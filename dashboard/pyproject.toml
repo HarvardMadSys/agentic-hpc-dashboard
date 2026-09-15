@@ -1,0 +1,19 @@
+[project]
+name = "rc-dashboard"
+version = "0.1.0"
+description = "Live agent-behaviour dashboard over the eBPF_marthen_new collector"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.scripts]
+rc-dashboard = "rc_dashboard.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rc_dashboard"]

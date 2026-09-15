@@ -1,0 +1,28 @@
+{
+  "name": "rc-dashboard-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Live HPC agent-behaviour dashboard frontend (rc_measurement)",
+  "scripts": {
+    "dev": "vite",
+    "dev:real": "vite --mode real",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "preview": "vite preview",
+    "fixture": "node mock/gen_fixture.mjs",
+    "check:no-random": "! grep -rn 'Math\\.random' src/ || (echo 'FAIL: Math.random() in src/' && exit 1)"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}

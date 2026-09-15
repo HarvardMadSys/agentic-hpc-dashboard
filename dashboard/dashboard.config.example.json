@@ -1,0 +1,98 @@
+{
+  "//": "dashboard/dashboard.config.example.json -- copy to dashboard.config.json and edit.",
+  "//1": "DOCS ONLY: the service never auto-loads a *.example.json file.",
+  "//2": "Precedence PER KEY: CLI flag > RC_DASH_* env var > this file > built-in default.",
+  "//3": "Omitted keys fall back to a built-in default that PROBES a candidate list.",
+  "//4": "Run `uv run python -m rc_dashboard --print-config` to see what each key",
+  "//5": "actually resolved to and why, and `--check-feeds` to see what is on disk.",
+  "//6": "Every '//'-prefixed key is stripped by the loader, so comments are legal here.",
+  "version": 1,
+
+  "feeds": {
+    "//": "eBPF tier (root): $EBPFM_OUTPUT_DIR/<date>/<host>.jsonl, landing repo-side",
+    "//1": "as log/ebpfm/<date>/<host>.jsonl -- the log/ebpfm symlink already ends in /logs.",
+    "//2": "List every root to merge; a non-existent root is reported, never fatal.",
+    "ebpf": {
+      "roots": ["/n/netscratch/juncheng_lab/juncheng/rc_measurement/ebpfm/logs"],
+      "days": 2,
+      "max_age_s": 300,
+      "//3": "max_age_s: residency_totals is written UNCONDITIONALLY every",
+      "//4": "EBPFM_RESIDENCY_S (default 60s) whether or not anything was tracked,",
+      "//5": "so freshness here means liveness, not activity. 300 = 5 ticks, the same",
+      "//6": "threshold collect/healthcheck.py uses for 'ebpfm'.",
+      "required": true
+    },
+
+    "//7": "Node tier (unprivileged): node_snapshot.py is a vendored copy of",
+    "//8": "collect/common/snapshot.py, so log/login is schema-compatible and works",
+    "//9": "as a stand-in before `ebpfm --node` is deployed anywhere.",
+    "ebpf_node": {
+      "roots": ["/n/netscratch/juncheng_lab/juncheng/rc_measurement/ebpfm/node/logs",
+                "/n/netscratch/juncheng_lab/juncheng/rc_measurement/login/logs"],
+      "days": 2,
+      "snapshots_per_host": 2,
+      "//10": "2 snapshots: per_user_cgroup.cpu_usage_usec is CUMULATIVE, so a per-user",
+      "//11": "CPU rate only exists as a delta between two consecutive snapshots.",
+      "max_age_s": 900,
+      "required": false
+    },
+
+    "//12": "collect/slurm_query.bash writes ONE FILE PER DAY into DEST_DIR, named",
+    "//13": "SlurmData_<start>_<stop>-orig.csv. Point `dir` at DEST_DIR, not at a file.",
+    "//14": "NOTE: sacct -D --starttime/--endtime overlap at midnight, so a job spanning",
+    "//15": "two days appears in BOTH day-files; the reducer dedups on JobID.",
+    "sacct": {
+      "dir": "/n/netscratch/juncheng_lab/juncheng/rc_measurement/rawdata",
+      "pattern": "SlurmData_*.csv",
+      "max_days": 0,
+      "jobs_csv": null,
+      "required": false
+    },
+
+    "sacctmgr":   { "dir": ".", "pattern": "sacctmgr_*.jsonl", "required": false },
+    "domains":    { "path": "dataclean/mapping/map_user.csv",  "required": false },
+    "user_actor": { "path": "dataclean/user.csv",              "required": false }
+  },
+
+  "//16": "The live window. 1440 min = 24h, matching the Overview grain, so the two",
+  "//17": "tabs reconcile. A 24h window is served from per-minute BUCKETS, never from",
+  "//18": "buffered raw events -- a day of records is ~10-20 GB fleet-wide.",
+  "live": {
+    "window_min": 1440,
+    "bin_s": 60,
+    "event_tail": 500,
+    "submit_tail": 50,
+    "backfill_hours": 24,
+    "//19": "backfill_hours: 0 starts empty and fills forward, skipping the one",
+    "//20": "expensive startup read. Progress is exposed on /api/feeds.",
+    "clock_skew_s": 120
+  },
+
+  "ingest":  { "poll_ms": 1000 },
+  "rebuild": { "interval_s": 900 },
+
+  "//21": "Standard repo exclusions -- see analyze/tool_calls_distribution.py:53.",
+  "filters": {
+    "drop_global": ["juncheng"],
+    "drop_agent": ["flamraoui"],
+    "classes": ["agent", "human-vscode", "human"],
+    "unlabeled_class": "unlabeled"
+  },
+
+  "reducers": {
+    "tool_mix": { "head_n": 12, "dedup_sessions_max": 200000 },
+    "io":       { "top_n": 20 },
+    "trajectories": {
+      "top_n": 15, "max_runs_shown": 60, "purpose_seq_cap": 80,
+      "idle_evict_s": 7200, "max_sessions": 50000,
+      "include_key_types": ["apid", "sess", "tty"],
+      "//": "'usr' is excluded: a usr-keyed group is 'everything that user did',",
+      "//1": "which is not a trajectory. It is counted in by_key_type, never ranked."
+    }
+  },
+
+  "export": { "max_rows": 5000000 },
+  "cache":  { "dir": "dashboard/.cache", "state_dir": "dashboard/.state",
+              "reducer_version": 3 },
+  "server": { "host": "127.0.0.1", "port": 8080, "static_dir": "dashboard/web/dist" }
+}

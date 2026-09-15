@@ -1,0 +1,98 @@
+/* Filter state, and its one canonical serialisation.
+ *
+ * The filter bar, the `/api/events` request and the `/api/export` download all
+ * read the SAME query string produced here, so the downloaded JSONL is exactly
+ * the view on screen. `tab` and `rank` ride along in the URL too so a reload
+ * restores what the user was looking at, but they are stripped before the
+ * query reaches the API.
+ */
+import { CLS } from './classes';
+import type { Cls, TrajRank } from '../api/types';
+
+/** Scalar filter params, in the order the backend documents them. */
+export const SCALAR_KEYS = [
+  'from',
+  'to',
+  'agent_type',
+  'user',
+  'host',
+  'tool',
+  'purpose',
+  'bucket',
+  'session_key',
+  'sandbox',
+  'approval',
+  'depth_min',
+  'depth_max',
+  'cpu_min',
+  'duration_min',
+  'exit_code',
+  'signal',
+  'q',
+] as const;
+export type ScalarKey = (typeof SCALAR_KEYS)[number];
+
+/** UI-only keys: they live in the URL, never in an API query. */
+export const UI_KEYS = ['tab', 'rank'] as const;
+
+export interface Filters {
+  /** `class` is repeatable; at least one class is always selected. */
+  cls: Cls[];
+  scalars: Partial<Record<ScalarKey, string>>;
+}
+
+export const EMPTY_FILTERS: Filters = { cls: [...CLS], scalars: {} };
+
+export interface UrlState extends Filters {
+  tab: string;
+  rank: TrajRank;
+}
+
+const RANKS = new Set(['events', 'cpu_s', 'distinct_tools', 'chain_runs']);
+
+export function parseUrl(search: string): UrlState {
+  const p = new URLSearchParams(search);
+  const raw = p.getAll('class').filter((c): c is Cls => (CLS as string[]).includes(c));
+  const scalars: Partial<Record<ScalarKey, string>> = {};
+  for (const k of SCALAR_KEYS) {
+    const v = p.get(k);
+    if (v != null && v !== '') scalars[k] = v;
+  }
+  const rank = p.get('rank');
+  return {
+    // At least one class is always selected: an empty selection would silently
+    // render an all-zero dashboard, which reads as "no activity".
+    cls: raw.length ? raw : [...CLS],
+    scalars,
+    tab: p.get('tab') || 'live',
+    rank: (rank && RANKS.has(rank) ? rank : 'events') as TrajRank,
+  };
+}
+
+/** The API query: `class` repeated, scalars in order, no UI keys. */
+export function apiQuery(f: Filters): string {
+  const p = new URLSearchParams();
+  for (const c of f.cls) p.append('class', c);
+  for (const k of SCALAR_KEYS) {
+    const v = f.scalars[k];
+    if (v != null && v !== '') p.append(k, v);
+  }
+  return p.toString();
+}
+
+/** The browser query: the API query plus the UI keys. */
+export function urlQuery(s: UrlState): string {
+  const p = new URLSearchParams(apiQuery(s));
+  if (s.tab && s.tab !== 'live') p.append('tab', s.tab);
+  if (s.rank && s.rank !== 'events') p.append('rank', s.rank);
+  return p.toString();
+}
+
+export function countActiveScalars(f: Filters): number {
+  return SCALAR_KEYS.reduce((a, k) => a + (f.scalars[k] ? 1 : 0), 0);
+}
+
+/** True when the class selection is not the full three-class set. */
+export function classFiltered(f: Filters): boolean {
+  return f.cls.length !== CLS.length;
+}

@@ -1,0 +1,48 @@
+# ebpfm — root eBPF tier of the login-node collector bundle.
+#
+# Installed by `ebpfm.sh install-unit`, which substitutes @EBPFM_DIR@ and
+# @EBPFM_OUTPUT_DIR@ and reloads systemd. Do not edit the installed copy; edit
+# this template and re-install, so the two never diverge.
+#
+# Why a unit at all, rather than the keepalive that runs every other collector:
+# run.sh is unprivileged and cannot sudo across the login fleet, so it must not
+# manage this. systemd is the supervisor instead. `ebpfm.sh start`'s transient
+# systemd-run scope is fine for a one-off, but it does not survive a reboot and
+# has no restart policy.
+#
+# Why system.slice: the userspace drain is cgroup-charged, and on a login node
+# the user slice is capped at cpu.max = 1.0 CPU. `sudo` does NOT leave that
+# slice. system.slice has no such cap.
+
+[Unit]
+Description=ebpfm login-node eBPF collector (root tier)
+Documentation=file://@EBPFM_DIR@/README.md
+After=network.target local-fs.target
+
+[Service]
+Type=simple
+Slice=system.slice
+ExecStart=/usr/bin/env python3 @EBPFM_DIR@/ebpf_trace.py %H
+Environment=EBPFM_OUTPUT_DIR=@EBPFM_OUTPUT_DIR@
+# EBPFM_MIN_UID=0 is deliberate and load-bearing: turning it on changes what
+# actor3="human" MEANS, and would make the human population incomparable with
+# every earlier capture. Leave it off; filter downstream on `attribution`.
+Environment=EBPFM_MIN_UID=0
+
+# on-failure, NEVER always: SIGTERM makes the collector flush every live tracked
+# process as event="truncated", and those records are a lower bound on lifetime.
+# A clean admin `stop` must therefore stay stopped. And nothing here may restart
+# it periodically -- no RuntimeMaxSec, no timer -- or every cycle would corrupt
+# the trace with a truncation burst. This is the same rule run.sh documents for
+# the pollers it supervises.
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+Nice=19
+# The drain is single-threaded and bounded; this is a backstop, not a target.
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

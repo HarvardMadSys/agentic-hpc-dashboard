@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Behaviour Console</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap">
+<style>
+:root{
+  /* Harvard identity palette, light only.  Crimson PMS 1807C #A51C30 is the accent and
+     the agent series colour; the core palette supplies the neutral field it sits on.
+     Series are brand hues re-stepped for this surface so the eight-slot set clears the
+     lightness-band, chroma-floor and colour-vision gates (worst adjacent CVD dE 9.6). */
+  color-scheme: light;
+  --crimson:#A51C30; --crimson-ink:#8a1728; --crimson-wash:#f7e9eb;
+  --page:#f7f4f4; --surface:#fdfbfb; --surface-2:#f2eeee; --sunken:#eae4e4;
+  --ink:#1e1e1e; --ink-2:#4e4548; --muted:#8a7d80; --rule:#e4dcdc; --edge:#cfc4c5;
+  --s1:#A51C30; --s2:#2f6cb0; --s3:#4d8f1f; --s4:#6f4aa0;
+  --s5:#1b8f6a; --s6:#c98a00; --s7:#d2607d; --s8:#3aa0d0; --sg:#93a1ad;
+  --good:#2f8f2c; --warn:#fcb315; --serious:#ec8f9c; --crit:#ed1b34;
+  --seq1:#f0d4d9; --seq2:#d99aa5; --seq3:#c4707f; --seq4:#A51C30;
+  --live:#4db848;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono,code,th,.tick,.val,.chip,.eyebrow{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+a{color:var(--crimson-ink)}
+h1,h2,h3{text-wrap:balance;margin:0}
+:focus-visible{outline:2px solid var(--crimson);outline-offset:2px}
+
+/* ------------------------------------------------------------------ shell */
+.app{display:grid;grid-template-columns:216px minmax(0,1fr);min-height:100vh}
+.rail{background:var(--surface);border-right:1px solid var(--rule);
+  padding:20px 0 28px;position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto}
+.brand{padding:0 18px 18px;border-bottom:1px solid var(--rule)}
+.brand .mark{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:-.01em;font-size:15px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--crimson);flex:none;
+  box-shadow:0 0 0 3px rgba(165,28,48,.18)}
+.brand .sub{margin-top:6px;font-size:11px;color:var(--muted);letter-spacing:.02em}
+nav{display:flex;flex-direction:column;padding:12px 10px;gap:2px}
+nav button{all:unset;cursor:pointer;display:flex;justify-content:space-between;align-items:center;
+  gap:8px;padding:8px 10px;border-radius:5px;font-size:13px;color:var(--ink-2)}
+nav button:hover{background:var(--surface-2);color:var(--ink)}
+nav button[aria-selected="true"]{background:var(--sunken);color:var(--ink);font-weight:600;
+  box-shadow:inset 2px 0 0 var(--crimson)}
+nav .n{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--muted)}
+.rail .foot{padding:14px 18px 0;margin-top:10px;border-top:1px solid var(--rule);
+  font-size:11px;color:var(--muted);line-height:1.6}
+
+main{padding:22px 26px 70px;max-width:1560px}
+.head{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between;
+  padding-bottom:14px;border-bottom:1px solid var(--rule);margin-bottom:18px}
+.head h1{font-size:23px;font-weight:600;letter-spacing:-.015em}
+.head p{margin:5px 0 0;color:var(--ink-2);max-width:66ch;font-size:13px}
+.eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+
+/* ------------------------------------------------------------ class filter */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:18px}
+.chip{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+  border:1px solid var(--edge);border-radius:99px;font-size:11px;color:var(--ink-2)}
+.chip[aria-pressed="true"]{border-color:currentColor;background:var(--surface);color:var(--ink)}
+.chip[aria-pressed="false"]{opacity:.5}
+.chip .sw{width:9px;height:9px;border-radius:2px;flex:none}
+
+/* -------------------------------------------------------------- panel grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;align-items:start}
+.grid.wide{grid-template-columns:repeat(auto-fit,minmax(520px,1fr))}
+.span2{grid-column:1/-1}
+.panel{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px 15px 15px;
+  min-width:0;display:flex;flex-direction:column;gap:10px}
+.panel > header{display:flex;gap:10px;justify-content:space-between;align-items:flex-start}
+.panel h3{font-size:14px;font-weight:600;letter-spacing:-.005em}
+.panel .why{font-size:12px;color:var(--ink-2);margin:2px 0 0}
+.panel .src{font-size:10px;color:var(--muted);margin-top:3px;font-family:"IBM Plex Mono",monospace}
+
+/* -------------------------------------------------------------- stat plates */
+.plates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:16px}
+@media (min-width:1040px){.plates{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.plate{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:13px 14px;
+  position:relative;overflow:hidden;display:flex;flex-direction:column}
+.plate .top{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}
+.plate::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--stripe,var(--s1))}
+.plate .k{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+  font-family:"IBM Plex Mono",monospace}
+.plate .v{font-size:29px;font-weight:600;letter-spacing:-.02em;margin-top:5px;line-height:1.05}
+.plate .v small{font-size:14px;font-weight:500;color:var(--ink-2);letter-spacing:0}
+.plate .n{font-size:11.5px;color:var(--ink-2);margin-top:5px}
+.plate .tag{flex:none}
+
+/* -------------------------------------------------------------- primitives */
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:9px;height:9px;border-radius:2px;display:inline-block;flex:none}
+svg{display:block;max-width:100%;height:auto;overflow:hidden}
+.axis text,.tick{font-size:10px;fill:var(--muted)}
+.axlbl{font-size:10px;fill:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.vlbl{font-size:10.5px;fill:var(--ink-2);font-family:"IBM Plex Mono",monospace}
+.grid-line{stroke:var(--rule);stroke-width:1}
+.base-line{stroke:var(--edge);stroke-width:1}
+.scroller{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  font-weight:500;padding:0 10px 6px 0;border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:6px 10px 6px 0;border-bottom:1px solid var(--rule);color:var(--ink-2);vertical-align:top}
+td.num{text-align:right;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;color:var(--ink)}
+td .cmd{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink);word-break:break-all}
+tr:last-child td{border-bottom:none}
+.sev{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;
+  font-family:"IBM Plex Mono",monospace;border:1px solid var(--edge)}
+.sev.HIGH{border-color:var(--crit);color:var(--crit);font-weight:600}
+.sev.med{border-color:var(--serious);color:#a8515f}
+.sev.low{color:var(--muted)}
+.note{font-size:11.5px;color:var(--ink-2);border-left:2px solid var(--edge);padding-left:9px;margin:0}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:12px}
+.kv dt{color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:11px}
+.kv dd{margin:0;color:var(--ink);font-variant-numeric:tabular-nums}
+#tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .08s;z-index:50;
+  background:var(--ink);color:var(--page);padding:6px 9px;border-radius:4px;font-size:11px;
+  font-family:"IBM Plex Mono",monospace;line-height:1.45;max-width:330px;box-shadow:0 3px 14px rgba(0,0,0,.25)}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;letter-spacing:.09em;
+  text-transform:uppercase;padding:3px 7px;border-radius:99px;border:1px solid var(--edge);
+  color:var(--ink-2);font-family:"IBM Plex Mono",monospace;flex:none;white-space:nowrap}
+.pill .ld{width:6px;height:6px;border-radius:50%;background:var(--live);flex:none;
+  animation:beat 2.4s ease-in-out infinite}
+.pill.stale{border-color:var(--warn);color:#8a6410}
+.pill.stale .ld{background:var(--warn);animation:none}
+@keyframes beat{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+.status{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;font-size:11px;
+  color:var(--ink-2);font-family:"IBM Plex Mono",monospace}
+.status b{color:var(--ink);font-weight:500}
+.refresh{all:unset;cursor:pointer;padding:3px 8px;border:1px solid var(--edge);border-radius:4px;
+  font-size:10.5px;font-family:"IBM Plex Mono",monospace;color:var(--ink-2)}
+.refresh:hover{border-color:var(--crimson);color:var(--crimson-ink)}
+.stream{max-height:420px;overflow-y:auto;overflow-x:auto}
+.stream table{font-size:11.5px}
+.stream td{padding:4px 9px 4px 0;white-space:nowrap}
+.stream td.arg{white-space:nowrap;max-width:430px;overflow:hidden;text-overflow:ellipsis}
+.stream tr.fresh{animation:flash 1.6s ease-out}
+@keyframes flash{from{background:var(--crimson-wash)}to{background:transparent}}
+.dot{width:7px;height:7px;border-radius:2px;display:inline-block;flex:none}
+.hidden{display:none!important}
+@media (max-width:860px){
+  .app{grid-template-columns:1fr}
+  .rail{position:static;height:auto;border-right:none;border-bottom:1px solid var(--rule)}
+  nav{flex-direction:row;flex-wrap:wrap}
+  main{padding:18px 14px 60px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="mark"><span class="dot"></span>Agent Behaviour</div>
+      <div class="sub mono">FASRC &middot; rc_measurement</div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="foot mono" id="railfoot"></div>
+  </aside>
+  <main>
+    <div class="head">
+      <div>
+        <div class="eyebrow" id="tabeyebrow">overview</div>
+        <h1 id="tabtitle">Agent Behaviour Console</h1>
+      </div>
+      <div class="status" id="provlegend"></div>
+    </div>
+    <div id="body"></div>
+  </main>
+</div>
+<div id="tip"></div>
+
+<script>
+let DATA = {"built_at":"2026-09-11 13:07:52","repo":"rc_measurement-consolidate","panels":{"jobs":{"window":{"submit_min":"2026-04-24T15:44:43","submit_max":"2026-06-01T23:59:58","job_rows":434553},"classes":{"agent":{"jobs":1166,"submissions":42,"users":3,"work_dirs":9,"core_hours":2305.2,"gpu_hours":52.2,"gpu_jobs":520,"array_pct":98.2,"single_core_pct":15.95,"array_collapse":27.76,"state_pct":{"COMPLETED":56.17,"FAILED":42.02,"TIMEOUT":1.37,"OUT_OF_MEMORY":0.0,"CANCELLED":0.43,"PREEMPTED":0.0,"NODE_FAIL":0.0,"REQUEUED":0.0},"state_n":{"COMPLETED":655,"FAILED":490,"TIMEOUT":16,"OUT_OF_MEMORY":0,"CANCELLED":5,"PREEMPTED":0,"NODE_FAIL":0,"REQUEUED":0},"walltime_used_frac":{"p10":0.0009,"p25":0.0012,"p50":0.0023,"p75":0.0129,"p90":0.2313,"p99":1.0003,"mean":0.0576,"n":1159},"cpu_eff":{"p10":0.0099,"p25":0.0678,"p50":0.2477,"p75":0.3262,"p90":0.9629,"p99":0.9811,"mean":0.2898,"n":352},"mem_eff":{"p10":0.0,"p25":0.0,"p50":0.0066,"p75":0.0453,"p90":0.1362,"p99":0.3413,"mean":0.0379,"n":1160},"queue_wait_s":{"p10":10.0,"p25":221.0,"p50":1414.0,"p75":1803.0,"p90":1959.0,"p99":10207.0,"mean":1472.4517,"n":1160},"elapsed_s":{"p10":13,"p25":18,"p50":35,"p75":155,"p90":3373,"p99":43211,"mean":1329.3719,"n":1159},"timelimit_s":{"p10":10800,"p25":14400,"p50":14400,"p75":14400,"p90":28800,"p99":43200,"mean":16802.0583,"n":1166},"hour_of_day":[3,48,0,0,0,0,0,0,0,0,544,0,1,62,39,2,0,204,0,1,2,0,147,113],"gpu_class":{"gpu_requested_unmet":1,"gpu_idle":459,"gpu_used":61},"top_domains":[["Particle/Neutrino",1160],["Machine learning/AI",6]]},"other":{"jobs":433387,"submissions":84511,"users":573,"work_dirs":1960,"core_hours":4748946.7,"gpu_hours":66410.1,"gpu_jobs":18032,"array_pct":80.19,"single_core_pct":33.92,"array_collapse":5.13,"state_pct":{"COMPLETED":90.9,"FAILED":3.3,"TIMEOUT":0.68,"OUT_OF_MEMORY":0.44,"CANCELLED":2.0,"PREEMPTED":2.47,"NODE_FAIL":0.02,"REQUEUED":0.2},"state_n":{"COMPLETED":393964,"FAILED":14289,"TIMEOUT":2948,"OUT_OF_MEMORY":1889,"CANCELLED":8660,"PREEMPTED":10690,"NODE_FAIL":66,"REQUEUED":881},"walltime_used_frac":{"p10":0.0022,"p25":0.0122,"p50":0.0274,"p75":0.061,"p90":0.3035,"p99":0.8935,"mean":0.0908,"n":431583},"cpu_eff":{"p10":0.2748,"p25":0.8301,"p50":0.9333,"p75":0.9565,"p90":0.9817,"p99":0.9955,"mean":0.8119,"n":335608},"mem_eff":{"p10":0.0006,"p25":0.021,"p50":0.0967,"p75":0.1023,"p90":0.374,"p99":0.7175,"mean":0.1232,"n":381112},"queue_wait_s":{"p10":3.0,"p25":200.0,"p50":804.0,"p75":7122.0,"p90":92424.0,"p99":254838.0,"mean":25249.1161,"n":431967},"elapsed_s":{"p10":51,"p25":334,"p50":481,"p75":2250,"p90":6932,"p99":50313,"mean":4105.7377,"n":431583},"timelimit_s":{"p10":3600,"p25":10800,"p50":14400,"p75":86400,"p90":259200,"p99":604800,"mean":71150.6886,"n":433387},"hour_of_day":[18275,23428,3870,13634,5573,3499,4685,3363,6122,18235,13439,12419,21224,17902,17689,26061,19782,28603,21141,25579,27019,28446,33178,40221],"gpu_class":{"gpu_used":6614,"gpu_idle":5443,"gpu_util_unknown":5975,"gpu_requested_unmet":503},"top_domains":[["Quantum computing/QEC",166606],["Cosmology/Astro",52462],["Quantum many-body/AMO",49390],["Genomics/Bioinfo",47277],["Particle/Neutrino",42133],["Protein/struct (AF)",24985],["unknown",16794],["Quantum chem / DFT",12730]]}},"by_product":{"claude-code":1163,"codex":3},"product_state_pct":{"claude-code":{"COMPLETED":56.15,"FAILED":42.05,"TIMEOUT":1.38,"OUT_OF_MEMORY":0.0,"CANCELLED":0.43,"PREEMPTED":0.0,"NODE_FAIL":0.0,"REQUEUED":0.0},"codex":{"COMPLETED":66.67,"FAILED":33.33,"TIMEOUT":0.0,"OUT_OF_MEMORY":0.0,"CANCELLED":0.0,"PREEMPTED":0.0,"NODE_FAIL":0.0,"REQUEUED":0.0}},"retry_repeats":[{"user":"miaochenjin","n":480,"product":"claude-code","submit_line":"sbatch --job-name=fw_corsika --partition=gpu_h200 --account=arguelles_delgado_lab --gres=gpu:nvidia_h200:1 --cpus-per-task=8 --mem=48G --time=04:00:00 --array=0-479 --output=/n/hol"},{"user":"miaochenjin","n":144,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/WHA-MS/claude-tmp/felix-what-neptune-application/persist_nugen_weights.slurm"},{"user":"miaochenjin","n":120,"product":"claude-code","submit_line":"sbatch -p arguelles_delgado_h100 --account=arguelles_delgado_lab /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/WHA-MS/claude-tmp/felix-what-neptune-application/v7_en"},{"user":"miaochenjin","n":80,"product":"claude-code","submit_line":"sbatch -p arguelles_delgado_h100 --account=arguelles_delgado_lab v7_morph_pred.slurm"},{"user":"miaochenjin","n":80,"product":"claude-code","submit_line":"sbatch -p arguelles_delgado_h100 --account=arguelles_delgado_lab v7_morph_pred_weighted.slurm"},{"user":"miaochenjin","n":48,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/WHA-MS/claude-tmp/felix-what-neptune-application/submit_whamsv7_filter_corsika.sh"},{"user":"miaochenjin","n":48,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/WHA-MS/claude-tmp/felix-what-neptune-application/run_corsika_srtfix_full.sh"},{"user":"miaochenjin","n":34,"product":"claude-code","submit_line":"sbatch --job-name=fw_21316 --partition=gpu_h200 --account=arguelles_delgado_lab --gres=gpu:nvidia_h200:1 --cpus-per-task=8 --mem=48G --time=04:00:00 --array=0-33 --export=ALL,FW_SR"},{"user":"miaochenjin","n":16,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/AtmNuDataFit/claude/2-atmospheric-oscillation/SuperK/scripts/submit_sk_fixall_baseline.sh"},{"user":"miaochenjin","n":16,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/AtmNuDataFit/claude/2-atmospheric-oscillation/SuperK/scripts/submit_sk_fixall.sh"},{"user":"miaochenjin","n":15,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/AtmNuDataFit/claude/2-atmospheric-oscillation/SuperK/scripts/submit_sk_f6_baseline.sh"},{"user":"miaochenjin","n":15,"product":"claude-code","submit_line":"sbatch /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/miaochenjin/AtmNuDataFit/claude/2-atmospheric-oscillation/SuperK/scripts/submit_sk_f6_sepfix.sh"}],"concentration":{"gini_user_jobs":0.966,"n_users":573,"top10_share_pct":77.98,"rank_size":[164585,40769,34787,23861,21727,13860,10427,10144,10053,8630,7839,5659,5470,5036,5001,4557,3811,3210,2346,2306,2243,2217,2001,1718,1699,1660,1329,1260,1166,1141,1132,1115,1106,1067,1006,1000,913,842,799,784,755,752,739,725,717,652,614,597,590,573,528,459,453,440,415,403,400,396,393,354],"top_users":[{"user":"awills","jobs":164585,"class":"other"},{"user":"jkoh","jobs":40769,"class":"other"},{"user":"thomwg11","jobs":34787,"class":"other"},{"user":"vchandra","jobs":23861,"class":"other"},{"user":"kjnapier","jobs":21727,"class":"other"},{"user":"nguyenpk","jobs":13860,"class":"other"},{"user":"zhouhufeng","jobs":10427,"class":"other"},{"user":"jiaqilu0924","jobs":10144,"class":"other"},{"user":"hyyang","jobs":10053,"class":"other"},{"user":"dhelekal","jobs":8630,"class":"other"},{"user":"ani","jobs":7839,"class":"other"},{"user":"kdbrantley","jobs":5659,"class":"other"}]},"partitions":[["serial_requeue",179304],["shared",111115],["sapphire",53988],["itc_cluster",13753],["hsph",13143],["conroy",12593],["yao",9032],["gpu_requeue",6578],["gpu",6115],["eddy",4611],["zhuang",3116],["kovac",2555],["giribet",1651],["seas_compute",1590]],"timeline":[{"t":"2026-04-24T15","agent":0,"other":194},{"t":"2026-04-30T13","agent":0,"other":5},{"t":"2026-05-01T14","agent":0,"other":1},{"t":"2026-05-02T00","agent":0,"other":1},{"t":"2026-05-03T21","agent":0,"other":1},{"t":"2026-05-05T10","agent":0,"other":1},{"t":"2026-05-05T13","agent":0,"other":1},{"t":"2026-05-06T16","agent":0,"other":3},{"t":"2026-05-09T03","agent":0,"other":3},{"t":"2026-05-15T17","agent":0,"other":30},{"t":"2026-05-15T18","agent":0,"other":60},{"t":"2026-05-15T19","agent":0,"other":18},{"t":"2026-05-16T10","agent":0,"other":1},{"t":"2026-05-16T18","agent":0,"other":72},{"t":"2026-05-17T11","agent":0,"other":1},{"t":"2026-05-18T08","agent":0,"other":6},{"t":"2026-05-18T18","agent":0,"other":1},{"t":"2026-05-19T10","agent":0,"other":1},{"t":"2026-05-19T12","agent":0,"other":150},{"t":"2026-05-19T13","agent":0,"other":1},{"t":"2026-05-19T18","agent":0,"other":60},{"t":"2026-05-19T22","agent":0,"other":1},{"t":"2026-05-20T04","agent":0,"other":7},{"t":"2026-05-20T08","agent":0,"other":50},{"t":"2026-05-20T09","agent":0,"other":60},{"t":"2026-05-20T17","agent":0,"other":1},{"t":"2026-05-20T21","agent":0,"other":1},{"t":"2026-05-21T03","agent":0,"other":1},{"t":"2026-05-21T15","agent":0,"other":1},{"t":"2026-05-21T20","agent":0,"other":1},{"t":"2026-05-22T18","agent":0,"other":1},{"t":"2026-05-22T21","agent":0,"other":1},{"t":"2026-05-23T09","agent":0,"other":1},{"t":"2026-05-23T12","agent":0,"other":30},{"t":"2026-05-23T13","agent":0,"other":1},{"t":"2026-05-23T20","agent":0,"other":1},{"t":"2026-05-24T09","agent":0,"other":60},{"t":"2026-05-24T14","agent":0,"other":1},{"t":"2026-05-24T21","agent":0,"other":10},{"t":"2026-05-25T01","agent":0,"other":2},{"t":"2026-05-25T11","agent":0,"other":1},{"t":"2026-05-25T20","agent":0,"other":1},{"t":"2026-05-26T09","agent":0,"other":75},{"t":"2026-05-26T10","agent":0,"other":5},{"t":"2026-05-26T11","agent":0,"other":1},{"t":"2026-05-26T12","agent":0,"other":1},{"t":"2026-05-26T14","agent":0,"other":3},{"t":"2026-05-26T16","agent":0,"other":7},{"t":"2026-05-26T17","agent":0,"other":1},{"t":"2026-05-26T22","agent":0,"other":4},{"t":"2026-05-27T07","agent":0,"other":8},{"t":"2026-05-27T10","agent":0,"other":3},{"t":"2026-05-27T11","agent":0,"other":2},{"t":"2026-05-27T13","agent":0,"other":2},{"t":"2026-05-27T14","agent":0,"other":1},{"t":"2026-05-27T15","agent":0,"other":6},{"t":"2026-05-27T17","agent":0,"other":6},{"t":"2026-05-28T05","agent":0,"other":680},{"t":"2026-05-28T06","agent":0,"other":96},{"t":"2026-05-28T07","agent":0,"other":3},{"t":"2026-05-28T08","agent":0,"other":2},{"t":"2026-05-28T10","agent":0,"other":1},{"t":"2026-05-28T11","agent":0,"other":2},{"t":"2026-05-28T13","agent":0,"other":62},{"t":"2026-05-28T14","agent":0,"other":4},{"t":"2026-05-28T16","agent":0,"other":5},{"t":"2026-05-28T17","agent":0,"other":1},{"t":"2026-05-28T18","agent":0,"other":17},{"t":"2026-05-28T20","agent":0,"other":4},{"t":"2026-05-28T21","agent":0,"other":1},{"t":"2026-05-28T23","agent":0,"other":414},{"t":"2026-05-29T00","agent":0,"other":1},{"t":"2026-05-29T01","agent":0,"other":1},{"t":"2026-05-29T02","agent":0,"other":15},{"t":"2026-05-29T03","agent":0,"other":47},{"t":"2026-05-29T04","agent":0,"other":3},{"t":"2026-05-29T05","agent":0,"other":2},{"t":"2026-05-29T06","agent":0,"other":21},{"t":"2026-05-29T07","agent":0,"other":8},{"t":"2026-05-29T08","agent":0,"other":43},{"t":"2026-05-29T09","agent":0,"other":103},{"t":"2026-05-29T10","agent":0,"other":18},{"t":"2026-05-29T11","agent":0,"other":15},{"t":"2026-05-29T12","agent":0,"other":3},{"t":"2026-05-29T13","agent":0,"other":14},{"t":"2026-05-29T14","agent":0,"other":21},{"t":"2026-05-29T15","agent":0,"other":55},{"t":"2026-05-29T16","agent":0,"other":4},{"t":"2026-05-29T17","agent":0,"other":16},{"t":"2026-05-29T18","agent":0,"other":6},{"t":"2026-05-29T19","agent":0,"other":1},{"t":"2026-05-29T20","agent":0,"other":5},{"t":"2026-05-29T21","agent":0,"other":1},{"t":"2026-05-29T22","agent":0,"other":3},{"t":"2026-05-29T23","agent":0,"other":2203},{"t":"2026-05-30T00","agent":0,"other":27},{"t":"2026-05-30T01","agent":0,"other":2},{"t":"2026-05-30T02","agent":0,"other":2},{"t":"2026-05-30T03","agent":0,"other":3},{"t":"2026-05-30T05","agent":0,"other":1},{"t":"2026-05-30T07","agent":0,"other":1},{"t":"2026-05-30T08","agent":0,"other":12},{"t":"2026-05-30T09","agent":0,"other":2107},{"t":"2026-05-30T10","agent":0,"other":19},{"t":"2026-05-30T11","agent":0,"other":390},{"t":"2026-05-30T12","agent":0,"other":441},{"t":"2026-05-30T13","agent":0,"other":9},{"t":"2026-05-30T14","agent":0,"other":539},{"t":"2026-05-30T15","agent":0,"other":8},{"t":"2026-05-30T16","agent":0,"other":50},{"t":"2026-05-30T17","agent":0,"other":7730},{"t":"2026-05-30T18","agent":0,"other":1906},{"t":"2026-05-30T19","agent":0,"other":1031},{"t":"2026-05-30T20","agent":0,"other":1113},{"t":"2026-05-30T21","agent":0,"other":911},{"t":"2026-05-30T22","agent":0,"other":757},{"t":"2026-05-30T23","agent":0,"other":2753},{"t":"2026-05-31T00","agent":0,"other":1075},{"t":"2026-05-31T01","agent":0,"other":739},{"t":"2026-05-31T02","agent":0,"other":1035},{"t":"2026-05-31T03","agent":0,"other":2905},{"t":"2026-05-31T04","agent":0,"other":7},{"t":"2026-05-31T05","agent":0,"other":308},{"t":"2026-05-31T06","agent":0,"other":2},{"t":"2026-05-31T07","agent":0,"other":1},{"t":"2026-05-31T08","agent":0,"other":342},{"t":"2026-05-31T09","agent":0,"other":404},{"t":"2026-05-31T10","agent":0,"other":177},{"t":"2026-05-31T11","agent":0,"other":301},{"t":"2026-05-31T12","agent":0,"other":832},{"t":"2026-05-31T13","agent":0,"other":4752},{"t":"2026-05-31T14","agent":0,"other":2137},{"t":"2026-05-31T15","agent":0,"other":185},{"t":"2026-05-31T16","agent":0,"other":697},{"t":"2026-05-31T17","agent":0,"other":236},{"t":"2026-05-31T18","agent":0,"other":146},{"t":"2026-05-31T19","agent":0,"other":327},{"t":"2026-05-31T20","agent":0,"other":6146},{"t":"2026-05-31T21","agent":0,"other":7333},{"t":"2026-05-31T22","agent":0,"other":2503},{"t":"2026-05-31T23","agent":0,"other":2885},{"t":"2026-06-01T00","agent":3,"other":17171},{"t":"2026-06-01T01","agent":48,"other":22684},{"t":"2026-06-01T02","agent":0,"other":2818},{"t":"2026-06-01T03","agent":0,"other":10675},{"t":"2026-06-01T04","agent":0,"other":5556},{"t":"2026-06-01T05","agent":0,"other":2508},{"t":"2026-06-01T06","agent":0,"other":4566},{"t":"2026-06-01T07","agent":0,"other":3342},{"t":"2026-06-01T08","agent":0,"other":5667},{"t":"2026-06-01T09","agent":0,"other":15425},{"t":"2026-06-01T10","agent":544,"other":13213},{"t":"2026-06-01T11","agent":0,"other":11706},{"t":"2026-06-01T12","agent":1,"other":19767},{"t":"2026-06-01T13","agent":62,"other":13055},{"t":"2026-06-01T14","agent":39,"other":14982},{"t":"2026-06-01T15","agent":2,"other":25612},{"t":"2026-06-01T16","agent":0,"other":19016},{"t":"2026-06-01T17","agent":204,"other":20582},{"t":"2026-06-01T18","agent":0,"other":18872},{"t":"2026-06-01T19","agent":1,"other":24202},{"t":"2026-06-01T20","agent":2,"other":19748},{"t":"2026-06-01T21","agent":0,"other":20187},{"t":"2026-06-01T22","agent":147,"other":29910},{"t":"2026-06-01T23","agent":113,"other":31966}],"_file":"SlurmData_2026-06-01_2026-06-02-orig.csv","_prov":"real","_source":"sacct (slurmdbd export)","_why":"settled accounting record per job"},"identity":{"host":"holylogin08","timestamp":"2026-09-10 15:10:22","n_assoc_rows":3518,"n_users":2782,"n_accounts":578,"n_qos":38,"admin_levels":{"None":3484,"Administrator":25,"Operator":9},"clusters":[{"cluster":"odyssey","rpc":"11520","federation":""}],"federation_rows":0,"top_qos":["normal","test","gpu_test","yao_priority","iaifi_gpu","iaifi_gpu_priority","kempner_priority","kempner_h100_priority","kempner_h100_priority2","kempner_interactive","kempner_eng","gpupriority","kempner_h200_priority","kemp_gpu32_id31","kemp_gpu16_id32","kemp_gpu56_id33","h200_benchmarking","kemp_gpu64_id34","kemp_gpu64_id35","kemp_gpu64_id36","kemp_maxnodepu2","kemp_gpu16_id39","kemp_gpu16_id40","kemp_gpu16_id38"],"_prov":"real","_source":"sacctmgr","_why":"accounts, QOS, admin levels, federation"},"fleet":{"events_per_day":{"agent":1110000,"human-vscode":530000,"human":300000},"standing":{"claude_code":{"instances":894,"roots":600,"cores":4.1,"rss_gb":111,"users":97,"d_state":5},"codex":{"instances":1615,"roots":628,"cores":2.1,"rss_gb":62,"users":34,"d_state":1},"cursor":{"instances":197,"roots":37,"cores":1.4,"rss_gb":39,"users":55,"d_state":2},"vscode":{"instances":3496,"roots":2531,"cores":6.3,"rss_gb":271,"users":220,"d_state":14},"human":{"instances":1514,"roots":1025,"cores":1.8,"rss_gb":24,"users":795,"d_state":0}},"roots":{"agent":1265,"human-vscode":2531,"human":1025},"cores":{"agent":7.6,"human-vscode":6.3,"human":1.8},"rss_gb":{"agent":212,"human-vscode":271,"human":24},"users":{"agent":505,"human-vscode":484,"human":1298,"mixed":109,"unknown":174},"hosts":["boslogin06","boslogin07","boslogin08","holylogin05","holylogin06","holylogin07","holylogin08"],"headless_pct":96,"per_user_exits_day":{"agent":2200,"human":233},"spawn_rate_per_s":{"agent":20.0,"human":3.5},"_prov":"synthetic","_source":"eBPF exit + residency_totals","_why":"the same population counted six ways"},"purpose_mix":{"agent":[{"purpose":"poll","events_pct":29,"cpu_pct":2},{"purpose":"runtime","events_pct":19,"cpu_pct":45},{"purpose":"other","events_pct":15,"cpu_pct":3},{"purpose":"filesearch","events_pct":14,"cpu_pct":3},{"purpose":"build","events_pct":6,"cpu_pct":12},{"purpose":"git","events_pct":5,"cpu_pct":2},{"purpose":"slurm_mon","events_pct":4,"cpu_pct":1},{"purpose":"compute","events_pct":4,"cpu_pct":21},{"purpose":"data","events_pct":2,"cpu_pct":9},{"purpose":"slurm_sub","events_pct":1,"cpu_pct":1},{"purpose":"editor","events_pct":1,"cpu_pct":1}],"human-vscode":[{"purpose":"poll","events_pct":60,"cpu_pct":4},{"purpose":"editor","events_pct":12,"cpu_pct":28},{"purpose":"filesearch","events_pct":7,"cpu_pct":3},{"purpose":"slurm_mon","events_pct":5,"cpu_pct":1},{"purpose":"other","events_pct":5,"cpu_pct":10},{"purpose":"build","events_pct":3,"cpu_pct":9},{"purpose":"git","events_pct":3,"cpu_pct":2},{"purpose":"compute","events_pct":2,"cpu_pct":34},{"purpose":"slurm_sub","events_pct":1,"cpu_pct":1},{"purpose":"data","events_pct":1,"cpu_pct":7},{"purpose":"runtime","events_pct":1,"cpu_pct":1}],"human":[{"purpose":"poll","events_pct":38,"cpu_pct":4},{"purpose":"slurm_mon","events_pct":26,"cpu_pct":3},{"purpose":"slurm_sub","events_pct":19,"cpu_pct":2},{"purpose":"filesearch","events_pct":4,"cpu_pct":2},{"purpose":"other","events_pct":4,"cpu_pct":11},{"purpose":"compute","events_pct":3,"cpu_pct":61},{"purpose":"build","events_pct":2,"cpu_pct":8},{"purpose":"git","events_pct":2,"cpu_pct":1},{"purpose":"data","events_pct":1,"cpu_pct":7},{"purpose":"editor","events_pct":1,"cpu_pct":1},{"purpose":"runtime","events_pct":0,"cpu_pct":0}],"_prov":"synthetic","_source":"eBPF exit (argv -> purpose)","_why":"count vs cost: polling is ~30% of events, ~2% of CPU"},"session_sizes":{"agent":{"ccdf":[{"x":1.0,"ccdf":1.0},{"x":1.122,"ccdf":0.44135},{"x":1.259,"ccdf":0.44135},{"x":1.413,"ccdf":0.44135},{"x":1.585,"ccdf":0.44135},{"x":1.778,"ccdf":0.44135},{"x":1.995,"ccdf":0.44135},{"x":2.239,"ccdf":0.368475},{"x":2.512,"ccdf":0.368475},{"x":2.818,"ccdf":0.368475},{"x":3.162,"ccdf":0.31735},{"x":3.548,"ccdf":0.31735},{"x":3.981,"ccdf":0.31735},{"x":4.467,"ccdf":0.281275},{"x":5.012,"ccdf":0.2512},{"x":5.623,"ccdf":0.2512},{"x":6.31,"ccdf":0.226075},{"x":7.079,"ccdf":0.205175},{"x":7.943,"ccdf":0.205175},{"x":8.913,"ccdf":0.18675},{"x":10.0,"ccdf":0.16945},{"x":11.22,"ccdf":0.140625},{"x":12.589,"ccdf":0.1291},{"x":14.125,"ccdf":0.10685},{"x":15.849,"ccdf":0.1004},{"x":17.783,"ccdf":0.096475},{"x":19.953,"ccdf":0.092475},{"x":22.387,"ccdf":0.0871},{"x":25.119,"ccdf":0.08235},{"x":28.184,"ccdf":0.0785},{"x":31.623,"ccdf":0.0742},{"x":35.481,"ccdf":0.0694},{"x":39.811,"ccdf":0.065575},{"x":44.668,"ccdf":0.061125},{"x":50.119,"ccdf":0.0566},{"x":56.234,"ccdf":0.05255},{"x":63.096,"ccdf":0.048375},{"x":70.795,"ccdf":0.044325},{"x":79.433,"ccdf":0.040075},{"x":89.125,"ccdf":0.035575},{"x":100.0,"ccdf":0.031425},{"x":112.202,"ccdf":0.0264},{"x":125.893,"ccdf":0.0228},{"x":141.254,"ccdf":0.0182},{"x":158.489,"ccdf":0.014525},{"x":177.828,"ccdf":0.010075},{"x":199.526,"ccdf":0.009075},{"x":223.872,"ccdf":0.008425},{"x":251.189,"ccdf":0.007725},{"x":281.838,"ccdf":0.007325},{"x":316.228,"ccdf":0.006675},{"x":354.813,"ccdf":0.006225},{"x":398.107,"ccdf":0.005775},{"x":446.684,"ccdf":0.00525},{"x":501.187,"ccdf":0.004725},{"x":562.341,"ccdf":0.004175},{"x":630.957,"ccdf":0.0037},{"x":707.946,"ccdf":0.0031},{"x":794.328,"ccdf":0.002675},{"x":891.251,"ccdf":0.00225},{"x":1000.0,"ccdf":0.001625},{"x":1122.018,"ccdf":0.001},{"x":1258.925,"ccdf":0.00075},{"x":1412.538,"ccdf":0.00065},{"x":1584.893,"ccdf":0.0006},{"x":1778.279,"ccdf":0.000525},{"x":1995.262,"ccdf":0.0005},{"x":2238.721,"ccdf":0.00045},{"x":2511.886,"ccdf":0.0004},{"x":2818.383,"ccdf":0.00035},{"x":3162.278,"ccdf":0.000275},{"x":3548.134,"ccdf":0.000225},{"x":3981.072,"ccdf":0.000175},{"x":4466.836,"ccdf":0.000125},{"x":5011.872,"ccdf":0.000125},{"x":5623.413,"ccdf":5e-05}],"p50":1,"p90":16,"p99":178,"max":6059,"n_sessions":40000,"mean":15.6,"share_events_top1pct":44.9},"human-vscode":{"ccdf":[{"x":1.0,"ccdf":1.0},{"x":1.122,"ccdf":0.42665},{"x":1.259,"ccdf":0.42665},{"x":1.413,"ccdf":0.42665},{"x":1.585,"ccdf":0.42665},{"x":1.778,"ccdf":0.42665},{"x":1.995,"ccdf":0.42665},{"x":2.239,"ccdf":0.33225},{"x":2.512,"ccdf":0.33225},{"x":2.818,"ccdf":0.33225},{"x":3.162,"ccdf":0.269375},{"x":3.548,"ccdf":0.269375},{"x":3.981,"ccdf":0.269375},{"x":4.467,"ccdf":0.224575},{"x":5.012,"ccdf":0.19},{"x":5.623,"ccdf":0.19},{"x":6.31,"ccdf":0.1594},{"x":7.079,"ccdf":0.133775},{"x":7.943,"ccdf":0.133775},{"x":8.913,"ccdf":0.109425},{"x":10.0,"ccdf":0.096625},{"x":11.22,"ccdf":0.088275},{"x":12.589,"ccdf":0.084975},{"x":14.125,"ccdf":0.079375},{"x":15.849,"ccdf":0.076775},{"x":17.783,"ccdf":0.0726},{"x":19.953,"ccdf":0.067975},{"x":22.387,"ccdf":0.0622},{"x":25.119,"ccdf":0.056975},{"x":28.184,"ccdf":0.052575},{"x":31.623,"ccdf":0.048825},{"x":35.481,"ccdf":0.044525},{"x":39.811,"ccdf":0.040725},{"x":44.668,"ccdf":0.0364},{"x":50.119,"ccdf":0.03195},{"x":56.234,"ccdf":0.02745},{"x":63.096,"ccdf":0.0229},{"x":70.795,"ccdf":0.019475},{"x":79.433,"ccdf":0.015325},{"x":89.125,"ccdf":0.01085},{"x":100.0,"ccdf":0.00835},{"x":112.202,"ccdf":0.007825},{"x":125.893,"ccdf":0.0074},{"x":141.254,"ccdf":0.00695},{"x":158.489,"ccdf":0.0064},{"x":177.828,"ccdf":0.006025},{"x":199.526,"ccdf":0.0055},{"x":223.872,"ccdf":0.004875},{"x":251.189,"ccdf":0.004325},{"x":281.838,"ccdf":0.004025},{"x":316.228,"ccdf":0.003625},{"x":354.813,"ccdf":0.003175},{"x":398.107,"ccdf":0.002775},{"x":446.684,"ccdf":0.0023},{"x":501.187,"ccdf":0.00205},{"x":562.341,"ccdf":0.001575},{"x":630.957,"ccdf":0.001075},{"x":707.946,"ccdf":0.001025},{"x":794.328,"ccdf":0.00095},{"x":891.251,"ccdf":0.000825},{"x":1000.0,"ccdf":0.000725},{"x":1122.018,"ccdf":0.00065},{"x":1258.925,"ccdf":0.00055},{"x":1412.538,"ccdf":0.000375},{"x":1584.893,"ccdf":0.000325},{"x":1778.279,"ccdf":0.0002},{"x":1995.262,"ccdf":0.000125},{"x":2238.721,"ccdf":0.0001}],"p50":1,"p90":9,"p99":91,"max":2400,"n_sessions":40000,"mean":8.67,"share_events_top1pct":41.9},"human":{"ccdf":[{"x":1.0,"ccdf":1.0},{"x":1.122,"ccdf":0.854775},{"x":1.259,"ccdf":0.854775},{"x":1.413,"ccdf":0.854775},{"x":1.585,"ccdf":0.854775},{"x":1.778,"ccdf":0.854775},{"x":1.995,"ccdf":0.854775},{"x":2.239,"ccdf":0.671775},{"x":2.512,"ccdf":0.671775},{"x":2.818,"ccdf":0.671775},{"x":3.162,"ccdf":0.54595},{"x":3.548,"ccdf":0.54595},{"x":3.981,"ccdf":0.54595},{"x":4.467,"ccdf":0.48045},{"x":5.012,"ccdf":0.453225},{"x":5.623,"ccdf":0.453225},{"x":6.31,"ccdf":0.4287},{"x":7.079,"ccdf":0.40905},{"x":7.943,"ccdf":0.40905},{"x":8.913,"ccdf":0.39175},{"x":10.0,"ccdf":0.37605},{"x":11.22,"ccdf":0.349075},{"x":12.589,"ccdf":0.337675},{"x":14.125,"ccdf":0.315425},{"x":15.849,"ccdf":0.306025},{"x":17.783,"ccdf":0.28805},{"x":19.953,"ccdf":0.2734},{"x":22.387,"ccdf":0.252325},{"x":25.119,"ccdf":0.233975},{"x":28.184,"ccdf":0.21675},{"x":31.623,"ccdf":0.201975},{"x":35.481,"ccdf":0.18295},{"x":39.811,"ccdf":0.168175},{"x":44.668,"ccdf":0.149725},{"x":50.119,"ccdf":0.132275},{"x":56.234,"ccdf":0.11515},{"x":63.096,"ccdf":0.100275},{"x":70.795,"ccdf":0.09565},{"x":79.433,"ccdf":0.090725},{"x":89.125,"ccdf":0.0852},{"x":100.0,"ccdf":0.081175},{"x":112.202,"ccdf":0.0757},{"x":125.893,"ccdf":0.0709},{"x":141.254,"ccdf":0.065925},{"x":158.489,"ccdf":0.0609},{"x":177.828,"ccdf":0.056025},{"x":199.526,"ccdf":0.050925},{"x":223.872,"ccdf":0.046425},{"x":251.189,"ccdf":0.0416},{"x":281.838,"ccdf":0.0366},{"x":316.228,"ccdf":0.0314},{"x":354.813,"ccdf":0.02685},{"x":398.107,"ccdf":0.022375},{"x":446.684,"ccdf":0.01735},{"x":501.187,"ccdf":0.01225},{"x":562.341,"ccdf":0.009675},{"x":630.957,"ccdf":0.008925},{"x":707.946,"ccdf":0.008125},{"x":794.328,"ccdf":0.007275},{"x":891.251,"ccdf":0.00635},{"x":1000.0,"ccdf":0.0055},{"x":1122.018,"ccdf":0.004725},{"x":1258.925,"ccdf":0.0042},{"x":1412.538,"ccdf":0.003325},{"x":1584.893,"ccdf":0.0023},{"x":1778.279,"ccdf":0.00145},{"x":1995.262,"ccdf":0.0009},{"x":2238.721,"ccdf":0.0008},{"x":2511.886,"ccdf":0.000725},{"x":2818.383,"ccdf":0.00055},{"x":3162.278,"ccdf":0.000425},{"x":3548.134,"ccdf":0.00035},{"x":3981.072,"ccdf":0.000275},{"x":4466.836,"ccdf":0.000175},{"x":5011.872,"ccdf":0.0001}],"p50":4,"p90":64,"p99":545,"max":5200,"n_sessions":40000,"mean":42.44,"share_events_top1pct":30.7},"_prov":"synthetic","_source":"eBPF exit grouped by session_key","_why":"93.6% of agent sessions are a single exit"},"archetypes":{"agent":{"ephemeral":93.6,"env-churn":0.4,"slurm-orchestrator":0.1,"varied-activity":1.1,"idle-resident":3.7,"poll-loop":0.4,"login-compute":0.2,"ide-monitor":0.2,"other":0.3},"human-vscode":{"ephemeral":97.2,"env-churn":0.4,"slurm-orchestrator":0.1,"varied-activity":0.2,"idle-resident":1.1,"poll-loop":0.3,"login-compute":0.0,"ide-monitor":0.6,"other":0.1},"human":{"ephemeral":13.6,"env-churn":43.8,"slurm-orchestrator":20.3,"varied-activity":10.2,"idle-resident":3.8,"poll-loop":4.2,"login-compute":0.9,"ide-monitor":0.0,"other":3.2},"_prov":"synthetic","_source":"trajectory features","_why":"what a session was actually doing"},"lifetime":{"claude_code":{"curve":[{"t_h":0.0,"s":1.0},{"t_h":0.071,"s":0.9697},{"t_h":0.143,"s":0.9403},{"t_h":0.214,"s":0.9118},{"t_h":0.286,"s":0.8842},{"t_h":0.357,"s":0.8574},{"t_h":0.429,"s":0.8314},{"t_h":0.5,"s":0.8062},{"t_h":0.571,"s":0.7818},{"t_h":0.643,"s":0.7581},{"t_h":0.714,"s":0.7351},{"t_h":0.786,"s":0.7129},{"t_h":0.857,"s":0.6913},{"t_h":0.929,"s":0.6703},{"t_h":1.0,"s":0.65},{"t_h":1.357,"s":0.6311},{"t_h":1.714,"s":0.6127},{"t_h":2.071,"s":0.5949},{"t_h":2.429,"s":0.5776},{"t_h":2.786,"s":0.5608},{"t_h":3.143,"s":0.5445},{"t_h":3.5,"s":0.5287},{"t_h":3.857,"s":0.5133},{"t_h":4.214,"s":0.4984},{"t_h":4.571,"s":0.4839},{"t_h":4.929,"s":0.4698},{"t_h":5.286,"s":0.4561},{"t_h":5.643,"s":0.4429},{"t_h":6.0,"s":0.43},{"t_h":7.286,"s":0.4201},{"t_h":8.571,"s":0.4104},{"t_h":9.857,"s":0.4009},{"t_h":11.143,"s":0.3916},{"t_h":12.429,"s":0.3826},{"t_h":13.714,"s":0.3737},{"t_h":15.0,"s":0.3651},{"t_h":16.286,"s":0.3567},{"t_h":17.571,"s":0.3484},{"t_h":18.857,"s":0.3404},{"t_h":20.143,"s":0.3325},{"t_h":21.429,"s":0.3248},{"t_h":22.714,"s":0.3173},{"t_h":24.0,"s":0.31},{"t_h":34.286,"s":0.3065},{"t_h":44.571,"s":0.303},{"t_h":54.857,"s":0.2996},{"t_h":65.143,"s":0.2963},{"t_h":75.429,"s":0.2929},{"t_h":85.714,"s":0.2896},{"t_h":96.0,"s":0.2863},{"t_h":106.286,"s":0.2831},{"t_h":116.571,"s":0.2799},{"t_h":126.857,"s":0.2768},{"t_h":137.143,"s":0.2737},{"t_h":147.429,"s":0.2706},{"t_h":157.714,"s":0.2675},{"t_h":168.0,"s":0.2645},{"t_h":203.657,"s":0.2627},{"t_h":239.314,"s":0.2609},{"t_h":274.971,"s":0.259},{"t_h":310.629,"s":0.2573},{"t_h":346.286,"s":0.2555},{"t_h":381.943,"s":0.2537},{"t_h":417.6,"s":0.252},{"t_h":453.257,"s":0.2502},{"t_h":488.914,"s":0.2485},{"t_h":524.571,"s":0.2468},{"t_h":560.229,"s":0.2451},{"t_h":595.886,"s":0.2434},{"t_h":631.543,"s":0.2417},{"t_h":667.2,"s":0.24}],"median_h":3.3,"never_dies_pct":24.0,"born_per_host_h":1.11,"died_per_host_h":0.67},"codex":{"curve":[{"t_h":0.0,"s":1.0},{"t_h":0.071,"s":0.9842},{"t_h":0.143,"s":0.9686},{"t_h":0.214,"s":0.9533},{"t_h":0.286,"s":0.9382},{"t_h":0.357,"s":0.9234},{"t_h":0.429,"s":0.9088},{"t_h":0.5,"s":0.8944},{"t_h":0.571,"s":0.8803},{"t_h":0.643,"s":0.8664},{"t_h":0.714,"s":0.8527},{"t_h":0.786,"s":0.8392},{"t_h":0.857,"s":0.8259},{"t_h":0.929,"s":0.8129},{"t_h":1.0,"s":0.8},{"t_h":1.357,"s":0.7856},{"t_h":1.714,"s":0.7714},{"t_h":2.071,"s":0.7575},{"t_h":2.429,"s":0.7438},{"t_h":2.786,"s":0.7304},{"t_h":3.143,"s":0.7172},{"t_h":3.5,"s":0.7043},{"t_h":3.857,"s":0.6916},{"t_h":4.214,"s":0.6791},{"t_h":4.571,"s":0.6668},{"t_h":4.929,"s":0.6548},{"t_h":5.286,"s":0.643},{"t_h":5.643,"s":0.6314},{"t_h":6.0,"s":0.62},{"t_h":7.286,"s":0.6105},{"t_h":8.571,"s":0.6012},{"t_h":9.857,"s":0.5921},{"t_h":11.143,"s":0.583},{"t_h":12.429,"s":0.5742},{"t_h":13.714,"s":0.5654},{"t_h":15.0,"s":0.5568},{"t_h":16.286,"s":0.5483},{"t_h":17.571,"s":0.5399},{"t_h":18.857,"s":0.5317},{"t_h":20.143,"s":0.5236},{"t_h":21.429,"s":0.5156},{"t_h":22.714,"s":0.5077},{"t_h":24.0,"s":0.5},{"t_h":34.286,"s":0.4976},{"t_h":44.571,"s":0.4952},{"t_h":54.857,"s":0.4929},{"t_h":65.143,"s":0.4905},{"t_h":75.429,"s":0.4881},{"t_h":85.714,"s":0.4858},{"t_h":96.0,"s":0.4835},{"t_h":106.286,"s":0.4812},{"t_h":116.571,"s":0.4789},{"t_h":126.857,"s":0.4766},{"t_h":137.143,"s":0.4743},{"t_h":147.429,"s":0.472},{"t_h":157.714,"s":0.4697},{"t_h":168.0,"s":0.4675},{"t_h":203.657,"s":0.4662},{"t_h":239.314,"s":0.465},{"t_h":274.971,"s":0.4637},{"t_h":310.629,"s":0.4624},{"t_h":346.286,"s":0.4612},{"t_h":381.943,"s":0.4599},{"t_h":417.6,"s":0.4587},{"t_h":453.257,"s":0.4574},{"t_h":488.914,"s":0.4562},{"t_h":524.571,"s":0.4549},{"t_h":560.229,"s":0.4537},{"t_h":595.886,"s":0.4525},{"t_h":631.543,"s":0.4512},{"t_h":667.2,"s":0.45}],"median_h":24.0,"never_dies_pct":45.0,"born_per_host_h":1.13,"died_per_host_h":0.71},"cursor":{"curve":[{"t_h":0.0,"s":1.0},{"t_h":0.071,"s":0.9664},{"t_h":0.143,"s":0.934},{"t_h":0.214,"s":0.9026},{"t_h":0.286,"s":0.8723},{"t_h":0.357,"s":0.8431},{"t_h":0.429,"s":0.8148},{"t_h":0.5,"s":0.7874},{"t_h":0.571,"s":0.761},{"t_h":0.643,"s":0.7354},{"t_h":0.714,"s":0.7107},{"t_h":0.786,"s":0.6869},{"t_h":0.857,"s":0.6638},{"t_h":0.929,"s":0.6415},{"t_h":1.0,"s":0.62},{"t_h":1.357,"s":0.6009},{"t_h":1.714,"s":0.5824},{"t_h":2.071,"s":0.5644},{"t_h":2.429,"s":0.547},{"t_h":2.786,"s":0.5302},{"t_h":3.143,"s":0.5138},{"t_h":3.5,"s":0.498},{"t_h":3.857,"s":0.4826},{"t_h":4.214,"s":0.4678},{"t_h":4.571,"s":0.4534},{"t_h":4.929,"s":0.4394},{"t_h":5.286,"s":0.4258},{"t_h":5.643,"s":0.4127},{"t_h":6.0,"s":0.4},{"t_h":7.286,"s":0.367},{"t_h":8.571,"s":0.3368},{"t_h":9.857,"s":0.309},{"t_h":11.143,"s":0.2836},{"t_h":12.429,"s":0.2602},{"t_h":13.714,"s":0.2388},{"t_h":15.0,"s":0.2191},{"t_h":16.286,"s":0.201},{"t_h":17.571,"s":0.1845},{"t_h":18.857,"s":0.1693},{"t_h":20.143,"s":0.1553},{"t_h":21.429,"s":0.1425},{"t_h":22.714,"s":0.1308},{"t_h":24.0,"s":0.12},{"t_h":34.286,"s":0.1135},{"t_h":44.571,"s":0.1073},{"t_h":54.857,"s":0.1015},{"t_h":65.143,"s":0.096},{"t_h":75.429,"s":0.0908},{"t_h":85.714,"s":0.0859},{"t_h":96.0,"s":0.0812},{"t_h":106.286,"s":0.0768},{"t_h":116.571,"s":0.0727},{"t_h":126.857,"s":0.0687},{"t_h":137.143,"s":0.065},{"t_h":147.429,"s":0.0615},{"t_h":157.714,"s":0.0582},{"t_h":168.0,"s":0.055},{"t_h":203.657,"s":0.0512},{"t_h":239.314,"s":0.0476},{"t_h":274.971,"s":0.0443},{"t_h":310.629,"s":0.0412},{"t_h":346.286,"s":0.0383},{"t_h":381.943,"s":0.0357},{"t_h":417.6,"s":0.0332},{"t_h":453.257,"s":0.0309},{"t_h":488.914,"s":0.0287},{"t_h":524.571,"s":0.0267},{"t_h":560.229,"s":0.0248},{"t_h":595.886,"s":0.0231},{"t_h":631.543,"s":0.0215},{"t_h":667.2,"s":0.02}],"median_h":3.1,"never_dies_pct":2.0,"born_per_host_h":1.19,"died_per_host_h":0.65},"_age_grain":{"agent_roots":{"median_d":7.5,"mean_d":9.0,"p90_d":18.5,"max_d":27.8,"over_1d_pct":93.6},"human_tty":{"median_d":3.6,"mean_d":6.7,"over_1d_pct":68.4}},"_instance_grain":{"agent":{"p50_s":1.5,"p90_s":300.0},"human":{"p50_s":2.1,"p90_s":10.0}},"_prov":"synthetic","_source":"eBPF residency (age_s) + census roots","_why":"agent roots outlive human logins; 24-45% never die"},"residency_series":{"rows":[{"date":"2026-07-06","day":1,"roots":52,"rss_gb":77.0,"cpu_pct":493.5,"rss_per_root_mb":1510.9,"cpu_per_root_pct":9.453,"bwrap_d_state":0},{"date":"2026-07-07","day":2,"roots":390,"rss_gb":119.7,"cpu_pct":581.5,"rss_per_root_mb":313.6,"cpu_per_root_pct":1.488,"bwrap_d_state":0},{"date":"2026-07-08","day":3,"roots":616,"rss_gb":138.5,"cpu_pct":614.2,"rss_per_root_mb":230.1,"cpu_per_root_pct":0.996,"bwrap_d_state":0},{"date":"2026-07-09","day":4,"roots":870,"rss_gb":164.2,"cpu_pct":684.5,"rss_per_root_mb":193.1,"cpu_per_root_pct":0.786,"bwrap_d_state":0},{"date":"2026-07-10","day":5,"roots":1034,"rss_gb":173.0,"cpu_pct":688.7,"rss_per_root_mb":171.3,"cpu_per_root_pct":0.666,"bwrap_d_state":0},{"date":"2026-07-11","day":6,"roots":1234,"rss_gb":188.7,"cpu_pct":723.6,"rss_per_root_mb":156.5,"cpu_per_root_pct":0.586,"bwrap_d_state":0},{"date":"2026-07-12","day":7,"roots":1328,"rss_gb":188.9,"cpu_pct":701.8,"rss_per_root_mb":145.6,"cpu_per_root_pct":0.528,"bwrap_d_state":0},{"date":"2026-07-13","day":8,"roots":1575,"rss_gb":211.1,"cpu_pct":763.3,"rss_per_root_mb":137.2,"cpu_per_root_pct":0.485,"bwrap_d_state":0},{"date":"2026-07-14","day":9,"roots":1752,"rss_gb":223.2,"cpu_pct":788.1,"rss_per_root_mb":130.4,"cpu_per_root_pct":0.45,"bwrap_d_state":0},{"date":"2026-07-15","day":10,"roots":1857,"rss_gb":226.4,"cpu_pct":782.8,"rss_per_root_mb":124.8,"cpu_per_root_pct":0.421,"bwrap_d_state":0},{"date":"2026-07-16","day":11,"roots":2056,"rss_gb":241.3,"cpu_pct":818.3,"rss_per_root_mb":120.1,"cpu_per_root_pct":0.398,"bwrap_d_state":0},{"date":"2026-07-17","day":12,"roots":2061,"rss_gb":233.6,"cpu_pct":778.8,"rss_per_root_mb":116.1,"cpu_per_root_pct":0.378,"bwrap_d_state":0},{"date":"2026-07-18","day":13,"roots":2284,"rss_gb":251.0,"cpu_pct":823.7,"rss_per_root_mb":112.5,"cpu_per_root_pct":0.361,"bwrap_d_state":0},{"date":"2026-07-19","day":14,"roots":2423,"rss_gb":259.0,"cpu_pct":837.3,"rss_per_root_mb":109.4,"cpu_per_root_pct":0.345,"bwrap_d_state":0},{"date":"2026-07-20","day":15,"roots":2528,"rss_gb":263.2,"cpu_pct":839.7,"rss_per_root_mb":106.6,"cpu_per_root_pct":0.332,"bwrap_d_state":0},{"date":"2026-07-21","day":16,"roots":2731,"rss_gb":277.7,"cpu_pct":874.8,"rss_per_root_mb":104.1,"cpu_per_root_pct":0.32,"bwrap_d_state":0},{"date":"2026-07-22","day":17,"roots":2799,"rss_gb":278.4,"cpu_pct":866.7,"rss_per_root_mb":101.9,"cpu_per_root_pct":0.31,"bwrap_d_state":0},{"date":"2026-07-23","day":18,"roots":2879,"rss_gb":280.6,"cpu_pct":863.6,"rss_per_root_mb":99.8,"cpu_per_root_pct":0.3,"bwrap_d_state":0},{"date":"2026-07-24","day":19,"roots":3028,"rss_gb":289.6,"cpu_pct":882.1,"rss_per_root_mb":97.9,"cpu_per_root_pct":0.291,"bwrap_d_state":0},{"date":"2026-07-25","day":20,"roots":3292,"rss_gb":309.2,"cpu_pct":932.6,"rss_per_root_mb":96.2,"cpu_per_root_pct":0.283,"bwrap_d_state":0},{"date":"2026-07-26","day":21,"roots":3309,"rss_gb":305.6,"cpu_pct":913.1,"rss_per_root_mb":94.5,"cpu_per_root_pct":0.276,"bwrap_d_state":0},{"date":"2026-07-27","day":22,"roots":3522,"rss_gb":320.1,"cpu_pct":947.9,"rss_per_root_mb":93.1,"cpu_per_root_pct":0.269,"bwrap_d_state":0},{"date":"2026-07-28","day":23,"roots":3650,"rss_gb":326.8,"cpu_pct":959.5,"rss_per_root_mb":91.7,"cpu_per_root_pct":0.263,"bwrap_d_state":0},{"date":"2026-07-29","day":24,"roots":3660,"rss_gb":323.0,"cpu_pct":940.8,"rss_per_root_mb":90.4,"cpu_per_root_pct":0.257,"bwrap_d_state":0},{"date":"2026-07-30","day":25,"roots":3882,"rss_gb":337.9,"cpu_pct":976.7,"rss_per_root_mb":89.1,"cpu_per_root_pct":0.252,"bwrap_d_state":0},{"date":"2026-07-31","day":26,"roots":3803,"rss_gb":326.8,"cpu_pct":937.4,"rss_per_root_mb":88.0,"cpu_per_root_pct":0.246,"bwrap_d_state":0},{"date":"2026-08-01","day":27,"roots":3960,"rss_gb":336.1,"cpu_pct":957.5,"rss_per_root_mb":86.9,"cpu_per_root_pct":0.242,"bwrap_d_state":0},{"date":"2026-08-02","day":28,"roots":4317,"rss_gb":362.1,"cpu_pct":1024.3,"rss_per_root_mb":85.9,"cpu_per_root_pct":0.237,"bwrap_d_state":0}],"note":"resident roots 53 -> 4,156 over 27.8 d (77.9x); cleared only by the fleet reboot","_prov":"synthetic","_source":"eBPF residency / agent census","_why":"resident roots accumulate until the fleet reboot"},"depth_profile":{"rows":[{"depth":0,"events_pct":19.85,"cpu_per_event_ms":8.3,"purpose_pct":{"runtime":62,"poll":14,"other":24}},{"depth":1,"events_pct":41.39,"cpu_per_event_ms":14.0,"purpose_pct":{"poll":44,"filesearch":18,"runtime":12,"build":8,"git":8,"other":10}},{"depth":2,"events_pct":33.42,"cpu_per_event_ms":27.7,"purpose_pct":{"filesearch":30,"poll":22,"compute":16,"build":14,"git":8,"other":10}},{"depth":3,"events_pct":5.31,"cpu_per_event_ms":59.5,"purpose_pct":{"compute":34,"build":30,"filesearch":14,"data":12,"other":10}},{"depth":4,"events_pct":0.03,"cpu_per_event_ms":110.9,"purpose_pct":{"build":44,"compute":34,"data":12,"other":10}}],"mean_depth":1.24,"max_depth":6,"agent_le1_pct":64,"agent_le2_pct":87,"_prov":"synthetic","_source":"eBPF exit (depth)","_why":"orchestrate -> poll -> search -> compute migration"},"diurnal":{"agent":[4.022,3.896,3.927,3.886,3.968,3.937,4.006,3.995,4.092,4.168,4.231,4.355,4.315,4.358,4.471,4.468,4.406,4.336,4.36,4.31,4.253,4.129,4.055,4.057],"human-vscode":[3.313,3.331,3.268,3.224,3.354,3.488,3.755,3.949,4.123,4.351,4.577,4.758,4.919,5.107,5.096,5.049,5.015,4.823,4.682,4.398,4.206,3.971,3.75,3.493],"human":[3.582,3.52,3.567,3.61,3.679,3.886,4.021,4.172,4.381,4.458,4.628,4.694,4.795,4.762,4.752,4.643,4.639,4.485,4.289,4.138,4.059,3.888,3.678,3.675],"_note":"agent day/night ratio 94%, human 85%; agent trough only ~24% below its mean","_prov":"synthetic","_source":"eBPF exit (ts)","_why":"agents are ~flat day/night; humans are not"},"exit_status":{"codes":[{"exit_code":0,"n":95683,"benign":true,"label":"success"},{"exit_code":1,"n":173,"benign":true,"label":"grep/test no-match"},{"exit_code":2,"n":56,"benign":true,"label":"glob/ls not found"},{"exit_code":128,"n":26,"benign":true,"label":"git fatal"},{"exit_code":127,"n":17,"benign":false,"label":"command not found"},{"exit_code":126,"n":8,"benign":false,"label":"not executable"},{"exit_code":137,"n":8,"benign":false,"label":"OOM / SIGKILL wrap"},{"exit_code":null,"signal":15,"n":17,"benign":true,"label":"SIGTERM teardown"},{"exit_code":null,"signal":13,"n":1,"benign":false,"label":"SIGPIPE"}],"total":96000,"longlived":{"n":43,"fail_pct":30.2,"max_duration_s":20549},"hook_storm":{"exit_pct":97.74,"wall_pct":3.06},"heavy":{"exits":586,"exits_pct":0.612,"cpu_pct":94.2,"write_pct":99.94},"hooks":{"PreToolUse":1769,"PostToolUse":1721,"UserPromptSubmit":28,"Stop":16,"SessionEnd":10},"comm_mix":[["node",10.2],["sh",7.7],["python3",5.9],["bash",5.8],["mkdir",4.2],["base64",4.1],["cat",3.9],["jq",3.7],["git",3.3],["grep",3.1],["rg",2.4],["sed",2.1]],"burst":{"median_per_min":1798,"p90_per_min":3835,"peak_per_min":5686,"peak_per_s":442,"p90_minutes_share_pct":24.0},"_prov":"synthetic","_source":"eBPF exit (exit_code/signal)","_why":"hook-storm vs real work; benign-nonzero filter"},"tcp_providers":{"rows":[{"provider":"anthropic","conns":19538,"tx_mb":229.0,"rx_mb":6487.2,"median_duration_s":7.4},{"provider":"openai","conns":8605,"tx_mb":75.6,"rx_mb":2184.9,"median_duration_s":30.7},{"provider":"github","conns":5914,"tx_mb":17.3,"rx_mb":519.8,"median_duration_s":7.1},{"provider":"pypi","conns":2820,"tx_mb":2.8,"rx_mb":578.3,"median_duration_s":8.9},{"provider":"huggingface","conns":2141,"tx_mb":1.3,"rx_mb":1881.7,"median_duration_s":21.8},{"provider":"google","conns":1647,"tx_mb":1.3,"rx_mb":64.3,"median_duration_s":35.5},{"provider":"other","conns":1231,"tx_mb":0.6,"rx_mb":36.1,"median_duration_s":2.1}],"standing_open_ext_per_root":2.1,"note":"connections opened before the tracer attached appear only in `residency.tcp_open_providers`, never as a `tcp` close record","_prov":"synthetic","_source":"eBPF tcp + residency.tcp_open_providers","_why":"where the agent's bytes go"},"autonomy":{"per_era":[{"era":"period1","exits":3041},{"era":"period2","exits":3649},{"era":"period3","exits":10511}],"daily":[{"date":"2026-07-06","tree_level":438,"root_only":124},{"date":"2026-07-07","tree_level":350,"root_only":183},{"date":"2026-07-08","tree_level":519,"root_only":126},{"date":"2026-07-09","tree_level":491,"root_only":192},{"date":"2026-07-10","tree_level":527,"root_only":117},{"date":"2026-07-11","tree_level":225,"root_only":154},{"date":"2026-07-12","tree_level":282,"root_only":190},{"date":"2026-07-13","tree_level":354,"root_only":127},{"date":"2026-07-14","tree_level":389,"root_only":206},{"date":"2026-07-15","tree_level":216,"root_only":115},{"date":"2026-07-16","tree_level":479,"root_only":155},{"date":"2026-07-17","tree_level":216,"root_only":103},{"date":"2026-07-18","tree_level":536,"root_only":78},{"date":"2026-07-19","tree_level":507,"root_only":202},{"date":"2026-07-20","tree_level":450,"root_only":179},{"date":"2026-07-21","tree_level":501,"root_only":78},{"date":"2026-07-22","tree_level":511,"root_only":143},{"date":"2026-07-23","tree_level":601,"root_only":145},{"date":"2026-07-24","tree_level":207,"root_only":181},{"date":"2026-07-25","tree_level":578,"root_only":83},{"date":"2026-07-26","tree_level":577,"root_only":194},{"date":"2026-07-27","tree_level":331,"root_only":85},{"date":"2026-07-28","tree_level":292,"root_only":130},{"date":"2026-07-29","tree_level":277,"root_only":200},{"date":"2026-07-30","tree_level":364,"root_only":81},{"date":"2026-07-31","tree_level":577,"root_only":150},{"date":"2026-08-01","tree_level":486,"root_only":86},{"date":"2026-08-02","tree_level":242,"root_only":92}],"vscode_exits":0,"human_exits":14,"note":"count tree-level: Codex puts bypass flags on CHILD processes, so root-only counting under-counts badly","_prov":"synthetic","_source":"eBPF exit (autonomous)","_why":"approval-bypass flags, counted tree-level"},"bwrap":{"rows":[{"date":"2026-06-18","era":"period2","d_state":0},{"date":"2026-06-19","era":"period2","d_state":41},{"date":"2026-06-20","era":"period2","d_state":99},{"date":"2026-06-21","era":"period2","d_state":164},{"date":"2026-06-22","era":"period2","d_state":235},{"date":"2026-06-23","era":"period2","d_state":311},{"date":"2026-06-24","era":"period2","d_state":391},{"date":"2026-06-25","era":"period2","d_state":474},{"date":"2026-06-26","era":"period2","d_state":560},{"date":"2026-06-27","era":"period2","d_state":649},{"date":"2026-06-28","era":"period2","d_state":740},{"date":"2026-06-29","era":"period2","d_state":834},{"date":"2026-06-30","era":"period2","d_state":930},{"date":"2026-07-01","era":"period2","d_state":1028},{"date":"2026-07-02","era":"period2","d_state":1128},{"date":"2026-07-03","era":"period2","d_state":1229},{"date":"2026-07-04","era":"period2","d_state":1333},{"date":"2026-07-05","era":"period2","d_state":1438},{"date":"2026-07-06","era":"period3","d_state":0},{"date":"2026-07-07","era":"period3","d_state":0},{"date":"2026-07-08","era":"period3","d_state":0},{"date":"2026-07-09","era":"period3","d_state":0},{"date":"2026-07-10","era":"period3","d_state":0},{"date":"2026-07-11","era":"period3","d_state":0},{"date":"2026-07-12","era":"period3","d_state":0},{"date":"2026-07-13","era":"period3","d_state":0},{"date":"2026-07-14","era":"period3","d_state":0},{"date":"2026-07-15","era":"period3","d_state":0},{"date":"2026-07-16","era":"period3","d_state":0},{"date":"2026-07-17","era":"period3","d_state":0},{"date":"2026-07-18","era":"period3","d_state":0},{"date":"2026-07-19","era":"period3","d_state":0},{"date":"2026-07-20","era":"period3","d_state":0},{"date":"2026-07-21","era":"period3","d_state":0},{"date":"2026-07-22","era":"period3","d_state":0},{"date":"2026-07-23","era":"period3","d_state":0},{"date":"2026-07-24","era":"period3","d_state":0},{"date":"2026-07-25","era":"period3","d_state":0},{"date":"2026-07-26","era":"period3","d_state":0}],"spawning_users":185,"note":"alarm on bwrap-in-D + blocked_io, not on load average - the pile climbs days before load moves","_prov":"synthetic","_source":"login snapshot (blocked_io) + eBPF","_why":"the D-state pile that only a reboot clears"},"dangerous":{"_prov":"synthetic","_source":"eBPF exit argv catalog","_why":"environment-unaware vs policy-unaware commands","rows":[{"command":"nvidia-smi on a login node","axis":"environment-unaware","severity":"low","users":131,"works_pct":100},{"command":"pip install on a login node","axis":"policy-unaware","severity":"med","users":203,"works_pct":95},{"command":"conda install/create on login","axis":"policy-unaware","severity":"med","users":208,"works_pct":92},{"command":"gcc/make build on login","axis":"policy-unaware","severity":"med","users":169,"works_pct":98},{"command":"ssh directly into a compute node","axis":"policy-unaware","severity":"med","users":75,"works_pct":40},{"command":"http.server / tensorboard / streamlit on login","axis":"policy-unaware","severity":"med","users":70,"works_pct":88},{"command":"wget/curl bulk download on login","axis":"policy-unaware","severity":"med","users":61,"works_pct":97},{"command":"hf download on login","axis":"policy-unaware","severity":"med","users":50,"works_pct":96},{"command":"nvcc compile on a login node","axis":"environment-unaware","severity":"low","users":46,"works_pct":10},{"command":"agent server backend left running","axis":"policy-unaware","severity":"med","users":39,"works_pct":90},{"command":"headless chromium swarm","axis":"policy-unaware","severity":"low","users":33,"works_pct":95},{"command":"git push --force (no lease)","axis":"policy-unaware","severity":"med","users":23,"works_pct":100},{"command":"secrets passed in argv","axis":"policy-unaware","severity":"HIGH","users":21,"works_pct":100},{"command":"crontab install","axis":"policy-unaware","severity":"med","users":18,"works_pct":85},{"command":"curl | bash","axis":"policy-unaware","severity":"med","users":17,"works_pct":90},{"command":"podman run","axis":"environment-unaware","severity":"low","users":16,"works_pct":55},{"command":"firefox for an OAuth flow","axis":"environment-unaware","severity":"low","users":15,"works_pct":20},{"command":"aria2c multi-stream download","axis":"policy-unaware","severity":"med","users":13,"works_pct":95},{"command":"sudo","axis":"environment-unaware","severity":"low","users":11,"works_pct":0},{"command":"systemctl","axis":"environment-unaware","severity":"low","users":6,"works_pct":0},{"command":"apt-get / dpkg","axis":"environment-unaware","severity":"low","users":4,"works_pct":0},{"command":"docker run","axis":"environment-unaware","severity":"low","users":4,"works_pct":0},{"command":"LAMMPS (lmp) MD run on login","axis":"policy-unaware","severity":"HIGH","users":3,"works_pct":100},{"command":"socat proxy bound to 0.0.0.0","axis":"policy-unaware","severity":"HIGH","users":1,"works_pct":100},{"command":"chmod 777","axis":"policy-unaware","severity":"low","users":1,"works_pct":100}]},"login_compute":{"rows":[{"command":"lmp (LAMMPS)","cpu_h":137,"users":3},{"command":"python3 training/eval","cpu_h":402,"users":61},{"command":"make/cc1plus","cpu_h":289,"users":44},{"command":"ffmpeg/convert","cpu_h":71,"users":12},{"command":"tar/zstd/gzip","cpu_h":118,"users":57},{"command":"rsync/scp","cpu_h":62,"users":39},{"command":"node (harness)","cpu_h":40,"users":96}],"total_cpu_h":1119,"note":"agents burned ~1,119 CPU-h of *compute* on login nodes in one era","_prov":"synthetic","_source":"eBPF exit (cpu_s on login hosts)","_why":"compute smuggled onto login nodes"},"top_commands":{"agent":[["bash -c '( cd <wd> && <cmd> )' wrapper",12.0],["make -s superclean (one user's loop)",6.0],["source <snapshot>.env env-restore",20.0],["pgrep -f <job> (run_in_background 1 Hz)",9.4],["squeue -j <id> --noheader",3.1],["rg --files <path>",2.6],["git status --porcelain",2.2],["cat <file>",2.0],["jq -r <filter>",1.7]],"human-vscode":[["cpuUsage.sh",19.6],["ps -ax -o pid,comm",21.8],["ls -l /proc/*/fd/*",4.1],["git status",2.0],["squeue -u <me>",1.4]],"human":[["watch -n 1 squeue -u <me>",22.0],["squeue -u <me>",12.0],["sbatch <script>",8.0],["ls -l",4.0],["scancel <id>",1.2]],"_prov":"synthetic","_source":"eBPF exit (effective_comm)","_why":"a tiny head of literal commands dominates"},"gpu_duty":{"hours":{"agent":63731,"human-vscode":95646,"human":121312,"mixed":42194},"sm_util_pct":{"agent":60.1,"human-vscode":53.7,"human":48.9,"mixed":61.9},"power_w":{"agent":275,"human-vscode":277,"human":214,"mixed":288},"duty_gpuh_weighted":{"agent":72.9,"human":54.0},"note":"agents hold FEWER GPU-hours than humans (0.53x) but drive the device HARDER (+18.9 pts duty cycle) - both panels must be read together","_prov":"synthetic","_source":"dcgm x gpu_binding, jobstats trace","_why":"agents hold fewer GPU-hours but drive them harder"},"scheduler":{"rpc_s":57.6,"poll_pct":67,"partition_info_pct":26.7,"attribution":{"human":65.5,"human-vscode":20.2,"agent":14.3},"polls_per_submit":{"agent":3.2,"human":1.3},"agent_submits":187753,"agent_cancels":10658,"peak_agent_submits_h":5773,"series":[{"h":0,"rpc_s":46.4},{"h":1,"rpc_s":48.5},{"h":2,"rpc_s":43.0},{"h":3,"rpc_s":43.8},{"h":4,"rpc_s":51.1},{"h":5,"rpc_s":50.6},{"h":6,"rpc_s":50.5},{"h":7,"rpc_s":49.9},{"h":8,"rpc_s":61.5},{"h":9,"rpc_s":61.9},{"h":10,"rpc_s":58.7},{"h":11,"rpc_s":67.2},{"h":12,"rpc_s":64.3},{"h":13,"rpc_s":70.7},{"h":14,"rpc_s":66.9},{"h":15,"rpc_s":70.5},{"h":16,"rpc_s":63.3},{"h":17,"rpc_s":71.1},{"h":18,"rpc_s":68.0},{"h":19,"rpc_s":63.1},{"h":20,"rpc_s":61.0},{"h":21,"rpc_s":53.7},{"h":22,"rpc_s":55.4},{"h":23,"rpc_s":46.1},{"h":24,"rpc_s":42.0},{"h":25,"rpc_s":44.5},{"h":26,"rpc_s":42.3},{"h":27,"rpc_s":49.4},{"h":28,"rpc_s":44.6},{"h":29,"rpc_s":48.3},{"h":30,"rpc_s":48.4},{"h":31,"rpc_s":58.3},{"h":32,"rpc_s":58.4},{"h":33,"rpc_s":59.2},{"h":34,"rpc_s":58.5},{"h":35,"rpc_s":60.4},{"h":36,"rpc_s":66.9},{"h":37,"rpc_s":67.0},{"h":38,"rpc_s":76.5},{"h":39,"rpc_s":67.5},{"h":40,"rpc_s":65.8},{"h":41,"rpc_s":68.1},{"h":42,"rpc_s":66.1},{"h":43,"rpc_s":59.9},{"h":44,"rpc_s":61.7},{"h":45,"rpc_s":51.0},{"h":46,"rpc_s":55.9},{"h":47,"rpc_s":53.3},{"h":48,"rpc_s":49.6},{"h":49,"rpc_s":43.7},{"h":50,"rpc_s":48.5},{"h":51,"rpc_s":43.5},{"h":52,"rpc_s":46.1},{"h":53,"rpc_s":48.1},{"h":54,"rpc_s":50.6},{"h":55,"rpc_s":58.0},{"h":56,"rpc_s":57.2},{"h":57,"rpc_s":60.0},{"h":58,"rpc_s":60.5},{"h":59,"rpc_s":62.5},{"h":60,"rpc_s":72.5},{"h":61,"rpc_s":72.4},{"h":62,"rpc_s":71.3},{"h":63,"rpc_s":73.4},{"h":64,"rpc_s":75.1},{"h":65,"rpc_s":64.6},{"h":66,"rpc_s":64.5},{"h":67,"rpc_s":62.7},{"h":68,"rpc_s":53.4},{"h":69,"rpc_s":49.5},{"h":70,"rpc_s":48.8},{"h":71,"rpc_s":44.8},{"h":72,"rpc_s":43.5},{"h":73,"rpc_s":43.7},{"h":74,"rpc_s":43.7},{"h":75,"rpc_s":45.9},{"h":76,"rpc_s":42.7},{"h":77,"rpc_s":51.0},{"h":78,"rpc_s":53.4},{"h":79,"rpc_s":57.7},{"h":80,"rpc_s":56.5},{"h":81,"rpc_s":66.8},{"h":82,"rpc_s":60.0},{"h":83,"rpc_s":71.0},{"h":84,"rpc_s":73.2},{"h":85,"rpc_s":70.0},{"h":86,"rpc_s":67.8},{"h":87,"rpc_s":66.0},{"h":88,"rpc_s":67.0},{"h":89,"rpc_s":62.4},{"h":90,"rpc_s":68.6},{"h":91,"rpc_s":58.8},{"h":92,"rpc_s":57.0},{"h":93,"rpc_s":49.8},{"h":94,"rpc_s":51.6},{"h":95,"rpc_s":49.0},{"h":96,"rpc_s":48.3},{"h":97,"rpc_s":47.3},{"h":98,"rpc_s":45.3},{"h":99,"rpc_s":43.8},{"h":100,"rpc_s":51.0},{"h":101,"rpc_s":52.3},{"h":102,"rpc_s":55.1},{"h":103,"rpc_s":55.0},{"h":104,"rpc_s":56.7},{"h":105,"rpc_s":55.6},{"h":106,"rpc_s":60.9},{"h":107,"rpc_s":70.3},{"h":108,"rpc_s":65.3},{"h":109,"rpc_s":73.2},{"h":110,"rpc_s":70.5},{"h":111,"rpc_s":75.5},{"h":112,"rpc_s":67.4},{"h":113,"rpc_s":65.8},{"h":114,"rpc_s":60.3},{"h":115,"rpc_s":58.9},{"h":116,"rpc_s":57.0},{"h":117,"rpc_s":50.1},{"h":118,"rpc_s":51.9},{"h":119,"rpc_s":45.0},{"h":120,"rpc_s":50.1},{"h":121,"rpc_s":48.8},{"h":122,"rpc_s":48.5},{"h":123,"rpc_s":48.3},{"h":124,"rpc_s":44.0},{"h":125,"rpc_s":47.8},{"h":126,"rpc_s":47.8},{"h":127,"rpc_s":50.7},{"h":128,"rpc_s":59.4},{"h":129,"rpc_s":55.5},{"h":130,"rpc_s":60.2},{"h":131,"rpc_s":66.6},{"h":132,"rpc_s":73.9},{"h":133,"rpc_s":75.6},{"h":134,"rpc_s":63.7},{"h":135,"rpc_s":71.9},{"h":136,"rpc_s":67.5},{"h":137,"rpc_s":63.7},{"h":138,"rpc_s":65.3},{"h":139,"rpc_s":55.0},{"h":140,"rpc_s":54.6},{"h":141,"rpc_s":59.1},{"h":142,"rpc_s":52.4},{"h":143,"rpc_s":51.4},{"h":144,"rpc_s":43.9},{"h":145,"rpc_s":44.3},{"h":146,"rpc_s":45.6},{"h":147,"rpc_s":41.6},{"h":148,"rpc_s":48.2},{"h":149,"rpc_s":46.8},{"h":150,"rpc_s":53.7},{"h":151,"rpc_s":55.2},{"h":152,"rpc_s":56.8},{"h":153,"rpc_s":57.4},{"h":154,"rpc_s":59.7},{"h":155,"rpc_s":64.3},{"h":156,"rpc_s":69.2},{"h":157,"rpc_s":71.6},{"h":158,"rpc_s":65.0},{"h":159,"rpc_s":71.6},{"h":160,"rpc_s":66.5},{"h":161,"rpc_s":62.8},{"h":162,"rpc_s":57.9},{"h":163,"rpc_s":57.5},{"h":164,"rpc_s":60.0},{"h":165,"rpc_s":51.2},{"h":166,"rpc_s":53.6},{"h":167,"rpc_s":49.9}],"_prov":"synthetic","_source":"sdiag","_why":"slurmctld RPC load and who causes it"},"concentration":{"agent":{"rank_size":[47.0714,14.9511,7.6439,4.7489,3.2828,2.4279,1.8813,1.5084,1.2413,1.0427,0.8906,0.7712,0.6755,0.5976,0.5331,0.4791,0.4334,0.3943,0.3605,0.3312,0.3055,0.2829,0.2628,0.2449,0.2289,0.2146,0.2016,0.1898,0.1791,0.1693,0.1604,0.1522,0.1446,0.1377,0.1312,0.1252,0.1197,0.1145,0.1097,0.1052,0.101,0.097,0.0933,0.0898,0.0866,0.0835,0.0806,0.0778,0.0752,0.0727,0.0704,0.0681,0.066,0.064,0.0621,0.0603,0.0585,0.0569,0.0553,0.0538,0.0523,0.0509,0.0496,0.0483,0.0471,0.0459,0.0448,0.0437,0.0427,0.0417,0.0407,0.0398,0.0389,0.038,0.0372,0.0364,0.0356,0.0348,0.0341,0.0334],"gini":0.96,"zipf_exponent":1.655,"top1_share_pct":47.1,"top10_share_pct":85.8,"n_users":505},"human":{"rank_size":[36.7663,13.4036,7.428,4.8865,3.5311,2.708,2.1637,1.7814,1.5007,1.2873,1.1205,0.9872,0.8786,0.7888,0.7134,0.6494,0.5946,0.5471,0.5057,0.4693,0.4371,0.4085,0.3829,0.3599,0.3391,0.3203,0.3032,0.2876,0.2732,0.2601,0.248,0.2368,0.2264,0.2168,0.2078,0.1995,0.1917,0.1844,0.1775,0.1711,0.1651,0.1594,0.154,0.1489,0.1441,0.1396,0.1353,0.1312,0.1273,0.1236,0.1201,0.1168,0.1136,0.1105,0.1076,0.1048,0.1022,0.0996,0.0972,0.0948,0.0926,0.0904,0.0883,0.0863,0.0844,0.0825,0.0807,0.079,0.0774,0.0758,0.0742,0.0727,0.0713,0.0699,0.0685,0.0672,0.0659,0.0647,0.0635,0.0624],"gini":0.95,"zipf_exponent":1.456,"top1_share_pct":36.8,"top10_share_pct":75.5,"n_users":1298},"_documented":{"gini_range":[0.94,0.97],"top_agent_submitter_share_pct":84.0,"top_agent_canceller_share_pct":47.9},"_note":"every misbehaviour pattern in this corpus is one-user-dominated: the top agent submitter alone is ~84% of agent submissions, so read every count-weighted agent headline as one user until proven otherwise","_prov":"synthetic","_source":"all tiers","_why":"every aggregate is one-user-dominated"},"session_gallery":{"rows":[{"session_id":"period3|2026-07-12|boslogin06|agent|apid:20000","host":"boslogin06","agent_type":"claude_code","archetype":"poll-loop","n_events":154,"distinct_comms":2,"dom_frac":0.82,"shape":"loop","duration_s":9230.0,"cpu_s":165.36,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll"]},{"session_id":"period3|2026-07-18|holylogin08|agent|apid:20822","host":"holylogin08","agent_type":"claude_code","archetype":"poll-loop","n_events":154,"distinct_comms":2,"dom_frac":0.82,"shape":"loop","duration_s":11576.7,"cpu_s":96.13,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll"]},{"session_id":"period3|2026-07-24|holylogin07|agent|apid:21644","host":"holylogin07","agent_type":"claude_code","archetype":"poll-loop","n_events":132,"distinct_comms":2,"dom_frac":0.82,"shape":"loop","duration_s":8990.0,"cpu_s":429.15,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll"]},{"session_id":"period3|2026-07-16|holylogin06|agent|apid:22466","host":"holylogin06","agent_type":"claude_code","archetype":"poll-loop","n_events":88,"distinct_comms":2,"dom_frac":0.82,"shape":"loop","duration_s":4578.9,"cpu_s":135.42,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","slurm_mon","slurm_mon","slurm_mon","slurm_mon","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll","poll"]},{"session_id":"period3|2026-07-17|holylogin07|agent|apid:22603","host":"holylogin07","agent_type":"codex","archetype":"slurm-orchestrator","n_events":63,"distinct_comms":5,"dom_frac":0.29,"shape":"varied","duration_s":320.6,"cpu_s":30.52,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git"]},{"session_id":"period3|2026-07-25|holylogin08|agent|apid:21781","host":"holylogin08","agent_type":"codex","archetype":"slurm-orchestrator","n_events":56,"distinct_comms":5,"dom_frac":0.29,"shape":"varied","duration_s":2971.2,"cpu_s":31.48,"headless":true,"autonomous":true,"max_depth":1,"purpose_seq":["filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git"]},{"session_id":"period3|2026-07-12|boslogin06|agent|apid:21918","host":"boslogin06","agent_type":"cursor","archetype":"login-compute","n_events":54,"distinct_comms":4,"dom_frac":0.5,"shape":"mixed","duration_s":539.9,"cpu_s":59.88,"headless":true,"autonomous":false,"max_depth":2,"purpose_seq":["filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll"]},{"session_id":"period3|2026-07-14|boslogin08|agent|apid:20274","host":"boslogin08","agent_type":"cursor","archetype":"login-compute","n_events":48,"distinct_comms":4,"dom_frac":0.5,"shape":"mixed","duration_s":2829.7,"cpu_s":23.92,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll"]},{"session_id":"period3|2026-07-19|boslogin06|agent|apid:20959","host":"boslogin06","agent_type":"codex","archetype":"slurm-orchestrator","n_events":42,"distinct_comms":5,"dom_frac":0.29,"shape":"varied","duration_s":3407.1,"cpu_s":21.46,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git","filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git"]},{"session_id":"period3|2026-07-18|holylogin08|agent|apid:22740","host":"holylogin08","agent_type":"cursor","archetype":"login-compute","n_events":42,"distinct_comms":4,"dom_frac":0.5,"shape":"mixed","duration_s":2290.3,"cpu_s":31.57,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll"]},{"session_id":"period3|2026-07-19|boslogin06|agent|apid:22877","host":"boslogin06","agent_type":"claude_code","archetype":"env-churn","n_events":40,"distinct_comms":3,"dom_frac":0.6,"shape":"mixed","duration_s":662.9,"cpu_s":8.8,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll"]},{"session_id":"period3|2026-07-13|boslogin07|agent|apid:22055","host":"boslogin07","agent_type":"claude_code","archetype":"env-churn","n_events":30,"distinct_comms":3,"dom_frac":0.6,"shape":"mixed","duration_s":2413.7,"cpu_s":58.68,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll"]},{"session_id":"period3|2026-07-23|holylogin06|agent|apid:21507","host":"holylogin06","agent_type":"cursor","archetype":"idle-resident","n_events":27,"distinct_comms":2,"dom_frac":0.67,"shape":"mixed","duration_s":1938.8,"cpu_s":64.46,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll"]},{"session_id":"period3|2026-07-16|holylogin06|agent|apid:20548","host":"holylogin06","agent_type":"codex","archetype":"varied-activity","n_events":24,"distinct_comms":8,"dom_frac":0.12,"shape":"varied","duration_s":638.2,"cpu_s":49.27,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["editor","compute","editor","poll","build","filesearch","compute","filesearch","poll","git","compute","editor","slurm_sub","build","git","data","data","git","poll","build","slurm_sub","filesearch","data","slurm_sub"]},{"session_id":"period3|2026-07-17|holylogin07|agent|apid:20685","host":"holylogin07","agent_type":"cursor","archetype":"idle-resident","n_events":21,"distinct_comms":2,"dom_frac":0.67,"shape":"mixed","duration_s":519.8,"cpu_s":10.05,"headless":true,"autonomous":false,"max_depth":2,"purpose_seq":["runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll"]},{"session_id":"period3|2026-07-21|boslogin08|agent|apid:23151","host":"boslogin08","agent_type":"cursor","archetype":"idle-resident","n_events":18,"distinct_comms":2,"dom_frac":0.67,"shape":"mixed","duration_s":852.7,"cpu_s":11.82,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll","runtime","poll","poll"]},{"session_id":"period3|2026-07-22|holylogin05|agent|apid:21370","host":"holylogin05","agent_type":"codex","archetype":"varied-activity","n_events":16,"distinct_comms":8,"dom_frac":0.12,"shape":"varied","duration_s":703.1,"cpu_s":7.39,"headless":true,"autonomous":false,"max_depth":2,"purpose_seq":["slurm_sub","data","build","build","git","editor","slurm_sub","compute","git","data","compute","poll","editor","poll","filesearch","filesearch"]},{"session_id":"period3|2026-07-14|boslogin08|agent|apid:22192","host":"boslogin08","agent_type":"codex","archetype":"varied-activity","n_events":16,"distinct_comms":8,"dom_frac":0.12,"shape":"varied","duration_s":983.6,"cpu_s":16.38,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["slurm_sub","editor","git","slurm_sub","poll","data","data","build","filesearch","build","git","compute","editor","poll","filesearch","compute"]},{"session_id":"period3|2026-07-20|boslogin07|agent|apid:23014","host":"boslogin07","agent_type":"codex","archetype":"varied-activity","n_events":16,"distinct_comms":8,"dom_frac":0.12,"shape":"varied","duration_s":1390.3,"cpu_s":50.27,"headless":true,"autonomous":false,"max_depth":2,"purpose_seq":["build","compute","slurm_sub","compute","build","data","filesearch","git","poll","data","editor","slurm_sub","editor","poll","git","filesearch"]},{"session_id":"period3|2026-07-15|holylogin05|agent|apid:20411","host":"holylogin05","agent_type":"claude_code","archetype":"env-churn","n_events":15,"distinct_comms":3,"dom_frac":0.6,"shape":"mixed","duration_s":844.7,"cpu_s":34.54,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["other","other","build","other","poll","other","other","build","other","poll","other","other","build","other","poll"]},{"session_id":"period3|2026-07-20|boslogin07|agent|apid:21096","host":"boslogin07","agent_type":"cursor","archetype":"login-compute","n_events":12,"distinct_comms":4,"dom_frac":0.5,"shape":"mixed","duration_s":962.5,"cpu_s":0.69,"headless":true,"autonomous":true,"max_depth":1,"purpose_seq":["filesearch","build","compute","compute","compute","poll","filesearch","build","compute","compute","compute","poll"]},{"session_id":"period3|2026-07-21|boslogin08|agent|apid:21233","host":"boslogin08","agent_type":"claude_code","archetype":"env-churn","n_events":10,"distinct_comms":3,"dom_frac":0.6,"shape":"mixed","duration_s":837.8,"cpu_s":4.44,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["other","other","build","other","poll","other","other","build","other","poll"]},{"session_id":"period3|2026-07-15|holylogin05|agent|apid:22329","host":"holylogin05","agent_type":"cursor","archetype":"idle-resident","n_events":9,"distinct_comms":2,"dom_frac":0.67,"shape":"mixed","duration_s":347.8,"cpu_s":9.77,"headless":true,"autonomous":false,"max_depth":1,"purpose_seq":["runtime","poll","poll","runtime","poll","poll","runtime","poll","poll"]},{"session_id":"period3|2026-07-13|boslogin07|agent|apid:20137","host":"boslogin07","agent_type":"codex","archetype":"slurm-orchestrator","n_events":7,"distinct_comms":5,"dom_frac":0.29,"shape":"varied","duration_s":540.8,"cpu_s":7.44,"headless":true,"autonomous":false,"max_depth":3,"purpose_seq":["filesearch","slurm_sub","slurm_mon","slurm_mon","poll","slurm_sub","git"]}],"purposes":["poll","runtime","filesearch","build","compute","git","slurm_sub","slurm_mon","data","editor","other"],"_prov":"synthetic","_source":"eBPF exit sequences","_why":"concrete trajectories, as purpose ribbons"},"live":{"_prov":"synthetic","_source":"eBPF exit + residency_totals \u00b7 slurm_jobs census","_why":"the current minute, across all three tiers"}},"sources":[{"tier":"sacct","path":"SlurmData_2026-06-01_2026-06-02-orig.csv","rows":434553,"prov":"real"},{"tier":"sacctmgr","path":"sacctmgr_2026-09-10.jsonl","rows":3518,"prov":"real"},{"tier":"eBPF / proc-trace","path":"log/ebpf_* (absent)","rows":0,"prov":"synthetic"}],"refresh_s":60,"cadence":{"eBPF / proc-trace":"event + 60 s","slurm_jobs":"300 s","slurm_nodes":"300 s","gpu_binding":"300 s","dcgm":"60 s","sdiag":"60 s","policy":"daily","sacctmgr":"daily","sacct":"on demand"},"calibration":{"events_per_day":{"agent":1110000,"human-vscode":530000,"human":300000},"standing":{"claude_code":{"instances":894,"roots":600,"cores":4.1,"rss_gb":111,"users":97,"d_state":5},"codex":{"instances":1615,"roots":628,"cores":2.1,"rss_gb":62,"users":34,"d_state":1},"cursor":{"instances":197,"roots":37,"cores":1.4,"rss_gb":39,"users":55,"d_state":2},"vscode":{"instances":3496,"roots":2531,"cores":6.3,"rss_gb":271,"users":220,"d_state":14},"human":{"instances":1514,"roots":1025,"cores":1.8,"rss_gb":24,"users":795,"d_state":0}},"km":{"claude_code":{"median_h":3.3,"s1h":0.65,"s6h":0.43,"s24h":0.31,"never_dies":0.24},"codex":{"median_h":24.0,"s1h":0.8,"s6h":0.62,"s24h":0.5,"never_dies":0.45},"cursor":{"median_h":3.1,"s1h":0.62,"s6h":0.4,"s24h":0.12,"never_dies":0.02}},"era":{"days":28,"roots0":53,"roots1":4156,"rss0_gb":78.2,"rss1_gb":348.5,"cpu0_pct":501,"cpu1_pct":986},"purpose":{"agent":{"poll":[29,2],"runtime":[19,45],"filesearch":[14,3],"slurm_mon":[4,1],"slurm_sub":[1,1],"build":[6,12],"compute":[4,21],"git":[5,2],"data":[2,9],"editor":[1,1],"other":[15,3]},"human-vscode":{"poll":[60,4],"editor":[12,28],"filesearch":[7,3],"slurm_mon":[5,1],"slurm_sub":[1,1],"build":[3,9],"compute":[2,34],"git":[3,2],"data":[1,7],"runtime":[1,1],"other":[5,10]},"human":{"poll":[38,4],"slurm_mon":[26,3],"slurm_sub":[19,2],"filesearch":[4,2],"build":[2,8],"compute":[3,61],"git":[2,1],"data":[1,7],"editor":[1,1],"runtime":[0,0],"other":[4,11]}},"archetype":{"agent":{"ephemeral":93.6,"env-churn":0.4,"slurm-orchestrator":0.1,"varied-activity":1.1,"idle-resident":3.7,"poll-loop":0.4,"login-compute":0.2,"ide-monitor":0.2,"other":0.3},"human-vscode":{"ephemeral":97.2,"env-churn":0.4,"slurm-orchestrator":0.1,"varied-activity":0.2,"idle-resident":1.1,"poll-loop":0.3,"login-compute":0.0,"ide-monitor":0.6,"other":0.1},"human":{"ephemeral":13.6,"env-churn":43.8,"slurm-orchestrator":20.3,"varied-activity":10.2,"idle-resident":3.8,"poll-loop":4.2,"login-compute":0.9,"ide-monitor":0.0,"other":3.2}},"ebpf_host":{"exits_median_min":1798,"exits_p90_min":3835,"exits_peak_min":5686,"cpu_s":8704,"write_gb":119,"peak_rss_gb":36.8,"depth_pct":{"0":19.85,"1":41.39,"2":33.42,"3":5.31,"4":0.03},"success_pct":99.67,"signal_deaths":18,"hook_storm_exit_pct":97.74,"hook_storm_wall_pct":3.06,"heavy_exits":586,"heavy_cpu_pct":94.2,"longlived_n":43,"longlived_fail_pct":30.2,"comm_mix":[["node",10.2],["sh",7.7],["python3",5.9],["bash",5.8],["mkdir",4.2],["base64",4.1],["cat",3.9],["jq",3.7],["git",3.3],["grep",3.1],["rg",2.4],["sed",2.1]],"hooks":{"PreToolUse":1769,"PostToolUse":1721,"UserPromptSubmit":28,"Stop":16,"SessionEnd":10}},"autonomy":{"per_era":[3041,3649,10511],"vscode":0,"human":14},"bwrap":{"period2_peak":1438,"period3_level":0,"spawning_users":185},"gpu":{"hours":{"agent":63731,"human-vscode":95646,"human":121312,"mixed":42194},"sm_util_pct":{"agent":60.1,"human-vscode":53.7,"human":48.9,"mixed":61.9},"power_w":{"agent":275,"human-vscode":277,"human":214,"mixed":288},"duty_gpuh_weighted":{"agent":72.9,"human":54.0}},"sched":{"rpc_s":57.6,"poll_pct":67,"partition_info_pct":26.7,"attribution":{"human":65.5,"human-vscode":20.2,"agent":14.3},"polls_per_submit":{"agent":3.2,"human":1.3},"agent_submits":187753,"agent_cancels":10658,"peak_agent_submits_h":5773},"hosts":["boslogin06","boslogin07","boslogin08","holylogin05","holylogin06","holylogin07","holylogin08"],"dangerous":[["nvidia-smi on a login node","environment-unaware","low",131,100],["pip install on a login node","policy-unaware","med",203,95],["conda install/create on login","policy-unaware","med",208,92],["gcc/make build on login","policy-unaware","med",169,98],["ssh directly into a compute node","policy-unaware","med",75,40],["http.server / tensorboard / streamlit on login","policy-unaware","med",70,88],["wget/curl bulk download on login","policy-unaware","med",61,97],["hf download on login","policy-unaware","med",50,96],["nvcc compile on a login node","environment-unaware","low",46,10],["agent server backend left running","policy-unaware","med",39,90],["headless chromium swarm","policy-unaware","low",33,95],["git push --force (no lease)","policy-unaware","med",23,100],["secrets passed in argv","policy-unaware","HIGH",21,100],["crontab install","policy-unaware","med",18,85],["curl | bash","policy-unaware","med",17,90],["podman run","environment-unaware","low",16,55],["firefox for an OAuth flow","environment-unaware","low",15,20],["aria2c multi-stream download","policy-unaware","med",13,95],["sudo","environment-unaware","low",11,0],["systemctl","environment-unaware","low",6,0],["apt-get / dpkg","environment-unaware","low",4,0],["docker run","environment-unaware","low",4,0],["LAMMPS (lmp) MD run on login","policy-unaware","HIGH",3,100],["socat proxy bound to 0.0.0.0","policy-unaware","HIGH",1,100],["chmod 777","policy-unaware","low",1,100]],"login_compute":[["lmp (LAMMPS)",137,3],["python3 training/eval",402,61],["make/cc1plus",289,44],["ffmpeg/convert",71,12],["tar/zstd/gzip",118,57],["rsync/scp",62,39],["node (harness)",40,96]],"top_commands":{"agent":[["bash -c '( cd <wd> && <cmd> )' wrapper",12.0],["make -s superclean (one user's loop)",6.0],["source <snapshot>.env env-restore",20.0],["pgrep -f <job> (run_in_background 1 Hz)",9.4],["squeue -j <id> --noheader",3.1],["rg --files <path>",2.6],["git status --porcelain",2.2],["cat <file>",2.0],["jq -r <filter>",1.7]],"human-vscode":[["cpuUsage.sh",19.6],["ps -ax -o pid,comm",21.8],["ls -l /proc/*/fd/*",4.1],["git status",2.0],["squeue -u <me>",1.4]],"human":[["watch -n 1 squeue -u <me>",22.0],["squeue -u <me>",12.0],["sbatch <script>",8.0],["ls -l",4.0],["scancel <id>",1.2]]}},"synth_seed":20260911,"live":{"updated":"2026-09-11 13:08:13","rate":[{"t":"11:38","agent":1815,"human-vscode":393,"human":202},{"t":"11:39","agent":775,"human-vscode":411,"human":210},{"t":"11:40","agent":781,"human-vscode":372,"human":202},{"t":"11:41","agent":755,"human-vscode":404,"human":191},{"t":"11:42","agent":1849,"human-vscode":426,"human":233},{"t":"11:43","agent":888,"human-vscode":421,"human":229},{"t":"11:44","agent":826,"human-vscode":402,"human":234},{"t":"11:45","agent":828,"human-vscode":362,"human":216},{"t":"11:46","agent":934,"human-vscode":353,"human":226},{"t":"11:47","agent":955,"human-vscode":405,"human":214},{"t":"11:48","agent":865,"human-vscode":431,"human":222},{"t":"11:49","agent":863,"human-vscode":410,"human":231},{"t":"11:50","agent":948,"human-vscode":404,"human":215},{"t":"11:51","agent":936,"human-vscode":400,"human":207},{"t":"11:52","agent":827,"human-vscode":401,"human":238},{"t":"11:53","agent":874,"human-vscode":341,"human":225},{"t":"11:54","agent":820,"human-vscode":394,"human":212},{"t":"11:55","agent":841,"human-vscode":384,"human":216},{"t":"11:56","agent":826,"human-vscode":423,"human":195},{"t":"11:57","agent":898,"human-vscode":397,"human":195},{"t":"11:58","agent":892,"human-vscode":370,"human":199},{"t":"11:59","agent":790,"human-vscode":412,"human":208},{"t":"12:00","agent":823,"human-vscode":426,"human":227},{"t":"12:01","agent":833,"human-vscode":446,"human":225},{"t":"12:02","agent":756,"human-vscode":455,"human":213},{"t":"12:03","agent":801,"human-vscode":452,"human":216},{"t":"12:04","agent":903,"human-vscode":413,"human":231},{"t":"12:05","agent":891,"human-vscode":392,"human":215},{"t":"12:06","agent":882,"human-vscode":428,"human":237},{"t":"12:07","agent":927,"human-vscode":441,"human":205},{"t":"12:08","agent":882,"human-vscode":429,"human":228},{"t":"12:09","agent":964,"human-vscode":406,"human":227},{"t":"12:10","agent":1003,"human-vscode":420,"human":207},{"t":"12:11","agent":977,"human-vscode":448,"human":237},{"t":"12:12","agent":880,"human-vscode":397,"human":219},{"t":"12:13","agent":836,"human-vscode":424,"human":221},{"t":"12:14","agent":865,"human-vscode":390,"human":215},{"t":"12:15","agent":746,"human-vscode":401,"human":218},{"t":"12:16","agent":736,"human-vscode":382,"human":216},{"t":"12:17","agent":752,"human-vscode":371,"human":235},{"t":"12:18","agent":848,"human-vscode":367,"human":224},{"t":"12:19","agent":943,"human-vscode":425,"human":197},{"t":"12:20","agent":896,"human-vscode":371,"human":174},{"t":"12:21","agent":835,"human-vscode":338,"human":193},{"t":"12:22","agent":862,"human-vscode":332,"human":168},{"t":"12:23","agent":947,"human-vscode":392,"human":177},{"t":"12:24","agent":865,"human-vscode":424,"human":183},{"t":"12:25","agent":884,"human-vscode":407,"human":196},{"t":"12:26","agent":898,"human-vscode":384,"human":196},{"t":"12:27","agent":728,"human-vscode":402,"human":209},{"t":"12:28","agent":817,"human-vscode":393,"human":208},{"t":"12:29","agent":850,"human-vscode":345,"human":221},{"t":"12:30","agent":855,"human-vscode":316,"human":183},{"t":"12:31","agent":763,"human-vscode":326,"human":152},{"t":"12:32","agent":762,"human-vscode":323,"human":139},{"t":"12:33","agent":798,"human-vscode":316,"human":176},{"t":"12:34","agent":887,"human-vscode":351,"human":198},{"t":"12:35","agent":776,"human-vscode":318,"human":202},{"t":"12:36","agent":797,"human-vscode":347,"human":191},{"t":"12:37","agent":797,"human-vscode":379,"human":202},{"t":"12:38","agent":740,"human-vscode":395,"human":205},{"t":"12:39","agent":791,"human-vscode":373,"human":204},{"t":"12:40","agent":826,"human-vscode":383,"human":209},{"t":"12:41","agent":695,"human-vscode":380,"human":208},{"t":"12:42","agent":746,"human-vscode":394,"human":223},{"t":"12:43","agent":762,"human-vscode":383,"human":221},{"t":"12:44","agent":796,"human-vscode":373,"human":217},{"t":"12:45","agent":774,"human-vscode":369,"human":235},{"t":"12:46","agent":701,"human-vscode":339,"human":232},{"t":"12:47","agent":848,"human-vscode":326,"human":230},{"t":"12:48","agent":853,"human-vscode":347,"human":191},{"t":"12:49","agent":835,"human-vscode":366,"human":195},{"t":"12:50","agent":850,"human-vscode":393,"human":192},{"t":"12:51","agent":877,"human-vscode":418,"human":214},{"t":"12:52","agent":848,"human-vscode":407,"human":230},{"t":"12:53","agent":870,"human-vscode":406,"human":246},{"t":"12:54","agent":862,"human-vscode":398,"human":227},{"t":"12:55","agent":2087,"human-vscode":411,"human":240},{"t":"12:56","agent":795,"human-vscode":347,"human":252},{"t":"12:57","agent":871,"human-vscode":369,"human":248},{"t":"12:58","agent":746,"human-vscode":346,"human":241},{"t":"12:59","agent":721,"human-vscode":385,"human":278},{"t":"13:00","agent":725,"human-vscode":439,"human":248},{"t":"13:01","agent":853,"human-vscode":477,"human":268},{"t":"13:02","agent":827,"human-vscode":428,"human":274},{"t":"13:03","agent":897,"human-vscode":462,"human":255},{"t":"13:04","agent":856,"human-vscode":478,"human":221},{"t":"13:05","agent":908,"human-vscode":448,"human":219},{"t":"13:06","agent":843,"human-vscode":461,"human":252},{"t":"13:07","agent":964,"human-vscode":443,"human":228}],"hosts":[{"host":"boslogin06","roots":801,"procs":1282,"rss_gb":65.8,"cpu_pct":541.3,"d_state":1,"users":63,"tcp_open_ext":491,"load_1":14.7},{"host":"boslogin07","roots":724,"procs":1675,"rss_gb":44.0,"cpu_pct":798.1,"d_state":1,"users":35,"tcp_open_ext":655,"load_1":10.0},{"host":"boslogin08","roots":553,"procs":1340,"rss_gb":42.3,"cpu_pct":208.2,"d_state":3,"users":88,"tcp_open_ext":337,"load_1":22.0},{"host":"holylogin05","roots":424,"procs":737,"rss_gb":49.5,"cpu_pct":332.2,"d_state":3,"users":81,"tcp_open_ext":342,"load_1":5.9},{"host":"holylogin06","roots":514,"procs":735,"rss_gb":49.7,"cpu_pct":543.6,"d_state":1,"users":77,"tcp_open_ext":535,"load_1":19.3},{"host":"holylogin07","roots":785,"procs":1612,"rss_gb":81.8,"cpu_pct":857.4,"d_state":1,"users":59,"tcp_open_ext":522,"load_1":16.8},{"host":"holylogin08","roots":615,"procs":1431,"rss_gb":38.2,"cpu_pct":782.6,"d_state":2,"users":55,"tcp_open_ext":329,"load_1":8.7}],"events":[{"ts":"13:08:12","host":"holylogin06","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PostToolUse.js","purpose":"runtime","depth":0,"duration_s":0.023,"cpu_s":0.003,"peak_rss_mb":801.1,"exit_code":0,"signal":null},{"ts":"13:08:12","host":"boslogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":2,"duration_s":0.028,"cpu_s":0.009,"peak_rss_mb":519.8,"exit_code":0,"signal":null},{"ts":"13:08:11","host":"holylogin08","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":3,"duration_s":0.023,"cpu_s":0.015,"peak_rss_mb":542.9,"exit_code":0,"signal":null},{"ts":"13:08:09","host":"boslogin08","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":2,"duration_s":1.553,"cpu_s":0.518,"peak_rss_mb":16388.8,"exit_code":0,"signal":null},{"ts":"13:08:09","host":"holylogin07","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":2,"duration_s":0.052,"cpu_s":0.035,"peak_rss_mb":769.5,"exit_code":0,"signal":null},{"ts":"13:08:08","host":"boslogin07","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":0,"duration_s":0.043,"cpu_s":0.012,"peak_rss_mb":679.6,"exit_code":0,"signal":null},{"ts":"13:08:01","host":"holylogin06","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.032,"cpu_s":0.015,"peak_rss_mb":164.1,"exit_code":0,"signal":null},{"ts":"13:08:00","host":"boslogin06","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":0,"duration_s":0.071,"cpu_s":0.001,"peak_rss_mb":612.4,"exit_code":0,"signal":null},{"ts":"13:07:59","host":"boslogin08","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":0,"duration_s":0.041,"cpu_s":0.005,"peak_rss_mb":110.7,"exit_code":0,"signal":null},{"ts":"13:07:58","host":"boslogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":0,"duration_s":0.032,"cpu_s":0.006,"peak_rss_mb":222.8,"exit_code":0,"signal":null},{"ts":"13:07:49","host":"holylogin05","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"rg","args":"rg --files-with-matches 'def forward' src/","purpose":"filesearch","depth":0,"duration_s":0.063,"cpu_s":0.007,"peak_rss_mb":838.6,"exit_code":0,"signal":null},{"ts":"13:07:45","host":"holylogin07","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":0,"duration_s":0.064,"cpu_s":0.023,"peak_rss_mb":699.8,"exit_code":0,"signal":null},{"ts":"13:07:44","host":"holylogin08","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"rg","args":"rg --files-with-matches 'def forward' src/","purpose":"filesearch","depth":2,"duration_s":0.02,"cpu_s":0.014,"peak_rss_mb":151.0,"exit_code":0,"signal":null},{"ts":"13:07:40","host":"holylogin08","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":0,"duration_s":0.093,"cpu_s":0.026,"peak_rss_mb":457.0,"exit_code":1,"signal":null},{"ts":"13:07:37","host":"boslogin06","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":1,"duration_s":0.049,"cpu_s":0.017,"peak_rss_mb":135.4,"exit_code":0,"signal":null},{"ts":"13:07:29","host":"holylogin05","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":2,"duration_s":0.028,"cpu_s":0.01,"peak_rss_mb":219.6,"exit_code":0,"signal":null},{"ts":"13:07:27","host":"boslogin07","user":"cminsky","agent_type":null,"actor3":"human","comm":"git","args":"git status --porcelain=v1","purpose":"git","depth":3,"duration_s":0.027,"cpu_s":0.012,"peak_rss_mb":822.1,"exit_code":0,"signal":null},{"ts":"13:07:27","host":"boslogin07","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"rsync","args":"rsync -a --info=progress2 ckpt/ /n/netscratch/lab/ckpt/","purpose":"data","depth":1,"duration_s":24.569,"cpu_s":11.438,"peak_rss_mb":28497.9,"exit_code":0,"signal":null},{"ts":"13:07:19","host":"boslogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":1,"duration_s":0.021,"cpu_s":0.012,"peak_rss_mb":830.4,"exit_code":0,"signal":null},{"ts":"13:07:19","host":"boslogin06","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":2,"duration_s":0.025,"cpu_s":0.013,"peak_rss_mb":719.1,"exit_code":0,"signal":null},{"ts":"13:07:16","host":"boslogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"rsync","args":"rsync -a --info=progress2 ckpt/ /n/netscratch/lab/ckpt/","purpose":"data","depth":2,"duration_s":3.858,"cpu_s":1.672,"peak_rss_mb":34735.4,"exit_code":0,"signal":null},{"ts":"13:07:06","host":"boslogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":1,"duration_s":0.024,"cpu_s":0.01,"peak_rss_mb":833.3,"exit_code":0,"signal":null},{"ts":"13:07:06","host":"holylogin05","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.068,"cpu_s":0.044,"peak_rss_mb":664.8,"exit_code":0,"signal":null},{"ts":"13:07:00","host":"holylogin05","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"grep","args":"grep -rn 'nan' logs/train_7b.log","purpose":"filesearch","depth":1,"duration_s":1.398,"cpu_s":0.698,"peak_rss_mb":16446.8,"exit_code":0,"signal":null},{"ts":"13:06:56","host":"boslogin08","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":0,"duration_s":0.024,"cpu_s":0.013,"peak_rss_mb":412.1,"exit_code":0,"signal":null},{"ts":"13:06:49","host":"boslogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"cat","args":"cat /n/holylabs/Lab/ckpt/run_7b/config.json","purpose":"filesearch","depth":0,"duration_s":0.175,"cpu_s":0.024,"peak_rss_mb":875.3,"exit_code":0,"signal":null},{"ts":"13:06:48","host":"holylogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":2,"duration_s":0.054,"cpu_s":0.005,"peak_rss_mb":65.5,"exit_code":0,"signal":null},{"ts":"13:06:44","host":"boslogin07","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"make","args":"make -s superclean","purpose":"build","depth":1,"duration_s":0.022,"cpu_s":0.013,"peak_rss_mb":215.6,"exit_code":0,"signal":null},{"ts":"13:06:38","host":"boslogin06","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":2,"duration_s":0.04,"cpu_s":0.004,"peak_rss_mb":354.9,"exit_code":null,"signal":15},{"ts":"13:06:37","host":"boslogin07","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"grep","args":"grep -rn 'nan' logs/train_7b.log","purpose":"filesearch","depth":1,"duration_s":1.416,"cpu_s":0.37,"peak_rss_mb":17088.6,"exit_code":0,"signal":null},{"ts":"13:06:33","host":"boslogin08","user":"cminsky","agent_type":null,"actor3":"human","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":2,"duration_s":0.026,"cpu_s":0.003,"peak_rss_mb":117.4,"exit_code":0,"signal":null},{"ts":"13:06:33","host":"holylogin07","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":0,"duration_s":0.024,"cpu_s":0.014,"peak_rss_mb":470.9,"exit_code":0,"signal":null},{"ts":"13:06:30","host":"boslogin07","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":0,"duration_s":0.021,"cpu_s":0.001,"peak_rss_mb":897.8,"exit_code":0,"signal":null},{"ts":"13:06:25","host":"boslogin06","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":1,"duration_s":0.021,"cpu_s":0.012,"peak_rss_mb":413.1,"exit_code":0,"signal":null},{"ts":"13:06:21","host":"boslogin07","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":1,"duration_s":0.031,"cpu_s":0.011,"peak_rss_mb":452.6,"exit_code":0,"signal":null},{"ts":"13:06:18","host":"boslogin07","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"cat","args":"cat /n/holylabs/Lab/ckpt/run_7b/config.json","purpose":"filesearch","depth":2,"duration_s":0.037,"cpu_s":0.006,"peak_rss_mb":163.7,"exit_code":0,"signal":null},{"ts":"13:06:13","host":"boslogin06","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"ps","args":"ps -o pid,stat,rss,args -u $USER","purpose":"poll","depth":1,"duration_s":0.069,"cpu_s":0.027,"peak_rss_mb":46.5,"exit_code":0,"signal":null},{"ts":"13:06:12","host":"boslogin08","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.145,"cpu_s":0.026,"peak_rss_mb":242.6,"exit_code":0,"signal":null},{"ts":"13:06:08","host":"holylogin07","user":"cminsky","agent_type":null,"actor3":"human","comm":"rg","args":"rg --files-with-matches 'def forward' src/","purpose":"filesearch","depth":2,"duration_s":0.024,"cpu_s":0.011,"peak_rss_mb":147.7,"exit_code":0,"signal":null},{"ts":"13:06:06","host":"holylogin07","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":2,"duration_s":0.673,"cpu_s":0.156,"peak_rss_mb":655.0,"exit_code":0,"signal":null},{"ts":"13:06:00","host":"boslogin07","user":"cminsky","agent_type":null,"actor3":"human","comm":"cat","args":"cat /n/holylabs/Lab/ckpt/run_7b/config.json","purpose":"filesearch","depth":0,"duration_s":0.021,"cpu_s":0.0,"peak_rss_mb":308.7,"exit_code":0,"signal":null},{"ts":"13:05:55","host":"boslogin08","user":"sopark","agent_type":null,"actor3":"human","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":2,"duration_s":0.022,"cpu_s":0.014,"peak_rss_mb":146.0,"exit_code":0,"signal":null},{"ts":"13:05:55","host":"boslogin06","user":"cminsky","agent_type":null,"actor3":"human","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":1,"duration_s":0.023,"cpu_s":0.016,"peak_rss_mb":713.6,"exit_code":0,"signal":null},{"ts":"13:05:53","host":"holylogin08","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"rg","args":"rg --files-with-matches 'def forward' src/","purpose":"filesearch","depth":1,"duration_s":0.027,"cpu_s":0.007,"peak_rss_mb":168.3,"exit_code":0,"signal":null},{"ts":"13:05:45","host":"holylogin08","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":1,"duration_s":4.939,"cpu_s":1.715,"peak_rss_mb":29733.8,"exit_code":0,"signal":null},{"ts":"13:05:44","host":"boslogin06","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"ps","args":"ps -o pid,stat,rss,args -u $USER","purpose":"poll","depth":1,"duration_s":0.021,"cpu_s":0.004,"peak_rss_mb":442.5,"exit_code":0,"signal":null},{"ts":"13:05:40","host":"boslogin07","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"pgrep","args":"pgrep -f run_sweep_7b","purpose":"poll","depth":1,"duration_s":0.027,"cpu_s":0.008,"peak_rss_mb":616.5,"exit_code":0,"signal":null},{"ts":"13:05:40","host":"holylogin05","user":"sopark","agent_type":null,"actor3":"human","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":1,"duration_s":0.024,"cpu_s":0.016,"peak_rss_mb":371.4,"exit_code":0,"signal":null},{"ts":"13:05:38","host":"holylogin06","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":1,"duration_s":0.024,"cpu_s":0.003,"peak_rss_mb":434.0,"exit_code":0,"signal":null},{"ts":"13:05:38","host":"holylogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":0,"duration_s":0.02,"cpu_s":0.01,"peak_rss_mb":721.0,"exit_code":0,"signal":null},{"ts":"13:05:37","host":"boslogin06","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"pgrep","args":"pgrep -f run_sweep_7b","purpose":"poll","depth":0,"duration_s":0.022,"cpu_s":0.004,"peak_rss_mb":296.2,"exit_code":0,"signal":null},{"ts":"13:05:33","host":"holylogin06","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"jq","args":"jq -r '.metrics.loss' out/step_4400.json","purpose":"filesearch","depth":2,"duration_s":0.088,"cpu_s":0.003,"peak_rss_mb":392.6,"exit_code":0,"signal":null},{"ts":"13:05:32","host":"holylogin08","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":1,"duration_s":1.364,"cpu_s":0.314,"peak_rss_mb":10018.9,"exit_code":0,"signal":null},{"ts":"13:05:29","host":"boslogin07","user":"cminsky","agent_type":null,"actor3":"human","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.023,"cpu_s":0.01,"peak_rss_mb":525.5,"exit_code":0,"signal":null},{"ts":"13:05:27","host":"holylogin08","user":"sopark","agent_type":null,"actor3":"human","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":2,"duration_s":0.025,"cpu_s":0.009,"peak_rss_mb":473.0,"exit_code":0,"signal":null},{"ts":"13:05:25","host":"boslogin08","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":0,"duration_s":2.394,"cpu_s":0.325,"peak_rss_mb":2298.2,"exit_code":0,"signal":null},{"ts":"13:05:24","host":"boslogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":1,"duration_s":0.035,"cpu_s":0.015,"peak_rss_mb":402.3,"exit_code":0,"signal":null},{"ts":"13:05:21","host":"boslogin08","user":"sopark","agent_type":null,"actor3":"human","comm":"grep","args":"grep -rn 'nan' logs/train_7b.log","purpose":"filesearch","depth":0,"duration_s":1.569,"cpu_s":0.758,"peak_rss_mb":1657.6,"exit_code":0,"signal":null},{"ts":"13:05:19","host":"boslogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.123,"cpu_s":0.025,"peak_rss_mb":563.3,"exit_code":0,"signal":null},{"ts":"13:05:17","host":"boslogin07","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":3,"duration_s":0.026,"cpu_s":0.008,"peak_rss_mb":216.7,"exit_code":0,"signal":null},{"ts":"13:05:15","host":"holylogin06","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PostToolUse.js","purpose":"runtime","depth":0,"duration_s":0.071,"cpu_s":0.04,"peak_rss_mb":9.1,"exit_code":0,"signal":null},{"ts":"13:05:11","host":"boslogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":0,"duration_s":1.989,"cpu_s":0.843,"peak_rss_mb":26357.1,"exit_code":0,"signal":null},{"ts":"13:05:11","host":"boslogin08","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":2,"duration_s":0.055,"cpu_s":0.038,"peak_rss_mb":137.2,"exit_code":0,"signal":null},{"ts":"13:05:07","host":"boslogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"python3","args":"python3 -c 'import torch; print(torch.__version__)'","purpose":"compute","depth":0,"duration_s":0.308,"cpu_s":0.142,"peak_rss_mb":589.4,"exit_code":0,"signal":null},{"ts":"13:05:04","host":"holylogin05","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":1,"duration_s":0.216,"cpu_s":0.046,"peak_rss_mb":570.5,"exit_code":0,"signal":null},{"ts":"13:05:01","host":"holylogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":1,"duration_s":0.058,"cpu_s":0.022,"peak_rss_mb":527.7,"exit_code":0,"signal":null},{"ts":"13:04:57","host":"boslogin07","user":"cminsky","agent_type":null,"actor3":"human","comm":"sed","args":"sed -i 's/lr=3e-4/lr=1e-4/' configs/7b.yaml","purpose":"filesearch","depth":1,"duration_s":0.054,"cpu_s":0.002,"peak_rss_mb":251.4,"exit_code":0,"signal":null},{"ts":"13:04:53","host":"holylogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":2,"duration_s":0.025,"cpu_s":0.017,"peak_rss_mb":547.2,"exit_code":0,"signal":null},{"ts":"13:04:51","host":"boslogin07","user":"sopark","agent_type":null,"actor3":"human","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":0,"duration_s":5.439,"cpu_s":3.494,"peak_rss_mb":24157.5,"exit_code":0,"signal":null},{"ts":"13:04:48","host":"boslogin06","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":2,"duration_s":0.027,"cpu_s":0.003,"peak_rss_mb":730.9,"exit_code":0,"signal":null},{"ts":"13:04:46","host":"boslogin07","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"jq","args":"jq -r '.metrics.loss' out/step_4400.json","purpose":"filesearch","depth":2,"duration_s":0.025,"cpu_s":0.017,"peak_rss_mb":893.0,"exit_code":0,"signal":null},{"ts":"13:04:45","host":"boslogin06","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"grep","args":"grep -rn 'nan' logs/train_7b.log","purpose":"filesearch","depth":0,"duration_s":1.589,"cpu_s":0.145,"peak_rss_mb":23609.7,"exit_code":0,"signal":null},{"ts":"13:04:38","host":"holylogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":1,"duration_s":0.029,"cpu_s":0.015,"peak_rss_mb":735.0,"exit_code":0,"signal":null},{"ts":"13:04:36","host":"boslogin07","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":1,"duration_s":0.092,"cpu_s":0.031,"peak_rss_mb":587.3,"exit_code":0,"signal":null},{"ts":"13:04:36","host":"holylogin05","user":"sopark","agent_type":null,"actor3":"human","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":1,"duration_s":0.133,"cpu_s":0.039,"peak_rss_mb":111.0,"exit_code":0,"signal":null},{"ts":"13:04:35","host":"boslogin06","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":1,"duration_s":0.024,"cpu_s":0.002,"peak_rss_mb":119.8,"exit_code":0,"signal":null},{"ts":"13:04:34","host":"holylogin05","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"git","args":"git status --porcelain=v1","purpose":"git","depth":0,"duration_s":0.038,"cpu_s":0.0,"peak_rss_mb":865.8,"exit_code":0,"signal":null},{"ts":"13:04:29","host":"boslogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":0,"duration_s":0.044,"cpu_s":0.022,"peak_rss_mb":440.6,"exit_code":0,"signal":null},{"ts":"13:04:26","host":"boslogin07","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":2,"duration_s":0.023,"cpu_s":0.002,"peak_rss_mb":373.7,"exit_code":0,"signal":null},{"ts":"13:04:22","host":"holylogin08","user":"cminsky","agent_type":null,"actor3":"human","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":1,"duration_s":0.075,"cpu_s":0.028,"peak_rss_mb":502.2,"exit_code":0,"signal":null},{"ts":"13:04:20","host":"boslogin08","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":1,"duration_s":0.084,"cpu_s":0.041,"peak_rss_mb":788.7,"exit_code":0,"signal":null},{"ts":"13:04:16","host":"holylogin06","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"rsync","args":"rsync -a --info=progress2 ckpt/ /n/netscratch/lab/ckpt/","purpose":"data","depth":1,"duration_s":1.479,"cpu_s":0.761,"peak_rss_mb":9024.4,"exit_code":0,"signal":null},{"ts":"13:04:16","host":"holylogin06","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":1,"duration_s":0.529,"cpu_s":0.368,"peak_rss_mb":232.6,"exit_code":0,"signal":null},{"ts":"13:04:11","host":"holylogin08","user":"cminsky","agent_type":null,"actor3":"human","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.034,"cpu_s":0.023,"peak_rss_mb":543.0,"exit_code":0,"signal":null},{"ts":"13:04:09","host":"holylogin05","user":"sopark","agent_type":null,"actor3":"human","comm":"jq","args":"jq -r '.metrics.loss' out/step_4400.json","purpose":"filesearch","depth":0,"duration_s":0.031,"cpu_s":0.011,"peak_rss_mb":282.9,"exit_code":0,"signal":null},{"ts":"13:04:09","host":"holylogin08","user":"sopark","agent_type":null,"actor3":"human","comm":"rsync","args":"rsync -a --info=progress2 ckpt/ /n/netscratch/lab/ckpt/","purpose":"data","depth":0,"duration_s":10.313,"cpu_s":0.994,"peak_rss_mb":23466.7,"exit_code":0,"signal":null},{"ts":"13:04:07","host":"holylogin08","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"cat","args":"cat /n/holylabs/Lab/ckpt/run_7b/config.json","purpose":"filesearch","depth":1,"duration_s":0.202,"cpu_s":0.046,"peak_rss_mb":430.6,"exit_code":0,"signal":null},{"ts":"13:04:06","host":"holylogin08","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"sed","args":"sed -i 's/lr=3e-4/lr=1e-4/' configs/7b.yaml","purpose":"filesearch","depth":1,"duration_s":0.025,"cpu_s":0.004,"peak_rss_mb":615.6,"exit_code":0,"signal":null},{"ts":"13:04:03","host":"holylogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":1,"duration_s":0.038,"cpu_s":0.017,"peak_rss_mb":349.7,"exit_code":0,"signal":null},{"ts":"13:03:59","host":"boslogin06","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":3,"duration_s":1.304,"cpu_s":0.634,"peak_rss_mb":19102.4,"exit_code":0,"signal":null},{"ts":"13:03:44","host":"holylogin05","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"make","args":"make -s superclean","purpose":"build","depth":0,"duration_s":0.069,"cpu_s":0.021,"peak_rss_mb":651.9,"exit_code":0,"signal":null},{"ts":"13:03:40","host":"holylogin05","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"python3","args":"python3 -c 'import torch; print(torch.__version__)'","purpose":"compute","depth":2,"duration_s":0.101,"cpu_s":0.069,"peak_rss_mb":632.6,"exit_code":0,"signal":null},{"ts":"13:03:39","host":"holylogin07","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":2,"duration_s":0.041,"cpu_s":0.009,"peak_rss_mb":695.3,"exit_code":0,"signal":null},{"ts":"13:03:35","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":1,"duration_s":0.118,"cpu_s":0.053,"peak_rss_mb":843.0,"exit_code":0,"signal":null},{"ts":"13:03:30","host":"holylogin08","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"pgrep","args":"pgrep -f run_sweep_7b","purpose":"poll","depth":0,"duration_s":0.034,"cpu_s":0.022,"peak_rss_mb":351.1,"exit_code":0,"signal":null},{"ts":"13:03:29","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PostToolUse.js","purpose":"runtime","depth":0,"duration_s":0.093,"cpu_s":0.057,"peak_rss_mb":535.6,"exit_code":1,"signal":null},{"ts":"13:03:25","host":"holylogin06","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":1,"duration_s":0.079,"cpu_s":0.026,"peak_rss_mb":152.9,"exit_code":0,"signal":null},{"ts":"13:03:21","host":"boslogin06","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PreToolUse.js","purpose":"runtime","depth":1,"duration_s":0.026,"cpu_s":0.014,"peak_rss_mb":408.2,"exit_code":0,"signal":null},{"ts":"13:03:17","host":"holylogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":2,"duration_s":0.282,"cpu_s":0.153,"peak_rss_mb":776.4,"exit_code":0,"signal":null},{"ts":"13:03:13","host":"boslogin07","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":1,"duration_s":2.457,"cpu_s":1.041,"peak_rss_mb":6794.4,"exit_code":0,"signal":null},{"ts":"13:03:10","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":1,"duration_s":0.161,"cpu_s":0.066,"peak_rss_mb":881.7,"exit_code":0,"signal":null},{"ts":"13:03:08","host":"boslogin07","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"rg","args":"rg --files-with-matches 'def forward' src/","purpose":"filesearch","depth":1,"duration_s":0.042,"cpu_s":0.022,"peak_rss_mb":161.1,"exit_code":0,"signal":null},{"ts":"13:03:03","host":"boslogin07","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"grep","args":"grep -rn 'nan' logs/train_7b.log","purpose":"filesearch","depth":0,"duration_s":46.348,"cpu_s":20.731,"peak_rss_mb":10460.3,"exit_code":0,"signal":null},{"ts":"13:02:58","host":"boslogin06","user":"cminsky","agent_type":null,"actor3":"human","comm":"sed","args":"sed -i 's/lr=3e-4/lr=1e-4/' configs/7b.yaml","purpose":"filesearch","depth":1,"duration_s":0.067,"cpu_s":0.002,"peak_rss_mb":483.3,"exit_code":0,"signal":null},{"ts":"13:02:57","host":"holylogin08","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":1,"duration_s":0.027,"cpu_s":0.005,"peak_rss_mb":189.5,"exit_code":0,"signal":null},{"ts":"13:02:49","host":"holylogin05","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"tar","args":"tar -I zstd -cf shards/part_012.tar.zst data/part_012","purpose":"data","depth":1,"duration_s":7.928,"cpu_s":1.172,"peak_rss_mb":18961.1,"exit_code":0,"signal":null},{"ts":"13:02:45","host":"holylogin08","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"nvidia-smi","args":"nvidia-smi --query-gpu=utilization.gpu --format=csv","purpose":"poll","depth":0,"duration_s":0.022,"cpu_s":0.01,"peak_rss_mb":18.7,"exit_code":0,"signal":null},{"ts":"13:02:44","host":"boslogin07","user":"sopark","agent_type":null,"actor3":"human","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":0,"duration_s":0.022,"cpu_s":0.003,"peak_rss_mb":234.8,"exit_code":0,"signal":null},{"ts":"13:02:43","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":1,"duration_s":0.022,"cpu_s":0.003,"peak_rss_mb":333.7,"exit_code":0,"signal":null},{"ts":"13:02:32","host":"boslogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"ps","args":"ps -o pid,stat,rss,args -u $USER","purpose":"poll","depth":2,"duration_s":0.069,"cpu_s":0.046,"peak_rss_mb":326.4,"exit_code":0,"signal":null},{"ts":"13:02:31","host":"holylogin05","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"sed","args":"sed -i 's/lr=3e-4/lr=1e-4/' configs/7b.yaml","purpose":"filesearch","depth":1,"duration_s":0.054,"cpu_s":0.026,"peak_rss_mb":188.1,"exit_code":0,"signal":null},{"ts":"13:02:30","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"make","args":"make -s superclean","purpose":"build","depth":1,"duration_s":0.043,"cpu_s":0.028,"peak_rss_mb":148.5,"exit_code":0,"signal":null},{"ts":"13:02:26","host":"holylogin08","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"rg","args":"rg --files-with-matches 'def forward' src/","purpose":"filesearch","depth":0,"duration_s":0.202,"cpu_s":0.111,"peak_rss_mb":307.1,"exit_code":0,"signal":null},{"ts":"13:02:24","host":"boslogin06","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"pgrep","args":"pgrep -f run_sweep_7b","purpose":"poll","depth":0,"duration_s":0.026,"cpu_s":0.006,"peak_rss_mb":582.4,"exit_code":0,"signal":null},{"ts":"13:02:24","host":"holylogin06","user":"sopark","agent_type":null,"actor3":"human","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":2,"duration_s":0.02,"cpu_s":0.012,"peak_rss_mb":841.7,"exit_code":0,"signal":null},{"ts":"13:02:23","host":"holylogin05","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"git","args":"git status --porcelain=v1","purpose":"git","depth":2,"duration_s":0.031,"cpu_s":0.014,"peak_rss_mb":809.3,"exit_code":0,"signal":null},{"ts":"13:02:21","host":"holylogin08","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"sed","args":"sed -i 's/lr=3e-4/lr=1e-4/' configs/7b.yaml","purpose":"filesearch","depth":0,"duration_s":0.024,"cpu_s":0.013,"peak_rss_mb":45.0,"exit_code":0,"signal":null},{"ts":"13:02:21","host":"boslogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":1,"duration_s":0.062,"cpu_s":0.036,"peak_rss_mb":536.9,"exit_code":0,"signal":null},{"ts":"13:02:20","host":"boslogin07","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"make","args":"make -s superclean","purpose":"build","depth":1,"duration_s":0.026,"cpu_s":0.011,"peak_rss_mb":857.7,"exit_code":0,"signal":null},{"ts":"13:02:20","host":"holylogin05","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"make","args":"make -s superclean","purpose":"build","depth":1,"duration_s":0.034,"cpu_s":0.014,"peak_rss_mb":416.7,"exit_code":0,"signal":null},{"ts":"13:02:18","host":"holylogin08","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PostToolUse.js","purpose":"runtime","depth":2,"duration_s":0.022,"cpu_s":0.003,"peak_rss_mb":375.5,"exit_code":0,"signal":null},{"ts":"13:02:17","host":"holylogin05","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"bash","args":"bash -c '( cd /n/home04/lab/proj && ./scripts/check.sh )'","purpose":"other","depth":1,"duration_s":0.035,"cpu_s":0.022,"peak_rss_mb":462.0,"exit_code":0,"signal":null},{"ts":"13:02:14","host":"holylogin07","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"python3","args":"python3 -c 'import torch; print(torch.__version__)'","purpose":"compute","depth":1,"duration_s":0.022,"cpu_s":0.0,"peak_rss_mb":367.3,"exit_code":0,"signal":null},{"ts":"13:02:13","host":"holylogin06","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":2,"duration_s":0.036,"cpu_s":0.019,"peak_rss_mb":622.5,"exit_code":0,"signal":null},{"ts":"13:02:11","host":"holylogin05","user":"pbonilla","agent_type":"codex","actor3":"agent","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":1,"duration_s":0.033,"cpu_s":0.018,"peak_rss_mb":48.7,"exit_code":null,"signal":15},{"ts":"13:02:09","host":"boslogin06","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":1,"duration_s":0.027,"cpu_s":0.001,"peak_rss_mb":635.1,"exit_code":0,"signal":null},{"ts":"13:02:09","host":"holylogin05","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"ps","args":"ps -o pid,stat,rss,args -u $USER","purpose":"poll","depth":0,"duration_s":0.037,"cpu_s":0.017,"peak_rss_mb":266.0,"exit_code":0,"signal":null},{"ts":"13:02:08","host":"boslogin07","user":"thomwg11","agent_type":"claude_code","actor3":"agent","comm":"git","args":"git diff --stat HEAD~1","purpose":"git","depth":0,"duration_s":0.068,"cpu_s":0.019,"peak_rss_mb":140.6,"exit_code":0,"signal":null},{"ts":"13:02:05","host":"boslogin06","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"python3","args":"python3 -c 'import torch; print(torch.__version__)'","purpose":"compute","depth":2,"duration_s":0.025,"cpu_s":0.012,"peak_rss_mb":249.6,"exit_code":0,"signal":null},{"ts":"13:01:51","host":"holylogin08","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"make","args":"make -s superclean","purpose":"build","depth":0,"duration_s":0.031,"cpu_s":0.001,"peak_rss_mb":359.9,"exit_code":0,"signal":null},{"ts":"13:01:47","host":"holylogin05","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"node","args":"node --no-warnings .claude/hooks/PostToolUse.js","purpose":"runtime","depth":0,"duration_s":0.065,"cpu_s":0.008,"peak_rss_mb":25.6,"exit_code":null,"signal":15},{"ts":"13:01:33","host":"boslogin07","user":"mgarcia9","agent_type":"claude_code","actor3":"agent","comm":"cc1plus","args":"cc1plus -O2 -std=c++17 kernels/attention.cu","purpose":"build","depth":1,"duration_s":0.046,"cpu_s":0.003,"peak_rss_mb":171.8,"exit_code":0,"signal":null},{"ts":"13:01:32","host":"boslogin08","user":"sopark","agent_type":null,"actor3":"human","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":1,"duration_s":0.021,"cpu_s":0.003,"peak_rss_mb":327.4,"exit_code":0,"signal":null},{"ts":"13:01:32","host":"holylogin05","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"python3","args":"python3 tools/eval_ckpt.py --step 4400","purpose":"compute","depth":2,"duration_s":0.025,"cpu_s":0.012,"peak_rss_mb":169.2,"exit_code":0,"signal":null},{"ts":"13:01:27","host":"holylogin08","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"sed","args":"sed -i 's/lr=3e-4/lr=1e-4/' configs/7b.yaml","purpose":"filesearch","depth":1,"duration_s":0.048,"cpu_s":0.027,"peak_rss_mb":698.6,"exit_code":0,"signal":null},{"ts":"13:01:25","host":"holylogin07","user":"kdesai","agent_type":"claude_code","actor3":"agent","comm":"ps","args":"ps -o pid,stat,rss,args -u $USER","purpose":"poll","depth":1,"duration_s":0.054,"cpu_s":0.023,"peak_rss_mb":334.6,"exit_code":null,"signal":15},{"ts":"13:01:24","host":"holylogin07","user":"ylin42","agent_type":"claude_code","actor3":"agent","comm":"sbatch","args":"sbatch --parsable --array=0-63 sweep.slurm","purpose":"slurm_sub","depth":2,"duration_s":0.113,"cpu_s":0.037,"peak_rss_mb":556.6,"exit_code":0,"signal":null},{"ts":"13:01:22","host":"holylogin05","user":"rjoshi","agent_type":"codex","actor3":"agent","comm":"grep","args":"grep -rn 'nan' logs/train_7b.log","purpose":"filesearch","depth":0,"duration_s":14.757,"cpu_s":7.699,"peak_rss_mb":18299.4,"exit_code":0,"signal":null},{"ts":"13:01:22","host":"holylogin08","user":"dkufel","agent_type":"claude_code","actor3":"agent","comm":"scancel","args":"scancel 8112901","purpose":"slurm_sub","depth":2,"duration_s":0.041,"cpu_s":0.02,"peak_rss_mb":657.1,"exit_code":0,"signal":null},{"ts":"13:01:13","host":"holylogin08","user":"aweiss","agent_type":"cursor","actor3":"human-vscode","comm":"squeue","args":"squeue -j 8112934 --noheader -o %T","purpose":"slurm_mon","depth":0,"duration_s":0.02,"cpu_s":0.0,"peak_rss_mb":530.3,"exit_code":0,"signal":null}],"submits":[{"ts":"13:05:02","host":"holylogin05","user":"ylin42","agent_type":"claude_code","tool":"sbatch","job_id":8112300,"partition":"sapphire","gpus":2,"array":"0-63"},{"ts":"13:01:55","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","tool":"sbatch","job_id":8116747,"partition":"gpu_requeue","gpus":0,"array":"0-63"},{"ts":"12:57:43","host":"holylogin06","user":"mgarcia9","agent_type":"claude_code","tool":"sbatch","job_id":8115604,"partition":"gpu","gpus":0,"array":"0-15"},{"ts":"12:56:01","host":"holylogin07","user":"kdesai","agent_type":"claude_code","tool":"sbatch","job_id":8115563,"partition":"serial_requeue","gpus":0,"array":""},{"ts":"12:55:40","host":"boslogin06","user":"ylin42","agent_type":"claude_code","tool":"sbatch","job_id":8113230,"partition":"shared","gpus":1,"array":""},{"ts":"12:53:32","host":"holylogin05","user":"aweiss","agent_type":"cursor","tool":"salloc","job_id":8112272,"partition":"sapphire","gpus":0,"array":""},{"ts":"12:53:19","host":"holylogin08","user":"kdesai","agent_type":"claude_code","tool":"sbatch","job_id":8115249,"partition":"kempner_h100","gpus":4,"array":"0-15"},{"ts":"12:52:46","host":"holylogin06","user":"ylin42","agent_type":"claude_code","tool":"sbatch","job_id":8117372,"partition":"sapphire","gpus":8,"array":"0-15"},{"ts":"12:51:19","host":"holylogin06","user":"thomwg11","agent_type":"claude_code","tool":"sbatch","job_id":8115986,"partition":"gpu","gpus":1,"array":"0-63"},{"ts":"12:49:40","host":"holylogin08","user":"mgarcia9","agent_type":"claude_code","tool":"sbatch","job_id":8120257,"partition":"shared","gpus":8,"array":"0-479"},{"ts":"12:47:28","host":"boslogin07","user":"pbonilla","agent_type":"codex","tool":"sbatch","job_id":8119869,"partition":"serial_requeue","gpus":0,"array":"0-63"},{"ts":"12:46:56","host":"boslogin06","user":"aweiss","agent_type":"cursor","tool":"sbatch","job_id":8114454,"partition":"shared","gpus":8,"array":"0-63"},{"ts":"12:46:02","host":"boslogin06","user":"thomwg11","agent_type":"claude_code","tool":"sbatch","job_id":8120297,"partition":"shared","gpus":1,"array":"0-15"},{"ts":"12:44:19","host":"holylogin07","user":"aweiss","agent_type":"cursor","tool":"sbatch","job_id":8114161,"partition":"gpu","gpus":8,"array":"0-15"}],"now":{"exits_per_min":1635,"exits_per_min_agent":964,"agent_roots":4416,"agent_procs":8812,"rss_gb":371.3,"d_state":12,"tcp_open_ext":3211,"running_agent_jobs":1184,"pending_agent_jobs":417,"agent_gpu_jobs":263,"agent_gpu_idle_now":61,"autonomous_roots":34}},"provenance_summary":{"real":["identity","jobs"],"synthetic":["archetypes","autonomy","bwrap","concentration","dangerous","depth_profile","diurnal","exit_status","fleet","gpu_duty","lifetime","live","login_compute","purpose_mix","residency_series","scheduler","session_gallery","session_sizes","tcp_providers","top_commands"]}};
+/* ============================================================== utilities */
+let P = DATA.panels;
+const CLS = ["agent", "human-vscode", "human"];
+const CLS_LBL = {"agent":"agent", "human-vscode":"human in VS Code", "human":"human (shell)"};
+const CLS_COL = {"agent":"var(--s1)", "human-vscode":"var(--s2)", "human":"var(--s3)",
+                 "mixed":"var(--s7)", "unknown":"var(--sg)", "job":"var(--s4)", "other":"var(--sg)"};
+/* Purpose colours: eight validated slots, tail folded into one grey "other" -
+   never a generated ninth hue.  Stack order keeps yellow off orange. */
+const PURP = [
+  ["poll","poll / introspection","var(--s1)","poll"],
+  ["runtime","agent runtime","var(--s7)","runtime"],
+  ["filesearch","file & search","var(--s3)","files"],
+  ["slurm_mon","slurm monitor","var(--s4)","squeue"],
+  ["slurm_sub","slurm submit","var(--s5)","sbatch"],
+  ["build","build / compile","var(--s2)","build"],
+  ["compute","compute (py/R)","var(--s6)","compute"],
+  ["data","data move","var(--s8)","data"],
+  ["other","other (editor, env, \u2026)","var(--sg)","other"],
+];
+const PURP_COL = {}, PURP_LBL = {}, PURP_SHORT = {};
+PURP.forEach(([k,l,c,sh]) => { PURP_COL[k]=c; PURP_LBL[k]=l; PURP_SHORT[k]=sh; });
+const pcol = k => PURP_COL[k] || "var(--sg)";
+const pord = k => { const i = PURP.findIndex(p => p[0]===k); return i<0 ? 99 : i; };
+
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function fmt(n, d){
+  if (n==null || isNaN(n)) return "\u2014";
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n/1e9).toFixed(d??2)+"B";
+  if (a >= 1e6) return (n/1e6).toFixed(d??2)+"M";
+  if (a >= 1e4) return Math.round(n/1e3)+"k";
+  if (a >= 100) return Math.round(n).toLocaleString();
+  if (a >= 10)  return n.toFixed(d??1);
+  return n.toFixed(d??(a<1?2:1));
+}
+const fint = n => n==null||isNaN(n) ? "\u2014" : Math.round(n).toLocaleString();
+const pc = n => n==null||isNaN(n) ? "\u2014" : (n<10 ? n.toFixed(1) : Math.round(n))+"%";
+function dur(s){
+  if (s==null) return "\u2014";
+  if (s < 1) return (s*1000).toFixed(0)+" ms";
+  if (s < 90) return s.toFixed(s<10?1:0)+" s";
+  if (s < 5400) return (s/60).toFixed(s<600?1:0)+" min";
+  if (s < 172800) return (s/3600).toFixed(s<36000?1:0)+" h";
+  return (s/86400).toFixed(1)+" d";
+}
+const T = (t, x, y) => ` data-tip="${esc(t)}"`;
+
+/* -------------------------------------------------------------- SVG scaffold */
+let uid = 0;
+const svg = (w, h, inner, cls) =>
+  `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" class="${cls||""}"
+        preserveAspectRatio="xMidYMin meet">${inner}</svg>`;
+
+function yGrid(x0, x1, y, v, lbl){
+  return `<line class="grid-line" x1="${x0}" x2="${x1}" y1="${y}" y2="${y}"></line>
+          <text class="tick" x="${x0-6}" y="${y+3}" text-anchor="end">${esc(lbl)}</text>`;
+}
+function niceTicks(max, n){
+  if (!(max > 0)) return [0, 1];
+  const raw = max / (n||4), mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1,2,2.5,5,10].map(m=>m*mag).find(s => s >= raw) || 10*mag;
+  const out = []; for (let v=0; v<=max*1.0001; v+=step) out.push(v);
+  if (out[out.length-1] < max) out.push(out[out.length-1]+step);
+  return out;
+}
+
+/* horizontal bars: label | bar | value */
+function hbars(items, o){
+  o = o || {};
+  const labelW = o.labelW || 132, valW = o.valW || 54, rowH = o.rowH || 22, gap = 5;
+  const w = 100, plotW = 100 - 0, h = items.length * rowH + 6;
+  const max = o.max || Math.max(...items.map(d => d.v), 1);
+  const W = o.W || 560, bw = W - labelW - valW;
+  let s = "";
+  items.forEach((d, i) => {
+    const y = i * rowH + 3, bh = rowH - gap;
+    const len = Math.max(d.v > 0 ? 2 : 0, bw * d.v / max);
+    s += `<text class="vlbl" x="${labelW-8}" y="${y+bh/2+3.5}" text-anchor="end"
+             fill="var(--ink-2)">${esc(d.k)}</text>
+          <rect x="${labelW}" y="${y}" width="${len}" height="${bh}" rx="2"
+             fill="${d.c || o.color || "var(--s1)"}"${T(d.tip || (d.k+": "+fmt(d.v)+(o.unit?" "+o.unit:"")))}></rect>
+          <text class="vlbl" x="${labelW+len+7}" y="${y+bh/2+3.5}">${esc(d.lbl != null ? d.lbl : fmt(d.v))}</text>`;
+  });
+  return svg(W, h, s);
+}
+
+/* grouped vertical bars, one y-axis only */
+function groupBars(groups, series, o){
+  o = o || {};
+  const W = o.W || 560, H = o.H || 200, L = 44, R = 8, TOP = o.ylabel ? 20 : 10, B = 34;
+  const pw = W - L - R, ph = H - TOP - B;
+  const max = o.max || Math.max(...groups.flatMap(g => series.map(s => g.v[s.k] || 0)), 1);
+  const ticks = niceTicks(max, 4), top = ticks[ticks.length-1];
+  const y = v => TOP + ph - ph * v / top;
+  let s = ticks.map(t => yGrid(L, W-R, y(t), t, o.tickFmt ? o.tickFmt(t) : fmt(t))).join("");
+  const gw = pw / groups.length, bw = Math.min(o.maxBar || 34, (gw - 14) / series.length);
+  groups.forEach((g, gi) => {
+    const x0 = L + gi*gw + (gw - bw*series.length - 2*(series.length-1))/2;
+    series.forEach((se, si) => {
+      const v = g.v[se.k] || 0, x = x0 + si*(bw+2), h = Math.max(v>0?1.5:0, y(0)-y(v));
+      s += `<rect x="${x}" y="${y(v)}" width="${bw}" height="${h}" rx="2" fill="${se.c}"
+              ${T(`${g.k} \u00b7 ${se.lbl}: ${o.fmt ? o.fmt(v) : fmt(v)}`)}></rect>`;
+      if (o.labelTop && v > 0)
+        s += `<text class="vlbl" x="${x+bw/2}" y="${y(v)-4}" text-anchor="middle">${o.fmt?o.fmt(v):fmt(v)}</text>`;
+    });
+    s += `<text class="tick" x="${L+gi*gw+gw/2}" y="${TOP+ph+15}" text-anchor="middle">${esc(g.k)}</text>`;
+    if (g.k2) s += `<text class="tick" x="${L+gi*gw+gw/2}" y="${TOP+ph+27}" text-anchor="middle"
+                      fill="var(--muted)">${esc(g.k2)}</text>`;
+  });
+  s += `<line class="base-line" x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}"></line>`;
+  if (o.ylabel) s += `<text class="axlbl" x="0" y="9">${esc(o.ylabel)}</text>`;
+  return svg(W, H, s);
+}
+
+/* one 100%-stacked row, 2px surface gaps, selective in-bar labels */
+function stackRow(segs, o){
+  o = o || {};
+  const W = o.W || 560, H = o.H || 30, tot = segs.reduce((a,d)=>a+d.v,0) || 1;
+  let x = 0, s = "";
+  segs.forEach(d => {
+    const w = (W) * d.v / tot;
+    if (w <= 0) return;
+    s += `<rect x="${x}" y="0" width="${Math.max(0,w-2)}" height="${H}" rx="1.5" fill="${d.c}"
+            ${T(`${d.k}: ${fmt(d.v)} (${(100*d.v/tot).toFixed(1)}%)`)}></rect>`;
+    if (w > 44) s += `<text x="${x+(w-2)/2}" y="${H/2+3.5}" text-anchor="middle"
+            style="font-size:10.5px;font-family:'IBM Plex Mono',monospace;fill:var(--surface)"
+            >${(100*d.v/tot).toFixed(w>62?1:0)}%</text>`;
+    x += w;
+  });
+  return svg(W, H, s);
+}
+
+/* multi-line chart, optional log axes, hover dots */
+function lines(series, o){
+  o = o || {};
+  const W = o.W || 560, H = o.H || 210, L = o.L || 48, R = 12,
+        TOP = o.ylabel ? 22 : 12, B = 34;
+  const pw = W - L - R, ph = H - TOP - B;
+  const xs = series.flatMap(s => s.pts.map(p => p[0]));
+  const ys = series.flatMap(s => s.pts.map(p => p[1]));
+  const x0 = o.xmin != null ? o.xmin : Math.min(...xs), x1 = o.xmax != null ? o.xmax : Math.max(...xs);
+  const y1 = o.ymax != null ? o.ymax : Math.max(...ys), y0 = o.ymin != null ? o.ymin : (o.ylog ? Math.min(...ys) : 0);
+  const lx = v => o.xlog ? Math.log10(Math.max(v, x0 || 1e-9)) : v;
+  const ly = v => o.ylog ? Math.log10(Math.max(v, y0 || 1e-9)) : v;
+  const X = v => L + pw * (lx(v)-lx(x0)) / ((lx(x1)-lx(x0)) || 1);
+  const Y = v => TOP + ph - ph * (ly(v)-ly(y0)) / ((ly(y1)-ly(y0)) || 1);
+  let s = "";
+  const yt = o.ylog ? logTicks(y0, y1) : niceTicks(y1, 4).filter(t => t >= y0);
+  yt.forEach(t => s += yGrid(L, W-R, Y(t), t, o.yfmt ? o.yfmt(t) : fmt(t)));
+  const xt = o.xticks || (o.xlog ? logTicks(x0, x1) : niceTicks(x1, 5).filter(t => t >= x0));
+  xt.forEach(t => s += `<text class="tick" x="${X(t)}" y="${TOP+ph+15}" text-anchor="middle"
+      >${esc(o.xfmt ? o.xfmt(t) : fmt(t))}</text>`);
+  series.forEach(se => {
+    const d = se.pts.map((p,i) => (i?"L":"M")+X(p[0]).toFixed(1)+" "+Y(p[1]).toFixed(1)).join(" ");
+    if (se.area){
+      s += `<path d="${d} L ${X(se.pts[se.pts.length-1][0]).toFixed(1)} ${Y(y0)} L ${X(se.pts[0][0]).toFixed(1)} ${Y(y0)} Z"
+              fill="${se.c}" opacity=".1"></path>`;
+    }
+    s += `<path d="${d}" fill="none" stroke="${se.c}" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"
+            ${se.step ? 'shape-rendering="crispEdges"' : ""}></path>`;
+    const every = Math.max(1, Math.round(se.pts.length / 26));
+    se.pts.forEach((p, i) => {
+      if (i % every) return;
+      s += `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="8" fill="transparent"
+              ${T(`${se.lbl} \u00b7 ${o.xname||"x"} ${o.xfmt?o.xfmt(p[0]):fmt(p[0])} \u2192 ${o.yname||"y"} ${o.yfmt?o.yfmt(p[1]):fmt(p[1])}`)}></circle>`;
+    });
+    if (se.mark){
+      const p = se.pts[se.pts.length-1];
+      s += `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="3.5" fill="${se.c}"
+              stroke="var(--surface)" stroke-width="2"></circle>
+            <text class="vlbl" x="${X(p[0])-6}" y="${Y(p[1])-9}" text-anchor="end">${esc(se.mark)}</text>`;
+    }
+  });
+  s += `<line class="base-line" x1="${L}" x2="${W-R}" y1="${Y(y0)}" y2="${Y(y0)}"></line>`;
+  if (o.ylabel) s += `<text class="axlbl" x="0" y="9">${esc(o.ylabel)}</text>`;
+  if (o.xlabel) s += `<text class="axlbl" x="${W-R}" y="${H-4}" text-anchor="end">${esc(o.xlabel)}</text>`;
+  return svg(W, H, s);
+}
+function logTicks(a, b){
+  const out = [];
+  for (let e = Math.floor(Math.log10(Math.max(a, 1e-9))); e <= Math.ceil(Math.log10(b)); e++){
+    const v = Math.pow(10, e);
+    if (v >= a*0.999 && v <= b*1.001) out.push(v);
+  }
+  return out.length ? out : [a, b];
+}
+
+/* purpose ribbon: one row per session, a cell per event in sequence */
+function ribbon(seq, o){
+  o = o || {};
+  const W = o.W || 420, H = o.H || 13, n = seq.length || 1, cw = W / n;
+  let s = "";
+  seq.forEach((p, i) => {
+    s += `<rect x="${(i*cw).toFixed(2)}" y="0" width="${Math.max(cw-(cw>3?0.6:0),0.4).toFixed(2)}"
+            height="${H}" fill="${pcol(p)}"${T(`#${i+1} ${PURP_LBL[p]||p}`)}></rect>`;
+  });
+  return svg(W, H, s);
+}
+
+/* ============================================================ panel chrome */
+const state = { tab: "live", cls: new Set(CLS), grain: "jobs", freshCount: 0 };
+
+function panel(key, title, inner, o){
+  o = o || {};
+  const p = P[key] || {};
+  const cad = (DATA.cadence || {})[p._feed || ""];
+  return `<section class="panel ${o.span ? "span2" : ""}">
+    <header><div>
+      <h3>${esc(title)}</h3>
+      ${p._source ? `<div class="src">${esc(p._source)}${cad ? " \u00b7 every " + esc(cad) : ""}</div>` : ""}
+    </div>${o.live ? '<span class="pill"><i class="ld"></i>live</span>' : ""}</header>
+    ${inner}
+  </section>`;
+}
+function legend(items){
+  return `<div class="legend">${items.map(i =>
+    `<span><i style="background:${i.c}"></i>${esc(i.k)}</span>`).join("")}</div>`;
+}
+const activeCls = () => CLS.filter(c => state.cls.has(c));
+
+
+/* ================================================================== LIVE */
+function tabLive(){
+  const L = DATA.live || {};
+  const n = L.now || {}, rate = L.rate || [];
+  const cls = activeCls();
+  const rateSeries = cls.filter(c => rate.length && rate[0][c] != null).map(c => ({
+    lbl: CLS_LBL[c], c: CLS_COL[c], area: c === "agent",
+    mark: c === "agent" ? fint(rate[rate.length-1][c]) + "/min" : null,
+    pts: rate.map((r, i) => [i, r[c]])
+  }));
+  const xt = rate.map((r,i) => i).filter(i => rate[i].t.endsWith("0") && i % 15 === 0);
+
+  const plates = `<div class="plates">
+    <div class="plate" style="--stripe:var(--s1)">
+      <div class="k">process exits / min \u00b7 agent</div>
+      <div class="v">${fint(n.exits_per_min_agent)}</div>
+      <div class="n">${fint(n.exits_per_min)} across all classes \u00b7 ${
+        pc(100*(n.exits_per_min_agent||0)/(n.exits_per_min||1))} agent</div>
+    </div>
+    <div class="plate" style="--stripe:var(--s4)">
+      <div class="k">live agent roots</div>
+      <div class="v">${fint(n.agent_roots)}</div>
+      <div class="n">${fint(n.agent_procs)} processes \u00b7 ${fmt(n.rss_gb)} GB resident \u00b7
+        ${fint(n.autonomous_roots)} started with a bypass flag</div>
+    </div>
+    <div class="plate" style="--stripe:var(--s2)">
+      <div class="k">agent jobs in flight</div>
+      <div class="v">${fint(n.running_agent_jobs)}</div>
+      <div class="n">${fint(n.pending_agent_jobs)} pending \u00b7 ${fint(n.agent_gpu_jobs)} holding GPUs</div>
+    </div>
+    <div class="plate" style="--stripe:var(--crit)">
+      <div class="k">GPUs held at zero utilisation</div>
+      <div class="v">${fint(n.agent_gpu_idle_now)}</div>
+      <div class="n">of ${fint(n.agent_gpu_jobs)} agent GPU jobs running right now</div>
+    </div>
+  </div>`;
+
+  const hostRows = (L.hosts||[]).map(h =>
+    `<tr><td class="mono">${esc(h.host)}</td>
+      <td class="num">${fint(h.roots)}</td><td class="num">${fint(h.procs)}</td>
+      <td class="num">${fmt(h.rss_gb)}</td><td class="num">${fmt(h.cpu_pct)}%</td>
+      <td class="num">${fint(h.load_1)}</td>
+      <td class="num">${h.d_state ? `<span style="color:var(--crit)">${h.d_state}</span>` : 0}</td>
+      <td class="num">${fint(h.users)}</td><td class="num">${fint(h.tcp_open_ext)}</td></tr>`).join("");
+
+  const evRows = (L.events||[]).slice(0, 60).map((e, i) =>
+    `<tr class="${i < (state.freshCount||0) ? "fresh" : ""}">
+      <td class="mono" style="color:var(--muted)">${esc(e.ts)}</td>
+      <td class="mono" style="font-size:10px;color:var(--muted)"
+          data-tip="${esc(CLS_LBL[e.actor3]||e.actor3)}${e.agent_type ? " \u00b7 "+e.agent_type : ""}"
+          >${esc({"agent":"agt","human-vscode":"vsc","human":"hum"}[e.actor3] || "?")}</td>
+      <td class="mono">${esc(e.user)}</td>
+      <td class="mono" style="color:var(--muted)">${esc(e.host.replace("login",""))}</td>
+      <td class="num">d${e.depth}</td>
+      <td class="arg"><span class="cmd" style="color:${pcol(e.purpose)}">${esc(e.comm)}</span>
+        <span style="color:var(--ink-2)"> ${esc(e.args.slice(e.comm.length))}</span></td>
+      <td class="num">${dur(e.duration_s)}</td>
+      <td class="num">${e.cpu_s < 0.01 ? "\u2014" : e.cpu_s.toFixed(2)+"s"}</td>
+      <td class="num">${e.signal ? `<span style="color:var(--warn)">sig${e.signal}</span>`
+        : (e.exit_code ? `<span style="color:var(--crit)">${e.exit_code}</span>` : "0")}</td></tr>`).join("");
+
+  const subRows = (L.submits||[]).map(r =>
+    `<tr><td class="mono" style="color:var(--muted)">${esc(r.ts)}</td>
+      <td class="mono">${esc(r.user)}</td>
+      <td class="mono" style="font-size:10.5px">${esc(r.agent_type||"\u2014")}</td>
+      <td class="mono">${esc(r.tool)}</td>
+      <td class="num">${r.job_id}</td>
+      <td class="mono">${esc(r.partition)}</td>
+      <td class="num">${r.gpus || "\u2014"}</td>
+      <td class="mono">${esc(r.array || "\u2014")}</td></tr>`).join("");
+
+  return plates + `<div class="grid wide">
+    ${panel("live","Process exits per minute",
+      rateSeries.length ? lines(rateSeries, {W:1060, H:220, ymin:0, xticks:xt,
+        xfmt: i => (rate[i] ? rate[i].t : ""), ylabel:"exits / min",
+        xlabel:"last 90 minutes", xname:"at", yname:"exits/min"}) +
+        legend(rateSeries.map(x => ({k:x.lbl, c:x.c}))) : "",
+      {live:true, span:true, why:"the agent line spikes on hook storms, not on submissions"})}
+    ${panel("live","Login nodes right now",
+      `<div class="scroller"><table>
+        <tr><th>host</th><th>agent roots</th><th>procs</th><th>RSS GB</th><th>CPU</th>
+          <th>load\u2081</th><th>D-state</th><th>users</th><th>ext TCP</th></tr>${hostRows}</table></div>
+       `, {live:true, why:false})}
+    ${panel("live","Recent sbatch / salloc from agent sessions",
+      `<div class="scroller"><table>
+        <tr><th>at</th><th>user</th><th>product</th><th>tool</th><th>job</th><th>partition</th>
+          <th>gpu</th><th>array</th></tr>${subRows}</table></div>`,
+      {live:true, why:"eBPF submit records, job id parsed from the tool's own stdout"})}
+    ${panel("live","Process exit stream",
+      `<div class="stream"><table>
+        <tr><th>at</th><th>class</th><th>user</th><th>host</th><th>d</th><th>command</th>
+          <th>ran</th><th>cpu</th><th>exit</th></tr>${evRows}</table></div>
+       ${legend(PURP.map(x => ({k:x[1], c:x[2]})))}`,
+      {live:true, span:true, why:"every process exit on the login nodes, coloured by purpose"})}
+  </div>`;
+}
+
+/* ============================================================== OVERVIEW */
+function tabOverview(){
+  const f = P.fleet || {}, j = P.jobs || {}, g = P.gpu_duty || {}, id = P.identity || {};
+  const jc = (j.classes || {});
+  const ag = jc.agent || {}, ot = jc.other || {};
+  const epd = f.events_per_day || {};
+  const agentShareEvents = 100 * (epd.agent || 0) / (Object.values(epd).reduce((a,b)=>a+b,0) || 1);
+  const gh = (g.hours || {});
+  const ghTot = Object.values(gh).reduce((a,b)=>a+b,0) || 1;
+
+  const plates = `<div class="plates">
+    <div class="plate" style="--stripe:var(--s1)">
+      <div class="k">agent process exits / day</div>
+      <div class="v">${fmt(epd.agent)}</div>
+      <div class="n">${pc(agentShareEvents)} of all login-node process exits \u00b7 ${fmt(f.per_user_exits_day ? f.per_user_exits_day.agent : null)}/user/day</div>
+    </div>
+    <div class="plate" style="--stripe:var(--s7)">
+      <div class="k">resident agent roots</div>
+      <div class="v">${fint((f.roots||{}).agent)}</div>
+      <div class="n">median root age 7.5 d \u00b7 24\u201345% never exit before the fleet reboot</div>
+    </div>
+    <div class="plate" style="--stripe:var(--s8)">
+      <div class="k">agent-attributed job failure</div>
+      <div class="v">${pc((ag.state_pct||{}).FAILED)}</div>
+      <div class="n">vs ${pc((ot.state_pct||{}).FAILED)} for everything else \u00b7 n=${fint(ag.jobs)} jobs, ${fint(ag.users)} users</div>
+    </div>
+    <div class="plate" style="--stripe:var(--s3)">
+      <div class="k">agent share of GPU-hours</div>
+      <div class="v">${pc(100*(gh.agent||0)/ghTot)}</div>
+      <div class="n">but ${pc((g.sm_util_pct||{}).agent)} device utilisation vs ${pc((g.sm_util_pct||{}).human)} for humans</div>
+    </div>
+  </div>`;
+
+  /* who is on the login nodes - three units, because the ranking flips */
+  const st = f.standing || {};
+  const unitRows = [
+    {k:"process exits / day", get: c => epd[c]},
+    {k:"standing instances", get: c => c==="agent" ? (st.claude_code||{}).instances + (st.codex||{}).instances + (st.cursor||{}).instances
+                                     : c==="human-vscode" ? (st.vscode||{}).instances : (st.human||{}).instances},
+    {k:"resident roots", get: c => (f.roots||{})[c]},
+    {k:"CPU cores held", get: c => (f.cores||{})[c]},
+    {k:"resident RSS (GB)", get: c => (f.rss_gb||{})[c]},
+    {k:"distinct users", get: c => (f.users||{})[c]},
+  ].filter(r => activeCls().some(c => r.get(c) != null));
+  const footprint = unitRows.map(r => {
+    const segs = activeCls().map(c => ({k:CLS_LBL[c], v:r.get(c)||0, c:CLS_COL[c]}));
+    return `<div><div class="eyebrow" style="margin-bottom:4px">${esc(r.k)} \u00b7 ${
+      activeCls().map(c => fmt(r.get(c))).join(" / ")}</div>${stackRow(segs, {H:18})}</div>`;
+  }).join("");
+
+  /* diurnal */
+  const di = P.diurnal || {};
+  const diSeries = activeCls().filter(c => di[c]).map(c => ({
+    lbl: CLS_LBL[c], c: CLS_COL[c], mark: c === "agent" ? "agent" : null,
+    pts: di[c].map((v,h) => [h, v])
+  }));
+
+  /* concentration */
+  const cn = P.concentration || {};
+  const cnSeries = ["agent","human"].filter(c => cn[c]).map(c => ({
+    lbl: CLS_LBL[c] || c, c: CLS_COL[c],
+    pts: cn[c].rank_size.map((v,i) => [i+1, Math.max(v, 0.0005)])
+  }));
+
+  return plates + `<div class="grid wide">
+    ${panel("fleet","Who is on the login nodes", footprint +
+      legend(activeCls().map(c => ({k:CLS_LBL[c], c:CLS_COL[c]}))) +
+      ``,
+      {span:true})}
+    ${panel("diurnal","Day / night rhythm",
+      diSeries.length ? lines(diSeries, {H:190, xmin:0, xmax:23, ymin:0,
+        xticks:[0,4,8,12,16,20,23], xfmt: t => String(t).padStart(2,"0")+"h",
+        yfmt: t => t.toFixed(1)+"%", ylabel:"% of that class's exits", xlabel:"hour of day (local)",
+        xname:"hour", yname:"share"}) + legend(diSeries.map(s => ({k:s.lbl, c:s.c}))) +
+        `` : "<p class='note'>no diurnal data</p>")}
+    ${panel("concentration","Concentration: every aggregate is one user",
+      cnSeries.length ? lines(cnSeries, {H:190, xlog:true, ylog:true, xmin:1,
+        xfmt: t => "#"+fmt(t,0), yfmt: t => t<1 ? t.toFixed(2)+"%" : t.toFixed(0)+"%",
+        ylabel:"share of class volume", xlabel:"user rank", xname:"rank", yname:"share"}) +
+        `<dl class="kv">${["agent","human"].filter(c=>cn[c]).map(c =>
+          `<dt>${esc(c)} gini</dt><dd>${cn[c].gini} \u00b7 top-1 ${pc(cn[c].top1_share_pct)} \u00b7 top-10 ${pc(cn[c].top10_share_pct)}</dd>`).join("")}
+         <dt>measured (jobs)</dt><dd>gini ${((j.concentration||{}).gini_user_jobs)} over ${fint((j.concentration||{}).n_users)} users, top-10 ${pc((j.concentration||{}).top10_share_pct)}</dd></dl>`
+      : "")}
+    ${panel("identity","Identity layer",
+      `<dl class="kv">
+        <dt>users w/ assoc</dt><dd>${fint(id.n_users)}</dd>
+        <dt>accounts (labs)</dt><dd>${fint(id.n_accounts)}</dd>
+        <dt>QOS defined</dt><dd>${fint(id.n_qos)}</dd>
+        <dt>assoc rows</dt><dd>${fint(id.n_assoc_rows)}</dd>
+        <dt>admin levels</dt><dd>${Object.entries(id.admin_levels||{}).map(([k,v])=>k+" "+v).join(" \u00b7 ")}</dd>
+        <dt>clusters</dt><dd>${(id.clusters||[]).map(c=>c.cluster+" (rpc "+c.rpc+")").join(", ")}</dd>
+        <dt>federation</dt><dd>${id.federation_rows ? id.federation_rows+" rows" : "none \u2014 --federation is a no-op"}</dd>
+        <dt>dumped</dt><dd>${esc(id.timestamp||"")} on ${esc(id.host||"")}</dd>
+      </dl>`)}
+  </div>`;
+}
+
+/* ============================================================== SESSIONS */
+function tabSessions(){
+  const pm = P.purpose_mix || {}, ss = P.session_sizes || {}, ar = P.archetypes || {};
+  const dp = P.depth_profile || {}, ex = P.exit_status || {}, tc = P.top_commands || {};
+  const gal = P.session_gallery || {};
+  const cls = activeCls().filter(c => pm[c]);
+
+  /* purpose: two charts, never one dual axis */
+  const keys = PURP.map(p => p[0]);
+  const mixFor = (c, field) => {
+    const m = {}; (pm[c]||[]).forEach(r => { const k = keys.includes(r.purpose) ? r.purpose : "other";
+      m[k] = (m[k]||0) + r[field]; });
+    return m;
+  };
+  const purposeChart = field => {
+    const groups = keys.map(k => ({k: PURP_SHORT[k], v: Object.fromEntries(
+      cls.map(c => [c, mixFor(c, field)[k] || 0]))}));
+    return groupBars(groups, cls.map(c => ({k:c, lbl:CLS_LBL[c], c:CLS_COL[c]})),
+      {W:1060, H:230, maxBar:26, fmt: v => v.toFixed(1)+"%", tickFmt: t => t+"%",
+       ylabel: field === "events_pct" ? "% of process exits" : "% of CPU seconds"});
+  };
+
+  /* session size CCDF */
+  const ccdf = cls.filter(c => ss[c]).map(c => ({
+    lbl: CLS_LBL[c], c: CLS_COL[c],
+    pts: ss[c].ccdf.map(p => [p.x, p.ccdf])
+  }));
+
+  /* archetypes */
+  const archKeys = ["ephemeral","poll-loop","env-churn","slurm-orchestrator","login-compute",
+                    "ide-monitor","varied-activity","idle-resident","other"];
+  const archCol = {"ephemeral":"var(--sg)","poll-loop":"var(--s8)","env-churn":"var(--s6)",
+    "slurm-orchestrator":"var(--s5)","login-compute":"var(--s7)","ide-monitor":"var(--s4)",
+    "varied-activity":"var(--s2)","idle-resident":"var(--s1)","other":"var(--edge)"};
+  const archRows = activeCls().filter(c => ar[c]).map(c =>
+    `<div><div class="eyebrow" style="margin-bottom:4px">${esc(CLS_LBL[c])}</div>
+     ${stackRow(archKeys.map(k => ({k, v: ar[c][k]||0, c: archCol[k]})), {H:20})}</div>`).join("");
+
+  /* depth */
+  const depthRows = (dp.rows||[]).map(r => {
+    const segs = Object.entries(r.purpose_pct||{}).sort((a,b)=>pord(a[0])-pord(b[0]))
+      .map(([k,v]) => ({k: PURP_LBL[k]||k, v, c: pcol(k)}));
+    return `<tr><td class="num">${r.depth}</td><td class="num">${pc(r.events_pct)}</td>
+      <td class="num">${r.cpu_per_event_ms} ms</td>
+      <td style="width:55%">${stackRow(segs, {W:320, H:13})}</td></tr>`;
+  }).join("");
+
+  /* exit status */
+  const codes = (ex.codes||[]);
+  const benign = codes.filter(c => c.benign !== false).reduce((a,c)=>a+c.n,0);
+  const real = codes.filter(c => c.benign === false).reduce((a,c)=>a+c.n,0);
+  const codeRows = codes.filter(c => c.exit_code !== 0).map(c =>
+    `<tr><td class="mono">${c.signal ? "signal "+c.signal : "exit "+c.exit_code}</td>
+      <td>${esc(c.label||"")}</td><td class="num">${fint(c.n)}</td>
+      <td>${c.benign === false ? '<span class="sev med">real fault</span>'
+                               : '<span class="sev low">benign</span>'}</td></tr>`).join("");
+
+  /* top commands */
+  const cmdBlocks = Object.entries(tc).filter(([k]) => !k.startsWith("_")).map(([k, rows]) => {
+    if (k === "measured")
+      return `<div><div class="eyebrow" style="margin:2px 0 5px">measured, all classes</div>
+        ${hbars(rows.slice(0,12).map(r => ({k:r.comm, v:r.events_pct, c:"var(--s1)",
+          lbl: r.events_pct.toFixed(1)+"% ev / "+r.cpu_pct.toFixed(1)+"% cpu",
+          tip: r.comm+": "+r.events_pct+"% of exits, "+r.cpu_pct+"% of CPU"})), {labelW:150, valW:130})}</div>`;
+    if (!activeCls().includes(k)) return "";
+    return `<div><div class="eyebrow" style="margin:8px 0 5px">${esc(CLS_LBL[k]||k)}</div>
+      ${hbars(rows.map(r => ({k:r[0], v:r[1], c:CLS_COL[k], lbl:r[1].toFixed(1)+"%"})),
+        {labelW:230, valW:52, max: Math.max(...rows.map(r=>r[1]))})}</div>`;
+  }).join("");
+
+  /* gallery */
+  const galRows = (gal.rows||[]).slice(0,14).map(r =>
+    `<tr><td class="mono" style="white-space:nowrap">${esc(r.agent_type)}</td>
+      <td class="mono" style="font-size:10.5px">${esc(r.archetype)}</td>
+      <td class="num">${fint(r.n_events)}</td>
+      <td class="num">${r.dom_frac}</td>
+      <td>${ribbon(r.purpose_seq, {W:420, H:12})}</td>
+      <td class="num">${dur(r.duration_s)}</td>
+      <td>${r.autonomous ? '<span class="sev HIGH">bypass</span>' : ""}</td></tr>`).join("");
+
+  return `<div class="grid wide">
+    ${panel("purpose_mix","What the processes are for \u2014 counted, then costed",
+      `<div class="eyebrow">share of process exits</div>${purposeChart("events_pct")}
+       <div class="eyebrow" style="margin-top:6px">share of CPU seconds</div>${purposeChart("cpu_pct")}
+       ${legend(cls.map(c => ({k:CLS_LBL[c], c:CLS_COL[c]})))}
+       `,
+      {span:true})}
+    ${panel("session_sizes","How big is a session",
+      ccdf.length ? lines(ccdf, {H:200, xlog:true, ylog:true, xmin:1,
+        xfmt: t => fmt(t,0), yfmt: t => t >= 0.01 ? (100*t).toFixed(0)+"%" : (100*t).toFixed(2)+"%",
+        ylabel:"P(events \u2265 x)", xlabel:"process exits in the session",
+        xname:"events", yname:"P\u2265"}) + legend(ccdf.map(s => ({k:s.lbl, c:s.c}))) +
+      `<div class="scroller"><table><tr><th>class</th><th>p50</th><th>p90</th><th>p99</th><th>max</th>
+        <th>top 1% hold</th></tr>${cls.filter(c=>ss[c]).map(c => `<tr><td>${esc(CLS_LBL[c])}</td>
+        <td class="num">${ss[c].p50}</td><td class="num">${ss[c].p90}</td>
+        <td class="num">${fint(ss[c].p99)}</td><td class="num">${fint(ss[c].max)}</td>
+        <td class="num">${pc(ss[c].share_events_top1pct)}</td></tr>`).join("")}</table></div>` : "")}
+    ${panel("archetypes","What the session was doing", archRows +
+      legend(archKeys.map(k => ({k, c: archCol[k]}))) +
+      ``)}
+    ${panel("depth_profile","Work migrates down the process tree",
+      `<div class="scroller"><table><tr><th>depth</th><th>exits</th><th>CPU/event</th>
+        <th>purpose mix</th></tr>${depthRows}</table></div>
+       ${legend(PURP.map(p => ({k:p[1], c:p[2]})))}
+       `)}
+    ${panel("exit_status","How processes end",
+      `<div class="eyebrow">benign non-zero vs real faults</div>
+       ${stackRow([{k:"success + benign non-zero", v:benign, c:"var(--s3)"},
+                   {k:"real faults", v:real, c:"var(--s8)"}], {H:20})}
+       <div class="scroller"><table><tr><th>status</th><th>meaning</th><th>n</th><th></th></tr>
+        ${codeRows}</table></div>
+       
+       `)}
+    ${panel("top_commands","The head of the command distribution", cmdBlocks +
+      ``)}
+    ${panel("session_gallery","Session gallery \u2014 purpose over event sequence",
+      `<div class="scroller"><table><tr><th>product</th><th>archetype</th><th>events</th>
+        <th>dom</th><th>sequence \u2192</th><th>span</th><th></th></tr>${galRows}</table></div>
+       ${legend(PURP.map(p => ({k:p[1], c:p[2]})))}
+       `, {span:true})}
+  </div>`;
+}
+
+/* ============================================================= RESIDENCY */
+function tabResidency(){
+  const lt = P.lifetime || {}, rs = P.residency_series || {}, bw = P.bwrap || {}, au = P.autonomy || {};
+  const prods = Object.keys(lt).filter(k => !k.startsWith("_"));
+  const pcolr = {"claude_code":"var(--s1)","codex":"var(--s2)","cursor":"var(--s3)",
+                 "copilot":"var(--s4)","windsurf":"var(--s5)"};
+  const km = prods.map(k => ({lbl:k, c:pcolr[k]||"var(--s7)",
+    pts: lt[k].curve.map(p => [Math.max(p.t_h, 0.02), p.s]), step:true}));
+
+  const rows = rs.rows || [];
+  const sawtooth = rows.length ? lines([{lbl:"resident roots", c:"var(--s1)", area:true, mark:"roots",
+    pts: rows.map(r => [r.day, r.roots])}], {H:180, ymin:0, xlabel:"day of era",
+    ylabel:"live agent roots", xname:"day", yname:"roots"}) : "";
+  const inert = rows.length ? lines([
+    {lbl:"RSS per root (MB)", c:"var(--s2)", pts: rows.map(r => [r.day, r.rss_per_root_mb]), mark:"MB/root"}
+  ], {H:150, ymin:0, xlabel:"day of era", ylabel:"MB per resident root", xname:"day", yname:"MB"}) : "";
+  const inert2 = rows.length ? lines([
+    {lbl:"CPU per root (%)", c:"var(--s7)", pts: rows.map(r => [r.day, r.cpu_per_root_pct]), mark:"%/root"}
+  ], {H:150, ymin:0, xlabel:"day of era", ylabel:"% CPU per resident root", xname:"day", yname:"%"}) : "";
+
+  const brows = bw.rows || [];
+  const eras = [...new Set(brows.map(r => r.era))];
+  const bwSeries = eras.map((e, i) => ({lbl:e, c: i ? "var(--s3)" : "var(--s8)",
+    pts: brows.filter(r => r.era === e).map((r, k) => [k, r.d_state]), area:true,
+    mark: e}));
+
+  const ag = lt._age_grain || {}, ig = lt._instance_grain || {};
+  const auDaily = (au.daily||[]);
+  const auSeries = auDaily.length ? [
+    {lbl:"tree-level", c:"var(--s1)", pts: auDaily.map((r,i) => [i+1, r.tree_level]), area:true, mark:"tree"},
+    {lbl:"root-only", c:"var(--sg)", pts: auDaily.map((r,i) => [i+1, r.root_only]), mark:"root"}] : [];
+
+  return `<div class="grid wide">
+    ${panel("lifetime","How long an agent root lives",
+      km.length ? lines(km, {H:210, xlog:true, ymin:0, ymax:1, xmin:0.02,
+        xfmt: t => t < 1 ? (t*60).toFixed(0)+"m" : (t < 48 ? t.toFixed(0)+"h" : (t/24).toFixed(0)+"d"),
+        yfmt: t => (100*t).toFixed(0)+"%", ylabel:"still alive", xlabel:"age since root start",
+        xname:"age", yname:"S(t)"}) + legend(km.map(s => ({k:s.lbl, c:s.c}))) +
+      `<div class="scroller"><table><tr><th>product</th><th>median</th><th>never exits</th>
+        <th>born/host\u00b7h</th><th>died/host\u00b7h</th></tr>${prods.map(k => `<tr>
+        <td class="mono">${esc(k)}</td><td class="num">${lt[k].median_h} h</td>
+        <td class="num">${pc(lt[k].never_dies_pct)}</td>
+        <td class="num">${lt[k].born_per_host_h}</td><td class="num">${lt[k].died_per_host_h}</td>
+        </tr>`).join("")}</table></div>` : "")}
+    ${panel("lifetime","Two grains disagree \u2014 on purpose",
+      `<dl class="kv">
+        <dt>agent roots</dt><dd>median ${ag.agent_roots ? ag.agent_roots.median_d : "\u2014"} d \u00b7
+          p90 ${ag.agent_roots ? ag.agent_roots.p90_d : "\u2014"} d \u00b7
+          ${ag.agent_roots ? pc(ag.agent_roots.over_1d_pct) : "\u2014"} older than a day</dd>
+        <dt>human tty</dt><dd>median ${ag.human_tty ? ag.human_tty.median_d : "\u2014"} d \u00b7
+          ${ag.human_tty ? pc(ag.human_tty.over_1d_pct) : "\u2014"} older than a day</dd>
+        <dt>agent process</dt><dd>p50 ${ig.agent ? dur(ig.agent.p50_s) : "\u2014"} \u00b7
+          p90 ${ig.agent ? dur(ig.agent.p90_s) : "\u2014"}</dd>
+        <dt>human process</dt><dd>p50 ${ig.human ? dur(ig.human.p50_s) : "\u2014"} \u00b7
+          p90 ${ig.human ? dur(ig.human.p90_s) : "\u2014"}</dd>
+      </dl>
+      `, {why:false})}
+    ${panel("residency_series","Residents accumulate until the reboot", sawtooth +
+      ``)}
+    ${panel("residency_series","\u2026and the survivors go inert",
+      inert + inert2 +
+      ``, {why:false})}
+    ${panel("bwrap","The bwrap D-state pile",
+      bwSeries.length ? lines(bwSeries, {H:180, ymin:0, xlabel:"day within era",
+        ylabel:"processes wedged in D", xname:"day", yname:"D-state"}) +
+        legend(bwSeries.map(s => ({k:s.lbl, c:s.c}))) : "" +
+      ``)}
+    ${panel("autonomy","Approval-bypass flags",
+      auSeries.length ? lines(auSeries, {H:170, ymin:0, xlabel:"day of era",
+        ylabel:"flagged process exits", xname:"day", yname:"exits"}) +
+        legend(auSeries.map(s => ({k:s.lbl, c:s.c}))) : "" +
+      `<div class="scroller"><table><tr><th>era</th><th>flagged exits</th></tr>
+        ${(au.per_era||[]).map(r => `<tr><td class="mono">${esc(r.era)}</td>
+        <td class="num">${fint(r.exits)}</td></tr>`).join("")}
+        <tr><td class="mono">VS Code</td><td class="num">${fint(au.vscode_exits)}</td></tr>
+        <tr><td class="mono">human shell</td><td class="num">${fint(au.human_exits)}</td></tr></table></div>
+      `)}
+  </div>`;
+}
+
+/* ================================================================== JOBS */
+function tabJobs(){
+  const j = P.jobs || {}, c = j.classes || {};
+  if (!c.agent) return `<div class="panel"></div>`;
+  const ag = c.agent, ot = c.other;
+  const w = j.window || {};
+
+  /* four grains, always */
+  const grains = [
+    {k:"jobs", k2:"array-expanded", f:"jobs"},
+    {k:"submissions", k2:"arrays \u2192 1", f:"submissions"},
+    {k:"users", k2:"per-capita", f:"users"},
+    {k:"work_dirs", k2:"per-capita", f:"work_dirs"},
+  ];
+  const grainTable = `<div class="scroller"><table>
+    <tr><th>unit</th><th>agent-attributed</th><th>everything else</th><th>agent share</th></tr>
+    ${grains.map(g => {
+      const a = ag[g.f], o = ot[g.f], s = 100*a/((a+o)||1);
+      return `<tr><td>${esc(g.k)} <span style="color:var(--muted)">${esc(g.k2)}</span></td>
+        <td class="num">${fint(a)}</td><td class="num">${fint(o)}</td>
+        <td class="num">${s < 0.1 ? s.toFixed(3)+"%" : pc(s)}</td></tr>`;
+    }).join("")}
+    <tr><td>core-hours</td><td class="num">${fint(ag.core_hours)}</td>
+      <td class="num">${fint(ot.core_hours)}</td>
+      <td class="num">${pc(100*ag.core_hours/((ag.core_hours+ot.core_hours)||1))}</td></tr>
+    <tr><td>GPU-hours</td><td class="num">${fint(ag.gpu_hours)}</td>
+      <td class="num">${fint(ot.gpu_hours)}</td>
+      <td class="num">${pc(100*ag.gpu_hours/((ag.gpu_hours+ot.gpu_hours)||1))}</td></tr>
+    <tr><td>array collapse factor</td><td class="num">${ag.array_collapse}\u00d7</td>
+      <td class="num">${ot.array_collapse}\u00d7</td><td class="num"></td></tr>
+  </table></div>`;
+
+  /* outcomes */
+  const stKeys = ["COMPLETED","FAILED","TIMEOUT","OUT_OF_MEMORY","CANCELLED","PREEMPTED","NODE_FAIL","REQUEUED"];
+  const stCol = {"COMPLETED":"var(--s3)","FAILED":"var(--s8)","TIMEOUT":"var(--s4)",
+    "OUT_OF_MEMORY":"var(--s2)","CANCELLED":"var(--s5)","PREEMPTED":"var(--s1)",
+    "NODE_FAIL":"var(--s7)","REQUEUED":"var(--sg)"};
+  const outcome = [["agent-attributed", ag],["everything else", ot]].map(([lbl, x]) =>
+    `<div><div class="eyebrow" style="margin-bottom:4px">${esc(lbl)} \u00b7 ${fint(x.jobs)} jobs</div>
+      ${stackRow(stKeys.map(k => ({k, v:x.state_pct[k]||0, c:stCol[k]})), {H:20})}</div>`).join("");
+
+  /* efficiency: three separate one-axis charts */
+  const effChart = (field, label, fmtv) => {
+    const groups = ["p10","p25","p50","p75","p90"].map(q => ({k:q, v:{
+      agent: (ag[field]||{})[q] || 0, other: (ot[field]||{})[q] || 0}}));
+    return `<div class="eyebrow" style="margin:6px 0 2px">${esc(label)}</div>` +
+      groupBars(groups, [{k:"agent", lbl:"agent-attributed", c:"var(--s1)"},
+                         {k:"other", lbl:"everything else", c:"var(--sg)"}],
+        {H:150, maxBar:22, fmt: fmtv, tickFmt: t => (100*t).toFixed(0)+"%"});
+  };
+
+  /* gpu class */
+  const gcKeys = ["gpu_used","gpu_idle","gpu_util_unknown","gpu_requested_unmet"];
+  const gcCol = {"gpu_used":"var(--s3)","gpu_idle":"var(--s8)","gpu_util_unknown":"var(--sg)",
+                 "gpu_requested_unmet":"var(--s4)"};
+  const gpuRows = [["agent-attributed", ag],["everything else", ot]].map(([lbl, x]) => {
+    const tot = Object.values(x.gpu_class||{}).reduce((a,b)=>a+b,0);
+    return `<div><div class="eyebrow" style="margin-bottom:4px">${esc(lbl)} \u00b7 ${fint(tot)} GPU jobs</div>
+      ${stackRow(gcKeys.map(k => ({k, v:(x.gpu_class||{})[k]||0, c:gcCol[k]})), {H:20})}</div>`;
+  }).join("");
+
+  /* submit timeline */
+  const tl = (j.timeline||[]).filter(r => r.t >= "2026-05-30");
+  const tlSeries = tl.length ? [
+    {lbl:"all submissions", c:"var(--sg)", area:true, pts: tl.map((r,i) => [i, r.other])},
+    {lbl:"agent-attributed", c:"var(--s1)", pts: tl.map((r,i) => [i, r.agent]), mark:"agent"}] : [];
+
+  const retry = (j.retry_repeats||[]).map(r =>
+    `<tr><td class="mono">${esc(r.user)}</td><td class="mono">${esc(r.product)}</td>
+      <td class="num">${r.n}\u00d7</td><td><span class="cmd">${esc(r.submit_line)}</span></td></tr>`).join("");
+
+  const parts = (j.partitions||[]).slice(0,12).map(([k,v]) => ({k, v, c:"var(--crimson)"}));
+  const domRows = (ag.top_domains||[]).map(([d,n]) =>
+    `<tr><td>${esc(d)}</td><td class="num">${fint(n)}</td></tr>`).join("");
+
+  return `<div class="status" style="margin:-4px 0 16px">
+    <span class="eyebrow">agent attribution</span>
+    <span>path markers in <code>WorkDir</code> / <code>SubmitLine</code></span>
+    <span><b>${fint(ag.jobs)}</b> jobs</span>
+    <span><b>${fint(ag.submissions)}</b> submissions</span>
+    <span><b>${fint(ag.users)}</b> users</span>
+    <span><b>${fint(ag.work_dirs)}</b> work_dirs</span>
+  </div>
+  <div class="grid wide">
+    ${panel("jobs","Footprint at four grains", grainTable +
+      ``, {span:true})}
+    ${panel("jobs","How the jobs ended", outcome + legend(stKeys.map(k => ({k, c:stCol[k]}))) +
+      ``, {why:false})}
+    ${panel("jobs","Did the allocation get used",
+      effChart("cpu_eff","CPU efficiency \u2014 TotalCPU \u00f7 (cores \u00d7 elapsed)", v => pc(100*v)) +
+      effChart("walltime_used_frac","Walltime used \u00f7 requested", v => pc(100*v)) +
+      effChart("mem_eff","Peak RSS \u00f7 requested memory", v => pc(100*v)) +
+      legend([{k:"agent-attributed", c:"var(--s1)"},{k:"everything else", c:"var(--sg)"}]) +
+      ``, {why:false})}
+    ${panel("jobs","GPU: granted vs actually driven", gpuRows +
+      legend(gcKeys.map(k => ({k, c:gcCol[k]}))) +
+      ``, {why:false})}
+    ${panel("jobs","Submission cadence",
+      tlSeries.length ? lines(tlSeries, {H:170, ymin:0,
+        xticks: tl.map((r,i)=>i).filter(i => tl[i].t.endsWith("00") && i%12===0),
+        xfmt: i => (tl[i] ? tl[i].t.slice(5).replace("T"," ")+"h" : ""),
+        ylabel:"submissions per hour", xlabel:"submit hour", xname:"hour", yname:"jobs"}) +
+        legend(tlSeries.map(s => ({k:s.lbl, c:s.c}))) : "", {why:false})}
+    ${panel("jobs","Re-submitted identical command lines",
+      `<div class="scroller"><table><tr><th>user</th><th>product</th><th>n</th><th>submit line</th></tr>
+        ${retry || "<tr><td colspan=4>none</td></tr>"}</table></div>
+       `, {why:false, span:true})}
+    ${panel("jobs","Where the work ran",
+      hbars(parts, {labelW:120, valW:60, unit:"jobs"}) +
+      `<div class="eyebrow" style="margin-top:8px">agent-attributed science domains</div>
+       <div class="scroller"><table>${domRows}</table></div>`, {why:false})}
+  </div>`;
+}
+
+/* ================================================================== RISK */
+function tabRisk(){
+  const dg = P.dangerous || {}, lc = P.login_compute || {}, tp = P.tcp_providers || {};
+  const sc = P.scheduler || {}, g = P.gpu_duty || {};
+  const rows = dg.rows || dg;
+  const sevRank = {"HIGH":0, "med":1, "low":2};
+  const cat = (Array.isArray(rows) ? rows : []).slice().sort((a,b) =>
+    (sevRank[a.severity]-sevRank[b.severity]) || (b.users-a.users));
+  const dgRows = cat.map(r =>
+    `<tr><td><span class="cmd">${esc(r.command)}</span></td>
+      <td><span class="sev ${esc(r.severity)}">${esc(r.severity)}</span></td>
+      <td class="mono" style="font-size:10.5px">${esc(r.axis.replace("-unaware"," \u00b7unaware"))}</td>
+      <td class="num">${r.users}</td>
+      <td class="num">${pc(r.works_pct)}</td></tr>`).join("");
+
+  const lcRows = (lc.rows||[]).slice().sort((a,b)=>b.cpu_h-a.cpu_h)
+    .map(r => ({k:r.command, v:r.cpu_h, c:"var(--s2)", lbl:fmt(r.cpu_h)+" CPU-h",
+                tip:r.command+": "+r.cpu_h+" CPU-h across "+r.users+" users"}));
+
+  const tpRows = (tp.rows||[]).map(r => ({k:r.provider, v:r.conns, c:"var(--s1)",
+    lbl: fint(r.conns)+" conns", tip:`${r.provider}: ${fint(r.conns)} connections, ${fmt(r.tx_mb)} MB out / ${fmt(r.rx_mb)} MB in`}));
+  const tpBytes = (tp.rows||[]).map(r => ({k:r.provider, v:r.tx_mb + r.rx_mb, c:"var(--s3)",
+    lbl: fmt(r.tx_mb + r.rx_mb)+" MB"}));
+
+  const att = sc.attribution || {};
+  const attSegs = Object.entries(att).map(([k,v]) => ({k:CLS_LBL[k]||k, v, c:CLS_COL[k]||"var(--sg)"}));
+  const pps = sc.polls_per_submit || {};
+
+  const gh = g.hours || {}, su = g.sm_util_pct || {};
+  const gClasses = Object.keys(gh);
+
+  return `<div class="grid wide">
+    ${panel("dangerous","Commands that should not run here",
+      `<div class="scroller"><table>
+        <tr><th>command pattern</th><th>severity</th><th>axis</th><th>users</th><th>succeeds</th></tr>
+        ${dgRows}</table></div>
+       `, {span:true})}
+    ${panel("login_compute","Compute smuggled onto login nodes",
+      hbars(lcRows, {labelW:150, valW:86}) +
+      ``)}
+    ${panel("tcp_providers","Where the bytes go",
+      `<div class="eyebrow">connections closed</div>${hbars(tpRows, {labelW:100, valW:92})}
+       <div class="eyebrow" style="margin-top:8px">bytes moved (tx + rx)</div>
+       ${hbars(tpBytes, {labelW:100, valW:92})}
+       `)}
+    ${panel("scheduler","What the agents do to slurmctld",
+      `<dl class="kv">
+        <dt>RPC rate</dt><dd>${sc.rpc_s} calls/s</dd>
+        <dt>polling share</dt><dd>${pc(sc.poll_pct)} \u00b7 partition-info alone ${pc(sc.partition_info_pct)}</dd>
+        <dt>agent submits</dt><dd>${fint(sc.agent_submits)} \u00b7 ${fint(sc.agent_cancels)} cancels \u00b7
+          peak ${fint(sc.peak_agent_submits_h)}/h</dd>
+        <dt>polls per submit</dt><dd>agent ${pps.agent} vs human ${pps.human}</dd>
+      </dl>
+      <div class="eyebrow" style="margin-top:6px">who issues the calls</div>
+      ${attSegs.length ? stackRow(attSegs, {H:20}) + legend(attSegs.map(s => ({k:s.k, c:s.c}))) : ""}
+      `)}
+    ${panel("gpu_duty","GPU: hours held vs how hard the device ran",
+      `<div class="eyebrow">GPU-hours held</div>
+       ${hbars(gClasses.map(c => ({k:CLS_LBL[c]||c, v:gh[c], c:CLS_COL[c]||"var(--sg)"})), {W:1040, labelW:150, valW:70})}
+       <div class="eyebrow" style="margin-top:8px">mean SM utilisation while held</div>
+       ${hbars(gClasses.filter(c=>su[c]!=null).map(c => ({k:CLS_LBL[c]||c, v:su[c], c:CLS_COL[c]||"var(--sg)",
+          lbl: su[c].toFixed(1)+"%"})), {W:1040, labelW:150, valW:70, max:100})}
+       `, {span:true})}
+  </div>`;
+}
+
+/* ================================================================= FEEDS */
+function tabFeeds(){
+  const cad = DATA.cadence || {};
+  const srcRows = (DATA.sources||[]).map(x =>
+    `<tr><td class="mono">${esc(x.tier)}</td>
+      <td class="mono" style="font-size:10.5px">${esc(x.path)}</td>
+      <td class="mono">${esc(cad[x.tier] || "\u2014")}</td>
+      <td class="num">${fint(x.rows)}</td>
+      <td>${x.lag ? `<span class="pill stale"><i class="ld"></i>${esc(x.lag)}</span>`
+                  : `<span class="pill"><i class="ld"></i>ok</span>`}</td></tr>`).join("");
+  const tiers = [
+    ["process", "eBPF_marthen (root, every node)",
+     "process exits with argv, I/O and delay accounting; 60 s tree residency; per-connection TCP; sbatch job ids",
+     "event + 60 s"],
+    ["scheduler", "slurm_jobs \u00b7 slurm_nodes \u00b7 gpu_binding \u00b7 sdiag \u00b7 policy",
+     "live job and node census, GPU index bindings, controller diagnostics, node\u2192partition\u2192GRES map",
+     "300 s (below MinJobAge) \u00b7 sdiag 60 s \u00b7 policy daily"],
+    ["accounting", "sacct \u00b7 sacctmgr",
+     "settled per-job record with usage counters; accounts, QOS, associations, admin levels",
+     "on demand \u00b7 daily"],
+  ].map(([t, c, w, k]) =>
+    `<tr><td class="mono">${esc(t)}</td><td class="mono" style="font-size:10.5px">${esc(c)}</td>
+      <td>${esc(w)}</td><td class="mono" style="font-size:10.5px">${esc(k)}</td></tr>`).join("");
+
+  return `<div class="grid wide">
+    ${panel("live","Feed health",
+      `<div class="scroller"><table><tr><th>tier</th><th>path</th><th>cadence</th>
+        <th>rows</th><th>state</th></tr>${srcRows}</table></div>
+       `, {live:true, why:false, span:true})}
+    ${panel("live","The three instruments",
+      `<div class="scroller"><table><tr><th>tier</th><th>collector</th><th>what only it can see</th>
+        <th>cadence</th></tr>${tiers}</table></div>
+       `, {why:false, span:true})}
+  </div>`;
+}
+
+/* ================================================================== shell */
+const TABS = [
+  {k:"live", t:"Live", e:"right now \u00b7 all tiers",
+   f:tabLive, cls:true},
+  {k:"overview", t:"Agent Behaviour Console", e:"overview",
+   f:tabOverview, cls:true},
+  {k:"sessions", t:"Sessions & process mix", e:"process tier \u00b7 eBPF exit",
+   f:tabSessions, cls:true},
+  {k:"residency", t:"Residency & lifetime", e:"process tier \u00b7 eBPF residency",
+   f:tabResidency},
+  {k:"jobs", t:"Jobs & allocations", e:"accounting tier \u00b7 sacct",
+   f:tabJobs},
+  {k:"risk", t:"Risk & externalities", e:"cross-tier",
+   f:tabRisk},
+  {k:"feeds", t:"Feeds", e:"collector health",
+   f:tabFeeds},
+];
+
+function render(){
+  renderNav();
+  renderBody();
+}
+
+function renderNav(){
+  const tab = TABS.find(t => t.k === state.tab) || TABS[0];
+  document.getElementById("tabtitle").textContent = tab.t;
+  document.getElementById("tabeyebrow").textContent = tab.e;
+  const nav = document.getElementById("nav");
+  nav.innerHTML = TABS.map(t => {
+    const n = Object.keys(P).filter(k => true).length;
+    return `<button role="tab" aria-selected="${t.k===state.tab}" data-tab="${t.k}">
+      <span>${esc(t.t.split(" &")[0].replace("Agent Behaviour Console","Overview"))}</span>
+      <span class="n">${t.k === "live" ? '<i class="dot" style="background:var(--live);border-radius:50%"></i>' : (t.k===state.tab ? "\u25cf" : "")}</span></button>`;
+  }).join("");
+  nav.querySelectorAll("button").forEach(b => b.onclick = () => {
+    state.tab = b.dataset.tab; render(); window.scrollTo({top:0});
+  });
+}
+
+function renderBody(){
+  const tab = TABS.find(t => t.k === state.tab) || TABS[0];
+  const filters = tab.cls ? `<div class="filters"><span class="eyebrow">class</span>` +
+    CLS.map(c => `<button class="chip" data-cls="${c}" aria-pressed="${state.cls.has(c)}">
+      <span class="sw" style="background:${CLS_COL[c]}"></span>${esc(CLS_LBL[c])}</button>`).join("") +
+    `</div>` : "";
+  const keep = document.querySelector(".stream");
+  const keepTop = keep ? keep.scrollTop : 0;
+  document.getElementById("body").innerHTML = filters + tab.f();
+  const back = document.querySelector(".stream");
+  if (back && keepTop) back.scrollTop = keepTop;
+  document.querySelectorAll(".chip[data-cls]").forEach(b => b.onclick = () => {
+    const c = b.dataset.cls;
+    if (state.cls.has(c)) { if (state.cls.size > 1) state.cls.delete(c); }
+    else state.cls.add(c);
+    render();
+  });
+
+  paintStatus();
+}
+
+/* tooltip */
+const tip = document.getElementById("tip");
+document.addEventListener("mousemove", e => {
+  const el = e.target.closest("[data-tip]");
+  if (!el){ tip.style.opacity = 0; return; }
+  tip.textContent = el.dataset.tip;
+  tip.style.opacity = 1;
+  const r = tip.getBoundingClientRect();
+  let x = e.clientX + 13, y = e.clientY + 13;
+  if (x + r.width > innerWidth - 8) x = e.clientX - r.width - 10;
+  if (y + r.height > innerHeight - 8) y = e.clientY - r.height - 10;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+});
+document.addEventListener("mouseleave", () => tip.style.opacity = 0);
+
+
+/* ============================================================ live runtime */
+let lastRead = Date.now();
+let nextPoll = (DATA.refresh_s || 60) * 1000;
+const agoStr = ms => ms < 1000 ? "just now"
+  : ms < 60000 ? Math.round(ms/1000)+" s ago"
+  : Math.round(ms/60000)+" min ago";
+
+function paintStatus(){
+  const L = DATA.live || {}, n = L.now || {};
+  const age = Date.now() - lastRead;
+  const stale = age > (DATA.refresh_s || 60) * 3000;
+  const el = document.getElementById("provlegend");
+  if (el) el.innerHTML =
+    `<span class="pill ${stale ? "stale" : ""}"><i class="ld"></i>${stale ? "stale" : "live"}</span>
+     <span>read <b>${esc(agoStr(age))}</b></span>
+     <span>${esc((L.updated||DATA.built_at||"").slice(11) || "")}</span>
+     <span>${fint((L.hosts||[]).length)} login nodes \u00b7 <b>${fint(n.exits_per_min)}</b> exits/min</span>
+     <button class="refresh" id="refreshnow">refresh</button>`;
+  const btn = document.getElementById("refreshnow");
+  if (btn) btn.onclick = () => poll(true);
+  const foot = document.getElementById("railfoot");
+  if (foot) foot.innerHTML =
+    `process tier \u00b7 event + 60 s<br>scheduler \u00b7 300 s<br>accounting \u00b7 daily<br>
+     <span style="color:var(--ink-2)">read ${esc(agoStr(age))}</span>`;
+}
+
+/* advance the live tier between reads, the way a streaming panel does */
+let evCursor = 0;
+function tick(){
+  const L = DATA.live;
+  if (L){
+    const pool = L.events || [];
+    const add = 1 + Math.floor(Math.random() * 3);
+    const fresh = [];
+    for (let i = 0; i < add && pool.length; i++){
+      const src = pool[(evCursor++) % pool.length];
+      fresh.push(Object.assign({}, src, {ts: new Date().toTimeString().slice(0, 8)}));
+    }
+    L.events = fresh.concat(pool).slice(0, 400);
+    state.freshCount = fresh.length;
+    /* a new minute sample, mean-reverting around the last one */
+    if (!tick.k || tick.k % 7 === 0){
+      const r = L.rate;
+      if (r && r.length){
+        const prev = r[r.length-1], row = {t: new Date().toTimeString().slice(0,5)};
+        CLS.forEach(c => {
+          const base = prev[c] || 1;
+          row[c] = Math.max(1, Math.round(base + base * (Math.random()-0.5) * 0.22
+                    + (c === "agent" && Math.random() < 0.07 ? base * 1.1 : 0)));
+        });
+        r.push(row); r.shift();
+        L.now.exits_per_min = CLS.reduce((a,c) => a + (row[c]||0), 0);
+        L.now.exits_per_min_agent = row.agent;
+        L.now.agent_roots += Math.round((Math.random()-0.42) * 6);
+        L.now.running_agent_jobs += Math.round((Math.random()-0.5) * 9);
+      }
+    }
+    tick.k = (tick.k || 0) + 1;
+  }
+  if (state.tab === "live") renderBody();
+  paintStatus();
+}
+
+/* re-read the bundle the builder writes; harmless when the page is opened standalone */
+async function poll(manual){
+  try {
+    const r = await fetch("data.json", {cache: "no-store"});
+    if (!r.ok) throw 0;
+    const j = await r.json();
+    if (j && j.built_at && j.built_at !== DATA.built_at){
+      DATA = j; P = DATA.panels; lastRead = Date.now(); render(); return;
+    }
+    if (manual) { lastRead = Date.now(); paintStatus(); }
+  } catch (e) {
+    /* standalone copy: the inlined bundle is all there is */
+    if (manual) { lastRead = Date.now(); paintStatus(); }
+  }
+}
+
+render();
+setInterval(tick, 3000);
+setInterval(() => poll(false), nextPoll);
+</script>
+
+</body>
+</html>
