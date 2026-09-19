@@ -1,4 +1,5 @@
-/* SVG chart primitives, ported from dashboard/archive/agent_dashboard.template.html.
+/* SVG chart primitives, ported from the retired demo template
+ * (git history: dashboard/archive/agent_dashboard.template.html).
  *
  * Hand-rolled rather than library-backed for two reasons that are constraints
  * here, not preferences:

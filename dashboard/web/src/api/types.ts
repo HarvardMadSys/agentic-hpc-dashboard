@@ -8,9 +8,9 @@
 
 /* --------------------------------------------------------------- classes */
 
-/** The three physical classes, plus the residual bin. NEVER fold vscode into agent. */
+/** The three physical classes. NEVER fold vscode into agent.
+ *  `unlabeled` is a residual bin rendered alongside them, never merged into them. */
 export type Cls = 'agent' | 'human-vscode' | 'human';
-export type ClsAny = Cls | 'unlabeled';
 
 /* ---------------------------------------------------------------- config */
 
@@ -216,7 +216,7 @@ export type ApprovalState = 'supervised' | 'bypassed' | 'unknown';
 
 export interface AncestryRow {
   ancestry: string;
-  sandbox: string;
+  sandbox: SandboxState;
   n: number;
   dstate_wait_s: number | null;
   dstate_coverage_pct: number | null;
@@ -255,8 +255,8 @@ export interface TrajRow {
   peak_rss_mb: number | null;
   io_rd_mb: number | null;
   io_wr_mb: number | null;
-  sandbox: string | null;
-  approval: string | null;
+  sandbox: SandboxState | null;
+  approval: ApprovalState | null;
   sandbox_ancestry: string | null;
   autonomous: boolean | null;
   tool_rle: [string, number][];

@@ -22,7 +22,7 @@ with sandbox=sandboxed is real confinement.
 """
 import collections
 
-from . import Reducer, pct
+from . import pct
 
 
 class SandboxReducer:

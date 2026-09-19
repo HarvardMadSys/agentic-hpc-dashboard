@@ -5,7 +5,7 @@
  * `unlabeled` is a fourth bin that is rendered when present but is NOT one of
  * the three physical classes and is never merged into them.
  */
-import type { Cls, ClsAny } from '../api/types';
+import type { Cls } from '../api/types';
 
 export const CLS: Cls[] = ['agent', 'human-vscode', 'human'];
 
@@ -35,14 +35,3 @@ export const CLS_COL: Record<string, string> = {
   job: 'var(--s4)',
   other: 'var(--sg)',
 };
-
-export const clsLabel = (c: string): string => CLS_LBL[c] ?? c;
-export const clsColor = (c: string): string => CLS_COL[c] ?? 'var(--sg)';
-
-/** Class keys present in a `by_class`-style map, in canonical order, tail last. */
-export function classKeys(m: Record<string, unknown> | undefined | null): ClsAny[] {
-  if (!m) return [];
-  const out: ClsAny[] = CLS.filter((c) => c in m);
-  if ('unlabeled' in m) out.push('unlabeled');
-  return out;
-}

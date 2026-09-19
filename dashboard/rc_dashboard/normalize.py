@@ -74,7 +74,7 @@ ALWAYS_NULL = ("samples", "state_last")
 # breaks a leading anchor.
 #
 # These are the collector's EXACT invocations, copied from
-# eBPF_marthen_new/node_snapshot.py:1162-1176. Matching the precise flag sets
+# collector/node_snapshot.py:1162-1176. Matching the precise flag sets
 # rather than a loose `nvidia-smi --query-` matters: a user legitimately running
 # `nvidia-smi --query-gpu=name` must still be counted, and only the snapshot's
 # own verbatim calls excluded. Nobody types these by hand.

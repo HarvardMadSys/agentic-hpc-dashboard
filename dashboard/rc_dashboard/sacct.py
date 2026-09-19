@@ -2,8 +2,10 @@
 
 This absorbs two retired modules -- ``archive/reduce_sacct.py`` (the step-row fold)
 and the sacct half of ``archive/rc_real.py`` (``rollup_sacct``) -- and fixes four
-defects they carried.  Stdlib only: the feed is a *directory* of multi-GB day-files
-and everything here streams, so pandas is neither needed nor affordable.
+defects they carried.  Those ``archive/`` paths, here and below, are history: the
+directory was retired from the tree and is recoverable from git.  Stdlib only: the
+feed is a *directory* of multi-GB day-files and everything here streams, so pandas
+is neither needed nor affordable.
 
 The feed is whatever ``collect/slurm_query.bash`` wrote: per-day files named
 ``SlurmData_<start>_<stop>-orig.csv``, each a ``____``-delimited

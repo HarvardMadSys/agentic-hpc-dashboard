@@ -87,14 +87,6 @@ export function notMeasured(o: Accum | Quant | null | undefined): boolean {
   return (o.n ?? 0) === 0;
 }
 
-/** `12.4 MB` / `not measured` -- the coverage lives beside it via <Coverage>. */
-export function accumValue(a: Accum | null | undefined, unit?: string): string {
-  if (notMeasured(a)) return 'not measured';
-  return fmt(a!.total) + (unit ? ' ' + unit : '');
-}
-
-export const esc = (s: unknown): string => (s == null ? '' : String(s));
-
 /** `hh:mm:ss` from an epoch-seconds value, local time. */
 export function clock(epoch: number | null | undefined): string {
   if (nil(epoch)) return DASH;

@@ -867,7 +867,7 @@ cmd_bundle() {
     {
         cat <<'HDR'
 #!/usr/bin/env bash
-# Self-extracting eBPF_marthen_new. Extracts to a temp dir and runs ebpfm.sh with
+# Self-extracting ebpfm. Extracts to a temp dir and runs ebpfm.sh with
 # whatever arguments you pass:   sudo ./ebpfm-bundle.sh check
 set -euo pipefail
 D="$(mktemp -d /tmp/ebpfm.XXXXXX)"

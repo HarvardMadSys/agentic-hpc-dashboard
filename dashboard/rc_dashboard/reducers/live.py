@@ -17,7 +17,6 @@ import collections
 import time
 
 from ..buckets import RollingBuckets
-from . import pct
 
 
 def _sum_or_none(vals):

@@ -18,7 +18,6 @@ import json
 import os
 import time
 
-from .normalize import epoch_of
 
 LIST_FIELDS = ("class", "agent_type", "user", "host", "tool", "purpose", "bucket",
                "sandbox", "approval", "exit_code", "signal", "event")

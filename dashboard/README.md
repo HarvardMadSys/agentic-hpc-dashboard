@@ -1,14 +1,14 @@
 # Live agent-behaviour dashboard
 
-A FastAPI service that tails the [`eBPF_marthen_new`](../eBPF_marthen_new) collector's JSONL,
+A FastAPI service that tails the [`ebpfm`](../collector) collector's JSONL,
 keeps rolling aggregates over a 24-hour window, and pushes them to a React page over a
 WebSocket. Every number on the page is measured: a feed with no data names the path it
 expected instead of showing a plausible figure, and a metric the collector could not
 populate reads **not measured** rather than `0`.
 
-This replaces a static-HTML demo, kept in [`archive/`](archive/) for reference. That demo
-generated most of its own numbers (`rc_synth.py`), and its viewer manufactured new events
-between polls; nothing here does either. `grep -r Math.random rc_dashboard web/src` returns
+This replaces a static-HTML demo, retired from the tree and recoverable in git history
+under `dashboard/archive/`. That demo generated most of its own numbers (`rc_synth.py`),
+and its viewer manufactured new events between polls; nothing here does either. `grep -r Math.random rc_dashboard web/src` returns
 nothing, by design and by CI-able assertion (`npm run check:no-random`).
 
 ## Run it
@@ -169,7 +169,6 @@ already made once.
 | `rc_dashboard/export.py` | shared filter grammar + streaming export |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
-| `archive/` | the retired static demo |
 
 ## Ingestion, precisely
 

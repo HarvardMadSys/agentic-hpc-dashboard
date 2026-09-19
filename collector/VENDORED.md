@@ -1,6 +1,6 @@
 # Vendored modules
 
-`eBPF_marthen_new/` is **standalone**: it has no `../` imports, so the folder can be
+`collector/` is **standalone**: it has no `../` imports, so the folder can be
 `scp`'d to any node — or handed to an admin as a single `ebpfm.sh bundle` file — and
 run without the rest of the repo. The price is five copied modules.
 

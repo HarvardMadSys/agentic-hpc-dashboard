@@ -1,5 +1,5 @@
-/* Harvard identity palette, light only -- ported from
- * dashboard/archive/agent_dashboard.template.html.
+/* Harvard identity palette, light only -- ported from the retired demo template
+ * (git history: dashboard/archive/agent_dashboard.template.html).
  *
  * Crimson PMS 1807C #A51C30 is the accent AND the `agent` series colour; it is
  * reserved for agent identity and is never reused for another series. The eight

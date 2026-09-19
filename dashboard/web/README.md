@@ -76,16 +76,16 @@ Runtime: **`react`, `react-dom`.** That is all.
 Dev: `vite`, `@vitejs/plugin-react`, `typescript`, `@types/{node,react,react-dom}`.
 
 There is **no charting library**. Every chart is hand-rolled SVG in `src/charts/primitives.tsx`,
-ported from `dashboard/archive/agent_dashboard.template.html`, for two reasons that are
-constraints here rather than preferences: there is no code path that can introduce a second
+ported from the retired demo template (git history: `dashboard/archive/`), for two
+reasons that are constraints here rather than preferences: there is no code path that can introduce a second
 value axis, and the colours are the CSS custom properties verbatim, so no library theme can
 substitute a hue. There is no table library either — the event explorer pages on the
 backend's `next_cursor`.
 
 ## The rules this code enforces
 
-These come from [`dashboard/archive/README.md`](../archive/README.md). They are
-research-integrity constraints; breaking one is a reporting error, not a styling error.
+These come from the retired demo's README (git history: `dashboard/archive/README.md`).
+They are research-integrity constraints; breaking one is a reporting error, not a styling error.
 
 1. **Three classes, never two** — `agent` / `human-vscode` / `human` (+ `unlabeled`).
    The list is closed in `src/lib/classes.ts` and labelled `agent` / `human in VS Code` /

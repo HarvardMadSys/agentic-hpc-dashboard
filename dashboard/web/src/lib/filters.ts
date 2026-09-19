@@ -32,16 +32,11 @@ export const SCALAR_KEYS = [
 ] as const;
 export type ScalarKey = (typeof SCALAR_KEYS)[number];
 
-/** UI-only keys: they live in the URL, never in an API query. */
-export const UI_KEYS = ['tab', 'rank'] as const;
-
 export interface Filters {
   /** `class` is repeatable; at least one class is always selected. */
   cls: Cls[];
   scalars: Partial<Record<ScalarKey, string>>;
 }
-
-export const EMPTY_FILTERS: Filters = { cls: [...CLS], scalars: {} };
 
 export interface UrlState extends Filters {
   tab: string;
@@ -90,9 +85,4 @@ export function urlQuery(s: UrlState): string {
 
 export function countActiveScalars(f: Filters): number {
   return SCALAR_KEYS.reduce((a, k) => a + (f.scalars[k] ? 1 : 0), 0);
-}
-
-/** True when the class selection is not the full three-class set. */
-export function classFiltered(f: Filters): boolean {
-  return f.cls.length !== CLS.length;
 }

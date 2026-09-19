@@ -30,12 +30,5 @@ for (const [k, l, c, s] of PURP) {
 /** Colour for a purpose. Anything off the eight-slot table gets the grey tail. */
 export const pcol = (k: string | null | undefined): string => PURP_COL[k ?? ''] ?? 'var(--sg)';
 export const plbl = (k: string | null | undefined): string => PURP_LBL[k ?? ''] ?? (k || 'other');
-export const pshort = (k: string | null | undefined): string => PURP_SHORT[k ?? ''] ?? (k || 'other');
-
-/** Stack order; unknown purposes sort to the end so the grey tail stays last. */
-export const pord = (k: string): number => {
-  const i = PURP.findIndex((p) => p[0] === k);
-  return i < 0 ? 99 : i;
-};
 
 export const purposeLegend = () => PURP.map(([, l, c]) => ({ k: l, c }));

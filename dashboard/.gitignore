@@ -8,7 +8,5 @@ __pycache__/
 web/node_modules/
 web/dist/
 
-# The archive's generated pages ARE tracked: main had them committed, and
-# archiving the demo should not silently drop files that existed. Only the live
-# service's own scratch is ignored (see `data.json` above, which is the retired
-# builder's output path at the dashboard root, not archive/data.json).
+# `/data.json` above is the retired builder's output path at the dashboard root --
+# the live service's own scratch, never tracked content.

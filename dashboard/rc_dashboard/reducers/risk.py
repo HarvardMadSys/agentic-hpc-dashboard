@@ -6,7 +6,7 @@ findings, not computed from anything. They are computable from the schema-5
 exit stream, so here they are computed.
 
 All three share one framing that matters: **the eBPF tier runs on login nodes
-only** (`eBPF_marthen_new/README.md`, "Relationship to the other collectors").
+only** (`collector/README.md`, "Relationship to the other collectors").
 So a build or an interpreter burning CPU in this feed *is by construction*
 compute on a login node -- there is no need to infer the host's role, and the
 per-host breakdown is there to say which one.

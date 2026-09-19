@@ -13,7 +13,6 @@ the newest bin rather than dropped: a host with a skewed clock would otherwise
 silently vanish from the rate chart.  Anything beyond the tolerance is counted.
 """
 import time
-from datetime import datetime
 
 from .normalize import epoch_of as _normalize_epoch
 

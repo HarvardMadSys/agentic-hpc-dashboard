@@ -14,7 +14,7 @@ regression in that basis is visible on the dashboard itself.
 """
 import collections
 
-from . import INSTANCE_CAP, Acc, Quant, Reducer, pct, top_by, who
+from . import INSTANCE_CAP, Acc, Quant, pct, top_by, who
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
 DELAY_FIELDS = ("blkio_wait_s", "swapin_wait_s", "freepages_wait_s")

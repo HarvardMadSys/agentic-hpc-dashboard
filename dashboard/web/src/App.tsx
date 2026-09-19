@@ -8,7 +8,7 @@
 import { useEffect } from 'react';
 import { useConfig, useFeeds, usePanels, useTrajectories } from './api/hooks';
 import { useLive } from './api/useLive';
-import type { FeedReport, FeedStatus, PanelEnvelope } from './api/types';
+import type { FeedReport, FeedStatus } from './api/types';
 import { ClassFilter } from './components/ClassFilter';
 import { StatusPill } from './components/Panel';
 import { TooltipLayer } from './components/Tooltip';
@@ -33,17 +33,6 @@ const TABS = [
   { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'process tier' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
 ];
-
-/** An envelope for a panel key that the backend did not send at all. */
-export function absentPanel(feed: string): PanelEnvelope {
-  return {
-    _feed: feed,
-    _status: 'missing',
-    _present: false,
-    _paths: [],
-    _notice: 'the backend did not return this panel',
-  };
-}
 
 /** Worst status across the feeds that matter, for the header pill. */
 function headline(feeds: Record<string, FeedReport> | null): {

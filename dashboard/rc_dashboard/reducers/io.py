@@ -12,7 +12,7 @@ BPF block was unavailable, so every total ships with its coverage.
 """
 import collections
 
-from . import Acc, Quant, Reducer, pct
+from . import Acc, Quant, pct
 
 
 class IoReducer:

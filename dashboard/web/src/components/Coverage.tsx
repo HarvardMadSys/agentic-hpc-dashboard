@@ -18,32 +18,6 @@ export function Coverage({ pct, n }: { pct: number | null | undefined; n?: numbe
   );
 }
 
-/** A value with its coverage. `not measured` when nothing carried the field. */
-export function Measured({
-  v,
-  unit,
-  pct,
-  n,
-  digits,
-}: {
-  v: number | null | undefined;
-  unit?: string;
-  pct?: number | null;
-  n?: number | null;
-  digits?: number;
-}) {
-  if (v == null || (n != null && n === 0)) return <span className="nm">not measured</span>;
-  return (
-    <>
-      <span>
-        {fmt(v, digits)}
-        {unit ? ' ' + unit : ''}
-      </span>
-      <Coverage pct={pct} n={n} />
-    </>
-  );
-}
-
 /** An `{total, n, coverage_pct, mean}` accumulator. */
 export function AccumCell({ a, unit }: { a: Accum | null | undefined; unit?: string }) {
   if (notMeasured(a)) return <span className="nm">not measured</span>;

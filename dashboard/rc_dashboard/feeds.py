@@ -18,7 +18,7 @@ from datetime import datetime
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"     # every collector stamps records this way
 
 TIER = {
-    "ebpf": ("eBPF / proc-trace", "ebpf_marthen_new exit/residency/tcp/submit", "event + 60 s"),
+    "ebpf": ("eBPF / proc-trace", "ebpfm exit/residency/tcp/submit", "event + 60 s"),
     "ebpf_node": ("eBPF node tier", "node_snapshot: load, memory, NFS, per-user cgroup", "300 s"),
     "sacct": ("sacct (slurmdbd export)", "settled accounting record per job", "on demand"),
     "sacctmgr": ("sacctmgr", "accounts, QOS, admin levels, federation", "daily"),
@@ -264,12 +264,6 @@ def panel_meta(rep):
             "_present": rep["status"] in ("ok", "stale", "degraded"),
             "_paths": rep["configured"], "_notice": rep["notice"],
             "_env": rep["env"], "_cli": rep["cli"]}
-
-
-def sources_rows(reports):
-    return [{"tier": r["tier"], "path": (r["resolved"] or r["configured"] or ["-"])[0],
-             "cadence": r["cadence"], "rows": r["rows"], "lag": r["lag"],
-             "status": r["status"]} for r in reports.values()]
 
 
 def print_table(reports):
