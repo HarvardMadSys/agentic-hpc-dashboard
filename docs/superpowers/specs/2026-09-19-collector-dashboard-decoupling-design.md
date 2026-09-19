@@ -321,6 +321,10 @@ with one side's declared contract two versions stale and no check between them, 
 coupling this work exists to address.
 
 - The accepted range is stated as 5–6 in `__init__.py`, `normalize.py` and the root README.
+  **Two of the three were done by hand during spec review**: `__init__.py:1` and
+  `normalize.py:1-23` now declare 6 and document what v6 changed, including that a capture
+  mixing 5 and 6 carries connection data in two shapes. Only the root README's
+  `SCHEMA_VERSION = 5` remains.
 - `Normalizer` already tallies `schema_versions` in its stats. That tally is promoted from
   an internal counter to a reported fact: a record whose version falls outside the accepted
   range is counted and named in the feed report, exactly as `excluded_pre_v4` already is.
