@@ -8,6 +8,7 @@
     "dev": "vite",
     "dev:real": "vite --mode real",
     "build": "tsc -b && vite build",
+    "build:watch": "vite build --watch",
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "fixture": "node mock/gen_fixture.mjs",

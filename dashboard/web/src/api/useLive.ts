@@ -10,7 +10,7 @@
  * behaviour this replaces.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FeedsResponse, LiveResponse, WsFrame } from './types';
+import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
 import { getLive, wsUrl } from './client';
 
 export type Transport = 'connecting' | 'ws' | 'polling' | 'down';
@@ -30,22 +30,37 @@ export interface LiveState {
   rebuildNonce: number;
   feeds: FeedsResponse | null;
   backfill: unknown;
+  /** The window registry: what is offered, and what is building right now. */
+  windows: WindowsResponse | null;
+  /** Bumps when the window this page is viewing finishes a (re)build. */
+  buildNonce: number;
   refresh: () => void;
 }
 
-export function useLive(): LiveState {
+export function useLive(windowMin: number | null): LiveState {
   const [live, setLive] = useState<LiveResponse | null>(null);
   const [feeds, setFeeds] = useState<FeedsResponse | null>(null);
   const [backfill, setBackfill] = useState<unknown>(null);
+  const [windows, setWindows] = useState<WindowsResponse | null>(null);
   const [transport, setTransport] = useState<Transport>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [receivedAt, setReceivedAt] = useState<number | null>(null);
   const [rebuildNonce, setRebuildNonce] = useState(0);
+  const [buildNonce, setBuildNonce] = useState(0);
 
   const sock = useRef<WebSocket | null>(null);
   const timer = useRef<number | null>(null);
   const attempts = useRef(0);
   const dead = useRef(false);
+  /* The window lives in a ref as well as in state so `poll` stays referentially
+   * stable. If it were a dependency the whole socket would tear down and
+   * reconnect on every window change -- losing the transport, the backoff count
+   * and the feeds frame to redraw a chart the server can just re-send. */
+  const win = useRef(windowMin);
+  win.current = windowMin;
+  /* The set of ready windows and their build stamps, as last seen. Panels are
+   * re-fetched only when this changes -- progress frames must not trigger one. */
+  const builtKey = useRef<string>('');
 
   const accept = useCallback((l: LiveResponse) => {
     setLive(l);
@@ -55,7 +70,7 @@ export function useLive(): LiveState {
 
   const poll = useCallback(async () => {
     try {
-      accept(await getLive());
+      accept(await getLive(win.current));
       setTransport((t) => (t === 'ws' ? t : 'polling'));
     } catch (e) {
       setTransport('down');
@@ -104,6 +119,16 @@ export function useLive(): LiveState {
         clear();
         setTransport('ws');
         setError(null);
+        // Tell the server which window this reader is on before anything else:
+        // it sends one `live` frame per DISTINCT window, and until it hears
+        // otherwise this socket is counted on the service default.
+        if (win.current != null) {
+          try {
+            ws.send(JSON.stringify({ type: 'window', minutes: win.current }));
+          } catch {
+            /* the frame is re-sent by the window effect once the socket settles */
+          }
+        }
         // The socket may only push deltas; seed the view once from the REST
         // snapshot so a quiet cluster is not an empty dashboard.
         void poll();
@@ -129,6 +154,25 @@ export function useLive(): LiveState {
           case 'backfill':
             setBackfill(frame.payload);
             break;
+          case 'windows': {
+            setWindows(frame.payload);
+            // Re-fetch panels when a READY window's build stamp moves. Keyed on
+            // the whole ready set rather than on this page's own window, because
+            // `win` is null whenever the page is on the service default and
+            // would never match a held window's minutes -- the first build to
+            // finish would then never reach the page. Progress frames arrive
+            // every couple of seconds and must NOT trigger a fetch, which is
+            // why only `state === 'ready'` rows are in the key.
+            const key = (frame.payload.held ?? [])
+              .filter((w) => w.state === 'ready')
+              .map((w) => `${w.minutes}:${w.built_at}`)
+              .join('|');
+            if (key && key !== builtKey.current) {
+              builtKey.current = key;
+              setBuildNonce((n) => n + 1);
+            }
+            break;
+          }
         }
       };
 
@@ -167,5 +211,24 @@ export function useLive(): LiveState {
     };
   }, [accept, poll]);
 
-  return { live, transport, error, receivedAt, rebuildNonce, feeds, backfill, refresh };
+  /* A window change re-uses the open socket. The server answers with a frame
+   * for the new window immediately, so the chart never keeps showing the old
+   * span while the picker already reads the new one. */
+  useEffect(() => {
+    const s = sock.current;
+    if (s && s.readyState === WebSocket.OPEN) {
+      try {
+        s.send(JSON.stringify({ type: 'window', minutes: windowMin }));
+        return;
+      } catch {
+        /* fall through to the REST read */
+      }
+    }
+    void poll();
+  }, [windowMin, poll]);
+
+  return {
+    live, transport, error, receivedAt, rebuildNonce, feeds, backfill,
+    windows, buildNonce, refresh,
+  };
 }

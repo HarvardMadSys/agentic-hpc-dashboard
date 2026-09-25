@@ -129,7 +129,7 @@ class TrajectoryReducer:
     EVENTS = ("exit",)
     KEY = "trajectories"
 
-    def __init__(self, cfg, classes):
+    def __init__(self, cfg, classes, window_s=None):
         self.cfg = cfg
         r = cfg.get("reducers.trajectories", {}) or {}
         self.top_n = r.get("top_n", 15)
@@ -141,7 +141,9 @@ class TrajectoryReducer:
         self.sessions = {}
         self.by_kt = collections.Counter()
         self.evicted = 0
-        self.window_s = int(cfg.get("live.window_min", 1440)) * 60
+        # The window is the VIEW's, not a fixed config value: one reducer instance
+        # exists per selected window, each ranking the sessions that window holds.
+        self.window_s = window_s or int(cfg.get("live.window_min", 1440)) * 60
 
     def feed(self, rec):
         sid = rec.get("_sid")
@@ -157,7 +159,12 @@ class TrajectoryReducer:
         s.add(rec, now)
 
     def _evict(self, now, force=False):
-        cutoff = now - (self.idle_evict if not force else self.idle_evict / 2)
+        # Idle eviction must never reach INSIDE the window, or the panel would
+        # rank "sessions active in the last idle_evict_s" while claiming to rank
+        # the window -- at the 2 h default and a 24 h window it already silently
+        # did. Memory stays bounded by `max_sessions`, which force-evicts.
+        keep_s = max(self.idle_evict, self.window_s)
+        cutoff = now - (keep_s if not force else keep_s / 2)
         dead = [k for k, v in self.sessions.items() if (v.last or 0) < cutoff]
         if force and not dead:
             dead = sorted(self.sessions, key=lambda k: self.sessions[k].last or 0)

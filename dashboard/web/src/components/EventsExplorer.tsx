@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EventsResponse, LiveEvent } from '../api/types';
 import { exportUrl, getEvents } from '../api/client';
-import { apiQuery, SCALAR_KEYS, countActiveScalars } from '../lib/filters';
+import { apiQuery, SCALAR_KEYS, countActiveScalars, windowBounds } from '../lib/filters';
 import type { ScalarKey, UrlState } from '../lib/filters';
 import { fint } from '../lib/format';
 import { Panel } from './Panel';
@@ -45,13 +45,25 @@ const FIELDS: { k: ScalarKey; lbl: string; kind: 'text' | 'num' | 'dt' | 'select
 export function EventsExplorer({
   url,
   setUrl,
+  windowMin,
 }: {
   url: UrlState;
   setUrl: (patch: Partial<UrlState>, push?: boolean) => void;
+  /** The window the rest of the page is showing, as the service resolved it. */
+  windowMin?: number | null;
 }) {
   /* The bar is a draft: typing must not refetch on every keystroke, so the
-   * committed query is only advanced on submit (or Enter). */
-  const query = useMemo(() => apiQuery({ cls: url.cls, scalars: url.scalars }), [url]);
+   * committed query is only advanced on submit (or Enter).
+   *
+   * The selected window enters the query as `from`/`to`, so "the download is
+   * exactly the view" survives the window being narrowed -- otherwise the bench
+   * would keep serving the whole feed while every chart above it showed an
+   * hour. An explicit from/to typed into the bar still wins: that is the more
+   * specific statement of intent, and `windowBounds` leaves it alone. */
+  const query = useMemo(
+    () => apiQuery(windowBounds({ ...url, cls: url.cls, scalars: url.scalars }, windowMin ?? null)),
+    [url, windowMin],
+  );
   const [pages, setPages] = useState<LiveEvent[][]>([]);
   const [resp, setResp] = useState<EventsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -156,6 +168,12 @@ export function EventsExplorer({
             {resp?.event_filter_defaulted ? ' \u00b7 process exits only' : ''}
             {` · ${url.cls.length}/3 classes`}
             {nActive ? ` · ${nActive} filter${nActive > 1 ? 's' : ''}` : ''}
+            {/* The window enters the query as from/to without appearing in the
+                filter bar, so it is named here: an invisible bound on a row
+                count is exactly the kind of thing that misleads. */}
+            {windowMin != null && !url.scalars.from && !url.scalars.to
+              ? ` · bounded to the selected window`
+              : ''}
           </span>
           <span className="wrapctl">
             <button className="btn primary" type="submit" disabled={!dirty}>

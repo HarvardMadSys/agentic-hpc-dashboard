@@ -87,7 +87,10 @@ def defaults():
         "feeds": {
             "ebpf": {
                 "roots": _ebpf_candidates(),
-                "days": 2,
+                # One date dir per day of retention, plus one: hosts roll over
+                # independently, so the oldest day in a 7-day window is still
+                # being written by a straggler when the newest has moved on.
+                "days": 8,
                 "max_age_s": 300,       # residency_totals ticks every 60s -> 5x
                 "required": True,
             },
@@ -112,15 +115,40 @@ def defaults():
                            "required": False},
         },
         "live": {
-            "window_min": 1440,      # 24h, matching the Overview grain
+            # RETENTION is what the process holds; WINDOW_MIN is only the view a
+            # fresh page opens on.  Any window up to retention is an exact slice
+            # of the same bins, so the two must not be conflated: raising the
+            # view costs nothing, raising retention costs memory and backfill.
+            "retention_min": 10080,  # 7 days of per-minute bins, ~hundreds of KB
+            "window_min": 1440,      # the default view: 24h, the Overview grain
+            # Offered in the picker.  Server-side so the ceiling and the options
+            # cannot disagree -- anything above retention is dropped from the
+            # list rather than offered and then clamped.
+            "window_presets_min": [60, 360, 720, 1440, 4320, 10080],
             "bin_s": 60,
             "event_tail": 500,
             "submit_tail": 50,
-            "backfill_hours": 24,
+            "backfill_hours": 168,   # fill retention, not a day of it
+            # Per-file cold-start budget for the live backfill.  The buckets
+            # discard anything older than retention on arrival, so over-reading
+            # is harmless and under-reading shows as an honest gap in old bins.
+            "backfill_mb": 2048,
             "clock_skew_s": 120,
         },
         "ingest": {"poll_ms": 1000},
         "rebuild": {"interval_s": 900},
+        "panels": {
+            # Historical reducers hold no time index, so a window change rebuilds
+            # them from the rows.  Each built window costs reducer state, so the
+            # registry is an LRU rather than unbounded: two lets a reader compare
+            # a narrow and a wide view without a third evicting both.
+            "max_windows": 2,
+            # A built view keeps ingesting, so it drifts past its own window.
+            # Re-scan once drift reaches this share of the window -- proportional
+            # by design: a 1h view refreshes often and cheaply, a 7d view rarely
+            # and expensively, and both read the same multiple of the feed.
+            "max_drift_pct": 25,
+        },
         "filters": {
             "drop_global": ["juncheng"],     # the monitoring operator
             "drop_agent": ["flamraoui"],     # period3 agent build skew
@@ -160,10 +188,16 @@ ENV_MAP = {
     "feeds.sacctmgr.dir": ("RC_DASH_SACCTMGR_DIR", str),
     "feeds.domains.path": ("RC_DASH_DOMAINS_CSV", str),
     "feeds.user_actor.path": ("RC_DASH_USER_CSV", str),
+    "live.retention_min": ("RC_DASH_RETENTION_MIN", int),
     "live.window_min": ("RC_DASH_LIVE_WINDOW_MIN", int),
+    "live.window_presets_min": ("RC_DASH_WINDOW_PRESETS",
+                                lambda v: [int(x) for x in _csv(v)]),
     "live.bin_s": ("RC_DASH_LIVE_BIN_S", int),
     "live.event_tail": ("RC_DASH_LIVE_EVENT_TAIL", int),
     "live.backfill_hours": ("RC_DASH_BACKFILL_HOURS", int),
+    "live.backfill_mb": ("RC_DASH_BACKFILL_MB", int),
+    "panels.max_windows": ("RC_DASH_MAX_WINDOWS", int),
+    "panels.max_drift_pct": ("RC_DASH_MAX_DRIFT_PCT", int),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
@@ -189,6 +223,7 @@ CLI_MAP = {
     "sacct_dir": "feeds.sacct.dir",
     "jobs_csv": "feeds.sacct.jobs_csv",
     "live_window_min": "live.window_min",
+    "retention_min": "live.retention_min",
     "backfill_hours": "live.backfill_hours",
     "port": "server.port",
     "host": "server.host",

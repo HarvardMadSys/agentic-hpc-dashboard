@@ -14,6 +14,7 @@ export function Plate({
   stripe = 'var(--s1)',
   by,
   note,
+  tip,
   fmtFn = fint,
   unit,
   classes = CLS,
@@ -24,13 +25,17 @@ export function Plate({
   /** per-class values; a class absent from the map renders as a dash, not 0 */
   by: Partial<Record<string, number | null>>;
   note?: React.ReactNode;
+  /** hover text for the label: how this number is counted, and what it overcounts */
+  tip?: string;
   fmtFn?: (n: number | null | undefined) => string;
   unit?: string;
   classes?: Cls[];
 }) {
   return (
     <div className="plate" style={{ '--stripe': stripe } as React.CSSProperties}>
-      <div className="k">{k}</div>
+      <div className="k" data-tip={tip}>
+        {k}
+      </div>
       <div className="v">
         {total == null ? DASH : fmtFn(total)}
         {unit && total != null && <small> {unit}</small>}

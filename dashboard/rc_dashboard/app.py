@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import feeds as feedmod
+from . import windows as winmod
 from .aggregator import Aggregator
 from .export import make_predicate, meta_header, parse_filters, scan
 from .normalize import Normalizer
@@ -25,7 +26,10 @@ def create_app(cfg):
     agg = Aggregator(cfg)
     app.state.cfg = cfg
     app.state.agg = agg
-    app.state.clients = set()
+    # ws -> the window that client is viewing. A dict rather than a set because
+    # the live frame is window-specific: one payload per DISTINCT window, not
+    # one per client, so ten readers on the default window still cost one build.
+    app.state.clients = {}
 
     async def broadcast(kind, payload):
         dead = []
@@ -36,7 +40,21 @@ def create_app(cfg):
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            app.state.clients.discard(ws)
+            app.state.clients.pop(ws, None)
+
+    async def broadcast_live():
+        """A `live` frame per distinct window in use."""
+        by_window = {}
+        for ws, minutes in list(app.state.clients.items()):
+            by_window.setdefault(minutes, []).append(ws)
+        for minutes, sockets in by_window.items():
+            payload = agg.live_payload(minutes)
+            frame = json.dumps({"type": "live", "payload": payload}, default=str)
+            for ws in sockets:
+                try:
+                    await ws.send_text(frame)
+                except Exception:
+                    app.state.clients.pop(ws, None)
 
     # ------------------------------------------------------------ background
     async def ingest_loop():
@@ -44,15 +62,40 @@ def create_app(cfg):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, agg.backfill_now)
         await broadcast("backfill", agg.backfill)
-        await broadcast("live", agg.live_payload())
+        await broadcast_live()
         while True:
             try:
                 n = await loop.run_in_executor(None, agg.poll_once)
                 if n:
-                    await broadcast("live", agg.live_payload())
+                    await broadcast_live()
             except Exception:
                 pass
             await asyncio.sleep(interval)
+
+    async def windows_loop():
+        """Push build progress, and say when a window's panels are new.
+
+        A rebuild can take minutes on a wide window, so the page shows a real
+        percentage instead of an empty panel that looks like an empty feed.
+        """
+        last = None
+        while True:
+            await asyncio.sleep(2)
+            try:
+                st = agg.panels_by_window.status()
+                # Change-detect on the MATERIAL fields only. `built_age_s` and
+                # `drift_s` advance every call by construction, so hashing the
+                # whole payload would push a frame to every client every two
+                # seconds forever -- a poll loop wearing a push loop's clothes.
+                key = json.dumps(
+                    [[w["minutes"], w["state"], w["progress"]["pct"], w["built_at"],
+                      w["replay_dropped"], w["error"]] for w in st["held"]]
+                    + [st["queued"]], default=str)
+                if key != last:
+                    last = key
+                    await broadcast("windows", st)
+            except Exception:
+                pass
 
     async def feeds_loop():
         loop = asyncio.get_running_loop()
@@ -71,20 +114,26 @@ def create_app(cfg):
             await asyncio.sleep(interval)
             try:
                 await loop.run_in_executor(None, agg.rebuild_history)
-                await broadcast("rebuilt", {"full_built_at": agg.full_built_at})
+                await broadcast("rebuilt", {
+                    "node_built_at": agg.node_built_at,
+                    "windows": [w["minutes"] for w
+                                in agg.panels_by_window.status()["held"]]})
             except Exception:
                 pass
 
     @app.on_event("startup")
     async def _startup():
+        agg.start()
         app.state.tasks = [asyncio.create_task(ingest_loop()),
                            asyncio.create_task(feeds_loop()),
-                           asyncio.create_task(rebuild_loop())]
+                           asyncio.create_task(rebuild_loop()),
+                           asyncio.create_task(windows_loop())]
 
     @app.on_event("shutdown")
     async def _shutdown():
         for t in getattr(app.state, "tasks", []):
             t.cancel()
+        agg.stop()
 
     # ------------------------------------------------------------------- API
     @app.get("/api/config")
@@ -95,17 +144,27 @@ def create_app(cfg):
     def api_feeds():
         return agg.refresh_feeds()
 
+    # `window_min` is optional everywhere: omitting it is the configured default
+    # (`live.window_min`), never an error, so an existing bookmark or script that
+    # predates the control keeps working and gets the same view it used to.
+    @app.get("/api/windows")
+    def api_windows():
+        """What windows can be asked for, and what is built right now."""
+        return dict(agg.panels_by_window.status(),
+                    default_minutes=agg.window(None)["minutes"],
+                    min_minutes=winmod.MIN_WINDOW_MIN)
+
     @app.get("/api/panels")
-    def api_panels():
-        return agg.panels()
+    def api_panels(window_min: int = Query(None)):
+        return agg.panels(window_min)
 
     @app.get("/api/live")
-    def api_live():
-        return agg.live_payload()
+    def api_live(window_min: int = Query(None)):
+        return agg.live_payload(window_min)
 
     @app.get("/api/trajectories")
-    def api_traj(rank: str = Query("events")):
-        out = agg.trajectories()
+    def api_traj(rank: str = Query("events"), window_min: int = Query(None)):
+        out = agg.trajectories(window_min)
         out["rank_by"] = rank if rank in out.get("ranks", {}) else "events"
         return out
 
@@ -114,11 +173,10 @@ def create_app(cfg):
         return {"ok": True, "records": agg.stats["records"],
                 "last_poll": agg.stats["last_poll"],
                 "backfill": agg.backfill,
-                "full_built_at": agg.full_built_at}
+                "node_built_at": agg.node_built_at,
+                "windows": agg.panels_by_window.status()}
 
-    def _roots():
-        return (agg.reports["ebpf"]["resolved"]
-                or cfg.get("feeds.ebpf.roots") or [])
+    _roots = agg.roots
 
     @app.get("/api/events")
     def api_events(request: Request,
@@ -209,20 +267,41 @@ def create_app(cfg):
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
         await websocket.accept()
-        app.state.clients.add(websocket)
+        minutes = agg.window(None)["minutes"]
+        app.state.clients[websocket] = minutes
         try:
             await websocket.send_text(json.dumps(
-                {"type": "live", "payload": agg.live_payload()}, default=str))
+                {"type": "live", "payload": agg.live_payload(minutes)}, default=str))
             await websocket.send_text(json.dumps(
                 {"type": "feeds", "payload": agg.reports}, default=str))
+            await websocket.send_text(json.dumps(
+                {"type": "windows", "payload": agg.panels_by_window.status()},
+                default=str))
             while True:
-                await websocket.receive_text()      # keepalive / client pings
+                msg = await websocket.receive_text()
+                # The only client->server message: which window this reader is
+                # looking at. Anything else is a keepalive ping and is ignored.
+                try:
+                    body = json.loads(msg)
+                except ValueError:
+                    continue
+                if not isinstance(body, dict) or body.get("type") != "window":
+                    continue
+                want = agg.window(body.get("minutes"))["minutes"]
+                if want == app.state.clients.get(websocket):
+                    continue
+                app.state.clients[websocket] = want
+                # Answer immediately rather than waiting for the next poll: the
+                # chart must not keep showing the previous window while the
+                # picker already reads the new one.
+                await websocket.send_text(json.dumps(
+                    {"type": "live", "payload": agg.live_payload(want)}, default=str))
         except WebSocketDisconnect:
             pass
         except Exception:
             pass
         finally:
-            app.state.clients.discard(websocket)
+            app.state.clients.pop(websocket, None)
 
     # --------------------------------------------------------------- statics
     static = cfg.get("server.static_dir")

@@ -173,6 +173,7 @@ export function GroupBars({
   const gw = pw / groups.length;
   const bw = Math.min(maxBar, (gw - 14) / series.length);
   const F = (v: number) => (fmtVal ? fmtVal(v) : fmt(v));
+  const CH = 6.3; // advance width of `.vlbl` (IBM Plex Mono at 10.5px)
   return (
     <Svg w={W} h={H} label={ylabel}>
       {ticks.map((t) => (
@@ -180,6 +181,7 @@ export function GroupBars({
       ))}
       {groups.map((g, gi) => {
         const x0 = L + gi * gw + (gw - bw * series.length - 2 * (series.length - 1)) / 2;
+        const drawn = series.filter((se) => g.v[se.k] != null).length;
         return (
           <g key={g.k + '-' + gi}>
             {series.map((se, si) => {
@@ -203,16 +205,28 @@ export function GroupBars({
             {labelTop &&
               series.map((se, si) => {
                 const raw = g.v[se.k];
-                if (raw == null || raw <= 0) return null;
+                if (raw == null) return null; // absent has no bar to label
+                // A measured 0 IS labelled: a bar one pixel tall and a bar that
+                // is genuinely absent look identical at this size, and the
+                // number is the only thing that tells them apart. Slots too
+                // narrow for the text at full size step down rather than drop
+                // the label -- the short bars are exactly the ones that are
+                // unreadable without it.
+                const txt = F(raw);
+                // Room is bounded by the next LABELLED bar, not by the bar
+                // itself: a group holding a single series can spread across the
+                // whole group and stay full size.
+                const room = drawn > 1 ? bw + 2 : gw - 4;
+                const narrow = txt.length * CH > room;
                 return (
                   <text
                     key={'l' + se.k}
-                    className="vlbl"
+                    className={narrow ? 'vlbl sm' : 'vlbl'}
                     x={x0 + si * (bw + 2) + bw / 2}
                     y={y(raw) - 4}
                     textAnchor="middle"
                   >
-                    {F(raw)}
+                    {txt}
                   </text>
                 );
               })}
