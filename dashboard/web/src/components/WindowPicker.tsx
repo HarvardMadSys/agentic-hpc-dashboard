@@ -15,7 +15,7 @@
  *     once it is material.
  */
 import { useEffect, useState } from 'react';
-import type { LiveResponse, WindowStatus, WindowsResponse } from '../api/types';
+import type { BackfillStatus, LiveResponse, WindowStatus, WindowsResponse } from '../api/types';
 
 /** `90m`, `4h`, `2d`, or a bare number of minutes. Null when unparseable. */
 export function parseWindow(raw: string): number | null {
@@ -39,12 +39,14 @@ export function WindowPicker({
   windows,
   resolved,
   status,
+  backfill,
 }: {
   value: number | null;
   onChange: (v: number | null) => void;
   windows: WindowsResponse | null;
   resolved?: LiveResponse['window'];
   status?: WindowStatus | null;
+  backfill?: BackfillStatus | null;
 }) {
   const presets = windows?.presets ?? [];
   const active = resolved?.minutes ?? value ?? windows?.default_minutes ?? null;
@@ -81,6 +83,7 @@ export function WindowPicker({
   const building =
     status && (status.state === 'queued' || status.state === 'building') ? status : null;
   const failed = status && status.state === 'error' ? status : null;
+  const reading = backfill && backfill.state === 'running' ? backfill : null;
   const drift =
     status && status.drift_s != null && status.drift_s > status.drift_budget_s / 2
       ? status
@@ -142,6 +145,16 @@ export function WindowPicker({
             filled {human(resolved.retained_minutes)} of {human(resolved.minutes)}
           </span>
         )}
+
+      {/* ...and are still being read back, so the short fill is not final. */}
+      {reading && (
+        <span
+          className="winnote build"
+          data-tip={`the service re-reads the collector's files on every start, newest first, so the bins fill from now backwards: ${reading.records.toLocaleString()} records so far`}
+        >
+          reading history · {reading.pct}%
+        </span>
+      )}
 
       {building && (
         <span

@@ -67,21 +67,37 @@ class LiveReducer:
         self.conn_unmatched_births = None
 
     # ------------------------------------------------------------------ feed
-    def feed(self, rec):
+    def feed(self, rec, older=False):
+        """One record.  `older` says it predates everything already held.
+
+        That is the backfill, which reads the history newest first while the
+        tail goes on feeding new records.  The bins are sums and take records in
+        any order; the "latest" state is not order-free, so an older record only
+        fills what nothing newer has claimed -- a host's plate keeps its newest
+        tick, and the tails grow at their OLD end.
+        """
         ev = rec.get("event")
         if ev in ("exit", "truncated"):
-            self._exit(rec)
+            self._exit(rec, older)
         elif ev == "residency":
-            self._residency(rec)
+            self._residency(rec, older)
         elif ev == "residency_totals":
-            self._totals(rec)
+            self._totals(rec, older)
         elif ev == "submit":
-            self._submit(rec)
+            self._submit(rec, older)
 
-    def _exit(self, rec):
+    @staticmethod
+    def _place(tail, row, older):
+        """Newest at the left; an older row joins the right end while there is room."""
+        if not older:
+            tail.appendleft(row)
+        elif len(tail) < tail.maxlen:
+            tail.append(row)
+
+    def _exit(self, rec, older=False):
         self.buckets.add(rec, rec["_a3"], cpu_s=rec.get("cpu_s"))
         io = rec.get("io") or {}
-        self.event_tail.appendleft({
+        self._place(self.event_tail, {
             "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "host": rec.get("host"), "user": rec.get("user"),
             "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
@@ -95,10 +111,12 @@ class LiveReducer:
             "exit_code": rec.get("exit_code"), "signal": rec.get("signal"),
             "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
             "session_key": rec.get("session_key"),
-        })
+        }, older)
 
-    def _residency(self, rec):
+    def _residency(self, rec, older=False):
         key = (rec.get("host"), rec.get("tree_root_pid") or rec.get("agent_pid"))
+        if older and key in self.trees:
+            return                       # a newer tick already holds this tree
         self.trees[key] = {
             "host": rec.get("host"), "agent_type": rec.get("agent_type"),
             "age_s": rec.get("age_s"), "n_procs": rec.get("n_procs"),
@@ -113,8 +131,10 @@ class LiveReducer:
             "actor3": rec.get("_a3"),
         }
 
-    def _totals(self, rec):
+    def _totals(self, rec, older=False):
         h = rec.get("host") or "?"
+        if older and h in self.hosts:
+            return                       # a newer tick already holds this host
         self.hosts[h] = {
             "host": h, "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "by_actor3": rec.get("by_actor3") or {},
@@ -127,10 +147,11 @@ class LiveReducer:
             "d_stack_top": rec.get("d_stack_top"),
             "conn_unmatched_births": rec.get("conn_unmatched_births"),
         }
-        if rec.get("conn_unmatched_births") is not None:
+        if rec.get("conn_unmatched_births") is not None and not (
+                older and self.conn_unmatched_births is not None):
             self.conn_unmatched_births = rec["conn_unmatched_births"]
 
-    def _submit(self, rec):
+    def _submit(self, rec, older=False):
         row = {
             "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "host": rec.get("host"), "user": rec.get("user"),
@@ -145,8 +166,12 @@ class LiveReducer:
             "mem": rec.get("mem"), "cpus_per_task": rec.get("cpus_per_task"),
             "req_src": rec.get("req_src"),
         }
-        self.submit_tail.appendleft(row)
-        self.submits_in_window.append(row)
+        self._place(self.submit_tail, row, older)
+        # Kept oldest-first so `result` can prune from the left.
+        if older:
+            self.submits_in_window.appendleft(row)
+        else:
+            self.submits_in_window.append(row)
 
     # ---------------------------------------------------------------- result
     def result(self, now=None, window_s=None):

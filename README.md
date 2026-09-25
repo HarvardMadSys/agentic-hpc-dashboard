@@ -107,6 +107,7 @@ same rules:
 
 ```bash
 cd collector && python3 -m unittest discover -s tests -q    # 72 tests, no root, no BPF needed
+cd dashboard && uv run python -m unittest discover -s tests -q   # ingest: restarts, the hand-off, backfill order
 cd dashboard/web && npm run typecheck && npm run check:no-random
 ```
 

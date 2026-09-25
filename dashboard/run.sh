@@ -47,7 +47,6 @@ esac
 # ---- Environment -----------------------------------------------------
 export RC_DASH_EBPF_ROOTS=/scratch/marthen/ebpfm/ebpf
 export RC_DASH_NODE_ROOTS=/scratch/marthen/ebpfm/login
-export RC_DASH_STATE_DIR=/scratch/marthen/ebpfm/dashstate
 export RC_DASH_PORT="${RC_DASH_PORT:-8124}"
 export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
 

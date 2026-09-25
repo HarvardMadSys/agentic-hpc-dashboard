@@ -245,6 +245,7 @@ export default function App() {
               windows={windows}
               resolved={resolvedWin}
               status={winStatus}
+              backfill={live.live?.backfill}
             />
             <ClassFilter value={url.cls} onChange={(c) => setUrl({ cls: c })} />
           </>

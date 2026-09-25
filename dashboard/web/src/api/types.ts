@@ -400,6 +400,26 @@ export interface LiveSubmit {
   array?: string | null;
   [k: string]: unknown;
 }
+/** The startup read of retention from the collector's files, newest first.
+ *  It runs on every start -- nothing is restored from a previous run -- so
+ *  while it is `running`, bins older than the live window's `retained_from`
+ *  have not been read yet: a gap, not a quiet fleet. `retained_from` here is
+ *  set once it is `done`. */
+export interface BackfillStatus {
+  state: 'idle' | 'running' | 'done' | 'skipped' | 'error';
+  pct: number;
+  records: number;
+  hours: number;
+  from?: string | null;
+  bytes?: number;
+  total_bytes?: number;
+  files?: number;
+  error?: string;
+  elapsed_s?: number;
+  retained_from?: string | null;
+  retained_hours?: number | null;
+}
+
 export interface LiveResponse {
   window: {
     minutes: number;
@@ -422,7 +442,7 @@ export interface LiveResponse {
   events: LiveEvent[];
   events_tail_depth?: number | null;
   submits: LiveSubmit[];
-  backfill: Record<string, unknown> | null;
+  backfill: BackfillStatus | null;
 }
 
 /* ---------------------------------------------------------------- events */

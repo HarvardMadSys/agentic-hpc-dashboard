@@ -60,13 +60,22 @@ def create_app(cfg):
     async def ingest_loop():
         interval = max(0.2, int(cfg.get("ingest.poll_ms", 1000)) / 1000.0)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, agg.backfill_now)
-        await broadcast("backfill", agg.backfill)
-        await broadcast_live()
+        # The backfill hands the tail every file at its end, then reads the
+        # history behind that point newest first -- while this loop is already
+        # polling, so the page is live from the first second and watches the past
+        # fill in. A poll before the hand-off reads nothing (`agg.positioned`).
+        fill = loop.run_in_executor(None, agg.backfill_now)
+        filling = True
         while True:
             try:
                 n = await loop.run_in_executor(None, agg.poll_once)
-                if n:
+                if filling and fill.done():
+                    filling = False
+                    await broadcast("backfill", agg.backfill)
+                    await broadcast_live()
+                elif n or filling:
+                    # While the backfill runs the bins move every cycle, new
+                    # records or not.
                     await broadcast_live()
             except Exception:
                 pass

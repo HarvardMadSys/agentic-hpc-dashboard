@@ -1007,6 +1007,11 @@ unrecognised version is a thing to look at, not a thing to discard."
 
 ### Task 8: Content-verified resume
 
+> **Superseded in part (2026-09-25).** `tail.py` no longer persists offsets — see the note under
+> spec section 1.2 — so `STATE_VERSION`, `_load_state` and `save_state` no longer exist and the
+> line numbers below are stale. The inode gate and the prefix hash carry over unchanged into the
+> in-memory state; drop the `STATE_VERSION == 2` assertion.
+
 **Files:**
 - Modify: `dashboard/rc_dashboard/tail.py:1-26` (header, `STATE_VERSION`), `:44-46` (`stats`), `:96-110` (the inode gate), `:145-149` (`_remember`)
 - Test: `dashboard/tests/test_tail.py` (create)

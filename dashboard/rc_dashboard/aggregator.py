@@ -9,15 +9,17 @@ Two aggregation tiers, because they have different composability:
 * The LIVE tier updates continuously from the tail.  Its state is bucketed or
   incremental, so a week of retention costs hundreds of KB rather than the
   ~10-20 GB/day the raw records occupy, and every selected window is an exact
-  slice of the same bins.
+  slice of the same bins.  On every start it is refilled from the collector's
+  files, newest first, while the tail already runs (`backfill_now`) -- it is
+  never restored from anything this service wrote itself.
 * The HISTORICAL tier (quantiles, CCDFs, Gini) is not resumable from a byte
   offset without persisted sketch state, so it cannot be sliced.  It is built
   PER WINDOW by `windows.WindowRegistry`, on a schedule and on demand, and
   publishes `built_at` and its drift -- the age and the true span of those
   panels are visible rather than implied.
 """
+import itertools
 import json
-import os
 import threading
 import time
 
@@ -26,7 +28,15 @@ from . import windows as winmod
 from .normalize import Normalizer
 from .reducers.live import LiveReducer
 from .reducers.resources import NodeReducer
-from .tail import FileTailSource
+from .tail import FileTailSource, read_back
+
+# Records per lock hold during the backfill.  Between batches the tail and the
+# API take their turn, so the page stays live and watches the history fill in
+# instead of hanging for the length of the read.  Small, because a window build
+# running alongside competes for the GIL and stretches every hold: measured with
+# both running, 256 kept /api/live at p90 ~10 ms where 2000 let it reach ~150 ms,
+# for a backfill 2% slower.
+BACKFILL_BATCH = 256
 
 
 class Aggregator:
@@ -37,11 +47,9 @@ class Aggregator:
         self.norm = Normalizer(cfg)
         self.lock = threading.RLock()
         self.reports = feedmod.resolve(cfg)
-        state = os.path.join(cfg.get("cache.state_dir"), "ebpf_offsets.json")
         self.source = FileTailSource(
             self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
-            days=int(cfg.get("feeds.ebpf.days", 8)), state_path=state,
-            cold_start_mb=int(cfg.get("live.backfill_mb", 2048)))
+            days=int(cfg.get("feeds.ebpf.days", 8)))
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
@@ -50,6 +58,10 @@ class Aggregator:
         self.node_built_at = None
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
+        # Set once every file has been handed to the tail.  Until then a poll
+        # reads nothing: a file the tail holds no offset for is read from byte
+        # 0, and the backfill would then count the same history a second time.
+        self.positioned = threading.Event()
         self.stats = {"records": 0, "last_poll": None}
 
     def roots(self):
@@ -63,7 +75,13 @@ class Aggregator:
         self.panels_by_window.stop()
 
     # -------------------------------------------------------------- ingestion
-    def consume(self, records):
+    def consume(self, records, older=False):
+        """Normalize and dispatch a batch.
+
+        `older` marks the backfill: records that predate everything held, which
+        feed the live tier only.  The historical views build from disk, oldest
+        first, and their own scans already cover every row the backfill reads.
+        """
         n = 0
         for raw in records:
             rec = self.norm.normalize(raw)
@@ -71,12 +89,13 @@ class Aggregator:
                 continue
             if rec.get("event") in LiveReducer.EVENTS:
                 try:
-                    self.live.feed(rec)
+                    self.live.feed(rec, older=older)
                 except Exception:
                     pass          # one bad record must never stop the stream
-            # Each built window keeps ingesting after its scan, so the panels
-            # stay current between rebuilds instead of ageing a full interval.
-            self.panels_by_window.feed(rec)
+            if not older:
+                # Each built window keeps ingesting after its scan, so the panels
+                # stay current between rebuilds instead of ageing a full interval.
+                self.panels_by_window.feed(rec)
             n += 1
         self.stats["records"] += n
         return n
@@ -115,57 +134,113 @@ class Aggregator:
         return n
 
     def poll_once(self):
+        if not self.positioned.is_set():
+            return 0
         with self.lock:
             n = self.consume(self.source.poll())
             self.source.prune_state()
-            self.source.save_state()
             self.stats["last_poll"] = time.time()
         return n
 
     def backfill_now(self):
-        """Fill RETENTION once at startup.  The one expensive read.
+        """Position the tail, then fill RETENTION behind it.  The one expensive read.
 
-        This populates the live bins only.  The historical tier is not filled
-        here: it is built per selected window by the registry, which seeks to
-        the window's first byte instead of replaying everything the tailer
-        happens to reach.  Records older than retention are discarded on arrival
-        by the buckets, so over-reading costs time, never correctness.
+        Every file is handed to the tail at its end first, so the polling that
+        app.py runs alongside this follows only what the collector writes from
+        here on.  The history behind that point is then read NEWEST FIRST
+        (`tail.read_back`) into the live tier, a batch per lock hold, so the page
+        is live throughout and watches the bins fill from now backwards.  The
+        historical tier is not filled here: it is built per selected window by
+        the registry, which seeks to the window's first byte.
+
+        Nothing about a previous run is consulted.  The span read is
+        `min(backfill_hours, retention)` back from now, found by timestamp, so
+        what the page holds is a function of the collector's files and the clock
+        -- never of when this service was last running.
         """
         hours = int(self.cfg.get("live.backfill_hours", 168))
-        if hours <= 0:
-            self.backfill = {"state": "skipped", "pct": 100, "records": 0, "hours": 0}
-            self.source.seek_all_to_end()
-            self.source.save_state()
-            self.read_node_tier()
+        span = min(hours * 3600, self.live.retention_s) if hours > 0 else 0
+        since = time.time() - span if span else None
+        try:
+            with self.lock:
+                plan = self.source.position(since)
+                total = sum(e["end"] - e["start"] for e in plan)
+                self.backfill = {
+                    "state": "running" if span else "skipped",
+                    "pct": 0 if span else 100, "records": 0,
+                    "hours": hours if span else 0,
+                    "from": (time.strftime("%Y-%m-%d %H:%M:%S",
+                                           time.localtime(since))
+                             if since else None),
+                    "bytes": 0, "total_bytes": total, "files": len(plan)}
+        except Exception as e:                     # never wedge the tail behind it
+            self.backfill = {"state": "error", "error": str(e), "pct": 0,
+                             "records": 0, "hours": hours}
             return 0
-        self.backfill = {"state": "running", "pct": 0, "records": 0, "hours": hours}
-        total = sum(f["size"] for f in self.reports["ebpf"]["files"]) or 1
-        seen = 0
-        with self.lock:
-            for rec in self.source.poll(cold_start_allowed=True):
-                self.consume([rec])
-                seen += 1
-                if seen % 20000 == 0:
-                    read = self.source.stats["bytes_read"]
-                    self.backfill.update(pct=min(99, int(100 * read / total)),
-                                         records=seen)
-            self.source.save_state()
-        retained = self.live.buckets.oldest_epoch()
-        self.backfill.update(
-            state="done", pct=100, records=seen,
-            # What the read actually reached back to, which after a cold start is
-            # bounded by live.backfill_mb per file rather than by the hours asked
-            # for. The live window states this too, so a short fill reads as a
-            # gap in the old bins instead of as a quiet fleet.
-            retained_from=(time.strftime("%Y-%m-%d %H:%M:%S",
-                                         time.localtime(retained))
-                           if retained else None),
-            retained_hours=(round((time.time() - retained) / 3600.0, 1)
-                            if retained else None))
+        finally:
+            self.positioned.set()
         # Materialise the node tier now rather than at the first scheduled tick:
         # it is a snapshot feed, not a window aggregate, and leaving it blank for
-        # a whole rebuild interval would read as an absent feed.
-        self.rebuild_history()
+        # a whole rebuild interval would read as an absent feed. Its failure is
+        # its own -- recorded where node.result()'s would be -- and must not
+        # leave the eBPF history unread.
+        try:
+            self.rebuild_history()
+        except Exception as e:
+            with self.lock:
+                self.node_result = {"_error": str(e)}
+        if not span:
+            return 0
+
+        t0 = time.time()
+        stats = {"bytes": 0, "parse_errors": 0, "records": 0}
+
+        def raws():
+            for _ts, raw in read_back(plan, stats):
+                stats["records"] += 1
+                yield raw
+
+        # Consumed lazily, a batch per lock hold, never materialised: holding a
+        # batch of parsed records alive makes every garbage-collector pass
+        # rescan them, which measured as a 50% slower read.
+        stream = raws()
+        try:
+            while True:
+                with self.lock:
+                    before = stats["records"]
+                    self.consume(itertools.islice(stream, BACKFILL_BATCH), older=True)
+                    if stats["records"] == before:
+                        break
+                    self.backfill.update(
+                        records=stats["records"], bytes=stats["bytes"],
+                        pct=min(99, int(100 * stats["bytes"] / total)) if total else 99)
+                # A released lock is not handed over: this thread still holds
+                # the GIL and would take it straight back, starving the tail and
+                # every API read until the backfill ends. Yield so a waiter gets
+                # its turn.
+                time.sleep(0)
+        except Exception as e:                     # the tail runs on regardless
+            with self.lock:
+                self.backfill.update(state="error", error=str(e),
+                                     records=stats["records"])
+            return stats["records"]
+        seen = stats["records"]
+        with self.lock:
+            retained = self.live.buckets.oldest_epoch()
+            self.backfill.update(
+                state="done", pct=100, records=seen, bytes=stats["bytes"],
+                parse_errors=stats["parse_errors"],
+                elapsed_s=round(time.time() - t0, 1),
+                # What the read actually reached back to. Younger than `from`
+                # when the feed itself is -- a collector started inside the
+                # window, or `feeds.ebpf.days` not covering it -- and the live
+                # window states this too, so the gap reads as a gap in the old
+                # bins instead of as a quiet fleet.
+                retained_from=(time.strftime("%Y-%m-%d %H:%M:%S",
+                                             time.localtime(retained))
+                               if retained else None),
+                retained_hours=(round((time.time() - retained) / 3600.0, 1)
+                                if retained else None))
         return seen
 
     # ---------------------------------------------------------------- results
