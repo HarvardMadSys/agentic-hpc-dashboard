@@ -14,7 +14,7 @@ import { CountCost } from '../components/CountCost';
 import { Plate } from '../components/Plate';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint, fmt, mb, pc } from '../lib/format';
-import { pick } from '../lib/panels';
+import { pick, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 
 /** One row per unit: the whole point is that the ranking changes between them. */
@@ -37,6 +37,7 @@ export function OverviewTab({
   traj: Trajectories | null;
 }) {
   const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
+  const win = winLabel(tm);
   const res = pick<Resources>(P, 'resources', 'ebpfm');
   const io = pick<IoProcess>(P, 'io_process', 'ebpfm');
   const sb = pick<Sandbox>(P, 'sandbox', 'ebpfm');
@@ -111,13 +112,13 @@ export function OverviewTab({
           note="newest complete minute from the live tier"
         />
         <Plate
-          k="tool calls in window"
+          k={`tool calls ${win}`}
           total={have.length ? totCalls : null}
           stripe="var(--s2)"
           by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.calls ?? null]))}
         />
         <Plate
-          k="cpu seconds in window"
+          k={`cpu seconds ${win}`}
           total={have.length ? totCpu : null}
           stripe="var(--s6)"
           by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.cpu_s ?? resBy[c]?.cpu_s ?? null]))}

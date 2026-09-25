@@ -253,6 +253,139 @@ def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True):
             return
 
 
+# ------------------------------------------------------- windowed re-scan
+#
+# The historical reducers (quantiles, CCDFs, Gini, the dedup index) are not
+# resumable from a byte offset and hold no time index, so a window change cannot
+# be served by slicing them the way the live buckets are sliced -- they have to
+# be rebuilt from the rows.  Rebuilding must cost the WINDOW, not the DAY, or
+# narrowing to the last hour would read the same 10-20 GB as asking for all of
+# it, and nobody would use the control.
+#
+# A day-file is appended as events occur, so it is sorted by timestamp: the
+# first in-window byte is findable by binary search over offsets.  A 1-hour view
+# of a 15 GB day-file then reads ~20 probes and one hour of rows.
+
+
+def seek_to_epoch(fh, since, size, probe_lines=64):
+    """Offset of the first line in `fh` whose timestamp is >= `since`.
+
+    `size` bytes is the search space; the return is `size` when the file holds
+    nothing in range, which lets the caller skip it without opening a stream.
+
+    A probe that lands on lines carrying no resolvable timestamp searches
+    EARLIER rather than guessing.  That reads more than strictly necessary,
+    which is the right way to be wrong here: the alternative is starting the
+    rebuild after rows that belonged in the window.
+    """
+    lo, hi, best = 0, size, size
+    while lo < hi:
+        mid = (lo + hi) // 2
+        off, ts = _probe(fh, mid, probe_lines)
+        if ts is None:
+            hi = mid                      # unplaceable: widen backwards
+        elif ts >= since:
+            best = min(best, off)
+            hi = mid
+        else:
+            lo = max(off, mid) + 1        # off >= mid, so this always advances
+    return best
+
+
+def _probe(fh, pos, limit):
+    """Align to the next whole line at/after `pos`; return (offset, ts|None)."""
+    fh.seek(pos)
+    if pos:
+        fh.readline()                     # drop the line we landed inside
+    off = fh.tell()
+    for _ in range(limit):
+        line = fh.readline()
+        if not line:
+            return off, None
+        if not line.strip():
+            continue
+        try:
+            ts = epoch_of(json.loads(line))
+        except ValueError:
+            continue
+        if ts is not None:
+            return off, ts
+    return off, None
+
+
+def window_plan(roots, since, days=0):
+    """Per-file byte range a window touches, plus the total bytes to read.
+
+    Built up front rather than discovered while streaming, so the rebuild can
+    report a real percentage instead of a spinner -- and so the cost of a window
+    is answerable BEFORE committing to it.
+    """
+    plan = []
+    for p in day_files(roots, days):
+        try:
+            with open(p, "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                start = seek_to_epoch(fh, since, size)
+        except OSError:
+            continue
+        if start < size:
+            plan.append({"path": p, "start": start, "size": size})
+    return plan, sum(e["size"] - e["start"] for e in plan)
+
+
+def _window_stream(entry, norm, since, until, stats):
+    """One file's in-window records as `(ts, rec)`, ascending."""
+    try:
+        fh = open(entry["path"], "rb")
+    except OSError:
+        return
+    with fh:
+        fh.seek(entry["start"])
+        for line in fh:
+            stats["bytes"] += len(line)
+            if not line.strip():
+                continue
+            stats["scanned"] += 1
+            try:
+                raw = json.loads(line)
+            except ValueError:
+                stats["parse_errors"] += 1
+                continue
+            rec = norm.normalize(raw)
+            if rec is None:
+                continue
+            ts = rec.get("_ts_epoch")
+            if ts is None:
+                # A record that cannot be placed in time cannot be attributed to
+                # a window.  Counted, never folded into one silently.
+                stats["no_ts"] += 1
+                continue
+            if ts < since:
+                continue
+            if until is not None and ts > until:
+                return                    # sorted: nothing later qualifies
+            yield ts, rec
+
+
+def window_scan(plan, norm, since, until=None):
+    """Yield `(rec, stats)` for every in-window record, OLDEST FIRST.
+
+    Ascending order is a correctness requirement, not a preference: the tool-mix
+    shell-wrapper dedup relies on a child's exit arriving before the shell that
+    waited on it, and a trajectory's run-length-encoded chain is appended in
+    place.  Fed newest-first, both would be wrong rather than merely unsorted.
+
+    Per-file streams are k-way merged on timestamp for the same reason `scan`
+    merges: concatenating gives all of host B then all of host A, which is not
+    one ordered stream, it is seven of them end to end.
+    """
+    stats = {"scanned": 0, "bytes": 0, "parse_errors": 0, "no_ts": 0,
+             "files": len(plan)}
+    streams = [_window_stream(e, norm, since, until, stats) for e in plan]
+    for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
+        yield rec, stats
+
+
 def meta_header(f, reports, cfg, matched, truncated, elapsed):
     return {"_meta": {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),

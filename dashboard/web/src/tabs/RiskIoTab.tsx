@@ -66,11 +66,14 @@ export function RiskIoTab({
   cls,
   url,
   setUrl,
+  windowMin,
 }: {
   P: Panels;
   cls: Cls[];
   url: UrlState;
   setUrl: (patch: Partial<UrlState>, push?: boolean) => void;
+  /** Resolved by the service, so the bench's from/to match the charts above. */
+  windowMin?: number | null;
 }) {
   const io = pick<IoProcess>(P, 'io_process', 'ebpfm');
   const byClass = io.by_class ?? {};
@@ -564,7 +567,7 @@ export function RiskIoTab({
           <h1 style={{ fontSize: 18 }}>Event bench</h1>
         </div>
       </div>
-      <EventsExplorer url={url} setUrl={setUrl} />
+      <EventsExplorer url={url} setUrl={setUrl} windowMin={windowMin ?? null} />
     </>
   );
 }

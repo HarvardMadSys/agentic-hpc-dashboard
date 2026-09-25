@@ -17,20 +17,6 @@ import { pcol, plbl, purposeLegend } from '../lib/purposes';
 
 /* ------------------------------------------------------------- helpers */
 
-/** Sum of a rate column over the window, skipping gaps. `null` when all gaps. */
-function windowTotal(rate: LiveResponse['rate'], c: string): number | null {
-  let any = false;
-  let s = 0;
-  for (const r of rate) {
-    const v = r[c];
-    if (typeof v === 'number') {
-      any = true;
-      s += v;
-    }
-  }
-  return any ? s : null;
-}
-
 /** The newest bin that actually carried a value for this class. */
 function latest(rate: LiveResponse['rate'], c: string): number | null {
   for (let i = rate.length - 1; i >= 0; i--) {
@@ -145,22 +131,34 @@ export function LiveTab({
     pts: rate.map((r, i) => ({ x: i, y: typeof r[c] === 'number' ? (r[c] as number) : null })),
   }));
 
-  /* hourly x ticks over a 24 h / per-minute window */
-  const xt = useMemo(
-    () => rate.map((_, i) => i).filter((i) => rate[i].t?.endsWith(':00') && i % 120 === 0),
-    [rate],
-  );
+  /* X ticks that stay legible at ANY window.
+   *
+   * The old rule -- every row ending `:00`, every 120th -- was correct for
+   * exactly one window: 24 h at one-minute bins. At 1 h it yields a single tick
+   * and at 7 d it yields eighty. So: pick a round interval that lands ~10 ticks
+   * across whatever is on screen, and place them on LOCAL wall-clock multiples
+   * of it, so a label reads `14:00` and not `14:07`. Local, not epoch-modulo,
+   * because a half-hour timezone would otherwise tick on the half hour. */
+  const xt = useMemo(() => {
+    if (!rate.length) return [];
+    const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080];
+    const step = STEPS.find((s) => rate.length / s <= 10) ?? STEPS[STEPS.length - 1];
+    const out: number[] = [];
+    for (let i = 0; i < rate.length; i++) {
+      const e = Number(rate[i].epoch);
+      if (!Number.isFinite(e)) continue;
+      const d = new Date(e * 1000);
+      const minuteOfDay = d.getHours() * 60 + d.getMinutes();
+      if (step >= 1440 ? minuteOfDay === 0 : minuteOfDay % step === 0) out.push(i);
+    }
+    return out;
+  }, [rate]);
 
   const gaps = useMemo(
     () => rate.filter((r) => cls.every((c) => typeof r[c] !== 'number')).length,
     [rate, cls],
   );
 
-  const totals = Object.fromEntries(CLS.map((c) => [c, windowTotal(rate, c)]));
-  const windowAll = CLS.reduce<number | null>((a, c) => {
-    const v = totals[c];
-    return v == null ? a : (a ?? 0) + v;
-  }, null);
   const perMin = Object.fromEntries(CLS.map((c) => [c, latest(rate, c)]));
   const perMinAll = CLS.reduce<number | null>((a, c) => {
     const v = perMin[c];
@@ -175,6 +173,19 @@ export function LiveTab({
   const procs = nowByClass(now, 'procs');
   const procsTot = nowNum(now, ['procs_total', 'agent_procs', 'procs']) ??
     (Object.keys(procs).length ? CLS.reduce((a, c) => a + (procs[c] ?? 0), 0) : null);
+  // How a user is counted, end to end. The collector walks the processes it
+  // tracks on each residency tick, buckets them by class, and emits the size of
+  // the distinct-username set per class -- so the unit at the source is
+  // "distinct users per (host, class)", over tracked live processes only, and a
+  // process whose owner will not resolve is skipped. The reducer then SUMS that
+  // across hosts, and the headline below sums the three classes, because the
+  // payload carries no `users_total` to prefer.
+  //
+  // Both sums double-count: one person on two login nodes counts twice, and one
+  // person running an agent from a shell counts in both classes. So this is an
+  // upper bound on distinct humans, not a headcount -- read it as "user
+  // sessions on the fleet". It is exact only when it says one host reporting
+  // and a single class is non-zero.
   const users = nowByClass(now, 'users');
   const usersTot = nowNum(now, ['users_total', 'users']) ??
     (Object.keys(users).length ? CLS.reduce((a, c) => a + (users[c] ?? 0), 0) : null);
@@ -209,18 +220,26 @@ export function LiveTab({
   }
 
   const windowMin = L?.window?.minutes ?? rate.length;
+  // The service's own name for the span, so the chart title, the plate and the
+  // picker cannot disagree about what is on screen.
+  const windowLbl = L?.window?.label ?? `${fint(windowMin)} min`;
 
   return (
     <>
-      <div className="plates">
+      <div className="plates three">
         <Plate
-          k="process exits / min"
+          k="events / min"
           total={perMinAll}
           stripe="var(--s1)"
           by={perMin}
+          tip={
+            'events recorded during the last minute that has fully elapsed.\n\n' +
+            'the minute in progress is still filling, so counting it would always ' +
+            'read low and the number would dip every time the page refreshed.'
+          }
           note={
             <>
-              newest complete minute
+              in the last full minute
               {perMinAll != null && perMin.agent != null
                 ? ` · ${pc((100 * perMin.agent) / (perMinAll || 1))} agent`
                 : ''}
@@ -228,19 +247,7 @@ export function LiveTab({
           }
         />
         <Plate
-          k={`exits in window (${fint(windowMin)} min)`}
-          total={windowAll}
-          stripe="var(--s2)"
-          by={totals}
-          note={
-            <>
-              {fint(rate.length - gaps)} of {fint(rate.length)} bins carried a record
-              {gaps ? ` · ${fint(gaps)} gaps` : ''}
-            </>
-          }
-        />
-        <Plate
-          k="resident roots"
+          k="actors"
           total={rootsTot}
           stripe="var(--s4)"
           by={roots}
@@ -255,12 +262,21 @@ export function LiveTab({
           }
         />
         <Plate
-          k="distinct users on the fleet"
+          k="users on the fleet"
           total={usersTot}
           stripe="var(--s5)"
           by={users}
+          tip={
+            'distinct usernames with a running process, counted separately on ' +
+            'each host and in each class, then added up.\n\n' +
+            'someone logged in to two nodes is counted twice, and someone running ' +
+            'an agent from their own shell is counted in both classes. so this is ' +
+            'the high end of how many people could be on the fleet, not a headcount.'
+          }
           note={
             <>
+              counted per host and per class, so an upper bound
+              <br />
               {fint(hosts.length)} hosts reporting
               {liveFeed?.lag_s != null ? ` · newest record ${lagStr(liveFeed.lag_s)} old` : ''}
             </>
@@ -270,7 +286,7 @@ export function LiveTab({
 
       <div className="grid wide">
         <Panel
-          title={`Process exits per minute · last ${fint(windowMin)} minutes`}
+          title={`Process exits per minute · last ${windowLbl}`}
           span
           live
           feed={liveFeed?.name ?? 'live'}
@@ -300,7 +316,7 @@ export function LiveTab({
             xticks={xt.length ? xt : undefined}
             xfmt={(i) => rate[Math.round(i)]?.t ?? ''}
             ylabel="exits / min"
-            xlabel={`${fint(windowMin)} minutes`}
+            xlabel={`last ${windowLbl}`}
             xname="at"
             yname="exits/min"
           />

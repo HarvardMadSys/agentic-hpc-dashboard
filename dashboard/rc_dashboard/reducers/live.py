@@ -51,15 +51,18 @@ class LiveReducer:
     def __init__(self, cfg, classes):
         self.cfg = cfg
         self.classes = list(classes)
-        win = int(cfg.get("live.window_min", 1440)) * 60
+        # ONE instance, sized at RETENTION.  Every selected window is a slice of
+        # these bins rather than its own accumulator: two accumulators over the
+        # same stream are two chances to disagree about the same minute.
+        self.retention_s = int(cfg.get("live.retention_min", 10080)) * 60
         self.bin_s = int(cfg.get("live.bin_s", 60))
-        self.buckets = RollingBuckets(win, self.bin_s,
+        self.buckets = RollingBuckets(self.retention_s, self.bin_s,
                                       int(cfg.get("live.clock_skew_s", 120)))
         self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 500)))
         self.submit_tail = collections.deque(maxlen=int(cfg.get("live.submit_tail", 50)))
         self.hosts = {}          # host -> newest residency_totals-derived rollup
         self.trees = {}          # (host, tree_root_pid) -> newest residency tick
-        self.window_s = win
+        self.window_s = self.retention_s
         self.submits_in_window = collections.deque()
         self.conn_unmatched_births = None
 
@@ -146,16 +149,29 @@ class LiveReducer:
         self.submits_in_window.append(row)
 
     # ---------------------------------------------------------------- result
-    def result(self, now=None):
+    def result(self, now=None, window_s=None):
+        """The live tier as seen through `window_s` (default: all of retention).
+
+        Everything time-bounded here reads the SAME cutoff -- the rate series,
+        its headline totals, the submissions and the event tail -- so a reader
+        never sees a chart and a plate that disagree about what "in window"
+        means.  The host and residency plates are deliberately NOT cut: they are
+        a snapshot of what is running now, not an aggregate over the window, and
+        narrowing the window does not make a running process stop running.
+        """
         now = now or time.time()
         self.buckets.evict(now)
-        cutoff = now - self.window_s
-        while self.submits_in_window and (self.submits_in_window[0]["epoch"] or 0) < cutoff:
+        # Prune to retention, then read through the view's own cutoff: the deque
+        # is shared by every window, so it must hold the widest one.
+        while (self.submits_in_window
+               and (self.submits_in_window[0]["epoch"] or 0) < now - self.retention_s):
             self.submits_in_window.popleft()
+        window_s = min(int(window_s or self.retention_s), self.retention_s)
+        cutoff, _end = self.buckets.covers(now, window_s)
 
-        rate = self.buckets.series(self.classes, "n", now)
+        rate = self.buckets.series(self.classes, "n", now, window_s)
         last = self.buckets.last_complete_bin(self.classes, now)
-        totals = self.buckets.totals()
+        totals = self.buckets.totals(now=now, window_s=window_s)
 
         # plates: all three classes, from residency_totals
         agg = collections.defaultdict(lambda: collections.Counter())
@@ -179,7 +195,7 @@ class LiveReducer:
             for _t, d in (h.get("by_agent_type") or {}).items():
                 autonomous += (d or {}).get("autonomous") or 0
 
-        subs = list(self.submits_in_window)
+        subs = [s for s in self.submits_in_window if (s["epoch"] or 0) >= cutoff]
         by_cls_subs = collections.Counter(s["actor3"] for s in subs)
 
         hosts = []
@@ -230,10 +246,22 @@ class LiveReducer:
                 hosts.append({"host": host, "ts": t.get("epoch"), "by_class": {},
                               "note": "residency only, no residency_totals tick"})
 
+        retained = self.buckets.oldest_epoch()
         return {
-            "window": {"minutes": self.window_s // 60, "bin_s": self.bin_s,
-                       "from": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff)),
-                       "to": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))},
+            "window": {
+                "minutes": window_s // 60, "bin_s": self.bin_s,
+                "from": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff)),
+                "to": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "retention_minutes": self.retention_s // 60,
+                # How far the bins ACTUALLY reach back. After a cold start this
+                # is younger than the window, and the page says so rather than
+                # drawing empty bins that read as a quiet fleet.
+                "retained_from": (time.strftime("%Y-%m-%d %H:%M:%S",
+                                                time.localtime(retained))
+                                  if retained else None),
+                "retained_minutes": (int((now - retained) // 60)
+                                     if retained else None),
+            },
             "rate": rate,
             # Every per-class quantity is a plain {class: value} map under its own
             # bare name; a headline number is the map's sum, never a separate
@@ -260,8 +288,13 @@ class LiveReducer:
                 "submission_users": len({s["user"] for s in subs}) if subs else 0,
             },
             "hosts": hosts,
-            "events": list(self.event_tail),
-            "submits": list(self.submit_tail),
+            # A bounded tail, cut to the window. The tail is `event_tail` deep
+            # REGARDLESS of window -- it is a tail, not an aggregate -- so a wide
+            # window does not deepen it; narrowing one only removes rows that
+            # fell outside. `events_tail_depth` says which limit bit.
+            "events": [e for e in self.event_tail if (e.get("epoch") or 0) >= cutoff],
+            "events_tail_depth": self.event_tail.maxlen,
+            "submits": [s for s in self.submit_tail if (s.get("epoch") or 0) >= cutoff],
             "skew_dropped": self.buckets.skew_dropped,
             "no_timestamp": self.buckets.no_ts,
             "conn_unmatched_births": self.conn_unmatched_births,

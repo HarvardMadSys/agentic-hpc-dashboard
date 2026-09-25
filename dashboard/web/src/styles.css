@@ -259,6 +259,49 @@ main {
   background: var(--surface-2);
 }
 
+/* ------------------------------------------------------------ window picker
+ * Sits directly above the class filter: both answer "what is on screen", and a
+ * reader checking one should not have to hunt for the other. */
+.winpick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.wininput {
+  all: unset;
+  cursor: text;
+  padding: 4px 9px;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink);
+  background: var(--surface);
+  width: 62px;
+}
+.wininput:focus {
+  border-color: var(--crimson-ink);
+}
+.wininput.bad {
+  border-color: var(--crimson-ink);
+  background: var(--surface-2);
+}
+/* A note beside the control, never instead of it: the picker keeps reading the
+ * value in force while it explains why that is not what was asked for. */
+.winnote {
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+}
+.winnote.bad {
+  color: var(--crimson-ink);
+}
+.winnote.build {
+  color: var(--ink-2);
+}
+
 /* -------------------------------------------------------------- panel grid */
 .grid {
   display: grid;
@@ -311,6 +354,9 @@ main {
   .plates {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+  .plates.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 .plate {
   background: var(--surface);
@@ -337,6 +383,13 @@ main {
   letter-spacing: 0.09em;
   color: var(--muted);
   font-family: 'IBM Plex Mono', monospace;
+}
+/* a label that carries a tip is the one affordance on a plate: the caveat about
+   how the number is counted lives there, so it has to look hoverable */
+.plate .k[data-tip] {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
 }
 .plate .v {
   font-size: 29px;
@@ -424,6 +477,10 @@ svg {
   font-size: 10.5px;
   fill: var(--ink-2);
   font-family: 'IBM Plex Mono', monospace;
+}
+/* narrow slot: shrink the value rather than drop it */
+.vlbl.sm {
+  font-size: 8.5px;
 }
 .grid-line {
   stroke: var(--rule);
@@ -719,6 +776,47 @@ tbody tr:last-child td {
   flex-direction: column;
   gap: 2px;
 }
+/* Feed present, rows exist, the reduction is not finished. A THIRD state, and
+ * it must look like neither `nofeed` (dashed, blames the path) nor `none`
+ * (a flat rule, asserts a measurement). Solid border, and a moving bar. */
+.building {
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: var(--surface-2);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 92px;
+  justify-content: center;
+}
+.building .hd {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.building .bar {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+.building .bar i {
+  display: block;
+  height: 100%;
+  background: var(--crimson-ink);
+  transition: width 0.4s linear;
+}
+.building .paths {
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+  margin: 0;
+}
+
 /* feed present, no rows -- a DIFFERENT state, and it must look different. */
 .none {
   font-size: 11px;

@@ -13,11 +13,12 @@ import { CountCost } from '../components/CountCost';
 import { Plate } from '../components/Plate';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint, fmt, pc } from '../lib/format';
-import { pick, shown } from '../lib/panels';
+import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 
 export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
+  const win = winLabel(tm);
   const byClass = tm.by_class ?? {};
   const have = shown(byClass, cls);
   const buckets = tm.buckets ?? [];
@@ -50,7 +51,7 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
     <>
       <div className="plates">
         <Plate
-          k="tool calls in window"
+          k={`tool calls ${win}`}
           total={have.length ? totCalls : null}
           stripe="var(--s1)"
           by={callsBy}
@@ -61,7 +62,7 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           }
         />
         <Plate
-          k="cpu seconds in window"
+          k={`cpu seconds ${win}`}
           total={have.length ? totCpu : null}
           stripe="var(--s6)"
           by={cpuBy}

@@ -21,6 +21,7 @@ export function CountCost({
   countAxis = '% of calls',
   costAxis = '% of CPU seconds',
   pctAxis = true,
+  labelTop = true,
 }: {
   /** One group per category; `v` holds `${cls}` -> count and `cpu:${cls}` -> cost. */
   groups: BarGroup[];
@@ -33,6 +34,9 @@ export function CountCost({
   countAxis?: string;
   costAxis?: string;
   pctAxis?: boolean;
+  /** print each bar's value above it. On by default: a share near 0 draws a bar
+   *  a pixel tall, and hover is not a reasonable way to read a number. */
+  labelTop?: boolean;
 }) {
   const f = pctAxis
     ? { fmtVal: (v: number) => v.toFixed(1) + '%', tickFmt: (t: number) => t + '%' }
@@ -52,6 +56,7 @@ export function CountCost({
         H={H}
         maxBar={maxBar}
         ylabel={countAxis}
+        labelTop={labelTop}
         {...f}
       />
       <div className="eyebrow" style={{ marginTop: 6 }}>
@@ -64,6 +69,7 @@ export function CountCost({
         H={H}
         maxBar={maxBar}
         ylabel={costAxis}
+        labelTop={labelTop}
         {...f}
       />
       <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />

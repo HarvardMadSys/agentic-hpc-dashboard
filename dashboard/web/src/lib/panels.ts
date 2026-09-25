@@ -20,6 +20,18 @@ export function pick<T extends PanelEnvelope>(P: Panels | undefined, key: string
   return absent(feed) as unknown as T;
 }
 
+/** How a plate should name the span it counted over.
+ *
+ * Read off the PANEL's own envelope rather than off the picker, so a plate can
+ * never name a window the numbers beside it were not reduced over -- during a
+ * rebuild those two genuinely differ, and the plate is the one that must be
+ * right. Falls back to the bare phrase when the backend sent no window, which
+ * is what an older service or the absent-feed envelope looks like.
+ */
+export function winLabel(p: PanelEnvelope | null | undefined): string {
+  return p?._window?.label ? `last ${p._window.label}` : 'in window';
+}
+
 /** Class keys present in a by_class map, canonical order, intersected with the filter. */
 export function shown<T>(
   by: Record<string, T> | undefined | null,

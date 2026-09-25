@@ -8,8 +8,9 @@ import type {
   PanelsResponse,
   TrajRank,
   Trajectories,
+  WindowsResponse,
 } from './types';
-import { getConfig, getFeeds, getPanels, getTrajectories } from './client';
+import { getConfig, getFeeds, getPanels, getTrajectories, getWindows } from './client';
 
 export interface Async<T> {
   data: T | null;
@@ -56,7 +57,19 @@ function useFetched<T>(fn: (s?: AbortSignal) => Promise<T>, deps: unknown[]): As
 }
 
 export const useConfig = (): Async<ConfigTree> => useFetched(getConfig, []);
-export const usePanels = (): Async<PanelsResponse> => useFetched(getPanels, []);
+
+/* The window is a dependency, not a filter applied after the fetch: the
+ * historical tier is REDUCED per window server-side, so changing it is a new
+ * request, and `buildNonce` re-requests when that build finishes. */
+export const usePanels = (win: number | null, buildNonce = 0): Async<PanelsResponse> =>
+  useFetched((s) => getPanels(win, s), [win, buildNonce]);
+
+export const useTrajectories = (
+  rank: TrajRank,
+  win: number | null,
+  buildNonce = 0,
+): Async<Trajectories> =>
+  useFetched((s) => getTrajectories(rank, win, s), [rank, win, buildNonce]);
 
 /** `/api/feeds` also arrives over the websocket; `seed` lets the WS overwrite it. */
 export function useFeeds(): Async<FeedsResponse> & { merge: (f: FeedsResponse) => void } {
@@ -66,5 +79,10 @@ export function useFeeds(): Async<FeedsResponse> & { merge: (f: FeedsResponse) =
   return { ...base, data: override ?? base.data, merge };
 }
 
-export const useTrajectories = (rank: TrajRank): Async<Trajectories> =>
-  useFetched((s) => getTrajectories(rank, s), [rank]);
+/** The offered windows and the retention ceiling, seeded over REST.
+ *
+ * The websocket supersedes this with live build progress; the REST read exists
+ * so the picker is populated before the socket is up, and stays populated if it
+ * never comes up at all.
+ */
+export const useWindows = (): Async<WindowsResponse> => useFetched(getWindows, []);

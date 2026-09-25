@@ -130,17 +130,36 @@ Two more that the payloads force:
   unable to read the field (it is unprivileged), so it gets its own hue *and* a hatch
   (`src/components/Defs.tsx`) and is excluded from the sandboxed numerator.
 
+## The window control
+
+`src/components/WindowPicker.tsx`, directly above the class filter — both answer "what is on
+screen", and a reader checking one should not have to hunt for the other. It is URL-backed as
+`?win=<minutes>`, like every other view knob.
+
+Three rules it follows, all of them the same rule this page follows everywhere:
+
+- **Presets come from the service**, filtered server-side against retention, so the picker
+  cannot offer a span the process does not hold.
+- **A clamp is shown, never silent.** Ask for 30 days against 7 days of retention and the
+  control reads `asked 30d · showing 7d` with the reason on hover.
+- **The three kinds of nothing stay three.** A panel whose window is still being reduced
+  renders `<Building>` — a solid frame and a percentage — not `none` (which would assert a
+  measurement) and not the empty state (which would blame the feed).
+
+Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
+picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
+
 ## Tabs
 
 | tab | source | notes |
 |---|---|---|
-| **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, 24 h per-minute rate chart with real gaps, per-host table with a per-class split, bounded event stream, submissions |
-| **Overview** | `/api/panels` | share of calls vs share of CPU; the same fleet in eight units |
+| **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
+| **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
 | **Resources** | `resources` | run vs wait accumulators with coverage, quantile spine, stall by tool, delay accounting shown as `not measured` |
 | **Risk & I/O** | `io_process` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, per-tool/per-user — plus the **event bench** (filter bar → `/api/events` → `/api/export`) |
 | **Sandbox** | `sandbox` | sandbox × approval as independent axes, two grains, the `ancestry_matrix` with `reading` surfaced |
-| **Trajectories** | `/api/trajectories?rank=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct` |
+| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct` |
 | **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
 
 ### Live transport

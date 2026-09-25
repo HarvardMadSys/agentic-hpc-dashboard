@@ -7,12 +7,14 @@ pays for the records it asked for -- a residency reducer must not be walked past
 Two aggregation tiers, because they have different composability:
 
 * The LIVE tier updates continuously from the tail.  Its state is bucketed or
-  incremental, so a 24-hour window costs tens of KB rather than the ~10-20 GB/day
-  the raw records occupy.
+  incremental, so a week of retention costs hundreds of KB rather than the
+  ~10-20 GB/day the raw records occupy, and every selected window is an exact
+  slice of the same bins.
 * The HISTORICAL tier (quantiles, CCDFs, Gini) is not resumable from a byte
-  offset without persisted sketch state, so it rebuilds on a schedule and
-  publishes `full_built_at` -- the age of those panels is visible rather than
-  implied.
+  offset without persisted sketch state, so it cannot be sliced.  It is built
+  PER WINDOW by `windows.WindowRegistry`, on a schedule and on demand, and
+  publishes `built_at` and its drift -- the age and the true span of those
+  panels are visible rather than implied.
 """
 import json
 import os
@@ -20,19 +22,11 @@ import threading
 import time
 
 from . import feeds as feedmod
+from . import windows as winmod
 from .normalize import Normalizer
-from .reducers.io import IoReducer
 from .reducers.live import LiveReducer
-from .reducers.resources import NodeReducer, ResourceReducer
-from .reducers.risk import RiskReducer
-from .reducers.sandbox import SandboxReducer
-from .reducers.tools import ToolMixReducer
-from .reducers.trajectories import TrajectoryReducer
+from .reducers.resources import NodeReducer
 from .tail import FileTailSource
-
-LIVE_REDUCERS = (LiveReducer, TrajectoryReducer)
-HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, SandboxReducer,
-                 RiskReducer)
 
 
 class Aggregator:
@@ -46,39 +40,43 @@ class Aggregator:
         state = os.path.join(cfg.get("cache.state_dir"), "ebpf_offsets.json")
         self.source = FileTailSource(
             self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
-            days=int(cfg.get("feeds.ebpf.days", 2)), state_path=state)
-        self.live = {r.KEY: r(cfg, self.classes) for r in LIVE_REDUCERS}
-        self.hist = {r.KEY: r(cfg, self.classes) for r in HIST_REDUCERS}
+            days=int(cfg.get("feeds.ebpf.days", 8)), state_path=state,
+            cold_start_mb=int(cfg.get("live.backfill_mb", 2048)))
+        # One live reducer, sized at retention; every window slices it.
+        self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
-        self.full_built_at = None
-        self.hist_result = {}
+        self.panels_by_window = winmod.WindowRegistry(
+            cfg, self.classes, self.roots, self.lock)
+        self.node_built_at = None
+        self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
-        self._dispatch = self._build_dispatch()
         self.stats = {"records": 0, "last_poll": None}
 
-    def _build_dispatch(self):
-        d = {}
-        for pool in (self.live, self.hist):
-            for r in pool.values():
-                for ev in getattr(r, "EVENTS", ()):
-                    d.setdefault(ev, []).append(r)
-        return d
+    def roots(self):
+        return (self.reports["ebpf"]["resolved"]
+                or self.cfg.get("feeds.ebpf.roots") or [])
+
+    def start(self):
+        self.panels_by_window.start()
+
+    def stop(self):
+        self.panels_by_window.stop()
 
     # -------------------------------------------------------------- ingestion
-    def consume(self, records, live_only=False):
+    def consume(self, records):
         n = 0
         for raw in records:
             rec = self.norm.normalize(raw)
             if rec is None:
                 continue
-            ev = rec.get("event")
-            for r in self._dispatch.get(ev, ()):
-                if live_only and r.KEY not in self.live:
-                    continue
+            if rec.get("event") in LiveReducer.EVENTS:
                 try:
-                    r.feed(rec)
+                    self.live.feed(rec)
                 except Exception:
                     pass          # one bad record must never stop the stream
+            # Each built window keeps ingesting after its scan, so the panels
+            # stay current between rebuilds instead of ageing a full interval.
+            self.panels_by_window.feed(rec)
             n += 1
         self.stats["records"] += n
         return n
@@ -125,12 +123,20 @@ class Aggregator:
         return n
 
     def backfill_now(self):
-        """Populate the window once at startup.  The one expensive read."""
-        hours = int(self.cfg.get("live.backfill_hours", 24))
+        """Fill RETENTION once at startup.  The one expensive read.
+
+        This populates the live bins only.  The historical tier is not filled
+        here: it is built per selected window by the registry, which seeks to
+        the window's first byte instead of replaying everything the tailer
+        happens to reach.  Records older than retention are discarded on arrival
+        by the buckets, so over-reading costs time, never correctness.
+        """
+        hours = int(self.cfg.get("live.backfill_hours", 168))
         if hours <= 0:
             self.backfill = {"state": "skipped", "pct": 100, "records": 0, "hours": 0}
             self.source.seek_all_to_end()
             self.source.save_state()
+            self.read_node_tier()
             return 0
         self.backfill = {"state": "running", "pct": 0, "records": 0, "hours": hours}
         total = sum(f["size"] for f in self.reports["ebpf"]["files"]) or 1
@@ -144,8 +150,21 @@ class Aggregator:
                     self.backfill.update(pct=min(99, int(100 * read / total)),
                                          records=seen)
             self.source.save_state()
-        self.backfill.update(state="done", pct=100, records=seen)
-        self.read_node_tier()
+        retained = self.live.buckets.oldest_epoch()
+        self.backfill.update(
+            state="done", pct=100, records=seen,
+            # What the read actually reached back to, which after a cold start is
+            # bounded by live.backfill_mb per file rather than by the hours asked
+            # for. The live window states this too, so a short fill reads as a
+            # gap in the old bins instead of as a quiet fleet.
+            retained_from=(time.strftime("%Y-%m-%d %H:%M:%S",
+                                         time.localtime(retained))
+                           if retained else None),
+            retained_hours=(round((time.time() - retained) / 3600.0, 1)
+                            if retained else None))
+        # Materialise the node tier now rather than at the first scheduled tick:
+        # it is a snapshot feed, not a window aggregate, and leaving it blank for
+        # a whole rebuild interval would read as an absent feed.
         self.rebuild_history()
         return seen
 
@@ -165,50 +184,86 @@ class Aggregator:
             return self.reports
 
     def rebuild_history(self):
+        """The scheduled tick: refresh the node snapshot, then every held window.
+
+        A view that has drifted past `panels.max_drift_pct` of its own window is
+        re-scanned by the registry's worker; the rest are just re-materialised,
+        which is what this always did.
+        """
         self.read_node_tier()
         with self.lock:
-            out = {}
-            for key, r in self.hist.items():
-                try:
-                    out[key] = r.result()
-                except Exception as e:
-                    out[key] = {"_error": str(e)}
             try:
-                out["node"] = self.node.result()
+                self.node_result = self.node.result()
             except Exception as e:
-                out["node"] = {"_error": str(e)}
-            self.hist_result = out
-            self.full_built_at = time.strftime("%Y-%m-%d %H:%M:%S")
-            return out
+                self.node_result = {"_error": str(e)}
+            self.node_built_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.panels_by_window.refresh()
+        return self.node_result
 
-    def panels(self):
-        """Historical panels, each stamped with its feed's presence."""
+    def window(self, window_min):
+        """Resolve a requested window against retention.  One rule, one place."""
+        return winmod.resolve(self.cfg, window_min)
+
+    def panels(self, window_min=None):
+        """Historical panels for one window, each stamped with its feed's presence.
+
+        A window still building returns its envelope with `_status='building'`
+        and the progress, rather than an empty panel: "no rows yet" and "not
+        finished reading" are different facts and must not render alike.
+        """
+        win = self.window(window_min)
+        view = self.panels_by_window.request(win["minutes"])
         with self.lock:
             ebpf = feedmod.panel_meta(self.reports["ebpf"])
             node = feedmod.panel_meta(self.reports["ebpf_node"])
+            status = view.status()
             out = {}
-            for key, payload in (self.hist_result or {}).items():
-                meta = node if key == "node" else ebpf
+            for key, payload in (view.payload or {}).items():
+                if key == "trajectories":
+                    continue                       # served by /api/trajectories
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
-                body.update(meta)
+                body.update(ebpf)
+                body["_window"] = status
                 out[key] = body
+            # `_status` stays the FEED's status and `_window.state` the build's:
+            # "the collector wrote nothing" and "we have not finished reading it"
+            # are different facts, and a panel that renders them alike is the
+            # zero-is-not-missing mistake wearing a different hat.
             for key in ("tool_mix", "io_process", "resources", "sandbox", "risk"):
-                out.setdefault(key, dict(ebpf))
-            out.setdefault("node", dict(node))
-            return {"panels": out, "full_built_at": self.full_built_at,
+                if key not in out:
+                    out[key] = dict(ebpf, _window=status)
+            body = dict(self.node_result) if isinstance(self.node_result, dict) \
+                else {"rows": self.node_result}
+            body.update(node)
+            out["node"] = body
+            return {"panels": out,
+                    # The node tier is a snapshot of current state, not a window
+                    # aggregate, so it keeps its own build stamp.
+                    "full_built_at": status["built_at"] or self.node_built_at,
+                    "node_built_at": self.node_built_at,
+                    "window": win,
+                    "window_status": status,
                     "purposes": self.norm.purposes,
                     "purpose_src": self.norm.purpose_src,
                     "classes": self.classes}
 
-    def live_payload(self):
+    def live_payload(self, window_min=None):
+        win = self.window(window_min)
         with self.lock:
-            out = self.live["live"].result()
+            out = self.live.result(window_s=win["minutes"] * 60)
+            out["window"].update(requested_minutes=win["requested"],
+                                 clamped=win["clamped"], note=win["note"],
+                                 label=win["label"])
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
             out["backfill"] = dict(self.backfill)
             return out
 
-    def trajectories(self):
+    def trajectories(self, window_min=None):
+        win = self.window(window_min)
+        view = self.panels_by_window.request(win["minutes"])
         with self.lock:
-            out = self.live["trajectories"].result()
+            payload = (view.payload or {}).get("trajectories")
+            out = dict(payload) if isinstance(payload, dict) else {}
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
+            out["_window"] = view.status()
             return out

@@ -13,6 +13,7 @@ import type {
   PanelsResponse,
   TrajRank,
   Trajectories,
+  WindowsResponse,
 } from './types';
 
 /** Override for a non-root mount or a split dev backend. */
@@ -44,13 +45,30 @@ async function get<T>(path: string, init?: RequestInit): Promise<T> {
   return (await r.json()) as T;
 }
 
+/** `?window_min=N`, or nothing at all when the caller has no opinion.
+ *
+ * Omitted rather than sent as the resolved default: the service decides what
+ * "default" means, so a page that never touched the picker follows
+ * `live.window_min` instead of pinning whatever it happened to read first.
+ */
+function win(minutes: number | null | undefined, sep = '?'): string {
+  return minutes == null ? '' : `${sep}window_min=${encodeURIComponent(minutes)}`;
+}
+
 export const getConfig = (s?: AbortSignal) => get<ConfigTree>('/config', { signal: s });
 export const getFeeds = (s?: AbortSignal) => get<FeedsResponse>('/feeds', { signal: s });
-export const getPanels = (s?: AbortSignal) => get<PanelsResponse>('/panels', { signal: s });
-export const getLive = (s?: AbortSignal) => get<LiveResponse>('/live', { signal: s });
+export const getWindows = (s?: AbortSignal) => get<WindowsResponse>('/windows', { signal: s });
 
-export const getTrajectories = (rank: TrajRank, s?: AbortSignal) =>
-  get<Trajectories>(`/trajectories?rank=${encodeURIComponent(rank)}`, { signal: s });
+export const getPanels = (minutes?: number | null, s?: AbortSignal) =>
+  get<PanelsResponse>(`/panels${win(minutes)}`, { signal: s });
+export const getLive = (minutes?: number | null, s?: AbortSignal) =>
+  get<LiveResponse>(`/live${win(minutes)}`, { signal: s });
+
+export const getTrajectories = (rank: TrajRank, minutes?: number | null, s?: AbortSignal) =>
+  get<Trajectories>(
+    `/trajectories?rank=${encodeURIComponent(rank)}${win(minutes, '&')}`,
+    { signal: s },
+  );
 
 export function getEvents(query: string, cursor?: number | string | null, s?: AbortSignal) {
   const q = cursor ? `${query}${query ? '&' : ''}cursor=${encodeURIComponent(cursor)}` : query;

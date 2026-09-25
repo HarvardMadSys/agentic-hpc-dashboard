@@ -66,6 +66,61 @@ export interface PanelEnvelope {
   _present: boolean;
   _paths: string[];
   _notice: string | null;
+  /** Build state of the window this panel was reduced over. Absent on panels
+   *  that are not window-scoped (the node tier is a snapshot of now). */
+  _window?: WindowStatus | null;
+}
+
+/* ---------------------------------------------------------------- window */
+
+/** A requested window, resolved against what the service actually retains. */
+export interface WindowSpec {
+  minutes: number;
+  requested: number | null;
+  /** True when `minutes` is NOT what was asked for. Never silently true. */
+  clamped: boolean;
+  retention_minutes: number;
+  label: string;
+  note: string | null;
+}
+
+/** One built (or building) window in the service's registry. */
+export interface WindowStatus {
+  minutes: number;
+  label: string;
+  state: 'queued' | 'building' | 'ready' | 'error';
+  error: string | null;
+  /** A previous reduction for this window is still available and on screen.
+   *  Separates a first build (nothing to show) from a drift re-build. */
+  has_payload: boolean;
+  progress: {
+    pct: number;
+    records: number;
+    bytes: number;
+    total_bytes: number;
+    files: number;
+    elapsed_s: number;
+  };
+  built_at: string | null;
+  built_age_s: number | null;
+  covers_from: string | null;
+  covers_to: string | null;
+  /** Seconds of records held BEYOND the window, since the view keeps ingesting. */
+  drift_s: number | null;
+  drift_budget_s: number;
+  live_records: number;
+  replay_dropped: number;
+  covers_note?: string;
+}
+
+export interface WindowsResponse {
+  held: WindowStatus[];
+  max_windows: number;
+  queued: number[];
+  presets: { minutes: number; label: string }[];
+  retention_minutes: number;
+  default_minutes: number;
+  min_minutes: number;
 }
 
 /** A quantile summary. `coverage_pct` is part of the number, not a footnote. */
@@ -285,6 +340,9 @@ export interface Trajectories extends PanelEnvelope {
 export interface PanelsResponse {
   panels: Record<string, PanelEnvelope & Record<string, unknown>>;
   full_built_at: string | null;
+  node_built_at: string | null;
+  window: WindowSpec;
+  window_status: WindowStatus;
   purposes: string[] | Record<string, string> | null;
 }
 
@@ -343,11 +401,26 @@ export interface LiveSubmit {
   [k: string]: unknown;
 }
 export interface LiveResponse {
-  window: { minutes: number; from: string | null; to: string | null };
+  window: {
+    minutes: number;
+    bin_s: number;
+    from: string | null;
+    to: string | null;
+    label?: string;
+    requested_minutes?: number | null;
+    clamped?: boolean;
+    note?: string | null;
+    retention_minutes?: number;
+    /** How far the retained bins actually reach back -- younger than the window
+     *  after a cold start, which is why an old empty bin is a gap, not a zero. */
+    retained_from?: string | null;
+    retained_minutes?: number | null;
+  };
   rate: RateRow[];
   now: LiveNow;
   hosts: LiveHost[];
   events: LiveEvent[];
+  events_tail_depth?: number | null;
   submits: LiveSubmit[];
   backfill: Record<string, unknown> | null;
 }
@@ -371,7 +444,8 @@ export type WsFrame =
   | { type: 'live'; payload: LiveResponse }
   | { type: 'feeds'; payload: FeedsResponse }
   | { type: 'rebuilt'; payload: unknown }
-  | { type: 'backfill'; payload: unknown };
+  | { type: 'backfill'; payload: unknown }
+  | { type: 'windows'; payload: WindowsResponse };
 
 /* ----------------------------------------------------------------- risk ---
  * The three views the retired prototype faked with a hardcoded CAL table.

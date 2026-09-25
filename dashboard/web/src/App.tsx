@@ -6,11 +6,12 @@
  * 10 minutes, and the pill must not say so.
  */
 import { useEffect } from 'react';
-import { useConfig, useFeeds, usePanels, useTrajectories } from './api/hooks';
+import { useConfig, useFeeds, usePanels, useTrajectories, useWindows } from './api/hooks';
 import { useLive } from './api/useLive';
 import type { FeedReport, FeedStatus } from './api/types';
 import { ClassFilter } from './components/ClassFilter';
 import { StatusPill } from './components/Panel';
+import { WindowPicker } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
 import { useUrlState } from './lib/useUrlState';
@@ -62,11 +63,24 @@ function headline(feeds: Record<string, FeedReport> | null): {
 
 export default function App() {
   const [url, setUrl] = useUrlState();
-  const panels = usePanels();
   const feeds = useFeeds();
   const config = useConfig();
-  const live = useLive();
-  const traj = useTrajectories(url.rank);
+  const live = useLive(url.win);
+  // `buildNonce` bumps when the service finishes reducing this window, which is
+  // the only moment /api/panels has anything new to say about it.
+  const panels = usePanels(url.win, live.buildNonce);
+  const traj = useTrajectories(url.rank, url.win, live.buildNonce);
+  // Seeded over REST so the picker is populated before the socket is up; the
+  // websocket's `windows` frame supersedes it with live build progress.
+  const windowsRest = useWindows();
+  const windows = live.windows ?? windowsRest.data;
+  // The window the SERVICE resolved, which is what every panel was built over --
+  // not the one in the URL, which may have been clamped.
+  const resolvedWin = live.live?.window;
+  const winStatus =
+    panels.data?.window_status ??
+    windows?.held?.find((w) => w.minutes === resolvedWin?.minutes) ??
+    null;
 
   // A `rebuilt` frame means the reduced panels changed on disk: re-read them.
   const rebuild = live.rebuildNonce;
@@ -98,7 +112,15 @@ export default function App() {
       case 'resources':
         return <ResourcesTab P={P} cls={url.cls} />;
       case 'risk':
-        return <RiskIoTab P={P} cls={url.cls} url={url} setUrl={setUrl} />;
+        return (
+          <RiskIoTab
+            P={P}
+            cls={url.cls}
+            url={url}
+            setUrl={setUrl}
+            windowMin={resolvedWin?.minutes ?? null}
+          />
+        );
       case 'sandbox':
         return <SandboxTab P={P} cls={url.cls} />;
       case 'trajectories':
@@ -153,6 +175,11 @@ export default function App() {
           transport <span style={{ color: 'var(--ink-2)' }}>{live.transport}</span>
           <br />
           frame {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
+          <br />
+          window <span style={{ color: 'var(--ink-2)' }}>{resolvedWin?.label ?? '—'}</span>
+          {windows?.retention_minutes != null && (
+            <span> of {Math.round(windows.retention_minutes / 60)}h held</span>
+          )}
           <br />
           panels built {panels.data?.full_built_at ?? '—'}
           <br />
@@ -211,7 +238,16 @@ export default function App() {
         )}
 
         {tab.k !== 'feeds' && (
-          <ClassFilter value={url.cls} onChange={(c) => setUrl({ cls: c })} />
+          <>
+            <WindowPicker
+              value={url.win}
+              onChange={(w) => setUrl({ win: w })}
+              windows={windows}
+              resolved={resolvedWin}
+              status={winStatus}
+            />
+            <ClassFilter value={url.cls} onChange={(c) => setUrl({ cls: c })} />
+          </>
         )}
 
         {body}
