@@ -121,10 +121,18 @@ measurement of the deployment from a declaration about it.
 
 ## 1.2 Content-verified resume
 
-The collector's writer is strictly append-only: `DailyWriter.write()` does
-`write(json + '\n')` then `flush()`, and never rewrites. Byte *i* of a given host-day file
-therefore never changes, and a faithful replica of that file has a byte-identical prefix.
-That is what makes resume-by-content sound, and it is the only property it relies on.
+The collector's writer is strictly append-only: `DailyWriter.write()` appends
+`json + '\n'` and never rewrites. Byte *i* of a given host-day file therefore never
+changes, and a faithful replica of that file has a byte-identical prefix. That is what
+makes resume-by-content sound, and it is the only property it relies on.
+
+Two things about that writer have changed since this section was written, and neither
+weakens the property. The default flush mode is now `poll`, so bytes land at most one
+poll round after the `write()` rather than immediately — resume reads what is on disk,
+so a record still sitting in the buffer is simply not yet there to resume from. And the
+ebpf tier now writes **two** files per host-day, `<host>.exits.jsonl` and
+`<host>.snapshot.jsonl`. Each is independently append-only, so the property holds per
+file, which is the grain resume already works at.
 
 In `FileTailSource._read_one`, the inode gate gains a fallback rather than surrendering to
 a full re-read:
@@ -156,7 +164,7 @@ replica that resumes cleanly and a replica that re-read everything are different
 
 `feeds.resolve_dated()` already computes both clocks — `newest_mtime` from the filesystem
 and `newest_record_ts` from the newest record — and then collapses them: `status` is
-derived from record lag alone (`feeds.py:158-160`). Under a five-minute `rsync` against
+derived from record lag alone (`feeds.py:181-183`). Under a five-minute `rsync` against
 the eBPF tier's `max_age_s: 300`, a perfectly healthy replica reports `stale`.
 
 The report gains `sync_lag_s` and `sync_lag` (now minus `newest_mtime`) beside the
@@ -305,7 +313,7 @@ data contract: the on-disk JSONL schema. The path convention is checked every ti
 resolves. The data contract is checked nowhere, and it is currently mis-stated — found
 while writing this spec.
 
-The collector emits `SCHEMA_VERSION = 6` (`collector/ebpf_trace.py:90`) — version 6 folded
+The collector emits `SCHEMA_VERSION = 6` (`collector/ebpf_trace.py:98`) — version 6 folded
 the per-connection `tcp` and `accept` records into a `conns` array. The dashboard declares
 its contract as 5 in three places: `rc_dashboard/__init__.py:1`, `normalize.py:3` and the
 root README. Its guards are `sv >= 5`, so v6 records flow through the v5 path unremarked.
@@ -372,8 +380,8 @@ It greps `dashboard/rc_dashboard/`, `dashboard/dashboard.config.example.json`,
 `dashboard/pyproject.toml` and `collector/` for `collect/`, `analyze/`, `findings/`,
 `eBPF_marthen_new` and `RC_MEASUREMENT_ROOT`, and fails on any hit. Exactly one exemption
 is allowed and is asserted positively rather than merely skipped: the wire value
-`COLLECTOR = 'ebpf_marthen_new'` at `collector/ebpf_trace.py:89`, which
-`collector/tests/test_ebpfm.py:729` already pins. An exemption that is itself tested
+`COLLECTOR = 'ebpf_marthen_new'` at `collector/ebpf_trace.py:97`, which
+`collector/tests/test_ebpfm.py:732` already pins. An exemption that is itself tested
 cannot quietly widen.
 
 ## 4.2 Documentation
@@ -404,9 +412,14 @@ guess is survivable; a wrong guess presented as fact is not.
 the 4 KiB window could match while later bytes differ, and records would be skipped
 silently — the one failure mode this design must not have. `DailyWriter` appends and
 nothing else, and section 2.5 changes only `ebpfm.sh` and the vendoring manifest — never
-`DailyWriter` or any other write path — so the assumption holds today. It is
-recorded here because it is the load-bearing one: any future change to how the collector
-writes invalidates 1.2.
+`DailyWriter` or any other write path.
+
+`DailyWriter` has since been changed, which is the check this note exists to force: the
+day is now split into an `exits` and a `snapshot` file and the default flush mode is
+`poll`. The assumption survives it. Both files are append-only, and the split only
+multiplies the number of files resume tracks — which it keys per path already, so the
+grain is unchanged. It is recorded here because it is the load-bearing one: any future
+change to how the collector writes must be checked against 1.2, as that one was.
 
 **Dropping the `1.83x` figure removes a real finding from the page.** It is the correct
 call under the rule that nothing is asserted without its basis, and it is reversible — if

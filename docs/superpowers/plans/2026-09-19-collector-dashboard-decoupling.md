@@ -16,7 +16,7 @@
 - **Nothing measured is asserted without its basis.** A number on the page whose evidence is not in this repository does not belong on the page.
 - **Scope is stated.** If the mode is a guess, the page says it is a guess.
 - **Three actor classes, never two** — `agent` / `human-vscode` / `human`. `_fallback_actor3`'s rule (*must NOT degrade to the binary `actor`*) is preserved verbatim through any rename.
-- **The wire value `COLLECTOR = 'ebpf_marthen_new'` (`collector/ebpf_trace.py:89`) is never renamed.** It is stamped into the JSONL envelope. Path references to the old name go; the wire value stays, and `collector/tests/test_ebpfm.py:729` pins it.
+- **The wire value `COLLECTOR = 'ebpf_marthen_new'` (`collector/ebpf_trace.py:97`) is never renamed.** It is stamped into the JSONL envelope. Path references to the old name go; the wire value stays, and `collector/tests/test_ebpfm.py:732` pins it.
 - **`sandbox` and `approval` are independent axes**, and `denied` is its own state, never folded into `unsandboxed`.
 - **Dependencies stay as they are:** `fastapi`, `uvicorn` and nothing else for the service; `react`, `react-dom` and nothing else at runtime for the page. Tests use stdlib `unittest` only, matching `collector/tests/`.
 - **Python floor is 3.11** (`dashboard/pyproject.toml`).
@@ -536,7 +536,7 @@ deployment defaults and describes the contract instead of citing files."
 ### Task 4: Remove the old repository's citations
 
 **Files:**
-- Modify: `dashboard/rc_dashboard/reducers/resources.py:159`, `reducers/tools.py:11`, `:123-125`, `reducers/trajectories.py:4-5`, `:225-226`, `reducers/sandbox.py:19`, `reducers/risk.py:9`, `:49`, `feeds.py:9-11`, `:276`, `sacct.py:9`, `:157`, `:334`, `normalize.py:193`, `reducers/__init__.py`
+- Modify: `dashboard/rc_dashboard/reducers/resources.py:159`, `reducers/tools.py:11`, `:123-125`, `reducers/trajectories.py:4-5`, `:225-226`, `reducers/sandbox.py:19`, `reducers/risk.py:9`, `:49`, `feeds.py:9-11`, `:299`, `sacct.py:9`, `:157`, `:334`, `normalize.py:193`, `reducers/__init__.py`
 - Test: `dashboard/tests/test_selfcontained.py` (create)
 
 **Interfaces:**
@@ -662,7 +662,7 @@ Work through the offender list from Step 2. In each case remove only the path re
 - `reducers/trajectories.py:4-5` — drop the citation, keep the sessionizing description.
 - `reducers/tools.py:11` — drop the citation, keep the dedup rule.
 - `reducers/risk.py:9`, `:49` — drop the `eBPF_marthen_new/README.md` and `findings/` citations, keep the login-node scope statement.
-- `feeds.py:9-11`, `:276` — drop the `collect/healthcheck.py` shaping note; keep "so operators can read it".
+- `feeds.py:9-11`, `:299` — drop the `collect/healthcheck.py` shaping note; keep "so operators can read it".
 - `sacct.py:9`, `:157`, `:334` — replace `collect/slurm_query.bash` with "the sacct exporter" in all three, keeping the instruction to re-pull.
 - `normalize.py:193` — drop the `analyze/extract_trajectories.py:278-294` citation, keep the `(key_type, key_value)` description.
 - `reducers/__init__.py` — drop any remaining citation.
@@ -1026,18 +1026,25 @@ import tempfile
 
 
 class FeedDir:
-    """A collector output root: <root>/<YYYY-MM-DD>/<host>.jsonl."""
+    """A collector output root: <root>/<YYYY-MM-DD>/<host>.<stream>.jsonl.
 
-    def __init__(self, date="2026-09-19", host="login01"):
+    The ebpf tier splits each day into `exits` (exit, truncated) and `snapshot`
+    (everything else), so a fixture writing one file per host-day no longer
+    resembles a real feed. `stream` picks which of the pair this helper drives
+    and `self.path` is that file, which leaves `resync` and `corrupt_prefix`
+    below unchanged by the split.
+    """
+
+    def __init__(self, date="2026-09-19", host="login01", stream="exits"):
         self.root = tempfile.mkdtemp(prefix="rcdash-feed-")
-        self.date, self.host = date, host
+        self.date, self.host, self.stream = date, host, stream
         self.daydir = os.path.join(self.root, date)
         os.makedirs(self.daydir)
-        self.path = os.path.join(self.daydir, host + ".jsonl")
+        self.path = os.path.join(self.daydir, "%s.%s.jsonl" % (host, stream))
         self.n = 0
 
     def append(self, count=1, event="exit"):
-        """Append `count` records the way the collector does: line, then flush."""
+        """Append `count` records, then flush once -- a collector poll round."""
         with open(self.path, "a") as fh:
             for _ in range(count):
                 self.n += 1
@@ -1198,8 +1205,9 @@ def _prefix_sha(path, offset, k=TAIL_K):
     """sha256 of the k bytes ending at `offset`, or None if unavailable.
 
     The collector's writer is strictly append-only -- `DailyWriter.write()`
-    writes a line then flushes and never rewrites -- so byte i of a host-day
-    file never changes and a faithful replica has a byte-identical prefix.
+    appends a line and never rewrites; under the default poll flush mode the
+    bytes land at most one round later -- so byte i of a host-day file never
+    changes and a faithful replica has a byte-identical prefix.
     Matching that window is what makes a resume across a new inode sound.
     """
     if offset <= 0:
@@ -1297,7 +1305,7 @@ collector's writer is strictly append-only."
 
 **Files:**
 - Create: `dashboard/rc_dashboard/modes.py`, `dashboard/tests/test_modes.py`
-- Modify: `dashboard/rc_dashboard/feeds.py:141-143` (add `ino` to file entries)
+- Modify: `dashboard/rc_dashboard/feeds.py:164-166` (add `ino` to file entries)
 
 **Interfaces:**
 - Consumes: a feed report's `files` list, whose entries gain `"ino"`.
@@ -1312,8 +1320,12 @@ In `dashboard/rc_dashboard/feeds.py`, in `resolve_dated`, extend the appended di
 ```python
         rep["files"].append({"path": p, "size": st.st_size, "mtime": st.st_mtime,
                              "ino": st.st_ino,
-                             "host": os.path.basename(p)[:-6]})
+                             "host": host_of(p)})
 ```
+
+`host_of()` replaced `os.path.basename(p)[:-6]` when the collector began writing
+two files per host-day: the bare stem is no longer the hostname. Only the `ino`
+key is being added here — leave the `host` expression alone.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1492,7 +1504,7 @@ outage warns before it is reframed as an archive."
 ### Task 10: Two clocks, never merged
 
 **Files:**
-- Modify: `dashboard/rc_dashboard/feeds.py:92-103` (`_blank`), `:150-161` (the lags and status), `:261-266` (`panel_meta`)
+- Modify: `dashboard/rc_dashboard/feeds.py:92-103` (`_blank`), `:173-184` (the lags and status), `:284-289` (`panel_meta`)
 - Test: `dashboard/tests/test_feeds.py` (create)
 
 **Interfaces:**

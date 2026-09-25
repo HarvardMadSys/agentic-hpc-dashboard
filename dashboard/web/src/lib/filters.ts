@@ -32,6 +32,18 @@ export const SCALAR_KEYS = [
 ] as const;
 export type ScalarKey = (typeof SCALAR_KEYS)[number];
 
+/** UI-only keys: they live in the URL, never in an API query.
+ *
+ * Load-bearing rather than documentation, which is the point. An earlier
+ * version of this list was a bare comment that `urlQuery` did not consult, so
+ * it drifted out of sync and was removed as dead; reinstating it that way would
+ * only set up the same drift again. `urlQuery` now serialises exactly these
+ * keys, and `UI_OMIT_AT` below is a mapped type over them, so adding a key here
+ * without deciding what value omits it is a compile error.
+ */
+export const UI_KEYS = ['tab', 'rank', 'win'] as const;
+export type UiKey = (typeof UI_KEYS)[number];
+
 export interface Filters {
   /** `class` is repeatable; at least one class is always selected. */
   cls: Cls[];
@@ -47,6 +59,14 @@ export interface UrlState extends Filters {
    *  pinning the old one. */
   win: number | null;
 }
+
+/** The value at which each UI key is left out of the URL, so a default-valued
+ *  view produces a clean query string instead of `?tab=live&rank=events`. */
+const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
+  tab: 'live',
+  rank: 'events',
+  win: null,
+};
 
 const RANKS = new Set(['events', 'cpu_s', 'distinct_tools', 'chain_runs']);
 
@@ -84,12 +104,17 @@ export function apiQuery(f: Filters): string {
   return p.toString();
 }
 
-/** The browser query: the API query plus the UI keys. */
+/** The browser query: the API query plus the UI keys.
+ *
+ * `apiQuery` iterates SCALAR_KEYS and UI_KEYS is disjoint from it, which is how
+ * a UI key is kept out of the request the backend sees.
+ */
 export function urlQuery(s: UrlState): string {
   const p = new URLSearchParams(apiQuery(s));
-  if (s.tab && s.tab !== 'live') p.append('tab', s.tab);
-  if (s.rank && s.rank !== 'events') p.append('rank', s.rank);
-  if (s.win != null) p.append('win', String(s.win));
+  for (const k of UI_KEYS) {
+    const v = s[k];
+    if (v != null && v !== '' && v !== UI_OMIT_AT[k]) p.append(k, String(v));
+  }
   return p.toString();
 }
 
