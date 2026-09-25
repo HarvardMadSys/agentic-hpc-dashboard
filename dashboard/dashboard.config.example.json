@@ -74,13 +74,13 @@
     "event_tail": 500,
     "submit_tail": 50,
     "backfill_hours": 168,
-    "//24": "backfill_hours: 0 starts empty and fills forward, skipping the one",
-    "//25": "expensive startup read. Progress is exposed on /api/feeds.",
-    "//26": "backfill_mb bounds that read PER FILE. The buckets discard anything",
-    "//27": "older than retention on arrival, so over-reading costs time, never",
-    "//28": "correctness; under-reading shows as a gap in the oldest bins, and",
-    "//29": "/api/live reports `retained_from` so the page can say which.",
-    "backfill_mb": 2048,
+    "//24": "backfill_hours: how far back the startup read reaches, capped at",
+    "//25": "retention. It runs on EVERY start, newest first, from the collector's",
+    "//26": "files -- nothing this service wrote is ever restored -- so what the",
+    "//27": "page holds never depends on whether the service was up while the data",
+    "//28": "was collected. 0 starts empty and fills forward. Progress is on",
+    "//29": "/api/feeds, and /api/live reports `retained_from`, so a short feed",
+    "//29a": "reads as a gap in the oldest bins instead of as a quiet fleet.",
     "clock_skew_s": 120
   },
 
@@ -128,7 +128,6 @@
   },
 
   "export": { "max_rows": 5000000 },
-  "cache":  { "dir": "dashboard/.cache", "state_dir": "dashboard/.state",
-              "reducer_version": 3 },
+  "cache":  { "dir": "dashboard/.cache", "reducer_version": 3 },
   "server": { "host": "127.0.0.1", "port": 8080, "static_dir": "dashboard/web/dist" }
 }

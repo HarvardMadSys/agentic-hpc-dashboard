@@ -128,11 +128,12 @@ def defaults():
             "bin_s": 60,
             "event_tail": 500,
             "submit_tail": 50,
-            "backfill_hours": 168,   # fill retention, not a day of it
-            # Per-file cold-start budget for the live backfill.  The buckets
-            # discard anything older than retention on arrival, so over-reading
-            # is harmless and under-reading shows as an honest gap in old bins.
-            "backfill_mb": 2048,
+            # Fill retention, not a day of it.  Read on EVERY start, newest
+            # first, from the collector's files -- the bins are never restored
+            # from anything this service wrote -- so the page cannot depend on
+            # whether the service was running while the data was collected.
+            # 0 starts empty and fills forward.
+            "backfill_hours": 168,
             "clock_skew_s": 120,
         },
         "ingest": {"poll_ms": 1000},
@@ -167,7 +168,6 @@ def defaults():
         },
         "export": {"max_rows": 5000000},
         "cache": {"dir": os.path.join(HERE, ".cache"),
-                  "state_dir": os.path.join(HERE, ".state"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,
                    "static_dir": os.path.join(HERE, "web", "dist")},
@@ -195,7 +195,6 @@ ENV_MAP = {
     "live.bin_s": ("RC_DASH_LIVE_BIN_S", int),
     "live.event_tail": ("RC_DASH_LIVE_EVENT_TAIL", int),
     "live.backfill_hours": ("RC_DASH_BACKFILL_HOURS", int),
-    "live.backfill_mb": ("RC_DASH_BACKFILL_MB", int),
     "panels.max_windows": ("RC_DASH_MAX_WINDOWS", int),
     "panels.max_drift_pct": ("RC_DASH_MAX_DRIFT_PCT", int),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
@@ -206,7 +205,6 @@ ENV_MAP = {
                                       lambda v: v not in ("0", "false", "no")),
     "export.max_rows": ("RC_DASH_EXPORT_MAX_ROWS", int),
     "cache.dir": ("RC_DASH_CACHE_DIR", str),
-    "cache.state_dir": ("RC_DASH_STATE_DIR", str),
     "server.host": ("RC_DASH_HOST", str),
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),

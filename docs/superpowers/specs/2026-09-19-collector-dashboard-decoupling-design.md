@@ -151,6 +151,14 @@ changed, so the live path pays nothing.
 Per-file state gains `tail_sha` and `tail_k`. `STATE_VERSION` goes 1 -> 2; the existing
 version check in `_load_state` discards incompatible state, so no migration is needed.
 
+**Offsets are no longer persisted** (2026-09-25, `tail.py`). They fed bins that were not
+persisted, so every restart resumed at EOF with empty bins and the page lost all history older
+than the restart. Every start now hands each file to the tail at its end and reads retention
+back by timestamp, newest first. Per-file state lives only in the running process, so
+`STATE_VERSION` and `_load_state` are gone and the resume above applies to a file replaced
+between two polls of one process — the rsync case this section exists for. `tail_sha` and
+`tail_k` still belong in that in-memory state; nothing needs a version.
+
 A partially transferred file is safe by construction. The temp-file-and-rename pattern
 never exposes one at the final path. A plain `scp` writing in place can, and then either
 the prefix still matches — we read fewer complete lines and catch up on the next poll —

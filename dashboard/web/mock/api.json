@@ -103,8 +103,10 @@
    "rows": 7161466,
    "notice": null,
    "backfill": {
-    "pending_days": 0,
-    "scanned_days": 2
+    "state": "done",
+    "pct": 100,
+    "records": 7161466,
+    "hours": 168
    }
   },
   "slurm_jobs": {
@@ -24155,9 +24157,10 @@
    }
   ],
   "backfill": {
-   "pending_days": 0,
-   "scanned_days": 2,
-   "note": "the live window is fully backfilled"
+   "state": "done",
+   "pct": 100,
+   "records": 7161466,
+   "hours": 168
   }
  },
  "trajectories": {

@@ -18,6 +18,8 @@ import json
 import os
 import time
 
+from .normalize import epoch_of
+
 
 LIST_FIELDS = ("class", "agent_type", "user", "host", "tool", "purpose", "bucket",
                "sandbox", "approval", "exit_code", "signal", "event")
@@ -133,7 +135,7 @@ def make_predicate(f):
     return ok
 
 
-def iter_lines_reverse(path, block=1 << 20):
+def iter_lines_reverse(path, block=1 << 20, start=0, end=None):
     """Yield complete lines from the END of a file backwards, bounded memory.
 
     A day-file is gigabytes, so it cannot be read into memory and reversed. This
@@ -142,18 +144,23 @@ def iter_lines_reverse(path, block=1 << 20):
 
     The first element of a split block is the fragment whose start lies in the
     PREVIOUS (earlier) block, so it is carried rather than yielded -- except at
-    byte 0, where it is a complete line and is yielded last.
+    `start`, where it is a complete line and is yielded last.
+
+    `[start, end)` narrows the walk to a byte range whose bounds are line
+    boundaries; the default is the whole file as it stands when opened.
     """
     try:
         fh = open(path, "rb")
     except OSError:
         return
     with fh:
-        fh.seek(0, os.SEEK_END)
-        pos = fh.tell()
+        if end is None:
+            fh.seek(0, os.SEEK_END)
+            end = fh.tell()
+        pos = end
         carry = b""
-        while pos > 0:
-            size = min(block, pos)
+        while pos > start:
+            size = min(block, pos - start)
             pos -= size
             fh.seek(pos)
             buf = fh.read(size) + carry

@@ -573,7 +573,7 @@ function build() {
       max_age_s: 300,
       rows: 7_161_466,
       notice: null,
-      backfill: { pending_days: 0, scanned_days: 2 },
+      backfill: { state: 'done', pct: 100, records: 7_161_466, hours: 168 },
     },
     slurm_jobs: {
       name: 'slurm_jobs',
@@ -722,7 +722,7 @@ function build() {
     hosts,
     events: events(nowEpoch, 400),
     submits,
-    backfill: { pending_days: 0, scanned_days: 2, note: 'the live window is fully backfilled' },
+    backfill: { state: 'done', pct: 100, records: 7_161_466, hours: 168 },
   };
 
   const config = {

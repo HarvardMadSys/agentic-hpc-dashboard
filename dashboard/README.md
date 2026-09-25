@@ -208,7 +208,7 @@ already made once.
 |---|---|
 | `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
-| `rc_dashboard/tail.py` | `IngestSource`; offset-resume file tailer (a push source drops in here) |
+| `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
 | `rc_dashboard/normalize.py` | schema contract, `actor3`, sandbox/approval, session keys, null gating |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, live, node |
@@ -220,11 +220,31 @@ already made once.
 
 ## Ingestion, precisely
 
-`DailyWriter.write()` (`ebpf_trace.py:1010`) writes then flushes, which is not atomic against
-a concurrent reader. So the tailer reads to EOF, finds the last newline, yields only complete
-lines, and **advances its stored offset only that far** — trailing bytes are re-read next
-cycle. Idempotent, never a truncated JSON line, never a lost record.
+**What the page holds is a function of the collector's files and the clock — never of when this
+service was running.** Nothing is restored from a previous run. On every start the service hands
+each day-file to the tail at the end of its last complete line, then reads the history behind
+that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it, located
+by the same timestamp binary search the window rebuild uses. Offsets used to be persisted while
+the bins they fed were not, so a restart resumed at EOF with empty bins and the page showed only
+what the collector wrote after the service came back — and `run.sh` restarts the service on
+every save.
 
-Offsets are keyed on `(st_dev, st_ino)`, not path, so a new date directory cold-starts instead
-of inheriting yesterday's offset, and a recreated file is detected as a new inode rather than
-silently seeked past its end.
+The read-back runs **newest first**, k-way merged across hosts, while the tail is already
+polling; a poll that lands before the hand-off reads nothing, so no record is counted twice. The
+page is live within a second and watches the chart fill from now backwards. The filled span is
+always contiguous, so the picker's `filled 5h of 7d` stays true beside `reading history · N%`.
+The read takes the aggregation lock one small batch at a time, so neither the page nor the tail
+queues behind it. A week of one login node's feed (4 GB, 2.4 M records) takes 35–45 s here. Bins
+are sums and take records in any order; the "latest" state — each host's plate, the event and
+submission tails — only takes an older record where nothing newer has claimed the slot.
+
+`DailyWriter.write()` (`collector/ebpf_trace.py`) buffers and flushes once per poll round, which
+is not atomic against a concurrent reader. So the tailer reads to EOF, finds the last newline,
+yields only complete lines, and **advances its stored offset only that far** — trailing bytes are
+re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup
+hand-off obeys the same rule, so a line still being written belongs to the tail, never to the
+read-back.
+
+Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
+rather than silently seeked past its end. A file first seen after startup — a new date
+directory, a new host — is read from byte 0, at most 64 MB per poll.
