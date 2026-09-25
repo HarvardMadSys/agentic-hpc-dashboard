@@ -148,6 +148,7 @@ class PanelView:
         self.touched = time.time()
         self.replay_dropped = 0
         self.live_records = 0
+        self.live_through = None        # newest ts ingested LIVE since the build
         self._replay = None             # deque while a build is in flight
 
     # ------------------------------------------------------------------ feed
@@ -172,6 +173,8 @@ class PanelView:
                 and ts <= self.consumed_through:
             return
         self.live_records += 1
+        if ts is not None and (self.live_through is None or ts > self.live_through):
+            self.live_through = ts
         for r in self.dispatch.get(rec.get("event"), ()):
             try:
                 r.feed(rec)
@@ -205,15 +208,27 @@ class PanelView:
         return out
 
     # ---------------------------------------------------------------- status
-    def drift_s(self, now=None):
-        """Seconds of records held BEYOND the window the view was built for."""
+    def drift_s(self):
+        """Seconds of records held BEYOND the window the view was built for.
+
+        Measured from the newest record actually INGESTED SINCE the build, not
+        from the wall clock. The two differ whenever the feed is quiet or
+        lagging, and using the clock there is a rebuild loop rather than a
+        refresh: `covers_to` is the newest row the SCAN found, so on any feed
+        whose newest row is already older than the drift budget -- an idle
+        cluster overnight, a collector behind by more than 25% of the window --
+        every tick re-queues a full re-scan that recomputes the same
+        `covers_to` and cures nothing. No new records means no drift.
+        """
         if self.covers_to is None:
             return None
-        return max(0.0, (now or time.time()) - self.covers_to)
+        if self.live_through is None:
+            return 0.0
+        return max(0.0, self.live_through - self.covers_to)
 
     def status(self, now=None):
         now = now or time.time()
-        drift = self.drift_s(now)
+        drift = self.drift_s()
         budget = self.window_s * max(1, int(
             self.cfg.get("panels.max_drift_pct", 25))) / 100.0
         st = {
@@ -354,6 +369,7 @@ class WindowRegistry:
             # lagging feed must not claim coverage up to `now`.
             view.covers_to = newest or t0
             view.built_at = time.time()
+            view.live_through = None     # drift is measured from this build on
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
@@ -409,16 +425,19 @@ class WindowRegistry:
         for view in list(self.views.values()):
             view.feed(rec)
 
-    def refresh(self, now=None):
-        """Re-materialise every ready view, and re-scan the ones that drifted."""
-        now = now or time.time()
+    def refresh(self):
+        """Re-materialise every ready view, and re-scan the ones that drifted.
+
+        Takes no clock: drift is now a property of what the views have ingested,
+        not of how long ago they were built.
+        """
         budget_pct = max(1, int(self.cfg.get("panels.max_drift_pct", 25))) / 100.0
         with self.lock:
             held = list(self.views.items())
         for minutes, view in held:
             if view.state != "ready":
                 continue
-            drift = view.drift_s(now) or 0
+            drift = view.drift_s() or 0
             if drift > view.window_s * budget_pct:
                 self._enqueue(minutes)
             else:

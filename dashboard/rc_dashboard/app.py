@@ -83,10 +83,13 @@ def create_app(cfg):
             await asyncio.sleep(2)
             try:
                 st = agg.panels_by_window.status()
-                # Change-detect on the MATERIAL fields only. `built_age_s` and
-                # `drift_s` advance every call by construction, so hashing the
-                # whole payload would push a frame to every client every two
-                # seconds forever -- a poll loop wearing a push loop's clothes.
+                # Change-detect on the MATERIAL fields only. `built_age_s`
+                # advances every call by construction, so hashing the whole
+                # payload would push a frame to every client every two seconds
+                # forever -- a poll loop wearing a push loop's clothes.
+                # (`drift_s` only moves when records actually land past the
+                # window, but it is still left out: it would push a frame per
+                # record on a busy feed, and the age readout carries it.)
                 key = json.dumps(
                     [[w["minutes"], w["state"], w["progress"]["pct"], w["built_at"],
                       w["replay_dropped"], w["error"]] for w in st["held"]]

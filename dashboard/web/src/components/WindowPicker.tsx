@@ -74,7 +74,13 @@ export function WindowPicker({
   };
 
   const cap = windows?.retention_minutes;
-  const building = status && status.state !== 'ready' ? status : null;
+  // 'error' is NOT 'not ready yet'. Lumping the two together renders a build
+  // that failed as one stuck at 0% forever, which is the one reading that stops
+  // a reader retrying -- and a retry is all it takes, since re-requesting a
+  // window puts an errored view back on the build queue.
+  const building =
+    status && (status.state === 'queued' || status.state === 'building') ? status : null;
+  const failed = status && status.state === 'error' ? status : null;
   const drift =
     status && status.drift_s != null && status.drift_s > status.drift_budget_s / 2
       ? status
@@ -146,7 +152,16 @@ export function WindowPicker({
         </span>
       )}
 
-      {!building && drift && (
+      {failed && (
+        <span
+          className="winnote bad"
+          data-tip={failed.error ?? 'the build raised, with no message'}
+        >
+          {failed.label} failed to build — pick it again to retry
+        </span>
+      )}
+
+      {!building && !failed && drift && (
         <span className="winnote" data-tip={drift.covers_note ?? ''}>
           +{Math.round((drift.drift_s ?? 0) / 60)}m past the window
         </span>
