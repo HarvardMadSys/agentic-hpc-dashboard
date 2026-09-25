@@ -13,7 +13,7 @@ It answers one question per row: **after the cutover, where does this signal com
 | Tier | Privilege | Written by | Lands in |
 |---|---|---|---|
 | **node** | unprivileged | `node_snapshot.py` (vendored `collect/common/snapshot.py`) | `login/logs/<date>/<host>.jsonl` — unchanged schema, unchanged path |
-| **ebpf** | root | `ebpf_trace.py` | `ebpfm/logs/<date>/<host>.jsonl` |
+| **ebpf** | root | `ebpf_trace.py` | `ebpfm/logs/<date>/<host>.{snapshot,exits}.jsonl` |
 
 `ebpfm.sh` runs both as root, the node tier alone as an ordinary user. The node tier's
 mode follows the tier set: `SNAPSHOT_MODE=node` when the eBPF tier is running, `full`
@@ -73,7 +73,7 @@ named replacement.
 | `top_io_processes` | **own-user only.** `/proc/<pid>/io` is ptrace-gated, so other users' processes were silently *omitted* — on a shared login node the section is structurally incomplete | `io` block (`task->ioac`) → `exit.io.{rd_mb,wr_mb,rchar_mb,wchar_mb}` + `io.scope`. Per process, exact, **all users** |
 | `top_sleeping_procs` | `wchan` → `-` and `syscall` → `N/A` for every other user | `dstate_stat` → `residency.d_stack`: top-5 kernel frames from `/proc/<pid>/stack`. **Reading a kernel stack touches no filesystem**, so it cannot hang on the mount being diagnosed |
 | `sleeping_wchans` | other users collapse into the `-` bucket, under-counting real NFS waits | `residency_totals.d_stack_top` — per-node top-10 blocking frames |
-| `socket_talkers` | connection **counts** only, own-process attribution | `netbytes` + `tcp_*` → `tcp` / `accept` / `conn` with real `rx_bytes`/`tx_bytes`, `rtt_ms`, `retrans`, `provider`, `connect_ms` |
+| `socket_talkers` | connection **counts** only, own-process attribution | `netbytes` + `tcp_*` → `exit.conns` / `conn` with real `rx_bytes`/`tx_bytes`, `rtt_ms`, `retrans`, `provider`, `connect_ms` |
 
 ## 5. What the eBPF tier adds that nothing had before
 
@@ -86,7 +86,7 @@ every record, `args_len`/`args_truncated`, the `submit` resource request, `io` o
 `cwd` / `cwd_source` / `work_dir` · `dstate_wait_s` / `_episodes` / `_max_s` / `_src` ·
 `net_tx_bytes` / `net_rx_bytes` / `net_calls` (QUIC-visible) · `d_stack` / `d_stack_top` ·
 `event="truncated"` with drained kernel counters · `attribution` (`ancestry`|`tty`|`uid`) ·
-`residency_totals.by_agent_type` · `event="accept"` · **`exit_code` / `signal` /
+`residency_totals.by_agent_type` · `exit.conns` (inbound folded in) · **`exit_code` / `signal` /
 `core_dumped`** · **sub-0.78 s processes** (the poller's measured capture floor) ·
 **per-process I/O for all users**.
 
@@ -134,6 +134,7 @@ Two defects were found while tracing this and fixed in the same pass:
 
 - The three hand-built identity stubs supplied **7 keys against `_base_identity`'s 21**, so
   `tcp` and `conn` records were *already* omitting fourteen fields — absent, not null.
+  (`tcp` is gone as of schema 6; `conn` still carries the full identity.)
 - `decode_argv` could **fabricate an agent classification**: a clamped buffer ends
   mid-token with no trailing NUL, so `/opt/tools/claude-wrapper` truncated to `…/claude`
   matched the `claude_code` pattern's end anchor.

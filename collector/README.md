@@ -1,4 +1,4 @@
-# eBPF_marthen_new — login-node collector, one bash entry point
+# ebpfm — login-node collector, one bash entry point
 
 A **standalone** collector for FASRC-style login nodes. Everything it needs is in this
 folder: no `../` imports, so it runs anywhere you can copy it (or hand over one
@@ -13,7 +13,7 @@ Only half of what a login node needs is a kernel event, so only half needs root:
 | Tier | Privilege | What | Output |
 |---|---|---|---|
 | **node** | **unprivileged** | node health: load, memory, filesystem space, NFS per-mount RTT, interface counters, the D-state census, the process tree, per-user cgroup totals, boot time | `$EBPFM_NODE_OUTPUT_DIR/<date>/<host>.jsonl` |
-| **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.jsonl` |
+| **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` |
 
 **eBPF cannot produce load average, memory totals, filesystem space or interface
 counters**, and it is not a process census (only *tracked* processes are emitted — see
@@ -228,8 +228,49 @@ Schema 5 adds, again by arithmetic: `ts_epoch` ~20 B, the four `sandbox_*` field
 ~80 B, `approval_mode`/`approval_src`/`env_flags` ~40 B set (~30 B of nulls when not),
 `session_uuid` ~30 B, `args_len`/`args_truncated` ~30 B — roughly a further **13 %**.
 `sandbox_detail` is a short comma-joined string rather than a nested object precisely
-to keep this down, since `DailyWriter` flushes on every record and width is direct
-write cost on the hottest path.
+to keep this down: width is direct write cost on the hottest path. (That argument was
+sharper still when `DailyWriter` flushed on every record — see **I/O cost** below, which
+is no longer true as of schema 6.)
+
+### I/O cost
+
+Two schema-6 changes cut the collector's write path. They are independent and compose:
+
+| | records | `write(2)` | on disk |
+|---|---|---|---|
+| schema 5 — `tcp` records, flush per record | 53 340 | 53 340 | 33.6 MB |
+| schema 6 — folded, flush per record | 20 000 | 20 000 | 12.4 MB |
+| schema 6 — folded, flush per poll round | 20 000 | **1 687** | 12.4 MB |
+
+*20 000 process exits, 1 in 6 opening 10 connections (33 000 total), `POLL_MS=100`, at
+the 830 exec/s rate of the throughput benchmark above.*
+
+**The fold is the flat win**: one record per process instead of one per connection is
+**63 % fewer records and 63 % fewer bytes**, and it does not depend on load.
+
+**The flush policy is the load-proportional one.** `DailyWriter` flushed after every
+record through schema 5, so the syscall rate *was* the record rate — unbounded, and
+highest exactly when the node is busiest. It now flushes once per poll round
+(`EBPFM_FLUSH_MODE`, `poll` by default; `record` restores the old behaviour), which caps
+syscalls at `1000/EBPFM_POLL_MS` per second however many records the round produced:
+
+- **idle node** (≤1 record per round): **no change**, 20 000 → 20 000. There is nothing
+  to batch, and a round that wrote nothing does not flush at all.
+- **busy node** (83 records per round): **20 000 → 1 687, a 11.9×** reduction, because a
+  burst of 83 exits costs one write instead of 83.
+
+Together, **53 340 → 1 687 write(2), 31.6×**, at the busy rate.
+
+Note the shape: this is the opposite of the `/proc` poller's defining flaw. The poller's
+sampling density was *anti*-correlated with load; this costs nothing extra when idle and
+gets cheaper per record exactly as load rises.
+
+What it trades is durability granularity: a record is durable within one poll round rather
+than immediately. SIGTERM, SIGINT and the duration stop all run through `close()`, which
+flushes, so the exposure is **SIGKILL or power loss losing at most one round** (100 ms).
+`meta` is flushed immediately on startup regardless, because `ebpfm.sh status` reads the
+file to confirm the collector came up. `stop.flushes` and `stop.flush_mode` report the
+real syscall count for any run, so the amplification is measurable rather than assumed.
 
 ---
 
@@ -240,27 +281,106 @@ This section is the **eBPF tier**. For the node tier's 36-key snapshot schema se
 same schema the login poller has always written, which is what keeps every existing
 `log/login` consumer working.
 
-`SCHEMA_VERSION = 5`, `collector = "ebpf_marthen_new"`. JSONL at
-`$EBPFM_OUTPUT_DIR/<date>/<host>.jsonl`, one record per line.
+`SCHEMA_VERSION = 6`, `collector = "ebpf_marthen_new"`. JSONL, one record per line,
+split across **two files per host per day**:
+
+| file | `event` | why separate |
+|---|---|---|
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.jsonl` | `exit`, `truncated` | the per-process terminal records. Unbounded: the rate is the node's fork rate, highest exactly when the node is busiest, and on a build node this is essentially the whole file |
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.jsonl` | `meta`, `conn`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a moment. Small, bounded by the residency tick, and the part you want when asking "what was running" rather than "what ended" |
+
+`stream_of()` in `ebpf_trace.py` is the single authority on the mapping; an event
+kind added without a decision there lands in `snapshot` rather than vanishing.
+
+The **record** schema is untouched by the split — `schema_version` stays 6. Every
+record is self-describing and carries its own `host`, so a consumer that globs
+`<date>/*.jsonl` sees exactly what the single file used to give it, and a feed
+captured before the split reads unchanged. Both files are created when the day
+opens, so an empty `.exits.jsonl` means "no exits observed", not "collector never
+started".
 
 | `event` | When | Grain |
 |---|---|---|
 | `meta` | startup | resolved blocks, rejected blocks + compiler reason, sysctl state, kernel, BCC version |
-| `exit` | process exit | the main record: identity, CPU, RSS, I/O, D-state, net bytes |
-| `tcp` | socket close | lifetime, endpoint, bytes, `connect_ms`, `established` |
-| `accept` | inbound connect | `inet_csk_accept` in the accepting task's context |
+| `exit` | process exit | the main record: identity, CPU, RSS, I/O, D-state, net bytes, **`conns`** |
 | `conn` | residency tick | one per **standing external** socket: RTT, retransmits, bytes, idle |
 | `residency` | residency tick | one per live agent tree |
 | `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate` |
 | `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir` |
 | `truncated` | SIGTERM | one per live tracked process, with accumulated counters |
-| `stop` | shutdown | `records`, `truncated`, `perf_lost`, `perf_seen`, `reason` |
+| `stop` | shutdown | `records`, `flushes`, `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `conns_dropped`, `reason` |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
 `ts` is local, naive and second-granular — fine for reading one host's file, useless for
 ordering or binning records from seven hosts against each other. `meta` additionally
 carries `tz` and `boot_id`, without which a reader cannot convert `ts` at all or tell a DST
 shift from a clock jump.
+
+### Schema 6: connections fold into the process
+
+`tcp` (socket close) and `accept` (inbound connect) were one record per connection.
+They no longer exist. The same connections now reach the feed as a **`conns` block on the
+owning process's `exit` record** — and on its `truncated` record, for a process still
+alive at stop.
+
+```json
+"conns": {"n": 21, "accepted": 0, "established": 20, "failed": 1, "external": 21,
+          "rx_bytes": 883110, "tx_bytes": 140022, "conn_s_total": 41.3,
+          "connect_ms_p50": 31.2, "connect_ms_max": 88.0,
+          "providers": {"anthropic": 20}, "peers_total": 2,
+          "peers": [{"daddr": "104.18.0.1", "dport": 443, "n": 20, "external": true,
+                     "provider": "anthropic", "inbound": 0, "failed": 0,
+                     "rx_bytes": 880000, "tx_bytes": 139000}]}
+```
+
+Why the grain is better, not just cheaper: an agent's traffic is overwhelmingly **repeat
+calls to a handful of hosts**, so twenty sequential requests to one API endpoint were
+twenty near-identical records and are now one `peers` entry with `n: 20`. `peers` keeps
+the heaviest `EBPFM_CONNS_TOPN` (default 5) by bytes; `peers_total` is the true distinct
+count, the endpoint map is capped at 256 keys and anything past that is counted in
+`peers_overflow` rather than silently merged.
+
+Four rules it keeps:
+
+- **`conns` is `null`, not a zeroed block, for a process that opened nothing.** Most
+  processes open nothing, and the block is ~200 B against the width argument below.
+  Whether the TCP blocks loaded at all is a property of the capture and stays in
+  `meta.features` — it is not a per-process fact.
+- **`rx_bytes`/`tx_bytes` are `null`, never `0`, when no connection contributed a real
+  figure** (the `tcp_basic` variant cannot read byte counters). Design principle 4.
+- **`conn_s_total` is summed connection lifetimes, not wall time.** Connections overlap,
+  so it can exceed the process's own `duration_s`. It is not a rate base.
+- **Loss is counted, never silent.** A process that folded connections but never produced
+  a record — unattributable, or its exit event was lost — is counted at GC into
+  `stop.conns_dropped` / `conns_dropped_comms`. That pair is the acceptance gate for this
+  change.
+
+#### The exit record is now held for 250 ms
+
+This is forced by kernel ordering, not by batching. `do_exit()` runs
+`trace_sched_process_exit()` **before** `exit_files()`, so the `TCP_CLOSE` events for the
+sockets a process still held are submitted *after* the exit event that describes it.
+Writing the exit record inline would fold in only the connections that happened to close
+during the process's life and miss every one it was still holding — for an agent, nearly
+all of them.
+
+So `on_exit` stages the record and `drain_exits()` writes it one poll round later
+(`EBPFM_EXIT_HOLD_MS`, default 250; `0` restores the old inline emit).
+
+Two consequences worth knowing:
+
+- **File order, not time order, is what shifts.** `ts_epoch` is stamped when the record is
+  built, so a consumer that sorts on it — which is what it is for — sees nothing change.
+  A consumer that assumed append order *was* time order will now see an `exit` line after
+  a `residency` line stamped later.
+- **Nothing is at risk at stop.** `drain_exits(final=True)` runs before `flush_live()`, so
+  a pending record is still written as an `exit` and cannot also appear as a contradictory
+  `truncated`.
+
+The hold also moves the three "too cheap to keep" filters (`EBPFM_MIN_DURATION`,
+`EBPFM_MIN_CPU`, the `sleep` timer filter) from decision to *application* time: a 40 ms
+`curl` is below `MIN_DURATION`, and dropping it at exit would throw away the connection
+that made it worth keeping. **A process that talked to the network is never a no-op.**
 
 ### Schema 5 additions
 
@@ -373,8 +493,9 @@ agent row of `by_actor3`.
 sockets for free (uid, no pid). Full attribution needs the kretprobe on
 `inet_csk_accept`, which returns the new `struct sock *` **in the accepting process's own
 context** — the inbound `SYN_RECV`→`ESTABLISHED` transition runs in softirq, where the
-current task is meaningless. Emits an `accept` record and seeds the birth map so inbound
-connections also get a proper close record.
+current task is meaningless. Folds into the accepting process's `conns` block (as of
+schema 6; it emitted an `accept` record through schema 5) and seeds the birth map so
+inbound connections also get a proper close.
 
 ---
 
@@ -440,7 +561,12 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 `EBPFM_ENV_PREFIXES` (`CLAUDE_,CODEX_,CURSOR_,ANTHROPIC_`) · `EBPFM_RESIDENCY_TOPN` (5) ·
 `EBPFM_OUTPUT_DIR` · `EBPFM_DURATION` · `EBPFM_RESIDENCY_S` · `EBPFM_FLUSH` ·
 `EBPFM_MIN_UID` (data point 6, default off) · `EBPFM_CWD_ALWAYS` ·
-`EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_MIN_CPU` /
+`EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_TCP_ALL` ·
+`EBPFM_CONNS_TOPN` (5) · `EBPFM_EXIT_HOLD_MS` (250; `0` = emit exit records inline and
+lose the connections that close after the exit event) ·
+`EBPFM_FLUSH_MODE` (`poll`; `record` = flush every record, the schema-5 behaviour —
+note this is NOT `EBPFM_FLUSH`, which is about flushing live *processes* at stop) ·
+`EBPFM_MIN_CPU` /
 `_DURATION` · `EBPFM_PERF_PAGES` · `EBPFM_POLL_MS` · `EBPFM_FEATURES` (force a block
 set) · `EBPFM_FEATURE_CACHE` · `EBPFM_PROBE_VERBOSE=1` (print the compiler line for a
 rejected block).
@@ -450,7 +576,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 72 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 150 tests, no root, no BPF needed
 ```
 
 Pure helpers, the BTF member walk (including bpftool's literal `(anon)` rendering for

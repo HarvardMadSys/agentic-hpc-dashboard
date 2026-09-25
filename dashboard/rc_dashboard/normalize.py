@@ -1,17 +1,23 @@
 """Turn a raw collector record into the shape the reducers consume.
 
-The contract is SCHEMA_VERSION 5.  A thin shim keeps the pre-v4 capture usable as
+The contract is SCHEMA_VERSION 6.  A thin shim keeps the pre-v4 capture usable as
 an offline test input, but the shim's job is to make older records *honest*, not
-to pretend they are v5: a field the old collector could not measure must arrive
-as None, never as 0.
+to pretend they are current: a field the old collector could not measure must
+arrive as None, never as 0.
+
+Schema 6 removed the `tcp` and `accept` events; a closed connection now arrives
+as the `conns` block on the owning process's `exit`/`truncated` record. Nothing
+here reads either event, so the gates below are all `sv >= 5` / `sv < 4` and a v6
+record needs no shim -- but a capture that mixes 5 and 6 will have connection
+data in two different shapes, which `schema_versions` is what makes visible.
 
 Three rules this module exists to enforce:
 
 1. `actor3` is derived, never approximated.  `r.get("actor3") or r.get("actor")`
    yields the BINARY actor on an older record, which silently empties the
    `human-vscode` class -- a class-accounting bug in a three-class dashboard. It
-   also swallows v5's deliberate explicit `actor3: null` on an untracked-pid
-   `tcp` record.  Unlabelled becomes its own class, never `human`.
+   also swallows the deliberate explicit `actor3: null` on an untracked-pid
+   `conn` record.  Unlabelled becomes its own class, never `human`.
 
 2. Null is not zero.  `null_if_off` (ebpf_trace.py:1075) emits None for every
    field whose BPF block was dropped, but the pre-v4 collector wrote 0 in some of

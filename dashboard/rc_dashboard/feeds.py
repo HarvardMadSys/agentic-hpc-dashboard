@@ -103,8 +103,31 @@ def _blank(name, cfg):
             "backfill": None}
 
 
+# The ebpf tier splits each day into two files per host (ebpf_trace.stream_of):
+# `<host>.exits.jsonl` and `<host>.snapshot.jsonl`. The node tier still writes a
+# single `<host>.jsonl`, and feeds captured before the split are single-file too,
+# so all three spellings have to resolve to the same host.
+_STREAM_SUFFIXES = (".snapshot", ".exits")
+
+
+def host_of(path):
+    """`<host>[.<stream>].jsonl` -> `<host>`.
+
+    Only a RECOGNISED stream suffix is stripped. That is the whole point: a
+    hostname may legitimately contain dots, and blindly cutting at the last one
+    would turn `login.rc.fas` into `login.rc` -- inventing a host that does not
+    exist and splitting one node's records across two of them in the report."""
+    stem = os.path.basename(path)
+    if stem.endswith(".jsonl"):
+        stem = stem[:-len(".jsonl")]
+    for suf in _STREAM_SUFFIXES:
+        if stem.endswith(suf):
+            return stem[:-len(suf)]
+    return stem
+
+
 def resolve_dated(name, cfg):
-    """`<root>/<YYYY-MM-DD>/<host>.jsonl` -- the ebpf and node tiers."""
+    """`<root>/<YYYY-MM-DD>/<host>[.<stream>].jsonl` -- the ebpf and node tiers."""
     rep = _blank(name, cfg)
     roots = cfg.get("feeds.%s.roots" % name, []) or []
     days = int(cfg.get("feeds.%s.days" % name, 2) or 2)
@@ -139,7 +162,7 @@ def resolve_dated(name, cfg):
         except OSError:
             continue
         rep["files"].append({"path": p, "size": st.st_size, "mtime": st.st_mtime,
-                             "host": os.path.basename(p)[:-6]})
+                             "host": host_of(p)})
         rep["bytes"] += st.st_size
     rep["n_files"] = len(rep["files"])
     rep["hosts"] = sorted({f["host"] for f in rep["files"]})

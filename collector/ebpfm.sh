@@ -63,6 +63,14 @@ NODE_INTERVAL="${EBPFM_NODE_INTERVAL:-300}"
 NODE_TOP_N="${EBPFM_NODE_TOP_N:-25}"
 export EBPFM_OUTPUT_DIR="$OUTPUT_DIR"
 
+# The ebpf tier writes TWO files per host per day; stream_of() in ebpf_trace.py
+# is the authority on which record goes where. The node tier is unaffected --
+# it emits snapshots only, into its own root, and keeps its single file.
+#   <host>.exits.jsonl      exit, truncated   (per-process, unbounded rate)
+#   <host>.snapshot.jsonl   everything else   (census, conns, submits, meta/stop)
+EBPF_STREAMS="snapshot exits"
+_ebpf_file() { echo "$OUTPUT_DIR/${2:-$(date +%F)}/$HOST.$1.jsonl"; }
+
 fails=0
 ok()   { printf '  ok    %-30s %s\n' "$1" "${2-}"; }
 warn() { printf '  WARN  %-30s %s\n' "$1" "${2-}"; }
@@ -435,7 +443,7 @@ cmd_once() {
     if want_ebpf; then
         need_root once
         mkdir -p "$OUTPUT_DIR"
-        echo "ebpf tier: capturing ${dur}s on $HOST -> $OUTPUT_DIR/$(date +%F)/$HOST.jsonl"
+        echo "ebpf tier: capturing ${dur}s on $HOST -> $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl"
         EBPFM_DURATION="$dur" python3 "$TRACER" "$HOST"
     fi
 }
@@ -545,7 +553,7 @@ _ebpf_start() {
         echo "$NAME started on $HOST (pid $(cat "$PID_FILE"))"
     fi
     echo "  log:    $LOG"
-    echo "  output: $OUTPUT_DIR/<date>/$HOST.jsonl"
+    echo "  output: $OUTPUT_DIR/<date>/$HOST.{snapshot,exits}.jsonl"
 }
 
 _passthru_env() {
@@ -600,9 +608,18 @@ _ebpf_status() {
     else
         echo "$NAME: NOT RUNNING on $HOST"
     fi
-    local f="$OUTPUT_DIR/$(date +%F)/$HOST.jsonl"
-    [ -f "$f" ] && echo "  today: $(wc -l < "$f") records, $(du -h "$f" | cut -f1)" \
-                || echo "  today: no file yet ($f)"
+    # Both streams, separately: a snapshot file that is growing while the exits
+    # file is flat is a real and diagnosable state (census ticking, no process
+    # exits seen), and one summed number would hide it.
+    local s f any=0
+    for s in $EBPF_STREAMS; do
+        f="$(_ebpf_file "$s")"
+        if [ -f "$f" ]; then
+            any=1
+            printf '  today (%-8s): %s records, %s\n' "$s" "$(wc -l < "$f")" "$(du -h "$f" | cut -f1)"
+        fi
+    done
+    [ "$any" = 1 ] || echo "  today: no files yet ($OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl)"
 }
 
 # --- persistent systemd unit ------------------------------------------------
@@ -627,7 +644,7 @@ cmd_install_unit() {
     systemctl daemon-reload || die "daemon-reload failed"
     echo "installed $UNIT_DST"
     echo "  collector: $DIR/ebpf_trace.py"
-    echo "  output:    $OUTPUT_DIR/<date>/<host>.jsonl"
+    echo "  output:    $OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl"
     echo
     echo "  systemctl enable --now $NAME     # start it and survive reboots"
     echo "  systemctl status $NAME"
@@ -666,10 +683,18 @@ cmd_status() {
     if want_ebpf; then _ebpf_status; fi
 }
 
+# `tail [n] [stream]` -- both streams by default, since which one carries the
+# record you are looking for is exactly what you may not know yet.
 cmd_tail() {
-    local n="${1:-3}" f="$OUTPUT_DIR/$(date +%F)/$HOST.jsonl"
-    [ -f "$f" ] || { echo "no log yet: $f"; return 1; }
-    if command -v jq >/dev/null 2>&1; then tail -n "$n" "$f" | jq .; else tail -n "$n" "$f"; fi
+    local n="${1:-3}" want="${2:-}" s f any=0
+    for s in ${want:-$EBPF_STREAMS}; do
+        f="$(_ebpf_file "$s")"
+        [ -f "$f" ] || continue
+        any=1
+        echo "== $s ($f)"
+        if command -v jq >/dev/null 2>&1; then tail -n "$n" "$f" | jq .; else tail -n "$n" "$f"; fi
+    done
+    [ "$any" = 1 ] || { echo "no log yet: $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl"; return 1; }
 }
 
 # ---------------------------------------------------------------------------
@@ -775,9 +800,14 @@ for avg,n,cnt,ns in rows[:12]:
     [ "$prev_stats" != missing ] && [ "$prev_stats" != 1 ] \
         && sysctl -w kernel.bpf_stats_enabled="$prev_stats" >/dev/null 2>&1
 
-    local f; f="$tmp/$(date +%F)/$HOST.jsonl"
+    # `recs` is the whole capture, so it sums both streams. The perf counters
+    # come off the `stop` record, which rides the SNAPSHOT stream -- reading the
+    # last line of the exits file would silently yield an exit record and report
+    # every counter as null.
+    local d; d="$tmp/$(date +%F)"
+    local f; f="$d/$HOST.snapshot.jsonl"
     local recs lostline seenline seentot
-    recs="$( [ -f "$f" ] && wc -l < "$f" || echo 0)"
+    recs="$(cat "$d/$HOST.snapshot.jsonl" "$d/$HOST.exits.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
     lostline="$( [ -f "$f" ] && tail -1 "$f" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps(d.get("perf_lost")))' 2>/dev/null || echo '{}')"
     seenline="$( [ -f "$f" ] && tail -1 "$f" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps(d.get("perf_seen")))' 2>/dev/null || echo '{}')"
     seentot="$( [ -f "$f" ] && tail -1 "$f" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(sum((d.get("perf_seen") or {}).values()))' 2>/dev/null || echo 0)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""eBPF_marthen_new — root eBPF collector for coding-agent activity on a login node.
+"""ebpfm — root eBPF collector for coding-agent activity on a login node.
 
 Standalone: everything it imports lives in ./lib, so the folder can be copied to a
 machine on its own. Invoke it through ./ebpfm.sh, which bootstraps dependencies,
@@ -48,10 +48,19 @@ Usage (prefer ./ebpfm.sh):
     sudo python3 ebpf_trace.py --features        # probe, print the resolved set, exit
     sudo python3 ebpf_trace.py --dump-c          # print the BPF C actually compiled
 
-Output: $EBPFM_OUTPUT_DIR/<YYYY-MM-DD>/<hostname>.jsonl, one JSON object per line,
-`event` in {meta, exit, truncated, tcp, accept, conn, submit, residency,
-residency_totals, stop}. Schema in README.md.
+Output: $EBPFM_OUTPUT_DIR/<YYYY-MM-DD>/<hostname>.<stream>.jsonl, one JSON object
+per line, `event` in {meta, exit, truncated, conn, submit, residency,
+residency_totals, stop} (v6 folded the former `tcp`/`accept` kinds into `conns`
+on the owning exit record). Two files per host per day:
+
+    <hostname>.exits.jsonl      exit, truncated          (per-process, unbounded)
+    <hostname>.snapshot.jsonl   everything else          (census + run bookends)
+
+stream_of() is the single mapping. The RECORD schema is unchanged by the split,
+so `schema_version` stays 6: a reader that globs the day directory sees exactly
+what one file used to give it. Schema in README.md.
 """
+import collections
 import ctypes
 import hashlib
 import ipaddress
@@ -83,8 +92,13 @@ try:  # netlink socket-diag for standing connections
 except Exception:  # pragma: no cover
     sockdiag = None
 
+# Wire value, deliberately NOT renamed to 'ebpfm': it is stamped into every JSONL
+# envelope (see _envelope below), so changing it would split already-captured feeds.
 COLLECTOR = 'ebpf_marthen_new'
-SCHEMA_VERSION = 5      # 5 = ts_epoch envelope, sandbox_*, approval_*, session_uuid,
+SCHEMA_VERSION = 6      # 6 = per-connection `tcp`/`accept` records folded into a `conns`
+                        #     block on the owning process's exit/truncated record;
+                        #     those two event kinds no longer exist
+                        # 5 = ts_epoch envelope, sandbox_*, approval_*, session_uuid,
                         #     args_len/args_truncated, submit request fields,
                         #     residency top_procs/state_counts/tcp_open_ext, io on truncated
                         # 4 = cwd, dstate_*, net_*, conn/accept/truncated events, attribution
@@ -134,7 +148,15 @@ SANDBOX_COMMS = {'bwrap', 'unshare', 'nsenter', 'podman', 'docker', 'runc', 'cru
 ENV_PREFIXES  = tuple((os.environ.get('EBPFM_ENV_PREFIXES')
                        or 'CLAUDE_,CODEX_,CURSOR_,ANTHROPIC_').split(','))
 # --- item 3/8: network -----------------------------------------------------
-TCP_ALL       = os.environ.get('EBPFM_TCP_ALL', '0') != '0'   # keep records for untracked pids
+TCP_ALL       = os.environ.get('EBPFM_TCP_ALL', '0') != '0'   # fold conns for untracked pids too
+CONNS_TOPN    = env_num('EBPFM_CONNS_TOPN', 5, int)           # peers/providers kept per record
+# How long an exit record is held before it is written, so that the socket
+# closes belonging to the exiting process can still be folded into it. The
+# kernel runs trace_sched_process_exit() BEFORE exit_files(), so a process's own
+# TCP_CLOSE events are submitted AFTER its exit event -- emitting inline would
+# drop every connection the process still held open, which for an agent is most
+# of them. Two poll rounds is generous; 0 restores the old inline emit.
+EXIT_HOLD_MS  = env_num('EBPFM_EXIT_HOLD_MS', 250, int)
 CONN_ALL      = os.environ.get('EBPFM_CONN_ALL', '0') != '0'  # 1 = emit loopback/private too
 CONN_UNTRACKED = os.environ.get('EBPFM_CONN_UNTRACKED', '1') != '0'  # netlink rows with no pid
 # --- item 4: wait channel --------------------------------------------------
@@ -142,6 +164,14 @@ DSTACK_MAX    = env_num('EBPFM_DSTACK_MAX', 300, int)         # /proc/<pid>/stac
 DSTACK_DEPTH  = env_num('EBPFM_DSTACK_DEPTH', 5, int)
 # --- item 5: flush ---------------------------------------------------------
 FLUSH_ON_EXIT = os.environ.get('EBPFM_FLUSH', '1') != '0'
+# NB: distinct from EBPFM_FLUSH above, which is about flushing live PROCESSES at
+# stop. This one is the output file's write(2) policy.
+#   'poll'   -- one flush per poll round (default): syscalls are capped at
+#               1000/EBPFM_POLL_MS per second no matter the record rate, and a
+#               record is at most one poll round short of durable, which is
+#               already the collector's own latency floor.
+#   'record' -- flush every record, the schema-5 behaviour.
+FLUSH_MODE    = os.environ.get('EBPFM_FLUSH_MODE', 'poll')
 # --- item 6: uid attribution ----------------------------------------------
 # 0 disables. Enabling this widens what `actor3="human"` means, so a capture with
 # it on is NOT comparable to one with it off; filter on `attribution` downstream.
@@ -297,10 +327,6 @@ def btf_ok(block):
         return True
     have = btf_offsets()
     return all(m in have.get(s, {}) for s, members in need.items() for m in members)
-
-
-def _off(struct_name, member, default=0):
-    return btf_offsets().get(struct_name, {}).get(member, default)
 
 
 def build_bpf_text(f, offs=None):
@@ -1259,10 +1285,81 @@ def _top_n(d, n, or_none=False):
     return dict(sorted(d.items(), key=lambda kv: -kv[1])[:n])
 
 
+# Every record carries `event`; these two constants decide which of the day's two
+# files it lands in. `exit` and `truncated` are the per-process terminal records
+# -- the unbounded stream, whose rate IS the fork rate of the node and is highest
+# exactly when the node is busiest. Everything else describes the node or the run
+# as it stood at a moment: the residency census and its totals, the
+# connection/submit observations, and the collector's own meta/stop bookends.
+# Splitting them means a consumer that wants only the census does not have to
+# read (or retain) a day of exits to find it.
+EXIT_EVENTS = ('exit', 'truncated')
+STREAMS = ('snapshot', 'exits')
+
+
+def stream_of(event):
+    """Record `event` -> which of the day's two files it belongs in.
+
+    Deliberately total: an event kind added later without a decision here lands
+    in `snapshot` rather than vanishing or raising mid-capture. StreamSplitTest
+    pins the known set, so the default cannot silently absorb a new high-rate
+    stream without a test failing first."""
+    return 'exits' if event in EXIT_EVENTS else 'snapshot'
+
+
 class DailyWriter:
-    def __init__(self, root, host):
-        self.root, self.host, self.day, self.fh = root, host, None, None
+    """JSONL sink: two files per host per day, one per stream.
+
+    Layout is `<root>/<YYYY-MM-DD>/<host>.<stream>.jsonl`, `stream` in
+    (snapshot, exits) per stream_of(). Both handles open when the day opens,
+    not on first use, so a running collector always shows the pair and an empty
+    `.exits.jsonl` reads as "no exits observed" rather than "collector never
+    started".
+
+    Flush policy is the whole I/O cost of this collector. Through schema 5 every
+    record was followed by fh.flush(), which is one write(2) per record -- and
+    the record rate is the EVENT rate, unbounded and exactly highest when the
+    node is busiest. Under 'poll' the loop flushes once per round instead, so
+    syscalls are bounded by the poll rate (10/s at the default POLL_MS) however
+    many records the round produced, and a burst of 400 exits costs one write
+    instead of 400. Only DIRTY streams flush, so the split costs a second
+    write(2) only in a round that actually wrote to both -- an idle round still
+    costs nothing, and a pure-exit burst still costs one.
+
+    What that trades: a record is durable within one poll round rather than
+    immediately. SIGTERM, SIGINT and the duration stop all run through close(),
+    which flushes, so the exposure is SIGKILL or power loss losing at most one
+    round. EBPFM_FLUSH_MODE=record restores the old behaviour."""
+
+    def __init__(self, root, host, flush_mode=None):
+        self.root, self.host, self.day = root, host, None
+        self.fh = {}              # stream -> open file
+        self.dirty = {}           # stream -> bool
         self.n = 0
+        self.flushes = 0          # write(2) count; reported in the stop record
+        self.per_record = (flush_mode or FLUSH_MODE) == 'record'
+
+    def path(self, stream, day=None):
+        """Where `stream` lands for `day` (default: the open day). Used by the
+        tests and by anything that needs to name a file without writing one."""
+        return os.path.join(self.root, day or self.day,
+                            '%s.%s.jsonl' % (self.host, stream))
+
+    def _roll(self, day):
+        """Open the day's pair, closing the outgoing one. _shut() flushes first,
+        so a rollover cannot strand a record in the old day's buffer."""
+        self._shut()
+        os.makedirs(os.path.join(self.root, day), exist_ok=True)
+        self.day = day
+        for s in STREAMS:
+            self.fh[s] = open(self.path(s), 'a')
+            self.dirty[s] = False
+
+    def _shut(self):
+        self.flush()
+        for fh in self.fh.values():
+            fh.close()
+        self.fh, self.dirty = {}, {}
 
     def write(self, rec):
         # Backstop for `ts_epoch`: every record type is supposed to get it from
@@ -1273,19 +1370,27 @@ class DailyWriter:
         rec.setdefault('ts_epoch', time.time())
         day = datetime.now().strftime('%Y-%m-%d')
         if day != self.day:
-            if self.fh:
-                self.fh.close()
-            d = os.path.join(self.root, day)
-            os.makedirs(d, exist_ok=True)
-            self.fh = open(os.path.join(d, '%s.jsonl' % self.host), 'a')
-            self.day = day
-        self.fh.write(json.dumps(rec) + '\n')
-        self.fh.flush()
+            self._roll(day)
+        s = stream_of(rec.get('event'))
+        self.fh[s].write(json.dumps(rec) + '\n')
         self.n += 1
+        if self.per_record:
+            self.fh[s].flush()
+            self.flushes += 1
+        else:
+            self.dirty[s] = True
+
+    def flush(self):
+        """Called once per poll round. A no-op for any stream the round left
+        alone, which on an idle node is both of them."""
+        for s, fh in self.fh.items():
+            if self.dirty.get(s):
+                fh.flush()
+                self.flushes += 1
+                self.dirty[s] = False
 
     def close(self):
-        if self.fh:
-            self.fh.close()
+        self._shut()
 
 
 # ---------------------------------------------------------------------------
@@ -1412,6 +1517,12 @@ _cgid_last_walk = 0.0
 _stop = False
 _dropped = {'n': 0, 'comms': {}}     # item 6: what the actor filter discarded
 _fork_prev = None
+# (due_monotonic, m, rec, quiet) in insertion order, which is also due order
+# because the hold is a constant. A deque, not a list: this is drained from the
+# head once per poll round and popleft is O(1) where pop(0) is O(n). See
+# _stage_exit().
+_pending_exits = collections.deque()
+_conn_dropped = {'n': 0, 'comms': {}}   # conns whose owner never got an exit record
 
 
 def _on_signal(signum, frame):
@@ -1433,7 +1544,7 @@ def _new_entry(pid, ppid, comm=None, **kw):
          'start_ep': None, 'exec_ktime': None, 'attributed': None, 'is_agent': False,
          'agent_pid': None, 'agent_type': None, 'depth': None,
          'exited': False, 'gc_ts': None, 'is_submit': False, 'submit_buf': None,
-         'emitted': False}
+         'emitted': False, 'conns': None}
     e.update(kw)
     return e
 
@@ -1988,13 +2099,17 @@ def on_exit(e):
     F = FEATURES
     io_bytes = (e.rd_bytes + e.wr_bytes) if 'io' in F else 0
     comm = m.get('comm') or ''
-    if (not KEEP_TIMERS and not m['is_agent'] and comm in TIMER_COMMS
-            and cpu_s == 0 and io_bytes == 0):
-        return
-    if duration is not None and duration < MIN_DURATION:
-        return
-    if cpu_s < MIN_CPU:
-        return
+    # These three discard a process for being too cheap to be interesting. They
+    # are DECIDED here, where the exit event's counters are, but APPLIED at drain
+    # time (see _stage_exit) -- a 40 ms curl is below MIN_DURATION and its socket
+    # close has not arrived yet, so dropping it now would throw away the
+    # connection that made it worth keeping. A process that talked to the network
+    # is never a no-op.
+    quiet = bool(
+        (not KEEP_TIMERS and not m['is_agent'] and comm in TIMER_COMMS
+         and cpu_s == 0 and io_bytes == 0)
+        or (duration is not None and duration < MIN_DURATION)
+        or (cpu_s < MIN_CPU))
 
     exit_code, sig, core = decode_status(e.exit_code)
     ds_s, ds_n, ds_max, ds_src = pick_dstate(e, F)
@@ -2042,11 +2157,64 @@ def on_exit(e):
         # poller-compat placeholders (this record is a strict superset of proc_trace's)
         'samples': None, 'state_last': None,
     })
+    _stage_exit(m, rec, quiet)
+
+
+# ---------------------------------------------------------------------------
+# deferred exit records (schema 6)
+# ---------------------------------------------------------------------------
+
+def _stage_exit(m, rec, quiet):
+    """Hold an exit record for EXIT_HOLD_MS, then write it with its `conns`.
+
+    The hold exists for one kernel ordering fact: do_exit() runs
+    trace_sched_process_exit() BEFORE exit_files(), so the TCP_CLOSE events for
+    the sockets this process still held are submitted AFTER the exit event that
+    produced `rec`. Writing inline would fold in only the connections that
+    happened to close during the process's life and miss every one it was still
+    holding -- for an agent, nearly all of them.
+
+    Cost of the hold is ordering in the FILE only: `ts_epoch` is stamped when the
+    record is built, so a consumer that sorts on it (which is what it is for) is
+    unaffected. Nothing is buffered that a stop would lose -- drain_exits(final=1)
+    runs before the stop record."""
+    if EXIT_HOLD_MS <= 0:
+        _write_exit(m, rec, quiet)
+        return
+    _pending_exits.append((time.monotonic() + EXIT_HOLD_MS / 1000.0, m, rec, quiet))
+
+
+def _write_exit(m, rec, quiet):
+    if quiet and not m.get('conns'):
+        return
+    rec['conns'] = _conns_block(m)
     writer.write(rec)
     m['emitted'] = True
-
     if m.get('is_submit') or m.get('submit_buf') is not None:
         _emit_submit(m, rec)
+
+
+def drain_exits(final=False):
+    """Write every staged exit record whose hold has elapsed. Called once per
+    poll round, and with final=True at shutdown so nothing is stranded.
+
+    _pending_exits is append-only with a constant hold, so it is already in due
+    order and the first record that is not due ends the scan."""
+    if not _pending_exits:
+        return 0
+    now = time.monotonic()
+    n = 0
+    while _pending_exits:
+        due, m, rec, quiet = _pending_exits[0]
+        if not final and due > now:
+            break
+        _pending_exits.popleft()
+        try:
+            _write_exit(m, rec, quiet)
+        except Exception:
+            pass
+        n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -2108,37 +2276,162 @@ def _provider(ip):
     return _cidr_index.classify(ip) if _cidr_index is not None else None
 
 
+def _new_conns():
+    """The per-process connection accumulator. Created lazily: a `conns` of None
+    means the process opened none, and most processes open none, so this must not
+    cost a dict on every entry."""
+    return {'n': 0, 'accepted': 0, 'established': 0, 'failed': 0, 'external': 0,
+            'rx_bytes': 0, 'tx_bytes': 0, 'rx_known': False, 'tx_known': False,
+            'dur_s': 0.0, 'connect_ms': [], 'providers': {}, 'peers': {}}
+
+
+def _conn_fold(m, *, daddr, dport, external, provider, inbound, established,
+               dur_s=None, connect_ms=None, rx=None, tx=None):
+    """Accumulate one closed/accepted connection onto its process.
+
+    Endpoints collapse on (daddr, dport): twenty sequential requests to one API
+    host were twenty records and are now one peer with n=20, which is the whole
+    point of folding -- an agent's traffic is overwhelmingly repeat calls to a
+    handful of hosts."""
+    c = m.get('conns')
+    if c is None:
+        c = m['conns'] = _new_conns()
+    c['n'] += 1
+    if inbound:
+        c['accepted'] += 1
+    if established:
+        c['established'] += 1
+    elif not inbound:
+        # SYN_SENT straight to CLOSE with no ESTABLISHED is a refused or
+        # timed-out connect, which is a provider-health signal. Only meaningful
+        # outbound: an accept is established by construction.
+        c['failed'] += 1
+    if external:
+        c['external'] += 1
+    # rx/tx are null-not-zero when the kernel block that reads them did not load,
+    # so track whether ANY connection contributed a real figure.
+    if rx is not None:
+        c['rx_bytes'] += rx
+        c['rx_known'] = True
+    if tx is not None:
+        c['tx_bytes'] += tx
+        c['tx_known'] = True
+    if dur_s:
+        c['dur_s'] += dur_s
+    if connect_ms is not None and len(c['connect_ms']) < 1024:
+        c['connect_ms'].append(connect_ms)
+    if provider:
+        c['providers'][provider] = c['providers'].get(provider, 0) + 1
+    # Unbounded peer keys are the one real width risk here (a port scan would be
+    # one key per port), so the map is capped and the overflow is counted rather
+    # than silently merged into a peer it does not belong to.
+    key = '%s:%d' % (daddr, dport)
+    peers = c['peers']
+    e = peers.get(key)
+    if e is None:
+        if len(peers) >= _PEER_KEYS_MAX:
+            c['peers_overflow'] = c.get('peers_overflow', 0) + 1
+            return
+        e = peers[key] = {'daddr': daddr, 'dport': dport, 'n': 0,
+                          'external': external, 'provider': provider,
+                          'inbound': 0, 'failed': 0,
+                          'rx_bytes': 0, 'tx_bytes': 0}
+    e['n'] += 1
+    if inbound:
+        e['inbound'] += 1
+    elif not established:
+        e['failed'] += 1
+    if rx:
+        e['rx_bytes'] += rx
+    if tx:
+        e['tx_bytes'] += tx
+
+
+_PEER_KEYS_MAX = 256
+
+
+def _conns_block(m):
+    """The `conns` field of an exit/truncated record, or None if the process
+    never opened a connection.
+
+    None for "no connections" rather than a zeroed block: the block is ~200 B and
+    would otherwise land on every exit record on the node, against the width rule
+    the schema-5 note argues. Whether the TCP blocks loaded at all is a property
+    of the capture, not of the process, and is recorded once in `meta.features`."""
+    c = m.get('conns')
+    if not c or not c['n']:
+        return None
+    peers = sorted(c['peers'].values(),
+                   key=lambda e: (-(e['rx_bytes'] + e['tx_bytes']), -e['n']))
+    cm = sorted(c['connect_ms'])
+    out = {
+        'n': c['n'],
+        'accepted': c['accepted'],
+        'established': c['established'],
+        # outbound connects that never reached ESTABLISHED
+        'failed': c['failed'],
+        'external': c['external'],
+        'rx_bytes': c['rx_bytes'] if c['rx_known'] else None,
+        'tx_bytes': c['tx_bytes'] if c['tx_known'] else None,
+        # summed connection lifetimes, NOT wall time: connections overlap, so
+        # this can exceed the process's own duration_s and is not a rate base
+        'conn_s_total': round(c['dur_s'], 3),
+        'connect_ms_p50': cm[len(cm) // 2] if cm else None,
+        'connect_ms_max': cm[-1] if cm else None,
+        'providers': _top_n(c['providers'], CONNS_TOPN, or_none=True),
+        'peers': peers[:CONNS_TOPN],
+        'peers_total': len(c['peers']),
+    }
+    if c.get('peers_overflow'):
+        out['peers_overflow'] = c['peers_overflow']
+    return out
+
+
 def on_tcp(t):
-    """One record per closed connection (kind=1) or accepted connection (kind=2)."""
+    """Fold one closed (kind=1) or accepted (kind=2) connection onto its process.
+
+    Emits nothing. Through schema 5 this wrote one `tcp`/`accept` record per
+    connection; both kinds are gone and the connection now reaches the feed only
+    inside the owning process's `exit` (or `truncated`) record. See _stage_exit()
+    for why that record has to wait."""
     m = proc.get(t.pid)
-    actor, attribution = actor_of(m) if m is not None else (None, None)
-    if actor is None and not TCP_ALL:
+    if m is None:
+        if not TCP_ALL:
+            return
+        # No fork/exec was ever seen for this pid -- it predates the collector.
+        # Give it an entry so the connection has somewhere to live; whether it
+        # ever reaches the feed depends on the pid becoming attributable before
+        # it exits, and _note_conn_dropped() counts it when it does not.
+        m = proc_add(t.pid, None, comm=_cstr(t.comm) or None)
+        if m['uid'] is None:
+            m['uid'], m['user'] = t.uid, username(t.uid)
+    elif actor_of(m)[0] is None and not TCP_ALL:
         return
     daddr = _ip_of(t, 'daddr_v4', 'daddr_v6', t.family)
-    saddr = _ip_of(t, 'saddr_v4', 'saddr_v6', t.family)
-    kind = 'accept' if t.kind == TCP_KIND_ACCEPT else 'tcp'
-    rec = _envelope(kind)
-    if m is not None:
-        rec.update(_base_identity(m, actor, attribution))
-    else:
-        rec.update(_stub_identity(t.pid, t.uid, _cstr(t.comm)))
-    rec.update({
-        'family': 'inet6' if t.family == 10 else 'inet',
-        'saddr': saddr, 'sport': t.sport, 'daddr': daddr, 'dport': t.dport,
-        'external': is_external_ip(daddr), 'provider': _provider(daddr),
-        'inbound': bool(t.inbound),
-    })
-    if kind == 'tcp':
-        rec.update({
-            'duration_s': round(t.dur_ns / 1e9, 3),
-            # SYN_SENT straight to CLOSE with no ESTABLISHED is a refused or
-            # timed-out connect, which is a provider-health signal
-            'established': bool(t.established),
-            'connect_ms': round(t.connect_ns / 1e6, 2) if t.established and t.connect_ns else None,
-            'rx_bytes': t.rx_bytes if t.has_bytes else None,
-            'tx_bytes': t.tx_bytes if t.has_bytes else None,
-        })
-    writer.write(rec)
+    inbound = bool(t.inbound)
+    established = True if t.kind == TCP_KIND_ACCEPT else bool(t.established)
+    _conn_fold(
+        m, daddr=daddr, dport=t.dport, external=is_external_ip(daddr),
+        provider=_provider(daddr), inbound=inbound, established=established,
+        dur_s=(round(t.dur_ns / 1e9, 3) if t.kind != TCP_KIND_ACCEPT else None),
+        connect_ms=(round(t.connect_ns / 1e6, 2)
+                    if t.kind != TCP_KIND_ACCEPT and t.established and t.connect_ns
+                    else None),
+        rx=(t.rx_bytes if (t.kind != TCP_KIND_ACCEPT and t.has_bytes) else None),
+        tx=(t.tx_bytes if (t.kind != TCP_KIND_ACCEPT and t.has_bytes) else None),
+    )
+
+
+def _note_conn_dropped(m):
+    """A process with folded connections whose exit record is not emitted takes
+    them with it. Counted so the loss is visible in `stop` instead of silent --
+    the same contract `_dropped` and conn_tick's `unmatched_births` keep."""
+    c = m.get('conns')
+    if not c or not c['n']:
+        return
+    _conn_dropped['n'] += c['n']
+    k = m.get('comm') or '?'
+    _conn_dropped['comms'][k] = _conn_dropped['comms'].get(k, 0) + c['n']
 
 
 def conn_tick(b):
@@ -2509,6 +2802,12 @@ def residency_tick(b=None):
 def gc():
     cutoff = time.time() - GRACE_S
     for pid in [p for p, m in proc.items() if m['exited'] and (m['gc_ts'] or 0) < cutoff]:
+        m = proc[pid]
+        # Reaped without ever being emitted -- unattributable, filtered, or a pid
+        # the collector only ever saw a socket for. Whatever it had folded is
+        # lost with it, and this is the one place that sees every such entry.
+        if not m['emitted']:
+            _note_conn_dropped(m)
         proc_del(pid)
 
 
@@ -2583,10 +2882,16 @@ def flush_live(b, features):
             # record's in-kernel taskstats read: this is /proc at flush time,
             # which is own-user-only unless the collector is root.
             'io': _io_mb(read_io(pid)),
+            # Same block the exit record carries. Without it a process that is
+            # still alive at stop -- which is exactly the long-lived agent whose
+            # traffic matters most -- would have every connection it made dropped
+            # on the floor now that they no longer emit records of their own.
+            'conns': _conns_block(m),
             'exit_code': None, 'signal': None, 'core_dumped': None,
             'samples': None,
         })
         writer.write(rec)
+        m['emitted'] = True
         n += 1
     return n
 
@@ -2727,6 +3032,8 @@ def main():
                        'write_kmax': WRITE_KMAX, 'residency_s': RESIDENCY_S,
                        'keep_timers': KEEP_TIMERS, 'include_roots': INCLUDE_ROOTS,
                        'tcp_all': TCP_ALL, 'conn_all': CONN_ALL,
+                       'conns_topn': CONNS_TOPN, 'exit_hold_ms': EXIT_HOLD_MS,
+                       'flush_mode': FLUSH_MODE,
                        'conn_untracked': CONN_UNTRACKED, 'cwd': WANT_CWD,
                        'cwd_always': CWD_ALWAYS, 'min_uid': MIN_UID,
                        'sandbox': WANT_SANDBOX, 'sandbox_always': SANDBOX_ALWAYS,
@@ -2735,6 +3042,7 @@ def main():
                        'submit_comms': sorted(SUBMIT_COMMS), 'gc_grace_s': GRACE_S},
             'seeded_pids': len(proc)})
     writer.write(meta)
+    writer.flush()          # `ebpfm.sh status` looks for this record immediately
     for k, v in sysctls.items():
         if v == '0':
             sys.stderr.write('warning: %s=0 — the dstate_*/blkio_* fields will read 0 '
@@ -2750,6 +3058,16 @@ def main():
             b.perf_buffer_poll(timeout=POLL_MS)
         except Exception:
             pass
+        try:
+            drain_exits()
+        except Exception:
+            pass
+        # After drain_exits, so a record staged this round is covered by this
+        # round's flush rather than waiting for the next one.
+        try:
+            writer.flush()
+        except Exception:
+            pass
         now = time.time()
         if now - last_gc > 60:
             gc()
@@ -2763,6 +3081,13 @@ def main():
         if DURATION and (now - start) >= DURATION:
             break
 
+    # Before flush_live, which skips m['exited'] entries: a staged exit record
+    # that is still pending belongs to a process that HAS exited, so draining
+    # first keeps it an `exit` and not a second, contradictory `truncated`.
+    try:
+        drain_exits(final=True)
+    except Exception:
+        pass
     n_trunc = 0
     if FLUSH_ON_EXIT:
         try:
@@ -2773,6 +3098,17 @@ def main():
     stop_rec = _envelope('stop')
     stop_rec.update({'uptime_s': round(time.time() - start, 1), 'records': writer.n,
                      'truncated': n_trunc, 'perf_lost': lost, 'perf_seen': seen,
+                     # write(2) count for the whole run, against `records` above:
+                     # the pair IS the I/O amplification, measured rather than
+                     # assumed. +1 because this record is built before it is
+                     # written, and the flush that lands it has not happened yet
+                     # -- true in both modes.
+                     'flush_mode': 'record' if writer.per_record else 'poll',
+                     'flushes': writer.flushes + 1,
+                     # folded connections whose owning process never produced a
+                     # record; the acceptance gate for the schema-6 fold
+                     'conns_dropped': _conn_dropped['n'],
+                     'conns_dropped_comms': _top_n(_conn_dropped['comms'], 10, or_none=True),
                      'reason': 'duration' if DURATION and not _stop else 'signal'})
     writer.write(stop_rec)
     if any(lost.values()):

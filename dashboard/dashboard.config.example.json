@@ -9,8 +9,9 @@
   "version": 1,
 
   "feeds": {
-    "//": "eBPF tier (root): $EBPFM_OUTPUT_DIR/<date>/<host>.jsonl, landing repo-side",
-    "//1": "as log/ebpfm/<date>/<host>.jsonl -- the log/ebpfm symlink already ends in /logs.",
+    "//": "eBPF tier (root): $EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl, landing",
+    "//1": "repo-side as log/ebpfm/<date>/<host>.{snapshot,exits}.jsonl -- the log/ebpfm symlink",
+    "//1a": "already ends in /logs. Both files are globbed; each record carries its own host.",
     "//2": "List every root to merge; a non-existent root is reported, never fatal.",
     "ebpf": {
       "roots": ["/n/netscratch/juncheng_lab/juncheng/rc_measurement/ebpfm/logs"],

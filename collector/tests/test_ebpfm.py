@@ -1,15 +1,18 @@
-"""Unit tests for eBPF_marthen_new's userspace logic.
+"""Unit tests for ebpfm's userspace logic.
 
 Runs anywhere: no bcc, no root, no kernel. Everything here is either a pure
 function or the process-table logic driven by synthetic events, which is where
 the bugs that a live capture cannot easily reveal actually live.
 
-    python3 -m unittest discover eBPF_marthen_new/tests
+    python3 -m unittest discover collector/tests
 """
+import json
 import os
+import shutil
 import socket
 import struct
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -725,13 +728,552 @@ class EnvelopeTest(unittest.TestCase):
     def test_schema_version_is_pinned(self):
         """Never asserted before. A bump is a deliberate act with a downstream
         cost, not something that should drift in unnoticed."""
-        self.assertEqual(T.SCHEMA_VERSION, 5)
+        self.assertEqual(T.SCHEMA_VERSION, 6)
         self.assertEqual(T.COLLECTOR, 'ebpf_marthen_new')
 
     def test_top_n(self):
         self.assertEqual(T._top_n({'a': 3, 'b': 9, 'c': 1}, 2), {'b': 9, 'a': 3})
         self.assertEqual(T._top_n({}, 5), {})
         self.assertIsNone(T._top_n({}, 5, or_none=True))
+
+
+# ---------------------------------------------------------------------------
+# schema 6: per-connection records folded onto the process
+# ---------------------------------------------------------------------------
+
+class FakeWriter(object):
+    """Stands in for DailyWriter. Records only; no file, no day rollover."""
+
+    def __init__(self):
+        self.recs = []
+        self.n = 0
+
+    def write(self, rec):
+        self.recs.append(rec)
+        self.n += 1
+
+    def of(self, event):
+        return [r for r in self.recs if r['event'] == event]
+
+
+def _tcp_ev(pid=101, daddr='104.18.0.1', dport=443, kind=None, established=1,
+            has_bytes=1, rx=1000, tx=200, dur_ns=int(2e9), connect_ns=int(30e6),
+            inbound=0, uid=1000, comm=b'node'):
+    return Ev(pid=pid, uid=uid, comm=comm, family=2,
+              saddr_v4=int.from_bytes(socket.inet_aton('10.0.0.2'), 'little'),
+              daddr_v4=int.from_bytes(socket.inet_aton(daddr), 'little'),
+              saddr_v6=0, daddr_v6=0, sport=40000, dport=dport,
+              kind=(T.TCP_KIND_ACCEPT if kind == 'accept' else T.TCP_KIND_CLOSE),
+              established=established, has_bytes=has_bytes, rx_bytes=rx,
+              tx_bytes=tx, dur_ns=dur_ns, connect_ns=connect_ns, inbound=inbound)
+
+
+def _exit_ev(pid=101, ppid=100, uid=1000, comm=b'node', cpu_ns=int(1e9),
+             exit_code=0, run_ns=int(1e9)):
+    """A full exit event. Every field on_exit reads eagerly must be present:
+    null_if_off() takes an already-evaluated argument, so a missing attribute is
+    an AttributeError even when the block is off."""
+    return Ev(pid=pid, ppid=ppid, uid=uid, comm=comm, exit_code=exit_code,
+              ktime_ns=int(5e9), start_ns=int(1e9),
+              utime_ns=cpu_ns, stime_ns=0, cutime_ns=0, cstime_ns=0,
+              hiwater_rss_pages=100, nr_threads=1, min_flt=10, maj_flt=0,
+              cmaj_flt=0, nvcsw=1, nivcsw=0, run_ns=run_ns, wait_ns=0,
+              blkio_ns=0, swapin_ns=0, freepages_ns=0,
+              rd_bytes=0, wr_bytes=0, rchar=0, wchar=0,
+              net_tx=0, net_rx=0, net_calls=0, has_net=0,
+              pgrp=pid, sid=pid, has_tty=0, tty=b'', cgid=0,
+              has_block=0, block_ns=0, has_dacc=0)
+
+
+class ConnFoldTest(unittest.TestCase):
+    """The schema-6 change: `tcp` and `accept` records no longer exist and the
+    connection reaches the feed inside its process's exit record."""
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._pending_exits.clear()
+        T._conn_dropped['n'] = 0
+        T._conn_dropped['comms'] = {}
+        self._saved = (T.writer, T.FEATURES, T._tgid_of, T.MIN_UID,
+                       T.MIN_DURATION, T.MIN_CPU, T.EXIT_HOLD_MS, T.TCP_ALL)
+        T.writer = self.W = FakeWriter()
+        T.FEATURES = set()
+        T._tgid_of = lambda pid: pid
+        T.MIN_UID = 0
+        T.MIN_DURATION = 0.0
+        T.MIN_CPU = 0.0
+        T.EXIT_HOLD_MS = 250
+        T.proc_add(100, 1, comm='node', args='node /x/.claude/cli.js',
+                   user='u', uid=1000)
+        T.proc_add(101, 100, comm='curl', args='curl https://api.example', user='u', uid=1000)
+
+    def tearDown(self):
+        (T.writer, T.FEATURES, T._tgid_of, T.MIN_UID,
+         T.MIN_DURATION, T.MIN_CPU, T.EXIT_HOLD_MS, T.TCP_ALL) = self._saved
+        T._pending_exits.clear()
+
+    # --- the records are gone ---------------------------------------------
+    def test_on_tcp_writes_nothing(self):
+        T.on_tcp(_tcp_ev())
+        self.assertEqual(self.W.recs, [])
+        self.assertEqual(T.proc[101]['conns']['n'], 1)
+
+    def test_no_tcp_or_accept_records_survive_a_full_cycle(self):
+        T.on_tcp(_tcp_ev())
+        T.on_tcp(_tcp_ev(kind='accept', inbound=1))
+        T.on_exit(_exit_ev())
+        T.drain_exits(final=True)
+        self.assertEqual(self.W.of('tcp'), [])
+        self.assertEqual(self.W.of('accept'), [])
+        self.assertEqual(len(self.W.of('exit')), 1)
+
+    # --- THE ordering regression ------------------------------------------
+    def test_socket_close_after_the_exit_event_still_lands_in_the_record(self):
+        """do_exit() runs trace_sched_process_exit() BEFORE exit_files(), so a
+        process's own TCP_CLOSE events arrive AFTER its exit event. If the exit
+        record were written inline this connection would be lost -- which is
+        every connection a process was still holding when it exited."""
+        T.on_exit(_exit_ev())
+        self.assertEqual(self.W.recs, [], 'exit record must not be written inline')
+        T.on_tcp(_tcp_ev())                      # arrives late, as the kernel does it
+        T.drain_exits(final=True)
+        rec = self.W.of('exit')[0]
+        self.assertEqual(rec['conns']['n'], 1)
+        self.assertEqual(rec['conns']['established'], 1)
+
+    def test_hold_is_respected_until_it_elapses(self):
+        T.on_exit(_exit_ev())
+        self.assertEqual(T.drain_exits(), 0)     # not due yet
+        self.assertEqual(self.W.recs, [])
+        T._pending_exits[0] = (0.0,) + tuple(T._pending_exits[0][1:])
+        self.assertEqual(T.drain_exits(), 1)
+        self.assertEqual(len(self.W.of('exit')), 1)
+
+    def test_zero_hold_restores_the_inline_emit(self):
+        T.EXIT_HOLD_MS = 0
+        T.on_exit(_exit_ev())
+        self.assertEqual(len(self.W.of('exit')), 1)
+        self.assertEqual(len(T._pending_exits), 0)
+
+    # --- the block itself --------------------------------------------------
+    def test_repeat_calls_to_one_endpoint_collapse_into_one_peer(self):
+        """The point of folding: twenty requests to one API host were twenty
+        records and are now one peer carrying n=20."""
+        for _ in range(20):
+            T.on_tcp(_tcp_ev(daddr='104.18.0.1'))
+        T.on_tcp(_tcp_ev(daddr='140.82.112.3'))
+        c = T._conns_block(T.proc[101])
+        self.assertEqual(c['n'], 21)
+        self.assertEqual(c['peers_total'], 2)
+        top = [p for p in c['peers'] if p['daddr'] == '104.18.0.1'][0]
+        self.assertEqual(top['n'], 20)
+        self.assertEqual(top['rx_bytes'], 20000)
+
+    def test_totals_and_failed_connects(self):
+        T.on_tcp(_tcp_ev(rx=1000, tx=200))
+        T.on_tcp(_tcp_ev(established=0, has_bytes=0, connect_ns=0))
+        c = T._conns_block(T.proc[101])
+        self.assertEqual((c['n'], c['established'], c['failed']), (2, 1, 1))
+        self.assertEqual((c['rx_bytes'], c['tx_bytes']), (1000, 200))
+        self.assertEqual(c['external'], 2)
+
+    def test_accept_counts_as_inbound_and_established_not_failed(self):
+        T.on_tcp(_tcp_ev(kind='accept', inbound=1, established=0))
+        c = T._conns_block(T.proc[101])
+        self.assertEqual((c['accepted'], c['established'], c['failed']), (1, 1, 0))
+
+    def test_bytes_are_null_not_zero_when_the_block_did_not_load(self):
+        """Design principle 4: a dropped block emits null, never 0. has_bytes=0
+        is the tcp_basic variant, which cannot read byte counters at all."""
+        T.on_tcp(_tcp_ev(has_bytes=0))
+        c = T._conns_block(T.proc[101])
+        self.assertIsNone(c['rx_bytes'])
+        self.assertIsNone(c['tx_bytes'])
+        self.assertEqual(c['n'], 1)
+
+    def test_no_connections_is_none_not_an_empty_block(self):
+        self.assertIsNone(T._conns_block(T.proc[101]))
+        T.on_exit(_exit_ev())
+        T.drain_exits(final=True)
+        self.assertIsNone(self.W.of('exit')[0]['conns'])
+
+    def test_peer_map_is_capped_and_the_overflow_is_counted(self):
+        for i in range(T._PEER_KEYS_MAX + 5):
+            T.on_tcp(_tcp_ev(daddr='104.18.%d.%d' % (i // 256, i % 256)))
+        c = T._conns_block(T.proc[101])
+        self.assertEqual(c['peers_total'], T._PEER_KEYS_MAX)
+        self.assertEqual(c['peers_overflow'], 5)
+        self.assertEqual(c['n'], T._PEER_KEYS_MAX + 5)
+        self.assertEqual(len(c['peers']), T.CONNS_TOPN)
+
+    def test_providers_are_counted(self):
+        T.proc[101]['conns'] = None
+        T._conn_fold(T.proc[101], daddr='1.2.3.4', dport=443, external=True,
+                     provider='anthropic', inbound=False, established=True)
+        T._conn_fold(T.proc[101], daddr='1.2.3.5', dport=443, external=True,
+                     provider='anthropic', inbound=False, established=True)
+        T._conn_fold(T.proc[101], daddr='1.2.3.6', dport=443, external=True,
+                     provider='github', inbound=False, established=True)
+        c = T._conns_block(T.proc[101])
+        self.assertEqual(c['providers'], {'anthropic': 2, 'github': 1})
+
+    # --- the quiet-process filters ----------------------------------------
+    def test_a_short_process_that_made_a_connection_is_kept(self):
+        """MIN_DURATION would discard this curl, and with it the connection that
+        made it worth keeping. The filter is decided at exit and applied at
+        drain, so the late socket close rescues the record."""
+        T.MIN_DURATION = 10.0
+        T.on_exit(_exit_ev(run_ns=int(1e6)))
+        T.on_tcp(_tcp_ev())
+        T.drain_exits(final=True)
+        self.assertEqual(len(self.W.of('exit')), 1)
+        self.assertEqual(self.W.of('exit')[0]['conns']['n'], 1)
+
+    def test_a_short_process_with_no_connection_is_still_dropped(self):
+        T.MIN_DURATION = 10.0
+        T.on_exit(_exit_ev(run_ns=int(1e6)))
+        T.drain_exits(final=True)
+        self.assertEqual(self.W.of('exit'), [])
+
+    # --- loss accounting ---------------------------------------------------
+    def test_connections_on_a_never_emitted_process_are_counted_at_gc(self):
+        """A dropped exit event (perf_lost) leaves a process that folded
+        connections and never produced a record. They are lost -- that is
+        unavoidable -- but `stop.conns_dropped` has to say so, because with the
+        standalone records gone this is the only way the loss is visible."""
+        T.on_tcp(_tcp_ev(pid=101))
+        T.proc[101]['exited'] = True             # exit event never arrived
+        T.proc[101]['gc_ts'] = 0.0
+        T.gc()
+        self.assertEqual(T._conn_dropped['n'], 1)
+        self.assertEqual(T._conn_dropped['comms'], {'curl': 1})
+        self.assertNotIn(101, T.proc)
+
+    def test_an_emitted_process_is_not_counted_as_dropped(self):
+        T.on_tcp(_tcp_ev())
+        T.on_exit(_exit_ev())
+        T.drain_exits(final=True)
+        T.proc[101]['gc_ts'] = 0.0
+        T.gc()
+        self.assertEqual(T._conn_dropped['n'], 0)
+
+    def test_untracked_pid_is_ignored_unless_tcp_all(self):
+        T.on_tcp(_tcp_ev(pid=777))
+        self.assertNotIn(777, T.proc)
+        T.TCP_ALL = True
+        T.on_tcp(_tcp_ev(pid=777))
+        self.assertEqual(T.proc[777]['conns']['n'], 1)
+
+
+class FlushPolicyTest(unittest.TestCase):
+    """DailyWriter's write(2) policy. Through schema 5 every record was followed
+    by a flush, so the syscall rate WAS the event rate -- unbounded, and highest
+    exactly when the node is busiest. Under 'poll' the loop flushes once per
+    round instead, which caps syscalls at the poll rate however many records the
+    round produced."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='ebpfm_flush_')
+        self._mode = T.FLUSH_MODE
+        self.day = datetime.now().strftime('%Y-%m-%d')
+
+    def tearDown(self):
+        T.FLUSH_MODE = self._mode
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _path(self, stream='exits'):
+        return os.path.join(self.dir, self.day, 'node0.%s.jsonl' % stream)
+
+    def _on_disk(self, stream='exits'):
+        """What a reader would see RIGHT NOW -- the point of the whole policy.
+        Defaults to the exits stream because _rec() defaults to an exit."""
+        try:
+            with open(self._path(stream)) as f:
+                return [json.loads(l) for l in f if l.strip()]
+        except IOError:
+            return []
+
+    def _rec(self, event='exit'):
+        return {'event': event, 'ts': 'x', 'host': 'n0'}
+
+    # --- poll mode ---------------------------------------------------------
+    def test_poll_mode_defers_the_write_until_flush(self):
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        for _ in range(50):
+            w.write(self._rec())
+        self.assertEqual(w.flushes, 0)
+        self.assertEqual(self._on_disk(), [], 'nothing should have reached disk yet')
+        w.flush()
+        self.assertEqual(w.flushes, 1, '50 records must cost ONE write(2)')
+        self.assertEqual(len(self._on_disk()), 50)
+        w.close()
+
+    def test_flush_is_a_noop_when_the_round_wrote_nothing(self):
+        """An idle node polls ten times a second forever; those rounds must not
+        each cost a syscall."""
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        for _ in range(100):
+            w.flush()
+        self.assertEqual(w.flushes, 0)
+        w.write(self._rec())
+        w.flush()
+        w.flush()
+        w.flush()
+        self.assertEqual(w.flushes, 1, 'only the round with a record flushes')
+        w.close()
+
+    def test_close_flushes_what_is_pending(self):
+        """The stop path writes the stop record and closes. Nothing may be lost
+        between the two -- and since the split sends the exit and the stop to
+        DIFFERENT files, close() has to land both, not just the last one
+        touched."""
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write(self._rec())
+        w.write(self._rec('stop'))
+        w.close()
+        self.assertEqual([r['event'] for r in self._on_disk('exits')], ['exit'])
+        self.assertEqual([r['event'] for r in self._on_disk('snapshot')], ['stop'])
+
+    def test_a_round_touching_both_streams_costs_two_writes(self):
+        """The split's only I/O cost, stated as a number: a round that wrote to
+        both files flushes both. It does not cost more than that however many
+        records each held."""
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        for _ in range(100):
+            w.write(self._rec('exit'))
+            w.write(self._rec('residency'))
+        w.flush()
+        self.assertEqual(w.flushes, 2, '200 records across two streams = two write(2)')
+        w.close()
+
+    def test_a_pure_exit_round_still_costs_one_write(self):
+        """The split must not tax the common case: a round that never touched
+        the snapshot stream does not flush it."""
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        for _ in range(100):
+            w.write(self._rec('exit'))
+        w.flush()
+        self.assertEqual(w.flushes, 1)
+        w.close()
+
+    def test_records_survive_a_reopen_byte_for_byte(self):
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        for i in range(200):
+            w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
+        w.close()
+        recs = self._on_disk()
+        self.assertEqual(len(recs), 200)
+        self.assertEqual([r['pid'] for r in recs], list(range(200)))
+
+    # --- record mode is still available ------------------------------------
+    def test_record_mode_flushes_every_record(self):
+        T.FLUSH_MODE = 'record'
+        w = T.DailyWriter(self.dir, 'node0')
+        for _ in range(50):
+            w.write(self._rec())
+        self.assertEqual(w.flushes, 50)
+        self.assertEqual(len(self._on_disk()), 50, 'record mode is durable per record')
+        w.close()
+
+    def test_mode_can_be_forced_per_writer(self):
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0', flush_mode='record')
+        w.write(self._rec())
+        self.assertEqual(w.flushes, 1)
+        w.close()
+
+    # --- the amplification claim, as a test --------------------------------
+    def test_poll_mode_decouples_syscalls_from_record_rate(self):
+        """The property the change exists for: doubling the records in a round
+        does not add a single write(2)."""
+        T.FLUSH_MODE = 'poll'
+        for n in (10, 100, 1000):
+            w = T.DailyWriter(self.dir, 'node%d' % n)
+            for _ in range(n):
+                w.write(self._rec())
+            w.flush()
+            self.assertEqual(w.flushes, 1, '%d records still cost one write(2)' % n)
+            w.close()
+
+    def test_n_counts_records_not_flushes(self):
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
+        for _ in range(7):
+            w.write(self._rec())
+        w.flush()
+        self.assertEqual((w.n, w.flushes), (7, 1))
+        w.close()
+
+
+class StreamSplitTest(unittest.TestCase):
+    """The day's output is two files, not one: `<host>.exits.jsonl` carries the
+    per-process terminal records and `<host>.snapshot.jsonl` carries everything
+    else. The split is a schema-level promise to consumers, so what matters here
+    is that the mapping is TOTAL (every documented event kind has a home), that
+    the two streams never bleed into each other, and that a reader can tell a
+    quiet node from a dead collector."""
+
+    # The v6 event vocabulary, as a literal rather than derived from the code:
+    # adding an event kind without deciding where it belongs must fail HERE,
+    # loudly, instead of defaulting into the snapshot file unnoticed.
+    ALL_EVENTS = ('meta', 'exit', 'truncated', 'conn', 'submit',
+                  'residency', 'residency_totals', 'stop')
+    # Retired in v6 (folded into `conns` on the owning exit record) but still
+    # present in archived v4/v5 captures, which the dashboard is expected to be
+    # able to read. They are connection observations, so they belong with the
+    # snapshot stream -- asserted below rather than left to chance.
+    RETIRED_EVENTS = ('tcp', 'accept')
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='ebpfm_split_')
+        self._mode = T.FLUSH_MODE
+        T.FLUSH_MODE = 'poll'
+        self.day = datetime.now().strftime('%Y-%m-%d')
+
+    def tearDown(self):
+        T.FLUSH_MODE = self._mode
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _read(self, stream, host='node0'):
+        p = os.path.join(self.dir, self.day, '%s.%s.jsonl' % (host, stream))
+        with open(p) as f:
+            return [json.loads(l) for l in f if l.strip()]
+
+    # --- the mapping -------------------------------------------------------
+    def test_every_documented_event_maps_to_a_real_stream(self):
+        for ev in self.ALL_EVENTS:
+            self.assertIn(T.stream_of(ev), T.STREAMS, '%s has no stream' % ev)
+
+    def test_only_exit_and_truncated_are_exits(self):
+        """Pins the membership both ways. `truncated` belongs with `exit`
+        because it IS an exit record -- one for a process whose argv the kernel
+        clamped -- and normalize.py already treats the pair as one group."""
+        self.assertEqual({e for e in self.ALL_EVENTS if T.stream_of(e) == 'exits'},
+                         {'exit', 'truncated'})
+
+    def test_retired_v4_v5_kinds_still_route_to_snapshot(self):
+        """Archived captures still carry these; they must not land in the exits
+        file, where a consumer counting process terminations would find them."""
+        for ev in self.RETIRED_EVENTS:
+            self.assertEqual(T.stream_of(ev), 'snapshot')
+
+    def test_an_unknown_event_lands_in_snapshot_rather_than_nowhere(self):
+        """Totality, stated. A future event kind must not be dropped or raise
+        in the middle of a capture."""
+        self.assertEqual(T.stream_of('some_future_event'), 'snapshot')
+        self.assertEqual(T.stream_of(None), 'snapshot')
+
+    # --- routing on disk ---------------------------------------------------
+    def test_records_land_in_the_file_their_event_selects(self):
+        w = T.DailyWriter(self.dir, 'node0')
+        for ev in self.ALL_EVENTS:
+            w.write({'event': ev, 'ts': 'x'})
+        w.close()
+        self.assertEqual([r['event'] for r in self._read('exits')],
+                         ['exit', 'truncated'])
+        self.assertEqual([r['event'] for r in self._read('snapshot')],
+                         ['meta', 'conn', 'submit',
+                          'residency', 'residency_totals', 'stop'])
+
+    def test_the_streams_do_not_bleed(self):
+        w = T.DailyWriter(self.dir, 'node0')
+        for ev in self.ALL_EVENTS * 20:
+            w.write({'event': ev, 'ts': 'x'})
+        w.close()
+        self.assertTrue(all(T.stream_of(r['event']) == 'exits'
+                            for r in self._read('exits')))
+        self.assertTrue(all(T.stream_of(r['event']) == 'snapshot'
+                            for r in self._read('snapshot')))
+
+    def test_no_record_is_lost_across_the_split(self):
+        """The count that matters: two files must still hold every record the
+        one file held."""
+        w = T.DailyWriter(self.dir, 'node0')
+        for ev in self.ALL_EVENTS * 13:
+            w.write({'event': ev, 'ts': 'x'})
+        w.close()
+        self.assertEqual(len(self._read('exits')) + len(self._read('snapshot')),
+                         len(self.ALL_EVENTS) * 13)
+        self.assertEqual(w.n, len(self.ALL_EVENTS) * 13)
+
+    def test_ordering_is_preserved_within_a_stream(self):
+        w = T.DailyWriter(self.dir, 'node0')
+        for i in range(200):
+            w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
+            w.write({'event': 'residency', 'seq': i, 'ts': 'x'})
+        w.close()
+        self.assertEqual([r['pid'] for r in self._read('exits')], list(range(200)))
+        self.assertEqual([r['seq'] for r in self._read('snapshot')], list(range(200)))
+
+    # --- what an operator sees --------------------------------------------
+    def test_both_files_exist_once_the_day_opens(self):
+        """A quiet node must be distinguishable from a collector that never
+        started, so the pair is created on the first write of the day even when
+        one stream stays empty."""
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'meta', 'ts': 'x'})       # startup record only
+        w.close()
+        self.assertEqual(self._read('exits'), [], 'no exits observed, not a missing file')
+        self.assertEqual(len(self._read('snapshot')), 1)
+
+    def test_ts_epoch_backstop_still_applies_to_both_streams(self):
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'exit', 'ts': 'x'})
+        w.write({'event': 'residency', 'ts': 'x'})
+        w.close()
+        for s in T.STREAMS:
+            for r in self._read(s):
+                self.assertIn('ts_epoch', r)
+
+    def test_path_names_the_file_without_writing_it(self):
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'exit', 'ts': 'x'})
+        self.assertEqual(w.path('exits'),
+                         os.path.join(self.dir, self.day, 'node0.exits.jsonl'))
+        self.assertEqual(w.path('snapshot'),
+                         os.path.join(self.dir, self.day, 'node0.snapshot.jsonl'))
+        w.close()
+
+    # --- day rollover ------------------------------------------------------
+    def test_rollover_opens_a_new_pair_and_strands_nothing(self):
+        """The rollover path closes two handles, not one. Records buffered in
+        EITHER stream must reach disk before the day changes -- with one handle
+        that was automatic, with two it is a thing that can be got wrong.
+
+        _roll() is driven directly because the day is taken from the wall clock:
+        reassigning w.day would still resolve to today's directory and prove
+        nothing."""
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'exit', 'ts': 'x'})
+        w.write({'event': 'residency', 'ts': 'x'})
+        self.assertEqual(self._read('exits'), [], 'still buffered pre-roll')
+
+        w._roll('1999-01-01')                       # the midnight transition
+        self.assertEqual(w.flushes, 2, 'the roll flushed both streams')
+        self.assertEqual(len(self._read('exits')), 1, 'day 1 exit reached disk')
+        self.assertEqual(len(self._read('snapshot')), 1, 'day 1 residency reached disk')
+
+        day2 = os.path.join(self.dir, '1999-01-01')  # the new day opens a PAIR
+        self.assertEqual(sorted(os.listdir(day2)),
+                         ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
+        self.assertEqual([os.path.getsize(os.path.join(day2, f))
+                          for f in sorted(os.listdir(day2))], [0, 0])
+        w.close()
+
+    def test_record_mode_routes_the_same_way(self):
+        w = T.DailyWriter(self.dir, 'node0', flush_mode='record')
+        w.write({'event': 'exit', 'ts': 'x'})
+        w.write({'event': 'residency', 'ts': 'x'})
+        self.assertEqual(w.flushes, 2, 'record mode is durable per record')
+        self.assertEqual(len(self._read('exits')), 1)
+        self.assertEqual(len(self._read('snapshot')), 1)
+        w.close()
 
 
 class SandboxTest(unittest.TestCase):
