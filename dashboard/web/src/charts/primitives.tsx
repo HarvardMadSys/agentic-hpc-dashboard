@@ -175,6 +175,7 @@ export function GroupBars({
   const bw = Math.min(maxBar, (gw - 14) / series.length);
   const F = (v: number) => (fmtVal ? fmtVal(v) : fmt(v));
   const CH = 6.3; // advance width of `.vlbl` (IBM Plex Mono at 10.5px)
+  const PAD = 5;  // a label that fills its slot edge to edge still collides
   return (
     <Svg w={W} h={H} label={ylabel}>
       {ticks.map((t) => (
@@ -218,13 +219,18 @@ export function GroupBars({
                 // itself: a group holding a single series can spread across the
                 // whole group and stay full size.
                 const room = drawn > 1 ? bw + 2 : gw - 4;
-                const narrow = txt.length * CH > room;
+                const narrow = txt.length * CH + PAD > room;
+                // Short bars of similar height put their labels at the same y,
+                // where a stepped-down font still reads as one run-on number
+                // ("0.4%0.6%1.1%"). Lifting the middle of each triple splits
+                // them without moving any label off its own bar.
+                const dy = narrow && si % 2 === 1 ? -9 : 0;
                 return (
                   <text
                     key={'l' + se.k}
                     className={narrow ? 'vlbl sm' : 'vlbl'}
                     x={x0 + si * (bw + 2) + bw / 2}
-                    y={y(raw) - 4}
+                    y={y(raw) - 4 + dy}
                     textAnchor="middle"
                   >
                     {txt}
