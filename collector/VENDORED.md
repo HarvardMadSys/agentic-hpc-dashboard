@@ -9,7 +9,7 @@ run without the rest of the repo. The price is five copied modules.
 | `lib/procparse.py` | `collect/common/procparse.py` | `f4ecb417…92292f` | **added `read_cwd(pid)`** (readlink only) |
 | `lib/agent_classify.py` | `collect/common/agent_classify.py` | `0d6528d0…20f9f3` | none |
 | `lib/provider_cidrs.py` | `collect/nettcp/provider_cidrs.py` | `13f4b613…e6bad8` | none |
-| `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | none |
+| `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | **GPU sections dropped**: `nvidia-smi` is never run, and `gpu`/`gpu_pmon`/`gpu_compute_apps` are always null, kept in place because the key order is load-bearing. Login nodes have no GPUs; upstream still collects them for compute nodes |
 | `lib/slurm_args.py` | `analyze/switch_submitline_time.py` | see `.vendored.sha256` | **`parse_cli_time` returns `None`, not `numpy.nan`** (the collector has no numpy, and null is the honest absent value); the flag parsers are new |
 
 `node_snapshot.py` is the **node tier** (`ebpfm.sh start` runs it unprivileged on a

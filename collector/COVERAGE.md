@@ -46,7 +46,7 @@ space, or interface counters.**
 | `tcp_transport`, `socket_summary` | `/proc/net/snmp`, `ss -s` | node-wide protocol counters |
 | `responsiveness` (`fork_exec_ms`, `stat_local_ms`, `getent_ms`) | synthetic probes | deliberately **active** measurement of what users feel |
 | `system_fds` | `/proc/sys/fs/file-nr` | node-wide fd allocation |
-| `gpu`, `gpu_pmon`, `gpu_compute_apps` | `nvidia-smi` | always null on a login node |
+| `gpu`, `gpu_pmon`, `gpu_compute_apps` | nothing: `nvidia-smi` is no longer run | always null, since login nodes have no GPUs; the keys stay for the key-order contract |
 | `slurm` | `$SLURM_*` | always null on a login node |
 
 ## 3. Per-process / per-user aggregates — kept in the node tier (8 keys)

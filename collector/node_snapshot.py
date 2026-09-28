@@ -2,8 +2,9 @@
 """Collect node metrics and print a single JSON line to stdout.
 
 Shared by the login and compute monitors. The schema is uniform across both:
-GPU sections are populated only when `nvidia-smi` is present (null otherwise),
-and the `slurm` section only when running under Slurm (null otherwise).
+the GPU sections are always null in this copy, which runs on login nodes only
+and login nodes have no GPUs, so `nvidia-smi` is never run; and the `slurm`
+section is populated only when running under Slurm (null otherwise).
 """
 import sys, os, json, re, shutil, subprocess, time, pwd
 from collections import Counter
@@ -79,8 +80,6 @@ NODE_MODE = (MODE == 'node')
 @lru_cache(maxsize=None)
 def command_exists(program):
     return shutil.which(program) is not None
-
-HAS_GPU = command_exists('nvidia-smi')
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -959,70 +958,6 @@ def collect_per_user_cgroup(n):
                               r.get('mem_current_bytes') or 0), reverse=True)
     return users[:n]
 
-# GPU columns queried from nvidia-smi --query-gpu (order matters, parsed by index)
-GPU_QUERY = ('index,name,temperature.gpu,utilization.gpu,utilization.memory,'
-             'memory.used,memory.total,power.draw,power.limit,pstate,'
-             'clocks.current.sm,clocks.current.memory')
-
-def parse_gpu(s):
-    gpus = []
-    for line in s.splitlines():
-        p = [x.strip() for x in line.split(',')]
-        if len(p) < 12:
-            continue
-        gpus.append({
-            'index':        _int(p[0]),
-            'name':         p[1],
-            'temp_c':       _float(p[2]),
-            'util_gpu_pct': _float(p[3]),
-            'util_mem_pct': _float(p[4]),
-            'mem_used_mb':  _float(p[5]),
-            'mem_total_mb': _float(p[6]),
-            'power_w':      _float(p[7]),
-            'power_limit_w': _float(p[8]),
-            'pstate':       p[9],
-            'sm_clock_mhz': _float(p[10]),
-            'mem_clock_mhz': _float(p[11]),
-        })
-    return gpus
-
-def parse_gpu_pmon(s):
-    """Per-GPU per-process utilization. Column count varies across driver
-    versions, but gpu/pid/type/sm/mem (first five) and command (last) are
-    stable, so parse only those."""
-    rows = []
-    for line in s.splitlines():
-        if line.startswith('#') or not line.strip():
-            continue
-        p = line.split()
-        if len(p) < 6 or not p[1].isdigit():   # skip idle GPUs (pid shown as '-')
-            continue
-        rows.append({
-            'gpu':     _int(p[0]),
-            'pid':     _int(p[1]),
-            'type':    p[2],
-            'sm_pct':  _float(p[3]),
-            'mem_pct': _float(p[4]),
-            'command': p[-1][:100],
-        })
-    return rows
-
-def parse_gpu_apps(s):
-    apps = []
-    for line in s.splitlines():
-        if not line.strip():
-            continue
-        p = [x.strip() for x in line.split(',')]
-        if len(p) < 4:
-            continue
-        apps.append({
-            'gpu_uuid':     p[0],
-            'pid':          _int(p[1]),
-            'process_name': p[2],
-            'used_mem_mb':  _float(p[3]),
-        })
-    return apps
-
 def slurm_context():
     """Slurm job/step/partition from the environment, or None outside Slurm."""
     job_id = os.environ.get('SLURM_JOB_ID')
@@ -1167,15 +1102,6 @@ with ThreadPoolExecutor(max_workers=8) as ex:
                     else ex.submit(collect_top_io_processes, top_n))
     f_nfsiostat  = ex.submit(run, ['nfsiostat', '5', '2'])
 
-    # GPU commands — only on nodes with nvidia-smi (pmon takes ~1s)
-    if HAS_GPU:
-        f_gpu  = ex.submit(run, ['nvidia-smi',
-            '--query-gpu=' + GPU_QUERY, '--format=csv,noheader,nounits'])
-        f_pmon = ex.submit(run, ['nvidia-smi', 'pmon', '-c', '1'])
-        f_apps = ex.submit(run, ['nvidia-smi',
-            '--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory',
-            '--format=csv,noheader,nounits'])
-
     # instant reads while timed commands run
     uptime_out    = run(['uptime'])
     w_out         = run(['w'])
@@ -1234,9 +1160,11 @@ snapshot = {
     'top_sleeping_procs': None if NODE_MODE else parse_top_sleeping(ps_sleep_top_out, top_n),
     'proc_tree':          parse_proc_tree(ps_tree_out) if PROC_TREE else None,
     'system_fds':         parse_fds(fds_out),
-    'gpu':                parse_gpu(f_gpu.result()) if HAS_GPU else None,
-    'gpu_pmon':           parse_gpu_pmon(f_pmon.result()) if HAS_GPU else None,
-    'gpu_compute_apps':   parse_gpu_apps(f_apps.result()) if HAS_GPU else None,
+    # Login nodes have no GPUs, so nothing is collected here. The keys stay, as
+    # null, because the key order is load-bearing (see MODE above).
+    'gpu':                None,
+    'gpu_pmon':           None,
+    'gpu_compute_apps':   None,
     'slurm':              slurm_context(),
 }
 
