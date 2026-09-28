@@ -1460,8 +1460,35 @@ class SandboxTest(unittest.TestCase):
     def test_identity_carries_the_new_fields(self):
         ident = T._base_identity(T.proc[100], 'agent', 'ancestry')
         for k in ('sandbox', 'sandbox_src', 'sandbox_detail', 'sandbox_ancestry',
-                  'approval_mode', 'approval_src', 'env_flags'):
+                  'approval_mode', 'approval_src'):
             self.assertIn(k, ident)
+        self.assertNotIn('env_flags', ident)
+
+    def test_an_agent_roots_environment_is_never_read(self):
+        """/proc/<pid>/environ holds another user's API keys next to the names;
+        the collector does not open it at all, not even for the names."""
+        import builtins
+        T.proc_add(600, 1, comm='node', args='node /x/.claude/cli.js',
+                   argv_source='kernel', argv_ktime=7, user='u', uid=1000)
+        self.assertTrue(T.resolve(600))
+        self.assertTrue(T.proc[600]['is_agent'])
+        opened, real_open = [], builtins.open
+
+        def spy(path, *a, **kw):
+            opened.append(str(path))
+            return real_open(path, *a, **kw)
+        builtins.open = spy
+        try:
+            T.on_exec(Ev(pid=600, ppid=1, uid=1000, comm=b'node', ktime_ns=7,
+                         has_tty=0, tty=b'', cgid=0))
+        finally:
+            builtins.open = real_open
+        self.assertEqual([p for p in opened if p.endswith('/environ')], [])
+
+    def test_approval_comes_from_argv_alone(self):
+        T.proc_add(601, 1, comm='node', args='node /x/.claude/cli.js')
+        T.resolve(601)
+        self.assertEqual(T._approval_of(T.proc[601]), (None, None))
 
 
 class CommandTest(unittest.TestCase):

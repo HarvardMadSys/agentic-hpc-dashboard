@@ -460,6 +460,12 @@ it is now matched on `command`.
 **`cwd_source` is gone.** Whether `cwd` was read or inherited was not worth a field on
 every record once the value itself is there.
 
+**`env_flags` is gone, and `/proc/<pid>/environ` is never opened.** It kept only variable
+names, but the file holds the values too, API keys among them, for every agent root on
+the node. `approval_mode` now comes from argv alone, so a bypass set through the
+environment or a config file rather than a flag is not seen (`approval_src` is `argv` or
+null).
+
 The feature cache now records the block list it was probed against and is ignored
 when that list changes. Without that, a host that ran an older collector would load
 its cached set and never try the new blocks.
@@ -537,7 +543,7 @@ that made it worth keeping. **A process that talked to the network is never a no
 | `sandbox`, `sandbox_src`, `sandbox_detail` | identity | **namespace isolation**, from `/proc/<pid>/ns/*` against pid 1's. `null` (never `"unsandboxed"`) when the read was denied |
 | `sandbox_ancestry` | identity | `bwrap` / `codex-linux-sandbox` / … — *how* it got there, which is a different question from *what it is*. See below |
 | `approval_mode`, `approval_src` | identity | unattended execution, split from confinement. `autonomous` is unchanged |
-| `env_flags` | identity | agent env variable **NAMES ONLY**, allow-listed by prefix. Read once per agent root |
+| `env_flags` | identity | agent env variable names from `/proc/<pid>/environ`. **Gone in schema 7:** the collector no longer reads another process's environment |
 | `session_uuid` | identity | survives a collector restart, unlike the pid-based `session_key` |
 | `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`) or an emit cap (`EBPFM_ARGS_MAXLEN`) cut it |
 | `partition`, `gpus`, `array`, `time_limit_s`, `mem`, `cpus_per_task`, `req_src` | `submit` | the resource request, parsed from the tool's argv |
@@ -710,7 +716,7 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 `EBPFM_ARGS_MAXLEN` (0 = no cap on emitted `args`) · `EBPFM_ARGV_KMAX` (4096; bytes of
 argv read in-kernel at exec, the real limit when uncapped) ·
 `EBPFM_SANDBOX` (on) · `EBPFM_SANDBOX_ALWAYS` (off; read on every exec, for validation) ·
-`EBPFM_ENV_PREFIXES` (`CLAUDE_,CODEX_,CURSOR_,ANTHROPIC_`) · `EBPFM_RESIDENCY_TOPN` (5) ·
+`EBPFM_RESIDENCY_TOPN` (5) ·
 `EBPFM_OUTPUT_DIR` · `EBPFM_DURATION` · `EBPFM_RESIDENCY_S` · `EBPFM_FLUSH` ·
 `EBPFM_MIN_UID` (data point 6, default off) · `EBPFM_CWD_ALWAYS` ·
 `EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_TCP_ALL` ·
@@ -731,7 +737,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 276 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 278 tests, no root, no BPF needed
 ```
 
 Pure helpers, the BTF member walk (including bpftool's literal `(anon)` rendering for

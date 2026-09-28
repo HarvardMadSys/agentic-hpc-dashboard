@@ -14,7 +14,7 @@ data in two different shapes, which `schema_versions` is what makes visible.
 Schema 7 adds `net_endpoints` (bytes per endpoint) to `exit`/`truncated`, a
 `netio` event (the same per tick), `proto` on `conn`, and `collector_pid` in the
 envelope (the collector's own pid, for dropping its own process tree), and drops
-the envelope's constant `source`/`collector` and `cwd_source`. Nothing here reads
+the envelope's constant `source`/`collector`, `cwd_source` and `env_flags`. Nothing here reads
 any of them. It also renames `comm` to `command`, whole rather than cut at 15
 characters; `_command` below is the one key readers use, taking whichever the
 record has. It also widens `net_tx_bytes` and

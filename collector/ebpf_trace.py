@@ -82,8 +82,7 @@ from agent_classify import (classify, actor3, is_autonomous, SANDBOX_TYPES,
                             approval_mode_of)  # noqa: E402
 from procparse import (  # noqa: E402
     boot_time, list_pids, read_stat, read_cmdline, read_cgroup, read_cwd,
-    tty_name, uid_of, username, start_epoch, env_num, boot_id, read_ns, read_confinement, read_io,
-    read_environ_names)
+    tty_name, uid_of, username, start_epoch, env_num, boot_id, read_ns, read_confinement, read_io)
 
 from slurm_args import parse_submit_args  # noqa: E402
 
@@ -105,7 +104,8 @@ SCHEMA_VERSION = 7      # 7 = `net_endpoints` on exit/truncated, the `netio` ser
                         #     envelope trades `source`/`collector` (constants:
                         #     'ebpf', 'ebpf_marthen_new') for `collector_pid`,
                         #     `command` (whole) replaces `comm` (cut at 15) and its
-                        #     by_comm/_comms keys, `cwd_source` is gone, and `args`
+                        #     by_comm/_comms keys, `cwd_source` and `env_flags` are
+                        #     gone (no /proc/<pid>/environ read), and `args`
                         #     is no longer capped by default
                         # 6 = per-connection `tcp`/`accept` records folded into a `conns`
                         #     block on the owning process's exit/truncated record;
@@ -157,9 +157,6 @@ RESIDENCY_TOPN = env_num('EBPFM_RESIDENCY_TOPN', 5, int)   # heaviest procs per 
 SANDBOX_COMMS = {'bwrap', 'unshare', 'nsenter', 'podman', 'docker', 'runc', 'crun',
                  'conmon', 'containerd-shim', 'apptainer', 'singularity', 'proot',
                  'firejail', 'systemd-nspawn', 'codex-linux-sandbox'}
-# Environment NAMES only, never values -- agent environments carry API keys.
-ENV_PREFIXES  = tuple((os.environ.get('EBPFM_ENV_PREFIXES')
-                       or 'CLAUDE_,CODEX_,CURSOR_,ANTHROPIC_').split(','))
 # --- item 3/8: network -----------------------------------------------------
 TCP_ALL       = os.environ.get('EBPFM_TCP_ALL', '0') != '0'   # fold conns for untracked pids too
 CONNS_TOPN    = env_num('EBPFM_CONNS_TOPN', 5, int)           # peers/providers kept per record
@@ -1896,7 +1893,6 @@ def _new_entry(pid, ppid, comm=None, **kw):
          'cwd': None, 'start_ticks': None,
      'args_raw_len': None, 'args_clamped': False, 'tick_cpu_s': None, 'sandbox_anc': _UNSET,
      'sandbox': None, 'sandbox_src': None, 'sandbox_detail': None,
-     'env_flags': None, 'approval_mode': None, 'approval_src': None,
          'start_ep': None, 'exec_ktime': None, 'attributed': None, 'is_agent': False,
          'agent_pid': None, 'agent_type': None, 'depth': None,
          'exited': False, 'gc_ts': None, 'is_submit': False, 'submit_buf': None,
@@ -2309,14 +2305,6 @@ def on_exec(e):
         # _approval_of); only the sandbox side-effect has to be recorded now,
         # because it overrides a /proc reading.
         m['sandbox'], m['sandbox_src'] = 'unsandboxed', 'argv'
-    if WANT_SANDBOX and m['is_agent'] and m.get('env_flags') is None:
-        # Once per agent root, never per exec. NAMES ONLY -- values can hold keys.
-        names = read_environ_names(pid, ENV_PREFIXES)
-        if names:
-            m['env_flags'] = names
-            if m['approval_mode'] is None and any('BYPASS' in n or 'DANGER' in n
-                                                  for n in names):
-                m['approval_mode'], m['approval_src'] = 'bypassed', 'env'
     _invalidate_attribution(pid)
     if m['argv_source'] == 'proc':        # a kernel argv asks in on_argv instead
         _ask_hosts(m)
@@ -2362,12 +2350,10 @@ def _approval_of(m):
     stable. `autonomous` is already lazy in the same way, and the two disagreeing
     on the same record would be indefensible.
 
-    An env-derived verdict (read once per agent root) wins, because a flag set
-    through configuration is invisible in argv."""
+    argv is the only source: the collector does not read /proc/<pid>/environ,
+    so a bypass set through configuration rather than a flag is not seen."""
     if m is None:
         return None, None
-    if m.get('approval_mode'):
-        return m['approval_mode'], m.get('approval_src') or 'env'
     mode, _sb = approval_mode_of(m.get('args'))
     return (mode, 'argv') if mode else (None, None)
 
@@ -2428,7 +2414,6 @@ def _base_identity(m, actor, attribution=None):
         'sandbox_detail': m.get('sandbox_detail'),
         'sandbox_ancestry': sandbox_ancestry_of(m),
         'approval_mode': _approval_of(m)[0], 'approval_src': _approval_of(m)[1],
-        'env_flags': m.get('env_flags'),
         'agent_type': m.get('agent_type'), 'agent_pid': agent_pid,
         'session_key': ('apid:%s' % agent_pid) if agent_pid is not None else None,
         # session_key is pid-based and dies with a collector restart; this does not.
@@ -3927,7 +3912,6 @@ def main():
                        'conn_untracked': CONN_UNTRACKED, 'cwd': WANT_CWD,
                        'cwd_always': CWD_ALWAYS, 'min_uid': MIN_UID,
                        'sandbox': WANT_SANDBOX, 'sandbox_always': SANDBOX_ALWAYS,
-                       'env_prefixes': list(ENV_PREFIXES),
                        'dstack_max': DSTACK_MAX, 'flush': FLUSH_ON_EXIT,
                        'submit_comms': sorted(SUBMIT_COMMS), 'gc_grace_s': GRACE_S},
             'seeded_pids': len(proc)})

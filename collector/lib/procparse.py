@@ -300,30 +300,6 @@ def read_confinement(pid):
         return None
 
 
-def read_environ_names(pid, prefixes):
-    """NAMES ONLY of environment variables matching any of `prefixes`.
-
-    Values are never returned. Agent environments hold API keys, and the whole
-    point of an allow-list of NAME prefixes rather than a deny-list of values is
-    that a new secret-bearing variable is excluded by default.
-
-    Same NUL-separated format as read_cmdline. ptrace-gated like /proc/<pid>/io,
-    so it resolves for other users only as root. Sorted for stable output."""
-    try:
-        with open('/proc/%d/environ' % pid, 'rb') as f:
-            raw = f.read(65536)
-    except Exception:
-        return None
-    names = set()
-    for item in raw.split(b'\x00'):
-        if not item or b'=' not in item:
-            continue
-        name = item.split(b'=', 1)[0].decode('utf-8', 'replace')
-        if any(name.startswith(pfx) for pfx in prefixes):
-            names.add(name)
-    return sorted(names) or None
-
-
 def boot_id():
     """The kernel's boot UUID, or None.
 

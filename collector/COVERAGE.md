@@ -79,7 +79,7 @@ named replacement.
 
 The eight from `README.md`, plus three the poller could never recover:
 
-*(schema 5 adds `sandbox*`, `approval_mode`, `env_flags`, `session_uuid`, `ts_epoch` on
+*(schema 5 adds `sandbox*`, `approval_mode`, `env_flags` (dropped in 7), `session_uuid`, `ts_epoch` on
 every record, `args_len`/`args_truncated`, the `submit` resource request, `io` on
 `truncated`, and `top_procs`/`state_counts`/`tcp_open_ext` on `residency` — see §7b.)*
 
