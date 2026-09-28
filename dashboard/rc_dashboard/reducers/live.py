@@ -101,7 +101,7 @@ class LiveReducer:
             "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "host": rec.get("host"), "user": rec.get("user"),
             "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
-            "comm": rec.get("comm"), "tool": rec.get("_eff"),
+            "comm": rec.get("_command"), "tool": rec.get("_eff"),
             "args": (rec.get("args") or "")[:400],
             "purpose": rec.get("_purpose"), "depth": rec.get("depth"),
             "pid": rec.get("pid"),

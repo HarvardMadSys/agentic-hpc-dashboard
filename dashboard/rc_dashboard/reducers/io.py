@@ -41,7 +41,7 @@ class IoReducer:
         c = self.cls[rec["_a3"]]
         c["events"] += 1
         io = rec.get("io")
-        tool = rec.get("_eff") or rec.get("comm") or "(empty)"
+        tool = rec.get("_eff") or rec.get("_command") or "(empty)"
         t = self.by_tool[tool]
         t["n"] += 1
         u = self.by_user[rec.get("user") or "?"]

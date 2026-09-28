@@ -35,8 +35,9 @@ unprivileged poller either cannot see or sees worse:
   7. per-agent-type totals    by_agent_type in residency_totals
   8. inbound connections      kretprobe inet_csk_accept
 plus all-protocol per-process network bytes (tcp/udp send+recv retprobes), which
-is what makes QUIC visible, and connect latency / failed-connect detection free
-from the existing socket tracepoint.
+is what makes QUIC visible, with the endpoint each byte went to (schema 7), and
+connect latency / failed-connect detection free from the existing socket
+tracepoint.
 
 Privilege: root, or CAP_BPF + CAP_PERFMON + CAP_SYS_PTRACE (CAP_SYS_ADMIN < 5.8).
 Needs python3-bcc, and kernel.sched_schedstats=1 plus kernel.task_delayacct=1 or
@@ -49,16 +50,16 @@ Usage (prefer ./ebpfm.sh):
     sudo python3 ebpf_trace.py --dump-c          # print the BPF C actually compiled
 
 Output: $EBPFM_OUTPUT_DIR/<YYYY-MM-DD>/<hostname>.<stream>.jsonl, one JSON object
-per line, `event` in {meta, exit, truncated, conn, submit, residency,
+per line, `event` in {meta, exit, truncated, conn, netio, submit, residency,
 residency_totals, stop} (v6 folded the former `tcp`/`accept` kinds into `conns`
-on the owning exit record). Two files per host per day:
+on the owning exit record; v7 added `netio`). Two files per host per day:
 
     <hostname>.exits.jsonl      exit, truncated          (per-process, unbounded)
     <hostname>.snapshot.jsonl   everything else          (census + run bookends)
 
-stream_of() is the single mapping. The RECORD schema is unchanged by the split,
-so `schema_version` stays 6: a reader that globs the day directory sees exactly
-what one file used to give it. Schema in README.md.
+stream_of() is the single mapping, and the split is a filing decision, not a
+schema one: a reader that globs the day directory sees exactly what one file
+used to give it. Schema in README.md.
 """
 import collections
 import ctypes
@@ -66,9 +67,12 @@ import hashlib
 import ipaddress
 import json
 import os
+import queue
 import re
 import signal
+import socket
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -92,10 +96,18 @@ try:  # netlink socket-diag for standing connections
 except Exception:  # pragma: no cover
     sockdiag = None
 
-# Wire value, deliberately NOT renamed to 'ebpfm': it is stamped into every JSONL
-# envelope (see _envelope below), so changing it would split already-captured feeds.
-COLLECTOR = 'ebpf_marthen_new'
-SCHEMA_VERSION = 6      # 6 = per-connection `tcp`/`accept` records folded into a `conns`
+# This process's pid, stamped on every record (see _envelope). Read once: the
+# tracer never forks itself -- ebpfm.sh daemonizes before Python starts -- and a
+# getpid() per record would put a syscall on the per-event path.
+COLLECTOR_PID = os.getpid()
+SCHEMA_VERSION = 7      # 7 = `net_endpoints` on exit/truncated, the `netio` series,
+                        #     `proto` on conn, net_*_bytes now include IPv6 UDP, the
+                        #     envelope trades `source`/`collector` (constants:
+                        #     'ebpf', 'ebpf_marthen_new') for `collector_pid`,
+                        #     `command` (whole) replaces `comm` (cut at 15) and its
+                        #     by_comm/_comms keys, `cwd_source` is gone, and `args`
+                        #     is no longer capped by default
+                        # 6 = per-connection `tcp`/`accept` records folded into a `conns`
                         #     block on the owning process's exit/truncated record;
                         #     those two event kinds no longer exist
                         # 5 = ts_epoch envelope, sandbox_*, approval_*, session_uuid,
@@ -111,8 +123,8 @@ HOSTNAME = (sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
 # ---------------------------------------------------------------------------
 OUTPUT_DIR    = os.environ.get('EBPFM_OUTPUT_DIR', '/var/log/ebpfm')
 DURATION      = env_num('EBPFM_DURATION', 0, float)          # 0 = forever
-ARGS_MAXLEN   = env_num('EBPFM_ARGS_MAXLEN', 2048, int)      # emitted argv cap (classification uncapped)
-ARGV_KMAX     = env_num('EBPFM_ARGV_KMAX', 4096, int)        # in-kernel argv read (bytes)
+ARGS_MAXLEN   = env_num('EBPFM_ARGS_MAXLEN', 0, int)         # emitted argv cap; 0 = none (classification is always uncapped)
+ARGV_KMAX     = env_num('EBPFM_ARGV_KMAX', 4096, int)        # in-kernel argv read (bytes): the real limit when uncapped
 WRITE_KMAX    = env_num('EBPFM_WRITE_KMAX', 1024, int)       # per write() capture (bytes)
 MIN_DURATION  = env_num('EBPFM_MIN_DURATION', 0.0, float)
 MIN_CPU       = env_num('EBPFM_MIN_CPU', 0.0, float)
@@ -138,8 +150,9 @@ SANDBOX_ALWAYS = os.environ.get('EBPFM_SANDBOX_ALWAYS', '0') != '0'  # read on e
 # Launchers that create the namespaces. The PARENT's comm matters as much as the
 # process's own: bwrap execs, THEN unshares, THEN execs the payload, so reading
 # namespaces at bwrap's own exec returns the HOST's and -- under inherit-first --
-# would propagate "unsandboxed" down the whole sandboxed tree. All <= 15 chars,
-# so all survive TASK_COMM_LEN.
+# would propagate "unsandboxed" down the whole sandboxed tree. Matched on the full
+# command (_command_of), not comm: codex-linux-sandbox is 19 characters, and the
+# kernel's comm for it is only ever 'codex-linux-san'.
 RESIDENCY_TOPN = env_num('EBPFM_RESIDENCY_TOPN', 5, int)   # heaviest procs per tree
 SANDBOX_COMMS = {'bwrap', 'unshare', 'nsenter', 'podman', 'docker', 'runc', 'crun',
                  'conmon', 'containerd-shim', 'apptainer', 'singularity', 'proot',
@@ -159,6 +172,27 @@ CONNS_TOPN    = env_num('EBPFM_CONNS_TOPN', 5, int)           # peers/providers 
 EXIT_HOLD_MS  = env_num('EBPFM_EXIT_HOLD_MS', 250, int)
 CONN_ALL      = os.environ.get('EBPFM_CONN_ALL', '0') != '0'  # 1 = emit loopback/private too
 CONN_UNTRACKED = os.environ.get('EBPFM_CONN_UNTRACKED', '1') != '0'  # netlink rows with no pid
+NETPEER_MAX   = env_num('EBPFM_NETPEER_MAX', 16384, int)      # (pid, endpoint) entries in the kernel table
+NET_ENDPOINTS_MAX = env_num('EBPFM_NET_ENDPOINTS_MAX', 256, int)  # endpoints listed per record
+WANT_NETIO    = os.environ.get('EBPFM_NETIO', '1') != '0'      # the per-tick `netio` series
+WANT_ARGV_HOSTS = os.environ.get('EBPFM_ARGV_HOSTS', '1') != '0'  # endpoint `host` from argv names
+
+
+def _eph_range():
+    """net.ipv4.ip_local_port_range, which covers IPv6 as well, or the kernel's
+    default. Compiled into the endpoint probe: it is how a socket the collector
+    did not see open is told inbound from outbound."""
+    try:
+        with open('/proc/sys/net/ipv4/ip_local_port_range') as f:
+            lo, hi = (int(x) for x in f.read().split()[:2])
+        if 0 < lo <= hi <= 65535:
+            return lo, hi
+    except Exception:
+        pass
+    return 32768, 60999
+
+
+EPH_RANGE     = _eph_range()
 # --- item 4: wait channel --------------------------------------------------
 DSTACK_MAX    = env_num('EBPFM_DSTACK_MAX', 300, int)         # /proc/<pid>/stack reads per tick
 DSTACK_DEPTH  = env_num('EBPFM_DSTACK_DEPTH', 5, int)
@@ -183,6 +217,8 @@ BTIME     = boot_time()
 
 EVT_FORK, EVT_EXEC, EVT_EXIT = 1, 2, 3
 TCP_KIND_CLOSE, TCP_KIND_ACCEPT = 1, 2
+# `netp` key flags. build_net_c() compiles these same values into the probe.
+NETP_F_INBOUND, NETP_F_V6, NETP_F_UNKNOWN = 1, 2, 4
 
 _KSTACK_FRAME = re.compile(r'\]\s+(\S+?)\+0x')   # same extraction snapshot.py uses
 
@@ -210,18 +246,25 @@ BLOCKS = [
     ('argv_kernel', (),             'in-kernel argv at exec via bpf_probe_read (pre-5.5 fallback)'),
     ('submit',      (),             'sbatch/salloc/srun stdout/stderr capture -> job id'),
     ('netbytes',    (),             'all-protocol per-process net bytes: kretprobes on tcp/udp send+recv (makes QUIC visible)'),
+    ('netbytes_udp6', ('netbytes',), 'the same over IPv6 UDP: udpv6_sendmsg/udpv6_recvmsg, which udp_* never see'),
     ('tcp_btf',     (),             'TCP lifetimes + bytes; tcp_sock offsets from kernel BTF (no net headers)'),
     ('tcp_hdr',     (),             'TCP lifetimes + bytes via <linux/tcp.h> (older kernels/BCC)'),
     ('tcp_basic',   (),             'TCP lifetimes without byte counters (no headers, no BTF)'),
     ('tcp_accept',  (),             'item 8: inbound connections via kretprobe inet_csk_accept (needs BTF)'),
+    # after the tcp blocks: an endpoint's direction comes from their birth map
+    # when it knows the socket, and the program text differs with and without it
+    ('netpeer_btf', ('netbytes',),  'the endpoint of every counted send/recv; sock_common offsets from kernel BTF'),
+    ('netpeer_hdr', ('netbytes',),  'the endpoint of every counted send/recv via <net/sock.h> (older kernels/BCC)'),
 ]
 BLOCK_NAMES = [b[0] for b in BLOCKS]
 TCP_BLOCKS   = {'tcp_btf', 'tcp_hdr', 'tcp_basic'}
 PIDS_BLOCKS  = {'pids_signal', 'pids_task', 'pids_kread'}
 DSTATE_BLOCKS = {'dstate_task', 'dstate_stat'}
+NETPEER_BLOCKS = {'netpeer_btf', 'netpeer_hdr'}
 # mutually exclusive alternatives: once the first loads, skip the rest
 ALTERNATIVES = {'pids_task': 'pids_signal', 'pids_kread': 'pids_signal',
-                'argv_kernel': 'argv_user', 'tcp_hdr': 'tcp_btf', 'tcp_basic': 'tcp_btf'}
+                'argv_kernel': 'argv_user', 'tcp_hdr': 'tcp_btf', 'tcp_basic': 'tcp_btf',
+                'netpeer_hdr': 'netpeer_btf'}
 ALSO_SUPERSEDED_BY = {'pids_kread': ('pids_task',), 'tcp_basic': ('tcp_hdr',)}
 # dstate_task and dstate_stat are NOT alternatives: both load where possible so a
 # capture can cross-check them, and `dstate_src` says which one a record used.
@@ -241,6 +284,9 @@ BTF_REQUIRED = {
     'tcp_btf':    {'tcp_sock': ('bytes_received', 'bytes_acked')},
     'tcp_accept': {'sock_common': ('skc_family', 'skc_rcv_saddr', 'skc_daddr',
                                    'skc_num', 'skc_dport')},
+    # skc_v6_daddr is optional, as it is for tcp_accept: without it an IPv6
+    # socket's peer reads as unattributed rather than failing the block
+    'netpeer_btf': {'sock_common': ('skc_family', 'skc_daddr', 'skc_num', 'skc_dport')},
 }
 BTF_OFFS = None          # {struct_name: {member: byte_offset}}
 
@@ -329,6 +375,359 @@ def btf_ok(block):
     return all(m in have.get(s, {}) for s, members in need.items() for m in members)
 
 
+def build_tcp_common_c():
+    """Declarations every TCP block shares. The birth map is written by the
+    outbound tracepoint and the inbound accept retprobe, read from userspace each
+    tick to describe connections that are still open (netlink supplies their
+    stats; it has no pid), and read by the endpoint probe for direction."""
+    return """
+#define EBPFM_IPPROTO_TCP 6
+#define EBPFM_TCP_ESTABLISHED 1
+#define EBPFM_TCP_SYN_SENT 2
+#define EBPFM_TCP_CLOSE 7
+struct tcp_meta_t {
+    u64 ts;           /* SYN_SENT, or accept() return for inbound */
+    u64 estab_ts;     /* 0 until ESTABLISHED: a connect that never completed stays 0 */
+    u32 pid, uid;
+    u32 saddr_v4, daddr_v4;
+    u16 sport, dport, family;
+    u8  inbound, _pad;
+    unsigned __int128 saddr_v6, daddr_v6;
+    char comm[TASK_COMM_LEN];
+};
+struct tcp_t {
+    u64 ts_ns, dur_ns, connect_ns, rx_bytes, tx_bytes;
+    u32 pid, uid, saddr_v4, daddr_v4;
+    u16 sport, dport, family;
+    u8  has_bytes, kind, inbound, established;
+    unsigned __int128 saddr_v6, daddr_v6;
+    char comm[TASK_COMM_LEN];
+};
+BPF_HASH(tcp_birth, u64, struct tcp_meta_t, 65536);
+BPF_PERF_OUTPUT(tcp_events);
+"""
+
+
+_NETB_C = """
+struct netb_t { u64 tx; u64 rx; u64 calls; };
+BPF_HASH(netb, u32, struct netb_t, 65536);
+
+static __always_inline void _netb_add(s64 ret, int is_tx) {
+    if (ret <= 0)
+        return;
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    struct netb_t *p = netb.lookup(&tgid);
+    if (!p) {
+        struct netb_t z = {};
+        netb.update(&tgid, &z);
+        p = netb.lookup(&tgid);
+        if (!p)
+            return;
+    }
+    if (is_tx)
+        __sync_fetch_and_add(&p->tx, (u64)ret);
+    else
+        __sync_fetch_and_add(&p->rx, (u64)ret);
+    __sync_fetch_and_add(&p->calls, 1);
+}
+"""
+
+_NETB_NEST_C = """
+/* A dual-stack socket sending to an IPv4 peer goes udpv6_sendmsg -> udp_sendmsg
+ * (a v4-mapped destination) on the same socket and thread, so both return probes
+ * would count it. The outer one counts; the inner one is recognised by carrying
+ * the socket the outer one entered with, and skipped. Keyed on that socket, not
+ * a bare flag: a return probe that never ran (kretprobe maxactive) must not
+ * silence every later udp_sendmsg on the thread, and a stale entry only matches
+ * its own IPv6 socket, whose sends always go through udpv6_sendmsg anyway.
+ * udpv6_recvmsg handles v4-mapped itself and never calls udp_recvmsg. */
+struct netb_nest_t { u64 v6sk; u64 skip; };
+BPF_HASH(netb_nest, u64, struct netb_nest_t, 16384);
+
+static __always_inline void _netb_nest_enter(u64 sk) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct netb_nest_t n = {};
+    n.v6sk = sk;
+    netb_nest.update(&id, &n);
+}
+
+static __always_inline void _netb_nest_leave(void) {
+    u64 id = bpf_get_current_pid_tgid();
+    netb_nest.delete(&id);
+}
+
+/* udp_sendmsg entry: is this the inner half of a udpv6_sendmsg? */
+static __always_inline int _netb_nest_inner(u64 sk) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct netb_nest_t *n = netb_nest.lookup(&id);
+    if (!n)
+        return 0;
+    n->skip = (n->v6sk == sk);
+    return n->skip ? 1 : 0;
+}
+
+/* udp_sendmsg return: consume the decision its entry made */
+static __always_inline int _netb_nest_skip(void) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct netb_nest_t *n = netb_nest.lookup(&id);
+    if (!n || !n->skip)
+        return 0;
+    n->skip = 0;
+    return 1;
+}
+"""
+
+_NETPEER_C = """
+/* ---- the endpoint of every counted send/recv --------------------------------
+ * A return probe has lost its arguments, so an entry probe records which socket
+ * and msghdr the call is on, per THREAD; the return probe then reads the peer and
+ * adds the bytes under (process, protocol, direction, address, port). Userspace
+ * reads this table every residency tick and before a networked process's record
+ * is written, and deletes a process's entries only once it has exited: deleting
+ * a live one would race the increments below, and 4.18 has no atomic
+ * read-and-delete. */
+#define NETP_TCP 6
+#define NETP_UDP 17
+#define NETP_F_INBOUND %(f_inbound)d
+#define NETP_F_V6 %(f_v6)d
+#define NETP_F_UNKNOWN %(f_unknown)d
+#define NETP_EPH_LO %(eph_lo)d
+#define NETP_EPH_HI %(eph_hi)d
+struct netp_arg_t { u64 sk; u64 msg; };
+struct netp_key_t { u32 tgid; u16 port; u8 proto; u8 flags; u8 addr[16]; };
+struct netp_val_t { u64 tx; u64 rx; u64 calls; };
+BPF_HASH(netp_args, u64, struct netp_arg_t, 16384);
+BPF_HASH(netp, struct netp_key_t, struct netp_val_t, %(netp_max)d);
+BPF_ARRAY(netp_drop, u64, 3);          /* calls, tx bytes, rx bytes that found netp full */
+
+static __always_inline void _netp_stash(u64 sk, u64 msg) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct netp_arg_t a = {};
+    a.sk = sk;
+    a.msg = msg;
+    netp_args.update(&id, &a);
+}
+
+static __always_inline void _netp_miss(s64 ret, int is_tx) {
+    u32 i = 0;
+    u64 *c = netp_drop.lookup(&i);
+    if (c)
+        __sync_fetch_and_add(c, 1);
+    i = is_tx ? 1 : 2;
+    c = netp_drop.lookup(&i);
+    if (c)
+        __sync_fetch_and_add(c, (u64)ret);
+}
+
+static __always_inline void _netp_add(s64 ret, int is_tx, u8 proto) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct netp_arg_t *a = netp_args.lookup(&id);
+    if (!a)
+        return;                  /* the call was already in flight when we attached */
+    u64 skp = a->sk, msgp = a->msg;
+    netp_args.delete(&id);
+    if (ret <= 0 || !skp)
+        return;
+    struct netp_key_t k = {};
+    k.tgid = id >> 32;
+    k.proto = proto;
+    u16 fam = 0, lport = 0, p = 0;
+    int got = 0;
+__NETP_SOCK_LOCAL__
+    /* sendto()/recvfrom() on UDP: the peer is in msg->msg_name (the first member
+     * of struct msghdr on 4.18 and 6.x alike), which the syscall layer has
+     * already copied into kernel memory. TCP ignores msg_name. */
+    if (proto == NETP_UDP && msgp) {
+        u64 name = 0;
+        bpf_probe_read(&name, sizeof(name), (void *)msgp);
+        if (name) {
+            u16 sf = 0;
+            bpf_probe_read(&sf, sizeof(sf), (void *)name);
+            bpf_probe_read(&p, sizeof(p), (void *)(name + 2));      /* sin(6)_port */
+            if (sf == 2) {
+                u32 a4 = 0;
+                bpf_probe_read(&a4, sizeof(a4), (void *)(name + 4));
+                __builtin_memcpy(k.addr, &a4, 4);
+                got = a4 != 0;
+            } else if (sf == 10) {
+                u64 w[2] = {};
+                bpf_probe_read(w, sizeof(w), (void *)(name + 8));
+                __builtin_memcpy(k.addr, w, 16);
+                k.flags = NETP_F_V6;
+                got = (w[0] | w[1]) != 0;
+            }
+        }
+    }
+    if (!got) {                  /* the socket's own peer: TCP, connected UDP */
+        k.flags = 0;
+        __builtin_memset(k.addr, 0, sizeof(k.addr));
+__NETP_SOCK_PEER__
+    }
+    if (!got) {
+        /* no address anywhere, e.g. recv() on an unconnected UDP socket: its own
+         * bucket, never dropped */
+        k.flags = NETP_F_UNKNOWN;
+        __builtin_memset(k.addr, 0, sizeof(k.addr));
+    } else {
+        u16 rport = (u16)((p >> 8) | (p << 8));
+        int inbound = -1;
+__NETP_BIRTH__
+        /* Otherwise a guess from the ports: a remote end on an ephemeral port and
+         * a local end off one is a client that connected in. */
+        if (inbound < 0)
+            inbound = rport >= NETP_EPH_LO && rport <= NETP_EPH_HI
+                      && !(lport >= NETP_EPH_LO && lport <= NETP_EPH_HI);
+        /* Inbound is keyed by the LOCAL port. The client's port is random, and
+         * keying on it would make one entry per connection. */
+        k.port = inbound ? lport : rport;
+        if (inbound)
+            k.flags |= NETP_F_INBOUND;
+    }
+    struct netp_val_t *v = netp.lookup(&k);
+    if (!v) {
+        struct netp_val_t z = {};
+        netp.update(&k, &z);
+        v = netp.lookup(&k);
+        if (!v) {
+            _netp_miss(ret, is_tx);   /* full: the per-process totals still have it */
+            return;
+        }
+    }
+    if (is_tx)
+        __sync_fetch_and_add(&v->tx, (u64)ret);
+    else
+        __sync_fetch_and_add(&v->rx, (u64)ret);
+    __sync_fetch_and_add(&v->calls, 1);
+}
+"""
+
+_NETPEER_BIRTH_C = """
+        /* The tcp blocks saw this socket open, so they know its direction. */
+        if (proto == NETP_TCP) {
+            struct tcp_meta_t *bm = tcp_birth.lookup(&skp);
+            if (bm)
+                inbound = bm->inbound ? 1 : 0;
+        }
+"""
+
+
+def build_net_c(f, offs=None):
+    """The network section of the BPF program: per-process byte totals
+    (netbytes), IPv6 UDP (netbytes_udp6) and the endpoint table (netpeer_*).
+
+    Kept apart from build_bpf_text so the unit tests can compile and drive
+    exactly this section with the host compiler (tests/bpf_mock.h). It is the one
+    part whose correctness rests on probes handing state to each other -- entry
+    to return, udpv6_sendmsg to the udp_sendmsg it calls -- which a text check
+    cannot show."""
+    if 'netbytes' not in f:
+        return ''
+    O = offs if offs is not None else btf_offsets()
+    udp6 = 'netbytes_udp6' in f
+    peer = next((b for b in ('netpeer_btf', 'netpeer_hdr') if b in f), None)
+    out = [_NETB_C]
+    if udp6:
+        out.append(_NETB_NEST_C)
+    if peer == 'netpeer_btf':
+        sc = O.get('sock_common', {})
+        local = """
+    bpf_probe_read(&fam, sizeof(fam), (void *)(skp + %d));
+    bpf_probe_read(&lport, sizeof(lport), (void *)(skp + %d));   /* skc_num: host order */
+""" % (sc.get('skc_family', 0), sc.get('skc_num', 0))
+        sock_peer = """
+        bpf_probe_read(&p, sizeof(p), (void *)(skp + %d));          /* skc_dport: network order */
+        if (fam == 2) {
+            u32 a4 = 0;
+            bpf_probe_read(&a4, sizeof(a4), (void *)(skp + %d));
+            __builtin_memcpy(k.addr, &a4, 4);
+            got = a4 != 0;
+        }
+""" % (sc.get('skc_dport', 0), sc.get('skc_daddr', 0))
+        if 'skc_v6_daddr' in sc:
+            sock_peer += """
+        if (fam == 10) {
+            u64 w[2] = {};
+            bpf_probe_read(w, sizeof(w), (void *)(skp + %d));
+            __builtin_memcpy(k.addr, w, 16);
+            k.flags = NETP_F_V6;
+            got = (w[0] | w[1]) != 0;
+        }
+""" % sc['skc_v6_daddr']
+    elif peer == 'netpeer_hdr':
+        local = """
+    {
+        struct sock *s_ = (struct sock *)skp;
+        bpf_probe_read(&fam, sizeof(fam), &s_->__sk_common.skc_family);
+        bpf_probe_read(&lport, sizeof(lport), &s_->__sk_common.skc_num);
+    }
+"""
+        sock_peer = """
+        {
+            struct sock *s_ = (struct sock *)skp;
+            bpf_probe_read(&p, sizeof(p), &s_->__sk_common.skc_dport);
+            if (fam == 2) {
+                u32 a4 = 0;
+                bpf_probe_read(&a4, sizeof(a4), &s_->__sk_common.skc_daddr);
+                __builtin_memcpy(k.addr, &a4, 4);
+                got = a4 != 0;
+            }
+#if IS_ENABLED(CONFIG_IPV6)
+            if (fam == 10) {
+                u64 w[2] = {};
+                bpf_probe_read(w, sizeof(w), &s_->__sk_common.skc_v6_daddr);
+                __builtin_memcpy(k.addr, w, 16);
+                k.flags = NETP_F_V6;
+                got = (w[0] | w[1]) != 0;
+            }
+#endif
+        }
+"""
+    if peer:
+        birth = _NETPEER_BIRTH_C if (TCP_BLOCKS | {'tcp_accept'}) & f else ''
+        out.append((_NETPEER_C % {'f_inbound': NETP_F_INBOUND, 'f_v6': NETP_F_V6,
+                                  'f_unknown': NETP_F_UNKNOWN, 'eph_lo': EPH_RANGE[0],
+                                  'eph_hi': EPH_RANGE[1], 'netp_max': NETPEER_MAX})
+                   .replace('__NETP_SOCK_LOCAL__', local)
+                   .replace('__NETP_SOCK_PEER__', sock_peer)
+                   .replace('__NETP_BIRTH__', birth))
+
+    # kretprobes on the protocol entry points, NOT on sock_sendmsg: tcp_sendmsg
+    # and udp_sendmsg take `struct sock *` and are inet by construction, so unix
+    # sockets (all the MCP traffic) are excluded without reading any struct
+    # member, and the return value is the byte count actually moved. udpv6_prot
+    # has its own pair, so IPv6 UDP needs udpv6_* as well; TCP shares tcp_*.
+    out.append("""
+/* All of these return `int`, so the ABI only defines eax — the upper 32 bits of
+ * rax are whatever was there before. Truncate to s32 and sign-extend, or that
+ * garbage is read as data: a 6.7 KB download first measured as 21474843382
+ * bytes, which is exactly 20 GiB plus the true 6902. */
+""")
+    fns = [('tcp_sendmsg', 1, 'NETP_TCP'), ('tcp_recvmsg', 0, 'NETP_TCP'),
+           ('udp_sendmsg', 1, 'NETP_UDP'), ('udp_recvmsg', 0, 'NETP_UDP')]
+    if udp6:
+        fns += [('udpv6_sendmsg', 1, 'NETP_UDP'), ('udpv6_recvmsg', 0, 'NETP_UDP')]
+    for fn, is_tx, proto in fns:
+        entry, pre = [], []
+        if udp6 and fn == 'udpv6_sendmsg':
+            entry.append('_netb_nest_enter(PT_REGS_PARM1(ctx));')
+            pre.append('_netb_nest_leave();')
+        elif udp6 and fn == 'udp_sendmsg':
+            entry.append('if (_netb_nest_inner(PT_REGS_PARM1(ctx)))\n'
+                         '        return 0;              /* counted by udpv6_sendmsg */')
+            pre.append('if (_netb_nest_skip())\n        return 0;')
+        if peer:
+            entry.append('_netp_stash(PT_REGS_PARM1(ctx), PT_REGS_PARM2(ctx));')
+        if entry:
+            out.append('int kprobe__%s(struct pt_regs *ctx) {\n    %s\n    return 0;\n}\n'
+                       % (fn, '\n    '.join(entry)))
+        body = pre + ['s64 ret = (s64)(s32)PT_REGS_RC(ctx);', '_netb_add(ret, %d);' % is_tx]
+        if peer:
+            body.append('_netp_add(ret, %d, %s);' % (is_tx, proto))
+        out.append('int kretprobe__%s(struct pt_regs *ctx) {\n    %s\n    return 0;\n}\n'
+                   % (fn, '\n    '.join(body)))
+    return ''.join(out)
+
+
 def build_bpf_text(f, offs=None):
     """BPF C source for feature set `f` (a set of BLOCK names).
     `offs` overrides the module-level BTF offsets (for unit tests)."""
@@ -349,6 +748,8 @@ def build_bpf_text(f, offs=None):
         inc.append('#include <linux/delayacct.h>')
     if 'tcp_hdr' in f:
         inc += ['#include <linux/tcp.h>', '#include <net/sock.h>']
+    elif 'netpeer_hdr' in f and 'netbytes' in f:
+        inc.append('#include <net/sock.h>')
     argv_on = ('argv_user' in f) or ('argv_kernel' in f)
     read_user = 'bpf_probe_read_user' if 'argv_user' in f else 'bpf_probe_read'
 
@@ -480,42 +881,7 @@ TRACEPOINT_PROBE(sched, sched_stat_blocked) {
     cgid = '    d.cgid = bpf_get_current_cgroup_id();\n' if 'cgid' in f else ''
 
     # ---- item 3b: all-protocol per-process network bytes -------------------
-    # kretprobes on the protocol entry points, NOT on sock_sendmsg: tcp_sendmsg
-    # and udp_sendmsg take `struct sock *` and are inet by construction, so unix
-    # sockets (all the MCP traffic) are excluded without reading any struct
-    # member, and the return value is the byte count actually moved.
-    netb_defs = ("""
-struct netb_t { u64 tx; u64 rx; u64 calls; };
-BPF_HASH(netb, u32, struct netb_t, 65536);
-
-static __always_inline void _netb_add(s64 ret, int is_tx) {
-    if (ret <= 0)
-        return;
-    u32 tgid = bpf_get_current_pid_tgid() >> 32;
-    struct netb_t *p = netb.lookup(&tgid);
-    if (!p) {
-        struct netb_t z = {};
-        netb.update(&tgid, &z);
-        p = netb.lookup(&tgid);
-        if (!p)
-            return;
-    }
-    if (is_tx)
-        __sync_fetch_and_add(&p->tx, (u64)ret);
-    else
-        __sync_fetch_and_add(&p->rx, (u64)ret);
-    __sync_fetch_and_add(&p->calls, 1);
-}
-
-/* All four return `int`, so the ABI only defines eax — the upper 32 bits of rax
- * are whatever was there before. Truncate to s32 and sign-extend, or that
- * garbage is read as data: a 6.7 KB download first measured as 21474843382
- * bytes, which is exactly 20 GiB plus the true 6902. */
-int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC(ctx), 1); return 0; }
-int kretprobe__tcp_recvmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC(ctx), 0); return 0; }
-int kretprobe__udp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC(ctx), 1); return 0; }
-int kretprobe__udp_recvmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC(ctx), 0); return 0; }
-""" if 'netbytes' in f else '')
+    netb_defs = build_net_c(f, O)
     netb_read = ("""
     {
         struct netb_t *p = netb.lookup(&tgid);
@@ -621,35 +987,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_write) {
     else:
         tcp_bytes = ''
 
-    # The birth map is shared by the outbound tracepoint and the inbound accept
-    # retprobe, and is also read from userspace each tick to describe connections
-    # that are still open (netlink supplies their stats; it has no pid).
-    tcp_common_defs = ("""
-#define EBPFM_IPPROTO_TCP 6
-#define EBPFM_TCP_ESTABLISHED 1
-#define EBPFM_TCP_SYN_SENT 2
-#define EBPFM_TCP_CLOSE 7
-struct tcp_meta_t {
-    u64 ts;           /* SYN_SENT, or accept() return for inbound */
-    u64 estab_ts;     /* 0 until ESTABLISHED: a connect that never completed stays 0 */
-    u32 pid, uid;
-    u32 saddr_v4, daddr_v4;
-    u16 sport, dport, family;
-    u8  inbound, _pad;
-    unsigned __int128 saddr_v6, daddr_v6;
-    char comm[TASK_COMM_LEN];
-};
-struct tcp_t {
-    u64 ts_ns, dur_ns, connect_ns, rx_bytes, tx_bytes;
-    u32 pid, uid, saddr_v4, daddr_v4;
-    u16 sport, dport, family;
-    u8  has_bytes, kind, inbound, established;
-    unsigned __int128 saddr_v6, daddr_v6;
-    char comm[TASK_COMM_LEN];
-};
-BPF_HASH(tcp_birth, u64, struct tcp_meta_t, 65536);
-BPF_PERF_OUTPUT(tcp_events);
-""") if (tcp_on or accept_on) else ''
+    tcp_common_defs = build_tcp_common_c() if (tcp_on or accept_on) else ''
 
     tcp_tp = ("""
 TRACEPOINT_PROBE(sock, inet_sock_set_state) {
@@ -810,7 +1148,7 @@ struct data_t {
     u32 nr_threads, pgrp, sid;
 };
 BPF_PERF_OUTPUT(events);
-__ARGV_DEFS____SUBMIT_DEFS____DSTATE_DEFS____NETB_DEFS____TCP_COMMON____TCP_TP____ACCEPT_PROBE__
+__ARGV_DEFS____SUBMIT_DEFS____DSTATE_DEFS____TCP_COMMON____TCP_TP____ACCEPT_PROBE____NETB_DEFS__
 
 TRACEPOINT_PROBE(sched, sched_process_fork) {
     struct data_t d = {};
@@ -977,6 +1315,11 @@ def probe_features(BPF, verbose=True):
         try:
             with open(_feature_cache_path()) as fh:
                 cached = json.load(fh)
+            # Keyed by kernel release, but only valid for the block list it was
+            # probed against: a collector that has gained a block since must probe
+            # it, or every host that ran the older collector never would.
+            if cached.get('blocks') != list(BLOCK_NAMES):
+                raise ValueError('feature cache predates the current block list')
             feats = set(cached.get('features', []))
             if cached.get('btf_offs'):
                 BTF_OFFS = cached['btf_offs']
@@ -1016,7 +1359,8 @@ def probe_features(BPF, verbose=True):
         b, accepted = nb, cand
     # A failed variant whose sibling loaded is not a capability gap; say so while
     # keeping the compiler line for the record.
-    for group in (PIDS_BLOCKS, TCP_BLOCKS, {'argv_user', 'argv_kernel'}, DSTATE_BLOCKS):
+    for group in (PIDS_BLOCKS, TCP_BLOCKS, {'argv_user', 'argv_kernel'}, DSTATE_BLOCKS,
+                  NETPEER_BLOCKS):
         winner = sorted(group & accepted)
         if winner:
             for nm in group - accepted:
@@ -1028,6 +1372,7 @@ def probe_features(BPF, verbose=True):
             with open(_feature_cache_path(), 'w') as fh:
                 json.dump({'kernel': os.uname().release, 'features': sorted(accepted),
                            'rejected': rejected, 'btf_offs': btf_offsets(),
+                           'blocks': list(BLOCK_NAMES),
                            'probed_at': _now()}, fh, indent=1)
         except Exception:
             pass
@@ -1258,7 +1603,8 @@ def sandbox_ancestry_of(m):
 
 
 def _envelope(event):
-    """The six-key record envelope, plus `ts_epoch`.
+    """The record envelope: `ts`, `ts_epoch`, `host`, `event`, `collector_pid`,
+    `schema_version`.
 
     `ts` is local, naive and second-granular -- fine for a human reading one
     host's file, useless for ordering or binning records from seven hosts against
@@ -1266,12 +1612,22 @@ def _envelope(event):
     sub-second, and monotone enough to sort across hosts. `ts` is kept unchanged
     because every existing consumer parses it.
 
+    `collector_pid` is this process, so its own process tree can be dropped
+    downstream (`pid` or `ppid` equal to it). That tree is invisible in a normal
+    deployment, where nothing admits it, but a capture started from a login
+    shell inherits the tty and is tracked as a human. It also tells two runs in
+    one day's file apart.
+
+    Through schema 6 this also stamped `source` ('ebpf') and `collector`
+    ('ebpf_marthen_new') on every record: constants that said nothing the feed's
+    own location does not, at a cost on every line. Nothing read either one.
+
     Built here rather than copied per record type so a future envelope field
     lands on all of them; DailyWriter.write() backstops anything that still
     constructs one by hand."""
     return {'ts': _now(), 'ts_epoch': time.time(), 'host': HOSTNAME,
-            'event': event, 'source': 'ebpf',
-            'collector': COLLECTOR, 'schema_version': SCHEMA_VERSION}
+            'event': event, 'collector_pid': COLLECTOR_PID,
+            'schema_version': SCHEMA_VERSION}
 
 
 def _top_n(d, n, or_none=False):
@@ -1515,14 +1871,14 @@ writer = None
 _cgid_map = {}
 _cgid_last_walk = 0.0
 _stop = False
-_dropped = {'n': 0, 'comms': {}}     # item 6: what the actor filter discarded
+_dropped = {'n': 0, 'commands': {}}  # item 6: what the actor filter discarded
 _fork_prev = None
 # (due_monotonic, m, rec, quiet) in insertion order, which is also due order
 # because the hold is a constant. A deque, not a list: this is drained from the
 # head once per poll round and popleft is O(1) where pop(0) is O(n). See
 # _stage_exit().
 _pending_exits = collections.deque()
-_conn_dropped = {'n': 0, 'comms': {}}   # conns whose owner never got an exit record
+_conn_dropped = {'n': 0, 'commands': {}}   # conns whose owner never got an exit record
 
 
 def _on_signal(signum, frame):
@@ -1537,14 +1893,18 @@ signal.signal(signal.SIGINT, _on_signal)
 def _new_entry(pid, ppid, comm=None, **kw):
     e = {'pid': pid, 'ppid': ppid, 'comm': comm, 'args': None, 'argv_source': None,
          'argv_ktime': None, 'tty': None, 'user': None, 'uid': None, 'cgroup': None,
-         'cwd': None, 'cwd_source': None, 'start_ticks': None,
-     'args_raw_len': None, 'tick_cpu_s': None, 'sandbox_anc': _UNSET,
+         'cwd': None, 'start_ticks': None,
+     'args_raw_len': None, 'args_clamped': False, 'tick_cpu_s': None, 'sandbox_anc': _UNSET,
      'sandbox': None, 'sandbox_src': None, 'sandbox_detail': None,
      'env_flags': None, 'approval_mode': None, 'approval_src': None,
          'start_ep': None, 'exec_ktime': None, 'attributed': None, 'is_agent': False,
          'agent_pid': None, 'agent_type': None, 'depth': None,
          'exited': False, 'gc_ts': None, 'is_submit': False, 'submit_buf': None,
-         'emitted': False, 'conns': None}
+         'emitted': False, 'conns': None,
+         # schema 7 (see netpeer_read): the endpoint table's counters for this
+         # process, what the netio series has reported of them, and its state
+         'net_io': False, 'exit_pending': False, 'netp_k': None, 'netp_kobj': None,
+         'netp_rep': None, 'in_series': False, 'netio_ts': None, 'netp_done': False}
     e.update(kw)
     return e
 
@@ -1679,6 +2039,7 @@ def _ingest_proc(pid, ppid=None):
         if args and not args.startswith('['):
             m['args'], m['argv_source'] = args, 'proc'
             m['args_raw_len'] = len(args)      # read_cmdline is uncapped: exact
+            m['args_clamped'] = False
             m['attributed'] = None
     return True
 
@@ -1693,7 +2054,10 @@ def seed_existing():
             if m is not None and m['cwd'] is None:
                 c = read_cwd(pid)
                 if c:
-                    m['cwd'], m['cwd_source'] = c, 'proc'
+                    m['cwd'] = c
+    # Only once the whole table is in: attribution needs every parent present.
+    for m in list(proc.values()):
+        _ask_hosts(m)
 
 
 def _inherit(m, key):
@@ -1758,10 +2122,10 @@ def _need_sandbox_read(m):
         return True
     if (m.get('agent_type') or None) in SANDBOX_TYPES:
         return True
-    if (m.get('comm') or '') in SANDBOX_COMMS:
+    if _command_of(m) in SANDBOX_COMMS:
         return True
     pm = proc.get(m.get('ppid'))
-    return pm is not None and (pm.get('comm') or '') in SANDBOX_COMMS
+    return pm is not None and _command_of(pm) in SANDBOX_COMMS
 
 
 def _read_sandbox(m, when):
@@ -1779,7 +2143,7 @@ def _inherit_cwd(m):
         return
     pm = proc.get(m['ppid'])
     if pm is not None and pm.get('cwd'):
-        m['cwd'], m['cwd_source'] = pm['cwd'], 'inherit'
+        m['cwd'] = pm['cwd']
 
 
 def _resolve_cgid(cgid):
@@ -1837,8 +2201,8 @@ def actor_of(m):
 
 def _note_dropped(m):
     _dropped['n'] += 1
-    c = m.get('comm') or '?'
-    _dropped['comms'][c] = _dropped['comms'].get(c, 0) + 1
+    c = _command_of(m) or '?'
+    _dropped['commands'][c] = _dropped['commands'].get(c, 0) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -1879,6 +2243,7 @@ def on_fork(e):
     if pm is not None and m['args'] is None and pm.get('args'):
         m['args'], m['argv_source'] = pm['args'], 'inherit'
         m['args_raw_len'] = pm.get('args_raw_len')
+        m['args_clamped'] = pm.get('args_clamped', False)
 
 
 def on_exec(e):
@@ -1896,6 +2261,8 @@ def on_exec(e):
     # arbitrary order; the two events carry the same ktime_ns).
     if not (m['argv_source'] == 'kernel' and m['argv_ktime'] == e.ktime_ns):
         m['args'], m['argv_source'], m['argv_ktime'] = None, None, None
+        # the old image's lengths too: unknown until the new argv arrives
+        m['args_raw_len'], m['args_clamped'] = None, False
     tty_known = False
     if 'tty' in FEATURES:
         m['tty'] = _cstr(e.tty) if e.has_tty else None
@@ -1921,7 +2288,7 @@ def on_exec(e):
         if need_cwd:
             c = read_cwd(pid)
             if c:
-                m['cwd'], m['cwd_source'] = c, 'proc'
+                m['cwd'] = c
     if WANT_SANDBOX:
         # The PARENT's comm is the load-bearing rung. bwrap execs, THEN unshares,
         # THEN execs the payload -- so reading at bwrap's own exec yields the
@@ -1951,6 +2318,8 @@ def on_exec(e):
                                                   for n in names):
                 m['approval_mode'], m['approval_src'] = 'bypassed', 'env'
     _invalidate_attribution(pid)
+    if m['argv_source'] == 'proc':        # a kernel argv asks in on_argv instead
+        _ask_hosts(m)
 
 
 def on_argv(a):
@@ -1964,9 +2333,11 @@ def on_argv(a):
     if args:
         m['args'], m['argv_source'], m['argv_ktime'] = args, 'kernel', a.ktime_ns
         m['args_raw_len'] = raw_len
+        m['args_clamped'] = raw_len > a.len    # the ARGV_KMAX read cut it
         if not m['comm']:
             m['comm'] = os.path.basename(args.split(' ', 1)[0])[:15]
         _invalidate_attribution(pid)
+        _ask_hosts(m)
 
 
 def _duration_and_start(m, e):
@@ -2007,6 +2378,28 @@ _UNSET = object()              # 'not computed yet', distinct from a cached None
 _IDENTITY_KEYS = None          # filled in below, after _base_identity is defined
 
 
+_COMM_MAX = 15               # TASK_COMM_LEN - 1: the kernel cuts comm here
+
+
+def _command_of(m):
+    """The executable's name, whole: the kernel's comm, completed from argv when
+    the kernel cut it.
+
+    comm stops at 15 characters, so a 15-character comm may be a prefix. The full
+    name is then nearly always an argv token: argv[0] for a binary, the path after
+    the interpreter for a script (binfmt_script puts the interpreter first). The
+    first token whose basename extends the comm wins. Anything shorter is taken
+    as is, so a login shell's '-bash' never replaces 'bash'; a name that exists
+    nowhere longer -- a thread name set with prctl -- stays as the kernel has it."""
+    comm = m.get('comm') or ''
+    if len(comm) >= _COMM_MAX:
+        for tok in (m.get('args') or '').split(' '):
+            b = os.path.basename(tok)
+            if len(b) > len(comm) and b.startswith(comm):
+                return b
+    return comm
+
+
 def _base_identity(m, actor, attribution=None):
     agent_pid = m.get('agent_pid')
     return {
@@ -2014,17 +2407,21 @@ def _base_identity(m, actor, attribution=None):
         'actor3': actor3(actor, m.get('agent_type')),
         'attribution': attribution,
         'pid': m['pid'], 'ppid': m['ppid'], 'uid': m.get('uid'), 'user': m.get('user'),
-        'tty': m.get('tty'), 'comm': m.get('comm') or '',
-        'args': (m.get('args') or '')[:ARGS_MAXLEN] or None,
+        'tty': m.get('tty'), 'command': _command_of(m),
+        'args': ((m.get('args') or '')[:ARGS_MAXLEN] if ARGS_MAXLEN > 0
+                 else m.get('args')) or None,
         'argv_source': m.get('argv_source'),
         # An honest denominator for "unresolvable" in the tool distribution: a
         # truncated shell payload was indistinguishable from a genuinely short
         # one. null (not false) when the raw length is unknown -- false would
-        # claim "measured and complete".
+        # claim "measured and complete". Two things can cut it: the in-kernel
+        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, and
+        # the emit cap when one is set.
         'args_len': m.get('args_raw_len'),
         'args_truncated': (None if m.get('args_raw_len') is None
-                           else m['args_raw_len'] > ARGS_MAXLEN),
-        'cwd': m.get('cwd'), 'cwd_source': m.get('cwd_source'),
+                           else bool(m.get('args_clamped'))
+                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)),
+        'cwd': m.get('cwd'),
         # sandbox = namespace isolation (ground truth); sandbox_ancestry = how it
         # got there. Their disagreement separates a bwrap PROBE from a real one.
         'sandbox': m.get('sandbox'), 'sandbox_src': m.get('sandbox_src'),
@@ -2061,7 +2458,7 @@ def _stub_identity(pid=None, uid=None, comm=None):
     out['pid'] = pid
     out['uid'] = uid
     out['user'] = username(uid) if uid is not None else None
-    out['comm'] = comm
+    out['command'] = comm
     return out
 
 
@@ -2099,12 +2496,14 @@ def on_exit(e):
     F = FEATURES
     io_bytes = (e.rd_bytes + e.wr_bytes) if 'io' in F else 0
     comm = m.get('comm') or ''
+    m['net_io'] = bool('netbytes' in F and getattr(e, 'has_net', 0)
+                       and (e.net_tx or e.net_rx))
     # These three discard a process for being too cheap to be interesting. They
     # are DECIDED here, where the exit event's counters are, but APPLIED at drain
     # time (see _stage_exit) -- a 40 ms curl is below MIN_DURATION and its socket
     # close has not arrived yet, so dropping it now would throw away the
     # connection that made it worth keeping. A process that talked to the network
-    # is never a no-op.
+    # is never a no-op, over TCP or not (m['net_io']).
     quiet = bool(
         (not KEEP_TIMERS and not m['is_agent'] and comm in TIMER_COMMS
          and cpu_s == 0 and io_bytes == 0)
@@ -2178,18 +2577,29 @@ def _stage_exit(m, rec, quiet):
     record is built, so a consumer that sorts on it (which is what it is for) is
     unaffected. Nothing is buffered that a stop would lose -- drain_exits(final=1)
     runs before the stop record."""
+    m['exit_pending'] = True
     if EXIT_HOLD_MS <= 0:
+        if m['net_io']:
+            netpeer_read()
         _write_exit(m, rec, quiet)
         return
     _pending_exits.append((time.monotonic() + EXIT_HOLD_MS / 1000.0, m, rec, quiet))
 
 
 def _write_exit(m, rec, quiet):
-    if quiet and not m.get('conns'):
+    m['exit_pending'] = False
+    if quiet and not m.get('conns') and not m['net_io']:
+        _netp_release(m)
         return
     rec['conns'] = _conns_block(m)
+    rec['net_endpoints'] = _net_endpoints_block(m, rec.get('net_tx_bytes'),
+                                                rec.get('net_rx_bytes'))
+    if m['in_series']:
+        # the remainder since its last tick, so the series sums to the lifetime
+        _emit_netio(m, rec['actor'], rec.get('attribution'), 'exit', time.time())
     writer.write(rec)
     m['emitted'] = True
+    _netp_release(m)
     if m.get('is_submit') or m.get('submit_buf') is not None:
         _emit_submit(m, rec)
 
@@ -2199,22 +2609,28 @@ def drain_exits(final=False):
     poll round, and with final=True at shutdown so nothing is stranded.
 
     _pending_exits is append-only with a constant hold, so it is already in due
-    order and the first record that is not due ends the scan."""
+    order and the first record that is not due ends the scan. A round that is
+    about to write a networked process reads the endpoint table first, once for
+    the whole round: its counters are final now that the process has exited."""
     if not _pending_exits:
         return 0
     now = time.monotonic()
-    n = 0
+    due = []
     while _pending_exits:
-        due, m, rec, quiet = _pending_exits[0]
-        if not final and due > now:
+        if not final and _pending_exits[0][0] > now:
             break
-        _pending_exits.popleft()
+        due.append(_pending_exits.popleft())
+    if any(m['net_io'] or m['netp_k'] for _d, m, _r, _q in due):
+        try:
+            netpeer_read()
+        except Exception:
+            pass
+    for _due, m, rec, quiet in due:
         try:
             _write_exit(m, rec, quiet)
         except Exception:
             pass
-        n += 1
-    return n
+    return len(due)
 
 
 # ---------------------------------------------------------------------------
@@ -2238,7 +2654,7 @@ def _emit_submit(m, exit_rec):
     req = parse_submit_args(m.get('args'))
     rec.update(req)          # partition, gpus, array, time_limit_s, mem, cpus_per_task, req_src
     rec.update({
-        'tool': exit_rec['comm'],
+        'tool': exit_rec['command'],
         'job_id': jobs[0] if jobs else None,
         'job_ids': jobs or None,
         # the tool's cwd IS the job's submit directory; named for the join rather
@@ -2430,8 +2846,8 @@ def _note_conn_dropped(m):
     if not c or not c['n']:
         return
     _conn_dropped['n'] += c['n']
-    k = m.get('comm') or '?'
-    _conn_dropped['comms'][k] = _conn_dropped['comms'].get(k, 0) + c['n']
+    k = _command_of(m) or '?'
+    _conn_dropped['commands'][k] = _conn_dropped['commands'].get(k, 0) + c['n']
 
 
 def conn_tick(b):
@@ -2449,7 +2865,10 @@ def conn_tick(b):
             rows = []
     by_key = {}
     for r in rows:
-        by_key[sockdiag.key_of(r)] = r
+        # The birth map is TCP-only, and a UDP socket can share a TCP one's
+        # four-tuple: a join on the tuple alone would hand one's stats to the other.
+        if _is_tcp_row(r):
+            by_key[sockdiag.key_of(r)] = r
     now_ktime = time.monotonic_ns() if hasattr(time, 'monotonic_ns') else int(time.time() * 1e9)
     matched = set()
     n_emitted = 0
@@ -2509,7 +2928,7 @@ def conn_tick(b):
             else:
                 rec.update(_stub_identity(v.pid, v.uid, _cstr(v.comm)))
             rec.update({
-                'family': 'inet6' if fam == 10 else 'inet',
+                'family': 'inet6' if fam == 10 else 'inet', 'proto': 'tcp',
                 'saddr': saddr, 'sport': v.sport, 'daddr': daddr, 'dport': v.dport,
                 'external': external, 'provider': _provider(daddr),
                 'inbound': bool(v.inbound),
@@ -2523,11 +2942,12 @@ def conn_tick(b):
     # netlink rows we never saw a connect or accept for: opened before we
     # attached, or inbound on a kernel where the accept probe did not load. They
     # carry uid but no pid, which is exactly what nettcp reports — so emitting
-    # them makes this feed a superset of it.
+    # them makes this feed a superset of it. Connected UDP sockets land here too
+    # (they report ESTABLISHED), which is what `proto` is for.
     if CONN_UNTRACKED:
         for r in rows:
             k = sockdiag.key_of(r)
-            if k in matched:
+            if _is_tcp_row(r) and k in matched:
                 continue
             if r['state'] != 'ESTABLISHED':
                 continue
@@ -2536,7 +2956,8 @@ def conn_tick(b):
             rec = _envelope('conn')
             rec.update(_stub_identity(None, r['uid'], None))
             rec.update({
-                   'family': r['family'], 'saddr': r['saddr'], 'sport': r['sport'],
+                   'family': r['family'], 'proto': r.get('proto'),
+                   'saddr': r['saddr'], 'sport': r['sport'],
                    'daddr': r['daddr'], 'dport': r['dport'],
                    'external': is_external_ip(r['daddr']), 'provider': _provider(r['daddr']),
                    'inbound': None, 'age_s': None, 'established': True,
@@ -2547,6 +2968,12 @@ def conn_tick(b):
     return {'n': n_emitted, 'by_tree': by_tree, 'by_actor3': by_a3,
             'records': out_records, 'netlink_rows': len(rows),
             'unmatched_births': unmatched_births}
+
+
+def _is_tcp_row(r):
+    """A netlink row from the TCP dump. A row with no `proto` at all predates the
+    stamp, and every row was treated as TCP then."""
+    return r.get('proto') in ('tcp', None)
 
 
 def _conn_stats(row):
@@ -2567,6 +2994,440 @@ def _conn_stats(row):
         'segs_in': i.get('segs_in'), 'segs_out': i.get('segs_out'),
         'rqueue': row.get('rqueue'), 'wqueue': row.get('wqueue'),
     }
+
+
+# ---------------------------------------------------------------------------
+# schema 7: network bytes by endpoint (the netpeer_* blocks)
+# ---------------------------------------------------------------------------
+#
+# The kernel keeps cumulative (tx, rx, calls) per (process, protocol, direction,
+# address, port) in `netp`. Userspace reads the whole table at every residency
+# tick and before it writes a networked process's record, keeps the latest
+# figures on the process entry, and derives two things from them:
+#
+#   net_endpoints  on exit/truncated: the process's complete lifetime list
+#   netio          at each tick: the bytes each endpoint moved since the
+#                  process's previous netio record -- the time series
+#
+# A process joins the series at its first tick with traffic, and from then on its
+# exit (or the stop) writes one last netio record for the remainder, so for a
+# series process the netio records alone sum to its lifetime. A process that
+# never saw a tick has `in_series: false`, and all of its traffic happened within
+# one tick of its exit record: it would otherwise have been in the series.
+
+_NETP_PROTO = {6: 'tcp', 17: 'udp'}
+_netp_tab = None          # BPF hash `netp`, when a netpeer block loaded (set by main)
+_netp_drop_tab = None     # BPF array `netp_drop`: [calls, tx, rx] that found netp full
+# entries deleted without reaching a record: a pid never seen, or bytes that
+# arrived after the record was written (a thread outliving its group leader)
+_netp_orphans = {'entries': 0, 'tx_bytes': 0, 'rx_bytes': 0, 'calls': 0}
+_netp_unclaimed = {}      # (tgid, key) -> 1: seen at the last read with no known pid
+_netio_stats = {'records': 0}
+_COLLECTOR_START = time.time()     # reset by main(); floors a process's first interval
+
+
+def netp_endpoint(proto, flags, port, addr):
+    """A `netp` key -> (proto, addr, port, inbound); addr, port and inbound are
+    None for the unattributed bucket. `addr` is the key's 16 raw bytes, a v4
+    address in the first four. A v4-mapped address reads as the v4 it maps, so a
+    dual-stack socket's peer and a plain v4 socket's are one endpoint."""
+    p = _NETP_PROTO.get(proto, str(proto))
+    if flags & NETP_F_UNKNOWN:
+        return p, None, None, None
+    raw = bytes(addr)
+    if flags & NETP_F_V6:
+        a = ipaddress.IPv6Address(raw[:16])
+        a = a.ipv4_mapped or a
+    else:
+        a = ipaddress.IPv4Address(raw[:4])
+    return p, str(a), port, bool(flags & NETP_F_INBOUND)
+
+
+def netpeer_read():
+    """Fold the kernel's endpoint table onto the process table. Returns the
+    number of entries read, or None when there is no table.
+
+    The kernel's counters are cumulative, so a read REPLACES a process's figures
+    rather than adding to them. An entry is deleted only where nothing can add to
+    it any more -- a live process's entry never is, because a delete would race
+    its increments:
+      * the process's record is already written: counted as orphaned, deleted
+      * the pid is unknown: left for one more read (its fork event may still be
+        queued behind this one), then counted as orphaned and deleted
+      * the process exited without a record of its own (untracked, filtered):
+        deleted, not counted -- it was never going to be reported"""
+    global _netp_unclaimed
+    tab = _netp_tab
+    if tab is None:
+        return None
+    items = None
+    if hasattr(tab, 'items_lookup_batch'):
+        try:
+            # one syscall per batch, where items() costs two per entry; the
+            # kernel has it from 5.6 (4.18 answers EINVAL)
+            items = list(tab.items_lookup_batch())
+        except Exception:
+            items = None
+    if items is None:
+        try:
+            items = list(tab.items())
+        except Exception:
+            return None
+    unclaimed, drop = {}, []
+    for k, v in items:
+        kk = (k.proto, k.flags, k.port, bytes(k.addr))
+        m = proc.get(k.tgid)
+        orphan = False
+        if m is None:
+            if (k.tgid,) + kk in _netp_unclaimed:
+                orphan = True
+            else:
+                unclaimed[(k.tgid,) + kk] = 1
+                continue
+        elif m['netp_done']:
+            orphan = True
+        elif m['exited'] and not m['exit_pending']:
+            drop.append(k)
+            continue
+        if orphan:
+            _netp_orphans['entries'] += 1
+            _netp_orphans['tx_bytes'] += v.tx
+            _netp_orphans['rx_bytes'] += v.rx
+            _netp_orphans['calls'] += v.calls
+            drop.append(k)
+            continue
+        if m['netp_k'] is None:
+            m['netp_k'], m['netp_kobj'] = {}, {}
+        m['netp_k'][kk] = (v.tx, v.rx, v.calls)
+        m['netp_kobj'][kk] = k
+    _netp_unclaimed = unclaimed
+    for k in drop:
+        try:
+            del tab[k]
+        except Exception:
+            pass
+    return len(items)
+
+
+def _netp_release(m):
+    """Delete a finished process's kernel entries. Safe once it has exited:
+    nothing but its own sends and receives adds to them."""
+    tab = _netp_tab
+    if tab is not None:
+        for k in (m['netp_kobj'] or {}).values():
+            try:
+                del tab[k]
+            except Exception:
+                pass
+    m['netp_kobj'] = None
+    m['netp_done'] = True
+
+
+def _netp_lifetime(m):
+    """{(proto, addr, port, inbound): [tx, rx, calls]} over the process's life.
+    Sums, because two kernel keys can decode to one endpoint."""
+    out = {}
+    for (proto, flags, port, addr), (tx, rx, calls) in (m['netp_k'] or {}).items():
+        a = out.setdefault(netp_endpoint(proto, flags, port, addr), [0, 0, 0])
+        a[0] += tx
+        a[1] += rx
+        a[2] += calls
+    return out
+
+
+# ---- endpoint names, from the process's own command line --------------------
+#
+# An endpoint is an address, and the name behind it is often in the argv that
+# made the connection: curl's URL, the ssh that git spawns for a remote, scp's
+# host:path. Those names are resolved on a background thread, and an endpoint
+# carries one as `host` only when its address is among the name's addresses.
+# Never a guess: a name absent from argv, not yet resolved, or answered with
+# other addresses (a CDN rotating them) leaves `host` null. Only hostnames are
+# taken -- a URL's credentials never are -- only for a process that is reported,
+# and nothing is read from the traffic itself.
+
+_URL_HOST = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
+                       r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_SSH_COMMANDS = {'ssh', 'autossh', 'sftp', 'mosh'}     # destination: first non-option
+_HOSTPATH_COMMANDS = {'scp', 'rsync'}                   # [user@]host:path arguments
+_SSH_OPT_ARG = set('BbcDEeFIiJLlmOoPpQRSWw')          # ssh(1) options that take a value
+_HOST_PATH = re.compile(r'^(?:[^@\s/]+@)?([A-Za-z0-9._-]+):')
+_SSH_DEST = re.compile(r'^(?:[^@\s/]+@)?([A-Za-z0-9._-]+)$')
+_ARGV_HOSTS_MAX = 8                                     # names taken per process
+
+
+def _ssh_destination(toks):
+    """ssh's destination: the first argument that is neither an option nor an
+    option's value (getopt rules: `-p 22`, `-p22`, `-vp 22`)."""
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if not t:
+            i += 1
+            continue
+        if t == '--':
+            return toks[i + 1] if i + 1 < len(toks) else None
+        if t.startswith('-') and len(t) > 1:
+            for j, ch in enumerate(t[1:], 1):
+                if ch in _SSH_OPT_ARG:
+                    if j == len(t) - 1:
+                        i += 1                  # its value is the next token
+                    break
+            i += 1
+            continue
+        return t
+    return None
+
+
+def _argv_hostnames(args, command=None):
+    """The hostnames `args` names, in order, without repeats: every URL's host,
+    and the destination of an ssh/sftp/scp/rsync. Address literals and localhost
+    need no name and are left out, and an ordinary argument -- a file name, an
+    email address -- is never taken for one."""
+    if not args:
+        return []
+    found = _URL_HOST.findall(args) if '://' in args else []
+    if command in _SSH_COMMANDS:
+        dest = _ssh_destination(args.split(' ')[1:])
+        mt = dest and (_SSH_DEST.match(dest) or _HOST_PATH.match(dest))
+        if mt:
+            found.append(mt.group(1))
+    elif command in _HOSTPATH_COMMANDS:
+        for t in args.split(' ')[1:]:
+            mt = _HOST_PATH.match(t)
+            if mt:
+                found.append(mt.group(1))
+    out = []
+    for h in found:
+        h = h.strip('[]').rstrip('.').lower()
+        if (not h or h in out or h == 'localhost' or h.endswith('.localhost')
+                or not re.search('[a-z]', h)):
+            continue
+        try:
+            ipaddress.ip_address(h)
+            continue                            # already an address
+        except ValueError:
+            pass
+        out.append(h)
+        if len(out) >= _ARGV_HOSTS_MAX:
+            break
+    return out
+
+
+HOST_TTL_S, HOST_FAIL_TTL_S = 600.0, 300.0
+_HOST_CACHE_MAX = 4096
+_HOST_WANT = queue.Queue(maxsize=256)   # names waiting for the lookup thread
+_HOST_CACHE = {}          # name -> (frozenset of addresses, expiry on time.monotonic())
+_host_pending = set()
+_host_stats = {'resolved': 0, 'failed': 0, 'dropped': 0}
+_host_getaddrinfo = socket.getaddrinfo     # the one blocking call, on the worker thread
+
+
+def _want_host(name):
+    """Queue `name` for the lookup thread, unless it is fresh in the cache or
+    already queued. Never blocks: a full queue drops the name, counted in
+    `_host_stats`, and it can be asked for again later."""
+    hit = _HOST_CACHE.get(name)
+    if (hit is not None and hit[1] > time.monotonic()) or name in _host_pending:
+        return
+    _host_pending.add(name)
+    try:
+        _HOST_WANT.put_nowait(name)
+    except queue.Full:
+        _host_pending.discard(name)
+        _host_stats['dropped'] += 1
+
+
+def _resolve_host(name):
+    """One lookup, as the worker thread does it. A failure is cached too, for
+    less long, so a dead name is not looked up on every exec that mentions it."""
+    try:
+        ips = set()
+        for _f, _t, _p, _c, sa in _host_getaddrinfo(name, None, 0, socket.SOCK_STREAM):
+            try:
+                a = ipaddress.ip_address(sa[0].split('%', 1)[0])
+            except ValueError:
+                continue
+            ips.add(str(getattr(a, 'ipv4_mapped', None) or a))
+        ttl = HOST_TTL_S
+        _host_stats['resolved'] += 1
+    except Exception:
+        ips, ttl = set(), HOST_FAIL_TTL_S
+        _host_stats['failed'] += 1
+    if name not in _HOST_CACHE and len(_HOST_CACHE) >= _HOST_CACHE_MAX:
+        _HOST_CACHE.pop(next(iter(_HOST_CACHE)), None)     # the oldest
+    _HOST_CACHE[name] = (frozenset(ips), time.monotonic() + ttl)
+    _host_pending.discard(name)
+
+
+def _host_ips(name):
+    """The addresses `name` resolved to, set() if it did not, None if unknown."""
+    hit = _HOST_CACHE.get(name)
+    return set(hit[0]) if hit is not None else None
+
+
+def _host_worker():
+    while True:
+        _resolve_host(_HOST_WANT.get())
+
+
+def _ask_hosts(m):
+    """Queue the names m's argv gives, for a process that will be reported.
+    Not callable while seeding: actor_of() memoizes, and a parent not ingested
+    yet would pin the child as unattributed."""
+    if not WANT_ARGV_HOSTS:
+        return
+    names = _argv_hostnames(m.get('args'), _command_of(m))
+    if names and actor_of(m)[0] is not None:
+        for n in names:
+            _want_host(n)
+
+
+def _hosts_for(m):
+    """{address: name} for the names m's argv gives, from what is resolved."""
+    if not WANT_ARGV_HOSTS:
+        return {}
+    out = {}
+    for name in _argv_hostnames(m.get('args'), _command_of(m)):
+        for ip in _host_ips(name) or ():
+            out.setdefault(ip, name)
+    return out
+
+
+def _endpoint_list(agg, hosts=None):
+    """{endpoint: (tx, rx, calls)} -> (entries, unattributed, overflow, n).
+
+    Entries are sorted by bytes and cut at NET_ENDPOINTS_MAX; whatever is past
+    the cut is summed into `overflow`, so the list's totals still add up. `n` is
+    the true number of distinct endpoints."""
+    un = [0, 0, 0]
+    rows = []
+    for (proto, addr, port, inbound), (tx, rx, calls) in agg.items():
+        if addr is None:
+            un[0] += tx
+            un[1] += rx
+            un[2] += calls
+            continue
+        rows.append({'proto': proto, 'addr': addr, 'port': port,
+                     'host': (hosts or {}).get(addr), 'inbound': inbound,
+                     'external': is_external_ip(addr), 'provider': _provider(addr),
+                     'tx_bytes': tx, 'rx_bytes': rx, 'calls': calls})
+    rows.sort(key=lambda e: (-(e['tx_bytes'] + e['rx_bytes']), -e['calls'],
+                             e['proto'], e['addr'], e['port']))
+    cap = max(0, NET_ENDPOINTS_MAX)
+    rest = rows[cap:]
+    over = ({'n': len(rest), 'tx_bytes': sum(e['tx_bytes'] for e in rest),
+             'rx_bytes': sum(e['rx_bytes'] for e in rest),
+             'calls': sum(e['calls'] for e in rest)} if rest else None)
+    unat = {'tx_bytes': un[0], 'rx_bytes': un[1], 'calls': un[2]} if any(un) else None
+    return rows[:cap], unat, over, len(rows)
+
+
+def _net_endpoints_block(m, net_tx=None, net_rx=None):
+    """The `net_endpoints` field of an exit/truncated record.
+
+    None when the netpeer blocks did not load, or for a process with no network
+    I/O at all -- the rule `conns` follows, for the same width reason.
+    `net_tx`/`net_rx` are the process's netbytes totals: the same probe feeds
+    both tables, so any excess over this list is bytes the endpoint table missed
+    (full, or the call was already in flight at attach), reported as
+    `unaccounted` rather than left for a reader to discover."""
+    if not (NETPEER_BLOCKS & FEATURES):
+        return None
+    agg = _netp_lifetime(m)
+    if not agg and not (net_tx or net_rx):
+        return None
+    eps, unat, over, n = _endpoint_list(agg, _hosts_for(m))
+    out = {'n': n, 'in_series': bool(m['in_series']), 'endpoints': eps,
+           'unattributed': unat}
+    if over:
+        out['overflow'] = over
+    miss_tx = max(0, net_tx - sum(v[0] for v in agg.values())) if net_tx is not None else 0
+    miss_rx = max(0, net_rx - sum(v[1] for v in agg.values())) if net_rx is not None else 0
+    if miss_tx or miss_rx:
+        out['unaccounted'] = {'tx_bytes': miss_tx, 'rx_bytes': miss_rx}
+    return out
+
+
+def _start_epoch_of(m):
+    if m.get('exec_ktime') is not None and BTIME:
+        return BTIME + m['exec_ktime'] / 1e9
+    return m.get('start_ep')
+
+
+def _emit_netio(m, actor, attribution, reason, now):
+    """One `netio` record: what each endpoint moved since this process's previous
+    one. Returns False, writing nothing, when there is nothing new."""
+    life = _netp_lifetime(m)
+    rep = m['netp_rep'] or {}
+    delta = {}
+    for ek, (tx, rx, calls) in life.items():
+        r = rep.get(ek, (0, 0, 0))
+        d = (tx - r[0], rx - r[1], calls - r[2])
+        if d[0] > 0 or d[1] > 0 or d[2] > 0:
+            delta[ek] = d
+    if not delta:
+        return False
+    since = m['netio_ts'] or max(_start_epoch_of(m) or 0.0, _COLLECTOR_START)
+    eps, unat, over, _n = _endpoint_list(delta, _hosts_for(m))
+    rec = _envelope('netio')
+    rec.update(_base_identity(m, actor, attribution))
+    rec.update({'reason': reason, 'interval_s': round(now - since, 1),
+                'endpoints': eps, 'unattributed': unat})
+    if over:
+        rec['overflow'] = over
+    writer.write(rec)
+    m['netp_rep'] = {ek: tuple(v) for ek, v in life.items()}
+    m['in_series'] = True
+    m['netio_ts'] = now
+    _netio_stats['records'] += 1
+    return True
+
+
+def netio_tick(now=None):
+    """The series: one `netio` record per live, tracked process that moved bytes
+    since its previous one. Call after netpeer_read(). Returns the number
+    written, or None when the series is off or there is no endpoint table."""
+    if _netp_tab is None or not WANT_NETIO or not (NETPEER_BLOCKS & FEATURES):
+        return None
+    now = time.time() if now is None else now
+    n = 0
+    for m in list(proc.values()):
+        if m['exited'] or not m['netp_k']:
+            continue
+        actor, attribution = actor_of(m)
+        if actor is not None and _emit_netio(m, actor, attribution, 'tick', now):
+            n += 1
+    return n
+
+
+def netio_final_live(now=None):
+    """At stop: the remainder for each live process already in the series, so the
+    series ends where the `truncated` records do."""
+    if _netp_tab is None or not WANT_NETIO:
+        return 0
+    now = time.time() if now is None else now
+    n = 0
+    for m in list(proc.values()):
+        if m['exited'] or not m['in_series']:
+            continue
+        actor, attribution = actor_of(m)
+        if actor is not None and _emit_netio(m, actor, attribution, 'stop', now):
+            n += 1
+    return n
+
+
+def _read_netp_drop():
+    """{calls, tx_bytes, rx_bytes} that found the endpoint table full since start,
+    or None without a table."""
+    t = _netp_drop_tab
+    if t is None:
+        return None
+    try:
+        return {'calls': int(t[0].value), 'tx_bytes': int(t[1].value),
+                'rx_bytes': int(t[2].value)}
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -2672,7 +3533,7 @@ def residency_tick(b=None):
         if m.get('is_agent') and is_autonomous(m.get('args')):
             bt['autonomous'] += 1
         tr = trees.setdefault(key, {'n_procs': 0, 'threads': 0, 'rss_mb': 0.0, 'cpu_s': 0.0,
-                                    'd_state': 0, 'max_depth': 0, 'comms': {},
+                                    'd_state': 0, 'max_depth': 0, 'commands': {},
                                     'agent_types': set(), 'frames': {},
                                     'states': {}, 'procs': []})
         tr['n_procs'] += 1
@@ -2682,15 +3543,15 @@ def residency_tick(b=None):
         tr['d_state'] += 1 if in_d else 0
         tr['max_depth'] = max(tr['max_depth'], m.get('depth') or 0)
         tr['agent_types'].add(m.get('agent_type'))
-        c = m.get('comm') or '?'
-        tr['comms'][c] = tr['comms'].get(c, 0) + 1
+        c = _command_of(m) or '?'
+        tr['commands'][c] = tr['commands'].get(c, 0) + 1
         # item 10: zombie census. state_z_frac was lost at the poller cutover --
         # an exit-triggered collector cannot see a zombie, because a zombie has
         # not exited. The tick can, and st['state'] is already read here.
         tr['states'][st['state']] = tr['states'].get(st['state'], 0) + 1
         # item 9: the row itself, so a live view can name the process burning CPU
         # right now. Every field is already in hand -- selection only, no syscall.
-        tr['procs'].append({'pid': m['pid'], 'comm': c,
+        tr['procs'].append({'pid': m['pid'], 'command': c,
                             'rss_mb': round(rss_kb / 1024.0, 1),
                             'cpu_s': round(cpu_s, 2), 'cpu_delta_s': dcpu,
                             'state': st['state'], 'threads': st['threads']})
@@ -2716,7 +3577,7 @@ def residency_tick(b=None):
         if WANT_CWD:
             c = read_cwd(apid)               # roots are long-lived and may have chdir'd
             if c:
-                root['cwd'], root['cwd_source'] = c, 'proc'
+                root['cwd'] = c
         rec = _envelope('residency')
         rec.update(_base_identity(root, 'agent', 'ancestry'))
         rec.update({
@@ -2727,7 +3588,7 @@ def residency_tick(b=None):
             'rss_mb': round(tr['rss_mb'], 1), 'cpu_s': round(tr['cpu_s'], 2),
             'd_state': tr['d_state'], 'max_depth': tr['max_depth'],
             'agent_types': sorted(t for t in tr['agent_types'] if t),
-            'by_comm': _top_n(tr['comms'], 15),
+            'by_command': _top_n(tr['commands'], 15),
             'd_stack': _top_n(tr['frames'], 5, or_none=True),
             # item 10: R/S/D/Z/T for this tree's live processes. Zombies are
             # invisible to an exit-triggered collector by construction.
@@ -2761,6 +3622,15 @@ def residency_tick(b=None):
         writer.write(_r)
     n_conn = conn['n'] if conn is not None else None
 
+    # After the walk above, so a process it just found gone is not ticked.
+    n_netp = n_netio = None
+    try:
+        n_netp = netpeer_read()
+        if n_netp is not None:
+            n_netio = netio_tick(now)
+    except Exception:
+        pass
+
     _tot = _envelope('residency_totals')
     _tot.update({
         'interval_s': RESIDENCY_S, 'tracked_live': len(live), 'trees': len(trees),
@@ -2777,7 +3647,7 @@ def residency_tick(b=None):
         # item 6: what the actor filter threw away since the last tick, and the
         # node's own fork rate as the denominator for the agent share
         'dropped': {'n': _dropped['n'],
-                    'by_comm': _top_n(_dropped['comms'], 10)},
+                    'by_command': _top_n(_dropped['commands'], 10)},
         # Same rule: an empty map means "measured, none found"; null means the
         # tick did not run.
         'tcp_open_ext_by_actor3': (conn['by_actor3'] if conn is not None else None),
@@ -2793,10 +3663,18 @@ def residency_tick(b=None):
         'fork_total': fork_total, 'fork_rate': fork_rate,
         'd_stack_top': _top_n(global_frames, 10, or_none=True),
         'd_stacks_read': stacks_read,
+        # schema 7, all null (not 0) when no netpeer block loaded: the netio
+        # records this tick wrote, the endpoint table's occupancy, and the two
+        # cumulative loss counters -- calls that found the table full, and
+        # entries deleted without ever reaching a record
+        'netio_records': n_netio,
+        'netpeer_entries': n_netp,
+        'netpeer_full': _read_netp_drop(),
+        'netpeer_orphans': dict(_netp_orphans) if n_netp is not None else None,
     })
     writer.write(_tot)
     _dropped['n'] = 0
-    _dropped['comms'] = {}
+    _dropped['commands'] = {}
 
 
 def gc():
@@ -2887,6 +3765,7 @@ def flush_live(b, features):
             # traffic matters most -- would have every connection it made dropped
             # on the floor now that they no longer emit records of their own.
             'conns': _conns_block(m),
+            'net_endpoints': _net_endpoints_block(m, tx, rx),
             'exit_code': None, 'signal': None, 'core_dumped': None,
             'samples': None,
         })
@@ -2929,7 +3808,7 @@ def _self_cgroup():
 
 
 def main():
-    global FEATURES, writer, _cidr_index
+    global FEATURES, writer, _cidr_index, _netp_tab, _netp_drop_tab, _COLLECTOR_START
     argv = sys.argv[1:]
     try:
         from bcc import BPF
@@ -2961,9 +3840,15 @@ def main():
         except Exception:
             _cidr_index = None
 
+    if WANT_ARGV_HOSTS:
+        # before seeding, so names in the argv of processes already running resolve
+        threading.Thread(target=_host_worker, name='ebpfm-hosts', daemon=True).start()
     seed_existing()
     b, FEATURES, rejected = probe_features(BPF)
     feats = FEATURES
+    _COLLECTOR_START = time.time()
+    if NETPEER_BLOCKS & feats:
+        _netp_tab, _netp_drop_tab = b['netp'], b['netp_drop']
 
     lost = {'events': 0, 'argv_events': 0, 'write_events': 0, 'tcp_events': 0}
     # Events DECODED, not records written. The drain touches every fork/exec/exit
@@ -3033,6 +3918,11 @@ def main():
                        'keep_timers': KEEP_TIMERS, 'include_roots': INCLUDE_ROOTS,
                        'tcp_all': TCP_ALL, 'conn_all': CONN_ALL,
                        'conns_topn': CONNS_TOPN, 'exit_hold_ms': EXIT_HOLD_MS,
+                       'netpeer_max': NETPEER_MAX, 'net_endpoints_max': NET_ENDPOINTS_MAX,
+                       'netio': WANT_NETIO, 'argv_hosts': WANT_ARGV_HOSTS,
+                       # compiled into the endpoint probe; decides inbound for a
+                       # socket the tcp blocks did not see open
+                       'eph_range': list(EPH_RANGE),
                        'flush_mode': FLUSH_MODE,
                        'conn_untracked': CONN_UNTRACKED, 'cwd': WANT_CWD,
                        'cwd_always': CWD_ALWAYS, 'min_uid': MIN_UID,
@@ -3047,9 +3937,10 @@ def main():
         if v == '0':
             sys.stderr.write('warning: %s=0 — the dstate_*/blkio_* fields will read 0 '
                              '(run `ebpfm.sh bootstrap` to set it)\n' % k)
-    sys.stderr.write('%s running on %s -> %s/<date>/%s.jsonl (features: %s)\n'
-                     % (COLLECTOR, HOSTNAME, OUTPUT_DIR, HOSTNAME,
-                        ','.join(sorted(feats)) or 'base'))
+    # `ebpfm.sh overhead` waits for "running on" in this line
+    sys.stderr.write('ebpfm running on %s -> %s/<date>/%s.{snapshot,exits}.jsonl '
+                     '(features: %s)\n'
+                     % (HOSTNAME, OUTPUT_DIR, HOSTNAME, ','.join(sorted(feats)) or 'base'))
 
     start = time.time()
     last_gc = last_res = start
@@ -3088,6 +3979,13 @@ def main():
         drain_exits(final=True)
     except Exception:
         pass
+    # The last read of the endpoint table, then the series' remainder for every
+    # process still alive, so the series ends where the truncated records do.
+    try:
+        netpeer_read()
+        netio_final_live()
+    except Exception:
+        pass
     n_trunc = 0
     if FLUSH_ON_EXIT:
         try:
@@ -3108,7 +4006,18 @@ def main():
                      # folded connections whose owning process never produced a
                      # record; the acceptance gate for the schema-6 fold
                      'conns_dropped': _conn_dropped['n'],
-                     'conns_dropped_comms': _top_n(_conn_dropped['comms'], 10, or_none=True),
+                     'conns_dropped_commands': _top_n(_conn_dropped['commands'], 10,
+                                                      or_none=True),
+                     # schema 7, null without a netpeer block: the run's netio
+                     # records, and the endpoint table's two loss counters
+                     'netio_records': (_netio_stats['records']
+                                       if _netp_tab is not None else None),
+                     'netpeer_full': _read_netp_drop(),
+                     'netpeer_orphans': (dict(_netp_orphans)
+                                         if _netp_tab is not None else None),
+                     # argv hostname lookups: done, failed, and dropped on a full
+                     # queue (each a `host` that may be missing)
+                     'argv_hosts': dict(_host_stats) if WANT_ARGV_HOSTS else None,
                      'reason': 'duration' if DURATION and not _stop else 'signal'})
     writer.write(stop_rec)
     if any(lost.values()):

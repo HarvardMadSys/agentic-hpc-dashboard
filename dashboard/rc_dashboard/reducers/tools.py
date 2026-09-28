@@ -57,7 +57,7 @@ class ToolMixReducer(Reducer):
     def feed(self, rec):
         sid = rec.get("_sid")
         ec = rec.get("_eff") or ""
-        comm = rec.get("comm") or ""
+        comm = rec.get("_command") or ""
         pid, ppid = rec.get("pid"), rec.get("ppid")
         cls = rec["_a3"]
         cpu = rec.get("cpu_s") or 0.0

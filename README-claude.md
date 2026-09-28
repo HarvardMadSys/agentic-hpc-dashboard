@@ -11,14 +11,14 @@ Two halves, in this order:
 | [`dashboard/`](dashboard/) | `rc_dashboard` — FastAPI service that tails that JSONL, keeps rolling 24 h aggregates, and pushes them to a React page over a WebSocket | unprivileged | HTTP + WebSocket on `:8080` |
 
 The collector runs on each login node; the dashboard reads the directory the collector
-writes. They are coupled only by the on-disk JSONL schema (`SCHEMA_VERSION = 6`), so the
+writes. They are coupled only by the on-disk JSONL schema (`SCHEMA_VERSION = 7`), so the
 dashboard can read a feed captured months ago, or a fleet's worth of hosts at once, and
 nothing needs to be running for it to start.
 
 The eBPF tier splits each day in two: `<host>.exits.jsonl` for the per-process terminal
 records, whose rate is the node's fork rate and which dominate the volume, and
-`<host>.snapshot.jsonl` for the residency census, connections, submits and the run's own
-meta/stop bookends. Records are unchanged either way — each carries its own `host`, and
+`<host>.snapshot.jsonl` for the residency census, connections, per-tick network bytes by
+endpoint, submits and the run's own meta/stop bookends. Records are unchanged either way — each carries its own `host`, and
 the dashboard globs the day directory — so this is a filing decision, not a schema one.
 
 ```
@@ -106,7 +106,7 @@ same rules:
 ## Tests
 
 ```bash
-cd collector && python3 -m unittest discover -s tests -q    # 72 tests, no root, no BPF needed
+cd collector && python3 -m unittest discover -s tests -q    # 276 tests, no root, no BPF needed
 cd dashboard && uv run python -m unittest discover -s tests -q   # ingest: restarts, the hand-off, backfill order
 cd dashboard/web && npm run typecheck && npm run check:no-random
 ```
@@ -119,11 +119,12 @@ still refer to sibling trees that are not vendored here (`collect/`, `analyze/`,
 collector has no `../` imports, and the dashboard resolves every feed path from config,
 env, or a probed candidate list.
 
-One legacy name survives deliberately. The collector folder was once `eBPF_marthen_new/`
-and is [`collector/`](collector/) here, but the JSONL envelope still stamps
-`collector = "ebpf_marthen_new"` — a wire value, so renaming it would split feeds captured
-before the change from those captured after. Nothing reads the field; it is provenance for
-whoever opens the data later.
+One legacy name survives only in old data. The collector folder was once
+`eBPF_marthen_new/` and is [`collector/`](collector/) here, and through schema 6 every
+record's envelope stamped `collector = "ebpf_marthen_new"` and `source = "ebpf"`. Schema 7
+drops both: they were the same on every line, nothing read them, and the feed's own
+location already says where a record came from. Captures from before the change still
+carry them.
 
 ## Requirements
 

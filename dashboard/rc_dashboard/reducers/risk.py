@@ -153,7 +153,7 @@ class RiskReducer:
         user = rec.get("user")
         host = rec.get("host")
         cpu = rec.get("cpu_s") or 0.0
-        ec = rec.get("_eff") or rec.get("comm") or ""
+        ec = rec.get("_eff") or rec.get("_command") or ""
         args = rec.get("args") or ""
         self.total_events += 1
         self.total_cpu += cpu
@@ -319,10 +319,12 @@ class RiskReducer:
                              "this dashboard the leak. `instances` carries pid, "
                              "user, actor and tool so the exposure is actionable, "
                              "and deliberately NO argv.",
-                "undercount": "argv is captured up to EBPFM_ARGS_MAXLEN (2048 by "
-                              "default), so a credential beyond the cap is invisible. "
-                              "args_truncated is the share of records where that is "
-                              "possible, i.e. the floor on what could be missed.",
+                "undercount": "argv is captured up to the collector's in-kernel read "
+                              "(EBPFM_ARGV_KMAX, 4096 bytes by default), or less if "
+                              "EBPFM_ARGS_MAXLEN caps it, so a credential beyond the "
+                              "cut is invisible. args_truncated is the share of "
+                              "records where that is possible, i.e. the floor on "
+                              "what could be missed.",
             },
             "totals": {"events": self.total_events,
                        "cpu_s": round(self.total_cpu, 2)},

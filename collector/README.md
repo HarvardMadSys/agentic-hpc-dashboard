@@ -13,7 +13,7 @@ Only half of what a login node needs is a kernel event, so only half needs root:
 | Tier | Privilege | What | Output |
 |---|---|---|---|
 | **node** | **unprivileged** | node health: load, memory, filesystem space, NFS per-mount RTT, interface counters, the D-state census, the process tree, per-user cgroup totals, boot time | `$EBPFM_NODE_OUTPUT_DIR/<date>/<host>.jsonl` |
-| **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` |
+| **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes and the endpoint each went to, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` |
 
 **eBPF cannot produce load average, memory totals, filesystem space or interface
 counters**, and it is not a process census (only *tracked* processes are emitted — see
@@ -146,6 +146,11 @@ would inflate them.
 | `tcp_sendmsg` | 268 | 321 |
 | `sys_enter_write` | 597 | 204 |
 | `tcp_recvmsg` | 4 323 | 182 |
+
+**Schema 7 is not in this table.** It adds an entry probe to each send/recv function
+and more work to each return probe (see **Schema 7** below), which puts cost on
+`tcp_recvmsg`, the hottest of these. It has not been measured yet: run `overhead`
+again before relying on it on a busy node.
 
 The expensive three are the process-lifecycle probes, which read many task fields and
 (at exec) copy argv. **The hot paths are the cheap ones** — `tcp_recvmsg` at 182 ns and
@@ -281,18 +286,18 @@ This section is the **eBPF tier**. For the node tier's 36-key snapshot schema se
 same schema the login poller has always written, which is what keeps every existing
 `log/login` consumer working.
 
-`SCHEMA_VERSION = 6`, `collector = "ebpf_marthen_new"`. JSONL, one record per line,
+`SCHEMA_VERSION = 7`. JSONL, one record per line,
 split across **two files per host per day**:
 
 | file | `event` | why separate |
 |---|---|---|
 | `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.jsonl` | `exit`, `truncated` | the per-process terminal records. Unbounded: the rate is the node's fork rate, highest exactly when the node is busiest, and on a build node this is essentially the whole file |
-| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.jsonl` | `meta`, `conn`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a moment. Small, bounded by the residency tick, and the part you want when asking "what was running" rather than "what ended" |
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.jsonl` | `meta`, `conn`, `netio`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a moment. Small, bounded by the residency tick, and the part you want when asking "what was running" rather than "what ended" |
 
 `stream_of()` in `ebpf_trace.py` is the single authority on the mapping; an event
 kind added without a decision there lands in `snapshot` rather than vanishing.
 
-The **record** schema is untouched by the split — `schema_version` stays 6. Every
+The split left the **record** schema untouched; it happened within schema 6. Every
 record is self-describing and carries its own `host`, so a consumer that globs
 `<date>/*.jsonl` sees exactly what the single file used to give it, and a feed
 captured before the split reads unchanged. Both files are created when the day
@@ -302,19 +307,162 @@ started".
 | `event` | When | Grain |
 |---|---|---|
 | `meta` | startup | resolved blocks, rejected blocks + compiler reason, sysctl state, kernel, BCC version |
-| `exit` | process exit | the main record: identity, CPU, RSS, I/O, D-state, net bytes, **`conns`** |
-| `conn` | residency tick | one per **standing external** socket: RTT, retransmits, bytes, idle |
+| `exit` | process exit | the main record: identity, CPU, RSS, I/O, D-state, net bytes, **`conns`**, **`net_endpoints`** |
+| `conn` | residency tick | one per **standing external** socket: `proto`, RTT, retransmits, bytes, idle |
+| `netio` | residency tick; a series process's exit; stop | one per process that moved bytes: bytes per endpoint since its previous `netio` |
 | `residency` | residency tick | one per live agent tree |
-| `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate` |
+| `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate`, the endpoint table's counters |
 | `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir` |
 | `truncated` | SIGTERM | one per live tracked process, with accumulated counters |
-| `stop` | shutdown | `records`, `flushes`, `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `conns_dropped`, `reason` |
+| `stop` | shutdown | `records`, `flushes`, `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason` |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
 `ts` is local, naive and second-granular — fine for reading one host's file, useless for
 ordering or binning records from seven hosts against each other. `meta` additionally
 carries `tz` and `boot_id`, without which a reader cannot convert `ts` at all or tell a DST
 shift from a clock jump.
+
+From schema 7, every record also carries **`collector_pid`**, the collector's own pid, so
+its own process tree can be filtered out: drop records whose `pid` or `ppid` equals it.
+A normal deployment never admits that tree, since it has no tty and no agent ancestry.
+But a capture started from a login shell (`sudo ./ebpfm.sh once`) inherits the tty and is
+tracked as a human, so the collector's own `truncated` record and its children's exits
+(`bpftool`, when it dumps BTF) would otherwise read as someone's work. The `ebpfm.sh` and
+`sudo` processes above it have pids of their own and are not covered by the rule. The
+field also tells two runs in one day's file apart.
+
+### Schema 7: network bytes by endpoint
+
+`net_tx_bytes`/`net_rx_bytes` said how much a process moved over the network, not
+where to. Schema 7 keeps those totals and adds the endpoint behind them, for TCP and
+UDP alike, so QUIC and DNS have a destination for the first time. TCP already had
+one in `conns.peers`, but only for connections opened after the collector attached,
+only the heaviest five, and only once the process exited.
+
+On `exit` and `truncated`, **`net_endpoints`** lists every endpoint of the process's
+life:
+
+```json
+"net_endpoints": {"n": 2, "in_series": true, "unattributed": null,
+  "endpoints": [
+    {"proto": "tcp", "addr": "140.82.112.3", "port": 443, "host": "github.com",
+     "inbound": false, "external": true, "provider": "github",
+     "tx_bytes": 139000, "rx_bytes": 880000, "calls": 412},
+    {"proto": "udp", "addr": "10.31.0.5", "port": 53, "host": null, "inbound": false,
+     "external": false, "provider": null, "tx_bytes": 80, "rx_bytes": 240, "calls": 4}]}
+```
+
+In the snapshot stream, **`netio`** is the time series: one record per process per
+residency tick, with the bytes each endpoint moved since that process's previous
+`netio` (`interval_s`) and the full identity block. A six-day agent's traffic
+therefore has a time axis instead of arriving as one total when it exits.
+
+The rules it keeps:
+
+- **Complete up to a cap, and the rest counted.** Sorted by bytes, up to
+  `EBPFM_NET_ENDPOINTS_MAX` (256); past that, an `overflow` object carries the count
+  and bytes. A day on madsys-gpu1 peaked at 52 for one process, and that was a VS
+  Code server whose inbound connections were still counted one per client port.
+- **`null`, not an empty block,** for a process with no network I/O, as `conns`.
+- **Loss is stated.** Bytes with no address anywhere (a `recv()` on an unconnected
+  UDP socket) are in `unattributed`. Bytes the per-process totals have but the
+  endpoint table missed (table full, or the call was in flight at attach) are
+  `unaccounted`. `residency_totals` and `stop` carry `netpeer_full`, the calls and
+  bytes that found the table full, and `netpeer_orphans`, the entries deleted before
+  they reached a record.
+- **One consumer rule for the time series.** A process joins the series at its first
+  tick with traffic. From then on its exit (or the stop) writes a last `netio`
+  (`reason: "exit"`/`"stop"`) for the remainder, and its record says
+  `in_series: true`. So the series is every `netio` record, plus the
+  `exit`/`truncated` records with `in_series: false` placed at their exit time. That
+  second group is exact to within one tick, since a process with traffic before a
+  tick would have joined, and `in_series` is what stops a consumer counting the same
+  bytes twice.
+
+How the endpoint is found:
+
+- **Where it comes from.** An entry probe on each send/recv function records the
+  socket and `msghdr` for the thread; the return probe that already counted the bytes
+  reads the peer and adds them to a BPF hash keyed by (pid, protocol, direction,
+  address, port). TCP and connected UDP use the socket's peer; `sendto`/`recvfrom` on
+  an unconnected UDP socket use `msg->msg_name`.
+- **Direction.** Outbound traffic is keyed by the remote port, inbound by the local
+  one: a client's port is random, and keying on it would make one entry per
+  connection. Direction comes from the TCP birth map when it saw the socket open.
+  Otherwise the port range decides (`ip_local_port_range`, compiled in and recorded as
+  `meta.config.eph_range`): a remote end on an ephemeral port and a local end off one
+  is inbound. That guess covers sockets opened before the collector started, all
+  UDP, and inbound TCP where `tcp_accept` does not load (4.18).
+- **IPv6 UDP.** `udpv6_prot` has its own `udpv6_sendmsg`/`udpv6_recvmsg`, which the
+  schema-6 probes never saw: IPv6 UDP went uncounted, and on a dual-stack socket to
+  an IPv4 peer sends were counted but receives were not. `netbytes_udp6` probes both,
+  so **`net_tx_bytes`/`net_rx_bytes` cover more from schema 7 on**, which is one
+  reason for the bump. The v4-mapped send path, where `udpv6_sendmsg` calls
+  `udp_sendmsg` on the same socket, is counted once.
+- **Read, never deleted while alive.** Userspace reads the whole table each tick and
+  before it writes a networked process's record. A live process's entries are never
+  deleted, because a delete would race the kernel's increments and 4.18 has no atomic
+  read-and-delete; an exited process's are.
+- **Names come from argv, never from traffic.** `host` is set only when the process's
+  own command line names the endpoint (see below). Nothing parses DNS answers, TLS or
+  HTTP. `provider` is still the existing CIDR bucket, and behind a proxy the endpoint is
+  the proxy.
+
+**`host` on an endpoint** is a name from the process's own command line: every URL's
+host (`curl https://…`, `pip --index-url=…`, `git clone https://…`), and the destination
+of `ssh`/`sftp`/`scp`/`rsync`, which covers the `ssh` that git runs for an ssh remote.
+Those names are resolved on a background thread and cached, and never on the event path.
+An endpoint takes a name only when its address is among the addresses the name resolves
+to, so `host` is null rather than a guess when:
+
+- the name isn't in argv, as with an agent's own API calls;
+- the lookup hasn't finished yet;
+- the name answered with other addresses, as a CDN that rotates them can.
+
+The collector takes only the hostname, never a URL's credentials. It skips address
+literals and `localhost`, and never treats a file name or an email address as a
+hostname. It looks names up only for processes it reports anyway. `stop.argv_hosts`
+counts lookups resolved, failed, and dropped because the queue was full; each dropped
+one may be a missing `host`. `EBPFM_ARGV_HOSTS=0` turns this off.
+
+`conn` records gain **`proto`**. The netlink dump asks for TCP and UDP, and a
+connected UDP socket reports `ESTABLISHED`, so a DHCP client's socket
+(128.103.1.210:67 on madsys-gpu1) read as a standing TCP connection with no pid,
+1 439 times a day. A UDP row also no longer joins the TCP-only birth map.
+
+The envelope gains **`collector_pid`** (see above), for filtering the collector's own
+process tree out, and loses **`source`** and **`collector`**. Those were the constants
+`"ebpf"` and `"ebpf_marthen_new"` on every line, and nothing read them. Pre-7 captures still
+carry them.
+
+**`args` is no longer capped by default** (`EBPFM_ARGS_MAXLEN=0`; it was 2048). What limits
+it now is how much argv the collector can read: the in-kernel read at exec stops at
+`EBPFM_ARGV_KMAX` (4096 bytes), while a `/proc` read, used for processes seeded at
+startup, is whole. `args_truncated` now also reports the in-kernel cut. Before, it
+compared only against the emit cap, so with no cap a clipped command line would have
+read as complete. The cost is width: identity, and so `args`, rides on every record
+about a process, including each tick's `residency`, `conn` and `netio`, so one long
+command line is repeated all day. Set a cap to bound that.
+
+**`command` replaces `comm`.** The kernel's comm stops at 15 characters, so
+`codex-linux-sandbox` read as `codex-linux-san` and a VS Code CLI as `code-2242ebbb54`.
+`command` is the comm, completed from argv when it hit that limit: the first token
+whose basename extends it, which is argv[0] for a binary and the script path for a
+script run through its interpreter. On one day of madsys-gpu1 data, most of the 115
+records with a 15-character comm completed this way. What exists nowhere longer stays
+as the kernel reported it: a thread name set with `prctl`, or the loader run with no
+arguments. Keys named after it follow: `by_command` on `residency`, `top_procs[].command`,
+`dropped.by_command` and `stop.conns_dropped_commands`. `submit.tool` keeps its name and
+takes the whole command. One latent bug goes with it. `SANDBOX_COMMS` lists
+`codex-linux-sandbox`, and matched against the cut comm that entry could never fire;
+it is now matched on `command`.
+
+**`cwd_source` is gone.** Whether `cwd` was read or inherited was not worth a field on
+every record once the value itself is there.
+
+The feature cache now records the block list it was probed against and is ignored
+when that list changes. Without that, a host that ran an older collector would load
+its cached set and never try the new blocks.
 
 ### Schema 6: connections fold into the process
 
@@ -352,7 +500,7 @@ Four rules it keeps:
   so it can exceed the process's own `duration_s`. It is not a rate base.
 - **Loss is counted, never silent.** A process that folded connections but never produced
   a record — unattributable, or its exit event was lost — is counted at GC into
-  `stop.conns_dropped` / `conns_dropped_comms`. That pair is the acceptance gate for this
+  `stop.conns_dropped` / `conns_dropped_commands`. That pair is the acceptance gate for this
   change.
 
 #### The exit record is now held for 250 ms
@@ -391,7 +539,7 @@ that made it worth keeping. **A process that talked to the network is never a no
 | `approval_mode`, `approval_src` | identity | unattended execution, split from confinement. `autonomous` is unchanged |
 | `env_flags` | identity | agent env variable **NAMES ONLY**, allow-listed by prefix. Read once per agent root |
 | `session_uuid` | identity | survives a collector restart, unlike the pid-based `session_key` |
-| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown |
+| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`) or an emit cap (`EBPFM_ARGS_MAXLEN`) cut it |
 | `partition`, `gpus`, `array`, `time_limit_s`, `mem`, `cpus_per_task`, `req_src` | `submit` | the resource request, parsed from the tool's argv |
 | `io` | `truncated` | processes alive at SIGTERM carried no I/O at all before |
 | `top_procs`, `state_counts`, `tcp_open_ext`, `tcp_open` | `residency` | live per-process rows, the zombie census, standing external connections per tree |
@@ -423,7 +571,7 @@ the field means; not agent sandboxing. Read `sandbox_src`.
 A coverage audit found 40 observable login-node signals: 15 already read, 17 belonging to
 the node snapshot by nature, and **8 the collector could read and did not**. All eight:
 
-**1. Working directory** — `cwd`, `cwd_source` on identity; `work_dir` on `submit` (named
+**1. Working directory** — `cwd` on identity; `work_dir` on `submit` (named
 for the `groupby("work_dir")` join in five `analyze/` scripts). One
 `os.readlink('/proc/<pid>/cwd')` — **readlink only, never stat**. `os.stat`,
 `os.path.exists`, `os.path.realpath` and listing the directory all follow the link onto
@@ -454,6 +602,8 @@ filtering `sched_switch` — and is the path for older kernels. Prefers `task`.
   - **Per-process totals, all protocols.** kretprobes on `tcp_sendmsg`/`tcp_recvmsg`/
     `udp_sendmsg`/`udp_recvmsg` → `net_tx_bytes`, `net_rx_bytes`, `net_calls`. **This is
     what makes QUIC visible.** Unix-socket MCP traffic is excluded by family.
+    Schema 7 adds `udpv6_sendmsg`/`udpv6_recvmsg` and the endpoint of every call:
+    see **Schema 7** above.
     *Caveat:* `sendfile` and `splice` bypass the socket layer.
   - **Close-record enrichment.** `connect_ms` and `established` come free from the same
     tracepoint: `SYN_SENT`→`ESTABLISHED` is connect latency, and `SYN_SENT`→`CLOSE`
@@ -557,6 +707,8 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 
 ### Environment
 
+`EBPFM_ARGS_MAXLEN` (0 = no cap on emitted `args`) · `EBPFM_ARGV_KMAX` (4096; bytes of
+argv read in-kernel at exec, the real limit when uncapped) ·
 `EBPFM_SANDBOX` (on) · `EBPFM_SANDBOX_ALWAYS` (off; read on every exec, for validation) ·
 `EBPFM_ENV_PREFIXES` (`CLAUDE_,CODEX_,CURSOR_,ANTHROPIC_`) · `EBPFM_RESIDENCY_TOPN` (5) ·
 `EBPFM_OUTPUT_DIR` · `EBPFM_DURATION` · `EBPFM_RESIDENCY_S` · `EBPFM_FLUSH` ·
@@ -564,6 +716,9 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 `EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_TCP_ALL` ·
 `EBPFM_CONNS_TOPN` (5) · `EBPFM_EXIT_HOLD_MS` (250; `0` = emit exit records inline and
 lose the connections that close after the exit event) ·
+`EBPFM_NETPEER_MAX` (16384; the kernel endpoint table) · `EBPFM_NET_ENDPOINTS_MAX`
+(256; endpoints listed per record) · `EBPFM_NETIO` (on; `0` = no `netio` series, keep
+`net_endpoints`) · `EBPFM_ARGV_HOSTS` (on; `0` = no `host` names from argv) ·
 `EBPFM_FLUSH_MODE` (`poll`; `record` = flush every record, the schema-5 behaviour —
 note this is NOT `EBPFM_FLUSH`, which is about flushing live *processes* at stop) ·
 `EBPFM_MIN_CPU` /
@@ -576,7 +731,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 150 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 276 tests, no root, no BPF needed
 ```
 
 Pure helpers, the BTF member walk (including bpftool's literal `(anon)` rendering for
@@ -584,12 +739,21 @@ unnamed union members), each BPF block compiled alone, ancestry, attribution pre
 (ancestry beats tty beats uid), tty **non**-inheritance, cwd inheritance, thread-clone
 skip, pid recycling, and the netlink parser against a captured response blob.
 
+The schema-7 network section is also **compiled and run**: `build_net_c()` is built with
+the host C compiler against `tests/bpf_mock.h` (map semantics, `bpf_probe_read` as a
+copy), and its probes are driven with fake sockets laid out at the BTF offsets. That
+covers the entry/return hand-off, the v4-mapped double count, byte order, direction
+and a full table. Those tests are skipped without a C compiler. It is not BPF:
+whether the program loads and attaches is still only shown by `features` on a real
+kernel, and the `netpeer_hdr` variant, which needs kernel headers, is only checked
+as text.
+
 ## Kernel support
 
 Developed against **6.8** (Ubuntu 24.04) and **6.17**. FASRC login nodes run **4.18**,
-where `dstate_task` (needs 5.19+) and `tcp_accept` (needs BTF) will be rejected;
-`dstate_stat` is the 4.18 path for data point 2, which is why both blocks exist and are
-cross-checked. Run `features` on the target kernel before trusting any field, and
+where `dstate_task` (needs 5.19+), `tcp_accept` and `netpeer_btf` (need BTF) will be
+rejected; `dstate_stat` is the 4.18 path for data point 2, which is why both blocks
+exist and are cross-checked, and `netpeer_hdr` is the 4.18 path for the endpoint table. Run `features` on the target kernel before trusting any field, and
 `EBPFM_PROBE_VERBOSE=1` to see why a block was rejected.
 
 ## Relationship to the other collectors

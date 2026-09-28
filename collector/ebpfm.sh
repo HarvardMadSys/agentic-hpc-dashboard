@@ -324,11 +324,15 @@ cmd_check() {
 
     printf -- '-- kprobe symbols\n'
     local s
-    for s in tcp_sendmsg tcp_recvmsg udp_sendmsg udp_recvmsg inet_csk_accept; do
+    for s in tcp_sendmsg tcp_recvmsg udp_sendmsg udp_recvmsg udpv6_sendmsg udpv6_recvmsg inet_csk_accept; do
         if grep -qwE " $s\$| $s " /proc/kallsyms 2>/dev/null || grep -qw "$s" /proc/kallsyms 2>/dev/null; then
             ok "$s" "in kallsyms"
         else
-            warn "$s" "absent -> netbytes or tcp_accept dropped"
+            case "$s" in
+                udpv6_*)         warn "$s" "absent -> netbytes_udp6 dropped (IPv6 UDP uncounted)" ;;
+                inet_csk_accept) warn "$s" "absent -> tcp_accept dropped" ;;
+                *)               warn "$s" "absent -> netbytes and netpeer dropped" ;;
+            esac
         fi
     done
 

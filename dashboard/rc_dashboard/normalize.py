@@ -1,6 +1,6 @@
 """Turn a raw collector record into the shape the reducers consume.
 
-The contract is SCHEMA_VERSION 6.  A thin shim keeps the pre-v4 capture usable as
+The contract is SCHEMA_VERSION 7.  A thin shim keeps the pre-v4 capture usable as
 an offline test input, but the shim's job is to make older records *honest*, not
 to pretend they are current: a field the old collector could not measure must
 arrive as None, never as 0.
@@ -10,6 +10,17 @@ as the `conns` block on the owning process's `exit`/`truncated` record. Nothing
 here reads either event, so the gates below are all `sv >= 5` / `sv < 4` and a v6
 record needs no shim -- but a capture that mixes 5 and 6 will have connection
 data in two different shapes, which `schema_versions` is what makes visible.
+
+Schema 7 adds `net_endpoints` (bytes per endpoint) to `exit`/`truncated`, a
+`netio` event (the same per tick), `proto` on `conn`, and `collector_pid` in the
+envelope (the collector's own pid, for dropping its own process tree), and drops
+the envelope's constant `source`/`collector` and `cwd_source`. Nothing here reads
+any of them. It also renames `comm` to `command`, whole rather than cut at 15
+characters; `_command` below is the one key readers use, taking whichever the
+record has. It also widens `net_tx_bytes` and
+`net_rx_bytes` to include IPv6 UDP, which the v6 collector did not count: across
+a 6/7 boundary those totals are not like for like, and `schema_versions` again is
+what shows the boundary is there.
 
 Three rules this module exists to enforce:
 
@@ -307,10 +318,13 @@ class Normalizer:
 
         rec["_sv"] = sv
         rec["_a3"] = a3
+        # v7 names the executable `command`, whole; v6 and older had `comm`, cut
+        # at 15 characters. Readers use this and never either raw key.
+        rec["_command"] = rec.get("command") or rec.get("comm")
 
         if ev in ("exit", "truncated"):
             self._gate_nulls(rec, sv)
-            comm = rec.get("comm") or ""
+            comm = rec["_command"] or ""
             args = rec.get("args") or ""
             ec = self.effective_comm(comm, args)
             rec["_eff"] = ec

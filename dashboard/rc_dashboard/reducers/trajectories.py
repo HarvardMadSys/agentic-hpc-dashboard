@@ -73,7 +73,7 @@ class Session:
         self.cpu += rec.get("cpu_s") or 0.0
         if len(self.pids) < 8 and rec.get("pid") is not None:
             self.pids.append(rec["pid"])
-        t = rec.get("_eff") or rec.get("comm") or "(empty)"
+        t = rec.get("_eff") or rec.get("_command") or "(empty)"
         self.tools.add(t)
         _rle_push(self.chain, t, MAX_SEQ_RUNS, self)
         _rle_push(self.purpose, rec.get("_purpose") or "other", MAX_SEQ_RUNS, None)

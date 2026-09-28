@@ -92,7 +92,7 @@ class ResourceReducer:
             d["n_with"] += 1
             if dw > 0:
                 d["events"] += 1
-                tool = rec.get("_eff") or rec.get("comm") or "(empty)"
+                tool = rec.get("_eff") or rec.get("_command") or "(empty)"
                 s = self.stall_by_tool[tool]
                 s["n"] += 1
                 s["wait_s"] += dw

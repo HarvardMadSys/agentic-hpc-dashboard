@@ -125,7 +125,7 @@ def who(rec, with_args=True):
     w = {"pid": rec.get("pid"), "ppid": rec.get("ppid"),
          "user": rec.get("user"), "actor3": rec.get("_a3"),
          "agent_type": rec.get("agent_type"), "host": rec.get("host"),
-         "ts": rec.get("ts"), "tool": rec.get("_eff") or rec.get("comm"),
+         "ts": rec.get("ts"), "tool": rec.get("_eff") or rec.get("_command"),
          "session_key": rec.get("session_key"),
          "cpu_s": rec.get("cpu_s"), "duration_s": rec.get("duration_s"),
          "exit_code": rec.get("exit_code"), "signal": rec.get("signal")}

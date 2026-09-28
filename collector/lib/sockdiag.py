@@ -39,6 +39,7 @@ TCP_STATES = {1: 'ESTABLISHED', 2: 'SYN_SENT', 3: 'SYN_RECV', 4: 'FIN_WAIT1',
               5: 'FIN_WAIT2', 6: 'TIME_WAIT', 7: 'CLOSE', 8: 'CLOSE_WAIT',
               9: 'LAST_ACK', 10: 'LISTEN', 11: 'CLOSING'}
 ALL_STATES = 0xFFFFFFFF
+_PROTO_NAME = {socket.IPPROTO_TCP: 'tcp', socket.IPPROTO_UDP: 'udp'}
 
 _NLMSGHDR = struct.Struct('=IHHII')            # len, type, flags, seq, pid
 # inet_diag_req_v2: family, protocol, ext, pad, states, then a 48-byte sockid
@@ -83,8 +84,12 @@ def _addr(raw, family):
     return socket.inet_ntop(socket.AF_INET6, raw[:16])
 
 
-def parse_messages(blob):
+def parse_messages(blob, proto=None):
     """A netlink response buffer -> list of socket dicts. Pure; no I/O.
+
+    `proto` ('tcp'/'udp') is stamped on every row: inet_diag_msg does not say
+    which protocol a socket is, only the request did, and a connected UDP socket
+    reports state ESTABLISHED just as a TCP one does.
 
     Returns [] on NLMSG_DONE and raises nothing on NLMSG_ERROR (the caller sees a
     short list rather than an exception, because a partial dump is still useful)."""
@@ -110,6 +115,7 @@ def parse_messages(blob):
             _expires, rqueue, wqueue, uid, inode = _MSG_TAIL.unpack_from(blob, t)
             rec = {
                 'family': 'inet6' if family == socket.AF_INET6 else 'inet',
+                'proto': proto,
                 'state': TCP_STATES.get(state, str(state)),
                 'state_num': state,
                 'retrans_now': retrans,
@@ -168,7 +174,7 @@ def dump(families=(socket.AF_INET, socket.AF_INET6),
                         break
                     if not buf:
                         break
-                    batch = parse_messages(buf)
+                    batch = parse_messages(buf, _PROTO_NAME.get(proto, str(proto)))
                     out.extend(batch)
                     # a dump ends with NLMSG_DONE, which parse_messages stops on;
                     # detect it directly so we do not block for the timeout

@@ -73,7 +73,7 @@ named replacement.
 | `top_io_processes` | **own-user only.** `/proc/<pid>/io` is ptrace-gated, so other users' processes were silently *omitted* — on a shared login node the section is structurally incomplete | `io` block (`task->ioac`) → `exit.io.{rd_mb,wr_mb,rchar_mb,wchar_mb}` + `io.scope`. Per process, exact, **all users** |
 | `top_sleeping_procs` | `wchan` → `-` and `syscall` → `N/A` for every other user | `dstate_stat` → `residency.d_stack`: top-5 kernel frames from `/proc/<pid>/stack`. **Reading a kernel stack touches no filesystem**, so it cannot hang on the mount being diagnosed |
 | `sleeping_wchans` | other users collapse into the `-` bucket, under-counting real NFS waits | `residency_totals.d_stack_top` — per-node top-10 blocking frames |
-| `socket_talkers` | connection **counts** only, own-process attribution | `netbytes` + `tcp_*` → `exit.conns` / `conn` with real `rx_bytes`/`tx_bytes`, `rtt_ms`, `retrans`, `provider`, `connect_ms` |
+| `socket_talkers` | connection **counts** only, own-process attribution | `netbytes` + `tcp_*` → `exit.conns` / `conn` with real `rx_bytes`/`tx_bytes`, `rtt_ms`, `retrans`, `provider`, `connect_ms`; from schema 7, `netpeer_*` → `exit.net_endpoints` / `netio`, bytes per endpoint for UDP as well as TCP |
 
 ## 5. What the eBPF tier adds that nothing had before
 
@@ -83,8 +83,9 @@ The eight from `README.md`, plus three the poller could never recover:
 every record, `args_len`/`args_truncated`, the `submit` resource request, `io` on
 `truncated`, and `top_procs`/`state_counts`/`tcp_open_ext` on `residency` — see §7b.)*
 
-`cwd` / `cwd_source` / `work_dir` · `dstate_wait_s` / `_episodes` / `_max_s` / `_src` ·
-`net_tx_bytes` / `net_rx_bytes` / `net_calls` (QUIC-visible) · `d_stack` / `d_stack_top` ·
+`cwd` / `work_dir` · `dstate_wait_s` / `_episodes` / `_max_s` / `_src` ·
+`net_tx_bytes` / `net_rx_bytes` / `net_calls` (QUIC-visible) · `net_endpoints` / `netio`
+(schema 7: the endpoint of every byte, and its time series) · `d_stack` / `d_stack_top` ·
 `event="truncated"` with drained kernel counters · `attribution` (`ancestry`|`tty`|`uid`) ·
 `residency_totals.by_agent_type` · `exit.conns` (inbound folded in) · **`exit_code` / `signal` /
 `core_dumped`** · **sub-0.78 s processes** (the poller's measured capture floor) ·
@@ -112,7 +113,7 @@ Further filters: `INCLUDE_ROOTS=0`, idle timers (`sleep`/`usleep` with no CPU an
 
 So detached `nohup` processes, cron jobs, system daemons and orphaned sandboxes do not
 appear. **Never use an eBPF record count as a node denominator.** `residency_totals`
-carries the honest ones: `dropped.n` / `dropped.by_comm` for what the actor filter threw
+carries the honest ones: `dropped.n` / `dropped.by_command` for what the actor filter threw
 away, and `fork_total` / `fork_rate` from `/proc/stat` for the node's real spawn rate.
 
 `EBPFM_MIN_UID` stays **off**: enabling it changes what `actor3="human"` *means* and would

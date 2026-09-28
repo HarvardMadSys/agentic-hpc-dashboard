@@ -124,7 +124,7 @@ def make_predicate(f):
         if f.get("wr_min") is not None and (io.get("wr_mb") or 0) < f["wr_min"]:
             return False
         if f.get("q"):
-            hay = "%s %s" % (rec.get("comm") or "", rec.get("args") or "")
+            hay = "%s %s" % (rec.get("_command") or "", rec.get("args") or "")
             if f["q"] not in hay.lower():
                 return False
         if f.get("bucket"):
