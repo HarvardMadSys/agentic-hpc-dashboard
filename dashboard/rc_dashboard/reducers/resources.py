@@ -18,6 +18,8 @@ from . import INSTANCE_CAP, Acc, Quant, pct, top_by, who
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
 DELAY_FIELDS = ("blkio_wait_s", "swapin_wait_s", "freepages_wait_s")
+NFS_IO_FIELDS = ("ops_s", "rd_kb_s", "rd_rtt_ms", "rd_exe_ms", "rd_retrans",
+                 "wr_kb_s", "wr_rtt_ms", "wr_exe_ms", "wr_retrans")
 
 
 class ResourceReducer:
@@ -265,13 +267,20 @@ class NodeReducer:
             row["per_user"].sort(key=lambda x: -(x["cpu_delta_s"] or x["mem_gb"] or 0))
             row["per_user_resets"] = sum(1 for u in row["per_user"] if u["counter_reset"])
             hosts.append(row)
-            for m in (cur.get("nfs_mountstats") or []):
-                mounts.append({"host": h, "mount": m.get("mountpoint"),
-                               "fstype": m.get("fstype"), "bad_xid": m.get("bad_xid"),
-                               "backlog_u": m.get("backlog_u"),
-                               "rd_rtt_ms": m.get("rd_rtt_ms"),
-                               "wr_rtt_ms": m.get("wr_rtt_ms"),
-                               "ops_s": m.get("ops_s")})
+            # Two sources per mount. `nfs_io` (nfsiostat) has the interval rates
+            # and lists only mounts with I/O in that interval; `nfs_mountstats`
+            # has cumulative-since-mount counters and omits an op whose count is
+            # 0. A mount absent from either keeps that source's fields null.
+            io = {m.get("mountpoint"): m for m in (cur.get("nfs_io") or [])}
+            ms = {m.get("mountpoint"): m for m in (cur.get("nfs_mountstats") or [])}
+            for mp in list(ms) + [mp for mp in io if mp not in ms]:
+                i, s = io.get(mp, {}), ms.get(mp, {})
+                mounts.append({"host": h, "mount": mp,
+                               "fstype": s.get("fstype"), "bad_xid": s.get("bad_xid"),
+                               "backlog_u": s.get("backlog_u"),
+                               "rd_ops_total": (s.get("read") or {}).get("ops"),
+                               "wr_ops_total": (s.get("write") or {}).get("ops"),
+                               **{k: i.get(k) for k in NFS_IO_FIELDS}})
             for d in (cur.get("disk_space") or []):
                 disks.append({"host": h, **d})
         return {
