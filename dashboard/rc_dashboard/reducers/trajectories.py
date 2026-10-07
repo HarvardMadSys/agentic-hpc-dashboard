@@ -7,6 +7,16 @@ pid, else `sess` from the cgroup's session-N.scope, else `tty` as user@tty, else
 `usr`.  `usr` is counted but NEVER ranked -- "everything that user did today" is
 not a trajectory.
 
+An `apid` key is then FOLDED into the agent it belongs to. The collector keys a
+process on its nearest classifier-tagged ancestor, and most tagged processes are
+not agents (roles.py): every Claude Code Bash tool call runs in a tagged
+`zsh -c source ~/.claude/shell-snapshots/...`, so one Claude session arrived as
+one key per tool call -- 204 keys for one tree on madsys-gpu1 on 2026-10-06, and
+383 for one Codex tree. The fold walks each key up the window's ProcIndex to the
+nearest `agent`-role process, at result time, because a helper's parent is only
+known once the helper's own record arrives, after its children's. Every row
+says how many keys it folds and how the least certain was attributed.
+
 This works at a 24h window because the state is incrementally composable:
 records arrive in time order, so each session's counters and its run-length
 encoded chain are appended in place.  Memory is O(sessions x chain cap), bounded
@@ -18,7 +28,10 @@ so each list ships with `dominant_user_share_pct`, letting the panel state its
 own concentration instead of implying a fleet-wide pattern.
 """
 import collections
+import copy
 import time
+
+from ..procindex import VIA
 
 from . import pct
 
@@ -36,7 +49,7 @@ class Session:
     __slots__ = ("sid", "kt", "kv", "host", "user", "cls", "agent_type", "n", "cpu",
                  "tools", "chain", "purpose", "first", "last", "rss", "rd", "wr",
                  "sandbox", "approval", "ancestry", "autonomous", "truncated", "no_ts",
-                 "users", "pids")
+                 "users", "pids", "tree_root", "chain_t", "purpose_t")
 
     def __init__(self, rec):
         self.sid = rec["_sid"]
@@ -51,6 +64,11 @@ class Session:
         self.tools = set()
         self.chain = []          # [[tool, runlength], ...]
         self.purpose = []        # [[purpose, runlength], ...]
+        # When each run began, parallel to the two chains: a folded session
+        # interleaves its keys' runs by these.
+        self.chain_t = []
+        self.purpose_t = []
+        self.tree_root = rec.get("tree_root_pid")
         self.first = None
         self.last = None
         self.rss = 0.0
@@ -75,8 +93,11 @@ class Session:
             self.pids.append(rec["pid"])
         t = rec.get("_eff") or rec.get("_command") or "(empty)"
         self.tools.add(t)
-        _rle_push(self.chain, t, MAX_SEQ_RUNS, self)
-        _rle_push(self.purpose, rec.get("_purpose") or "other", MAX_SEQ_RUNS, None)
+        _rle_push(self.chain, self.chain_t, t, e, MAX_SEQ_RUNS, self)
+        _rle_push(self.purpose, self.purpose_t, rec.get("_purpose") or "other", e,
+                  MAX_SEQ_RUNS, None)
+        if self.tree_root is None and rec.get("tree_root_pid") is not None:
+            self.tree_root = rec["tree_root_pid"]
         if e is not None:
             self.first = e if self.first is None else min(self.first, e)
             self.last = e if self.last is None else max(self.last, e)
@@ -114,7 +135,7 @@ class Session:
             self.users[ident] = self.users.get(ident, 0) + 1
 
 
-def _rle_push(seq, tok, cap, owner):
+def _rle_push(seq, times, tok, t, cap, owner):
     if seq and seq[-1][0] == tok:
         seq[-1][1] += 1
         return
@@ -123,14 +144,81 @@ def _rle_push(seq, tok, cap, owner):
             owner.truncated = True
         return
     seq.append([tok, 1])
+    times.append(t)
+
+
+def _interleave(parts, attr, tattr, cap):
+    """Merge several sessions' run-length chains by when each run began.
+
+    Runs re-coalesce where neighbours now match. Order is by run START, so two
+    keys running at once (parallel tool calls) interleave at run grain, not
+    per call. Returns (chain, times, truncated).
+    """
+    runs = []
+    for p in parts:
+        for (tok, n), t in zip(getattr(p, attr), getattr(p, tattr)):
+            runs.append((float("inf") if t is None else t, tok, n))
+    runs.sort(key=lambda r: r[0])
+    seq, times, cut = [], [], False
+    for t, tok, n in runs:
+        if seq and seq[-1][0] == tok:
+            seq[-1][1] += n
+        elif len(seq) >= cap:
+            cut = True
+        else:
+            seq.append([tok, n])
+            times.append(None if t == float("inf") else t)
+    return seq, times, cut
+
+
+def fold(parts, sid, kv):
+    """One Session from the keys that resolve to the same agent.
+
+    `parts[0]` is the owner's own key when it has one: its identity (user,
+    agent type, sandbox verdict) wins, since the key process is the agent.
+    """
+    m = copy.copy(parts[0])
+    m.sid, m.kv = sid, kv
+    m.n = sum(p.n for p in parts)
+    m.cpu = sum(p.cpu for p in parts)
+    m.tools = set().union(*(p.tools for p in parts))
+    m.chain, m.chain_t, cut = _interleave(parts, "chain", "chain_t", MAX_SEQ_RUNS)
+    m.purpose, m.purpose_t, _ = _interleave(parts, "purpose", "purpose_t", MAX_SEQ_RUNS)
+    m.truncated = cut or any(p.truncated for p in parts)
+    firsts = [p.first for p in parts if p.first is not None]
+    lasts = [p.last for p in parts if p.last is not None]
+    m.first = min(firsts) if firsts else None
+    m.last = max(lasts) if lasts else None
+    m.rss = max(p.rss for p in parts)
+    m.rd = sum(p.rd for p in parts)
+    m.wr = sum(p.wr for p in parts)
+    m.autonomous = sum(p.autonomous for p in parts)
+    m.no_ts = any(p.no_ts for p in parts)
+    by_time = sorted(parts, key=lambda p: p.first if p.first is not None else float("inf"))
+    for attr, unknown in (("sandbox", "unknown"), ("approval", "unknown"),
+                          ("ancestry", None), ("agent_type", None),
+                          ("user", None), ("host", None), ("tree_root", None)):
+        if getattr(m, attr) == unknown:
+            v = next((getattr(p, attr) for p in by_time if getattr(p, attr) != unknown),
+                     unknown)
+            setattr(m, attr, v)
+    m.users = {}
+    for p in parts:
+        for u, c in p.users.items():
+            m.users[u] = m.users.get(u, 0) + c
+    m.pids = [pid for p in parts for pid in p.pids][:8]
+    return m
 
 
 class TrajectoryReducer:
     EVENTS = ("exit",)
     KEY = "trajectories"
 
-    def __init__(self, cfg, classes, window_s=None):
+    def __init__(self, cfg, classes, window_s=None, procs=None):
         self.cfg = cfg
+        # The window's ProcIndex: what each key's process is. Without one the
+        # keys are ranked as the collector wrote them.
+        self.procs = procs
         r = cfg.get("reducers.trajectories", {}) or {}
         self.top_n = r.get("top_n", 15)
         self.max_runs = r.get("max_runs_shown", 60)
@@ -173,10 +261,49 @@ class TrajectoryReducer:
             del self.sessions[k]
             self.evicted += 1
 
-    def _row(self, s):
+    def _fold_all(self, sessions):
+        """Resolve every apid key to its agent and merge the keys that share one.
+
+        Returns ([(session, owner_via, n_keys)], per-key via counts). Builds new
+        objects for merged sessions: the held ones keep ingesting after this.
+        """
+        groups = {}
+        vias = collections.Counter()
+        for s in sessions:
+            target, via = s.sid, None
+            if s.kt == "apid" and self.procs is not None:
+                try:
+                    pid = int(s.kv)
+                except (TypeError, ValueError):
+                    pid = None
+                if pid is not None:
+                    owner, via = self.procs.owner(s.host, pid, s.tree_root)
+                    vias[via] += 1
+                    if owner != pid:
+                        target = s.sid[:s.sid.rfind(":") + 1] + str(owner)
+            groups.setdefault(target, []).append((s, via))
+        out = []
+        for target, members in groups.items():
+            members.sort(key=lambda m: m[0].sid != target)    # the owner's own key first
+            parts = [m[0] for m in members]
+            if len(parts) == 1 and parts[0].sid == target:
+                s = parts[0]
+            else:
+                s = fold(parts, target, target.rsplit(":", 1)[1])
+            # Report how the FOLDED keys got here, at their least certain: a row
+            # assembled partly by fallback must not read as fully resolved.
+            vs = [v for p, v in members if p.sid != target] or [v for _, v in members]
+            vs = [v for v in vs if v is not None]
+            out.append((s, max(vs, key=VIA.index) if vs else None, len(parts)))
+        return out, vias
+
+    def _row(self, s, via=None, n_keys=1):
         chain = s.chain[:self.max_runs]
         return {
             "sid": s.sid, "key_type": s.kt, "host": s.host, "user": s.user,
+            # how many collector session keys this row folds together, and how
+            # the least certain of them was attributed (procindex.VIA)
+            "fragments": n_keys, "owner_via": via,
             "actor3": s.cls, "agent_type": s.agent_type,
             "n_events": s.n, "cpu_s": round(s.cpu, 3),
             # a session can span users (a root helper inside a user's tree), so
@@ -198,7 +325,9 @@ class TrajectoryReducer:
         now = now or time.time()
         self._evict(now)
         cutoff = now - self.window_s
-        live = [s for s in self.sessions.values()
+        folded, vias = self._fold_all(self.sessions.values())
+        meta = {s.sid: (via, k) for s, via, k in folded}
+        live = [s for s, _, _ in folded
                 if (s.last or 0) >= cutoff and s.kt in self.rankable]
         ranks, rows, dom = {}, {}, {}
         keyf = {"events": lambda s: s.n, "cpu_s": lambda s: s.cpu,
@@ -208,7 +337,7 @@ class TrajectoryReducer:
             top = sorted(live, key=keyf[r], reverse=True)[:self.top_n]
             ranks[r] = [s.sid for s in top]
             for s in top:
-                rows.setdefault(s.sid, self._row(s))
+                rows.setdefault(s.sid, self._row(s, *meta[s.sid]))
             if top:
                 byu = collections.Counter()
                 for s in top:
@@ -217,7 +346,7 @@ class TrajectoryReducer:
                 dom[r] = pct(byu.most_common(1)[0][1], tot) if tot else 0.0
             else:
                 dom[r] = None
-        by_cls = collections.Counter(s.cls for s in self.sessions.values())
+        by_cls = collections.Counter(s.cls for s, _, _ in folded)
         return {
             "window": {"minutes": self.window_s // 60,
                        "from": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff)),
@@ -225,12 +354,21 @@ class TrajectoryReducer:
             "rank_by": "events", "rank_meaning": RANK_MEANING,
             "ranks": ranks, "rows": rows,
             "by_class_counts": dict(by_cls), "by_key_type": dict(self.by_kt),
+            "fold": {"raw_sessions": len(self.sessions), "sessions": len(folded),
+                     "by_via": dict(vias),
+                     "index": self.procs.result() if self.procs is not None else None},
             "dominant_user_share_pct": dom,
             "buffer": {"sessions": len(self.sessions), "evicted": self.evicted},
             "basis": {
                 "sessionize": "session_key='apid:<agent_pid>'; absent -> sess (cgroup "
                               "session-(\\d+)\\.scope) -> tty as user@tty -> usr "
                               "(analyze/extract_trajectories.py:278-294)",
+                "fold": "an apid key whose process is not an agent (a tool-call shell, "
+                        "a sandbox wrapper, an embedded rg, a probe) is folded into "
+                        "the nearest agent above it; failing that, into the tree's "
+                        "top-most agent (owner_via=tree_root). A key whose process "
+                        "was never seen is left alone (owner_via=unknown). Folded "
+                        "chains interleave by run start time.",
                 "rle": "run-length compression over effective_comm. True run count is "
                        "chain_runs; the displayed chain is capped at max_runs_shown.",
                 "excluded_key_types": ["usr"],

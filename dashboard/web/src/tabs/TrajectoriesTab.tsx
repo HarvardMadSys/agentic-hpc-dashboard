@@ -8,8 +8,8 @@
  * the top list is frequently one user's campaign rather than a cluster pattern.
  */
 import type { Async } from '../api/hooks';
-import type { Cls, TrajRank, TrajRow, Trajectories } from '../api/types';
-import { TRAJ_RANKS } from '../api/types';
+import type { Cls, OwnerVia, TrajRank, TrajRow, Trajectories } from '../api/types';
+import { OWNER_VIA, TRAJ_RANKS } from '../api/types';
 import { Ribbon, StackRow } from '../charts/primitives';
 import { Basis, Legend, Panel } from '../components/Panel';
 import { Segmented } from '../components/ClassFilter';
@@ -24,6 +24,16 @@ const RANK_LBL: Record<TrajRank, string> = {
   cpu_s: 'cpu_s',
   distinct_tools: 'distinct tools',
   chain_runs: 'chain runs',
+};
+
+/* What each attribution means, for the keys column and the fold table. */
+const VIA_TIP: Record<OwnerVia, string> = {
+  self: 'the key process is itself the agent',
+  ancestor: 'walked up the process tree to the nearest agent',
+  parent: 'the parent of a tool-call shell, embedded tool or Codex sandbox, never itself seen',
+  tree_root: 'fell back to the top-most agent the collector recorded for the tree',
+  root: 'not an agent, with nothing above it to fold into',
+  unknown: 'the key process was never seen in the window, so it is left as its own session',
 };
 
 /** `pgrep x120 > git > rg x3 ...` -- the tool tokens as text, bounded. */
@@ -73,6 +83,7 @@ export function TrajectoriesTab({
 
   const counts = t?.by_class_counts ?? {};
   const keyTypes = t?.by_key_type ?? {};
+  const fold = t?.fold;
 
   return (
     <>
@@ -160,6 +171,9 @@ export function TrajectoriesTab({
               <thead>
                 <tr>
                   <th>session</th>
+                  <th className="num" data-tip="collector session keys folded into this session, and how the least certain one was attributed">
+                    keys
+                  </th>
                   <th>class</th>
                   <th>user</th>
                   <th>host</th>
@@ -186,6 +200,15 @@ export function TrajectoriesTab({
                       }`}
                     >
                       {r.sid}
+                    </td>
+                    <td
+                      className="num"
+                      data-tip={r.owner_via ? `${r.owner_via}: ${VIA_TIP[r.owner_via]}` : undefined}
+                    >
+                      {fint(r.fragments ?? 1)}
+                      {r.owner_via && r.owner_via !== 'self' && r.owner_via !== 'ancestor' && (
+                        <span style={{ color: 'var(--muted)' }}>{` ${r.owner_via}`}</span>
+                      )}
                     </td>
                     <td>
                       <span
@@ -321,7 +344,7 @@ export function TrajectoriesTab({
             }))}
           />
           <div className="eyebrow" style={{ marginTop: 8 }}>
-            by session key type
+            by session key type, as the collector wrote them
           </div>
           <div className="scroller">
             <table>
@@ -341,6 +364,33 @@ export function TrajectoriesTab({
               </tbody>
             </table>
           </div>
+          {fold && (
+            <>
+              <div className="eyebrow" style={{ marginTop: 8 }}>
+                {`session-key fold · ${fint(fold.raw_sessions)} keys → ${fint(fold.sessions)} sessions`}
+              </div>
+              <div className="scroller">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>attributed by</th>
+                      <th className="num">keys</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {OWNER_VIA.filter((v) => fold.by_via[v]).map((v) => (
+                      <tr key={v}>
+                        <td className="mono" data-tip={VIA_TIP[v]}>
+                          {v}
+                        </td>
+                        <td className="num">{fint(fold.by_via[v])}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </Panel>
       </div>
     </>

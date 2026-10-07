@@ -295,9 +295,17 @@ export interface Sandbox extends PanelEnvelope {
 export type TrajRank = 'events' | 'cpu_s' | 'distinct_tools' | 'chain_runs';
 export const TRAJ_RANKS: TrajRank[] = ['events', 'cpu_s', 'distinct_tools', 'chain_runs'];
 
+/** How a session's collector keys were attributed to it, most certain first
+ * (`rc_dashboard/procindex.py: VIA`). A row reports its least certain key. */
+export type OwnerVia = 'self' | 'ancestor' | 'parent' | 'tree_root' | 'root' | 'unknown';
+export const OWNER_VIA: OwnerVia[] = ['self', 'ancestor', 'parent', 'tree_root', 'root', 'unknown'];
+
 export interface TrajRow {
   sid: string;
   key_type: string;
+  /** collector session keys folded into this row; 1 when nothing was folded */
+  fragments?: number;
+  owner_via?: OwnerVia | null;
   host: string;
   user: string;
   actor3: string | null;
@@ -330,6 +338,12 @@ export interface Trajectories extends PanelEnvelope {
   rows: Record<string, TrajRow>;
   by_class_counts: Record<string, number>;
   by_key_type: Record<string, number>;
+  fold?: {
+    raw_sessions: number;
+    sessions: number;
+    by_via: Partial<Record<OwnerVia, number>>;
+    index: { entries: number; cap: number; evicted: number } | null;
+  };
   dominant_user_share_pct?: Partial<Record<TrajRank, number | null>> | null;
   buffer: unknown;
   basis: string;

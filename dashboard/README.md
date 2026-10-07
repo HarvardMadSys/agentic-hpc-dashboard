@@ -191,6 +191,14 @@ already made once.
   `task->mm`) before the `sched_process_exit` tracepoint fires, so the `if (mm)` guard at
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
+- **The collector's session key splits one session per tool call.** It keys a process on
+  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
+  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
+  trajectory rows say how many keys they fold and how the least certain one was
+  attributed, and the Sandbox tab's tree counts use the same fold. On madsys-gpu1 a
+  24 h window went from 3 281 keys to 636 sessions, one VS Code server alone from 688.
 - **The node tier daemon needs an absolute path.** `ebpfm.sh:466` re-execs `"$0"`, so
   `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by absolute
   path.
@@ -210,6 +218,8 @@ already made once.
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
 | `rc_dashboard/normalize.py` | schema contract, `actor3`, sandbox/approval, session keys, null gating |
+| `rc_dashboard/roles.py` | what a classifier-tagged process is: agent, tool-shell, probe, sandbox, infra, ... |
+| `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, live, node |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |

@@ -294,8 +294,8 @@ class Aggregator:
             status = view.status()
             out = {}
             for key, payload in (view.payload or {}).items():
-                if key == "trajectories":
-                    continue                       # served by /api/trajectories
+                if key == "trajectories" or key.startswith("_"):
+                    continue                       # /api/trajectories; internal state
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
                 body.update(ebpf)
                 body["_window"] = status
