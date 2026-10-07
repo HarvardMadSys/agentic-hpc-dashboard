@@ -40,6 +40,7 @@ import time
 from .export import window_plan, window_scan
 from .normalize import Normalizer
 from .procindex import ProcIndex
+from .reducers.cascades import CascadeReducer
 from .reducers.io import IoReducer
 from .reducers.resources import ResourceReducer
 from .reducers.risk import RiskReducer
@@ -188,8 +189,10 @@ class PanelView:
         # sessions: they fold the collector's session keys through it.
         procs = red[ProcIndex.KEY] = ProcIndex(self.cfg)
         red["sandbox"] = SandboxReducer(self.cfg, self.classes, procs=procs)
-        red["trajectories"] = TrajectoryReducer(self.cfg, self.classes,
-                                                window_s=self.window_s, procs=procs)
+        traj = red["trajectories"] = TrajectoryReducer(
+            self.cfg, self.classes, window_s=self.window_s, procs=procs)
+        red["cascades"] = CascadeReducer(self.cfg, self.classes, window_s=self.window_s,
+                                         procs=procs, traj=traj)
         return red
 
     @staticmethod

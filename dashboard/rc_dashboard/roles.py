@@ -25,7 +25,8 @@ session. Roles, in the order they are tested:
   embedded-tool  the agent binary run under another argv[0] (Claude's rg/ugrep/bfs)
   probe          a one-shot invocation that is not a session (--version, auth, doctor)
   client         attaches to a session it does not run (claude attach, codex app-server proxy)
-  infra          hosts sessions without being one (claude daemon, bg-pty-host, remote server)
+  infra          hosts sessions without being one (claude daemon, bg-pty-host, claude rc,
+                 Claude Desktop's remote server)
   agent          an agent session runtime: the thing that talks to the model and runs tools
   tool-shell     the shell a Claude Code Bash tool call runs in
   helper         tagged only because its argv mentions an agent path
@@ -75,7 +76,11 @@ _PROBE_SUB = frozenset({"doctor", "update", "upgrade", "install", "auth", "confi
                         "completion", "setup-token", "migrate-installer", "plugin",
                         "login", "logout", "version", "help", "features"})
 _CLIENT_SUB = frozenset({"attach", "agents"})
-_INFRA_SUB = frozenset({"daemon", "bg-pty-host"})
+# `rc`/`remote-control` is the Remote Control server: it starts a
+# `--print --sdk-url` worker per remote session and runs no tool calls itself
+# (none in 7 days on madsys-gpu1, against 30 409 for its worker). The `--rc`
+# FLAG is an interactive session with Remote Control on, and stays an agent.
+_INFRA_SUB = frozenset({"daemon", "bg-pty-host", "rc", "remote-control"})
 
 # Flags that take the next token as their value, so it is not mistaken for a
 # subcommand (`codex -c features.code_mode_host=true app-server`).

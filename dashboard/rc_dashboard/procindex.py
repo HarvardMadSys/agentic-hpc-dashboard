@@ -33,8 +33,11 @@ class ProcIndex:
 
     def __init__(self, cfg, classes=None):
         self.cap = int(cfg.get("reducers.sessions.proc_index_max", 200000) or 200000)
-        self.entries = {}          # (host, pid) -> [ppid, role, spawned_by_agent]
+        # (host, pid) -> [ppid, role, spawned_by_agent, command, cwd]
+        self.entries = {}
         self.evicted = 0
+        # Bumped on every change, so a consumer can cache what it derived.
+        self.version = 0
 
     def feed(self, rec):
         role = rec.get("_role")
@@ -46,17 +49,32 @@ class ProcIndex:
         if e is not None:
             if e[0] in _NO_PARENT and rec.get("ppid") not in _NO_PARENT:
                 e[0] = rec.get("ppid")
+                self.version += 1
+            if e[4] is None and rec.get("cwd"):
+                e[4] = rec["cwd"]
+                self.version += 1
             return
         if len(self.entries) >= self.cap:
             # Oldest first: dict order is insertion order. Counted, never silent.
             self.entries.pop(next(iter(self.entries)))
             self.evicted += 1
+        # cwd is the FIRST one seen: an agent's launch directory. The collector
+        # re-reads a tree root's cwd every tick, and Claude Code never chdirs
+        # (it tracks its working directory itself), but a later record of a
+        # process that did would otherwise move the anchor drift is measured from.
         self.entries[key] = [rec.get("ppid"), role,
-                             spawned_by_agent(role, rec.get("_command"))]
+                             spawned_by_agent(role, rec.get("_command")),
+                             rec.get("_command"), rec.get("cwd")]
+        self.version += 1
 
     def role(self, host, pid):
         e = self.entries.get((host, pid))
         return e[1] if e else None
+
+    def get(self, host, pid):
+        """(ppid, role, command, cwd), or None if the process was never seen."""
+        e = self.entries.get((host, pid))
+        return (e[0], e[1], e[3], e[4]) if e else None
 
     def owner(self, host, pid, tree_root=None):
         """(owner_pid, via) for the session keyed on `pid`.

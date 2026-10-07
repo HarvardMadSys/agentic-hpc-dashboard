@@ -22,6 +22,7 @@ import { ResourcesTab } from './tabs/ResourcesTab';
 import { RiskIoTab } from './tabs/RiskIoTab';
 import { SandboxTab } from './tabs/SandboxTab';
 import { TrajectoriesTab } from './tabs/TrajectoriesTab';
+import { CascadesTab } from './tabs/CascadesTab';
 import { FeedsTab } from './tabs/FeedsTab';
 
 const TABS = [
@@ -32,6 +33,7 @@ const TABS = [
   { k: 'risk', lbl: 'Risk & I/O', eyebrow: 'process tier' },
   { k: 'sandbox', lbl: 'Sandbox', eyebrow: 'process tier' },
   { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'process tier' },
+  { k: 'cascades', lbl: 'Cascades', eyebrow: 'process tier' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
 ];
 
@@ -125,6 +127,8 @@ export default function App() {
         return <SandboxTab P={P} cls={url.cls} />;
       case 'trajectories':
         return <TrajectoriesTab traj={traj} rank={url.rank} setRank={(r) => setUrl({ rank: r })} cls={url.cls} />;
+      case 'cascades':
+        return <CascadesTab P={P} />;
       case 'feeds':
         return <FeedsTab feeds={feeds} config={config} builtAt={panels.data?.full_built_at ?? null} />;
       default:

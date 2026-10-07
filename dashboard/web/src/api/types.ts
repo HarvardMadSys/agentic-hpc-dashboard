@@ -306,6 +306,7 @@ export interface TrajRow {
   /** collector session keys folded into this row; 1 when nothing was folded */
   fragments?: number;
   owner_via?: OwnerVia | null;
+  drift?: Drift;
   host: string;
   user: string;
   actor3: string | null;
@@ -347,6 +348,104 @@ export interface Trajectories extends PanelEnvelope {
   dominant_user_share_pct?: Partial<Record<TrajRank, number | null>> | null;
   buffer: unknown;
   basis: string;
+}
+
+/* -------------------------------------------------------------- cascades */
+
+/** Two process-level proxies for an agent leaving its task
+ *  (`rc_dashboard/reducers/trajectories.py: drift`). Neither sees the context. */
+export interface Drift {
+  n: number;
+  capped: boolean;
+  min_n: number;
+  /** Jensen-Shannon divergence, first vs last third of the purpose mix; null below min_n */
+  mix_jsd: number | null;
+  mix_first: [string, number][] | null;
+  mix_last: [string, number][] | null;
+  cwd_coverage_pct: number | null;
+  cwd_anchor: string | null;
+  cwd_anchor_src: 'agent' | 'first_call' | null;
+  cwd_outside_pct: number | null;
+  cwd_distinct: number;
+  cwd_top: [string, number][];
+  cwd_first: string | null;
+  cwd_last: string | null;
+}
+
+export type CascadeRole = 'agent' | 'infra' | 'client';
+export type CascadeVia = 'ancestor' | 'spawned_by' | 'same_user_daemon' | 'tree_root';
+
+export interface CascadeNode {
+  pid: number;
+  ppid: number | null;
+  host: string;
+  role: CascadeRole;
+  agent_type: string | null;
+  user: string | null;
+  command: string | null;
+  args: string | null;
+  cwd: string | null;
+  implied: boolean;
+  frontend: boolean;
+  parent: number | null;
+  via: CascadeVia | null;
+  /** commands passed through between the parent node and this one */
+  path: string[];
+  spawned_by: number | null;
+  started: string | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  exited: boolean;
+  duration_s: number | null;
+  depth: number;
+  agent_level: number | null;
+  fanout: number;
+  tool_calls: number | null;
+  cpu_s: number | null;
+  session_keys: number | null;
+  drift: Drift | null;
+  cwd_anchor: string | null;
+  cwd_vs_parent_agent: 'same' | 'inside' | 'above' | 'outside' | null;
+}
+
+export interface CascadeTree {
+  root: CascadeNode;
+  host: string;
+  users: string[];
+  agent_depth: number;
+  max_fanout: number;
+  n_nodes: number;
+  n_agents: number;
+  agents_nested: number;
+  agent_types: string[];
+  tool_calls: number;
+  cpu_s: number;
+  nodes: CascadeNode[];
+  nodes_truncated: boolean;
+  hidden_nodes: number;
+}
+
+export interface Cascades extends PanelEnvelope {
+  window?: { minutes: number; from: string | null; to: string | null };
+  summary?: {
+    trees: number;
+    nested: number;
+    hosted: number;
+    agents: number;
+    agents_nested: number;
+    agents_implied: number;
+    max_agent_depth: number | null;
+    max_fanout: number | null;
+    trees_without_agents: number;
+  };
+  depth_hist?: Record<string, number>;
+  fanout_hist?: Record<string, number>;
+  edges?: { parent: string; child: string; n: number }[];
+  edge_via?: Partial<Record<CascadeVia, number>>;
+  trees?: CascadeTree[];
+  role_census?: { agent_type: string | null; role: string; n: number; cpu_s: number; pct: number }[];
+  buffer?: { nodes: number; cap: number; dropped: number };
+  basis?: Record<string, unknown>;
 }
 
 /* ---------------------------------------------------------------- panels */

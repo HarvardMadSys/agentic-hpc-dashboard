@@ -111,7 +111,10 @@ class RoleTest(unittest.TestCase):
         # (agent_type, command, args, role)
         ("claude_code", "claude", "claude", "agent"),
         ("claude_code", "claude", "claude --rc", "agent"),
-        ("claude_code", "claude", "claude rc", "agent"),
+        # the Remote Control server: it runs no tool calls of its own, it starts
+        # a `--print --sdk-url` worker per remote session
+        ("claude_code", "claude", "claude rc", "infra"),
+        ("claude_code", "claude", "claude remote-control", "infra"),
         ("claude_code", "claude", "claude -p summarise this", "agent"),
         ("claude_code", "2.1.291", HOME + "/.local/share/claude/versions/2.1.291 --print "
          "--sdk-url https://api.anthropic.com/v1/code/sessions/cse_01", "agent"),
@@ -200,8 +203,8 @@ class SessionizeTest(unittest.TestCase):
                          ["git", "zsh", "2.1.291", "ls", "zsh"])
 
     def test_a_nested_agent_keeps_its_own_trajectory(self):
-        # `claude rc` spawns a worker per remote session: a real agent under an
-        # agent, which must stay a session of its own.
+        # `claude rc` spawns a worker per remote session, an agent of its own
+        # inside the host's tree, which must stay a session of its own.
         t0 = self.t0
         recs = [
             rec("residency", t0, 100, 50, "claude", "claude rc",

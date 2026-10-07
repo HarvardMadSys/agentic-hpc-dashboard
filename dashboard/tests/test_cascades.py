@@ -1,0 +1,244 @@
+"""Cascade and drift tests: which agents started which, and how far each wandered.
+
+The shapes are the ones madsys-gpu1 actually shows (2026-09-20 .. 10-07): no
+`claude -p` or `codex exec` from a tool call in two weeks, but Remote Control
+workers under `claude rc`, Claude Desktop `ccd-cli` sessions under the remote
+`server`, and background agents started by `claude daemon run --spawned-by`
+through a `bg-pty-host`. The tool-call spawn is tested too, because that is the
+case the view exists to catch when it happens.
+
+    cd dashboard && uv run python -m unittest discover -s tests -q
+"""
+import os
+import sys
+import time
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
+
+PROJ = HOME + "/proj"
+
+
+def tree_of(payload, root_pid):
+    for t in payload["cascades"]["trees"]:
+        if t["root"]["pid"] == root_pid:
+            return t
+    raise AssertionError("no tree rooted at %s: %s" % (
+        root_pid, [t["root"]["pid"] for t in payload["cascades"]["trees"]]))
+
+
+def node(tree, pid):
+    return next(n for n in tree["nodes"] if n["pid"] == pid)
+
+
+class CascadeTest(unittest.TestCase):
+    def setUp(self):
+        self.t0 = time.time() - 600
+
+    def test_a_lone_agent_is_a_tree_one_agent_deep(self):
+        c = reduce(claude_session(self.t0))["cascades"]
+        self.assertEqual(c["summary"]["trees"], 1)
+        self.assertEqual(c["summary"]["nested"], 0)
+        self.assertEqual(c["depth_hist"], {"1": 1})
+
+    def test_an_agent_started_by_an_agent_is_a_cascade(self):
+        t0 = self.t0
+        recs = claude_session(t0)[:1] + [
+            rec("exit", t0 + 5, 250, 200, "codex", "codex exec review the diff",
+                agent_pid=250, tree_root=100, is_agent=True, agent_type="codex"),
+            rec("exit", t0 + 6, 200, 100, "zsh", SNAP + "'codex exec review the diff'",
+                agent_pid=200, tree_root=100, is_agent=True),
+        ]
+        p = reduce(recs)
+        c = p["cascades"]
+        self.assertEqual(c["summary"]["nested"], 1)
+        self.assertEqual(tree_of(p, 100)["agent_depth"], 2)
+        self.assertIn({"parent": "claude_code agent", "child": "codex agent", "n": 1},
+                      c["edges"])
+
+    def test_remote_control_workers_are_hosted_not_nested(self):
+        t0 = self.t0
+        recs = [
+            rec("residency", t0, 100, 50, "claude", "claude rc",
+                agent_pid=100, tree_root=100, is_agent=True),
+            rec("conn", t0 + 1, 150, 100, "2.1.291",
+                HOME + "/.local/share/claude/versions/2.1.291 --print --sdk-url "
+                "https://api.anthropic.com/v1/code/sessions/cse_01",
+                agent_pid=150, tree_root=100, is_agent=True),
+        ]
+        p = reduce(recs)
+        self.assertEqual(p["cascades"]["summary"]["nested"], 0)
+        self.assertEqual(p["cascades"]["summary"]["hosted"], 1)
+        t = tree_of(p, 100)
+        self.assertEqual((node(t, 150)["parent"], node(t, 150)["via"]), (100, "ancestor"))
+
+    def test_a_codex_front_end_is_not_a_second_agent(self):
+        # `codex` (the TUI) starts `codex app-server`, which runs the session
+        t0 = self.t0
+        recs = [
+            rec("residency", t0, 100, 50, "codex", "codex", agent_pid=100, tree_root=100,
+                is_agent=True, agent_type="codex"),
+            rec("conn", t0 + 1, 150, 100, "codex", HOME + "/.codex/packages/app-server-daemon"
+                "/current/bin/codex app-server --listen unix://", agent_pid=150,
+                tree_root=100, is_agent=True, agent_type="codex"),
+        ]
+        p = reduce(recs)
+        t = tree_of(p, 100)
+        self.assertEqual(t["agent_depth"], 1)
+        self.assertEqual(t["root"]["role"], "client")
+        self.assertTrue(t["root"]["frontend"])
+        self.assertEqual(p["cascades"]["summary"]["nested"], 0)
+        self.assertEqual(p["cascades"]["summary"]["hosted"], 0)
+
+    def test_infrastructure_with_no_agent_below_is_counted_not_listed(self):
+        t0 = self.t0
+        daemon = HOME + "/.codex/packages/app-server-daemon/current/bin/codex"
+        recs = [
+            rec("residency", t0, 100, 1, "codex-code-mode-host", daemon + "-code-mode-host",
+                agent_pid=100, tree_root=100, is_agent=True, agent_type="codex"),
+            rec("conn", t0 + 1, 150, 100, "codex", daemon + " app-server --listen unix://",
+                agent_pid=150, tree_root=100, is_agent=True, agent_type="codex"),
+            rec("exit", t0 + 2, 160, 100, "codex", daemon + " app-server daemon pid-update-loop",
+                agent_pid=160, tree_root=100, is_agent=True, agent_type="codex"),
+        ]
+        t = tree_of(reduce(recs), 100)
+        self.assertEqual(sorted(n["pid"] for n in t["nodes"]), [100, 150])
+        self.assertEqual(t["hidden_nodes"], 1)
+
+    def test_an_agent_started_from_a_tool_call_links_to_the_agent_that_ran_it(self):
+        t0 = self.t0
+        recs = claude_session(t0)[:1] + [
+            rec("exit", t0 + 5, 250, 200, "claude", "claude -p write the summary",
+                agent_pid=250, tree_root=100, is_agent=True),
+            rec("exit", t0 + 6, 200, 100, "zsh", SNAP + "'claude -p write the summary'",
+                agent_pid=200, tree_root=100, is_agent=True),
+        ]
+        t = tree_of(reduce(recs), 100)
+        self.assertEqual(t["agent_depth"], 2)
+        n = node(t, 250)
+        self.assertEqual((n["parent"], n["via"]), (100, "ancestor"))
+        self.assertEqual(n["path"], ["zsh"])           # what it was started through
+
+    def test_background_agents_link_back_to_the_session_that_started_the_daemon(self):
+        t0 = self.t0
+        recs = claude_session(t0)[:1] + [
+            rec("residency", t0 + 1, 300, 1, "claude",
+                HOME + "/.local/bin/claude daemon run --origin transient --spawned-by "
+                '{"label":"claude","cwd":"%s","pid":100}' % PROJ,
+                agent_pid=300, tree_root=300, is_agent=True),
+            rec("residency", t0 + 2, 310, 1, "2.1.282",
+                "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-1000/ab/pty/x.sock 200 50 "
+                "-- " + HOME + "/.local/share/claude/versions/2.1.282 --session-id x",
+                agent_pid=310, tree_root=310, is_agent=True),
+            rec("conn", t0 + 3, 320, 310, "2.1.282",
+                HOME + "/.local/share/claude/versions/2.1.282 --session-id "
+                "08749fc1-dedd-48d3-add6-8890798cd937 --agent claude",
+                agent_pid=320, tree_root=310, is_agent=True),
+        ]
+        t = tree_of(reduce(recs), 100)
+        self.assertEqual((node(t, 300)["parent"], node(t, 300)["via"]), (100, "spawned_by"))
+        self.assertEqual((node(t, 310)["parent"], node(t, 310)["via"]),
+                         (300, "same_user_daemon"))
+        self.assertEqual((node(t, 320)["parent"], node(t, 320)["via"]), (310, "ancestor"))
+        self.assertEqual(t["agent_depth"], 2)            # 100, then 320
+
+    def test_sessions_hosted_by_infrastructure_are_not_a_cascade(self):
+        # Claude Desktop's remote server runs one ccd-cli per chat: hosted, not nested
+        t0 = self.t0
+        srv = HOME + "/.claude/remote/srv/89cb/server"
+        cli = HOME + "/.claude/remote/ccd-cli/2.1.286 --output-format stream-json --verbose"
+        recs = [
+            rec("residency", t0, 400, 1, "server", srv + " --serve --socket x.sock",
+                agent_pid=400, tree_root=400, is_agent=True),
+            rec("exit", t0 + 5, 410, 400, "2.1.286", cli, agent_pid=410, tree_root=400,
+                is_agent=True),
+            rec("exit", t0 + 6, 420, 400, "2.1.286", cli, agent_pid=420, tree_root=400,
+                is_agent=True),
+        ]
+        p = reduce(recs)
+        t = tree_of(p, 400)
+        self.assertEqual(t["agent_depth"], 1)
+        self.assertEqual(t["max_fanout"], 2)
+        self.assertEqual(p["cascades"]["summary"]["nested"], 0)
+        self.assertEqual(p["cascades"]["summary"]["hosted"], 1)
+
+    def test_the_role_census_counts_what_the_classifier_tagged(self):
+        census = reduce(claude_session(self.t0))["cascades"]["role_census"]
+        got = {(r["agent_type"], r["role"]): r["n"] for r in census}
+        self.assertEqual(got, {("claude_code", "tool-shell"): 2})
+
+
+class DriftTest(unittest.TestCase):
+    def setUp(self):
+        self.t0 = time.time() - 3000
+
+    def session(self, calls, launch_cwd=PROJ):
+        """A Claude agent and one tool-call shell per (command, cwd)."""
+        t0 = self.t0
+        recs = [rec("residency", t0, 100, 50, "claude", "claude", agent_pid=100,
+                    tree_root=100, is_agent=True, cwd=launch_cwd)]
+        for i, (cmd, cwd) in enumerate(calls):
+            pid = 1000 + i
+            recs.append(rec("exit", t0 + 10 + i, pid, 100, cmd, cmd, agent_pid=100,
+                            tree_root=100, cwd=cwd))
+        return recs
+
+    def drift(self, recs):
+        p = reduce(recs)
+        rows = [p["trajectories"]["rows"][s] for s in p["trajectories"]["ranks"]["events"]]
+        self.assertEqual(len(rows), 1)
+        return rows[0]["drift"], p
+
+    def test_cwd_drift_is_the_share_of_processes_outside_the_launch_directory(self):
+        d, _ = self.drift(self.session([
+            ("git", PROJ), ("git", PROJ), ("ls", PROJ + "/sub"),
+            ("ls", "/scratch/other"), ("cat", "/scratch/other")]))
+        self.assertEqual(d["cwd_anchor"], PROJ)
+        self.assertEqual(d["cwd_outside_pct"], 40.0)
+        self.assertEqual(d["cwd_distinct"], 3)
+        self.assertEqual(d["cwd_last"], "/scratch/other")
+
+    def test_an_agent_launched_at_the_filesystem_root_is_anchored_on_its_first_call(self):
+        # IDE-hosted agents run with cwd `/`, under which every path is "inside":
+        # the share would read 0% by construction, which is not a measurement.
+        d, _ = self.drift(self.session([("git", PROJ), ("ls", "/scratch/other")],
+                                       launch_cwd="/"))
+        self.assertEqual((d["cwd_anchor"], d["cwd_anchor_src"]), (PROJ, "first_call"))
+        self.assertEqual(d["cwd_outside_pct"], 50.0)
+
+    def test_the_first_call_anchor_skips_calls_made_at_the_root(self):
+        d, _ = self.drift(self.session([("ls", "/"), ("git", PROJ), ("ls", "/scratch/other")],
+                                       launch_cwd="/"))
+        self.assertEqual(d["cwd_anchor"], PROJ)
+        self.assertEqual(d["cwd_outside_pct"], 66.67)
+
+    def test_a_sibling_with_a_shared_prefix_is_outside(self):
+        d, _ = self.drift(self.session([("git", PROJ), ("git", PROJ + "-old")]))
+        self.assertEqual(d["cwd_outside_pct"], 50.0)
+
+    def test_tool_mix_drift_compares_the_first_and_last_third(self):
+        calls = [("git", PROJ)] * 10 + [("ls", PROJ)] * 10 + [("make", PROJ)] * 10
+        d, _ = self.drift(self.session(calls))
+        self.assertEqual(d["mix_jsd"], 1.0)              # git only, then build only
+        self.assertEqual(d["mix_first"][0][0], "git")
+        self.assertEqual(d["mix_last"][0][0], "build")
+
+    def test_an_unchanging_mix_has_no_drift(self):
+        d, _ = self.drift(self.session([("git", PROJ)] * 30))
+        self.assertEqual(d["mix_jsd"], 0.0)
+
+    def test_too_short_a_session_has_no_mix_drift(self):
+        d, _ = self.drift(self.session([("git", PROJ)] * 10 + [("make", PROJ)] * 10))
+        self.assertIsNone(d["mix_jsd"])
+
+    def test_the_cascade_node_carries_its_sessions_drift(self):
+        _, p = self.drift(self.session([("git", PROJ), ("ls", "/scratch/other")]))
+        n = node(tree_of(p, 100), 100)
+        self.assertEqual(n["drift"]["cwd_outside_pct"], 50.0)
+        self.assertEqual(n["tool_calls"], 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

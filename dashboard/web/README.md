@@ -159,7 +159,8 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 | **Resources** | `resources` | run vs wait accumulators with coverage, quantile spine, stall by tool, delay accounting shown as `not measured` |
 | **Risk & I/O** | `io_process` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, per-tool/per-user — plus the **event bench** (filter bar → `/api/events` → `/api/export`) |
 | **Sandbox** | `sandbox` | sandbox × approval as independent axes, two grains, the `ancestry_matrix` with `reading` surfaced |
-| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct` |
+| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed |
+| **Cascades** | `cascades` | agent trees deepest first (agent / infra / client nodes, how each parent was found), **nested** (agent under agent) kept apart from **hosted** (a daemon or server running sessions), per-agent drift, depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged |
 | **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
 
 ### Live transport
