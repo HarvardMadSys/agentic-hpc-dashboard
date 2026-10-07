@@ -254,6 +254,32 @@ export interface StallByTool {
   coverage_pct?: number | null;
   [k: string]: unknown;
 }
+/** One class in one time bin. Each `*_s` is summed over the `*_n` exits that
+ *  reported it, and is null -- not 0 -- when none did. */
+export interface ResBinCell {
+  n: number;
+  cpu_s: number | null;
+  cpu_n: number;
+  run_s: number | null;
+  run_n: number;
+  wait_s: number | null;
+  wait_n: number;
+}
+export interface ResBin {
+  /** bin start, epoch seconds */
+  epoch: number;
+  /** seconds of the bin elapsed: `bin_s`, except for the in-progress bin */
+  secs: number;
+  /** null when no exit landed in the bin at all: a gap, not a quiet fleet */
+  by_class: Record<string, ResBinCell> | null;
+}
+export interface ResTimeseries {
+  bin_s: number;
+  rows: ResBin[];
+  no_ts: number;
+  basis: string;
+}
+
 export interface Resources extends PanelEnvelope {
   by_class: Record<string, ResClassBlock>;
   stall_by_tool: StallByTool[];
@@ -262,6 +288,7 @@ export interface Resources extends PanelEnvelope {
   worst_stall?: ResourceInstance[];
   worst_fault?: ResourceInstance[];
   worst_wait?: ResourceInstance[];
+  timeseries?: ResTimeseries;
 }
 
 /* -------------------------------------------------------------- sandbox */

@@ -46,8 +46,7 @@ from .reducers.sandbox import SandboxReducer
 from .reducers.tools import ToolMixReducer
 from .reducers.trajectories import TrajectoryReducer
 
-HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, SandboxReducer,
-                 RiskReducer)
+HIST_REDUCERS = (ToolMixReducer, IoReducer, SandboxReducer, RiskReducer)
 
 # Below this a window is mostly bin-edge noise: one minute of a login fleet is a
 # handful of exits, and every distribution panel would read `n=0`.
@@ -184,6 +183,8 @@ class PanelView:
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
         red = {r.KEY: r(self.cfg, self.classes) for r in HIST_REDUCERS}
+        red["resources"] = ResourceReducer(self.cfg, self.classes,
+                                           window_s=self.window_s)
         red["trajectories"] = TrajectoryReducer(self.cfg, self.classes,
                                                 window_s=self.window_s)
         return red

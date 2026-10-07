@@ -490,6 +490,15 @@ svg {
   stroke: var(--edge);
   stroke-width: 1;
 }
+/* per-column hover band on a timeseries: invisible until hovered, then a faint
+   crosshair column over the lines it describes */
+.xcol {
+  fill: var(--ink);
+  fill-opacity: 0;
+}
+.xcol:hover {
+  fill-opacity: 0.06;
+}
 .scroller {
   overflow-x: auto;
   max-width: 100%;

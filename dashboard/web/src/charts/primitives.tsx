@@ -342,7 +342,12 @@ export interface LineSeries {
  *
  * A `null` y is a GAP. The path is emitted as separate subpaths around it, so a
  * minute with no records reads as a hole in the line -- never as a measured 0,
- * and never as a straight interpolation across the hole. */
+ * and never as a straight interpolation across the hole.
+ *
+ * With `xtip`, hover is per x COLUMN rather than per point: a full-height band
+ * at each x carries one tooltip naming every series there, which is how a
+ * timeseries is read ("what was everyone doing at 14:20"), and every column is
+ * reachable instead of every n-th point. */
 export function Lines({
   series,
   W = 560,
@@ -361,6 +366,7 @@ export function Lines({
   yname,
   ylog,
   xlog,
+  xtip,
 }: {
   series: LineSeries[];
   W?: number;
@@ -379,6 +385,7 @@ export function Lines({
   yname?: string;
   ylog?: boolean;
   xlog?: boolean;
+  xtip?: (x: number) => string;
 }) {
   const finite = series.flatMap((s) => s.pts.filter((p) => p.y != null));
   if (!series.length) return null;
@@ -462,7 +469,7 @@ export function Lines({
                 </g>
               );
             })}
-            {se.pts.map((p, i) => {
+            {!xtip && se.pts.map((p, i) => {
               const every = Math.max(1, Math.round(se.pts.length / 26));
               if (i % every || p.y == null) return null;
               return (
@@ -507,6 +514,25 @@ export function Lines({
         );
       })}
       <line className="base-line" x1={L} x2={W - R} y1={Y(y0)} y2={Y(y0)} />
+      {xtip &&
+        (() => {
+          const ux = [...new Set(xs)].sort((a, b) => a - b);
+          return ux.map((x, i) => {
+            const a = i ? (X(ux[i - 1]) + X(x)) / 2 : L;
+            const b = i < ux.length - 1 ? (X(x) + X(ux[i + 1])) / 2 : W - R;
+            return (
+              <rect
+                key={'c' + i}
+                className="xcol"
+                x={a.toFixed(1)}
+                y={TOP}
+                width={Math.max(b - a, 0.5).toFixed(1)}
+                height={ph}
+                data-tip={xtip(x)}
+              />
+            );
+          });
+        })()}
       {ylabel && (
         <text className="axlbl" x={0} y={9}>
           {ylabel}

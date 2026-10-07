@@ -343,7 +343,58 @@ function ioProcess() {
   };
 }
 
-function resources() {
+/* 24 h at 10-minute bins, as the backend sizes a 1440-minute window. Carries
+ * the same awkward states as the rate rows: the outage as whole-bin gaps, an
+ * in-progress last bin, and a stretch where `human` exits reported no
+ * schedstat at all (run/wait null with events present -- unmeasured, not 0). */
+function resourceSeries(nowEpoch, shape) {
+  const BIN = 600;
+  const N = 144;
+  const end = Math.floor(nowEpoch / BIN);
+  const rows = [];
+  for (let i = 0; i < N; i++) {
+    const epoch = (end - N + 1 + i) * BIN;
+    const min = i * 10;
+    const secs = i === N - 1 ? nowEpoch - epoch : BIN;
+    if (min + 10 > OUTAGE[0] && min < OUTAGE[1]) {
+      rows.push({ epoch, secs, by_class: null });
+      continue;
+    }
+    const by_class = {};
+    for (const c of CLASSES) {
+      const k = CLASSES.indexOf(c);
+      const d = diurnal(min);
+      /* scaled so the bins sum to roughly the class totals on the plates */
+      const [events, cpuTot] = shape[c];
+      const n = Math.round((events / N / 0.75) * d * (0.75 + 0.5 * wob(i, k)) * (secs / BIN));
+      if (!n) continue;
+      /* a long-lived process exiting lands all its CPU in one bin */
+      const spike = (c === 'human' && i % 37 === 11) || (c === 'agent' && i % 53 === 20) ? 6 : 1;
+      const cpu = Number(((cpuTot / events) * n * spike * (0.8 + 0.4 * wob(i, k + 7))).toFixed(3));
+      const cov = c === 'agent' ? 0.58 : c === 'human-vscode' ? 0.31 : i > 40 && i < 70 ? 0 : 0.13;
+      const mn = Math.round(n * cov);
+      by_class[c] = {
+        n,
+        cpu_s: cpu,
+        cpu_n: n,
+        run_s: mn ? Number((cpu * cov * 0.94).toFixed(3)) : null,
+        run_n: mn,
+        wait_s: mn ? Number((cpu * cov * (c === 'agent' ? 2.6 + 1.8 * d : 1.1) * (0.7 + 0.6 * wob(i, k + 3))).toFixed(3)) : null,
+        wait_n: mn,
+      };
+    }
+    rows.push({ epoch, secs, by_class });
+  }
+  return {
+    bin_s: BIN,
+    rows,
+    no_ts: 0,
+    basis:
+      'per bin: events = exits; cpu_s/run_s/wait_s summed over the exits that reported them (cpu_n/run_n/wait_n), attributed to the bin the process EXITED in, so a long-lived process lands all its CPU in its last bin',
+  };
+}
+
+function resources(nowEpoch) {
   const by_class = {};
   const shape = {
     agent: [4_812_446, 91_244.8, 62_118.4, 188_442.6],
@@ -389,6 +440,7 @@ function resources() {
       dstate_wait_s: i % 4 === 3 ? null : Number((880 / (i + 1.7)).toFixed(1)),
       coverage_pct: Number(Math.max(4, 68 - i * 4.8).toFixed(1)),
     })),
+    timeseries: resourceSeries(nowEpoch, shape),
     scope: { hosts: HOSTS.length, days: 2, window: '2026-09-13 00:00 to 2026-09-14 18:00' },
     cpu_basis: 'self cpu_s (utime+stime of the exiting process); child_cpu_s NEVER added',
   };
@@ -758,7 +810,7 @@ function build() {
       panels: {
         tool_mix: toolMix(),
         io_process: ioProcess(),
-        resources: resources(),
+        resources: resources(nowEpoch),
         sandbox: sandbox(),
         trajectories: trajectories(nowEpoch),
         /* An absent panel, so <EmptyState> is verifiable without the backend. */

@@ -246,25 +246,52 @@ class ConcurrencyTest(FeedCase):
 
 class PanelsTest(FeedCase):
 
+    def built(self, agg, minutes):
+        agg.backfill_now()
+        agg.panels(minutes)
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            # status(), not panels(): asking again re-queues a failed build,
+            # and the failure is what this has to be able to see.
+            held = {w["minutes"]: w for w in agg.panels_by_window.status()["held"]}
+            if held[minutes]["state"] in ("ready", "error"):
+                break
+            time.sleep(0.05)
+        self.assertEqual((held[minutes]["state"], held[minutes]["error"]), ("ready", None))
+        return agg.panels(minutes)["panels"]
+
     def test_the_default_window_builds_its_panels_over_the_whole_feed(self):
         self.append("h1.exits.jsonl", self.thirty_exits())
         agg = Aggregator(self.cfg())
         agg.start()
         try:
-            agg.backfill_now()
-            agg.panels(1440)
-            deadline = time.time() + 20
-            while time.time() < deadline:
-                # status(), not panels(): asking again re-queues a failed build,
-                # and the failure is what this has to be able to see.
-                held = {w["minutes"]: w for w in agg.panels_by_window.status()["held"]}
-                if held[1440]["state"] in ("ready", "error"):
-                    break
-                time.sleep(0.05)
-            self.assertEqual((held[1440]["state"], held[1440]["error"]), ("ready", None))
-            by_class = agg.panels(1440)["panels"]["tool_mix"]["by_class"]
+            by_class = self.built(agg, 1440)["tool_mix"]["by_class"]
             self.assertEqual((by_class["agent"]["calls"], by_class["human"]["calls"]),
                              (20, 10))
+        finally:
+            agg.stop()
+
+    def test_the_resource_timeseries_spans_the_window_and_sums_to_the_totals(self):
+        self.append("h1.exits.jsonl", self.thirty_exits())
+        agg = Aggregator(self.cfg())
+        agg.start()
+        try:
+            res = self.built(agg, 1440)["resources"]
+            ts = res["timeseries"]
+            # 24 h at 10-minute bins; the feed covers only the last 150 minutes,
+            # and the rest of the window is gap, not a chart stretched to fit.
+            self.assertEqual((ts["bin_s"], len(ts["rows"])), (600, 144))
+            filled = [r for r in ts["rows"] if r["by_class"]]
+            self.assertLessEqual(len(filled), 16)
+            self.assertIsNone(ts["rows"][0]["by_class"])
+            for cls in ("agent", "human"):
+                cells = [r["by_class"][cls] for r in filled if cls in r["by_class"]]
+                self.assertEqual(sum(c["n"] for c in cells), res["by_class"][cls]["events"])
+                self.assertAlmostEqual(sum(c["cpu_s"] for c in cells),
+                                       res["by_class"][cls]["cpu_s"])
+                # schedstat never reported: unmeasured in every bin, never 0
+                self.assertTrue(all(c["run_s"] is None and c["run_n"] == 0
+                                    for c in cells))
         finally:
             agg.stop()
 

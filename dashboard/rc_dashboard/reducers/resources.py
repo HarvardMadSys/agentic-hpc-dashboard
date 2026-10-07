@@ -11,22 +11,42 @@ inflating login CPU 1.83x pooled and UNEVENLY by class (agent 1.57x, human
 2.03x, human-vscode 2.38x), which would invert an agent-vs-human comparison.
 `schedstat_ratio` (cpu_s / sched_run_s, median) is emitted so any future
 regression in that basis is visible on the dashboard itself.
+
+`timeseries` re-cuts the same exits into time bins, so the Resources tab can
+show WHEN a class used the CPU rather than only how much over the whole window.
+It sums exactly the records the class totals sum -- the plates and the area
+under the lines are one set of numbers.
 """
 import collections
+import time
 
 from . import INSTANCE_CAP, Acc, Quant, pct, top_by, who
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
 DELAY_FIELDS = ("blkio_wait_s", "swapin_wait_s", "freepages_wait_s")
 
+# Round bin widths, seconds. The narrowest that keeps a window at or under
+# MAX_BINS points wins: enough to see a diurnal shape at 7 d, few enough that a
+# payload stays a few tens of KB.
+BIN_STEPS = (60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400)
+MAX_BINS = 180
+
+
+def bin_width(window_s):
+    return next((b for b in BIN_STEPS if window_s / b <= MAX_BINS), BIN_STEPS[-1])
+
 
 class ResourceReducer:
     EVENTS = ("exit", "truncated")
     KEY = "resources"
 
-    def __init__(self, cfg, classes):
+    def __init__(self, cfg, classes, window_s=86400):
         self.cfg = cfg
         self.classes = list(classes)
+        self.window_s = int(window_s)
+        self.bin_s = bin_width(self.window_s)
+        self.bins = {}             # bin index -> class -> counters
+        self.no_ts = 0
         self.cls = collections.defaultdict(lambda: {
             "events": 0,
             "cpu_s": 0.0, "sched_run": Acc(), "sched_wait": Acc(),
@@ -54,6 +74,7 @@ class ResourceReducer:
         run = rec.get("sched_run_s")
         if cpu is not None:
             c["cpu_s"] += cpu
+        self._bin(rec, cpu, run, rec.get("sched_wait_s"))
         c["sched_run"].add(run)
         c["sched_wait"].add(rec.get("sched_wait_s"))
         c["q_cpu"].add(cpu)
@@ -110,6 +131,67 @@ class ResourceReducer:
         if rec.get("dstate_src"):
             d["src"][rec["dstate_src"]] += 1
 
+    def _bin(self, rec, cpu, run, wait):
+        """Each nullable field keeps its own present-count, so a bin where
+        schedstat was unreadable reads as unmeasured, not as zero wait."""
+        e = rec.get("_ts_epoch")
+        if not isinstance(e, (int, float)):
+            self.no_ts += 1
+            return
+        # A skewed host's near-future record lands in the newest bin, as in
+        # buckets.RollingBuckets, rather than in a bin that has not started.
+        e = min(e, time.time())
+        b = self.bins.setdefault(int(e // self.bin_s), {}).setdefault(
+            rec["_a3"], {"n": 0, "cpu_s": 0.0, "cpu_n": 0, "run_s": 0.0, "run_n": 0,
+                         "wait_s": 0.0, "wait_n": 0})
+        b["n"] += 1
+        for k, v in (("cpu", cpu), ("run", run), ("wait", wait)):
+            if v is not None:
+                b[k + "_s"] += v
+                b[k + "_n"] += 1
+
+    def timeseries(self, now=None):
+        """Dense bins, oldest first, from the window's start to now.
+
+        The range is the WINDOW, not the data: a feed that started three hours
+        into a 24 h window shows twenty-one hours of gap rather than a chart
+        stretched to look full. A bin no exit landed in is null, and a field no
+        record in the bin reported is null -- neither is ever 0. `secs` is how
+        much of the bin has elapsed, so the in-progress bin's rate is the rate
+        so far instead of a cliff at the right edge.
+        """
+        now = now or time.time()
+        end = int(now // self.bin_s)
+        start = end - max(1, self.window_s // self.bin_s) + 1
+        if self.bins:
+            # A view keeps ingesting past its window, so data can predate it.
+            start = min(start, min(self.bins))
+        rows = []
+        for idx in range(start, end + 1):
+            t0 = idx * self.bin_s
+            slot = self.bins.get(idx)
+            by_class = None
+            if slot:
+                by_class = {}
+                for cls, b in slot.items():
+                    by_class[cls] = {
+                        "n": b["n"],
+                        "cpu_s": round(b["cpu_s"], 3) if b["cpu_n"] else None,
+                        "cpu_n": b["cpu_n"],
+                        "run_s": round(b["run_s"], 3) if b["run_n"] else None,
+                        "run_n": b["run_n"],
+                        "wait_s": round(b["wait_s"], 3) if b["wait_n"] else None,
+                        "wait_n": b["wait_n"],
+                    }
+            rows.append({"epoch": t0,
+                         "secs": max(1.0, min(self.bin_s, round(now - t0, 1))),
+                         "by_class": by_class})
+        return {"bin_s": self.bin_s, "rows": rows, "no_ts": self.no_ts,
+                "basis": "per bin: events = exits; cpu_s/run_s/wait_s summed over the "
+                         "exits that reported them (cpu_n/run_n/wait_n), attributed to "
+                         "the bin the process EXITED in, so a long-lived process lands "
+                         "all its CPU in its last bin"}
+
     def result(self):
         by_class = {}
         for cls, c in self.cls.items():
@@ -147,6 +229,7 @@ class ResourceReducer:
             "worst_stall": self.worst_stall[:INSTANCE_CAP],
             "worst_fault": self.worst_fault[:INSTANCE_CAP],
             "worst_wait": self.worst_wait[:INSTANCE_CAP],
+            "timeseries": self.timeseries(),
             "scope": "login nodes only -- the eBPF tier runs on login nodes, so this is "
                      "login-node resource use, not cluster resource use",
             "cpu_basis": "sum(cpu_s), self, once per process; child_cpu_s NEVER added",

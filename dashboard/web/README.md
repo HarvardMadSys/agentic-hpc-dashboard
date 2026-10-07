@@ -156,7 +156,7 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 | **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
 | **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
-| **Resources** | `resources` | run vs wait accumulators with coverage, quantile spine, stall by tool, delay accounting shown as `not measured` |
+| **Resources** | `resources` | events/min, CPU cores and schedstat run vs wait per class as timeseries over the window (`resources.timeseries`), accumulators with coverage, quantile spine, stall by tool, delay accounting shown as `not measured` |
 | **Risk & I/O** | `io_process` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, per-tool/per-user — plus the **event bench** (filter bar → `/api/events` → `/api/export`) |
 | **Sandbox** | `sandbox` | sandbox × approval as independent axes, two grains, the `ancestry_matrix` with `reading` surfaced |
 | **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct` |
