@@ -964,6 +964,39 @@ details.basis .body b {
   color: var(--muted);
 }
 
+/* ------------------------------------------------- sporadicity: zones, paths */
+.zone {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.zone b {
+  color: var(--ink);
+  font-weight: 500;
+}
+.where {
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+.where > div {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.where .dot {
+  align-self: center;
+}
+.where .mono {
+  word-break: break-all;
+}
+.where .sev {
+  font-size: 9px;
+  padding: 0 4px;
+}
+
 .err {
   border: 1px solid var(--crit);
   background: #fdeff1;

@@ -124,6 +124,20 @@
       "include_key_types": ["apid", "sess", "tty"],
       "//": "'usr' is excluded: a usr-keyed group is 'everything that user did',",
       "//1": "which is not a trajectory. It is counted in by_key_type, never ranked."
+    },
+    "sporadicity": {
+      "//": "Blast radius: launch dir (cwd) vs the directories argv names.",
+      "//1": "Zones are relative to each session's launch dir. Point shared_prefixes",
+      "//2": "at the site's shared storage, or those paths read as `other`; a path",
+      "//3": "under a home_roots entry whose name is not the user's is `other-home`.",
+      "top_n": 15, "dirs_top_n": 40, "rollup_depth": 4,
+      "max_sessions": 50000, "max_dirs_per_session": 128, "dedup_index_max": 20000,
+      "include_key_types": ["apid", "sess", "tty"],
+      "home_roots": ["/home", "/n/home[0-9]*", "/users"],
+      "home_default": "/home/{user}",
+      "shared_prefixes": ["/n", "/scratch", "/netscratch", "/net", "/lustre", "/gpfs",
+                          "/project", "/projects", "/work", "/data", "/hdd", "/madsys",
+                          "/mnt", "/media", "/shared"]
     }
   },
 

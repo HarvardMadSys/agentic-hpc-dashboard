@@ -304,7 +304,8 @@ class Aggregator:
             # "the collector wrote nothing" and "we have not finished reading it"
             # are different facts, and a panel that renders them alike is the
             # zero-is-not-missing mistake wearing a different hat.
-            for key in ("tool_mix", "io_process", "resources", "sandbox", "risk"):
+            for key in ("tool_mix", "io_process", "resources", "sandbox", "risk",
+                        "sporadicity"):
                 if key not in out:
                     out[key] = dict(ebpf, _window=status)
             body = dict(self.node_result) if isinstance(self.node_result, dict) \

@@ -197,6 +197,14 @@ already made once.
 - **`submit` request fields are argv-only.** A job whose `#SBATCH` directives carry the
   request reports `null` for `partition`/`gpus`/`array`; `req_src` says which. Recovering them
   needs a `slurm_jobs` census join, which is not a configured feed.
+- **`cwd` is the launch directory, not where an agent's tool call ran.** The
+  collector inherits `cwd` from the parent and reads `/proc/<pid>/cwd` only for agent
+  roots, tty processes and submits, so a Claude Code tool call that ran
+  `cd /elsewhere && …` still records the directory the agent started in. The
+  **Sporadicity** tab therefore treats `cwd` as the anchor and reads reach from argv —
+  `cd` targets, absolute and `~` paths, relative paths only against a base it knows.
+  That is a floor: a file a program opens on its own never reaches argv. Ground truth
+  needs a `chdir`/file-open probe in the collector.
 - **Scheduler and GPU panels are absent, not zero.** `running_agent_jobs` and GPU duty need
   the census and `dcgm`. The Live tab shows *agent job submissions in the window* from eBPF
   `submit` records instead — per-submission and actor-attributed, which is better evidence
@@ -211,7 +219,7 @@ already made once.
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
 | `rc_dashboard/normalize.py` | schema contract, `actor3`, sandbox/approval, session keys, null gating |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
-| `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, live, node |
+| `rc_dashboard/reducers/` | tools, io, resources, sandbox, risk, sporadicity, trajectories, live, node |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (`seek_to_epoch`) |

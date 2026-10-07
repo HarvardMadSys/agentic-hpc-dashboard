@@ -43,11 +43,12 @@ from .reducers.io import IoReducer
 from .reducers.resources import ResourceReducer
 from .reducers.risk import RiskReducer
 from .reducers.sandbox import SandboxReducer
+from .reducers.sporadicity import SporadicityReducer
 from .reducers.tools import ToolMixReducer
 from .reducers.trajectories import TrajectoryReducer
 
 HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, SandboxReducer,
-                 RiskReducer)
+                 RiskReducer, SporadicityReducer)
 
 # Below this a window is mostly bin-edge noise: one minute of a login fleet is a
 # handful of exits, and every distribution panel would read `n=0`.

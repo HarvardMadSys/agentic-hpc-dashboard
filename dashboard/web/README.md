@@ -159,6 +159,7 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 | **Resources** | `resources` | run vs wait accumulators with coverage, quantile spine, stall by tool, delay accounting shown as `not measured` |
 | **Risk & I/O** | `io_process` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, per-tool/per-user — plus the **event bench** (filter bar → `/api/events` → `/api/export`) |
 | **Sandbox** | `sandbox` | sandbox × approval as independent axes, two grains, the `ancestry_matrix` with `reading` surfaced |
+| **Sporadicity** | `sporadicity` | blast radius: each session's launch dir vs the directories its argv names — zone mix per class (mentions and writes), sessions per zone, radius in levels up from the launch dir, sessions ranked by `radius` / `writes` / `dirs` / `other_home` (URL `?reach=`), the directories reached from outside, and a coverage table naming what argv cannot show |
 | **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct` |
 | **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
 
@@ -172,7 +173,7 @@ a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels
 
 ### Filters, URL state and export
 
-Every filter — plus the active tab and the trajectory rank — lives in the query string, so
+Every filter — plus the active tab, the trajectory rank and the sporadicity rank (`reach`) — lives in the query string, so
 a reload or a pasted link restores the view. `src/lib/filters.ts` owns the one
 serialisation: `apiQuery()` builds the string sent to **both** `/api/events` and
 `/api/export`, so the download is exactly the view by construction rather than by

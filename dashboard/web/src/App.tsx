@@ -21,6 +21,7 @@ import { SessionsTab } from './tabs/SessionsTab';
 import { ResourcesTab } from './tabs/ResourcesTab';
 import { RiskIoTab } from './tabs/RiskIoTab';
 import { SandboxTab } from './tabs/SandboxTab';
+import { SporadicityTab } from './tabs/SporadicityTab';
 import { TrajectoriesTab } from './tabs/TrajectoriesTab';
 import { FeedsTab } from './tabs/FeedsTab';
 
@@ -31,6 +32,7 @@ const TABS = [
   { k: 'resources', lbl: 'Resources', eyebrow: 'process tier' },
   { k: 'risk', lbl: 'Risk & I/O', eyebrow: 'process tier' },
   { k: 'sandbox', lbl: 'Sandbox', eyebrow: 'process tier' },
+  { k: 'sporadicity', lbl: 'Sporadicity', eyebrow: 'blast radius' },
   { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'process tier' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
 ];
@@ -123,6 +125,10 @@ export default function App() {
         );
       case 'sandbox':
         return <SandboxTab P={P} cls={url.cls} />;
+      case 'sporadicity':
+        return (
+          <SporadicityTab P={P} cls={url.cls} rank={url.reach} setRank={(r) => setUrl({ reach: r })} />
+        );
       case 'trajectories':
         return <TrajectoriesTab traj={traj} rank={url.rank} setRank={(r) => setUrl({ rank: r })} cls={url.cls} />;
       case 'feeds':

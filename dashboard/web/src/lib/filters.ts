@@ -2,12 +2,12 @@
  *
  * The filter bar, the `/api/events` request and the `/api/export` download all
  * read the SAME query string produced here, so the downloaded JSONL is exactly
- * the view on screen. `tab` and `rank` ride along in the URL too so a reload
+ * the view on screen. `tab`, `rank` and `reach` ride along in the URL so a reload
  * restores what the user was looking at, but they are stripped before the
  * query reaches the API.
  */
 import { CLS } from './classes';
-import type { Cls, TrajRank } from '../api/types';
+import type { Cls, ReachRank, TrajRank } from '../api/types';
 
 /** Scalar filter params, in the order the backend documents them. */
 export const SCALAR_KEYS = [
@@ -41,7 +41,7 @@ export type ScalarKey = (typeof SCALAR_KEYS)[number];
  * keys, and `UI_OMIT_AT` below is a mapped type over them, so adding a key here
  * without deciding what value omits it is a compile error.
  */
-export const UI_KEYS = ['tab', 'rank', 'win'] as const;
+export const UI_KEYS = ['tab', 'rank', 'reach', 'win'] as const;
 export type UiKey = (typeof UI_KEYS)[number];
 
 export interface Filters {
@@ -53,6 +53,8 @@ export interface Filters {
 export interface UrlState extends Filters {
   tab: string;
   rank: TrajRank;
+  /** The sporadicity tab's ranking. */
+  reach: ReachRank;
   /** Selected window in minutes. `null` means "whatever the service defaults
    *  to" -- deliberately not resolved to a number here, so a link shared before
    *  an operator changed `live.window_min` follows the new default instead of
@@ -65,10 +67,12 @@ export interface UrlState extends Filters {
 const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
   tab: 'live',
   rank: 'events',
+  reach: 'radius',
   win: null,
 };
 
 const RANKS = new Set(['events', 'cpu_s', 'distinct_tools', 'chain_runs']);
+const REACH = new Set(['radius', 'writes', 'dirs', 'other_home']);
 
 export function parseUrl(search: string): UrlState {
   const p = new URLSearchParams(search);
@@ -79,6 +83,7 @@ export function parseUrl(search: string): UrlState {
     if (v != null && v !== '') scalars[k] = v;
   }
   const rank = p.get('rank');
+  const reach = p.get('reach');
   const win = Number(p.get('win'));
   return {
     // At least one class is always selected: an empty selection would silently
@@ -87,6 +92,7 @@ export function parseUrl(search: string): UrlState {
     scalars,
     tab: p.get('tab') || 'live',
     rank: (rank && RANKS.has(rank) ? rank : 'events') as TrajRank,
+    reach: (reach && REACH.has(reach) ? reach : 'radius') as ReachRank,
     // Nonsense in the query string falls back to the default rather than being
     // clamped to a number nobody asked for. The backend clamps what it is sent.
     win: Number.isFinite(win) && win > 0 ? Math.floor(win) : null,

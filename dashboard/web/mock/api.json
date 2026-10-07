@@ -1878,6 +1878,667 @@
      "axes": "sandbox and approval_mode are independent: a confined tree can still bypass approvals"
     }
    },
+   "sporadicity": {
+    "_feed": "ebpfm",
+    "_status": "ok",
+    "_present": true,
+    "_paths": [
+     "/var/log/ebpfm/exit_2026-09-14.jsonl",
+     "/var/log/ebpfm/exit_2026-09-13.jsonl"
+    ],
+    "_notice": null,
+    "zones": [
+     "cwd",
+     "home",
+     "home-dot",
+     "tool-state",
+     "tmp",
+     "shared",
+     "other-home",
+     "system",
+     "other"
+    ],
+    "zone_meaning": {
+     "cwd": "inside the session's launch directory",
+     "tool-state": "an agent's or editor's own state (~/.claude, ~/.codex, ~/.vscode-server, /tmp/claude-*)",
+     "other-home": "ANOTHER user's home directory"
+    },
+    "radius_buckets": [
+     "0",
+     "1",
+     "2",
+     "3+",
+     "root"
+    ],
+    "contained": [
+     "cwd",
+     "tool-state"
+    ],
+    "by_class": {
+     "agent": {
+      "sessions": 1412,
+      "sessions_outside": 318,
+      "sessions_write_outside": 61,
+      "sessions_other_home": 4,
+      "no_anchor": 1096,
+      "refs": {
+       "cwd": 48812,
+       "home": 1204,
+       "home-dot": 3118,
+       "tool-state": 22441,
+       "tmp": 2206,
+       "shared": 9884,
+       "other-home": 12,
+       "system": 1877,
+       "other": 140
+      },
+      "writes": {
+       "cwd": 6118,
+       "home": 88,
+       "home-dot": 41,
+       "tool-state": 4002,
+       "tmp": 611,
+       "shared": 1204
+      },
+      "sessions_by_zone": {
+       "cwd": 1301,
+       "home": 88,
+       "home-dot": 212,
+       "tool-state": 1122,
+       "tmp": 141,
+       "shared": 96,
+       "other-home": 4,
+       "system": 77,
+       "other": 9
+      },
+      "write_sessions_by_zone": {
+       "cwd": 744,
+       "home": 12,
+       "home-dot": 9,
+       "tool-state": 1011,
+       "tmp": 33,
+       "shared": 21
+      },
+      "radius": {
+       "0": 1094,
+       "1": 61,
+       "2": 72,
+       "3+": 58,
+       "root": 127
+      },
+      "write_radius": {
+       "0": 744,
+       "1": 9,
+       "2": 14,
+       "3+": 18,
+       "root": 20
+      }
+     },
+     "human-vscode": {
+      "sessions": 488,
+      "sessions_outside": 21,
+      "sessions_write_outside": 0,
+      "sessions_other_home": 0,
+      "no_anchor": 5911,
+      "refs": {
+       "cwd": 4118,
+       "tool-state": 18224,
+       "tmp": 61,
+       "system": 44
+      },
+      "writes": {
+       "cwd": 212,
+       "tool-state": 88
+      },
+      "sessions_by_zone": {
+       "cwd": 462,
+       "tool-state": 488,
+       "tmp": 14,
+       "system": 9
+      },
+      "write_sessions_by_zone": {
+       "cwd": 41,
+       "tool-state": 102
+      },
+      "radius": {
+       "0": 467,
+       "root": 21
+      },
+      "write_radius": {
+       "0": 41
+      }
+     },
+     "human": {
+      "sessions": 61,
+      "sessions_outside": 38,
+      "sessions_write_outside": 9,
+      "sessions_other_home": 0,
+      "no_anchor": 18,
+      "refs": {
+       "cwd": 2204,
+       "home": 611,
+       "home-dot": 41,
+       "tmp": 188,
+       "shared": 3012,
+       "system": 902
+      },
+      "writes": {
+       "cwd": 140,
+       "home": 12,
+       "tmp": 9,
+       "shared": 466
+      },
+      "sessions_by_zone": {
+       "cwd": 58,
+       "home": 22,
+       "home-dot": 6,
+       "tmp": 14,
+       "shared": 19,
+       "system": 31
+      },
+      "write_sessions_by_zone": {
+       "cwd": 33,
+       "home": 3,
+       "tmp": 4,
+       "shared": 7
+      },
+      "radius": {
+       "0": 23,
+       "1": 9,
+       "2": 4,
+       "3+": 3,
+       "root": 22
+      },
+      "write_radius": {
+       "0": 33,
+       "1": 2,
+       "root": 7
+      }
+     }
+    },
+    "ranks": {
+     "radius": [
+      "holylogin03|2026-09-14|agent|apid:41074",
+      "holylogin01|2026-09-14|agent|apid:41000",
+      "holylogin01|2026-09-14|agent|apid:41111",
+      "holylogin02|2026-09-14|human|apid:41148",
+      "holylogin03|2026-09-14|human-vscode|apid:41185",
+      "holylogin02|2026-09-14|agent|apid:41037"
+     ],
+     "writes": [
+      "holylogin01|2026-09-14|agent|apid:41111",
+      "holylogin01|2026-09-14|agent|apid:41000",
+      "holylogin02|2026-09-14|agent|apid:41037",
+      "holylogin02|2026-09-14|human|apid:41148"
+     ],
+     "dirs": [
+      "holylogin01|2026-09-14|agent|apid:41000",
+      "holylogin02|2026-09-14|agent|apid:41037",
+      "holylogin02|2026-09-14|human|apid:41148",
+      "holylogin03|2026-09-14|agent|apid:41074",
+      "holylogin01|2026-09-14|agent|apid:41111",
+      "holylogin03|2026-09-14|human-vscode|apid:41185"
+     ],
+     "other_home": [
+      "holylogin03|2026-09-14|agent|apid:41074"
+     ]
+    },
+    "rows": {
+     "holylogin01|2026-09-14|agent|apid:41000": {
+      "sid": "holylogin01|2026-09-14|agent|apid:41000",
+      "key_type": "apid",
+      "host": "holylogin01",
+      "user": "thomwg11",
+      "actor3": "agent",
+      "agent_type": "claude_code",
+      "agent_pid": 41000,
+      "anchor": "/n/home01/thomwg11/llm-eval",
+      "anchor_src": "mode",
+      "home": "/n/home01/thomwg11",
+      "n_records": 120,
+      "wall_s": 1800,
+      "radius": 3,
+      "root_escape": false,
+      "write_radius": 3,
+      "outside_dirs": 3,
+      "outside_refs": 72,
+      "outside_writes": 44,
+      "other_home_dirs": 0,
+      "zones": {
+       "shared": {
+        "dirs": 2,
+        "refs": 63,
+        "writes": 40
+       },
+       "tmp": {
+        "dirs": 1,
+        "refs": 9,
+        "writes": 4
+       }
+      },
+      "top_outside": [
+       {
+        "dir": "/n/holylabs/LABS/kempner_lab/Users/thomwg11/ckpt",
+        "zone": "shared",
+        "refs": 41,
+        "writes": 18,
+        "cd": true,
+        "radius": 3
+       },
+       {
+        "dir": "/n/netscratch/kempner_lab/thomwg11/runs",
+        "zone": "shared",
+        "refs": 22,
+        "writes": 22,
+        "cd": false,
+        "radius": 3
+       },
+       {
+        "dir": "/tmp/eval-cache",
+        "zone": "tmp",
+        "refs": 9,
+        "writes": 4,
+        "cd": false,
+        "radius": 3
+       }
+      ],
+      "more_outside": 4,
+      "dirs_dropped": 0,
+      "sandbox": "unsandboxed",
+      "approval": "bypassed"
+     },
+     "holylogin02|2026-09-14|agent|apid:41037": {
+      "sid": "holylogin02|2026-09-14|agent|apid:41037",
+      "key_type": "apid",
+      "host": "holylogin02",
+      "user": "thomwg11",
+      "actor3": "agent",
+      "agent_type": "codex",
+      "agent_pid": 41037,
+      "anchor": "/n/home01/thomwg11/llm-eval",
+      "anchor_src": "root",
+      "home": "/n/home01/thomwg11",
+      "n_records": 173,
+      "wall_s": 2411,
+      "radius": 1,
+      "root_escape": false,
+      "write_radius": 1,
+      "outside_dirs": 2,
+      "outside_refs": 18,
+      "outside_writes": 3,
+      "other_home_dirs": 0,
+      "zones": {
+       "home": {
+        "dirs": 1,
+        "refs": 12,
+        "writes": 3
+       },
+       "home-dot": {
+        "dirs": 1,
+        "refs": 6,
+        "writes": 0
+       }
+      },
+      "top_outside": [
+       {
+        "dir": "/n/home04/thomwg11/llm-eval-old",
+        "zone": "home",
+        "refs": 12,
+        "writes": 3,
+        "cd": true,
+        "radius": 1
+       },
+       {
+        "dir": "/n/home04/thomwg11/.cache/huggingface",
+        "zone": "home-dot",
+        "refs": 6,
+        "writes": 0,
+        "cd": false,
+        "radius": 1
+       }
+      ],
+      "more_outside": 0,
+      "dirs_dropped": 0,
+      "sandbox": "sandboxed",
+      "approval": "supervised"
+     },
+     "holylogin03|2026-09-14|agent|apid:41074": {
+      "sid": "holylogin03|2026-09-14|agent|apid:41074",
+      "key_type": "apid",
+      "host": "holylogin03",
+      "user": "aparker",
+      "actor3": "agent",
+      "agent_type": "claude_code",
+      "agent_pid": 41074,
+      "anchor": "/n/home04/aparker/genomics/pipeline",
+      "anchor_src": "root",
+      "home": "/n/home04/aparker",
+      "n_records": 226,
+      "wall_s": 3022,
+      "radius": 4,
+      "root_escape": false,
+      "write_radius": null,
+      "outside_dirs": 2,
+      "outside_refs": 17,
+      "outside_writes": 0,
+      "other_home_dirs": 1,
+      "zones": {
+       "other-home": {
+        "dirs": 1,
+        "refs": 3,
+        "writes": 0
+       },
+       "shared": {
+        "dirs": 1,
+        "refs": 14,
+        "writes": 0
+       }
+      },
+      "top_outside": [
+       {
+        "dir": "/n/home02/lzhang/shared-refs",
+        "zone": "other-home",
+        "refs": 3,
+        "writes": 0,
+        "cd": true,
+        "radius": 2
+       },
+       {
+        "dir": "/n/holylabs/LABS/kempner_lab/ref/hg38",
+        "zone": "shared",
+        "refs": 14,
+        "writes": 0,
+        "cd": false,
+        "radius": 4
+       }
+      ],
+      "more_outside": 0,
+      "dirs_dropped": 0,
+      "sandbox": "unsandboxed",
+      "approval": "supervised"
+     },
+     "holylogin01|2026-09-14|agent|apid:41111": {
+      "sid": "holylogin01|2026-09-14|agent|apid:41111",
+      "key_type": "apid",
+      "host": "holylogin01",
+      "user": "thomwg11",
+      "actor3": "agent",
+      "agent_type": "codex",
+      "agent_pid": 41111,
+      "anchor": "/n/home01/thomwg11/sweeps",
+      "anchor_src": "mode",
+      "home": "/n/home01/thomwg11",
+      "n_records": 279,
+      "wall_s": 3633,
+      "radius": 3,
+      "root_escape": false,
+      "write_radius": 3,
+      "outside_dirs": 1,
+      "outside_refs": 88,
+      "outside_writes": 61,
+      "other_home_dirs": 0,
+      "zones": {
+       "shared": {
+        "dirs": 1,
+        "refs": 88,
+        "writes": 61
+       }
+      },
+      "top_outside": [
+       {
+        "dir": "/n/netscratch/kempner_lab/thomwg11/sweep-12",
+        "zone": "shared",
+        "refs": 88,
+        "writes": 61,
+        "cd": false,
+        "radius": 3
+       }
+      ],
+      "more_outside": 0,
+      "dirs_dropped": 0,
+      "sandbox": "denied",
+      "approval": "bypassed"
+     },
+     "holylogin02|2026-09-14|human|apid:41148": {
+      "sid": "holylogin02|2026-09-14|human|apid:41148",
+      "key_type": "tty",
+      "host": "holylogin02",
+      "user": "dwei",
+      "actor3": "human",
+      "agent_type": null,
+      "agent_pid": null,
+      "anchor": "/n/home01/dwei/thesis",
+      "anchor_src": "root",
+      "home": "/n/home01/dwei",
+      "n_records": 332,
+      "wall_s": 4244,
+      "radius": 3,
+      "root_escape": false,
+      "write_radius": 3,
+      "outside_dirs": 2,
+      "outside_refs": 11,
+      "outside_writes": 2,
+      "other_home_dirs": 0,
+      "zones": {
+       "home": {
+        "dirs": 1,
+        "refs": 7,
+        "writes": 0
+       },
+       "shared": {
+        "dirs": 1,
+        "refs": 4,
+        "writes": 2
+       }
+      },
+      "top_outside": [
+       {
+        "dir": "/n/home03/dwei/data",
+        "zone": "home",
+        "refs": 7,
+        "writes": 0,
+        "cd": false,
+        "radius": 1
+       },
+       {
+        "dir": "/scratch/dwei/tmp",
+        "zone": "shared",
+        "refs": 4,
+        "writes": 2,
+        "cd": false,
+        "radius": 3
+       }
+      ],
+      "more_outside": 0,
+      "dirs_dropped": 0,
+      "sandbox": "unknown",
+      "approval": "unknown"
+     },
+     "holylogin03|2026-09-14|human-vscode|apid:41185": {
+      "sid": "holylogin03|2026-09-14|human-vscode|apid:41185",
+      "key_type": "tty",
+      "host": "holylogin03",
+      "user": "jsilva",
+      "actor3": "human-vscode",
+      "agent_type": "vscode",
+      "agent_pid": null,
+      "anchor": "/n/home03/jsilva/webapp",
+      "anchor_src": "root",
+      "home": "/n/home03/jsilva",
+      "n_records": 385,
+      "wall_s": 4855,
+      "radius": 3,
+      "root_escape": false,
+      "write_radius": null,
+      "outside_dirs": 1,
+      "outside_refs": 5,
+      "outside_writes": 0,
+      "other_home_dirs": 0,
+      "zones": {
+       "tmp": {
+        "dirs": 1,
+        "refs": 5,
+        "writes": 0
+       }
+      },
+      "top_outside": [
+       {
+        "dir": "/tmp/vite-cache",
+        "zone": "tmp",
+        "refs": 5,
+        "writes": 0,
+        "cd": false,
+        "radius": 3
+       }
+      ],
+      "more_outside": 0,
+      "dirs_dropped": 0,
+      "sandbox": "unknown",
+      "approval": "unknown"
+     }
+    },
+    "rank_meaning": {
+     "radius": "furthest reach: levels up from the launch dir",
+     "writes": "most writes outside the launch dir",
+     "dirs": "most distinct directories outside the launch dir",
+     "other_home": "named a directory in ANOTHER user's home (every such session)"
+    },
+    "dominant_user_share_pct": {
+     "radius": 61.5,
+     "writes": 82.4,
+     "dirs": 57.1,
+     "other_home": 100
+    },
+    "sessions_outside_total": 377,
+    "dirs": [
+     {
+      "dir": "/n/home02/lzhang/shared-refs",
+      "zone": "other-home",
+      "sessions": 4,
+      "users": 1,
+      "classes": {
+       "agent": 4
+      },
+      "refs": 12,
+      "writes": 0,
+      "cds": 4
+     },
+     {
+      "dir": "/n/netscratch/kempner_lab/thomwg11",
+      "zone": "shared",
+      "sessions": 41,
+      "users": 1,
+      "classes": {
+       "agent": 41
+      },
+      "refs": 1204,
+      "writes": 612,
+      "cds": 18
+     },
+     {
+      "dir": "/n/holylabs/LABS/kempner_lab/ref",
+      "zone": "shared",
+      "sessions": 22,
+      "users": 4,
+      "classes": {
+       "agent": 17,
+       "human": 5
+      },
+      "refs": 388,
+      "writes": 0,
+      "cds": 6
+     },
+     {
+      "dir": "/tmp/eval-cache",
+      "zone": "tmp",
+      "sessions": 14,
+      "users": 2,
+      "classes": {
+       "agent": 14
+      },
+      "refs": 96,
+      "writes": 41,
+      "cds": 0
+     },
+     {
+      "dir": "/tmp/vite-cache",
+      "zone": "tmp",
+      "sessions": 3,
+      "users": 1,
+      "classes": {
+       "human-vscode": 3
+      },
+      "refs": 15,
+      "writes": 0,
+      "cds": 0
+     }
+    ],
+    "dirs_total": 211,
+    "rollup_depth": 4,
+    "coverage": {
+     "records": {
+      "agent": 4812446,
+      "human-vscode": 1964118,
+      "human": 384902
+     },
+     "with_args": {
+      "agent": 4766102,
+      "human-vscode": 1958004,
+      "human": 381118
+     },
+     "args_truncated": {
+      "agent": 9118,
+      "human-vscode": 402
+     },
+     "cwd_null": {
+      "agent": 211,
+      "human": 3012
+     },
+     "cwd_read": {
+      "agent": 1288414,
+      "human-vscode": 14882,
+      "human": 241906
+     },
+     "tokens": {
+      "agent": {
+       "kept": 101244,
+       "program": 3884102,
+       "pseudo": 611884,
+       "harness": 188412,
+       "junk": 402,
+       "bare_root": 18442,
+       "relative_resolved": 14118,
+       "relative_unresolved": 9884
+      },
+      "human-vscode": {
+       "kept": 22488,
+       "program": 1611402,
+       "pseudo": 1002118,
+       "relative_resolved": 204,
+       "relative_unresolved": 112
+      },
+      "human": {
+       "kept": 8011,
+       "program": 141204,
+       "pseudo": 1402,
+       "bare_root": 611,
+       "relative_resolved": 88,
+       "relative_unresolved": 9412
+      }
+     },
+     "dedup_dropped": 412884
+    },
+    "buffer": {
+     "sessions": 9611,
+     "untracked_records": 0,
+     "refs_dropped": 0,
+     "dedup_index_evicted": 0
+    },
+    "notes": {
+     "evidence": "Paths come from argv plus each process's recorded cwd; every number is a floor on reach.",
+     "radius": "Levels up from the launch directory to the nearest directory containing the reference; `root` means / is the only common ancestor."
+    }
+   },
    "trajectories": {
     "_feed": "ebpfm",
     "_status": "ok",

@@ -335,6 +335,109 @@ export interface Trajectories extends PanelEnvelope {
   basis: string;
 }
 
+/* ---------------------------------------------------------- sporadicity
+ * Where a session was launched vs where its argv says it reached. Every count
+ * is argv evidence -- a floor on reach, never the whole of it.
+ */
+
+export type ReachRank = 'radius' | 'writes' | 'dirs' | 'other_home';
+export const REACH_RANKS: ReachRank[] = ['radius', 'writes', 'dirs', 'other_home'];
+
+/** One class's sessions (with a launch dir) and its references by zone. */
+export interface ReachClassBlock {
+  sessions: number;
+  sessions_outside: number;
+  sessions_write_outside: number;
+  sessions_other_home: number;
+  /** Trees launched at `/`: no directory to measure reach from. */
+  no_anchor: number;
+  refs: Partial<Record<string, number>>;
+  writes: Partial<Record<string, number>>;
+  sessions_by_zone: Partial<Record<string, number>>;
+  write_sessions_by_zone: Partial<Record<string, number>>;
+  radius: Partial<Record<string, number>>;
+  write_radius: Partial<Record<string, number>>;
+}
+export interface ReachDir {
+  dir: string;
+  zone: string;
+  refs: number;
+  writes: number;
+  cd: boolean;
+  radius: number | null;
+}
+export interface ReachRow {
+  sid: string;
+  key_type: string;
+  host: string | null;
+  user: string | null;
+  actor3: string | null;
+  agent_type: string | null;
+  agent_pid: number | string | null;
+  anchor: string;
+  anchor_src: 'root' | 'mode';
+  home: string | null;
+  n_records: number;
+  wall_s: number | null;
+  radius: number;
+  root_escape: boolean;
+  write_radius: number | null;
+  outside_dirs: number;
+  outside_refs: number;
+  outside_writes: number;
+  other_home_dirs: number;
+  zones: Record<string, { dirs: number; refs: number; writes: number }>;
+  top_outside: ReachDir[];
+  more_outside: number;
+  dirs_dropped: number;
+  sandbox: SandboxState | null;
+  approval: ApprovalState | null;
+}
+export interface ReachDirRow {
+  dir: string;
+  zone: string;
+  sessions: number;
+  users: number;
+  classes: Partial<Record<string, number>>;
+  refs: number;
+  writes: number;
+  cds: number;
+}
+type PerClass = Partial<Record<string, number>>;
+export interface Sporadicity extends PanelEnvelope {
+  zones: string[];
+  zone_meaning: Record<string, string>;
+  radius_buckets: string[];
+  contained: string[];
+  by_class: Record<string, ReachClassBlock>;
+  ranks: Partial<Record<ReachRank, string[]>>;
+  rows: Record<string, ReachRow>;
+  rank_meaning: Record<string, string>;
+  dominant_user_share_pct: Partial<Record<ReachRank, number | null>>;
+  /** Sessions qualifying for each ranking, before the list was cut. */
+  rank_totals?: Partial<Record<ReachRank, number>>;
+  sessions_outside_total: number;
+  dirs: ReachDirRow[];
+  dirs_total: number;
+  rollup_depth: number;
+  coverage: {
+    records: PerClass;
+    with_args: PerClass;
+    args_truncated: PerClass;
+    cwd_null: PerClass;
+    cwd_read: PerClass;
+    tokens: Record<string, PerClass>;
+    dedup_dropped: number;
+  };
+  buffer: {
+    sessions: number;
+    untracked_records: number;
+    refs_dropped: number;
+    dedup_index_evicted: number;
+  };
+  notes: Record<string, string>;
+}
+
 /* ---------------------------------------------------------------- panels */
 
 export interface PanelsResponse {

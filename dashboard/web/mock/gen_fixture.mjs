@@ -462,6 +462,151 @@ function sandbox() {
   };
 }
 
+/* Sporadicity: launch dir vs reach. Awkward states on purpose: one class
+ * (human-vscode) that never writes outside, a session in another user's home,
+ * a ranking dominated by one user, and trees launched at / counted apart. */
+function sporadicity() {
+  const zones = ['cwd', 'home', 'home-dot', 'tool-state', 'tmp', 'shared', 'other-home', 'system', 'other'];
+  const lab = '/n/holylabs/LABS/kempner_lab';
+  const proj = (u, p) => `/n/home0${(u.length % 4) + 1}/${u}/${p}`;
+  const rows = {};
+  const ranks = { radius: [], writes: [], dirs: [], other_home: [] };
+  const spec = [
+    // user, class, project, [dir, zone, refs, writes, cd, radius], sandbox, approval
+    ['thomwg11', 'agent', 'llm-eval', [
+      [`${lab}/Users/thomwg11/ckpt`, 'shared', 41, 18, true, 3],
+      ['/n/netscratch/kempner_lab/thomwg11/runs', 'shared', 22, 22, false, 3],
+      ['/tmp/eval-cache', 'tmp', 9, 4, false, 3],
+    ], 'unsandboxed', 'bypassed'],
+    ['thomwg11', 'agent', 'llm-eval', [
+      ['/n/home04/thomwg11/llm-eval-old', 'home', 12, 3, true, 1],
+      ['/n/home04/thomwg11/.cache/huggingface', 'home-dot', 6, 0, false, 1],
+    ], 'sandboxed', 'supervised'],
+    ['aparker', 'agent', 'genomics/pipeline', [
+      ['/n/home02/lzhang/shared-refs', 'other-home', 3, 0, true, 2],
+      [`${lab}/ref/hg38`, 'shared', 14, 0, false, 4],
+    ], 'unsandboxed', 'supervised'],
+    ['thomwg11', 'agent', 'sweeps', [
+      ['/n/netscratch/kempner_lab/thomwg11/sweep-12', 'shared', 88, 61, false, 3],
+    ], 'denied', 'bypassed'],
+    ['dwei', 'human', 'thesis', [
+      ['/n/home03/dwei/data', 'home', 7, 0, false, 1],
+      ['/scratch/dwei/tmp', 'shared', 4, 2, false, 3],
+    ], 'unknown', 'unknown'],
+    ['jsilva', 'human-vscode', 'webapp', [
+      ['/tmp/vite-cache', 'tmp', 5, 0, false, 3],
+    ], 'unknown', 'unknown'],
+  ];
+  spec.forEach(([user, cls, p, dirs, sandbox, approval], i) => {
+    const sid = `holylogin0${(i % 3) + 1}|2026-09-14|${cls}|apid:${41000 + i * 37}`;
+    const outside = dirs;
+    const far = outside.reduce((a, d) => Math.max(a, d[5]), 0);
+    const anchor = proj(user, p);
+    const depth = anchor.split('/').filter(Boolean).length;
+    const zoneAgg = {};
+    for (const [, z, r, w] of outside) {
+      const e = (zoneAgg[z] ||= { dirs: 0, refs: 0, writes: 0 });
+      e.dirs += 1;
+      e.refs += r;
+      e.writes += w;
+    }
+    rows[sid] = {
+      sid, key_type: cls === 'agent' ? 'apid' : 'tty', host: `holylogin0${(i % 3) + 1}`, user,
+      actor3: cls, agent_type: cls === 'agent' ? (i % 2 ? 'codex' : 'claude_code') : cls === 'human-vscode' ? 'vscode' : null,
+      agent_pid: cls === 'agent' ? 41000 + i * 37 : null, anchor, anchor_src: i % 3 ? 'root' : 'mode',
+      home: proj(user, '').replace(/\/$/, ''), n_records: 120 + i * 53, wall_s: 1800 + i * 611,
+      radius: far, root_escape: far >= depth, write_radius: outside.some((d) => d[3]) ? Math.max(...outside.filter((d) => d[3]).map((d) => d[5])) : null,
+      outside_dirs: outside.length, outside_refs: outside.reduce((a, d) => a + d[2], 0),
+      outside_writes: outside.reduce((a, d) => a + d[3], 0),
+      other_home_dirs: outside.filter((d) => d[1] === 'other-home').length, zones: zoneAgg,
+      top_outside: outside.map(([dir, zone, refs, writes, cd, radius]) => ({ dir, zone, refs, writes, cd, radius })),
+      more_outside: i === 0 ? 4 : 0, dirs_dropped: 0, sandbox, approval,
+    };
+  });
+  const order = (k) => Object.values(rows).sort((a, b) => b[k] - a[k] || a.sid.localeCompare(b.sid)).map((r) => r.sid);
+  ranks.radius = order('radius');
+  ranks.writes = order('outside_writes').filter((sid) => rows[sid].outside_writes > 0);
+  ranks.dirs = order('outside_dirs');
+  ranks.other_home = order('other_home_dirs').filter((sid) => rows[sid].other_home_dirs > 0);
+  return {
+    ...ENV('ebpfm', EBPFM_PATHS),
+    zones,
+    zone_meaning: {
+      cwd: "inside the session's launch directory",
+      'tool-state': "an agent's or editor's own state (~/.claude, ~/.codex, ~/.vscode-server, /tmp/claude-*)",
+      'other-home': "ANOTHER user's home directory",
+    },
+    radius_buckets: ['0', '1', '2', '3+', 'root'],
+    contained: ['cwd', 'tool-state'],
+    by_class: {
+      agent: {
+        sessions: 1_412, sessions_outside: 318, sessions_write_outside: 61, sessions_other_home: 4, no_anchor: 1_096,
+        refs: { cwd: 48_812, home: 1_204, 'home-dot': 3_118, 'tool-state': 22_441, tmp: 2_206, shared: 9_884, 'other-home': 12, system: 1_877, other: 140 },
+        writes: { cwd: 6_118, home: 88, 'home-dot': 41, 'tool-state': 4_002, tmp: 611, shared: 1_204 },
+        sessions_by_zone: { cwd: 1_301, home: 88, 'home-dot': 212, 'tool-state': 1_122, tmp: 141, shared: 96, 'other-home': 4, system: 77, other: 9 },
+        write_sessions_by_zone: { cwd: 744, home: 12, 'home-dot': 9, 'tool-state': 1_011, tmp: 33, shared: 21 },
+        radius: { '0': 1_094, '1': 61, '2': 72, '3+': 58, root: 127 },
+        write_radius: { '0': 744, '1': 9, '2': 14, '3+': 18, root: 20 },
+      },
+      'human-vscode': {
+        sessions: 488, sessions_outside: 21, sessions_write_outside: 0, sessions_other_home: 0, no_anchor: 5_911,
+        refs: { cwd: 4_118, 'tool-state': 18_224, tmp: 61, system: 44 },
+        writes: { cwd: 212, 'tool-state': 88 },
+        sessions_by_zone: { cwd: 462, 'tool-state': 488, tmp: 14, system: 9 },
+        write_sessions_by_zone: { cwd: 41, 'tool-state': 102 },
+        radius: { '0': 467, root: 21 },
+        write_radius: { '0': 41 },
+      },
+      human: {
+        sessions: 61, sessions_outside: 38, sessions_write_outside: 9, sessions_other_home: 0, no_anchor: 18,
+        refs: { cwd: 2_204, home: 611, 'home-dot': 41, tmp: 188, shared: 3_012, system: 902 },
+        writes: { cwd: 140, home: 12, tmp: 9, shared: 466 },
+        sessions_by_zone: { cwd: 58, home: 22, 'home-dot': 6, tmp: 14, shared: 19, system: 31 },
+        write_sessions_by_zone: { cwd: 33, home: 3, tmp: 4, shared: 7 },
+        radius: { '0': 23, '1': 9, '2': 4, '3+': 3, root: 22 },
+        write_radius: { '0': 33, '1': 2, root: 7 },
+      },
+    },
+    ranks,
+    rows,
+    rank_meaning: {
+      radius: 'furthest reach: levels up from the launch dir',
+      writes: 'most writes outside the launch dir',
+      dirs: 'most distinct directories outside the launch dir',
+      other_home: "named a directory in ANOTHER user's home (every such session)",
+    },
+    dominant_user_share_pct: { radius: 61.5, writes: 82.4, dirs: 57.1, other_home: 100 },
+    sessions_outside_total: 377,
+    dirs: [
+      { dir: '/n/home02/lzhang/shared-refs', zone: 'other-home', sessions: 4, users: 1, classes: { agent: 4 }, refs: 12, writes: 0, cds: 4 },
+      { dir: '/n/netscratch/kempner_lab/thomwg11', zone: 'shared', sessions: 41, users: 1, classes: { agent: 41 }, refs: 1_204, writes: 612, cds: 18 },
+      { dir: `${lab}/ref`, zone: 'shared', sessions: 22, users: 4, classes: { agent: 17, human: 5 }, refs: 388, writes: 0, cds: 6 },
+      { dir: '/tmp/eval-cache', zone: 'tmp', sessions: 14, users: 2, classes: { agent: 14 }, refs: 96, writes: 41, cds: 0 },
+      { dir: '/tmp/vite-cache', zone: 'tmp', sessions: 3, users: 1, classes: { 'human-vscode': 3 }, refs: 15, writes: 0, cds: 0 },
+    ],
+    dirs_total: 211,
+    rollup_depth: 4,
+    coverage: {
+      records: { agent: 4_812_446, 'human-vscode': 1_964_118, human: 384_902 },
+      with_args: { agent: 4_766_102, 'human-vscode': 1_958_004, human: 381_118 },
+      args_truncated: { agent: 9_118, 'human-vscode': 402 },
+      cwd_null: { agent: 211, human: 3_012 },
+      cwd_read: { agent: 1_288_414, 'human-vscode': 14_882, human: 241_906 },
+      tokens: {
+        agent: { kept: 101_244, program: 3_884_102, pseudo: 611_884, harness: 188_412, junk: 402, bare_root: 18_442, relative_resolved: 14_118, relative_unresolved: 9_884 },
+        'human-vscode': { kept: 22_488, program: 1_611_402, pseudo: 1_002_118, relative_resolved: 204, relative_unresolved: 112 },
+        human: { kept: 8_011, program: 141_204, pseudo: 1_402, bare_root: 611, relative_resolved: 88, relative_unresolved: 9_412 },
+      },
+      dedup_dropped: 412_884,
+    },
+    buffer: { sessions: 9_611, untracked_records: 0, refs_dropped: 0, dedup_index_evicted: 0 },
+    notes: {
+      evidence: 'Paths come from argv plus each process\'s recorded cwd; every number is a floor on reach.',
+      radius: 'Levels up from the launch directory to the nearest directory containing the reference; `root` means / is the only common ancestor.',
+    },
+  };
+}
+
 function trajectories(nowEpoch) {
   const rows = {};
   const sids = [];
@@ -760,6 +905,7 @@ function build() {
         io_process: ioProcess(),
         resources: resources(),
         sandbox: sandbox(),
+        sporadicity: sporadicity(),
         trajectories: trajectories(nowEpoch),
         /* An absent panel, so <EmptyState> is verifiable without the backend. */
         gpu_duty: {
