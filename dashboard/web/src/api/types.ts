@@ -204,6 +204,7 @@ export interface IoByTool {
   tool: string;
   cls?: string;
   events?: number;
+  with_io?: number;
   rd_mb?: number | null;
   wr_mb?: number | null;
   rchar_mb?: number | null;
@@ -216,8 +217,11 @@ export interface IoByUser {
   user: string;
   cls?: string;
   events?: number;
+  with_io?: number;
   rd_mb?: number | null;
   wr_mb?: number | null;
+  rchar_mb?: number | null;
+  wchar_mb?: number | null;
   net_tx_mb?: number | null;
   net_rx_mb?: number | null;
   io_coverage_pct?: number | null;

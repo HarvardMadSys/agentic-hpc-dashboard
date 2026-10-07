@@ -170,7 +170,8 @@ export function TrajectoriesTab({
                   <th className="num">chains</th>
                   <th className="num">wall</th>
                   <th className="num">peak RSS</th>
-                  <th className="num">rd / wr</th>
+                  <th className="num" data-tip="block-layer bytes read">disk read</th>
+                  <th className="num" data-tip="block-layer bytes written">disk written</th>
                   <th>sandbox</th>
                   <th>approval</th>
                 </tr>
@@ -224,9 +225,8 @@ export function TrajectoriesTab({
                     </td>
                     <td className="num">{dur(r.wall_s)}</td>
                     <td className="num">{mb(r.peak_rss_mb)}</td>
-                    <td className="num">
-                      {mb(r.io_rd_mb)} / {mb(r.io_wr_mb)}
-                    </td>
+                    <td className="num">{mb(r.io_rd_mb)}</td>
+                    <td className="num">{mb(r.io_wr_mb)}</td>
                     <td>
                       <span className="sev low">{r.sandbox ?? 'unknown'}</span>
                     </td>

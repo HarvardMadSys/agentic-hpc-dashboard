@@ -332,6 +332,8 @@ function ioProcess() {
       events: Math.round(2_400_000 / (i + 1.1)),
       rd_mb: Number((88_000 / (i + 1.2)).toFixed(1)),
       wr_mb: Number((21_000 / (i + 1.6)).toFixed(1)),
+      rchar_mb: Number((412_000 / (i + 1.2)).toFixed(1)),
+      wchar_mb: Number((38_000 / (i + 1.6)).toFixed(1)),
       net_tx_mb: i % 3 === 2 ? null : Number((2_100 / (i + 1.3)).toFixed(1)),
       net_rx_mb: i % 3 === 2 ? null : Number((8_400 / (i + 1.3)).toFixed(1)),
       io_coverage_pct: Number((72 - i * 4.2).toFixed(1)),
