@@ -79,12 +79,13 @@ export function NoRows({ what }: { what?: string }) {
  */
 export function Building({ w }: { w: WindowStatus }) {
   const p = w.progress || { pct: 0, records: 0, files: 0 };
+  const resuming = p.mode === 'resume';
   return (
     <div className="building">
       <div className="hd">
         <span className="pill">
           <i className="ld" />
-          {w.state === 'queued' ? 'queued' : 'reducing'} {w.label}
+          {w.state === 'queued' ? 'queued' : resuming ? 'catching up' : 'reducing'} {w.label}
         </span>
         <span className="mono">{p.pct}%</span>
       </div>
@@ -94,7 +95,9 @@ export function Building({ w }: { w: WindowStatus }) {
       <p className="paths">
         {w.state === 'error'
           ? `rebuild failed: ${w.error}`
-          : `these panels carry no time index, so the ${w.label} window is being reduced from the rows — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
+          : resuming
+            ? `resuming the saved ${w.label} reduction, reading only what the collector wrote since it was built — ${p.records.toLocaleString()} records across ${p.files} file(s)`
+            : `these panels carry no time index, so the ${w.label} window is being reduced from the rows — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
       </p>
     </div>
   );

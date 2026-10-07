@@ -121,7 +121,44 @@ raise retention on a busy fleet, since it applies per held window.
 Built windows are an LRU of `panels.max_windows` (2), and builds are serialised on one worker:
 two concurrent rebuilds would contend for the same page cache and each make the other look
 slow. Ten readers on the same window cost one build, because the WebSocket sends one frame per
-*distinct* window rather than one per client.
+*distinct* window rather than one per client. The default window starts building with the
+service, not with the first page load.
+
+Two things keep a build from costing more than it must:
+
+- **Only the records the panels read are parsed.** Every historical reducer reads `exit` and
+  `truncated` and nothing else, so a scan skips the other ~70% of a day-file's lines (residency,
+  connections, sockets) on a byte match before `json.loads`. The match cannot miss a record — any
+  JSON writer emits `"event": "exit"` — and a false hit only costs a parse.
+- **Every build is saved, and resumed rather than repeated.** At the end of each scan the
+  reducers are pickled to `<cache.dir>/windows/` together with exactly how far into each day-file
+  the scan read: `(st_dev, st_ino)`, a digest of the first 4 KB, and the offset past the last
+  complete line. A restart (and `run.sh` restarts on every save), or a return to a window the
+  LRU evicted, loads that and reads each file on from its offset — only what the collector wrote
+  since. On one login node's feed a 24 h window goes from ~7 s to ~0.2 s and a 7 d window from
+  ~42 s to ~1.4 s, plus the catch-up. A snapshot is ~12 MB per day of window; `panels.cache_keep`
+  (8) bounds how many are kept.
+
+A resumed view holds the records a service that had never stopped would hold, and reproduces a
+fresh scan's panels exactly — checked on real data, and in `tests/test_window_cache.py`. It keeps
+its original `built_at`, so its age and its drift read as they would had nothing restarted; the
+catch-up *is* drift, and re-scans at the same budget. The snapshot is ignored, and the window
+scanned from scratch, unless all of these hold — and the window status's `cache.note` says which
+one failed:
+
+- the same code and config (a fingerprint of the reducers, the normaliser, the scan and every
+  config key outside `server`) — changing how a record is counted must never resume a reduction
+  counted the old way;
+- the same files: every one it read still there, the same inode *and* the same first 4 KB (a
+  file deleted and rewritten can get its inode number back), at least as long, a line ending at
+  the saved offset;
+- built within the window's drift budget. An older one would be re-scanned the moment it caught
+  up, so catching it up would only add to the cost.
+
+A drift re-build always scans: it exists to move the window's start forward, which an older copy
+cannot do. Pickle runs code for whoever can write the file, so the directory is created 0700,
+files 0600, and a symlink or a file another user owns or can write is never loaded.
+`panels.cache_windows=false` (`RC_DASH_CACHE_WINDOWS=0`) turns all of it off.
 
 ## API
 
@@ -213,6 +250,7 @@ already made once.
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, live, node |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
+| `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (`seek_to_epoch`) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
@@ -221,7 +259,9 @@ already made once.
 ## Ingestion, precisely
 
 **What the page holds is a function of the collector's files and the clock — never of when this
-service was running.** Nothing is restored from a previous run. On every start the service hands
+service was running.** Nothing in the live tier is restored from a previous run (the historical
+windows resume from saved builds, but only from ones that are provably a prefix of the same files —
+see *The time window*). On every start the service hands
 each day-file to the tail at the end of its last complete line, then reads the history behind
 that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it, located
 by the same timestamp binary search the window rebuild uses. Offsets used to be persisted while

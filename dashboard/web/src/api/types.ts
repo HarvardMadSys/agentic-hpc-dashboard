@@ -93,6 +93,9 @@ export interface WindowStatus {
   /** A previous reduction for this window is still available and on screen.
    *  Separates a first build (nothing to show) from a drift re-build. */
   has_payload: boolean;
+  /** Epoch the current reducers went live -- a build or a resume finishing.
+   *  Unlike `built_at`, it moves on a resume. */
+  installed_at?: number | null;
   progress: {
     pct: number;
     records: number;
@@ -100,6 +103,9 @@ export interface WindowStatus {
     total_bytes: number;
     files: number;
     elapsed_s: number;
+    /** `resume`: reading on from a saved build, only what was written since.
+     *  `scan`: reducing the whole window from the rows. */
+    mode?: 'scan' | 'resume';
   };
   built_at: string | null;
   built_age_s: number | null;
@@ -111,6 +117,14 @@ export interface WindowStatus {
   live_records: number;
   replay_dropped: number;
   covers_note?: string;
+  /** Where these reducers came from. A `snapshot` view was saved by an earlier
+   *  build -- `built_at` is that build's -- and caught up from the day-files. */
+  cache?: {
+    source: 'scan' | 'snapshot' | null;
+    /** Why a saved build was or was not used, or why this one was not saved. */
+    note: string | null;
+    saved_at: string | null;
+  };
 }
 
 export interface WindowsResponse {
