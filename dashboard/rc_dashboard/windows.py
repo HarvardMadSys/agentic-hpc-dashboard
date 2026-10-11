@@ -32,12 +32,19 @@ service:
   day-files while the tailer is also advancing through them; the handful of rows
   landing in that seam are buffered and replayed, and if the buffer overflows
   the count is published as `replay_dropped` instead of quietly going missing.
+
+And one thing is reused rather than recomputed: every build's reducer state is
+saved with how far into each day-file it read (`snapshots`), so a restart or a
+return to a window evicted from the LRU resumes it -- reading only what the
+collector wrote since -- instead of reducing the whole window again. A resumed
+view keeps its original `built_at`, and its status says it was restored.
 """
 import collections
 import threading
 import time
 
-from .export import window_plan, window_scan
+from . import snapshots
+from .export import resume_plan, window_plan, window_scan
 from .normalize import Normalizer
 from .reducers.io import IoReducer
 from .reducers.resources import ResourceReducer
@@ -48,6 +55,11 @@ from .reducers.trajectories import TrajectoryReducer
 
 HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, SandboxReducer,
                  RiskReducer)
+# The only records a view reads. A build skips the rest before parsing them, and
+# the live feed, the replay buffer and the drift all ignore them, so "the newest
+# record the view holds" means the same thing whichever path it came in by.
+EVENTS = frozenset(ev for r in HIST_REDUCERS + (TrajectoryReducer,)
+                   for ev in r.EVENTS)
 
 # Below this a window is mostly bin-edge noise: one minute of a login fleet is a
 # handful of exits, and every distribution panel would read `n=0`.
@@ -57,6 +69,10 @@ MIN_WINDOW_MIN = 5
 # seam is sub-second in practice (the scan and the tailer reach EOF together),
 # so this is generous; what matters is that overflow is COUNTED, not silent.
 REPLAY_CAP = 20000
+
+
+def _newest(a, b):
+    return b if a is None else a if b is None else max(a, b)
 
 
 def label(minutes):
@@ -138,7 +154,8 @@ class PanelView:
         self.error = None
         self.progress = {"pct": 0, "records": 0, "bytes": 0, "total_bytes": 0,
                          "files": 0, "elapsed_s": 0.0}
-        self.built_at = None            # epoch of the last successful swap
+        self.built_at = None            # epoch the reduction was built (a resume keeps it)
+        self.installed_at = None        # epoch these reducers went live: build OR resume
         self.covers_from = None
         self.covers_to = None
         self.consumed_through = None    # newest ts the build ingested
@@ -150,6 +167,10 @@ class PanelView:
         self.live_records = 0
         self.live_through = None        # newest ts ingested LIVE since the build
         self._replay = None             # deque while a build is in flight
+        # Where the reducers came from and what happened to the saved copy:
+        # `source` is "scan" or "snapshot", `note` says why a snapshot was or
+        # was not used, `saved_at` when this build was last written down.
+        self.cache = {"source": None, "note": None, "saved_at": None}
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec):
@@ -159,6 +180,8 @@ class PanelView:
         exist yet, and feeding the outgoing ones would only update state that is
         about to be discarded.
         """
+        if rec.get("event") not in EVENTS:
+            return
         if self._replay is not None:
             if len(self._replay) >= REPLAY_CAP:
                 self.replay_dropped += 1
@@ -240,6 +263,11 @@ class PanelView:
             # minutes because a 7-day view is refreshing would be a worse lie
             # than showing them with their age attached.
             "has_payload": bool(self.payload),
+            # Moves whenever the reducers are swapped in, including on a resume,
+            # where `built_at` deliberately does not: a page keyed on `built_at`
+            # alone would never re-fetch a restored window.
+            "installed_at": (round(self.installed_at, 3)
+                             if self.installed_at else None),
             "progress": dict(self.progress),
             "built_at": (time.strftime("%Y-%m-%d %H:%M:%S",
                                        time.localtime(self.built_at))
@@ -258,6 +286,7 @@ class PanelView:
             "drift_budget_s": round(budget, 1),
             "live_records": self.live_records,
             "replay_dropped": self.replay_dropped,
+            "cache": dict(self.cache),
         }
         if drift is not None and drift > 0:
             st["covers_note"] = (
@@ -282,6 +311,8 @@ class WindowRegistry:
         self.lock = lock                # the aggregator's; guards reducer swaps
         self.views = collections.OrderedDict()   # minutes -> PanelView
         self.max_views = max(1, int(cfg.get("panels.max_windows", 2)))
+        self.budget_pct = max(1, int(cfg.get("panels.max_drift_pct", 25))) / 100.0
+        self.store = snapshots.SnapshotStore.from_config(cfg)
         self._queue = collections.deque()
         self._cv = threading.Condition()
         self._worker = None
@@ -331,20 +362,29 @@ class WindowRegistry:
         # EOF" and "the fresh reducers are installed" replays rather than drops.
         with self.lock:
             view._replay = collections.deque()
-        since = t0 - view.window_s
-        days = int(view.window_s // 86400) + 2
         roots = self.roots_fn()
-        plan, total = window_plan(roots, since, days)
+        view.cache["note"] = None
+        # Only a view with nothing in memory resumes. A drift re-build exists to
+        # move the window's start forward, which a saved copy -- older still --
+        # cannot do.
+        resumed = None if view.reducers else self._resume(view, roots, t0)
+        if resumed:
+            saved, reducers, plan, total = resumed
+            since = saved["covers_from"]
+        else:
+            saved, reducers = None, view.fresh_reducers()
+            since = t0 - view.window_s
+            days = int(view.window_s // 86400) + 2
+            plan, total = window_plan(roots, since, days)
         view.progress = {"pct": 0, "records": 0, "bytes": 0,
                          "total_bytes": total, "files": len(plan),
-                         "elapsed_s": 0.0}
+                         "elapsed_s": 0.0, "mode": "resume" if saved else "scan"}
 
-        reducers = view.fresh_reducers()
         dispatch = PanelView.build_dispatch(reducers)
         norm = Normalizer(self.cfg)      # fresh: build stats must not pollute /api/feeds
         newest = None
         n = 0
-        for rec, stats in window_scan(plan, norm, since):
+        for rec, stats in window_scan(plan, norm, since, events=EVENTS):
             ts = rec.get("_ts_epoch")
             if ts is not None and (newest is None or ts > newest):
                 newest = ts
@@ -360,23 +400,111 @@ class WindowRegistry:
                     pct=min(99, int(100 * stats["bytes"] / total)) if total else 99,
                     elapsed_s=round(time.time() - t0, 1))
 
+        if saved:
+            # The saved build's own span, and the catch-up as what it is:
+            # records that arrived after that build, i.e. drift.
+            meta = {"covers_from": saved["covers_from"],
+                    "covers_to": saved["covers_to"],
+                    "built_at": saved["built_at"],
+                    "consumed_through": _newest(saved["consumed_through"], newest),
+                    "live_through": _newest(saved["live_through"], newest),
+                    "live_records": saved["live_records"] + n}
+        else:
+            meta = {"covers_from": since,
+                    # What the build actually reached, not what it aimed at: an
+                    # empty or lagging feed must not claim coverage up to `now`.
+                    "covers_to": newest or t0,
+                    "built_at": time.time(),
+                    "consumed_through": newest,
+                    "live_through": None,  # drift is measured from this build on
+                    "live_records": 0}
+        meta["files"] = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head",
+                                            "end")}
+                         for e in plan if "ino" in e]
+        # Serialised now, before the swap: after it the live feed mutates these
+        # reducers under the lock, and pickling them there would stall every
+        # read for as long as it takes.
+        blob, unsaved = None, None
+        if self.store is not None:
+            try:
+                blob = snapshots.capture(reducers)
+            except Exception as e:
+                unsaved = "not saved: %s" % e
+
         with self.lock:
             view.reducers = reducers
             view.dispatch = dispatch
-            view.consumed_through = newest
-            view.covers_from = since
-            # What the build actually reached, not what it aimed at: an empty or
-            # lagging feed must not claim coverage up to `now`.
-            view.covers_to = newest or t0
-            view.built_at = time.time()
-            view.live_through = None     # drift is measured from this build on
+            # `replay_dropped` stays the view's own: a seam drop is a record the
+            # LIVE feed lost, and a resume re-reads the files past the saved
+            # offsets, so a saved build carries none of its predecessor's.
+            for k in ("covers_from", "covers_to", "built_at", "consumed_through",
+                      "live_through", "live_records"):
+                setattr(view, k, meta[k])
+            view.cache["source"] = "snapshot" if saved else "scan"
+            if saved:
+                view.cache["note"] = (
+                    "restored the %s reduction built %s, then read the %s "
+                    "record(s) written since" % (
+                        label(view.minutes),
+                        time.strftime("%Y-%m-%d %H:%M:%S",
+                                      time.localtime(saved["built_at"])),
+                        "{:,}".format(n)))
+            elif unsaved:
+                view.cache["note"] = unsaved
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
             view.state = "ready"
+            view.installed_at = time.time()
             view.progress.update(records=n, pct=100,
                                  elapsed_s=round(time.time() - t0, 1))
             view.materialize()
+
+        if blob is not None:
+            try:
+                out = self.store.save(view.minutes, roots, meta, blob)
+                view.cache["saved_at"] = time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(out["saved_at"]))
+            except Exception as e:      # a cache that cannot be written is no cache
+                view.cache["note"] = "not saved: %s" % e
+
+    def _resume(self, view, roots, t0):
+        """The saved reduction for this window and what is left to read, or None.
+
+        Returns `(meta, reducers, plan, total_bytes)`. Says on the view why a
+        snapshot was not used, so "it re-read the whole window" is never a
+        guess. Anything unreadable is discarded: a cache that cannot be read is
+        a cache to rebuild, never a reason to fail the window.
+        """
+        if self.store is None:
+            return None
+        budget = view.window_s * self.budget_pct
+
+        def check(meta):
+            age = t0 - meta["built_at"]
+            if age > budget:
+                return ("saved build is %s old, past this window's %s drift "
+                        "budget" % (label(max(1, age // 60)), label(max(1, budget // 60))))
+            if age < -60:
+                return "saved build is dated in the future"
+            return None
+        try:
+            meta, state, why = self.store.load(view.minutes, roots, check)
+            if meta is None:
+                view.cache["note"] = "scanned: %s" % why
+                return None
+            days = int((t0 - meta["covers_from"]) // 86400) + 2
+            got = resume_plan(roots, meta["covers_from"], meta["files"], days)
+            if got is None:
+                view.cache["note"] = ("scanned: the day-files the saved build read "
+                                      "have changed since")
+                return None
+            reducers = snapshots.restore(view.fresh_reducers(), state)
+        except Exception as e:
+            view.cache["note"] = "scanned: saved build unreadable (%s); discarded" % e
+            self.store.discard(view.minutes, roots)
+            return None
+        return (meta, reducers) + got
 
     # --------------------------------------------------------------- lookup
     def request(self, minutes):

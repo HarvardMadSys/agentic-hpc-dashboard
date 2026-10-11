@@ -149,6 +149,13 @@ def defaults():
             # by design: a 1h view refreshes often and cheaply, a 7d view rarely
             # and expensively, and both read the same multiple of the feed.
             "max_drift_pct": 25,
+            # Save every built window to <cache.dir>/windows, with how far into
+            # each day-file it read, so a restart or a return to an evicted
+            # window reads only what the collector wrote since. Used only while
+            # younger than the drift budget above, and only by the same code
+            # and config; ~12 MB per day of window on one login node.
+            "cache_windows": True,
+            "cache_keep": 8,
         },
         "filters": {
             "drop_global": ["juncheng"],     # the monitoring operator
@@ -197,6 +204,8 @@ ENV_MAP = {
     "live.backfill_hours": ("RC_DASH_BACKFILL_HOURS", int),
     "panels.max_windows": ("RC_DASH_MAX_WINDOWS", int),
     "panels.max_drift_pct": ("RC_DASH_MAX_DRIFT_PCT", int),
+    "panels.cache_windows": ("RC_DASH_CACHE_WINDOWS",
+                             lambda v: v not in ("0", "false", "no")),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),

@@ -161,7 +161,8 @@ export function WindowPicker({
           className="winnote build"
           data-tip={`the historical panels hold no time index, so this window is being reduced from the rows: ${building.progress.files} file(s), ${building.progress.records.toLocaleString()} records so far`}
         >
-          rebuilding {building.label} · {building.progress.pct}%
+          {building.progress.mode === 'resume' ? 'catching up' : 'rebuilding'} {building.label} ·{' '}
+          {building.progress.pct}%
         </span>
       )}
 

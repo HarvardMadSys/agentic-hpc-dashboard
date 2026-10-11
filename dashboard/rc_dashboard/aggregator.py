@@ -16,7 +16,9 @@ Two aggregation tiers, because they have different composability:
   offset without persisted sketch state, so it cannot be sliced.  It is built
   PER WINDOW by `windows.WindowRegistry`, on a schedule and on demand, and
   publishes `built_at` and its drift -- the age and the true span of those
-  panels are visible rather than implied.
+  panels are visible rather than implied.  Each build is saved with the byte
+  offsets it read to (`snapshots`), which is the persisted sketch state that
+  makes a restarted view resumable rather than re-read.
 """
 import itertools
 import json
@@ -70,6 +72,10 @@ class Aggregator:
 
     def start(self):
         self.panels_by_window.start()
+        # The default window is what nearly every page load asks for first, so
+        # its build -- or its resume from the saved copy -- starts with the
+        # service rather than with the first reader.
+        self.panels_by_window.request(self.window(None)["minutes"])
 
     def stop(self):
         self.panels_by_window.stop()
