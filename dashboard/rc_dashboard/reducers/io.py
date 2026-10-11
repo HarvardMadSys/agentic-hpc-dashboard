@@ -9,10 +9,25 @@ sockets and procfs reads, which never had a device to miss.
 `net_tx_bytes`/`net_rx_bytes`/`net_calls` are all-protocol per-process counters
 (this is what makes QUIC visible) and are null -- not zero -- when the netbytes
 BPF block was unavailable, so every total ships with its coverage.
+
+Reads and writes are kept apart end to end: the per-tool and per-user rows are
+cut to the top N on EACH counter and unioned, so a tool that only writes is not
+dropped for reading little.
 """
 import collections
+import heapq
 
 from . import Acc, Quant, pct
+
+IO_KEYS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
+
+
+def _heaviest(rows, n):
+    """Union of the top `n` rows on each I/O counter, heaviest syscall readers first."""
+    keep = set()
+    for k in IO_KEYS:
+        keep.update(heapq.nlargest(n, rows, key=lambda name: rows[name][k]))
+    return sorted(((k, rows[k]) for k in keep), key=lambda kv: (-kv[1]["rchar_mb"], kv[0]))
 
 
 class IoReducer:
@@ -28,14 +43,14 @@ class IoReducer:
             "rd_mb": 0.0, "wr_mb": 0.0, "rchar_mb": 0.0, "wchar_mb": 0.0,
             "net_tx_mb": Acc(), "net_rx_mb": Acc(), "net_calls": Acc(),
             "scope": collections.Counter(),
-            "q_rchar": Quant(), "q_wchar": Quant(), "q_rd": Quant(),
+            "quants": {k: Quant() for k in IO_KEYS},
         })
         self.by_tool = collections.defaultdict(lambda: {
-            "n": 0, "rd_mb": 0.0, "wr_mb": 0.0, "rchar_mb": 0.0, "wchar_mb": 0.0,
-            "net_tx_mb": 0.0, "net_rx_mb": 0.0, "net_calls": 0})
+            "events": 0, "with_io": 0, "rd_mb": 0.0, "wr_mb": 0.0, "rchar_mb": 0.0,
+            "wchar_mb": 0.0, "net_tx_mb": 0.0, "net_rx_mb": 0.0, "net_calls": 0})
         self.by_user = collections.defaultdict(lambda: {
             "events": 0, "with_io": 0, "rchar_mb": 0.0, "wchar_mb": 0.0,
-            "rd_mb": 0.0, "wr_mb": 0.0, "net_tx_mb": 0.0, "cls": None})
+            "rd_mb": 0.0, "wr_mb": 0.0, "net_tx_mb": 0.0, "net_rx_mb": 0.0, "cls": None})
 
     def feed(self, rec):
         c = self.cls[rec["_a3"]]
@@ -43,28 +58,26 @@ class IoReducer:
         io = rec.get("io")
         tool = rec.get("_eff") or rec.get("_command") or "(empty)"
         t = self.by_tool[tool]
-        t["n"] += 1
+        t["events"] += 1
         u = self.by_user[rec.get("user") or "?"]
         u["events"] += 1
         u["cls"] = rec["_a3"]
 
         if isinstance(io, dict):
             c["io_seen"] += 1
+            t["with_io"] += 1
             u["with_io"] += 1
             c["scope"][io.get("scope") or "unknown"] += 1
-            for k in ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb"):
+            for k in IO_KEYS:
                 v = io.get(k)
                 if v is not None:
                     c[k] += v
                     t[k] += v
                     u[k] += v
-            c["q_rchar"].add(io.get("rchar_mb"))
-            c["q_wchar"].add(io.get("wchar_mb"))
-            c["q_rd"].add(io.get("rd_mb"))
+                c["quants"][k].add(v)
         else:
-            c["q_rchar"].add(None)
-            c["q_wchar"].add(None)
-            c["q_rd"].add(None)
+            for k in IO_KEYS:
+                c["quants"][k].add(None)
 
         tx, rx, nc = (rec.get("net_tx_bytes"), rec.get("net_rx_bytes"),
                       rec.get("net_calls"))
@@ -76,6 +89,7 @@ class IoReducer:
             u["net_tx_mb"] += tx / 1e6
         if rx is not None:
             t["net_rx_mb"] += rx / 1e6
+            u["net_rx_mb"] += rx / 1e6
         if nc is not None:
             t["net_calls"] += nc
 
@@ -95,23 +109,25 @@ class IoReducer:
                 "net_rx_mb": c["net_rx_mb"].as_dict(),
                 "net_calls": c["net_calls"].as_dict(),
                 "scope": dict(c["scope"]),
-                "quants": {"rchar_mb": c["q_rchar"].as_dict(),
-                           "wchar_mb": c["q_wchar"].as_dict(),
-                           "rd_mb": c["q_rd"].as_dict()},
+                "quants": {k: q.as_dict() for k, q in c["quants"].items()},
             }
-        top = sorted(self.by_tool.items(), key=lambda kv: -kv[1]["rchar_mb"])[:self.top_n]
-        users = sorted(self.by_user.items(), key=lambda kv: -kv[1]["rchar_mb"])[:self.top_n]
 
-        def _user_row(name, v):
-            row = dict(user=name, **{k: (round(x, 3) if isinstance(x, float) else x)
-                                     for k, x in v.items()})
+        def _row(key, name, v):
+            row = {key: name, **{k: (round(x, 3) if isinstance(x, float) else x)
+                                 for k, x in v.items()}}
             row["io_coverage_pct"] = pct(v["with_io"], v["events"])
+            return row
+
+        def _tool_row(name, v):
+            row = _row("tool", name, v)
+            # null, not 0%, for a tool that read nothing: there was no read to hit
+            row["cache_hit_pct"] = (pct(max(0.0, v["rchar_mb"] - v["rd_mb"]), v["rchar_mb"])
+                                    if v["rchar_mb"] > 0 else None)
             return row
         return {
             "by_class": by_class,
-            "by_tool": [dict(tool=k, **{kk: (round(vv, 3) if isinstance(vv, float) else vv)
-                                        for kk, vv in v.items()}) for k, v in top],
-            "by_user": [_user_row(k, v) for k, v in users],
+            "by_tool": [_tool_row(k, v) for k, v in _heaviest(self.by_tool, self.top_n)],
+            "by_user": [_row("user", k, v) for k, v in _heaviest(self.by_user, self.top_n)],
             "notes": {
                 "cache_served_mb": "max(0, rchar - rd). rchar counts ALL read() bytes "
                                    "including pipes, sockets and procfs, so this is an "
@@ -120,5 +136,8 @@ class IoReducer:
                          "block was dropped); 'unknown' = a record with no io.scope key.",
                 "net": "net_tx/rx/calls cover ALL protocols (QUIC included) and are null, "
                        "not zero, when the netbytes block was dropped -- read coverage_pct.",
+                "ranking": "by_tool / by_user hold the top N on EACH of rchar, rd, wchar "
+                           "and wr, unioned -- so up to 4N rows, and a write-only tool or "
+                           "user is never cut for reading little.",
             },
         }

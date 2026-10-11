@@ -4,9 +4,9 @@
  * is meaningless without its coverage, so every accumulator here is rendered
  * with the coverage attached rather than as a bare total.
  */
-import type { Cls, IoProcess } from '../api/types';
+import type { Cls, IoByTool, IoProcess } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
-import type { BarGroup } from '../charts/primitives';
+import type { BarGroup, HBarItem } from '../charts/primitives';
 import { Basis, Legend, Panel } from '../components/Panel';
 import { AccumCell, Coverage, QUANT_HEAD, QuantCells } from '../components/Coverage';
 import { Plate } from '../components/Plate';
@@ -61,6 +61,32 @@ export function InstanceTable({ rows, showArgs }: { rows: RiskInstance[]; showAr
   );
 }
 
+/** One direction of per-tool I/O, ranked on its own counter: disk bytes as the
+ *  bar, syscall bytes in the tip. A tool that never moved a byte this way is not
+ *  a top reader (or writer) and is left off rather than drawn as a zero. */
+function toolBars(
+  rows: IoByTool[],
+  dir: 'read' | 'write',
+  color: string,
+): HBarItem[] {
+  const [disk, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
+  return rows
+    .filter((t) => (t[disk] ?? 0) > 0)
+    .sort((a, b) => (b[disk] ?? 0) - (a[disk] ?? 0))
+    .slice(0, 14)
+    .map((t) => ({
+      k: t.tool,
+      v: t[disk] ?? null,
+      c: t.cls ? CLS_COL[t.cls] : color,
+      lbl: mb(t[disk]),
+      tip:
+        `${t.tool}: ${dir === 'read' ? 'read' : 'wrote'} ${mb(t[disk])} on disk, ` +
+        `${mb(t[sys])} through ${dir}() syscalls` +
+        (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
+        `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} events`,
+    }));
+}
+
 export function RiskIoTab({
   P,
   cls,
@@ -110,6 +136,8 @@ export function RiskIoTab({
   }));
 
   const byTool = (io.by_tool ?? []).filter((t) => !t.cls || cls.includes(t.cls as Cls));
+  const toolReads = toolBars(byTool, 'read', 'var(--s2)');
+  const toolWrites = toolBars(byTool, 'write', 'var(--s1)');
   const byUser = (io.by_user ?? []).filter((u) => !u.cls || cls.includes(u.cls as Cls));
 
   const risk = pick<RiskPanel>(P, 'risk', 'ebpfm');
@@ -244,6 +272,24 @@ export function RiskIoTab({
         </Panel>
 
         <Panel
+          title="Reads by tool"
+          p={io}
+          empty={!toolReads.length}
+          emptyWhat="no tool read from disk in the selection"
+        >
+          <HBars items={toolReads} labelW={150} valW={100} />
+        </Panel>
+
+        <Panel
+          title="Writes by tool"
+          p={io}
+          empty={!toolWrites.length}
+          emptyWhat="no tool wrote to disk in the selection"
+        >
+          <HBars items={toolWrites} labelW={150} valW={100} />
+        </Panel>
+
+        <Panel
           title="Network bytes"
           p={io}
           empty={!have.length || netGroups.every((g) => g.v.tx == null && g.v.rx == null)}
@@ -288,7 +334,9 @@ export function RiskIoTab({
                     </td>
                     {/* an Acc like its tx/rx neighbours: the count carries the
                         same coverage, so it must show it the same way */}
-                    <AccumCell a={byClass[c]?.net_calls} />
+                    <td className="num">
+                      <AccumCell a={byClass[c]?.net_calls} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -297,53 +345,49 @@ export function RiskIoTab({
         </Panel>
 
         <Panel
-          title="I/O by tool"
-          p={io}
-          empty={!byTool.length}
-          emptyWhat="no per-tool I/O rows for the selection"
-        >
-          <HBars
-            items={byTool.slice(0, 14).map((t) => ({
-              k: t.tool,
-              v: (t.rd_mb ?? 0) + (t.wr_mb ?? 0) || null,
-              c: t.cls ? CLS_COL[t.cls] : 'var(--s2)',
-              lbl: mb((t.rd_mb ?? 0) + (t.wr_mb ?? 0)),
-              tip: `${t.tool}: rd ${mb(t.rd_mb)}, wr ${mb(t.wr_mb)}, coverage ${pc(
-                t.io_coverage_pct,
-              )}, ${fint(t.events)} events`,
-            }))}
-            labelW={150}
-            valW={100}
-          />
-        </Panel>
-
-        <Panel
           title="I/O by user"
           p={io}
+          span
           empty={!byUser.length}
           emptyWhat="no per-user I/O rows for the selection"
         >
+          {/* Every row the service sent: it is already the union of the top N
+              on each read and write counter, and cutting it again here would
+              drop exactly the write-heavy users that union exists to keep. */}
           <div className="scroller">
             <table>
               <thead>
                 <tr>
+                  <th colSpan={3} />
+                  <th className="num" colSpan={2}>read</th>
+                  <th className="num" colSpan={2}>write</th>
+                  <th className="num" colSpan={2}>network</th>
+                  <th />
+                </tr>
+                <tr>
                   <th>user</th>
                   <th>class</th>
                   <th className="num">events</th>
-                  <th className="num">rd</th>
-                  <th className="num">wr</th>
+                  <th className="num" data-tip="block-layer bytes read (read_bytes)">disk</th>
+                  <th className="num" data-tip="bytes through read() syscalls (rchar)">syscall</th>
+                  <th className="num" data-tip="block-layer bytes written (write_bytes)">disk</th>
+                  <th className="num" data-tip="bytes through write() syscalls (wchar)">syscall</th>
+                  <th className="num">rx</th>
                   <th className="num">tx</th>
                   <th className="num">coverage</th>
                 </tr>
               </thead>
               <tbody>
-                {byUser.slice(0, 20).map((u, i) => (
+                {byUser.map((u, i) => (
                   <tr key={u.user + i}>
                     <td className="mono">{u.user}</td>
                     <td>{u.cls ? (CLS_LBL[u.cls] ?? u.cls) : DASH}</td>
                     <td className="num">{fint(u.events)}</td>
                     <td className="num">{mb(u.rd_mb)}</td>
+                    <td className="num">{mb(u.rchar_mb)}</td>
                     <td className="num">{mb(u.wr_mb)}</td>
+                    <td className="num">{mb(u.wchar_mb)}</td>
+                    <td className="num">{mb(u.net_rx_mb)}</td>
                     <td className="num">{mb(u.net_tx_mb)}</td>
                     <td className="num">
                       <Coverage pct={u.io_coverage_pct} n={u.events} />

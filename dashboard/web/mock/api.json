@@ -1117,6 +1117,8 @@
       "events": 2181818,
       "rd_mb": 73333.3,
       "wr_mb": 13125,
+      "rchar_mb": 343333.3,
+      "wchar_mb": 23750,
       "net_tx_mb": 1615.4,
       "net_rx_mb": 6461.5,
       "io_coverage_pct": 72
@@ -1127,6 +1129,8 @@
       "events": 1142857,
       "rd_mb": 40000,
       "wr_mb": 8076.9,
+      "rchar_mb": 187272.7,
+      "wchar_mb": 14615.4,
       "net_tx_mb": 913,
       "net_rx_mb": 3652.2,
       "io_coverage_pct": 67.8
@@ -1137,6 +1141,8 @@
       "events": 774194,
       "rd_mb": 27500,
       "wr_mb": 5833.3,
+      "rchar_mb": 128750,
+      "wchar_mb": 10555.6,
       "net_tx_mb": null,
       "net_rx_mb": null,
       "io_coverage_pct": 63.6
@@ -1147,6 +1153,8 @@
       "events": 585366,
       "rd_mb": 20952.4,
       "wr_mb": 4565.2,
+      "rchar_mb": 98095.2,
+      "wchar_mb": 8260.9,
       "net_tx_mb": 488.4,
       "net_rx_mb": 1953.5,
       "io_coverage_pct": 59.4
@@ -1157,6 +1165,8 @@
       "events": 470588,
       "rd_mb": 16923.1,
       "wr_mb": 3750,
+      "rchar_mb": 79230.8,
+      "wchar_mb": 6785.7,
       "net_tx_mb": 396.2,
       "net_rx_mb": 1584.9,
       "io_coverage_pct": 55.2
@@ -1167,6 +1177,8 @@
       "events": 393443,
       "rd_mb": 14193.5,
       "wr_mb": 3181.8,
+      "rchar_mb": 66451.6,
+      "wchar_mb": 5757.6,
       "net_tx_mb": null,
       "net_rx_mb": null,
       "io_coverage_pct": 51
@@ -1177,6 +1189,8 @@
       "events": 338028,
       "rd_mb": 12222.2,
       "wr_mb": 2763.2,
+      "rchar_mb": 57222.2,
+      "wchar_mb": 5000,
       "net_tx_mb": 287.7,
       "net_rx_mb": 1150.7,
       "io_coverage_pct": 46.8
