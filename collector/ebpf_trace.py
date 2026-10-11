@@ -99,7 +99,12 @@ except Exception:  # pragma: no cover
 # tracer never forks itself -- ebpfm.sh daemonizes before Python starts -- and a
 # getpid() per record would put a syscall on the per-event path.
 COLLECTOR_PID = os.getpid()
-SCHEMA_VERSION = 7      # 7 = `net_endpoints` on exit/truncated, the `netio` series,
+SCHEMA_VERSION = 8      # 8 = only an agent runtime (agent_role) starts a session inside
+                        #     an agent tree: a tagged tool shell, Grep re-exec,
+                        #     sandbox, probe or helper attaches to its parent's tree,
+                        #     so `is_agent`, `agent_pid`, `session_key`,
+                        #     `session_uuid`, `depth` and `agent_type` change for it
+                        # 7 = `net_endpoints` on exit/truncated, the `netio` series,
                         #     `proto` on conn, net_*_bytes now include IPv6 UDP, the
                         #     envelope trades `source`/`collector` (constants:
                         #     'ebpf', 'ebpf_marthen_new') for `collector_pid`,
@@ -1551,14 +1556,16 @@ def sandbox_ancestry_of(m):
     sandbox="sandboxed" is a real confinement.
 
     Note the collector could not see this before: _AGENT_PATTERNS is
-    first-match-wins with bwrap LAST, and resolve() returns early when a process
-    self-classifies, so a claude_code process inside bwrap reports
-    agent_type="claude_code" and the bwrap fact survived only in tree_root_pid,
-    which carries a pid and no type."""
+    first-match-wins with bwrap LAST, and resolve() makes an agent its own root,
+    so a claude_code process inside bwrap reports agent_type="claude_code" and the
+    bwrap fact survived only in tree_root_pid, which carries a pid and no type.
+    From schema 8 a bwrap inside an agent tree is not a root either, and takes
+    that tree's agent_type: _sandbox_type reads its own tag as well."""
     if m is None:
         return None
-    if (m.get('agent_type') or None) in SANDBOX_TYPES:
-        return m['agent_type']
+    st = _sandbox_type(m)
+    if st is not None:
+        return st
     # Fast path, and it is the common one: no agent ancestry at all means no
     # ancestor of ANY agent type, bwrap included -- resolve() would have
     # attributed this process to one otherwise. Skipping the walk here keeps a
@@ -1571,7 +1578,7 @@ def sandbox_ancestry_of(m):
                 return tok
         return None
     # Walk the real parent chain, resolving as we go. Walking agent_pid alone is
-    # order-dependent: resolve() returns early for a self-classifying process, so
+    # order-dependent: resolve() returns early for an agent root, so
     # an ancestor's agent_pid may still be unset unless tree_root() happened to
     # run first. tree_root has the same shape for the same reason.
     cached = m.get('sandbox_anc')
@@ -1582,9 +1589,10 @@ def sandbox_ancestry_of(m):
         seen.add(cur)
         pm = proc[cur]
         resolve(cur)
-        if (pm.get('agent_type') or None) in SANDBOX_TYPES:
-            m['sandbox_anc'] = pm['agent_type']
-            return pm['agent_type']
+        st = _sandbox_type(pm)
+        if st is not None:
+            m['sandbox_anc'] = st
+            return st
         nxt = pm.get('ppid')
         if nxt == cur:
             break
@@ -1894,7 +1902,7 @@ def _new_entry(pid, ppid, comm=None, **kw):
      'args_raw_len': None, 'args_clamped': False, 'tick_cpu_s': None, 'sandbox_anc': _UNSET,
      'sandbox': None, 'sandbox_src': None, 'sandbox_detail': None,
          'start_ep': None, 'exec_ktime': None, 'attributed': None, 'is_agent': False,
-         'agent_pid': None, 'agent_type': None, 'depth': None,
+         'agent_pid': None, 'agent_type': None, 'depth': None, 'tag': None,
          'exited': False, 'gc_ts': None, 'is_submit': False, 'submit_buf': None,
          'emitted': False, 'conns': None,
          # schema 7 (see netpeer_read): the endpoint table's counters for this
@@ -1944,12 +1952,169 @@ def proc_del(pid):
     _children.pop(pid, None)
 
 
+# ---------------------------------------------------------------------------
+# agent roles: which classifier-tagged processes are an agent session
+# ---------------------------------------------------------------------------
+# classify() answers "which agent's tree is this?" and matches any argv that
+# mentions ~/.claude/, ~/.codex/ or ~/.vscode-server/. Most processes it tags are
+# not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/shell-snapshots/
+# ...`, its native binary re-executed as rg/ugrep/bfs, codex-linux-sandbox and
+# bwrap, --version and `auth status` probes, Codex's self-update script, VS Code's
+# server and its helpers. agent_role() says which one a tagged process is, from
+# its own argv, and resolve() lets only an `agent` start a session inside a tree.
+#
+# A port of dashboard/rc_dashboard/roles.py, which applies the same rules to
+# schema <= 7 records at read time; keep the two in sync. It is a heuristic over
+# argv, calibrated on madsys-gpu1's shapes from 2026-09-20 to 10-07. Roles, in the
+# order they are tested:
+#
+#   sandbox        the per-call confinement wrapper (codex-linux-sandbox, bwrap)
+#   ide            an IDE server process (VS Code / Cursor / Windsurf server, extension host)
+#   embedded-tool  the agent binary run under another argv[0] (Claude's rg/ugrep/bfs)
+#   probe          a one-shot invocation that is not a session (--version, auth, doctor)
+#   client         attaches to a session it does not run (claude attach, codex app-server proxy)
+#   infra          hosts sessions without being one (claude daemon, bg-pty-host, remote server)
+#   agent          an agent session runtime: the thing that talks to the model and runs tools
+#   tool-shell     the shell a Claude Code Bash tool call runs in
+#   helper         tagged only because its argv mentions an agent path
+
+# The agent executables. Claude's native binary is installed as its version
+# (`~/.local/share/claude/versions/2.1.291`), so its comm is a version string.
+_ROLE_AGENT_EXES = frozenset({'claude', 'codex', 'cursor-agent', 'copilot', 'windsurf'})
+_ROLE_VERSION_EXE = re.compile(r'^\d+\.\d+\.\d+')
+_ROLE_SCRIPT_HOSTS = frozenset({'node', 'bun', 'deno'})
+_ROLE_SCRIPT = re.compile(r'claude-code/cli\.[cm]?js$|@anthropic-ai/claude-code'
+                          r'|@openai/codex/bin/codex(?:\.[cm]?js)?$')
+# argv[0] names the native Claude binary takes when it runs its bundled search
+_ROLE_EMBEDDED = frozenset({'rg', 'ugrep', 'bfs'})
+# Prefixes, so a comm the kernel cut at 15 characters still matches
+_ROLE_SANDBOX_PREFIX = ('codex-linux-san', 'bwrap')
+_ROLE_INFRA_PREFIX = ('codex-code-mode',)
+_ROLE_IDE_SERVER = re.compile(
+    r'bootstrap-fork|server-main\.js|--type=extensionHost|--connection-token'
+    r'|\.(?:vscode|cursor|windsurf)-server/cli/servers/[^ ]*/server/(?:node|bin/code-server)(?:\s|$)')
+_ROLE_IDE_EXE = re.compile(r'^code-[0-9a-f]{6,}')
+_ROLE_SHELLS = frozenset({'sh', 'bash', 'zsh', 'dash', 'fish'})
+_ROLE_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
+_ROLE_PROBE_FLAGS = frozenset({'--version', '-v', '-V', '--help', '-h', '--update'})
+_ROLE_PROBE_SUB = frozenset({'doctor', 'update', 'upgrade', 'install', 'auth', 'config',
+                             'completion', 'setup-token', 'migrate-installer', 'plugin',
+                             'login', 'logout', 'version', 'help', 'features'})
+_ROLE_CLIENT_SUB = frozenset({'attach', 'agents'})
+_ROLE_INFRA_SUB = frozenset({'daemon', 'bg-pty-host'})
+# Flags that take the next token as their value, so it is not mistaken for a
+# subcommand (`codex -c features.code_mode_host=true app-server`).
+_ROLE_VALUE_FLAGS = frozenset({
+    '-c', '--config', '-m', '--model', '--session-id', '-r', '--resume',
+    '--output-format', '--input-format', '--effort', '--sdk-url', '--permission-mode',
+    '--add-dir', '--json-path', '--log-file', '--origin', '--spawned-by', '-C', '--cd',
+    '-s', '--sandbox', '-a', '--ask-for-approval', '-p', '--profile', '-i', '--image',
+    '--agent', '--settings', '--mcp-config', '--append-system-prompt', '--system-prompt',
+    '--allowedTools', '--disallowedTools', '--fallback-model', '--max-turns',
+    '--bg-spare', '--bg-pty-host', '--socket', '--listen',
+})
+
+
+def _role_base(tok):
+    b = os.path.basename(tok)
+    for ext in ('.js', '.mjs', '.cjs'):
+        if b.endswith(ext):
+            return b[:-len(ext)]
+    return b
+
+
+def _role_positionals(rest):
+    """Non-flag tokens, skipping the values of the flags that take one."""
+    out, skip = [], False
+    for tok in rest:
+        if skip:
+            skip = False
+            continue
+        if tok.startswith('-'):
+            skip = '=' not in tok and tok in _ROLE_VALUE_FLAGS
+            continue
+        out.append(tok)
+    return out
+
+
+def _role_exe_index(command, toks):
+    """Index in argv of the agent executable, or None if this is not one."""
+    if command in _ROLE_AGENT_EXES or _ROLE_VERSION_EXE.match(command):
+        return 0
+    if command in _ROLE_SCRIPT_HOSTS:
+        for i, tok in enumerate(toks[1:], 1):
+            if tok.startswith('-'):
+                continue
+            if _role_base(tok) in _ROLE_AGENT_EXES or _ROLE_SCRIPT.search(tok):
+                return i
+            return None             # the first script argument is something else
+    return None
+
+
+def agent_role(agent_type, command, args):
+    """What a process the classifier tagged `agent_type` is: one of the roles
+    above. `command` is the whole executable name (_command_of)."""
+    command = command or ''
+    args = args or ''
+    toks = args.split()
+    argv0 = _role_base(toks[0]) if toks else ''
+
+    if agent_type == 'bwrap' or command.startswith(_ROLE_SANDBOX_PREFIX) \
+            or argv0 in ('bwrap', 'codex-linux-sandbox'):
+        return 'sandbox'
+    if agent_type == 'vscode' or '.cursor-server' in args or '.windsurf-server' in args:
+        return 'ide' if (_ROLE_IDE_EXE.match(command) or _ROLE_IDE_SERVER.search(args)) \
+            else 'helper'
+    if command.startswith(_ROLE_INFRA_PREFIX):
+        return 'infra'
+    if toks and '/.claude/remote/srv/' in toks[0]:
+        # Claude Desktop's remote server: it launches `ccd-cli` sessions over SSH
+        return 'probe' if _ROLE_PROBE_FLAGS.intersection(toks[1:]) else 'infra'
+
+    i = _role_exe_index(command, toks)
+    if i is None:
+        if command in _ROLE_SHELLS and _ROLE_TOOL_SHELL.search(args):
+            return 'tool-shell'
+        return 'helper'
+    if i == 0 and argv0 in _ROLE_EMBEDDED:
+        return 'embedded-tool'
+    rest = toks[i + 1:]
+    if _ROLE_PROBE_FLAGS.intersection(rest):
+        return 'probe'
+    pos = _role_positionals(rest)
+    sub = pos[0] if pos else None
+    if sub == 'app-server':
+        nxt = pos[1] if len(pos) > 1 else None
+        return {'proxy': 'client', 'daemon': 'infra'}.get(nxt, 'agent')
+    if sub == 'mcp':
+        return 'agent' if len(pos) > 1 and pos[1] == 'serve' else 'probe'
+    if sub in _ROLE_PROBE_SUB:
+        return 'probe'
+    if sub in _ROLE_CLIENT_SUB:
+        return 'client'
+    if sub in _ROLE_INFRA_SUB:
+        return 'infra'
+    return 'agent'
+
+
 def resolve(pid):
     """Nearest-agent-ancestor attribution, memoized.
 
+    A process the classifier tags is its own agent root (`is_agent`, depth 0,
+    agent_pid = itself) when it is an agent runtime (agent_role() == 'agent'), or
+    when it sits in no agent tree. Any other tagged process attaches to its
+    parent's tree at depth+1, as an untagged child does: through schema 7 every
+    tagged process was a root, so each Claude Bash tool call, Grep and Codex
+    sandbox became its own agent_pid and session_key, and one session split into
+    one key per tool call. A nested agent (`claude -p` from a tool call, the
+    `--print --sdk-url` workers of `claude rc`) is still its own root.
+
     A fork-without-exec child carries its parent's argv (argv_source='inherit');
     that argv must NOT make the child its own agent root — it attaches to the
-    parent's tree at depth+1, as it would under the /proc poller."""
+    parent's tree at depth+1, as it would under the /proc poller.
+
+    `tag` keeps the process's own classifier match either way, so a bwrap that
+    attached to its agent's tree is still known to be one (_sandbox_type)."""
     m = proc.get(pid)
     if m is None:
         return False
@@ -1957,23 +2122,39 @@ def resolve(pid):
         return m['attributed']
     own_args = m['args'] if m.get('argv_source') != 'inherit' else None
     tag = classify(own_args) if own_args else None
-    if tag is not None:
+    m['tag'] = tag
+    if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
         m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
         return True
     ppid = m['ppid']
     if ppid and ppid != pid and ppid in proc and resolve(ppid):
         pm = proc[ppid]
-        m.update(attributed=True, agent_pid=pm['agent_pid'], agent_type=pm['agent_type'],
-                 depth=(pm['depth'] or 0) + 1)
+        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
+                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
         return True
-    m['attributed'] = False
+    if tag is not None:
+        # outside any agent tree: its own root, as every tagged process was
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    # Cleared, not left over from an earlier image: an exec re-resolves a process
+    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
     return False
+
+
+def _sandbox_type(m):
+    """The SANDBOX_TYPES tag on m, its own or its tree's. A bwrap inside an agent
+    tree takes that tree's agent_type and keeps `bwrap` only as its own tag; one
+    outside any tree is a root and carries it as agent_type, as do its children."""
+    for t in (m.get('tag'), m.get('agent_type')):
+        if t in SANDBOX_TYPES:
+            return t
+    return None
 
 
 def tree_root(pid):
     """Top-most agent ancestor — the census's session root — as opposed to
-    agent_pid, the nearest one (the spawner). A VS Code helper is its own nearest
-    agent but belongs to the extension host's tree."""
+    agent_pid, the nearest one (the spawner). A nested agent (`claude -p` run
+    from a tool call) is its own nearest agent but belongs to its spawner's tree."""
     m = proc.get(pid)
     if m is None or not resolve(pid):
         return None
@@ -2105,7 +2286,8 @@ def _need_sandbox_read(m):
     exactly backwards. Firing on the exec whose PARENT is a launcher measures the
     first process actually inside the sandbox; everything under it then inherits
     correctly, because inheritance within a sandbox is exact."""
-    if SANDBOX_ALWAYS or m.get('is_agent'):
+    # Every tagged process, as through schema 7 when each one was a root
+    if SANDBOX_ALWAYS or m.get('tag') is not None:
         return True
     # An unknown sandbox is only worth 5 /proc reads for a process that will
     # actually be EMITTED. Reading for every unknown process charged ~15k extra
@@ -2116,7 +2298,7 @@ def _need_sandbox_read(m):
     # and null is the honest answer for something we never report.
     if m.get('sandbox') is None and (m.get('tty') or m.get('agent_pid') is not None):
         return True
-    if (m.get('agent_type') or None) in SANDBOX_TYPES:
+    if _sandbox_type(m) is not None:
         return True
     if _command_of(m) in SANDBOX_COMMS:
         return True
