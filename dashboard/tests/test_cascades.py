@@ -164,6 +164,68 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual(p["cascades"]["summary"]["nested"], 0)
         self.assertEqual(p["cascades"]["summary"]["hosted"], 1)
 
+    def grep_from_a_subshell(self, with_subshell=True):
+        """`grep` in a Bash tool call runs Claude's binary as ugrep, from a
+        subshell the tool's shell forked (argv inherited, so never tagged).
+        Seen on madsys-gpu1 on 2026-10-10, where it read as three nested agents."""
+        t0 = self.t0
+        ug = ("ugrep -G --ignore-files --hidden -I -n needle "
+              + HOME + "/.claude/projects/x.jsonl")
+        recs = claude_session(t0)[:1] + [
+            rec("exit", t0 + 5, 202, 201, "2.1.296", ug, agent_pid=202, tree_root=100,
+                is_agent=True),
+        ]
+        if with_subshell:
+            recs += [
+                rec("exit", t0 + 6, 201, 200, "zsh", SNAP + "'grep -n needle x'",
+                    agent_pid=200, tree_root=100, argv_source="inherit"),
+                rec("exit", t0 + 7, 200, 100, "zsh", SNAP + "'grep -n needle x'",
+                    agent_pid=200, tree_root=100, is_agent=True),
+            ]
+        return reduce(recs)
+
+    def test_a_built_in_grep_run_from_a_subshell_is_not_an_agent(self):
+        p = self.grep_from_a_subshell()
+        c = p["cascades"]["summary"]
+        self.assertEqual((c["nested"], c["agents_implied"], c["agents"]), (0, 0, 1))
+        rows = [p["trajectories"]["rows"][s] for s in p["trajectories"]["ranks"]["events"]]
+        self.assertEqual([(r["agent_pid"], r["owner_via"]) for r in rows], [("100", "ancestor")])
+
+    def test_a_built_in_grep_whose_parent_was_never_seen_folds_into_the_tree_root(self):
+        p = self.grep_from_a_subshell(with_subshell=False)
+        self.assertEqual(p["cascades"]["summary"]["agents_implied"], 0)
+        rows = [p["trajectories"]["rows"][s] for s in p["trajectories"]["ranks"]["events"]]
+        self.assertEqual([(r["agent_pid"], r["owner_via"]) for r in rows], [("100", "tree_root")])
+
+    def reused_parent_pid(self, user):
+        """haoran's Claude Desktop server, pid 28324, was started by pid 28307 on
+        2026-10-09. After the host's pids wrapped, an unrelated `cut` run under
+        glen's codex took 28307 -- read as codex starting haoran's server."""
+        t0 = self.t0
+        srv = HOME + "/.claude/remote/srv/89cb/server --serve --socket x.sock"
+        return reduce([
+            rec("residency", t0, 1467449, 1385881, "codex", "codex", agent_pid=1467449,
+                tree_root=1467449, is_agent=True, agent_type="codex", user="glen"),
+            rec("residency", t0 + 1, 28324, 28307, "server", srv, agent_pid=28324,
+                tree_root=28324, is_agent=True, user="haoran", age_s=100000),
+            rec("conn", t0 + 1, 28483, 28324, "2.1.293", HOME + "/.claude/remote/ccd-cli/"
+                "2.1.293 --output-format stream-json --verbose", agent_pid=28483,
+                tree_root=28324, is_agent=True, user="haoran"),
+            rec("exit", t0 + 2, 28307, 28305, "cut", "cut -d: -f2", agent_pid=1467449,
+                tree_root=1467449, agent_type="codex", user=user),
+            rec("exit", t0 + 3, 28305, 1467449, "lsb_release", "/bin/sh /usr/bin/lsb_release -a",
+                agent_pid=1467449, tree_root=1467449, agent_type="codex", user=user),
+        ])
+
+    def test_a_reused_pid_never_links_two_users_processes(self):
+        p = self.reused_parent_pid("glen")
+        self.assertIsNone(node(tree_of(p, 28324), 28324)["parent"])
+        self.assertEqual(p["cascades"]["summary"]["nested"], 0)
+
+    def test_a_reused_pid_that_started_after_the_child_is_not_its_parent(self):
+        p = self.reused_parent_pid("haoran")      # same user: only the start times say no
+        self.assertIsNone(node(tree_of(p, 28324), 28324)["parent"])
+
     def test_the_role_census_counts_what_the_classifier_tagged(self):
         census = reduce(claude_session(self.t0))["cascades"]["role_census"]
         got = {(r["agent_type"], r["role"]): r["n"] for r in census}

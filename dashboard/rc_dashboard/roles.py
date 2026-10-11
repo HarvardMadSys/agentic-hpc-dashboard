@@ -31,10 +31,13 @@ session. Roles, in the order they are tested:
   tool-shell     the shell a Claude Code Bash tool call runs in
   helper         tagged only because its argv mentions an agent path
 
-`tool-shell`, `embedded-tool` and `codex-linux-sandbox` are started by their
-agent directly, never through anything in between, so `spawned_by_agent` lets a
-caller take the parent of one of them as the agent even when nothing else in the
-window says what that parent is.
+`tool-shell` and `codex-linux-sandbox` are started by their agent directly,
+never through anything in between, so `spawned_by_agent` lets a caller take the
+parent of one of them as the agent even when nothing else in the window says
+what that parent is. `embedded-tool` is NOT: Claude's Grep tool runs it from the
+agent, but the shell snapshot routes a Bash call's `grep` to the same binary, so
+it also runs under a tool call's shell or a subshell that shell forked -- read as
+three nested agents on madsys-gpu1 on 2026-10-10 before this was taken out.
 
 This is a heuristic over argv, calibrated on the shapes above, and it is stated
 as one: callers publish the role census so a misfiled shape is visible.
@@ -178,5 +181,5 @@ def role_of(agent_type, command, args):
 
 def spawned_by_agent(role, command):
     """True for a process its agent starts directly: its parent IS the agent."""
-    return role in ("tool-shell", "embedded-tool") or \
+    return role == "tool-shell" or \
         (role == "sandbox" and (command or "").startswith("codex-linux-san"))

@@ -32,7 +32,7 @@ import json
 import re
 import time
 
-from ..procindex import MAX_HOPS
+from ..procindex import MAX_HOPS, users_conflict
 from . import pct
 
 NODE_ROLES = ("agent", "infra", "client")
@@ -137,9 +137,11 @@ class CascadeReducer:
                 break
             seen.add(p)
             if (host, p) in live:
+                if users_conflict(n["user"], live[(host, p)]["user"]):
+                    break               # a reused pid, not this process's parent
                 return p, "ancestor", path
             e = self.procs.get(host, p) if self.procs is not None else None
-            if e is None:
+            if e is None or users_conflict(n["user"], e[4]):
                 break
             path.append(e[2] or "?")
             p = e[0]
