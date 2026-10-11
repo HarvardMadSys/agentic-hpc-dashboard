@@ -96,7 +96,15 @@
     "//37": "re-scans once drift reaches this share of the window -- proportional,",
     "//38": "so 1h refreshes often and cheaply and 7d rarely and expensively. The",
     "//39": "drift is published either way; it is never rounded away.",
-    "max_drift_pct": 25
+    "max_drift_pct": 25,
+    "//40": "Every built window is saved to <cache.dir>/windows with how far into",
+    "//41": "each day-file it read, so a restart -- run.sh restarts on every save --",
+    "//42": "or a return to an evicted window reads only what was written since,",
+    "//43": "not the whole window. Used only by the same code and config, only while",
+    "//44": "the files it read are unchanged, and only while younger than the drift",
+    "//45": "budget above. ~12 MB per day of window per login node; keep bounds it.",
+    "cache_windows": true,
+    "cache_keep": 8
   },
 
   "ingest":  { "poll_ms": 1000 },

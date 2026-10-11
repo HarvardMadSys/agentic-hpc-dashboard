@@ -81,6 +81,9 @@ class FeedCase(unittest.TestCase):
         # brings it back is caught by these tests instead of writing into the
         # repo tree.
         tree["cache"]["state_dir"] = os.path.join(self.tmp, "state")
+        # Saved windows too: scratch, never the repo tree, and never another
+        # test's.
+        tree["cache"]["dir"] = os.path.join(self.tmp, "cache")
         tree["live"].update(live)
         return configmod.Config(tree, {}, None)
 

@@ -156,16 +156,19 @@ export function useLive(windowMin: number | null): LiveState {
             break;
           case 'windows': {
             setWindows(frame.payload);
-            // Re-fetch panels when a READY window's build stamp moves. Keyed on
+            // Re-fetch panels when a READY window's reducers are swapped in. Keyed on
             // the whole ready set rather than on this page's own window, because
             // `win` is null whenever the page is on the service default and
             // would never match a held window's minutes -- the first build to
             // finish would then never reach the page. Progress frames arrive
             // every couple of seconds and must NOT trigger a fetch, which is
-            // why only `state === 'ready'` rows are in the key.
+            // why only `state === 'ready'` rows are in the key. `installed_at`,
+            // not just `built_at`: a window resumed from a saved build keeps that
+            // build's stamp, so across a service restart `built_at` alone would
+            // match the key from before it and the page would never re-fetch.
             const key = (frame.payload.held ?? [])
               .filter((w) => w.state === 'ready')
-              .map((w) => `${w.minutes}:${w.built_at}`)
+              .map((w) => `${w.minutes}:${w.built_at}:${w.installed_at ?? ''}`)
               .join('|');
             if (key && key !== builtKey.current) {
               builtKey.current = key;
