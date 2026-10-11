@@ -1,6 +1,6 @@
 """Turn a raw collector record into the shape the reducers consume.
 
-The contract is SCHEMA_VERSION 7.  A thin shim keeps the pre-v4 capture usable as
+The contract is SCHEMA_VERSION 8.  A thin shim keeps the pre-v4 capture usable as
 an offline test input, but the shim's job is to make older records *honest*, not
 to pretend they are current: a field the old collector could not measure must
 arrive as None, never as 0.
@@ -21,6 +21,19 @@ record has. It also widens `net_tx_bytes` and
 `net_rx_bytes` to include IPv6 UDP, which the v6 collector did not count: across
 a 6/7 boundary those totals are not like for like, and `schema_versions` again is
 what shows the boundary is there.
+
+Schema 8 renames nothing this module reads, but changes what a session is (it
+also masks credentials and agent prompts in `args`). Through 7, every process
+whose own argv the classifier tagged was its own agent root, so Claude Code's shell
+for each Bash tool call, its Grep re-exec, a Codex sandbox and a `--version` probe
+each had `is_agent` true, `depth` 0, and its own `agent_pid`, `session_key` and
+`session_uuid`: one session per tool call. From 8, inside an agent tree only an
+agent runtime is a root (the collector's `agent_role()`). Every other tagged process
+carries its parent's tree, at `depth` + 1, and its tree's `agent_type`, so its
+`actor3` can change too. Outside any tree a tagged process is still its own root.
+`tree_root_pid` and `actor` do not change. Nothing here branches on the version: a
+v8 key is already a session, and a capture that spans 7 and 8 mixes the two grains,
+which `schema_versions` makes visible.
 
 Three rules this module exists to enforce:
 

@@ -331,7 +331,83 @@ tracked as a human, so the collector's own `truncated` record and its children's
 `sudo` processes above it have pids of their own and are not covered by the rule. The
 field also tells two runs in one day's file apart.
 
-### Schema 8: whole processes, ordered events, masked text
+### Schema 8: one session per agent, whole processes, masked text
+
+Two sets of changes share schema 8: sessions that stop splitting at every tool
+call, and the fixes from a review of a week of FASRC captures. Neither was
+deployed before the other, so no capture has one without the other.
+
+#### One session per agent, not per tool call
+
+This part renames no field. It changes what `is_agent`, `agent_pid`, `session_key`,
+`session_uuid`, `depth` and `agent_type` mean for one kind of process.
+
+Through schema 7, `resolve()` made every process whose own argv matched the classifier
+(`lib/agent_classify.py`) its own agent root: `is_agent` true, `depth` 0, `agent_pid`
+itself. The classifier matches any argv that mentions `/.claude/`, `/.codex/` or
+`.vscode-server`, so these all became roots, each starting a session of its own:
+
+- Claude Code's shell for each Bash tool call (`zsh -c source ~/.claude/shell-snapshots/…`)
+- its native binary re-executed as `rg`, `ugrep` or `bfs` for Grep and Glob
+- `codex-linux-sandbox` and `bwrap`, once per sandboxed tool call
+- `--version` and `auth status` probes, and `chmod`/`mkdir` on `~/.claude/…`
+
+One Claude tree on madsys-gpu1 on 2026-10-06 split into 204 `session_key`s this way.
+
+From schema 8, a tagged process is a root only when it is an **agent runtime**, or when
+no agent tree is above it. Anything else the classifier tags joins its parent's tree at
+`depth`+1, exactly as an untagged child does. `agent_role()` in `ebpf_trace.py` makes the
+call from the process's own argv. It ports `dashboard/rc_dashboard/roles.py`, which applies
+the same rules to older records when the dashboard reads them; keep the two in sync. It
+sorts tagged processes into `agent`, `tool-shell`, `embedded-tool`, `sandbox`, `probe`,
+`client`, `infra`, `ide` and `helper`, and only `agent` starts a session inside a tree.
+`AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1. The classifier
+itself is unchanged; see `VENDORED.md`.
+
+For a tagged process that is not an agent runtime, inside an agent tree:
+
+| field | schema 7 | schema 8 |
+|---|---|---|
+| `is_agent` | `true` | `false` |
+| `agent_pid`, `session_key`, `session_uuid` | its own | the nearest agent runtime's above it, or the tree root's if there is none |
+| `depth` | 0 | its parent's + 1 |
+| `agent_type` | its own tag | its tree's: a `bwrap` under Claude Code is `claude_code` |
+| `autonomous` | from its argv | `null`, as on every non-root |
+
+For example, a Bash tool call's shell, the command it runs and a Grep now all carry the
+Claude process's `session_key`, at depths 1, 2 and 1.
+
+- **Nested agents are still roots.** `claude -p` run from a tool call, and the
+  `--print --sdk-url` workers `claude rc` starts, keep their own sessions. `tree_root_pid`
+  still names the outermost agent, and it is unchanged for every process.
+- **Outside an agent tree nothing changes.** Running `claude --version` or
+  `chmod ~/.claude/…` at a human prompt still gives its own root, with the same `actor`
+  and `actor3`.
+- **`actor3` can move inside a tree, because `agent_type` follows the tree.** The
+  `claude auth status` probe that VS Code's extension host runs every few minutes is now
+  `vscode`, so `human-vscode`, and no longer `agent`. Something an agent runs that matches
+  `.vscode-server` is now `agent`.
+- **`sandbox_ancestry` still sees `bwrap`.** It used to rely on `agent_type`, which a
+  `bwrap` inside a tree no longer carries. The process table now keeps each process's own
+  classifier match next to its tree's. Tagged processes still each get a sandbox read at
+  exec, as they did when they were all roots.
+- **`residency` moves too.** `max_depth` grows, since tool calls sit below their agent.
+  `by_agent_type` changes along with `agent_type`. A tool shell whose command line carries
+  a bypass flag no longer counts as `autonomous`.
+- **`EBPFM_INCLUDE_ROOTS=0` keeps tool calls.** It drops roots, and a tool shell is no
+  longer one.
+- **An exec clears the old attribution.** Before, a root that exec'd into an untagged
+  command kept `is_agent: true`, and a process that lost its tree kept its old
+  `agent_pid`.
+
+This is a heuristic over argv, so it can misfile a shape it has not seen. If a new kind
+of agent runtime is misfiled, it joins its spawner's session instead of starting its own.
+Its `args`, `command` and `ppid` are still on every record, so a reader can split it out
+again. A capture that spans 7 and 8 has sessions of two different grains, and
+`schema_versions` is what shows the boundary. On schema-8 records the dashboard's fold
+finds almost nothing left to fold.
+
+#### Whole processes, ordered events, masked text
 
 A review of a week of FASRC captures (8 login nodes, 2026-10-20 to 25) found the
 endpoint table full most of the day, exit records frozen before their argv arrived,
@@ -807,7 +883,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 418 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 433 tests, no root, no BPF needed
 python3 tests/bpf_compile_check.py           # compile every block with BCC, no root
 ```
 
@@ -817,7 +893,8 @@ itself (tracefs is root-only). It shows what the rewriter and the 512-byte stack
 accept on this host's headers; only a load shows what the verifier does.
 
 Pure helpers, the BTF member walk (including bpftool's literal `(anon)` rendering for
-unnamed union members), each BPF block compiled alone, ancestry, attribution precedence
+unnamed union members), each BPF block compiled alone, ancestry, which tagged processes
+are agent roots (schema 8: the role table and whole agent trees), attribution precedence
 (ancestry beats tty beats uid), tty **non**-inheritance, cwd inheritance, thread-clone
 skip, pid recycling, and the netlink parser against a captured response blob.
 
