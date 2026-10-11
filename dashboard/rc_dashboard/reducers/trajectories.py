@@ -262,6 +262,8 @@ def under(path, anchor):
 class TrajectoryReducer:
     EVENTS = ("exit",)
     KEY = "trajectories"
+    # Derived from the sessions and the index on demand; not worth saving.
+    SNAPSHOT_SKIP = ("_fold_cache",)
 
     def __init__(self, cfg, classes, window_s=None, procs=None):
         self.cfg = cfg

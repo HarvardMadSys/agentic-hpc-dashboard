@@ -101,7 +101,8 @@ def create_app(cfg):
                 # record on a busy feed, and the age readout carries it.)
                 key = json.dumps(
                     [[w["minutes"], w["state"], w["progress"]["pct"], w["built_at"],
-                      w["replay_dropped"], w["error"]] for w in st["held"]]
+                      w["installed_at"], w["replay_dropped"], w["error"]]
+                     for w in st["held"]]
                     + [st["queued"]], default=str)
                 if key != last:
                     last = key

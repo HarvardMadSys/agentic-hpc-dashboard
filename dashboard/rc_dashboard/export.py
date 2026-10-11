@@ -13,9 +13,11 @@ Scanning re-reads the day-files rather than serving from memory: a 24-hour windo
 of raw events is on the order of 10-20 GB, so it is never buffered.
 """
 import glob
+import hashlib
 import heapq
 import json
 import os
+import re
 import time
 
 from .normalize import epoch_of
@@ -340,17 +342,109 @@ def window_plan(roots, since, days=0):
     return plan, sum(e["size"] - e["start"] for e in plan)
 
 
-def _window_stream(entry, norm, since, until, stats):
-    """One file's in-window records as `(ts, rec)`, ascending."""
+def resume_plan(roots, since, files, days=0):
+    """The byte ranges a saved window still has to read, or None.
+
+    `files` is what the saved scan read: per file its path, `(dev, ino)` and the
+    offset just past the last complete line it consumed. Each of those files is
+    read on from that offset -- the records before it are already in the saved
+    reducers -- and any file the scan never read is planned from `since`, as a
+    fresh build would plan it.
+
+    None when the saved scan no longer describes the files: one has vanished, is
+    a different inode, starts with different bytes (a file deleted and written
+    again can get its inode number back), is shorter than the offset, or has no
+    line ending there.
+    The saved reducers then hold records that are not on disk in that form, and
+    resuming them would serve numbers the files cannot reproduce.
+    """
+    known = {f["path"]: f for f in files}
+    plan = []
+    for p, f in known.items():
+        try:
+            with open(p, "rb") as fh:
+                st = os.fstat(fh.fileno())
+                if (st.st_dev, st.st_ino) != (f["dev"], f["ino"]) \
+                        or st.st_size < f["end"] \
+                        or head_digest(fh, f["head_n"]) != f["head"]:
+                    return None
+                if f["end"]:
+                    fh.seek(f["end"] - 1)
+                    if fh.read(1) != b"\n":
+                        return None
+        except OSError:
+            return None
+        plan.append({"path": p, "start": f["end"], "size": st.st_size})
+    for p in day_files(roots, days):
+        if p in known:
+            continue
+        try:
+            with open(p, "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                start = seek_to_epoch(fh, since, size)
+        except OSError:
+            continue
+        if start < size:
+            plan.append({"path": p, "start": start, "size": size})
+    plan.sort(key=lambda e: e["path"])
+    return plan, sum(max(0, e["size"] - e["start"]) for e in plan)
+
+
+HEAD_BYTES = 4096
+
+
+def head_digest(fh, n):
+    """Digest of a file's first `n` bytes: its identity beyond the inode number."""
+    fh.seek(0)
+    return hashlib.sha1(fh.read(n)).hexdigest()
+
+
+def event_filter(events):
+    """A byte-level pre-check for lines whose `event` is one of `events`.
+
+    Run before `json.loads`, so a scan feeding reducers that only read `exit`
+    skips parsing the residency, connection and socket records around them --
+    most of a day-file's lines. Never a false negative: the collector writes
+    `"event": "<name>"` and any JSON writer must, give or take whitespace. A false
+    positive (the same text inside some nested object) only costs a parse, since
+    dispatch is still by the parsed record's own `event`.
+    """
+    if not events:
+        return None
+    names = b"|".join(re.escape(e.encode()) for e in sorted(events))
+    return re.compile(rb'"event"\s*:\s*"(?:' + names + rb')"').search
+
+
+def _window_stream(entry, norm, since, until, stats, wanted=None):
+    """One file's in-window records as `(ts, rec)`, ascending.
+
+    Records in `entry` how far it got, for a saved window to resume from: the
+    file's `(dev, ino)`, a digest of its head, and `end`, the offset just past the
+    last COMPLETE line.
+    A trailing line with no newline is still being written; it is left for the
+    tail, and for the next resume, rather than lost as a parse error.
+    """
     try:
         fh = open(entry["path"], "rb")
     except OSError:
         return
     with fh:
-        fh.seek(entry["start"])
+        st = os.fstat(fh.fileno())
+        entry["dev"], entry["ino"] = st.st_dev, st.st_ino
+        entry["head_n"] = min(HEAD_BYTES, st.st_size)
+        entry["head"] = head_digest(fh, entry["head_n"])
+        pos = entry["end"] = entry["start"]
+        fh.seek(pos)
         for line in fh:
+            if not line.endswith(b"\n"):
+                return
+            pos += len(line)
+            entry["end"] = pos
             stats["bytes"] += len(line)
             if not line.strip():
+                continue
+            if wanted is not None and wanted(line) is None:
+                stats["skipped"] += 1
                 continue
             stats["scanned"] += 1
             try:
@@ -374,7 +468,7 @@ def _window_stream(entry, norm, since, until, stats):
             yield ts, rec
 
 
-def window_scan(plan, norm, since, until=None):
+def window_scan(plan, norm, since, until=None, events=None):
     """Yield `(rec, stats)` for every in-window record, OLDEST FIRST.
 
     Ascending order is a correctness requirement, not a preference: the tool-mix
@@ -385,10 +479,14 @@ def window_scan(plan, norm, since, until=None):
     Per-file streams are k-way merged on timestamp for the same reason `scan`
     merges: concatenating gives all of host B then all of host A, which is not
     one ordered stream, it is seven of them end to end.
+
+    `events`, when given, is the only event types yielded; the rest are skipped
+    before they are parsed (`event_filter`).
     """
-    stats = {"scanned": 0, "bytes": 0, "parse_errors": 0, "no_ts": 0,
-             "files": len(plan)}
-    streams = [_window_stream(e, norm, since, until, stats) for e in plan]
+    stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
+             "no_ts": 0, "files": len(plan)}
+    wanted = event_filter(events)
+    streams = [_window_stream(e, norm, since, until, stats, wanted) for e in plan]
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
         yield rec, stats
 

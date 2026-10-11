@@ -186,6 +186,11 @@ export default function App() {
           )}
           <br />
           panels built {panels.data?.full_built_at ?? '—'}
+          {/* Restored from a saved build: the age above is that build's, and
+              everything written since was read from the files on top of it. */}
+          {winStatus?.cache?.source === 'snapshot' && (
+            <span data-tip={winStatus.cache.note ?? ''}> · restored</span>
+          )}
           <br />
           {nClasses < 3 && (
             <span style={{ color: 'var(--crimson-ink)' }}>
