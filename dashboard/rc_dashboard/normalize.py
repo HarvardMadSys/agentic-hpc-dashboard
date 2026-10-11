@@ -47,6 +47,8 @@ import re
 import sys
 from datetime import datetime
 
+from .roles import role_of
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 SESSION_SCOPE_RE = re.compile(r"session-([0-9]+)\.scope")
@@ -107,6 +109,9 @@ SELF_OBSERVATION = re.compile(
     r"|\bnfsiostat\s+5\s+2\s*$"
     r"|\bvmstat\s+1\s+1\s*$"
 )
+
+# Records that carry a process's identity block.
+IDENTITY_EVENTS = ("exit", "truncated", "residency", "conn", "netio", "submit")
 
 SANDBOX_STATES = ("sandboxed", "unsandboxed", "denied", "unknown")
 APPROVAL_STATES = ("supervised", "bypassed", "unknown")
@@ -321,6 +326,14 @@ class Normalizer:
         # v7 names the executable `command`, whole; v6 and older had `comm`, cut
         # at 15 characters. Readers use this and never either raw key.
         rec["_command"] = rec.get("command") or rec.get("comm")
+
+        # What a classifier-tagged process actually is (see roles.py). Only a
+        # tagged process gets one, so a missing `_role` means "not tagged".
+        tagged = rec.get("is_agent")
+        if tagged is None:          # pre-v4: the collector's own rule, agent_pid == pid
+            tagged = rec.get("agent_pid") is not None and rec.get("agent_pid") == rec.get("pid")
+        if tagged and ev in IDENTITY_EVENTS:
+            rec["_role"] = role_of(rec.get("agent_type"), rec["_command"], rec.get("args"))
 
         if ev in ("exit", "truncated"):
             self._gate_nulls(rec, sv)

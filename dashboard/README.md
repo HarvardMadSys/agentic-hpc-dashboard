@@ -222,12 +222,46 @@ already made once.
 - **Scope is stated** — the eBPF tier runs on login nodes, so its resource figures are
   login-node use, not cluster use.
 
+## Cascades and drift
+
+The **Cascades** tab answers "which agents started which other agents". A node is a process
+whose role (`roles.py`) is `agent`, `infra` or `client`; tool-call shells, sandboxes, probes
+and helpers are steps between nodes. A node's parent is the nearest node above it in the
+process tree, else the daemon's own `--spawned-by {"pid": N}`, else (for a `bg-pty-host`
+orphaned to init) its user's only daemon, labelled as inferred, else the tree root. Two
+outcomes are kept apart: **nested**, an agent started by another agent, and **hosted**, a
+daemon, Claude Desktop's remote server or `claude rc` running sessions side by side. A Codex
+TUI whose direct child is `codex app-server` is shown as that session's front-end, not as a
+second agent.
+
+What it cannot see: Claude Code's Task-tool subagents and workflow agents run inside their
+parent's process. Only agents that are processes of their own appear. On madsys-gpu1 over
+2026-10-01..07 that was 49 agent trees, 4 hosted and none nested.
+
+**Drift** is two process-level proxies, carried on every trajectory row and every agent node.
+Neither sees the model's context:
+
+- `cwd_outside_pct`: the share of the session's processes whose cwd is outside its launch
+  directory (the agent's own cwd, or, when that is `/`, its first call's off the root).
+  The collector reads cwd at exec for tagged processes and inherits it below, so a `cd`
+  inside one shell command is not seen.
+- `mix_jsd`: Jensen–Shannon divergence (base 2, 0..1) between the purpose mix of the first
+  and last third of the session's processes, null below 30.
+
 ## Known collector limitations the page surfaces
 
 - **`peak_rss_mb` is always 0** on kernel 6.8: the kernel runs `exit_mm()` (clearing
   `task->mm`) before the `sched_process_exit` tracepoint fires, so the `if (mm)` guard at
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
+- **The collector's session key splits one session per tool call.** It keys a process on
+  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
+  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
+  trajectory rows say how many keys they fold and how the least certain one was
+  attributed, and the Sandbox tab's tree counts use the same fold. On madsys-gpu1 a
+  24 h window went from 3 281 keys to 636 sessions, one VS Code server alone from 688.
 - **The node tier daemon needs an absolute path.** `ebpfm.sh:466` re-execs `"$0"`, so
   `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by absolute
   path.
@@ -247,8 +281,10 @@ already made once.
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
 | `rc_dashboard/normalize.py` | schema contract, `actor3`, sandbox/approval, session keys, null gating |
+| `rc_dashboard/roles.py` | what a classifier-tagged process is: agent, tool-shell, probe, sandbox, infra, ... |
+| `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
-| `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, live, node |
+| `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades, live, node |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |

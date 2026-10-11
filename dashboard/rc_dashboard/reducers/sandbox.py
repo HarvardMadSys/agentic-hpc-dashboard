@@ -29,9 +29,13 @@ class SandboxReducer:
     EVENTS = ("exit", "truncated")
     KEY = "sandbox"
 
-    def __init__(self, cfg, classes):
+    def __init__(self, cfg, classes, procs=None):
         self.cfg = cfg
         self.classes = list(classes)
+        # The window's ProcIndex. A tree is an agent session, and the collector's
+        # session key splits one session per tool call (see trajectories.py), so
+        # keys are folded through it before they are counted.
+        self.procs = procs
         self.sb = collections.defaultdict(collections.Counter)
         self.ap = collections.defaultdict(collections.Counter)
         self.matrix = collections.Counter()       # (ancestry, sandbox) -> n
@@ -40,7 +44,7 @@ class SandboxReducer:
         self.src = collections.Counter()
         self.detail = collections.Counter()
         self.agents_only = collections.defaultdict(collections.Counter)
-        self.trees = {}                            # session -> (sandbox, approval, cls)
+        self.trees = {}       # session -> (sandbox, approval, cls, host, agent_pid, tree_root)
 
     def feed(self, rec):
         cls = rec["_a3"]
@@ -65,12 +69,31 @@ class SandboxReducer:
         if sid and rec.get("agent_pid") is not None:
             prev = self.trees.get(sid)
             if prev is None or (prev[0] == "unknown" and sb != "unknown"):
-                self.trees[sid] = (sb, ap, cls)
+                self.trees[sid] = (sb, ap, cls, rec.get("host"), rec["agent_pid"],
+                                   rec.get("tree_root_pid"))
+
+    def _folded_trees(self):
+        """Session -> (sandbox, approval, cls), with each key folded into its agent.
+
+        A folded tree takes the owner's verdict when the owner's own key has
+        one, else the first known among its keys.
+        """
+        out = {}
+        for sid, (sb, ap, cls, host, apid, root) in self.trees.items():
+            target = sid
+            if self.procs is not None:
+                owner, _ = self.procs.owner(host, apid, root)
+                if owner != apid:
+                    target = sid[:sid.rfind(":") + 1] + str(owner)
+            prev = out.get(target)
+            if prev is None or (sb != "unknown" and (sid == target or prev[0] == "unknown")):
+                out[target] = (sb, ap, cls)
+        return out
 
     def result(self):
         tree_sb = collections.defaultdict(collections.Counter)
         tree_ap = collections.defaultdict(collections.Counter)
-        for sb, ap, cls in self.trees.values():
+        for sb, ap, cls in self._folded_trees().values():
             tree_sb[cls][sb] += 1
             tree_ap[cls][ap] += 1
         rows = []

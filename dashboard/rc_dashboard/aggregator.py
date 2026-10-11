@@ -300,8 +300,8 @@ class Aggregator:
             status = view.status()
             out = {}
             for key, payload in (view.payload or {}).items():
-                if key == "trajectories":
-                    continue                       # served by /api/trajectories
+                if key == "trajectories" or key.startswith("_"):
+                    continue                       # /api/trajectories; internal state
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
                 body.update(ebpf)
                 body["_window"] = status
@@ -310,7 +310,7 @@ class Aggregator:
             # "the collector wrote nothing" and "we have not finished reading it"
             # are different facts, and a panel that renders them alike is the
             # zero-is-not-missing mistake wearing a different hat.
-            for key in ("tool_mix", "io_process", "resources", "sandbox", "risk"):
+            for key in ("tool_mix", "io_process", "resources", "sandbox", "risk", "cascades"):
                 if key not in out:
                     out[key] = dict(ebpf, _window=status)
             body = dict(self.node_result) if isinstance(self.node_result, dict) \

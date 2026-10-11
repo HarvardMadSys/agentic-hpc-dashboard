@@ -46,6 +46,8 @@ import time
 from . import snapshots
 from .export import resume_plan, window_plan, window_scan
 from .normalize import Normalizer
+from .procindex import ProcIndex
+from .reducers.cascades import CascadeReducer
 from .reducers.io import IoReducer
 from .reducers.resources import ResourceReducer
 from .reducers.risk import RiskReducer
@@ -53,12 +55,14 @@ from .reducers.sandbox import SandboxReducer
 from .reducers.tools import ToolMixReducer
 from .reducers.trajectories import TrajectoryReducer
 
-HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, SandboxReducer,
-                 RiskReducer)
+HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, RiskReducer)
 # The only records a view reads. A build skips the rest before parsing them, and
 # the live feed, the replay buffer and the drift all ignore them, so "the newest
 # record the view holds" means the same thing whichever path it came in by.
-EVENTS = frozenset(ev for r in HIST_REDUCERS + (TrajectoryReducer,)
+# The process index and the cascades read the tick records (residency, conn,
+# netio) as well: a long-lived agent's identity is often only there.
+EVENTS = frozenset(ev for r in HIST_REDUCERS + (SandboxReducer, TrajectoryReducer,
+                                                ProcIndex, CascadeReducer)
                    for ev in r.EVENTS)
 
 # Below this a window is mostly bin-edge noise: one minute of a login fleet is a
@@ -207,8 +211,14 @@ class PanelView:
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
         red = {r.KEY: r(self.cfg, self.classes) for r in HIST_REDUCERS}
-        red["trajectories"] = TrajectoryReducer(self.cfg, self.classes,
-                                                window_s=self.window_s)
+        # One process index per window, shared by the reducers that count
+        # sessions: they fold the collector's session keys through it.
+        procs = red[ProcIndex.KEY] = ProcIndex(self.cfg)
+        red["sandbox"] = SandboxReducer(self.cfg, self.classes, procs=procs)
+        traj = red["trajectories"] = TrajectoryReducer(
+            self.cfg, self.classes, window_s=self.window_s, procs=procs)
+        red["cascades"] = CascadeReducer(self.cfg, self.classes, window_s=self.window_s,
+                                         procs=procs, traj=traj)
         return red
 
     @staticmethod

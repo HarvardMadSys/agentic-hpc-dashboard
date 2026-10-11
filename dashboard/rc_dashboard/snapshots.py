@@ -87,12 +87,21 @@ def capture(reducers):
     defaultdict goes as a plain dict: several are built from lambdas, which
     pickle cannot name. `restore` pours the contents back into a fresh
     instance's own defaultdict, factory and all.
+
+    A reference to another reducer in the set stays behind too, along with
+    anything a reducer lists in `SNAPSHOT_SKIP` (derived caches). The process
+    index is shared by the reducers that fold session keys, and the cascades
+    read the trajectory reducer; pickled, each would come back as a private
+    copy, and a resumed view would feed one object and read another. The
+    fresh instances `restore` fills are already linked, so the links are kept.
     """
+    ids = {id(r) for r in reducers.values()}
     state = {}
     for key, r in reducers.items():
         st = {}
+        skip = set(getattr(r, "SNAPSHOT_SKIP", ()))
         for attr, v in vars(r).items():
-            if attr == "cfg":
+            if attr == "cfg" or attr in skip or id(v) in ids:
                 continue
             if isinstance(v, collections.defaultdict):
                 v = dict(v)

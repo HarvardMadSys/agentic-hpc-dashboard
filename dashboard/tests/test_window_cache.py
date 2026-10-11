@@ -43,9 +43,11 @@ def varied_exit(epoch, i, host="h1"):
     return r
 
 
-def conn_rec(epoch, host="h1"):
-    return {"schema_version": 6, "event": "conn", "ts": stamp(epoch),
-            "ts_epoch": epoch, "host": host, "user": "alice", "actor3": "agent"}
+def skipped_rec(epoch, host="h1"):
+    """A record no view reads. Not `conn`: the process index and the cascades
+    take a long-lived agent's identity from its connection ticks."""
+    return {"schema_version": 6, "event": "residency_totals", "ts": stamp(epoch),
+            "ts_epoch": epoch, "host": host, "by_actor3": {}, "by_agent_type": {}}
 
 
 class CacheCase(FeedCase):
@@ -63,12 +65,12 @@ class CacheCase(FeedCase):
 
     def feed(self, start_min, n, host="h1"):
         """`n` exits a minute apart, the oldest `start_min` minutes ago, with a
-        connection record between each pair the views must skip."""
+        record between each pair that the views must skip."""
         recs = []
         for i in range(n):
             t = self.now - 60 * (start_min - i)
             recs.append(varied_exit(t, i, host))
-            recs.append(conn_rec(t + 1, host))
+            recs.append(skipped_rec(t + 1, host))
         self.append("%s.exits.jsonl" % host, recs)
 
     def snapshot_file(self, minutes=WIN):
@@ -228,6 +230,19 @@ class RefusalTest(CacheCase):
 
 
 class RoundTripTest(CacheCase):
+
+    def test_reducers_that_share_state_still_share_it_after_a_restore(self):
+        # The process index is shared by the reducers that fold session keys,
+        # and the cascades read the trajectory reducer. Restored as separate
+        # copies, a resumed view would feed one and read another.
+        self.feed(150, 90)
+        view = self.build(self.registry())
+        r = snapshots.restore(view.fresh_reducers(),
+                              pickle.loads(snapshots.capture(view.reducers)))
+        self.assertIs(r["trajectories"].procs, r["_procs"])
+        self.assertIs(r["sandbox"].procs, r["_procs"])
+        self.assertIs(r["cascades"].procs, r["_procs"])
+        self.assertIs(r["cascades"].traj, r["trajectories"])
 
     def test_every_reducer_comes_back_with_the_state_it_left_with(self):
         self.feed(150, 90)
