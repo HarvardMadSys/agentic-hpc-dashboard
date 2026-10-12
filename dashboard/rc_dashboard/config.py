@@ -275,6 +275,9 @@ def defaults():
         # exited, cpu, read, written, net, gpu, last); a reader's own choice is
         # kept in their browser.
         "ui": {
+            # What the hosts this dashboard watches are called on the page:
+            # "Login nodes right now". A workstation fleet says "hosts".
+            "node_noun": "login nodes",
             "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
             # What a trajectory's tree hides when "hide routine" is on, beside
             # runs of the same command: a command, a command and its first
@@ -351,6 +354,7 @@ ENV_MAP = {
     "ask.command": ("RC_DASH_ASK_CMD", str),
     "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
+    "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
     "cache.dir": ("RC_DASH_CACHE_DIR", str),
     "server.host": ("RC_DASH_HOST", str),

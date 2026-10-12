@@ -226,6 +226,11 @@ export default function App() {
             // Opening a session or a user's sessions is navigation: back returns.
             openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
             openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+            nodeNoun={
+              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.node_noun?._value as
+                | string
+                | undefined) ?? null
+            }
             userCols={
               ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.user_columns?._value as
                 | string[]
