@@ -22,17 +22,15 @@ import type { Async } from '../api/hooks';
 import type { Cls, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
-import { Basis, Legend, Panel } from '../components/Panel';
+import { Panel } from '../components/Panel';
 import { Segmented } from '../components/ClassFilter';
 import { Plate } from '../components/Plate';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { CLS_COL } from '../lib/classes';
 import { sessionName } from '../lib/sessions';
-import { ByUser, distinct } from '../components/ByUser';
-import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
-import { pcol, plbl, purposeLegend } from '../lib/purposes';
+import { DASH, dur, fint, pc } from '../lib/format';
+import { pcol, plbl } from '../lib/purposes';
 import { absent } from '../lib/panels';
-import { AP_LABEL, AP_SHORT, SB_LABEL, label } from '../lib/sandbox';
-import { ToolTokens, TrajectoryInspector, VIA_TIP, runJump, runTip } from './TrajectoryInspector';
+import { TrajectoryInspector } from './TrajectoryInspector';
 import type { RunJump } from './TrajectoryInspector';
 import './trajectories.css';
 
@@ -55,6 +53,8 @@ export function TrajectoriesTab({
   tfrom,
   setTfrom,
   tuser = null,
+  clearUser = () => {},
+  routine = null,
 }: {
   traj: Async<Trajectories>;
   rank: TrajRank;
@@ -69,6 +69,9 @@ export function TrajectoriesTab({
   setTfrom: (t: number | null) => void;
   /** open on this user's sessions (from Active users' "trajectories →") */
   tuser?: string | null;
+  clearUser?: () => void;
+  /** the site's routine commands, which the tree can hide */
+  routine?: string[] | null;
 }) {
   const t = traj.data;
   // Not answered yet is waiting, not a missing feed -- a busy service, or a
@@ -90,20 +93,7 @@ export function TrajectoriesTab({
     setJump(null);
     select(sid);
   };
-  const pick = (r: TrajRow, kind: 'purpose' | 'tool', i: number) => {
-    setJump((p) => ({ sid: r.sid, j: runJump(r, kind, i, (p?.j.n ?? 0) + 1) }));
-    // the session already open keeps its read, and the page it is on
-    if (sel !== r.sid) select(r.sid);
-  };
-
-  // A row is a button for the inspector: click anywhere on it, or tab to its
-  // session id and press Enter.
-  const rowProps = (sid: string) => ({
-    className: `tj-row${sel === sid ? ' sel' : ''}`,
-    onClick: () => open(sid),
-    'aria-selected': sel === sid,
-  });
-
+  const shownList = tuser ? listed.filter((r) => (r.user ?? (r.users ?? [])[0]) === tuser) : listed;
   const sum = t?.summary ?? {};
   const agent = cls.includes('agent') ? sum.agent : undefined;
   const shownCls = cls.filter((c) => c in sum);
@@ -182,23 +172,13 @@ export function TrajectoriesTab({
         />
       </div>
 
-      <div className="grid wide">
-        {sel && (
-          <TrajectoryInspector
-            key={sel}
-            sid={sel}
-            row={rows[sel] ?? null}
-            win={win}
-            from={tfrom}
-            setFrom={setTfrom}
-            onClose={() => open(null)}
-            jump={jump?.sid === sel ? jump.j : null}
-          />
-        )}
+      {/* The ranked list and the inspector, side by side (roadmap note 39.2):
+          pick a session on the left, its process tree opens on the right. */}
+      <div className="tj-md">
         <Panel
-          title="Ranked sessions"
+          title="Sessions"
+          id="sec-ranked-sessions"
           p={env}
-          span
           empty={!listed.length}
           emptyWhat={
             Object.keys(rows).length
@@ -207,242 +187,69 @@ export function TrajectoriesTab({
           }
           header={
             <Segmented
-              label="rank by"
               value={rank}
               options={TRAJ_RANKS.map((r) => ({
                 k: r,
                 lbl: RANK_LBL[r],
-                tip: `reorder by ${RANK_LBL[r]} — every column stays visible`,
+                tip: `the busiest sessions by ${RANK_LBL[r]} first`,
               }))}
               onChange={setRank}
             />
           }
-          basis={
-            <Basis
-              items={[
-                ['rank_meaning', t?.rank_meaning],
-                ['basis', t?.basis],
-                ['window', t?.window],
-                ['buffer', t?.buffer],
-                ['ribbon', 'segment width is the run length; colour is the purpose run. Zoomed, the widths are shares of the calls in view, which the line above it states'],
-                ['runs', 'a ribbon run or a tool token opens the inspector at the process its first record came from: the record time, then its purpose or tool, pick it'],
-              ]}
+        >
+          {tuser && (
+            <div className="tj-filter">
+              {`${shownList.length ? '' : 'no ranked session for '}`}
+              <b className="mono">{tuser}</b>
+              {shownList.length ? '’s sessions' : ' in this window'}
+              {' · '}
+              <button className="linkbtn" onClick={() => clearUser()}>show everyone</button>
+            </div>
+          )}
+          <div className="tj-list">
+            {(tuser && shownList.length ? shownList : listed).map((r) => {
+              const nm = sessionName(r);
+              return (
+                <button
+                  key={r.sid}
+                  className={`tj-item${sel === r.sid ? ' on' : ''}`}
+                  style={{ borderLeftColor: sel === r.sid ? undefined : CLS_COL[r.actor3 ?? 'unlabeled'] }}
+                  onClick={() => open(r.sid)}
+                  data-tip={`${r.sid}\nclick to open its process tree`}
+                >
+                  <span className="tj-item-h">
+                    <b>{nm.key}</b>
+                    <span className="tj-date">{nm.date}</span>
+                  </span>
+                  <span className="tj-item-s">
+                    {(r.user ?? (r.users ?? [])[0]) ?? DASH} · {fint(r.n_events)} processes · {dur(r.cpu_s)} CPU · {dur(r.wall_s)}
+                  </span>
+                  {r.purpose_rle?.length ? (
+                    <Ribbon rle={r.purpose_rle} colour={pcol} label={(k, n) => `${plbl(k)} ×${fint(n)}`} W={290} H={7} />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </Panel>
+
+        <div>
+          {sel ? (
+            <TrajectoryInspector
+              key={sel}
+              sid={sel}
+              row={rows[sel] ?? null}
+              win={win}
+              from={tfrom}
+              setFrom={setTfrom}
+              onClose={() => open(null)}
+              jump={jump?.sid === sel ? jump.j : null}
+              routine={routine}
             />
-          }
-        >
-          <ByUser
-            openUser={tuser}
-            rows={listed}
-            user={(r) => r.user ?? (r.users ?? [])[0]}
-            noun="session"
-            open
-            cols={[
-              { h: 'classes', cell: (rs) => distinct(rs, (r) => CLS_LBL[r.actor3 ?? 'unlabeled'] ?? r.actor3) },
-              { h: 'processes', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + (r.n_events ?? 0), 0)) },
-              { h: 'cpu s', num: true, cell: (rs) => fmt(rs.reduce((a, r) => a + (r.cpu_s ?? 0), 0)) },
-              { h: 'peak RSS', num: true, cell: (rs) => mb(Math.max(0, ...rs.map((r) => r.peak_rss_mb ?? 0)) || null) },
-              { h: 'read', num: true, cell: (rs) => mb(rs.reduce((a, r) => a + (r.io_rd_mb ?? 0), 0)) },
-              { h: 'written', num: true, cell: (rs) => mb(rs.reduce((a, r) => a + (r.io_wr_mb ?? 0), 0)) },
-            ]}
-            sub={(rs) => (
-              <div className="scroller">
-                <table className="tj-table">
-                  <thead>
-                    <tr>
-                      <th>session</th>
-                      <th className="num" data-tip="collector session keys folded into this session, and how the least certain one was attributed">
-                        keys
-                      </th>
-                      <th>class</th>
-                      <th>host</th>
-                      {/* both always visible: the switcher reorders, it never hides */}
-                      <th className="num" data-tip="processes that exited in the session within the window">processes</th>
-                      <th className="num">cpu s</th>
-                      <th className="num">tools</th>
-                      <th className="num">chains</th>
-                      <th className="num">wall</th>
-                      <th className="num">peak RSS</th>
-                      <th className="num" data-tip="bytes read from disk (block layer)">read</th>
-                      <th className="num" data-tip="bytes written to disk (block layer)">written</th>
-                      <th>sandbox</th>
-                      <th>approval</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rs.map((r) => (
-                      <tr key={r.sid} {...rowProps(r.sid)}>
-                        <td
-                          className="mono"
-                          data-tip={`${r.sid}\nkey_type ${r.key_type}${
-                            r.agent_type ? '\nagent_type ' + r.agent_type : ''
-                          }\nclick to open its process tree`}
-                        >
-                          {/* host and class have their own columns; the date and
-                              the key are what tell two rows apart */}
-                          <button className="tj-open" onClick={(e) => { e.stopPropagation(); open(r.sid); }}>
-                            <span className="tj-date">{sessionName(r).date}</span>
-                            {sessionName(r).key}
-                          </button>
-                        </td>
-                        <td
-                          className="num"
-                          data-tip={r.owner_via ? `${r.owner_via}: ${VIA_TIP[r.owner_via]}` : undefined}
-                        >
-                          {fint(r.fragments ?? 1)}
-                          {r.owner_via && r.owner_via !== 'self' && r.owner_via !== 'ancestor' && (
-                            <div className="sub">{r.owner_via.replace(/_/g, ' ')}</div>
-                          )}
-                        </td>
-                        <td>
-                          <span
-                            className="dot"
-                            style={{
-                              background: CLS_COL[r.actor3 ?? 'unlabeled'],
-                              marginRight: 5,
-                            }}
-                          />
-                          {CLS_LBL[r.actor3 ?? 'unlabeled'] ?? r.actor3}
-                        </td>
-                        <td className="mono" style={{ color: 'var(--muted)' }}>
-                          {(r.host || '').replace('login', '') || DASH}
-                        </td>
-                        <td
-                          className="num"
-                          style={rank === 'events' ? { fontWeight: 600 } : undefined}
-                        >
-                          {fint(r.n_events)}
-                        </td>
-                        <td className="num" style={rank === 'cpu_s' ? { fontWeight: 600 } : undefined}>
-                          {fmt(r.cpu_s)}
-                        </td>
-                        <td
-                          className="num"
-                          style={rank === 'distinct_tools' ? { fontWeight: 600 } : undefined}
-                        >
-                          {fint(r.distinct_tools)}
-                        </td>
-                        <td
-                          className="num"
-                          style={rank === 'chain_runs' ? { fontWeight: 600 } : undefined}
-                        >
-                          {fint(r.chain_runs)}
-                        </td>
-                        <td className="num">{dur(r.wall_s)}</td>
-                        <td className="num">{mb(r.peak_rss_mb)}</td>
-                        <td className="num">{mb(r.io_rd_mb)}</td>
-                        <td className="num">{mb(r.io_wr_mb)}</td>
-                        <td>
-                          <span className="sev low" data-tip="the session's first known verdict">
-                            {label(SB_LABEL, r.sandbox ?? 'unknown')}
-                          </span>
-                        </td>
-                        <td>
-                          <span
-                            className={`sev ${
-                              r.approval === 'bypassed' || r.autonomous
-                                ? 'HIGH'
-                                : r.approval === 'auto'
-                                  ? 'med'
-                                  : 'low'
-                            }`}
-                            data-tip={`${label(AP_LABEL, r.approval ?? 'unknown')}\nread off the session root's own record`}
-                          >
-                            {label(AP_SHORT, r.approval ?? 'unknown')}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          />
-        </Panel>
-
-        <Panel
-          title="Tool sequence — ribbon and tokens"
-          p={env}
-          span
-          empty={!listed.length}
-          emptyWhat="no session to draw"
-        >
-          <ByUser
-            rows={listed.slice(0, 20)}
-            user={(r) => r.user ?? (r.users ?? [])[0]}
-            noun="session"
-            open
-            cols={[
-              { h: 'processes', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + (r.n_events ?? 0), 0)) },
-              { h: 'cpu s', num: true, cell: (rs) => fmt(rs.reduce((a, r) => a + (r.cpu_s ?? 0), 0)) },
-            ]}
-            sub={(rs) => (
-              <div className="scroller">
-                <table className="tj-table">
-                  <thead>
-                    <tr>
-                      <th>session</th>
-                      <th className="num" data-tip="processes that exited in the session within the window">processes</th>
-                      <th className="num">cpu s</th>
-                      <th style={{ minWidth: 330 }}>purpose over the sequence</th>
-                      <th className="wrap" style={{ minWidth: 300 }}>tool runs</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rs.map((r) => (
-                      <tr key={r.sid} {...rowProps(r.sid)}>
-                        <td className="mono" style={{ whiteSpace: 'nowrap' }} data-tip={r.sid}>
-                          <button className="tj-open" onClick={(e) => { e.stopPropagation(); open(r.sid); }}>
-                            <span className="tj-date">{sessionName(r).date}</span>
-                            {sessionName(r).key}
-                          </button>
-                        </td>
-                        <td className="num">{fint(r.n_events)}</td>
-                        <td className="num">{fmt(r.cpu_s)}</td>
-                        <td>
-                          {r.purpose_rle?.length ? (
-                            <Ribbon
-                              rle={r.purpose_rle}
-                              colour={pcol}
-                              label={(k, n, i) =>
-                                `${plbl(k)} ×${fint(n)} · run ${fint(i + 1)}\n${runTip(r.purpose_t?.[i], 'open the inspector')}`
-                              }
-                              W={320}
-                              H={13}
-                              zoom
-                              note={
-                                r.purpose_rle.reduce((a, [, k]) => a + k, 0) < r.n_events
-                                  ? `(the first ${fint(r.purpose_rle.length)} runs of ${fint(r.n_events)})`
-                                  : undefined
-                              }
-                              name="purpose runs"
-                              onPick={(i) => pick(r, 'purpose', i)}
-                            />
-                          ) : (
-                            <span className="nm">no purpose run-lengths</span>
-                          )}
-                        </td>
-                        <td className="wrap">
-                          {r.tool_rle?.length ? (
-                            <ToolTokens
-                              rle={r.tool_rle}
-                              truncated={r.chain_truncated}
-                              times={r.tool_t}
-                              onPick={(i) => pick(r, 'tool', i)}
-                            />
-                          ) : (
-                            <span className="nm">no tool run-lengths</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          />
-          <Legend items={purposeLegend()} />
-        </Panel>
-
+          ) : (
+            <div className="tj-empty">pick a session on the left: its process tree opens here</div>
+          )}
+        </div>
       </div>
     </>
   );

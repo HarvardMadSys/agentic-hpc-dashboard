@@ -276,6 +276,17 @@ def defaults():
         # kept in their browser.
         "ui": {
             "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
+            # What a trajectory's tree hides when "hide routine" is on, beside
+            # runs of the same command: a command, a command and its first
+            # argument ("git status"), or "shell-snapshot" for an agent's shell
+            # sourcing its saved environment.
+            "routine_commands": [
+                "lsb_release", "getconf", "uname", "sleep", "pgrep", "ps", "tr", "cut",
+                "dirname", "basename", "readlink", "realpath", "which", "hostname", "id",
+                "whoami", "date", "tty", "stty", "tput", "locale", "nproc", "true", "false",
+                "git status", "git rev-parse", "git config", "git symbolic-ref",
+                "shell-snapshot",
+            ],
         },
         "anonymize": {
             "enabled": False,
