@@ -250,6 +250,7 @@ export default function App() {
             windowMin={resolvedWin?.minutes ?? null}
             windowLabel={resolvedWin?.label ?? null}
             openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+            goto={(t) => setUrl({ tab: t }, true)}
           />
         );
       case 'events':

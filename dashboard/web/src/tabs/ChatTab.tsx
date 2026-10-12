@@ -27,9 +27,10 @@ const SEV: Record<OperatorSuggestion['priority'], string> = { high: 'HIGH', medi
 
 /** The operator's suggestions, as cards: what to do, the numbers behind it,
  * and a link to each account it names. */
-function SuggestionList({ job, openUserTraj, followUp }: {
+function SuggestionList({ job, openUserTraj, goto, followUp }: {
   job: AskJob;
   openUserTraj: (u: string) => void;
+  goto: (tab: string) => void;
   followUp: (x: OperatorSuggestion) => void;
 }) {
   const got = job.suggestions;
@@ -64,7 +65,13 @@ function SuggestionList({ job, openUserTraj, followUp }: {
                     {u} →
                   </button>
                 ))}
-                {x.panel && <span className="nm">shown on: {x.panel}</span>}
+                {x.panel && x.tab ? (
+                  <button className="linkbtn" onClick={() => goto(x.tab!)} data-tip={`open the ${x.panel} tab`}>
+                    see {x.panel} →
+                  </button>
+                ) : x.panel ? (
+                  <span className="nm">shown on: {x.panel}</span>
+                ) : null}
                 <button className="linkbtn" onClick={() => followUp(x)}
                   data-tip="put a question about this suggestion in the chat below">
                   ask about this ↓
@@ -79,9 +86,10 @@ function SuggestionList({ job, openUserTraj, followUp }: {
 }
 
 /** "Suggest actions": one press, one run over the window on screen. */
-function Suggestions({ info, openUserTraj, followUp }: {
+function Suggestions({ info, openUserTraj, goto, followUp }: {
   info: AskInfo | null;
   openUserTraj: (u: string) => void;
+  goto: (tab: string) => void;
   followUp: (x: OperatorSuggestion) => void;
 }) {
   const scope = useAskScope();
@@ -113,7 +121,7 @@ function Suggestions({ info, openUserTraj, followUp }: {
         </div>
         {job == null ? null : job.state === 'done' ? (
           <>
-            <SuggestionList job={job} openUserTraj={openUserTraj} followUp={followUp} />
+            <SuggestionList job={job} openUserTraj={openUserTraj} goto={goto} followUp={followUp} />
             <div className="chat-meta">
               {job.agent} · {job.elapsed_s} s · {job.snapshot_kb} KB of the window’s panels · the {job.window} window
               {job.submitted ? ` · asked at ${clock(job.submitted)}` : ''}
@@ -141,11 +149,13 @@ const STARTERS = [
   'Summarise what Claude Code did in this window.',
 ];
 
-export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {} }: {
+export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto = () => {} }: {
   windowMin: number | null;
   windowLabel: string | null;
   /** open an account's sessions on the Trajectories tab */
   openUserTraj?: (u: string) => void;
+  /** open a tab */
+  goto?: (tab: string) => void;
 }) {
   const [info, setInfo] = useState<AskInfo | null>(null);
   const [infoErr, setInfoErr] = useState<string | null>(null);
@@ -179,7 +189,7 @@ export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {} }: {
   const off = info && (!info.enabled || !info.available);
   return (
     <div className="grid wide">
-      {!infoErr && !off && <Suggestions info={info} openUserTraj={openUserTraj} followUp={followUp} />}
+      {!infoErr && !off && <Suggestions info={info} openUserTraj={openUserTraj} goto={goto} followUp={followUp} />}
       <Panel title="Ask about the whole window" span>
         {infoErr ? (
           <div className="none">could not reach the chat service: {infoErr}</div>
