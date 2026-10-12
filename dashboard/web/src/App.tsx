@@ -177,6 +177,11 @@ export default function App() {
   useEffect(() => {
     document.title = siteName ? `${siteName} · Agent Behaviour` : 'Agent Behaviour Console';
   }, [siteName]);
+  // Names are aliased on the way out (rc_dashboard/anonymize.py): the header
+  // says so, or a reader takes `user-7f3a9c1e` for a real account.
+  const anonymized =
+    (config.data?.anonymize as Record<string, { _value?: unknown }> | undefined)?.enabled?._value ===
+    true;
   const mainRef = useRef<HTMLElement>(null);
   const { secs, active } = useSections(mainRef, tab.k);
   const hl = headline(feeds.data);
@@ -324,6 +329,17 @@ export default function App() {
               </>
             ) : (
               <StatusPill {...pillOf(hl.status, live.transport)} />
+            )}
+            {anonymized && (
+              <span
+                className="pill"
+                data-tip={
+                  'names are replaced by stable aliases (user-…, lab-…) before anything leaves ' +
+                  'the service; email addresses and user IDs are hidden'
+                }
+              >
+                anonymized
+              </span>
             )}
             {hl.lag && !live.live?.clock?.pinned && (
               <span data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">

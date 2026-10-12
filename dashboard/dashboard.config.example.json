@@ -41,6 +41,24 @@
 
   "site": { "name": "", "description": "" },
 
+  "//anonymize": "Replace every username, lab or Slurm account name, email address and numeric",
+  "//anonymize1": "user ID in what the service sends out with a stable alias (user-7f3a9c1e,",
+  "//anonymize2": "lab-1b2c3d4e). Off by default. salt empty: one is generated into",
+  "//anonymize3": "<cache.dir>/anonymize.salt and reused; changing it reshuffles every alias, and",
+  "//anonymize4": "the page never shows it. Empty pattern lists use anonymize.py's defaults (homes",
+  "//anonymize5": "and FAS lab trees); set them for a cluster laid out differently. Switching any",
+  "//anonymize6": "of this costs a restart, never a rebuild. RC_DASH_ANONYMIZE=1 turns it on.",
+  "anonymize": {
+    "enabled": false,
+    "salt": "",
+    "labs": true,
+    "emails": true,
+    "uids": true,
+    "keep": ["root"],
+    "home_patterns": [],
+    "lab_patterns": []
+  },
+
   "feeds": {
     "//": "eBPF tier (root): $EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl, landing",
     "//1": "repo-side as log/ebpfm/<date>/<host>.{snapshot,exits}.jsonl -- the log/ebpfm symlink",

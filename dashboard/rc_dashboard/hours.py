@@ -99,10 +99,11 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.py",
               "tool_buckets.py", "proctree.py", "fastjson.py", "snapshots.py", "hours.py")
 # Config that changes nothing a reduction holds: the server, the window
-# registry's own knobs, the live tier's views and backfill, the clock, and the
-# other feeds and the paths (the eBPF roots are fingerprinted as resolved) --
-# so a checkout moved, or a node-tier path changed, keeps its hours.
-CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "export", "clock")
+# registry's own knobs, the live tier's views and backfill, the clock, the
+# masking of names on the way out (anonymize.py), and the other feeds and the
+# paths (the eBPF roots are fingerprinted as resolved) -- so a checkout moved,
+# a node-tier path changed, or anonymization switched, keeps its hours.
+CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "export", "clock", "anonymize")
 LIVE_IGNORED = ("window_min", "window_presets_min", "event_tail", "submit_tail",
                 "backfill_hours")
 

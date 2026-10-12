@@ -25,6 +25,7 @@ import json
 import threading
 import time
 
+from . import anonymize
 from . import ask
 from . import clock
 from . import feeds as feedmod
@@ -67,6 +68,10 @@ class Aggregator:
         # each collector's own account of itself: start, heartbeat, stop
         self.health = CollectorHealth(cfg)
         self.asker = ask.Asker(cfg)
+        # Stable aliases for every name the service sends out, or None when off.
+        # It learns accounts from the roster, so an alias a reader pastes into a
+        # filter maps back even for someone the page has not shown yet.
+        self.anon = anonymize.from_config(cfg, roster=self._accounts)
         self.panels_by_window = winmod.WindowRegistry(
             cfg, self.classes, self.roots, self.lock)
         self.node_built_at = None
@@ -434,8 +439,17 @@ class Aggregator:
         extra = {"facets": got.get("facets"),
                  "sessions": {"summary": tr.get("summary"),
                               "busiest": [{k: r.get(k) for k in keep} for r in busiest]}}
-        return self.asker.submit(question, got.get("panels") or {}, live, win["label"],
-                                 history, extra)
+        panels = got.get("panels") or {}
+        if self.anon is not None:
+            # The snapshot leaves the host, for the model's provider: aliases only.
+            panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
+                                   self.anon.payload(extra))
+        return self.asker.submit(question, panels, live, win["label"], history, extra)
+
+    def _accounts(self):
+        """Every account in the live roster's retention, for the anonymizer."""
+        with self.lock:
+            return list(self.live.roster.last)
 
     def ask_job(self, jid):
         return self.asker.view(jid)
