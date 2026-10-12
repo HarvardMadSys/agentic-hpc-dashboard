@@ -9,9 +9,11 @@ Three changes make it hold:
   retention. A roster needs no 10-minute resolution a week back, and the old
   bins become a sixth as many.
 - A compact slot: a bin maps a user to ONE flat list,
-  [kind, n, cpu, kind, n, cpu, ...], where `kind` is a small integer standing
-  for a (class, agent type) pair. A dict per pair per bin was several times
-  the memory for the same three numbers.
+  [kind, n, cpu, rd, wr, net, kind, n, ...], where `kind` is a small integer
+  standing for a (class, agent type) pair. A dict per pair per bin was several
+  times the memory for the same numbers. Disk read, disk written, and network
+  MB ride along so the Active users table can show each account's I/O over the
+  window without a second roster.
 - A cached window: between two frames only the open bin changes, so the sum
   over a window's closed bins is kept and rebuilt only when a bin closes, the
   window's edge crosses a bin, or -- at most every REBUILD_S -- a late record
@@ -29,33 +31,39 @@ COARSE_S = 3600
 FINE_SPAN_S = 86400
 REBUILD_S = 15
 CACHE_MAX = 8
+# One entry: kind, processes, CPU s, disk read MB, disk written MB, network MB.
+W = 6
 
 
-def _bump(slot, user, kind, cpu):
+def _bump(slot, user, kind, vals):
+    """Count one process of `kind` for `user`; `vals` are its CPU and I/O. A
+    record with no CPU or no I/O block still ran: it counts, and adds 0."""
     e = slot.get(user)
-    c = cpu or 0.0                       # a record with no CPU still ran
     if e is None:
-        slot[user] = [kind, 1, c]
+        slot[user] = [kind, 1, *vals]
         return
-    for j in range(0, len(e), 3):
+    for j in range(0, len(e), W):
         if e[j] == kind:
             e[j + 1] += 1
-            e[j + 2] += c
+            e[j + 2] += vals[0]
+            e[j + 3] += vals[1]
+            e[j + 4] += vals[2]
+            e[j + 5] += vals[3]
             return
-    e.extend((kind, 1, c))
+    e.extend((kind, 1, *vals))
 
 
 def _add_into(dst, e):
     """Add flat entry `e` into flat entry `dst`, in place."""
-    for j in range(0, len(e), 3):
+    for j in range(0, len(e), W):
         k = e[j]
-        for i in range(0, len(dst), 3):
+        for i in range(0, len(dst), W):
             if dst[i] == k:
-                dst[i + 1] += e[j + 1]
-                dst[i + 2] += e[j + 2]
+                for f in range(1, W):
+                    dst[i + f] += e[j + f]
                 break
         else:
-            dst.extend((k, e[j + 1], e[j + 2]))
+            dst.extend(e[j:j + W])
 
 
 def _merge(dst, src):
@@ -96,7 +104,7 @@ class UserRoster:
             self.kinds.append(key)
         return k
 
-    def add(self, epoch, user, cls, atype, cpu_s, now=None):
+    def add(self, epoch, user, cls, atype, cpu_s, now=None, rd_mb=None, wr_mb=None, net_mb=None):
         if epoch is None or not user:
             return False
         now = time.time() if now is None else now
@@ -117,7 +125,7 @@ class UserRoster:
         slot = store.get(idx)
         if slot is None:
             slot = store[idx] = {}
-        _bump(slot, user, k, cpu_s)
+        _bump(slot, user, k, (cpu_s or 0.0, rd_mb or 0.0, wr_mb or 0.0, net_mb or 0.0))
         if epoch > self.last.get(user, 0):
             self.last[user] = epoch
         return True
@@ -188,4 +196,8 @@ class UserRoster:
 
     def decode(self, e):
         """A flat entry as ((class, agent type), n, cpu) triples."""
-        return [(self.kinds[e[j]], e[j + 1], e[j + 2]) for j in range(0, len(e or ()), 3)]
+        return [(self.kinds[e[j]], e[j + 1], e[j + 2]) for j in range(0, len(e or ()), W)]
+
+    def decode_full(self, e):
+        """A flat entry as ((class, agent type), n, cpu, rd MB, wr MB, net MB)."""
+        return [(self.kinds[e[j]], *e[j + 1:j + W]) for j in range(0, len(e or ()), W)]

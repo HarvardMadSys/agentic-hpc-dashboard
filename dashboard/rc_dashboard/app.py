@@ -289,11 +289,13 @@ def create_app(cfg):
         return respond(out)
 
     @app.get("/api/live/user")
-    def api_live_user(name: str = Query(...), window_min: int = Query(None)):
-        """One account opened up: sessions running now and its latest commands."""
+    def api_live_user(name: str = Query(...), window_min: int = Query(None),
+                      n: int = Query(25, ge=1, le=1000)):
+        """One account opened up: sessions running now and its last `n` exited
+        processes, however long ago."""
         if anon is not None:
             name = anon.dealias_user(name)
-        return respond(redact.payload(agg.live_user(name, window_min)))
+        return respond(redact.payload(agg.live_user(name, window_min, n)))
 
     @app.get("/api/trajectories")
     def api_traj(request: Request, rank: str = Query("events"),

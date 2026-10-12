@@ -41,6 +41,13 @@
 
   "site": { "name": "", "description": "" },
 
+  "//ui": "What the page opens on before a reader changes it; ignored by the saved builds.",
+  "//ui1": "user_columns: Active users' columns, any of agents ides running exited cpu read",
+  "//ui2": "written net gpu last. A reader's own choice is kept in their browser.",
+  "ui": {
+    "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"]
+  },
+
   "//anonymize": "Replace every username, lab or Slurm account name, email address and numeric",
   "//anonymize1": "user ID in what the service sends out with a stable alias (user-7f3a9c1e,",
   "//anonymize2": "lab-1b2c3d4e). Off by default. salt empty: one is generated into",

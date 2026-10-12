@@ -54,6 +54,7 @@ export function TrajectoriesTab({
   select,
   tfrom,
   setTfrom,
+  tuser = null,
 }: {
   traj: Async<Trajectories>;
   rank: TrajRank;
@@ -66,6 +67,8 @@ export function TrajectoriesTab({
   select: (sid: string | null) => void;
   tfrom: number | null;
   setTfrom: (t: number | null) => void;
+  /** open on this user's sessions (from Active users' "trajectories →") */
+  tuser?: string | null;
 }) {
   const t = traj.data;
   // Not answered yet is waiting, not a missing feed -- a busy service, or a
@@ -228,6 +231,7 @@ export function TrajectoriesTab({
           }
         >
           <ByUser
+            openUser={tuser}
             rows={listed}
             user={(r) => r.user ?? (r.users ?? [])[0]}
             noun="session"

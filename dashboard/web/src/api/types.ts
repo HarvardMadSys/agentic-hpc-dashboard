@@ -1065,6 +1065,10 @@ export interface LiveEvent {
   sandbox?: string | null;
   approval?: string | null;
   session_key?: string | null;
+  rd_mb?: number | null;
+  wr_mb?: number | null;
+  net_tx_mb?: number | null;
+  net_rx_mb?: number | null;
   [k: string]: unknown;
   pid?: number | null;
   event?: string;
@@ -1234,16 +1238,33 @@ export interface LiveResponse {
 }
 
 /** One account: what it ran in the window, and what it has running now. */
+/** What a set of exited processes cost: how many, CPU, disk, and network. */
+export interface UsageBlock {
+  n: number;
+  cpu_s: number;
+  rd_mb?: number;
+  wr_mb?: number;
+  net_mb?: number;
+}
 export interface LiveUserRow {
   user: string;
   /** processes that exited in the window, every class */
   n: number;
   cpu_s: number;
-  by_class: Partial<Record<string, { n: number; cpu_s: number }>>;
+  rd_mb?: number;
+  wr_mb?: number;
+  net_mb?: number;
+  by_class: Partial<Record<string, UsageBlock>>;
   /** class -> agent type -> processes, for records that carry a type */
   types: Partial<Record<string, Record<string, number>>>;
+  /** class -> agent type -> what that type's processes cost */
+  type_detail?: Partial<Record<string, Record<string, UsageBlock>>>;
   /** class -> agent type -> sessions running now */
   live: Partial<Record<string, Record<string, number>>>;
+  /** class -> processes running now, from the live sessions' census */
+  running?: Partial<Record<string, number>>;
+  /** GPU-hours asked of Slurm in the window (GPUs x time limit); null without Slurm data */
+  gpu_h?: number | null;
   last_epoch: number | null;
 }
 export interface LiveUsers {
@@ -1271,13 +1292,25 @@ export interface LiveUserSession {
   headless: boolean | null;
   approval: string | null;
   sandbox: string | null;
+  epoch?: number | null;
+  /** the trajectory this session is, today: open it with ?traj= */
+  sid?: string | null;
+  /** read from the program's path where the path names it */
+  version?: string | null;
+  /** the most, and the average, resident memory over every tick seen */
+  rss_peak_mb?: number | null;
+  rss_mean_mb?: number | null;
+  rss_ticks?: number | null;
 }
 export interface LiveUserDetail {
   user: string;
   row: LiveUserRow | null;
   sessions: LiveUserSession[];
+  /** the account's newest exited processes, however long ago */
   recent: LiveEvent[];
   recent_depth: number;
+  /** how many the service holds for this account */
+  recent_held?: number;
 }
 
 /* ---------------------------------------------------------------- events */

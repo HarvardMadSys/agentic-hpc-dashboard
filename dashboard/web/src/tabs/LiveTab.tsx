@@ -13,10 +13,9 @@ import { clockLabel, fullClock, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
 import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
-import { whoMatch } from '../lib/filters';
 import type { Who } from '../lib/filters';
 import { DASH, dur, fint, fmt, pc } from '../lib/format';
-import { pcol, purposeLegend } from '../lib/purposes';
+import { pcol } from '../lib/purposes';
 import { ActiveUsers, scrollToUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
@@ -128,6 +127,9 @@ export function LiveTab({
   who,
   feeds,
   goto,
+  openTraj,
+  openUserTraj,
+  userCols,
 }: {
   live: LiveState;
   /** the window's reduced panels: the "last 24h" plates and every time series */
@@ -139,6 +141,11 @@ export function LiveTab({
   who?: Who;
   feeds: FeedsResponse | null;
   goto: (tab: string) => void;
+  /** open a session's trajectory, or a user's sessions, on the Trajectories tab */
+  openTraj: (sid: string) => void;
+  openUserTraj: (user: string) => void;
+  /** the service's default Active users columns (`ui.user_columns`) */
+  userCols?: string[] | null;
 }) {
   const L = live.live;
   const rate = L?.rate ?? [];
@@ -193,9 +200,6 @@ export function LiveTab({
   const U = L?.users;
   const usersBy = Object.fromEntries(CLS.filter((c) => U?.by_class[c] != null).map((c) => [c, U!.by_class[c]!]));
 
-  const events = (L?.events ?? []).filter(
-    (e) => (!e.actor3 || cls.includes(e.actor3 as Cls)) && (!who || whoMatch(who, e.user, e.agent_type)),
-  );
   const hosts = L?.hosts ?? [];
 
   const envelope = L
@@ -342,8 +346,14 @@ export function LiveTab({
           U={U}
           cls={cls}
           windowMin={L?.window?.requested_minutes ?? windowMin ?? null}
+          windowLbl={`last ${windowLbl}`}
+          P={P}
+          defaultCols={userCols}
           pageUsers={who?.users}
           pageTypes={who?.atypes}
+          openTraj={openTraj}
+          openUserTraj={openUserTraj}
+          goto={goto}
         />
 
         <Panel
@@ -409,30 +419,7 @@ export function LiveTab({
         </Panel>
 
 
-        <Panel
-          title="Latest processes exited"
-          span
-          live
-          feed={liveFeed?.name ?? 'live'}
-          empty={!events.length}
-          emptyWhat={
-            (L?.events?.length ?? 0) > 0
-              ? 'no event in the window matches the class filter'
-              : 'the bounded tail is empty'
-          }
-          header={
-            <>
-              <button className="btn" onClick={() => goto('events')} data-tip="filter and export the full day-files">
-                search & export {'→'}
-              </button>
-            </>
-          }
-        >
-          <div className="stream">
-            <EventTable rows={events} />
-          </div>
-          <Legend items={purposeLegend()} />
-        </Panel>
+
       </div>
     </>
   );

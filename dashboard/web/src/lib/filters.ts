@@ -45,7 +45,7 @@ export type ScalarKey = (typeof SCALAR_KEYS)[number];
  * keys, and `UI_OMIT_AT` below is a mapped type over them, so adding a key here
  * without deciding what value omits it is a compile error.
  */
-export const UI_KEYS = ['tab', 'rank', 'win', 'traj', 'tfrom'] as const;
+export const UI_KEYS = ['tab', 'rank', 'win', 'traj', 'tfrom', 'tuser'] as const;
 export type UiKey = (typeof UI_KEYS)[number];
 
 /** The page-wide user and agent-type filter; empty lists are everyone. */
@@ -75,6 +75,10 @@ export interface UrlState extends Filters {
   /** Where the inspector's read starts, epoch seconds: set by "continue" after
    *  a read stopped at its budget, so the continued view is linkable too. */
   tfrom: number | null;
+  /** A user whose sessions the Trajectories tab opens on, from Active users'
+   *  "trajectories →" (roadmap note 7): a view, not a filter, so nothing is
+   *  rebuilt for it. */
+  tuser: string | null;
 }
 
 /** The value at which each UI key is left out of the URL, so a default-valued
@@ -85,6 +89,7 @@ const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
   win: null,
   traj: null,
   tfrom: null,
+  tuser: null,
 };
 
 const RANKS = new Set(['events', 'cpu_s', 'distinct_tools', 'chain_runs']);
@@ -145,6 +150,7 @@ export function parseUrl(search: string): UrlState {
     win: Number.isFinite(win) && win > 0 ? Math.floor(win) : null,
     traj: p.get('traj') || null,
     tfrom: Number.isFinite(tfrom) && tfrom > 0 ? tfrom : null,
+    tuser: p.get('tuser') || null,
   };
 }
 

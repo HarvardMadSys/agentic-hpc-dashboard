@@ -103,7 +103,7 @@ CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.p
 # masking of names on the way out (anonymize.py), and the other feeds and the
 # paths (the eBPF roots are fingerprinted as resolved) -- so a checkout moved,
 # a node-tier path changed, or anonymization switched, keeps its hours.
-CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "export", "clock", "anonymize")
+CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "export", "clock", "anonymize", "ui")
 LIVE_IGNORED = ("window_min", "window_presets_min", "event_tail", "submit_tail",
                 "backfill_hours")
 
