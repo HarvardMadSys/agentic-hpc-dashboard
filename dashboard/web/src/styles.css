@@ -1673,7 +1673,10 @@ th.sorted .sort-arrow {
  * so a reader knows where the explanations are without hovering everything. */
 th[data-tip]::after,
 .eyebrow[data-tip]::after,
-td.lbl[data-tip]::after {
+td.lbl[data-tip]::after,
+.u-badge[data-tip]::after,
+.q-mark[data-tip]::after,
+.pt-head [data-tip]::after {
   content: '?';
   font-size: 0.72em;
   font-weight: 600;

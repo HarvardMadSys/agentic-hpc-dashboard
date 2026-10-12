@@ -2,7 +2,7 @@
  *
  * Four stay open, the ones an operator watches: CPU, memory, and each class's
  * share of the processes and of the CPU. Everything else -- waits, D-state,
- * faults, disk, the scheduler -- sits behind one picker, one chart at a time,
+ * faults, disk, network, the scheduler -- sits behind one picker, one chart at a time,
  * with the table that used to fold under that chart. All of them share one zoom,
  * tied to the window it was taken in: a range picked on the 24 h view means
  * nothing once the 1 h view is on screen.
@@ -24,7 +24,7 @@ import { DASH, dur, fint, fmt } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 
-type PickKey = 'wait' | 'dstate' | 'faults' | 'read' | 'write' | 'queue' | 'jobs';
+type PickKey = 'wait' | 'dstate' | 'faults' | 'read' | 'write' | 'net' | 'queue' | 'jobs';
 
 export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
@@ -99,6 +99,11 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
     { k: 'disk', c: 'var(--ink-2)', solid: true },
     { k: sysWord, c: 'var(--ink-2)', dashed: true },
   ];
+  // network: each class's bytes sent (solid) and received (dashed)
+  const netLines: TimeLine[] = ioCls.flatMap((c) => [
+    { lbl: `${CLS_LBL[c] ?? c} · sent`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_tx_mb ?? [] },
+    { lbl: `${CLS_LBL[c] ?? c} · received`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_rx_mb ?? [], dashed: true },
+  ]);
   const stallLines: TimeLine[] = Object.entries(s?.stall_by_tool ?? {}).map(([tool, v], i) => ({
     lbl: tool,
     c: TOOL_COL[i % TOOL_COL.length],
@@ -115,6 +120,7 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
     { k: 'faults', lbl: 'major page faults', tip: 'majflt', show: true },
     { k: 'read', lbl: 'disk read', tip: 'syscall', show: true },
     { k: 'write', lbl: 'disk written', tip: 'syscall', show: true },
+    { k: 'net', lbl: 'network', show: true },
     { k: 'queue', lbl: 'Slurm queue checks', tip: 'queuecheck', show: !!ss?.t.length },
     { k: 'jobs', lbl: 'Slurm jobs submitted', show: !!ss?.t.length },
   ];
@@ -226,6 +232,20 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
             <TimeChart {...z} s={s} lines={ioLines('wr_mb', 'wchar_mb', 'write()')} ylabel="MB / min"
               yname="written" perMin legend={ioLegend('write() calls')} />
           </>
+        );
+      case 'net':
+        return anyValue(netLines) ? (
+          <>
+            <div className="eyebrow">solid: sent · dashed: received, by the processes that exited in each bin</div>
+            <TimeChart {...z} s={s} lines={netLines} ylabel="MB / min" yname="network" perMin
+              legend={[
+                ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
+                { k: 'sent', c: 'var(--ink-2)', solid: true },
+                { k: 'received', c: 'var(--ink-2)', dashed: true },
+              ]} />
+          </>
+        ) : (
+          <NoRows what="no TCP accounting for the selection in the window" />
         );
       case 'queue':
         return ss ? <TimeChart {...z} s={ss} lines={slurmLines('queries')} ylabel={`checks / ${dur(ss.bin_s)}`} yname="checks" /> : null;

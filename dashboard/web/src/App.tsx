@@ -273,7 +273,7 @@ export default function App() {
           />
         );
       case 'slurm':
-        return <SlurmTab P={P} live={live.live} cls={url.cls} />;
+        return <SlurmTab P={P} live={live.live} cls={url.cls} goLive={() => setUrl({ tab: 'live' }, true)} />;
       case 'agents':
         return <AgentsTab P={P} cls={url.cls} />;
       case 'feeds':

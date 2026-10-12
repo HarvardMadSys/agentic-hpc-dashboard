@@ -12,7 +12,7 @@
  * ran in the window by agent, and its last processes -- the exit stream that
  * used to be its own panel (note 18).
  */
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { getLiveUser, getLiveUsers } from '../api/client';
 import type { Cascades, Cls, LiveEvent, LiveUserDetail, LiveUserRow, LiveUserSession, LiveUsers, UsageBlock } from '../api/types';
 import { CmdCell } from '../components/Cmd';
@@ -36,7 +36,7 @@ const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
 /* The table's columns, each switchable (roadmap note 3). The defaults come
  * from the service's config (`live.user_columns`) when it names them, and a
  * reader's own choice is kept in this browser. */
-type ColKey = 'agents' | 'ides' | 'running' | 'exited' | 'cpu' | 'read' | 'written' | 'net' | 'gpu' | 'last';
+type ColKey = 'agents' | 'ides' | 'running' | 'exited' | 'cpu' | 'read' | 'written' | 'sent' | 'received' | 'gpu' | 'last';
 const COLS: { k: ColKey; lbl: string; tip?: string; num?: boolean }[] = [
   { k: 'agents', lbl: 'agents running', tip: 'agent sessions running now, by agent' },
   { k: 'ides', lbl: 'IDEs running', tip: 'editor sessions running now' },
@@ -45,17 +45,26 @@ const COLS: { k: ColKey; lbl: string; tip?: string; num?: boolean }[] = [
   { k: 'cpu', lbl: 'CPU time', tip: 'CPU used by the processes that exited in the window', num: true },
   { k: 'read', lbl: 'disk read', tip: GLOSS.diskbytes + ', by the processes that exited in the window', num: true },
   { k: 'written', lbl: 'disk written', tip: GLOSS.diskbytes + ', by the processes that exited in the window', num: true },
-  { k: 'net', lbl: 'network', tip: 'bytes sent and received over the network by the processes that exited in the window', num: true },
+  { k: 'sent', lbl: 'network sent', tip: 'bytes sent over the network by the processes that exited in the window', num: true },
+  { k: 'received', lbl: 'network received', tip: 'bytes received over the network by the processes that exited in the window', num: true },
   { k: 'gpu', lbl: 'GPU·h asked', tip: GLOSS.gpuh + '. Only what the sbatch / srun command line named; a #SBATCH request in the script is not seen', num: true },
   { k: 'last', lbl: 'last active', num: true },
 ];
 const DEFAULT_COLS: ColKey[] = ['agents', 'ides', 'running', 'exited', 'cpu', 'read', 'written', 'last'];
 const COLS_KEY = 'rc.activeUsers.columns';
 
+/** Known column keys only; `net`, the one network column there used to be,
+ * is both of the two there are now. */
+function knownCols(v: unknown[]): ColKey[] {
+  return v
+    .flatMap((k) => (k === 'net' ? ['sent', 'received'] : [k]))
+    .filter((k): k is ColKey => COLS.some((c) => c.k === k));
+}
+
 function loadCols(fallback: ColKey[]): ColKey[] {
   try {
     const v = JSON.parse(localStorage.getItem(COLS_KEY) ?? 'null');
-    if (Array.isArray(v)) return v.filter((k): k is ColKey => COLS.some((c) => c.k === k));
+    if (Array.isArray(v)) return knownCols(v);
   } catch {
     /* private window or blocked storage: the defaults */
   }
@@ -190,7 +199,7 @@ function nestedAgents(c: Cascades | undefined, user: string): Record<string, Rec
 /* ------------------------------------------------------------ drill-down */
 
 /** The launch, as badges on the session (roadmap note 12). */
-function Badges({ s }: { s: LiveUserSession }) {
+function Badges({ s }: { s: Pick<LiveUserSession, 'actor3' | 'approval' | 'sandbox' | 'headless'> }) {
   const out: [string, string, string][] = [];
   if (s.actor3 === 'agent') {
     if (s.approval === 'bypassed') out.push(['bypass', 'crit', AP_LABEL.bypassed + ': ' + GLOSS.bypass]);
@@ -217,7 +226,8 @@ function Usage({ b }: { b: UsageBlock | undefined }) {
       <td className="num">{b && b.cpu_s ? dur(b.cpu_s) : DASH}</td>
       <td className="num">{b?.rd_mb ? mb(b.rd_mb) : DASH}</td>
       <td className="num">{b?.wr_mb ? mb(b.wr_mb) : DASH}</td>
-      <td className="num">{b?.net_mb ? mb(b.net_mb) : DASH}</td>
+      <td className="num">{b?.net_tx_mb ? mb(b.net_tx_mb) : DASH}</td>
+      <td className="num">{b?.net_rx_mb ? mb(b.net_rx_mb) : DASH}</td>
     </>
   );
 }
@@ -276,18 +286,23 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
               </thead>
               <tbody>
                 {sessions.map((s, i) => (
-                  <tr key={i}>
+                  <Fragment key={i}>
+                  <tr>
                     <td>
                       <span className="u-sess">
                         <i className="u-dot" style={{ background: CLS_COL[s.actor3 ?? 'agent'] }} />
                         <span>
                           {typeLbl(s.agent_type ?? '')}
-                          {/* the version under the agent's name (roadmap note 13) */}
-                          <span className="u-ver" data-tip={s.version ? GLOSS.version : 'the version is not in this program’s path, so it is not known'}>
-                            {s.version ? `v${s.version}` : 'v?'}
-                          </span>
+                          {/* the version under the agent's name, where its
+                              program's path names it, else nothing (note 13) */}
+                          {s.version && <span className="u-ver" data-tip={GLOSS.version}>v{s.version}</span>}
                         </span>
                         <Badges s={s} />
+                        {s.no_census && (
+                          <span className="nm" data-tip="seen running in the last 10 min, but its process tree sent no 60-second census, so what it holds is not known">
+                            no census
+                          </span>
+                        )}
                       </span>
                     </td>
                     {multiHost && <td className="mono nm">{s.host}</td>}
@@ -307,6 +322,27 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
                       )}
                     </td>
                   </tr>
+                  {/* each agent running inside this session's tree, on a row
+                      of its own with its own launch (roadmap notes 4 and 12) */}
+                  {(s.agents ?? []).map((a) => (
+                    <tr key={`${i}:${a.pid}`} className="u-sub">
+                      <td colSpan={multiHost ? 7 : 6}>
+                        <span className="u-sess">
+                          <span
+                            data-tip={`an agent running inside this session's process tree, with its own launch flags · pid ${a.pid}`}
+                          >
+                            {typeLbl(a.agent_type ?? '')}
+                            {a.version && <span className="u-ver" data-tip={GLOSS.version}>v{a.version}</span>}
+                          </span>
+                          <span className="nm">
+                            {s.actor3 === 'agent' ? 'started by' : 'started from'} {typeLbl(s.agent_type ?? '')}
+                          </span>
+                          <Badges s={{ actor3: 'agent', approval: a.approval, sandbox: a.sandbox, headless: null }} />
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -330,7 +366,8 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
                   <th className="num">CPU time</th>
                   <th className="num" data-tip={GLOSS.diskbytes}>disk read</th>
                   <th className="num" data-tip={GLOSS.diskbytes}>disk written</th>
-                  <th className="num" data-tip="bytes sent and received over the network">network</th>
+                  <th className="num" data-tip="bytes sent over the network">network sent</th>
+                  <th className="num" data-tip="bytes received over the network">network received</th>
                 </tr>
               </thead>
               <tbody>
@@ -428,13 +465,13 @@ function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: b
             <th className="num">CPU</th>
             <th className="num" data-tip={GLOSS.diskbytes}>read</th>
             <th className="num" data-tip={GLOSS.diskbytes}>written</th>
-            <th className="num" data-tip="bytes sent and received over the network">network</th>
+            <th className="num" data-tip="bytes sent over the network">sent</th>
+            <th className="num" data-tip="bytes received over the network">received</th>
             <th className="num" data-tip={GLOSS.exitcode}>exit code</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((e, i) => {
-            const net = (e.net_tx_mb ?? 0) + (e.net_rx_mb ?? 0);
             const failed = (e.exit_code != null && e.exit_code !== 0) || e.signal != null;
             return (
               <tr key={i}>
@@ -452,7 +489,8 @@ function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: b
                 <td className="num">{e.cpu_s != null ? dur(e.cpu_s) : DASH}</td>
                 <td className="num">{e.rd_mb ? mb(e.rd_mb) : DASH}</td>
                 <td className="num">{e.wr_mb ? mb(e.wr_mb) : DASH}</td>
-                <td className="num">{net ? mb(net) : DASH}</td>
+                <td className="num">{e.net_tx_mb ? mb(e.net_tx_mb) : DASH}</td>
+                <td className="num">{e.net_rx_mb ? mb(e.net_rx_mb) : DASH}</td>
                 <td className="num" style={failed ? { color: 'var(--crit)' } : undefined}>
                   {e.signal != null ? `signal ${e.signal}` : e.exit_code ?? DASH}
                 </td>
@@ -515,7 +553,7 @@ export function UsersPanel({
   const [open, setOpen] = useState<string | null>(null);
   const [remote, setRemote] = useState<LiveUsers | null>(null);
   const [run, setRun] = useState<string | null>(null);
-  const fallback = (defaultCols ?? []).filter((k): k is ColKey => COLS.some((c) => c.k === k));
+  const fallback = knownCols(defaultCols ?? []);
   const [cols, setCols] = useState<ColKey[]>(() => loadCols(fallback.length ? fallback : DEFAULT_COLS));
   const sort = useSort<ColKey | 'user'>();
   const cascades = pick<Cascades>(P, 'cascades', 'ebpfm');
@@ -575,7 +613,8 @@ export function UsersPanel({
       case 'cpu': return sumCls(r, cls, (b) => b.cpu_s);
       case 'read': return sumCls(r, cls, (b) => b.rd_mb);
       case 'written': return sumCls(r, cls, (b) => b.wr_mb);
-      case 'net': return sumCls(r, cls, (b) => b.net_mb);
+      case 'sent': return sumCls(r, cls, (b) => b.net_tx_mb);
+      case 'received': return sumCls(r, cls, (b) => b.net_rx_mb);
       case 'gpu': return r.gpu_h ?? null;
       case 'last': return r.last_epoch;
     }
@@ -594,7 +633,8 @@ export function UsersPanel({
       case 'cpu': { const v = sumCls(r, cls, (b) => b.cpu_s); return <td key={k} className="num">{v ? dur(v) : DASH}</td>; }
       case 'read': { const v = sumCls(r, cls, (b) => b.rd_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
       case 'written': { const v = sumCls(r, cls, (b) => b.wr_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
-      case 'net': { const v = sumCls(r, cls, (b) => b.net_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
+      case 'sent': { const v = sumCls(r, cls, (b) => b.net_tx_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
+      case 'received': { const v = sumCls(r, cls, (b) => b.net_rx_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
       case 'gpu': return <td key={k} className="num">{r.gpu_h ? `${fmt(r.gpu_h)} GPU·h` : DASH}</td>;
       case 'last': return <td key={k} className="num nm">{r.last_epoch ? ago(now - r.last_epoch * 1000) : DASH}</td>;
     }

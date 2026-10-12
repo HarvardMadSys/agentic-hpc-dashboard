@@ -9,11 +9,11 @@ Three changes make it hold:
   retention. A roster needs no 10-minute resolution a week back, and the old
   bins become a sixth as many.
 - A compact slot: a bin maps a user to ONE flat list,
-  [kind, n, cpu, rd, wr, net, kind, n, ...], where `kind` is a small integer
-  standing for a (class, agent type) pair. A dict per pair per bin was several
-  times the memory for the same numbers. Disk read, disk written, and network
-  MB ride along so the Active users table can show each account's I/O over the
-  window without a second roster.
+  [kind, n, cpu, rd, wr, tx, rx, kind, n, ...], where `kind` is a small
+  integer standing for a (class, agent type) pair. A dict per pair per bin was
+  several times the memory for the same numbers. Disk read and written, and
+  network sent and received, ride along in MB, so the Active users table can
+  show each account's I/O over the window without a second roster.
 - A cached window: between two frames only the open bin changes, so the sum
   over a window's closed bins is kept and rebuilt only when a bin closes, the
   window's edge crosses a bin, or -- at most every REBUILD_S -- a late record
@@ -31,8 +31,9 @@ COARSE_S = 3600
 FINE_SPAN_S = 86400
 REBUILD_S = 15
 CACHE_MAX = 8
-# One entry: kind, processes, CPU s, disk read MB, disk written MB, network MB.
-W = 6
+# One entry: kind, processes, CPU s, disk read MB, disk written MB, network
+# sent MB, network received MB.
+W = 7
 
 
 def _bump(slot, user, kind, vals):
@@ -45,10 +46,8 @@ def _bump(slot, user, kind, vals):
     for j in range(0, len(e), W):
         if e[j] == kind:
             e[j + 1] += 1
-            e[j + 2] += vals[0]
-            e[j + 3] += vals[1]
-            e[j + 4] += vals[2]
-            e[j + 5] += vals[3]
+            for f, v in enumerate(vals, 2):
+                e[j + f] += v
             return
     e.extend((kind, 1, *vals))
 
@@ -104,7 +103,8 @@ class UserRoster:
             self.kinds.append(key)
         return k
 
-    def add(self, epoch, user, cls, atype, cpu_s, now=None, rd_mb=None, wr_mb=None, net_mb=None):
+    def add(self, epoch, user, cls, atype, cpu_s, now=None, rd_mb=None, wr_mb=None,
+            tx_mb=None, rx_mb=None):
         if epoch is None or not user:
             return False
         now = time.time() if now is None else now
@@ -125,7 +125,8 @@ class UserRoster:
         slot = store.get(idx)
         if slot is None:
             slot = store[idx] = {}
-        _bump(slot, user, k, (cpu_s or 0.0, rd_mb or 0.0, wr_mb or 0.0, net_mb or 0.0))
+        _bump(slot, user, k, (cpu_s or 0.0, rd_mb or 0.0, wr_mb or 0.0, tx_mb or 0.0,
+                              rx_mb or 0.0))
         if epoch > self.last.get(user, 0):
             self.last[user] = epoch
         return True
@@ -199,5 +200,5 @@ class UserRoster:
         return [(self.kinds[e[j]], e[j + 1], e[j + 2]) for j in range(0, len(e or ()), W)]
 
     def decode_full(self, e):
-        """A flat entry as ((class, agent type), n, cpu, rd MB, wr MB, net MB)."""
+        """A flat entry as ((class, agent type), n, cpu, rd MB, wr MB, tx MB, rx MB)."""
         return [(self.kinds[e[j]], *e[j + 1:j + W]) for j in range(0, len(e or ()), W)]

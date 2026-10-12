@@ -12,7 +12,7 @@ import { GLOSS } from '../lib/glossary';
 import { HBars } from '../charts/primitives';
 import { Basis, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
@@ -110,41 +110,84 @@ function MixTable({
   );
 }
 
-/** The tool mix and the head of the tool distribution, on the Agents tab. */
-export function ToolPanels({ P, cls }: { P: Panels; cls: Cls[] }) {
-  const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
+/** The tool mix and the head of the tool distribution, on the Agents tab.
+ *
+ * With an agent type picked, the agent column is that type's processes alone,
+ * beside people and IDEs: the Agents tab never mixes one type's tools with
+ * another's. A window built before tools were counted per type has only the
+ * class, and says so. */
+export function ToolPanels({ P, cls, type = null }: { P: Panels; cls: Cls[]; type?: string | null }) {
+  const raw = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
+  const one = type ? raw.by_agent_type?.[type] : undefined;
+  const tm: ToolMix = one
+    ? {
+        ...raw,
+        by_class: { ...raw.by_class, agent: one.by },
+        tools: { ...(raw.tools ?? {}), agent: one.tools },
+        head: { ...raw.head, agent: one.head },
+        n_tools: { ...(raw.n_tools ?? {}), agent: one.n_tools },
+      }
+    : raw;
   const byClass = tm.by_class ?? {};
   const have = shown(byClass, cls);
   const buckets = tm.buckets ?? [];
+  const typeName = type ? AGENT_TYPE_LBL[type] ?? type : null;
+  const lbl = (c: string) => (c === 'agent' && one && typeName ? typeName : CLS_LBL[c] ?? c);
+  const scope: ToolScope = {
+    lbl,
+    title: (t: string) => (one && typeName ? `${typeName}: ${t.toLowerCase()}` : t),
+    note: type && !one && cls.includes('agent')
+      ? 'every agent type together: this window was read before tools were counted per type'
+      : null,
+    askKeys: (keys: string[]) => (one && type ? [...keys, `by_agent_type.${type}`] : keys),
+  };
   return (
     <div className="grid wide">
-      <ToolMixPanel tm={tm} have={have} buckets={buckets} byClass={byClass} />
-      <HeadPanel tm={tm} have={have} />
+      <ToolMixPanel tm={tm} have={have} buckets={buckets} byClass={byClass} scope={scope} />
+      <HeadPanel tm={tm} have={have} scope={scope} />
     </div>
   );
 }
 
+/** How a tool panel names its columns and itself, with or without a type. */
+interface ToolScope {
+  lbl: (c: string) => string;
+  title: (t: string) => string;
+  note: string | null;
+  askKeys: (keys: string[]) => string[];
+}
+const CLASS_SCOPE: ToolScope = {
+  lbl: (c) => CLS_LBL[c] ?? c,
+  title: (t) => t,
+  note: null,
+  askKeys: (keys) => keys,
+};
+
 /* One resource at a time (roadmap note 25): a table that put calls and CPU
  * side by side, per class, asked the reader to hold four numbers per cell. */
-type Metric = 'calls' | 'cpu' | 'io' | 'net';
+type Metric = 'calls' | 'cpu' | 'io' | 'net' | 'mem';
 const METRICS: { k: Metric; lbl: string; tip: string }[] = [
   { k: 'calls', lbl: 'processes', tip: GLOSS.exited },
   { k: 'cpu', lbl: 'CPU', tip: 'CPU seconds the processes used' },
   { k: 'io', lbl: 'disk I/O', tip: 'disk bytes read and written' },
   { k: 'net', lbl: 'network', tip: 'bytes sent and received over the network' },
+  { k: 'mem', lbl: 'memory', tip: 'each process’s peak memory, summed: how much memory the processes held at their highest' },
 ];
 const rowVal = (r: ToolBucketRow | undefined, m: Metric): number | null =>
-  !r ? null : m === 'calls' ? r.calls : m === 'cpu' ? r.cpu_s : m === 'io' ? r.io_mb ?? null : r.net_mb ?? null;
+  !r ? null : m === 'calls' ? r.calls : m === 'cpu' ? r.cpu_s : m === 'io' ? r.io_mb ?? null
+  : m === 'net' ? r.net_mb ?? null : r.mem_mb ?? null;
 const rowPct = (r: ToolBucketRow | undefined, m: Metric): number | null =>
-  !r ? null : m === 'calls' ? r.calls_pct : m === 'cpu' ? r.cpu_pct : m === 'io' ? r.io_pct ?? null : r.net_pct ?? null;
+  !r ? null : m === 'calls' ? r.calls_pct : m === 'cpu' ? r.cpu_pct : m === 'io' ? r.io_pct ?? null
+  : m === 'net' ? r.net_pct ?? null : r.mem_pct ?? null;
 const fmtVal = (v: number | null, m: Metric) =>
   v == null ? DASH : m === 'calls' ? fint(v) : m === 'cpu' ? dur(v) : mb(v);
 
-function ToolMixPanel({ tm, have, buckets, byClass }: {
+function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
   tm: ToolMix;
   have: string[];
   buckets: string[];
   byClass: Record<string, ToolClassBlock>;
+  scope?: ToolScope;
 }) {
   // Read across by default: each kind of tool split by who ran it, so a row
   // adds to 100% the way a reader's eye travels (roadmap note 25). The other
@@ -157,8 +200,9 @@ function ToolMixPanel({ tm, have, buckets, byClass }: {
   const idle = buckets.filter((b) => !rows.includes(b));
   return (
     <Panel
-      title="Tool mix"
-      ask={[{ panel: 'tool_mix', keys: ['by_class', 'by_type', 'buckets'] }]}
+      title={scope.title('Tool mix')}
+      id="sec-tool-mix"
+      ask={[{ panel: 'tool_mix', keys: scope.askKeys(['by_class', 'by_type', 'buckets']) }]}
       p={tm}
       span
       empty={!have.length || !buckets.length}
@@ -196,7 +240,7 @@ function ToolMixPanel({ tm, have, buckets, byClass }: {
                           const p = tot ? (100 * v) / tot : 0;
                           return p > 0 ? (
                             <i key={c} style={{ width: `${p}%`, background: CLS_COL[c] }}
-                              data-tip={`${CLS_LBL[c] ?? c}: ${pc(p)} (${fmtVal(v, metric)})`} />
+                              data-tip={`${scope.lbl(c)}: ${pc(p)} (${fmtVal(v, metric)})`} />
                           ) : null;
                         })}
                       </span>
@@ -222,8 +266,8 @@ function ToolMixPanel({ tm, have, buckets, byClass }: {
                 <th>kind of tool</th>
                 {have.map((c) => (
                   <th key={c} className="cls" style={{ color: CLS_COL[c] }}
-                    data-tip={`share of the ${CLS_LBL[c] ?? c} class's ${METRICS.find((m) => m.k === metric)!.lbl}`}>
-                    {CLS_LBL[c] ?? c}
+                    data-tip={`share of ${scope.lbl(c)}'s ${METRICS.find((m) => m.k === metric)!.lbl}`}>
+                    {scope.lbl(c)}
                   </th>
                 ))}
               </tr>
@@ -250,6 +294,7 @@ function ToolMixPanel({ tm, have, buckets, byClass }: {
             none in the window: {idle.join(', ')}
           </div>
         )}
+        {scope.note && <div className="nm" style={{ marginTop: 6, fontSize: 11 }}>{scope.note}</div>}
       </div>
     </Panel>
   );
@@ -280,14 +325,14 @@ const headTip = (r: ToolCostRow) => [
   `disk ${mb(r.io_mb)} · network ${mb(r.net_mb)}`,
 ].join('\n');
 
-function HeadPanel({ tm, have }: { tm: ToolMix; have: string[] }) {
+function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: string[]; scope?: ToolScope }) {
   const [by, setBy] = useState<HeadSort>('calls');
   const tools = tm.tools;
   const head = tm.head ?? {};
   return (
     <Panel
-      title="Top tools"
-      ask={[{ panel: 'tool_mix', keys: ['tools', 'head', 'n_tools'] }]}
+      title={scope.title('Top tools')}
+      ask={[{ panel: 'tool_mix', keys: scope.askKeys(['tools', 'head', 'n_tools']) }]}
       id="sec-head-of-the-tool-distribution"
       p={tm}
       span
@@ -309,7 +354,7 @@ function HeadPanel({ tm, have }: { tm: ToolMix; have: string[] }) {
           return (
             <div key={c}>
               <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_COL[c] }}>
-                {CLS_LBL[c] ?? c}
+                {scope.lbl(c)}
               </div>
               {rows ? (
                 rows.length ? (

@@ -279,7 +279,7 @@ export function LiveTab({
               {nowNum(now, ['autonomous_roots']) != null
                 ? ` · ${fint(nowNum(now, ['autonomous_roots']))} of ${fint(
                     nowNum(now, ['live_agent_sessions']),
-                  )} live agent sessions launched with a bypass flag`
+                  )} running agent sessions launched with a bypass flag`
                 : ''}
             </>
           }

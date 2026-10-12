@@ -605,7 +605,7 @@ export function TrajectoryInspector({
           lbl: fl?.n ? `first failure (${fint(fl.n)})` : 'first failure',
           run: go(failReq(0)),
           tip: fl?.n
-            ? `${fint(fl.n)} exits with a non-zero code or a signal in this read${
+            ? `${fint(fl.n)} processes exited with a non-zero code or a signal in this read${
                 fl.listed < fl.n ? `; the first ${fint(fl.listed)} are listed` : ''
               }`
             : 'no exit with a non-zero code or a signal in this read',

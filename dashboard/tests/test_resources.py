@@ -95,6 +95,14 @@ class IoSeriesTest(unittest.TestCase):
         self.assertEqual(s["rchar_mb"], [5.0, None])
         self.assertEqual(s["n"], [1, 1])
 
+    def test_network_sent_and_received_are_binned_in_mb(self):
+        a = dict(exit_rec(T0), net_tx_bytes=3e6, net_rx_bytes=1e6)
+        b = dict(exit_rec(T0), net_tx_bytes=1e6)
+        c = exit_rec(T0 + 60)                       # no TCP accounting: a gap, not 0
+        s = reduce([a, b, c])["series"]["by_class"]["agent"]
+        self.assertEqual(s["net_tx_mb"], [4.0, None])
+        self.assertEqual(s["net_rx_mb"], [1.0, None])
+
 
 class StallSeriesTest(unittest.TestCase):
 

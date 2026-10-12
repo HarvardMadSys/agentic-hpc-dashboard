@@ -71,6 +71,21 @@ def _mb(b):
     return b / 1e6 if isinstance(b, (int, float)) else None
 
 
+# What an account's usage block sums, in the roster's order after the count.
+_USAGE = ("cpu_s", "rd_mb", "wr_mb", "net_tx_mb", "net_rx_mb")
+
+
+def _inner(r):
+    """An agent root as a session's row: what it is and how it was launched."""
+    return {"pid": r["pid"], "agent_type": r["agent_type"], "approval": r["approval"],
+            "version": r["version"], "sandbox": r["sandbox"], "epoch": r["epoch"]}
+
+
+def _usage():
+    return {"n": 0, "cpu_s": 0.0, "rd_mb": 0.0, "wr_mb": 0.0, "net_tx_mb": 0.0,
+            "net_rx_mb": 0.0, "net_mb": 0.0}
+
+
 class LiveReducer:
     # conn / netio are read for one thing: the identity block of a running agent
     # root, which carries its launch flags. Residency alone cannot give that -- its
@@ -96,8 +111,11 @@ class LiveReducer:
         self.window_s = self.retention_s
         self.submits_in_window = collections.deque()
         self.conn_unmatched_births = None
-        # (host, pid) -> [newest epoch, approval] for every agent-session root
-        # seen in an identity block; an exit removes it.
+        # (host, pid) -> every agent-session root seen in an identity block:
+        # its newest epoch, launch approval, the process tree it runs in, and
+        # whose it is. An exit removes it. An agent inside another tree -- a
+        # Claude Code a VS Code server started, a Codex a Claude Code started
+        # -- is a root of its own here and only a member of a tree there.
         self.roots = {}
         # Who ran what, per account (roster.py: tiered bins, compact slots, a
         # cached window -- it has to hold at thousands of users).
@@ -154,8 +172,14 @@ class LiveReducer:
             return
         e = rec.get("_ts_epoch")
         cur = self.roots.get(key)
-        if cur is None or (e is not None and (cur[0] is None or e > cur[0])):
-            self.roots[key] = [e, rec.get("_approval") or "unknown"]
+        if cur is None or (e is not None and (cur["epoch"] is None or e > cur["epoch"])):
+            self.roots[key] = {
+                "epoch": e, "approval": rec.get("_approval") or "unknown",
+                "tree": rec.get("tree_root_pid"), "agent_type": rec.get("agent_type"),
+                "user": rec.get("user"), "pid": pid,
+                "version": agent_version(rec.get("comm"), rec.get("args"))
+                or (cur or {}).get("version"),
+                "sandbox": rec.get("_sandbox")}
 
     @staticmethod
     def _place(tail, row, older):
@@ -171,8 +195,7 @@ class LiveReducer:
         tx, rx = _mb(rec.get("net_tx_bytes")), _mb(rec.get("net_rx_bytes"))
         self.roster.add(_epoch_of(rec), rec.get("user"), rec["_a3"],
                         rec.get("agent_type"), rec.get("cpu_s"),
-                        rd_mb=io.get("rd_mb"), wr_mb=io.get("wr_mb"),
-                        net_mb=(tx or 0.0) + (rx or 0.0) if tx is not None or rx is not None else None)
+                        rd_mb=io.get("rd_mb"), wr_mb=io.get("wr_mb"), tx_mb=tx, rx_mb=rx)
         row = {
             "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "host": rec.get("host"), "user": rec.get("user"),
@@ -233,7 +256,7 @@ class LiveReducer:
             "top_procs": rec.get("top_procs"),
             "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
             "epoch": rec.get("_ts_epoch"), "user": rec.get("user"),
-            "actor3": rec.get("_a3"),
+            "actor3": rec.get("_a3"), "root_pid": key[1],
             # the trajectory this session is, today (roadmap note 7), and the
             # version its program's path names (note 13)
             "sid": rec.get("_sid"), "uuid": uuid,
@@ -349,39 +372,30 @@ class LiveReducer:
         A person is ONE row however many classes they show up in -- the point of
         this over the collector's per-(host, class) `users` count, which adds
         the same person once per class and once per node."""
-        r = {"user": u, "n": 0, "cpu_s": 0.0, "rd_mb": 0.0, "wr_mb": 0.0, "net_mb": 0.0,
+        r = {"user": u, "n": 0, "cpu_s": 0.0, "rd_mb": 0.0, "wr_mb": 0.0,
+             "net_tx_mb": 0.0, "net_rx_mb": 0.0, "net_mb": 0.0,
              "by_class": {}, "types": {}, "type_detail": {},
              "live": live.get(u) or {}, "last_epoch": None,
              # processes running now, from the live sessions' census (note 10)
              "running": (procs or {}).get(u) or {},
              "gpu_h": round((gpu or {}).get(u, 0.0), 1) if gpu is not None else None}
-        for (c, at), n, cpu, rd, wr, net in self.roster.decode_full(e):
-            r["n"] += n
-            r["cpu_s"] += cpu
-            r["rd_mb"] += rd
-            r["wr_mb"] += wr
-            r["net_mb"] += net
-            b = r["by_class"].setdefault(c, {"n": 0, "cpu_s": 0.0, "rd_mb": 0.0, "wr_mb": 0.0,
-                                             "net_mb": 0.0})
-            b["n"] += n
-            b["cpu_s"] += cpu
-            b["rd_mb"] += rd
-            b["wr_mb"] += wr
-            b["net_mb"] += net
+        def fold(blk, n, vals):
+            blk["n"] += n
+            for k, v in zip(_USAGE, vals):
+                blk[k] += v
+            blk["net_mb"] += vals[3] + vals[4]
+
+        for (c, at), n, *vals in self.roster.decode_full(e):
+            fold(r, n, vals)
+            fold(r["by_class"].setdefault(c, _usage()), n, vals)
             if at:
                 ty = r["types"].setdefault(c, {})
                 ty[at] = ty.get(at, 0) + n
                 # each agent type's own row under its class (note 5)
-                d = r["type_detail"].setdefault(c, {}).setdefault(
-                    at, {"n": 0, "cpu_s": 0.0, "rd_mb": 0.0, "wr_mb": 0.0, "net_mb": 0.0})
-                d["n"] += n
-                d["cpu_s"] += cpu
-                d["rd_mb"] += rd
-                d["wr_mb"] += wr
-                d["net_mb"] += net
+                fold(r["type_detail"].setdefault(c, {}).setdefault(at, _usage()), n, vals)
         for blk in [r, *r["by_class"].values(),
                     *(d for ty in r["type_detail"].values() for d in ty.values())]:
-            for k in ("cpu_s", "rd_mb", "wr_mb", "net_mb"):
+            for k in _USAGE + ("net_mb",):
                 blk[k] = round(blk[k], 1)
         last = max(self.roster.last.get(u) or 0, seen.get(u) or 0)
         r["last_epoch"] = last or None
@@ -455,7 +469,19 @@ class LiveReducer:
         gpu = self._gpu_h(now - window_s) if self.submits_in_window else None
         row = self._row(name, tot.get(name), live, seen, procs, gpu) \
             if name in tot or name in live else None
-        sessions = []
+        # This account's running agents (roadmap notes 4 and 12): an agent that
+        # is its own tree's root speaks for that session's launch; one inside
+        # another tree -- a Claude Code a VS Code server or the Claude app
+        # started, a Codex a Claude Code started -- is a row of its own under
+        # that session, with its own launch flags.
+        mine, inside = {}, {}
+        for (h, pid), r in self.roots.items():
+            if r["user"] != name or (r["epoch"] or 0) < now - self.LIVE_S:
+                continue
+            mine[(h, pid)] = r
+            if r["tree"] is not None and r["tree"] != pid:
+                inside.setdefault((h, r["tree"]), []).append(r)
+        sessions, placed = [], set()
         for t in self._live_trees(now):
             if t.get("user") != name:
                 continue
@@ -465,7 +491,21 @@ class LiveReducer:
                                        "rss_peak_mb")}
             d["rss_mean_mb"] = round(t["rss_sum_mb"] / t["rss_n"], 1) if t.get("rss_n") else None
             d["rss_ticks"] = t.get("rss_n")
+            key = (t.get("host"), t.get("root_pid"))
+            own = mine.get(key)
+            if own is not None:
+                placed.add(key)
+                d["approval"] = own["approval"]
+                d["version"] = d["version"] or own["version"]
+            d["agents"] = [_inner(r) for r in sorted(inside.get(key, ()), key=lambda r: r["pid"])]
+            placed.update((key[0], r["pid"]) for r in inside.get(key, ()))
             sessions.append(d)
+        # an agent seen running whose tree sent no census in the last 10 min
+        for (h, pid), r in mine.items():
+            if (h, pid) in placed:
+                continue
+            sessions.append(dict(_inner(r), host=h, actor3="agent", agent_type=r["agent_type"],
+                                 n_procs=None, agents=[], no_census=True))
         sessions.sort(key=lambda t: (t["actor3"] != "agent", -(t["n_procs"] or 0)))
         n = max(1, min(int(recent or 25), self.user_tail_n))
         tail = self.user_tails.get(name) or ()
@@ -525,10 +565,10 @@ class LiveReducer:
         # `--permission-mode bypassPermissions`, so it read 0 on every day of
         # rtx6000a's capture while 30k records carried approval_mode=bypassed.
         for k in [k for k, v in self.roots.items()
-                  if v[0] is not None and v[0] < now - self.retention_s]:
+                  if v["epoch"] is not None and v["epoch"] < now - self.retention_s]:
             del self.roots[k]
-        live_roots = [v[1] for v in self.roots.values()
-                      if v[0] is not None and v[0] >= now - 600]
+        live_roots = [v["approval"] for v in self.roots.values()
+                      if v["epoch"] is not None and v["epoch"] >= now - 600]
         live_ap = collections.Counter(live_roots)
 
         subs = [s for s in self.submits_in_window if (s["epoch"] or 0) >= cutoff]

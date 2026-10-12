@@ -42,6 +42,10 @@ SERIES_FIELDS = ("cpu_s", "sched_wait_s", "dstate_wait_s", "maj_flt")
 # that reached the disk. Null for another user's process (/proc/<pid>/io is
 # theirs), so a bin can have calls and no I/O measured.
 IO_SERIES_FIELDS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
+# Network bytes sent and received, from the record's own TCP accounting, in MB
+# (Live's picker: "every time series on Live", roadmap note 23). Null where the
+# collector kept none, like the rest.
+NET_SERIES_FIELDS = (("net_tx_mb", "net_tx_bytes"), ("net_rx_mb", "net_rx_bytes"))
 # Per-class state from a residency tick, `residency_totals.by_actor3`.
 TICK_FIELDS = ("rss_mb", "n_procs", "d_state")
 # Round wall-clock widths; the first that keeps a window under SERIES_MAX_BINS
@@ -142,7 +146,9 @@ class ResourceReducer:
         slot["n"] += 1
         io = rec.get("io") or {}
         for k, v in [(k, rec.get(k)) for k in SERIES_FIELDS] + \
-                [(k, io.get(k)) for k in IO_SERIES_FIELDS]:
+                [(k, io.get(k)) for k in IO_SERIES_FIELDS] + \
+                [(k, rec[f] / 1e6 if isinstance(rec.get(f), (int, float)) else None)
+                 for k, f in NET_SERIES_FIELDS]:
             if v is None:
                 continue
             slot["sum"][k] = slot["sum"].get(k, 0) + v
@@ -387,13 +393,14 @@ class ResourceReducer:
         out["t"] = [b * self.bin_s for b in idx]
 
         exit_cls = sorted({c for b in idx for c in self.bins.get(b, ())})
+        fields = SERIES_FIELDS + IO_SERIES_FIELDS + tuple(k for k, _f in NET_SERIES_FIELDS)
         for c in exit_cls:
             row = {"n": []}
-            row.update((k, []) for k in SERIES_FIELDS + IO_SERIES_FIELDS)
+            row.update((k, []) for k in fields)
             for b in idx:
                 s = self.bins.get(b, {}).get(c)
                 row["n"].append(s["n"] if s else None)
-                for k in SERIES_FIELDS + IO_SERIES_FIELDS:
+                for k in fields:
                     row[k].append(round(s["sum"][k], 3) if s and s["has"].get(k) else None)
             out["by_class"][c] = row
 

@@ -373,19 +373,19 @@ function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; set
             {fint(s.agents)} <small>agent{s.agents === 1 ? '' : 's'}</small>
           </div>
           <div className="n">
-            <span data-tip={GLOSS.subagent}>{fint(s.nested)} subagent{s.nested === 1 ? '' : 's'}</span>
+            <span className="q-mark" data-tip={GLOSS.subagent}>{fint(s.nested)} subagent{s.nested === 1 ? '' : 's'}</span>
             {' · '}
-            <span data-tip="agents of this type that started another agent">{fint(s.started)} started one</span>
+            <span className="q-mark" data-tip="agents of this type that started another agent">{fint(s.started)} started one</span>
           </div>
           <div className="n">
             {fint(s.procs)} processes · {dur(s.cpu)} CPU
           </div>
           <div className="n">
-            <span className={s.outside ? 'warnword' : undefined} data-tip={GLOSS.outsidehome}>
+            <span className={`q-mark${s.outside ? ' warnword' : ''}`} data-tip={GLOSS.outsidehome}>
               {fint(s.outside)} wrote outside home
             </span>
             {' · '}
-            <span className={s.otherHome ? 'critword' : undefined} data-tip={GLOSS.otherhome}>
+            <span className={`q-mark${s.otherHome ? ' critword' : ''}`} data-tip={GLOSS.otherhome}>
               {fint(s.otherHome)} reached another user's home
             </span>
           </div>
@@ -680,10 +680,10 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </div>
       )}
 
-      {/* What agents ran, by kind of tool: was the Sessions & tools tab
-          (roadmap notes 46 and 47). */}
+      {/* What the picked type's agents ran, by kind of tool: was the Sessions
+          & tools tab (roadmap notes 46 and 47), and never mixes types. */}
       <div className="grid-gap" />
-      <ToolPanels P={P} cls={cls} />
+      <ToolPanels P={P} cls={cls} type={type || null} />
     </>
   );
 }

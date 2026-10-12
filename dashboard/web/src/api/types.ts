@@ -274,13 +274,24 @@ export interface ToolBucketRow {
   io_pct?: number | null;
   net_mb?: number | null;
   net_pct?: number | null;
+  /** the sum of each process's peak memory, and its share */
+  mem_mb?: number | null;
+  mem_pct?: number | null;
 }
 export interface ToolClassBlock {
   calls: number;
   cpu_s: number | null;
   io_mb?: number;
   net_mb?: number;
+  mem_mb?: number;
   rows: ToolBucketRow[];
+}
+/** One agent type's processes alone: its mix, its top tools, its head. */
+export interface ToolTypeBlock {
+  by: ToolClassBlock;
+  tools: ToolCostRow[];
+  head: ToolHeadRow[];
+  n_tools: number;
 }
 /** One tool, with every resource it used, for sorting by any of them. */
 export interface ToolCostRow {
@@ -313,6 +324,8 @@ export interface ToolMix extends PanelEnvelope {
   n_tools?: Record<string, number>;
   /** class -> agent type ("" = untagged) -> its share of the class's calls and CPU */
   by_type?: Record<string, Record<string, { calls: number; calls_pct: number | null; cpu_s: number; cpu_pct: number | null }>>;
+  /** agent type -> that type's processes alone, so the Agents tab never mixes types */
+  by_agent_type?: Record<string, ToolTypeBlock>;
   dedup: { dropped: number; dropped_pct: number | null; rule: string };
   cpu_basis: string;
 }
@@ -417,7 +430,7 @@ export interface ResSeries {
   t: number[];
   /** sums by exit time: a process's whole-life counters land in its exit bin */
   by_class: Record<string, Record<'n' | 'cpu_s' | 'sched_wait_s' | 'dstate_wait_s' | 'maj_flt'
-    | 'rchar_mb' | 'rd_mb' | 'wchar_mb' | 'wr_mb', Bins>>;
+    | 'rchar_mb' | 'rd_mb' | 'wchar_mb' | 'wr_mb', Bins> & Partial<Record<'net_tx_mb' | 'net_rx_mb', Bins>>>;
   /** D-state seconds per bin for the heaviest stallers; 0 where measured and none */
   stall_by_tool: Record<string, Bins>;
   stall_other: Bins;
@@ -1283,6 +1296,9 @@ export interface UsageBlock {
   cpu_s: number;
   rd_mb?: number;
   wr_mb?: number;
+  /** sent and received, and their sum */
+  net_tx_mb?: number;
+  net_rx_mb?: number;
   net_mb?: number;
 }
 export interface LiveUserRow {
@@ -1292,6 +1308,8 @@ export interface LiveUserRow {
   cpu_s: number;
   rd_mb?: number;
   wr_mb?: number;
+  net_tx_mb?: number;
+  net_rx_mb?: number;
   net_mb?: number;
   by_class: Partial<Record<string, UsageBlock>>;
   /** class -> agent type -> processes, for records that carry a type */
@@ -1340,6 +1358,20 @@ export interface LiveUserSession {
   rss_peak_mb?: number | null;
   rss_mean_mb?: number | null;
   rss_ticks?: number | null;
+  /** agents running inside this session's tree, each with its own launch:
+   *  a Claude Code a VS Code server started, a Codex a Claude Code started */
+  agents?: LiveInnerAgent[];
+  /** an agent seen running whose tree sent no census in the last 10 min */
+  no_census?: boolean;
+  pid?: number | null;
+}
+export interface LiveInnerAgent {
+  pid: number;
+  agent_type: string | null;
+  approval: string | null;
+  version: string | null;
+  sandbox: string | null;
+  epoch: number | null;
 }
 export interface LiveUserDetail {
   user: string;
