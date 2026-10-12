@@ -253,10 +253,20 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
     return () => ac.abort();
   }, [name, windowMin, n]);
   const nested = useMemo(() => nestedAgents(cascades, name), [cascades, name]);
+  // both boxes sort by any column (roadmap note 27); before the early returns,
+  // as hooks must be
+  const sessSort = useSort<string>();
+  const winSort = useSort<string>();
   if (err) return <div className="nm">could not load {name}: {err}</div>;
   if (!d) return <div className="nm">loading {name}…</div>;
   const row = d.row;
-  const sessions = d.sessions.filter((s) => cls.includes((s.actor3 ?? 'agent') as Cls));
+  const sessions = sessSort.sort(
+    d.sessions.filter((s) => cls.includes((s.actor3 ?? 'agent') as Cls)),
+    (s, k) => k === 'session' ? typeLbl(s.agent_type ?? '') : k === 'host' ? s.host : k === 'age' ? s.age_s
+      : k === 'procs' ? s.n_procs : k === 'mem' ? s.rss_mb : s.cpu_s,
+  );
+  const usage = (b: UsageBlock | undefined, k: string) =>
+    !b ? null : k === 'who' ? null : (b as unknown as Record<string, number | undefined>)[k] ?? null;
   const all = d.recent.filter((e) => !e.actor3 || cls.includes(e.actor3 as Cls));
   const hosts = Array.from(new Set(all.map((e) => e.host).filter((h): h is string => !!h))).sort();
   const recent = host ? all.filter((e) => e.host === host) : all;
@@ -275,12 +285,12 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
             <table className="roomy">
               <thead>
                 <tr>
-                  <th>session</th>
-                  {multiHost && <th>host</th>}
-                  <th className="num">running for</th>
-                  <th className="num" data-tip={GLOSS.running}>running</th>
-                  <th className="num" data-tip="resident memory now, and the most and the average over every 60-second census of this session">memory now · peak · avg</th>
-                  <th className="num">CPU time</th>
+                  <SortTh s={sessSort} k="session" first="asc">session</SortTh>
+                  {multiHost && <SortTh s={sessSort} k="host" first="asc">host</SortTh>}
+                  <SortTh s={sessSort} k="age" num>running for</SortTh>
+                  <SortTh s={sessSort} k="procs" num tip={GLOSS.running}>running</SortTh>
+                  <SortTh s={sessSort} k="mem" num tip="resident memory now, and the most and the average over every 60-second census of this session">memory now · peak · avg</SortTh>
+                  <SortTh s={sessSort} k="cpu" num>CPU time</SortTh>
                   <th />
                 </tr>
               </thead>
@@ -361,18 +371,24 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
             <table className="roomy">
               <thead>
                 <tr>
-                  <th>who ran it</th>
-                  <th className="num" data-tip={GLOSS.exited}>exited</th>
-                  <th className="num">CPU time</th>
-                  <th className="num" data-tip={GLOSS.diskbytes}>disk read</th>
-                  <th className="num" data-tip={GLOSS.diskbytes}>disk written</th>
-                  <th className="num" data-tip="bytes sent over the network">network sent</th>
-                  <th className="num" data-tip="bytes received over the network">network received</th>
+                  <SortTh s={winSort} k="who" first="asc">who ran it</SortTh>
+                  <SortTh s={winSort} k="n" num tip={GLOSS.exited}>exited</SortTh>
+                  <SortTh s={winSort} k="cpu_s" num>CPU time</SortTh>
+                  <SortTh s={winSort} k="rd_mb" num tip={GLOSS.diskbytes}>disk read</SortTh>
+                  <SortTh s={winSort} k="wr_mb" num tip={GLOSS.diskbytes}>disk written</SortTh>
+                  <SortTh s={winSort} k="net_tx_mb" num tip="bytes sent over the network">network sent</SortTh>
+                  <SortTh s={winSort} k="net_rx_mb" num tip="bytes received over the network">network received</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {cls.filter((c) => row.by_class[c]).flatMap((c) => {
-                  const types = Object.entries(row.type_detail?.[c] ?? {}).sort((a, b) => b[1].n - a[1].n);
+                {/* classes sort by the column, and each class's agent types
+                    under it by the same one: a sort never breaks the nesting */}
+                {winSort.sort(cls.filter((c) => row.by_class[c]),
+                  (c, k) => (k === 'who' ? CLS_LBL[c] : usage(row.by_class[c], k))).flatMap((c) => {
+                  const types = winSort.key
+                    ? winSort.sort(Object.entries(row.type_detail?.[c] ?? {}),
+                        ([t, b], k) => (k === 'who' ? typeLbl(t) : usage(b, k)))
+                    : Object.entries(row.type_detail?.[c] ?? {}).sort((a, b) => b[1].n - a[1].n);
                   return [
                     <tr key={c} className="u-cls">
                       <td>
@@ -452,26 +468,32 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
 }
 
 function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: boolean; now: number }) {
+  const s = useSort<string>();
+  const val = (e: LiveEvent, k: string) =>
+    k === 'at' ? e.epoch : k === 'host' ? e.host : k === 'agent' ? e.agent_type ?? e.actor3
+    : k === 'cmd' ? e.comm ?? e.tool : k === 'ran' ? e.duration_s : k === 'cpu' ? e.cpu_s
+    : k === 'rd' ? e.rd_mb : k === 'wr' ? e.wr_mb : k === 'tx' ? e.net_tx_mb : k === 'rx' ? e.net_rx_mb
+    : e.signal != null ? 1000 + e.signal : e.exit_code;
   return (
     <div className="scroller">
       <table className="roomy u-recent">
         <thead>
           <tr>
-            <th>at</th>
-            {multiHost && <th>host</th>}
-            <th>agent</th>
-            <th>command</th>
-            <th className="num" data-tip={GLOSS.lifetime}>ran</th>
-            <th className="num">CPU</th>
-            <th className="num" data-tip={GLOSS.diskbytes}>read</th>
-            <th className="num" data-tip={GLOSS.diskbytes}>written</th>
-            <th className="num" data-tip="bytes sent over the network">sent</th>
-            <th className="num" data-tip="bytes received over the network">received</th>
-            <th className="num" data-tip={GLOSS.exitcode}>exit code</th>
+            <SortTh s={s} k="at">at</SortTh>
+            {multiHost && <SortTh s={s} k="host" first="asc">host</SortTh>}
+            <SortTh s={s} k="agent" first="asc">agent</SortTh>
+            <SortTh s={s} k="cmd" first="asc">command</SortTh>
+            <SortTh s={s} k="ran" num tip={GLOSS.lifetime}>ran</SortTh>
+            <SortTh s={s} k="cpu" num>CPU</SortTh>
+            <SortTh s={s} k="rd" num tip={GLOSS.diskbytes}>read</SortTh>
+            <SortTh s={s} k="wr" num tip={GLOSS.diskbytes}>written</SortTh>
+            <SortTh s={s} k="tx" num tip="bytes sent over the network">sent</SortTh>
+            <SortTh s={s} k="rx" num tip="bytes received over the network">received</SortTh>
+            <SortTh s={s} k="exit" num tip={GLOSS.exitcode}>exit code</SortTh>
           </tr>
         </thead>
         <tbody>
-          {rows.map((e, i) => {
+          {s.sort(rows, val).map((e, i) => {
             const failed = (e.exit_code != null && e.exit_code !== 0) || e.signal != null;
             return (
               <tr key={i}>

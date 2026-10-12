@@ -13,6 +13,8 @@
 import { useState } from 'react';
 import type { Accum, Cls, MaxProcess, Quant, Resources } from '../api/types';
 import { Term } from '../components/Term';
+import { SortTh } from '../components/SortTh';
+import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { TimeChart } from '../charts/TimeChart';
 import type { TimeLine, View } from '../charts/TimeChart';
@@ -145,12 +147,15 @@ function maxTip(t: MaxProcess | undefined): string | undefined {
 
 function DistTable({ byClass, have, more }: { byClass: Resources['by_class']; have: string[]; more: boolean }) {
   const qs = more ? [...BASE_Q.slice(0, 2), MORE_Q[0], BASE_Q[2], MORE_Q[1]] : BASE_Q;
+  // one row per measure, each in its own unit: the measures sort by name, and
+  // a class's column, which would rank seconds against megabytes, does not
+  const s = useSort<string>();
   return (
     <div className="scroller">
       <table className="dist">
         <thead>
           <tr>
-            <th rowSpan={2}>per process</th>
+            <SortTh s={s} k="measure" first="asc" rowSpan={2}>per process</SortTh>
             {have.map((c) => (
               <th key={c} colSpan={qs.length} className="grp" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
@@ -167,7 +172,7 @@ function DistTable({ byClass, have, more }: { byClass: Resources['by_class']; ha
           </tr>
         </thead>
         <tbody>
-          {DIST_ROWS.map(([qk, label, f, tip]) => {
+          {s.sort(DIST_ROWS, ([, label]) => label).map(([qk, label, f, tip]) => {
             const aside = qk === 'on_cpu_frac'
               ? have.reduce((a, c) => a + (byClass[c]?.oncpu_set_aside ?? 0), 0) : 0;
             return (
@@ -215,12 +220,14 @@ function FaultTable({
 }) {
   // Every section starts closed: a reader opens what they came for (note 31).
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // the measures sort by name within their section, as in the table above
+  const s = useSort<string>();
   return (
     <div className="scroller">
       <table className="faults">
         <thead>
           <tr>
-            <th>average per process</th>
+            <SortTh s={s} k="measure" first="asc">average per process</SortTh>
             {have.map((c) => (
               <th key={c} className="num" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
@@ -238,7 +245,7 @@ function FaultTable({
                 {!open[section] && <span className="nm"> · {rows.length} measures, click to open</span>}
               </td>
             </tr>,
-            ...(open[section] ? rows.map(([g, k, label, kind, tip]) => (
+            ...(open[section] ? s.sort(rows, ([, , label]) => label).map(([g, k, label, kind, tip]) => (
               <tr key={g + k}>
                 <td><Term tip={tip}>{label}</Term></td>
                 {have.map((c) => (

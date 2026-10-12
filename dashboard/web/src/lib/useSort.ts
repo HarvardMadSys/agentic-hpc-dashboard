@@ -16,6 +16,24 @@ export interface Sorter<K extends string> {
   sort: <T>(rows: T[], get: (row: T, k: K) => SortVal) => T[];
 }
 
+/** `rows` in the order `key` and `dir` give; the order they came in for no key. */
+function sortRows<T, K extends string>(rows: T[], get: (row: T, k: K) => SortVal, key: K | null, dir: SortDir): T[] {
+  if (key == null) return rows;
+  const sign = dir === 'asc' ? 1 : -1;
+  return rows
+    .map((r, i) => ({ r, i, v: get(r, key) }))
+    .sort((a, b) => {
+      const am = a.v == null || a.v === '' || (typeof a.v === 'number' && Number.isNaN(a.v));
+      const bm = b.v == null || b.v === '' || (typeof b.v === 'number' && Number.isNaN(b.v));
+      if (am || bm) return am && bm ? a.i - b.i : am ? 1 : -1;
+      const c = typeof a.v === 'number' && typeof b.v === 'number'
+        ? a.v - b.v
+        : String(a.v).localeCompare(String(b.v), undefined, { numeric: true });
+      return c ? sign * c : a.i - b.i;
+    })
+    .map((x) => x.r);
+}
+
 export function useSort<K extends string>(initial: K | null = null, initialDir: SortDir = 'desc'): Sorter<K> {
   const [key, setKey] = useState<K | null>(initial);
   const [dir, setDir] = useState<SortDir>(initialDir);
@@ -26,21 +44,25 @@ export function useSort<K extends string>(initial: K | null = null, initialDir: 
       setDir(firstDir);
     }
   };
-  const sort = <T,>(rows: T[], get: (row: T, k: K) => SortVal): T[] => {
-    if (key == null) return rows;
-    const sign = dir === 'asc' ? 1 : -1;
-    return rows
-      .map((r, i) => ({ r, i, v: get(r, key) }))
-      .sort((a, b) => {
-        const am = a.v == null || a.v === '' || (typeof a.v === 'number' && Number.isNaN(a.v));
-        const bm = b.v == null || b.v === '' || (typeof b.v === 'number' && Number.isNaN(b.v));
-        if (am || bm) return am && bm ? a.i - b.i : am ? 1 : -1;
-        const c = typeof a.v === 'number' && typeof b.v === 'number'
-          ? a.v - b.v
-          : String(a.v).localeCompare(String(b.v), undefined, { numeric: true });
-        return c ? sign * c : a.i - b.i;
-      })
-      .map((x) => x.r);
-  };
+  const sort = <T,>(rows: T[], get: (row: T, k: K) => SortVal): T[] => sortRows(rows, get, key, dir);
   return { key, dir, toggle, sort };
+}
+
+/** One sort per table, by an id, from a single hook: for a component that
+ * draws its tables in a loop or a branch, where a hook per table cannot go. */
+export function useSortMap<K extends string = string>(): (id: string) => Sorter<K> {
+  const [st, setSt] = useState<Record<string, { key: K | null; dir: SortDir }>>({});
+  return (id) => {
+    const cur = st[id] ?? { key: null, dir: 'desc' as SortDir };
+    return {
+      key: cur.key,
+      dir: cur.dir,
+      toggle: (k: K, firstDir: SortDir = 'desc') =>
+        setSt((m) => {
+          const c = m[id] ?? { key: null, dir: 'desc' as SortDir };
+          return { ...m, [id]: k === c.key ? { key: k, dir: c.dir === 'desc' ? 'asc' : 'desc' } : { key: k, dir: firstDir } };
+        }),
+      sort: <T,>(rows: T[], get: (row: T, k: K) => SortVal): T[] => sortRows(rows, get, cur.key, cur.dir),
+    };
+  };
 }

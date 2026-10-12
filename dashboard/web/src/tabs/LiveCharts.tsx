@@ -19,6 +19,8 @@ import { fullClock } from '../charts/scale';
 import { More, NoRows, Panel } from '../components/Panel';
 import { AccumCell } from '../components/Coverage';
 import { Term } from '../components/Term';
+import { SortTh } from '../components/SortTh';
+import { useSortMap } from '../lib/useSort';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
@@ -40,6 +42,8 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
   const onView = (v: View) => setZoom(v ? { win: winKey, v } : null);
   const z = { view, onView };
   const [picked, setPicked] = useState<PickKey>('wait');
+  // the tables folded under the charts sort too (roadmap note 27)
+  const sortOf = useSortMap();
 
   const byCls = (field: 'n' | 'cpu_s' | 'sched_wait_s' | 'maj_flt'): TimeLine[] =>
     shown(s?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.by_class?.[c]?.[field] }));
@@ -148,14 +152,19 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
                 <table>
                   <thead>
                     <tr>
-                      <th>class</th>
-                      <th className="num"><Term tip="time on a CPU, summed">run</Term></th>
-                      <th className="num"><Term k="runqueue">wait</Term></th>
-                      <th className="num"><Term tip="wait divided by run: above 1 means these processes waited longer for a CPU than they ran">ratio</Term></th>
+                      <SortTh s={sortOf('wait')} k="cls" first="asc">class</SortTh>
+                      <SortTh s={sortOf('wait')} k="run" num tip="time on a CPU, summed">run</SortTh>
+                      <SortTh s={sortOf('wait')} k="wait" num gloss="runqueue">wait</SortTh>
+                      <SortTh s={sortOf('wait')} k="ratio" num tip="wait divided by run: above 1 means these processes waited longer for a CPU than they ran">ratio</SortTh>
                     </tr>
                   </thead>
                   <tbody>
-                    {have.map((c) => (
+                    {sortOf('wait').sort(have, (c, k) =>
+                      k === 'cls' ? CLS_LBL[c] ?? c
+                      : k === 'run' ? (byClass[c]?.sched_run_s as Accum | undefined)?.total ?? null
+                      : k === 'wait' ? (byClass[c]?.sched_wait_s as Accum | undefined)?.total ?? null
+                      : byClass[c]?.schedstat_ratio ?? null,
+                    ).map((c) => (
                       <tr key={c}>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <td className="num"><AccumCell a={byClass[c]?.sched_run_s as Accum | undefined} unit="s" /></td>
@@ -187,15 +196,17 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
                   <table>
                     <thead>
                       <tr>
-                        <th>tool</th>
-                        <th className="num" data-tip="its processes that spent any time in uninterruptible sleep (D-state)">processes stalled</th>
-                        <th className="num" data-tip="their time in D-state, summed">time stalled</th>
-                        <th className="num"><Term k="stall">stalls</Term></th>
-                        <th className="num" data-tip="the longest single stall">longest stall</th>
+                        <SortTh s={sortOf('stall')} k="tool" first="asc">tool</SortTh>
+                        <SortTh s={sortOf('stall')} k="n" num tip="its processes that spent any time in uninterruptible sleep (D-state)">processes stalled</SortTh>
+                        <SortTh s={sortOf('stall')} k="wait_s" num tip="their time in D-state, summed">time stalled</SortTh>
+                        <SortTh s={sortOf('stall')} k="episodes" num gloss="stall">stalls</SortTh>
+                        <SortTh s={sortOf('stall')} k="max_s" num tip="the longest single stall">longest stall</SortTh>
                       </tr>
                     </thead>
                     <tbody>
-                      {stalls.map((t) => (
+                      {sortOf('stall').sort(stalls, (t, k) =>
+                        (t as unknown as Record<string, string | number | null>)[k] ?? null,
+                      ).map((t) => (
                         <tr key={t.tool}>
                           <td className="mono">{t.tool}</td>
                           <td className="num">{fint(t.n)}</td>
@@ -284,14 +295,16 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
                 <table>
                   <thead>
                     <tr>
-                      <th>class</th>
-                      <th className="num">peak</th>
-                      <th>at</th>
-                      <th className="num">average</th>
+                      <SortTh s={sortOf('mem')} k="cls" first="asc">class</SortTh>
+                      <SortTh s={sortOf('mem')} k="peak" num>peak</SortTh>
+                      <SortTh s={sortOf('mem')} k="at">at</SortTh>
+                      <SortTh s={sortOf('mem')} k="mean" num>average</SortTh>
                     </tr>
                   </thead>
                   <tbody>
-                    {memCls.map((c) => (
+                    {sortOf('mem').sort(memCls, (c, k) =>
+                      k === 'cls' ? CLS_LBL[c] ?? c : k === 'peak' ? mem[c].peak : k === 'at' ? mem[c].at : mem[c].mean,
+                    ).map((c) => (
                       <tr key={c}>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <td className="num">{mem[c].peak == null ? DASH : `${fmt(mem[c].peak!)} GB`}</td>

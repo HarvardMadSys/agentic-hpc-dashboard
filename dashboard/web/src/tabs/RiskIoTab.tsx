@@ -12,7 +12,7 @@ import { TimeChart } from './ResourcesTab';
 import type { TimeLine, View } from './ResourcesTab';
 import type { BarGroup, HBarItem } from '../charts/primitives';
 import { Legend, More, NoRows, Panel } from '../components/Panel';
-import { AccumCell, Coverage, QUANT_HEAD, QuantCells } from '../components/Coverage';
+import { AccumCell, Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { ByUser, distinct } from '../components/ByUser';
@@ -21,6 +21,8 @@ import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/types';
+import { SortTh } from '../components/SortTh';
+import { useSort, useSortMap } from '../lib/useSort';
 
 
 /** Who ran it, at a glance: one chip per agent type (a human's untagged
@@ -87,20 +89,31 @@ export function InstanceTable({ rows, showArgs }: { rows: RiskInstance[]; showAr
         user={(w) => w.user}
         noun="process"
         cols={[
-          { h: 'from', cell: (rs) => distinct(rs, fromLbl) },
-          { h: 'tools', cell: (rs) => <span className="mono">{distinct(rs, (w) => w.tool)}</span> },
-          { h: 'CPU', num: true, cell: (rs) => fmt(rs.reduce((a, w) => a + (w.cpu_s ?? 0), 0)) },
+          { h: 'from', cell: (rs) => distinct(rs, fromLbl), sort: (rs) => distinct(rs, fromLbl) },
+          {
+            h: 'tools',
+            cell: (rs) => <span className="mono">{distinct(rs, (w) => w.tool)}</span>,
+            sort: (rs) => distinct(rs, (w) => w.tool),
+          },
+          {
+            h: 'CPU',
+            num: true,
+            cell: (rs) => fmt(rs.reduce((a, w) => a + (w.cpu_s ?? 0), 0)),
+            sort: (rs) => rs.reduce((a, w) => a + (w.cpu_s ?? 0), 0),
+          },
           {
             h: 'failed',
             num: true,
             tip: 'exited non-zero or on a signal',
             cell: (rs) => (rs.some(failed) ? fint(rs.filter(failed).length) : DASH),
+            sort: (rs) => rs.filter(failed).length,
           },
           {
             h: 'latest',
             cell: (rs) => (
               <span className="mono nm">{rs.map((w) => w.ts ?? '').sort().pop() || DASH}</span>
             ),
+            sort: (rs) => rs.map((w) => w.ts ?? '').sort().pop() || null,
           },
         ]}
         sub={(rs) => <InstanceRows rows={rs} showArgs={showArgs} />}
@@ -111,20 +124,27 @@ export function InstanceTable({ rows, showArgs }: { rows: RiskInstance[]; showAr
 
 /** One user's processes, as rows. */
 function InstanceRows({ rows, showArgs }: { rows: RiskInstance[]; showArgs: boolean }) {
+  const s = useSort<string>();
   if (!rows.length) return null;
+  const val = (w: RiskInstance, k: string) =>
+    k === 'at' ? w.ts : k === 'pid' ? w.pid : k === 'from' ? fromLbl(w) : k === 'host' ? w.host
+    : k === 'tool' ? w.tool : k === 'cmd' ? w.args : k === 'cpu' ? w.cpu_s
+    : w.signal != null ? 1000 + w.signal : w.exit_code;
   return (
     <div className="scroller">
       <table>
         <thead>
           <tr>
-            <th>at</th><th className="num">pid</th><th>from</th>
-            <th>host</th><th>tool</th>
-            {showArgs && <th>command</th>}
-            <th className="num">CPU</th><th className="num" data-tip={GLOSS.exitcode}>exit code</th>
+            <SortTh s={s} k="at">at</SortTh><SortTh s={s} k="pid" num>pid</SortTh>
+            <SortTh s={s} k="from" first="asc">from</SortTh>
+            <SortTh s={s} k="host" first="asc">host</SortTh><SortTh s={s} k="tool" first="asc">tool</SortTh>
+            {showArgs && <SortTh s={s} k="cmd" first="asc">command</SortTh>}
+            <SortTh s={s} k="cpu" num>CPU</SortTh>
+            <SortTh s={s} k="exit" num tip={GLOSS.exitcode}>exit code</SortTh>
           </tr>
         </thead>
         <tbody>
-          {rows.map((w, i) => (
+          {s.sort(rows, val).map((w, i) => (
             <tr key={`${w.pid}-${i}`}>
               <td className="mono" style={{ color: 'var(--muted)' }}>{w.ts ?? DASH}</td>
               <td className="num mono" style={{ fontSize: '10.5px' }}
@@ -176,6 +196,7 @@ function toolBars(
 /** The rules the Risk tab counted with: they differ by cluster (a `risk`
  *  section in the service config, or a profile file), so the page says which. */
 function RulesInEffect({ r }: { r: RiskRules | undefined }) {
+  const s = useSort<string>();
   if (!r) return <NoRows what="the service sent no rule list" />;
   const all = [
     ...r.dangerous.map((x) => ({ ...x, kind: 'dangerous command' })),
@@ -221,16 +242,20 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
           <table>
             <thead>
               <tr>
-                <th>category</th>
-                <th>rule</th>
-                <th data-tip={GLOSS.severity}>severity</th>
-                <th>from</th>
-                <th>section</th>
-                <th>matches</th>
+                <SortTh s={s} k="kind" first="asc">category</SortTh>
+                <SortTh s={s} k="rule" first="asc">rule</SortTh>
+                <SortTh s={s} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
+                <SortTh s={s} k="from" first="asc">from</SortTh>
+                <SortTh s={s} k="section" first="asc">section</SortTh>
+                <SortTh s={s} k="pattern" first="asc">matches</SortTh>
               </tr>
             </thead>
             <tbody>
-              {all.map((x) => (
+              {/* the switched-off and unsectioned rules stay after the rest */}
+              {s.sort(all, (x, k) =>
+                k === 'kind' ? x.kind : k === 'rule' ? x.label : k === 'sev' ? x.severity : k === 'from' ? x.source
+                : k === 'section' ? (x.section ? secTitle[x.section] ?? x.section : null) : x.pattern_resolved,
+              ).map((x) => (
                 <tr key={x.kind + x.id}>
                   <td className="nm">{x.kind}</td>
                   <td>
@@ -300,6 +325,8 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
   const io = pick<IoProcess>(P, 'io_process', 'ebpfm');
   const byClass = io.by_class ?? {};
   const have = shown(byClass, cls);
+  // every table here sorts by any column (roadmap note 27), each on its own
+  const sortOf = useSortMap();
 
   const totRd = have.reduce((a, c) => a + (byClass[c]?.rd_mb ?? 0), 0);
   const totWr = have.reduce((a, c) => a + (byClass[c]?.wr_mb ?? 0), 0);
@@ -493,19 +520,21 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
               <table>
                 <thead>
                   <tr>
-                    <th>class</th>
-                    <th className="num" data-tip="processes exited">processes</th>
-                    <th className="num" data-tip="processes that read or wrote anything, and the share of the class they are">with I/O</th>
-                    <th className="num" data-tip={GLOSS.rchar}>rchar</th>
-                    <th className="num" data-tip={GLOSS.rd}>rd</th>
-                    <th className="num" data-tip={GLOSS.wchar}>wchar</th>
-                    <th className="num" data-tip={GLOSS.wr}>wr</th>
-                    <th className="num" data-tip={GLOSS.cacheserved}>cache served</th>
-                    <th className="num" data-tip={GLOSS.cachehit}>cache hit</th>
+                    <SortTh s={sortOf('io-class')} k="cls" first="asc">class</SortTh>
+                    <SortTh s={sortOf('io-class')} k="events" num tip="processes exited">processes</SortTh>
+                    <SortTh s={sortOf('io-class')} k="events_with_io" num tip="processes that read or wrote anything, and the share of the class they are">with I/O</SortTh>
+                    <SortTh s={sortOf('io-class')} k="rchar_mb" num tip={GLOSS.rchar}>rchar</SortTh>
+                    <SortTh s={sortOf('io-class')} k="rd_mb" num tip={GLOSS.rd}>rd</SortTh>
+                    <SortTh s={sortOf('io-class')} k="wchar_mb" num tip={GLOSS.wchar}>wchar</SortTh>
+                    <SortTh s={sortOf('io-class')} k="wr_mb" num tip={GLOSS.wr}>wr</SortTh>
+                    <SortTh s={sortOf('io-class')} k="cache_served_mb" num tip={GLOSS.cacheserved}>cache served</SortTh>
+                    <SortTh s={sortOf('io-class')} k="cache_hit_pct" num tip={GLOSS.cachehit}>cache hit</SortTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {have.map((c) => {
+                  {sortOf('io-class').sort(have, (c, k) =>
+                    k === 'cls' ? CLS_LBL[c] ?? c : ((byClass[c] as unknown as Record<string, number | null>)?.[k] ?? null),
+                  ).map((c) => {
                     const b = byClass[c]!;
                     return (
                       <tr key={c}>
@@ -586,14 +615,19 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
               <table>
                 <thead>
                   <tr>
-                    <th>class</th>
-                    <th className="num" data-tip={GLOSS.tx}>tx</th>
-                    <th className="num" data-tip={GLOSS.rx}>rx</th>
-                    <th className="num" data-tip={GLOSS.netcalls}>calls</th>
+                    <SortTh s={sortOf('net-class')} k="cls" first="asc">class</SortTh>
+                    <SortTh s={sortOf('net-class')} k="tx" num tip={GLOSS.tx}>tx</SortTh>
+                    <SortTh s={sortOf('net-class')} k="rx" num tip={GLOSS.rx}>rx</SortTh>
+                    <SortTh s={sortOf('net-class')} k="calls" num tip={GLOSS.netcalls}>calls</SortTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {have.map((c) => (
+                  {sortOf('net-class').sort(have, (c, k) =>
+                    k === 'cls' ? CLS_LBL[c] ?? c
+                    : k === 'tx' ? byClass[c]?.net_tx_mb?.total ?? null
+                    : k === 'rx' ? byClass[c]?.net_rx_mb?.total ?? null
+                    : byClass[c]?.net_calls?.total ?? null,
+                  ).map((c) => (
                     <tr key={c}>
                       <td>{CLS_LBL[c] ?? c}</td>
                       <td className="num">
@@ -637,20 +671,23 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   <th />
                 </tr>
                 <tr>
-                  <th>user</th>
-                  <th>class</th>
-                  <th className="num" data-tip="processes exited">processes</th>
-                  <th className="num" data-tip="block-layer bytes read (read_bytes)">disk</th>
-                  <th className="num" data-tip="bytes through read() syscalls (rchar)">syscall</th>
-                  <th className="num" data-tip="block-layer bytes written (write_bytes)">disk</th>
-                  <th className="num" data-tip="bytes through write() syscalls (wchar)">syscall</th>
-                  <th className="num" data-tip={GLOSS.rx}>rx</th>
-                  <th className="num" data-tip={GLOSS.tx}>tx</th>
-                  <th className="num" data-tip={GLOSS.coverage}>coverage</th>
+                  <SortTh s={sortOf('io-user')} k="user" first="asc">user</SortTh>
+                  <SortTh s={sortOf('io-user')} k="cls" first="asc">class</SortTh>
+                  <SortTh s={sortOf('io-user')} k="events" num tip="processes exited">processes</SortTh>
+                  <SortTh s={sortOf('io-user')} k="rd_mb" num tip="block-layer bytes read (read_bytes)">disk</SortTh>
+                  <SortTh s={sortOf('io-user')} k="rchar_mb" num tip="bytes through read() syscalls (rchar)">syscall</SortTh>
+                  <SortTh s={sortOf('io-user')} k="wr_mb" num tip="block-layer bytes written (write_bytes)">disk</SortTh>
+                  <SortTh s={sortOf('io-user')} k="wchar_mb" num tip="bytes through write() syscalls (wchar)">syscall</SortTh>
+                  <SortTh s={sortOf('io-user')} k="net_rx_mb" num tip={GLOSS.rx}>rx</SortTh>
+                  <SortTh s={sortOf('io-user')} k="net_tx_mb" num tip={GLOSS.tx}>tx</SortTh>
+                  <SortTh s={sortOf('io-user')} k="io_coverage_pct" num tip={GLOSS.coverage}>coverage</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {byUser.map((u, i) => (
+                {sortOf('io-user').sort(byUser, (u, k) =>
+                  k === 'cls' ? (u.cls ? CLS_LBL[u.cls] ?? u.cls : null)
+                  : ((u as unknown as Record<string, string | number | null | undefined>)[k] ?? null),
+                ).map((u, i) => (
                   <tr key={u.user + i}>
                     <td className="mono">{u.user}</td>
                     <td>{u.cls ? (CLS_LBL[u.cls] ?? u.cls) : DASH}</td>
@@ -678,21 +715,22 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
               <table>
                 <thead>
                   <tr>
-                    <th data-tip="the raw counter each row describes; hover a name for what it counts">metric</th>
-                    <th>class</th>
-                    {QUANT_HEAD}
+                    <SortTh s={sortOf('io-quant')} k="metric" first="asc" tip="the raw counter each row describes; hover a name for what it counts">metric</SortTh>
+                    <SortTh s={sortOf('io-quant')} k="cls" first="asc">class</SortTh>
+                    <QuantHead s={sortOf('io-quant')} />
                   </tr>
                 </thead>
                 <tbody>
-                  {quantKeys.flatMap((qk) =>
-                    have.map((c) => (
+                  {sortOf('io-quant').sort(quantKeys.flatMap((qk) => have.map((c) => [qk, c] as const)),
+                    ([qk, c], k) => (k === 'metric' ? qk : k === 'cls' ? CLS_LBL[c] ?? c
+                      : quantVal(byClass[c]?.quants?.[qk], k)),
+                  ).map(([qk, c]) => (
                       <tr key={qk + c}>
                         <td className="mono lbl" data-tip={GLOSS[qk]}>{qk}</td>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <QuantCells q={byClass[c]?.quants?.[qk]} />
                       </tr>
-                    )),
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -751,13 +789,21 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   <table>
                     <thead>
                       <tr>
-                        <th>tool</th><th>category</th><th className="num">times run</th>
-                        <th className="num">CPU time</th><th className="num">% of CPU</th>
-                        <th className="num">users</th><th>hosts</th><th>run by</th>
+                        <SortTh s={sortOf(sc.id)} k="tool" first="asc">tool</SortTh>
+                        <SortTh s={sortOf(sc.id)} k="kind" first="asc">category</SortTh>
+                        <SortTh s={sortOf(sc.id)} k="n" num>times run</SortTh>
+                        <SortTh s={sortOf(sc.id)} k="cpu" num>CPU time</SortTh>
+                        <SortTh s={sortOf(sc.id)} k="pct" num>% of CPU</SortTh>
+                        <SortTh s={sortOf(sc.id)} k="users" num>users</SortTh>
+                        <SortTh s={sortOf(sc.id)} k="hosts" first="asc">hosts</SortTh>
+                        <th>run by</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {lcRows.map((r, i) => (
+                      {sortOf(sc.id).sort(lcRows, (r, k) =>
+                        k === 'tool' ? r.tool : k === 'kind' ? (r.kind ? LC_KIND[r.kind] ?? r.kind : null) : k === 'n' ? r.n
+                        : k === 'cpu' ? r.cpu_s : k === 'pct' ? r.cpu_pct : k === 'users' ? r.users : r.hosts.join(' '),
+                      ).map((r, i) => (
                         <tr key={r.tool + i}>
                           <td className="mono">{r.tool}</td>
                           <td>{r.kind ? LC_KIND[r.kind] ?? r.kind : DASH}</td>
@@ -794,12 +840,19 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                 <table>
                   <thead>
                     <tr>
-                      <th>pattern</th><th data-tip={GLOSS.severity}>severity</th><th className="num">matches</th>
-                      <th className="num">users</th><th>tools</th><th>run by</th>
+                      <SortTh s={sortOf(sc.id)} k="pattern" first="asc">pattern</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="n" num>matches</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="users" num>users</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="tools" first="asc">tools</SortTh>
+                      <th>run by</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {inSection(secRows, sc).map((r) => (
+                    {sortOf(sc.id).sort(inSection(secRows, sc), (r, k) =>
+                      k === 'pattern' ? r.pattern : k === 'sev' ? r.severity : k === 'n' ? r.n
+                      : k === 'users' ? r.users : r.tools.join(' '),
+                    ).map((r) => (
                       <Fragment key={r.id}>
                       <tr {...rowOpen(r.id, (r.instances ?? []).length > 0)}>
                         <td>
@@ -841,13 +894,20 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                 <table>
                   <thead>
                     <tr>
-                      <th>command</th><th data-tip={GLOSS.severity}>severity</th>
-                      <th className="num">times run</th><th className="num">users</th><th>run by</th>
-                      <th className="num" data-tip="runs that exited 0: nothing stopped them">succeeded</th><th className="num">CPU s</th>
+                      <SortTh s={sortOf(sc.id)} k="command" first="asc">command</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="n" num>times run</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="users" num>users</SortTh>
+                      <th>run by</th>
+                      <SortTh s={sortOf(sc.id)} k="works" num tip="runs that exited 0: nothing stopped them">succeeded</SortTh>
+                      <SortTh s={sortOf(sc.id)} k="cpu" num>CPU s</SortTh>
                     </tr>
                   </thead>
                   <tbody>
-                    {inSection(dgRows, sc).map((r) => (
+                    {sortOf(sc.id).sort(inSection(dgRows, sc), (r, k) =>
+                      k === 'command' ? r.command : k === 'sev' ? r.severity : k === 'n' ? r.n : k === 'users' ? r.users
+                      : k === 'works' ? r.works_pct : r.cpu_s,
+                    ).map((r) => (
                       <Fragment key={r.id}>
                       <tr {...rowOpen(r.id, (r.instances ?? []).length > 0)}>
                         <td className="mono">

@@ -20,7 +20,8 @@ import { ActiveUsers, scrollToUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
 import { WindowCharts } from './LiveCharts';
-import { Term } from '../components/Term';
+import { SortTh } from '../components/SortTh';
+import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import type { Panels } from '../lib/panels';
 
@@ -205,7 +206,17 @@ export function LiveTab({
   const U = L?.users;
   const usersBy = Object.fromEntries(CLS.filter((c) => U?.by_class[c] != null).map((c) => [c, U!.by_class[c]!]));
 
-  const hosts = L?.hosts ?? [];
+  // sortable by any column (roadmap note 27); the service's order until then
+  const hostSort = useSort<string>();
+  const hostCols = HOST_COLS.filter((c) => (L?.hosts ?? []).some((h) => typeof h[c[0]] === 'number'));
+  const hosts = hostSort.sort(L?.hosts ?? [], (h, k) => {
+    if (k === 'host') return h.host;
+    if (k === 'byclass') {
+      const bc = hostByClass(h);
+      return bc ? Object.values(bc).reduce<number>((a, v) => a + (v ?? 0), 0) : null;
+    }
+    return typeof h[k] === 'number' ? (h[k] as number) : null;
+  });
 
   const envelope = L
     ? null
@@ -374,15 +385,13 @@ export function LiveTab({
             <table>
               <thead>
                 <tr>
-                  <th>host</th>
-                  {HOST_COLS.filter((c) => hosts.some((h) => typeof h[c[0]] === 'number')).map(
-                    (c) => (
-                      <th key={c[0]} className="num">
-                        <Term k={c[3]}>{c[1]}</Term>
-                      </th>
-                    ),
-                  )}
-                  <th><Term tip="processes running now, per class">running by class</Term></th>
+                  <SortTh s={hostSort} k="host" first="asc">host</SortTh>
+                  {hostCols.map((c) => (
+                    <SortTh key={c[0]} s={hostSort} k={c[0]} num gloss={c[3]}>
+                      {c[1]}
+                    </SortTh>
+                  ))}
+                  <SortTh s={hostSort} k="byclass" tip="processes running now, per class">running by class</SortTh>
                 </tr>
               </thead>
               <tbody>
@@ -391,13 +400,11 @@ export function LiveTab({
                   return (
                     <tr key={h.host}>
                       <td className="mono">{h.host}</td>
-                      {HOST_COLS.filter((c) => hosts.some((x) => typeof x[c[0]] === 'number')).map(
-                        (c) => (
-                          <td key={c[0]} className="num">
-                            {hostCell(h, c[0], c[2])}
-                          </td>
-                        ),
-                      )}
+                      {hostCols.map((c) => (
+                        <td key={c[0]} className="num">
+                          {hostCell(h, c[0], c[2])}
+                        </td>
+                      ))}
                       <td>
                         {bc ? (
                           <span className="rle">
@@ -445,41 +452,66 @@ export function EventTable({ rows }: { rows: LiveEvent[] }) {
       // both callers hold it in a `.stream`, which is already the scroll box
       scroll={false}
       cols={[
-        { h: 'class', cell: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3) },
-        { h: 'commands', cell: (rs) => <span className="mono">{distinct(rs, (e) => e.comm ?? e.tool, 4)}</span> },
-        { h: 'CPU', num: true, cell: (rs) => dur(rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0)) },
+        {
+          h: 'class',
+          cell: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3),
+          sort: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3),
+        },
+        {
+          h: 'commands',
+          cell: (rs) => <span className="mono">{distinct(rs, (e) => e.comm ?? e.tool, 4)}</span>,
+          sort: (rs) => distinct(rs, (e) => e.comm ?? e.tool, 4),
+        },
+        {
+          h: 'CPU',
+          num: true,
+          cell: (rs) => dur(rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0)),
+          sort: (rs) => rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0),
+        },
         {
           h: 'failed',
           num: true,
           tip: 'exited non-zero or on a signal',
           cell: (rs) => (rs.some(failed) ? fint(rs.filter(failed).length) : DASH),
+          sort: (rs) => rs.filter(failed).length,
         },
-        { h: 'latest', cell: (rs) => <span className="mono nm">{rs.map((e) => e.ts ?? '').sort().pop() || DASH}</span> },
+        {
+          h: 'latest',
+          cell: (rs) => <span className="mono nm">{rs.map((e) => e.ts ?? '').sort().pop() || DASH}</span>,
+          sort: (rs) => rs.map((e) => e.ts ?? '').sort().pop() || null,
+        },
       ]}
       sub={(rs) => <EventRows rows={rs} />}
     />
   );
 }
 
+type EvKey = 'at' | 'class' | 'pid' | 'host' | 'depth' | 'cmd' | 'ran' | 'cpu' | 'exit';
+const evVal = (e: LiveEvent, k: EvKey) =>
+  k === 'at' ? e.epoch ?? e.ts : k === 'class' ? e.actor3 : k === 'pid' ? e.pid : k === 'host' ? e.host
+  : k === 'depth' ? e.depth : k === 'cmd' ? e.comm ?? e.tool : k === 'ran' ? e.duration_s : k === 'cpu' ? e.cpu_s
+  : e.signal != null ? 1000 + e.signal : e.exit_code;
+
 /** One user's processes, as rows. */
 function EventRows({ rows }: { rows: LiveEvent[] }) {
+  const s = useSort<EvKey>();
   return (
     <table>
       <thead>
         <tr>
-          <th>at</th>
-          <th>class</th>
-          <th className="num">pid</th>
-          <th>host</th>
-          <th className="num" data-tip={DEPTH_TIP}>tree depth</th>
-          <th>command</th>
-          <th className="num">ran</th>
-          <th className="num">cpu</th>
-          <th className="num">exit</th>
+          <SortTh s={s} k="at">at</SortTh>
+          <SortTh s={s} k="class" first="asc">class</SortTh>
+          <SortTh s={s} k="pid" num>pid</SortTh>
+          <SortTh s={s} k="host" first="asc">host</SortTh>
+          <SortTh s={s} k="depth" num tip={DEPTH_TIP}>tree depth</SortTh>
+          <SortTh s={s} k="cmd" first="asc">command</SortTh>
+          <SortTh s={s} k="ran" num>ran</SortTh>
+          <SortTh s={s} k="cpu" num>cpu</SortTh>
+          <SortTh s={s} k="exit" num>exit</SortTh>
         </tr>
       </thead>
       <tbody>
-        {rows.map((e, i) => {
+        {s.sort(rows, evVal).map((e, i) => {
           const comm = e.comm ?? e.tool ?? '';
           const args = e.args ?? '';
           const tail = args.startsWith(comm) ? args.slice(comm.length) : args ? ' ' + args : '';
