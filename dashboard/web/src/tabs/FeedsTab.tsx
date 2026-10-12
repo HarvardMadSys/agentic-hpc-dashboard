@@ -27,6 +27,8 @@ import type {
 import { isConfigLeaf } from '../api/types';
 import { fullClock } from '../charts/scale';
 import { More, NoRows, Panel, StatusPill } from '../components/Panel';
+import { SortTh } from '../components/SortTh';
+import { useSort } from '../lib/useSort';
 import { DASH, bytes, dur, fint, lagStr } from '../lib/format';
 
 /* ----------------------------------------------------------- collectors */
@@ -49,23 +51,28 @@ function lostText(r: CollectorRun | undefined | null): string {
 }
 
 function Runs({ runs, now }: { runs: CollectorRun[]; now: number }) {
+  const s = useSort<string>();
   if (!runs.length) return <NoRows what="no start or stop record in the files read" />;
+  // newest first as read; the index each run had decides "running" below
+  const rows = s.sort(runs.map((r, i) => ({ r, i })), ({ r }, k) =>
+    k === 'started' ? r.started : k === 'stopped' ? r.stopped : k === 'ran' ? r.ran_s : k === 'why' ? r.stop_reason
+    : k === 'records' ? r.records : k === 'lost' ? r.lost_pct : k === 'cut' ? r.truncated : r.pid);
   return (
     <table>
       <thead>
         <tr>
-          <th>started</th>
-          <th>stopped</th>
-          <th className="num">ran for</th>
-          <th>why it stopped</th>
-          <th className="num" data-tip="records it wrote, from its stop record">records</th>
-          <th className="num" data-tip="kernel events it could not keep up with, against those it was handed">events lost</th>
-          <th className="num" data-tip="processes still running when it stopped, written with what was known">cut short at stop</th>
-          <th>pid · kernel</th>
+          <SortTh s={s} k="started">started</SortTh>
+          <SortTh s={s} k="stopped">stopped</SortTh>
+          <SortTh s={s} k="ran" num>ran for</SortTh>
+          <SortTh s={s} k="why" first="asc">why it stopped</SortTh>
+          <SortTh s={s} k="records" num tip="records it wrote, from its stop record">records</SortTh>
+          <SortTh s={s} k="lost" num tip="kernel events it could not keep up with, against those it was handed">events lost</SortTh>
+          <SortTh s={s} k="cut" num tip="processes still running when it stopped, written with what was known">cut short at stop</SortTh>
+          <SortTh s={s} k="pid">pid · kernel</SortTh>
         </tr>
       </thead>
       <tbody>
-        {runs.map((r, i) => (
+        {rows.map(({ r, i }) => (
           <tr key={`${r.pid}-${i}`}>
             <td className="mono">{when(r.started)}</td>
             <td className="mono">{r.stopped != null ? when(r.stopped) : <span className="nm">{i === 0 ? 'running' : 'no stop record'}</span>}</td>
@@ -126,21 +133,26 @@ function HostDetail({ h, now }: { h: CollectorHost; now: number }) {
 
 function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const s = useSort<string>();
+  const sorted = s.sort(hosts, (h, k) =>
+    k === 'host' ? h.host : k === 'status' ? h.verdict : k === 'beat' ? h.heartbeat.age_s
+    : k === 'since' ? h.running?.started ?? null : k === 'restarts' ? h.restarts
+    : k === 'lost' ? h.runs.find((r) => r.stopped != null)?.lost_pct ?? null : h.reasons.join(' '));
   return (
     <div className="scroller vscroll">
       <table className="roomy byuser-t">
         <thead>
           <tr>
-            <th>host</th>
-            <th>status</th>
-            <th className="num" data-tip="the collector writes a heartbeat (residency_totals) every minute">last heartbeat</th>
-            <th>running since</th>
-            <th className="num" data-tip="starts after the first one, in the files read">restarts</th>
-            <th className="num" data-tip="kernel events its last finished run could not keep up with">events lost, last run</th>
-            <th>why</th>
+            <SortTh s={s} k="host" first="asc">host</SortTh>
+            <SortTh s={s} k="status" first="asc">status</SortTh>
+            <SortTh s={s} k="beat" num tip="the collector writes a heartbeat (residency_totals) every minute">last heartbeat</SortTh>
+            <SortTh s={s} k="since">running since</SortTh>
+            <SortTh s={s} k="restarts" num tip="starts after the first one, in the files read">restarts</SortTh>
+            <SortTh s={s} k="lost" num tip="kernel events its last finished run could not keep up with">events lost, last run</SortTh>
+            <SortTh s={s} k="why" first="asc">why</SortTh>
           </tr>
         </thead>
-        {hosts.map((h) => {
+        {sorted.map((h) => {
           const v = VERDICT[h.verdict] ?? VERDICT.unknown;
           const o = !!open[h.host];
           const lastDone = h.runs.find((r) => r.stopped != null);
@@ -240,20 +252,24 @@ function Where({ f }: { f: FeedReport }) {
 }
 
 function Sources({ list }: { list: FeedReport[] }) {
+  const s = useSort<string>();
+  const sorted = s.sort(list, (f, k) =>
+    k === 'source' ? f.name : k === 'status' ? f.status : k === 'newest' ? f.lag_s ?? null
+    : k === 'from' ? (f.resolved.length ? f.resolved : f.configured).join(' ') : f.n_files);
   return (
     <div className="scroller">
       <table className="roomy">
         <thead>
           <tr>
-            <th>source</th>
-            <th>status</th>
-            <th className="num" data-tip="the newest record in its newest file, and how old that is against the source's own limit">newest record</th>
-            <th>read from</th>
-            <th className="num">files</th>
+            <SortTh s={s} k="source" first="asc">source</SortTh>
+            <SortTh s={s} k="status" first="asc">status</SortTh>
+            <SortTh s={s} k="newest" num first="asc" tip="the newest record in its newest file, and how old that is against the source's own limit">newest record</SortTh>
+            <SortTh s={s} k="from" first="asc">read from</SortTh>
+            <SortTh s={s} k="files" num>files</SortTh>
           </tr>
         </thead>
         <tbody>
-          {list.map((f) => {
+          {sorted.map((f) => {
             const past = f.lag_s != null && f.max_age_s != null && f.lag_s > f.max_age_s;
             // An optional source nobody set up is not a fault: red would send an
             // admin looking for a broken collector that does not exist.
@@ -346,6 +362,7 @@ export function FeedsTab({
     (a, b) => Number(b.required) - Number(a.required) || (a.tier || '').localeCompare(b.tier || '') || (a.name || '').localeCompare(b.name || ''),
   );
   const cfg = config.data ? flatten(config.data as unknown as ConfigNode) : [];
+  const cfgSort = useSort<string>();
   const counts = hosts.reduce<Record<string, number>>((m, h) => ({ ...m, [h.verdict]: (m[h.verdict] ?? 0) + 1 }), {});
   const summary = (['ok', 'degraded', 'stopped', 'silent', 'unknown'] as CollectorVerdict[])
     .filter((v) => counts[v])
@@ -402,13 +419,13 @@ export function FeedsTab({
             <table>
               <thead>
                 <tr>
-                  <th>key</th>
-                  <th>value</th>
-                  <th>set by</th>
+                  <SortTh s={cfgSort} k="key" first="asc">key</SortTh>
+                  <SortTh s={cfgSort} k="value" first="asc">value</SortTh>
+                  <SortTh s={cfgSort} k="by" first="asc">set by</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {cfg.map(([k, v, o]) => (
+                {cfgSort.sort(cfg, ([k, v, o], key) => (key === 'key' ? k : key === 'value' ? v : o)).map(([k, v, o]) => (
                   <tr key={k}>
                     <td className="mono">{k}</td>
                     <td className="mono" style={{ wordBreak: 'break-all', color: 'var(--ink)' }}>{v}</td>

@@ -12,12 +12,17 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { DASH, fint } from '../lib/format';
+import { SortTh } from './SortTh';
+import { useSort } from '../lib/useSort';
+import type { SortVal } from '../lib/useSort';
 
 export interface GroupCol<T> {
   h: ReactNode;
   num?: boolean;
   tip?: string;
   cell: (rows: T[]) => ReactNode;
+  /** what the column sorts by; a column without it does not sort */
+  sort?: (rows: T[]) => SortVal;
 }
 
 export function ByUser<T>({
@@ -62,6 +67,10 @@ export function ByUser<T>({
     if (i > 0) groups.unshift(...groups.splice(i, 1));
   }
   const [opened, setOpened] = useState<Record<string, boolean>>({});
+  // the users sort by name, by how many rows they have, or by a column
+  const s = useSort<string>();
+  const shown = s.sort(groups, ([u, rs], k) =>
+    k === 'user' ? u : k === 'n' ? rs.length : cols[+k.slice(1)]?.sort?.(rs));
   const isOpen = (u: string, i: number) =>
     opened[u] ?? (openUser ? u === openUser : openFirst && i === 0);
   if (!rows.length) return null;
@@ -73,16 +82,23 @@ export function ByUser<T>({
         <table className="roomy byuser-t">
           <thead>
             <tr>
-              <th>user</th>
-              <th className="num">{nouns}</th>
-              {cols.map((c, i) => (
-                <th key={i} className={c.num ? 'num' : undefined} data-tip={c.tip}>
-                  {c.h}
-                </th>
-              ))}
+              <SortTh s={s} k="user" first="asc">user</SortTh>
+              <SortTh s={s} k="n" num>{nouns}</SortTh>
+              {cols.map((c, i) =>
+                c.sort ? (
+                  <SortTh key={i} s={s} k={`c${i}`} num={c.num} tip={c.tip}
+                    first={c.num ? 'desc' : 'asc'}>
+                    {c.h}
+                  </SortTh>
+                ) : (
+                  <th key={i} className={c.num ? 'num' : undefined} data-tip={c.tip}>
+                    {c.h}
+                  </th>
+                ),
+              )}
             </tr>
           </thead>
-          {groups.map(([u, rs], i) => {
+          {shown.map(([u, rs], i) => {
             const o = isOpen(u, i);
             return (
               <tbody key={u}>

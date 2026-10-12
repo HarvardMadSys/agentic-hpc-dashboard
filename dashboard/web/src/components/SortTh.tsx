@@ -10,6 +10,7 @@ export function SortTh<K extends string>({
   num,
   first = 'desc',
   tip,
+  gloss,
   className,
   colSpan,
   rowSpan,
@@ -23,6 +24,8 @@ export function SortTh<K extends string>({
   /** the direction of the first click: largest first for numbers, A to Z for text */
   first?: SortDir;
   tip?: string;
+  /** a glossary key, for a header whose explanation is the glossary's */
+  gloss?: string;
   className?: string;
   colSpan?: number;
   rowSpan?: number;
@@ -40,7 +43,7 @@ export function SortTh<K extends string>({
     >
       {/* the explanation, if any, rides on the label with its own "?"; the
           header itself carries no tip, so it is not marked a second time */}
-      {tip ? <Term tip={tip}>{children}</Term> : children}
+      {tip || gloss ? <Term tip={tip} k={gloss}>{children}</Term> : children}
       <span className="sort-arrow" aria-hidden="true">{on ? (s.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
     </th>
   );

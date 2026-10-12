@@ -7,6 +7,8 @@
 import { useState } from 'react';
 import type { Cls, ToolBucketRow, ToolClassBlock, ToolCostRow, ToolMix } from '../api/types';
 import { Segmented } from '../components/ClassFilter';
+import { SortTh } from '../components/SortTh';
+import { useSort } from '../lib/useSort';
 import { Term } from '../components/Term';
 import { GLOSS } from '../lib/glossary';
 import { HBars } from '../charts/primitives';
@@ -194,9 +196,21 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
   // reading -- each class's work split into kinds of tool -- is a click away.
   const [read, setRead] = useState<'who' | 'kind'>('who');
   const [metric, setMetric] = useState<Metric>('calls');
+  const s = useSort<string>();
   const get = (c: string, b: string) => byClass[c]?.rows?.find((r) => r.b === b);
   const total = (b: string) => have.reduce((a, c) => a + (rowVal(get(c, b), metric) ?? 0), 0);
-  const rows = buckets.filter((b) => total(b) > 0).sort((x, y) => total(y) - total(x));
+  // the biggest first until a header is clicked (roadmap note 27): by name, by
+  // the total, or by a class's share -- of the row, or of the class's work
+  const rows = s.sort(
+    buckets.filter((b) => total(b) > 0).sort((x, y) => total(y) - total(x)),
+    (b, k) => {
+      if (k === 'kind') return b;
+      if (k === 'total') return total(b);
+      const c = k.slice(4);
+      if (k.startsWith('who:')) return total(b) ? (100 * (rowVal(get(c, b), metric) ?? 0)) / total(b) : null;
+      return rowPct(get(c, b), metric);
+    },
+  );
   const idle = buckets.filter((b) => !rows.includes(b));
   return (
     <Panel
@@ -222,9 +236,12 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
           <table className="mix who">
             <thead>
               <tr>
-                <th>kind of tool</th>
-                <th>who ran it, as a share of the row</th>
-                <th className="num">total</th>
+                <SortTh s={s} k="kind" first="asc">kind of tool</SortTh>
+                <SortTh s={s} k={`who:${have[0] ?? ''}`}
+                  tip={`who ran it, as a share of the row; sorts by ${scope.lbl(have[0] ?? '')}'s share`}>
+                  who ran it, as a share of the row
+                </SortTh>
+                <SortTh s={s} k="total" num>total</SortTh>
               </tr>
             </thead>
             <tbody>
@@ -263,12 +280,12 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
           <table className="mix">
             <thead>
               <tr>
-                <th>kind of tool</th>
+                <SortTh s={s} k="kind" first="asc">kind of tool</SortTh>
                 {have.map((c) => (
-                  <th key={c} className="cls" style={{ color: CLS_COL[c] }}
-                    data-tip={`share of ${scope.lbl(c)}'s ${METRICS.find((m) => m.k === metric)!.lbl}`}>
+                  <SortTh key={c} s={s} k={`cls:${c}`} className="cls" style={{ color: CLS_COL[c] }}
+                    tip={`share of ${scope.lbl(c)}'s ${METRICS.find((m) => m.k === metric)!.lbl}`}>
                     {scope.lbl(c)}
-                  </th>
+                  </SortTh>
                 ))}
               </tr>
             </thead>

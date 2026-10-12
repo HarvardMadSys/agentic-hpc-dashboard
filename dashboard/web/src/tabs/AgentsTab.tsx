@@ -38,6 +38,8 @@ import { More, Panel, NoRows } from '../components/Panel';
 import { TreeDiagram } from '../components/TreeDiagram';
 import type { TreeNode } from '../components/TreeDiagram';
 import { Term } from '../components/Term';
+import { SortTh } from '../components/SortTh';
+import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
 import { AGENT_TYPE_LBL } from '../lib/classes';
@@ -193,27 +195,28 @@ function ioTip(d: WsDir): string | undefined {
  * view: the busiest dozen used to be shown and the rest were a click away. */
 function DirTable({ v }: { v: WsView }) {
   const maxProcs = Math.max(1, ...v.dirs.map((d) => d.procs));
-  const rows = v.dirs;
+  const s = useSort<string>();
+  const rows = s.sort(v.dirs, (d, k) =>
+    k === 'dir' ? d.shown : k === 'procs' ? d.procs : k === 'rd' ? d.io?.rchar_mb ?? null
+    : k === 'wr' ? d.io?.wchar_mb ?? null : k === 'named' ? d.named : d.last);
   return (
     <>
       <div className="scroller vscroll short">
         <table>
           <thead>
             <tr>
-              <th>directory</th>
-              <th
-                className="num"
-                data-tip={`MEASURED: processes whose cwd the collector recorded as this directory${v.summary.cwd_read_pct != null ? ` -- read at exec for ${pc(v.summary.cwd_read_pct)}, copied from the parent at fork for the rest` : ''}`}
-              >
+              <SortTh s={s} k="dir" first="asc">directory</SortTh>
+              <SortTh s={s} k="procs" num
+                tip={`MEASURED: processes whose cwd the collector recorded as this directory${v.summary.cwd_read_pct != null ? ` -- read at exec for ${pc(v.summary.cwd_read_pct)}, copied from the parent at fork for the rest` : ''}`}>
                 ran in
-              </th>
+              </SortTh>
               <th />
-              <th className="num" data-tip="MEASURED per process: syscall bytes read by the processes that ran here">bytes read</th>
-              <th className="num" data-tip="MEASURED per process: syscall bytes written by the processes that ran here">bytes written</th>
-              <th className="ws-inf" data-tip="INFERRED: distinct paths here that command lines named, by what the command does with them">
+              <SortTh s={s} k="rd" num tip="MEASURED per process: syscall bytes read by the processes that ran here">bytes read</SortTh>
+              <SortTh s={s} k="wr" num tip="MEASURED per process: syscall bytes written by the processes that ran here">bytes written</SortTh>
+              <SortTh s={s} k="named" className="ws-inf" tip="INFERRED: distinct paths here that command lines named, by what the command does with them">
                 named on command lines
-              </th>
-              <th>seen</th>
+              </SortTh>
+              <SortTh s={s} k="seen">seen</SortTh>
             </tr>
           </thead>
           <tbody>

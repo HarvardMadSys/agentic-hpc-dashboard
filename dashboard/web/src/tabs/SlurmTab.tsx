@@ -17,7 +17,6 @@
  * Its own tab because not every cluster runs Slurm: `slurm.enabled: false`
  * in the service's config hides it.
  */
-import { GLOSS } from '../lib/glossary';
 import { Fragment, useState } from 'react';
 import type {
   Cls,
@@ -31,6 +30,8 @@ import type {
 import { fullClock } from '../charts/scale';
 import { Segmented } from '../components/ClassFilter';
 import { Basis, NoRows, Panel } from '../components/Panel';
+import { SortTh } from '../components/SortTh';
+import { useSort, useSortMap } from '../lib/useSort';
 import { CmdCell } from '../components/Cmd';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
@@ -135,7 +136,13 @@ const SORTS: Record<Sort, (r: SlurmSession) => number> = {
 function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
   const [sort, setSort] = useState<Sort>('queries');
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const sorted = [...rows].filter((r) => SORTS[sort](r) > 0 || sort === 'queries').sort((a, b) => SORTS[sort](b) - SORTS[sort](a));
+  // the ranking picks the rows and their order; a header then re-sorts them
+  const s = useSort<string>();
+  const sorted = s.sort(
+    [...rows].filter((r) => SORTS[sort](r) > 0 || sort === 'queries').sort((a, b) => SORTS[sort](b) - SORTS[sort](a)),
+    (r, k) => k === 'session' ? r.user : k === 'jobs' ? r.jobs : k === 'refused' ? r.rejected : k === 'peak' ? r.peak_per_min
+      : k === 'shapes' ? r.shapes : k === 'queries' ? r.queries : k === 'qpj' ? r.queries_per_job : SORTS.polling(r),
+  );
   const keyOf = (r: SlurmSession, i: number) => r.session ?? `${r.cls}:${r.user ?? i}`;
   return (
     <>
@@ -155,15 +162,15 @@ function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
           <table className="roomy byuser-t wrap-head">
             <thead>
               <tr>
-                <th data-tip="an agent session (its tool calls folded into it), or everything one person or IDE ran; first and last Slurm activity beneath">session</th>
-                <th className="num" data-tip="submissions that came back with a job id">jobs submitted</th>
-                <th className="num" data-tip="submissions the scheduler turned down: a QOS limit, a partition rule, a bad script">refused</th>
-                <th className="num" data-tip="the most jobs it submitted within a single minute">most in a minute</th>
-                <th className="num" data-tip="different submit commands once numbers are masked: one script resubmitted 100 times is 1; a newly written script each time counts each">distinct commands</th>
+                <SortTh s={s} k="session" first="asc" tip="an agent session (its tool calls folded into it), or everything one person or IDE ran; first and last Slurm activity beneath">session</SortTh>
+                <SortTh s={s} k="jobs" num tip="submissions that came back with a job id">jobs submitted</SortTh>
+                <SortTh s={s} k="refused" num tip="submissions the scheduler turned down: a QOS limit, a partition rule, a bad script">refused</SortTh>
+                <SortTh s={s} k="peak" num tip="the most jobs it submitted within a single minute">most in a minute</SortTh>
+                <SortTh s={s} k="shapes" num tip="different submit commands once numbers are masked: one script resubmitted 100 times is 1; a newly written script each time counts each">distinct commands</SortTh>
                 <th data-tip="flags on its submit commands, and how many submissions used each">sbatch flags</th>
-                <th className="num" data-tip="calls to squeue, sacct, scontrol, sinfo, … asking how jobs or the cluster are doing">queue checks</th>
-                <th className="num" data-tip="queue checks for every job it submitted">checks per job</th>
-                <th data-tip="its longest stretch of checking the queue at least every 3 min: how often, and for how long">polling the queue</th>
+                <SortTh s={s} k="queries" num tip="calls to squeue, sacct, scontrol, sinfo, … asking how jobs or the cluster are doing">queue checks</SortTh>
+                <SortTh s={s} k="qpj" num tip="queue checks for every job it submitted">checks per job</SortTh>
+                <SortTh s={s} k="polling" tip="its longest stretch of checking the queue at least every 3 min: how often, and for how long">polling the queue</SortTh>
               </tr>
             </thead>
             {sorted.map((r, i) => {
@@ -219,6 +226,9 @@ function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
 /* One row per measure, one column per class: the classes differ in size by
  * orders of magnitude, so the rows that compare them are rates and shares. */
 function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: string[]; tm: ToolMix }) {
+  // one row per measure, in different units: the measures sort by name, and
+  // the class columns, whose cells are not alike, do not
+  const s = useSort<string>();
   const kind = (c: string, b: string) => tm.by_class?.[c]?.rows?.find((r) => r.b === b);
   const schedPct = (c: string) => {
     const t = tm.by_class?.[c];
@@ -253,7 +263,7 @@ function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: strin
       <table className="roomy">
         <thead>
           <tr>
-            <th />
+            <SortTh s={s} k="measure" first="asc">measure</SortTh>
             {have.map((c) => (
               <th key={c} className="num">
                 <i className="u-dot" style={{ background: CLS_COL[c] }} />
@@ -263,7 +273,7 @@ function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: strin
           </tr>
         </thead>
         <tbody>
-          {rows.map(([k, tip, cell]) => (
+          {s.sort(rows, ([k]) => k).map(([k, tip, cell]) => (
             <tr key={k}>
               <td data-tip={tip}>{k}</td>
               {have.map((c) => (
@@ -293,21 +303,26 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
     ].filter(Boolean);
     return bits.length ? bits.join(' · ') : <span className="nm" data-tip="no request on the command line: it is in the script's #SBATCH lines, which are not read">in the script</span>;
   };
+  const s = useSort<string>();
+  const val = (r: LiveSubmit, k: string) =>
+    k === 'at' ? r.ts : k === 'user' ? r.user : k === 'from' ? (r.agent_type ?? r.actor3) as string | null
+    : k === 'job' ? (r.job_id != null ? Number(r.job_id) : String(r.outcome ?? '')) : k === 'asked' ? (r.partition as string | null)
+    : (r.args as string | null);
   return (
     <div className="scroller vscroll">
       <table className="roomy">
         <thead>
           <tr>
-            <th>at</th>
-            <th>user</th>
-            <th>from</th>
-            <th>job</th>
-            <th data-tip="the partition, time limit, and GPUs the command line asked for; “in the script” when they were #SBATCH lines the collector cannot see">asked for</th>
-            <th>command</th>
+            <SortTh s={s} k="at">at</SortTh>
+            <SortTh s={s} k="user" first="asc">user</SortTh>
+            <SortTh s={s} k="from" first="asc">from</SortTh>
+            <SortTh s={s} k="job">job</SortTh>
+            <SortTh s={s} k="asked" first="asc" tip="the partition, time limit, and GPUs the command line asked for; “in the script” when they were #SBATCH lines the collector cannot see">asked for</SortTh>
+            <SortTh s={s} k="cmd" first="asc">command</SortTh>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
+          {s.sort(rows, val).map((r, i) => (
             <tr key={`${r.job_id ?? ''}-${r.ts ?? ''}-${i}`}>
               <td className="mono nm">{r.ts ?? DASH}</td>
               <td>{r.user ?? DASH}</td>
@@ -346,7 +361,9 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
   const submits = (live?.submits ?? []).filter(
     (r) => typeof r.actor3 !== 'string' || cls.includes(r.actor3 as Cls),
   );
-  const rej = (sp.rejections ?? []).filter((r) => cls.includes(r.cls as Cls));
+  const sortOf = useSortMap();
+  const rej = sortOf('refused').sort((sp.rejections ?? []).filter((r) => cls.includes(r.cls as Cls)), (r, k) =>
+    k === 'from' ? CLS_LBL[r.cls] ?? r.cls : k === 'tool' ? r.tool : k === 'why' ? r.why : k === 'n' ? r.n : r.eg?.ts ?? null);
   const basis = <Basis items={Object.entries(sp.basis ?? {})} />;
 
   return (
@@ -419,11 +436,11 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
             <table className="roomy">
               <thead>
                 <tr>
-                  <th>from</th>
-                  <th>tool</th>
-                  <th data-tip={GLOSS.refused}>why</th>
-                  <th className="num">times</th>
-                  <th>e.g.</th>
+                  <SortTh s={sortOf('refused')} k="from" first="asc">from</SortTh>
+                  <SortTh s={sortOf('refused')} k="tool" first="asc">tool</SortTh>
+                  <SortTh s={sortOf('refused')} k="why" first="asc" gloss="refused">why</SortTh>
+                  <SortTh s={sortOf('refused')} k="n" num>times</SortTh>
+                  <SortTh s={sortOf('refused')} k="eg">e.g.</SortTh>
                 </tr>
               </thead>
               <tbody>

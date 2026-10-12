@@ -7,6 +7,8 @@
  */
 import type { Accum, Quant } from '../api/types';
 import { DASH, fmt, notMeasured, pc } from '../lib/format';
+import type { Sorter } from '../lib/useSort';
+import { SortTh } from './SortTh';
 
 export function Coverage({ pct, n }: { pct: number | null | undefined; n?: number | null }) {
   if (pct == null) return null;
@@ -91,3 +93,20 @@ export const QUANT_HEAD = (
     <th className="num">coverage</th>
   </>
 );
+
+/** The same headers, sorting their table (roadmap note 27); `quantVal` reads
+ * a row's value for one. A metric that was never measured sorts last. */
+export function QuantHead({ s }: { s: Sorter<string> }) {
+  return (
+    <>
+      <SortTh s={s} k="p50" num>p50</SortTh>
+      <SortTh s={s} k="p90" num>p90</SortTh>
+      <SortTh s={s} k="p99" num>p99</SortTh>
+      <SortTh s={s} k="max" num>max</SortTh>
+      <SortTh s={s} k="coverage_pct" num>coverage</SortTh>
+    </>
+  );
+}
+export const quantVal = (q: Quant | null | undefined, k: string): number | null =>
+  !q || (q.all_zero && k !== 'coverage_pct') ? null
+  : ((q as unknown as Record<string, number | null>)[k] ?? null);

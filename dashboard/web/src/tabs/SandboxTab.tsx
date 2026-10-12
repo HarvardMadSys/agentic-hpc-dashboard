@@ -26,6 +26,8 @@ import { Coverage } from '../components/Coverage';
 import { Plate } from '../components/Plate';
 import { ShareCell } from '../components/ShareCell';
 import { ByUser, distinct } from '../components/ByUser';
+import { SortTh } from '../components/SortTh';
+import { useSort, useSortMap } from '../lib/useSort';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint, fmt, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
@@ -51,14 +53,15 @@ import type { Share } from '../lib/sandbox';
 
 type ByClass = Record<string, Record<string, number>> | undefined;
 
-function axisBlock(
-  by: ByClass,
-  have: string[],
-  order: string[],
-  col: Record<string, string>,
-  lbl: Record<string, string>,
-  grain: string,
-) {
+function AxisBlock({ by, have, order, col, lbl, grain }: {
+  by: ByClass;
+  have: string[];
+  order: string[];
+  col: Record<string, string>;
+  lbl: Record<string, string>;
+  grain: string;
+}) {
+  const sort = useSort<string>();
   if (!by) return null;
   const tot = (c: string) => Object.values(by[c] ?? {}).reduce((a, b) => a + b, 0);
   const cols = have.filter((c) => tot(c) > 0);
@@ -73,19 +76,21 @@ function axisBlock(
       <table className="roomy shares" style={{ '--track': '64px' } as React.CSSProperties}>
         <thead>
           <tr>
-            <th />
+            <SortTh s={sort} k="state" first="asc">state</SortTh>
             {cols.map((c) => (
-              <th key={c} className="cls">
+              <SortTh key={c} s={sort} k={c} className="cls">
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
                 <div className="sub">
                   {fint(tot(c))} {grain}
                 </div>
-              </th>
+              </SortTh>
             ))}
           </tr>
         </thead>
         <tbody>
-          {[...order, ...extra].map((s) => (
+          {sort.sort([...order, ...extra], (st, k) =>
+            k === 'state' ? label(lbl, st) : tot(k) ? (by[k]?.[st] ?? 0) / tot(k) : null,
+          ).map((s) => (
             <tr key={s}>
               <td>
                 <i className="u-dot" style={{ background: legendCol(col[s] ?? 'var(--sg)') }} />
@@ -135,20 +140,35 @@ function SessionTable({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHos
       user={(r) => r.user}
       noun="session"
       cols={[
-        { h: 'agents', cell: (rs) => distinct(rs, (r) => AGENT_TYPE_LBL[r.agent_type ?? ''] ?? r.agent_type) },
-        { h: 'approval at launch', cell: (rs) => distinct(rs, (r) => label(AP_LABEL, r.approval), 2) },
-        { h: 'tool calls', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + callsOf(r), 0)) || DASH },
+        {
+          h: 'agents',
+          cell: (rs) => distinct(rs, (r) => AGENT_TYPE_LBL[r.agent_type ?? ''] ?? r.agent_type),
+          sort: (rs) => distinct(rs, (r) => AGENT_TYPE_LBL[r.agent_type ?? ''] ?? r.agent_type),
+        },
+        {
+          h: 'approval at launch',
+          cell: (rs) => distinct(rs, (r) => label(AP_LABEL, r.approval), 2),
+          sort: (rs) => distinct(rs, (r) => label(AP_LABEL, r.approval), 2),
+        },
+        {
+          h: 'tool calls',
+          num: true,
+          cell: (rs) => fint(rs.reduce((a, r) => a + callsOf(r), 0)) || DASH,
+          sort: (rs) => rs.reduce((a, r) => a + callsOf(r), 0),
+        },
         {
           h: 'isolated',
           num: true,
           tip: 'share of their tool calls with a known verdict that ran namespace-isolated',
           cell: (rs) =>
             known(rs) ? pc((100 * rs.reduce((a, r) => a + (r.calls?.isolated ?? 0), 0)) / known(rs)) : DASH,
+          sort: (rs) => (known(rs) ? rs.reduce((a, r) => a + (r.calls?.isolated ?? 0), 0) / known(rs) : null),
         },
         {
           h: 'failed attempts',
           num: true,
           cell: (rs) => fint(rs.reduce((a, r) => a + (r.calls?.failed ?? 0), 0)) || DASH,
+          sort: (rs) => rs.reduce((a, r) => a + (r.calls?.failed ?? 0), 0),
         },
       ]}
       sub={(rs) => <SessionRows rows={rs} multiHost={multiHost} />}
@@ -158,24 +178,29 @@ function SessionTable({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHos
 
 /** One user's sessions, as rows. */
 function SessionRows({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHost: boolean }) {
+  const s = useSort<string>();
+  const val = (r: SandboxSessionRow, k: string) =>
+    k === 'agent' ? r.agent_type : k === 'host' ? r.host : k === 'pid' ? r.pid : k === 'approval' ? label(AP_LABEL, r.approval)
+    : k === 'flags' ? r.approval_detail : k === 'calls' ? callsOf(r) : k === 'isolated' ? r.isolated_pct
+    : k === 'failed' ? r.calls?.failed ?? null : label(SESSION_LABEL, r.state);
   return (
     <div className="scroller">
       <table className="roomy">
         <thead>
           <tr>
-            <th>agent</th>
-            {multiHost && <th>host</th>}
-            <th className="num">pid</th>
-            <th data-tip={GLOSS.approval}>approval at launch</th>
-            <th data-tip="the flags on the agent's own command line when it started">launch flags</th>
-            <th className="num" data-tip={GLOSS.toolcall}>tool calls</th>
-            <th className="num" data-tip="share of the session's tool calls with a known verdict that ran namespace-isolated">isolated</th>
-            <th className="num" data-tip="sandbox wrapper runs that failed before running the command they were given">failed attempts</th>
-            <th data-tip={GLOSS.verdict}>verdict</th>
+            <SortTh s={s} k="agent" first="asc">agent</SortTh>
+            {multiHost && <SortTh s={s} k="host" first="asc">host</SortTh>}
+            <SortTh s={s} k="pid" num>pid</SortTh>
+            <SortTh s={s} k="approval" first="asc" gloss="approval">approval at launch</SortTh>
+            <SortTh s={s} k="flags" first="asc" tip="the flags on the agent's own command line when it started">launch flags</SortTh>
+            <SortTh s={s} k="calls" num gloss="toolcall">tool calls</SortTh>
+            <SortTh s={s} k="isolated" num tip="share of the session's tool calls with a known verdict that ran namespace-isolated">isolated</SortTh>
+            <SortTh s={s} k="failed" num tip="sandbox wrapper runs that failed before running the command they were given">failed attempts</SortTh>
+            <SortTh s={s} k="verdict" first="asc" gloss="verdict">verdict</SortTh>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
+          {s.sort(rows, val).map((r) => {
             const n = callsOf(r);
             const flags = r.approval_detail && r.approval_detail !== 'no launch flag' ? r.approval_detail : null;
             return (
@@ -214,6 +239,8 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const apSeHave = shown(sb.approval_by_class_sessions, cls);
   const apEvHave = shown(sb.approval_by_class_events, cls);
   const anc = sb.ancestry_matrix ?? [];
+  // every table here sorts by any column (roadmap note 27), each on its own
+  const sortOf = useSortMap();
   const sessions = sb.sessions ?? [];
   const busy = sessions.filter((r) => callsOf(r) > 0);
   const idle = sessions.filter((r) => callsOf(r) === 0);
@@ -277,7 +304,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           }
         >
           <div className="eyebrow">tool calls, by outcome</div>
-          {axisBlock(sb.tool_calls, tcHave, CALL_ORDER, SB_COL, CALL_LABEL, 'tool calls')}
+          <AxisBlock by={sb.tool_calls} have={tcHave} order={CALL_ORDER} col={SB_COL} lbl={CALL_LABEL} grain="tool calls" />
           <div className="eyebrow" style={{ marginTop: 10 }}>
             sessions that made tool calls{sb.sessions_total > sessions.length ? ` · busiest ${sessions.length} of ${fint(sb.sessions_total)}` : ''}
           </div>
@@ -306,11 +333,11 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           }
         >
           <div className="eyebrow">per process</div>
-          {axisBlock(sb.by_class_events, evHave, SANDBOX_ORDER, SB_COL, SB_LABEL, 'processes')}
+          <AxisBlock by={sb.by_class_events} have={evHave} order={SANDBOX_ORDER} col={SB_COL} lbl={SB_LABEL} grain="processes" />
           <div className="eyebrow" style={{ marginTop: 8 }}>
             per session
           </div>
-          {axisBlock(sb.by_class_sessions, seHave, SESSION_ORDER, SB_COL, SESSION_LABEL, 'sessions')}
+          <AxisBlock by={sb.by_class_sessions} have={seHave} order={SESSION_ORDER} col={SB_COL} lbl={SESSION_LABEL} grain="sessions" />
         </Panel>
 
         <Panel
@@ -328,24 +355,26 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           }
         >
           <div className="eyebrow">per session</div>
-          {axisBlock(sb.approval_by_class_sessions, apSeHave, APPROVAL_ORDER, AP_COL, AP_LABEL, 'sessions')}
+          <AxisBlock by={sb.approval_by_class_sessions} have={apSeHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="sessions" />
           <div className="eyebrow" style={{ marginTop: 8 }}>
             per process
           </div>
-          {axisBlock(sb.approval_by_class_events, apEvHave, APPROVAL_ORDER, AP_COL, AP_LABEL, 'processes')}
+          <AxisBlock by={sb.approval_by_class_events} have={apEvHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="processes" />
           {modes.length > 0 && (
             <div className="scroller" style={{ marginTop: 8 }}>
               <table>
                 <thead>
                   <tr>
-                    <th>agent</th>
-                    <th data-tip="the flags exactly as they appeared on the agent's command line">launch flags, as written</th>
-                    <th data-tip={GLOSS.approval}>reads as</th>
-                    <th className="num">sessions</th>
+                    <SortTh s={sortOf('modes')} k="agent" first="asc">agent</SortTh>
+                    <SortTh s={sortOf('modes')} k="detail" first="asc" tip="the flags exactly as they appeared on the agent's command line">launch flags, as written</SortTh>
+                    <SortTh s={sortOf('modes')} k="approval" first="asc" gloss="approval">reads as</SortTh>
+                    <SortTh s={sortOf('modes')} k="n" num>sessions</SortTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {modes.map((m, i) => (
+                  {sortOf('modes').sort(modes, (m, k) =>
+                    k === 'agent' ? m.agent_type : k === 'detail' ? m.detail : k === 'approval' ? label(AP_LABEL, m.approval) : m.n,
+                  ).map((m, i) => (
                     <tr key={`${m.agent_type}|${m.detail}|${m.approval}|${i}`}>
                       <td className="mono">{m.agent_type ?? DASH}</td>
                       <td className="mono">{m.detail ?? DASH}</td>
@@ -370,14 +399,16 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <th data-tip={GLOSS.wrapper}>wrapper</th>
-                  <th>agent</th>
-                  <th data-tip="what happened to the command the wrapper was given (its payload)">outcome</th>
-                  <th className="num">calls</th>
+                  <SortTh s={sortOf('attempts')} k="wrapper" first="asc" gloss="wrapper">wrapper</SortTh>
+                  <SortTh s={sortOf('attempts')} k="agent" first="asc">agent</SortTh>
+                  <SortTh s={sortOf('attempts')} k="outcome" first="asc" tip="what happened to the command the wrapper was given (its payload)">outcome</SortTh>
+                  <SortTh s={sortOf('attempts')} k="n" num>calls</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {attempts.map((a, i) => (
+                {sortOf('attempts').sort(attempts, (a, k) =>
+                  k === 'wrapper' ? a.wrapper : k === 'agent' ? a.agent_type : k === 'outcome' ? label(CALL_LABEL, a.outcome) : a.n,
+                ).map((a, i) => (
                   <tr key={`${a.wrapper}|${a.agent_type}|${a.outcome}|${i}`}>
                     <td className="mono">{a.wrapper}</td>
                     <td className="mono">{a.agent_type ?? DASH}</td>
@@ -420,17 +451,20 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <th data-tip={GLOSS.ancestry}>ancestry</th>
-                  <th data-tip="process: an ordinary process; wrapper: the sandbox helper itself">category</th>
-                  <th data-tip={GLOSS.verdict}>verdict</th>
-                  <th className="num" data-tip="processes">n</th>
-                  <th className="num" data-tip={GLOSS.dstate}>D-state wait</th>
-                  <th className="num" data-tip={GLOSS.coverage}>coverage</th>
-                  <th>reading</th>
+                  <SortTh s={sortOf('anc')} k="ancestry" first="asc" gloss="ancestry">ancestry</SortTh>
+                  <SortTh s={sortOf('anc')} k="kind" first="asc" tip="process: an ordinary process; wrapper: the sandbox helper itself">category</SortTh>
+                  <SortTh s={sortOf('anc')} k="verdict" first="asc" gloss="verdict">verdict</SortTh>
+                  <SortTh s={sortOf('anc')} k="n" num tip="processes">n</SortTh>
+                  <SortTh s={sortOf('anc')} k="dstate" num gloss="dstate">D-state wait</SortTh>
+                  <SortTh s={sortOf('anc')} k="cov" num gloss="coverage">coverage</SortTh>
+                  <SortTh s={sortOf('anc')} k="reading" first="asc">reading</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {anc.map((a, i) => (
+                {sortOf('anc').sort(anc, (a, k) =>
+                  k === 'ancestry' ? a.ancestry : k === 'kind' ? a.kind : k === 'verdict' ? label(SB_LABEL, a.sandbox)
+                  : k === 'n' ? a.n : k === 'dstate' ? a.dstate_wait_s : k === 'cov' ? a.dstate_coverage_pct : a.reading,
+                ).map((a, i) => (
                   <tr key={a.ancestry + a.kind + a.sandbox + i}>
                     <td className="mono">{a.ancestry}</td>
                     <td className="mono">{a.kind ?? DASH}</td>
@@ -477,10 +511,17 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           basis={<Basis items={[['inherit', sb.notes?.inherit]]} />}
         >
           {(() => {
-            const src = Object.entries(sb.sandbox_src ?? {}).sort((a, b) => b[1] - a[1]);
-            const tot = src.reduce((a, [, v]) => a + v, 0);
+            const all = Object.entries(sb.sandbox_src ?? {}).sort((a, b) => b[1] - a[1]);
+            const tot = all.reduce((a, [, v]) => a + v, 0);
+            const src = sortOf('src').sort(all, ([k, v], key) => (key === 'src' ? k : v));
             return (
               <table className="roomy shares">
+                <thead>
+                  <tr>
+                    <SortTh s={sortOf('src')} k="src" first="asc">source</SortTh>
+                    <SortTh s={sortOf('src')} k="n">share</SortTh>
+                  </tr>
+                </thead>
                 <tbody>
                   {src.map(([k, v]) => (
                     <tr key={k}>
