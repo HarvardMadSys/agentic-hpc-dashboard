@@ -269,6 +269,14 @@ def defaults():
         # generated into <cache.dir>/anonymize.salt and reused; changing it
         # reshuffles every alias. The patterns name where homes and lab trees
         # sit on this cluster -- see anonymize.HOME_PATTERNS for the defaults.
+        # What the page opens on, before a reader changes it. Nothing here
+        # changes a number, so the saved builds ignore the section.
+        # user_columns: the Active users table's columns (agents, ides, running,
+        # exited, cpu, read, written, net, gpu, last); a reader's own choice is
+        # kept in their browser.
+        "ui": {
+            "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
+        },
         "anonymize": {
             "enabled": False,
             "salt": "",

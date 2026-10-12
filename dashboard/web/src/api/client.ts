@@ -115,8 +115,8 @@ export async function postAsk(
   return (await r.json()) as AskJob;
 }
 
-export const getLiveUser = (name: string, minutes?: number | null, s?: AbortSignal) =>
-  get<LiveUserDetail>(`/live/user?name=${encodeURIComponent(name)}${win(minutes, '&')}`, { signal: s });
+export const getLiveUser = (name: string, minutes?: number | null, s?: AbortSignal, n = 25) =>
+  get<LiveUserDetail>(`/live/user?name=${encodeURIComponent(name)}&n=${n}${win(minutes, '&')}`, { signal: s });
 
 export const getTrajectories = (
   rank: TrajRank,

@@ -27,6 +27,7 @@ export function ByUser<T>({
   sub,
   noun,
   open: openFirst = false,
+  openUser = null,
   scroll = true,
 }: {
   rows: T[];
@@ -39,6 +40,8 @@ export function ByUser<T>({
   noun: string;
   /** open the first user's rows on arrival */
   open?: boolean;
+  /** open this user's rows, first in the list (a link from Active users) */
+  openUser?: string | null;
   /** scroll in a box of its own; false when the caller's container scrolls */
   scroll?: boolean;
 }) {
@@ -54,8 +57,13 @@ export function ByUser<T>({
     }
     groups[i][1].push(r);
   }
+  if (openUser) {
+    const i = groups.findIndex(([u]) => u === openUser);
+    if (i > 0) groups.unshift(...groups.splice(i, 1));
+  }
   const [opened, setOpened] = useState<Record<string, boolean>>({});
-  const isOpen = (u: string, i: number) => opened[u] ?? (openFirst && i === 0);
+  const isOpen = (u: string, i: number) =>
+    opened[u] ?? (openUser ? u === openUser : openFirst && i === 0);
   if (!rows.length) return null;
   const nouns = noun.endsWith('s') ? `${noun}es` : `${noun}s`;
   const plural = (n: number) => `${fint(n)} ${n === 1 ? noun : nouns}`;

@@ -4,25 +4,96 @@
  * busiest 100 (`live.user_rows`); the table holds all of them and scrolls, its
  * header in view; and a search goes to the server once the frame does not hold
  * everyone, so it reaches every account and not just the busiest. Opening a
- * user fetches its sessions and latest commands on demand, so a closed row
+ * user fetches its sessions and its last processes on demand, so a closed row
  * costs nothing.
+ *
+ * Everything a reader would look up about an account sits on its row or in its
+ * drill-down (roadmap note 8): what it runs now and what that costs, what it
+ * ran in the window by agent, and its last processes -- the exit stream that
+ * used to be its own panel (note 18).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getLiveUser, getLiveUsers } from '../api/client';
-import type { Cls, LiveUserDetail, LiveUserRow, LiveUsers } from '../api/types';
-import { Segmented } from '../components/ClassFilter';
+import type { Cascades, Cls, LiveEvent, LiveUserDetail, LiveUserRow, LiveUserSession, LiveUsers, UsageBlock } from '../api/types';
 import { CmdCell } from '../components/Cmd';
 import { NoRows, Panel } from '../components/Panel';
+import { SortTh } from '../components/SortTh';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { serverNow } from '../lib/clock';
 import { UNTAGGED } from '../lib/filters';
-import { DASH, ago, dur, fint, mb } from '../lib/format';
-import { AP_LABEL, label } from '../lib/sandbox';
+import { DASH, ago, dur, fint, fmt, mb } from '../lib/format';
+import { GLOSS } from '../lib/glossary';
+import { pick } from '../lib/panels';
+import type { Panels } from '../lib/panels';
 import { pcol } from '../lib/purposes';
-
-type Sort = 'agents' | 'active' | 'name';
+import { AP_LABEL, SB_LABEL } from '../lib/sandbox';
+import { useSort } from '../lib/useSort';
 
 const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
+
+/* ------------------------------------------------------------- columns */
+
+/* The table's columns, each switchable (roadmap note 3). The defaults come
+ * from the service's config (`live.user_columns`) when it names them, and a
+ * reader's own choice is kept in this browser. */
+type ColKey = 'agents' | 'ides' | 'running' | 'exited' | 'cpu' | 'read' | 'written' | 'net' | 'gpu' | 'last';
+const COLS: { k: ColKey; lbl: string; tip?: string; num?: boolean }[] = [
+  { k: 'agents', lbl: 'agents running', tip: 'agent sessions running now, by agent' },
+  { k: 'ides', lbl: 'IDEs running', tip: 'editor sessions running now' },
+  { k: 'running', lbl: 'running', tip: GLOSS.running, num: true },
+  { k: 'exited', lbl: 'exited', tip: GLOSS.exited + ' in the window, split by class', num: true },
+  { k: 'cpu', lbl: 'CPU time', tip: 'CPU used by the processes that exited in the window', num: true },
+  { k: 'read', lbl: 'disk read', tip: GLOSS.diskbytes + ', by the processes that exited in the window', num: true },
+  { k: 'written', lbl: 'disk written', tip: GLOSS.diskbytes + ', by the processes that exited in the window', num: true },
+  { k: 'net', lbl: 'network', tip: 'bytes sent and received over the network by the processes that exited in the window', num: true },
+  { k: 'gpu', lbl: 'GPU·h asked', tip: GLOSS.gpuh + '. Only what the sbatch / srun command line named; a #SBATCH request in the script is not seen', num: true },
+  { k: 'last', lbl: 'last active', num: true },
+];
+const DEFAULT_COLS: ColKey[] = ['agents', 'ides', 'running', 'exited', 'cpu', 'read', 'written', 'last'];
+const COLS_KEY = 'rc.activeUsers.columns';
+
+function loadCols(fallback: ColKey[]): ColKey[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(COLS_KEY) ?? 'null');
+    if (Array.isArray(v)) return v.filter((k): k is ColKey => COLS.some((c) => c.k === k));
+  } catch {
+    /* private window or blocked storage: the defaults */
+  }
+  return fallback;
+}
+function saveCols(v: ColKey[]) {
+  try {
+    localStorage.setItem(COLS_KEY, JSON.stringify(v));
+  } catch {
+    /* not kept; still applied for this page */
+  }
+}
+
+function ColumnPicker({ on, setOn, gpuKnown }: { on: ColKey[]; setOn: (v: ColKey[]) => void; gpuKnown: boolean }) {
+  return (
+    <details className="u-cols-pick">
+      <summary className="btn">columns</summary>
+      <div className="u-cols-menu">
+        {COLS.filter((c) => c.k !== 'gpu' || gpuKnown).map((c) => (
+          <label key={c.k}>
+            <input
+              type="checkbox"
+              checked={on.includes(c.k)}
+              onChange={(e) => {
+                const next = e.target.checked ? COLS.map((x) => x.k).filter((k) => k === c.k || on.includes(k)) : on.filter((k) => k !== c.k);
+                setOn(next);
+                saveCols(next);
+              }}
+            />
+            {c.lbl}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/* ---------------------------------------------------------------- cells */
 
 /** "Claude Code 3 · Codex 1": a class's running sessions, by type. */
 function Running({ m }: { m: Record<string, number> | undefined }) {
@@ -39,7 +110,7 @@ function Running({ m }: { m: Record<string, number> | undefined }) {
   );
 }
 
-/** Processes run, split by class: the bar is the account's own mix. */
+/** Processes exited, split by class: the bar is the account's own mix. */
 function Mix({ r, cls }: { r: LiveUserRow; cls: Cls[] }) {
   const parts = cls.map((c) => [c, r.by_class[c]?.n ?? 0] as const).filter(([, n]) => n > 0);
   const tot = parts.reduce((a, [, n]) => a + n, 0);
@@ -56,9 +127,8 @@ function Mix({ r, cls }: { r: LiveUserRow; cls: Cls[] }) {
   );
 }
 
-/* The roster at a glance, which at hundreds of users matters more than any
- * one row: how many people have each agent or IDE running. A chip is also a
- * filter -- click it to list just those people. */
+/* The roster at a glance: how many people have each agent or IDE running. A
+ * chip is also a filter -- click it to list just those people. */
 function Summary({ counts, cls, run, setRun }: {
   counts: Partial<Record<string, Record<string, number>>>;
   cls: Cls[];
@@ -92,107 +162,285 @@ function Summary({ counts, cls, run, setRun }: {
   );
 }
 
-const shownN = (r: LiveUserRow, cls: Cls[]) => cls.reduce((a, c) => a + (r.by_class[c]?.n ?? 0), 0);
-const shownCpu = (r: LiveUserRow, cls: Cls[]) => cls.reduce((a, c) => a + (r.by_class[c]?.cpu_s ?? 0), 0);
+const sumCls = (r: LiveUserRow, cls: Cls[], f: (b: UsageBlock) => number | undefined) =>
+  cls.reduce((a, c) => a + (r.by_class[c] ? f(r.by_class[c]!) ?? 0 : 0), 0);
+const runningN = (r: LiveUserRow, cls: Cls[]) => cls.reduce((a, c) => a + (r.running?.[c] ?? 0), 0);
 const inClasses = (r: LiveUserRow, cls: Cls[]) => cls.some((c) => r.by_class[c] || r.live[c]);
 
-function Detail({ name, windowMin, cls }: { name: string; windowMin: number | null; cls: Cls[] }) {
+/* -------------------------------------------------- Claude Code runs Codex */
+
+/** child agent type -> parent agent type -> processes, for one account: the
+ * agents another agent started (roadmap note 4), from the Agents tab's trees. */
+function nestedAgents(c: Cascades | undefined, user: string): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  for (const t of c?.trees ?? []) {
+    const byPid = new Map(t.nodes.map((n) => [n.pid, n]));
+    for (const n of t.nodes) {
+      if (n.role !== 'agent' || n.user !== user || !n.agent_type) continue;
+      let p = n.parent != null ? byPid.get(n.parent) : undefined;
+      while (p && p.role !== 'agent') p = p.parent != null ? byPid.get(p.parent) : undefined;
+      if (!p?.agent_type) continue;
+      const d = (out[n.agent_type] ??= {});
+      d[p.agent_type] = (d[p.agent_type] ?? 0) + (n.tool_calls ?? 0);
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------ drill-down */
+
+/** The launch, as badges on the session (roadmap note 12). */
+function Badges({ s }: { s: LiveUserSession }) {
+  const out: [string, string, string][] = [];
+  if (s.actor3 === 'agent') {
+    if (s.approval === 'bypassed') out.push(['bypass', 'crit', AP_LABEL.bypassed + ': ' + GLOSS.bypass]);
+    else if (s.approval === 'auto') out.push(['auto mode', 'warn', GLOSS.automode]);
+    else if (s.approval === 'supervised') out.push(['asks first', 'ok', AP_LABEL.supervised + ': the agent asks before it acts']);
+    else if (s.approval === 'unobservable') out.push(['launch unknown', 'nm', AP_LABEL.unobservable]);
+  }
+  if (s.sandbox === 'sandboxed') out.push(['sandboxed', 'ok', GLOSS.sandbox]);
+  else if (s.sandbox === 'unsandboxed') out.push(['not sandboxed', 'nm', SB_LABEL.unsandboxed + ': ' + GLOSS.sandbox]);
+  if (s.headless) out.push(['headless', 'nm', GLOSS.headless]);
+  if (!out.length) return null;
+  return (
+    <span className="u-badges">
+      {out.map(([t, k, tip]) => (
+        <span key={t} className={`u-badge ${k}`} data-tip={tip}>{t}</span>
+      ))}
+    </span>
+  );
+}
+
+function Usage({ b }: { b: UsageBlock | undefined }) {
+  return (
+    <>
+      <td className="num">{b ? fint(b.n) : DASH}</td>
+      <td className="num">{b && b.cpu_s ? dur(b.cpu_s) : DASH}</td>
+      <td className="num">{b?.rd_mb ? mb(b.rd_mb) : DASH}</td>
+      <td className="num">{b?.wr_mb ? mb(b.wr_mb) : DASH}</td>
+      <td className="num">{b?.net_mb ? mb(b.net_mb) : DASH}</td>
+    </>
+  );
+}
+
+function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
+  name: string;
+  windowMin: number | null;
+  windowLbl: string;
+  cls: Cls[];
+  cascades: Cascades | undefined;
+  openTraj: (sid: string) => void;
+}) {
+  const [n, setN] = useState(25);
+  const [host, setHost] = useState<string>('');
   const [d, setD] = useState<LiveUserDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     const ac = new AbortController();
-    setD(null);
     setErr(null);
-    getLiveUser(name, windowMin, ac.signal)
+    getLiveUser(name, windowMin, ac.signal, n)
       .then(setD)
       .catch((e) => !ac.signal.aborted && setErr(String(e)));
     return () => ac.abort();
-  }, [name, windowMin]);
+  }, [name, windowMin, n]);
+  const nested = useMemo(() => nestedAgents(cascades, name), [cascades, name]);
   if (err) return <div className="nm">could not load {name}: {err}</div>;
   if (!d) return <div className="nm">loading {name}…</div>;
   const row = d.row;
   const sessions = d.sessions.filter((s) => cls.includes((s.actor3 ?? 'agent') as Cls));
-  const recent = d.recent.filter((e) => !e.actor3 || cls.includes(e.actor3 as Cls));
+  const all = d.recent.filter((e) => !e.actor3 || cls.includes(e.actor3 as Cls));
+  const hosts = Array.from(new Set(all.map((e) => e.host).filter((h): h is string => !!h))).sort();
+  const recent = host ? all.filter((e) => e.host === host) : all;
+  const multiHost = hosts.length > 1 || new Set(sessions.map((s) => s.host)).size > 1;
+  const now = serverNow();
   return (
     <div className="u-detail">
-      <div className="u-cols">
-        <div>
-          <div className="eyebrow">running now</div>
-          {sessions.length ? (
+      {/* Two boxes, never one wide table: what runs NOW and what ran in the
+          WINDOW are different spans of different things (roadmap note 6). */}
+      <section className="u-box now">
+        <h4>
+          running now <span className="nm">· sessions seen in the last 10 min</span>
+        </h4>
+        {sessions.length ? (
+          <div className="scroller">
             <table className="roomy">
               <thead>
                 <tr>
                   <th>session</th>
+                  {multiHost && <th>host</th>}
                   <th className="num">running for</th>
-                  <th className="num">processes</th>
-                  <th className="num">memory</th>
+                  <th className="num" data-tip={GLOSS.running}>running</th>
+                  <th className="num" data-tip="resident memory now, and the most and the average over every 60-second census of this session">memory now · peak · avg</th>
                   <th className="num">CPU time</th>
-                  <th>launched</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
                 {sessions.map((s, i) => (
                   <tr key={i}>
                     <td>
-                      <i className="u-dot" style={{ background: CLS_COL[s.actor3 ?? 'agent'] }} />
-                      {typeLbl(s.agent_type ?? '')}
+                      <span className="u-sess">
+                        <i className="u-dot" style={{ background: CLS_COL[s.actor3 ?? 'agent'] }} />
+                        <span>
+                          {typeLbl(s.agent_type ?? '')}
+                          {/* the version under the agent's name (roadmap note 13) */}
+                          <span className="u-ver" data-tip={GLOSS.version}>
+                            {s.version ? `v${s.version}` : 'version not shown'}
+                          </span>
+                        </span>
+                        <Badges s={s} />
+                      </span>
                     </td>
+                    {multiHost && <td className="mono nm">{s.host}</td>}
                     <td className="num">{dur(s.age_s)}</td>
                     <td className="num">{fint(s.n_procs)}</td>
-                    <td className="num">{mb(s.rss_mb)}</td>
+                    <td className="num">
+                      {mb(s.rss_mb)}
+                      <span className="sub"> · {s.rss_peak_mb != null ? mb(s.rss_peak_mb) : DASH} · {s.rss_mean_mb != null ? mb(s.rss_mean_mb) : DASH}</span>
+                    </td>
                     <td className="num">{dur(s.cpu_s)}</td>
-                    <td>{s.actor3 === 'agent' && s.approval && s.approval !== 'na' ? label(AP_LABEL, s.approval) : DASH}</td>
+                    <td>
+                      {s.sid && (
+                        <button className="linkbtn" onClick={() => openTraj(s.sid!)}
+                          data-tip="open this session's process tree on the Trajectories tab">
+                          trajectory →
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          ) : (
-            <NoRows what="no agent or IDE session running" />
-          )}
-        </div>
-        <div>
-          <div className="eyebrow">in the window</div>
-          {row && cls.some((c) => row.by_class[c]) ? (
+          </div>
+        ) : (
+          <NoRows what="no agent or IDE session running" />
+        )}
+      </section>
+
+      <section className="u-box window">
+        <h4>
+          in the {windowLbl} <span className="nm">· processes that exited, by class and by agent</span>
+        </h4>
+        {row && cls.some((c) => row.by_class[c]) ? (
+          <div className="scroller">
             <table className="roomy">
               <thead>
                 <tr>
-                  <th>class</th>
-                  <th className="num">processes</th>
+                  <th>who ran it</th>
+                  <th className="num" data-tip={GLOSS.exited}>exited</th>
                   <th className="num">CPU time</th>
-                  <th>by agent</th>
+                  <th className="num" data-tip={GLOSS.diskbytes}>disk read</th>
+                  <th className="num" data-tip={GLOSS.diskbytes}>disk written</th>
+                  <th className="num" data-tip="bytes sent and received over the network">network</th>
                 </tr>
               </thead>
               <tbody>
-                {cls.filter((c) => row.by_class[c]).map((c) => (
-                  <tr key={c}>
-                    <td>
-                      <i className="u-dot" style={{ background: CLS_COL[c] }} />
-                      {CLS_LBL[c]}
-                    </td>
-                    <td className="num">{fint(row.by_class[c]!.n)}</td>
-                    <td className="num">{dur(row.by_class[c]!.cpu_s)}</td>
-                    <td className="wrap">
-                      {Object.entries(row.types[c] ?? {})
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([t, n]) => `${typeLbl(t)} ${fint(n)}`)
-                        .join(' · ') || DASH}
-                    </td>
-                  </tr>
-                ))}
+                {cls.filter((c) => row.by_class[c]).flatMap((c) => {
+                  const types = Object.entries(row.type_detail?.[c] ?? {}).sort((a, b) => b[1].n - a[1].n);
+                  return [
+                    <tr key={c} className="u-cls">
+                      <td>
+                        <i className="u-dot" style={{ background: CLS_COL[c] }} />
+                        {CLS_LBL[c]}
+                      </td>
+                      <Usage b={row.by_class[c]} />
+                    </tr>,
+                    // one nested row per agent (roadmap note 5)
+                    ...types.flatMap(([t, b]) => {
+                      const by = nested[t] ?? {};
+                      const under = Object.entries(by).filter(([, k]) => k > 0).sort((a, b2) => b2[1] - a[1]);
+                      const nestedN = under.reduce((a, [, k]) => a + k, 0);
+                      return [
+                        <tr key={c + t} className="u-sub">
+                          <td>{typeLbl(t)}</td>
+                          <Usage b={b} />
+                        </tr>,
+                        // an agent another agent started, split out (roadmap note 4)
+                        ...under.map(([p, k]) => (
+                          <tr key={c + t + p} className="u-sub2">
+                            <td data-tip={`${typeLbl(t)} processes in sessions that ${typeLbl(p)} started, from the Agents tab's trees`}>
+                              started by {typeLbl(p)}
+                            </td>
+                            <td className="num">{fint(k)}</td>
+                            <td colSpan={4} />
+                          </tr>
+                        )),
+                        ...(under.length && b.n > nestedN
+                          ? [
+                              <tr key={c + t + '-own'} className="u-sub2">
+                                <td>on its own</td>
+                                <td className="num">{fint(b.n - nestedN)}</td>
+                                <td colSpan={4} />
+                              </tr>,
+                            ]
+                          : []),
+                      ];
+                    }),
+                  ];
+                })}
               </tbody>
             </table>
-          ) : (
-            <NoRows what="ran nothing in the window" />
+          </div>
+        ) : (
+          <NoRows what="ran nothing in the window" />
+        )}
+      </section>
+
+      <section className="u-box cmds">
+        <h4>
+          last processes exited <span className="nm">· however long ago, newest first</span>
+        </h4>
+        {/* the last N, not "within the window" (roadmap note 9), on any host (note 17) */}
+        <div className="u-ctl">
+          <span className="seg" role="group" aria-label="how many">
+            {[10, 25, 100].map((k) => (
+              <button key={k} aria-pressed={n === k} onClick={() => setN(k)}>last {k}</button>
+            ))}
+          </span>
+          {hosts.length > 1 && (
+            <select className="wininput" value={host} onChange={(e) => setHost(e.target.value)} aria-label="host">
+              <option value="">every host</option>
+              {hosts.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+          )}
+          {d.recent_held != null && (
+            <span className="nm">{fint(d.recent_held)} held for this user (at most {fint(d.recent_depth)})</span>
           )}
         </div>
-      </div>
-      <div className="eyebrow" style={{ marginTop: 12 }}>latest commands</div>
-      {recent.length ? (
-        <table className="roomy">
-          <tbody>
-            {recent.slice(0, 10).map((e, i) => (
+        {recent.length ? <RecentTable rows={recent} multiHost={hosts.length > 1} now={now} /> : (
+          <NoRows what="no exited process held for this user" />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: boolean; now: number }) {
+  return (
+    <div className="scroller">
+      <table className="roomy u-recent">
+        <thead>
+          <tr>
+            <th>at</th>
+            {multiHost && <th>host</th>}
+            <th>agent</th>
+            <th>command</th>
+            <th className="num" data-tip={GLOSS.lifetime}>ran</th>
+            <th className="num">CPU</th>
+            <th className="num" data-tip={GLOSS.diskbytes}>read</th>
+            <th className="num" data-tip={GLOSS.diskbytes}>written</th>
+            <th className="num" data-tip="bytes sent and received over the network">network</th>
+            <th className="num" data-tip={GLOSS.exitcode}>exit code</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((e, i) => {
+            const net = (e.net_tx_mb ?? 0) + (e.net_rx_mb ?? 0);
+            const failed = (e.exit_code != null && e.exit_code !== 0) || e.signal != null;
+            return (
               <tr key={i}>
-                <td className="mono nm">{e.ts?.slice(11) ?? DASH}</td>
+                <td className="mono nm" data-tip={e.epoch ? ago(now - e.epoch * 1000) + ' ago' : undefined}>{e.ts?.slice(5) ?? DASH}</td>
+                {multiHost && <td className="mono nm">{e.host ?? DASH}</td>}
                 <td>
                   <i className="u-dot" style={{ background: CLS_COL[e.actor3 ?? 'agent'] }} />
                   {e.agent_type ? typeLbl(e.agent_type) : CLS_LBL[e.actor3 ?? ''] ?? DASH}
@@ -202,16 +450,23 @@ function Detail({ name, windowMin, cls }: { name: string; windowMin: number | nu
                   {(e.args ?? '').replace(/^\S+\s?/, '')}
                 </CmdCell>
                 <td className="num">{dur(e.duration_s)}</td>
+                <td className="num">{e.cpu_s != null ? dur(e.cpu_s) : DASH}</td>
+                <td className="num">{e.rd_mb ? mb(e.rd_mb) : DASH}</td>
+                <td className="num">{e.wr_mb ? mb(e.wr_mb) : DASH}</td>
+                <td className="num">{net ? mb(net) : DASH}</td>
+                <td className="num" style={failed ? { color: 'var(--crit)' } : undefined}>
+                  {e.signal != null ? `signal ${e.signal}` : e.exit_code ?? DASH}
+                </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <NoRows what="none in the recent stream" />
-      )}
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
+
+/* ------------------------------------------------------------ the table */
 
 /** The page-wide user and agent-type filter, applied to one account: the
  * same rule the service applies to a filtered view's records, at the grain of
@@ -230,24 +485,41 @@ function pageMatch(r: LiveUserRow, users: string[], types: string[]): boolean {
   );
 }
 
+interface UsersProps {
+  U: LiveUsers | undefined;
+  cls: Cls[];
+  windowMin: number | null;
+  windowLbl: string;
+  P: Panels;
+  /** the service's default columns (`live.user_columns`), when it names them */
+  defaultCols?: string[] | null;
+  pageUsers?: string[];
+  pageTypes?: string[];
+  /** open a session's trajectory, or a user's sessions, on the Trajectories tab */
+  openTraj: (sid: string) => void;
+  openUserTraj: (user: string) => void;
+}
+
 export function UsersPanel({
   U,
   cls,
   windowMin,
+  windowLbl,
+  P,
+  defaultCols,
   pageUsers = [],
   pageTypes = [],
-}: {
-  U: LiveUsers | undefined;
-  cls: Cls[];
-  windowMin: number | null;
-  pageUsers?: string[];
-  pageTypes?: string[];
-}) {
+  openTraj,
+  openUserTraj,
+}: UsersProps) {
   const [q, setQ] = useState('');
-  const [sort, setSort] = useState<Sort>('agents');
   const [open, setOpen] = useState<string | null>(null);
   const [remote, setRemote] = useState<LiveUsers | null>(null);
   const [run, setRun] = useState<string | null>(null);
+  const fallback = (defaultCols ?? []).filter((k): k is ColKey => COLS.some((c) => c.k === k));
+  const [cols, setCols] = useState<ColKey[]>(() => loadCols(fallback.length ? fallback : DEFAULT_COLS));
+  const sort = useSort<ColKey | 'user'>();
+  const cascades = pick<Cascades>(P, 'cascades', 'ebpfm');
 
   // the frame holds the busiest rows only: past them, the server searches
   const partial = !!U && U.rows_total > U.rows.length;
@@ -286,14 +558,48 @@ export function UsersPanel({
       }
     }
   }
-  const sorted =
-    sort === 'agents'
-      ? rows // the service's own order: agents running, then activity, then name
-      : [...rows].sort((a, b) =>
-          sort === 'name' ? a.user.localeCompare(b.user) : shownN(b, cls) - shownN(a, cls),
-        );
+  const gpuKnown = rows.some((r) => r.gpu_h != null && r.gpu_h > 0);
+  const shownCols = COLS.filter(
+    (c) =>
+      cols.includes(c.k) &&
+      (c.k !== 'agents' || cls.includes('agent')) &&
+      (c.k !== 'ides' || cls.includes('ide')) &&
+      (c.k !== 'gpu' || gpuKnown),
+  );
+  const val = (r: LiveUserRow, k: ColKey | 'user'): number | string | null => {
+    switch (k) {
+      case 'user': return r.user;
+      case 'agents': return Object.values(r.live.agent ?? {}).reduce((a, b) => a + b, 0);
+      case 'ides': return Object.values(r.live.ide ?? {}).reduce((a, b) => a + b, 0);
+      case 'running': return runningN(r, cls);
+      case 'exited': return sumCls(r, cls, (b) => b.n);
+      case 'cpu': return sumCls(r, cls, (b) => b.cpu_s);
+      case 'read': return sumCls(r, cls, (b) => b.rd_mb);
+      case 'written': return sumCls(r, cls, (b) => b.wr_mb);
+      case 'net': return sumCls(r, cls, (b) => b.net_mb);
+      case 'gpu': return r.gpu_h ?? null;
+      case 'last': return r.last_epoch;
+    }
+  };
+  // the service's own order until a header is clicked: agents running, then activity, then name
+  const sorted = sort.sort(rows, val);
   const now = serverNow();
   const more = !q && !run && !pageOn && partial ? U!.rows_total - U!.rows.length : 0;
+
+  const cell = (r: LiveUserRow, k: ColKey) => {
+    switch (k) {
+      case 'agents': return <td key={k}><Running m={r.live.agent} /></td>;
+      case 'ides': return <td key={k}><Running m={r.live.ide} /></td>;
+      case 'running': return <td key={k} className="num">{runningN(r, cls) ? fint(runningN(r, cls)) : DASH}</td>;
+      case 'exited': return <td key={k} className="num"><Mix r={r} cls={cls} /></td>;
+      case 'cpu': { const v = sumCls(r, cls, (b) => b.cpu_s); return <td key={k} className="num">{v ? dur(v) : DASH}</td>; }
+      case 'read': { const v = sumCls(r, cls, (b) => b.rd_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
+      case 'written': { const v = sumCls(r, cls, (b) => b.wr_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
+      case 'net': { const v = sumCls(r, cls, (b) => b.net_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
+      case 'gpu': return <td key={k} className="num">{r.gpu_h ? `${fmt(r.gpu_h)} GPU·h` : DASH}</td>;
+      case 'last': return <td key={k} className="num nm">{r.last_epoch ? ago(now - r.last_epoch * 1000) : DASH}</td>;
+    }
+  };
 
   return (
     <div className="u-panel">
@@ -308,27 +614,22 @@ export function UsersPanel({
           onChange={(e) => setQ(e.target.value.trim())}
           aria-label="find a user"
         />
-        <Segmented<Sort>
-          value={sort}
-          onChange={setSort}
-          options={[
-            { k: 'agents', lbl: 'agents running', tip: 'users with the most agents running first' },
-            { k: 'active', lbl: 'most active', tip: 'the most processes exited in the window first' },
-            { k: 'name', lbl: 'name' },
-          ]}
-        />
+        <ColumnPicker on={cols} setOn={setCols} gpuKnown={gpuKnown} />
+        {sort.key && (
+          <button className="linkbtn" onClick={() => sort.toggle(sort.key!)} data-tip="the sort in use; click a header to change it">
+            sorted by {sort.key === 'user' ? 'user' : COLS.find((c) => c.k === sort.key)?.lbl}
+          </button>
+        )}
       </div>
       {sorted.length ? (
         <div className="scroller vscroll">
           <table className="roomy users">
             <thead>
               <tr>
-                <th>user</th>
-                {cls.includes('agent') && <th>agents running</th>}
-                {cls.includes('ide') && <th>IDEs running</th>}
-                <th className="num" data-tip="processes that exited in the window, split by class">processes exited</th>
-                <th className="num">CPU time</th>
-                <th className="num">last active</th>
+                <SortTh s={sort} k="user" first="asc">user</SortTh>
+                {shownCols.map((c) => (
+                  <SortTh key={c.k} s={sort} k={c.k} num={c.num} tip={c.tip}>{c.lbl}</SortTh>
+                ))}
               </tr>
             </thead>
             {sorted.map((r) => {
@@ -339,27 +640,25 @@ export function UsersPanel({
                     <td>
                       <span className="u-caret">{isOpen ? '▾' : '▸'}</span>
                       <span className="mono u-name">{r.user}</span>
+                      {/* to this user's sessions (roadmap note 7) */}
+                      <button
+                        className="linkbtn u-go"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openUserTraj(r.user);
+                        }}
+                        data-tip="this user's sessions on the Trajectories tab"
+                      >
+                        trajectories →
+                      </button>
                     </td>
-                    {cls.includes('agent') && (
-                      <td>
-                        <Running m={r.live.agent} />
-                      </td>
-                    )}
-                    {cls.includes('ide') && (
-                      <td>
-                        <Running m={r.live.ide} />
-                      </td>
-                    )}
-                    <td className="num">
-                      <Mix r={r} cls={cls} />
-                    </td>
-                    <td className="num">{shownCpu(r, cls) ? dur(shownCpu(r, cls)) : DASH}</td>
-                    <td className="num nm">{r.last_epoch ? ago(now - r.last_epoch * 1000) : DASH}</td>
+                    {shownCols.map((c) => cell(r, c.k))}
                   </tr>
                   {isOpen && (
                     <tr className="u-open">
-                      <td colSpan={6}>
-                        <Detail name={r.user} windowMin={windowMin} cls={cls} />
+                      <td colSpan={shownCols.length + 1}>
+                        <Detail name={r.user} windowMin={windowMin} windowLbl={windowLbl} cls={cls}
+                          cascades={cascades._present === false ? undefined : cascades} openTraj={openTraj} />
                       </td>
                     </tr>
                   )}
@@ -382,13 +681,8 @@ export function UsersPanel({
 }
 
 /** The panel, with an anchor the plate can scroll to. */
-export function ActiveUsers(props: {
-  U: LiveUsers | undefined;
-  cls: Cls[];
-  windowMin: number | null;
-  pageUsers?: string[];
-  pageTypes?: string[];
-}) {
+export function ActiveUsers(props: UsersProps & { goto?: (tab: string) => void }) {
+  const { goto, ...rest } = props;
   return (
     <Panel
       id="live-users"
@@ -398,11 +692,19 @@ export function ActiveUsers(props: {
       feed="live"
       empty={!props.U}
       emptyWhat="the service sent no user roster"
+      header={
+        goto && (
+          <button className="btn" onClick={() => goto('events')} data-tip="every process record, filtered and downloadable">
+            search & export {'→'}
+          </button>
+        )
+      }
     >
-      <UsersPanel {...props} />
+      <UsersPanel {...rest} />
     </Panel>
   );
 }
 
 export const scrollToUsers = () =>
   document.getElementById('live-users')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+

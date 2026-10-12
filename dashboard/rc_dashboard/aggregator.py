@@ -460,10 +460,10 @@ class Aggregator:
             return self.live.users(window_s=win["minutes"] * 60, q=q, limit=limit,
                                    running=running)
 
-    def live_user(self, name, window_min=None):
+    def live_user(self, name, window_min=None, recent=25):
         win = self.window(window_min)
         with self.lock:
-            return self.live.user_detail(name, window_s=win["minutes"] * 60)
+            return self.live.user_detail(name, window_s=win["minutes"] * 60, recent=recent)
 
     def trajectories(self, window_min=None, flt=None):
         win = self.window(window_min)

@@ -192,7 +192,25 @@ export default function App() {
   const body = (() => {
     switch (tab.k) {
       case 'live':
-        return <LiveTab live={live} P={P} traj={traj.data} cls={url.cls} who={who} feeds={feeds.data} goto={(t) => setUrl({ tab: t }, true)} />;
+        return (
+          <LiveTab
+            live={live}
+            P={P}
+            traj={traj.data}
+            cls={url.cls}
+            who={who}
+            feeds={feeds.data}
+            goto={(t) => setUrl({ tab: t }, true)}
+            // Opening a session or a user's sessions is navigation: back returns.
+            openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
+            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+            userCols={
+              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.user_columns?._value as
+                | string[]
+                | undefined) ?? null
+            }
+          />
+        );
       case 'overview':
         return <OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />;
       case 'resources':
@@ -218,6 +236,7 @@ export default function App() {
             select={(sid) => setUrl({ traj: sid, tfrom: null }, true)}
             tfrom={url.tfrom}
             setTfrom={(t) => setUrl({ tfrom: t }, true)}
+            tuser={url.tuser}
           />
         );
       case 'slurm':

@@ -1688,3 +1688,167 @@ th[data-tip],
 td.lbl[data-tip] {
   cursor: help;
 }
+
+/* ------------------------------------------------- Active users, opened up
+ * Three boxes, each its own span, so "running now" and "in the window" never
+ * read as one wide table (roadmap note 6). */
+.u-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 6px;
+}
+.u-box {
+  border: 1px solid var(--rule);
+  border-left-width: 3px;
+  border-radius: 5px;
+  padding: 8px 12px 10px;
+  background: var(--surface);
+}
+.u-box.now {
+  border-left-color: var(--live);
+  background: var(--surface-2);
+}
+.u-box.window {
+  border-left-color: var(--s4);
+}
+.u-box.cmds {
+  border-left-color: var(--edge);
+}
+.u-box h4 {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.u-box h4 .nm {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+.u-sess {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.u-sess > span:first-of-type {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+/* the version, small under the agent's name (roadmap note 13) */
+.u-ver {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.u-badges {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.u-badge {
+  font-size: 9.5px;
+  font-family: 'IBM Plex Mono', monospace;
+  padding: 1px 6px;
+  border-radius: 99px;
+  border: 1px solid var(--edge);
+  color: var(--ink-2);
+  white-space: nowrap;
+  cursor: help;
+}
+.u-badge.crit {
+  border-color: var(--crit);
+  color: var(--crit);
+}
+.u-badge.warn {
+  border-color: var(--warn);
+  color: #8a6410;
+}
+.u-badge.ok {
+  border-color: var(--good);
+  color: #1f6b1d;
+}
+.u-badge.nm {
+  color: var(--muted);
+}
+table tr.u-cls td {
+  font-weight: 600;
+}
+table tr.u-sub td:first-child {
+  padding-left: 22px;
+}
+table tr.u-sub2 td {
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+table tr.u-sub2 td:first-child {
+  padding-left: 40px;
+}
+table tr.u-sub2 td:first-child::before {
+  content: '↳ ';
+  color: var(--muted);
+}
+.sub {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+/* a link that is a button: navigation inside the page */
+.linkbtn {
+  all: unset;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+.linkbtn:hover {
+  color: var(--ink);
+}
+.u-go {
+  margin-left: 8px;
+  font-size: 10px;
+  opacity: 0;
+}
+table.users tr.u-row:hover .u-go,
+table.users tr.u-row.open .u-go {
+  opacity: 1;
+}
+.u-cols-pick {
+  position: relative;
+}
+.u-cols-pick > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.u-cols-pick > summary::-webkit-details-marker {
+  display: none;
+}
+.u-cols-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+  min-width: 170px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+.u-cols-menu label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
