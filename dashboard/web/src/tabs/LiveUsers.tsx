@@ -26,7 +26,7 @@ import { GLOSS } from '../lib/glossary';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { pcol } from '../lib/purposes';
-import { AP_LABEL, SB_LABEL } from '../lib/sandbox';
+import { AP_LABEL } from '../lib/sandbox';
 import { useSort } from '../lib/useSort';
 
 const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
@@ -195,11 +195,10 @@ function Badges({ s }: { s: LiveUserSession }) {
   if (s.actor3 === 'agent') {
     if (s.approval === 'bypassed') out.push(['bypass', 'crit', AP_LABEL.bypassed + ': ' + GLOSS.bypass]);
     else if (s.approval === 'auto') out.push(['auto mode', 'warn', GLOSS.automode]);
-    else if (s.approval === 'supervised') out.push(['asks first', 'ok', AP_LABEL.supervised + ': the agent asks before it acts']);
-    else if (s.approval === 'unobservable') out.push(['launch unknown', 'nm', AP_LABEL.unobservable]);
   }
+  // Only the states worth noticing: on a host where no sandbox works, a "not
+  // sandboxed" on every session is noise, and "asks first" is the default.
   if (s.sandbox === 'sandboxed') out.push(['sandboxed', 'ok', GLOSS.sandbox]);
-  else if (s.sandbox === 'unsandboxed') out.push(['not sandboxed', 'nm', SB_LABEL.unsandboxed + ': ' + GLOSS.sandbox]);
   if (s.headless) out.push(['headless', 'nm', GLOSS.headless]);
   if (!out.length) return null;
   return (
@@ -284,8 +283,8 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
                         <span>
                           {typeLbl(s.agent_type ?? '')}
                           {/* the version under the agent's name (roadmap note 13) */}
-                          <span className="u-ver" data-tip={GLOSS.version}>
-                            {s.version ? `v${s.version}` : 'version not shown'}
+                          <span className="u-ver" data-tip={s.version ? GLOSS.version : 'the version is not in this program’s path, so it is not known'}>
+                            {s.version ? `v${s.version}` : 'v?'}
                           </span>
                         </span>
                         <Badges s={s} />

@@ -87,6 +87,12 @@ class ResourceReducer:
             "cpu_s": 0.0, "sched_run": Acc(), "sched_wait": Acc(),
             "q_cpu": Quant(), "q_rss": Quant(), "q_wait": Quant(), "q_dur": Quant(),
             "q_oncpu": Quant(),
+            # the process behind each distribution's max (roadmap note 27):
+            # metric -> [value, who]
+            "top": {},
+            # processes whose run time is longer than their lifetime as
+            # measured, left out of the on-CPU share and counted (note 28)
+            "oncpu_aside": 0,
             "faults": {k: Acc() for k in FAULT_FIELDS},
             "delays": {k: Acc() for k in DELAY_FIELDS},
             "dstate": {"events": 0, "wait": Acc(), "episodes": Acc(), "max_s": 0.0,
@@ -166,10 +172,25 @@ class ResourceReducer:
         c["q_cpu"].add(cpu)
         c["q_rss"].add(rec.get("peak_rss_mb") if rec.get("peak_rss_mb") is not None
                        else rec.get("rss_mb"))
+        rss = rec.get("peak_rss_mb") if rec.get("peak_rss_mb") is not None else rec.get("rss_mb")
         c["q_wait"].add(rec.get("sched_wait_s"))
         c["q_dur"].add(dur)
+        top = c["top"]
+        for metric, v in (("cpu_s", cpu), ("peak_rss_mb", rss),
+                          ("sched_wait_s", rec.get("sched_wait_s")), ("duration_s", dur)):
+            if v is not None and (metric not in top or v > top[metric][0]):
+                top[metric] = [v, who(rec)]
+        # The on-CPU share is run time over lifetime. A lifetime measured from
+        # exec (`duration_src` exec) leaves out the work a process did before
+        # it exec'd -- the shell code of a fork, before the command it runs --
+        # which its run time counts. On rtx6000a one exit in five ran longer
+        # than it "lived" that way; capped at 100% they read as busy CPUs and
+        # lifted the median. They are left out, and counted, instead.
         if dur and dur > 0 and run is not None:
-            c["q_oncpu"].add(min(1.0, run / dur))
+            if run > dur * 1.05 + 0.001:
+                c["oncpu_aside"] += 1
+            else:
+                c["q_oncpu"].add(min(1.0, run / dur))
         if cpu and cpu > 1.0 and run:
             c["ratio"].append(cpu / run)
         for k in FAULT_FIELDS:
@@ -263,6 +284,10 @@ class ResourceReducer:
                 m[k].merge(c[k])
             for k in ("q_cpu", "q_rss", "q_wait", "q_dur", "q_oncpu"):
                 m[k].merge(c[k])
+            for metric, t in c.get("top", {}).items():
+                if metric not in m["top"] or t[0] > m["top"][metric][0]:
+                    m["top"][metric] = t
+            m["oncpu_aside"] += c.get("oncpu_aside", 0)
             for grp in ("faults", "delays"):
                 for k, a in c[grp].items():
                     m[grp][k].merge(a)
@@ -303,6 +328,9 @@ class ResourceReducer:
                            "sched_wait_s": c["q_wait"].as_dict(),
                            "duration_s": c["q_dur"].as_dict(),
                            "on_cpu_frac": c["q_oncpu"].as_dict()},
+                # the process behind each max: which one, whose, and when
+                "top": {m: dict(t[1], value=round(t[0], 4)) for m, t in c["top"].items()},
+                "oncpu_set_aside": c["oncpu_aside"],
                 "faults": {k: v.as_dict() for k, v in c["faults"].items()},
                 "delays": {k: v.as_dict() for k, v in c["delays"].items()},
                 "dstate": {"events_with_stall": c["dstate"]["events"],
