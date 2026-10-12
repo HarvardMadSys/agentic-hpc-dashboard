@@ -9,13 +9,31 @@ import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse 
 import type { LiveState } from '../api/useLive';
 import { Lines } from '../charts/primitives';
 import type { LineSeries } from '../charts/primitives';
+import { clockLabel, fullClock, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
-import { CLS, CLS_ABBR, CLS_COL, CLS_LBL } from '../lib/classes';
-import { DASH, dur, fint, fmt, lagStr, pc } from '../lib/format';
-import { pcol, plbl, purposeLegend } from '../lib/purposes';
+import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { whoMatch } from '../lib/filters';
+import type { Who } from '../lib/filters';
+import { DASH, dur, fint, fmt, pc } from '../lib/format';
+import { pcol, purposeLegend } from '../lib/purposes';
+import { ActiveUsers, scrollToUsers } from './LiveUsers';
+import { ByUser, distinct } from '../components/ByUser';
 
 /* ------------------------------------------------------------- helpers */
+
+/* `depth` is the collector's count of process generations between a process
+ * and its nearest agent ancestor: its depth in that agent's process tree. */
+const DEPTH_TIP =
+  "depth in the agent's process tree:\n\n" +
+  '0 = the agent process itself\n1 = started directly by the agent (e.g. a tool-call shell)\n' +
+  '2 = started by one of those (e.g. the command that shell ran)\nand so on down the tree\n\n' +
+  "— = no agent above it: a human's own process";
+
+function depthLabel(d: number | null | undefined): string {
+  if (d == null) return DASH;
+  return d === 0 ? '0 (agent)' : String(d);
+}
 
 /** The newest bin that actually carried a value for this class. */
 function latest(rate: LiveResponse['rate'], c: string): number | null {
@@ -98,11 +116,15 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
 export function LiveTab({
   live,
   cls,
+  who,
   feeds,
   goto,
 }: {
   live: LiveState;
   cls: Cls[];
+  /** The page's user and agent-type filter. The live tier is one shared rolling
+   *  count, not rebuilt per filter, so only rows that name a user narrow. */
+  who?: Who;
   feeds: FeedsResponse | null;
   goto: (tab: string) => void;
 }) {
@@ -128,36 +150,17 @@ export function LiveTab({
     c: CLS_COL[c],
     area: c === 'agent',
     mark: c === 'agent' ? (latest(rate, c) != null ? fint(latest(rate, c)) + '/min' : null) : null,
-    pts: rate.map((r, i) => ({ x: i, y: typeof r[c] === 'number' ? (r[c] as number) : null })),
+    // x is the bin's epoch, not its index: the window slides a bin every
+    // minute, and a zoom held in indices would drift off the minutes picked.
+    pts: rate
+      .filter((r) => Number.isFinite(Number(r.epoch)))
+      .map((r) => ({ x: Number(r.epoch), y: typeof r[c] === 'number' ? (r[c] as number) : null })),
   }));
 
-  /* X ticks that stay legible at ANY window.
-   *
-   * The old rule -- every row ending `:00`, every 120th -- was correct for
-   * exactly one window: 24 h at one-minute bins. At 1 h it yields a single tick
-   * and at 7 d it yields eighty. So: pick a round interval that lands ~10 ticks
-   * across whatever is on screen, and place them on LOCAL wall-clock multiples
-   * of it, so a label reads `14:00` and not `14:07`. Local, not epoch-modulo,
-   * because a half-hour timezone would otherwise tick on the half hour. */
-  const xt = useMemo(() => {
-    if (!rate.length) return [];
-    const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080];
-    const step = STEPS.find((s) => rate.length / s <= 10) ?? STEPS[STEPS.length - 1];
-    const out: number[] = [];
-    for (let i = 0; i < rate.length; i++) {
-      const e = Number(rate[i].epoch);
-      if (!Number.isFinite(e)) continue;
-      const d = new Date(e * 1000);
-      const minuteOfDay = d.getHours() * 60 + d.getMinutes();
-      if (step >= 1440 ? minuteOfDay === 0 : minuteOfDay % step === 0) out.push(i);
-    }
-    return out;
-  }, [rate]);
-
-  const gaps = useMemo(
-    () => rate.filter((r) => cls.every((c) => typeof r[c] !== 'number')).length,
-    [rate, cls],
-  );
+  /* X ticks that stay legible at ANY window, and at any zoom into it: a round
+   * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
+   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`. */
+  const xticks = (a: number, b: number) => timeTicks(a, b, 10);
 
   const perMin = Object.fromEntries(CLS.map((c) => [c, latest(rate, c)]));
   const perMinAll = CLS.reduce<number | null>((a, c) => {
@@ -173,25 +176,14 @@ export function LiveTab({
   const procs = nowByClass(now, 'procs');
   const procsTot = nowNum(now, ['procs_total', 'agent_procs', 'procs']) ??
     (Object.keys(procs).length ? CLS.reduce((a, c) => a + (procs[c] ?? 0), 0) : null);
-  // How a user is counted, end to end. The collector walks the processes it
-  // tracks on each residency tick, buckets them by class, and emits the size of
-  // the distinct-username set per class -- so the unit at the source is
-  // "distinct users per (host, class)", over tracked live processes only, and a
-  // process whose owner will not resolve is skipped. The reducer then SUMS that
-  // across hosts, and the headline below sums the three classes, because the
-  // payload carries no `users_total` to prefer.
-  //
-  // Both sums double-count: one person on two login nodes counts twice, and one
-  // person running an agent from a shell counts in both classes. So this is an
-  // upper bound on distinct humans, not a headcount -- read it as "user
-  // sessions on the fleet". It is exact only when it says one host reporting
-  // and a single class is non-zero.
-  const users = nowByClass(now, 'users');
-  const usersTot = nowNum(now, ['users_total', 'users']) ??
-    (Object.keys(users).length ? CLS.reduce((a, c) => a + (users[c] ?? 0), 0) : null);
+  // One row per account, from the live reducer's roster: a person who runs
+  // an agent, a shell, and an IDE is one user, not three.
+  const U = L?.users;
+  const usersBy = Object.fromEntries(CLS.filter((c) => U?.by_class[c] != null).map((c) => [c, U!.by_class[c]!]));
 
-  const events = (L?.events ?? []).filter((e) => !e.actor3 || cls.includes(e.actor3 as Cls));
-  const submits = L?.submits ?? [];
+  const events = (L?.events ?? []).filter(
+    (e) => (!e.actor3 || cls.includes(e.actor3 as Cls)) && (!who || whoMatch(who, e.user, e.agent_type)),
+  );
   const hosts = L?.hosts ?? [];
 
   const envelope = L
@@ -247,38 +239,42 @@ export function LiveTab({
           }
         />
         <Plate
-          k="actors"
+          k="live sessions"
           total={rootsTot}
           stripe="var(--s4)"
           by={roots}
+          tip="agent and IDE sessions running right now: a session root seen in the last 10 minutes. A person's own shell has no such root, so the human slot is blank, not 0."
           note={
             <>
               {procsTot != null ? `${fint(procsTot)} processes` : 'processes not reported'}
               {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB resident` : ''}
+              {/* Counted from the live agent-session roots' own launch argv
+                  (reducers/live.py), not the collector's `autonomous`, which
+                  never saw --permission-mode bypassPermissions. Null when no
+                  root was seen, so "none seen" never reads as "none bypassed". */}
               {nowNum(now, ['autonomous_roots']) != null
-                ? ` · ${fint(nowNum(now, ['autonomous_roots']))} with a bypass flag`
+                ? ` · ${fint(nowNum(now, ['autonomous_roots']))} of ${fint(
+                    nowNum(now, ['live_agent_sessions']),
+                  )} live agent sessions launched with a bypass flag`
                 : ''}
             </>
           }
         />
         <Plate
-          k="users on the fleet"
-          total={usersTot}
+          k="active users"
+          total={U?.total ?? null}
           stripe="var(--s5)"
-          by={users}
+          by={usersBy}
           tip={
-            'distinct usernames with a running process, counted separately on ' +
-            'each host and in each class, then added up.\n\n' +
-            'someone logged in to two nodes is counted twice, and someone running ' +
-            'an agent from their own shell is counted in both classes. so this is ' +
-            'the high end of how many people could be on the fleet, not a headcount.'
+            'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +
+            'one person in several classes is one user; the class row counts the users in each.'
           }
+          onClick={scrollToUsers}
+          linkTip="see who, and what each one is running"
           note={
             <>
-              counted per host and per class, so an upper bound
-              <br />
-              {fint(hosts.length)} hosts reporting
-              {liveFeed?.lag_s != null ? ` · newest record ${lagStr(liveFeed.lag_s)} old` : ''}
+              {U ? `${fint(U.with_live_agent)} with an agent running now · ` : ''}
+              <span className="plate-go">see who {'→'}</span>
             </>
           }
         />
@@ -292,11 +288,6 @@ export function LiveTab({
           feed={liveFeed?.name ?? 'live'}
           empty={!rate.length}
           emptyWhat="the live window holds no bins"
-          header={
-            <span className="pill" data-tip="a bin with no record is drawn as a gap, never as 0">
-              {fint(gaps)} gap bins
-            </span>
-          }
           basis={
             <Basis
               items={[
@@ -313,8 +304,10 @@ export function LiveTab({
             W={1060}
             H={230}
             ymin={0}
-            xticks={xt.length ? xt : undefined}
-            xfmt={(i) => rate[Math.round(i)]?.t ?? ''}
+            xticks={xticks}
+            xfmt={clockLabel}
+            xtip={fullClock}
+            minSpan={3 * (L?.window?.bin_s ?? 60)}
             ylabel="exits / min"
             xlabel={`last ${windowLbl}`}
             xname="at"
@@ -323,8 +316,17 @@ export function LiveTab({
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
 
+        <ActiveUsers
+          U={U}
+          cls={cls}
+          windowMin={L?.window?.requested_minutes ?? windowMin ?? null}
+          pageUsers={who?.users}
+          pageTypes={who?.atypes}
+        />
+
         <Panel
-          title="Login nodes right now"
+          title="Hosts right now"
+          span
           live
           feed={liveFeed?.name ?? 'live'}
           empty={!hosts.length}
@@ -384,48 +386,6 @@ export function LiveTab({
           </div>
         </Panel>
 
-        <Panel
-          title="Recent sbatch / salloc"
-          live
-          feed={liveFeed?.name ?? 'live'}
-          empty={!submits.length}
-          emptyWhat="no submission in the window"
-        >
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>at</th>
-                  <th>user</th>
-                  <th>product</th>
-                  <th>tool</th>
-                  <th className="num">job</th>
-                  <th>partition</th>
-                  <th className="num">gpu</th>
-                  <th>array</th>
-                </tr>
-              </thead>
-              <tbody>
-                {submits.map((r, i) => (
-                  <tr key={`${r.job_id ?? ''}-${i}`}>
-                    <td className="mono" style={{ color: 'var(--muted)' }}>
-                      {r.ts ?? DASH}
-                    </td>
-                    <td className="mono">{r.user ?? DASH}</td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>
-                      {r.agent_type ?? DASH}
-                    </td>
-                    <td className="mono">{r.tool ?? DASH}</td>
-                    <td className="num">{r.job_id ?? DASH}</td>
-                    <td className="mono">{r.partition ?? DASH}</td>
-                    <td className="num">{r.gpus ?? DASH}</td>
-                    <td className="mono">{r.array ?? DASH}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
 
         <Panel
           title="Process exit stream"
@@ -440,10 +400,7 @@ export function LiveTab({
           }
           header={
             <>
-              <span className="pill">
-                {fint(events.length)} of {fint(L?.events?.length ?? 0)} buffered
-              </span>
-              <button className="btn" onClick={() => goto('risk')} data-tip="filter and export the full day-files">
+              <button className="btn" onClick={() => goto('events')} data-tip="filter and export the full day-files">
                 search & export {'→'}
               </button>
             </>
@@ -464,16 +421,42 @@ export function LiveTab({
  * reserved for agent identity, so purpose owns the colour here. */
 export function EventTable({ rows }: { rows: LiveEvent[] }) {
   if (!rows.length) return <NoRows />;
+  const failed = (e: LiveEvent) => e.signal != null || (e.exit_code != null && e.exit_code !== 0);
+  return (
+    <ByUser
+      rows={rows}
+      user={(e) => e.user}
+      noun="process"
+      // both callers hold it in a `.stream`, which is already the scroll box
+      scroll={false}
+      cols={[
+        { h: 'class', cell: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3) },
+        { h: 'commands', cell: (rs) => <span className="mono">{distinct(rs, (e) => e.comm ?? e.tool, 4)}</span> },
+        { h: 'CPU', num: true, cell: (rs) => dur(rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0)) },
+        {
+          h: 'failed',
+          num: true,
+          tip: 'exited non-zero or on a signal',
+          cell: (rs) => (rs.some(failed) ? fint(rs.filter(failed).length) : DASH),
+        },
+        { h: 'latest', cell: (rs) => <span className="mono nm">{rs.map((e) => e.ts ?? '').sort().pop() || DASH}</span> },
+      ]}
+      sub={(rs) => <EventRows rows={rs} />}
+    />
+  );
+}
+
+/** One user's processes, as rows. */
+function EventRows({ rows }: { rows: LiveEvent[] }) {
   return (
     <table>
       <thead>
         <tr>
           <th>at</th>
           <th>class</th>
-          <th>user</th>
           <th className="num">pid</th>
           <th>host</th>
-          <th className="num">d</th>
+          <th className="num" data-tip={DEPTH_TIP}>tree depth</th>
           <th>command</th>
           <th className="num">ran</th>
           <th className="num">cpu</th>
@@ -491,31 +474,27 @@ export function EventTable({ rows }: { rows: LiveEvent[] }) {
                 {e.ts ?? DASH}
               </td>
               <td
-                className="mono"
-                style={{ fontSize: '10px', color: 'var(--muted)' }}
-                data-tip={`${CLS_LBL[e.actor3 ?? ''] ?? e.actor3 ?? 'unlabeled'}${
-                  e.agent_type ? ' · ' + e.agent_type : ''
-                }`}
+                style={{ color: CLS_COL[e.actor3 ?? ''] ?? 'var(--muted)' }}
+                data-tip={e.agent_type ? `agent type: ${e.agent_type}` : undefined}
               >
-                {CLS_ABBR[e.actor3 ?? ''] ?? '?'}
+                {CLS_LBL[e.actor3 ?? ''] ?? e.actor3 ?? 'unlabeled'}
               </td>
-              <td className="mono">{e.user ?? DASH}</td>
               <td
                 className="num mono"
                 style={{ fontSize: '10.5px' }}
-                data-tip={
-                  e.ppid != null
-                    ? `ppid ${e.ppid}${e.session_key ? ' \u00b7 ' + e.session_key : ''}`
-                    : e.session_key ?? undefined
-                }
+                data-tip={e.ppid != null ? `parent pid ${e.ppid}` : undefined}
               >
                 {e.pid ?? DASH}
               </td>
               <td className="mono" style={{ color: 'var(--muted)' }}>
                 {(e.host ?? '').replace('login', '') || DASH}
               </td>
-              <td className="num">{e.depth == null ? DASH : 'd' + e.depth}</td>
-              <td className="arg" data-tip={e.purpose ? plbl(e.purpose) : undefined}>
+              <td className="num" data-tip={DEPTH_TIP}>
+                {depthLabel(e.depth)}
+              </td>
+              {/* the cell is cut to one line, so the hover shows the whole
+                  command (masked as served) and nothing else */}
+              <td className="arg" data-tip={args || comm || undefined} data-tip-wide>
                 <span className="cmd" style={{ color: pcol(e.purpose) }}>
                   {comm || DASH}
                 </span>

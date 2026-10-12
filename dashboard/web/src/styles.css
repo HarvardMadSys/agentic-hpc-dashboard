@@ -27,7 +27,10 @@
   --s2: #2f6cb0;
   --s3: #4d8f1f;
   --s4: #6f4aa0;
-  --s5: #1b8f6a;
+  /* was #1b8f6a, a teal 8 Delta E from --s3 green: unreadable as a pair (slurm
+     submit vs file & search). This violet clears every other slot by >= 16 in
+     normal vision and >= 8.6 under protan/deutan simulation. */
+  --s5: #9470f4;
   --s6: #c98a00;
   --s7: #d2607d;
   --s8: #3aa0d0;
@@ -156,6 +159,37 @@ nav .n {
   font-size: 10px;
   color: var(--muted);
 }
+/* the open tab's sections, under its button in the rail */
+.secnav {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 8px 12px;
+  border-left: 1px solid var(--rule);
+}
+.secnav a {
+  display: block;
+  padding: 4px 8px 4px 12px;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.secnav a:hover {
+  color: var(--ink);
+}
+.secnav a.on {
+  color: var(--ink);
+  border-left-color: var(--crimson);
+}
+section.panel {
+  scroll-margin-top: 14px;
+}
+
 .rail .foot {
   padding: 14px 18px 0;
   margin-top: 10px;
@@ -307,7 +341,9 @@ main {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 14px;
-  align-items: start;
+  /* panels on one row share a height, so their frames line up even when one
+     has a folded table under its chart and the other does not */
+  align-items: stretch;
 }
 .grid.wide {
   grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
@@ -356,6 +392,9 @@ main {
   }
   .plates.three {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .plates.two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 .plate {
@@ -456,6 +495,18 @@ main {
   display: inline-block;
   flex: none;
 }
+/* a line-style key: dashed against solid, in the ink of whatever it keys */
+.legend i.dash {
+  width: 14px;
+  height: 0;
+  border-radius: 0;
+  border-top: 2px dashed;
+}
+.legend i.solid {
+  width: 14px;
+  height: 2px;
+  border-radius: 0;
+}
 svg {
   display: block;
   max-width: 100%;
@@ -490,9 +541,239 @@ svg {
   stroke: var(--edge);
   stroke-width: 1;
 }
+/* a chart's table, folded until asked for (components/Panel.tsx More) */
+details.more {
+  margin-top: 10px;
+}
+details.more > summary {
+  cursor: pointer;
+  list-style: none;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+details.more > summary::-webkit-details-marker {
+  display: none;
+}
+details.more > summary::before {
+  content: '\25B8  ';
+}
+details.more[open] > summary::before {
+  content: '\25BE  ';
+}
+details.more > summary:hover {
+  color: var(--ink-2);
+}
+
+/* two charts side by side inside one panel, on the same clock */
+.pair-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 28px;
+}
+@media (max-width: 1100px) {
+  .pair-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Overview: one measure per row, each class's value named, then the split */
+.unit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin: 10px 0 4px;
+  font-size: 12px;
+}
+.unit-row .unit-k {
+  min-width: 110px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.unit-row .unit-v {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+}
+.unit-row .unit-v i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+/* the tool-mix table: an inline bar per share, the value beside it */
+table.mix th,
+table.mix td {
+  padding: 7px 14px 7px 0;
+  white-space: nowrap;
+}
+table.mix th.cls {
+  text-align: left;
+  border-bottom: none;
+}
+table.mix td:first-child {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11.5px;
+}
+.minibar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 150px;
+}
+.minibar i {
+  display: block;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+  max-width: 96px;
+}
+.minibar b {
+  font-weight: normal;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+/* per-class lists side by side (Sessions: head of the tool distribution) */
+.head-row {
+  display: grid;
+  gap: 8px 28px;
+}
+@media (max-width: 1100px) {
+  .head-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+/* the compact faults table: per-process value, total beneath, sections as rules */
+table.faults {
+  width: auto;
+  min-width: 520px;
+}
+table.faults td,
+table.faults th {
+  vertical-align: top;
+}
+table.faults td.num,
+table.faults th.num {
+  padding-left: 40px;
+}
+table.faults .sub {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: normal;
+  line-height: 1.3;
+}
+/* per-process quantiles: a group of four columns per class */
+table.dist th.grp {
+  text-align: left;
+  padding-left: 36px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  border-bottom: none;
+}
+table.dist th.grp .sub {
+  font-size: 10px;
+  color: var(--muted);
+}
+table.dist td.num,
+table.dist th.num {
+  padding-left: 14px;
+}
+table.dist td.num.g0,
+table.dist th.num.g0 {
+  padding-left: 36px;
+}
+table.dist td:first-child {
+  white-space: nowrap;
+}
+table.faults tr.section td {
+  padding-top: 12px;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--rule);
+}
+/* scroll to zoom, drag to pan: see the zoom section of charts/primitives.tsx */
+.zoomable {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.zoom-cut {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 2;
+  pointer-events: none;
+}
+.zoomnote {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 15px;
+  line-height: 15px;
+  margin-bottom: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+/* the hint shows only while the pointer is on the chart it belongs to */
+.zoomnote .hint {
+  visibility: hidden;
+}
+.zoomnote:hover .hint,
+.zoomnote:has(+ svg:hover) .hint {
+  visibility: visible;
+}
+.zoomnote button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--crimson-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
 .scroller {
   overflow-x: auto;
   max-width: 100%;
+}
+/* A long table that scrolls inside its panel with its header held in view: a
+ * roster of hundreds is read by scrolling, not by "show 15 more". */
+.scroller.vscroll {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  /* reaching the table's top or bottom must not hand the wheel to the page */
+  overscroll-behavior: contain;
+}
+/* nested inside another table's row: shorter, so the outer one stays readable */
+.scroller.vscroll.short {
+  max-height: min(50vh, 380px);
+}
+/* Only a scroll box's own header sticks. A table opened inside one of its rows
+ * keeps its header in place; pinned, it sat on top of the outer one. */
+.scroller.vscroll td thead th,
+.stream td thead th {
+  position: static;
+  box-shadow: none;
+  border-bottom: 1px solid var(--rule);
+}
+.scroller.vscroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  /* a collapsed border stays behind when the cell sticks; a shadow travels */
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--rule);
 }
 table {
   border-collapse: collapse;
@@ -525,6 +806,32 @@ th.num {
 }
 th.num {
   color: var(--muted);
+}
+/* A right-aligned number followed by a left-aligned word leaves the two
+ * touching, "17 sandbox attempts failed" read as one phrase: open the seam. */
+td.num + td:not(.num),
+th.num + th:not(.num) {
+  padding-left: 18px;
+}
+td.nm {
+  color: var(--muted);
+}
+/* the spacing of a table meant to be read across a wide panel */
+table.roomy th,
+table.roomy td {
+  padding: 9px 14px 9px 0;
+  white-space: nowrap;
+}
+table.roomy td {
+  vertical-align: baseline;
+}
+table.roomy th.num,
+table.roomy td.num {
+  padding-left: 8px;
+}
+table.roomy td.wrap {
+  white-space: normal;
+  min-width: 14ch;
 }
 td .cmd {
   font-family: 'IBM Plex Mono', monospace;
@@ -589,6 +896,11 @@ tbody tr:last-child td {
   max-width: 330px;
   box-shadow: 0 3px 14px rgba(0, 0, 0, 0.25);
   white-space: pre-wrap;
+  /* a path or token longer than the box breaks rather than running out of it */
+  overflow-wrap: anywhere;
+}
+#tip.wide {
+  max-width: min(640px, 90vw);
 }
 
 .pill {
@@ -714,12 +1026,20 @@ tbody tr:last-child td {
   max-height: 460px;
   overflow-y: auto;
   overflow-x: auto;
+  overscroll-behavior: contain;
 }
 .stream table {
   font-size: 11.5px;
 }
 .stream td {
   padding: 4px 9px 4px 0;
+  white-space: nowrap;
+}
+/* a command line in a table: one line, cut, the whole of it on hover (Cmd.tsx) */
+td.cmd-cut {
+  max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .stream td.arg {
@@ -1003,6 +1323,9 @@ details.basis .body b {
   nav button {
     flex: none;
   }
+  .secnav {
+    display: none;
+  }
   main {
     padding: 18px 14px 60px;
   }
@@ -1016,4 +1339,255 @@ details.basis .body b {
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* a plate that opens the section breaking it down */
+.plate.link {
+  cursor: pointer;
+}
+.plate.link:hover {
+  border-color: var(--edge);
+}
+.plate-go {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Live: active users */
+.u-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.u-search {
+  width: 220px;
+}
+table.users tr.u-row {
+  cursor: pointer;
+}
+table.users tr.u-row:hover td,
+table.users tr.u-row.open td {
+  background: var(--surface-2);
+}
+table.users td {
+  vertical-align: middle;
+}
+.u-caret {
+  color: var(--muted);
+  margin-right: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.u-name {
+  color: var(--ink);
+  font-weight: 500;
+}
+.u-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.u-chip {
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.u-chip b {
+  color: var(--ink);
+  font-weight: 600;
+  margin-left: 2px;
+}
+.u-mix {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.u-bar {
+  display: inline-flex;
+  width: 72px;
+  height: 8px;
+  border-radius: 2px;
+  overflow: hidden;
+  gap: 1px;
+  background: var(--rule);
+}
+.u-bar i {
+  display: block;
+  height: 100%;
+}
+.u-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
+table.users tr.u-open > td {
+  padding: 4px 0 18px 22px;
+  white-space: normal;
+}
+.u-detail table {
+  width: auto;
+}
+.u-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 12px 32px;
+}
+.u-cmd {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+.u-foot {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-top: 10px;
+}
+.u-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-bottom: 12px;
+}
+.u-summary .eyebrow {
+  margin-right: 4px;
+}
+.u-pick {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.u-pick b {
+  color: var(--ink);
+  margin: 0 3px 0 5px;
+}
+.u-pick:hover {
+  border-color: var(--edge);
+}
+.u-pick[aria-pressed='true'] {
+  border-color: var(--ink);
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+/* shares as a table: each value on its own 0-100% track (ShareCell.tsx) */
+table.shares th.cls {
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+table.shares th.cls .sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
+table.shares td {
+  vertical-align: middle;
+}
+/* a heading row that says where the quantities below it were measured */
+table.shares tr.grp td {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 16px;
+}
+table.shares tr.grp td .nm {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.share-cell {
+  display: grid;
+  grid-template-columns: var(--track, 90px) 52px;
+  column-gap: 8px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.share-track {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--rule);
+  overflow: hidden;
+}
+.share-track i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+.share-cell b {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  text-align: right;
+}
+.share-sub {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  margin-top: 2px;
+}
+/* the label column holds still, so one class column sits beside it rather
+   than across the panel */
+table.shares th:first-child,
+table.shares td:first-child {
+  width: 230px;
+}
+
+/* a wide table whose headers may take two lines rather than push it past its panel */
+table.wrap-head th {
+  white-space: normal;
+  vertical-align: bottom;
+  max-width: 110px;
+}
+table.wrap-head th:first-child {
+  max-width: none;
+}
+
+/* tables grouped by user (ByUser.tsx) */
+table.byuser-t tr.byuser-row {
+  cursor: pointer;
+}
+table.byuser-t tr.byuser-row:hover td,
+table.byuser-t tr.byuser-row.open td {
+  background: var(--surface-2);
+}
+table.byuser-t tr.byuser-sub > td {
+  padding: 2px 0 14px 22px;
+  white-space: normal;
+}
+table.byuser-t tr.byuser-sub table {
+  font-size: 11.5px;
+}
+
+/* a summary row that opens in place into its detail */
+tr.xrow {
+  cursor: pointer;
+}
+tr.xrow:hover td,
+tr.xrow.open td {
+  background: var(--surface-2);
+}
+tr.xsub > td {
+  padding: 4px 0 16px 22px;
+  white-space: normal;
 }

@@ -10,15 +10,34 @@ import json
 import os
 import time
 
-from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, HTTPException, Query, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import feeds as feedmod
+from . import proctree
+from . import redact
 from . import windows as winmod
 from .aggregator import Aggregator
 from .export import make_predicate, meta_header, parse_filters, scan
 from .normalize import Normalizer
+
+
+def query_lists(request):
+    """Query params as name -> every value given. Repeatable keys keep them all:
+    `dict(multi_items())` kept only the LAST, so `class=agent&class=human` --
+    which is what the page sends -- filtered the events by `human` alone."""
+    qp = request.query_params
+    return {k: qp.getlist(k) for k in qp.keys()}
+
+
+def view_filter(request):
+    """The page-wide `user` / `agent_type` filter, in `/api/events`' vocabulary."""
+    try:
+        return winmod.ViewFilter.from_params(query_lists(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def create_app(cfg):
@@ -100,10 +119,10 @@ def create_app(cfg):
                 # window, but it is still left out: it would push a frame per
                 # record on a busy feed, and the age readout carries it.)
                 key = json.dumps(
-                    [[w["minutes"], w["state"], w["progress"]["pct"], w["built_at"],
-                      w["installed_at"], w["replay_dropped"], w["error"]]
+                    [[w["minutes"], w.get("filter"), w["state"], w["progress"]["pct"],
+                      w["built_at"], w["installed_at"], w["replay_dropped"], w["error"]]
                      for w in st["held"]]
-                    + [st["queued"]], default=str)
+                    + [st["queued"], st.get("queued_filtered")], default=str)
                 if key != last:
                     last = key
                     await broadcast("windows", st)
@@ -157,6 +176,33 @@ def create_app(cfg):
     def api_feeds():
         return agg.refresh_feeds()
 
+    # Chat with an LLM: the agent this service would run, a question, a job.
+    @app.get("/api/ask")
+    def api_ask_info():
+        return agg.ask_info()
+
+    @app.post("/api/ask")
+    async def api_ask(request: Request):
+        body = await request.json()
+        try:
+            return await asyncio.to_thread(
+                agg.ask, str(body.get("question") or ""), body.get("window_min"),
+                [h for h in (body.get("history") or []) if isinstance(h, dict)][-3:])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/ask/{jid}")
+    def api_ask_job(jid: str):
+        j = agg.ask_job(jid)
+        if j is None:
+            raise HTTPException(404, "no such question")
+        return j
+
+    @app.get("/api/collectors")
+    def api_collectors():
+        """Per host: is its collector OK, read from what it wrote (health.py)."""
+        return agg.collectors()
+
     # `window_min` is optional everywhere: omitting it is the configured default
     # (`live.window_min`), never an error, so an existing bookmark or script that
     # predates the control keeps working and gets the same view it used to.
@@ -167,19 +213,58 @@ def create_app(cfg):
                     default_minutes=agg.window(None)["minutes"],
                     min_minutes=winmod.MIN_WINDOW_MIN)
 
+    # `user` and `agent_type` (each repeatable, or comma-separated; `none` is
+    # an untagged process) narrow every window panel and the trajectories to
+    # those records. Each filter is a view of its own, built like a window; the
+    # response's `filter` names it. The live tier is not narrowed (`/api/live`).
     @app.get("/api/panels")
-    def api_panels(window_min: int = Query(None)):
-        return agg.panels(window_min)
+    def api_panels(request: Request, window_min: int = Query(None)):
+        return agg.panels(window_min, view_filter(request))
 
     @app.get("/api/live")
     def api_live(window_min: int = Query(None)):
         return agg.live_payload(window_min)
 
+    @app.get("/api/live/users")
+    def api_live_users(window_min: int = Query(None), q: str = Query(None),
+                       limit: int = Query(None, ge=0, le=5000),
+                       running: str = Query(None)):
+        """The user roster past the busiest rows the live frame carries;
+        `running=agent:claude_code` keeps the accounts with such a session up."""
+        return agg.live_users(window_min, q, limit, running)
+
+    @app.get("/api/live/user")
+    def api_live_user(name: str = Query(...), window_min: int = Query(None)):
+        """One account opened up: sessions running now and its latest commands."""
+        return redact.payload(agg.live_user(name, window_min))
+
     @app.get("/api/trajectories")
-    def api_traj(rank: str = Query("events"), window_min: int = Query(None)):
-        out = agg.trajectories(window_min)
+    def api_traj(request: Request, rank: str = Query("events"),
+                 window_min: int = Query(None)):
+        out = agg.trajectories(window_min, view_filter(request))
         out["rank_by"] = rank if rank in out.get("ranks", {}) else "events"
         return out
+
+    @app.get("/api/trajectory")
+    def api_trajectory(request: Request, sid: str = Query(...),
+                       window_min: int = Query(None),
+                       frm: float = Query(None, alias="from"),
+                       to: float = Query(None)):
+        """One ranked session as a process tree, re-read on demand (proctree.py).
+
+        Sync on purpose: the read runs in the threadpool, never on the loop.
+
+        Takes no user / agent-type filter, deliberately. The session is named by
+        its `sid`, which the page only offers from the (filtered) ranking, and
+        the tree is that session's whole ancestry: dropping the VS Code server
+        that launched a filtered-to-Claude-Code session would cut the tree at
+        its root rather than narrow it.
+        """
+        body = redact.payload(proctree.serve(agg, sid, window_min, frm, to))
+        raw, headers = proctree.response(body, request.headers.get("accept-encoding"))
+        # One chunk: the body is already whole, this only lets it go out gzipped.
+        return StreamingResponse(iter([raw]), media_type="application/json",
+                                 headers=headers)
 
     @app.get("/api/health")
     def api_health():
@@ -196,9 +281,7 @@ def create_app(cfg):
                    limit: int = Query(200, le=5000),
                    cursor: int = Query(0, ge=0),
                    order: str = Query("desc")):
-        f = parse_filters(dict(request.query_params.multi_items()
-                               if hasattr(request.query_params, "multi_items")
-                               else request.query_params))
+        f = parse_filters(query_lists(request))
         pred = make_predicate(f)
         norm = Normalizer(cfg)
         newest = order != "asc"
@@ -215,7 +298,7 @@ def create_app(cfg):
         rows, scanned, matched = [], 0, 0
         for rec, scanned, matched in scan(_roots(), norm, pred, limit=limit,
                                           offset=cursor, newest_first=newest):
-            rows.append(rec)
+            rows.append(redact.record(rec))
         rep = agg.reports["ebpf"]
         full = len(rows) >= limit
         return {"rows": rows,
@@ -230,9 +313,7 @@ def create_app(cfg):
 
     @app.get("/api/export")
     def api_export(request: Request, order: str = Query("desc")):
-        f = parse_filters(dict(request.query_params.multi_items()
-                               if hasattr(request.query_params, "multi_items")
-                               else request.query_params))
+        f = parse_filters(query_lists(request))
         # same default as /api/events, so "the download is the view" holds
         export_default_event = not f.get("event")
         if export_default_event:
@@ -248,7 +329,8 @@ def create_app(cfg):
             body = []
             for rec, _scanned, matched in scan(_roots(), norm, pred, limit=cap,
                                                newest_first=order != "asc"):
-                body.append(json.dumps(rec, default=str))
+                # the download is the view, credentials masked like the view
+                body.append(json.dumps(redact.record(rec), default=str))
                 if len(body) >= 500:
                     yield "\n".join(body) + "\n"
                     body = []

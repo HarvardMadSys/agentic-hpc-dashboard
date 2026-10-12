@@ -24,7 +24,7 @@ from rc_dashboard import tail                     # noqa: E402
 
 TS = "%Y-%m-%d %H:%M:%S"
 DAY = "2026-09-25"
-NONE = {"agent": 0, "human-vscode": 0, "human": 0, "unlabeled": 0}
+NONE = {"agent": 0, "human": 0, "ide": 0, "unlabeled": 0}
 
 
 def stamp(epoch):
@@ -84,6 +84,9 @@ class FeedCase(unittest.TestCase):
         # Saved windows too: scratch, never the repo tree, and never another
         # test's.
         tree["cache"]["dir"] = os.path.join(self.tmp, "cache")
+        # Windows built by scanning, which is what these tests are about;
+        # test_hours.py builds them from saved hours.
+        tree["panels"]["merge_reduce"] = False
         tree["live"].update(live)
         return configmod.Config(tree, {}, None)
 

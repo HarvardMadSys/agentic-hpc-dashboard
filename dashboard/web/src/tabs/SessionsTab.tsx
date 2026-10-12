@@ -1,20 +1,110 @@
 /* Sessions & tools -- the `tool_mix` payload.
  *
- * The bucket mix ships as two charts on one axis each, never a dual axis: on
- * this cluster `poll/probe` is ~29% of calls and ~0% of CPU, and one pair of
- * axes would make those look like the same quantity.
+ * The bucket mix is a table of calls share beside CPU share, never one dual
+ * axis: on this cluster `poll/probe` is ~29% of calls and ~0% of CPU, and one
+ * pair of axes would make those look like the same quantity.
  */
-import { useMemo } from 'react';
-import type { Cls, ToolMix } from '../api/types';
-import { HBars, StackRow } from '../charts/primitives';
-import type { BarGroup, BarSeries } from '../charts/primitives';
-import { Basis, Legend, Panel } from '../components/Panel';
-import { CountCost } from '../components/CountCost';
+import type { Cls, ToolClassBlock, ToolMix } from '../api/types';
+import { HBars } from '../charts/primitives';
+import { Basis, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint, fmt, pc } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+
+/* What each kind of tool looks like, so a bucket name is never a riddle. */
+const BUCKET_TIP: Record<string, string> = {
+  'poll/probe': 'checking on things: ps, pgrep, top, sleep, uname, lsb_release, nvidia-smi',
+  'slurm-submit': 'putting work on the cluster: sbatch, srun, salloc, scancel',
+  'slurm-query': 'asking the scheduler: squeue, sacct, sinfo, scontrol',
+  git: 'git and its helpers',
+  runtime: 'the agent and editor runtimes themselves: node, claude, codex, cursor',
+  interpreter: 'python, pytest, jupyter, wandb',
+  'shell/env-init': 'shells and environment setup: bash, zsh, conda, module, pip',
+  search: 'grep, rg, find, fd',
+  build: 'compilers and build tools: make, cmake, gcc, cargo, nvcc',
+  'net/data': 'moving data: rsync, wget, curl, scp, aws',
+  files: 'reading and editing files: cat, ls, head, sed, awk, vim',
+  other: 'everything the taxonomy does not name',
+};
+
+/** A share as a short inline bar with its value beside it. */
+function MiniBar({ pct: v, c, faint }: { pct: number | null | undefined; c: string; faint?: boolean }) {
+  if (v == null) return <span className="nm">{DASH}</span>;
+  return (
+    <span className="minibar">
+      <i style={{ width: `${Math.min(100, Math.max(v > 0 ? 1.5 : 0, v))}%`, background: c, opacity: faint ? 0.45 : 1 }} />
+      <b>{v > 0 && v < 0.05 ? '<0.1%' : pc(v)}</b>
+    </span>
+  );
+}
+
+/* Count and cost side by side, as a table rather than two 36-bar charts:
+ * one row per kind of tool, a calls column and a CPU column per class. A
+ * bucket no class touched in the window is left out and counted, not drawn as
+ * a row of zeros. */
+function MixTable({
+  buckets,
+  have,
+  byClass,
+}: {
+  buckets: string[];
+  have: string[];
+  byClass: Record<string, ToolClassBlock>;
+}) {
+  const get = (c: string, b: string) => byClass[c]?.rows?.find((r) => r.b === b);
+  const lead = have.includes('agent') ? 'agent' : have[0];
+  const rows = buckets
+    .filter((b) => have.some((c) => (get(c, b)?.calls_pct ?? 0) >= 0.05 || (get(c, b)?.cpu_pct ?? 0) >= 0.05))
+    .sort((x, y) => (get(lead, y)?.calls_pct ?? 0) - (get(lead, x)?.calls_pct ?? 0));
+  const idle = buckets.filter((b) => !rows.includes(b));
+  return (
+    <div className="scroller">
+      <table className="mix">
+        <thead>
+          <tr>
+            <th rowSpan={2}>tool category</th>
+            {have.map((c) => (
+              <th key={c} colSpan={2} className="cls" style={{ color: CLS_COL[c] }}>
+                {CLS_LBL[c] ?? c}
+              </th>
+            ))}
+          </tr>
+          <tr>
+            {have.flatMap((c) => [
+              <th key={c + 'n'} data-tip="share of the class's tool calls">calls</th>,
+              <th key={c + 'c'} data-tip="share of the class's CPU seconds">CPU</th>,
+            ])}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((b) => (
+            <tr key={b}>
+              <td data-tip={BUCKET_TIP[b]}>{b}</td>
+              {have.flatMap((c) => {
+                const r = get(c, b);
+                return [
+                  <td key={c + 'n'} data-tip={r ? `${fint(r.calls)} calls` : undefined}>
+                    <MiniBar pct={r ? r.calls_pct : null} c={CLS_COL[c]} />
+                  </td>,
+                  <td key={c + 'c'} data-tip={r ? `${fmt(r.cpu_s)} CPU s` : undefined}>
+                    <MiniBar pct={r ? r.cpu_pct : null} c={CLS_COL[c]} faint />
+                  </td>,
+                ];
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {idle.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+          no calls in the window: {idle.join(', ')}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
@@ -23,66 +113,60 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const have = shown(byClass, cls);
   const buckets = tm.buckets ?? [];
 
-  const series: BarSeries[] = have.map((c) => ({ k: c, lbl: CLS_LBL[c] ?? c, c: CLS_COL[c] }));
 
-  /* One group per bucket; count share and CPU share travel together so the two
-   * charts cannot drift apart, but they are drawn on separate axes. */
-  const groups: BarGroup[] = useMemo(() => {
-    return buckets.map((b) => {
-      const v: Record<string, number | null> = {};
-      for (const c of have) {
-        const row = byClass[c]?.rows?.find((r) => r.b === b);
-        v[c] = row ? (row.calls_pct ?? null) : null;
-        v['cpu:' + c] = row ? (row.cpu_pct ?? null) : null;
-      }
-      return { k: b, v };
-    });
-  }, [buckets, have, byClass]);
-
-  const totCalls = have.reduce((a, c) => a + (byClass[c]?.calls ?? 0), 0);
-  const totCpu = have.reduce((a, c) => a + (byClass[c]?.cpu_s ?? 0), 0);
-  const callsBy = Object.fromEntries(have.map((c) => [c, byClass[c]?.calls ?? null]));
-  const cpuBy = Object.fromEntries(have.map((c) => [c, byClass[c]?.cpu_s ?? null]));
 
   const head = tm.head ?? {};
-  const shellKinds = tm.shell_kinds ?? {};
+  const topAgent = cls.includes('agent') ? head.agent?.[0] : undefined;
+  // polling = the poll/probe and slurm-query buckets, as a share of the class's calls
+  const POLL_BUCKETS = new Set(['poll/probe', 'slurm-query']);
+  const pollPct = Object.fromEntries(
+    have.map((c) => {
+      const b = byClass[c];
+      if (!b?.calls) return [c, null];
+      const n = (b.rows ?? []).filter((r) => POLL_BUCKETS.has(r.b)).reduce((a, r) => a + (r.calls ?? 0), 0);
+      return [c, (100 * n) / b.calls];
+    }),
+  );
 
   return (
     <>
-      <div className="plates">
+      {/* What the agents spend their tool calls on: the one tool that dominates,
+          how much of it is only waiting, and how varied the rest is. */}
+      <div className="plates three">
         <Plate
-          k={`tool calls ${win}`}
-          total={have.length ? totCalls : null}
+          k={topAgent ? `agents' top tool · ${topAgent.tool}` : "agents' top tool"}
+          total={topAgent?.calls_pct ?? null}
           stripe="var(--s1)"
-          by={callsBy}
+          by={{}}
+          classes={[]}
+          fmtFn={(n) => (n == null ? DASH : pc(n))}
+          tip="the single tool agents ran most, as a share of all agent tool calls"
           note={
-            tm.dedup
-              ? `${fint(tm.dedup.dropped)} resolved shells deduped (${pc(tm.dedup.dropped_pct)})`
+            topAgent
+              ? `of agent tool calls, ${pc(topAgent.cpu_pct)} of their CPU` +
+                have
+                  .filter((c) => c !== 'agent' && head[c]?.[0])
+                  .map((c) => ` · ${CLS_LBL[c] ?? c}: ${head[c]![0].tool} ${pc(head[c]![0].calls_pct)}`)
+                  .join('')
               : undefined
           }
         />
         <Plate
-          k={`cpu seconds ${win}`}
-          total={have.length ? totCpu : null}
-          stripe="var(--s6)"
-          by={cpuBy}
-          fmtFn={(n) => fmt(n)}
-          unit="s"
-          note="self cpu_s only; child_cpu_s is never added"
-        />
-        <Plate
-          k="distinct tools in the head"
-          total={have.length ? Math.max(...have.map((c) => head[c]?.length ?? 0), 0) : null}
+          k="agent tool calls spent polling"
+          total={cls.includes('agent') ? pollPct.agent ?? null : null}
           stripe="var(--s4)"
-          by={Object.fromEntries(have.map((c) => [c, head[c]?.length ?? null]))}
-          note="length of the per-class head list the reducer kept"
+          by={pollPct}
+          fmtFn={(n) => (n == null ? DASH : pc(n))}
+          tip="calls that only check on something: the process table (ps, pgrep, top, sleep, uname, …) and the scheduler (squeue, sacct, scontrol, sinfo, …)"
+          note={cls.includes('agent') && byClass.agent ? `of ${fint(byClass.agent.calls)} agent tool calls ${win}` : undefined}
         />
         <Plate
-          k="buckets in the taxonomy"
-          total={buckets.length || null}
-          stripe="var(--sg)"
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rows?.length ?? null]))}
-          note="12-way tool taxonomy; a class row is one bucket"
+          k="distinct tools agents ran"
+          total={cls.includes('agent') ? tm.n_tools?.agent ?? null : null}
+          stripe="var(--s2)"
+          by={Object.fromEntries(have.map((c) => [c, tm.n_tools?.[c] ?? null]))}
+          tip="different commands, after resolving shell wrappers to the command they ran"
+          note={`the twelve most used are listed below, per class`}
         />
       </div>
 
@@ -103,21 +187,24 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             />
           }
         >
-          <CountCost groups={groups} series={series} />
+          <MixTable buckets={buckets} have={have} byClass={byClass} />
         </Panel>
 
         <Panel
           title="Head of the tool distribution"
           p={tm}
+          span
           empty={!have.some((c) => (head[c]?.length ?? 0) > 0)}
           emptyWhat="no head list for the selected classes"
         >
+          {/* the classes side by side, so one tool reads across all three */}
+          <div className="head-row" style={{ gridTemplateColumns: `repeat(${have.length || 1}, minmax(0, 1fr))` }}>
           {have.map((c) => {
             const rows = head[c] ?? [];
-            if (!rows.length) return null;
+            if (!rows.length) return <div key={c} />;
             return (
               <div key={c}>
-                <div className="eyebrow" style={{ margin: '8px 0 5px' }}>
+                <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_COL[c] }}>
                   {CLS_LBL[c] ?? c}
                 </div>
                 <HBars
@@ -130,103 +217,13 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                       r.cpu_pct,
                     )} of CPU`,
                   }))}
-                  labelW={150}
+                  W={380}
+                  labelW={100}
                   valW={150}
                 />
               </div>
             );
           })}
-        </Panel>
-
-        <Panel
-          title="Shell kinds"
-          p={tm}
-          empty={!have.some((c) => Object.keys(shellKinds[c] ?? {}).length > 0)}
-          emptyWhat="no shell breakdown for the selected classes"
-        >
-          {have.map((c) => {
-            const k = shellKinds[c] ?? {};
-            const keys = Object.keys(k);
-            if (!keys.length) return null;
-            const segs = keys
-              .map((kk, i) => ({
-                k: kk,
-                v: k[kk],
-                c: ['var(--s2)', 'var(--s5)', 'var(--s6)', 'var(--s8)', 'var(--s4)', 'var(--sg)'][
-                  i % 6
-                ],
-              }))
-              .sort((a, b) => b.v - a.v);
-            return (
-              <div key={c}>
-                <div className="eyebrow" style={{ margin: '6px 0 4px' }}>
-                  {CLS_LBL[c] ?? c} {'·'} {fint(segs.reduce((a, s) => a + s.v, 0))} shells
-                </div>
-                <StackRow segs={segs} W={520} H={18} />
-              </div>
-            );
-          })}
-          <Legend
-            items={Array.from(
-              new Set(have.flatMap((c) => Object.keys(shellKinds[c] ?? {}))),
-            ).map((kk, i) => ({
-              k: kk,
-              c: ['var(--s2)', 'var(--s5)', 'var(--s6)', 'var(--s8)', 'var(--s4)', 'var(--sg)'][
-                i % 6
-              ],
-            }))}
-          />
-        </Panel>
-
-        <Panel
-          title="Bucket table — calls and CPU per class"
-          p={tm}
-          span
-          empty={!have.length || !buckets.length}
-          emptyWhat="the feed carried no bucket rows"
-        >
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>bucket</th>
-                  {have.map((c) => (
-                    <th key={c} className="num" colSpan={2}>
-                      {CLS_LBL[c] ?? c}
-                    </th>
-                  ))}
-                </tr>
-                <tr>
-                  <th />
-                  {have.flatMap((c) => [
-                    <th key={c + 'a'} className="num">
-                      calls
-                    </th>,
-                    <th key={c + 'b'} className="num">
-                      cpu
-                    </th>,
-                  ])}
-                </tr>
-              </thead>
-              <tbody>
-                {buckets.map((b) => (
-                  <tr key={b}>
-                    <td className="mono">{b}</td>
-                    {have.flatMap((c) => {
-                      const r = byClass[c]?.rows?.find((x) => x.b === b);
-                      return [
-                        <td key={c + 'a'} className="num">
-                          {r ? `${fint(r.calls)} / ${pc(r.calls_pct)}` : DASH}
-                        </td>,
-                        <td key={c + 'b'} className="num">
-                          {r ? `${fmt(r.cpu_s)}s / ${pc(r.cpu_pct)}` : DASH}
-                        </td>,
-                      ];
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         </Panel>
       </div>

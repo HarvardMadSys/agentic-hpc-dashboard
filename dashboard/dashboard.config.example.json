@@ -8,6 +8,39 @@
   "//6": "Every '//'-prefixed key is stripped by the loader, so comments are legal here.",
   "version": 1,
 
+  "//risk": "What counts as risky differs by cluster: switch built-in rules off, change or add",
+  "//risk1": "them, and set this cluster's variables. Usually kept in its own file and named by",
+  "//risk2": "`profile` (or RC_DASH_RISK_PROFILE). Every key: risk-profiles/README.md and example.json.",
+  "risk": {
+    "profile": "risk-profiles/fasrc.json",
+    "vars": { "compute_hosts": "holy|bos|node|gpu|c\\d{3,}" },
+    "dangerous": { "disable": [], "override": {}, "add": [] },
+    "secrets": { "disable": [], "override": {}, "add": [] }
+  },
+
+  "//ask": "Chat with LLM: each question runs an agent CLI on this host, as the service's",
+  "//ask1": "user (the `codex` preset uses that user's Codex login), with a compact, masked",
+  "//ask2": "snapshot of the window on screen. That snapshot leaves the host.",
+  "ask": {
+    "enabled": true,
+    "agent": "codex",
+    "//command": "or any CLI: argv list or one string; prompt on stdin, answer on stdout",
+    "//command1": "(or in {answer_file}); {workdir} {answer_file} {model} are filled in",
+    "command": null,
+    "model": "",
+    "timeout_s": 240,
+    "max_concurrent": 1,
+    "context_kb": 120,
+    "include_commands": false,
+    "//system_prompt": "the answerer's instructions; empty uses the built-in one. A file is",
+    "//system_prompt1": "re-read on every question and wins. {deployment} {site} {window} are filled in.",
+    "system_prompt": "",
+    "system_prompt_file": "",
+    "snapshot_guide": true
+  },
+
+  "site": { "name": "", "description": "" },
+
   "feeds": {
     "//": "eBPF tier (root): $EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl, landing",
     "//1": "repo-side as log/ebpfm/<date>/<host>.{snapshot,exits}.jsonl -- the log/ebpfm symlink",
@@ -104,7 +137,20 @@
     "//44": "the files it read are unchanged, and only while younger than the drift",
     "//45": "budget above. ~12 MB per day of window per login node; keep bounds it.",
     "cache_windows": true,
-    "cache_keep": 8
+    "cache_keep": 8,
+    "//h1": "Reduce each record once, into the state of its epoch hour, saved under",
+    "//h2": "<cache.dir>/hours; a window is its first part-hour read as before, its",
+    "//h3": "whole hours merged from their saved states, and the open hour read as",
+    "//h4": "before. A window switch, a drift refresh or a restart then costs those",
+    "//h5": "edges and a merge, not a re-read. Filtered views are still read.",
+    "merge_reduce": true,
+    "//h6": "An hour closes once the newest record is this far past its end; a",
+    "//h7": "record later still is merged into its hour's saved state, not lost.",
+    "hour_grace_s": 300,
+    "//h8": "Also save each whole epoch day as one merged state (7 d = ~7 merges).",
+    "day_cache": true,
+    "//h9": "Pause between two hours' reductions, so a backlog never holds off the live tier.",
+    "hour_pause_s": 0.02
   },
 
   "ingest":  { "poll_ms": 1000 },

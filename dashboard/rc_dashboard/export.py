@@ -20,13 +20,32 @@ import os
 import re
 import time
 
-from .normalize import epoch_of
+from . import gz, fastjson
+from .normalize import canonical_class, epoch_of
+from .redact import redact
 
 
 LIST_FIELDS = ("class", "agent_type", "user", "host", "tool", "purpose", "bucket",
                "sandbox", "approval", "exit_code", "signal", "event")
 SCALARS = ("from", "to", "session_key", "depth_min", "depth_max", "cpu_min",
            "duration_min", "q", "rd_min", "wr_min")
+
+# A process the collector did not tag with an agent type -- a person's own
+# shell, an editor it does not recognise -- has none, and `none` is how a filter
+# asks for those. `str(None)` made it `None`, which nobody would think to type,
+# and an empty value cannot be used: it is dropped as "no filter".
+UNTAGGED = "none"
+_UNTAGGED_ALIASES = frozenset({"none", "None", "null", "untagged"})
+
+
+def agent_type_token(v):
+    """A record's agent type as a filter value: the collector's own name, or `none`."""
+    return UNTAGGED if v in (None, "") else str(v)
+
+
+def agent_type_want(values):
+    """Requested agent types, with every spelling of "untagged" made `none`."""
+    return {UNTAGGED if v in _UNTAGGED_ALIASES else v for v in values}
 
 
 def parse_filters(params):
@@ -53,6 +72,10 @@ def parse_filters(params):
             return None
 
     f = {k: many(k) for k in LIST_FIELDS}
+    if f.get("class"):                   # old links say class=human-vscode
+        f["class"] = {canonical_class(c) for c in f["class"]}
+    if f.get("agent_type"):
+        f["agent_type"] = agent_type_want(f["agent_type"])
     f["from"] = one("from")
     f["to"] = one("to")
     f["session_key"] = one("session_key")
@@ -98,7 +121,10 @@ def make_predicate(f):
                 return False
         if f.get("class") and rec.get("_a3") not in f["class"]:
             return False
-        for key, field in (("agent_type", "agent_type"), ("user", "user"),
+        if f.get("agent_type") and agent_type_token(rec.get("agent_type")) \
+                not in f["agent_type"]:
+            return False
+        for key, field in (("user", "user"),
                            ("host", "host"), ("tool", "_eff"),
                            ("purpose", "_purpose"), ("sandbox", "_sandbox"),
                            ("approval", "_approval")):
@@ -126,7 +152,10 @@ def make_predicate(f):
         if f.get("wr_min") is not None and (io.get("wr_mb") or 0) < f["wr_min"]:
             return False
         if f.get("q"):
-            hay = "%s %s" % (rec.get("_command") or "", rec.get("args") or "")
+            # Matched against what would be SHOWN: searching raw argv would let
+            # `q=sk-a`, `q=sk-ab`, ... read a masked token back one character
+            # at a time from the hit counts.
+            hay = "%s %s" % (rec.get("_command") or "", redact(rec.get("args") or ""))
             if f["q"] not in hay.lower():
                 return False
         if f.get("bucket"):
@@ -134,6 +163,11 @@ def make_predicate(f):
             if bucket(rec.get("_eff") or "") not in f["bucket"]:
                 return False
         return True
+    # The time bounds, for `scan` to stop at: a day-file is in time order, so
+    # past the window's far edge nothing in it can match.
+    ok.bounds = (lo, hi)
+    # and the event types, for its byte-level pre-check (`event_filter`)
+    ok.events = f.get("event")
     return ok
 
 
@@ -152,7 +186,7 @@ def iter_lines_reverse(path, block=1 << 20, start=0, end=None):
     boundaries; the default is the whole file as it stands when opened.
     """
     try:
-        fh = open(path, "rb")
+        fh = gz.open_feed(path)
     except OSError:
         return
     with fh:
@@ -175,33 +209,68 @@ def iter_lines_reverse(path, block=1 << 20, start=0, end=None):
             yield carry
 
 
-def iter_lines_forward(path):
+def iter_lines_forward(path, start=0):
+    """Yield complete lines from byte `start` on, as bytes."""
     try:
-        fh = open(path, errors="replace")
+        fh = gz.open_feed(path)
     except OSError:
         return
     with fh:
+        fh.seek(start)
         for line in fh:
             if line.strip():
                 yield line
 
 
+def feed_files(d):
+    """A directory's day-files, plain or gzip-compressed (`gz`).
+
+    A plain file wins over its `.gz` twin: both exist while one is being
+    compressed into the other, and the plain one is the complete copy.
+    """
+    found = set(glob.glob(os.path.join(d, "*.jsonl")))
+    found.update(p for p in glob.glob(os.path.join(d, "*.jsonl" + gz.SUFFIX))
+                 if gz.plain_name(p) not in found)
+    return sorted(found)
+
+
+def dated_dirs(root, days=0):
+    """`[(date, files)]` for the newest `days` date dirs under `root` that hold
+    a day-file, oldest first; every one of them for 0.
+
+    An empty date dir is passed over, not counted. A capture copied in from
+    another cluster has dated dirs made ahead of the files that fill them, and
+    counting those pushed the days that do hold records out of every window:
+    the 1 h view of such a capture read nothing at all.
+    """
+    if not os.path.isdir(root):
+        return []
+    dates = sorted((d for d in os.listdir(root)
+                    if d.startswith("20") and os.path.isdir(os.path.join(root, d))),
+                   reverse=True)
+    out = []
+    for d in dates:
+        files = feed_files(os.path.join(root, d))
+        if files:
+            out.append((d, files))
+            if days and len(out) >= days:
+                break
+    return out[::-1]
+
+
 def day_files(roots, days=0):
     out = []
     for root in roots:
-        if not os.path.isdir(root):
-            continue
-        dates = sorted(d for d in os.listdir(root)
-                       if d.startswith("20") and os.path.isdir(os.path.join(root, d)))
-        if days:
-            dates = dates[-days:]
-        for d in dates:
-            out += sorted(glob.glob(os.path.join(root, d, "*.jsonl")))
-        out += sorted(glob.glob(os.path.join(root, "*.jsonl")))
+        for _d, files in dated_dirs(root, days):
+            out += files
+        out += feed_files(root)
     return sorted(set(out))
 
 
 NO_TS = float("-inf")
+# How far out of time order a day-file's lines can be: the collector writes a
+# poll round at a time. A scan reads this far past a bound before it stops.
+SCAN_SLACK_S = 120
 
 
 def _matching(path, norm, pred, newest_first, stats):
@@ -210,14 +279,45 @@ def _matching(path, norm, pred, newest_first, stats):
     A day-file is appended as events occur, so reading it backwards yields
     descending timestamps and forwards yields ascending -- which is exactly the
     precondition `heapq.merge` needs.
+
+    The same order bounds the read by the predicate's `from`/`to`: it starts at
+    the near edge (`seek_to_epoch`) and stops past the far one. It once read
+    every day-file whole, and `heapq.merge` cannot yield until each stream has,
+    so a day wholly outside the window -- 1.7 GB of a capture's first day under
+    a 24 h view of its second -- held every page of results until it was parsed
+    to the end, to match nothing.
     """
-    lines = iter_lines_reverse(path) if newest_first else iter_lines_forward(path)
-    for line in lines:
+    lo, hi = getattr(pred, "bounds", (None, None))
+    lo = None if lo is None else lo - SCAN_SLACK_S
+    hi = None if hi is None else hi + SCAN_SLACK_S
+    edge = hi if newest_first else lo
+    at = None
+    if edge is not None:
         try:
-            raw = json.loads(line)
+            with gz.open_feed(path) as fh:
+                at = seek_to_epoch(fh, edge, gz.fstat(fh).st_size)
+        except OSError:
+            return
+    if newest_first:
+        lines = iter_lines_reverse(path, end=at)
+    else:
+        lines = iter_lines_forward(path, start=at or 0)
+    # Lines of another event type are dropped before they are parsed, as a
+    # window build drops them: a snapshot stream holds no `exit` at all, and
+    # parsing every line of it to learn that cost most of an exits query.
+    wanted = event_filter(getattr(pred, "events", None))
+    for line in lines:
+        if wanted is not None and wanted(line) is None:
+            continue
+        try:
+            raw = fastjson.loads(line)
         except ValueError:
             continue
         stats["scanned"] += 1
+        ts = epoch_of(raw)
+        if ts is not None and (lo if newest_first else hi) is not None:
+            if (ts < lo) if newest_first else (ts > hi):
+                return
         rec = norm.normalize(raw)
         if rec is None or not pred(rec):
             continue
@@ -314,7 +414,7 @@ def _probe(fh, pos, limit):
         if not line.strip():
             continue
         try:
-            ts = epoch_of(json.loads(line))
+            ts = epoch_of(fastjson.loads(line))
         except ValueError:
             continue
         if ts is not None:
@@ -332,8 +432,8 @@ def window_plan(roots, since, days=0):
     plan = []
     for p in day_files(roots, days):
         try:
-            with open(p, "rb") as fh:
-                size = os.fstat(fh.fileno()).st_size
+            with gz.open_feed(p) as fh:
+                size = gz.fstat(fh).st_size
                 start = seek_to_epoch(fh, since, size)
         except OSError:
             continue
@@ -362,8 +462,8 @@ def resume_plan(roots, since, files, days=0):
     plan = []
     for p, f in known.items():
         try:
-            with open(p, "rb") as fh:
-                st = os.fstat(fh.fileno())
+            with gz.open_feed(p) as fh:
+                st = gz.fstat(fh)
                 if (st.st_dev, st.st_ino) != (f["dev"], f["ino"]) \
                         or st.st_size < f["end"] \
                         or head_digest(fh, f["head_n"]) != f["head"]:
@@ -379,8 +479,8 @@ def resume_plan(roots, since, files, days=0):
         if p in known:
             continue
         try:
-            with open(p, "rb") as fh:
-                size = os.fstat(fh.fileno()).st_size
+            with gz.open_feed(p) as fh:
+                size = gz.fstat(fh).st_size
                 start = seek_to_epoch(fh, since, size)
         except OSError:
             continue
@@ -425,11 +525,11 @@ def _window_stream(entry, norm, since, until, stats, wanted=None):
     tail, and for the next resume, rather than lost as a parse error.
     """
     try:
-        fh = open(entry["path"], "rb")
+        fh = gz.open_feed(entry["path"])
     except OSError:
         return
     with fh:
-        st = os.fstat(fh.fileno())
+        st = gz.fstat(fh)
         entry["dev"], entry["ino"] = st.st_dev, st.st_ino
         entry["head_n"] = min(HEAD_BYTES, st.st_size)
         entry["head"] = head_digest(fh, entry["head_n"])
@@ -448,7 +548,7 @@ def _window_stream(entry, norm, since, until, stats, wanted=None):
                 continue
             stats["scanned"] += 1
             try:
-                raw = json.loads(line)
+                raw = fastjson.loads(line)
             except ValueError:
                 stats["parse_errors"] += 1
                 continue
@@ -468,7 +568,7 @@ def _window_stream(entry, norm, since, until, stats, wanted=None):
             yield ts, rec
 
 
-def window_scan(plan, norm, since, until=None, events=None):
+def window_scan(plan, norm, since, until=None, events=None, match=None):
     """Yield `(rec, stats)` for every in-window record, OLDEST FIRST.
 
     Ascending order is a correctness requirement, not a preference: the tool-mix
@@ -481,11 +581,20 @@ def window_scan(plan, norm, since, until=None, events=None):
     one ordered stream, it is seven of them end to end.
 
     `events`, when given, is the only event types yielded; the rest are skipped
-    before they are parsed (`event_filter`).
+    before they are parsed (`event_filter`). `match`, when given, is a second
+    byte-level pre-check of the same kind -- a callable on the raw line, None to
+    skip it -- for a caller after a handful of records in a busy file (one
+    session's, `proctree.key_matcher`). It must never miss a line the caller
+    wants; a false hit only costs a parse, the caller still filters the record.
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan)}
     wanted = event_filter(events)
+    if match is not None:
+        by_event = wanted
+
+        def wanted(line):
+            return match(line) if by_event is None or by_event(line) is not None else None
     streams = [_window_stream(e, norm, since, until, stats, wanted) for e in plan]
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
         yield rec, stats
@@ -505,5 +614,6 @@ def meta_header(f, reports, cfg, matched, truncated, elapsed):
         "elapsed_s": round(elapsed, 2),
         "note": "Records are the collector's own, plus additive `_`-prefixed derived "
                 "keys (_a3, _eff, _purpose, _sandbox, _approval, _sid, _ts_epoch). "
-                "Original fields are unmodified.",
+                "Original fields are unmodified, except that credential values in "
+                "args / captured_tail are replaced by [REDACTED] (rc_dashboard/redact.py).",
     }}

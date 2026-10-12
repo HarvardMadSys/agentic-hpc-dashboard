@@ -5,6 +5,7 @@ description = "Live agent-behaviour dashboard over the ebpfm collector"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
+    "orjson>=3.13.0",
     "uvicorn[standard]>=0.32",
 ]
 

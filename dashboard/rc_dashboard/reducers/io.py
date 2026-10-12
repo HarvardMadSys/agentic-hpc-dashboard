@@ -17,7 +17,7 @@ dropped for reading little.
 import collections
 import heapq
 
-from . import Acc, Quant, pct
+from . import Acc, Quant, add_counts, pct
 
 IO_KEYS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 
@@ -92,6 +92,30 @@ class IoReducer:
             u["net_rx_mb"] += rx / 1e6
         if nc is not None:
             t["net_calls"] += nc
+
+    def merge(self, o):
+        """Fold a LATER state into this one. `o` is consumed."""
+        for cls, c in o.cls.items():
+            m = self.cls[cls]
+            for k in ("events", "io_seen", "net_seen", "rd_mb", "wr_mb", "rchar_mb",
+                      "wchar_mb"):
+                m[k] += c[k]
+            for k in ("net_tx_mb", "net_rx_mb", "net_calls"):
+                m[k].merge(c[k])
+            add_counts(m["scope"], c["scope"])
+            for k, q in c["quants"].items():
+                m["quants"][k].merge(q)
+        for name, t in o.by_tool.items():
+            m = self.by_tool[name]
+            for k, v in t.items():
+                m[k] += v
+        for name, u in o.by_user.items():
+            m = self.by_user[name]
+            for k, v in u.items():
+                if k == "cls":
+                    m[k] = v            # the newest record's, as one pass keeps it
+                else:
+                    m[k] += v
 
     def result(self):
         by_class = {}

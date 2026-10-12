@@ -16,7 +16,10 @@ is better evidence than a census count.
 import collections
 import time
 
-from ..buckets import RollingBuckets
+from ..buckets import RollingBuckets, _epoch_of
+from ..roster import UserRoster
+from ..redact import redact
+from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
 
 def _sum_or_none(vals):
@@ -45,7 +48,11 @@ def _conn_count(v, kind="ext"):
 
 
 class LiveReducer:
-    EVENTS = ("exit", "residency", "residency_totals", "submit", "truncated")
+    # conn / netio are read for one thing: the identity block of a running agent
+    # root, which carries its launch flags. Residency alone cannot give that -- its
+    # identity is the TREE root, which for a VS Code-launched Claude is the VS Code
+    # server, and every bypassed session on rtx6000a was launched that way.
+    EVENTS = ("exit", "residency", "residency_totals", "submit", "truncated", "conn", "netio")
     KEY = "live"
 
     def __init__(self, cfg, classes):
@@ -65,6 +72,21 @@ class LiveReducer:
         self.window_s = self.retention_s
         self.submits_in_window = collections.deque()
         self.conn_unmatched_births = None
+        # (host, pid) -> [newest epoch, approval] for every agent-session root
+        # seen in an identity block; an exit removes it.
+        self.roots = {}
+        # Who ran what, per account (roster.py: tiered bins, compact slots, a
+        # cached window -- it has to hold at thousands of users).
+        self.roster = UserRoster(
+            self.retention_s,
+            fine_s=int(cfg.get("live.user_bin_s", 600)),
+            coarse_s=int(cfg.get("live.user_coarse_bin_s", 3600)),
+            fine_span_s=int(cfg.get("live.user_fine_span_s", 86400)),
+            skew_s=int(cfg.get("live.clock_skew_s", 120)))
+        # The live frame carries the busiest N; a search reaches the rest
+        # through /api/live/users, so a node with thousands of accounts does
+        # not ship them all on every frame.
+        self.user_rows = int(cfg.get("live.user_rows", 100))
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, older=False):
@@ -77,6 +99,7 @@ class LiveReducer:
         tick, and the tails grow at their OLD end.
         """
         ev = rec.get("event")
+        self._root(rec, ev, older)
         if ev in ("exit", "truncated"):
             self._exit(rec, older)
         elif ev == "residency":
@@ -85,6 +108,25 @@ class LiveReducer:
             self._totals(rec, older)
         elif ev == "submit":
             self._submit(rec, older)
+
+    def _root(self, rec, ev, older=False):
+        """Track the live agent-session roots and their launch approval.
+
+        Only a process whose role is `agent`, on its own record: a tool shell or
+        a child never speaks for its session (normalize.approval_of)."""
+        pid = rec.get("pid")
+        if rec.get("_role") != "agent" or rec.get("_a3") != "agent" \
+                or pid is None or pid != rec.get("agent_pid"):
+            return
+        key = (rec.get("host"), pid)
+        if ev == "exit":
+            if not older:
+                self.roots.pop(key, None)
+            return
+        e = rec.get("_ts_epoch")
+        cur = self.roots.get(key)
+        if cur is None or (e is not None and (cur[0] is None or e > cur[0])):
+            self.roots[key] = [e, rec.get("_approval") or "unknown"]
 
     @staticmethod
     def _place(tail, row, older):
@@ -96,13 +138,19 @@ class LiveReducer:
 
     def _exit(self, rec, older=False):
         self.buckets.add(rec, rec["_a3"], cpu_s=rec.get("cpu_s"))
+        self.roster.add(_epoch_of(rec), rec.get("user"), rec["_a3"],
+                        rec.get("agent_type"), rec.get("cpu_s"))
         io = rec.get("io") or {}
         self._place(self.event_tail, {
             "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "host": rec.get("host"), "user": rec.get("user"),
             "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
             "comm": rec.get("_command"), "tool": rec.get("_eff"),
-            "args": (rec.get("args") or "")[:400],
+            # Raw, and private to this process: masked once, the first time
+            # the row is served (`result`), so the backfill's millions of rows
+            # that age out unseen never pay for it. Cut after masking, never
+            # before -- a cut can leave a token too short to recognise.
+            "_argv": rec.get("args") or "",
             "purpose": rec.get("_purpose"), "depth": rec.get("depth"),
             "pid": rec.get("pid"),
             "duration_s": rec.get("duration_s"), "cpu_s": rec.get("cpu_s"),
@@ -137,11 +185,13 @@ class LiveReducer:
             return                       # a newer tick already holds this host
         self.hosts[h] = {
             "host": h, "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
-            "by_actor3": rec.get("by_actor3") or {},
+            # under this dashboard's classes, IDEs included (normalize.class_totals)
+            "by_actor3": rec.get("_by_class") or rec.get("by_actor3") or {},
             "by_agent_type": rec.get("by_agent_type") or {},
             "trees": rec.get("trees"), "tracked_live": rec.get("tracked_live"),
             "conn_records": rec.get("conn_records"),
-            "tcp_open_ext": (rec.get("tcp_open_ext_by_actor3") or {}),
+            "tcp_open_ext": (rec.get("_tcp_by_class") or rec.get("tcp_open_ext_by_actor3")
+                             or {}),
             "fork_rate": rec.get("fork_rate"),
             "dropped": (rec.get("dropped") or {}).get("n"),
             "d_stack_top": rec.get("d_stack_top"),
@@ -150,6 +200,13 @@ class LiveReducer:
         if rec.get("conn_unmatched_births") is not None and not (
                 older and self.conn_unmatched_births is not None):
             self.conn_unmatched_births = rec["conn_unmatched_births"]
+
+    @staticmethod
+    def _served(row):
+        """The row as the API may show it: argv masked, in place, once."""
+        if "_argv" in row:
+            row["args"] = redact(row.pop("_argv"))[:400]
+        return row
 
     def _submit(self, rec, older=False):
         row = {
@@ -165,13 +222,142 @@ class LiveReducer:
             "array": rec.get("array"), "time_limit_s": rec.get("time_limit_s"),
             "mem": rec.get("mem"), "cpus_per_task": rec.get("cpus_per_task"),
             "req_src": rec.get("req_src"),
+            # what came back -- a job, a dry run, a step, a refusal -- and the
+            # command itself, masked like every other argv this serves
+            "outcome": slurm_outcome(rec),
+            "args": redact(rec.get("args") or "")[:300],
         }
+        if row["outcome"] == "rejected":
+            row["why"] = slurm_reason(rec)
         self._place(self.submit_tail, row, older)
         # Kept oldest-first so `result` can prune from the left.
         if older:
             self.submits_in_window.appendleft(row)
         else:
             self.submits_in_window.append(row)
+
+    # ----------------------------------------------------------------- users
+    LIVE_S = 600     # a session root seen this recently is running now
+
+    def _live_trees(self, now):
+        return [t for t in self.trees.values()
+                if (t.get("epoch") or 0) >= now - self.LIVE_S]
+
+    def _running(self, now):
+        """user -> {class: {agent type: sessions running now}}, and the newest
+        tick each user's sessions sent."""
+        live, seen = {}, {}
+        for t in self._live_trees(now):
+            u = t.get("user")
+            if not u:
+                continue
+            lv = live.setdefault(u, {}).setdefault(t.get("actor3") or "agent", {})
+            at = t.get("agent_type") or ""
+            lv[at] = lv.get(at, 0) + 1
+            seen[u] = max(seen.get(u, 0), t.get("epoch") or 0)
+        return live, seen
+
+    def _row(self, u, e, live, seen):
+        """One account's row: what it ran in the window, by class and agent
+        type, and the sessions it has running now.
+
+        A person is ONE row however many classes they show up in -- the point of
+        this over the collector's per-(host, class) `users` count, which adds
+        the same person once per class and once per node."""
+        r = {"user": u, "n": 0, "cpu_s": 0.0, "by_class": {}, "types": {},
+             "live": live.get(u) or {}, "last_epoch": None}
+        for (c, at), n, cpu in self.roster.decode(e):
+            r["n"] += n
+            r["cpu_s"] += cpu
+            b = r["by_class"].setdefault(c, {"n": 0, "cpu_s": 0.0})
+            b["n"] += n
+            b["cpu_s"] += cpu
+            if at:
+                ty = r["types"].setdefault(c, {})
+                ty[at] = ty.get(at, 0) + n
+        r["cpu_s"] = round(r["cpu_s"], 1)
+        for b in r["by_class"].values():
+            b["cpu_s"] = round(b["cpu_s"], 1)
+        last = max(self.roster.last.get(u) or 0, seen.get(u) or 0)
+        r["last_epoch"] = last or None
+        return r
+
+    def users(self, now=None, window_s=None, q=None, limit=None, running=None):
+        """The roster: distinct accounts, per-class counts, who runs what now,
+        and the busiest rows.
+
+        `q` filters by a substring of the account name and `running`
+        ("class:agent type") to the accounts with such a session up -- both over
+        EVERY account, since the frame carries only the busiest `user_rows`.
+
+        Built lean, because it runs on every live frame: one pass over the
+        accounts for the counts and the sort key, and full rows only for the
+        ones returned."""
+        now = now or time.time()
+        window_s = min(int(window_s or self.retention_s), self.retention_s)
+        tot = self.roster.totals(now, window_s)
+        live, seen = self._running(now)
+        kinds = self.roster.kinds
+        by_class = dict.fromkeys(self.classes, 0)
+        running_by = {}                  # class -> agent type -> users running it
+        for u, m in live.items():
+            for c, ty in m.items():
+                d = running_by.setdefault(c, {})
+                for at in ty:
+                    d[at] = d.get(at, 0) + 1
+        want = None
+        if running:
+            c, _, at = running.partition(":")
+            want = (c, at)
+        ql = q.lower() if q else None
+        keyed = []
+        for u in set(tot) | set(live):
+            e = tot.get(u) or ()
+            m = live.get(u) or {}
+            cs = {kinds[e[j]][0] for j in range(0, len(e), 3)} | set(m)
+            for c in cs:
+                if c in by_class:
+                    by_class[c] += 1
+            if ql and ql not in u.lower():
+                continue
+            if want and not (m.get(want[0]) or {}).get(want[1]):
+                continue
+            # running agents first, then the most active, then by name: the
+            # order a reader scanning for "who has agents going" wants
+            n = sum(e[j + 1] for j in range(0, len(e), 3))
+            keyed.append((-sum((m.get("agent") or {}).values()), -n, u))
+        keyed.sort()
+        limit = self.user_rows if limit is None else max(0, int(limit))
+        return {
+            "total": len(set(tot) | set(live)),
+            "by_class": by_class,
+            "with_live_agent": sum(1 for m in live.values() if m.get("agent")),
+            "running_by_type": running_by,
+            "rows": [self._row(u, tot.get(u), live, seen) for _, _, u in keyed[:limit]],
+            "rows_total": len(keyed),
+            "bin_s": self.roster.fine_s,
+        }
+
+    def user_detail(self, name, now=None, window_s=None, recent=15):
+        """One account opened up: its row, each session it has running, and
+        its newest commands in the event tail."""
+        now = now or time.time()
+        window_s = min(int(window_s or self.retention_s), self.retention_s)
+        cutoff, _ = self.buckets.covers(now, window_s)
+        tot = self.roster.totals(now, window_s)
+        live, seen = self._running(now)
+        row = self._row(name, tot.get(name), live, seen) \
+            if name in tot or name in live else None
+        sessions = sorted(
+            ({k: t.get(k) for k in ("host", "agent_type", "actor3", "age_s", "n_procs",
+                                    "threads", "rss_mb", "cpu_s", "d_state", "headless",
+                                    "approval", "sandbox", "epoch")}
+             for t in self._live_trees(now) if t.get("user") == name),
+            key=lambda t: (t["actor3"] != "agent", -(t["n_procs"] or 0)))
+        cmds = [self._served(dict(e)) for e in self.event_tail
+                if e.get("user") == name and (e.get("epoch") or 0) >= cutoff][:recent]
+        return {"user": name, "row": row, "sessions": sessions, "recent": cmds,
+                "recent_depth": self.event_tail.maxlen}
 
     # ---------------------------------------------------------------- result
     def result(self, now=None, window_s=None):
@@ -215,10 +401,16 @@ class LiveReducer:
             if (t.get("epoch") or 0) >= now - 600:
                 c = t.get("actor3") or "agent"
                 roots_by_cls[c] = roots_by_cls.get(c, 0) + 1
-        autonomous = 0
-        for h in self.hosts.values():
-            for _t, d in (h.get("by_agent_type") or {}).items():
-                autonomous += (d or {}).get("autonomous") or 0
+        # Live agent sessions by their launch approval. The collector's own
+        # residency_totals `autonomous` cannot be used: its is_autonomous misses
+        # `--permission-mode bypassPermissions`, so it read 0 on every day of
+        # rtx6000a's capture while 30k records carried approval_mode=bypassed.
+        for k in [k for k, v in self.roots.items()
+                  if v[0] is not None and v[0] < now - self.retention_s]:
+            del self.roots[k]
+        live_roots = [v[1] for v in self.roots.values()
+                      if v[0] is not None and v[0] >= now - 600]
+        live_ap = collections.Counter(live_roots)
 
         subs = [s for s in self.submits_in_window if (s["epoch"] or 0) >= cutoff]
         by_cls_subs = collections.Counter(s["actor3"] for s in subs)
@@ -306,18 +498,24 @@ class LiveReducer:
                 "d_state": {c: agg[c].get("d_state") for c in self.classes},
                 "roots": {c: roots_by_cls.get(c) for c in self.classes},
                 "live_agent_trees": live_trees,
-                "autonomous_roots": autonomous or None,
+                # null when no agent root was seen, so "none seen" never reads as
+                # "none bypassed"; a real 0 once there are roots to count.
+                "autonomous_roots": live_ap.get("bypassed", 0) if live_roots else None,
+                "live_agent_sessions": len(live_roots) if live_roots else None,
+                "live_sessions_by_approval": dict(live_ap),
                 # replaces the census plate: real, in-scope, actor-attributed
                 "submissions": dict(by_cls_subs),
                 "submissions_window": len(subs),
                 "submission_users": len({s["user"] for s in subs}) if subs else 0,
             },
             "hosts": hosts,
+            "users": self.users(now=now, window_s=window_s),
             # A bounded tail, cut to the window. The tail is `event_tail` deep
             # REGARDLESS of window -- it is a tail, not an aggregate -- so a wide
             # window does not deepen it; narrowing one only removes rows that
             # fell outside. `events_tail_depth` says which limit bit.
-            "events": [e for e in self.event_tail if (e.get("epoch") or 0) >= cutoff],
+            "events": [self._served(e) for e in self.event_tail
+                       if (e.get("epoch") or 0) >= cutoff],
             "events_tail_depth": self.event_tail.maxlen,
             "submits": [s for s in self.submit_tail if (s.get("epoch") or 0) >= cutoff],
             "skew_dropped": self.buckets.skew_dropped,

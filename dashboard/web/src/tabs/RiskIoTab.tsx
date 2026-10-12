@@ -4,30 +4,119 @@
  * is meaningless without its coverage, so every accumulator here is rendered
  * with the coverage attached rather than as a bare total.
  */
-import type { Cls, IoByTool, IoProcess } from '../api/types';
+import { Fragment, useState } from 'react';
+import type { Cls, IoByTool, IoProcess, Resources } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
+import { TimeChart } from './ResourcesTab';
+import type { TimeLine, View } from './ResourcesTab';
 import type { BarGroup, HBarItem } from '../charts/primitives';
-import { Basis, Legend, Panel } from '../components/Panel';
+import { Legend, More, NoRows, Panel } from '../components/Panel';
 import { AccumCell, Coverage, QUANT_HEAD, QuantCells } from '../components/Coverage';
 import { Plate } from '../components/Plate';
-import { EventsExplorer } from '../components/EventsExplorer';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
-import { DASH, fint, fmt, mb, pc } from '../lib/format';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { ByUser, distinct } from '../components/ByUser';
+import { CmdCell } from '../components/Cmd';
+import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
-import type { RiskInstance, RiskPanel } from '../api/types';
-import type { UrlState } from '../lib/filters';
+import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/types';
 
 
-/** Who ran it. `args` is absent on a secrets instance by design. */
+/** Who ran it, at a glance: one chip per agent type (a human's untagged
+ *  runs as "human"), in the class's colour, the most first. */
+function WhoChips({ r, cls }: {
+  r: { classes?: Partial<Record<string, number>>; types?: Partial<Record<string, Record<string, number>>> };
+  cls: Cls[];
+}) {
+  const chips: { c: string; k: string; n: number }[] = [];
+  for (const c of cls) {
+    const ty = r.types?.[c];
+    if (ty) {
+      for (const [t, n] of Object.entries(ty)) chips.push({ c, k: t ? AGENT_TYPE_LBL[t] ?? t : CLS_LBL[c] ?? c, n });
+    } else if (r.classes?.[c]) {
+      chips.push({ c, k: CLS_LBL[c] ?? c, n: r.classes[c]! });
+    }
+  }
+  chips.sort((a, b) => b.n - a.n);
+  if (!chips.length) return <span className="nm">{DASH}</span>;
+  const head = chips.slice(0, 3);
+  const rest = chips.slice(3);
+  return (
+    <span className="u-chips">
+      {head.map((x) => (
+        <span key={x.c + x.k} className="u-chip">
+          <i className="u-dot" style={{ background: CLS_COL[x.c] }} />
+          {x.k} <b>{fint(x.n)}</b>
+        </span>
+      ))}
+      {rest.length > 0 && (
+        <span className="nm" data-tip={rest.map((x) => `${x.k} ${fint(x.n)}`).join('\n')}>
+          +{rest.length}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** The login-compute categories, in the legend's words. */
+const LC_KIND: Record<string, string> = { compute: 'compute', transfer: 'bulk transfer' };
+
+function Caret({ on, show }: { on: boolean; show: boolean }) {
+  return <span className="u-caret" style={show ? undefined : { visibility: 'hidden' }}>{on ? '▾' : '▸'}</span>;
+}
+
+/** The instance lists keep the first few runs a pattern matched; say so when
+ *  that is not all of them, so the groups never read as the whole count. */
+function Capped({ shown, of, noun }: { shown: number; of: number; noun: string }) {
+  if (shown >= of) return null;
+  return <div className="nm" style={{ marginTop: 6 }}>the first {fint(shown)} of {fint(of)} {noun}{noun.endsWith('h') ? 'es' : 's'}</div>;
+}
+
+const failed = (w: RiskInstance) => w.signal != null || (w.exit_code != null && w.exit_code !== 0);
+const fromLbl = (w: RiskInstance) =>
+  w.agent_type ? AGENT_TYPE_LBL[w.agent_type] ?? w.agent_type : CLS_LBL[w.actor3 ?? ''] ?? w.actor3;
+
+/** Who ran it: one row per user, opened into their processes. `args` is
+ *  absent on a secrets instance by design. */
 export function InstanceTable({ rows, showArgs }: { rows: RiskInstance[]; showArgs: boolean }) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      <ByUser
+        rows={rows}
+        user={(w) => w.user}
+        noun="process"
+        cols={[
+          { h: 'from', cell: (rs) => distinct(rs, fromLbl) },
+          { h: 'tools', cell: (rs) => <span className="mono">{distinct(rs, (w) => w.tool)}</span> },
+          { h: 'CPU', num: true, cell: (rs) => fmt(rs.reduce((a, w) => a + (w.cpu_s ?? 0), 0)) },
+          {
+            h: 'failed',
+            num: true,
+            tip: 'exited non-zero or on a signal',
+            cell: (rs) => (rs.some(failed) ? fint(rs.filter(failed).length) : DASH),
+          },
+          {
+            h: 'latest',
+            cell: (rs) => (
+              <span className="mono nm">{rs.map((w) => w.ts ?? '').sort().pop() || DASH}</span>
+            ),
+          },
+        ]}
+        sub={(rs) => <InstanceRows rows={rs} showArgs={showArgs} />}
+      />
+    </div>
+  );
+}
+
+/** One user's processes, as rows. */
+function InstanceRows({ rows, showArgs }: { rows: RiskInstance[]; showArgs: boolean }) {
   if (!rows.length) return null;
   return (
-    <div className="scroller" style={{ marginTop: 6 }}>
+    <div className="scroller">
       <table>
         <thead>
           <tr>
-            <th>at</th><th className="num">pid</th><th>user</th><th>actor</th>
+            <th>at</th><th className="num">pid</th><th>from</th>
             <th>host</th><th>tool</th>
             {showArgs && <th>command</th>}
             <th className="num">cpu</th><th className="num">exit</th>
@@ -38,17 +127,13 @@ export function InstanceTable({ rows, showArgs }: { rows: RiskInstance[]; showAr
             <tr key={`${w.pid}-${i}`}>
               <td className="mono" style={{ color: 'var(--muted)' }}>{w.ts ?? DASH}</td>
               <td className="num mono" style={{ fontSize: '10.5px' }}
-                  data-tip={w.ppid != null ? `ppid ${w.ppid}${w.session_key ? ' \u00b7 ' + w.session_key : ''}` : undefined}>
+                  data-tip={w.ppid != null ? `parent pid ${w.ppid}` : undefined}>
                 {w.pid ?? DASH}
               </td>
-              <td className="mono">{w.user ?? DASH}</td>
-              <td className="mono" style={{ fontSize: '10.5px' }}
-                  data-tip={w.agent_type ?? undefined}>
-                {CLS_LBL[w.actor3 ?? ''] ?? w.actor3 ?? DASH}
-              </td>
+              <td>{fromLbl(w) ?? DASH}</td>
               <td className="mono" style={{ color: 'var(--muted)' }}>{w.host ?? DASH}</td>
               <td className="mono">{w.tool ?? DASH}</td>
-              {showArgs && <td className="arg mono" style={{ fontSize: '10.5px' }}>{w.args ?? DASH}</td>}
+              {showArgs && <CmdCell text={w.args} style={{ fontSize: '10.5px' }} />}
               <td className="num">{w.cpu_s == null ? DASH : fmt(w.cpu_s)}</td>
               <td className="num">
                 {w.signal != null ? `sig${w.signal}` : w.exit_code == null ? DASH : w.exit_code}
@@ -87,20 +172,122 @@ function toolBars(
     }));
 }
 
-export function RiskIoTab({
-  P,
-  cls,
-  url,
-  setUrl,
-  windowMin,
-}: {
-  P: Panels;
-  cls: Cls[];
-  url: UrlState;
-  setUrl: (patch: Partial<UrlState>, push?: boolean) => void;
-  /** Resolved by the service, so the bench's from/to match the charts above. */
-  windowMin?: number | null;
-}) {
+/** The rules the Risk tab counted with: they differ by cluster (a `risk`
+ *  section in the service config, or a profile file), so the page says which. */
+function RulesInEffect({ r }: { r: RiskRules | undefined }) {
+  if (!r) return <NoRows what="the service sent no rule list" />;
+  const all = [
+    ...r.dangerous.map((x) => ({ ...x, kind: 'dangerous command' })),
+    ...r.secrets.map((x) => ({ ...x, kind: 'credential' })),
+  ];
+  const changed = all.filter((x) => x.source !== 'built-in').length;
+  const secTitle = Object.fromEntries((r.sections ?? []).map((sc) => [sc.id, sc.title]));
+  const unsectioned = r.unsectioned ?? [];
+  return (
+    <>
+      <p className="paths" style={{ marginTop: 0 }}>
+        {r.profile ? `profile ${r.profile}` : 'built-in rules, no cluster profile'}
+        {` · ${fint(all.length)} rules in effect`}
+        {changed ? ` · ${fint(changed)} changed or added for this cluster` : ''}
+        {r.disabled.length ? ` · ${fint(r.disabled.length)} switched off` : ''}
+        {unsectioned.length ? ` · ${fint(unsectioned.length)} in no section, so not counted` : ''}
+        {' · set in the risk section of the config, or a profile file (dashboard/risk-profiles/)'}
+      </p>
+      {r.sections && (
+        <p className="paths" style={{ marginTop: 0 }}>
+          {'sections, in order: '}
+          {r.sections.length
+            ? r.sections.map((sc) => (sc.kind === 'login_compute' ? sc.title : `${sc.title} (${fint(sc.rules.length)})`)).join(' · ')
+            : 'none'}
+        </p>
+      )}
+      {(r.invalid.length > 0 || r.unknown.length > 0) && (
+        <div className="err">
+          {r.invalid.map((x) => (
+            <div key={`i${x.kind}${x.id}`}>{`rule ${x.id ?? '(no id)'} (${x.kind}) left out: ${x.error}`}</div>
+          ))}
+          {r.unknown.map((x) => (
+            <div key={`u${x.kind}${x.id}`}>
+              {x.kind === 'login_compute'
+                ? `no tool bucket called ${x.id} (login_compute): it counts nothing`
+                : `no ${x.kind} rule called ${x.id}: check the id`}
+            </div>
+          ))}
+        </div>
+      )}
+      <More label={`every rule, its pattern, and where it came from · ${fint(all.length)}`}>
+        <div className="scroller vscroll">
+          <table>
+            <thead>
+              <tr>
+                <th>category</th>
+                <th>rule</th>
+                <th>severity</th>
+                <th>from</th>
+                <th>section</th>
+                <th>matches</th>
+              </tr>
+            </thead>
+            <tbody>
+              {all.map((x) => (
+                <tr key={x.kind + x.id}>
+                  <td className="nm">{x.kind}</td>
+                  <td>
+                    {x.label}
+                    <div className="mono nm" style={{ fontSize: '10.5px' }}>{x.id}</div>
+                  </td>
+                  <td>{x.severity}</td>
+                  <td style={x.source !== 'built-in' ? { color: 'var(--crimson-ink)' } : undefined}>{x.source}</td>
+                  <td>{x.section ? secTitle[x.section] ?? x.section : DASH}</td>
+                  <CmdCell text={x.pattern_resolved} style={{ fontSize: '10.5px' }} />
+                </tr>
+              ))}
+              {r.disabled.map((x) => (
+                <tr key={`d${x.kind}${x.id}`} className="nm">
+                  <td>{x.kind === 'dangerous' ? 'dangerous command' : 'credential'}</td>
+                  <td>
+                    <s>{x.label}</s>
+                    <div className="mono" style={{ fontSize: '10.5px' }}>{x.id}</div>
+                  </td>
+                  <td>{DASH}</td>
+                  <td>switched off</td>
+                  <td>{DASH}</td>
+                  <td>{DASH}</td>
+                </tr>
+              ))}
+              {unsectioned.map((x) => (
+                <tr key={`n${x.kind}${x.id}`} className="nm">
+                  <td>{x.kind === 'dangerous' ? 'dangerous command' : 'credential'}</td>
+                  <td>
+                    {x.label}
+                    <div className="mono" style={{ fontSize: '10.5px' }}>{x.id}</div>
+                  </td>
+                  <td>{DASH}</td>
+                  <td>{DASH}</td>
+                  <td>in no section: not counted</td>
+                  <td>{DASH}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </More>
+    </>
+  );
+}
+
+/* Two tabs from one reduction: Risk (what agents did that they should not have,
+ * on a shared login node) and I/O (what their reads, writes and traffic cost).
+ * They read the same panels, so they share the setup and each renders its half. */
+export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk' | 'io' }) {
+  // A command or pattern row opens in place into who ran it; the old list of
+  // per-row dropdowns under the table named every row a second time.
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  const isOpen = (id: string) => !!opened[id];
+  const rowOpen = (id: string, can: boolean) =>
+    can
+      ? { className: `xrow${isOpen(id) ? ' open' : ''}`, onClick: () => setOpened((m) => ({ ...m, [id]: !m[id] })) }
+      : {};
   const io = pick<IoProcess>(P, 'io_process', 'ebpfm');
   const byClass = io.by_class ?? {};
   const have = shown(byClass, cls);
@@ -108,22 +295,23 @@ export function RiskIoTab({
   const totRd = have.reduce((a, c) => a + (byClass[c]?.rd_mb ?? 0), 0);
   const totWr = have.reduce((a, c) => a + (byClass[c]?.wr_mb ?? 0), 0);
 
-  /* Disk vs syscall bytes, one axis, MB. The gap between them IS the cache. */
-  const ioGroups: BarGroup[] = have.map((c) => ({
-    k: CLS_LBL[c] ?? c,
-    k2: `io cov ${pc(byClass[c]?.io_coverage_pct)}`,
-    v: {
-      rchar: byClass[c]?.rchar_mb ?? null,
-      rd: byClass[c]?.rd_mb ?? null,
-      wchar: byClass[c]?.wchar_mb ?? null,
-      wr: byClass[c]?.wr_mb ?? null,
-    },
-  }));
-  const ioSeries = [
-    { k: 'rchar', lbl: 'read syscalls (rchar)', c: 'var(--s8)' },
-    { k: 'rd', lbl: 'read from disk', c: 'var(--s2)' },
-    { k: 'wchar', lbl: 'write syscalls (wchar)', c: 'var(--s7)' },
-    { k: 'wr', lbl: 'written to disk', c: 'var(--s1)' },
+  /* Disk against syscall bytes over time, one axis per direction, MB/min.
+   * Solid is what reached the disk, dashed is what passed through read() or
+   * write(): the gap between a class's two lines IS the page cache. Binned by
+   * exit time, like every series on the Resources tab. */
+  const res = pick<Resources>(P, 'resources', 'ebpfm');
+  const rs = res.series;
+  const ioCls = shown(rs?.by_class, cls);
+  const [zoom, setZoom] = useState<View>(null);
+  const ioLines = (disk: 'rd_mb' | 'wr_mb', sys: 'rchar_mb' | 'wchar_mb', sysWord: string): TimeLine[] =>
+    ioCls.flatMap((c) => [
+      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: rs?.by_class[c]?.[disk] },
+      { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: rs?.by_class[c]?.[sys], dashed: true },
+    ]);
+  const ioLegend = (sysWord: string) => [
+    ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
+    { k: 'disk', c: 'var(--ink-2)', solid: true },
+    { k: sysWord, c: 'var(--ink-2)', dashed: true },
   ];
 
   const netGroups: BarGroup[] = have.map((c) => ({
@@ -150,125 +338,192 @@ export function RiskIoTab({
     (r) => !Object.keys(r.classes ?? {}).length ||
            Object.keys(r.classes ?? {}).some((c) => cls.includes(c as Cls)),
   );
+  const dgRows = dg?.rows ?? [];
+  const secRows = sec?.rows ?? [];
+  // The Risk tab's sections, in the cluster's order (risk.sections); a payload
+  // from before sections existed reads as the three it always had.
+  const sections: RiskSection[] = risk.sections ?? [
+    ...(lc ? [{ id: 'login_compute', kind: 'login_compute' as const, title: 'Compute on a login node', rules: [] }] : []),
+    ...(dg ? [{ id: 'commands', kind: 'commands' as const, title: 'Commands that should not run here', rules: dgRows.map((r) => r.id) }] : []),
+    ...(sec ? [{ id: 'credentials', kind: 'credentials' as const, title: 'Credentials exposed in argv', rules: secRows.map((r) => r.id) }] : []),
+  ];
+  const inSection = <T extends { id: string }>(rows: T[], sc: RiskSection) => {
+    const want = new Set(sc.rules);
+    return rows.filter((r) => want.has(r.id));
+  };
+  const sumBy = (rows: { classes?: Partial<Record<string, number>> }[]) =>
+    Object.fromEntries(have.map((c) => [c, rows.reduce((a, r) => a + (r.classes?.[c] ?? 0), 0)]));
   const quantKeys = Array.from(
     new Set(have.flatMap((c) => Object.keys(byClass[c]?.quants ?? {}))),
   );
 
   return (
     <>
+      {/* The headline is the agent's; the other classes sit beside it for scale. */}
+      {part === 'risk' && (
+      <div className={`plates${sections.length === 3 ? ' three' : sections.length === 2 ? ' two' : ''}`}>
+        {sections.slice(0, 4).map((sc) => {
+          if (sc.kind === 'login_compute') {
+            return (
+              <Plate
+                key={sc.id}
+                k={sc.title}
+                total={cls.includes('agent') ? lc?.by_class?.agent?.cpu_h ?? (lc ? 0 : null) : null}
+                stripe="var(--s8)"
+                by={Object.fromEntries(have.map((c) => [c, lc?.by_class?.[c]?.cpu_h ?? (lc ? 0 : null)]))}
+                fmtFn={(n) => fmt(n)}
+                unit="CPU-h"
+                tip="agents' CPU in builds and interpreters (make, gcc, python, …) on a login node, which is shared and not for compute; the other classes beside it"
+                note={lc ? `${fint(lc.by_class?.agent?.users ?? 0)} agent users · all classes ${pc(lc.share_of_all_cpu_pct)} of the node's CPU` : undefined}
+              />
+            );
+          }
+          if (sc.kind === 'credentials') {
+            const rows = inSection(secRows, sc);
+            const by = sumBy(rows);
+            return (
+              <Plate
+                key={sc.id}
+                k={sc.title}
+                total={cls.includes('agent') ? by.agent ?? 0 : null}
+                stripe="var(--s7)"
+                by={by}
+                fmtFn={fint}
+                tip="credentials agents wrote into a command line, where any user on the node can read them with ps; the other classes beside it. Counted, never shown."
+                note={sec ? `of ${fint(sec.args_scanned)} command lines scanned · values never shown` : undefined}
+              />
+            );
+          }
+          const rows = inSection(dgRows, sc);
+          const by = sumBy(rows);
+          const top = [...rows]
+            .filter((r) => (r.classes?.agent ?? 0) > 0)
+            .sort((x, y) => (y.classes?.agent ?? 0) - (x.classes?.agent ?? 0))
+            .slice(0, 2);
+          return (
+            <Plate
+              key={sc.id}
+              k={sc.title}
+              total={cls.includes('agent') ? by.agent ?? 0 : null}
+              stripe="var(--crit)"
+              by={by}
+              fmtFn={fint}
+              tip={`agents' runs matching this section's rules (${sc.rules.length}); the other classes beside it`}
+              note={top.length ? top.map((r) => `${r.command} ×${fint(r.classes?.agent ?? 0)}`).join(' · ') : 'none in the window'}
+            />
+          );
+        })}
+      </div>
+      )}
+
+      {part === 'io' && (
       <div className="plates">
         <Plate
-          k="read from disk"
-          total={have.length ? totRd : null}
+          k="agent disk read"
+          total={cls.includes('agent') ? byClass.agent?.rd_mb ?? null : null}
           stripe="var(--s2)"
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rd_mb ?? null]))}
           fmtFn={(n) => mb(n)}
-          note={
-            have.length ? (
-              <>
-                coverage{' '}
-                {have.map((c) => (
-                  <span key={c}>
-                    {CLS_LBL[c]} {pc(byClass[c]?.io_coverage_pct)}{' '}
-                  </span>
-                ))}
-              </>
-            ) : undefined
-          }
+          note={totRd ? `${pc((100 * (byClass.agent?.rd_mb ?? 0)) / totRd)} of all disk reads` : undefined}
         />
         <Plate
-          k="written to disk"
-          total={have.length ? totWr : null}
+          k="agent disk written"
+          total={cls.includes('agent') ? byClass.agent?.wr_mb ?? null : null}
           stripe="var(--s1)"
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.wr_mb ?? null]))}
           fmtFn={(n) => mb(n)}
+          note={totWr ? `${pc((100 * (byClass.agent?.wr_mb ?? 0)) / totWr)} of all disk writes` : undefined}
         />
         <Plate
-          k="page-cache hit"
-          total={null}
+          k="agent network sent"
+          total={cls.includes('agent') ? (byClass.agent?.net_tx_mb?.n ? byClass.agent.net_tx_mb.total ?? null : null) : null}
+          stripe="var(--s4)"
+          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_tx_mb?.n ? byClass[c]!.net_tx_mb.total ?? null : null]))}
+          fmtFn={(n) => mb(n)}
+          tip="bytes sent over the network by the processes, as each exited"
+          note={byClass.agent?.net_tx_mb ? `measured on ${pc(byClass.agent.net_tx_mb.coverage_pct)} of agent processes` : undefined}
+        />
+        <Plate
+          k="agent network received"
+          total={cls.includes('agent') ? (byClass.agent?.net_rx_mb?.n ? byClass.agent.net_rx_mb.total ?? null : null) : null}
           stripe="var(--s5)"
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.cache_hit_pct ?? null]))}
-          fmtFn={(n) => (n == null ? DASH : pc(n))}
-          note="per class only; a fleet-wide mean would hide the split"
-        />
-        <Plate
-          k="events carrying I/O"
-          total={have.length ? have.reduce((a, c) => a + (byClass[c]?.events_with_io ?? 0), 0) : null}
-          stripe="var(--sg)"
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.events_with_io ?? null]))}
-          note={
-            <>
-              of {fint(have.reduce((a, c) => a + (byClass[c]?.events ?? 0), 0))} events {'—'} per-process
-              I/O is blank for other users' processes
-            </>
-          }
+          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_rx_mb?.n ? byClass[c]!.net_rx_mb.total ?? null : null]))}
+          fmtFn={(n) => mb(n)}
+          tip="bytes received over the network by the processes, as each exited"
+          note={byClass.agent?.net_rx_mb ? `measured on ${pc(byClass.agent.net_rx_mb.coverage_pct)} of agent processes` : undefined}
         />
       </div>
+      )}
 
+      {part === 'io' && (
       <div className="grid wide">
         <Panel
           title="Syscall bytes against disk bytes"
-          p={io}
+          p={res}
           span
-          empty={!have.length}
+          empty={!ioCls.length || !rs?.t.length}
           emptyWhat="no class block for the selection"
-          basis={<Basis items={Object.entries(io.notes ?? {})} />}
         >
-          <GroupBars
-            groups={ioGroups}
-            series={ioSeries}
-            W={1060}
-            H={240}
-            maxBar={30}
-            ylabel="MB"
-            fmtVal={(v) => mb(v)}
-            tickFmt={(t) => fmt(t)}
-          />
-          <Legend items={ioSeries.map((s) => ({ k: s.lbl, c: s.c }))} />
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>class</th>
-                  <th className="num">events</th>
-                  <th className="num">with I/O</th>
-                  <th className="num">rchar</th>
-                  <th className="num">rd</th>
-                  <th className="num">wchar</th>
-                  <th className="num">wr</th>
-                  <th className="num">cache served</th>
-                  <th className="num">cache hit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {have.map((c) => {
-                  const b = byClass[c]!;
-                  return (
-                    <tr key={c}>
-                      <td>{CLS_LBL[c] ?? c}</td>
-                      <td className="num">{fint(b.events)}</td>
-                      <td className="num">
-                        {fint(b.events_with_io)}
-                        <Coverage pct={b.io_coverage_pct} n={b.events_with_io} />
-                      </td>
-                      <td className="num">{mb(b.rchar_mb)}</td>
-                      <td className="num">{mb(b.rd_mb)}</td>
-                      <td className="num">{mb(b.wchar_mb)}</td>
-                      <td className="num">{mb(b.wr_mb)}</td>
-                      <td className="num">{mb(b.cache_served_mb)}</td>
-                      <td className="num">
-                        {b.cache_hit_pct == null ? (
-                          <span className="nm">not measured</span>
-                        ) : (
-                          pc(b.cache_hit_pct)
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          {rs && (
+            <div className="pair-row">
+              <div>
+                <div className="eyebrow">read · solid from disk, dashed through read()</div>
+                <TimeChart s={rs} lines={ioLines('rd_mb', 'rchar_mb', 'read()')} ylabel="MB / min"
+                  yname="read" perMin view={zoom} onView={setZoom} legend={ioLegend('read() calls')} />
+              </div>
+              <div>
+                <div className="eyebrow">written · solid to disk, dashed through write()</div>
+                <TimeChart s={rs} lines={ioLines('wr_mb', 'wchar_mb', 'write()')} ylabel="MB / min"
+                  yname="written" perMin view={zoom} onView={setZoom} legend={ioLegend('write() calls')} />
+              </div>
+            </div>
+          )}
+          <More label="bytes per class">
+            <div className="scroller">
+              <table>
+                <thead>
+                  <tr>
+                    <th>class</th>
+                    <th className="num">events</th>
+                    <th className="num">with I/O</th>
+                    <th className="num">rchar</th>
+                    <th className="num">rd</th>
+                    <th className="num">wchar</th>
+                    <th className="num">wr</th>
+                    <th className="num">cache served</th>
+                    <th className="num">cache hit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {have.map((c) => {
+                    const b = byClass[c]!;
+                    return (
+                      <tr key={c}>
+                        <td>{CLS_LBL[c] ?? c}</td>
+                        <td className="num">{fint(b.events)}</td>
+                        <td className="num">
+                          {fint(b.events_with_io)}
+                          <Coverage pct={b.io_coverage_pct} n={b.events_with_io} />
+                        </td>
+                        <td className="num">{mb(b.rchar_mb)}</td>
+                        <td className="num">{mb(b.rd_mb)}</td>
+                        <td className="num">{mb(b.wchar_mb)}</td>
+                        <td className="num">{mb(b.wr_mb)}</td>
+                        <td className="num">{mb(b.cache_served_mb)}</td>
+                        <td className="num">
+                          {b.cache_hit_pct == null ? (
+                            <span className="nm">not measured</span>
+                          ) : (
+                            pc(b.cache_hit_pct)
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </More>
         </Panel>
 
         <Panel
@@ -312,36 +567,38 @@ export function RiskIoTab({
               { k: 'ingress (rx)', c: 'var(--s2)' },
             ]}
           />
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>class</th>
-                  <th className="num">tx</th>
-                  <th className="num">rx</th>
-                  <th className="num">calls</th>
-                </tr>
-              </thead>
-              <tbody>
-                {have.map((c) => (
-                  <tr key={c}>
-                    <td>{CLS_LBL[c] ?? c}</td>
-                    <td className="num">
-                      <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
-                    </td>
-                    <td className="num">
-                      <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
-                    </td>
-                    {/* an Acc like its tx/rx neighbours: the count carries the
-                        same coverage, so it must show it the same way */}
-                    <td className="num">
-                      <AccumCell a={byClass[c]?.net_calls} />
-                    </td>
+          <More label="network bytes per class">
+            <div className="scroller">
+              <table>
+                <thead>
+                  <tr>
+                    <th>class</th>
+                    <th className="num">tx</th>
+                    <th className="num">rx</th>
+                    <th className="num">calls</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {have.map((c) => (
+                    <tr key={c}>
+                      <td>{CLS_LBL[c] ?? c}</td>
+                      <td className="num">
+                        <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
+                      </td>
+                      <td className="num">
+                        <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
+                      </td>
+                      {/* an Acc like its tx/rx neighbours: the count carries the
+                          same coverage, so it must show it the same way */}
+                      <td className="num">
+                        <AccumCell a={byClass[c]?.net_calls} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </More>
         </Panel>
 
         <Panel
@@ -426,192 +683,196 @@ export function RiskIoTab({
           </Panel>
         )}
       </div>
+      )}
 
-      <div className="grid wide" style={{ marginTop: 18 }}>
-        <Panel
-          title="Compute on a login node"
-          p={risk}
-          span
-          empty={!lcRows.length}
-          emptyWhat="no build or interpreter CPU in the window"
-          basis={lc?.basis}
-        >
-          <div className="eyebrow">
-            {fmt(lc?.compute_cpu_h ?? 0, 3)} CPU-h of compute{' '}
-            <span style={{ color: 'var(--muted)' }}>
-              {'\u00b7'} {pc(lc?.share_of_all_cpu_pct ?? 0)} of all CPU the collector saw
-            </span>
-          </div>
-          <HBars
-            items={lcRows.slice(0, 12).map((r) => ({
-              k: r.tool,
-              v: r.cpu_s,
-              c: r.kind === 'compute' ? 'var(--s8)' : 'var(--sg)',
-              lbl: `${fmt(r.cpu_s)}s ${'\u00b7'} ${r.users}u`,
-              tip: `${r.tool}: ${fmt(r.cpu_s)} CPU-s over ${fint(r.n)} exits, ${r.users} user(s), hosts ${r.hosts.join(', ')}`,
-            }))}
-            labelW={140}
-            valW={110}
-          />
-          <Legend
-            items={[
-              { k: 'compute (build / interpreter)', c: 'var(--s8)' },
-              { k: 'bulk transfer', c: 'var(--sg)' },
-            ]}
-          />
-          <div className="scroller" style={{ marginTop: 8 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>tool</th><th>kind</th><th className="num">exits</th>
-                  <th className="num">CPU s</th><th className="num">% of CPU</th>
-                  <th className="num">users</th><th>hosts</th><th>by class</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lcRows.slice(0, 20).map((r, i) => (
-                  <tr key={r.tool + i}>
-                    <td className="mono">{r.tool}</td>
-                    <td>{r.kind ?? DASH}</td>
-                    <td className="num">{fint(r.n)}</td>
-                    <td className="num">{fmt(r.cpu_s)}</td>
-                    <td className="num">{pc(r.cpu_pct)}</td>
-                    <td className="num">{fint(r.users)}</td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>{r.hosts.join(' ')}</td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>
-                      {Object.entries(r.classes ?? {})
-                        .map(([c, n]) => `${CLS_LBL[c] ?? c} ${n}`)
-                        .join(' \u00b7 ')}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="eyebrow" style={{ marginTop: 10 }}>heaviest individual processes</div>
-          <InstanceTable rows={lc?.top_procs ?? []} showArgs />
-        </Panel>
-
-        <Panel
-          title="Commands that should not run here"
-          p={risk}
-          span
-          empty={!(dg?.rows ?? []).length}
-          emptyWhat="no matching command in the window"
-          basis={[dg?.basis, dg?.site_assumption].filter(Boolean).join(' ')}
-        >
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>command</th><th>severity</th><th>axis</th>
-                  <th className="num">exits</th><th className="num">users</th>
-                  <th className="num">succeeds</th><th className="num">CPU s</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(dg?.rows ?? []).map((r) => (
-                  <tr key={r.id}>
-                    <td className="mono">{r.command}</td>
-                    <td><span className={`sev ${r.severity}`}>{r.severity}</span></td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>{r.axis}</td>
-                    <td className="num">{fint(r.n)}</td>
-                    <td className="num">{fint(r.users)}</td>
-                    <td className="num">
-                      {r.works_pct == null ? (
-                        <span className="nm">no verdict</span>
-                      ) : (
-                        <>
-                          {pc(r.works_pct)}
-                          <span style={{ color: 'var(--muted)' }}> of {fint(r.rated)}</span>
-                        </>
+      {part === 'risk' && (
+      <div className="grid wide">
+        {/* One panel per section, in the order this cluster's risk profile
+            lists them (risk.sections); a section it leaves out is not drawn and
+            not computed. */}
+        {sections.length === 0 && (
+          <Panel title="No risk sections" span>
+            <NoRows what="this cluster's risk profile lists no sections (risk.sections)" />
+          </Panel>
+        )}
+        {sections.map((sc) =>
+          sc.kind === 'login_compute' ? (
+            <Panel
+              key={sc.id}
+              title={sc.title}
+              p={risk}
+              span
+              empty={!lcRows.length}
+              emptyWhat="no build or interpreter CPU in the window"
+              basis={lc?.basis}
+            >
+              <div className="eyebrow">
+                {fmt(lc?.compute_cpu_h ?? 0, 3)} CPU-h of compute{' '}
+                <span style={{ color: 'var(--muted)' }}>
+                  {'\u00b7'} {pc(lc?.share_of_all_cpu_pct ?? 0)} of all CPU
+                </span>
+              </div>
+              <HBars
+                items={lcRows.slice(0, 12).map((r) => ({
+                  k: r.tool,
+                  v: r.cpu_s,
+                  c: r.kind === 'compute' ? 'var(--s8)' : 'var(--sg)',
+                  lbl: `${dur(r.cpu_s)} ${'\u00b7'} ${fint(r.users)} user${r.users === 1 ? '' : 's'}`,
+                  tip: `${r.tool}: ${fmt(r.cpu_s)} CPU-s over ${fint(r.n)} exits, ${r.users} user(s), hosts ${r.hosts.join(', ')}`,
+                }))}
+                labelW={140}
+                valW={110}
+              />
+              <Legend
+                items={[
+                  { k: 'compute (build / interpreter)', c: 'var(--s8)' },
+                  { k: 'bulk transfer', c: 'var(--sg)' },
+                ]}
+              />
+              <More label="per tool, and the heaviest processes">
+                <div className="scroller vscroll" style={{ marginTop: 8 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>tool</th><th>category</th><th className="num">times run</th>
+                        <th className="num">CPU time</th><th className="num">% of CPU</th>
+                        <th className="num">users</th><th>hosts</th><th>run by</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lcRows.map((r, i) => (
+                        <tr key={r.tool + i}>
+                          <td className="mono">{r.tool}</td>
+                          <td>{r.kind ? LC_KIND[r.kind] ?? r.kind : DASH}</td>
+                          <td className="num">{fint(r.n)}</td>
+                          <td className="num">{dur(r.cpu_s)}</td>
+                          <td className="num">{pc(r.cpu_pct)}</td>
+                          <td className="num">{fint(r.users)}</td>
+                          <td className="mono" style={{ fontSize: '10.5px' }}>{r.hosts.join(' ')}</td>
+                          <td><WhoChips r={r} cls={cls} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="eyebrow" style={{ marginTop: 10 }}>heaviest individual processes</div>
+                <InstanceTable rows={lc?.top_procs ?? []} showArgs />
+              </More>
+            </Panel>
+          ) : sc.kind === 'credentials' ? (
+            <Panel
+              key={sc.id}
+              title={sc.title}
+              p={risk}
+              span
+              empty={!inSection(secRows, sc).length}
+              emptyWhat="no credential pattern matched in the window"
+              basis={[sec?.redaction, sec?.undercount].filter(Boolean).join(' ')}
+            >
+              <div className="eyebrow">
+                {fint(sec?.args_scanned ?? 0)} command lines scanned
+              </div>
+              <div className="scroller">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>pattern</th><th>severity</th><th className="num">matches</th>
+                      <th className="num">users</th><th>tools</th><th>run by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inSection(secRows, sc).map((r) => (
+                      <Fragment key={r.id}>
+                      <tr {...rowOpen(r.id, (r.instances ?? []).length > 0)}>
+                        <td>
+                          <Caret on={isOpen(r.id)} show={(r.instances ?? []).length > 0} />
+                          {r.pattern}
+                        </td>
+                        <td><span className={`sev ${r.severity}`}>{r.severity}</span></td>
+                        <td className="num">{fint(r.n)}</td>
+                        <td className="num">{fint(r.users)}</td>
+                        <td className="mono" style={{ fontSize: '10.5px' }}>{r.tools.join(' ')}</td>
+                        <td><WhoChips r={r} cls={cls} /></td>
+                      </tr>
+                      {isOpen(r.id) && (
+                        <tr className="xsub">
+                          <td colSpan={6}>
+                            <InstanceTable rows={r.instances ?? []} showArgs={false} />
+                            <Capped shown={(r.instances ?? []).length} of={r.n} noun="match" />
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="num">{fmt(r.cpu_s)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Legend
-            items={[
-              { k: 'environment-unaware: runs, tells you nothing here', c: 'var(--s6)' },
-              { k: 'policy-unaware: works, and is what the facility asks you not to do', c: 'var(--s7)' },
-            ]}
-          />
-          {(dg?.rows ?? []).filter((r) => (r.instances ?? []).length).map((r) => (
-            <div key={r.id}>
-              <div className="eyebrow" style={{ marginTop: 10 }}>
-                {r.command} {'\u2014'} who ran it
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <InstanceTable rows={r.instances ?? []} showArgs />
-            </div>
-          ))}
-        </Panel>
+            </Panel>
+          ) : (
+            <Panel
+              key={sc.id}
+              title={sc.title}
+              p={risk}
+              span
+              empty={!inSection(dgRows, sc).length}
+              emptyWhat="no matching command in the window"
+              basis={[dg?.basis, dg?.site_assumption].filter(Boolean).join(' ')}
+            >
+              <div className="scroller">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>command</th><th>severity</th>
+                      <th className="num">times run</th><th className="num">users</th><th>run by</th>
+                      <th className="num" data-tip="runs that exited 0: nothing stopped them">succeeded</th><th className="num">CPU s</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inSection(dgRows, sc).map((r) => (
+                      <Fragment key={r.id}>
+                      <tr {...rowOpen(r.id, (r.instances ?? []).length > 0)}>
+                        <td className="mono">
+                          <Caret on={isOpen(r.id)} show={(r.instances ?? []).length > 0} />
+                          {r.command}
+                        </td>
+                        <td><span className={`sev ${r.severity}`}>{r.severity}</span></td>
+                        <td className="num">{fint(r.n)}</td>
+                        <td className="num">{fint(r.users)}</td>
+                        <td><WhoChips r={r} cls={cls} /></td>
+                        <td className="num">
+                          {r.works_pct == null ? (
+                            <span className="nm">no verdict</span>
+                          ) : (
+                            <span data-tip={`${fint(r.succeeded)} of the ${fint(r.rated)} runs with an exit code exited 0; ${fint(r.n - r.rated)} ended on a signal and carry no verdict`}>
+                              {pc(r.works_pct)}
+                              <span style={{ color: 'var(--muted)' }}>{` · ${fint(r.succeeded)} of ${fint(r.rated)}`}</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="num">{fmt(r.cpu_s)}</td>
+                      </tr>
+                      {isOpen(r.id) && (
+                        <tr className="xsub">
+                          <td colSpan={7}>
+                            <InstanceTable rows={r.instances ?? []} showArgs />
+                            <Capped shown={(r.instances ?? []).length} of={r.n} noun="run" />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          ),
+        )}
 
-        <Panel
-          title="Credentials exposed in argv"
-          p={risk}
-          span
-          empty={!(sec?.rows ?? []).length}
-          emptyWhat="no credential pattern matched in the window"
-          basis={[sec?.redaction, sec?.undercount].filter(Boolean).join(' ')}
-        >
-          <div className="eyebrow">
-            {fint(sec?.args_scanned ?? 0)} argv scanned{' '}
-            <span style={{ color: 'var(--muted)' }}>
-              {'\u00b7'} {fint(sec?.args_truncated ?? 0)} truncated ({pc(sec?.truncation_pct ?? 0)}) {'\u2014'}{' '}
-              a credential past the argv cap is invisible
-            </span>
-          </div>
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>pattern</th><th>severity</th><th className="num">matches</th>
-                  <th className="num">users</th><th>tools</th><th>by class</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(sec?.rows ?? []).map((r) => (
-                  <tr key={r.id}>
-                    <td>{r.pattern}</td>
-                    <td><span className={`sev ${r.severity}`}>{r.severity}</span></td>
-                    <td className="num">{fint(r.n)}</td>
-                    <td className="num">{fint(r.users)}</td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>{r.tools.join(' ')}</td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>
-                      {Object.entries(r.classes ?? {})
-                        .map(([c, n]) => `${CLS_LBL[c] ?? c} ${n}`)
-                        .join(' \u00b7 ')}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {(sec?.rows ?? []).filter((r) => (r.instances ?? []).length).map((r) => (
-            <div key={r.id}>
-              <div className="eyebrow" style={{ marginTop: 10 }}>
-                {r.pattern} {'\u2014'} who exposed it (no argv, by design)
-              </div>
-              <InstanceTable rows={r.instances ?? []} showArgs={false} />
-            </div>
-          ))}
-          <p className="empty" style={{ marginTop: 8 }}>
-            The matched value is never read back here {'\u2014'} only the pattern, the counts and
-            the tools. On a shared node the alternative would make this page the leak.
-          </p>
+        <Panel title="Rules in effect" p={risk} span empty={!risk.rules} emptyWhat="the service sent no rule list">
+          <RulesInEffect r={risk.rules} />
         </Panel>
       </div>
-
-      <div className="head" style={{ marginTop: 26 }}>
-        <div>
-          <div className="eyebrow">search / filter / export</div>
-          <h1 style={{ fontSize: 18 }}>Event bench</h1>
-        </div>
-      </div>
-      <EventsExplorer url={url} setUrl={setUrl} windowMin={windowMin ?? null} />
+      )}
     </>
   );
 }

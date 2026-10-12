@@ -93,8 +93,10 @@ same rules:
   `0` — an absent measurement must not read as a zero measurement. Downstream, a nullable
   field carries `coverage_pct` and is never imputed; a present feed with no matching rows
   says `none`, while an absent feed names the path it expected.
-- **Three actor classes, never two** — `agent` / `human-vscode` / `human`. Folding VS Code
-  into "agent" is what produced a retracted GPU near-parity claim.
+- **Three actor classes, never two** — `agent` / `human` / `ide`. `ide` is any editor a person
+  drives (VS Code, Cursor, Windsurf, other remote-IDE servers); the collector's `human-vscode`
+  and its Cursor/Windsurf "agents" are mapped into it at ingest. Folding the IDE class into
+  "agent" is what produced a retracted GPU near-parity claim.
 - **Nothing is fabricated.** The collector emits only what it measured; the page contains
   no `Math.random()` (`npm run check:no-random` asserts it) and never interpolates between
   frames. A minute with no record is a hole in the line.

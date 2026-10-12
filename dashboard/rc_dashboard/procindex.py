@@ -53,6 +53,9 @@ class ProcIndex:
         self.wanted_full = 0
         # Bumped on every change, so a consumer can cache what it derived.
         self.version = 0
+        # The keys this index held a record of, while an hour is reduced
+        # (`hours`); None otherwise.
+        self.touched = None
 
     def feed(self, rec):
         pid = rec.get("pid")
@@ -69,6 +72,8 @@ class ProcIndex:
             if e[4] is None and rec.get("cwd"):
                 e[4] = rec["cwd"]
                 self.version += 1
+            if self.touched is not None:
+                self.touched.add(key)
             return
         want = self.wanted.pop(key, None)
         if role is None:
@@ -90,6 +95,8 @@ class ProcIndex:
                              spawned_by_agent(role, rec.get("_command")),
                              rec.get("_command"), rec.get("cwd"), rec.get("user")]
         self.version += 1
+        if self.touched is not None:
+            self.touched.add(key)
         ppid = rec.get("ppid")
         pk = (host, ppid)
         if ppid not in _NO_PARENT and pk not in self.entries:
@@ -101,6 +108,60 @@ class ProcIndex:
                 self.wanted[pk] = [st, rec.get("user")]
             else:
                 self.wanted_full += 1   # counted, never silent
+
+    # ----------------------------------------------------------------- merge
+    # A window is merged from saved hour states (`hours`). The index is a join
+    # across records -- a child asks for its parent (`wanted`), a later record
+    # fills a parent or a cwd in -- so each hour is reduced with the index as
+    # it stood at the end of the hour before (`seed`), and decides exactly as
+    # one pass would. What an hour SAVES is the entries it held a record of,
+    # as they stood at its end (`strip`): a merged window holds every process
+    # it saw a record of, and nothing older.
+    CARRY_AGED = ("entries", "wanted")
+
+    def track(self):
+        """Note every key fed from here on, for `strip`."""
+        self.touched = set()
+
+    def carry(self):
+        return {"entries": self.entries, "wanted": self.wanted,
+                "touched": {"entries": self.touched or ()}}
+
+    def seed(self, c):
+        self.entries = c["entries"]
+        self.wanted = c["wanted"]
+
+    def install(self, c):
+        """The pending parent requests at the end of the hours merged in, for
+        the records after them; the entries stay this window's own."""
+        self.wanted = c["wanted"]
+
+    def strip(self):
+        held = self.touched or ()
+        self.entries = {k: e for k, e in self.entries.items() if k in held}
+        self.wanted = {}
+        self.touched = None
+
+    def merge(self, o):
+        """Fold a LATER state into this one. `o` is consumed.
+
+        A key new here is admitted as `feed` admits one, oldest evicted at the
+        cap; a key held already keeps what it was first seen with, and takes
+        only a parent or a cwd it lacked -- `feed`'s own rule."""
+        for k, e in o.entries.items():
+            cur = self.entries.get(k)
+            if cur is None:
+                if len(self.entries) >= self.cap:
+                    self.entries.pop(next(iter(self.entries)))
+                    self.evicted += 1
+                self.entries[k] = e
+                continue
+            if cur[0] in _NO_PARENT and e[0] not in _NO_PARENT:
+                cur[0] = e[0]
+            if cur[4] is None and e[4]:
+                cur[4] = e[4]
+        self.wanted_full += o.wanted_full
+        self.version += 1
 
     def role(self, host, pid):
         e = self.entries.get((host, pid))

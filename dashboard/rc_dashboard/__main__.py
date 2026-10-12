@@ -1,6 +1,7 @@
 """CLI: `--print-config`, `--check-feeds`, and `serve`."""
 import argparse
 import json
+import os
 import sys
 
 from . import config as configmod
@@ -24,6 +25,9 @@ def build_parser():
     ap.add_argument("--retention-min", type=int, default=None)
     ap.add_argument("--live-window-min", type=int, default=None)
     ap.add_argument("--backfill-hours", type=int, default=None)
+    # Pin the service's present: "auto" (the feed's newest record) or a local
+    # time. For a capture copied from another cluster; see clock.py.
+    ap.add_argument("--as-of", default=None)
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--static-dir", default=None)
@@ -43,11 +47,31 @@ def main(argv=None):
         return feedmod.print_table(feedmod.resolve(cfg))
 
     import uvicorn
+    from . import clock
     from .app import create_app
+    # Before anything reads the time: the window registry starts building the
+    # default window as the app is created.
+    if cfg.get("clock.as_of"):
+        clk = clock.install(cfg, feedmod.resolve(cfg)["ebpf"]["resolved"])
+        sys.stderr.write("clock pinned to %s (%s)\n" % (clk["as_of"], clk["source"]))
     app = create_app(cfg)
-    uvicorn.run(app, host=cfg.get("server.host"), port=int(cfg.get("server.port")),
-                log_level="info")
-    return 0
+    # An open websocket (every page holds one) must not hold a restart hostage.
+    try:
+        uvicorn.run(app, host=cfg.get("server.host"), port=int(cfg.get("server.port")),
+                    log_level="info", timeout_graceful_shutdown=3)
+        code = 0
+    except SystemExit as e:              # uvicorn's own exit, e.g. a failed bind
+        code = e.code if isinstance(e.code, int) else 1
+    # Then leave at once. The backfill and the node-tier read run on executor
+    # threads, which the interpreter joins at exit; a restart during either
+    # outlived the dev runner's grace, was SIGKILLed only through its `uv run`
+    # wrapper, and the orphan kept the port -- the next server failed to bind
+    # and hung, and every request was a 502. Nothing is lost: window snapshots
+    # are written to a temp file and renamed, and everything else is rebuilt
+    # from the collector's files on the next start.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":
