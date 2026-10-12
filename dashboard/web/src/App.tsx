@@ -237,6 +237,12 @@ export default function App() {
             tfrom={url.tfrom}
             setTfrom={(t) => setUrl({ tfrom: t }, true)}
             tuser={url.tuser}
+            clearUser={() => setUrl({ tuser: null })}
+            routine={
+              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.routine_commands?._value as
+                | string[]
+                | undefined) ?? null
+            }
           />
         );
       case 'slurm':

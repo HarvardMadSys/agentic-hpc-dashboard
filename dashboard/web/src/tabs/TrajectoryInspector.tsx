@@ -36,6 +36,8 @@ import {
   spots,
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
+import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount } from '../components/ProcDiagram';
+import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { serverNow } from '../lib/clock';
@@ -366,6 +368,7 @@ export function TrajectoryInspector({
   setFrom,
   onClose,
   jump,
+  routine,
 }: {
   sid: string;
   /** the ranked row, when the ranking holds it: shown while the tree is read */
@@ -376,6 +379,8 @@ export function TrajectoryInspector({
   onClose: () => void;
   /** a run picked in the ranked table; `n` changes with every pick */
   jump?: RunJump | null;
+  /** the site's routine commands, hidden from the tree on request (`ui.routine_commands`) */
+  routine?: string[] | null;
 }) {
   // "read again": a bound of now is a different read from the one the service
   // kept, and is that read's own key there. Cleared by paging, which reads anew.
@@ -389,6 +394,13 @@ export function TrajectoryInspector({
   const elapsed = useElapsed(q.loading);
   const tree: ProcNode | null = d?.found ? (d.tree ?? null) : null;
   const [open, setOpen] = useState<Set<string>>(() => new Set(['r']));
+  // The tree view (roadmap notes 38 and 39): boxes, opened from the top, with
+  // the routine taken out unless asked for. The table keeps every jump.
+  const [mode, setMode] = useState<'tree' | 'table'>('tree');
+  const [hide, setHide] = useState(true);
+  const [dopen, setDopen] = useState<Set<string>>(() => new Set(['r']));
+  const [dall, setDall] = useState<Set<string>>(() => new Set());
+  const rules = routine?.length ? routine : DEFAULT_ROUTINE;
   const [view, setView] = useState<[number, number] | null>(null);
   // The tree follows the zoom a beat behind the strip: a fully expanded tree is
   // thousands of rows, and the strip must not wait for them on every frame.
@@ -401,11 +413,18 @@ export function TrajectoryInspector({
   const stampKey = `${sid}|${d?.scan?.computed_at ?? ''}`;
   useEffect(() => {
     if (tree) setOpen(defaultOpen(tree));
+    setDopen(new Set(['r']));
+    setDall(new Set());
     // a new read is a new axis and new rows: nothing from the last one applies
     setView(null);
     setFlash(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stampKey]);
+
+  // a jump lands on a row of the table: show the table when one is asked for
+  useEffect(() => {
+    if (want) setMode('table');
+  }, [want]);
 
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -656,13 +675,19 @@ export function TrajectoryInspector({
           <div className="ins-tools">
             {tree && (
               <>
-                <button className="btn" onClick={() => setOpen(allOpen(tree))} data-tip="open every row the read served">
+                <Segmented
+                  value={mode}
+                  onChange={setMode}
+                  options={[
+                    { k: 'tree', lbl: 'tree', tip: 'boxes joined by lines, opened a level at a time' },
+                    { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline; landmarks and the strip jump here' },
+                  ]}
+                />
+                <button className="btn" onClick={() => (mode === 'tree' ? setDopen(allOpen(tree)) : setOpen(allOpen(tree)))}
+                  data-tip="open every process the read served">
                   expand all
                 </button>
-                <button className="btn" onClick={() => setOpen(defaultOpen(tree))}>
-                  overview
-                </button>
-                <button className="btn" onClick={() => setOpen(new Set(['r']))}>
+                <button className="btn" onClick={() => (mode === 'tree' ? setDopen(new Set(['r'])) : setOpen(new Set(['r'])))}>
                   collapse
                 </button>
               </>
@@ -721,7 +746,24 @@ export function TrajectoryInspector({
             inView={inView}
           />
         )}
-        {tree && (
+        {tree && mode === 'tree' && (
+          <>
+            <div className="pd-bar">
+              <label data-tip="take out runs of the same command and the site's routine commands (ui.routine_commands), so the unusual processes stand out">
+                <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
+                hide routine
+              </label>
+              {hide && (
+                <span className="nm">
+                  {`${fint(hiddenCount(tree, rules))} routine processes hidden`}
+                </span>
+              )}
+              <span className="nm">· click a box to open what it started · hover for its command</span>
+            </div>
+            <ProcDiagram root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
+          </>
+        )}
+        {tree && mode === 'table' && (
           <ProcTree root={tree} open={open} setOpen={setOpen} timeline={d?.timeline} view={treeView} flash={flash} />
         )}
         {tree && (

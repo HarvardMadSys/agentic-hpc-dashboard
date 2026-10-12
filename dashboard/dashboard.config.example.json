@@ -44,8 +44,15 @@
   "//ui": "What the page opens on before a reader changes it; ignored by the saved builds.",
   "//ui1": "user_columns: Active users' columns, any of agents ides running exited cpu read",
   "//ui2": "written net gpu last. A reader's own choice is kept in their browser.",
+  "//ui3": "routine_commands: what a trajectory's tree hides when 'hide routine' is on, beside",
+  "//ui4": "runs of the same command: a command, a command and its first argument, or",
+  "//ui5": "'shell-snapshot' (an agent's shell sourcing its saved environment).",
   "ui": {
-    "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"]
+    "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
+    "routine_commands": ["lsb_release", "getconf", "uname", "sleep", "pgrep", "ps", "tr", "cut",
+                         "dirname", "basename", "readlink", "realpath", "which", "hostname", "id",
+                         "whoami", "date", "tty", "stty", "tput", "locale", "nproc", "true", "false",
+                         "git status", "git rev-parse", "git config", "git symbolic-ref", "shell-snapshot"]
   },
 
   "//anonymize": "Replace every username, lab or Slurm account name, email address and numeric",
