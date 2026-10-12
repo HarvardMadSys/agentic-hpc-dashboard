@@ -90,7 +90,13 @@ const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
 const RANKS = new Set(['events', 'cpu_s', 'distinct_tools', 'chain_runs']);
 
 /** Renamed tabs: old key -> current key. */
-const TAB_ALIAS: Record<string, string> = { cascades: 'agents' };
+const TAB_ALIAS: Record<string, string> = {
+  cascades: 'agents',
+  // the consolidation (roadmap notes 41-47): a saved link still lands on the panels
+  sessions: 'agents',
+  io: 'resources',
+  sandbox: 'internal',
+};
 
 /** How a filter asks for the processes the collector gave no agent type. */
 export const UNTAGGED = 'none';

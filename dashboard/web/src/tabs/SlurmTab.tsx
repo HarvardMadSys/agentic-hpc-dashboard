@@ -17,6 +17,7 @@
  * Its own tab because not every cluster runs Slurm: `slurm.enabled: false`
  * in the service's config hides it.
  */
+import { GLOSS } from '../lib/glossary';
 import { Fragment, useState } from 'react';
 import type {
   Cls,
@@ -234,7 +235,7 @@ function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: strin
     ['queue checks', undefined, (c) => fint(by[c].queries)],
     ['sessions polling the queue', 'a poll at least every 3 min, for 10 min or more', (c) => fint(by[c].polling_sessions)],
     ['hours spent polling', 'the sum of those stretches of polling', (c) => (by[c].polling_h ? fmt(by[c].polling_h) : DASH)],
-    ['share of its tool calls that go to the scheduler', 'from the tool mix: sbatch, srun, salloc, scancel, squeue, sacct, sinfo, scontrol, … over every tool call of the class', (c) => pc(schedPct(c))],
+    ['share of its processes that are scheduler commands', 'from the tool mix: sbatch, srun, salloc, scancel, squeue, sacct, sinfo, scontrol, … over every process the class ran', (c) => pc(schedPct(c))],
     ...FLAGS.map(([f, lbl, tip]): [string, string, (c: string) => React.ReactNode] => [
       `submitted with ${lbl}`,
       `${tip}; share of the submissions that asked for a job`,
@@ -341,7 +342,7 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
             <th>user</th>
             <th>from</th>
             <th>job</th>
-            <th>asked for</th>
+            <th data-tip="the partition, time limit, and GPUs the command line asked for; “in the script” when they were #SBATCH lines the collector cannot see">asked for</th>
             <th>command</th>
           </tr>
         </thead>
@@ -452,7 +453,7 @@ export function SlurmTab({ P, live, cls }: { P: Panels; live: LiveResponse | nul
                 <tr>
                   <th>from</th>
                   <th>tool</th>
-                  <th>why</th>
+                  <th data-tip={GLOSS.refused}>why</th>
                   <th className="num">times</th>
                   <th>e.g.</th>
                 </tr>

@@ -18,6 +18,7 @@
  *   are measured; the paths its command lines NAMED are inferred, and every
  *   place that shows them is drawn in the dashed `inferred` style.
  */
+import { ToolPanels } from './SessionsTab';
 import { useState } from 'react';
 import type {
   Cls,
@@ -737,6 +738,10 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         )}
 
       </div>
+      {/* What agents ran, by kind of tool: was the Sessions & tools tab
+          (roadmap notes 46 and 47). */}
+      <div className="grid-gap" />
+      <ToolPanels P={P} cls={cls} />
     </>
   );
 }

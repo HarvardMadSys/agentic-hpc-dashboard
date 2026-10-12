@@ -37,8 +37,8 @@ import type { RunJump } from './TrajectoryInspector';
 import './trajectories.css';
 
 const RANK_LBL: Record<TrajRank, string> = {
-  events: 'events',
-  cpu_s: 'cpu_s',
+  events: 'processes',
+  cpu_s: 'CPU',
   distinct_tools: 'distinct tools',
   chain_runs: 'chain runs',
 };
@@ -128,7 +128,7 @@ export function TrajectoriesTab({
               <>
                 {fint(agent.users)} agent user{agent.users === 1 ? '' : 's'}
                 {agent.top_user_share_pct != null
-                  ? ` · the busiest makes ${pc(agent.top_user_share_pct)} of agent tool calls`
+                  ? ` · the busiest makes ${pc(agent.top_user_share_pct)} of agent processes`
                   : ''}
                 {agent.probes ? ` · ${fint(agent.probes)} one-off probes set aside` : ''}
               </>
@@ -136,7 +136,7 @@ export function TrajectoriesTab({
           }
         />
         <Plate
-          k="tool calls per agent session · median"
+          k="processes per agent session · median"
           total={agent?.calls_p50 ?? null}
           stripe="var(--s4)"
           by={byCls((d) => d.calls_p50)}
@@ -153,29 +153,29 @@ export function TrajectoriesTab({
           by={byCls((d) => d.wall_p50_s)}
           fmtFn={(n) => dur(n)}
           tip={
-            'first to last tool call INSIDE the window: in a 1 h window no session reads ' +
+            'first to last process INSIDE the window: in a 1 h window no session reads ' +
             'longer than an hour, and one idle at its end reads shorter than it was open.'
           }
           note={
             agent?.longest
               ? `longest ${dur(agent.longest.wall_s)} · ${agent.longest.user ?? '?'}, ${
                   agent.longest.agent_type ?? 'agent'
-                }, ${fint(agent.longest.tool_calls)} tool calls`
+                }, ${fint(agent.longest.tool_calls)} processes`
               : undefined
           }
         />
         <Plate
-          k="agent tool calls spent waiting"
+          k="agent processes spent waiting"
           total={agent?.wait_pct ?? null}
           stripe="var(--s2)"
           by={byCls((d) => d.wait_pct)}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
           tip={
-            'tool calls whose only job is to wait on something else: polling the ' +
+            'processes whose only job is to wait on something else: polling the ' +
             'process table (ps, pgrep, top, sleep loops) or the scheduler (squeue, ' +
             'sacct, scontrol, watch).'
           }
-          note={agent ? `of ${fint(agent.tool_calls)} tool calls in real agent sessions` : undefined}
+          note={agent ? `of ${fint(agent.tool_calls)} processes in real agent sessions` : undefined}
         />
       </div>
 
@@ -234,7 +234,7 @@ export function TrajectoriesTab({
             open
             cols={[
               { h: 'classes', cell: (rs) => distinct(rs, (r) => CLS_LBL[r.actor3 ?? 'unlabeled'] ?? r.actor3) },
-              { h: 'events', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + (r.n_events ?? 0), 0)) },
+              { h: 'processes', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + (r.n_events ?? 0), 0)) },
               { h: 'cpu s', num: true, cell: (rs) => fmt(rs.reduce((a, r) => a + (r.cpu_s ?? 0), 0)) },
               { h: 'peak RSS', num: true, cell: (rs) => mb(Math.max(0, ...rs.map((r) => r.peak_rss_mb ?? 0)) || null) },
               { h: 'read', num: true, cell: (rs) => mb(rs.reduce((a, r) => a + (r.io_rd_mb ?? 0), 0)) },
@@ -252,7 +252,7 @@ export function TrajectoriesTab({
                       <th>class</th>
                       <th>host</th>
                       {/* both always visible: the switcher reorders, it never hides */}
-                      <th className="num">events</th>
+                      <th className="num" data-tip="processes that exited in the session within the window">processes</th>
                       <th className="num">cpu s</th>
                       <th className="num">tools</th>
                       <th className="num">chains</th>
@@ -368,7 +368,7 @@ export function TrajectoriesTab({
             noun="session"
             open
             cols={[
-              { h: 'events', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + (r.n_events ?? 0), 0)) },
+              { h: 'processes', num: true, cell: (rs) => fint(rs.reduce((a, r) => a + (r.n_events ?? 0), 0)) },
               { h: 'cpu s', num: true, cell: (rs) => fmt(rs.reduce((a, r) => a + (r.cpu_s ?? 0), 0)) },
             ]}
             sub={(rs) => (
@@ -377,7 +377,7 @@ export function TrajectoriesTab({
                   <thead>
                     <tr>
                       <th>session</th>
-                      <th className="num">events</th>
+                      <th className="num" data-tip="processes that exited in the session within the window">processes</th>
                       <th className="num">cpu s</th>
                       <th style={{ minWidth: 330 }}>purpose over the sequence</th>
                       <th className="wrap" style={{ minWidth: 300 }}>tool runs</th>

@@ -5,7 +5,7 @@
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
 import { useMemo } from 'react';
-import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse } from '../api/types';
+import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Lines } from '../charts/primitives';
 import type { LineSeries } from '../charts/primitives';
@@ -19,6 +19,11 @@ import { DASH, dur, fint, fmt, pc } from '../lib/format';
 import { pcol, purposeLegend } from '../lib/purposes';
 import { ActiveUsers, scrollToUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
+import { WindowPlates } from '../components/WindowPlates';
+import { WindowCharts } from './LiveCharts';
+import { Term } from '../components/Term';
+import { GLOSS } from '../lib/glossary';
+import type { Panels } from '../lib/panels';
 
 /* ------------------------------------------------------------- helpers */
 
@@ -71,16 +76,18 @@ function nowByClass(now: LiveResponse['now'], key: string): Partial<Record<strin
   return out;
 }
 
-const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct'][] = [
-  ['roots', 'roots', 'int'],
-  ['procs', 'procs', 'int'],
-  ['events', 'events', 'int'],
-  ['rss_gb', 'RSS GB', 'num'],
+/* `roots` is the count of live agent and IDE session trees on the host: the
+ * word a reader meets is "sessions" (roadmap note 14). */
+const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct', gloss?: string][] = [
+  ['roots', 'sessions', 'int', 'sessions_now'],
+  ['procs', 'running', 'int', 'running'],
+  ['events', 'exited', 'int', 'exited'],
+  ['rss_gb', 'memory GB', 'num', 'rss'],
   ['cpu_pct', 'CPU', 'pct'],
   ['load_1', 'load₁', 'num'],
-  ['d_state', 'D-state', 'int'],
-  ['users', 'users', 'int'],
-  ['tcp_open_ext', 'ext TCP', 'int'],
+  ['d_state', 'D-state', 'int', 'dstate'],
+  ['users', 'users', 'int', 'user'],
+  ['tcp_open_ext', 'ext TCP', 'int', 'exttcp'],
 ];
 
 function hostCell(h: LiveHost, key: string, kind: string) {
@@ -115,12 +122,17 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
 
 export function LiveTab({
   live,
+  P,
+  traj,
   cls,
   who,
   feeds,
   goto,
 }: {
   live: LiveState;
+  /** the window's reduced panels: the "last 24h" plates and every time series */
+  P: Panels;
+  traj: Trajectories | null;
   cls: Cls[];
   /** The page's user and agent-type filter. The live tier is one shared rolling
    *  count, not rebuilt per filter, so only rows that name a user narrow. */
@@ -218,16 +230,19 @@ export function LiveTab({
 
   return (
     <>
+      {/* Two rows, each saying which span it counts: the same word ("sessions",
+          "users") means a different span in each (roadmap note 1). */}
+      <div className="rowlabel">right now</div>
       <div className="plates three">
         <Plate
-          k="events / min"
+          k="processes exited / min"
           total={perMinAll}
           stripe="var(--s1)"
           by={perMin}
           tip={
-            'events recorded during the last minute that has fully elapsed.\n\n' +
-            'the minute in progress is still filling, so counting it would always ' +
-            'read low and the number would dip every time the page refreshed.'
+            GLOSS.exited + '\n\n' +
+            'counted over the last minute that has fully elapsed: the minute in progress is ' +
+            'still filling, so counting it would always read low.'
           }
           note={
             <>
@@ -239,14 +254,14 @@ export function LiveTab({
           }
         />
         <Plate
-          k="live sessions"
+          k="sessions · last 10 min"
           total={rootsTot}
           stripe="var(--s4)"
           by={roots}
-          tip="agent and IDE sessions running right now: a session root seen in the last 10 minutes. A person's own shell has no such root, so the human slot is blank, not 0."
+          tip={GLOSS.sessions_now + ". A person's own shell has no such session, so the human slot is blank, not 0."}
           note={
             <>
-              {procsTot != null ? `${fint(procsTot)} processes` : 'processes not reported'}
+              {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
               {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB resident` : ''}
               {/* Counted from the live agent-session roots' own launch argv
                   (reducers/live.py), not the collector's `autonomous`, which
@@ -261,7 +276,7 @@ export function LiveTab({
           }
         />
         <Plate
-          k="active users"
+          k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
           total={U?.total ?? null}
           stripe="var(--s5)"
           by={usersBy}
@@ -280,9 +295,14 @@ export function LiveTab({
         />
       </div>
 
+      <div className="rowlabel">
+        {windowLbl === 'in window' ? 'the window' : <>last <b>{windowLbl}</b></>}
+      </div>
+      <WindowPlates P={P} cls={cls} traj={traj} />
+
       <div className="grid wide">
         <Panel
-          title={`Process exits per minute · last ${windowLbl}`}
+          title={`Processes exited per minute · last ${windowLbl}`}
           span
           live
           feed={liveFeed?.name ?? 'live'}
@@ -308,13 +328,15 @@ export function LiveTab({
             xfmt={clockLabel}
             xtip={fullClock}
             minSpan={3 * (L?.window?.bin_s ?? 60)}
-            ylabel="exits / min"
+            ylabel="exited / min"
             xlabel={`last ${windowLbl}`}
             xname="at"
-            yname="exits/min"
+            yname="exited/min"
           />
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
+
+        <WindowCharts P={P} cls={cls} />
 
         <ActiveUsers
           U={U}
@@ -325,7 +347,7 @@ export function LiveTab({
         />
 
         <Panel
-          title="Hosts right now"
+          title="Login nodes right now"
           span
           live
           feed={liveFeed?.name ?? 'live'}
@@ -340,11 +362,11 @@ export function LiveTab({
                   {HOST_COLS.filter((c) => hosts.some((h) => typeof h[c[0]] === 'number')).map(
                     (c) => (
                       <th key={c[0]} className="num">
-                        {c[1]}
+                        <Term k={c[3]}>{c[1]}</Term>
                       </th>
                     ),
                   )}
-                  <th>by class</th>
+                  <th><Term tip="processes running now, per class">running by class</Term></th>
                 </tr>
               </thead>
               <tbody>
@@ -388,7 +410,7 @@ export function LiveTab({
 
 
         <Panel
-          title="Process exit stream"
+          title="Latest processes exited"
           span
           live
           feed={liveFeed?.name ?? 'live'}

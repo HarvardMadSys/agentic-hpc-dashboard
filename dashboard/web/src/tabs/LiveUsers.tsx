@@ -313,7 +313,7 @@ export function UsersPanel({
           onChange={setSort}
           options={[
             { k: 'agents', lbl: 'agents running', tip: 'users with the most agents running first' },
-            { k: 'active', lbl: 'most active', tip: 'the most processes run in the window first' },
+            { k: 'active', lbl: 'most active', tip: 'the most processes exited in the window first' },
             { k: 'name', lbl: 'name' },
           ]}
         />
@@ -326,7 +326,7 @@ export function UsersPanel({
                 <th>user</th>
                 {cls.includes('agent') && <th>agents running</th>}
                 {cls.includes('ide') && <th>IDEs running</th>}
-                <th className="num" data-tip="processes that finished in the window, split by class">processes run</th>
+                <th className="num" data-tip="processes that exited in the window, split by class">processes exited</th>
                 <th className="num">CPU time</th>
                 <th className="num">last active</th>
               </tr>
