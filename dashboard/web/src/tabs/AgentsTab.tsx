@@ -605,6 +605,7 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         <div className="grid wide">
           <Panel
             title={`${typeLbl(type)}: its agents and their subagents`}
+            ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'role_census', 'workspace.summary'] }]}
             id="sec-agent-trees"
             p={c}
             span

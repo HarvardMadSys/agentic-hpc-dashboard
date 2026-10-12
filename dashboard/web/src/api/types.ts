@@ -1523,12 +1523,28 @@ export interface AskInfo {
   error: string | null;
   timeout_s: number;
 }
+/** Part of one panel's data, as the service keys it: a window panel
+ * (`tool_mix`, `risk`, ...) or some of its fields, the live tier's small
+ * sections (`live`: now, users, hosts, submits), or the ranked sessions
+ * (`trajectories`, by `rank`). */
+export interface AskPart {
+  panel: string;
+  keys?: string[];
+  rank?: string;
+}
+/** What a question is about: one panel's parts, or one session. Omitted, it is
+ * the whole window. `title` and `tab` are what the page calls the panel. */
+export type AskContext =
+  | { parts: AskPart[]; title?: string; tab?: string; classes?: string[] }
+  | { session: string; title?: string };
 /** One question, as the service runs it. */
 export interface AskJob {
   id: string;
   state: 'queued' | 'running' | 'done' | 'error';
   question: string;
   window: string;
+  /** the panel or session it was asked about; null for the whole window */
+  about?: string | null;
   agent: string;
   model: string | null;
   progress: string | null;

@@ -46,6 +46,18 @@ def dealias(params, anon):
     return out
 
 
+def dealias_sid(sid, anon):
+    """A session id as the service keys it. A terminal's (`tty:<user>@<tty>`)
+    carries its account, which the page only ever saw as an alias."""
+    if anon is None or not isinstance(sid, str):
+        return sid
+    head, sep, key = sid.rpartition("|")
+    if sep and key.startswith("tty:") and "@" in key:
+        who, _, tty = key[4:].partition("@")
+        return "%s|tty:%s@%s" % (head, anon.dealias_user(who), tty)
+    return sid
+
+
 def view_filter(request, anon=None):
     """The page-wide `user` / `agent_type` filter, in `/api/events`' vocabulary."""
     try:
@@ -227,13 +239,21 @@ def create_app(cfg):
     def api_ask_info():
         return agg.ask_info()
 
+    # `context` narrows a question to one panel or one session (Aggregator.ask);
+    # the page's `user` / `agent_type` filter rides in the query string, as on
+    # /api/panels, so a panel's question reads the view the reader is looking at.
     @app.post("/api/ask")
     async def api_ask(request: Request):
         body = await request.json()
+        flt = view_filter(request, anon)
+        ctx = body.get("context")
+        if isinstance(ctx, dict) and ctx.get("session") is not None:
+            ctx = dict(ctx, session=dealias_sid(ctx["session"], anon))
         try:
             return await asyncio.to_thread(
                 agg.ask, str(body.get("question") or ""), body.get("window_min"),
-                [h for h in (body.get("history") or []) if isinstance(h, dict)][-3:])
+                [h for h in (body.get("history") or []) if isinstance(h, dict)][-3:],
+                ctx if isinstance(ctx, dict) else None, flt)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -319,8 +339,8 @@ def create_app(cfg):
         that launched a filtered-to-Claude-Code session would cut the tree at
         its root rather than narrow it.
         """
-        body = masked(redact.payload(proctree.serve(agg, sid, window_min, frm, to)),
-                      "trajectory")
+        body = masked(redact.payload(proctree.serve(agg, dealias_sid(sid, anon), window_min,
+                                                    frm, to)), "trajectory")
         raw, headers = proctree.response(body, request.headers.get("accept-encoding"))
         # One chunk: the body is already whole, this only lets it go out gzipped.
         return StreamingResponse(iter([raw]), media_type="application/json",

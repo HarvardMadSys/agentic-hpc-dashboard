@@ -667,6 +667,7 @@ export function TrajectoryInspector({
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
       <Panel
         title="Session inspector — process tree"
+        ask={{ session: sid }}
         p={env}
         feed="ebpf"
         empty={d?.found === false}

@@ -158,6 +158,7 @@ function ToolMixPanel({ tm, have, buckets, byClass }: {
   return (
     <Panel
       title="Tool mix"
+      ask={[{ panel: 'tool_mix', keys: ['by_class', 'by_type', 'buckets'] }]}
       p={tm}
       span
       empty={!have.length || !buckets.length}
@@ -286,6 +287,7 @@ function HeadPanel({ tm, have }: { tm: ToolMix; have: string[] }) {
   return (
     <Panel
       title="Top tools"
+      ask={[{ panel: 'tool_mix', keys: ['tools', 'head', 'n_tools'] }]}
       id="sec-head-of-the-tool-distribution"
       p={tm}
       span
@@ -404,6 +406,7 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       <div className="grid wide">
         <Panel
           title="Tool mix — counted, then costed"
+          ask={[{ panel: 'tool_mix', keys: ['by_class', 'buckets', 'cpu_basis', 'dedup'] }]}
           p={tm}
           span
           empty={!have.length || !buckets.length}
@@ -423,6 +426,7 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
 
         <Panel
           title="Head of the tool distribution"
+          ask={[{ panel: 'tool_mix', keys: ['head', 'tools', 'n_tools'] }]}
           p={tm}
           span
           empty={!have.some((c) => (head[c]?.length ?? 0) > 0)}

@@ -433,6 +433,7 @@ export function SlurmTab({ P, live, cls }: { P: Panels; live: LiveResponse | nul
       <div className="grid wide">
         <Panel
           title="Sessions at the scheduler"
+          ask={[{ panel: 'slurm', keys: ['sessions', 'sessions_total', 'basis'] }]}
           p={sp}
           span
           empty={!sessions.length}
@@ -442,11 +443,13 @@ export function SlurmTab({ P, live, cls }: { P: Panels; live: LiveResponse | nul
           <Sessions rows={sessions} total={sp.sessions_total ?? sessions.length} />
         </Panel>
 
-        <Panel title="How each class uses the scheduler" p={sp} span empty={!have.length} emptyWhat="no class block for the selection">
+        <Panel title="How each class uses the scheduler" p={sp} span empty={!have.length} emptyWhat="no class block for the selection"
+          ask={[{ panel: 'slurm', keys: ['by_class', 'basis'] }]}>
           <ByClass by={by} have={have} tm={tm} />
         </Panel>
 
-        <Panel title="Submissions the scheduler refused" p={sp} span empty={!rej.length} emptyWhat="the scheduler refused nothing in the window">
+        <Panel title="Submissions the scheduler refused" p={sp} span empty={!rej.length} emptyWhat="the scheduler refused nothing in the window"
+          ask={[{ panel: 'slurm', keys: ['rejections', 'by_class'] }]}>
           <div className="scroller">
             <table className="roomy">
               <thead>
@@ -476,7 +479,8 @@ export function SlurmTab({ P, live, cls }: { P: Panels; live: LiveResponse | nul
           </div>
         </Panel>
 
-        <Panel title="Latest submissions" span live feed="live" empty={!submits.length} emptyWhat="no submission in the window">
+        <Panel title="Latest submissions" span live feed="live" empty={!submits.length} emptyWhat="no submission in the window"
+          ask={[{ panel: 'live', keys: ['submits'] }]}>
           <Latest rows={submits} />
         </Panel>
       </div>

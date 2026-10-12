@@ -127,6 +127,13 @@ export function OverviewTab({
     <div className="grid wide">
       <Panel
         title={`Who uses what · ${win}`}
+        ask={[
+          { panel: 'tool_mix', keys: ['by_class'] },
+          { panel: 'resources', keys: ['by_class', 'top', 'oncpu_set_aside'] },
+          { panel: 'io_process', keys: ['by_class'] },
+          { panel: 'slurm', keys: ['by_class'] },
+          { panel: 'live', keys: ['now'] },
+        ]}
         p={tm}
         span
         empty={!units.length}

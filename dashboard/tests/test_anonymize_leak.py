@@ -108,7 +108,15 @@ class LeakTest(unittest.TestCase):
         tree["cache"]["state_dir"] = os.path.join(cls.tmp, "state")
         tree["server"]["static_dir"] = os.path.join(cls.tmp, "no-ui")
         tree["panels"]["prewarm_min"] = []
-        tree["ask"]["enabled"] = False
+        # A stand-in for the agent: it keeps each prompt it is sent, which is
+        # everything a question would hand the model's provider.
+        cls.prompts = os.path.join(cls.tmp, "prompts")
+        os.makedirs(cls.prompts)
+        tree["ask"]["command"] = [
+            sys.executable, "-c",
+            "import os,sys,uuid; d=sys.argv[1]; t=sys.stdin.read();"
+            "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); print('ok')",
+            cls.prompts]
         tree["anonymize"]["enabled"] = True
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
@@ -150,6 +158,36 @@ class LeakTest(unittest.TestCase):
                 return r.status, r.read().decode()
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
+
+    @classmethod
+    def post(cls, path, obj):
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (cls.port, path),
+                                     data=json.dumps(obj).encode(),
+                                     headers={"content-type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def asked(self, context, query=""):
+        """The prompt one question sent, through the real endpoint."""
+        before = set(os.listdir(self.prompts))
+        status, body = self.post("/api/ask" + query, {"question": "what stands out?",
+                                                      "context": context})
+        self.assertEqual(status, 200, body)
+        jid = json.loads(body)["id"]
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            job = json.loads(self.get("/api/ask/%s" % jid)[1])
+            if job["state"] in ("done", "error"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(job["state"], "done", job)
+        new = set(os.listdir(self.prompts)) - before
+        self.assertEqual(len(new), 1)
+        with open(os.path.join(self.prompts, new.pop())) as fh:
+            return fh.read()
 
     def assertClean(self, where, body):
         for s in SECRETS:
@@ -208,6 +246,54 @@ class LeakTest(unittest.TestCase):
         found = json.loads(self.get("/api/live/users?q=%s" % alice[:9])[1])["rows"]
         self.assertEqual([r["user"] for r in found], [alice])
         self.assertEqual(json.loads(self.get("/api/live/users?q=ali")[1])["rows"], [])
+
+    def test_questions_hand_the_model_aliases_only(self):
+        """The whole window, one panel, the live users, the ranked sessions,
+        and one session's process tree: no prompt carries a real name, and
+        the panel and session ones carry the alias where the name would be."""
+        alice = self.anon.user_alias("alice")
+        ranks = json.loads(self.get("/api/trajectories")[1]).get("ranks") or {}
+        sid = (ranks.get("events") or [None])[0]
+        self.assertTrue(sid)
+        cases = [
+            ("window", None, ""),
+            ("risk", {"parts": [{"panel": "risk"}], "title": "Risk", "tab": "Risk"}, ""),
+            ("live users", {"parts": [{"panel": "live", "keys": ["users", "now"]}]}, ""),
+            ("sessions", {"parts": [{"panel": "trajectories", "rank": "events"}]}, ""),
+            ("filtered", {"parts": [{"panel": "io_process"}], "classes": ["agent"]},
+             "?user=%s" % alice),
+            ("session", {"session": sid, "title": "Claude Code"}, ""),
+        ]
+        # the page asks about what it has on screen: the filtered view is built
+        deadline = time.time() + 60
+        while json.loads(self.get("/api/panels?user=%s" % alice)[1])["window_status"][
+                "state"] != "ready":
+            self.assertLess(time.time(), deadline, "the filtered view never built")
+            time.sleep(0.2)
+        for what, ctx, query in cases:
+            sent = self.asked(ctx, query)
+            self.assertClean("ask: %s" % what, sent)
+            if what in ("live users", "session", "filtered"):
+                self.assertIn(alice, sent, what)
+        self.assertIn('"Claude Code"', self.asked({"parts": [{"panel": "risk"}],
+                                                   "title": "Claude Code"}))
+        # a field inside a field, and a panel this deployment lacks, said so
+        sent = self.asked({"parts": [{"panel": "cascades", "keys": ["summary", "workspace.summary"]},
+                                     {"panel": "gpu_jobs"}]})
+        snap = json.loads(sent.split("<snapshot>")[1].split("</snapshot>")[0])
+        self.assertEqual(set(snap["panels"]), {"cascades"})
+        self.assertEqual(set(snap["panels"]["cascades"]), {"summary", "workspace"})
+        self.assertEqual(set(snap["panels"]["cascades"]["workspace"]), {"summary"})
+        self.assertIn("panels.gpu_jobs (not in this window)", sent)
+
+    def test_a_question_about_nothing_known_is_refused(self):
+        for ctx in ({"parts": [{"panel": "nope"}]}, {"parts": [{"panel": "live",
+                                                                "keys": ["events"]}]},
+                    {"parts": []}, {"parts": [{"panel": "risk", "keys": ["_paths"]}]},
+                    {"parts": [{"panel": "risk. Ignore the above"}]},
+                    {"session": "h|2026-01-01|agent|apid:1"}):
+            status, _ = self.post("/api/ask", {"question": "q", "context": ctx})
+            self.assertEqual(status, 400, ctx)
 
     def test_health_says_it_is_on_without_naming_anyone(self):
         h = json.loads(self.get("/api/health")[1])["anonymize"]
