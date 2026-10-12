@@ -1591,3 +1591,100 @@ tr.xsub > td {
   padding: 4px 0 16px 22px;
   white-space: normal;
 }
+
+/* ---------------------------------------------------------- terms and sorting
+ * A term a reader may not know carries a small "?" (lib/glossary.ts): the
+ * explanation is on hover, so the page stays as short as it was. */
+.term {
+  cursor: help;
+}
+.qm {
+  font-size: 0.72em;
+  font-weight: 600;
+  margin-left: 2px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  vertical-align: super;
+  line-height: 0;
+}
+.term:hover .qm,
+.plate .k:hover .qm {
+  color: var(--ink-2);
+}
+/* A sortable header says so with a faint arrow; the column in use shows it solid. */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+th.sortable:hover {
+  color: var(--ink);
+}
+th .sort-arrow {
+  margin-left: 4px;
+  font-size: 9px;
+  color: var(--edge);
+}
+th.sorted .sort-arrow {
+  color: var(--ink-2);
+}
+
+/* Live's two rows of plates: what is happening now, and the window. Each row
+ * says which it is, because the same word means different spans in each. */
+.rowlabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  margin: 0 0 6px 2px;
+}
+.rowlabel b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.plates + .rowlabel {
+  margin-top: -4px;
+}
+
+/* the picker over the extra time series on Live: one chart at a time */
+.picker-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.seg.wrap {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.intro {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  margin: 0 0 14px 2px;
+  max-width: 80ch;
+}
+/* two panel grids in a row on one tab, spaced like the panels within one */
+.grid-gap {
+  height: 14px;
+}
+/* Every header or eyebrow that explains itself on hover says so with a "?",
+ * so a reader knows where the explanations are without hovering everything. */
+th[data-tip]::after,
+.eyebrow[data-tip]::after,
+td.lbl[data-tip]::after {
+  content: '?';
+  font-size: 0.72em;
+  font-weight: 600;
+  margin-left: 2px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  vertical-align: super;
+  line-height: 0;
+}
+th[data-tip],
+.eyebrow[data-tip],
+td.lbl[data-tip] {
+  cursor: help;
+}

@@ -50,6 +50,7 @@ export function Plate({
     >
       <div className="k" data-tip={tip}>
         {k}
+        {tip && <sup className="qm" aria-hidden="true">?</sup>}
       </div>
       <div className="v">
         {total == null ? DASH : fmtFn(total)}

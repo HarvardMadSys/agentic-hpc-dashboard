@@ -73,7 +73,7 @@ function MixTable({
           </tr>
           <tr>
             {have.flatMap((c) => [
-              <th key={c + 'n'} data-tip="share of the class's tool calls">calls</th>,
+              <th key={c + 'n'} data-tip="share of the class's processes exited">processes</th>,
               <th key={c + 'c'} data-tip="share of the class's CPU seconds">CPU</th>,
             ])}
           </tr>
@@ -85,7 +85,7 @@ function MixTable({
               {have.flatMap((c) => {
                 const r = get(c, b);
                 return [
-                  <td key={c + 'n'} data-tip={r ? `${fint(r.calls)} calls` : undefined}>
+                  <td key={c + 'n'} data-tip={r ? `${fint(r.calls)} processes` : undefined}>
                     <MiniBar pct={r ? r.calls_pct : null} c={CLS_COL[c]} />
                   </td>,
                   <td key={c + 'c'} data-tip={r ? `${fmt(r.cpu_s)} CPU s` : undefined}>
@@ -99,10 +99,82 @@ function MixTable({
       </table>
       {idle.length > 0 && (
         <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
-          no calls in the window: {idle.join(', ')}
+          nothing ran in the window: {idle.join(', ')}
         </div>
       )}
     </div>
+  );
+}
+
+/** The tool mix and the head of the tool distribution, on the Agents tab. */
+export function ToolPanels({ P, cls }: { P: Panels; cls: Cls[] }) {
+  const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
+  const byClass = tm.by_class ?? {};
+  const have = shown(byClass, cls);
+  const buckets = tm.buckets ?? [];
+  const head = tm.head ?? {};
+  return (
+    <div className="grid wide">
+      <ToolMixPanel tm={tm} have={have} buckets={buckets} byClass={byClass} />
+      <HeadPanel tm={tm} have={have} head={head} />
+    </div>
+  );
+}
+
+function ToolMixPanel({ tm, have, buckets, byClass }: {
+  tm: ToolMix;
+  have: string[];
+  buckets: string[];
+  byClass: Record<string, ToolClassBlock>;
+}) {
+  return (
+    <Panel
+      title="Tool mix: processes, then CPU"
+      p={tm}
+      span
+      empty={!have.length || !buckets.length}
+      emptyWhat="the feed carried no bucket rows for the selected classes"
+    >
+      <MixTable buckets={buckets} have={have} byClass={byClass} />
+    </Panel>
+  );
+}
+
+function HeadPanel({ tm, have, head }: { tm: ToolMix; have: string[]; head: NonNullable<ToolMix['head']> }) {
+  return (
+    <Panel
+      title="Head of the tool distribution"
+      p={tm}
+      span
+      empty={!have.some((c) => (head[c]?.length ?? 0) > 0)}
+      emptyWhat="no head list for the selected classes"
+    >
+      <div className="head-row" style={{ gridTemplateColumns: `repeat(${have.length || 1}, minmax(0, 1fr))` }}>
+        {have.map((c) => {
+          const rows = head[c] ?? [];
+          if (!rows.length) return <div key={c} />;
+          return (
+            <div key={c}>
+              <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_COL[c] }}>
+                {CLS_LBL[c] ?? c}
+              </div>
+              <HBars
+                items={rows.slice(0, 12).map((r) => ({
+                  k: r.tool,
+                  v: r.calls_pct,
+                  c: CLS_COL[c],
+                  lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
+                  tip: `${r.tool}: ${fint(r.calls)} processes, ${pc(r.calls_pct)} of the class's processes, ${pc(r.cpu_pct)} of its CPU`,
+                }))}
+                W={380}
+                labelW={100}
+                valW={170}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
   );
 }
 
@@ -212,10 +284,10 @@ export function SessionsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                     k: r.tool,
                     v: r.calls_pct,
                     c: CLS_COL[c],
-                    lbl: `${pc(r.calls_pct)} calls / ${pc(r.cpu_pct)} cpu`,
-                    tip: `${r.tool}: ${fint(r.calls)} calls, ${pc(r.calls_pct)} of calls, ${pc(
+                    lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
+                    tip: `${r.tool}: ${fint(r.calls)} processes, ${pc(r.calls_pct)} of the class's processes, ${pc(
                       r.cpu_pct,
-                    )} of CPU`,
+                    )} of its CPU`,
                   }))}
                   W={380}
                   labelW={100}

@@ -22,10 +22,9 @@ import type { Who } from './lib/filters';
 import { useUrlState } from './lib/useUrlState';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
-import { SessionsTab } from './tabs/SessionsTab';
 import { ResourcesTab } from './tabs/ResourcesTab';
 import { RiskIoTab } from './tabs/RiskIoTab';
-import { SandboxTab } from './tabs/SandboxTab';
+import { InternalTab } from './tabs/InternalTab';
 import { TrajectoriesTab } from './tabs/TrajectoriesTab';
 import { AgentsTab } from './tabs/AgentsTab';
 import { SlurmTab } from './tabs/SlurmTab';
@@ -33,19 +32,21 @@ import { FeedsTab } from './tabs/FeedsTab';
 import { ChatTab } from './tabs/ChatTab';
 import { EventsExplorer } from './components/EventsExplorer';
 
+/* In the order an operator reads them (roadmap notes 32 and 50): what is
+ * happening, who uses what, the agents, one session, then the detail. Old tab
+ * keys still open (lib/filters.ts TAB_ALIAS): sessions and cascades -> agents,
+ * io -> resources, sandbox -> internal. */
 const TABS = [
-  { k: 'live', lbl: 'Live', eyebrow: 'live tier' },
-  { k: 'overview', lbl: 'Overview', eyebrow: 'overview' },
-  { k: 'sessions', lbl: 'Sessions & tools', eyebrow: 'process tier' },
-  { k: 'resources', lbl: 'Resources', eyebrow: 'process tier' },
-  { k: 'risk', lbl: 'Risk', eyebrow: 'what should not run here' },
-  { k: 'io', lbl: 'I/O', eyebrow: 'disk and network' },
-  { k: 'sandbox', lbl: 'Sandbox', eyebrow: 'process tier' },
-  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'process tier' },
-  { k: 'agents', lbl: 'Agents', eyebrow: 'agent & subagent behaviour' },
+  { k: 'live', lbl: 'Live', eyebrow: 'right now, and over the window' },
+  { k: 'overview', lbl: 'Overview', eyebrow: 'who uses what' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran' },
+  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time' },
+  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O' },
+  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here' },
   { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler' },
-  { k: 'chat', lbl: 'Chat with LLM', eyebrow: 'ask an agent about this window' },
+  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask an agent about this window' },
   { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable' },
+  { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
 ];
 
@@ -191,23 +192,19 @@ export default function App() {
   const body = (() => {
     switch (tab.k) {
       case 'live':
-        return <LiveTab live={live} cls={url.cls} who={who} feeds={feeds.data} goto={(t) => setUrl({ tab: t }, true)} />;
+        return <LiveTab live={live} P={P} traj={traj.data} cls={url.cls} who={who} feeds={feeds.data} goto={(t) => setUrl({ tab: t }, true)} />;
       case 'overview':
         return <OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />;
-      case 'sessions':
-        return <SessionsTab P={P} cls={url.cls} />;
       case 'resources':
         return <ResourcesTab P={P} cls={url.cls} />;
       case 'risk':
         return <RiskIoTab P={P} cls={url.cls} part="risk" />;
-      case 'io':
-        return <RiskIoTab P={P} cls={url.cls} part="io" />;
       case 'chat':
         return <ChatTab windowMin={resolvedWin?.minutes ?? null} windowLabel={resolvedWin?.label ?? null} />;
       case 'events':
         return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
-      case 'sandbox':
-        return <SandboxTab P={P} cls={url.cls} />;
+      case 'internal':
+        return <InternalTab P={P} cls={url.cls} />;
       case 'trajectories':
         return (
           <TrajectoriesTab

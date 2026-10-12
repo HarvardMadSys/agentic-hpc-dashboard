@@ -19,6 +19,7 @@
  * (lib/sandbox.ts). `exited before read` and `unknown` are never folded into a
  * "no", and never silently into a denominator either.
  */
+import { GLOSS } from '../lib/glossary';
 import type { Cls, Sandbox, SandboxSessionRow } from '../api/types';
 import { Basis, Panel, More } from '../components/Panel';
 import { Coverage } from '../components/Coverage';
@@ -165,12 +166,12 @@ function SessionRows({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHost
             <th>agent</th>
             {multiHost && <th>host</th>}
             <th className="num">pid</th>
-            <th>approval at launch</th>
-            <th>launch flags</th>
-            <th className="num">tool calls</th>
+            <th data-tip={GLOSS.approval}>approval at launch</th>
+            <th data-tip="the flags on the agent's own command line when it started">launch flags</th>
+            <th className="num" data-tip={GLOSS.toolcall}>tool calls</th>
             <th className="num" data-tip="share of the session's tool calls with a known verdict that ran namespace-isolated">isolated</th>
-            <th className="num">failed attempts</th>
-            <th>verdict</th>
+            <th className="num" data-tip="sandbox wrapper runs that failed before running the command they were given">failed attempts</th>
+            <th data-tip={GLOSS.verdict}>verdict</th>
           </tr>
         </thead>
         <tbody>
@@ -305,7 +306,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           }
         >
           <div className="eyebrow">per process</div>
-          {axisBlock(sb.by_class_events, evHave, SANDBOX_ORDER, SB_COL, SB_LABEL, 'events')}
+          {axisBlock(sb.by_class_events, evHave, SANDBOX_ORDER, SB_COL, SB_LABEL, 'processes')}
           <div className="eyebrow" style={{ marginTop: 8 }}>
             per session
           </div>
@@ -331,15 +332,15 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           <div className="eyebrow" style={{ marginTop: 8 }}>
             per process
           </div>
-          {axisBlock(sb.approval_by_class_events, apEvHave, APPROVAL_ORDER, AP_COL, AP_LABEL, 'events')}
+          {axisBlock(sb.approval_by_class_events, apEvHave, APPROVAL_ORDER, AP_COL, AP_LABEL, 'processes')}
           {modes.length > 0 && (
             <div className="scroller" style={{ marginTop: 8 }}>
               <table>
                 <thead>
                   <tr>
                     <th>agent</th>
-                    <th>launch flags, as written</th>
-                    <th>reads as</th>
+                    <th data-tip="the flags exactly as they appeared on the agent's command line">launch flags, as written</th>
+                    <th data-tip={GLOSS.approval}>reads as</th>
                     <th className="num">sessions</th>
                   </tr>
                 </thead>
@@ -369,9 +370,9 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <th>wrapper</th>
+                  <th data-tip={GLOSS.wrapper}>wrapper</th>
                   <th>agent</th>
-                  <th>outcome</th>
+                  <th data-tip="what happened to the command the wrapper was given (its payload)">outcome</th>
                   <th className="num">calls</th>
                 </tr>
               </thead>
@@ -419,12 +420,12 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <th>ancestry</th>
-                  <th>category</th>
-                  <th>verdict</th>
-                  <th className="num">n</th>
-                  <th className="num">D-state wait</th>
-                  <th className="num">coverage</th>
+                  <th data-tip={GLOSS.ancestry}>ancestry</th>
+                  <th data-tip="process: an ordinary process; wrapper: the sandbox helper itself">category</th>
+                  <th data-tip={GLOSS.verdict}>verdict</th>
+                  <th className="num" data-tip="processes">n</th>
+                  <th className="num" data-tip={GLOSS.dstate}>D-state wait</th>
+                  <th className="num" data-tip={GLOSS.coverage}>coverage</th>
                   <th>reading</th>
                 </tr>
               </thead>
@@ -483,7 +484,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                 <tbody>
                   {src.map(([k, v]) => (
                     <tr key={k}>
-                      <td className="mono">{k === 'denied' ? 'exited before read' : k}</td>
+                      <td className="mono lbl" data-tip={GLOSS[k === 'denied' ? 'exitedbeforeread' : k === 'inherit' ? 'inherit' : k.replace(':', '_')]}>{k === 'denied' ? 'exited before read' : k}</td>
                       <td>
                         <ShareCell pct={tot ? (100 * v) / tot : null} sub={fint(v)} c="var(--s2)" />
                       </td>

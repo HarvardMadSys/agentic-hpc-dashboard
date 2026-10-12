@@ -4,6 +4,7 @@
  * is meaningless without its coverage, so every accumulator here is rendered
  * with the coverage attached rather than as a bare total.
  */
+import { GLOSS } from '../lib/glossary';
 import { Fragment, useState } from 'react';
 import type { Cls, IoByTool, IoProcess, Resources } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
@@ -119,7 +120,7 @@ function InstanceRows({ rows, showArgs }: { rows: RiskInstance[]; showArgs: bool
             <th>at</th><th className="num">pid</th><th>from</th>
             <th>host</th><th>tool</th>
             {showArgs && <th>command</th>}
-            <th className="num">cpu</th><th className="num">exit</th>
+            <th className="num">CPU</th><th className="num" data-tip={GLOSS.exitcode}>exit code</th>
           </tr>
         </thead>
         <tbody>
@@ -222,7 +223,7 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
               <tr>
                 <th>category</th>
                 <th>rule</th>
-                <th>severity</th>
+                <th data-tip={GLOSS.severity}>severity</th>
                 <th>from</th>
                 <th>section</th>
                 <th>matches</th>
@@ -279,7 +280,15 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
 /* Two tabs from one reduction: Risk (what agents did that they should not have,
  * on a shared login node) and I/O (what their reads, writes and traffic cost).
  * They read the same panels, so they share the setup and each renders its half. */
-export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk' | 'io' }) {
+export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
+  P: Panels;
+  cls: Cls[];
+  part: 'risk' | 'io';
+  /** the I/O tiles: off on Resources, where their numbers are Overview rows */
+  plates?: boolean;
+  /** the syscall-against-disk time series: off on Resources, they are on Live */
+  series?: boolean;
+}) {
   // A command or pattern row opens in place into who ran it; the old list of
   // per-row dropdowns under the table named every row a second time.
   const [opened, setOpened] = useState<Record<string, boolean>>({});
@@ -416,7 +425,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
       </div>
       )}
 
-      {part === 'io' && (
+      {part === 'io' && plates && (
       <div className="plates">
         <Plate
           k="agent disk read"
@@ -457,6 +466,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
 
       {part === 'io' && (
       <div className="grid wide">
+        {series && (
         <Panel
           title="Syscall bytes against disk bytes"
           p={res}
@@ -484,14 +494,14 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
                 <thead>
                   <tr>
                     <th>class</th>
-                    <th className="num">events</th>
-                    <th className="num">with I/O</th>
-                    <th className="num">rchar</th>
-                    <th className="num">rd</th>
-                    <th className="num">wchar</th>
-                    <th className="num">wr</th>
-                    <th className="num">cache served</th>
-                    <th className="num">cache hit</th>
+                    <th className="num" data-tip="processes exited">processes</th>
+                    <th className="num" data-tip="processes that read or wrote anything, and the share of the class they are">with I/O</th>
+                    <th className="num" data-tip={GLOSS.rchar}>rchar</th>
+                    <th className="num" data-tip={GLOSS.rd}>rd</th>
+                    <th className="num" data-tip={GLOSS.wchar}>wchar</th>
+                    <th className="num" data-tip={GLOSS.wr}>wr</th>
+                    <th className="num" data-tip={GLOSS.cacheserved}>cache served</th>
+                    <th className="num" data-tip={GLOSS.cachehit}>cache hit</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -525,6 +535,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
             </div>
           </More>
         </Panel>
+        )}
 
         <Panel
           title="Reads by tool"
@@ -573,9 +584,9 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
                 <thead>
                   <tr>
                     <th>class</th>
-                    <th className="num">tx</th>
-                    <th className="num">rx</th>
-                    <th className="num">calls</th>
+                    <th className="num" data-tip={GLOSS.tx}>tx</th>
+                    <th className="num" data-tip={GLOSS.rx}>rx</th>
+                    <th className="num" data-tip={GLOSS.netcalls}>calls</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -624,14 +635,14 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
                 <tr>
                   <th>user</th>
                   <th>class</th>
-                  <th className="num">events</th>
+                  <th className="num" data-tip="processes exited">processes</th>
                   <th className="num" data-tip="block-layer bytes read (read_bytes)">disk</th>
                   <th className="num" data-tip="bytes through read() syscalls (rchar)">syscall</th>
                   <th className="num" data-tip="block-layer bytes written (write_bytes)">disk</th>
                   <th className="num" data-tip="bytes through write() syscalls (wchar)">syscall</th>
-                  <th className="num">rx</th>
-                  <th className="num">tx</th>
-                  <th className="num">coverage</th>
+                  <th className="num" data-tip={GLOSS.rx}>rx</th>
+                  <th className="num" data-tip={GLOSS.tx}>tx</th>
+                  <th className="num" data-tip={GLOSS.coverage}>coverage</th>
                 </tr>
               </thead>
               <tbody>
@@ -662,7 +673,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
               <table>
                 <thead>
                   <tr>
-                    <th>metric</th>
+                    <th data-tip="the raw counter each row describes; hover a name for what it counts">metric</th>
                     <th>class</th>
                     {QUANT_HEAD}
                   </tr>
@@ -671,7 +682,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
                   {quantKeys.flatMap((qk) =>
                     have.map((c) => (
                       <tr key={qk + c}>
-                        <td className="mono">{qk}</td>
+                        <td className="mono lbl" data-tip={GLOSS[qk]}>{qk}</td>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <QuantCells q={byClass[c]?.quants?.[qk]} />
                       </tr>
@@ -776,7 +787,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
                 <table>
                   <thead>
                     <tr>
-                      <th>pattern</th><th>severity</th><th className="num">matches</th>
+                      <th>pattern</th><th data-tip={GLOSS.severity}>severity</th><th className="num">matches</th>
                       <th className="num">users</th><th>tools</th><th>run by</th>
                     </tr>
                   </thead>
@@ -822,7 +833,7 @@ export function RiskIoTab({ P, cls, part }: { P: Panels; cls: Cls[]; part: 'risk
                 <table>
                   <thead>
                     <tr>
-                      <th>command</th><th>severity</th>
+                      <th>command</th><th data-tip={GLOSS.severity}>severity</th>
                       <th className="num">times run</th><th className="num">users</th><th>run by</th>
                       <th className="num" data-tip="runs that exited 0: nothing stopped them">succeeded</th><th className="num">CPU s</th>
                     </tr>

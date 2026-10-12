@@ -169,7 +169,7 @@ export function EventsExplorer({
             {resp?.total_scanned != null ? ` · ${fint(resp.total_scanned)} scanned` : ''}
             {resp?.truncated ? ' · truncated by the backend' : ''}
             {resp?.order === 'desc' ? ' \u00b7 newest first' : resp?.order === 'asc' ? ' \u00b7 oldest first' : ''}
-            {resp?.event_filter_defaulted ? ' \u00b7 process exits only' : ''}
+            {resp?.event_filter_defaulted ? ' \u00b7 processes exited only' : ''}
             {` · ${url.cls.length}/3 classes`}
             {nActive ? ` · ${nActive} filter${nActive > 1 ? 's' : ''}` : ''}
             {/* The window enters the query as from/to without appearing in the
@@ -200,7 +200,7 @@ export function EventsExplorer({
 
       <div className="grid wide" style={{ marginTop: 14 }}>
         <Panel
-          title="Events"
+          title="Records"
           span
           feed="ebpfm"
           empty={!loading && !error && !rows.length}
