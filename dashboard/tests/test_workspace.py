@@ -490,5 +490,24 @@ def reduce_with(recs, **attrs):
     return view.materialize()
 
 
+class OtherHomeTest(unittest.TestCase):
+    """Roadmap note 33: another user's home is a home on FAS too."""
+
+    def test_a_fas_home_is_a_home_and_whose_it_is_is_told(self):
+        self.assertEqual(ws._root("/n/home08/bob/proj", "/n/home03/ann"),
+                         ("/n/home08/bob", "~bob", "other user's home"))
+        self.assertEqual(ws._root("/home/bob/x", "/home/ann"), ("/home/bob", "~bob", "other user's home"))
+
+    def test_the_agents_own_fas_home_is_own_even_when_never_read_off_an_argv(self):
+        # uhome fell back to /home/ann; the path is ann's real home on FAS
+        self.assertEqual(ws._root("/n/home03/ann/proj", "/home/ann")[2], "own home")
+
+    def test_shared_storage_is_still_shared(self):
+        self.assertEqual(ws._root("/n/netscratch/lab/x", "/n/home03/ann")[2], "shared storage")
+
+    def test_a_fas_home_reads_as_tilde(self):
+        self.assertEqual(ws.tilde("/n/home08/bob/proj", "/n/home03/ann"), "~bob/proj")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -270,11 +270,32 @@ export interface ToolBucketRow {
   calls_pct: number | null;
   cpu_s: number | null;
   cpu_pct: number | null;
+  io_mb?: number | null;
+  io_pct?: number | null;
+  net_mb?: number | null;
+  net_pct?: number | null;
 }
 export interface ToolClassBlock {
   calls: number;
   cpu_s: number | null;
+  io_mb?: number;
+  net_mb?: number;
   rows: ToolBucketRow[];
+}
+/** One tool, with every resource it used, for sorting by any of them. */
+export interface ToolCostRow {
+  tool: string;
+  bucket: string;
+  calls: number;
+  calls_pct: number | null;
+  cpu_s: number;
+  cpu_pct: number | null;
+  io_mb: number;
+  io_pct: number | null;
+  net_mb: number;
+  net_pct: number | null;
+  mem_mean_mb: number | null;
+  mem_max_mb: number | null;
 }
 export interface ToolHeadRow {
   tool: string;
@@ -286,6 +307,8 @@ export interface ToolMix extends PanelEnvelope {
   buckets: string[];
   by_class: Record<string, ToolClassBlock>;
   head: Record<string, ToolHeadRow[]>;
+  /** class -> the top tools by every resource, each with all of them */
+  tools?: Record<string, ToolCostRow[]>;
   /** distinct tools each class ran (the head lists only the top few) */
   n_tools?: Record<string, number>;
   /** class -> agent type ("" = untagged) -> its share of the class's calls and CPU */

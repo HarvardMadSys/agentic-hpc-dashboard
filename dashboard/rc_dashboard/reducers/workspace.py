@@ -1556,6 +1556,8 @@ class _Acc:
         return out
 
 
+_N_HOME = re.compile(r"^/n/home[^/]*/([^/]+)")
+
 # How alarming a write outside the home is, by where it landed: first listed first.
 _SEVERITY = {"other user's home": 0, "system": 1, "filesystem root": 1,
              "shared storage": 2, "own home": 3, "other": 3, "cache & tooling": 4,
@@ -1583,6 +1585,17 @@ def _root(path, uhome):
         return "/", "/", "filesystem root"
     if top == "home" and len(parts) > 2 and parts[2]:
         return "/home/" + parts[2], "~" + parts[2], "other user's home"
+    # FAS homes are /n/homeNN/<user>. Read as shared storage before, so on that
+    # cluster "reached another user's home" could never count anything: a day
+    # of boslogin06 has agents naming paths in other users' homes (roadmap
+    # note 33). A name that is the agent's own user is its own home, even when
+    # its home was never read off an argv and so is not `uhome`.
+    m = _N_HOME.match(path)
+    if m:
+        root = path[:m.end()]
+        if uhome and m.group(1) == uhome.rstrip("/").rsplit("/", 1)[-1]:
+            return root, "~", "own home"
+        return root, "~" + m.group(1), "other user's home"
     if top in ("tmp", "dev") or path.startswith(("/var/tmp", "/dev/shm", "/run/user")):
         r = "/var/tmp" if path.startswith("/var/tmp") else "/tmp"
         return r, r, "temp"
@@ -1603,6 +1616,9 @@ def tilde(path, uhome):
         return "~" + path[len(uhome.rstrip("/")):]
     if path.startswith("/home/"):
         return "~" + path[6:]
+    m = _N_HOME.match(path)
+    if m:
+        return "~" + path[m.start(1):]
     return path
 
 
