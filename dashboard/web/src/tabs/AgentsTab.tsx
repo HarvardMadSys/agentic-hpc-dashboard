@@ -30,13 +30,15 @@ import type {
   WsDir,
   WsKind,
   WsView,
-  Workspace,
 } from '../api/types';
-import { GroupBars, StackRow } from '../charts/primitives';
+import { GroupBars } from '../charts/primitives';
 import type { BarGroup, BarSeries } from '../charts/primitives';
 import { Segmented } from '../components/ClassFilter';
-import { Basis, More, Panel, NoRows } from '../components/Panel';
-import { Plate } from '../components/Plate';
+import { More, Panel, NoRows } from '../components/Panel';
+import { TreeDiagram } from '../components/TreeDiagram';
+import type { TreeNode } from '../components/TreeDiagram';
+import { Term } from '../components/Term';
+import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
 import { AGENT_TYPE_LBL } from '../lib/classes';
 import { pick, winLabel } from '../lib/panels';
@@ -119,95 +121,6 @@ const PARENT_LBL: Record<string, string> = {
   above: "above its parent agent's directory",
   outside: "outside its parent agent's directory",
 };
-
-/* Agents only, named in words. The processes between them -- the remote
- * server or daemon that hosts a set of sessions, a node launcher, the shells --
- * are plumbing: the tree's heading says what it is, and the hover keeps the
- * command line and pids for whoever needs them. A tree of one agent needs no
- * heading at all; its row says everything. */
-function TreeRows({ t, open, toggle }: { t: CascadeTree; open: boolean; toggle: () => void }) {
-  const agents = t.nodes.filter((n) => n.role === 'agent');
-  const grouped = agents.length > 1;
-  return (
-    <tbody>
-      {grouped && (
-        <tr className="treehead" onClick={toggle}>
-          <td colSpan={3} data-tip={`started under\n${nodeTip(t.root)}`}>
-            <span className="caret">{open ? '▾' : '▸'}</span>
-            <b>{treeTitle(t, agents)}</b>
-          </td>
-          <td className="num">{fint(t.tool_calls)}</td>
-          <td className="num">{dur(t.cpu_s)}</td>
-          <td colSpan={2} />
-        </tr>
-      )}
-      {(open || !grouped) &&
-        agents.map((n) => {
-          const w = n.workspace;
-          const sub = n.agent_level != null && n.agent_level >= 2;
-          const indent = grouped ? (n.agent_level ?? 1) : 0;
-          return (
-            <tr key={n.pid}>
-              <td style={{ paddingLeft: 8 + indent * 18 }} data-tip={nodeTip(n)}>
-                {indent > 0 && <span style={{ color: 'var(--edge)' }}>{'└ '}</span>}
-                {typeLbl(n.agent_type)}
-                {sub && (
-                  <span className="sev sub-chip" data-tip={`started beneath another agent, ${n.agent_level} agents deep`}>
-                    subagent
-                  </span>
-                )}
-              </td>
-              <td className="mono">{n.user ?? DASH}</td>
-              <td
-                className={`ws-home${n.home_src === 'first_call' ? ' inferred' : ''}`}
-                data-tip={
-                  n.home
-                    ? [n.home, n.home_src ? HOME_TIP[n.home_src] : null, sub && n.cwd_vs_parent_agent ? PARENT_LBL[n.cwd_vs_parent_agent] : null]
-                        .filter(Boolean).join('\n')
-                    : 'no working directory recorded for it or its calls'
-                }
-              >
-                {tildeOf(n.home, n.user)}
-              </td>
-              <td className="num">{n.tool_calls ? fint(n.tool_calls) : DASH}</td>
-              <td className="num">{n.cpu_s ? dur(n.cpu_s) : DASH}</td>
-              <td className="num" data-tip="distinct directories it ran in or named (see Workspace & blast radius)">
-                {w?.dirs ? fint(w.dirs) : DASH}
-              </td>
-              <td>{w ? <OutsideWrites n={w.outside_writes} /> : DASH}</td>
-            </tr>
-          );
-        })}
-    </tbody>
-  );
-}
-
-function TreeTable({ trees, isOpen, toggle }: {
-  trees: CascadeTree[];
-  isOpen: (t: CascadeTree) => boolean;
-  toggle: (t: CascadeTree) => void;
-}) {
-  return (
-    <div className="scroller">
-      <table className="roomy trees">
-        <thead>
-          <tr>
-            <th>agent</th>
-            <th>user</th>
-            <th data-tip="the directory the agent was started in; italic: it started at `/`, so its first call's directory">working in</th>
-            <th className="num" data-tip="processes in the agent's session: its tool calls and what they ran">processes</th>
-            <th className="num">CPU time</th>
-            <th className="num" data-tip="distinct directories it ran in or named">directories</th>
-            <th data-tip="distinct paths written or deleted outside its working directory, read off command lines">outside home</th>
-          </tr>
-        </thead>
-        {trees.map((t) => (
-          <TreeRows key={`${t.host}:${t.root.pid}`} t={t} open={isOpen(t)} toggle={() => toggle(t)} />
-        ))}
-      </table>
-    </div>
-  );
-}
 
 /* ---------------------------------------------------------- blast radius */
 
@@ -387,233 +300,262 @@ function Flags({ v }: { v: WsView }) {
   );
 }
 
-function AgentRow({
-  a,
-  mode,
-  open,
-  toggle,
-}: {
-  a: WsAgent;
-  mode: Mode;
-  open: boolean;
-  toggle: () => void;
-}) {
-  const v = viewOf(a, mode);
-  if (!v) return null;
-  const s = v.summary;
-  const usingTree = mode === 'tree' && a.tree != null;
-  const outRoots = s.roots;
+/* ------------------------------------------------------- the agents view
+ * Split by agent type (roadmap note 35): a strip compares the types, and a
+ * click shows one type's agents -- trees with subagents drawn as trees, the
+ * rest as cards -- and each agent's blast radius opens from its own card
+ * (note 35.3), not from a second table. */
+
+interface AgentPt {
+  n: CascadeNode;
+  t: CascadeTree;
+  ws: WsAgent | undefined;
+}
+
+const keyOf = (host: string, pid: number) => `${host}:${pid}`;
+
+/** Each agent in a tree, with the nearest agent above it (or none). */
+function agentParents(t: CascadeTree): Map<number, number | null> {
+  const byPid = new Map(t.nodes.map((n) => [n.pid, n]));
+  const out = new Map<number, number | null>();
+  for (const n of t.nodes) {
+    if (n.role !== 'agent') continue;
+    let p = n.parent != null ? byPid.get(n.parent) : undefined;
+    while (p && p.role !== 'agent') p = p.parent != null ? byPid.get(p.parent) : undefined;
+    out.set(n.pid, p ? p.pid : null);
+  }
+  return out;
+}
+
+interface TypeStat {
+  type: string;
+  agents: number;
+  /** started beneath another agent */
+  nested: number;
+  /** started at least one subagent */
+  started: number;
+  procs: number;
+  cpu: number;
+  outside: number;
+  otherHome: number;
+}
+
+function typeStats(pts: AgentPt[]): TypeStat[] {
+  const m = new Map<string, TypeStat>();
+  for (const { n, t, ws } of pts) {
+    const k = n.agent_type ?? '';
+    const s = m.get(k) ?? { type: k, agents: 0, nested: 0, started: 0, procs: 0, cpu: 0, outside: 0, otherHome: 0 };
+    s.agents += 1;
+    if ((n.agent_level ?? 1) >= 2) s.nested += 1;
+    if (agentParents(t).size && [...agentParents(t).values()].includes(n.pid)) s.started += 1;
+    s.procs += n.tool_calls ?? 0;
+    s.cpu += n.cpu_s ?? 0;
+    if ((ws?.self?.summary.outside_writes ?? n.workspace?.outside_writes ?? 0) > 0) s.outside += 1;
+    if (ws?.self?.summary.roots.some((r) => r.kind === "other user's home")) s.otherHome += 1;
+    m.set(k, s);
+  }
+  return [...m.values()].sort((a, b) => b.procs - a.procs);
+}
+
+function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; setSel: (t: string) => void }) {
   return (
-    <tbody>
-      <tr className={`ws-agent${open ? ' open' : ''}`} onClick={toggle}>
-        <td style={{ minWidth: 200 }}>
-          <span className="ws-caret">{open ? '▾' : '▸'}</span>
-          <span style={{ color: 'var(--ink)' }} data-tip={`pid ${a.pid} on ${a.host}`}>
-            {typeLbl(a.agent_type)}
-          </span>
-          <div className="ws-sub" style={{ marginLeft: 16 }}>
-            {a.user ?? DASH}
-            {a.parent_agent != null && ' · a subagent'}
-            {a.subagents.length > 0 &&
-              ` · ${usingTree ? 'with' : '+'} ${a.subagents.length} subagent${a.subagents.length === 1 ? '' : 's'}`}
-          </div>
-        </td>
-        <td
-          className={`ws-home${a.home_src === 'first_call' ? ' inferred' : ''}`}
-          style={{ maxWidth: 240 }}
-          data-tip={a.home ? `${a.home}\n${a.home_src ? HOME_TIP[a.home_src] : ''}` : 'no cwd recorded for it or its calls: nothing to be inside or outside of'}
+    <div className="atype-strip" role="tablist" aria-label="agent type">
+      {stats.map((s) => (
+        <button
+          key={s.type}
+          role="tab"
+          aria-selected={s.type === sel}
+          className={`atype${s.type === sel ? ' on' : ''}`}
+          onClick={() => setSel(s.type)}
         >
-          {a.home_shown ?? DASH}
-        </td>
-        <td className="num" data-tip={`processes folded into this agent${usingTree ? ' and its subagents' : ''}, from ${fint(s.keys)} collector session keys`}>
-          {fint(s.procs)}
-        </td>
-        <td style={{ minWidth: 150 }}>
-          {s.procs_inside != null && s.procs_outside != null && s.procs_inside + s.procs_outside > 0 ? (
-            <div
-              data-tip={[
-                `ran inside the home: ${fint(s.procs_inside)} processes`,
-                `ran outside it: ${fint(s.procs_outside)}`,
-                s.cwd_read_pct != null
-                  ? `cwd read at exec for ${pc(s.cwd_read_pct)} of them; the rest copied from their parent at fork, before any cd`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join('\n')}
-            >
-              <StackRow
-                segs={[
-                  { k: 'ran inside the home', v: s.procs_inside, c: 'var(--s2)' },
-                  { k: 'ran outside it', v: s.procs_outside, c: 'var(--s6)' },
-                ]}
-                W={120}
-                H={14}
-              />
+          <div className="k">{typeLbl(s.type)}</div>
+          <div className="v">
+            {fint(s.agents)} <small>agent{s.agents === 1 ? '' : 's'}</small>
+          </div>
+          <div className="n">
+            <span data-tip={GLOSS.subagent}>{fint(s.nested)} subagent{s.nested === 1 ? '' : 's'}</span>
+            {' · '}
+            <span data-tip="agents of this type that started another agent">{fint(s.started)} started one</span>
+          </div>
+          <div className="n">
+            {fint(s.procs)} processes · {dur(s.cpu)} CPU
+          </div>
+          <div className="n">
+            <span className={s.outside ? 'warnword' : undefined} data-tip={GLOSS.outsidehome}>
+              {fint(s.outside)} wrote outside home
+            </span>
+            {' · '}
+            <span className={s.otherHome ? 'critword' : undefined} data-tip={GLOSS.otherhome}>
+              {fint(s.otherHome)} reached another user's home
+            </span>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** One agent as a box: what it is, whose, how much it ran, and whether it
+ * wrote outside its home. `foreign`: another type's agent in this tree. */
+function AgentCard({ n, foreign }: { n: CascadeNode; foreign?: boolean }) {
+  const w = n.workspace;
+  const sub = (n.agent_level ?? 1) >= 2;
+  return (
+    <div
+      className={`acard${foreign ? ' foreign' : ''}`}
+      data-tip={nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '')}
+    >
+      <div className="acard-h">
+        <b>{typeLbl(n.agent_type)}</b>
+        {sub && <span className="sev sub-chip">subagent</span>}
+        <span className="mono nm acard-u">{n.user ?? DASH}</span>
+      </div>
+      <div className="acard-b">
+        {n.tool_calls ? `${fint(n.tool_calls)} processes` : 'ran nothing'}
+        {n.cpu_s ? ` · ${dur(n.cpu_s)}` : ''}
+        {w?.outside_writes ? <span className="ws-flagmark"> {fint(w.outside_writes)} outside</span> : null}
+      </div>
+      <div className={`acard-c nm${n.home_src === 'first_call' ? ' inferred' : ''}`}>{tildeOf(n.home, n.user)}</div>
+    </div>
+  );
+}
+
+/** A tree of more than one agent, drawn as a tree. */
+function TreeView({ t, type, sel, onSel }: {
+  t: CascadeTree;
+  type: string;
+  sel: string | null;
+  onSel: (k: string) => void;
+}) {
+  const parents = agentParents(t);
+  const rootIsAgent = t.root.role === 'agent';
+  const nodes: TreeNode<CascadeNode | null>[] = [];
+  if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: null });
+  for (const n of t.nodes) {
+    if (n.role !== 'agent') continue;
+    const p = parents.get(n.pid);
+    nodes.push({
+      id: keyOf(t.host, n.pid),
+      parent: p != null ? keyOf(t.host, p) : rootIsAgent && n.pid === t.root.pid ? null : 'root',
+      data: n,
+    });
+  }
+  return (
+    <TreeDiagram
+      nodes={nodes}
+      selected={sel}
+      onSelect={(id) => id !== 'root' && onSel(id)}
+      render={(x) =>
+        x.data ? (
+          <AgentCard n={x.data} foreign={(x.data.agent_type ?? '') !== type} />
+        ) : (
+          <div className="acard infra" data-tip={`started under\n${nodeTip(t.root)}`}>
+            <div className="acard-h">
+              <b>{t.root.command ?? 'process'}</b>
             </div>
-          ) : (
-            DASH
-          )}
-        </td>
-        <td className="num" data-tip="distinct directories it ran in or named, before folding for display">
-          {fint(s.dirs)}
-        </td>
-        <td className="ws-inf">
-          <Ops d={s.named} />
-        </td>
-        <td>
-          <OutsideWrites n={s.outside_writes} />
-        </td>
-        <td>
-          <div className="ws-roots">
-            {outRoots.slice(0, 5).map((g) => {
+            <div className="acard-b nm">{t.root.role === 'client' ? 'a client that launched the agents' : 'runs the agents below'}</div>
+          </div>
+        )
+      }
+    />
+  );
+}
+
+/** One agent's blast radius, opened from its card (roadmap note 35.3). */
+function AgentBlast({ a }: { a: WsAgent | undefined }) {
+  const [mode, setMode] = useState<Mode>('self');
+  if (!a) {
+    return <NoRows what="no blast radius was served for this agent: the service sends the busiest agents' only" />;
+  }
+  const v = viewOf(a, mode);
+  if (!v) return <NoRows what="it ran nothing itself; its subagents did" />;
+  const s = v.summary;
+  const inside = s.procs_inside != null && s.procs_outside != null && s.procs_inside + s.procs_outside > 0
+    ? (100 * s.procs_inside) / (s.procs_inside + s.procs_outside) : null;
+  return (
+    <div className="ablast">
+      <div className="ablast-head">
+        <h4>
+          <Term k="blast">blast radius</Term> · {typeLbl(a.agent_type)} · {a.user ?? DASH}
+        </h4>
+        {a.subagents.length > 0 && (
+          <Segmented
+            value={mode}
+            onChange={setMode}
+            options={[
+              { k: 'self', lbl: 'this agent only', tip: 'only the processes folded into the agent itself' },
+              { k: 'tree', lbl: 'with its subagents', tip: 'adds every agent started beneath it, judged against THIS agent’s home' },
+            ]}
+          />
+        )}
+      </div>
+      <div className="ablast-sum">
+        <span data-tip={a.home ? `${a.home}\n${a.home_src ? HOME_TIP[a.home_src] : ''}` : 'no cwd recorded'}>
+          <Term k="home">home</Term> <b className="mono">{a.home_shown ?? DASH}</b>
+        </span>
+        <span>{fint(s.procs)} processes{inside != null ? `, ${pc(inside)} inside home` : ''}</span>
+        <span>{fint(s.dirs)} directories</span>
+        <span className="ws-inf"><Term k="named">named</Term> <Ops d={s.named} /></span>
+        <span><Term k="outsidehome">outside home</Term> <OutsideWrites n={s.outside_writes} /></span>
+        {s.roots.length > 0 && (
+          <span className="ws-roots">
+            {s.roots.slice(0, 6).map((g) => {
               const wrote = g.write + g.delete > 0;
               return (
-                <span
-                  key={g.root}
-                  className={`ws-root${wrote ? ' wrote' : ''}${wrote && SEVERITY[g.kind] === 'high' ? ' high' : ''}`}
-                  data-tip={`${g.root} · ${g.kind}\nran there: ${fint(g.procs)} processes\nnamed: read ${fint(g.read)}, written ${fint(g.write)}, deleted ${fint(g.delete)}, other ${fint(g.named)}`}
-                >
+                <span key={g.root} className={`ws-root${wrote ? ' wrote' : ''}${wrote && SEVERITY[g.kind] === 'high' ? ' high' : ''}`}
+                  data-tip={`${g.root} · ${g.kind}\nran there: ${fint(g.procs)} processes\nnamed: read ${fint(g.read)}, written ${fint(g.write)}, deleted ${fint(g.delete)}, other ${fint(g.named)}`}>
                   {g.root}
                   {g.delete > 0 ? <b className="ws-d"> d</b> : g.write > 0 ? <b className="ws-w"> w</b> : null}
                 </span>
               );
             })}
-            {outRoots.length > 5 && <span className="ws-sub">+{outRoots.length - 5}</span>}
-            {!outRoots.length && <span style={{ color: 'var(--muted)' }}>{a.home ? 'none' : DASH}</span>}
-          </div>
-        </td>
-      </tr>
-      {open && (
-        <tr className="ws-detail">
-          <td colSpan={8}>
-            <Flags v={v} />
-            <DirTable v={v} />
-          </td>
-        </tr>
-      )}
-    </tbody>
+          </span>
+        )}
+      </div>
+      <Flags v={v} />
+      <DirTable v={v} />
+    </div>
   );
 }
 
-function BlastRadius({ c, w }: { c: Cascades; w: Workspace | null | undefined }) {
-  const [mode, setMode] = useState<Mode>('self');
-  const [opened, setOpened] = useState<Record<string, boolean>>({});
-  const agents = [...(w?.agents ?? [])]
-    .filter((a) => viewOf(a, mode) != null)
-    .sort((x, y) => (viewOf(y, mode)?.summary.procs ?? 0) - (viewOf(x, mode)?.summary.procs ?? 0));
-  const k = (a: WsAgent) => `${a.host}:${a.pid}`;
-  // Opened on first render: the first agent that wrote outside its home, so
-  // the reading this panel exists for is on screen without a click.
-  const firstFlagged = agents.find((a) => (viewOf(a, mode)?.summary.outside_writes ?? 0) > 0) ?? agents[0];
-  const isOpen = (a: WsAgent) => opened[k(a)] ?? a === firstFlagged;
-  const s = w?.summary;
-  const basis = (
-    <Basis
-      items={[
-        ...Object.entries(w?.basis ?? {}),
-        ['summary', s],
-        ['buffer', w?.buffer],
-      ]}
-    />
-  );
-  return (
-    <Panel
-      title="Workspace & blast radius"
-      p={c}
-      span
-      empty={!agents.length}
-      emptyWhat="no agent left a process record in this window"
-      header={
-        <Segmented
-          value={mode}
-          onChange={setMode}
-          options={[
-            { k: 'self', lbl: 'this agent only', tip: 'only the processes folded into the agent itself' },
-            {
-              k: 'tree',
-              lbl: 'with its subagents',
-              tip: 'adds every agent started beneath it, judged against THIS agent’s home',
-            },
-          ]}
-        />
-      }
-      basis={basis}
-    >
-      <div
-        className="eyebrow"
-        style={{ marginBottom: 4 }}
-        data-tip={[
-          'home: the agent process’s own cwd; italic when it started at `/` (IDE-hosted) and its first call’s directory stands in',
-          'outside the home: a write or delete NAMED beyond it is flagged; /tmp, caches, and the agent’s own state directory too, drawn quieter',
-          `directories deeper than ${s?.collapse_depth ?? 4} levels below the home or a top-level root fold into that ancestor, as do a directory’s quieter subdirectories past six; every fold is counted`,
-          'scope: agent-class exit records with a session key, folded into their agent as trajectory rows are; a fork that inherited its parent’s argv is not read twice',
-        ].join('\n')}
-      >
-        {s
-          ? `${fint(s.agents)} agent${s.agents === 1 ? '' : 's'} · ${fint(s.with_outside_writes)} wrote or deleted outside their home · ${fint(s.with_subagents)} started subagents${s.shown < s.agents ? ` · busiest ${fint(s.shown)} served` : ''}`
-          : DASH}
-      </div>
-      <div className="scroller">
-        <table>
-          <thead>
-            <tr>
-              <th>agent</th>
-              <th data-tip="the agent's own cwd: the directory it was started in">home</th>
-              <th className="num">processes</th>
-              <th data-tip="share of its processes whose working directory was inside the home">ran inside home</th>
-              <th className="num" data-tip="distinct directories it ran in or named">dirs</th>
-              <th className="ws-inf" data-tip="paths its commands named: r read · w write · d delete · n other. Taken from command lines, so a path named is not proof it was touched">named</th>
-              <th data-tip="distinct paths written or deleted outside the home (inferred)">outside home</th>
-              <th data-tip="top-level places outside the home it ran in or named; w: wrote there, d: deleted there (inferred)">roots outside home</th>
-            </tr>
-          </thead>
-          {agents.map((a) => (
-            <AgentRow
-              key={k(a)}
-              a={a}
-              mode={mode}
-              open={isOpen(a)}
-              toggle={() => setOpened((o) => ({ ...o, [k(a)]: !isOpen(a) }))}
-            />
-          ))}
-        </table>
-      </div>
-    </Panel>
-  );
-}
+const GRID_SHOWN = 24;
 
 export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const c = pick<Cascades>(P, 'cascades', 'ebpfm');
-  // Every plate here counts agents, so its headline is the agent class's: with
-  // the agent class filtered out there is nothing to count, not zero.
-  const on = cls.includes('agent');
-  const ag = <T,>(v: T | null | undefined): T | null => (on && v != null ? v : null);
   const win = winLabel(c);
-  const s = c.summary;
-  const w = c.workspace;
   const trees = c.trees ?? [];
-  const [opened, setOpened] = useState<Record<string, boolean>>({});
-  const treeKey = (t: CascadeTree) => `${t.host}:${t.root.pid}`;
-  const isOpen = (t: CascadeTree) => opened[treeKey(t)] ?? true;
-  const toggleTree = (t: CascadeTree) => setOpened((o) => ({ ...o, [treeKey(t)]: !isOpen(t) }));
-  // idle by its agents' own work: a host process can run things while the
-  // agents it hosts run nothing
-  const agentWork = (t: CascadeTree) =>
-    t.nodes.reduce((a, n) => a + (n.role === 'agent' ? n.tool_calls ?? 0 : 0), 0);
-  const busyTrees = trees.filter((t) => agentWork(t) > 0);
-  const idleTrees = trees.filter((t) => !(agentWork(t) > 0));
+  const ws = new Map((c.workspace?.agents ?? []).map((a) => [keyOf(a.host, a.pid), a]));
+  const pts: AgentPt[] = cls.includes('agent')
+    ? trees.flatMap((t) =>
+        t.nodes.filter((n) => n.role === 'agent').map((n) => ({ n, t, ws: ws.get(keyOf(t.host, n.pid)) })))
+    : [];
+  const stats = typeStats(pts);
+  const [selType, setSelType] = useState<string | null>(null);
+  const type = stats.find((x) => x.type === selType)?.type ?? stats[0]?.type ?? '';
+  const [selAgent, setSelAgent] = useState<string | null>(null);
+  const [allGrid, setAllGrid] = useState(false);
 
-  /* Both are histograms, and a histogram has to show its empty bins: listing
-   * only the values that occurred put "8 agents" straight under "2 agents", as
-   * if nothing lay between them. Depth stays exact -- agents nest a few levels
-   * at most, and every level is a different story. Fan-out does not stay small:
-   * one orchestrator looping `claude -p` over a directory starts dozens, so it
-   * is binned by doubling (1, 2, 3-4, 5-8, ...), which keeps a fan-out of 500
-   * to nine columns without hiding the long tail. Drawn as columns, the bins
-   * left to right in order, as a histogram reads. */
+  // Trees with more than one agent are drawn; a lone agent is a card. A
+  // tree belongs to every type it has an agent of: a Claude Code that started
+  // a Codex is on both views, the other type's box drawn quieter.
+  const mine = pts.filter((p) => (p.n.agent_type ?? '') === type);
+  const multi = trees.filter(
+    (t) => t.nodes.filter((n) => n.role === 'agent').length > 1 &&
+      t.nodes.some((n) => n.role === 'agent' && (n.agent_type ?? '') === type),
+  );
+  const inMulti = new Set(multi.map((t) => keyOf(t.host, t.root.pid)));
+  const lone = mine
+    .filter((p) => !inMulti.has(keyOf(p.t.host, p.t.root.pid)))
+    .sort((a, b) => (b.n.tool_calls ?? 0) - (a.n.tool_calls ?? 0));
+  const busyLone = lone.filter((p) => (p.n.tool_calls ?? 0) > 0);
+  const idleLone = lone.filter((p) => !((p.n.tool_calls ?? 0) > 0));
+  const gridShown = allGrid ? busyLone : busyLone.slice(0, GRID_SHOWN);
+  const selPt = selAgent ? pts.find((p) => keyOf(p.t.host, p.n.pid) === selAgent) : undefined;
+  const pickAgent = (k: string) => setSelAgent(selAgent === k ? null : k);
+
+  // The two histograms, kept for whoever wants the shape of nesting.
   const depthHist = c.depth_hist ?? {};
   const maxDepth = Math.max(0, ...Object.keys(depthHist).map(Number));
-  // Two series so a nested tree keeps its alarm colour; each column holds one.
   const depthGroups: BarGroup[] = Array.from({ length: maxDepth }, (_, i) => i + 1).map((d) => {
     const n = depthHist[String(d)] ?? 0;
     const k = d === 1 ? 'no subagent' : `${d - 1} level${d === 2 ? '' : 's'}`;
@@ -635,109 +577,103 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const fanGroups: BarGroup[] = fanBins.map(([lo, hi]) => {
     const n = fanHist.reduce((a, [f, m]) => (f >= lo && f <= hi ? a + m : a), 0);
     const k = lo === hi ? `${lo}` : `${lo}–${hi}`;
-    return {
-      k,
-      v: { n },
-      tips: { n: `${fint(n)} started ${k} agent${hi === 1 ? '' : 's'} directly` },
-    };
+    return { k, v: { n }, tips: { n: `${fint(n)} started ${k} agent${hi === 1 ? '' : 's'} directly` } };
   });
   const fanSeries: BarSeries[] = [{ k: 'n', lbl: 'started', c: 'var(--s4)' }];
 
-  const basis = (extra: [string, unknown][] = []) => (
-    <Basis items={[...Object.entries(c.basis ?? {}), ['window', c.window], ['buffer', c.buffer], ...extra]} />
-  );
-  const ws = w?.summary;
+  const detailHere = (where: 'tree' | 'grid', t?: CascadeTree) =>
+    selPt &&
+    (where === 'tree' ? selPt.t === t : !inMulti.has(keyOf(selPt.t.host, selPt.t.root.pid))) && (
+      <AgentBlast key={selAgent} a={selPt.ws} />
+    );
 
   return (
     <>
-      <div className="plates">
-        <Plate
-          k={`agent trees ${win}`}
-          total={ag(s?.trees)}
-          stripe="var(--s1)"
-          by={{}}
-          classes={[]}
-          note={s ? `${fint(s.agents)} agent processes · ${fint(s.trees_without_agents)} trees of infrastructure only` : undefined}
-          tip="a tree is a root and everything started under it; only a process whose own argv makes it an agent session (roles.py) counts as an agent -- tool-call shells, sandboxes, probes, and helpers do not"
-        />
-        <Plate
-          k="subagents: agent under agent"
-          total={ag(s?.agents_nested)}
-          stripe={(s?.agents_nested ?? 0) > 0 ? 'var(--crit)' : 'var(--s2)'}
-          by={{}}
-          classes={[]}
-          note={s ? (s.agents_nested ? `in ${fint(s.nested)} tree${s.nested === 1 ? '' : 's'} · deepest chain ${s.max_agent_depth ?? DASH} agents` : 'no agent started another agent as a process') : undefined}
-          tip="agents started, through any number of steps, by another agent; in-process subagents (Task tool) are not processes and are not counted"
-        />
-        <Plate
-          k="wrote outside their home"
-          total={ag(ws?.with_outside_writes)}
-          stripe={(ws?.with_outside_writes ?? 0) > 0 ? 'var(--crit)' : 'var(--s2)'}
-          by={{}}
-          classes={[]}
-          note={ws ? `of ${fint(ws.agents)} agents · a write or delete named on a command line (inferred)` : undefined}
-          tip="agents (each on its own processes, not its subagents') whose command lines wrote or deleted a path outside the directory they were started in. Inferred from argv: the collector records no file paths, and Claude Code's Read/Edit/Write tools leave no command line"
-        />
-        <Plate
-          k="reached another user's home"
-          total={ag(ws?.other_homes)}
-          stripe={(ws?.other_homes ?? 0) > 0 ? 'var(--crit)' : 'var(--s2)'}
-          by={{}}
-          classes={[]}
-          note={ws?.shared_roots != null ? `${fint(ws.shared_roots)} reached shared storage (/scratch, /n/…) · ran there or named a path there` : undefined}
-          tip="agents with a process that RAN in another user's home directory (measured, its cwd) or a command line that NAMED a path there (inferred) -- the agent left its own user's space"
-        />
-      </div>
+      <div className="rowlabel">agents by type · {win} · click one</div>
+      {stats.length ? (
+        <TypeStrip stats={stats} sel={type} setSel={(t) => { setSelType(t); setSelAgent(null); }} />
+      ) : (
+        <NoRows what={cls.includes('agent') ? 'no agent process in this window' : 'the agent class is filtered out'} />
+      )}
 
-      <div className="grid wide">
-        <Panel
-          title="Agent trees"
-          p={c}
-          span
-          empty={!trees.length}
-          emptyWhat="no agent process in this window"
-          basis={basis()}
-        >
-          {/* the shape of the trees first: how deep they go, how wide they fan */}
-          {(depthGroups.length > 0 || fanGroups.length > 0) && (
-            <div className="trees-shape">
-              <div>
-                <div className="eyebrow" data-tip="agent depth: the most agents on any root-to-leaf path of a tree; 1 means no agent was started beneath another">
-                  how deep agents nest
+      {stats.length > 0 && (
+        <div className="grid wide">
+          <Panel
+            title={`${typeLbl(type)}: its agents and their subagents`}
+            id="sec-agent-trees"
+            p={c}
+            span
+            empty={!mine.length}
+            emptyWhat="no agent of this type in the window"
+          >
+            {multi.length > 0 && (
+              <>
+                <div className="eyebrow" data-tip="trees with more than one agent: agents that started subagents, or several sessions started side by side under one process">
+                  started together · {fint(multi.length)} tree{multi.length === 1 ? '' : 's'}
                 </div>
-                {depthGroups.length ? (
-                  <GroupBars groups={depthGroups} series={depthSeries} W={480} H={190} maxBar={44} ylabel="trees" fmtVal={fint} tickFmt={fint} labelTop />
-                ) : (
-                  <NoRows what="no agent tree" />
-                )}
-              </div>
-              <div>
-                <div className="eyebrow" data-tip="agents directly below an agent (or a tree's root) with no other agent between; an infra node in a chain is not counted again at every hop">
-                  fan-out: agents each one started directly
+                {multi.map((t) => {
+                  const agents = t.nodes.filter((n) => n.role === 'agent');
+                  return (
+                    <div key={keyOf(t.host, t.root.pid)} className="atree">
+                      <div className="atree-t">{treeTitle(t, agents)}{t.users.length ? ` · ${t.users.join(', ')}` : ''}</div>
+                      <TreeView t={t} type={type} sel={selAgent} onSel={pickAgent} />
+                      {detailHere('tree', t)}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+            {busyLone.length > 0 && (
+              <>
+                <div className="eyebrow" style={{ marginTop: multi.length ? 10 : 0 }}>
+                  on their own · {fint(busyLone.length)} agent{busyLone.length === 1 ? '' : 's'}, busiest first · click one for its blast radius
                 </div>
-                {fanGroups.length ? (
-                  <GroupBars groups={fanGroups} series={fanSeries} W={480} H={190} maxBar={44} ylabel="agents or roots" fmtVal={fint} tickFmt={fint} labelTop />
-                ) : (
-                  <NoRows what="no agent started another" />
+                <div className="agrid">
+                  {gridShown.map((p) => {
+                    const k = keyOf(p.t.host, p.n.pid);
+                    return (
+                      <div key={k} className={`agrid-cell${selAgent === k ? ' on' : ''}`} onClick={() => pickAgent(k)}
+                        role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && pickAgent(k)}>
+                        <AgentCard n={p.n} />
+                      </div>
+                    );
+                  })}
+                </div>
+                {busyLone.length > GRID_SHOWN && !allGrid && (
+                  <button className="ws-more" onClick={() => setAllGrid(true)}>show all {fint(busyLone.length)}</button>
                 )}
+                {detailHere('grid')}
+              </>
+            )}
+            {idleLone.length > 0 && (
+              <More label={`${fint(idleLone.length)} agent${idleLone.length === 1 ? '' : 's'} that ran nothing in the window`}>
+                <div className="agrid">
+                  {idleLone.map((p) => (
+                    <div key={keyOf(p.t.host, p.n.pid)} className="agrid-cell"><AgentCard n={p.n} /></div>
+                  ))}
+                </div>
+              </More>
+            )}
+            <More label="nesting at a glance: how deep agents nest, and how many each started">
+              <div className="pair-row">
+                <div>
+                  <div className="eyebrow" data-tip="trees by the longest chain of agents in them, every type">how deep agents nest</div>
+                  {depthGroups.length ? (
+                    <GroupBars groups={depthGroups} series={depthSeries} W={480} H={190} maxBar={44} ylabel="trees" fmtVal={fint} tickFmt={fint} labelTop />
+                  ) : <NoRows what="no tree in the window" />}
+                </div>
+                <div>
+                  <div className="eyebrow" data-tip={GLOSS.fanout}>fan-out: agents each one started directly</div>
+                  {fanGroups.length ? (
+                    <GroupBars groups={fanGroups} series={fanSeries} W={480} H={190} maxBar={44} ylabel="agents or roots" fmtVal={fint} tickFmt={fint} labelTop />
+                  ) : <NoRows what="no agent started another" />}
+                </div>
               </div>
-            </div>
-          )}
-          <TreeTable trees={busyTrees} isOpen={isOpen} toggle={toggleTree} />
-          {idleTrees.length > 0 && (
-            <More label={`${fint(idleTrees.length)} agent tree${idleTrees.length === 1 ? '' : 's'} that ran nothing in the window`}>
-              <TreeTable trees={idleTrees} isOpen={isOpen} toggle={toggleTree} />
             </More>
-          )}
-        </Panel>
+          </Panel>
+        </div>
+      )}
 
-        {w === undefined || w === null ? (
-          <Panel title="Workspace & blast radius" p={c} span empty emptyWhat="the service sent no workspace for this window" />
-        ) : (
-          <BlastRadius c={c} w={w} />
-        )}
-
-      </div>
       {/* What agents ran, by kind of tool: was the Sessions & tools tab
           (roadmap notes 46 and 47). */}
       <div className="grid-gap" />

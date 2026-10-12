@@ -259,3 +259,170 @@ table.trees .sub-chip {
   border-color: var(--crit);
   color: var(--crit);
 }
+
+/* ------------------------------------------- agents by type (roadmap note 35)
+ * A strip compares the types; one is open at a time. */
+.atype-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.atype {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--s1);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.atype:hover {
+  border-color: var(--edge);
+  border-left-color: var(--s1);
+}
+.atype.on {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--s1) 22%, transparent);
+}
+.atype .k {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.atype .v {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.atype .v small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+.atype .n {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.warnword {
+  color: #8a6410;
+}
+.critword {
+  color: var(--crit);
+}
+
+/* one agent as a box, in a tree or in the grid */
+.acard {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.acard-h {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+.acard-h b {
+  color: var(--ink);
+  white-space: nowrap;
+}
+.acard-u {
+  margin-left: auto;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acard-b {
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acard-c {
+  font-size: 10.5px;
+  font-family: 'IBM Plex Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acard-c.inferred {
+  font-style: italic;
+}
+.acard.foreign {
+  opacity: 0.6;
+}
+.acard.infra b {
+  color: var(--ink-2);
+  font-weight: 500;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.atree {
+  border-top: 1px dashed var(--rule);
+  padding-top: 8px;
+  margin-top: 6px;
+}
+.atree-t {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.agrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  margin: 6px 0 4px;
+}
+.agrid-cell {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  background: var(--surface);
+}
+.agrid-cell:hover {
+  border-color: var(--edge);
+}
+.agrid-cell.on {
+  border-color: var(--ink-2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-2) 18%, transparent);
+}
+/* an agent's blast radius, opened under the box that was clicked */
+.ablast {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--s6);
+  border-radius: 6px;
+  padding: 8px 12px 10px;
+  margin: 8px 0 4px;
+  background: var(--surface-2);
+}
+.ablast-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ablast-head h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+}
+.ablast-sum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  margin: 6px 0;
+  align-items: center;
+}

@@ -4,12 +4,16 @@
  * axis: on this cluster `poll/probe` is ~29% of calls and ~0% of CPU, and one
  * pair of axes would make those look like the same quantity.
  */
-import type { Cls, ToolClassBlock, ToolMix } from '../api/types';
+import { useState } from 'react';
+import type { Cls, ToolBucketRow, ToolClassBlock, ToolCostRow, ToolMix } from '../api/types';
+import { Segmented } from '../components/ClassFilter';
+import { Term } from '../components/Term';
+import { GLOSS } from '../lib/glossary';
 import { HBars } from '../charts/primitives';
 import { Basis, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
-import { DASH, fint, fmt, pc } from '../lib/format';
+import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 
@@ -112,14 +116,29 @@ export function ToolPanels({ P, cls }: { P: Panels; cls: Cls[] }) {
   const byClass = tm.by_class ?? {};
   const have = shown(byClass, cls);
   const buckets = tm.buckets ?? [];
-  const head = tm.head ?? {};
   return (
     <div className="grid wide">
       <ToolMixPanel tm={tm} have={have} buckets={buckets} byClass={byClass} />
-      <HeadPanel tm={tm} have={have} head={head} />
+      <HeadPanel tm={tm} have={have} />
     </div>
   );
 }
+
+/* One resource at a time (roadmap note 25): a table that put calls and CPU
+ * side by side, per class, asked the reader to hold four numbers per cell. */
+type Metric = 'calls' | 'cpu' | 'io' | 'net';
+const METRICS: { k: Metric; lbl: string; tip: string }[] = [
+  { k: 'calls', lbl: 'processes', tip: GLOSS.exited },
+  { k: 'cpu', lbl: 'CPU', tip: 'CPU seconds the processes used' },
+  { k: 'io', lbl: 'disk I/O', tip: 'disk bytes read and written' },
+  { k: 'net', lbl: 'network', tip: 'bytes sent and received over the network' },
+];
+const rowVal = (r: ToolBucketRow | undefined, m: Metric): number | null =>
+  !r ? null : m === 'calls' ? r.calls : m === 'cpu' ? r.cpu_s : m === 'io' ? r.io_mb ?? null : r.net_mb ?? null;
+const rowPct = (r: ToolBucketRow | undefined, m: Metric): number | null =>
+  !r ? null : m === 'calls' ? r.calls_pct : m === 'cpu' ? r.cpu_pct : m === 'io' ? r.io_pct ?? null : r.net_pct ?? null;
+const fmtVal = (v: number | null, m: Metric) =>
+  v == null ? DASH : m === 'calls' ? fint(v) : m === 'cpu' ? dur(v) : mb(v);
 
 function ToolMixPanel({ tm, have, buckets, byClass }: {
   tm: ToolMix;
@@ -127,49 +146,189 @@ function ToolMixPanel({ tm, have, buckets, byClass }: {
   buckets: string[];
   byClass: Record<string, ToolClassBlock>;
 }) {
+  // Read across by default: each kind of tool split by who ran it, so a row
+  // adds to 100% the way a reader's eye travels (roadmap note 25). The other
+  // reading -- each class's work split into kinds of tool -- is a click away.
+  const [read, setRead] = useState<'who' | 'kind'>('who');
+  const [metric, setMetric] = useState<Metric>('calls');
+  const get = (c: string, b: string) => byClass[c]?.rows?.find((r) => r.b === b);
+  const total = (b: string) => have.reduce((a, c) => a + (rowVal(get(c, b), metric) ?? 0), 0);
+  const rows = buckets.filter((b) => total(b) > 0).sort((x, y) => total(y) - total(x));
+  const idle = buckets.filter((b) => !rows.includes(b));
   return (
     <Panel
-      title="Tool mix: processes, then CPU"
+      title="Tool mix"
       p={tm}
       span
       empty={!have.length || !buckets.length}
       emptyWhat="the feed carried no bucket rows for the selected classes"
+      header={
+        <span className="wrapctl" style={{ gap: 6 }}>
+          <Segmented value={read} onChange={setRead} options={[
+            { k: 'who', lbl: 'by who ran it', tip: 'each kind of tool, split by class: a row adds to 100%' },
+            { k: 'kind', lbl: 'by kind of tool', tip: "each class's work, split by kind of tool: a column adds to 100%" },
+          ]} />
+          <Segmented value={metric} onChange={setMetric} options={METRICS.map((m) => ({ k: m.k, lbl: m.lbl, tip: m.tip }))} />
+        </span>
+      }
     >
-      <MixTable buckets={buckets} have={have} byClass={byClass} />
+      <div className="scroller">
+        {read === 'who' ? (
+          <table className="mix who">
+            <thead>
+              <tr>
+                <th>kind of tool</th>
+                <th>who ran it, as a share of the row</th>
+                <th className="num">total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((b) => {
+                const tot = total(b);
+                return (
+                  <tr key={b}>
+                    <td><Term tip={BUCKET_TIP[b]}>{b}</Term></td>
+                    <td style={{ minWidth: 320 }}>
+                      <span className="whobar">
+                        {have.map((c) => {
+                          const v = rowVal(get(c, b), metric) ?? 0;
+                          const p = tot ? (100 * v) / tot : 0;
+                          return p > 0 ? (
+                            <i key={c} style={{ width: `${p}%`, background: CLS_COL[c] }}
+                              data-tip={`${CLS_LBL[c] ?? c}: ${pc(p)} (${fmtVal(v, metric)})`} />
+                          ) : null;
+                        })}
+                      </span>
+                      <span className="whopct">
+                        {have.map((c) => {
+                          const v = rowVal(get(c, b), metric) ?? 0;
+                          return v > 0 ? (
+                            <span key={c}><i style={{ background: CLS_COL[c] }} />{pc((100 * v) / tot)}</span>
+                          ) : null;
+                        })}
+                      </span>
+                    </td>
+                    <td className="num">{fmtVal(tot, metric)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <table className="mix">
+            <thead>
+              <tr>
+                <th>kind of tool</th>
+                {have.map((c) => (
+                  <th key={c} className="cls" style={{ color: CLS_COL[c] }}
+                    data-tip={`share of the ${CLS_LBL[c] ?? c} class's ${METRICS.find((m) => m.k === metric)!.lbl}`}>
+                    {CLS_LBL[c] ?? c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((b) => (
+                <tr key={b}>
+                  <td><Term tip={BUCKET_TIP[b]}>{b}</Term></td>
+                  {have.map((c) => {
+                    const r = get(c, b);
+                    return (
+                      <td key={c} data-tip={r ? fmtVal(rowVal(r, metric), metric) : undefined}>
+                        <MiniBar pct={rowPct(r, metric)} c={CLS_COL[c]} />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {idle.length > 0 && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+            none in the window: {idle.join(', ')}
+          </div>
+        )}
+      </div>
     </Panel>
   );
 }
 
-function HeadPanel({ tm, have, head }: { tm: ToolMix; have: string[]; head: NonNullable<ToolMix['head']> }) {
+/* The head of the tool distribution, sorted by any one resource (note 24). */
+type HeadSort = 'calls' | 'cpu' | 'mem' | 'io' | 'net';
+const HEAD_SORTS: { k: HeadSort; lbl: string; tip: string }[] = [
+  { k: 'calls', lbl: 'processes', tip: 'the most processes first' },
+  { k: 'cpu', lbl: 'CPU', tip: 'the most CPU first' },
+  { k: 'mem', lbl: 'memory', tip: 'the most memory per process first: the mean of each process’s peak' },
+  { k: 'io', lbl: 'disk I/O', tip: 'the most disk bytes read and written first' },
+  { k: 'net', lbl: 'network', tip: 'the most network bytes first' },
+];
+const headVal = (r: ToolCostRow, k: HeadSort): number | null =>
+  k === 'calls' ? r.calls : k === 'cpu' ? r.cpu_s : k === 'mem' ? r.mem_mean_mb : k === 'io' ? r.io_mb : r.net_mb;
+const headLbl = (r: ToolCostRow, k: HeadSort): string =>
+  k === 'calls' ? `${pc(r.calls_pct)} of processes`
+  : k === 'cpu' ? `${dur(r.cpu_s)} · ${pc(r.cpu_pct)} of CPU`
+  : k === 'mem' ? `${mb(r.mem_mean_mb)} mean peak`
+  : k === 'io' ? `${mb(r.io_mb)} disk`
+  : `${mb(r.net_mb)} network`;
+const headTip = (r: ToolCostRow) => [
+  r.tool,
+  `${fint(r.calls)} processes (${pc(r.calls_pct)} of the class's)`,
+  `CPU ${dur(r.cpu_s)} (${pc(r.cpu_pct)})`,
+  r.mem_mean_mb != null ? `peak memory: ${mb(r.mem_mean_mb)} on average, ${mb(r.mem_max_mb)} at most` : 'peak memory not reported',
+  `disk ${mb(r.io_mb)} · network ${mb(r.net_mb)}`,
+].join('\n');
+
+function HeadPanel({ tm, have }: { tm: ToolMix; have: string[] }) {
+  const [by, setBy] = useState<HeadSort>('calls');
+  const tools = tm.tools;
+  const head = tm.head ?? {};
   return (
     <Panel
-      title="Head of the tool distribution"
+      title="Top tools"
+      id="sec-head-of-the-tool-distribution"
       p={tm}
       span
-      empty={!have.some((c) => (head[c]?.length ?? 0) > 0)}
+      empty={!have.some((c) => (tools?.[c]?.length ?? head[c]?.length ?? 0) > 0)}
       emptyWhat="no head list for the selected classes"
+      header={tools && (
+        <span className="wrapctl" style={{ gap: 6 }}>
+          <span className="nm">sort by</span>
+          <Segmented value={by} onChange={setBy} options={HEAD_SORTS.map((m) => ({ k: m.k, lbl: m.lbl, tip: m.tip }))} />
+        </span>
+      )}
     >
       <div className="head-row" style={{ gridTemplateColumns: `repeat(${have.length || 1}, minmax(0, 1fr))` }}>
         {have.map((c) => {
-          const rows = head[c] ?? [];
-          if (!rows.length) return <div key={c} />;
+          const rows: ToolCostRow[] | undefined = tools?.[c]
+            ?.filter((r) => (headVal(r, by) ?? 0) > 0)
+            .sort((a, b) => (headVal(b, by) ?? 0) - (headVal(a, by) ?? 0))
+            .slice(0, 12);
           return (
             <div key={c}>
               <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_COL[c] }}>
                 {CLS_LBL[c] ?? c}
               </div>
-              <HBars
-                items={rows.slice(0, 12).map((r) => ({
-                  k: r.tool,
-                  v: r.calls_pct,
-                  c: CLS_COL[c],
-                  lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
-                  tip: `${r.tool}: ${fint(r.calls)} processes, ${pc(r.calls_pct)} of the class's processes, ${pc(r.cpu_pct)} of its CPU`,
-                }))}
-                W={380}
-                labelW={100}
-                valW={170}
-              />
+              {rows ? (
+                rows.length ? (
+                  <HBars
+                    items={rows.map((r) => ({ k: r.tool, v: headVal(r, by) ?? 0, c: CLS_COL[c], lbl: headLbl(r, by), tip: headTip(r) }))}
+                    W={380}
+                    labelW={100}
+                    valW={170}
+                  />
+                ) : <div className="none">none</div>
+              ) : (
+                <HBars
+                  items={(head[c] ?? []).slice(0, 12).map((r) => ({
+                    k: r.tool, v: r.calls_pct ?? 0, c: CLS_COL[c],
+                    lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
+                  }))}
+                  W={380}
+                  labelW={100}
+                  valW={170}
+                />
+              )}
             </div>
           );
         })}

@@ -35,6 +35,17 @@ class ToolMixReducer(Reducer):
         self.b_cpu = collections.defaultdict(collections.Counter)
         self.t_calls = collections.defaultdict(collections.Counter)
         self.t_cpu = collections.defaultdict(collections.Counter)
+        # What else each kind of tool and each tool cost, so the tables can be
+        # read by any one resource (roadmap notes 24 and 25): disk bytes read
+        # plus written, network bytes, and peak memory (summed for a mean over
+        # the processes that reported one, and its max).
+        self.b_io = collections.defaultdict(collections.Counter)
+        self.b_net = collections.defaultdict(collections.Counter)
+        self.t_io = collections.defaultdict(collections.Counter)
+        self.t_net = collections.defaultdict(collections.Counter)
+        self.t_mem = collections.defaultdict(collections.Counter)
+        self.t_mem_n = collections.defaultdict(collections.Counter)
+        self.t_mem_max = collections.defaultdict(dict)
         # (class, agent_type) -> calls / CPU: which agent or editor the calls
         # came from. Flat Counters, so a saved window pickles them as they are.
         self.at_calls = collections.Counter()
@@ -72,10 +83,27 @@ class ToolMixReducer(Reducer):
         if rec.get("_shell_resolved") or comm == ec:
             pass
         b = bucket(ec)
+        t = ec or "(empty)"
         self.b_calls[cls][b] += 1
         self.b_cpu[cls][b] += cpu
-        self.t_calls[cls][ec or "(empty)"] += 1
-        self.t_cpu[cls][ec or "(empty)"] += cpu
+        self.t_calls[cls][t] += 1
+        self.t_cpu[cls][t] += cpu
+        io = rec.get("io") or {}
+        disk = (io.get("rd_mb") or 0.0) + (io.get("wr_mb") or 0.0)
+        net = ((rec.get("net_tx_bytes") or 0) + (rec.get("net_rx_bytes") or 0)) / 1e6
+        if disk:
+            self.b_io[cls][b] += disk
+            self.t_io[cls][t] += disk
+        if net:
+            self.b_net[cls][b] += net
+            self.t_net[cls][t] += net
+        rss = rec.get("peak_rss_mb")
+        if rss is not None:
+            self.t_mem[cls][t] += rss
+            self.t_mem_n[cls][t] += 1
+            mx = self.t_mem_max[cls]
+            if rss > mx.get(t, -1.0):
+                mx[t] = rss
         at = (cls, rec.get("agent_type") or "")
         self.at_calls[at] += 1
         self.at_cpu[at] += cpu
@@ -101,9 +129,17 @@ class ToolMixReducer(Reducer):
     def merge(self, o):
         """Fold a LATER state's counts into this one. `o` is consumed."""
         for mine, theirs in ((self.b_calls, o.b_calls), (self.b_cpu, o.b_cpu),
-                             (self.t_calls, o.t_calls), (self.t_cpu, o.t_cpu)):
+                             (self.t_calls, o.t_calls), (self.t_cpu, o.t_cpu),
+                             (self.b_io, o.b_io), (self.b_net, o.b_net),
+                             (self.t_io, o.t_io), (self.t_net, o.t_net),
+                             (self.t_mem, o.t_mem), (self.t_mem_n, o.t_mem_n)):
             for cls, c in theirs.items():
                 add_counts(mine[cls], c)
+        for cls, c in o.t_mem_max.items():
+            mx = self.t_mem_max[cls]
+            for t, v in c.items():
+                if v > mx.get(t, -1.0):
+                    mx[t] = v
         add_counts(self.at_calls, o.at_calls)
         add_counts(self.at_cpu, o.at_cpu)
         self.dropped += o.dropped
@@ -131,13 +167,20 @@ class ToolMixReducer(Reducer):
         for cls in self.b_calls:
             calls = sum(self.b_calls[cls].values())
             cpu = sum(self.b_cpu[cls].values())
+            io = sum(self.b_io[cls].values())
+            net = sum(self.b_net[cls].values())
             by_class[cls] = {
                 "calls": calls, "cpu_s": round(cpu, 2),
+                "io_mb": round(io, 2), "net_mb": round(net, 2),
                 "rows": [{"b": b,
                           "calls": self.b_calls[cls].get(b, 0),
                           "calls_pct": pct(self.b_calls[cls].get(b, 0), calls),
                           "cpu_s": round(self.b_cpu[cls].get(b, 0.0), 2),
-                          "cpu_pct": pct(self.b_cpu[cls].get(b, 0.0), cpu)}
+                          "cpu_pct": pct(self.b_cpu[cls].get(b, 0.0), cpu),
+                          "io_mb": round(self.b_io[cls].get(b, 0.0), 2),
+                          "io_pct": pct(self.b_io[cls].get(b, 0.0), io) if io else None,
+                          "net_mb": round(self.b_net[cls].get(b, 0.0), 2),
+                          "net_pct": pct(self.b_net[cls].get(b, 0.0), net) if net else None}
                          for b in BUCKETS],
             }
         head = {}
@@ -147,9 +190,37 @@ class ToolMixReducer(Reducer):
             head[cls] = [{"tool": t, "calls": n, "calls_pct": pct(n, calls),
                           "cpu_pct": pct(self.t_cpu[cls].get(t, 0.0), cpu)}
                          for t, n in self.t_calls[cls].most_common(self.head_n)]
+        # Each class's top tools by every resource, as one list: the union of
+        # the head_n busiest by processes, CPU, disk, network, and memory, each
+        # row carrying all of them, so the page sorts by whichever it is asked.
+        tools = {}
+        for cls in self.t_calls:
+            calls = sum(self.t_calls[cls].values())
+            cpu = sum(self.t_cpu[cls].values())
+            io = sum(self.t_io[cls].values())
+            net = sum(self.t_net[cls].values())
+            mem_mean = {t: self.t_mem[cls][t] / n for t, n in self.t_mem_n[cls].items() if n}
+            pick = set()
+            for counter in (self.t_calls[cls], self.t_cpu[cls], self.t_io[cls], self.t_net[cls]):
+                pick.update(t for t, _v in counter.most_common(self.head_n))
+            pick.update(sorted(mem_mean, key=lambda t: -mem_mean[t])[:self.head_n])
+            tools[cls] = [{
+                "tool": t, "bucket": bucket(t if t != "(empty)" else ""),
+                "calls": self.t_calls[cls].get(t, 0),
+                "calls_pct": pct(self.t_calls[cls].get(t, 0), calls),
+                "cpu_s": round(self.t_cpu[cls].get(t, 0.0), 2),
+                "cpu_pct": pct(self.t_cpu[cls].get(t, 0.0), cpu) if cpu else None,
+                "io_mb": round(self.t_io[cls].get(t, 0.0), 2),
+                "io_pct": pct(self.t_io[cls].get(t, 0.0), io) if io else None,
+                "net_mb": round(self.t_net[cls].get(t, 0.0), 2),
+                "net_pct": pct(self.t_net[cls].get(t, 0.0), net) if net else None,
+                "mem_mean_mb": round(mem_mean[t], 1) if t in mem_mean else None,
+                "mem_max_mb": round(self.t_mem_max[cls][t], 1) if t in self.t_mem_max[cls] else None,
+            } for t in pick]
         return {
             "buckets": list(BUCKETS),
             "by_class": by_class,
+            "tools": tools,
             # class -> agent type -> share of the class's calls and CPU; an
             # untagged process (a person's shell) is the type ""
             "by_type": self._by_type(),
