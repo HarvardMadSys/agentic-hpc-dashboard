@@ -77,6 +77,8 @@ function nowByClass(now: LiveResponse['now'], key: string): Partial<Record<strin
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
  * word a reader meets is "sessions" (roadmap note 14). */
+const capFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct', gloss?: string][] = [
   ['roots', 'sessions', 'int', 'sessions_now'],
   ['procs', 'running', 'int', 'running'],
@@ -130,6 +132,7 @@ export function LiveTab({
   openTraj,
   openUserTraj,
   userCols,
+  nodeNoun,
 }: {
   live: LiveState;
   /** the window's reduced panels: the "last 24h" plates and every time series */
@@ -146,6 +149,8 @@ export function LiveTab({
   openUserTraj: (user: string) => void;
   /** the service's default Active users columns (`ui.user_columns`) */
   userCols?: string[] | null;
+  /** what the watched hosts are called (`ui.node_noun`): "login nodes" */
+  nodeNoun?: string | null;
 }) {
   const L = live.live;
   const rate = L?.rate ?? [];
@@ -357,7 +362,7 @@ export function LiveTab({
         />
 
         <Panel
-          title="Login nodes right now"
+          title={`${capFirst(nodeNoun?.trim() || 'login nodes')} right now`}
           ask={[{ panel: 'live', keys: ['hosts', 'now'] }]}
           span
           live
