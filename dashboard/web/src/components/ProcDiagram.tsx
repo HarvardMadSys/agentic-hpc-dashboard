@@ -87,14 +87,18 @@ function failed(e: ProcNode): boolean {
   return (e.exit_code != null && e.exit_code !== 0) || e.signal != null;
 }
 
-function Box({ e, open, kids }: { e: Item; open: boolean; kids: number }) {
+function Box({ e, open, kids, root }: { e: Item; open: boolean; kids: number; root: boolean }) {
   const caret = kids > 0 ? <span className="pd-caret">{open ? '▾' : `▸ ${fint(kids)}`}</span> : null;
   if (e.k === 'p') {
     const bad = failed(e);
+    // an agent's own process can be named for its runtime (`server`, `node`):
+    // say which agent it is, as the table view does
+    const type = (e.role === 'agent' || root) && e.agent_type ? e.agent_type : null;
     return (
       <div className={`pd-box${bad ? ' bad' : ''}`} data-tip={nodeTip(e)} style={{ borderLeftColor: pcol(e.purpose) }}>
         <div className="pd-h">
           <b className="mono">{e.label ?? e.cmd ?? '(no record)'}</b>
+          {type && <span className="pt-tag type">{type}</span>}
           {caret}
         </div>
         <div className="pd-s">
@@ -210,7 +214,7 @@ export function ProcDiagram({
         else next.add(id);
         setOpen(next);
       }}
-      render={(n) => <Box e={n.data.e} open={open.has(n.id)} kids={n.data.kids} />}
+      render={(n) => <Box e={n.data.e} open={open.has(n.id)} kids={n.data.kids} root={n.id === 'r'} />}
     />
   );
 }
