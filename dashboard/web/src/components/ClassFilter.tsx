@@ -57,16 +57,19 @@ export function Segmented<T extends string>({
   options,
   onChange,
   label,
+  wrap,
 }: {
   value: T;
   options: { k: T; lbl: string; tip?: string }[];
   onChange: (v: T) => void;
   label?: string;
+  /** let the buttons wrap onto a second line in a narrow column */
+  wrap?: boolean;
 }) {
   return (
     <div className="wrapctl" style={{ gap: 7 }}>
       {label && <span className="eyebrow">{label}</span>}
-      <div className="seg">
+      <div className={`seg${wrap ? ' wrap' : ''}`}>
         {options.map((o) => (
           <button
             key={o.k}

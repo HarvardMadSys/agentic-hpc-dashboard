@@ -185,8 +185,12 @@ export function TrajectoriesTab({
               ? 'no session at this rank matches the class filter'
               : 'the trajectory buffer is empty'
           }
-          header={
+        >
+          {/* in the body, not the header: the column is too narrow for both */}
+          <div className="tj-rank">
             <Segmented
+              label="rank by"
+              wrap
               value={rank}
               options={TRAJ_RANKS.map((r) => ({
                 k: r,
@@ -195,8 +199,7 @@ export function TrajectoriesTab({
               }))}
               onChange={setRank}
             />
-          }
-        >
+          </div>
           {tuser && (
             <div className="tj-filter">
               {`${shownList.length ? '' : 'no ranked session for '}`}

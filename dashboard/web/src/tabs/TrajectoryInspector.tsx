@@ -760,7 +760,8 @@ export function TrajectoryInspector({
               )}
               <span className="nm">· click a box to open what it started · hover for its command</span>
             </div>
-            <ProcDiagram root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
+            {/* keyed on `hide`: hiding moves every parent, so start again over the root */}
+            <ProcDiagram key={hide ? 'hide' : 'all'} root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
           </>
         )}
         {tree && mode === 'table' && (

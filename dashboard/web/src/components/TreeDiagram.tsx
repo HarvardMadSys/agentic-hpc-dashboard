@@ -11,7 +11,15 @@
  *
  * Boxes are HTML laid over an SVG of the connectors, so a box can carry text,
  * badges, and hover tips like any other cell on the page.
+ *
+ * A wide tree scrolls inside its own box, and a parent sits over the middle of
+ * its children -- so the box a reader is after can be a screen or more to the
+ * right. The diagram scrolls to it: to `focus` (the first root unless the
+ * caller names one) when first drawn and when the focus changes, and a box
+ * that was clicked stays where it was on screen while the tree re-lays out
+ * around what it opened.
  */
+import { useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 export interface TreeNode<T> {
@@ -82,6 +90,7 @@ export function TreeDiagram<T>({
   gapY = 30,
   selected,
   onSelect,
+  focus,
   className,
 }: {
   nodes: TreeNode<T>[];
@@ -92,9 +101,41 @@ export function TreeDiagram<T>({
   gapY?: number;
   selected?: string | null;
   onSelect?: (id: string) => void;
+  /** the box to scroll into view; the first root when not given */
+  focus?: string | null;
   className?: string;
 }) {
   const { placed, slots, depth } = layoutTree(nodes);
+  const box = useRef<HTMLDivElement>(null);
+  const els = useRef(new Map<string, HTMLDivElement>());
+  // the clicked box and where it was on screen, to put it back after the click
+  const pin = useRef<{ id: string; left: number } | null>(null);
+  const want = focus ?? placed[0]?.n.id ?? null;
+
+  useLayoutEffect(() => {
+    const p = pin.current;
+    pin.current = null;
+    const el = els.current.get(p?.id ?? '');
+    if (p && el && box.current) box.current.scrollLeft += el.getBoundingClientRect().left - p.left;
+  });
+  useLayoutEffect(() => {
+    const el = want != null ? els.current.get(want) : undefined;
+    const b = box.current;
+    if (!el || !b) return;
+    const r = b.getBoundingClientRect();
+    const e = el.getBoundingClientRect();
+    if (e.left >= r.left && e.right <= r.right) return; // already in view
+    b.scrollLeft += e.left + e.width / 2 - (r.left + r.width / 2);
+  }, [want]);
+  const click = onSelect
+    ? (id: string) => {
+        const el = els.current.get(id);
+        if (el) pin.current = { id, left: el.getBoundingClientRect().left };
+        onSelect(id);
+        // a click that changed nothing must not move a later redraw
+        requestAnimationFrame(() => (pin.current = null));
+      }
+    : undefined;
   const sx = nodeW + gapX;
   const sy = nodeH + gapY;
   const W = slots * sx;
@@ -103,7 +144,7 @@ export function TreeDiagram<T>({
   // a box's left edge: centred on its slots' middle
   const cx = (p: Placed<T>) => p.x * sx - nodeW / 2;
   return (
-    <div className={`tdiag ${className ?? ''}`}>
+    <div className={`tdiag ${className ?? ''}`} ref={box}>
       <div className="tdiag-canvas" style={{ width: W, height: H }}>
         <svg width={W} height={H} className="tdiag-edges" aria-hidden="true">
           {placed.map((p) => {
@@ -120,12 +161,16 @@ export function TreeDiagram<T>({
         {placed.map((p) => (
           <div
             key={p.n.id}
-            className={`tnode${selected === p.n.id ? ' on' : ''}${onSelect ? ' click' : ''}`}
+            ref={(el) => {
+              if (el) els.current.set(p.n.id, el);
+              else els.current.delete(p.n.id);
+            }}
+            className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}`}
             style={{ left: cx(p), top: p.y * sy, width: nodeW, height: nodeH }}
-            onClick={onSelect ? () => onSelect(p.n.id) : undefined}
-            role={onSelect ? 'button' : undefined}
-            tabIndex={onSelect ? 0 : undefined}
-            onKeyDown={onSelect ? (e) => e.key === 'Enter' && onSelect(p.n.id) : undefined}
+            onClick={click ? () => click(p.n.id) : undefined}
+            role={click ? 'button' : undefined}
+            tabIndex={click ? 0 : undefined}
+            onKeyDown={click ? (e) => e.key === 'Enter' && click(p.n.id) : undefined}
           >
             {render(p.n)}
           </div>
