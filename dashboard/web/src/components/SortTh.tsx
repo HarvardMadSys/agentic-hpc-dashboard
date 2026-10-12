@@ -1,6 +1,7 @@
 /* A table header that sorts its table: an arrow shows the column in use. */
 import type { ReactNode } from 'react';
 import type { Sorter, SortDir } from '../lib/useSort';
+import { Term } from './Term';
 
 export function SortTh<K extends string>({
   s,
@@ -33,12 +34,13 @@ export function SortTh<K extends string>({
       className={[num ? 'num' : '', 'sortable', on ? 'sorted' : '', className ?? ''].filter(Boolean).join(' ')}
       onClick={() => s.toggle(k, first)}
       aria-sort={on ? (s.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
-      data-tip={tip}
       colSpan={colSpan}
       rowSpan={rowSpan}
       style={style}
     >
-      {children}
+      {/* the explanation, if any, rides on the label with its own "?"; the
+          header itself carries no tip, so it is not marked a second time */}
+      {tip ? <Term tip={tip}>{children}</Term> : children}
       <span className="sort-arrow" aria-hidden="true">{on ? (s.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
     </th>
   );

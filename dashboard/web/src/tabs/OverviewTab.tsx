@@ -133,9 +133,8 @@ export function OverviewTab({
               <tr>
                 <SortTh s={sort} k="unit" first="asc">each class's share of</SortTh>
                 {have.map((c) => (
-                  <SortTh key={c} s={sort} k={c} className="cls" style={{ color: CLS_COL[c] }}
-                    tip={`sort by ${CLS_LBL[c] ?? c}'s share`}>
-                    <Term k="class">{CLS_LBL[c] ?? c}</Term>
+                  <SortTh key={c} s={sort} k={c} className="cls" style={{ color: CLS_COL[c] }}>
+                    {CLS_LBL[c] ?? c}
                   </SortTh>
                 ))}
               </tr>
