@@ -355,9 +355,25 @@ export interface ResClassBlock {
   sched_wait_s: Accum;
   schedstat_ratio: number | null;
   quants: Record<string, Quant>;
+  /** metric -> the process behind its max */
+  top?: Record<string, MaxProcess>;
+  /** processes left out of the on-CPU share: run time longer than measured lifetime */
+  oncpu_set_aside?: number;
   faults: Record<string, unknown>;
   delays: Record<string, unknown>;
   dstate: Record<string, unknown>;
+}
+/** The one process behind a distribution's max. */
+export interface MaxProcess {
+  value: number;
+  pid: number | null;
+  user: string | null;
+  host: string | null;
+  ts: string | null;
+  tool: string | null;
+  args?: string | null;
+  agent_type?: string | null;
+  actor3?: string | null;
 }
 /** One tool's D-state stalls: only its records that stalled at all. */
 export interface StallByTool {

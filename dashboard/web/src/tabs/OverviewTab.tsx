@@ -12,7 +12,7 @@ import { ShareCell } from '../components/ShareCell';
 import { SortTh } from '../components/SortTh';
 import { Term } from '../components/Term';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
-import { DASH, fint, fmt, mb } from '../lib/format';
+import { DASH, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
 import { pick, winLabel } from '../lib/panels';
 import { useSort } from '../lib/useSort';
@@ -27,6 +27,8 @@ interface UnitRow {
   tip?: string;
   /** where the quantity lives: the login node itself, or the jobs it asked Slurm for */
   group?: 'node' | 'slurm';
+  /** a class's cell on hover: the single process behind a peak (roadmap note 27) */
+  cellTip?: (c: string) => string | undefined;
 }
 
 const GROUPS: Record<NonNullable<UnitRow['group']>, [string, string]> = {
@@ -69,17 +71,32 @@ export function OverviewTab({
   // for nothing -- a measured 0; with no panel at all, nothing is known.
   const slurmOf = (c: string, f: (s: SlurmClass) => number | null) =>
     !sl._present ? null : sl.by_class?.[c] ? f(sl.by_class[c]) : 0;
+  // The one process behind a class's heaviest value, in words.
+  const topTip = (c: string, metric: string, f: (v: number) => string, what: string) => {
+    const t = resBy[c]?.top?.[metric];
+    return t
+      ? `${what}: ${f(t.value)}, ${t.tool ?? '?'} by ${t.user ?? '?'} (pid ${t.pid ?? '?'}${t.host ? ' on ' + t.host : ''})`
+      : undefined;
+  };
+  const netOf = (c: string, k: 'net_tx_mb' | 'net_rx_mb') => {
+    const a = ioBy[c]?.[k];
+    return a?.n ? a.total ?? null : null;
+  };
   const units: UnitRow[] = ([
     { k: 'processes exited', get: (c) => tmBy[c]?.calls ?? null,
       tip: GLOSS.exited + '; a shell is counted as the command it ran' },
     { k: 'CPU time', get: (c) => {
         const v = tmBy[c]?.cpu_s ?? resBy[c]?.cpu_s;
         return v == null ? null : v / 3600;
-      }, fmt: (n) => (n == null ? DASH : fmt(n) + ' h'), tip: GLOSS.cpuh },
+      }, fmt: (n) => (n == null ? DASH : fmt(n) + ' h'), tip: GLOSS.cpuh,
+      cellTip: (c) => topTip(c, 'cpu_s', dur, 'most CPU in one process') },
     { k: 'disk read', get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes },
     { k: 'disk written', get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes },
+    { k: 'network sent', get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx },
+    { k: 'network received', get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx },
     { k: 'peak memory', get: peakGb, fmt: (n) => (n == null ? DASH : fmt(n) + ' GB'),
-      tip: 'the highest resident memory in the window, sampled while processes ran' },
+      tip: 'the most resident memory the class held at once in the window, sampled while processes ran; hover a cell for the single largest process',
+      cellTip: (c) => topTip(c, 'peak_rss_mb', (v) => mb(v), 'largest single process') },
     { k: 'sessions', get: (c) => traj?.summary?.[c]?.sessions ?? null,
       tip: GLOSS.session + '; scripts that only probe an agent are not counted' },
     { k: 'jobs submitted', group: 'slurm', get: (c) => slurmOf(c, (x) => x.jobs),
@@ -159,7 +176,7 @@ export function OverviewTab({
                     {have.map((c) => {
                       const v = u.get(c);
                       return (
-                        <td key={c}>
+                        <td key={c} data-tip={u.cellTip?.(c)}>
                           <ShareCell
                             pct={v == null || !tot ? null : (100 * v) / tot}
                             sub={u.fmt ? u.fmt(v) : fint(v)}

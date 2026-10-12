@@ -1852,3 +1852,11 @@ table.users tr.u-row.open .u-go {
   cursor: pointer;
   white-space: nowrap;
 }
+/* a section header row that opens and closes its rows */
+table tr.section.fold td {
+  cursor: pointer;
+  user-select: none;
+}
+table tr.section.fold:hover td {
+  color: var(--ink);
+}

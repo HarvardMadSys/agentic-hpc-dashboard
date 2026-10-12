@@ -10,7 +10,10 @@
  * lands in the bin its process exited in. Resident memory is the exception,
  * sampled while processes run, and its pill says that instead.
  */
-import type { Accum, Cls, Quant, Resources } from '../api/types';
+import { useState } from 'react';
+import type { Accum, Cls, MaxProcess, Quant, Resources } from '../api/types';
+import { Term } from '../components/Term';
+import { GLOSS } from '../lib/glossary';
 import { TimeChart } from '../charts/TimeChart';
 import type { TimeLine, View } from '../charts/TimeChart';
 import { Basis, Panel, More } from '../components/Panel';
@@ -31,22 +34,22 @@ const QUANT_KEYS = ['cpu_s', 'peak_rss_mb', 'sched_wait_s', 'duration_s', 'on_cp
 type FaultKind = 'count' | 'secs' | 'share' | 'max';
 const FAULT_ROWS: [string, [group: 'faults' | 'delays' | 'dstate', key: string, label: string, kind: FaultKind, tip?: string][]][] = [
   ['page faults and context switches', [
-    ['faults', 'min_flt', 'minor page faults', 'count', 'a page mapped without touching storage'],
-    ['faults', 'maj_flt', 'major page faults', 'count', 'a page that had to be read from storage, often over a network filesystem such as NFS'],
-    ['faults', 'cmaj_flt', 'major faults, in reaped children', 'count'],
-    ['faults', 'nvcsw', 'gave up the CPU to wait', 'count', 'voluntary context switches: blocked on I/O, a lock, or sleep'],
-    ['faults', 'nivcsw', 'preempted', 'count', 'involuntary context switches: the scheduler took the CPU away'],
+    ['faults', 'min_flt', 'minor page faults', 'count', GLOSS.minflt],
+    ['faults', 'maj_flt', 'major page faults', 'count', GLOSS.majflt],
+    ['faults', 'cmaj_flt', 'major faults, in reaped children', 'count', GLOSS.cmajflt],
+    ['faults', 'nvcsw', 'gave up the CPU to wait', 'count', GLOSS.nvcsw],
+    ['faults', 'nivcsw', 'preempted', 'count', GLOSS.nivcsw],
   ]],
   ['time spent waiting', [
-    ['delays', 'blkio_wait_s', 'on block I/O', 'secs'],
-    ['delays', 'swapin_wait_s', 'on swap-in', 'secs'],
-    ['delays', 'freepages_wait_s', 'on memory reclaim', 'secs'],
+    ['delays', 'blkio_wait_s', 'on block I/O', 'secs', GLOSS.blkio],
+    ['delays', 'swapin_wait_s', 'on swap-in', 'secs', GLOSS.swapin],
+    ['delays', 'freepages_wait_s', 'on memory reclaim', 'secs', GLOSS.reclaim],
   ]],
   ['uninterruptible sleep (D-state)', [
-    ['dstate', 'events_with_stall', 'processes that stalled', 'share'],
-    ['dstate', 'wait_s', 'time stalled', 'secs'],
-    ['dstate', 'episodes', 'separate stalls', 'count', 'each time a thread blocked in uninterruptible sleep and woke again is one stall'],
-    ['dstate', 'max_s', 'longest single stall', 'max'],
+    ['dstate', 'events_with_stall', 'processes that stalled', 'share', GLOSS.dstate],
+    ['dstate', 'wait_s', 'time stalled', 'secs', 'time spent in D-state, per process on average and summed beneath'],
+    ['dstate', 'episodes', 'separate stalls', 'count', GLOSS.stall],
+    ['dstate', 'max_s', 'longest single stall', 'max', 'the longest single stall of any process in the class'],
   ]],
 ];
 
@@ -105,75 +108,96 @@ function FaultCell({
 }
 
 /* Same shape as the faults table: one row per measure, the classes across,
- * so a measure reads left to right. Each class gets its four quantiles; the
- * coverage column is gone (every class read 100%), and a sampled estimate says
- * so in the class header's tooltip instead of on every row. */
-const DIST_ROWS: [key: (typeof QUANT_KEYS)[number], label: string, f: (v: number) => string][] = [
-  ['cpu_s', 'CPU time', dur],
-  ['duration_s', 'lifetime', dur],
-  ['on_cpu_frac', 'share of lifetime on CPU', (v) => pc(100 * v)],
-  ['sched_wait_s', 'runqueue wait', dur],
-  ['peak_rss_mb', 'peak memory', mb],
+ * so a measure reads left to right. Mean, median, and 99th show; the 90th and
+ * the max open on a click (roadmap note 28), and the max names the process
+ * behind it on hover (note 27). Each class's columns wear its colour. */
+const LIFETIME_TIP =
+  'how long the process existed. For most processes it is counted from when the program ' +
+  'started (exec), while CPU time counts the whole process, including the moments before ' +
+  'exec, so a very short process can show more CPU time than lifetime.';
+const DIST_ROWS: [key: (typeof QUANT_KEYS)[number], label: string, f: (v: number) => string, tip: string][] = [
+  ['cpu_s', 'CPU time', dur, 'CPU time each process used itself (its children are not added)'],
+  ['duration_s', 'lifetime', dur, LIFETIME_TIP],
+  ['on_cpu_frac', 'share of lifetime on CPU', (v) => pc(100 * v), GLOSS.oncpu],
+  ['sched_wait_s', 'runqueue wait', dur, GLOSS.runqueue],
+  ['peak_rss_mb', 'peak memory', mb, GLOSS.peakrss],
 ];
-const DIST_Q: [k: 'p50' | 'p90' | 'p99' | 'max', label: string][] = [
-  ['p50', 'median'],
-  ['p90', '90th'],
-  ['p99', '99th'],
-  ['max', 'max'],
+type QKey = 'mean' | 'p50' | 'p90' | 'p99' | 'max';
+const BASE_Q: [QKey, string, string][] = [
+  ['mean', 'mean', GLOSS.mean],
+  ['p50', 'median', GLOSS.median],
+  ['p99', '99th', GLOSS.p99],
 ];
+const MORE_Q: [QKey, string, string][] = [
+  ['p90', '90th', GLOSS.p90],
+  ['max', 'max', GLOSS.max + '; hover a value for the process'],
+];
+const tint = (c: string) => ({ background: `color-mix(in srgb, ${CLS_COL[c] ?? 'transparent'} 6%, transparent)` });
 
-function DistTable({ byClass, have }: { byClass: Resources['by_class']; have: string[] }) {
-  const sampledN = (c: string) => {
-    const qs = Object.values(byClass[c]?.quants ?? {}) as (Quant | undefined)[];
-    const q = qs.find((x) => x?.sampled);
-    return q ? q.sample_n : null;
-  };
+function maxTip(t: MaxProcess | undefined): string | undefined {
+  if (!t) return undefined;
+  return [
+    `${t.tool ?? '?'} · ${t.user ?? '?'} · pid ${t.pid ?? '?'}${t.host ? ' on ' + t.host : ''}`,
+    t.ts ? `exited ${t.ts}` : null,
+    t.args ? t.args : null,
+  ].filter(Boolean).join('\n');
+}
+
+function DistTable({ byClass, have, more }: { byClass: Resources['by_class']; have: string[]; more: boolean }) {
+  const qs = more ? [...BASE_Q.slice(0, 2), MORE_Q[0], BASE_Q[2], MORE_Q[1]] : BASE_Q;
   return (
     <div className="scroller">
       <table className="dist">
         <thead>
           <tr>
             <th rowSpan={2}>per process</th>
-            {have.map((c) => {
-              const sn = sampledN(c);
-              return (
-                <th
-                  key={c}
-                  colSpan={DIST_Q.length}
-                  className="grp"
-                  data-tip={sn ? `quantiles estimated from a sample of ${fint(sn)} processes; max is exact` : undefined}
-                >
-                  <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
-                  <span className="sub"> · {fint(byClass[c]?.events)} processes</span>
-                </th>
-              );
-            })}
+            {have.map((c) => (
+              <th key={c} colSpan={qs.length} className="grp" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
+                <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
+                <span className="sub"> · {fint(byClass[c]?.events)} processes</span>
+              </th>
+            ))}
           </tr>
           <tr>
             {have.flatMap((c) =>
-              DIST_Q.map(([k, l], i) => (
-                <th key={c + k} className={`num${i === 0 ? ' g0' : ''}`}>{l}</th>
+              qs.map(([k, l, tip], i) => (
+                <th key={c + k} className={`num${i === 0 ? ' g0' : ''}`} style={tint(c)} data-tip={tip}>{l}</th>
               )),
             )}
           </tr>
         </thead>
         <tbody>
-          {DIST_ROWS.map(([qk, label, f]) => (
-            <tr key={qk}>
-              <td>{label}</td>
-              {have.flatMap((c) => {
-                const q = byClass[c]?.quants?.[qk] as Quant | undefined;
-                return DIST_Q.map(([k], i) => {
-                  const v = q?.n ? q[k] : null;
-                  return (
-                    <td key={c + k} className={`num${i === 0 ? ' g0' : ''}`}>
-                      {v == null ? DASH : f(v)}
-                    </td>
-                  );
-                });
-              })}
-            </tr>
-          ))}
+          {DIST_ROWS.map(([qk, label, f, tip]) => {
+            const aside = qk === 'on_cpu_frac'
+              ? have.reduce((a, c) => a + (byClass[c]?.oncpu_set_aside ?? 0), 0) : 0;
+            return (
+              <tr key={qk}>
+                <td>
+                  <Term tip={tip}>{label}</Term>
+                  {aside > 0 && (
+                    <div className="sub" data-tip={
+                      `${fint(aside)} processes ran longer on a CPU than their lifetime as measured (it was counted from exec), ` +
+                      'so their share cannot be read; they are left out rather than shown as 100%'}>
+                      {fint(aside)} set aside
+                    </div>
+                  )}
+                </td>
+                {have.flatMap((c) => {
+                  const q = byClass[c]?.quants?.[qk] as Quant | undefined;
+                  const top = qk === 'on_cpu_frac' ? undefined : byClass[c]?.top?.[qk];
+                  return qs.map(([k], i) => {
+                    const v = q?.n ? q[k] : null;
+                    const isMax = k === 'max' && top;
+                    return (
+                      <td key={c + k} className={`num${i === 0 ? ' g0' : ''}`} style={tint(c)}>
+                        {v == null ? DASH : isMax ? <span className="term" data-tip={maxTip(top)}>{f(v)}</span> : f(v)}
+                      </td>
+                    );
+                  });
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -189,6 +213,8 @@ function FaultTable({
   have: string[];
   impossible: Record<string, Record<string, number>>;
 }) {
+  // Every section starts closed: a reader opens what they came for (note 31).
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   return (
     <div className="scroller">
       <table className="faults">
@@ -196,7 +222,7 @@ function FaultTable({
           <tr>
             <th>average per process</th>
             {have.map((c) => (
-              <th key={c} className="num">
+              <th key={c} className="num" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
                 <div className="sub">{fint(byClass[c]?.events)} processes</div>
               </th>
@@ -205,14 +231,18 @@ function FaultTable({
         </thead>
         <tbody>
           {FAULT_ROWS.flatMap(([section, rows]) => [
-            <tr key={section} className="section">
-              <td colSpan={have.length + 1}>{section}</td>
+            <tr key={section} className="section fold" onClick={() => setOpen((m) => ({ ...m, [section]: !m[section] }))}>
+              <td colSpan={have.length + 1}>
+                <span className="u-caret">{open[section] ? '▾' : '▸'}</span>
+                {section}
+                {!open[section] && <span className="nm"> · {rows.length} measures, click to open</span>}
+              </td>
             </tr>,
-            ...rows.map(([g, k, label, kind, tip]) => (
+            ...(open[section] ? rows.map(([g, k, label, kind, tip]) => (
               <tr key={g + k}>
-                <td data-tip={tip}>{label}</td>
+                <td><Term tip={tip}>{label}</Term></td>
                 {have.map((c) => (
-                  <td key={c} className="num">
+                  <td key={c} className="num" style={tint(c)}>
                     <FaultCell
                       v={(byClass[c]?.[g] as Record<string, unknown> | undefined)?.[k]}
                       kind={kind}
@@ -223,7 +253,7 @@ function FaultTable({
                   </td>
                 ))}
               </tr>
-            )),
+            )) : []),
           ])}
         </tbody>
       </table>
@@ -238,18 +268,26 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
   const byClass = r.by_class ?? {};
   const have = shown(byClass, cls);
+  const [more, setMore] = useState(false);
 
   return (
     <>
       <div className="grid wide">
         <Panel
-          title="Per-event distributions"
+          title="Per-process distributions"
+          id="sec-per-event-distributions"
           p={r}
           span
           empty={!have.length}
           emptyWhat="no class block for the selection"
+          header={
+            <button className="btn" onClick={() => setMore(!more)} aria-pressed={more}
+              data-tip="the 90th percentile and the single largest value, with the process behind it">
+              {more ? '− 90th and max' : '+ 90th and max'}
+            </button>
+          }
         >
-          <DistTable byClass={byClass} have={have} />
+          <DistTable byClass={byClass} have={have} more={more} />
         </Panel>
 
         <Panel

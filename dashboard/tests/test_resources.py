@@ -170,5 +170,44 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(fresh["resources"].result()["series"], r.result()["series"])
 
 
+class MaxProcessTest(unittest.TestCase):
+    """Roadmap notes 27 and 28: a max names its process, and an on-CPU share
+    that cannot be real is set aside and counted, not capped at 100%."""
+
+    def recs(self):
+        a = exit_rec(T0 + 60, cpu=2.0)
+        a.update(pid=11, user="ann", duration_s=10.0, peak_rss_mb=50.0, args="python a.py")
+        b = exit_rec(T0 + 120, cpu=9.0)
+        b.update(pid=22, user="bob", duration_s=20.0, peak_rss_mb=900.0, args="python b.py")
+        # ran 5 s but "lived" 0.1 s: a lifetime counted from exec
+        c = exit_rec(T0 + 180, cpu=5.0)
+        c.update(pid=33, user="cy", duration_s=0.1, peak_rss_mb=10.0, args="sh -c x")
+        return [a, b, c]
+
+    def test_each_max_names_the_process_behind_it(self):
+        top = reduce(self.recs())["by_class"]["agent"]["top"]
+        self.assertEqual((top["cpu_s"]["value"], top["cpu_s"]["pid"], top["cpu_s"]["user"]), (9.0, 22, "bob"))
+        self.assertEqual((top["peak_rss_mb"]["value"], top["peak_rss_mb"]["pid"]), (900.0, 22))
+        self.assertEqual(top["duration_s"]["pid"], 22)
+
+    def test_a_run_longer_than_the_measured_lifetime_is_set_aside(self):
+        a = reduce(self.recs())["by_class"]["agent"]
+        self.assertEqual(a["oncpu_set_aside"], 1)
+        self.assertEqual(a["quants"]["on_cpu_frac"]["n"], 2)
+        self.assertLess(a["quants"]["on_cpu_frac"]["max"], 1.0)
+
+    def test_two_merged_states_keep_the_larger_max_and_add_the_set_aside(self):
+        rs = []
+        for part in (self.recs()[:1], self.recs()[1:]):
+            r = ResourceReducer(Cfg(), ["agent", "human", "unlabeled"], window_s=3600)
+            for rec in part:
+                r.feed(rec)
+            rs.append(r)
+        rs[0].merge(rs[1])
+        a = rs[0].result()["by_class"]["agent"]
+        self.assertEqual(a["top"]["cpu_s"]["pid"], 22)
+        self.assertEqual(a["oncpu_set_aside"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
