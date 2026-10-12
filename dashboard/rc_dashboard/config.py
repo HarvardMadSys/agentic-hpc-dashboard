@@ -262,6 +262,23 @@ def defaults():
             ],
         },
         "export": {"max_rows": 5000000},
+        # Replace every username, lab or Slurm account name, email address and
+        # numeric user ID in what the service sends out with a stable alias
+        # (anonymize.py). Off by default: a deployment for the cluster's own
+        # staff shows real names unless told otherwise. `salt` empty: one is
+        # generated into <cache.dir>/anonymize.salt and reused; changing it
+        # reshuffles every alias. The patterns name where homes and lab trees
+        # sit on this cluster -- see anonymize.HOME_PATTERNS for the defaults.
+        "anonymize": {
+            "enabled": False,
+            "salt": "",
+            "labs": True,
+            "emails": True,
+            "uids": True,
+            "keep": ["root"],
+            "home_patterns": [],
+            "lab_patterns": [],
+        },
         "cache": {"dir": os.path.join(HERE, ".cache"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,
@@ -308,6 +325,8 @@ ENV_MAP = {
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
     "slurm.enabled": ("RC_DASH_SLURM", lambda v: v not in ("0", "false", "no", "off")),
     "ask.enabled": ("RC_DASH_ASK", lambda v: v not in ("0", "false", "no", "off")),
+    "anonymize.enabled": ("RC_DASH_ANONYMIZE",
+                          lambda v: v not in ("0", "false", "no", "off")),
     "ask.agent": ("RC_DASH_ASK_AGENT", str),
     "ask.model": ("RC_DASH_ASK_MODEL", str),
     "ask.command": ("RC_DASH_ASK_CMD", str),
@@ -409,6 +428,9 @@ class Config:
         out = {}
         for path, val in self._leaves():
             entry = {"_value": val, "_origin": self.origin(path)}
+            if path == "anonymize.salt" and val:
+                # With the salt, a list of candidate names turns every alias back.
+                entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
                 cand = val if isinstance(val, list) else [val]
                 entry["_existing"] = [p for p in cand if p and os.path.exists(p)]

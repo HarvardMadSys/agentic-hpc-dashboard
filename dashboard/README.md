@@ -70,7 +70,8 @@ silently repoint the readers along with the writer.
 | `run-dev.sh` | 8086 | this dev cluster's live feed, `/scratch/marthen/ebpfm/{ebpf,login}` (rtx6000a) | wall | `gpu-dev.json` | off |
 | `run-fasrc.sh` | 8085 | FAS RC capture, `/scratch/marthen/fas-rc-test-data` (boslogin06, 2026-10-08..09, `.jsonl.gz`) | pinned to the capture's end | `fasrc.json` | on |
 
-Both hot-reload as `./run.sh build`, from the same tree. `site.name` (`RC_DASH_SITE_NAME`) is
+Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
+(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `site.name` (`RC_DASH_SITE_NAME`) is
 shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
 side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
 Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
@@ -416,6 +417,48 @@ unlisted section is not computed) or splits rules into sections of its own.
 (a GPU box that is also the login node) are shipped; **[`risk-profiles/README.md`](risk-profiles/README.md)**
 documents every key and every built-in rule, and [`example.json`](risk-profiles/example.json) uses
 every key, annotated.
+
+## Anonymized names
+
+`anonymize.enabled` (`RC_DASH_ANONYMIZE=1`) replaces every username, lab or Slurm account name,
+email address, and numeric user ID in what the service sends out -- every HTTP response,
+websocket frame, export line, and the Ask-LLM snapshot -- with a stable alias: `user-7f3a9c1e`,
+`lab-1b2c3d4e`, `[email]`, and `[uid]`. It is off by default, so a deployment for the cluster's
+own staff shows real names. `run-dev.sh` and `run-fasrc.sh` turn it on, because both instances
+are reachable without a login through the tunnel. The header says *anonymized* while it is on.
+
+- **Stable, not reversible.** An alias is 8 hex characters of an HMAC under a secret salt:
+  `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
+  account reads the same in every tab, window, and restart, and without the salt a list of
+  candidate names does not turn an alias back. Changing the salt reshuffles every alias.
+  Neither `/api/config` nor `--print-config` shows it.
+- **What is a name.**
+  - Every account the live roster holds or a `user` field names, plus the accounts the
+    config's filters name.
+  - Any segment of a home or lab path, masked where it stands even for someone who never ran
+    anything here: `/n/home08/<name>/`, `/n/holylabs/<lab>/Lab/<name>/`, and Claude Code's
+    `-n-home08-<name>-` spelling of a folder.
+  - Labs, from a Slurm `--account` or `-A`, from `<x>_lab`, and from lab paths.
+
+  Names match as whole words, a dotted one also in its hyphen spelling, and a name clipped off
+  the end of a long command line matches by its prefix. The patterns are
+  `anonymize.home_patterns` and `anonymize.lab_patterns`; the defaults
+  (`anonymize.HOME_PATTERNS`) know FAS's layout. System accounts (uid below 1000),
+  `anonymize.keep` (`root`), the class names, and the agent types are never aliased.
+- **Where.** At the exits, after the reducers, like `redact`: the default response class, plus
+  the websocket frames, the export stream, and the gzipped trajectory body. Reducers and saved
+  state keep raw names, and `anonymize` is left out of both saved-state fingerprints, so
+  switching it is a restart, never a rebuild. Anonymizing that fails is a 500 with no body,
+  never the raw payload.
+- **Requests.** A `user` filter, the user drill-down, and both searches take aliases. A real
+  name matches nothing, so the page cannot be used to ask whether someone is here.
+- **Not covered.** A person's name in free text that no rule ties to an account (a commit
+  message, a folder named after someone), hostnames, partitions, and job ids. In `/api/health`,
+  `anonymize` counts the names it knows, the collisions (two names, one alias), and the
+  accounts left visible because their name is a reserved word. It never shows a name.
+
+`tests/test_anonymize_leak.py` starts the app over a feed full of names, then reads every route
+and the websocket. No byte may carry one.
 
 ## Agents: subagents and blast radius
 
