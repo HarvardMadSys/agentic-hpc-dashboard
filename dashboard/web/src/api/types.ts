@@ -1568,7 +1568,20 @@ export interface AskPart {
  * the whole window. `title` and `tab` are what the page calls the panel. */
 export type AskContext =
   | { parts: AskPart[]; title?: string; tab?: string; classes?: string[] }
-  | { session: string; title?: string };
+  | { session: string; title?: string }
+  /** the operator's suggestions: the whole window on screen, one fixed question */
+  | { suggest: true; classes?: string[] };
+/** One thing the cluster operator could do, as the model put it, checked by
+ * the service (ask.parse_suggestions). */
+export interface OperatorSuggestion {
+  priority: 'high' | 'medium' | 'low';
+  title: string;
+  action: string | null;
+  evidence: string | null;
+  /** the accounts it concerns, as the page names them */
+  users: string[];
+  panel: string | null;
+}
 /** One question, as the service runs it. */
 export interface AskJob {
   id: string;
@@ -1577,6 +1590,10 @@ export interface AskJob {
   window: string;
   /** the panel or session it was asked about; null for the whole window */
   about?: string | null;
+  /** epoch seconds it was asked at */
+  submitted?: number;
+  /** a "suggest actions" answer, read; null when it could not be */
+  suggestions?: { summary: string | null; suggestions: OperatorSuggestion[] } | null;
   agent: string;
   model: string | null;
   progress: string | null;

@@ -270,6 +270,59 @@ def session_body(n_kids=14):
     }
 
 
+class SuggestionsTest(unittest.TestCase):
+    """The operator's suggestions: an answer asked for as JSON, read leniently
+    and checked strictly."""
+
+    ANSWER = json.dumps({"summary": "A quiet day with one noisy poller.", "suggestions": [
+        {"priority": "low", "title": "Note the IDE share", "action": "nothing yet",
+         "evidence": "IDE 0.3% of processes", "users": [], "panel": "Overview"},
+        {"priority": "HIGH", "title": "Ask user-1a2b3c4d to stop polling squeue",
+         "action": "email them about --wait", "evidence": "13,340 queue checks in 24h",
+         "users": ["user-1a2b3c4d", 7], "panel": "Sessions at the scheduler"},
+        {"priority": "urgent", "title": "Check NFS", "evidence": "cp 1,971 s in D-state"},
+        {"title": ""}, "not an object"]})
+
+    def test_a_clean_answer_is_read_most_urgent_first(self):
+        got = ask.parse_suggestions(self.ANSWER)
+        self.assertEqual(got["summary"], "A quiet day with one noisy poller.")
+        self.assertEqual([x["priority"] for x in got["suggestions"]], ["high", "medium", "low"])
+        top = got["suggestions"][0]
+        self.assertEqual(top["users"], ["user-1a2b3c4d"])           # a non-string dropped
+        self.assertEqual(got["suggestions"][1]["title"], "Check NFS")  # unknown priority: medium
+        self.assertIsNone(got["suggestions"][1]["action"])
+
+    def test_a_fenced_or_prefaced_answer_still_reads(self):
+        for text in ("```json\n%s\n```" % self.ANSWER, "Here you go: %s" % self.ANSWER):
+            self.assertEqual(len(ask.parse_suggestions(text)["suggestions"]), 3)
+
+    def test_anything_else_is_not_suggestions(self):
+        for text in ("", "Nothing to report.", "{not json}", '{"summary": "x"}',
+                     '{"suggestions": "none"}'):
+            self.assertIsNone(ask.parse_suggestions(text), text)
+
+    def test_at_most_eight_and_every_field_cut_to_size(self):
+        many = {"suggestions": [{"title": "t%d" % i, "action": "a" * 5000} for i in range(20)]}
+        got = ask.parse_suggestions(json.dumps(many))["suggestions"]
+        self.assertEqual(len(got), 8)
+        self.assertEqual(len(got[0]["action"]), 600)
+
+    def test_secrets_in_an_answer_are_masked(self):
+        text = json.dumps({"suggestions": [{"title": "rotate it",
+                                            "evidence": "token sk-" + "a" * 40}]})
+        self.assertNotIn("a" * 40, json.dumps(ask.parse_suggestions(text)))
+
+    def test_a_suggestions_job_carries_them_and_a_chat_job_does_not(self):
+        cmd = [PY, "-c", "import sys; sys.stdin.read(); print(sys.argv[1])", self.ANSWER]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        j = a.submit(ask.SUGGEST_QUESTION, {}, None, "w",
+                     scope={"about": "suggestions for the operator", "parse": "suggestions",
+                            "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE})
+        done = wait(a, j["id"])
+        self.assertEqual(done["suggestions"]["suggestions"][0]["priority"], "high")
+        self.assertIsNone(wait(a, a.submit("q", {}, None, "w")["id"])["suggestions"])
+
+
 class SessionDigestTest(unittest.TestCase):
     """A session for a question: totals, sequence, landmarks, and an outline."""
 

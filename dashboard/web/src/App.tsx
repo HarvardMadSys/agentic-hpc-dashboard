@@ -245,7 +245,13 @@ export default function App() {
       case 'risk':
         return <RiskIoTab P={P} cls={url.cls} part="risk" />;
       case 'chat':
-        return <ChatTab windowMin={resolvedWin?.minutes ?? null} windowLabel={resolvedWin?.label ?? null} />;
+        return (
+          <ChatTab
+            windowMin={resolvedWin?.minutes ?? null}
+            windowLabel={resolvedWin?.label ?? null}
+            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+          />
+        );
       case 'events':
         return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
       case 'internal':

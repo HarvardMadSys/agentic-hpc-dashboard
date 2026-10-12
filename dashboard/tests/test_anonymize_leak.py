@@ -32,6 +32,7 @@ from fastapi.routing import APIRoute               # noqa: E402
 from websockets.sync.client import connect         # noqa: E402
 
 from rc_dashboard import app as appmod             # noqa: E402
+from rc_dashboard import ask as ask_mod            # noqa: E402
 from rc_dashboard import config as configmod       # noqa: E402
 from test_ingest import DAY, line, stamp           # noqa: E402
 
@@ -263,6 +264,8 @@ class LeakTest(unittest.TestCase):
             ("filtered", {"parts": [{"panel": "io_process"}], "classes": ["agent"]},
              "?user=%s" % alice),
             ("session", {"session": sid, "title": "Claude Code"}, ""),
+            ("suggestions", {"suggest": True, "classes": ["agent", "human"]}, ""),
+            ("suggestions, filtered", {"suggest": True}, "?user=%s" % alice),
         ]
         # the page asks about what it has on screen: the filtered view is built
         deadline = time.time() + 60
@@ -273,8 +276,11 @@ class LeakTest(unittest.TestCase):
         for what, ctx, query in cases:
             sent = self.asked(ctx, query)
             self.assertClean("ask: %s" % what, sent)
-            if what in ("live users", "session", "filtered"):
+            if what in ("live users", "session", "filtered", "suggestions, filtered"):
                 self.assertIn(alice, sent, what)
+            if what.startswith("suggestions"):
+                self.assertIn(ask_mod.SUGGEST_QUESTION, sent)
+                self.assertIn("this cluster's operator", sent)
         self.assertIn('"Claude Code"', self.asked({"parts": [{"panel": "risk"}],
                                                    "title": "Claude Code"}))
         # a field inside a field, and a panel this deployment lacks, said so

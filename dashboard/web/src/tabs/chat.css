@@ -124,3 +124,56 @@
 .askbox .a {
   max-width: 100%;
 }
+
+/* Suggestions for the operator (ChatTab.tsx): one card per suggestion, the
+ * most urgent first. */
+.sugg-box {
+  max-width: none;
+}
+.sugg-sum {
+  margin: 0;
+  color: var(--ink);
+}
+.sugg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sugg {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--edge);
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--surface);
+}
+.sugg.high {
+  border-left-color: var(--crit);
+}
+.sugg.medium {
+  border-left-color: var(--warn);
+}
+.sugg-h {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.sugg-a {
+  color: var(--ink);
+}
+.sugg-e {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.sugg-f {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 11.5px;
+}
