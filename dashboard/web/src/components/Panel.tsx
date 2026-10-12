@@ -163,6 +163,18 @@ export function Panel({
   // still has the previous reduction, which is valid and older -- it keeps the
   // numbers and wears a pill, rather than blanking a panel that was fine.
   const blank = building != null && !building.has_payload;
+  const askBtn = askable && !missing && !blank ? (
+    <button
+      className={`btn askbtn${asking ? ' on' : ''}`}
+      aria-pressed={asking}
+      onClick={() => setAsking(!asking)}
+      data-tip={`ask ${scope.info?.agent ?? 'the LLM'} about ${
+        Array.isArray(ask) ? 'this panel: it is sent this panel’s data and nothing else' : 'this session: it is sent this session’s process tree and nothing else'
+      }`}
+    >
+      {Array.isArray(ask) ? 'ask' : 'ask about this session'}
+    </button>
+  ) : null;
   return (
     <section className={`panel${span ? ' span2' : ''}`} id={id ?? slug(title)} data-title={title}>
       <header>
@@ -173,6 +185,9 @@ export function Panel({
           <h3>{title}</h3>
         </div>
         <div className="wrapctl" style={{ gap: 6 }}>
+          {/* a panel's "ask" sits at the end; a session's leads, so the
+              inspector's "close" stays last */}
+          {!Array.isArray(ask) && askBtn}
           {header}
           {building && !blank && (
             <span
@@ -184,18 +199,7 @@ export function Panel({
             </span>
           )}
           {live && !missing && <StatusPill status="live" text="live" beat />}
-          {askable && !missing && !blank && (
-            <button
-              className={`btn askbtn${asking ? ' on' : ''}`}
-              aria-pressed={asking}
-              onClick={() => setAsking(!asking)}
-              data-tip={`ask ${scope.info?.agent ?? 'the LLM'} about ${
-                Array.isArray(ask) ? 'this panel: it is sent this panel’s data and nothing else' : 'this session: it is sent this session’s process tree and nothing else'
-              }`}
-            >
-              {Array.isArray(ask) ? 'ask' : 'ask about this session'}
-            </button>
-          )}
+          {Array.isArray(ask) && askBtn}
         </div>
       </header>
       {askable && asking && !missing && !blank && (
