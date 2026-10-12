@@ -1580,7 +1580,9 @@ export interface OperatorSuggestion {
   evidence: string | null;
   /** the accounts it concerns, as the page names them */
   users: string[];
+  /** where on the page it shows, and the tab that is (null when not known) */
   panel: string | null;
+  tab: string | null;
 }
 /** One question, as the service runs it. */
 export interface AskJob {

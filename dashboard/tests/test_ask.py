@@ -312,6 +312,34 @@ class SuggestionsTest(unittest.TestCase):
                                             "evidence": "token sk-" + "a" * 40}]})
         self.assertNotIn("a" * 40, json.dumps(ask.parse_suggestions(text)))
 
+    def test_a_panel_is_placed_on_its_tab_by_key_or_by_name(self):
+        for name, want in (("panels.risk", ("risk", "Risk & Warning")),
+                           ("live_now.users", ("live", "Active users")),
+                           ("node", ("live", "Login nodes right now")),
+                           ("Resources · I/O", ("resources", "Resources")),
+                           ("Risk & Warning", ("risk", "Risk & Warning")),
+                           ("somewhere else", (None, "somewhere else"))):
+            self.assertEqual(ask.panel_tab(name), want, name)
+        got = ask.parse_suggestions(json.dumps({"suggestions": [{"title": "t", "panel": "panels.sandbox"}]}))
+        self.assertEqual((got["suggestions"][0]["tab"], got["suggestions"][0]["panel"]),
+                         ("internal", "Internal · Sandbox"))
+
+    def test_who_ran_each_flagged_command_is_counted_from_its_listed_runs(self):
+        risk = {"dangerous": {"rows": [
+                    {"id": "rm_rf_shared", "command": "rm -rf", "n": 49,
+                     "instances": [{"user": "ann"}] * 9 + [{"user": "bob"}] * 3 + [{"user": None}]},
+                    {"id": "quiet", "command": "x", "n": 0, "instances": []}]},
+                "secrets": {"rows": [{"id": "redis_password", "pattern": "redis -a", "n": 1,
+                                      "instances": [{"user": "cy"}]}]},
+                "login_compute": {"top_procs": [{"user": "ann"}, {"user": "dee"}]}}
+        who = ask.risk_who(risk)
+        self.assertEqual(who["rm_rf_shared"], {"command": "rm -rf", "n": 49, "listed": 13,
+                                              "users": {"ann": 9, "bob": 3}})
+        self.assertEqual(who["redis_password"]["users"], {"cy": 1})
+        self.assertEqual(who["login_compute"]["users"], {"ann": 1, "dee": 1})
+        self.assertNotIn("quiet", who)
+        self.assertEqual(ask.risk_who(None), {})
+
     def test_a_suggestions_job_carries_them_and_a_chat_job_does_not(self):
         cmd = [PY, "-c", "import sys; sys.stdin.read(); print(sys.argv[1])", self.ANSWER]
         a = ask.Asker(Cfg(**{"ask.command": cmd}))

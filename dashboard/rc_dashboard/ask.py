@@ -129,10 +129,44 @@ Answer with one JSON object and nothing else -- no prose, no code fence:
    "action": "<the concrete step: whom to contact, what to change or check>",
    "evidence": "<the numbers behind it, from the snapshot>",
    "users": ["<alias the suggestion concerns>", ...],
-   "panel": "<the dashboard panel that shows it>"}]}
-At most 8 suggestions."""
+   "panel": "<where on the dashboard: Live, Active users, Login nodes right now,
+             Overview, Agents, Trajectories, Resources, Risk & Warning, Slurm,
+             or Internal>"}]}
+At most 8 suggestions. `risk_who` names who ran each flagged command and
+pattern, counted over the first runs the dashboard lists for it ("listed" of
+"n"): name them in "users" when a suggestion is about that rule."""
 
 PRIORITIES = ("high", "medium", "low")
+
+# Where a suggestion's panel is on the page: the snapshot's keys and the page's
+# own names, to the tab that shows it and what to call it there.
+PANEL_TABS = {
+    "live": ("live", "Live"), "live_now": ("live", "Live"),
+    "live_now.users": ("live", "Active users"), "active users": ("live", "Active users"),
+    "live_now.hosts": ("live", "Login nodes right now"), "node": ("live", "Login nodes right now"),
+    "login nodes right now": ("live", "Login nodes right now"), "login nodes": ("live", "Login nodes right now"),
+    "overview": ("overview", "Overview"),
+    "agents": ("agents", "Agents"), "cascades": ("agents", "Agents"), "workspace": ("agents", "Agents"),
+    "tool_mix": ("agents", "Agents · tool mix"),
+    "trajectories": ("trajectories", "Trajectories"), "sessions": ("trajectories", "Trajectories"),
+    "resources": ("resources", "Resources"), "io_process": ("resources", "Resources · I/O"),
+    "risk": ("risk", "Risk & Warning"), "risk & warning": ("risk", "Risk & Warning"),
+    "risk_who": ("risk", "Risk & Warning"),
+    "slurm": ("slurm", "Slurm"),
+    "sandbox": ("internal", "Internal · Sandbox"), "internal": ("internal", "Internal"),
+}
+
+
+def panel_tab(name):
+    """(tab, label) for a panel as the model named it, or (None, name)."""
+    if not name:
+        return None, None
+    key = name.strip().lower()
+    key = key[len("panels."):] if key.startswith("panels.") else key
+    for k in (key, key.split(".")[0], key.split(" ·")[0].strip()):
+        if k in PANEL_TABS:
+            return PANEL_TABS[k]
+    return None, name
 
 
 def parse_suggestions(text, keep=8):
@@ -161,16 +195,39 @@ def parse_suggestions(text, keep=8):
             continue
         pri = str(item.get("priority") or "").strip().lower()
         users = item.get("users") if isinstance(item.get("users"), list) else []
+        tab, panel = panel_tab(text_of(item.get("panel"), 80))
         out.append({
             "priority": pri if pri in PRIORITIES else "medium",
             "title": text_of(item.get("title"), 160),
             "action": text_of(item.get("action"), 600),
             "evidence": text_of(item.get("evidence"), 600),
             "users": [u.strip()[:64] for u in users if isinstance(u, str) and u.strip()][:6],
-            "panel": text_of(item.get("panel"), 80),
+            "panel": panel, "tab": tab,
         })
     out.sort(key=lambda x: PRIORITIES.index(x["priority"]))     # stable: the model's order within
     return {"summary": text_of(obj.get("summary"), 400), "suggestions": out}
+
+
+def risk_who(risk):
+    """Who ran each flagged command and credential pattern: the users in the
+    runs the risk panel lists for it, counted. The snapshot drops those runs
+    (`instances`, DROP_KEYS) to keep its budget, which left a suggestion able
+    to say "contact the two users behind it" and not who they are."""
+    out = {}
+    for key, name in (("dangerous", "command"), ("secrets", "pattern")):
+        for r in ((risk or {}).get(key) or {}).get("rows") or []:
+            inst = r.get("instances") or []
+            users = collections.Counter(i.get("user") for i in inst if i.get("user"))
+            if users:
+                out[r.get("id") or r.get(name) or "?"] = {
+                    name: r.get(name), "n": r.get("n"), "listed": len(inst),
+                    "users": dict(users.most_common(8))}
+    lc = (risk or {}).get("login_compute") or {}
+    users = collections.Counter(p.get("user") for p in lc.get("top_procs") or [] if p.get("user"))
+    if users:
+        out["login_compute"] = {"listed": len(lc.get("top_procs") or []),
+                                "users": dict(users.most_common(8))}
+    return out
 
 
 def panel_guide(title, tab, parts):
