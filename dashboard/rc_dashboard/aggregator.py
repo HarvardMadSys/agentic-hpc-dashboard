@@ -25,9 +25,14 @@ import json
 import threading
 import time
 
+from . import ask
+from . import clock
 from . import feeds as feedmod
+from . import gz
+from .health import CollectorHealth
+from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
-from .normalize import Normalizer
+from .normalize import Normalizer, canonical_class
 from .reducers.live import LiveReducer
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
@@ -44,9 +49,13 @@ BACKFILL_BATCH = 256
 class Aggregator:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.classes = list(cfg.get("filters.classes") or []) + \
+        # a config written before the IDE class was named still says human-vscode
+        self.classes = [canonical_class(c) for c in cfg.get("filters.classes") or []] + \
             [cfg.get("filters.unlabeled_class", "unlabeled")]
         self.norm = Normalizer(cfg)
+        # The cluster's risk rules, built now: any secret pattern it adds must be
+        # masked (redact.extend) before the first byte is served.
+        risk_ruleset(cfg)
         self.lock = threading.RLock()
         self.reports = feedmod.resolve(cfg)
         self.source = FileTailSource(
@@ -55,6 +64,9 @@ class Aggregator:
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
+        # each collector's own account of itself: start, heartbeat, stop
+        self.health = CollectorHealth(cfg)
+        self.asker = ask.Asker(cfg)
         self.panels_by_window = winmod.WindowRegistry(
             cfg, self.classes, self.roots, self.lock)
         self.node_built_at = None
@@ -65,6 +77,12 @@ class Aggregator:
         # 0, and the backfill would then count the same history a second time.
         self.positioned = threading.Event()
         self.stats = {"records": 0, "last_poll": None}
+        # Set at shutdown. The backfill runs on an executor thread, which the
+        # interpreter waits for at exit; unchecked, a restart during the minutes
+        # of a week's backfill outlived the dev runner's SIGINT grace, was
+        # SIGKILLed only through its `uv run` wrapper, and the orphan kept the
+        # port -- the next server failed to bind and every request was a 502.
+        self.stopping = False
 
     def roots(self):
         return (self.reports["ebpf"]["resolved"]
@@ -76,8 +94,14 @@ class Aggregator:
         # its build -- or its resume from the saved copy -- starts with the
         # service rather than with the first reader.
         self.panels_by_window.request(self.window(None)["minutes"])
+        # Then the cheap windows, so the first switch to one is instant rather
+        # than a scan: queued behind the default, built by the same worker.
+        self.panels_by_window.prewarm(
+            [m for m in (self.cfg.get("panels.prewarm_min") or [])
+             if m != self.window(None)["minutes"]])
 
     def stop(self):
+        self.stopping = True
         self.panels_by_window.stop()
 
     # -------------------------------------------------------------- ingestion
@@ -98,6 +122,11 @@ class Aggregator:
                     self.live.feed(rec, older=older)
                 except Exception:
                     pass          # one bad record must never stop the stream
+            if rec.get("event") in CollectorHealth.EVENTS:
+                try:
+                    self.health.feed(rec)
+                except Exception:
+                    pass
             if not older:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
@@ -124,7 +153,7 @@ class Aggregator:
         n = 0
         for f in rep.get("files", []):
             try:
-                with open(f["path"], errors="replace") as fh:
+                with gz.open_text(f["path"]) as fh:
                     lines = fh.readlines()[-keep:]
             except OSError:
                 continue
@@ -212,6 +241,10 @@ class Aggregator:
         stream = raws()
         try:
             while True:
+                if self.stopping:
+                    with self.lock:
+                        self.backfill.update(state="stopped", records=stats["records"])
+                    return stats["records"]
                 with self.lock:
                     before = stats["records"]
                     self.consume(itertools.islice(stream, BACKFILL_BATCH), older=True)
@@ -264,6 +297,28 @@ class Aggregator:
                     rep["backfill"] = dict(self.backfill)
             return self.reports
 
+    def collectors(self):
+        """Is each collector OK: its own records (`health`) and its files on disk.
+
+        Nothing here talks to a collector -- the files are the only interface, so
+        a capture copied from another cluster reads the same as a live feed.
+        """
+        with self.lock:
+            files = {}
+            for tier in ("ebpf", "ebpf_node"):
+                for f in (self.reports.get(tier) or {}).get("files", []):
+                    d = files.setdefault(f.get("host") or "?", {}).setdefault(
+                        tier, {"files": 0, "bytes": 0, "last_write": None})
+                    d["files"] += 1
+                    d["bytes"] += f.get("size") or 0
+                    d["last_write"] = max(d["last_write"] or 0, f.get("mtime") or 0) or None
+            tiers = {t: {k: (self.reports.get(t) or {}).get(k) for k in (
+                         "status", "notice", "configured", "resolved", "env", "lag",
+                         "newest_record_ts", "max_age_s", "hosts")}
+                     for t in ("ebpf", "ebpf_node")}
+            return {"hosts": self.health.report(files), "tiers": tiers,
+                    "now": time.time(), "backfill": dict(self.backfill)}
+
     def rebuild_history(self):
         """The scheduled tick: refresh the node snapshot, then every held window.
 
@@ -277,7 +332,8 @@ class Aggregator:
                 self.node_result = self.node.result()
             except Exception as e:
                 self.node_result = {"_error": str(e)}
-            self.node_built_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.node_built_at = time.strftime("%Y-%m-%d %H:%M:%S",
+                                               time.localtime(time.time()))
         self.panels_by_window.refresh()
         return self.node_result
 
@@ -285,26 +341,42 @@ class Aggregator:
         """Resolve a requested window against retention.  One rule, one place."""
         return winmod.resolve(self.cfg, window_min)
 
-    def panels(self, window_min=None):
+    def facets(self, minutes):
+        """The filter's choices, from the UNFILTERED view of this window if it is
+        held -- never a build of its own. A filtered view's own counts would
+        offer only the people already picked, and the dropdown must keep
+        offering everyone else."""
+        view = self.panels_by_window.peek(minutes)
+        fac = (view.payload or {}).get("facets") if view is not None else None
+        return fac if isinstance(fac, dict) and "_error" not in fac else None
+
+    def panels(self, window_min=None, flt=None):
         """Historical panels for one window, each stamped with its feed's presence.
 
         A window still building returns its envelope with `_status='building'`
         and the progress, rather than an empty panel: "no rows yet" and "not
         finished reading" are different facts and must not render alike.
+
+        `flt` narrows every window panel to some users or agent types; that is a
+        view of its own, built like a window (`windows.ViewFilter`), and the
+        response's `filter` says which -- and what it could not narrow.
         """
         win = self.window(window_min)
-        view = self.panels_by_window.request(win["minutes"])
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        facets = self.facets(win["minutes"])
         with self.lock:
             ebpf = feedmod.panel_meta(self.reports["ebpf"])
             node = feedmod.panel_meta(self.reports["ebpf_node"])
             status = view.status()
             out = {}
             for key, payload in (view.payload or {}).items():
-                if key == "trajectories" or key.startswith("_"):
-                    continue                       # /api/trajectories; internal state
+                if key in ("trajectories", "facets") or key.startswith("_"):
+                    continue                       # /api/trajectories; below; internal
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
                 body.update(ebpf)
                 body["_window"] = status
+                body["_filter"] = flt.as_dict()
                 out[key] = body
             # `_status` stays the FEED's status and `_window.state` the build's:
             # "the collector wrote nothing" and "we have not finished reading it"
@@ -312,7 +384,7 @@ class Aggregator:
             # zero-is-not-missing mistake wearing a different hat.
             for key in ("tool_mix", "io_process", "resources", "sandbox", "risk", "cascades"):
                 if key not in out:
-                    out[key] = dict(ebpf, _window=status)
+                    out[key] = dict(ebpf, _window=status, _filter=flt.as_dict())
             body = dict(self.node_result) if isinstance(self.node_result, dict) \
                 else {"rows": self.node_result}
             body.update(node)
@@ -324,6 +396,10 @@ class Aggregator:
                     "node_built_at": self.node_built_at,
                     "window": win,
                     "window_status": status,
+                    "filter": flt.block(),
+                    # Who and what the window holds, for the filter's choices:
+                    # the unfiltered view's counts, whichever view this is.
+                    "facets": facets,
                     "purposes": self.norm.purposes,
                     "purpose_src": self.norm.purpose_src,
                     "classes": self.classes}
@@ -337,14 +413,52 @@ class Aggregator:
                                  label=win["label"])
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
             out["backfill"] = dict(self.backfill)
+            out["clock"] = clock.status()
             return out
 
-    def trajectories(self, window_min=None):
+    def ask_info(self):
+        return ask.describe(self.cfg)
+
+    def ask(self, question, window_min=None, history=()):
+        """Start one question about the window; the agent runs in the background."""
         win = self.window(window_min)
-        view = self.panels_by_window.request(win["minutes"])
+        got = self.panels(window_min) or {}
+        live = self.live_payload(window_min)
+        # sessions come from their own endpoint: the per-class summary and the
+        # busiest few, in plain fields
+        tr = self.trajectories(window_min) or {}
+        rows = tr.get("rows") or {}
+        busiest = [rows[s] for s in (tr.get("ranks") or {}).get("events", [])[:15] if s in rows]
+        keep = ("user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
+                "distinct_tools", "peak_rss_mb", "sandbox", "approval", "host")
+        extra = {"facets": got.get("facets"),
+                 "sessions": {"summary": tr.get("summary"),
+                              "busiest": [{k: r.get(k) for k in keep} for r in busiest]}}
+        return self.asker.submit(question, got.get("panels") or {}, live, win["label"],
+                                 history, extra)
+
+    def ask_job(self, jid):
+        return self.asker.view(jid)
+
+    def live_users(self, window_min=None, q=None, limit=None, running=None):
+        win = self.window(window_min)
+        with self.lock:
+            return self.live.users(window_s=win["minutes"] * 60, q=q, limit=limit,
+                                   running=running)
+
+    def live_user(self, name, window_min=None):
+        win = self.window(window_min)
+        with self.lock:
+            return self.live.user_detail(name, window_s=win["minutes"] * 60)
+
+    def trajectories(self, window_min=None, flt=None):
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
         with self.lock:
             payload = (view.payload or {}).get("trajectories")
             out = dict(payload) if isinstance(payload, dict) else {}
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
             out["_window"] = view.status()
+            out["filter"] = flt.block()
             return out

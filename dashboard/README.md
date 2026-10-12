@@ -63,6 +63,89 @@ Reading the collector's output uses a **separate** env var from the collector's 
 `EBPFM_OUTPUT_DIR`, following `collect/healthcheck.py`: sharing one would let an operator shell
 silently repoint the readers along with the writer.
 
+## Two deployments on this host
+
+| script | port | data | clock | risk profile | Slurm |
+|---|---|---|---|---|---|
+| `run-dev.sh` | 8086 | this dev cluster's live feed, `/scratch/marthen/ebpfm/{ebpf,login}` (rtx6000a) | wall | `gpu-dev.json` | off |
+| `run-fasrc.sh` | 8085 | FAS RC capture, `/scratch/marthen/fas-rc-test-data` (boslogin06, 2026-10-08..09, `.jsonl.gz`) | pinned to the capture's end | `fasrc.json` | on |
+
+Both hot-reload as `./run.sh build`, from the same tree. `site.name` (`RC_DASH_SITE_NAME`) is
+shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
+side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
+Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
+rows go with it.
+
+The FAS RC `sacct` export (`/scratch/marthen/agentic-hpc-measurement/raw_data/sacct`, one parquet
+file a day, 2026-08-23..09-30) is not read: the service is stdlib-only and has no parquet reader,
+and those days overlap neither deployment's eBPF data, so no job id the collector saw can be
+joined to them.
+
+## A capture from another cluster
+
+A feed collected elsewhere and copied here -- `run-fasrc.sh` serves boslogin06's, on `:8085`
+with the same hot reload as `./run.sh build` -- differs from a live one in two ways, and the
+service handles both without touching a record.
+
+**It is compressed.** A day-file may be `<host>.<stream>.jsonl.gz`, read in place
+(`rc_dashboard/gz.py`). Every reader here addresses a file by byte offset (the window plan's
+binary search, the read-back that walks from the end, a saved window's resume, the tail),
+and gzip offers none of that, so the first open inflates the file once and keeps a copy of the
+inflater every 8 MB of output. Reaching any offset then inflates at most 8 MB, and offsets are
+into the uncompressed stream, so a byte range or a saved build means the same thing for either
+form. On boslogin06's 2026-10-08..09 (330 MB -> 7.9 GB) indexing takes ~6 s and holds ~32 MB;
+it lives in the process, because an inflater cannot be pickled, so each restart indexes again.
+A plain file wins over its `.gz` twin, concatenated members are followed, and a stream cut
+short is read as far as it goes. A date dir holding no day-file is passed over rather than
+counted as a day: a copied capture has dirs made ahead of the files, and counting them left
+the 1 h view of the capture nothing to read.
+
+**It is old.** On the wall clock every window would end in days of nothing. `clock.as_of`
+(`RC_DASH_AS_OF`, `--as-of`) pins the service's present: `auto` is one second after the newest
+record, or give a local time. The pinned clock is **frozen** (`rc_dashboard/clock.py` says why:
+a running one would date every saved build in the future after a hot-reload restart, and
+re-scan instead of resuming). Every live frame carries `clock`, the header reads *frozen
+capture · as of ...* instead of *live*, and the page takes "now" from the server, not the
+browser, so the events query, the export bounds and every "ago" agree with the windows.
+Durations the service measures with that clock read 0 s.
+
+### Testing against a capture
+
+The pinned view is deterministic: the same windows over the same bytes on every restart. That
+is what makes a capture useful as a test, at four levels:
+
+| level | what it checks | state |
+|---|---|---|
+| the pinned view (`run-fasrc.sh`) | every tab on another cluster's data: its users, its kernel's feature set (4.18: no node tier, no `dstate_task`, no `tcp_accept`) rendering *not measured*, never 0 | running |
+| scale | index, backfill and window-build cost at that cluster's volume -- boslogin06 writes ~2.7 M exit records a day, about four times rtx6000a | measured on the instance (`/api/feeds` `compressed`, `/api/windows`) |
+| cross-check | a few totals counted straight from the `.gz` by an independent script (exits per class per hour, distinct users, agent sessions) against `/api/live` and `/api/panels` at the pinned clock | proposed |
+| replay | the live path the frozen view never runs -- the tail following appends, WebSocket pushes, drift re-builds, the build/tail seam -- by writing the capture into a plain staging root at N x speed while the service's clock runs from the replay's start | proposed |
+
+## Is each collector OK?
+
+The **Feeds** tab leads with one row per host and a verdict an admin can act on, judged
+only from what the collector wrote (`rc_dashboard/health.py`) -- the dashboard never
+contacts a collector, so a capture copied from another cluster is judged exactly as a live
+feed. The collector writes a `meta` record when it starts (pid, kernel, the probes that
+loaded and the ones that did not, the sysctls they need), a `residency_totals` heartbeat
+every minute, and a `stop` record when it exits cleanly (why, how long it ran, and kernel
+events lost against seen).
+
+| verdict | means |
+|---|---|
+| OK | a heartbeat within `feeds.ebpf.max_age_s` (5 min) |
+| degraded | running, but losing data it could have: a sysctl a probe needs is off, or its last run lost more than 0.1% of kernel events |
+| stopped | no recent heartbeat and a stop record after the last one; its reason is shown |
+| silent | no recent heartbeat and no stop record: killed, crashed, or the host is down |
+| no heartbeat | files for the host, but no heartbeat in what was read |
+
+A probe the kernel cannot load (boslogin06's `tcp_accept`: no BTF on 4.18) is listed as a
+**limit** beside the verdict but does not change it -- it is true of every run until the
+kernel changes. A running collector's lost-event count is written only at stop, so the run
+in progress shows "reported when it stops", never 0. Below the collectors: the data sources
+(an optional one nobody set up reads "not set up", not red), the startup read, and the
+resolved configuration.
+
 ## The time window
 
 The window is chosen on the page — presets plus a custom entry (`90m`, `4h`, `2d`) — and it
@@ -160,16 +243,46 @@ cannot do. Pickle runs code for whoever can write the file, so the directory is 
 files 0600, and a symlink or a file another user owns or can write is never loaded.
 `panels.cache_windows=false` (`RC_DASH_CACHE_WINDOWS=0`) turns all of it off.
 
+### Hourly merge-reduce
+
+With `panels.merge_reduce` on (the default; `RC_DASH_MERGE_REDUCE=0` turns it off), a record is
+parsed and reduced **once**, into the state of the epoch hour it belongs to, and that state is
+saved under `<cache.dir>/hours/` (`hours.py`). An unfiltered window is then the records from its
+start to the first whole hour, read as before, so the start is exact rather than snapped to an
+hour; every closed hour inside it, merged from their saved states (whole epoch days from one saved
+merge of their 24 hours, `panels.day_cache`); and the hour still open, read as before. The view
+is live-fed as always. Every window reducer has `merge(other)`, which folds a later state into its
+own exactly as feeding it the later records would have, so a merged window is the window one pass
+builds (`tests/test_merge.py`, `tests/test_hours.py`; checked on the real feed). The quantile panels
+are now a mergeable sketch of every value rather than a capped sample: `n`, `max` and `mean` exact,
+each quantile within 1% (`rel_err`), `sampled` false.
+
+Joins that cross an hour -- the shell-wrapper dedup, the process index's parent requests, a
+sandbox wrapper absorbing its payload, the keys the workspace has admitted -- are carried from
+each hour into the next one's reduction, so the hours are reduced in order, and a merged window
+takes the join state its last hour ended with. That carried state is aged out after 24 hours
+untouched, which is the one place a merged 7 d window differs from one pass over 7 days: it no
+longer holds week-old pending requests, which on rtx6000a made one pass refuse a few legitimate
+parents whose pid an older process had used. An hour closes once the newest record is
+`panels.hour_grace_s` (300 s) past its end; a record that arrives for a closed hour is found by the
+next hour's read and merged into its hour's saved state, not lost. On one login node's feed a
+24 h window then builds in ~2-3 s and a 7 d one in ~8 s after a restart, a window switch or a drift
+refresh (against ~15 s and ~160 s scanned); filling the hours the first time costs about what one
+scan does. A week of hours is ~38 MB on disk. A view filtered to users or agent types is still
+scanned.
+
 ## API
 
 | endpoint | purpose |
 |---|---|
 | `GET /api/config` | resolved config, `_origin` per key |
 | `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill |
+| `GET /api/collectors` | per host: is its collector OK -- verdict and reasons, heartbeat age, the run in progress, every run and how it ended (events lost), probes that could not load (`health.py`) |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
-| `GET /api/panels?window_min=` | historical aggregates for that window + its build state |
+| `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
-| `GET /api/trajectories?rank=&window_min=` | ranked sessions in that window |
+| `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way |
+| `GET /api/trajectory?sid=&window_min=&from=` | one session as a **process tree**, re-read on demand (below) |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
@@ -178,23 +291,50 @@ files 0600, and a symlink or a file another user owns or can write is never load
 script or bookmark that predates the control keeps the view it had. A value above retention is
 clamped, and the response carries `requested`, `clamped` and a `note` saying why.
 
+`/api/trajectory` (`rc_dashboard/proctree.py`) is the inspector behind a clicked trajectory row.
+No reducer holds per-process rows -- one day's busiest session on rtx6000a ran 1.59 M processes --
+so it re-reads the window's day-files for exactly the records the row folds (their `_sid`), through
+the same normaliser scan a window build uses, with a byte pre-check on `session_key` so the rest of
+the file is skipped before parsing. Parents come from each record's own `ppid`; a parent placed on
+weaker evidence (the process index, the collector's `depth`, the fold) says so in `link`, and one
+with no exit record in the read is drawn without one. Consecutive siblings of one shape fold into
+counted groups. Every bound is in the response, never applied quietly: the read stops at
+`reducers.trajectories.inspect_max_records` (150 000) or `inspect_max_bytes` and says where
+(`scan.stopped_at`; `from=` continues from it), at most `inspect_hold` (20 000) processes and
+`inspect_per_parent` (2 000) childless ones of one command per parent are itemised and the rest
+counted under their parent, and `inspect_nodes` (6 000) rows are served breadth first with the rest
+counted. Command lines are masked (`redact.py`) and then cut to 220 characters. One read runs at
+a time and is served again for a minute.
+
 Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
 `from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox
 approval depth_min depth_max cpu_min duration_min exit_code signal q`.
 
 The export's first line is a `_meta` header (filters, window, feed paths, schema versions) and
 its last is a `_trailer` (row count, whether the cap truncated it). Body rows are the
-collector's own fields plus additive `_`-prefixed derived keys — originals unmodified.
+collector's own fields plus additive `_`-prefixed derived keys — originals unmodified,
+except credentials.
+
+**Credentials never leave the service.** Tokens, passwords, keys and signed URLs on a command
+line are replaced by `[REDACTED]` on every way out (built panels, the live frame,
+`/api/events`, `/api/export`, and the `q` search, which matches the masked text), keeping the
+flag or variable name so a reader can see what was there. Records stay raw in memory, because
+the secrets, sandbox and approval detectors need to read them. The rules and their measured cost
+are in `rc_dashboard/redact.py`.
 
 ## Conventions the panels obey
 
 These are research-integrity rules, not preferences. Each one is a mistake this project has
 already made once.
 
-- **Three classes, never two** — `agent` / `human-vscode` / `human` (+ `unlabeled`). Folding
-  VS Code into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
+- **Three classes, never two** — `agent` / `human` / `ide` (+ `unlabeled`). `ide` is any
+  editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
+  tags (it calls the first `human-vscode` and counts the other two as agents), plus other
+  editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
+  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
-  silently empty the `human-vscode` class.
+  silently empty the IDE class.
 - **Count and cost, side by side** — every categorical panel ships an event-weighted and a
   CPU-weighted chart on separate single axes. Never a dual axis. You can see why immediately:
   `poll/probe` is ~28% of an agent's tool calls and ~0% of its CPU.
@@ -205,13 +345,30 @@ already made once.
   names its configured path. Different states, different renderings.
 - **`sandbox` and `approval` are independent axes.** `--dangerously-skip-permissions` bypasses
   approval but leaves the sandbox intact; `--dangerously-bypass-approvals-and-sandbox`
-  disables both. `sandbox` has **four** states — `denied` (unreadable, ptrace-gated for other
-  users when the collector is unprivileged) must never be folded into `unsandboxed`, which
-  would deflate the sandbox rate for everyone except the collector's owner.
-- **Ancestry disagreeing with ground truth is the signal.** `sandbox_ancestry=bwrap` with
-  `sandbox=unsandboxed` is Claude Code's capability probe (`bwrap --ro-bind / /`), the shape
-  that wedges in D-state on a dead automount per `findings/login.md`. With
-  `sandbox=sandboxed` it is real confinement.
+  disables both.
+- **`sandbox` is namespace isolation, and it is labelled so.** The collector compares
+  `/proc/<pid>/ns/*` with pid 1's: Landlock and seccomp-only sandboxes are invisible to it,
+  and a container, an apptainer user namespace or a `PrivateTmp=` unit counts as isolated.
+  The key `sandboxed` is shown as "namespace-isolated". It has **four** states — `denied`,
+  shown as "exited before read", is the namespace links being gone when read (the ebpf tier
+  is root; every such record on rtx6000a lived under 6 ms) and is never folded into
+  `unsandboxed`. Every share is taken over the KNOWN verdicts, with coverage beside it.
+- **A session is judged by its tool calls.** Claude Code and Codex wrap each tool call and
+  never themselves, so the session root's own verdict says nothing about confinement. A tool
+  call is a sandbox wrapper invocation (bwrap / codex-linux-sandbox, nested ones folded into
+  the outermost) or a Claude Code Bash shell no wrapper encloses; its outcome is `isolated`,
+  `not_isolated`, `failed` (the wrapper exited non-zero and no payload ran — tried, and the
+  sandbox did not come up: all 612 codex-linux-sandbox runs on rtx6000a), `no_payload` or
+  `unknown`. A wrapper's own record is read before it unshares, so it always reads "not
+  isolated" and is not a "capability probe"; what ran under it decides the call.
+- **Approval is read off the session root's own argv, and says no more than that.** Only a
+  process whose role is `agent` (and not an IDE's) carries a verdict, from exit records and
+  from its residency / conn / netio identity blocks — a running VS Code-launched Claude is
+  only ever seen in its own `conn` records. States: `bypassed` (a bypass flag at launch),
+  `auto` (`--permission-mode auto`), `supervised` shown as "no bypass flag at launch"
+  (settings files, codex `config.toml` and a mid-session switch are invisible),
+  `unobservable` (`codex app-server` takes its policy per thread), `na` (a tool shell, probe,
+  IDE helper or human process) and `unknown` (a child: its verdict is on the root).
 - **CPU is `sum(cpu_s)`, self, once per process.** `child_cpu_s` is never added:
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
@@ -222,31 +379,132 @@ already made once.
 - **Scope is stated** — the eBPF tier runs on login nodes, so its resource figures are
   login-node use, not cluster use.
 
-## Cascades and drift
+## Risk rules differ by cluster
 
-The **Cascades** tab answers "which agents started which other agents". A node is a process
-whose role (`roles.py`) is `agent`, `infra` or `client`; tool-call shells, sandboxes, probes
-and helpers are steps between nodes. A node's parent is the nearest node above it in the
-process tree, else the daemon's own `--spawned-by {"pid": N}`, else (for a `bg-pty-host`
-orphaned to init) its user's only daemon, labelled as inferred, else the tree root. Two
-outcomes are kept apart: **nested**, an agent started by another agent, and **hosted**, a
-daemon, Claude Desktop's remote server or `claude rc` running sessions side by side. A Codex
-TUI whose direct child is `codex app-server` is shown as that session's front-end, not as a
-second agent.
+What counts as risky is a site's call: nvidia-smi is a pointless question on a GPU-less login
+node and a sensible one on a GPU dev box, compute nodes are named differently everywhere, and a
+site has its own tools and token formats. The rules are built in (`reducers/risk.py`, which
+documents every key) and changed per cluster in the config's `risk` section, or in a **profile**
+file merged over it: `RC_DASH_RISK_PROFILE=risk-profiles/gpu-dev.json`.
+
+```json
+{
+  "vars": {"compute_hosts": "holy|bos|node|gpu|c\\d{3,}"},
+  "dangerous": {
+    "disable": ["nvidia_smi_login", "nvcc_login"],
+    "override": {"pip_install": {"severity": "low"}},
+    "add": [{"id": "rclone_sync", "label": "rclone sync on login", "severity": "med",
+             "pattern": "(?:^|/)rclone\\b[^\\n]*\\bsync\\b"}]
+  },
+  "secrets": {"add": [{"id": "site_token", "label": "site token", "severity": "HIGH",
+                       "pattern": "\\bRCT-[A-Z0-9]{12}\\b"}]}
+}
+```
+
+`{{name}}` in a pattern is a `vars` entry. A changed pattern, an added rule, or a variable that
+changes a pattern runs without the built-in's pre-check (a cheap literal test that a stale one
+would turn into missed matches). A rule that does not compile is left out and named on the Risk
+tab, never fatal. A secret pattern a cluster adds is also **masked** everywhere the page shows a
+command line (`redact.extend`), so a credential the panel counts is never shown elsewhere. The
+profile's content is part of the resolved config, so changing a rule re-scans the saved windows
+instead of resuming counts made by the old one. The Risk tab's **Rules in effect** lists every
+rule, its pattern, and whether it is built in, changed, added or switched off.
+The tab itself is modular: `risk.sections` lists its sections in order -- compute on a login
+node, groups of command rules, credentials -- so a cluster drops the ones it has no use for (an
+unlisted section is not computed) or splits rules into sections of its own.
+`risk-profiles/fasrc.json` (FASRC login nodes; `run-fasrc.sh` uses it) and `gpu-dev.json`
+(a GPU box that is also the login node) are shipped; **[`risk-profiles/README.md`](risk-profiles/README.md)**
+documents every key and every built-in rule, and [`example.json`](risk-profiles/example.json) uses
+every key, annotated.
+
+## Agents: subagents and blast radius
+
+The **Agents** tab (`?tab=agents`; the old `?tab=cascades` still opens it) answers "which
+agents started which other agents, and where did each one work". A node is a process whose
+role (`roles.py`) is `agent`, `infra` or `client`; tool-call shells, sandboxes, probes and
+helpers are steps between nodes. A node's parent is the nearest node above it in the process
+tree, else the daemon's own `--spawned-by {"pid": N}`, else (for a `bg-pty-host` orphaned to
+init) its user's only daemon, labelled as inferred, else the tree root. An agent started,
+through any number of steps, beneath another agent is that agent's **subagent**. Two outcomes
+are kept apart: **nested**, an agent with subagents, and **hosted**, a daemon, Claude
+Desktop's remote server or `claude rc` running sessions side by side. A Codex TUI whose
+direct child is `codex app-server` is shown as that session's front-end, not as a second
+agent.
 
 What it cannot see: Claude Code's Task-tool subagents and workflow agents run inside their
-parent's process. Only agents that are processes of their own appear. On madsys-gpu1 over
-2026-10-01..07 that was 49 agent trees, 4 hosted and none nested.
+parent's process. Only agents that are processes of their own appear; an in-process
+subagent's commands are counted in its parent's. On madsys-gpu1 over 2026-10-01..07 that was
+49 agent trees, 4 hosted and none nested.
 
-**Drift** is two process-level proxies, carried on every trajectory row and every agent node.
-Neither sees the model's context:
+**Workspace & blast radius** (`reducers/workspace.py`, composed per agent by the cascades
+reducer) is where each agent worked, from its **home** -- the agent process's own cwd, or,
+when that is `/` (IDE-hosted), its first call's directory off the root, labelled so. The
+collector records no file paths, so three kinds of evidence are kept apart on the page and
+in the payload's `basis`:
 
-- `cwd_outside_pct`: the share of the session's processes whose cwd is outside its launch
-  directory (the agent's own cwd, or, when that is `/`, its first call's off the root).
-  The collector reads cwd at exec for tagged processes and inherits it below, so a `cd`
-  inside one shell command is not seen.
-- `mix_jsd`: Jensen–Shannon divergence (base 2, 0..1) between the purpose mix of the first
-  and last third of the session's processes, null below 30.
+| reading | kind | what it is |
+|---|---|---|
+| ran in | **measured** | processes whose cwd the collector recorded as that directory. It reads cwd at exec for some processes and copies the parent's at fork for the rest -- before a shell's own `cd`, and before the chdir Claude Code's Bash tool makes into the directory its last call left it in (on rtx6000a 1 173 of 1 180 tool-call shells on 2026-10-11 were copied). Each view says how much was read (`cwd_read_pct`) |
+| bytes | **measured, per process** | rchar/wchar (syscall, pipes and terminals included) and read_bytes/write_bytes (disk) of the processes that ran there -- credited to where they ran, not to where the bytes went |
+| named | **inferred** | distinct paths a command line names, classified by the command: read (`cat`, `grep`, `ls`, a script run, `<`), write (`>`/`>>`, a `cp`/`mv`/`rsync` destination, `tee`, `touch`, `mkdir`, `sed -i`, `tar -x`, `git clone`, `wget -O`, `curl -o`), delete (`rm`, `rmdir`, `git rm`, `find -delete`), and anything else path-like as named. Naming a path is not proof of touching it |
+
+Exact file-level reads and writes would need a collector probe (openat / unlink / rename
+tracepoints) that is not built, and Claude Code's Read, Edit and Write tools and Codex's
+apply_patch run inside the agent's own process and leave no command line at all.
+
+Directories inside the home are shown relative (`./src`), outside it with `~` for the user's
+home and `~bob` for another's; deeper than `collapse_depth` (4) levels below the home or a
+top-level root (`/tmp`, `/scratch`, `~/.cache`, `/n/<fs>`, another user's home) they fold into
+that ancestor, as do a directory's quieter subdirectories past six, and every fold is counted.
+A **write or delete named outside the home is flagged** and labelled by where it landed
+(another user's home and system paths first, the agent's own `/tmp` scratch last). The
+toggle **this agent only / with its subagents** adds every agent beneath it, judged against
+the outer agent's home. Claude Code's tool calls are read through their `eval '<cmd>'`
+(`proctree.ran`, the inspector's own reader), so the snapshot each call sources and the cwd
+file it writes are never counted; a fork that inherited its parent's argv is not read twice. A
+relative path is placed against the process's cwd, never against `/` (an agent's process is at
+`/` when it inherited an IDE's or a daemon's directory, and `ls src` from there is not `/src`),
+and never by climbing out of a copied cwd with `..`: `./bin/cachesim ../data/x` with a cwd
+copied from an agent in `/home/marthen` would otherwise read as `/home/data`, another user's
+home.
+
+Cost and bounds: each distinct argv is parsed once (a regex tokenizer, never `shlex`) and the
+per-record path is a few dict lookups. On rtx6000a's 2026-10-10 (1.89 M records, a ~90 s 24 h
+build) `feed` took 2.4 s, ~1.4 µs a record, and the saved window grew by 2.4 MB. State is one
+entry per collector session key, capped at `reducers.workspace.max_keys` (150 000) keys,
+`max_dirs` (300) directories per key, `max_dir_entries` (400 000) overall, 64 named paths per
+directory and 32 per command line; past any cap the excess is counted, not kept. Served paths
+are masked (`redact`) and no raw argv is served.
+
+The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the trajectory rows' reading and stay
+on the Trajectories tab; the Agents page no longer carries them.
+
+## Slurm: how sessions use the scheduler
+
+"An agent submitted job N" says nothing about agent behaviour; how agents drive the
+scheduler does. On boslogin06's 2026-10-09 agents made 16.6 scheduler queries per job
+against 0.2 for people, 41 agent sessions polled the queue for 10 minutes or more (94.9 h
+of it; one Claude session every 4.9 s for 4.9 h), one session submitted 112 jobs in a
+minute, and 79% of agent submissions used `--parsable` (people: 0.2%) -- a program reading
+the job id. The **Slurm** tab (`?tab=slurm`, hidden by `slurm.enabled: false`) is built on
+that, from the window's `slurm` reducer (`reducers/slurm.py`):
+
+- **per session** -- an agent's collector keys folded into the agent, as Trajectories fold
+  them; people and IDEs one row per user: jobs, refusals, the busiest minute, distinct
+  command lines (numbers masked: one script resubmitted is one), the flags it submits with,
+  queries, its longest **polling loop** (queries within 2 s are one poll, polls within 3 min
+  one loop, 10 min or more counts as polling), queries per job, cancels, GPU-hours asked;
+- **per class**, the same as rates and shares side by side;
+- **what came back** from each submission: a job id, a dry run (`--test-only` makes no job),
+  a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
+  no id, a non-zero exit and the scheduler's own error line, which is the reason shown
+  (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
+  is not a refusal;
+- queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
+  gap, not 0.
+
+Requests are read off argv: a `#SBATCH` line in the script is not seen, so GPU-hours count
+only jobs with GPUs and a time limit on the command line, and say how many those were.
 
 ## Known collector limitations the page surfaces
 
@@ -260,7 +518,7 @@ Neither sees the model's context:
   Claude Code Bash tool call runs in. The dashboard decides what each tagged process
   really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
   trajectory rows say how many keys they fold and how the least certain one was
-  attributed, and the Sandbox tab's tree counts use the same fold. On madsys-gpu1 a
+  attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a
   24 h window went from 3 281 keys to 636 sessions, one VS Code server alone from 688.
 - **The node tier daemon needs an absolute path.** `ebpfm.sh:466` re-execs `"$0"`, so
   `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by absolute
@@ -280,11 +538,14 @@ Neither sees the model's context:
 | `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
+| `rc_dashboard/gz.py` | a `.jsonl.gz` day-file read in place, seekable by uncompressed offset through a per-process inflater index |
+| `rc_dashboard/health.py` | each collector's verdict, from its own meta / heartbeat / stop records |
+| `rc_dashboard/clock.py` | the service's present; `clock.as_of` pins (and freezes) it for a captured feed |
 | `rc_dashboard/normalize.py` | schema contract, `actor3`, sandbox/approval, session keys, null gating |
 | `rc_dashboard/roles.py` | what a classifier-tagged process is: agent, tool-shell, probe, sandbox, infra, ... |
 | `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
-| `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades, live, node |
+| `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), live, node |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |

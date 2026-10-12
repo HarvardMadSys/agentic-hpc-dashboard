@@ -45,10 +45,17 @@ case "$MODE" in
 esac
 
 # ---- Environment -----------------------------------------------------
-export RC_DASH_EBPF_ROOTS=/scratch/marthen/ebpfm/ebpf
-export RC_DASH_NODE_ROOTS=/scratch/marthen/ebpfm/login
+# Overridable, so a wrapper can point a second instance at another feed
+# (run-fasrc.sh).
+export RC_DASH_EBPF_ROOTS="${RC_DASH_EBPF_ROOTS:-/scratch/marthen/ebpfm/ebpf}"
+export RC_DASH_NODE_ROOTS="${RC_DASH_NODE_ROOTS:-/scratch/marthen/ebpfm/login}"
 export RC_DASH_PORT="${RC_DASH_PORT:-8124}"
 export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
+# A bundle built anywhere but web/dist is passed to vite as its outDir: a second
+# instance must not share the first one's watcher output, which vite empties
+# on every rebuild.
+VITE_OUT=()
+[ "$RC_DASH_STATIC_DIR" != "$WEB/dist" ] && VITE_OUT=(--outDir "$RC_DASH_STATIC_DIR" --emptyOutDir)
 
 # Vite dev server (dev mode only). Set RC_DASH_UI_HOST=0.0.0.0 to reach it from
 # another machine instead of through a tunnel.
@@ -74,9 +81,19 @@ backend() {
   # source, and PythonFilter passes only .py* -- under it the config file above
   # would be watched and then silently filtered out, never restarting anything.
   # DefaultFilter still drops __pycache__, *.pyc and editor swap files.
+  # --sigint-timeout: the server needs a few seconds to stop (graceful HTTP
+  # shutdown, then the backfill noticing `stopping`).
+  # The server is the venv's python itself, not `uv run python`: watchfiles
+  # signals its direct child, and with uv in between its SIGINT did not always
+  # reach the server, and the SIGKILL after the timeout reached only uv. The
+  # server was orphaned with the port bound, every restart after it failed to
+  # bind, and the orphan went on serving the code from before the edit. One
+  # `uv run` first does the sync each restart's `uv run` used to.
+  (cd "$HERE" && uv run python -c '')
   exec uv run --with watchfiles watchfiles \
     --filter default \
-    "uv run python -m rc_dashboard serve" \
+    --sigint-timeout 15 \
+    "$HERE/.venv/bin/python -m rc_dashboard serve" \
     "${WATCH_PATHS[@]}"
 }
 
@@ -91,7 +108,7 @@ frontend_dev() {
 
 frontend_build_watch() {
   cd "$WEB"
-  exec npm run build:watch
+  exec npm run build:watch -- "${VITE_OUT[@]}"
 }
 
 # ---- Preflight -------------------------------------------------------
@@ -103,9 +120,11 @@ fi
 # In build mode uvicorn mounts web/dist at import time, so it has to exist
 # before the backend starts -- vite --watch would only create it a few seconds
 # in, and the mount would silently fall back to the 503 "frontend not built".
-if [ "$MODE" = "build" ] && [ ! -f "$WEB/dist/index.html" ]; then
-  echo "==> initial build (dist/ is empty)"
-  (cd "$WEB" && npm run build)
+# No type check, as with --watch: a half-finished edit elsewhere in the tree
+# must not keep the server from starting. `npm run typecheck` is separate.
+if [ "$MODE" = "build" ] && [ ! -f "$RC_DASH_STATIC_DIR/index.html" ]; then
+  echo "==> initial build ($RC_DASH_STATIC_DIR is empty)"
+  (cd "$WEB" && npx vite build "${VITE_OUT[@]}")
 fi
 
 # ---- Supervise -------------------------------------------------------

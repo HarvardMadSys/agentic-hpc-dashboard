@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
 import { getLive, wsUrl } from './client';
+import { syncServerClock } from '../lib/clock';
 
 export type Transport = 'connecting' | 'ws' | 'polling' | 'down';
 
@@ -63,6 +64,7 @@ export function useLive(windowMin: number | null): LiveState {
   const builtKey = useRef<string>('');
 
   const accept = useCallback((l: LiveResponse) => {
+    syncServerClock(l.clock?.now);
     setLive(l);
     setReceivedAt(Date.now());
     setError(null);

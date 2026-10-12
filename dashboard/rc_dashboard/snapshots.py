@@ -30,6 +30,13 @@ A resumed view keeps its original `built_at`, so its age and its drift read as
 they would had the service never stopped, and the window status says it was
 restored.
 
+A view filtered to some users or agent types (`windows.ViewFilter`) is saved
+under its own name, `w<minutes>-<filter>.<fingerprint>.pkl`, and its header
+names the filter, so a filtered and an unfiltered build can never resume each
+other. An unfiltered build keeps the name it always had. When the store is full
+the filtered copies are pruned first: they are one reader's view, the
+unfiltered windows are everyone's.
+
 Pickle runs code for whoever can write the file, so the directory is made 0700,
 files are written 0600, and a file that is a symlink, not owned by this uid, or
 writable by anyone else is never loaded.
@@ -46,7 +53,7 @@ import time
 FORMAT = 1
 PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what a reducer's state means.
-CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py")
+CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py", "redact.py")
 HELPER_MODULES = ("agent_lib", "tool_bucket_lib", "purpose_lib", "deep_traj_lib")
 
 
@@ -151,21 +158,26 @@ class SnapshotStore:
             return None
         return cls(os.path.join(base, "windows"), cfg, cfg.get("panels.cache_keep", 8))
 
-    def path(self, minutes, roots):
-        fp = fingerprint(self.code, self.cfg, roots)
-        return os.path.join(self.dir, "w%d.%s.pkl" % (int(minutes), fp)), fp
+    @staticmethod
+    def _stem(minutes, flt=None):
+        return "w%d" % int(minutes) if not flt else "w%d-%s" % (int(minutes), flt.slug())
 
-    def load(self, minutes, roots, check):
+    def path(self, minutes, roots, flt=None):
+        fp = fingerprint(self.code, self.cfg, roots)
+        return os.path.join(self.dir, "%s.%s.pkl" % (self._stem(minutes, flt), fp)), fp
+
+    def load(self, minutes, roots, check, flt=None):
         """`(meta, state, None)`, or `(None, None, reason)`.
 
         `check(meta)` returns a reason to refuse, or None; the state -- the
         expensive part -- is only unpickled once the cheap header has passed.
         """
-        path, fp = self.path(minutes, roots)
+        path, fp = self.path(minutes, roots, flt)
         try:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError:
-            other = glob.glob(os.path.join(self.dir, "w%d.*.pkl" % int(minutes)))
+            other = glob.glob(os.path.join(self.dir, "%s.*.pkl"
+                                           % self._stem(minutes, flt)))
             return None, None, ("the saved build was made by different code, config "
                                 "or feed roots" if other
                                 else "no saved build for this window")
@@ -177,17 +189,21 @@ class SnapshotStore:
             if meta.get("format") != FORMAT or meta.get("fingerprint") != fp \
                     or meta.get("minutes") != int(minutes):
                 return None, None, "saved by a different code or config"
+            if meta.get("filter") != (flt.as_dict() if flt else None):
+                return None, None, "saved for a different user or agent-type filter"
             why = check(meta)
             if why:
                 return None, None, why
             return meta, pickle.load(fh), None
 
-    def save(self, minutes, roots, meta, blob):
+    def save(self, minutes, roots, meta, blob, flt=None):
         """Write atomically: a reader sees the old file or the new one, whole."""
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
-        dest, fp = self.path(minutes, roots)
+        dest, fp = self.path(minutes, roots, flt)
         meta = dict(meta, format=FORMAT, fingerprint=fp, minutes=int(minutes),
                     saved_at=time.time())
+        if flt:
+            meta["filter"] = flt.as_dict()
         tmp = "%s.%d.tmp" % (dest, os.getpid())
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -201,21 +217,31 @@ class SnapshotStore:
             except OSError:
                 pass
             raise
-        self.prune()
+        self.prune(fp)
         return meta
 
-    def discard(self, minutes, roots):
+    def discard(self, minutes, roots, flt=None):
         try:
-            os.unlink(self.path(minutes, roots)[0])
+            os.unlink(self.path(minutes, roots, flt)[0])
         except OSError:
             pass
 
-    def prune(self):
-        """Keep the newest `keep` snapshots; any fingerprint, any window."""
+    def prune(self, current=None):
+        """Keep the newest `keep` snapshots, any window.
+
+        The current fingerprint's before any other -- a copy made by other code
+        or roots can never be resumed -- and among those the unfiltered before
+        the filtered, so one reader trying filters cannot push the default
+        window's saved copy out of the store.
+        """
+        def rank(p):
+            n = os.path.basename(p)
+            return (current is not None and n.endswith(".%s.pkl" % current),
+                    "-" not in n.split(".", 1)[0], os.path.getmtime(p))
         try:
             names = [os.path.join(self.dir, n) for n in os.listdir(self.dir)
                      if n.startswith("w") and n.endswith(".pkl")]
-            names.sort(key=os.path.getmtime, reverse=True)
+            names.sort(key=rank, reverse=True)
         except OSError:
             return
         for p in names[self.keep:]:

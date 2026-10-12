@@ -17,22 +17,9 @@ the child was not captured the shell is kept, which is the original's own
 conservative rule.
 """
 import collections
-import os
-import sys
 
-from . import Reducer, pct
-
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "..", "analyze"))
-try:
-    from tool_bucket_lib import bucket, BUCKETS, shellenv_sub
-except Exception:                                    # keep the service running
-    BUCKETS = ("other",)
-    def bucket(ec):                                  # noqa: E301
-        return "other"
-    def shellenv_sub(cm, ec, a):                     # noqa: E301
-        return "other"
+from . import Reducer, add_counts, pct
+from ..tool_buckets import BUCKETS, bucket
 
 
 class ToolMixReducer(Reducer):
@@ -48,7 +35,10 @@ class ToolMixReducer(Reducer):
         self.b_cpu = collections.defaultdict(collections.Counter)
         self.t_calls = collections.defaultdict(collections.Counter)
         self.t_cpu = collections.defaultdict(collections.Counter)
-        self.shell_kinds = collections.defaultdict(collections.Counter)
+        # (class, agent_type) -> calls / CPU: which agent or editor the calls
+        # came from. Flat Counters, so a saved window pickles them as they are.
+        self.at_calls = collections.Counter()
+        self.at_cpu = collections.Counter()
         self.child_tok = {}            # (sid, ppid) -> {child effective_comm}
         self.dropped = 0
         self.total = 0
@@ -82,12 +72,59 @@ class ToolMixReducer(Reducer):
         if rec.get("_shell_resolved") or comm == ec:
             pass
         b = bucket(ec)
-        if b == "shell/env-init":
-            self.shell_kinds[cls][shellenv_sub(comm, ec, rec.get("args") or "")] += 1
         self.b_calls[cls][b] += 1
         self.b_cpu[cls][b] += cpu
         self.t_calls[cls][ec or "(empty)"] += 1
         self.t_cpu[cls][ec or "(empty)"] += cpu
+        at = (cls, rec.get("agent_type") or "")
+        self.at_calls[at] += 1
+        self.at_cpu[at] += cpu
+
+    # ------------------------------------------------------------- merge
+    # A window is merged from saved hour states (`hours`). The dedup index is
+    # the one thing here that crosses an hour: a shell that exits in the next
+    # hour looks up the child it waited on in this one. So it is CARRIED from
+    # each hour into the next one's reduction -- the dedup decides exactly as
+    # one pass would -- and is not part of the saved hour, which holds only
+    # the counts that hour produced.
+    CARRY_AGED = ("child_tok",)
+
+    def carry(self):
+        return {"child_tok": self.child_tok}
+
+    def seed(self, c):
+        self.child_tok = c["child_tok"]
+
+    def strip(self):
+        self.child_tok = {}
+
+    def merge(self, o):
+        """Fold a LATER state's counts into this one. `o` is consumed."""
+        for mine, theirs in ((self.b_calls, o.b_calls), (self.b_cpu, o.b_cpu),
+                             (self.t_calls, o.t_calls), (self.t_cpu, o.t_cpu)):
+            for cls, c in theirs.items():
+                add_counts(mine[cls], c)
+        add_counts(self.at_calls, o.at_calls)
+        add_counts(self.at_cpu, o.at_cpu)
+        self.dropped += o.dropped
+        self.total += o.total
+        self.evicted += o.evicted
+
+    def _by_type(self):
+        calls = collections.Counter()
+        cpu = collections.Counter()
+        for (cls, _at), n in self.at_calls.items():
+            calls[cls] += n
+        for (cls, _at), v in self.at_cpu.items():
+            cpu[cls] += v
+        out = {}
+        for (cls, at), n in self.at_calls.most_common():
+            out.setdefault(cls, {})[at] = {
+                "calls": n, "calls_pct": pct(n, calls[cls]),
+                "cpu_s": round(self.at_cpu[(cls, at)], 2),
+                "cpu_pct": pct(self.at_cpu[(cls, at)], cpu[cls]) if cpu[cls] else None,
+            }
+        return out
 
     def result(self):
         by_class = {}
@@ -113,8 +150,12 @@ class ToolMixReducer(Reducer):
         return {
             "buckets": list(BUCKETS),
             "by_class": by_class,
+            # class -> agent type -> share of the class's calls and CPU; an
+            # untagged process (a person's shell) is the type ""
+            "by_type": self._by_type(),
             "head": head,
-            "shell_kinds": {c: dict(v) for c, v in self.shell_kinds.items()},
+            # how many different tools each class ran: the head shows only the top
+            "n_tools": {c: len(v) for c, v in self.t_calls.items()},
             "dedup": {"dropped": self.dropped,
                       "dropped_pct": pct(self.dropped, self.total),
                       "index_evicted": self.evicted,

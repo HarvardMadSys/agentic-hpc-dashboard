@@ -1,0 +1,14 @@
+{
+  "//": "A GPU development box that is also the login node (madsys-gpu1, rtx6000a). Merged over the `risk` section of the config: see reducers/risk.py for every key.",
+  "dangerous": {
+    "//disable": "this host has GPUs: nvidia-smi and nvcc are reasonable here, not environment-unaware",
+    "disable": ["nvidia_smi_login", "nvcc_login"],
+    "override": {},
+    "add": []
+  },
+  "//sections": "the login node IS the GPU box here: building and running code on it is what it is for, so there is no 'compute on a login node' section",
+  "sections": [
+    {"id": "commands", "kind": "commands", "rules": "rest", "title": "Commands that should not run here"},
+    {"id": "credentials", "kind": "credentials", "rules": "rest", "title": "Credentials exposed in argv"}
+  ]
+}

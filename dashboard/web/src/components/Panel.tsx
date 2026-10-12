@@ -12,20 +12,21 @@
  */
 import type { ReactNode } from 'react';
 import type { FeedStatus, PanelEnvelope, WindowStatus } from '../api/types';
-import { feedLabel } from '../lib/feeds';
 
 export function StatusPill({
   status,
   text,
   beat,
+  tip,
 }: {
   status: FeedStatus | 'live';
   text?: string;
   beat?: boolean;
+  tip?: string;
 }) {
   const cls = status === 'live' ? (beat ? '' : 'ok') : status;
   return (
-    <span className={`pill ${cls}`}>
+    <span className={`pill ${cls}`} data-tip={tip}>
       <i className="ld" />
       {text ?? status}
     </span>
@@ -80,12 +81,13 @@ export function NoRows({ what }: { what?: string }) {
 export function Building({ w }: { w: WindowStatus }) {
   const p = w.progress || { pct: 0, records: 0, files: 0 };
   const resuming = p.mode === 'resume';
+  const merging = p.mode === 'merge';
   return (
     <div className="building">
       <div className="hd">
         <span className="pill">
           <i className="ld" />
-          {w.state === 'queued' ? 'queued' : resuming ? 'catching up' : 'reducing'} {w.label}
+          {w.state === 'queued' ? 'queued' : merging ? 'merging' : resuming ? 'catching up' : 'reducing'} {w.label}
         </span>
         <span className="mono">{p.pct}%</span>
       </div>
@@ -95,7 +97,9 @@ export function Building({ w }: { w: WindowStatus }) {
       <p className="paths">
         {w.state === 'error'
           ? `rebuild failed: ${w.error}`
-          : resuming
+          : merging
+            ? `combining the saved hours of the ${w.label} window`
+            : resuming
             ? `resuming the saved ${w.label} reduction, reading only what the collector wrote since it was built — ${p.records.toLocaleString()} records across ${p.files} file(s)`
             : `these panels carry no time index, so the ${w.label} window is being reduced from the rows — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
       </p>
@@ -105,6 +109,8 @@ export function Building({ w }: { w: WindowStatus }) {
 
 export interface PanelProps {
   title: string;
+  /** anchor for the tab's section list; defaults to a slug of the title */
+  id?: string;
   /** The envelope. Omit only for panels that are not feed-backed (e.g. config). */
   p?: PanelEnvelope | null;
   /** Feed name override when there is no envelope. */
@@ -119,8 +125,13 @@ export interface PanelProps {
   children?: ReactNode;
 }
 
+/** "Syscall bytes against disk bytes" -> "syscall-bytes-against-disk-bytes" */
+export const slug = (s: string) =>
+  'sec-' + s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
 export function Panel({
   title,
+  id,
   p,
   feed,
   span,
@@ -143,16 +154,13 @@ export function Panel({
   // numbers and wears a pill, rather than blanking a panel that was fine.
   const blank = building != null && !building.has_payload;
   return (
-    <section className={`panel${span ? ' span2' : ''}`}>
+    <section className={`panel${span ? ' span2' : ''}`} id={id ?? slug(title)} data-title={title}>
       <header>
         <div>
+          {/* No "process tracer · ok" line: which collector fed a panel, and
+              whether it is healthy, is the Feeds tab's business. A panel whose
+              feed is absent still says so in its body (EmptyState). */}
           <h3>{title}</h3>
-          {feedName && (
-            <div className="src" data-tip={`feed key: ${feedName}`}>
-              {feedLabel(feedName)}
-              {p?._status ? ' · ' + p._status : ''}
-            </div>
-          )}
         </div>
         <div className="wrapctl" style={{ gap: 6 }}>
           {header}
@@ -168,7 +176,9 @@ export function Panel({
           {live && !missing && <StatusPill status="live" text="live" beat />}
         </div>
       </header>
-      {missing ? (
+      {p?._waiting ? (
+        <div className="none">waiting for the dashboard service…</div>
+      ) : missing ? (
         <EmptyState
           feed={feedName}
           paths={p!._paths || []}
@@ -182,13 +192,23 @@ export function Panel({
       ) : (
         children
       )}
-      {!missing && !blank && basis}
+      {/* A basis handed over as bare text is a paragraph of method notes; the
+          reader asked for none of those under a panel. Only <Basis>, which is
+          switched off, may render here. */}
+      {!missing && !blank && typeof basis !== 'string' && basis}
     </section>
   );
 }
 
 /** The collapsed basis affordance: notes, cpu_basis, scope, dedup rules. */
+/* Basis disclosures are switched off: the reader found them noise, not help.
+ * Anything a reader needs to read a number right belongs in its tooltip or its
+ * pill, beside the number, not in a collapsed list under the panel. The prop and
+ * the call sites stay for now so this is one switch, not a dozen file edits. */
+const SHOW_BASIS = false;
+
 export function Basis({ items }: { items: [string, unknown][] }) {
+  if (!SHOW_BASIS) return null;
   const rows = items.filter(([, v]) => v != null && v !== '' && !(Array.isArray(v) && !v.length));
   if (!rows.length) return null;
   return (
@@ -205,13 +225,26 @@ export function Basis({ items }: { items: [string, unknown][] }) {
   );
 }
 
-export function Legend({ items }: { items: { k: string; c: string }[] }) {
+/** The table behind a chart, folded away until asked for: open, a panel's
+ * tables push its chart out of line with the chart beside it. */
+export function More({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <details className="more">
+      <summary>{label}</summary>
+      {children}
+    </details>
+  );
+}
+
+export function Legend({ items }: { items: { k: string; c: string; dashed?: boolean; solid?: boolean }[] }) {
   if (!items.length) return null;
   return (
     <div className="legend">
       {items.map((i) => (
         <span key={i.k + i.c}>
-          <i style={{ background: i.c }} />
+          {i.dashed
+            ? <i className="dash" style={{ borderTopColor: i.c }} />
+            : <i className={i.solid ? 'solid' : undefined} style={{ background: i.c }} />}
           {i.k}
         </span>
       ))}

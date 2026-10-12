@@ -1,0 +1,156 @@
+/* The user and agent-type dropdowns, beside the class chips.
+ *
+ * Kept out of styles.css so the rules sit next to the component that owns
+ * them. Palette tokens only; the class-mix bar takes its colours from
+ * CLS_COL, so crimson stays the agent's.
+ */
+
+.who-drop {
+  position: relative;
+  display: inline-flex;
+}
+/* Shaped like a chip so the row reads as one control strip, but squared off
+ * enough to say "this opens" rather than "this toggles". */
+.who-btn {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  color: var(--ink-2);
+  background: var(--surface);
+}
+.who-btn:hover,
+.who-btn[aria-expanded='true'] {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+.who-btn.on {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.who-btn b {
+  font-weight: 600;
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--sunken);
+  text-align: center;
+}
+.who-caret {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.who-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  width: 280px;
+  max-height: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px var(--rule);
+}
+.who-find {
+  all: unset;
+  margin: 8px 8px 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  color: var(--ink);
+  background: var(--page);
+}
+.who-find:focus {
+  border-color: var(--crimson-ink);
+}
+.who-list {
+  overflow-y: auto;
+  padding: 4px 0 6px;
+}
+.who-opt {
+  display: grid;
+  grid-template-columns: 14px 1fr 44px 52px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.who-opt:hover {
+  background: var(--surface-2);
+}
+.who-opt input {
+  margin: 0;
+  accent-color: var(--ink-2);
+}
+.who-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.who-name.mono {
+  font-size: 11px;
+}
+.who-n {
+  text-align: right;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.who-mix {
+  display: flex;
+  height: 6px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--sunken);
+}
+.who-mix i {
+  display: block;
+  height: 100%;
+}
+.who-more {
+  padding: 4px 10px 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+/* What is in force, each value one click from gone. */
+.who-sum {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.who-tag {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--sunken);
+  font-size: 11px;
+  color: var(--ink);
+}
+.who-tag:hover {
+  background: var(--crimson-wash);
+  color: var(--crimson-ink);
+}
+.who-tag .x {
+  color: var(--muted);
+}

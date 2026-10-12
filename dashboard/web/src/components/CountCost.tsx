@@ -45,6 +45,12 @@ export function CountCost({
     k: g.k,
     k2: g.k2,
     v: Object.fromEntries(series.map((s) => [s.k, g.v['cpu:' + s.k] ?? null])),
+    // a group's `tips` carry the count tip under `<series>` and the cost tip
+    // under `cpu:<series>`, as its values do
+    tips: g.tips
+      ? Object.fromEntries(series.map((s) => [s.k, g.tips?.['cpu:' + s.k] ?? ''])
+          .filter(([, t]) => t))
+      : undefined,
   }));
   return (
     <>

@@ -45,9 +45,10 @@ def varied_exit(epoch, i, host="h1"):
 
 def skipped_rec(epoch, host="h1"):
     """A record no view reads. Not `conn`: the process index and the cascades
-    take a long-lived agent's identity from its connection ticks."""
-    return {"schema_version": 6, "event": "residency_totals", "ts": stamp(epoch),
-            "ts_epoch": epoch, "host": host, "by_actor3": {}, "by_agent_type": {}}
+    take a long-lived agent's identity from its connection ticks. Not
+    `residency_totals` either: the resources series samples memory from it."""
+    return {"schema_version": 6, "event": "stop", "ts": stamp(epoch),
+            "ts_epoch": epoch, "host": host, "records": 0, "reason": "test"}
 
 
 class CacheCase(FeedCase):
@@ -105,6 +106,31 @@ class ScanTest(CacheCase):
         self.assertEqual(got, [5000, 5001, 5002])
         # The saved offset stops before the fragment, so a resume reads it whole.
         self.assertEqual(plan[0]["end"], os.path.getsize(self.path("h1.exits.jsonl")) - 25)
+
+
+class PrewarmTest(CacheCase):
+
+    def test_a_prewarmed_window_queues_behind_and_is_evicted_first(self):
+        reg = self.registry()
+        reg.max_views = 3
+        mine = reg.request(WIN)                     # the reader's window
+        reg.prewarm([60, 360, 720])                 # room for two of them
+        self.assertEqual(list(reg._queue), [WIN, 60, 360])
+        self.assertEqual(list(reg.views), [360, 60, WIN])   # least recent first
+        for v in list(reg.views.values()):
+            v.state = "ready"
+        reg.request(4320)                           # the reader opens a wide one
+        self.assertIn(WIN, reg.views)
+        self.assertIs(reg.views[WIN], mine)
+        self.assertNotIn(360, reg.views)            # a prewarm made the room
+
+    def test_prewarm_never_evicts_what_a_reader_opened(self):
+        reg = self.registry()
+        reg.max_views = 2
+        reg.request(WIN)
+        reg.request(60)
+        reg.prewarm([360])
+        self.assertEqual(sorted(reg.views), [60, WIN])
 
 
 class ResumeTest(CacheCase):

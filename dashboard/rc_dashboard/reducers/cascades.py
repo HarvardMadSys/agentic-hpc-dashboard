@@ -1,4 +1,5 @@
-"""Cascades: which agents started which other agents, and through what.
+"""Agents and their subagents: which agents started which, through what, and
+where each one worked.
 
 A node is a process whose role (roles.py) is `agent`, `infra` or `client` --
 the things that run sessions, host them, or attach to them. Everything else the
@@ -24,8 +25,12 @@ A node's parent is found, in order:
                     daemon on that host. Inferred, and labelled so
   tree_root         the top-most agent the collector recorded for the tree
 
-An agent's numbers -- tool calls, CPU, drift -- are its folded trajectory
-session's (trajectories.py), so the two tabs cannot disagree about a session.
+An agent started beneath another agent is that agent's SUBAGENT. An agent's
+numbers -- tool calls, CPU -- are its folded trajectory session's
+(trajectories.py), so the two tabs cannot disagree about a session; where it
+worked -- its home, the directories it ran in and the paths its commands named
+-- is the workspace reducer's (workspace.py), folded the same way and composed
+here, because only this reducer knows which agents are whose subagents.
 """
 import collections
 import json
@@ -33,7 +38,9 @@ import re
 import time
 
 from ..procindex import MAX_HOPS, users_conflict
-from . import pct
+from . import add_counts, max_of, min_of, pct
+from ..redact import redact
+from .workspace import tilde
 
 NODE_ROLES = ("agent", "infra", "client")
 _NO_PARENT = (None, 0, 1)
@@ -41,6 +48,48 @@ _SPAWNED_BY = re.compile(r"--spawned-by\s+(\{[^}]*\})")
 _DAEMON = re.compile(r"(?:^|\s)daemon\s+run(?:\s|$)")
 _PTY_HOST = re.compile(r"(?:^|\s)bg-pty-host(?:\s|$)")
 _APP_SERVER = re.compile(r"(?:^|\s)app-server(?:\s|$)")
+_SCRIPT_HOSTS = frozenset({"node", "nodejs", "bun", "deno"})
+WORKSPACE_BASIS = {
+    "ran_in": "MEASURED: processes whose working directory is that directory. The "
+              "collector reads cwd at exec for agent-tagged processes and processes "
+              "with a terminal, and copies the parent's at fork otherwise -- before a "
+              "shell's own `cd` and before the chdir an agent's Bash tool makes, so "
+              "`cd sub && make` is credited to the shell's directory. cwd_read_pct "
+              "says how much was read; a relative path is never placed by climbing "
+              "out of a copied cwd",
+    "bytes": "MEASURED per process, not per file: the read/write syscall bytes "
+             "(rchar/wchar, which include pipes, terminals and sockets) and the disk "
+             "bytes (read_bytes/write_bytes) of the processes that ran in a directory, "
+             "credited to where they RAN, not to where the bytes went",
+    "named": "INFERRED from command lines: the paths a command names, as distinct "
+             "paths per directory, classified by what the command does with them -- "
+             "read (cat, grep, ls, a script run), write (> and >>, a cp/mv/rsync "
+             "destination, tee, touch, mkdir, sed -i, tar -x), delete (rm, rmdir, "
+             "git rm, find -delete) -- and anything else path-like as named. Naming "
+             "a path is not proof of touching it: the command may fail, the path may "
+             "be a pattern",
+    "not_seen": "exact file-level reads and writes would need a collector probe "
+                "(openat/unlink/rename tracepoints) that is not built. Claude Code's "
+                "Read, Edit and Write tools and Codex's apply_patch run inside the "
+                "agent's own process and leave no command line, so their file "
+                "access is not here",
+    "home": "the agent process's own cwd; an agent started at `/` (IDE-hosted) is "
+            "anchored on its first call's directory off the root, labelled so",
+    "outside": "a write or delete NAMED outside the home is flagged: the agent "
+               "changed, or tried to change, something beyond the directory it was "
+               "started in. /tmp, caches and the agent's own state directory are "
+               "flagged too, and labelled by kind",
+    "collapse": "directories deeper than collapse_depth levels below the home, or "
+                "below a top-level root (/tmp, /scratch, ~/.cache, another user's "
+                "home), are folded into that ancestor and counted as `deeper`",
+    "subagents": "with subagents adds every agent started beneath this one (see "
+                 "Agent trees), judged against THIS agent's home",
+    "scope": "exit and truncated records of agent-class processes that carry a "
+             "session key, folded into their agent through the process index as "
+             "trajectory rows are; a fork that never exec'd inherits its parent's "
+             "argv and is not read twice; ~ is the user's home as their agent's own "
+             "paths name it, else /home/<user>",
+}
 VIA_MEANING = {
     "ancestor": "nearest node above it in the process tree",
     "spawned_by": "named by the daemon's own --spawned-by argument",
@@ -66,7 +115,7 @@ class CascadeReducer:
     EVENTS = ("exit", "truncated", "residency", "conn", "netio", "submit")
     KEY = "cascades"
 
-    def __init__(self, cfg, classes, window_s=None, procs=None, traj=None):
+    def __init__(self, cfg, classes, window_s=None, procs=None, traj=None, ws=None):
         self.cfg = cfg
         r = cfg.get("reducers.cascades", {}) or {}
         self.max_nodes = int(r.get("max_nodes", 20000))
@@ -75,6 +124,7 @@ class CascadeReducer:
         self.window_s = window_s or int(cfg.get("live.window_min", 1440)) * 60
         self.procs = procs
         self.traj = traj
+        self.ws = ws
         self.nodes = {}                          # (host, pid) -> dict
         self.dropped = 0
         self.census = collections.Counter()      # (agent_type, role) -> exits
@@ -101,7 +151,10 @@ class CascadeReducer:
             n = self.nodes[key] = {
                 "host": key[0], "pid": key[1], "ppid": rec.get("ppid"), "role": role,
                 "agent_type": rec.get("agent_type"), "user": rec.get("user"),
-                "command": rec.get("_command"), "args": args[:200],
+                # Masked BEFORE the cut: the payload is masked again on the
+                # way out, but a token cut in half here would no longer look
+                # like one. Once per node, so it costs nothing per record.
+                "command": rec.get("_command"), "args": redact(args)[:200],
                 "cwd": rec.get("cwd"), "tree_root": rec.get("tree_root_pid"),
                 "spawned_by": spawned_by_pid(args) if role == "infra" else None,
                 "daemon": bool(role == "infra" and _DAEMON.search(args)),
@@ -127,6 +180,34 @@ class CascadeReducer:
         if rec.get("event") in ("exit", "truncated"):
             n["exited"] = rec.get("event") == "exit"
             n["duration_s"] = rec.get("duration_s")
+
+    # --------------------------------------------------------------- merge
+    def merge(self, o):
+        """Fold a LATER state into this one. `o` is consumed.
+
+        A node keeps what it was first seen with and takes what `feed` would
+        have filled in from the later records: a parent, cwd, user or tree root
+        it lacked, the widened first/last and start, and its exit."""
+        for key, n in o.nodes.items():
+            cur = self.nodes.get(key)
+            if cur is None:
+                if len(self.nodes) >= self.max_nodes:
+                    self.dropped += 1            # counted, never silent
+                    continue
+                self.nodes[key] = n
+                continue
+            for f, pick in (("first", min_of), ("last", max_of), ("start", min_of)):
+                cur[f] = pick(cur[f], n[f])
+            if cur["ppid"] in _NO_PARENT and n["ppid"] not in _NO_PARENT:
+                cur["ppid"] = n["ppid"]
+            for f in ("cwd", "user", "tree_root"):
+                if cur[f] is None and n[f] is not None:
+                    cur[f] = n[f]
+            if n["exited"] or n["duration_s"] is not None:
+                cur["exited"], cur["duration_s"] = n["exited"], n["duration_s"]
+        self.dropped += o.dropped
+        add_counts(self.census, o.census)
+        add_counts(self.census_cpu, o.census_cpu)
 
     # ------------------------------------------------------------- resolve
     def _parent(self, n, live, daemons):
@@ -187,13 +268,18 @@ class CascadeReducer:
         self._break_cycles(live)
         # Codex's TUI starts `codex app-server` as its direct child and the
         # app-server runs the session: one session in two processes, not an
-        # agent under an agent. The parent is re-labelled a client (front-end).
+        # agent under an agent. So does npm's `node /usr/local/bin/codex`, which
+        # only execs the native binary (rtx6000a, 2026-10-11: two such pairs,
+        # read as two agents with a subagent each). The parent is re-labelled a
+        # client (front-end).
         for n in live.values():
-            if n["role"] == "agent" and n["via"] == "ancestor" and not n["path"] \
-                    and _APP_SERVER.search(n["args"] or ""):
-                p = live[(n["host"], n["parent"])]
-                if p["role"] == "agent" and p["agent_type"] == n["agent_type"]:
-                    p["role"], p["frontend"] = "client", True
+            if n["role"] != "agent" or n["via"] != "ancestor" or n["path"]:
+                continue
+            p = live[(n["host"], n["parent"])]
+            if p["role"] == "agent" and p["agent_type"] == n["agent_type"] and (
+                    _APP_SERVER.search(n["args"] or "")
+                    or (p["command"] or "") in _SCRIPT_HOSTS):
+                p["role"], p["frontend"] = "client", True
 
         kids = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -201,6 +287,16 @@ class CascadeReducer:
                 kids[(host, n["parent"])].append((host, pid))
         for v in kids.values():
             v.sort(key=lambda k: live[k]["start"] or live[k]["first"] or 0)
+
+        # Where each agent worked: its keys folded through the same process
+        # index, and its home -- its own cwd, or its first call's off `/`.
+        folded = self.ws.fold(cutoff) if self.ws is not None else {}
+        homes = {key: _home(n, folded.get(key)) for key, n in live.items()
+                 if n["role"] == "agent"}
+        views = {}
+        for key, (home, _src) in homes.items():
+            if key in folded:
+                views[key] = self.ws.view([folded[key]], home, live[key]["user"])
 
         trees, edges, vias = [], collections.Counter(), collections.Counter()
         depth_hist, fan_hist = collections.Counter(), collections.Counter()
@@ -210,7 +306,7 @@ class CascadeReducer:
                 edges[(_label(p), _label(n))] += 1
                 vias[n["via"]] += 1
                 continue
-            trees.append(self._tree(key, live, kids, sessions))
+            trees.append(self._tree(key, live, kids, sessions, homes, views))
         for t in trees:
             if t["n_agents"]:
                 depth_hist[str(t["agent_depth"])] += 1
@@ -253,6 +349,7 @@ class CascadeReducer:
                 for (at, role), k in self.census.most_common()],
             "buffer": {"nodes": len(self.nodes), "cap": self.max_nodes,
                        "dropped": self.dropped},
+            "workspace": self._workspace(live, kids, folded, homes, views),
             "basis": {
                 "node": "a process whose role is agent, infra or client (roles.py); "
                         "tool-call shells, sandboxes, probes and helpers are steps "
@@ -262,15 +359,110 @@ class CascadeReducer:
                 "fanout": "agents directly below an agent (or a tree's root) with no "
                           "other agent between",
                 "via": VIA_MEANING,
-                "frontend": "a codex TUI whose direct child is `codex app-server` is that "
-                            "session's front-end: shown as a client, not a second agent",
+                "frontend": "a codex TUI whose direct child is `codex app-server`, or a "
+                            "node launcher whose direct child is the same agent's native "
+                            "binary, is that session's front-end: shown as a client, not "
+                            "as an agent with a subagent",
                 "hidden_nodes": "infra and clients with no agent beneath them are "
                                 "counted per tree, not listed",
+                "subagent": "an agent started, through any number of steps, beneath "
+                            "another agent",
                 "invisible": "in-process subagents (Claude Code's Task tool, workflow "
-                             "agents) share their parent's process and do not appear",
-                "drift": "per agent, from its folded trajectory session: see the "
-                         "trajectories basis",
+                             "agents) share their parent's process and do not appear; "
+                             "their commands are counted in their parent's",
+                "home": "an agent's own cwd, the directory it was started in; one "
+                        "started at `/` (IDE-hosted) is anchored on its first call's "
+                        "directory off the root instead",
+                "dir_vs_parent": "where an agent's home sits relative to the home of "
+                                 "the agent above it: same, inside, above or outside",
             },
+        }
+
+    def _workspace(self, live, kids, folded, homes, views):
+        """Per agent: where it worked, alone and with its subagents."""
+        if self.ws is None:
+            return None
+        ws = self.ws
+        owners = set(folded)
+
+        def below(key):
+            """Every agent beneath `key`, through infra and clients too."""
+            out, stack = [], list(kids.get(key, ()))
+            while stack:
+                k = stack.pop()
+                if live[k]["role"] == "agent":
+                    out.append(k)
+                stack.extend(kids.get(k, ()))
+            return out
+
+        def up(key):
+            """(the nearest agent above, the root of the tree)."""
+            n, agent, seen = live[key], None, {key}
+            while n["parent"] is not None:
+                pk = (n["host"], n["parent"])
+                if pk in seen or pk not in live:
+                    break
+                seen.add(pk)
+                n = live[pk]
+                if agent is None and n["role"] == "agent":
+                    agent = n["pid"]
+            return agent, n["pid"]
+
+        rows = []
+        for key, (home, src) in homes.items():
+            subs = below(key)
+            mine = [folded[k] for k in subs if k in folded]
+            if key not in views and not mine:
+                continue
+            n = live[key]
+            parent_agent, root = up(key)
+            tree = None
+            if mine:
+                own = [folded[key]] if key in folded else []
+                tree = ws.view(own + mine, home, n["user"])
+            uhome = ws.home_of(n["user"])
+            rows.append({
+                "host": n["host"], "pid": n["pid"], "agent_type": n["agent_type"],
+                "user": n["user"], "tree_root": root, "parent_agent": parent_agent,
+                "subagents": [k[1] for k in subs],
+                "home": redact(home) if home else None, "home_src": src,
+                "home_shown": redact(tilde(home, uhome)) if home else None,
+                "self": views.get(key), "tree": tree,
+                "_rank": ((tree or views.get(key))["summary"]["procs"]),
+            })
+        rows.sort(key=lambda r: (-r["_rank"], r["host"] or "", r["pid"]))
+        for r in rows:
+            del r["_rank"]
+
+        def wrote(r):
+            return bool(r["self"] and r["self"]["summary"]["outside_writes"])
+        # The busiest are served; an agent that wrote outside its home is
+        # served however quiet, because that is the reading the panel is for.
+        served = rows[:ws.max_agents] + [r for r in rows[ws.max_agents:] if wrote(r)]
+        unowned = sum(a.procs for k, a in folded.items()
+                      if k not in live or live[k]["role"] != "agent")
+        # each agent judged on its own processes: a subagent's writes count once,
+        # against the subagent, not again against every agent above it
+        flagged = sum(1 for r in rows if wrote(r))
+
+        def reached(r, kind):
+            """It ran in, or named a path in, a place of this kind outside its home."""
+            return bool(r["self"] and any(g["kind"] == kind
+                                          for g in r["self"]["summary"]["roots"]))
+        return {
+            "agents": served,
+            "summary": {
+                "agents": len(rows), "shown": len(served),
+                "with_subagents": sum(1 for r in rows if r["subagents"]),
+                "with_outside_writes": flagged,
+                "other_homes": sum(1 for r in rows if reached(r, "other user's home")),
+                "shared_roots": sum(1 for r in rows if reached(r, "shared storage")),
+                "unowned_procs": unowned,
+                "agents_without_records": sum(1 for k in homes if k not in owners),
+                "collapse_depth": ws.depth, "rows_cap": ws.max_rows,
+            },
+            "buffer": ws.result(),
+            "basis": WORKSPACE_BASIS,
         }
 
     @staticmethod
@@ -286,7 +478,7 @@ class CascadeReducer:
                 seen.add(pk)
                 cur = live[pk]
 
-    def _tree(self, root_key, live, kids, sessions):
+    def _tree(self, root_key, live, kids, sessions, homes, views):
         nodes, fanouts = [], []
         totals = {"tool_calls": 0, "cpu_s": 0.0}
 
@@ -296,15 +488,21 @@ class CascadeReducer:
             level = level + 1 if is_agent else level
             s = sessions.get(key)
             sess = s[0] if s else None
-            drift = self.traj.drift(sess, n["cwd"]) if (sess is not None and self.traj) else None
-            # the anchor drift was measured from, which skips a `/` launch dir
-            anchor = (drift or {}).get("cwd_anchor") or (n["cwd"] if n["cwd"] != "/" else None)
+            home, home_src = homes.get(key, (None, None))
+            # a node that is not an agent has no home of its own; its cwd, off `/`,
+            # is what an agent below it is compared with
+            anchor = home if is_agent else (n["cwd"] if n["cwd"] != "/" else None)
+            v = views.get(key)
             out = _node_out(n)
             out.update(depth=depth, agent_level=level if is_agent else None,
                        tool_calls=sess.n if sess else None,
                        cpu_s=round(sess.cpu, 3) if sess else None,
                        session_keys=s[2] if s else None, session_via=s[1] if s else None,
-                       drift=drift, cwd_anchor=anchor,
+                       home=home, home_src=home_src,
+                       workspace=({"dirs": v["summary"]["dirs"],
+                                   "inside_pct": v["summary"]["inside_pct"],
+                                   "outside_writes": v["summary"]["outside_writes"]}
+                                  if v else None),
                        cwd_vs_parent_agent=(_rel(anchor, anchor_up)
                                             if is_agent and anchor_up else None))
             if sess:
@@ -343,6 +541,16 @@ class CascadeReducer:
             "nodes_truncated": len(nodes) > self.max_shown,
             "_fanouts": fanouts,
         }
+
+
+def _home(n, acc):
+    """(home, how it was found) for an agent node: its own cwd unless that is
+    `/`, else the first directory off `/` any of its calls ran in."""
+    if n["cwd"] and n["cwd"] != "/":
+        return n["cwd"], "agent"
+    if acc is not None and acc.cwd0:
+        return acc.cwd0, "first_call"
+    return None, None
 
 
 def _label(n):

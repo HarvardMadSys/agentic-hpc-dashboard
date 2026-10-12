@@ -1,4 +1,4 @@
-"""Cascade and drift tests: which agents started which, and how far each wandered.
+"""Agent tree tests: which agents started which, and which are whose subagents.
 
 The shapes are the ones madsys-gpu1 actually shows (2026-09-20 .. 10-07): no
 `claude -p` or `codex exec` from a tool call in two weeks, but Remote Control
@@ -91,6 +91,22 @@ class CascadeTest(unittest.TestCase):
         self.assertTrue(t["root"]["frontend"])
         self.assertEqual(p["cascades"]["summary"]["nested"], 0)
         self.assertEqual(p["cascades"]["summary"]["hosted"], 0)
+
+    def test_a_node_launcher_is_a_front_end_not_an_agent_with_a_subagent(self):
+        # npm's `codex` is a node script that execs the native binary (rtx6000a)
+        t0 = self.t0
+        native = ("/usr/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64"
+                  "/vendor/x86_64-unknown-linux-musl/codex/codex")
+        recs = [
+            rec("exit", t0 + 9, 100, 50, "node", "node /usr/local/bin/codex", agent_pid=100,
+                tree_root=100, is_agent=True, agent_type="codex"),
+            rec("exit", t0 + 8, 110, 100, "codex", native, agent_pid=110, tree_root=100,
+                is_agent=True, agent_type="codex"),
+        ]
+        p = reduce(recs)
+        t = tree_of(p, 100)
+        self.assertEqual((t["root"]["role"], t["root"]["frontend"]), ("client", True))
+        self.assertEqual((t["agent_depth"], p["cascades"]["summary"]["nested"]), (1, 0))
 
     def test_infrastructure_with_no_agent_below_is_counted_not_listed(self):
         t0 = self.t0
@@ -295,11 +311,16 @@ class DriftTest(unittest.TestCase):
         d, _ = self.drift(self.session([("git", PROJ)] * 10 + [("make", PROJ)] * 10))
         self.assertIsNone(d["mix_jsd"])
 
-    def test_the_cascade_node_carries_its_sessions_drift(self):
+    def test_the_agent_node_carries_its_session_and_home_but_no_drift(self):
+        # drift is the trajectory rows' reading; the Agents page shows where an
+        # agent worked instead (workspace.py), so its nodes carry the home
         _, p = self.drift(self.session([("git", PROJ), ("ls", "/scratch/other")]))
         n = node(tree_of(p, 100), 100)
-        self.assertEqual(n["drift"]["cwd_outside_pct"], 50.0)
+        self.assertNotIn("drift", n)
+        self.assertEqual((n["home"], n["home_src"]), (PROJ, "agent"))
         self.assertEqual(n["tool_calls"], 2)
+        self.assertEqual(n["workspace"]["dirs"], 2)
+        self.assertEqual(n["workspace"]["inside_pct"], 50.0)
 
 
 if __name__ == "__main__":

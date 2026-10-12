@@ -13,7 +13,11 @@ dashboard must not take a dependency on collect/.
 import glob
 import json
 import os
+import time
 from datetime import datetime
+
+from . import gz
+from .export import dated_dirs, feed_files
 
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"     # every collector stamps records this way
 
@@ -44,14 +48,14 @@ def newest_record_ts(path, ts_field="ts"):
     tail would only ever see a mid-line fragment.
     """
     try:
-        size = os.path.getsize(path)
+        size = gz.stat(path).st_size
     except OSError:
         return None
     window = 65536
     while True:
         start = max(0, size - window)
         try:
-            with open(path, "rb") as fh:
+            with gz.open_feed(path) as fh:
                 fh.seek(start)
                 data = fh.read(size - start)
         except OSError:
@@ -117,7 +121,7 @@ def host_of(path):
     hostname may legitimately contain dots, and blindly cutting at the last one
     would turn `login.rc.fas` into `login.rc` -- inventing a host that does not
     exist and splitting one node's records across two of them in the report."""
-    stem = os.path.basename(path)
+    stem = gz.plain_name(os.path.basename(path))
     if stem.endswith(".jsonl"):
         stem = stem[:-len(".jsonl")]
     for suf in _STREAM_SUFFIXES:
@@ -139,21 +143,14 @@ def resolve_dated(name, cfg):
         return rep
     rep["exists"] = True
 
-    datedirs = []
+    files, dates = [], set()
     for root in rep["resolved"]:
-        for d in os.listdir(root):
-            if d.startswith("20") and os.path.isdir(os.path.join(root, d)):
-                datedirs.append((d, os.path.join(root, d)))
-    datedirs.sort()
-    keep = [p for d, p in datedirs if d in sorted({d for d, _ in datedirs})[-days:]]
-    rep["days"] = sorted({d for d, _ in datedirs})[-days:]
-
-    files = []
-    for d in keep:
-        files += sorted(glob.glob(os.path.join(d, "*.jsonl")))
-    # a root may also hold flat <thing>_<date>.jsonl files
-    for root in rep["resolved"]:
-        files += sorted(glob.glob(os.path.join(root, "*.jsonl")))[-days:]
+        for d, found in dated_dirs(root, days):
+            dates.add(d)
+            files += found
+        # a root may also hold flat <thing>_<date>.jsonl files
+        files += feed_files(root)[-days:]
+    rep["days"] = sorted(dates)[-days:]
     files = sorted(set(files))
 
     for p in files:
@@ -162,10 +159,13 @@ def resolve_dated(name, cfg):
         except OSError:
             continue
         rep["files"].append({"path": p, "size": st.st_size, "mtime": st.st_mtime,
-                             "host": host_of(p)})
+                             "host": host_of(p), "compressed": gz.is_gz(p)})
         rep["bytes"] += st.st_size
     rep["n_files"] = len(rep["files"])
     rep["hosts"] = sorted({f["host"] for f in rep["files"]})
+    if any(f["compressed"] for f in rep["files"]):
+        # `size`/`bytes` stay what is on disk; what it holds is here
+        rep["compressed"] = gz.status()
     if not rep["files"]:
         rep["status"] = "empty"
         return rep
@@ -176,7 +176,8 @@ def resolve_dated(name, cfg):
     ts = newest_record_ts(newest["path"])
     if ts is not None:
         rep["newest_record_ts"] = ts.strftime(TS_FORMAT)
-        rep["lag_s"] = (datetime.now() - ts).total_seconds()
+        # time.time(), not datetime.now(): a pinned clock (`clock`) covers it
+        rep["lag_s"] = (datetime.fromtimestamp(time.time()) - ts).total_seconds()
         rep["lag"] = fmt_age(rep["lag_s"])
     max_age = rep["max_age_s"]
     rep["status"] = ("stale" if (max_age and rep["lag_s"] is not None
