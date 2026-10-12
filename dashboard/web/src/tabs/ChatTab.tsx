@@ -1,5 +1,11 @@
 /* Ask LLM: ask an agent about the window on screen.
  *
+ * "Suggestions for the operator" asks it one fixed question about the whole
+ * window on screen (its filter included): what should this cluster's operator
+ * do? The answer comes back as JSON, which the service checks and the page
+ * lays out as cards, the most urgent first, each with the numbers behind it
+ * and a link to whom it concerns. It runs only when the button is pressed.
+ *
  * Each question runs the agent the service is configured with (`ask` in its
  * config; by default the service user's own `codex`) over a compact snapshot
  * of this window's panels, and the page polls for the answer. The last few
@@ -10,10 +16,123 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { getAskInfo } from '../api/client';
-import type { AskInfo } from '../api/types';
-import { Turn, useAskThread } from '../components/Ask';
+import type { AskInfo, AskJob, OperatorSuggestion } from '../api/types';
+import { Md, Turn, canAsk, useAskScope, useAskThread } from '../components/Ask';
 import { Panel } from '../components/Panel';
+import { clock } from '../lib/format';
 import './chat.css';
+
+const SUGGEST_Q = 'What should the cluster operator do about what ran in this window?';
+const SEV: Record<OperatorSuggestion['priority'], string> = { high: 'HIGH', medium: 'med', low: 'low' };
+
+/** The operator's suggestions, as cards: what to do, the numbers behind it,
+ * and a link to each account it names. */
+function SuggestionList({ job, openUserTraj, followUp }: {
+  job: AskJob;
+  openUserTraj: (u: string) => void;
+  followUp: (x: OperatorSuggestion) => void;
+}) {
+  const got = job.suggestions;
+  if (!got) {
+    // not the JSON it was asked for: the answer as written, never nothing
+    return <Md text={job.answer ?? ''} />;
+  }
+  return (
+    <>
+      {got.summary && <p className="sugg-sum">{got.summary}</p>}
+      {got.suggestions.length === 0 ? (
+        <p className="nm">nothing in this window needs the operator, by the model’s reading of it</p>
+      ) : (
+        <ol className="sugg-list">
+          {got.suggestions.map((x, i) => (
+            <li key={i} className={`sugg ${x.priority}`}>
+              <div className="sugg-h">
+                <span className={`sev ${SEV[x.priority]}`}>{x.priority}</span>
+                <b>{x.title}</b>
+              </div>
+              {x.action && <div className="sugg-a">{x.action}</div>}
+              {x.evidence && (
+                <div className="sugg-e">
+                  <span className="nm">the numbers · </span>
+                  {x.evidence}
+                </div>
+              )}
+              <div className="sugg-f">
+                {x.users.map((u) => (
+                  <button key={u} className="linkbtn mono" onClick={() => openUserTraj(u)}
+                    data-tip="open this account's sessions on the Trajectories tab">
+                    {u} →
+                  </button>
+                ))}
+                {x.panel && <span className="nm">shown on: {x.panel}</span>}
+                <button className="linkbtn" onClick={() => followUp(x)}
+                  data-tip="put a question about this suggestion in the chat below">
+                  ask about this ↓
+                </button>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </>
+  );
+}
+
+/** "Suggest actions": one press, one run over the window on screen. */
+function Suggestions({ info, openUserTraj, followUp }: {
+  info: AskInfo | null;
+  openUserTraj: (u: string) => void;
+  followUp: (x: OperatorSuggestion) => void;
+}) {
+  const scope = useAskScope();
+  const { turns, setTurns, send, err, busy } = useAskThread('rc-dash-suggest');
+  const job = turns[turns.length - 1] ?? null;
+  const narrowed = [...(scope.who?.users ?? []), ...(scope.who?.atypes ?? [])];
+  const run = async () => {
+    setTurns([]); // one set of suggestions at a time
+    await send(SUGGEST_Q, scope.windowMin, { suggest: true, classes: scope.cls }, scope.who);
+  };
+  return (
+    <Panel
+      title="Suggestions for the operator"
+      span
+      header={
+        canAsk(info) ? (
+          <button className="btn primary" onClick={() => void run()} disabled={busy}>
+            {busy ? 'suggesting…' : job ? 'suggest again' : 'suggest actions'}
+          </button>
+        ) : undefined
+      }
+    >
+      <div className="chat sugg-box">
+        <div className="chat-who">
+          asks <b>{info?.agent ?? '…'}</b> what this cluster’s operator should do, from the{' '}
+          <b>{scope.windowLabel ?? 'current'}</b> window on screen
+          {narrowed.length ? <> · narrowed to <b>{narrowed.join(', ')}</b></> : null} · each suggestion names
+          the numbers behind it · it runs only when you press the button
+        </div>
+        {job == null ? null : job.state === 'done' ? (
+          <>
+            <SuggestionList job={job} openUserTraj={openUserTraj} followUp={followUp} />
+            <div className="chat-meta">
+              {job.agent} · {job.elapsed_s} s · {job.snapshot_kb} KB of the window’s panels · the {job.window} window
+              {job.submitted ? ` · asked at ${clock(job.submitted)}` : ''}
+            </div>
+          </>
+        ) : job.state === 'error' ? (
+          <span className="chat-err">{job.error}</span>
+        ) : (
+          <span className="chat-wait">
+            <i className="ld" />
+            {job.state === 'queued' ? 'waiting for the agent to be free' : job.progress ?? 'thinking'} ·{' '}
+            {Math.round(job.elapsed_s)} s
+          </span>
+        )}
+        {err && <div className="chat-err">{err}</div>}
+      </div>
+    </Panel>
+  );
+}
 
 const STARTERS = [
   'Which agents ran the most commands, and for whom?',
@@ -22,13 +141,25 @@ const STARTERS = [
   'Summarise what Claude Code did in this window.',
 ];
 
-export function ChatTab({ windowMin, windowLabel }: { windowMin: number | null; windowLabel: string | null }) {
+export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {} }: {
+  windowMin: number | null;
+  windowLabel: string | null;
+  /** open an account's sessions on the Trajectories tab */
+  openUserTraj?: (u: string) => void;
+}) {
   const [info, setInfo] = useState<AskInfo | null>(null);
   const [infoErr, setInfoErr] = useState<string | null>(null);
   // the thread kept under the key it always had, so an open chat survives
   const { turns, setTurns, send, err: sendErr, busy } = useAskThread('rc-dash-chat');
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // a suggestion's "ask about this": a question in the box, ready to send
+  const followUp = (x: OperatorSuggestion) => {
+    setDraft(`Tell me more about this suggestion: “${x.title}”${x.evidence ? ` (${x.evidence})` : ''}. `);
+    inputRef.current?.focus();
+    inputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  };
 
   useEffect(() => {
     const ac = new AbortController();
@@ -48,6 +179,7 @@ export function ChatTab({ windowMin, windowLabel }: { windowMin: number | null; 
   const off = info && (!info.enabled || !info.available);
   return (
     <div className="grid wide">
+      {!infoErr && !off && <Suggestions info={info} openUserTraj={openUserTraj} followUp={followUp} />}
       <Panel title="Ask about the whole window" span>
         {infoErr ? (
           <div className="none">could not reach the chat service: {infoErr}</div>
@@ -83,6 +215,7 @@ export function ChatTab({ windowMin, windowLabel }: { windowMin: number | null; 
               }}
             >
               <textarea
+                ref={inputRef}
                 rows={2}
                 value={draft}
                 placeholder="Ask about this window…"

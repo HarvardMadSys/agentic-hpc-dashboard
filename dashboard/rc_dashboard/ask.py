@@ -102,6 +102,77 @@ GUIDE = """Where to look in the snapshot:
 LOCAL_KEEP = frozenset(("notes", "basis", "cpu_basis", "impossible_basis"))
 
 
+# Suggestions for the operator (the Ask LLM tab's "suggest actions"): the same
+# whole-window snapshot as the chat, asked one fixed question, answered as
+# JSON the page lays out as cards (`parse_suggestions`).
+SUGGEST_QUESTION = "What should the cluster operator do about what ran in this window?"
+
+OPERATOR_GUIDE = """The reader is this cluster's operator: the research computing staff who
+look after these machines for everyone who uses them. From the snapshot,
+suggest what they should do about what AI agents, people, and IDEs did here --
+the few things worth their time, the most important first. A suggestion is a
+step they can take: contact someone, and about what; change or check a limit,
+a partition, a node, a file system, or one of this dashboard's own rules.
+
+Each suggestion must rest on numbers in the snapshot: quote them, with their
+units. Name whom it concerns by the names the snapshot uses -- they are aliases;
+keep them exactly as written. Judge what is risky by this site's own rules
+(panels.risk), not by general rules for other kinds of machines. Do not
+invent a policy the site has not stated, and suggest nothing the data does not
+show. If nothing needs the operator, say so with an empty list.
+
+Answer with one JSON object and nothing else -- no prose, no code fence:
+{"summary": "<one sentence on the window as a whole>",
+ "suggestions": [
+  {"priority": "high" or "medium" or "low",
+   "title": "<what to do, in a few words>",
+   "action": "<the concrete step: whom to contact, what to change or check>",
+   "evidence": "<the numbers behind it, from the snapshot>",
+   "users": ["<alias the suggestion concerns>", ...],
+   "panel": "<the dashboard panel that shows it>"}]}
+At most 8 suggestions."""
+
+PRIORITIES = ("high", "medium", "low")
+
+
+def parse_suggestions(text, keep=8):
+    """The operator's suggestions out of an answer asked for as JSON: the first
+    object in it (a model may still fence it, or say a word first), every
+    field checked and cut to size, the most urgent first. None when there is
+    no such object; the page then shows the answer as written."""
+    if not text:
+        return None
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("suggestions"), list):
+        return None
+
+    def text_of(v, cap):
+        return redact.redact(v.strip())[:cap] if isinstance(v, str) and v.strip() else None
+
+    out = []
+    for item in obj["suggestions"][:keep]:
+        if not isinstance(item, dict) or not text_of(item.get("title"), 1):
+            continue
+        pri = str(item.get("priority") or "").strip().lower()
+        users = item.get("users") if isinstance(item.get("users"), list) else []
+        out.append({
+            "priority": pri if pri in PRIORITIES else "medium",
+            "title": text_of(item.get("title"), 160),
+            "action": text_of(item.get("action"), 600),
+            "evidence": text_of(item.get("evidence"), 600),
+            "users": [u.strip()[:64] for u in users if isinstance(u, str) and u.strip()][:6],
+            "panel": text_of(item.get("panel"), 80),
+        })
+    out.sort(key=lambda x: PRIORITIES.index(x["priority"]))     # stable: the model's order within
+    return {"summary": text_of(obj.get("summary"), 400), "suggestions": out}
+
+
 def panel_guide(title, tab, parts):
     """The guide for a question about one panel: what the snapshot is, and
     that it is all there is."""
@@ -524,7 +595,8 @@ class Asker:
                scope=None):
         """`scope`, for a question about one panel or one session: `about`
         (what the page shows it as), `guide` (replaces GUIDE), and the
-        snapshot's `steps` and `keep`."""
+        snapshot's `steps` and `keep`; `parse: "suggestions"` reads the answer
+        as the operator's suggestions too (`parse_suggestions`)."""
         scope = scope or {}
         info = describe(self.cfg)
         if not info["enabled"]:
@@ -540,6 +612,7 @@ class Asker:
                         scope.get("steps") or STEPS, scope.get("keep") or ())
         job = {"id": uuid.uuid4().hex[:12], "state": "queued", "question": question[:2000],
                "window": window_label, "about": scope.get("about"),
+               "parse": scope.get("parse"), "suggestions": None,
                "agent": info["agent"], "model": info["model"],
                "submitted": time.time(), "started": None, "finished": None,
                "progress": "waiting for a free agent", "answer": None, "error": None,
@@ -617,8 +690,10 @@ class Asker:
                     timed_out = code in (-signal.SIGKILL, -signal.SIGTERM)
                     raise RuntimeError("the agent timed out after %d s" % timeout if timed_out
                                        else "the agent exited %d: %s" % (code, (err or "").strip()[-400:]))
-                self._set(job, state="done", answer=redact.redact(answer) if answer else "(no answer)",
-                          progress=None, finished=time.time())
+                answer = redact.redact(answer) if answer else "(no answer)"
+                self._set(job, state="done", answer=answer, progress=None, finished=time.time(),
+                          suggestions=parse_suggestions(answer)
+                          if job.get("parse") == "suggestions" else None)
             except Exception as e:
                 self._set(job, state="error", error=str(e), progress=None, finished=time.time())
             finally:

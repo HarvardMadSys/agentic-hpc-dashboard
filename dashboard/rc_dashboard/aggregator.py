@@ -454,12 +454,16 @@ class Aggregator:
             return self._ask_session(question, window_min, history, context)
         if context.get("parts") is not None:
             return self._ask_panel(question, window_min, history, context, flt)
+        # `context.suggest`: the operator's suggestions -- the whole window the
+        # page has on screen, its filter included, asked one fixed question
+        suggest = context.get("suggest") is True
+        view = flt if suggest else None
         win = self.window(window_min)
-        got = self.panels(window_min) or {}
+        got = self.panels(window_min, view) or {}
         live = self.live_payload(window_min)
         # sessions come from their own endpoint: the per-class summary and the
         # busiest few, in plain fields
-        tr = self.trajectories(window_min) or {}
+        tr = self.trajectories(window_min, view) or {}
         rows = tr.get("rows") or {}
         busiest = [rows[s] for s in (tr.get("ranks") or {}).get("events", [])[:15] if s in rows]
         keep = ("user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
@@ -468,11 +472,23 @@ class Aggregator:
                  "sessions": {"summary": tr.get("summary"),
                               "busiest": [{k: r.get(k) for k in keep} for r in busiest]}}
         panels = got.get("panels") or {}
+        scope = None
+        if suggest:
+            st = got.get("window_status") or {}
+            if st.get("state") != "ready" and not st.get("has_payload"):
+                raise ValueError("this window is still being read; ask again when it is built")
+            question, history = ask.SUGGEST_QUESTION, ()
+            classes = context.get("classes")
+            extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
+                             "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                             if isinstance(classes, list) else None}
+            scope = {"about": "suggestions for the operator", "parse": "suggestions",
+                     "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE}
         if self.anon is not None:
             # The snapshot leaves the host, for the model's provider: aliases only.
             panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
                                    self.anon.payload(extra))
-        return self.asker.submit(question, panels, live, win["label"], history, extra)
+        return self.asker.submit(question, panels, live, win["label"], history, extra, scope)
 
     @staticmethod
     def _ask_label(ctx, key, cap):
