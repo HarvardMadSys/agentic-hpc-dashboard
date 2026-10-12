@@ -22,6 +22,7 @@ Two aggregation tiers, because they have different composability:
 """
 import itertools
 import json
+import re
 import threading
 import time
 
@@ -30,6 +31,7 @@ from . import ask
 from . import clock
 from . import feeds as feedmod
 from . import gz
+from . import proctree
 from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
@@ -45,6 +47,10 @@ from .tail import FileTailSource, read_back
 # both running, 256 kept /api/live at p90 ~10 ms where 2000 let it reach ~150 ms,
 # for a backfill 2% slower.
 BACKFILL_BATCH = 256
+
+
+# A panel or field named in a question's context: `tool_mix`, `workspace.summary`.
+_ASK_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}(\.[A-Za-z][A-Za-z0-9_]{0,39})?")
 
 
 class Aggregator:
@@ -424,8 +430,30 @@ class Aggregator:
     def ask_info(self):
         return ask.describe(self.cfg)
 
-    def ask(self, question, window_min=None, history=()):
-        """Start one question about the window; the agent runs in the background."""
+    # What a question about one panel may read besides the window's panels:
+    # the live tier's small sections (never its per-minute series or its event
+    # stream), and the ranked sessions, in these fields.
+    ASK_LIVE = ("now", "users", "hosts", "submits", "window")
+    ASK_SESSION_KEYS = ("sid", "user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
+                        "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
+                        "sandbox", "approval", "host", "first", "last")
+
+    def ask(self, question, window_min=None, history=(), context=None, flt=None):
+        """Start one question; the agent runs in the background.
+
+        With no `context` it is about the whole window. `context.parts` makes it
+        about one panel, whose data is all it is given: window panels by key
+        (`{"panel": "risk", "keys": ["sections"]}`), the live tier's small
+        sections (`{"panel": "live", "keys": ["users"]}`), or the ranked
+        sessions (`{"panel": "trajectories", "rank": "cpu_s"}`), over the
+        page's own filter (`flt`). `context.session` makes it about one session,
+        given as a digest of its process tree. `context.title` and `.tab` are
+        what the page calls the panel, for the prompt."""
+        context = context if isinstance(context, dict) else {}
+        if context.get("session") is not None:
+            return self._ask_session(question, window_min, history, context)
+        if context.get("parts") is not None:
+            return self._ask_panel(question, window_min, history, context, flt)
         win = self.window(window_min)
         got = self.panels(window_min) or {}
         live = self.live_payload(window_min)
@@ -445,6 +473,114 @@ class Aggregator:
             panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
                                    self.anon.payload(extra))
         return self.asker.submit(question, panels, live, win["label"], history, extra)
+
+    @staticmethod
+    def _ask_label(ctx, key, cap):
+        v = ctx.get(key)
+        return v.strip()[:cap] if isinstance(v, str) else ""
+
+    def _ask_panel(self, question, window_min, history, ctx, flt):
+        parts = ctx.get("parts")
+        if not isinstance(parts, list) or not 0 < len(parts) <= 6:
+            raise ValueError("context.parts: one to six parts of one panel")
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        got = live = None
+        panels, extra, named = {}, {}, []
+        for p in parts:
+            key = p.get("panel") if isinstance(p, dict) else None
+            keys = p.get("keys") if isinstance(p, dict) else None
+            # names, not text: they are written into the model's instructions
+            if not isinstance(key, str) or not _ASK_NAME.fullmatch(key):
+                raise ValueError("context.parts: each part names a panel")
+            if keys is not None and not (isinstance(keys, list) and len(keys) <= 20 and
+                                         all(isinstance(k, str) and _ASK_NAME.fullmatch(k)
+                                             for k in keys)):
+                raise ValueError("context.parts[].keys: a list of field names")
+            if key == "live":
+                want = keys or ["now", "users", "hosts"]
+                bad = [k for k in want if k not in self.ASK_LIVE]
+                if bad:
+                    raise ValueError("the live tier has no %s to ask about" % ", ".join(bad))
+                live = live or self.live_payload(window_min)
+                extra.setdefault("live_now", {}).update(
+                    {k: live.get(k) for k in want if live.get(k) is not None})
+                named.append("live_now (%s)" % ", ".join(want))
+            elif key == "trajectories":
+                tr = self.trajectories(window_min, flt)
+                ranks = tr.get("ranks") or {}
+                rank = p.get("rank") if p.get("rank") in ranks else "events"
+                rows = tr.get("rows") or {}
+                extra["sessions"] = {
+                    "summary": tr.get("summary"), "ranked_by": rank,
+                    "listed": [{k: rows[s].get(k) for k in self.ASK_SESSION_KEYS}
+                               for s in ranks.get(rank, [])[:40] if s in rows]}
+                named.append("sessions (the ranked list, by %s)" % rank)
+            else:
+                if got is None:
+                    body = self.panels(window_min, flt) or {}
+                    st = body.get("window_status") or {}
+                    if st.get("state") != "ready" and not st.get("has_payload"):
+                        raise ValueError("this window is still being read; ask again when "
+                                         "it is built")
+                    got = body.get("panels") or {}
+                if key not in got:
+                    # one deployment has a Slurm panel and another has not: a
+                    # part the window lacks is said to be missing, not an error
+                    named.append("panels.%s (not in this window)" % key)
+                    continue
+                body = got[key] if isinstance(got[key], dict) else {"rows": got[key]}
+                pick = {}
+                for k in keys or [k for k in body if not k.startswith("_")]:
+                    # `workspace.summary`: one field inside another
+                    top, _, sub = k.partition(".")
+                    if top.startswith("_") or top not in body:
+                        continue
+                    if not sub:
+                        pick[top] = body[top]
+                    elif isinstance(body[top], dict) and sub in body[top]:
+                        pick.setdefault(top, {})[sub] = body[top][sub]
+                if pick:
+                    panels.setdefault(key, {}).update(pick)
+                named.append("panels.%s%s" % (key, " (%s)" % ", ".join(keys) if keys else ""))
+        if not panels and not extra:
+            raise ValueError("this panel has no data in this window to ask about")
+        classes = ctx.get("classes")
+        extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
+                         "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                         if isinstance(classes, list) else None}
+        title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
+        scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),
+                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP}
+        if self.anon is not None:
+            # The snapshot leaves the host, for the model's provider: aliases only.
+            panels, extra = self.anon.payload(panels), self.anon.payload(extra)
+        return self.asker.submit(question, panels, None, win["label"], history, extra, scope)
+
+    def _ask_session(self, question, window_min, history, ctx):
+        sid = ctx.get("session")
+        if not isinstance(sid, str) or not sid or len(sid) > 400:
+            raise ValueError("context.session: a session id")
+        # Refused before the read: a question that cannot run must not make
+        # the service re-read a day of records first.
+        info = ask.describe(self.cfg)
+        if not info["enabled"] or not info["available"]:
+            raise ValueError("chat is turned off (ask.enabled)" if not info["enabled"]
+                             else info["error"] or "the agent cannot run here")
+        win = self.window(window_min)
+        body = proctree.serve(self, sid, window_min)
+        if body.get("found") is None:
+            raise ValueError("this window is still being read; ask again when it is built")
+        if not body.get("found"):
+            raise ValueError("this session is not in the %s window" % win["label"])
+        extra = ask.session_digest(body, bool(self.cfg.get("ask.include_commands", False)))
+        extra["view"] = {"window": win["label"]}
+        title = self._ask_label(ctx, "title", 160)
+        scope = {"about": title or "one session", "guide": ask.SESSION_GUIDE,
+                 "steps": ask.SESSION_STEPS}
+        if self.anon is not None:
+            extra = self.anon.payload(extra)
+        return self.asker.submit(question, None, None, win["label"], history, extra, scope)
 
     def _accounts(self):
         """Every account in the live roster's retention, for the anonymizer."""

@@ -192,5 +192,121 @@ class BalanceTest(unittest.TestCase):
         s = json.loads(ask.snapshot({}, extra={"sessions": {"summary": {"agent": 3}}}))
         self.assertEqual(s["sessions"]["summary"]["agent"], 3)
 
+
+class LocalScopeTest(unittest.TestCase):
+    """A question about one panel: its own data, longer lists, its own notes."""
+
+    def test_one_panel_keeps_its_notes_and_longer_lists(self):
+        panel = {"risk": {"rows": [{"i": i} for i in range(40)], "basis": "how it counts",
+                          "series": [1, 2, 3]}}
+        s = json.loads(ask.snapshot(panel, steps=ask.LOCAL_STEPS, keep=ask.LOCAL_KEEP))
+        self.assertEqual(len(s["panels"]["risk"]["rows"]), 40)
+        self.assertEqual(s["panels"]["risk"]["basis"], "how it counts")
+        self.assertNotIn("series", s["panels"]["risk"])
+        whole = json.loads(ask.snapshot(panel))
+        self.assertNotIn("basis", whole["panels"]["risk"])
+
+    def test_a_guide_of_its_own_replaces_the_window_guide(self):
+        g = ask.panel_guide("Worst individual processes", "Resources", ["panels.resources"])
+        t = ask.prompt("q", "{}", "last 24h", guide_text=g)
+        self.assertIn('"Worst individual processes" on the Resources tab', t)
+        self.assertIn("panels.resources", t)
+        self.assertNotIn("live_now.users.rows", t)        # the whole-window guide
+        self.assertIn("live_now.users.rows", ask.prompt("q", "{}", "last 24h"))
+
+    def test_the_job_says_what_it_is_about_and_the_agent_gets_the_guide(self):
+        out = tempfile.mktemp()
+        cmd = [PY, "-c", "import sys; open(sys.argv[1], 'w').write(sys.stdin.read()); print('ok')",
+               out]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        scope = {"about": "Top tools", "guide": ask.panel_guide("Top tools", "Agents", ["x"]),
+                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP}
+        j = a.submit("q", {"tool_mix": {"head": [{"b": "git"}] * 30}}, None, "w", scope=scope)
+        self.assertEqual(j["about"], "Top tools")
+        self.assertEqual(wait(a, j["id"])["state"], "done")
+        with open(out) as fh:
+            sent = fh.read()
+        self.assertIn('"Top tools" on the Agents tab', sent)
+        self.assertEqual(json.loads(sent.split("<snapshot>")[1].split("</snapshot>")[0])
+                         ["panels"]["tool_mix"]["head"].__len__(), 30)
+        self.assertIsNone(a.submit("q", {}, None, "w")["about"])
+
+
+def proc(pid, cmd, kids=(), n=None, cpu=0.01, sub=None, code=0, start=0.0, **kv):
+    d = {"k": "p", "pid": pid, "cmd": cmd, "start": start, "dur": 0.5, "cpu": cpu,
+         "n": n or 1 + sum(k.get("n") or 0 for k in kids), "sub_cpu": sub or cpu,
+         "ev": "exit", "exit_code": code}
+    if kids:
+        d["kids"] = list(kids)
+    d.update(kv)
+    return d
+
+
+def session_body(n_kids=14):
+    kids = [proc(10 + i, "sh", kids=[proc(100 + i, "ls", code=2)], sub=0.02 + i / 1000,
+                 start=float(i), args="sh -c 'ls /secret/dir'") for i in range(n_kids)]
+    kids.append({"k": "g", "motif": ["git"], "period": 1, "reps": 40, "count": 40, "n": 40,
+                 "start": 50.0, "sub_cpu": 0.4, "exits": {"0": 39, "128": 1}, "signals": {}})
+    kids.append(proc(99, "python", kids=[proc(98, "nvcc")], cpu=30.0, sub=42.0, start=60.0))
+    kids.append({"k": "agg", "why": "hold", "n": 5000, "sub_cpu": 7.0,
+                 "cmds": [["realpath", 4000], ["git", 1000]]})
+    root = proc(1, "server", kids=kids, cpu=None, sub=60.0, role="infra",
+                agent_type="claude_code", ev=None, exit_code=None)
+    root["n"] = 5100
+    return {
+        "row": {"sid": "h|2026-10-12|agent|apid:1", "user": "alice", "agent_type": "claude_code",
+                "actor3": "agent", "n_events": 5100, "cpu_s": 60.0, "wall_s": 7200, "first": 1e9,
+                "last": 1e9 + 7200, "tool_rle": [["git", 25], ["ls", 1], ["python", 2]],
+                "purpose_rle": [["git", 25], ["filesearch", 1], ["compute", 2]],
+                "chain_truncated": False},
+        "nav": {"first_tool": {"t": 1e9, "cmd": "git"}, "busiest": {"t": 1e9 + 60, "n": 300},
+                "longest": {"t": 1e9 + 100, "cmd": "python", "dur": 900.0},
+                "failures": {"n": 15, "listed": 15,
+                             "items": [[1e9 + i, 1e9 + i, 100 + i, "ls", 2, None] for i in range(14)]
+                             + [[1e9 + 99, 1e9 + 99, 7, "git", 128, None]]}},
+        "scan": {"records": 5100, "first": 1e9, "last": 1e9 + 7200, "stopped": None},
+        "bounds": {"itemised": 100, "counted": 5000},
+        "tree": root,
+    }
+
+
+class SessionDigestTest(unittest.TestCase):
+    """A session for a question: totals, sequence, landmarks, and an outline."""
+
+    def test_totals_sequence_and_landmarks(self):
+        d = ask.session_digest(session_body())
+        self.assertEqual(d["session"]["user"], "alice")
+        self.assertEqual(d["session"]["wall"], "2.0 h")
+        self.assertEqual(d["tools"], "git x25 > ls > python x2")
+        self.assertEqual(d["purposes"]["share_pct"]["git"], round(100 * 25 / 28, 1))
+        self.assertEqual(d["landmarks"]["failures"]["total"], 15)
+        self.assertEqual(d["landmarks"]["failures"]["by_command"][0], "ls exit 2 x14")
+        self.assertEqual(d["landmarks"]["longest_process"]["dur"], "15.0 min")
+        self.assertEqual(d["read"]["counted"], 5000)
+
+    def test_the_outline_counts_children_then_opens_a_varied_few(self):
+        lines = ask.session_digest(session_body())["tree"]
+        self.assertTrue(lines[0].startswith("server [claude_code, infra]"))
+        census = next(x for x in lines if "children by command" in x)
+        # a child's own exit, not its children's: each sh exited 0, its ls failed
+        self.assertIn("git x40, 1 failed; sh x14 (28 processes);", census)
+        opened = [x for x in lines if x.startswith("  ") and not x.startswith("   ")
+                  and "children" not in x]
+        # the costliest subtree is opened; ten copies of one helper are not
+        self.assertTrue(any(x.startswith("  python") for x in opened))
+        self.assertLessEqual(sum(x.startswith("  sh") for x in opened), 2)
+        self.assertTrue(any(x.startswith("    nvcc") for x in lines))
+        self.assertTrue(any("+5000 more processes counted" in x for x in lines))
+        self.assertTrue(any("git x40 in a row" in x and "1 failed" in x for x in lines))
+
+    def test_command_lines_only_when_asked(self):
+        plain = json.dumps(ask.session_digest(session_body()))
+        self.assertNotIn("/secret/dir", plain)
+        self.assertIn("/secret/dir", json.dumps(ask.session_digest(session_body(), with_argv=True)))
+
+    def test_a_long_outline_stops_and_says_so(self):
+        lines = ask.session_digest(session_body(), max_lines=5)["tree"]
+        self.assertEqual(lines[-1], "... the outline stops at 5 lines")
+
 if __name__ == "__main__":
     unittest.main()

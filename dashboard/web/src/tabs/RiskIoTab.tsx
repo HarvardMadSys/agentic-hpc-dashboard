@@ -539,6 +539,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
 
         <Panel
           title="Reads by tool"
+          ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
           empty={!toolReads.length}
           emptyWhat="no tool read from disk in the selection"
@@ -548,6 +549,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
 
         <Panel
           title="Writes by tool"
+          ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
           empty={!toolWrites.length}
           emptyWhat="no tool wrote to disk in the selection"
@@ -557,6 +559,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
 
         <Panel
           title="Network bytes"
+          ask={[{ panel: 'io_process', keys: ['by_class', 'by_tool', 'notes'] }]}
           p={io}
           empty={!have.length || netGroups.every((g) => g.v.tx == null && g.v.rx == null)}
           emptyWhat="no TCP accounting for the selection"
@@ -614,6 +617,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
 
         <Panel
           title="I/O by user"
+          ask={[{ panel: 'io_process', keys: ['by_user', 'notes'] }]}
           p={io}
           span
           empty={!byUser.length}
@@ -668,7 +672,8 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
         </Panel>
 
         {quantKeys.length > 0 && (
-          <Panel title="I/O distributions" p={io} span empty={!have.length}>
+          <Panel title="I/O distributions" p={io} span empty={!have.length}
+            ask={[{ panel: 'io_process', keys: ['by_class', 'notes'] }]}>
             <div className="scroller">
               <table>
                 <thead>
@@ -711,6 +716,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
             <Panel
               key={sc.id}
               title={sc.title}
+              ask={[{ panel: 'risk', keys: ['login_compute', 'sections'] }]}
               p={risk}
               span
               empty={!lcRows.length}
@@ -774,6 +780,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
             <Panel
               key={sc.id}
               title={sc.title}
+              ask={[{ panel: 'risk', keys: ['secrets', 'sections', 'rules'] }]}
               p={risk}
               span
               empty={!inSection(secRows, sc).length}
@@ -823,6 +830,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
             <Panel
               key={sc.id}
               title={sc.title}
+              ask={[{ panel: 'risk', keys: ['dangerous', 'sections', 'rules'] }]}
               p={risk}
               span
               empty={!inSection(dgRows, sc).length}
@@ -879,7 +887,8 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
           ),
         )}
 
-        <Panel title="Rules in effect" p={risk} span empty={!risk.rules} emptyWhat="the service sent no rule list">
+        <Panel title="Rules in effect" p={risk} span empty={!risk.rules} emptyWhat="the service sent no rule list"
+          ask={[{ panel: 'risk', keys: ['rules', 'sections', 'totals'] }]}>
           <RulesInEffect r={risk.rules} />
         </Panel>
       </div>

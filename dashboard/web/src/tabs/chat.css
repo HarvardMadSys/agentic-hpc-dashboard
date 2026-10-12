@@ -90,3 +90,37 @@
   display: flex;
   gap: 8px;
 }
+
+/* A question about one panel, inside it (components/Ask.tsx). */
+.askbtn.on {
+  border-color: var(--crimson);
+  color: var(--crimson-ink);
+  background: var(--crimson-wash);
+}
+.askbox {
+  max-width: none;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--crimson);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.askbox-h {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+.askbox-ctl {
+  display: inline-flex;
+  gap: 10px;
+  flex: none;
+}
+.askbox .chat-input textarea {
+  min-height: 32px;
+}
+.askbox .a {
+  max-width: 100%;
+}

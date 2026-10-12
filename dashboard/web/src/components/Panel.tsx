@@ -10,8 +10,11 @@
  * chart or table. `notes` / `basis` / `cpu_basis` go in <Basis>, a collapsed
  * affordance -- never body prose.
  */
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { FeedStatus, PanelEnvelope, WindowStatus } from '../api/types';
+import { AskBox, canAsk, useAskScope } from './Ask';
+import type { AskRef } from './Ask';
 
 export function StatusPill({
   status,
@@ -122,6 +125,9 @@ export interface PanelProps {
   emptyWhat?: string;
   header?: ReactNode;
   basis?: ReactNode;
+  /** What an "ask" about this panel reads (components/Ask.tsx): the service's
+   *  panel data it is drawn from, or one session. No button without it. */
+  ask?: AskRef | null;
   children?: ReactNode;
 }
 
@@ -140,8 +146,12 @@ export function Panel({
   emptyWhat,
   header,
   basis,
+  ask,
   children,
 }: PanelProps) {
+  const scope = useAskScope();
+  const [asking, setAsking] = useState(false);
+  const askable = !!ask && canAsk(scope.info);
   const feedName = p?._feed ?? feed ?? '';
   const missing = p != null && p._present === false;
   // Feed-absent outranks window-building: if the collector wrote nothing, no
@@ -174,8 +184,28 @@ export function Panel({
             </span>
           )}
           {live && !missing && <StatusPill status="live" text="live" beat />}
+          {askable && !missing && !blank && (
+            <button
+              className={`btn askbtn${asking ? ' on' : ''}`}
+              aria-pressed={asking}
+              onClick={() => setAsking(!asking)}
+              data-tip={`ask ${scope.info?.agent ?? 'the LLM'} about ${
+                Array.isArray(ask) ? 'this panel: it is sent this panel’s data and nothing else' : 'this session: it is sent this session’s process tree and nothing else'
+              }`}
+            >
+              {Array.isArray(ask) ? 'ask' : 'ask about this session'}
+            </button>
+          )}
         </div>
       </header>
+      {askable && asking && !missing && !blank && (
+        <AskBox
+          what={ask!}
+          title={title}
+          threadKey={Array.isArray(ask) ? `${id ?? slug(title)}` : `session:${ask!.session}`}
+          onClose={() => setAsking(false)}
+        />
+      )}
       {p?._waiting ? (
         <div className="none">waiting for the dashboard service…</div>
       ) : missing ? (

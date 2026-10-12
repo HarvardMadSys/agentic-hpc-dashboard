@@ -9,7 +9,10 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig, useFeeds, usePanels, useTrajectories, useWindows } from './api/hooks';
 import { useLive } from './api/useLive';
 import type { Transport } from './api/useLive';
-import type { Facets, FeedReport, FeedStatus } from './api/types';
+import { getAskInfo } from './api/client';
+import type { AskInfo, Facets, FeedReport, FeedStatus } from './api/types';
+import { AskScopeCtx } from './components/Ask';
+import type { AskScope } from './components/Ask';
 import { ClassFilter } from './components/ClassFilter';
 import { WhoFilter } from './components/WhoFilter';
 import { StatusPill } from './components/Panel';
@@ -185,6 +188,25 @@ export default function App() {
     true;
   const mainRef = useRef<HTMLElement>(null);
   const { secs, active } = useSections(mainRef, tab.k);
+  // The agent behind every "ask" button: asked for once. Failing that, the
+  // buttons stay hidden -- a question that cannot run is not offered.
+  const [askInfo, setAskInfo] = useState<AskInfo | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    getAskInfo(ac.signal).then(setAskInfo).catch(() => {});
+    return () => ac.abort();
+  }, []);
+  const askScope: AskScope = useMemo(
+    () => ({
+      info: askInfo,
+      windowMin: resolvedWin?.minutes ?? null,
+      windowLabel: resolvedWin?.label ?? null,
+      who,
+      cls: url.cls,
+      tab: tab.lbl,
+    }),
+    [askInfo, resolvedWin?.minutes, resolvedWin?.label, who, url.cls, tab.lbl],
+  );
   const hl = headline(feeds.data);
   const P = panels.data?.panels ?? {};
 
@@ -427,7 +449,7 @@ export default function App() {
           </>
         )}
 
-        {body}
+        <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
       </main>
       <TooltipLayer />
     </div>

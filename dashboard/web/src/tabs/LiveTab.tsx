@@ -358,6 +358,7 @@ export function LiveTab({
 
         <Panel
           title="Login nodes right now"
+          ask={[{ panel: 'live', keys: ['hosts', 'now'] }]}
           span
           live
           feed={liveFeed?.name ?? 'live'}

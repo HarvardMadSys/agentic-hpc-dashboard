@@ -275,6 +275,7 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       <div className="grid wide">
         <Panel
           title="Per-process distributions"
+          ask={[{ panel: 'resources', keys: ['by_class', 'top', 'oncpu_set_aside', 'scope', 'cpu_basis'] }]}
           id="sec-per-event-distributions"
           p={r}
           span
@@ -292,6 +293,7 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
 
         <Panel
           title="Faults, delays, and D-state"
+          ask={[{ panel: 'resources', keys: ['by_class', 'stall_by_tool', 'impossible_waits', 'impossible_basis'] }]}
           p={r}
           empty={!have.some((c) => byClass[c]?.faults || byClass[c]?.delays || byClass[c]?.dstate)}
           emptyWhat="delay accounting was not readable for the selection"
@@ -311,6 +313,7 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
 
         <Panel
           title="Worst individual processes"
+          ask={[{ panel: 'resources', keys: ['worst_stall', 'worst_fault', 'worst_wait'] }]}
           p={r}
           span
           empty={

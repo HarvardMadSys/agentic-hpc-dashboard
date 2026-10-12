@@ -686,6 +686,7 @@ export function ActiveUsers(props: UsersProps & { goto?: (tab: string) => void }
     <Panel
       id="live-users"
       title="Active users"
+      ask={[{ panel: 'live', keys: ['users', 'now'] }]}
       span
       live
       feed="live"

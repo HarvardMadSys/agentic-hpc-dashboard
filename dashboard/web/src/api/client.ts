@@ -12,6 +12,7 @@ import type {
   FeedsResponse,
   LiveResponse,
   LiveUserDetail,
+  AskContext,
   AskInfo,
   AskJob,
   LiveUsers,
@@ -92,16 +93,21 @@ export const getLiveUsers = (q: string, minutes?: number | null, s?: AbortSignal
 export const getAskInfo = (s?: AbortSignal) => get<AskInfo>('/ask', { signal: s });
 export const getAskJob = (id: string, s?: AbortSignal) =>
   get<AskJob>(`/ask/${encodeURIComponent(id)}`, { signal: s });
-/** Start a question; the answer is polled with getAskJob. */
+/** Start a question; the answer is polled with getAskJob. `context` narrows it
+ *  to one panel or one session; `w`, the page's filter, rides in the query
+ *  string as on /panels, so a panel's question reads the view on screen. */
 export async function postAsk(
   question: string,
   minutes: number | null | undefined,
   history: { q: string; a: string }[],
+  context?: AskContext,
+  w?: Who | null,
 ): Promise<AskJob> {
-  const r = await fetch(API_BASE + '/ask', {
+  const q = who(w).replace(/^&/, '');
+  const r = await fetch(API_BASE + '/ask' + (q ? '?' + q : ''), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ question, window_min: minutes ?? null, history }),
+    body: JSON.stringify({ question, window_min: minutes ?? null, history, context: context ?? null }),
   });
   if (!r.ok) {
     let detail = r.statusText;
