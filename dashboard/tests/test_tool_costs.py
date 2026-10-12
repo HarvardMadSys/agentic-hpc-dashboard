@@ -17,9 +17,10 @@ class Cfg:
         return {"reducers.tool_mix": {"head_n": 1}}.get(dotted, default)
 
 
-def ex(tool, pid, cpu=0.0, rd=None, wr=None, net=None, rss=None):
-    r = {"event": "exit", "_a3": "agent", "_eff": tool, "_command": tool, "_sid": "s",
-         "pid": pid, "ppid": 1, "cpu_s": cpu}
+def ex(tool, pid, cpu=0.0, rd=None, wr=None, net=None, rss=None, atype="claude_code",
+       cls="agent"):
+    r = {"event": "exit", "_a3": cls, "_eff": tool, "_command": tool, "_sid": "s",
+         "pid": pid, "ppid": 1, "cpu_s": cpu, "agent_type": atype}
     if rd is not None or wr is not None:
         r["io"] = {"rd_mb": rd, "wr_mb": wr}
     if net is not None:
@@ -61,6 +62,35 @@ class ToolCostTest(unittest.TestCase):
         a.merge(b)
         node = next(t for t in a.result()["tools"]["agent"] if t["tool"] == "node")
         self.assertEqual((node["mem_mean_mb"], node["mem_max_mb"], node["calls"]), (1500.0, 2000.0, 2))
+
+    def test_a_kind_of_tool_carries_its_memory_share(self):
+        rows = {r["b"]: r for r in reduce(self.recs()).result()["by_class"]["agent"]["rows"]}
+        mem = {b: r["mem_pct"] for b, r in rows.items() if r["mem_mb"]}
+        self.assertAlmostEqual(sum(mem.values()), 100.0, places=1)
+        node = next(b for b in rows if rows[b]["mem_mb"] == 3000.0)
+        self.assertAlmostEqual(rows[node]["mem_pct"], 100 * 3000 / 3100, places=1)
+
+
+class PerAgentTypeTest(unittest.TestCase):
+    """The Agents tab's "nothing mixes types": each agent type's tools alone."""
+
+    def test_each_agent_type_has_its_own_mix_tools_and_head(self):
+        out = reduce([ex("git", 1), ex("git", 2), ex("python", 3, cpu=5.0, atype="codex"),
+                      ex("vim", 4, atype=None, cls="human")]).result()
+        self.assertEqual(set(out["by_agent_type"]), {"claude_code", "codex"})
+        cc, cx = out["by_agent_type"]["claude_code"], out["by_agent_type"]["codex"]
+        self.assertEqual((cc["by"]["calls"], cx["by"]["calls"]), (2, 1))
+        self.assertEqual([t["tool"] for t in cx["tools"]], ["python"])
+        self.assertEqual([h["tool"] for h in cc["head"]], ["git"])
+        self.assertEqual(cx["n_tools"], 1)
+        # the class still holds both, and no type key leaks in as a class
+        self.assertEqual(out["by_class"]["agent"]["calls"], 3)
+        self.assertEqual(set(out["by_class"]), {"agent", "human"})
+
+    def test_merged_hours_keep_the_types_apart(self):
+        a = reduce([ex("git", 1)])
+        a.merge(reduce([ex("python", 2, atype="codex")]))
+        self.assertEqual(set(a.result()["by_agent_type"]), {"claude_code", "codex"})
 
 
 if __name__ == "__main__":

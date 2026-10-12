@@ -272,8 +272,8 @@ def defaults():
         # What the page opens on, before a reader changes it. Nothing here
         # changes a number, so the saved builds ignore the section.
         # user_columns: the Active users table's columns (agents, ides, running,
-        # exited, cpu, read, written, net, gpu, last); a reader's own choice is
-        # kept in their browser.
+        # exited, cpu, read, written, sent, received, gpu, last; `net` is sent
+        # and received); a reader's own choice is kept in their browser.
         "ui": {
             # What the hosts this dashboard watches are called on the page:
             # "Login nodes right now". A workstation fleet says "hosts".

@@ -143,7 +143,7 @@ export function OverviewTab({
             items={[
               [
                 'why',
-                'the class ranking is not stable across units: a unit that de-weights the loudest users routinely erases or flips the per-event gap',
+                'the class ranking is not stable across units: a unit that de-weights the loudest users routinely erases or flips the per-process gap',
               ],
             ]}
           />

@@ -12,7 +12,7 @@ export function Coverage({ pct, n }: { pct: number | null | undefined; n?: numbe
   if (pct == null) return null;
   const cls = pct <= 0 ? 'none' : pct < 50 ? 'low' : '';
   return (
-    <span className={`cov ${cls}`} data-tip={n != null ? `${fmt(n)} events carried the field` : undefined}>
+    <span className={`cov ${cls}`} data-tip={n != null ? `${fmt(n)} processes carried the field` : undefined}>
       cov {pc(pct)}
     </span>
   );
@@ -72,7 +72,7 @@ export function QuantCells({ q }: { q: Quant | null | undefined }) {
       <td className="num">
         <Coverage pct={v.coverage_pct} n={v.n} />
         {v.sampled && (
-          <span className="cov" data-tip={`quantiles from a ${fmt(v.sample_n)}-event sample`}>
+          <span className="cov" data-tip={`quantiles from a sample of ${fmt(v.sample_n)} processes`}>
             {' '}
             sampled
           </span>

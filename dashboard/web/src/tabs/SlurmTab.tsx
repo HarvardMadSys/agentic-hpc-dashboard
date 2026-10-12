@@ -28,11 +28,9 @@ import type {
   SlurmSession,
   ToolMix,
 } from '../api/types';
-import { Lines } from '../charts/primitives';
-import type { LineSeries } from '../charts/primitives';
-import { clockLabel, fullClock, timeTicks } from '../charts/scale';
+import { fullClock } from '../charts/scale';
 import { Segmented } from '../components/ClassFilter';
-import { Basis, Legend, NoRows, Panel } from '../components/Panel';
+import { Basis, NoRows, Panel } from '../components/Panel';
 import { CmdCell } from '../components/Cmd';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
@@ -279,44 +277,6 @@ function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: strin
   );
 }
 
-function TimeChart({ s, have, field, ylabel }: {
-  s: NonNullable<SlurmPanel['series']>;
-  have: string[];
-  field: 'jobs' | 'queries';
-  ylabel: string;
-}) {
-  const x0 = s.t[0];
-  const x1 = s.t[s.t.length - 1];
-  const series: LineSeries[] = have
-    .filter((c) => s.by_class[c])
-    .map((c) => ({
-      lbl: CLS_LBL[c] ?? c,
-      c: CLS_COL[c],
-      pts: s.t.map((x, i) => ({ x, y: s.by_class[c][field][i] ?? null })),
-    }));
-  if (!series.length || x0 == null) return <NoRows what="nothing in the window" />;
-  return (
-    <>
-      <Lines
-        series={series}
-        W={520}
-        H={200}
-        ymin={0}
-        xmin={x0}
-        xmax={x1 > x0 ? x1 : x0 + s.bin_s}
-        xticks={(a, b) => timeTicks(a, b)}
-        xfmt={clockLabel}
-        xtip={fullClock}
-        ylabel={ylabel}
-        xname="at"
-        yname={ylabel}
-        minSpan={3 * s.bin_s}
-      />
-      <Legend items={series.map((l) => ({ k: l.lbl, c: l.c }))} />
-    </>
-  );
-}
-
 function Latest({ rows }: { rows: LiveSubmit[] }) {
   const out = (r: LiveSubmit) => {
     const o = r.outcome as string | undefined;
@@ -366,7 +326,13 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
   );
 }
 
-export function SlurmTab({ P, live, cls }: { P: Panels; live: LiveResponse | null; cls: Cls[] }) {
+export function SlurmTab({ P, live, cls, goLive = () => {} }: {
+  P: Panels;
+  live: LiveResponse | null;
+  cls: Cls[];
+  /** open the Live tab, where this tab's two charts now are */
+  goLive?: () => void;
+}) {
   const sp = pick<SlurmPanel>(P, 'slurm', 'ebpfm');
   const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
   const by = sp.by_class ?? {};
@@ -421,14 +387,13 @@ export function SlurmTab({ P, live, cls }: { P: Panels; live: LiveResponse | nul
         />
       </div>
 
-      <div className="grid">
-        <Panel title="Queue checks (squeue, sacct, …)" p={sp} empty={!sp.series?.t.length} emptyWhat="no queue check in the window" basis={basis}>
-          {sp.series && <TimeChart s={sp.series} have={have} field="queries" ylabel={`checks / ${dur(sp.series.bin_s)}`} />}
-        </Panel>
-        <Panel title="Jobs submitted" p={sp} empty={!sp.series?.t.length} emptyWhat="no submission in the window">
-          {sp.series && <TimeChart s={sp.series} have={have} field="jobs" ylabel={`jobs / ${dur(sp.series.bin_s)}`} />}
-        </Panel>
-      </div>
+      {/* Its two charts, queue checks and jobs submitted, are on Live's
+          picker with every other time series (roadmap note 23). */}
+      <p className="intro">
+        Queue checks and jobs submitted over time are on the{' '}
+        <button className="linkbtn" onClick={() => goLive()}>Live tab</button>, in the picker under
+        “More over time.”
+      </p>
 
       <div className="grid wide">
         <Panel

@@ -169,7 +169,7 @@ function toolBars(
         `${t.tool}: ${dir === 'read' ? 'read' : 'wrote'} ${mb(t[disk])} on disk, ` +
         `${mb(t[sys])} through ${dir}() syscalls` +
         (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
-        `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} events`,
+        `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} processes exited`,
     }));
 }
 
@@ -735,7 +735,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   v: r.cpu_s,
                   c: r.kind === 'compute' ? 'var(--s8)' : 'var(--sg)',
                   lbl: `${dur(r.cpu_s)} ${'\u00b7'} ${fint(r.users)} user${r.users === 1 ? '' : 's'}`,
-                  tip: `${r.tool}: ${fmt(r.cpu_s)} CPU-s over ${fint(r.n)} exits, ${r.users} user(s), hosts ${r.hosts.join(', ')}`,
+                  tip: `${r.tool}: ${fmt(r.cpu_s)} CPU-s over ${fint(r.n)} exited processes, ${r.users} user(s), hosts ${r.hosts.join(', ')}`,
                 }))}
                 labelW={140}
                 valW={110}

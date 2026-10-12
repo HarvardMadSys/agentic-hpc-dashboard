@@ -136,6 +136,8 @@ class RowTest(unittest.TestCase):
     def test_an_account_carries_its_io_running_processes_and_gpu_ask(self):
         a = self.row()
         self.assertEqual((a["rd_mb"], a["wr_mb"], a["net_mb"]), (12.0, 6.0, 4.0))
+        # sent and received apart (roadmap note 3), their sum kept beside them
+        self.assertEqual((a["net_tx_mb"], a["net_rx_mb"]), (3.0, 1.0))
         self.assertEqual(a["running"], {"agent": 4})
         self.assertEqual(a["gpu_h"], 4.0)            # 2 GPUs x 2 h; the one with no limit is not guessed
 
@@ -143,6 +145,65 @@ class RowTest(unittest.TestCase):
         d = self.row()["type_detail"]["agent"]
         self.assertEqual(d["claude_code"]["n"], 1)
         self.assertEqual((d["codex"]["n"], d["codex"]["cpu_s"], d["codex"]["rd_mb"]), (1, 4.0, 2.0))
+
+
+
+def agent_root(at, user, pid, tree, approval, agent_type="claude_code", comm="claude",
+               event="conn"):
+    # `event` is any identity block but a residency tick, which is a census too
+    """An agent's own identity block (role `agent`, its own agent_pid)."""
+    return {"event": event, "_a3": "agent", "_ts_epoch": at, "host": "h1", "user": user,
+            "agent_type": agent_type, "pid": pid, "agent_pid": pid, "tree_root_pid": tree,
+            "_role": "agent", "_approval": approval, "comm": comm, "args": comm}
+
+
+class NestedAgentTest(unittest.TestCase):
+    """Roadmap notes 4 and 12: an agent inside another session's tree is a row
+    of its own under that session, with its own launch flags."""
+
+    def setUp(self):
+        self.now = time.time()
+        self.r = LiveReducer(Cfg(), CLASSES)
+        feed = self.r.feed
+        # the Claude app's server is the tree's root; the CLIs it runs are agents
+        feed(tick(self.now - 30, "ann", 10, 50.0, comm="server", args="server --serve",
+                  sid="h1|d|agent|apid:10"))
+        feed(agent_root(self.now - 20, "ann", 21, 10, "auto", comm="2.1.295-8b2928c"))
+        feed(agent_root(self.now - 20, "ann", 20, 10, "supervised"))
+        # a Claude Code that is its own tree's root, and a Codex it started
+        # (its residency tick is its own identity block too)
+        feed(dict(tick(self.now - 30, "ann", 30, 80.0, uuid="u2", sid="h1|d|agent|apid:30"),
+                  pid=30, agent_pid=30, _role="agent", _approval="supervised"))
+        feed(agent_root(self.now - 20, "ann", 31, 30, "bypassed", agent_type="codex",
+                        comm="codex"))
+        # a running agent whose tree sent no census
+        feed(agent_root(self.now - 20, "ann", 40, 41, "auto"))
+        # someone else's, and one that exited
+        feed(agent_root(self.now - 20, "bob", 50, 10, "bypassed"))
+        feed(agent_root(self.now - 20, "ann", 60, 30, "auto"))
+        feed(dict(agent_root(self.now - 10, "ann", 60, 30, "auto"), event="exit"))
+        self.d = self.r.user_detail("ann", now=self.now, window_s=3600)
+
+    def by_root(self, pid):
+        return next(s for s in self.d["sessions"] if (s.get("sid") or "").endswith(":%d" % pid))
+
+    def test_the_agents_inside_a_tree_are_rows_under_it_with_their_launch(self):
+        app = self.by_root(10)
+        self.assertEqual([(a["pid"], a["approval"], a["version"]) for a in app["agents"]],
+                         [(20, "supervised", None), (21, "auto", "2.1.295")])
+
+    def test_a_codex_a_claude_code_started_sits_under_it(self):
+        cc = self.by_root(30)
+        self.assertEqual(cc["approval"], "supervised")
+        self.assertEqual([(a["agent_type"], a["approval"]) for a in cc["agents"]],
+                         [("codex", "bypassed")])
+
+    def test_an_agent_with_no_census_is_still_listed_and_nothing_else_leaks_in(self):
+        lone = [s for s in self.d["sessions"] if s.get("no_census")]
+        self.assertEqual([(s["pid"], s["approval"]) for s in lone], [(40, "auto")])
+        pids = {a["pid"] for s in self.d["sessions"] for a in s["agents"]}
+        self.assertNotIn(50, pids)                   # bob's
+        self.assertNotIn(60, pids)                   # exited
 
 
 if __name__ == "__main__":

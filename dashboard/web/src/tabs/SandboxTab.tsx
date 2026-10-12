@@ -290,7 +290,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </Panel>
 
         <Panel
-          title="Namespace isolation — per event and per session"
+          title="Namespace isolation — per process and per session"
           p={sb}
           empty={!evHave.length && !seHave.length}
           emptyWhat="no isolation breakdown for the selection"
@@ -470,7 +470,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </Panel>
 
         <Panel
-          title="Where the per-event verdict came from"
+          title="Where the per-process verdict came from"
           p={sb}
           empty={!Object.keys(sb.sandbox_src ?? {}).length}
           emptyWhat="no source breakdown"
