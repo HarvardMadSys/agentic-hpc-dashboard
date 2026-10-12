@@ -663,6 +663,9 @@ svg:has(> g.pickable:focus-visible) {
   cursor: pointer;
 }
 /* the session list beside the inspector: one column of compact rows */
+.tj-rank {
+  margin: 0 0 8px;
+}
 .tj-md {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);

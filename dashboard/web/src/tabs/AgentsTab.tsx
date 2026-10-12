@@ -440,10 +440,15 @@ function TreeView({ t, type, sel, onSel }: {
       data: n,
     });
   }
+  // open on the picked agent, or on this type's first: in a wide tree of
+  // another type's agents it can sit a screen to the right
+  const first = nodes.find((x) => x.data && (x.data.agent_type ?? '') === type);
+  const focus = sel != null && nodes.some((x) => x.id === sel) ? sel : first?.id ?? null;
   return (
     <TreeDiagram
       nodes={nodes}
       selected={sel}
+      focus={focus}
       onSelect={(id) => id !== 'root' && onSel(id)}
       render={(x) =>
         x.data ? (
