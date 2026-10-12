@@ -122,7 +122,8 @@ agent (or a person's terminal, or an IDE) and every process it ran, re-read from
 the collector's records -- and nothing else from the dashboard.
 - session: whose, where, when (the host's local time), and its totals.
 - tools: the commands it ran, in order, as runs (`git x25` is 25 in a row);
-  purposes: the same sequence by kind of work, and each kind's share.
+  purposes: the same sequence by the dashboard's kind of work, and each kind's
+  share of the processes -- a count, not a share of the session's time.
 - landmarks: the first tool call, the busiest minute, the longest process, and
   the failures (a non-zero exit or a signal), by command, with the first few.
 - tree: the process tree as an indented outline, one line per process: its
