@@ -110,9 +110,10 @@ function FaultCell({
 }
 
 /* Same shape as the faults table: one row per measure, the classes across,
- * so a measure reads left to right. Mean, median, and 99th show; the 90th and
- * the max open on a click (roadmap note 28), and the max names the process
- * behind it on hover (note 27). Each class's columns wear its colour. */
+ * so a measure reads left to right. Each statistic has its own chip: mean,
+ * median, and 99th start on, and the rest open on a click (roadmap note 28).
+ * The max names the process behind it on hover (note 27); the min does not,
+ * since many processes usually share it. Each class's columns wear its colour. */
 const LIFETIME_TIP =
   'how long the process existed. For most processes it is counted from when the program ' +
   'started (exec), while CPU time counts the whole process, including the moments before ' +
@@ -124,16 +125,19 @@ const DIST_ROWS: [key: (typeof QUANT_KEYS)[number], label: string, f: (v: number
   ['sched_wait_s', 'runqueue wait', dur, GLOSS.runqueue],
   ['peak_rss_mb', 'peak memory', mb, GLOSS.peakrss],
 ];
-type QKey = 'mean' | 'p50' | 'p90' | 'p99' | 'max';
-const BASE_Q: [QKey, string, string][] = [
+type QKey = 'mean' | 'min' | 'p1' | 'p10' | 'p50' | 'p90' | 'p99' | 'max';
+// in column order, which is the chips' order too
+const STATS: [QKey, string, string][] = [
   ['mean', 'mean', GLOSS.mean],
+  ['min', 'min', GLOSS.min],
+  ['p1', '1st', GLOSS.p1],
+  ['p10', '10th', GLOSS.p10],
   ['p50', 'median', GLOSS.median],
-  ['p99', '99th', GLOSS.p99],
-];
-const MORE_Q: [QKey, string, string][] = [
   ['p90', '90th', GLOSS.p90],
+  ['p99', '99th', GLOSS.p99],
   ['max', 'max', GLOSS.max + '; hover a value for the process'],
 ];
+const STATS_ON: QKey[] = ['mean', 'p50', 'p99'];
 const tint = (c: string) => ({ background: `color-mix(in srgb, ${CLS_COL[c] ?? 'transparent'} 6%, transparent)` });
 
 function maxTip(t: MaxProcess | undefined): string | undefined {
@@ -145,8 +149,34 @@ function maxTip(t: MaxProcess | undefined): string | undefined {
   ].filter(Boolean).join('\n');
 }
 
-function DistTable({ byClass, have, more }: { byClass: Resources['by_class']; have: string[]; more: boolean }) {
-  const qs = more ? [...BASE_Q.slice(0, 2), MORE_Q[0], BASE_Q[2], MORE_Q[1]] : BASE_Q;
+// one chip per statistic, as the class filter has one per class
+function StatChips({ on, onChange }: { on: QKey[]; onChange: (v: QKey[]) => void }) {
+  const toggle = (k: QKey) =>
+    onChange(on.includes(k) ? on.filter((x) => x !== k) : STATS.map(([x]) => x).filter((x) => x === k || on.includes(x)));
+  return (
+    <>
+      {STATS.map(([k, label, tip]) => {
+        const sel = on.includes(k);
+        const last = sel && on.length === 1;
+        return (
+          <button
+            key={k}
+            className="chip"
+            aria-pressed={sel}
+            disabled={last}
+            onClick={() => toggle(k)}
+            data-tip={last ? 'at least one statistic must stay shown' : `${sel ? 'hide' : 'show'} the ${tip}`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+function DistTable({ byClass, have, on }: { byClass: Resources['by_class']; have: string[]; on: QKey[] }) {
+  const qs = STATS.filter(([k]) => on.includes(k));
   // one row per measure, each in its own unit: the measures sort by name, and
   // a class's column, which would rank seconds against megabytes, does not
   const s = useSort<string>();
@@ -275,7 +305,7 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
   const byClass = r.by_class ?? {};
   const have = shown(byClass, cls);
-  const [more, setMore] = useState(false);
+  const [stats, setStats] = useState<QKey[]>(STATS_ON);
 
   return (
     <>
@@ -288,14 +318,9 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           span
           empty={!have.length}
           emptyWhat="no class block for the selection"
-          header={
-            <button className="btn" onClick={() => setMore(!more)} aria-pressed={more}
-              data-tip="the 90th percentile and the single largest value, with the process behind it">
-              {more ? '− 90th and max' : '+ 90th and max'}
-            </button>
-          }
+          header={<StatChips on={stats} onChange={setStats} />}
         >
-          <DistTable byClass={byClass} have={have} more={more} />
+          <DistTable byClass={byClass} have={have} on={stats} />
         </Panel>
 
         <Panel

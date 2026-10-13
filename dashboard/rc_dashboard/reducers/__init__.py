@@ -71,7 +71,7 @@ class Quant:
     is a fixed share of its magnitude, and two sketches merge by adding their
     bucket counts -- a merged sketch is the very sketch one pass would have
     built. A quantile read from it is within REL_ERR of the true value, at any
-    rank, for any number of values; `n`, `max` and `mean` are exact, and
+    rank, for any number of values; `n`, `min`, `max` and `mean` are exact, and
     nothing is sampled any more, which the payload says (`sampled` false,
     `rel_err`).
     """
@@ -194,7 +194,7 @@ class Quant:
         n = self.n
         if not n:
             return {"n": 0, "coverage_pct": 0.0 if self.seen else None, "sampled": False}
-        ps = (.10, .25, .50, .75, .90, .99)
+        ps = (.01, .10, .25, .50, .75, .90, .99)
         # the rank the capped list read, `int(p * (n - 1))`, over every value
         qs = self._ranks([int(p * (n - 1)) for p in ps])
         # A field that is PRESENT on every record and exactly 0 on every record is
@@ -208,6 +208,7 @@ class Quant:
         out = {"n": n}
         out.update(("p%d" % round(p * 100), round(q, 4)) for p, q in zip(ps, qs))
         out.update({
+            "min": round(self.lo, 4),
             "max": round(self.hi, 4),
             "mean": round(self.total / n, 4),
             "sampled": False, "sample_n": n, "rel_err": self.REL_ERR,

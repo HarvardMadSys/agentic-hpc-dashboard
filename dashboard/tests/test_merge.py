@@ -455,10 +455,11 @@ class SketchTest(unittest.TestCase):
             q.add(v)
         got = q.as_dict()
         ex = sorted(vals)
-        for p in (.10, .25, .50, .75, .90, .99):
+        for p in (.01, .10, .25, .50, .75, .90, .99):
             want = ex[int(p * (len(ex) - 1))]
             self.assertLessEqual(abs(got["p%d" % round(p * 100)] - want),
                                  Quant.REL_ERR * want + 1e-4, p)
+        self.assertEqual(got["min"], round(min(vals), 4))
         self.assertEqual(got["max"], round(max(vals), 4))
         self.assertAlmostEqual(got["mean"], sum(vals) / len(vals), places=3)
         self.assertFalse(got["sampled"])
