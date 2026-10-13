@@ -39,12 +39,12 @@ export const GLOSS: Record<string, string> = {
   mean: 'mean: the total divided by the number of processes',
   median: 'median: half of the processes were below this value',
   min: 'min: the single smallest value in the window',
-  p1: '1st percentile: 1 in 100 processes were below this value',
-  p10: '10th percentile: 1 in 10 processes were below this value',
-  p90: '90th percentile: 9 in 10 processes were below this value',
-  p99: '99th percentile: 99 in 100 processes were below this value',
+  p1: 'p1, the 1st percentile: 1 in 100 processes were below this value',
+  p10: 'p10, the 10th percentile: 1 in 10 processes were below this value',
+  p90: 'p90, the 90th percentile: 9 in 10 processes were below this value',
+  p99: 'p99, the 99th percentile: 99 in 100 processes were below this value',
   max: 'max: the single largest value in the window',
-  quantile: 'quantiles (median, 90th, 99th): the value below which that share of processes fall',
+  quantile: 'quantiles (median, p90, p99): the value below which that share of processes fall',
 
   // I/O
   diskbytes: 'disk bytes: data that actually reached or came from the disk',
