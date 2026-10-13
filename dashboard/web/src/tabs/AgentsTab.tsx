@@ -461,7 +461,7 @@ const FOLD_STEP = 12;
 type TreeBox =
   | { k: 'infra' }
   | { k: 'agent'; n: CascadeNode; lead: boolean; parentHome: string | null }
-  | { k: 'more'; at: string; rest: CascadeNode[]; below: number; top: boolean };
+  | { k: 'more'; at: string; rest: CascadeNode[]; unsent: CascadeNode['folded']; below: number; top: boolean; any: boolean };
 
 /** busiest first: processes, then writes outside home, then CPU */
 const busier = (a: CascadeNode, b: CascadeNode) =>
@@ -469,16 +469,23 @@ const busier = (a: CascadeNode, b: CascadeNode) =>
   (b.workspace?.outside_writes ?? 0) - (a.workspace?.outside_writes ?? 0) ||
   (b.cpu_s ?? 0) - (a.cpu_s ?? 0);
 
-/** What the folded agents did, for their box. */
+/** What the folded agents did, for their box: the ones on the page, and the
+ * ones the service counted but did not send (`folded`). */
 function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
-  const nothing = b.rest.filter((n) => !n.tool_calls).length;
-  const one = b.rest.filter((n) => n.tool_calls === 1).length;
-  const more = b.rest.length - nothing - one;
-  const outside = b.rest.filter((n) => n.workspace?.outside_writes).length;
+  const u = b.unsent;
+  const all = b.rest.length + (u?.agents ?? 0);
+  const nothing = b.rest.filter((n) => !n.tool_calls).length + (u?.ran_nothing ?? 0);
+  const one = b.rest.filter((n) => n.tool_calls === 1).length + (u?.one ?? 0);
+  const more = all - nothing - one;
+  const outside = b.rest.filter((n) => n.workspace?.outside_writes).length + (u?.outside ?? 0);
+  const noun = `${b.top ? 'agent' : 'subagent'}${all === 1 ? '' : 's'}`;
+  const tip = b.rest.length
+    ? `click to show ${Math.min(FOLD_STEP, b.rest.length)} more, the busiest first`
+    : 'counted, not drawn: the service sends a big tree’s busiest agents';
   return (
-    <div className="acard more" data-tip={`click to show ${Math.min(FOLD_STEP, b.rest.length)} more, the busiest first`}>
+    <div className={`acard more${b.rest.length ? '' : ' unsent'}`} data-tip={tip}>
       <div className="acard-h">
-        <b>+{fint(b.rest.length)} more {b.top ? 'agent' : 'subagent'}{b.rest.length === 1 ? '' : 's'}</b>
+        <b>{b.any ? `+${fint(all)} more ${noun}` : `${fint(all)} ${noun}`}</b>
       </div>
       <div className="acard-b">
         {[nothing ? `${fint(nothing)} ran nothing` : null, one ? `${fint(one)} ran 1 process each` : null]
@@ -537,21 +544,32 @@ function TreeView({ t, type, sel, onSel }: {
 
   const nodes: TreeNode<TreeBox>[] = [];
   if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: { k: 'infra' } });
+  // an agent that ran one process or none, wrote nothing outside its home,
+  // and started no other: a box of its own would only repeat the fold's count
+  const trivial = (n: CascadeNode) =>
+    (n.tool_calls ?? 0) <= 1 && !n.workspace?.outside_writes && !(kids.get(id(n)) ?? []).length;
   const place = (at: string | null, list: CascadeNode[], parentHome: string | null) => {
     const sorted = [...list].sort(busier);
-    const limit = open[at ?? ''] ?? FOLD_FIRST;
-    const shown = sorted.filter((n, i) => i < limit || keep.has(id(n)));
+    const opened = open[at ?? ''];
+    const limit = opened ?? FOLD_FIRST;
+    const shown = sorted.filter((n, i) => keep.has(id(n)) || (i < limit && (opened != null || !trivial(n))));
     for (const n of shown) {
       const lead = at === null || at === 'root';
       nodes.push({ id: id(n), parent: at, data: { k: 'agent', n, lead, parentHome } });
       place(id(n), kids.get(id(n)) ?? [], n.home);
     }
     const rest = sorted.filter((n) => !shown.includes(n));
-    if (rest.length) {
+    // the agents the service counted under this parent and did not send
+    const unsent = (at === 'root' ? t.root : at ? byId.get(at) : undefined)?.folded ?? null;
+    if (rest.length || unsent?.agents) {
       nodes.push({
         id: `${at ?? 'top'}:more`,
         parent: at,
-        data: { k: 'more', at: at ?? '', rest, below: rest.reduce((a, n) => a + below(n), 0), top: at === null || at === 'root' },
+        data: {
+          k: 'more', at: at ?? '', rest, unsent,
+          below: rest.reduce((a, n) => a + below(n), 0),
+          top: at === null || at === 'root', any: shown.length > 0,
+        },
       });
     }
   };
@@ -576,6 +594,7 @@ function TreeView({ t, type, sel, onSel }: {
           const x = nodes.find((y) => y.id === nid)?.data;
           if (!x || x.k === 'infra') return;
           if (x.k === 'more') {
+            if (!x.rest.length) return;              // counted, not sent: nothing to open
             const limit = open[x.at] ?? FOLD_FIRST;
             setOpen({ ...open, [x.at]: limit + FOLD_STEP });
             return;

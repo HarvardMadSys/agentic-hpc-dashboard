@@ -323,5 +323,52 @@ class DriftTest(unittest.TestCase):
         self.assertEqual(n["workspace"]["inside_pct"], 50.0)
 
 
+
+class PickTest(unittest.TestCase):
+    """A tree bigger than what is sent: its shape, then each parent's busiest
+    agents in turn, and what the rest did counted on their parent."""
+
+    @staticmethod
+    def agent(pid, parent, calls, fanout=0, outside=0, level=2):
+        return {"pid": pid, "parent": parent, "role": "agent", "fanout": fanout,
+                "tool_calls": calls, "cpu_s": calls / 100, "agent_level": level,
+                "workspace": {"outside_writes": outside}}
+
+    def tree(self):
+        from rc_dashboard.reducers.cascades import _pick
+        root = {"pid": 1, "parent": None, "role": "client", "fanout": 1}
+        lead = self.agent(10, 1, 5000, fanout=101, level=1)
+        # a hundred subagents walked in start order; the busy ones come last
+        subs = [self.agent(100 + i, 10, 0 if i < 40 else 1) for i in range(97)]
+        subs += [self.agent(300, 10, 59, outside=2), self.agent(301, 10, 12),
+                 self.agent(302, 10, 3)]
+        mid = self.agent(400, 10, 7, fanout=1)
+        deep = self.agent(401, 400, 2, level=3)
+        nodes = [root, lead] + subs + [mid, deep]
+        return _pick, nodes
+
+    def test_the_busiest_are_sent_and_the_shape_kept(self):
+        pick, nodes = self.tree()
+        sent = pick(nodes, 12)
+        pids = [x["pid"] for x in sent]
+        self.assertEqual(len(sent), 12)
+        self.assertEqual(pids[:2], [1, 10])                  # walk order kept
+        for must in (300, 301, 302, 400, 401):               # busiest, and the shape
+            self.assertIn(must, pids)
+        self.assertNotIn(100, pids)                          # ran nothing: folded
+
+    def test_what_was_not_sent_is_counted_on_its_parent(self):
+        pick, nodes = self.tree()
+        sent = pick(nodes, 12)
+        lead = next(x for x in sent if x["pid"] == 10)
+        sent_subs = sum(1 for x in sent if x["pid"] >= 100 and x["pid"] < 400)
+        f = lead["folded"]
+        self.assertEqual(f["agents"], 100 - sent_subs)
+        self.assertEqual(f["ran_nothing"], 40)
+        self.assertEqual(f["agents"], f["ran_nothing"] + f["one"])
+        self.assertEqual(f["outside"], 0)                    # the one that wrote outside was sent
+        self.assertNotIn("folded", next(x for x in sent if x["pid"] == 400))
+
+
 if __name__ == "__main__":
     unittest.main()

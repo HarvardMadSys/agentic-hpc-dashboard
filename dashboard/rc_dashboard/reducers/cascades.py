@@ -537,10 +537,66 @@ class CascadeReducer:
             "agents_nested": sum(1 for x in agents if x["agent_level"] >= 2),
             "agent_types": sorted({x["agent_type"] for x in agents if x["agent_type"]}),
             "tool_calls": totals["tool_calls"], "cpu_s": round(totals["cpu_s"], 3),
-            "nodes": nodes[:self.max_shown], "hidden_nodes": hidden,
+            "nodes": _pick(nodes, self.max_shown) if len(nodes) > self.max_shown else nodes,
+            "hidden_nodes": hidden,
             "nodes_truncated": len(nodes) > self.max_shown,
             "_fanouts": fanouts,
         }
+
+
+def _busiest(x):
+    """Sort key, busiest first: processes, then writes outside home, then CPU."""
+    return (-(x.get("tool_calls") or 0),
+            -((x.get("workspace") or {}).get("outside_writes") or 0),
+            -(x.get("cpu_s") or 0))
+
+
+def _pick(nodes, cap):
+    """The `cap` nodes of a bigger tree that are sent, and what the rest did.
+
+    The root, and every node an agent hangs from, come first: they are the
+    tree's shape. Then each parent's agents that started none, busiest first,
+    a parent at a time in turn -- so a Codex with 211 subagents sends its
+    busiest, not its first 58 in the order they were walked. What a parent's
+    unsent agents did is counted on the parent's node (`folded`), so the page
+    can say so rather than show 58 as if they were all. The sent nodes keep
+    the order they were walked in, a parent before its children."""
+    by_pid = {x["pid"]: x for x in nodes}
+    root = nodes[0]
+
+    def agent_above(x):
+        p = by_pid.get(x.get("parent"))
+        while p is not None and p is not root and p["role"] != "agent":
+            p = by_pid.get(p.get("parent"))
+        return p if p is not None else root
+
+    shape = [root] + [x for x in nodes[1:] if x["role"] != "agent" or x.get("fanout")]
+    groups = {}
+    for x in nodes[1:]:
+        if x["role"] == "agent" and not x.get("fanout"):
+            groups.setdefault(agent_above(x)["pid"], []).append(x)
+    for g in groups.values():
+        g.sort(key=_busiest)
+    keep = {id(x) for x in shape[:cap]}
+    room, i = cap - len(keep), 0
+    while room > 0 and any(i < len(g) for g in groups.values()):
+        for g in groups.values():
+            if i < len(g) and room > 0:
+                keep.add(id(g[i]))
+                room -= 1
+        i += 1
+    for pid, g in groups.items():
+        left = [x for x in g if id(x) not in keep]
+        if left:
+            calls = [x.get("tool_calls") or 0 for x in left]
+            by_pid[pid]["folded"] = {
+                "agents": len(left),
+                "ran_nothing": sum(1 for c in calls if c == 0),
+                "one": sum(1 for c in calls if c == 1),
+                "processes": sum(calls),
+                "outside": sum(1 for x in left if (x.get("workspace") or {}).get("outside_writes")),
+            }
+    return [x for x in nodes if id(x) in keep]
 
 
 def _home(n, acc):
