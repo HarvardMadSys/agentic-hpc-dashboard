@@ -479,6 +479,16 @@ function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
   const more = all - nothing - one;
   const outside = b.rest.filter((n) => n.workspace?.outside_writes).length + (u?.outside ?? 0);
   const noun = `${b.top ? 'agent' : 'subagent'}${all === 1 ? '' : 's'}`;
+  const groups: [number, string][] = [
+    [one, `${fint(one)} ran 1 process each`],
+    [nothing, `${fint(nothing)} ran nothing`],
+    [more, `${fint(more)} ran more`],
+  ];
+  const lines = [
+    ...groups.filter(([n]) => n > 0).sort((a, z) => z[0] - a[0]).map(([, l]) => l),
+    outside ? `${fint(outside)} wrote outside home` : null,
+    b.below ? `${fint(b.below)} more under them` : null,
+  ].filter((l): l is string => !!l);
   const tip = b.rest.length
     ? `click to show ${Math.min(FOLD_STEP, b.rest.length)} more, the busiest first`
     : 'counted, not drawn: the service sends a big tree’s busiest agents';
@@ -487,18 +497,10 @@ function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
       <div className="acard-h">
         <b>{b.any ? `+${fint(all)} more ${noun}` : `${fint(all)} ${noun}`}</b>
       </div>
-      <div className="acard-b">
-        {[nothing ? `${fint(nothing)} ran nothing` : null, one ? `${fint(one)} ran 1 process each` : null]
-          .filter(Boolean)
-          .join(' · ') || `${fint(more)} ran more`}
-      </div>
-      <div className="acard-c nm">
-        {[nothing || one ? (more ? `${fint(more)} ran more` : null) : null,
-          outside ? `${fint(outside)} wrote outside home` : null,
-          b.below ? `${fint(b.below)} more under them` : null]
-          .filter(Boolean)
-          .join(' · ')}
-      </div>
+      {/* the biggest group on its own line, the rest under it: one line
+          of all of them is cut off in a box this wide */}
+      <div className="acard-b">{lines[0] ?? ''}</div>
+      <div className="acard-c nm">{lines.slice(1).join(' · ')}</div>
     </div>
   );
 }
