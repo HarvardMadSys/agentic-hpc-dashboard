@@ -428,3 +428,26 @@ table.trees .sub-chip {
   margin: 6px 0;
   align-items: center;
 }
+
+/* the folded tree (AgentsTab.tsx TreeView): the box that holds the rest, a
+ * subagent's box, and the way back to folded */
+.acard.more {
+  cursor: pointer;
+}
+.acard.more b {
+  color: var(--ink-2);
+}
+.acard.sub .acard-h b {
+  font-weight: 600;
+}
+.acard-h .acard-other {
+  margin-left: auto;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.atree-fold {
+  font-size: 11px;
+  margin: 0 0 4px;
+}

@@ -398,24 +398,52 @@ function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; set
   );
 }
 
+const procs = (n: number | null | undefined) =>
+  n ? `${fint(n)} process${n === 1 ? '' : 'es'}` : 'ran nothing';
+
 /** One agent as a box: whose it is, how much it ran, and whether it wrote
  * outside its home. Its type is the view's, picked above, so the box leads
- * with the user; `foreign`, another type's agent in this tree, says its type. */
-function AgentCard({ n, foreign }: { n: CascadeNode; foreign?: boolean }) {
+ * with the user; `foreign`, another type's agent in this tree, says its type.
+ *
+ * In a tree (`tree`), a subagent's box is its work alone: the tree's title
+ * names the type and the user, and its parent's box the home, so the box says
+ * them only where they differ. */
+function AgentCard({ n, foreign, tree }: {
+  n: CascadeNode;
+  foreign?: boolean;
+  /** in a tree and not its lead: the tree's user and the parent's home */
+  tree?: { user: string | null; home: string | null };
+}) {
   const w = n.workspace;
   const sub = (n.agent_level ?? 1) >= 2;
+  const tip = nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '');
+  if (tree) {
+    const user = n.user && n.user !== tree.user ? n.user : null;
+    const home = n.home && n.home !== tree.home ? n.home : null;
+    return (
+      <div className={`acard sub${foreign ? ' foreign' : ''}`} data-tip={tip}>
+        <div className="acard-h">
+          <b>{procs(n.tool_calls)}</b>
+          {foreign && <span className="sev type-chip">{typeLbl(n.agent_type)}</span>}
+          {user && <span className="mono nm acard-other">{user}</span>}
+        </div>
+        <div className="acard-b">
+          {n.cpu_s ? dur(n.cpu_s) : n.tool_calls ? 'no CPU recorded' : ''}
+          {w?.outside_writes ? <span className="ws-flagmark"> {fint(w.outside_writes)} outside</span> : null}
+        </div>
+        {home && <div className={`acard-c nm${n.home_src === 'first_call' ? ' inferred' : ''}`}>{tildeOf(home, n.user)}</div>}
+      </div>
+    );
+  }
   return (
-    <div
-      className={`acard${foreign ? ' foreign' : ''}`}
-      data-tip={nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '')}
-    >
+    <div className={`acard${foreign ? ' foreign' : ''}`} data-tip={tip}>
       <div className="acard-h">
         <b className="mono acard-user">{n.user ?? DASH}</b>
         {foreign && <span className="sev type-chip">{typeLbl(n.agent_type)}</span>}
         {sub && <span className="sev sub-chip">subagent</span>}
       </div>
       <div className="acard-b">
-        {n.tool_calls ? `${fint(n.tool_calls)} processes` : 'ran nothing'}
+        {procs(n.tool_calls)}
         {n.cpu_s ? ` · ${dur(n.cpu_s)}` : ''}
         {w?.outside_writes ? <span className="ws-flagmark"> {fint(w.outside_writes)} outside</span> : null}
       </div>
@@ -424,49 +452,156 @@ function AgentCard({ n, foreign }: { n: CascadeNode; foreign?: boolean }) {
   );
 }
 
-/** A tree of more than one agent, drawn as a tree. */
+/* A parent shows its busiest few agents, and the rest wait in one box that
+ * says what they did and opens a dozen at a time: a Codex that started 211
+ * subagents of one process each is a row of five boxes, not of 211. */
+const FOLD_FIRST = 4;
+const FOLD_STEP = 12;
+
+type TreeBox =
+  | { k: 'infra' }
+  | { k: 'agent'; n: CascadeNode; lead: boolean; parentHome: string | null }
+  | { k: 'more'; at: string; rest: CascadeNode[]; below: number; top: boolean };
+
+/** busiest first: processes, then writes outside home, then CPU */
+const busier = (a: CascadeNode, b: CascadeNode) =>
+  (b.tool_calls ?? 0) - (a.tool_calls ?? 0) ||
+  (b.workspace?.outside_writes ?? 0) - (a.workspace?.outside_writes ?? 0) ||
+  (b.cpu_s ?? 0) - (a.cpu_s ?? 0);
+
+/** What the folded agents did, for their box. */
+function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
+  const nothing = b.rest.filter((n) => !n.tool_calls).length;
+  const one = b.rest.filter((n) => n.tool_calls === 1).length;
+  const more = b.rest.length - nothing - one;
+  const outside = b.rest.filter((n) => n.workspace?.outside_writes).length;
+  return (
+    <div className="acard more" data-tip={`click to show ${Math.min(FOLD_STEP, b.rest.length)} more, the busiest first`}>
+      <div className="acard-h">
+        <b>+{fint(b.rest.length)} more {b.top ? 'agent' : 'subagent'}{b.rest.length === 1 ? '' : 's'}</b>
+      </div>
+      <div className="acard-b">
+        {[nothing ? `${fint(nothing)} ran nothing` : null, one ? `${fint(one)} ran 1 process each` : null]
+          .filter(Boolean)
+          .join(' · ') || `${fint(more)} ran more`}
+      </div>
+      <div className="acard-c nm">
+        {[nothing || one ? (more ? `${fint(more)} ran more` : null) : null,
+          outside ? `${fint(outside)} wrote outside home` : null,
+          b.below ? `${fint(b.below)} more under them` : null]
+          .filter(Boolean)
+          .join(' · ')}
+      </div>
+    </div>
+  );
+}
+
+/** A tree of more than one agent, drawn as a tree, folded. */
 function TreeView({ t, type, sel, onSel }: {
   t: CascadeTree;
   type: string;
   sel: string | null;
   onSel: (k: string) => void;
 }) {
+  // how many of a parent's agents are open, past the first FOLD_FIRST
+  const [open, setOpen] = useState<Record<string, number>>({});
   const parents = agentParents(t);
   const rootIsAgent = t.root.role === 'agent';
-  const nodes: TreeNode<CascadeNode | null>[] = [];
-  if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: null });
-  for (const n of t.nodes) {
-    if (n.role !== 'agent') continue;
+  const id = (n: CascadeNode) => keyOf(t.host, n.pid);
+  const agents = t.nodes.filter((n) => n.role === 'agent');
+  const byId = new Map(agents.map((n) => [id(n), n]));
+  // an agent's parent box: its agent parent; else the tree's root process,
+  // drawn as its own box only when it is not itself an agent
+  const parentOf = (n: CascadeNode): string | null => {
     const p = parents.get(n.pid);
-    nodes.push({
-      id: keyOf(t.host, n.pid),
-      parent: p != null ? keyOf(t.host, p) : rootIsAgent && n.pid === t.root.pid ? null : 'root',
-      data: n,
-    });
+    if (p != null) return keyOf(t.host, p);
+    return rootIsAgent ? null : 'root';
+  };
+  const kids = new Map<string | null, CascadeNode[]>();
+  for (const n of agents) {
+    const p = parentOf(n);
+    const list = kids.get(p);
+    if (list) list.push(n);
+    else kids.set(p, [n]);
   }
+  const below = (n: CascadeNode): number =>
+    (kids.get(id(n)) ?? []).reduce((a, c) => a + 1 + below(c), 0);
+  // the picked agent and the agents above it stay in view, folded or not
+  const keep = new Set<string>();
+  for (let n = sel ? byId.get(sel) : undefined; n; ) {
+    keep.add(id(n));
+    const p = parentOf(n);
+    n = p ? byId.get(p) : undefined;
+  }
+  const treeUser = t.users.length === 1 ? t.users[0] : null;
+
+  const nodes: TreeNode<TreeBox>[] = [];
+  if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: { k: 'infra' } });
+  const place = (at: string | null, list: CascadeNode[], parentHome: string | null) => {
+    const sorted = [...list].sort(busier);
+    const limit = open[at ?? ''] ?? FOLD_FIRST;
+    const shown = sorted.filter((n, i) => i < limit || keep.has(id(n)));
+    for (const n of shown) {
+      const lead = at === null || at === 'root';
+      nodes.push({ id: id(n), parent: at, data: { k: 'agent', n, lead, parentHome } });
+      place(id(n), kids.get(id(n)) ?? [], n.home);
+    }
+    const rest = sorted.filter((n) => !shown.includes(n));
+    if (rest.length) {
+      nodes.push({
+        id: `${at ?? 'top'}:more`,
+        parent: at,
+        data: { k: 'more', at: at ?? '', rest, below: rest.reduce((a, n) => a + below(n), 0), top: at === null || at === 'root' },
+      });
+    }
+  };
+  place(rootIsAgent ? null : 'root', kids.get(rootIsAgent ? null : 'root') ?? [], null);
+
   // open on the picked agent, or on this type's first: in a wide tree of
   // another type's agents it can sit a screen to the right
-  const first = nodes.find((x) => x.data && (x.data.agent_type ?? '') === type);
+  const first = nodes.find((x) => x.data.k === 'agent' && (x.data.n.agent_type ?? '') === type);
   const focus = sel != null && nodes.some((x) => x.id === sel) ? sel : first?.id ?? null;
   return (
-    <TreeDiagram
-      nodes={nodes}
-      selected={sel}
-      focus={focus}
-      onSelect={(id) => id !== 'root' && onSel(id)}
-      render={(x) =>
-        x.data ? (
-          <AgentCard n={x.data} foreign={(x.data.agent_type ?? '') !== type} />
-        ) : (
-          <div className="acard infra" data-tip={`started under\n${nodeTip(t.root)}`}>
-            <div className="acard-h">
-              <b>{t.root.command ?? 'process'}</b>
+    <>
+      {Object.keys(open).length > 0 && (
+        <button className="linkbtn atree-fold" onClick={() => setOpen({})}>
+          fold again
+        </button>
+      )}
+      <TreeDiagram
+        nodes={nodes}
+        selected={sel}
+        focus={focus}
+        onSelect={(nid) => {
+          const x = nodes.find((y) => y.id === nid)?.data;
+          if (!x || x.k === 'infra') return;
+          if (x.k === 'more') {
+            const limit = open[x.at] ?? FOLD_FIRST;
+            setOpen({ ...open, [x.at]: limit + FOLD_STEP });
+            return;
+          }
+          onSel(nid);
+        }}
+        render={(x) =>
+          x.data.k === 'agent' ? (
+            <AgentCard
+              n={x.data.n}
+              foreign={(x.data.n.agent_type ?? '') !== type}
+              tree={x.data.lead ? undefined : { user: treeUser, home: x.data.parentHome }}
+            />
+          ) : x.data.k === 'more' ? (
+            <MoreBox b={x.data} />
+          ) : (
+            <div className="acard infra" data-tip={`started under\n${nodeTip(t.root)}`}>
+              <div className="acard-h">
+                <b>{t.root.command ?? 'process'}</b>
+              </div>
+              <div className="acard-b nm">{t.root.role === 'client' ? 'a client that launched the agents' : 'runs the agents below'}</div>
             </div>
-            <div className="acard-b nm">{t.root.role === 'client' ? 'a client that launched the agents' : 'runs the agents below'}</div>
-          </div>
-        )
-      }
-    />
+          )
+        }
+      />
+    </>
   );
 }
 
