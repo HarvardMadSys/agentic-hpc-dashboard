@@ -306,7 +306,12 @@ class SuggestionsTest(unittest.TestCase):
         many = {"suggestions": [{"title": "t%d" % i, "action": "a" * 5000} for i in range(20)]}
         got = ask.parse_suggestions(json.dumps(many))["suggestions"]
         self.assertEqual(len(got), 8)
-        self.assertEqual(len(got[0]["action"]), 600)
+        self.assertLessEqual(len(got[0]["action"]), 600)
+        self.assertTrue(got[0]["action"].endswith("…"))
+        paths = "rm -rf " + ", ".join("/tmp/claude-1000/project-%d/scratchpad/stage" % i for i in range(30))
+        cut = ask.parse_suggestions(json.dumps({"suggestions": [{"title": "t", "action": paths}]}))
+        action = cut["suggestions"][0]["action"]
+        self.assertTrue(action.endswith("/scratchpad/stage…"), action[-40:])   # a whole path, then …
 
     def test_secrets_in_an_answer_are_masked(self):
         text = json.dumps({"suggestions": [{"title": "rotate it",
