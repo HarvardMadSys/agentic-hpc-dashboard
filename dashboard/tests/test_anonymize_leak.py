@@ -283,6 +283,23 @@ class LeakTest(unittest.TestCase):
                 self.assertIn("this cluster's operator", sent)
         self.assertIn('"Claude Code"', self.asked({"parts": [{"panel": "risk"}],
                                                    "title": "Claude Code"}))
+        # a suggestion marked done is in the next pass's prompt, with aliases
+        asker = self.app.state.agg.asker
+        asker.jobs["seeded"] = {"id": "seeded", "window": "24h", "suggestions": {
+            "summary": None, "suggestions": [{
+                "priority": "high", "title": "Ask %s about polling" % alice, "action": None,
+                "evidence": None, "users": [alice], "panel": None, "tab": None}]}}
+        status, body = self.post("/api/suggestions/done", {"job": "seeded", "index": 0})
+        self.assertEqual(status, 200, body)
+        self.assertClean("/api/suggestions/done", self.get("/api/suggestions/done")[1])
+        sent = self.asked({"suggest": True})
+        self.assertIn("Ask %s about polling" % alice, sent)
+        self.assertClean("ask: suggestions with done", sent)
+        did = json.loads(body)["items"][0]["id"]
+        req = urllib.request.Request("http://127.0.0.1:%d/api/suggestions/done/%s" % (self.port, did),
+                                     method="DELETE")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            self.assertEqual(json.loads(r.read())["items"], [])
         # a field inside a field, and a panel this deployment lacks, said so
         sent = self.asked({"parts": [{"panel": "cascades", "keys": ["summary", "workspace.summary"]},
                                      {"panel": "gpu_jobs"}]})

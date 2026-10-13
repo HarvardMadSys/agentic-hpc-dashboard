@@ -15,6 +15,7 @@ import type {
   AskContext,
   AskInfo,
   AskJob,
+  DoneList,
   LiveUsers,
   PanelsResponse,
   TrajRank,
@@ -120,6 +121,29 @@ export async function postAsk(
   }
   return (await r.json()) as AskJob;
 }
+
+/** The operator's suggestions marked done: the service keeps them for
+ *  everyone, until undone. A mark names an answer and a suggestion in it. */
+export const getDone = (s?: AbortSignal) => get<DoneList>('/suggestions/done', { signal: s });
+async function doneCall(path: string, method: 'POST' | 'DELETE', body?: unknown): Promise<DoneList> {
+  const r = await fetch(API_BASE + path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    let detail = r.statusText;
+    try {
+      detail = ((await r.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      /* not JSON: the status is the message */
+    }
+    throw new ApiError(API_BASE + path, r.status, detail);
+  }
+  return (await r.json()) as DoneList;
+}
+export const markDone = (job: string, index: number) => doneCall('/suggestions/done', 'POST', { job, index });
+export const undoDone = (id: string) => doneCall(`/suggestions/done/${encodeURIComponent(id)}`, 'DELETE');
 
 export const getLiveUser = (name: string, minutes?: number | null, s?: AbortSignal, n = 25) =>
   get<LiveUserDetail>(`/live/user?name=${encodeURIComponent(name)}&n=${n}${win(minutes, '&')}`, { signal: s });

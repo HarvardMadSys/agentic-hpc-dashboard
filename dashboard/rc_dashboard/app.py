@@ -257,6 +257,30 @@ def create_app(cfg):
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    # The operator's suggestions marked done: kept by the service for everyone
+    # until undone, and left out of the next "suggest actions" (ask.Asker). A
+    # mark names a job and an index; the text is the service's own.
+    @app.get("/api/suggestions/done")
+    def api_done():
+        return agg.asker.done_list()
+
+    @app.post("/api/suggestions/done")
+    async def api_mark_done(request: Request):
+        body = await request.json()
+        try:
+            return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/suggestions/done/{did}")
+    def api_undo_done(did: str):
+        try:
+            return agg.asker.undo_done(did)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+
     @app.get("/api/ask/{jid}")
     def api_ask_job(jid: str):
         j = agg.ask_job(jid)
