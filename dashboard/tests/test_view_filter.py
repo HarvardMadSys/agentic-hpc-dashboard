@@ -10,6 +10,7 @@ import sys
 import threading
 import unittest
 import warnings
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -152,13 +153,17 @@ class FilteredBuildTest(FilterCase):
         self.feed_who(120, 50)
         other = os.path.join(self.tmp, "only_glen")
         self.feed_who(120, 50, only=glen.match, root=other)
-        filtered = self.build(self.registry(), flt=glen)
-        self.assertEqual(self.calls(filtered), 20)
+        # Both builds at one present, as a pinned clock does it (clock.py): a
+        # payload stamps its window's end to the second, and two builds that
+        # straddle one differed there and nowhere else, about one run in 40.
+        with mock.patch("time.time", return_value=self.now):
+            filtered = self.build(self.registry(), flt=glen)
+            self.assertEqual(self.calls(filtered), 20)
 
-        cfg = self.cfg()
-        reg = WindowRegistry(cfg, list(cfg.get("filters.classes")) + ["unlabeled"],
-                             lambda: [other], threading.RLock())
-        alone = self.build(reg)
+            cfg = self.cfg()
+            reg = WindowRegistry(cfg, list(cfg.get("filters.classes")) + ["unlabeled"],
+                                 lambda: [other], threading.RLock())
+            alone = self.build(reg)
         self.assertEqual(filtered.payload, alone.payload)
 
     def test_an_agent_type_filter_counts_only_those_types(self):
