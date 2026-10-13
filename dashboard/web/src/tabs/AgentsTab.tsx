@@ -42,7 +42,7 @@ import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
-import { AGENT_TYPE_LBL } from '../lib/classes';
+import { AGENT_TYPE_COL, AGENT_TYPE_LBL } from '../lib/classes';
 import { pick, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import './agents.css';
@@ -105,17 +105,7 @@ function OutsideWrites({ n, tip }: { n: number | null | undefined; tip?: string 
 }
 
 const typeLbl = (t: string | null | undefined) => AGENT_TYPE_LBL[t ?? ''] ?? t ?? 'agent';
-
-/** A tree of more than one agent, in a few words. */
-function treeTitle(t: CascadeTree, agents: CascadeNode[]): string {
-  const types = Array.from(new Set(agents.map((n) => typeLbl(n.agent_type))));
-  const kind = types.length === 1 ? types[0] : 'agent';
-  const k = t.agents_nested;
-  if (k > 0) {
-    return `${kind} with ${k} subagent${k === 1 ? '' : 's'}${t.agent_depth > 2 ? `, ${t.agent_depth - 1} levels deep` : ''}`;
-  }
-  return `${agents.length} ${kind} sessions started side by side`;
-}
+const typeCol = (t: string | null | undefined) => AGENT_TYPE_COL[t ?? ''] ?? 'var(--sg)';
 
 const PARENT_LBL: Record<string, string> = {
   same: "in its parent agent's directory",
@@ -360,17 +350,14 @@ function typeStats(pts: AgentPt[]): TypeStat[] {
   return [...m.values()].sort((a, b) => b.procs - a.procs);
 }
 
-function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; setSel: (t: string) => void }) {
+/** Agents by type, side by side: a summary, not a switch. A Claude Code can
+ * start a Codex and a Codex a Claude Code, so the trees below are one view of
+ * every type, each box named by its own. */
+function TypeStrip({ stats }: { stats: TypeStat[] }) {
   return (
-    <div className="atype-strip" role="tablist" aria-label="agent type">
+    <div className="atype-strip">
       {stats.map((s) => (
-        <button
-          key={s.type}
-          role="tab"
-          aria-selected={s.type === sel}
-          className={`atype${s.type === sel ? ' on' : ''}`}
-          onClick={() => setSel(s.type)}
-        >
+        <div key={s.type} className="atype" style={{ borderLeftColor: typeCol(s.type) }}>
           <div className="k">{typeLbl(s.type)}</div>
           <div className="v">
             {fint(s.agents)} <small>agent{s.agents === 1 ? '' : 's'}</small>
@@ -378,7 +365,7 @@ function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; set
           <div className="n">
             <span className="q-mark" data-tip={GLOSS.subagent}>{fint(s.nested)} subagent{s.nested === 1 ? '' : 's'}</span>
             {' · '}
-            <span className="q-mark" data-tip="agents of this type that started another agent">{fint(s.started)} started one</span>
+            <span className="q-mark" data-tip="agents of this type that started another agent, of any type">{fint(s.started)} started one</span>
           </div>
           <div className="n">
             {fint(s.procs)} processes · {dur(s.cpu)} CPU
@@ -392,7 +379,7 @@ function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; set
               {fint(s.otherHome)} reached another user's home
             </span>
           </div>
-        </button>
+        </div>
       ))}
     </div>
   );
@@ -401,46 +388,16 @@ function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; set
 const procs = (n: number | null | undefined) =>
   n ? `${fint(n)} process${n === 1 ? '' : 'es'}` : 'ran nothing';
 
-/** One agent as a box: whose it is, how much it ran, and whether it wrote
- * outside its home. Its type is the view's, picked above, so the box leads
- * with the user; `foreign`, another type's agent in this tree, says its type.
- *
- * In a tree (`tree`), a subagent's box is its work alone: the tree's title
- * names the type and the user, and its parent's box the home, so the box says
- * them only where they differ. */
-function AgentCard({ n, foreign, tree }: {
-  n: CascadeNode;
-  foreign?: boolean;
-  /** in a tree and not its lead: the tree's user and the parent's home */
-  tree?: { user: string | null; home: string | null };
-}) {
+/** An agent on its own, as a card: its type, whose it is, how much it ran,
+ * whether it wrote outside its home, and where its home is. */
+function AgentCard({ n }: { n: CascadeNode }) {
   const w = n.workspace;
-  const sub = (n.agent_level ?? 1) >= 2;
-  const tip = nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '');
-  if (tree) {
-    const user = n.user && n.user !== tree.user ? n.user : null;
-    const home = n.home && n.home !== tree.home ? n.home : null;
-    return (
-      <div className={`acard sub${foreign ? ' foreign' : ''}`} data-tip={tip}>
-        <div className="acard-h">
-          <b>{procs(n.tool_calls)}</b>
-          {foreign && <span className="sev type-chip">{typeLbl(n.agent_type)}</span>}
-          {user && <span className="mono nm acard-other">{user}</span>}
-        </div>
-        <div className="acard-b">
-          {n.cpu_s ? dur(n.cpu_s) : n.tool_calls ? 'no CPU recorded' : ''}
-          {w?.outside_writes ? <span className="ws-flagmark"> {fint(w.outside_writes)} outside</span> : null}
-        </div>
-        {home && <div className={`acard-c nm${n.home_src === 'first_call' ? ' inferred' : ''}`}>{tildeOf(home, n.user)}</div>}
-      </div>
-    );
-  }
   return (
-    <div className={`acard${foreign ? ' foreign' : ''}`} data-tip={tip}>
+    <div className="acard" data-tip={nodeTip(n)}>
       <div className="acard-h">
-        <b className="mono acard-user">{n.user ?? DASH}</b>
-        {foreign && <span className="sev type-chip">{typeLbl(n.agent_type)}</span>}
-        {sub && <span className="sev sub-chip">subagent</span>}
+        <i className="tdot" style={{ background: typeCol(n.agent_type) }} />
+        <b>{typeLbl(n.agent_type)}</b>
+        <span className="mono nm acard-other">{n.user ?? DASH}</span>
       </div>
       <div className="acard-b">
         {procs(n.tool_calls)}
@@ -452,15 +409,43 @@ function AgentCard({ n, foreign, tree }: {
   );
 }
 
+/** An agent in a tree, named by its type -- the one thing every box needs,
+ * since a tree can hold more than one -- with how much it ran. Its user and
+ * home show only where they differ from the tree's title and its parent's. */
+function AgentNode({ n, treeUser, home }: { n: CascadeNode; treeUser: string | null; home: string | null }) {
+  const w = n.workspace;
+  const sub = (n.agent_level ?? 1) >= 2;
+  const user = n.user && n.user !== treeUser ? n.user : null;
+  const own = n.home && n.home !== home ? tildeOf(n.home, n.user) : null;
+  const facts = [n.cpu_s ? `${dur(n.cpu_s)} CPU` : null, user].filter(Boolean).join(' · ');
+  return (
+    <div
+      className="anode"
+      style={{ borderLeftColor: typeCol(n.agent_type) }}
+      data-tip={nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '')}
+    >
+      <div className="anode-h">
+        <b>{typeLbl(n.agent_type)}</b>
+        <span className="anode-n">{procs(n.tool_calls)}</span>
+      </div>
+      <div className="anode-s">
+        {facts}
+        {w?.outside_writes ? <span className="ws-flagmark">{facts ? ' · ' : ''}{fint(w.outside_writes)} outside</span> : null}
+      </div>
+      {own && <div className={`anode-s mono${n.home_src === 'first_call' ? ' inferred' : ''}`}>{own}</div>}
+    </div>
+  );
+}
+
 /* A parent shows its busiest few agents, and the rest wait in one box that
  * says what they did and opens a dozen at a time: a Codex that started 211
- * subagents of one process each is a row of five boxes, not of 211. */
+ * subagents of one process each is one box, not a row of 211. */
 const FOLD_FIRST = 4;
 const FOLD_STEP = 12;
 
 type TreeBox =
   | { k: 'infra' }
-  | { k: 'agent'; n: CascadeNode; lead: boolean; parentHome: string | null }
+  | { k: 'agent'; n: CascadeNode; home: string | null }
   | { k: 'more'; at: string; rest: CascadeNode[]; unsent: CascadeNode['folded']; below: number; top: boolean; any: boolean };
 
 /** busiest first: processes, then writes outside home, then CPU */
@@ -470,7 +455,8 @@ const busier = (a: CascadeNode, b: CascadeNode) =>
   (b.cpu_s ?? 0) - (a.cpu_s ?? 0);
 
 /** What the folded agents did, for their box: the ones on the page, and the
- * ones the service counted but did not send (`folded`). */
+ * ones the service counted but did not send (`folded`). Named by their type
+ * when the ones on the page are all of one. */
 function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
   const u = b.unsent;
   const all = b.rest.length + (u?.agents ?? 0);
@@ -478,7 +464,8 @@ function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
   const one = b.rest.filter((n) => n.tool_calls === 1).length + (u?.one ?? 0);
   const more = all - nothing - one;
   const outside = b.rest.filter((n) => n.workspace?.outside_writes).length + (u?.outside ?? 0);
-  const noun = `${b.top ? 'agent' : 'subagent'}${all === 1 ? '' : 's'}`;
+  const types = Array.from(new Set(b.rest.map((n) => typeLbl(n.agent_type))));
+  const noun = `${types.length === 1 ? types[0] + ' ' : ''}${b.top ? 'agent' : 'subagent'}${all === 1 ? '' : 's'}`;
   const groups: [number, string][] = [
     [one, `${fint(one)} ran 1 process each`],
     [nothing, `${fint(nothing)} ran nothing`],
@@ -493,22 +480,54 @@ function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
     ? `click to show ${Math.min(FOLD_STEP, b.rest.length)} more, the busiest first`
     : 'counted, not drawn: the service sends a big tree’s busiest agents';
   return (
-    <div className={`acard more${b.rest.length ? '' : ' unsent'}`} data-tip={tip}>
-      <div className="acard-h">
+    <div className={`anode more${b.rest.length ? '' : ' unsent'}`} data-tip={tip}>
+      <div className="anode-h">
         <b>{b.any ? `+${fint(all)} more ${noun}` : `${fint(all)} ${noun}`}</b>
       </div>
-      {/* the biggest group on its own line, the rest under it: one line
-          of all of them is cut off in a box this wide */}
-      <div className="acard-b">{lines[0] ?? ''}</div>
-      <div className="acard-c nm">{lines.slice(1).join(' · ')}</div>
+      <div className="anode-s">{lines[0] ?? ''}</div>
+      <div className="anode-s nm">{lines.slice(1).join(' · ')}</div>
     </div>
   );
 }
 
-/** A tree of more than one agent, drawn as a tree, folded. */
-function TreeView({ t, type, sel, onSel }: {
+/** "Claude Code with 2 Codex subagents", "9 Codex agents with 211
+ * subagents", "3 Claude Code and Codex agents started side by side": what a
+ * tree is made of, every type named, counted over every agent in it --
+ * those the service sent and those it only counted. */
+function composition(t: CascadeTree, agents: CascadeNode[]): string {
+  const leads = agents.filter((n) => (n.agent_level ?? 1) <= 1);
+  const subs = agents.filter((n) => (n.agent_level ?? 1) >= 2);
+  const nSubs = t.agents_nested ?? subs.length;
+  const nLeads = Math.max(leads.length, (t.n_agents ?? agents.length) - nSubs);
+  const kinds = (list: CascadeNode[]) => Array.from(new Set(list.map((n) => typeLbl(n.agent_type)))).join(' and ');
+  const leadTxt = nLeads === 1 ? kinds(leads) || 'agent' : `${fint(nLeads)} ${kinds(leads)} agents`;
+  if (!nSubs) return `${leadTxt} started side by side`;
+  const subKinds = kinds(subs);
+  const same = !subKinds || subKinds === kinds(leads);
+  return `${leadTxt} with ${fint(nSubs)} ${same ? '' : subKinds + ' '}subagent${nSubs === 1 ? '' : 's'}`;
+}
+
+/** A tree's title row: what it is made of, whose, where, and what it ran. */
+function TreeTitle({ t, agents }: { t: CascadeTree; agents: CascadeNode[] }) {
+  const lead = [...agents].filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0];
+  const user = t.users.length === 1 ? t.users[0] : null;
+  return (
+    <div className="atree-t">
+      <span className="atree-what">
+        <b>{composition(t, agents)}</b>
+        {t.users.length ? <span className="nm"> · {t.users.join(', ')}</span> : null}
+        {lead?.home ? <span className="nm mono"> · {tildeOf(lead.home, user)}</span> : null}
+      </span>
+      <span className="atree-sum nm">
+        {fint(t.tool_calls)} processes · {dur(t.cpu_s)} CPU
+      </span>
+    </div>
+  );
+}
+
+/** A tree of more than one agent, of any types, drawn as a tree, folded. */
+function TreeView({ t, sel, onSel }: {
   t: CascadeTree;
-  type: string;
   sel: string | null;
   onSel: (k: string) => void;
 }) {
@@ -543,22 +562,23 @@ function TreeView({ t, type, sel, onSel }: {
     n = p ? byId.get(p) : undefined;
   }
   const treeUser = t.users.length === 1 ? t.users[0] : null;
-
-  const nodes: TreeNode<TreeBox>[] = [];
-  if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: { k: 'infra' } });
+  // the title names the busiest lead's home; a box names its own only if it differs
+  const titleHome = [...agents].filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0]?.home ?? null;
   // an agent that ran one process or none, wrote nothing outside its home,
   // and started no other: a box of its own would only repeat the fold's count
   const trivial = (n: CascadeNode) =>
     (n.tool_calls ?? 0) <= 1 && !n.workspace?.outside_writes && !(kids.get(id(n)) ?? []).length;
-  const place = (at: string | null, list: CascadeNode[], parentHome: string | null) => {
+
+  const nodes: TreeNode<TreeBox>[] = [];
+  if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: { k: 'infra' } });
+  const place = (at: string | null, list: CascadeNode[], home: string | null) => {
     const sorted = [...list].sort(busier);
     const opened = open[at ?? ''];
     const limit = opened ?? FOLD_FIRST;
     const shown = sorted.filter((n, i) => keep.has(id(n)) || (i < limit && (opened != null || !trivial(n))));
     for (const n of shown) {
-      const lead = at === null || at === 'root';
-      nodes.push({ id: id(n), parent: at, data: { k: 'agent', n, lead, parentHome } });
-      place(id(n), kids.get(id(n)) ?? [], n.home);
+      nodes.push({ id: id(n), parent: at, data: { k: 'agent', n, home } });
+      place(id(n), kids.get(id(n)) ?? [], n.home ?? home);
     }
     const rest = sorted.filter((n) => !shown.includes(n));
     // the agents the service counted under this parent and did not send
@@ -575,12 +595,9 @@ function TreeView({ t, type, sel, onSel }: {
       });
     }
   };
-  place(rootIsAgent ? null : 'root', kids.get(rootIsAgent ? null : 'root') ?? [], null);
+  place(rootIsAgent ? null : 'root', kids.get(rootIsAgent ? null : 'root') ?? [], titleHome);
 
-  // open on the picked agent, or on this type's first: in a wide tree of
-  // another type's agents it can sit a screen to the right
-  const first = nodes.find((x) => x.data.k === 'agent' && (x.data.n.agent_type ?? '') === type);
-  const focus = sel != null && nodes.some((x) => x.id === sel) ? sel : first?.id ?? null;
+  const focus = sel != null && nodes.some((x) => x.id === sel) ? sel : null;
   return (
     <>
       {Object.keys(open).length > 0 && (
@@ -590,6 +607,11 @@ function TreeView({ t, type, sel, onSel }: {
       )}
       <TreeDiagram
         nodes={nodes}
+        nodeW={212}
+        nodeH={56}
+        gapX={10}
+        gapY={22}
+        className="atree-d"
         selected={sel}
         focus={focus}
         onSelect={(nid) => {
@@ -605,19 +627,15 @@ function TreeView({ t, type, sel, onSel }: {
         }}
         render={(x) =>
           x.data.k === 'agent' ? (
-            <AgentCard
-              n={x.data.n}
-              foreign={(x.data.n.agent_type ?? '') !== type}
-              tree={x.data.lead ? undefined : { user: treeUser, home: x.data.parentHome }}
-            />
+            <AgentNode n={x.data.n} treeUser={treeUser} home={x.data.home} />
           ) : x.data.k === 'more' ? (
             <MoreBox b={x.data} />
           ) : (
-            <div className="acard infra" data-tip={`started under\n${nodeTip(t.root)}`}>
-              <div className="acard-h">
-                <b>{t.root.command ?? 'process'}</b>
+            <div className="anode infra" data-tip={`started under\n${nodeTip(t.root)}`}>
+              <div className="anode-h">
+                <b className="mono">{t.root.command ?? 'process'}</b>
               </div>
-              <div className="acard-b nm">{t.root.role === 'client' ? 'a client that launched the agents' : 'runs the agents below'}</div>
+              <div className="anode-s nm">{t.root.role === 'client' ? 'a client that launched the agents' : 'runs the agents below'}</div>
             </div>
           )
         }
@@ -641,7 +659,7 @@ function AgentBlast({ a }: { a: WsAgent | undefined }) {
     <div className="ablast">
       <div className="ablast-head">
         <h4>
-          <Term k="blast">blast radius</Term> · {a.user ?? DASH}
+          <Term k="blast">blast radius</Term> · {typeLbl(a.agent_type)} · {a.user ?? DASH}
         </h4>
         {a.subagents.length > 0 && (
           <Segmented
@@ -695,21 +713,17 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         t.nodes.filter((n) => n.role === 'agent').map((n) => ({ n, t, ws: ws.get(keyOf(t.host, n.pid)) })))
     : [];
   const stats = typeStats(pts);
-  const [selType, setSelType] = useState<string | null>(null);
-  const type = stats.find((x) => x.type === selType)?.type ?? stats[0]?.type ?? '';
   const [selAgent, setSelAgent] = useState<string | null>(null);
   const [allGrid, setAllGrid] = useState(false);
 
-  // Trees with more than one agent are drawn; a lone agent is a card. A
-  // tree belongs to every type it has an agent of: a Claude Code that started
-  // a Codex is on both views, the other type's box drawn quieter.
-  const mine = pts.filter((p) => (p.n.agent_type ?? '') === type);
-  const multi = trees.filter(
-    (t) => t.nodes.filter((n) => n.role === 'agent').length > 1 &&
-      t.nodes.some((n) => n.role === 'agent' && (n.agent_type ?? '') === type),
-  );
+  // Trees with more than one agent are drawn, busiest first; a lone agent is
+  // a card. One view of every type: a Claude Code can start a Codex and a
+  // Codex a Claude Code, so a view per type drew one tree on two pages.
+  const multi = trees
+    .filter((t) => cls.includes('agent') && t.nodes.filter((n) => n.role === 'agent').length > 1)
+    .sort((a, b) => (b.tool_calls ?? 0) - (a.tool_calls ?? 0));
   const inMulti = new Set(multi.map((t) => keyOf(t.host, t.root.pid)));
-  const lone = mine
+  const lone = pts
     .filter((p) => !inMulti.has(keyOf(p.t.host, p.t.root.pid)))
     .sort((a, b) => (b.n.tool_calls ?? 0) - (a.n.tool_calls ?? 0));
   const busyLone = lone.filter((p) => (p.n.tool_calls ?? 0) > 0);
@@ -754,9 +768,9 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
 
   return (
     <>
-      <div className="rowlabel">agents by type · {win} · click one</div>
+      <div className="rowlabel">agents by type · {win}</div>
       {stats.length ? (
-        <TypeStrip stats={stats} sel={type} setSel={(t) => { setSelType(t); setSelAgent(null); }} />
+        <TypeStrip stats={stats} />
       ) : (
         <NoRows what={cls.includes('agent') ? 'no agent process in this window' : 'the agent class is filtered out'} />
       )}
@@ -764,13 +778,13 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       {stats.length > 0 && (
         <div className="grid wide">
           <Panel
-            title={`${typeLbl(type)}: its agents and their subagents`}
+            title="Agents and their subagents"
             ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'role_census', 'workspace.summary'] }]}
             id="sec-agent-trees"
             p={c}
             span
-            empty={!mine.length}
-            emptyWhat="no agent of this type in the window"
+            empty={!pts.length}
+            emptyWhat="no agent in the window"
           >
             {multi.length > 0 && (
               <>
@@ -781,8 +795,8 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                   const agents = t.nodes.filter((n) => n.role === 'agent');
                   return (
                     <div key={keyOf(t.host, t.root.pid)} className="atree">
-                      <div className="atree-t">{treeTitle(t, agents)}{t.users.length ? ` · ${t.users.join(', ')}` : ''}</div>
-                      <TreeView t={t} type={type} sel={selAgent} onSel={pickAgent} />
+                      <TreeTitle t={t} agents={agents} />
+                      <TreeView t={t} sel={selAgent} onSel={pickAgent} />
                       {detailHere('tree', t)}
                     </div>
                   );
@@ -840,10 +854,10 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </div>
       )}
 
-      {/* What the picked type's agents ran, by kind of tool: was the Sessions
-          & tools tab (roadmap notes 46 and 47), and never mixes types. */}
+      {/* What agents ran, by kind of tool: was the Sessions & tools tab
+          (roadmap notes 46 and 47). */}
       <div className="grid-gap" />
-      <ToolPanels P={P} cls={cls} type={type || null} />
+      <ToolPanels P={P} cls={cls} />
     </>
   );
 }

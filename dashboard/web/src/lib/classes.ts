@@ -32,6 +32,17 @@ export const CLS_COL: Record<string, string> = {
   other: 'var(--sg)',
 };
 
+/** Each agent or editor type's own colour, inside the agent class's crimson:
+ * a tree can hold more than one type, so each box says which by colour too. */
+export const AGENT_TYPE_COL: Record<string, string> = {
+  claude_code: 'var(--s6)',
+  codex: 'var(--s4)',
+  copilot: 'var(--s8)',
+  cursor: 'var(--s2)',
+  windsurf: 'var(--s2)',
+  vscode: 'var(--s2)',
+};
+
 /** The agent or editor a process belongs to, as people call it. */
 export const AGENT_TYPE_LBL: Record<string, string> = {
   claude_code: 'Claude Code',

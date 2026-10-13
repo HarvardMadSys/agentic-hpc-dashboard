@@ -271,7 +271,6 @@ table.trees .sub-chip {
 .atype {
   all: unset;
   box-sizing: border-box;
-  cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--rule);
   border-left: 3px solid var(--s1);
@@ -281,10 +280,7 @@ table.trees .sub-chip {
   flex-direction: column;
   gap: 3px;
 }
-.atype:hover {
-  border-color: var(--edge);
-  border-left-color: var(--s1);
-}
+
 .atype.on {
   background: var(--surface-2);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--s1) 22%, transparent);
@@ -454,4 +450,101 @@ table.trees .sub-chip {
 
 .acard.more.unsent {
   cursor: default;
+}
+
+/* One view of every agent type (AgentsTab.tsx): a tree's title row, and its
+ * boxes, each edged in its type's colour (lib/classes.ts AGENT_TYPE_COL). */
+.atree-t {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.atree-t .atree-what {
+  min-width: 0;
+}
+.atree-t .atree-sum {
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.atree-d .tdiag-canvas {
+  margin: 0;
+}
+.anode {
+  height: 100%;
+  box-sizing: border-box;
+  margin: -6px -8px;
+  padding: 6px 9px;
+  border-left: 3px solid var(--edge);
+  border-radius: 5px 0 0 5px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+}
+.anode-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.anode-h b {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.anode-n {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.anode-s {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.anode-s.mono {
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+}
+.anode-s.inferred {
+  font-style: italic;
+}
+.anode.more {
+  border-left-style: dashed;
+  border-left-color: var(--edge);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.anode.more b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.anode.more.unsent {
+  cursor: default;
+}
+.anode.infra {
+  border-left-color: var(--rule);
+}
+.anode.infra b {
+  color: var(--ink-2);
+  font-weight: 500;
+}
+.acard-h .tdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  align-self: center;
+}
+.atree-t .nm {
+  font-weight: 400;
 }

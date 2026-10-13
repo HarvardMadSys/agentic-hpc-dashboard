@@ -155,7 +155,14 @@ export function TreeDiagram<T>({
             const x2 = cx(p) + nodeW / 2;
             const y2 = p.y * sy;
             const mid = y1 + (y2 - y1) / 2;
-            return <path key={p.n.id} d={`M${x1},${y1} V${mid} H${x2} V${y2}`} />;
+            // an elbow with rounded corners: one fork per parent, not a grid
+            const r = Math.min(6, Math.abs(x2 - x1) / 2, (y2 - y1) / 2);
+            const dir = x2 > x1 ? 1 : -1;
+            const d = Math.abs(x2 - x1) < 0.5
+              ? `M${x1},${y1} V${y2}`
+              : `M${x1},${y1} V${mid - r} Q${x1},${mid} ${x1 + dir * r},${mid} ` +
+                `H${x2 - dir * r} Q${x2},${mid} ${x2},${mid + r} V${y2}`;
+            return <path key={p.n.id} d={d} />;
           })}
         </svg>
         {placed.map((p) => (
