@@ -334,12 +334,14 @@ table.trees .sub-chip {
   color: var(--ink);
   white-space: nowrap;
 }
-.acard-u {
-  margin-left: auto;
-  font-size: 10.5px;
+.acard-h .acard-user {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+}
+.acard-h .type-chip {
+  flex: none;
+  font-size: 9.5px;
 }
 .acard-b {
   font-size: 11px;

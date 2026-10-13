@@ -398,8 +398,9 @@ function TypeStrip({ stats, sel, setSel }: { stats: TypeStat[]; sel: string; set
   );
 }
 
-/** One agent as a box: what it is, whose, how much it ran, and whether it
- * wrote outside its home. `foreign`: another type's agent in this tree. */
+/** One agent as a box: whose it is, how much it ran, and whether it wrote
+ * outside its home. Its type is the view's, picked above, so the box leads
+ * with the user; `foreign`, another type's agent in this tree, says its type. */
 function AgentCard({ n, foreign }: { n: CascadeNode; foreign?: boolean }) {
   const w = n.workspace;
   const sub = (n.agent_level ?? 1) >= 2;
@@ -409,9 +410,9 @@ function AgentCard({ n, foreign }: { n: CascadeNode; foreign?: boolean }) {
       data-tip={nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '')}
     >
       <div className="acard-h">
-        <b>{typeLbl(n.agent_type)}</b>
+        <b className="mono acard-user">{n.user ?? DASH}</b>
+        {foreign && <span className="sev type-chip">{typeLbl(n.agent_type)}</span>}
         {sub && <span className="sev sub-chip">subagent</span>}
-        <span className="mono nm acard-u">{n.user ?? DASH}</span>
       </div>
       <div className="acard-b">
         {n.tool_calls ? `${fint(n.tool_calls)} processes` : 'ran nothing'}
@@ -484,7 +485,7 @@ function AgentBlast({ a }: { a: WsAgent | undefined }) {
     <div className="ablast">
       <div className="ablast-head">
         <h4>
-          <Term k="blast">blast radius</Term> · {typeLbl(a.agent_type)} · {a.user ?? DASH}
+          <Term k="blast">blast radius</Term> · {a.user ?? DASH}
         </h4>
         {a.subagents.length > 0 && (
           <Segmented
