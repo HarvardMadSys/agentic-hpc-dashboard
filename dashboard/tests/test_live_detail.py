@@ -206,5 +206,25 @@ class NestedAgentTest(unittest.TestCase):
         self.assertNotIn(60, pids)                   # exited
 
 
+
+class HostBreakdownTest(unittest.TestCase):
+    """A host's running processes, by class and by agent or editor type."""
+
+    def test_a_host_row_carries_both_breakdowns(self):
+        now = time.time()
+        r = LiveReducer(Cfg(), CLASSES)
+        r.feed({"event": "residency_totals", "_a3": "unlabeled", "_ts_epoch": now - 5,
+                "ts": "t", "host": "h1",
+                "_by_class": {"agent": {"n_procs": 59}, "human": {"n_procs": 134},
+                              "ide": {"n_procs": 19}},
+                "by_agent_type": {"claude_code": {"n_procs": 47, "trees": 17},
+                                  "codex": {"n_procs": 12}, "vscode": {"n_procs": 19},
+                                  "copilot": {"n_procs": 0}}})
+        host = r.result(now=now)["hosts"][0]
+        self.assertEqual(host["procs"], 212)
+        self.assertEqual(host["by_class"], {"agent": 59, "human": 134, "ide": 19})
+        self.assertEqual(host["by_type"], {"claude_code": 47, "codex": 12, "vscode": 19})
+
+
 if __name__ == "__main__":
     unittest.main()

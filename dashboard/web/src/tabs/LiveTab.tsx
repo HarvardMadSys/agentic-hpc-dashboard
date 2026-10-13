@@ -4,7 +4,7 @@
  * `null` bins as gaps: a minute in which the collector wrote no record is a hole
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
-import { useMemo } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Lines } from '../charts/primitives';
@@ -12,7 +12,8 @@ import type { LineSeries } from '../charts/primitives';
 import { clockLabel, fullClock, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
-import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { Segmented } from '../components/ClassFilter';
 import type { Who } from '../lib/filters';
 import { DASH, dur, fint, fmt, pc } from '../lib/format';
 import { pcol } from '../lib/purposes';
@@ -102,6 +103,53 @@ function hostCell(h: LiveHost, key: string, kind: string) {
 }
 
 /** Per-class split for one host, if the payload carries one. */
+// editors, which the IDE class holds; every other type is an agent's
+const EDITOR_TYPES = new Set(['vscode', 'cursor', 'windsurf']);
+
+/** A host's running processes split by class, or by agent and editor type,
+ * read right after their total (the column before it). */
+function HostBreakdown({ h, cls, by }: { h: LiveHost; cls: Cls[]; by: 'class' | 'type' }) {
+  const sep = <span className="sep">{' · '}</span>;
+  if (by === 'class') {
+    const bc = hostByClass(h);
+    if (!bc) return <span className="nm">not reported per class</span>;
+    return (
+      <span className="rle">
+        {cls.map((c, i) => (
+          <span key={c} data-tip={`${CLS_LBL[c] ?? c}: processes running now`}>
+            {i ? sep : null}
+            <i className="dot" style={{ background: CLS_COL[c], marginRight: 4 }} />
+            <b>{c in bc ? fint(bc[c]) : DASH}</b>
+          </span>
+        ))}
+      </span>
+    );
+  }
+  const bt = (h.by_type ?? null) as Record<string, number> | null;
+  if (!bt || !Object.keys(bt).length) return <span className="nm">not reported per type</span>;
+  const total = typeof h.procs === 'number' ? h.procs : null;
+  const typed = Object.values(bt).reduce((a, n) => a + n, 0);
+  return (
+    <span className="rle">
+      {Object.entries(bt)
+        .sort((a, b) => b[1] - a[1])
+        .map(([t, n], i) => (
+          <span key={t}>
+            {i ? sep : null}
+            <i className="dot" style={{ background: CLS_COL[EDITOR_TYPES.has(t) ? 'ide' : 'agent'], marginRight: 4 }} />
+            {AGENT_TYPE_LBL[t] ?? t} <b>{fint(n)}</b>
+          </span>
+        ))}
+      {total != null && total > typed && (
+        <span data-tip="processes with no agent or editor above them: people’s own shells, and the rest">
+          {sep}
+          <span className="nm">no type</span> <b>{fint(total - typed)}</b>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
   const b = (h.by_class ?? h.classes ?? h.events_by_class) as unknown;
   if (b && typeof b === 'object' && !Array.isArray(b)) {
@@ -209,14 +257,10 @@ export function LiveTab({
   // sortable by any column (roadmap note 27); the service's order until then
   const hostSort = useSort<string>();
   const hostCols = HOST_COLS.filter((c) => (L?.hosts ?? []).some((h) => typeof h[c[0]] === 'number'));
-  const hosts = hostSort.sort(L?.hosts ?? [], (h, k) => {
-    if (k === 'host') return h.host;
-    if (k === 'byclass') {
-      const bc = hostByClass(h);
-      return bc ? Object.values(bc).reduce<number>((a, v) => a + (v ?? 0), 0) : null;
-    }
-    return typeof h[k] === 'number' ? (h[k] as number) : null;
-  });
+  const hosts = hostSort.sort(L?.hosts ?? [], (h, k) =>
+    k === 'host' ? h.host : typeof h[k] === 'number' ? (h[k] as number) : null);
+  // what a host's running processes are, read right after their count
+  const [hostBy, setHostBy] = useState<'class' | 'type'>('class');
 
   const envelope = L
     ? null
@@ -380,6 +424,17 @@ export function LiveTab({
           feed={liveFeed?.name ?? 'live'}
           empty={!hosts.length}
           emptyWhat="no host reported in the window"
+          header={
+            <Segmented
+              label="running, by"
+              value={hostBy}
+              onChange={setHostBy}
+              options={[
+                { k: 'class', lbl: 'class', tip: 'running processes split by class: agents, people, and IDEs' },
+                { k: 'type', lbl: 'agent type', tip: 'running processes split by the agent or editor they belong to; a person’s own shell has no type' },
+              ]}
+            />
+          }
         >
           <div className="scroller">
             <table>
@@ -387,42 +442,30 @@ export function LiveTab({
                 <tr>
                   <SortTh s={hostSort} k="host" first="asc">host</SortTh>
                   {hostCols.map((c) => (
-                    <SortTh key={c[0]} s={hostSort} k={c[0]} num gloss={c[3]}>
-                      {c[1]}
-                    </SortTh>
+                    <Fragment key={c[0]}>
+                      <SortTh s={hostSort} k={c[0]} num gloss={c[3]}>
+                        {c[1]}
+                      </SortTh>
+                      {c[0] === 'procs' && <th className="host-by">{hostBy === 'class' ? 'by class' : 'by agent type'}</th>}
+                    </Fragment>
                   ))}
-                  <SortTh s={hostSort} k="byclass" tip="processes running now, per class">running by class</SortTh>
                 </tr>
               </thead>
               <tbody>
                 {hosts.map((h) => {
-                  const bc = hostByClass(h);
                   return (
                     <tr key={h.host}>
                       <td className="mono">{h.host}</td>
                       {hostCols.map((c) => (
-                        <td key={c[0]} className="num">
-                          {hostCell(h, c[0], c[2])}
-                        </td>
+                        <Fragment key={c[0]}>
+                          <td className="num">{hostCell(h, c[0], c[2])}</td>
+                          {c[0] === 'procs' && (
+                            <td className="host-by">
+                              <HostBreakdown h={h} cls={cls} by={hostBy} />
+                            </td>
+                          )}
+                        </Fragment>
                       ))}
-                      <td>
-                        {bc ? (
-                          <span className="rle">
-                            {cls.map((c, i) => (
-                              <span key={c}>
-                                {i ? <span className="sep">{' · '}</span> : null}
-                                <i
-                                  className="dot"
-                                  style={{ background: CLS_COL[c], marginRight: 4 }}
-                                />
-                                <b>{c in bc ? fint(bc[c]) : DASH}</b>
-                              </span>
-                            ))}
-                          </span>
-                        ) : (
-                          <span className="nm">not reported per class</span>
-                        )}
-                      </td>
                     </tr>
                   );
                 })}

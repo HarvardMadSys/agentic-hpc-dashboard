@@ -1,4 +1,6 @@
-/* A table header that sorts its table: an arrow shows the column in use. */
+/* A table header that sorts its table: an arrow shows the column in use.
+ * Click once to sort, again to reverse, a third time for the table's own
+ * order (lib/useSort.ts). */
 import type { ReactNode } from 'react';
 import type { Sorter, SortDir } from '../lib/useSort';
 import { Term } from './Term';

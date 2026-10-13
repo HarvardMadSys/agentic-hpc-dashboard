@@ -1940,3 +1940,11 @@ table tr.section.fold:hover td {
   height: 7px;
   border-radius: 2px;
 }
+
+/* Login nodes right now: what the running processes are, beside their count */
+th.host-by,
+td.host-by {
+  text-align: left;
+  white-space: nowrap;
+  padding-left: 4px;
+}

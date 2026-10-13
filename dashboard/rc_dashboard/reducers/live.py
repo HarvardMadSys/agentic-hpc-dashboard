@@ -585,6 +585,11 @@ class LiveReducer:
                 "host": h, "ts": v["ts"],
                 "by_class": {c: ((by.get(c) or {}).get("n_procs") or 0)
                              for c in self.classes if by.get(c)},
+                # the same running processes by agent or editor type; a
+                # person's own shell has none, so these add up to less
+                "by_type": {t: (d or {}).get("n_procs") or 0
+                            for t, d in (v.get("by_agent_type") or {}).items()
+                            if (d or {}).get("n_procs")},
                 "procs": sum((by.get(c) or {}).get("n_procs") or 0 for c in by),
                 "threads": sum((by.get(c) or {}).get("threads") or 0 for c in by),
                 "rss_gb": round(sum((by.get(c) or {}).get("rss_mb") or 0
