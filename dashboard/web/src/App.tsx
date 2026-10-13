@@ -53,6 +53,10 @@ const TABS = [
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
 ];
 
+/* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
+ * link to it (?tab=events) opens the first tab instead. */
+const HIDDEN_TABS = new Set(['events']);
+
 /** Worst status across the feeds that matter, for the header pill. */
 function headline(feeds: Record<string, FeedReport> | null): {
   status: FeedStatus | 'live';
@@ -171,7 +175,7 @@ export default function App() {
 
   // A cluster without Slurm sets `slurm.enabled: false`; its tab goes away.
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
-  const tabs = TABS.filter((t) => t.k !== 'slurm' || slurmLeaf?._value !== false);
+  const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
   const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
   // Which deployment: the sidebar and the browser tab both say, so a frozen
   // capture and a live feed open side by side are never confused.
