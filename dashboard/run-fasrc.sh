@@ -32,9 +32,9 @@ export RC_DASH_AS_OF="${RC_DASH_AS_OF:-auto}"
 export RC_DASH_RISK_PROFILE="${RC_DASH_RISK_PROFILE:-risk-profiles/fasrc.json}"
 # Named on every page, so it is never mistaken for the live dev-cluster one (run-dev.sh).
 export RC_DASH_SITE_NAME="${RC_DASH_SITE_NAME:-FAS RC · boslogin06 capture · frozen}"
-# Reachable without a login through the tunnel, so names go out as aliases
-# (rc_dashboard/anonymize.py). RC_DASH_ANONYMIZE=0 shows the real ones.
-export RC_DASH_ANONYMIZE="${RC_DASH_ANONYMIZE:-1}"
+# Names go out as they are (user, 2026-10-13), though the tunnel serves this
+# without a login. RC_DASH_ANONYMIZE=1 aliases every name (rc_dashboard/anonymize.py).
+export RC_DASH_ANONYMIZE="${RC_DASH_ANONYMIZE:-0}"
 export RC_DASH_PORT="${RC_DASH_PORT:-8085}"
 # Its own saved window builds: they are keyed on the feed anyway, but both
 # instances sharing one store would evict each other's (panels.cache_keep).
