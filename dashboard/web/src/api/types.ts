@@ -877,6 +877,9 @@ export interface CascadeNode {
   /** this agent's own blast radius in brief (no subagents); null: no record of it */
   workspace: { dirs: number; inside_pct: number | null; outside_writes: number | null } | null;
   cwd_vs_parent_agent: 'same' | 'inside' | 'above' | 'outside' | null;
+  /** a tree bigger than the service sends: what this node's agents that were
+   *  not sent did (the busiest are sent) */
+  folded?: { agents: number; ran_nothing: number; one: number; processes: number; outside: number } | null;
 }
 
 export interface CascadeTree {

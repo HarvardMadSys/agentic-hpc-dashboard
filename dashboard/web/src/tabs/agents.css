@@ -451,3 +451,7 @@ table.trees .sub-chip {
   font-size: 11px;
   margin: 0 0 4px;
 }
+
+.acard.more.unsent {
+  cursor: default;
+}
