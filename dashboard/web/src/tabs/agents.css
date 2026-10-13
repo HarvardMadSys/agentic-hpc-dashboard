@@ -473,10 +473,13 @@ table.trees .sub-chip {
   margin: 0;
 }
 .anode {
-  height: 100%;
+  /* the whole box, its padding included: a fill or a third line that stops
+     at the content box is cut off at the bottom */
+  height: calc(100% + 12px);
   box-sizing: border-box;
   margin: -6px -8px;
-  padding: 6px 9px;
+  padding: 5px 9px;
+  line-height: 1.25;
   border-left: 3px solid var(--edge);
   border-radius: 5px 0 0 5px;
   display: flex;

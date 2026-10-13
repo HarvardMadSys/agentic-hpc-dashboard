@@ -430,7 +430,12 @@ function AgentNode({ n, treeUser, home }: { n: CascadeNode; treeUser: string | n
       </div>
       <div className="anode-s">
         {facts}
-        {w?.outside_writes ? <span className="ws-flagmark">{facts ? ' · ' : ''}{fint(w.outside_writes)} outside</span> : null}
+        {w?.outside_writes ? (
+          <>
+            {facts ? ' · ' : ''}
+            <span className="ws-flagmark">{fint(w.outside_writes)} outside</span>
+          </>
+        ) : null}
       </div>
       {own && <div className={`anode-s mono${n.home_src === 'first_call' ? ' inferred' : ''}`}>{own}</div>}
     </div>
@@ -608,7 +613,7 @@ function TreeView({ t, sel, onSel }: {
       <TreeDiagram
         nodes={nodes}
         nodeW={212}
-        nodeH={56}
+        nodeH={58}
         gapX={10}
         gapY={22}
         className="atree-d"
