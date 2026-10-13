@@ -235,12 +235,14 @@ export interface WindowsResponse {
 /** A quantile summary. `coverage_pct` is part of the number, not a footnote. */
 export interface Quant {
   n: number;
+  p1: number | null;
   p10: number | null;
   p25: number | null;
   p50: number | null;
   p75: number | null;
   p90: number | null;
   p99: number | null;
+  min: number | null;
   max: number | null;
   mean: number | null;
   sampled: boolean;
