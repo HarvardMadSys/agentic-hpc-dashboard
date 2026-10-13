@@ -1,4 +1,5 @@
-/* Click a column header to sort a table by it, again to flip the order (note 27).
+/* Click a column header to sort a table by it, again to flip the order, and a
+ * third time to put the table back in its own order (note 27).
  *
  * Numbers sort largest first on the first click, text A to Z; a missing value
  * always sorts last in either direction, because "not measured" is not the
@@ -38,10 +39,15 @@ export function useSort<K extends string>(initial: K | null = null, initialDir: 
   const [key, setKey] = useState<K | null>(initial);
   const [dir, setDir] = useState<SortDir>(initialDir);
   const toggle = (k: K, firstDir: SortDir = 'desc') => {
-    if (k === key) setDir(dir === 'desc' ? 'asc' : 'desc');
-    else {
+    if (k !== key) {
       setKey(k);
       setDir(firstDir);
+    } else if (dir === firstDir) {
+      setDir(firstDir === 'desc' ? 'asc' : 'desc');
+    } else {
+      // the third click: the table's own order again
+      setKey(initial);
+      setDir(initialDir);
     }
   };
   const sort = <T,>(rows: T[], get: (row: T, k: K) => SortVal): T[] => sortRows(rows, get, key, dir);
@@ -60,7 +66,12 @@ export function useSortMap<K extends string = string>(): (id: string) => Sorter<
       toggle: (k: K, firstDir: SortDir = 'desc') =>
         setSt((m) => {
           const c = m[id] ?? { key: null, dir: 'desc' as SortDir };
-          return { ...m, [id]: k === c.key ? { key: k, dir: c.dir === 'desc' ? 'asc' : 'desc' } : { key: k, dir: firstDir } };
+          if (k !== c.key) return { ...m, [id]: { key: k, dir: firstDir } };
+          if (c.dir === firstDir) return { ...m, [id]: { key: k, dir: firstDir === 'desc' ? 'asc' : 'desc' } };
+          // the third click: the table's own order again
+          const rest = { ...m };
+          delete rest[id];
+          return rest;
         }),
       sort: <T,>(rows: T[], get: (row: T, k: K) => SortVal): T[] => sortRows(rows, get, cur.key, cur.dir),
     };
