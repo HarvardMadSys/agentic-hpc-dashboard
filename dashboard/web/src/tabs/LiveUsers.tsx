@@ -754,13 +754,6 @@ export function ActiveUsers(props: UsersProps & { goto?: (tab: string) => void }
       feed="live"
       empty={!props.U}
       emptyWhat="the service sent no user roster"
-      header={
-        goto && (
-          <button className="btn" onClick={() => goto('events')} data-tip="every process record, filtered and downloadable">
-            search & export {'→'}
-          </button>
-        )
-      }
     >
       <UsersPanel {...rest} />
     </Panel>
