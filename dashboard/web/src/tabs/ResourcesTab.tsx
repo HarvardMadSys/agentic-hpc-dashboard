@@ -111,7 +111,7 @@ function FaultCell({
 
 /* Same shape as the faults table: one row per measure, the classes across,
  * so a measure reads left to right. Each statistic has its own chip: mean,
- * median, and 99th start on, and the rest open on a click (roadmap note 28).
+ * median, and p99 start on, and the rest open on a click (roadmap note 28).
  * The max names the process behind it on hover (note 27); the min does not,
  * since many processes usually share it. Each class's columns wear its colour. */
 const LIFETIME_TIP =
@@ -130,11 +130,11 @@ type QKey = 'mean' | 'min' | 'p1' | 'p10' | 'p50' | 'p90' | 'p99' | 'max';
 const STATS: [QKey, string, string][] = [
   ['mean', 'mean', GLOSS.mean],
   ['min', 'min', GLOSS.min],
-  ['p1', '1st', GLOSS.p1],
-  ['p10', '10th', GLOSS.p10],
+  ['p1', 'p1', GLOSS.p1],
+  ['p10', 'p10', GLOSS.p10],
   ['p50', 'median', GLOSS.median],
-  ['p90', '90th', GLOSS.p90],
-  ['p99', '99th', GLOSS.p99],
+  ['p90', 'p90', GLOSS.p90],
+  ['p99', 'p99', GLOSS.p99],
   ['max', 'max', GLOSS.max + '; hover a value for the process'],
 ];
 const STATS_ON: QKey[] = ['mean', 'p50', 'p99'];
@@ -165,7 +165,7 @@ function StatChips({ on, onChange }: { on: QKey[]; onChange: (v: QKey[]) => void
             aria-pressed={sel}
             disabled={last}
             onClick={() => toggle(k)}
-            data-tip={last ? 'at least one statistic must stay shown' : `${sel ? 'hide' : 'show'} the ${tip}`}
+            data-tip={last ? 'at least one statistic must stay shown' : `${sel ? 'hide' : 'show'} ${tip}`}
           >
             {label}
           </button>
