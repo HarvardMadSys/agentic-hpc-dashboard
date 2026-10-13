@@ -76,7 +76,7 @@ export const GLOSS: Record<string, string> = {
   outsidehome: 'outside home: a path outside the folder the agent was started in, its own temp scratch included',
   otherhome: 'another user’s home: a path inside someone else’s home folder',
   shared: 'shared storage: cluster-wide storage such as /scratch or /n/…, which other people use too',
-  named: 'named on a command line: a path that appears in a command; inferred from the text, not measured',
+  named: 'files its commands mention: paths that appear in the text of its commands, sorted by what each command does with them; guessed from the text, not measured',
   sandbox: 'sandboxed (namespace-isolated): the command ran inside an isolated view of the system, so it could not see or change everything the user can',
   bypass: 'bypass flag: the agent was started with a flag that lets it act without asking (for example --dangerously-skip-permissions or --yolo)',
   automode: 'auto mode: a classifier approves the agent’s actions instead of asking a person',
@@ -113,7 +113,6 @@ export const GLOSS: Record<string, string> = {
   // trajectories
   trajectory: 'trajectory: one session’s commands in order, as a process tree',
   purpose: 'purpose: what kind of work each command was (polling, files, build, compute, …), as a colored strip over the session',
-  chainruns: 'chain runs: how many times the session switched from one kind of tool to another',
   keys: 'keys: how many collector session ids this row combines',
   wall: 'wall: elapsed time from the session’s first process to its last',
   sigmacpu: 'Σ CPU: CPU of the process and everything below it',

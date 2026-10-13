@@ -101,5 +101,41 @@ class UserRosterTest(unittest.TestCase):
         self.assertEqual(d["sessions"], [])
 
 
+def shell_exit(at, user, kt, kv, host="h1"):
+    return dict(exit_rec(at, user, cls="human", agent_type=None), host=host, _kt=kt, _kv=kv)
+
+
+class HumanSessionsNowTest(unittest.TestCase):
+    """A person's shell sends no residency tick, so the live plate counts their
+    sessions by the processes that ended in them in the last ten minutes."""
+
+    def roots(self, recs, now):
+        r = LiveReducer(Cfg(), CLASSES)
+        for rec in recs:
+            r.feed(rec)
+        return r.result(now=now)["now"]["roots"]
+
+    def test_one_session_however_many_processes_end_in_it(self):
+        now = time.time()
+        roots = self.roots([shell_exit(now - 30, "ann", "sess", "41"),
+                            shell_exit(now - 20, "ann", "sess", "41"),
+                            shell_exit(now - 10, "ann", "tty", "ann@pts/3"),
+                            shell_exit(now - 10, "bob", "sess", "41", host="h2"),
+                            tree(now - 30, "cy", 10)], now)
+        self.assertEqual(roots["human"], 3)
+        self.assertEqual(roots["agent"], 1)
+
+    def test_a_quiet_session_is_not_counted(self):
+        now = time.time()
+        roots = self.roots([shell_exit(now - 900, "ann", "sess", "41"),
+                            exit_rec(now - 30, "cy")], now)
+        self.assertEqual(roots["human"], 0)
+
+    def test_nothing_ended_is_absent_not_zero(self):
+        now = time.time()
+        roots = self.roots([shell_exit(now - 900, "ann", "sess", "41")], now)
+        self.assertIsNone(roots["human"])
+
+
 if __name__ == "__main__":
     unittest.main()

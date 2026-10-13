@@ -171,23 +171,25 @@ function SessionTable({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHos
           sort: (rs) => rs.reduce((a, r) => a + (r.calls?.failed ?? 0), 0),
         },
       ]}
-      sub={(rs) => <SessionRows rows={rs} multiHost={multiHost} />}
+      sub={(rs, withUser) => <SessionRows rows={rs} multiHost={multiHost} withUser={withUser} />}
     />
   );
 }
 
-/** One user's sessions, as rows. */
-function SessionRows({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHost: boolean }) {
-  const s = useSort<string>();
+/** One user's sessions, as rows; every user's, with a user column. */
+function SessionRows({ rows, multiHost, withUser }: { rows: SandboxSessionRow[]; multiHost: boolean; withUser?: boolean }) {
+  const s = useSort<string>('agent', 'asc');
   const val = (r: SandboxSessionRow, k: string) =>
-    k === 'agent' ? r.agent_type : k === 'host' ? r.host : k === 'pid' ? r.pid : k === 'approval' ? label(AP_LABEL, r.approval)
+    k === 'agent' ? r.agent_type : k === 'user' ? r.user : k === 'host' ? r.host : k === 'pid' ? r.pid : k === 'approval' ? label(AP_LABEL, r.approval)
     : k === 'flags' ? r.approval_detail : k === 'calls' ? callsOf(r) : k === 'isolated' ? r.isolated_pct
     : k === 'failed' ? r.calls?.failed ?? null : label(SESSION_LABEL, r.state);
   return (
-    <div className="scroller">
+    // flat, it sits in the list's own scroll box, which holds its header in view
+    <div className={withUser ? undefined : 'scroller'}>
       <table className="roomy">
         <thead>
           <tr>
+            {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
             {multiHost && <SortTh s={s} k="host" first="asc">host</SortTh>}
             <SortTh s={s} k="pid" num>pid</SortTh>
@@ -205,6 +207,7 @@ function SessionRows({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHost
             const flags = r.approval_detail && r.approval_detail !== 'no launch flag' ? r.approval_detail : null;
             return (
               <tr key={`${r.host}:${r.pid}`}>
+                {withUser && <td className="mono">{r.user ?? DASH}</td>}
                 <td>{AGENT_TYPE_LBL[r.agent_type ?? ''] ?? r.agent_type ?? DASH}</td>
                 {multiHost && <td className="mono nm">{r.host}</td>}
                 <td className="num nm">{r.pid ?? DASH}</td>
@@ -365,14 +368,14 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
               <table>
                 <thead>
                   <tr>
-                    <SortTh s={sortOf('modes')} k="agent" first="asc">agent</SortTh>
-                    <SortTh s={sortOf('modes')} k="detail" first="asc" tip="the flags exactly as they appeared on the agent's command line">launch flags, as written</SortTh>
-                    <SortTh s={sortOf('modes')} k="approval" first="asc" gloss="approval">reads as</SortTh>
-                    <SortTh s={sortOf('modes')} k="n" num>sessions</SortTh>
+                    <SortTh s={sortOf('modes', 'agent', 'asc')} k="agent" first="asc">agent</SortTh>
+                    <SortTh s={sortOf('modes', 'agent', 'asc')} k="detail" first="asc" tip="the flags exactly as they appeared on the agent's command line">launch flags, as written</SortTh>
+                    <SortTh s={sortOf('modes', 'agent', 'asc')} k="approval" first="asc" gloss="approval">reads as</SortTh>
+                    <SortTh s={sortOf('modes', 'agent', 'asc')} k="n" num>sessions</SortTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {sortOf('modes').sort(modes, (m, k) =>
+                  {sortOf('modes', 'agent', 'asc').sort(modes, (m, k) =>
                     k === 'agent' ? m.agent_type : k === 'detail' ? m.detail : k === 'approval' ? label(AP_LABEL, m.approval) : m.n,
                   ).map((m, i) => (
                     <tr key={`${m.agent_type}|${m.detail}|${m.approval}|${i}`}>
@@ -399,14 +402,14 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <SortTh s={sortOf('attempts')} k="wrapper" first="asc" gloss="wrapper">wrapper</SortTh>
-                  <SortTh s={sortOf('attempts')} k="agent" first="asc">agent</SortTh>
-                  <SortTh s={sortOf('attempts')} k="outcome" first="asc" tip="what happened to the command the wrapper was given (its payload)">outcome</SortTh>
-                  <SortTh s={sortOf('attempts')} k="n" num>calls</SortTh>
+                  <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="wrapper" first="asc" gloss="wrapper">wrapper</SortTh>
+                  <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="agent" first="asc">agent</SortTh>
+                  <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="outcome" first="asc" tip="what happened to the command the wrapper was given (its payload)">outcome</SortTh>
+                  <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="n" num>calls</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {sortOf('attempts').sort(attempts, (a, k) =>
+                {sortOf('attempts', 'wrapper', 'asc').sort(attempts, (a, k) =>
                   k === 'wrapper' ? a.wrapper : k === 'agent' ? a.agent_type : k === 'outcome' ? label(CALL_LABEL, a.outcome) : a.n,
                 ).map((a, i) => (
                   <tr key={`${a.wrapper}|${a.agent_type}|${a.outcome}|${i}`}>
@@ -451,17 +454,17 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <SortTh s={sortOf('anc')} k="ancestry" first="asc" gloss="ancestry">ancestry</SortTh>
-                  <SortTh s={sortOf('anc')} k="kind" first="asc" tip="process: an ordinary process; wrapper: the sandbox helper itself">category</SortTh>
-                  <SortTh s={sortOf('anc')} k="verdict" first="asc" gloss="verdict">verdict</SortTh>
-                  <SortTh s={sortOf('anc')} k="n" num tip="processes">n</SortTh>
-                  <SortTh s={sortOf('anc')} k="dstate" num gloss="dstate">D-state wait</SortTh>
-                  <SortTh s={sortOf('anc')} k="cov" num gloss="coverage">coverage</SortTh>
-                  <SortTh s={sortOf('anc')} k="reading" first="asc">reading</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="ancestry" first="asc" gloss="ancestry">ancestry</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="kind" first="asc" tip="process: an ordinary process; wrapper: the sandbox helper itself">category</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="verdict" first="asc" gloss="verdict">verdict</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="n" num tip="processes">n</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="dstate" num gloss="dstate">D-state wait</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="cov" num gloss="coverage">coverage</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="reading" first="asc">reading</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {sortOf('anc').sort(anc, (a, k) =>
+                {sortOf('anc', 'ancestry', 'asc').sort(anc, (a, k) =>
                   k === 'ancestry' ? a.ancestry : k === 'kind' ? a.kind : k === 'verdict' ? label(SB_LABEL, a.sandbox)
                   : k === 'n' ? a.n : k === 'dstate' ? a.dstate_wait_s : k === 'cov' ? a.dstate_coverage_pct : a.reading,
                 ).map((a, i) => (
@@ -511,15 +514,15 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
           basis={<Basis items={[['inherit', sb.notes?.inherit]]} />}
         >
           {(() => {
-            const all = Object.entries(sb.sandbox_src ?? {}).sort((a, b) => b[1] - a[1]);
+            const all = Object.entries(sb.sandbox_src ?? {});
             const tot = all.reduce((a, [, v]) => a + v, 0);
-            const src = sortOf('src').sort(all, ([k, v], key) => (key === 'src' ? k : v));
+            const src = sortOf('src', 'src', 'asc').sort(all, ([k, v], key) => (key === 'src' ? k : v));
             return (
               <table className="roomy shares">
                 <thead>
                   <tr>
-                    <SortTh s={sortOf('src')} k="src" first="asc">source</SortTh>
-                    <SortTh s={sortOf('src')} k="n">share</SortTh>
+                    <SortTh s={sortOf('src', 'src', 'asc')} k="src" first="asc">source</SortTh>
+                    <SortTh s={sortOf('src', 'src', 'asc')} k="n">share</SortTh>
                   </tr>
                 </thead>
                 <tbody>

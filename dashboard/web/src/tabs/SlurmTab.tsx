@@ -125,36 +125,38 @@ function SessionDetail({ r }: { r: SlurmSession }) {
   );
 }
 
-type Sort = 'queries' | 'jobs' | 'polling' | 'refused';
-const SORTS: Record<Sort, (r: SlurmSession) => number> = {
-  queries: (r) => r.queries,
-  jobs: (r) => r.jobs,
-  polling: (r) => (r.loop?.polling ? r.loop.span_s : 0),
-  refused: (r) => r.rejected,
+const pollingS = (r: SlurmSession) => (r.loop?.polling ? r.loop.span_s : 0);
+type Show = 'all' | 'jobs' | 'polling' | 'refused';
+const SHOWS: Record<Show, (r: SlurmSession) => boolean> = {
+  all: () => true,
+  jobs: (r) => r.jobs > 0,
+  polling: (r) => pollingS(r) > 0,
+  refused: (r) => r.rejected > 0,
 };
 
 function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
-  const [sort, setSort] = useState<Sort>('queries');
+  const [show, setShow] = useState<Show>('all');
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  // the ranking picks the rows and their order; a header then re-sorts them
-  const s = useSort<string>();
+  // the filter only picks the rows: they open by session, A to Z, and a
+  // header ranks them
+  const s = useSort<string>('session', 'asc');
   const sorted = s.sort(
-    [...rows].filter((r) => SORTS[sort](r) > 0 || sort === 'queries').sort((a, b) => SORTS[sort](b) - SORTS[sort](a)),
+    rows.filter(SHOWS[show]),
     (r, k) => k === 'session' ? r.user : k === 'jobs' ? r.jobs : k === 'refused' ? r.rejected : k === 'peak' ? r.peak_per_min
-      : k === 'shapes' ? r.shapes : k === 'queries' ? r.queries : k === 'qpj' ? r.queries_per_job : SORTS.polling(r),
+      : k === 'shapes' ? r.shapes : k === 'queries' ? r.queries : k === 'qpj' ? r.queries_per_job : pollingS(r),
   );
   const keyOf = (r: SlurmSession, i: number) => r.session ?? `${r.cls}:${r.user ?? i}`;
   return (
     <>
-      <Segmented<Sort>
-        value={sort}
-        onChange={setSort}
-        label="rank by"
+      <Segmented<Show>
+        value={show}
+        onChange={setShow}
+        label="show"
         options={[
-          { k: 'queries', lbl: 'most queue checks', tip: 'squeue, sacct, scontrol, … calls' },
-          { k: 'jobs', lbl: 'most jobs', tip: 'submissions that came back with a job id' },
-          { k: 'polling', lbl: 'longest polling', tip: 'the longest stretch of checking the queue at least every 3 min, 10 min or more' },
-          { k: 'refused', lbl: 'most refused', tip: 'submissions the scheduler turned down' },
+          { k: 'all', lbl: 'every session', tip: 'every session the service sent' },
+          { k: 'jobs', lbl: 'submitted jobs', tip: 'sessions with a submission that came back with a job id' },
+          { k: 'polling', lbl: 'polled the queue', tip: 'sessions that checked the queue at least every 3 min, for 10 min or more' },
+          { k: 'refused', lbl: 'refused', tip: 'sessions with a submission the scheduler turned down' },
         ]}
       />
       {sorted.length ? (
@@ -213,7 +215,7 @@ function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
           </table>
         </div>
       ) : (
-        <NoRows what="no session matches this ranking" />
+        <NoRows what="no session matches this filter" />
       )}
       <p className="paths">
         {`${fint(sorted.length)} session${sorted.length === 1 ? '' : 's'}`}
@@ -303,7 +305,7 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
     ].filter(Boolean);
     return bits.length ? bits.join(' · ') : <span className="nm" data-tip="no request on the command line: it is in the script's #SBATCH lines, which are not read">in the script</span>;
   };
-  const s = useSort<string>();
+  const s = useSort<string>('at');
   const val = (r: LiveSubmit, k: string) =>
     k === 'at' ? r.ts : k === 'user' ? r.user : k === 'from' ? (r.agent_type ?? r.actor3) as string | null
     : k === 'job' ? (r.job_id != null ? Number(r.job_id) : String(r.outcome ?? '')) : k === 'asked' ? (r.partition as string | null)
@@ -362,7 +364,7 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
     (r) => typeof r.actor3 !== 'string' || cls.includes(r.actor3 as Cls),
   );
   const sortOf = useSortMap();
-  const rej = sortOf('refused').sort((sp.rejections ?? []).filter((r) => cls.includes(r.cls as Cls)), (r, k) =>
+  const rej = sortOf('refused', 'from', 'asc').sort((sp.rejections ?? []).filter((r) => cls.includes(r.cls as Cls)), (r, k) =>
     k === 'from' ? CLS_LBL[r.cls] ?? r.cls : k === 'tool' ? r.tool : k === 'why' ? r.why : k === 'n' ? r.n : r.eg?.ts ?? null);
   const basis = <Basis items={Object.entries(sp.basis ?? {})} />;
 
@@ -436,11 +438,11 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
             <table className="roomy">
               <thead>
                 <tr>
-                  <SortTh s={sortOf('refused')} k="from" first="asc">from</SortTh>
-                  <SortTh s={sortOf('refused')} k="tool" first="asc">tool</SortTh>
-                  <SortTh s={sortOf('refused')} k="why" first="asc" gloss="refused">why</SortTh>
-                  <SortTh s={sortOf('refused')} k="n" num>times</SortTh>
-                  <SortTh s={sortOf('refused')} k="eg">e.g.</SortTh>
+                  <SortTh s={sortOf('refused', 'from', 'asc')} k="from" first="asc">from</SortTh>
+                  <SortTh s={sortOf('refused', 'from', 'asc')} k="tool" first="asc">tool</SortTh>
+                  <SortTh s={sortOf('refused', 'from', 'asc')} k="why" first="asc" gloss="refused">why</SortTh>
+                  <SortTh s={sortOf('refused', 'from', 'asc')} k="n" num>times</SortTh>
+                  <SortTh s={sortOf('refused', 'from', 'asc')} k="eg">e.g.</SortTh>
                 </tr>
               </thead>
               <tbody>

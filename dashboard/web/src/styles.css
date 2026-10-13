@@ -640,7 +640,7 @@ table.mix td:first-child {
   color: var(--ink-2);
 }
 
-/* per-class lists side by side (Sessions: head of the tool distribution) */
+/* per-class lists side by side (Agents: top tools) */
 .head-row {
   display: grid;
   gap: 8px 28px;
@@ -651,10 +651,20 @@ table.mix td:first-child {
   }
 }
 
-/* the compact faults table: per-process value, total beneath, sections as rules */
+/* the compact faults table: per-process value, total beneath, sections as rules.
+ * Set widths, so opening or closing a section, or a cell reading "not
+ * measured", never moves a column; --cols is the number of classes shown. */
 table.faults {
-  width: auto;
-  min-width: 520px;
+  --measure-w: 210px;
+  --cls-w: 230px;
+  table-layout: fixed;
+  width: calc(var(--measure-w) + var(--cols, 3) * var(--cls-w));
+}
+table.faults col.measure {
+  width: var(--measure-w);
+}
+table.faults col.cls {
+  width: var(--cls-w);
 }
 table.faults td,
 table.faults th {
@@ -732,6 +742,46 @@ table.faults tr.section td {
 .zoomnote:hover .hint,
 .zoomnote:has(+ svg:hover) .hint {
   visibility: visible;
+}
+/* a zoomed chart's minimap (ZoomMap): the whole range, the part in view boxed */
+.zmap {
+  margin-top: 4px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.zmap-bg {
+  fill: var(--surface-2);
+  stroke: var(--rule);
+}
+.zmap-out {
+  fill: color-mix(in srgb, var(--page) 62%, transparent);
+  pointer-events: none;
+}
+.zmap-win {
+  fill: none;
+  stroke: var(--crimson);
+  stroke-width: 1.5;
+  cursor: grab;
+  pointer-events: all;
+}
+.zmap.move,
+.zmap.move .zmap-win {
+  cursor: grabbing;
+}
+.zmap-h {
+  fill: var(--surface);
+  stroke: var(--crimson);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.zmap-edge {
+  fill: transparent;
+  cursor: ew-resize;
+}
+.zmap.l,
+.zmap.r {
+  cursor: ew-resize;
 }
 .zoomnote button {
   padding: 0;
@@ -1364,6 +1414,20 @@ details.basis .body b {
 .u-search {
   width: 220px;
 }
+/* the exit streams' host picker: a native select, so it reads as one */
+.u-host {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.u-host:focus {
+  border-color: var(--crimson-ink);
+}
 table.users tr.u-row {
   cursor: pointer;
 }
@@ -1443,6 +1507,38 @@ table.users tr.u-open > td {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   word-break: break-all;
+}
+/* The last processes exited: every column but the command a set width, so 10,
+ * 25, or 100 rows, of any user, lay out the same; the command fills the rest
+ * of the panel and is cut where it runs long (the whole of it on hover). */
+.u-detail table.u-recent,
+.u-stream table.u-recent {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 940px;
+}
+table.u-recent col.at {
+  width: 132px;
+}
+table.u-recent col.user,
+table.u-recent col.host {
+  width: 120px;
+}
+table.u-recent col.agent {
+  width: 140px;
+}
+table.u-recent col.q {
+  width: 92px;
+}
+table.u-recent col.exit {
+  width: 100px;
+}
+table.u-recent td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+table.u-recent td.cmd-cut {
+  max-width: none;
 }
 .u-foot {
   display: flex;

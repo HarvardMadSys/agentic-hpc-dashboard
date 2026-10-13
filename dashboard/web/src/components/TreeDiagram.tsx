@@ -81,6 +81,53 @@ export function layoutTree<T>(nodes: TreeNode<T>[]): { placed: Placed<T>[]; slot
   return { placed, slots: Math.max(1, slots), depth };
 }
 
+/** Where everything goes, in pixels: each box's top-left corner and each
+ *  connector's path. The inline diagram, the popped-out one, its minimap, and
+ *  its export all draw from this, so they agree box for box. */
+export interface TreeGeo<T> {
+  W: number;
+  H: number;
+  nodeW: number;
+  nodeH: number;
+  boxes: { n: TreeNode<T>; x: number; y: number }[];
+  at: Map<string, { x: number; y: number }>;
+  edges: { id: string; d: string }[];
+}
+
+export function treeGeometry<T>(
+  nodes: TreeNode<T>[],
+  nodeW: number,
+  nodeH: number,
+  gapX: number,
+  gapY: number,
+): TreeGeo<T> {
+  const { placed, slots, depth } = layoutTree(nodes);
+  const sx = nodeW + gapX;
+  const sy = nodeH + gapY;
+  // a box's left edge: centred on its slots' middle
+  const boxes = placed.map((p) => ({ n: p.n, x: p.x * sx - nodeW / 2, y: p.y * sy }));
+  const at = new Map(boxes.map((b) => [b.n.id, { x: b.x, y: b.y }]));
+  const edges: { id: string; d: string }[] = [];
+  for (const b of boxes) {
+    const up = b.n.parent != null ? at.get(b.n.parent) : undefined;
+    if (!up) continue;
+    const x1 = up.x + nodeW / 2;
+    const y1 = up.y + nodeH;
+    const x2 = b.x + nodeW / 2;
+    const y2 = b.y;
+    const mid = y1 + (y2 - y1) / 2;
+    // an elbow with rounded corners: one fork per parent, not a grid
+    const r = Math.min(6, Math.abs(x2 - x1) / 2, (y2 - y1) / 2);
+    const dir = x2 > x1 ? 1 : -1;
+    const d = Math.abs(x2 - x1) < 0.5
+      ? `M${x1},${y1} V${y2}`
+      : `M${x1},${y1} V${mid - r} Q${x1},${mid} ${x1 + dir * r},${mid} ` +
+        `H${x2 - dir * r} Q${x2},${mid} ${x2},${mid + r} V${y2}`;
+    edges.push({ id: b.n.id, d });
+  }
+  return { W: slots * sx, H: (depth + 1) * sy - gapY, nodeW, nodeH, boxes, at, edges };
+}
+
 export function TreeDiagram<T>({
   nodes,
   render,
@@ -105,12 +152,12 @@ export function TreeDiagram<T>({
   focus?: string | null;
   className?: string;
 }) {
-  const { placed, slots, depth } = layoutTree(nodes);
+  const { W, H, boxes, edges } = treeGeometry(nodes, nodeW, nodeH, gapX, gapY);
   const box = useRef<HTMLDivElement>(null);
   const els = useRef(new Map<string, HTMLDivElement>());
   // the clicked box and where it was on screen, to put it back after the click
   const pin = useRef<{ id: string; left: number } | null>(null);
-  const want = focus ?? placed[0]?.n.id ?? null;
+  const want = focus ?? boxes[0]?.n.id ?? null;
 
   useLayoutEffect(() => {
     const p = pin.current;
@@ -136,36 +183,15 @@ export function TreeDiagram<T>({
         requestAnimationFrame(() => (pin.current = null));
       }
     : undefined;
-  const sx = nodeW + gapX;
-  const sy = nodeH + gapY;
-  const W = slots * sx;
-  const H = (depth + 1) * sy - gapY;
-  const at = new Map(placed.map((p) => [p.n.id, p]));
-  // a box's left edge: centred on its slots' middle
-  const cx = (p: Placed<T>) => p.x * sx - nodeW / 2;
   return (
     <div className={`tdiag ${className ?? ''}`} ref={box}>
       <div className="tdiag-canvas" style={{ width: W, height: H }}>
         <svg width={W} height={H} className="tdiag-edges" aria-hidden="true">
-          {placed.map((p) => {
-            const up = p.n.parent != null ? at.get(p.n.parent) : undefined;
-            if (!up) return null;
-            const x1 = cx(up) + nodeW / 2;
-            const y1 = up.y * sy + nodeH;
-            const x2 = cx(p) + nodeW / 2;
-            const y2 = p.y * sy;
-            const mid = y1 + (y2 - y1) / 2;
-            // an elbow with rounded corners: one fork per parent, not a grid
-            const r = Math.min(6, Math.abs(x2 - x1) / 2, (y2 - y1) / 2);
-            const dir = x2 > x1 ? 1 : -1;
-            const d = Math.abs(x2 - x1) < 0.5
-              ? `M${x1},${y1} V${y2}`
-              : `M${x1},${y1} V${mid - r} Q${x1},${mid} ${x1 + dir * r},${mid} ` +
-                `H${x2 - dir * r} Q${x2},${mid} ${x2},${mid + r} V${y2}`;
-            return <path key={p.n.id} d={d} />;
-          })}
+          {edges.map((e) => (
+            <path key={e.id} d={e.d} />
+          ))}
         </svg>
-        {placed.map((p) => (
+        {boxes.map((p) => (
           <div
             key={p.n.id}
             ref={(el) => {
@@ -173,7 +199,7 @@ export function TreeDiagram<T>({
               else els.current.delete(p.n.id);
             }}
             className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}`}
-            style={{ left: cx(p), top: p.y * sy, width: nodeW, height: nodeH }}
+            style={{ left: p.x, top: p.y, width: nodeW, height: nodeH }}
             onClick={click ? () => click(p.n.id) : undefined}
             role={click ? 'button' : undefined}
             tabIndex={click ? 0 : undefined}

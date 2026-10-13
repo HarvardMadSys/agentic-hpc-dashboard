@@ -14,6 +14,7 @@
 import { CLS } from './classes';
 import { serverNow } from './clock';
 import type { Cls, TrajRank } from '../api/types';
+import { TRAJ_RANKS } from '../api/types';
 
 /** Scalar filter params, in the order the backend documents them. */
 export const SCALAR_KEYS = [
@@ -82,17 +83,18 @@ export interface UrlState extends Filters {
 }
 
 /** The value at which each UI key is left out of the URL, so a default-valued
- *  view produces a clean query string instead of `?tab=live&rank=events`. */
+ *  view produces a clean query string instead of `?tab=live&rank=recent`. */
 const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
   tab: 'live',
-  rank: 'events',
+  rank: 'recent',
   win: null,
   traj: null,
   tfrom: null,
   tuser: null,
 };
 
-const RANKS = new Set(['events', 'cpu_s', 'distinct_tools', 'chain_runs']);
+// A saved link ranked by a ranking since removed (`chain_runs`) opens on the default.
+const RANKS = new Set<string>(TRAJ_RANKS);
 
 /** Renamed tabs: old key -> current key. */
 const TAB_ALIAS: Record<string, string> = {
@@ -144,7 +146,7 @@ export function parseUrl(search: string): UrlState {
     // `cascades` is the Agents tab's old name: a link saved before the rename
     // still opens it.
     tab: TAB_ALIAS[p.get('tab') ?? ''] ?? (p.get('tab') || 'live'),
-    rank: (rank && RANKS.has(rank) ? rank : 'events') as TrajRank,
+    rank: (rank && RANKS.has(rank) ? rank : 'recent') as TrajRank,
     // Nonsense in the query string falls back to the default rather than being
     // clamped to a number nobody asked for. The backend clamps what it is sent.
     win: Number.isFinite(win) && win > 0 ? Math.floor(win) : null,

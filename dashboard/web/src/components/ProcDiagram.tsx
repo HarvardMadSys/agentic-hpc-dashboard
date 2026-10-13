@@ -13,7 +13,8 @@
  * the processes that are not routine are the ones left to see. What it hid is
  * counted above the tree, never dropped silently.
  */
-import type { ProcCount, ProcEntry, ProcGroup, ProcNode } from '../api/types';
+import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcNode } from '../api/types';
+import { ioBrief, ioTip } from '../lib/procio';
 import { DASH, clock, dur, fint } from '../lib/format';
 import { pcol } from '../lib/purposes';
 import { TreeDiagram } from './TreeDiagram';
@@ -21,9 +22,12 @@ import type { TreeNode } from './TreeDiagram';
 
 type Rest = { k: 'rest'; more: number; of: ProcGroup };
 type Cap = { k: 'cap'; more: number; parent: string };
-type Item = ProcEntry | Rest | Cap;
+export type Item = ProcEntry | Rest | Cap;
+/** A box: what it stands for, and how many children it would open to. */
+export type PNode = TreeNode<{ e: Item; kids: number }>;
 
-const MAX_KIDS = 30;
+/** Children drawn under one parent before a "+N more" box stands for the rest. */
+export const MAX_KIDS = 30;
 
 function kidsOf(e: Item): Item[] {
   if (e.k === 'p') return e.kids ?? [];
@@ -70,6 +74,13 @@ export function isRoutine(e: ProcNode, rules: string[]): boolean {
   return false;
 }
 
+/** What "hide routine" takes out, with everything below it: a run of the
+ *  same command, or a process on the routine list. The table view hides the
+ *  same rows. */
+export function isHidden(e: { k: string }, rules: string[]): boolean {
+  return e.k === 'g' || (e.k === 'p' && isRoutine(e as ProcNode, rules));
+}
+
 /* --------------------------------------------------------------- boxes */
 
 function nodeTip(e: ProcNode): string {
@@ -80,68 +91,161 @@ function nodeTip(e: ProcNode): string {
     e.cwd ? `in ${e.cwd}` : null,
     e.n > 1 ? `${fint(e.n)} processes in its subtree` : null,
     e.ev == null ? 'no exit in the read: it outlived it, or left no record' : null,
+    ioTip(e.io, 'its own I/O'),
+    ioTip(e.sub_io, 'with everything below it'),
   ].filter(Boolean).join('\n');
+}
+
+/** A box's third line, when anything moved: `Σ I/O 45 MB · disk 3 MB`. */
+function ioLine(io: ProcIo | null | undefined, sum: boolean): [string, boolean][][] {
+  const b = ioBrief(io);
+  return b ? [[[(sum ? 'Σ ' : '') + b, false]]] : [];
 }
 
 function failed(e: ProcNode): boolean {
   return (e.exit_code != null && e.exit_code !== 0) || e.signal != null;
 }
 
-function Box({ e, open, kids, root }: { e: Item; open: boolean; kids: number; root: boolean }) {
-  const caret = kids > 0 ? <span className="pd-caret">{open ? '▾' : `▸ ${fint(kids)}`}</span> : null;
+/** What a box says, as text: drawn by `Box`, and written out by the popped-out
+ *  tree's SVG export, so the two say the same thing. */
+export interface BoxText {
+  kind: 'p' | 'g' | 'more';
+  title: string;
+  /** an agent's type, tagged beside its name */
+  type: string | null;
+  caret: string | null;
+  /** the lines under the title, in pieces; a piece marked true is a failure */
+  lines: [string, boolean][][];
+  bad: boolean;
+  /** the left rule's colour (a CSS colour, possibly a var()) */
+  color: string | null;
+  tip?: string;
+}
+
+export function boxText(e: Item, open: boolean, kids: number, root: boolean): BoxText {
+  const caret = kids > 0 ? (open ? '▾' : `▸ ${fint(kids)}`) : null;
   if (e.k === 'p') {
     const bad = failed(e);
     // an agent's own process can be named for its runtime (`server`, `node`):
     // say which agent it is, as the table view does
     const type = (e.role === 'agent' || root) && e.agent_type ? e.agent_type : null;
-    return (
-      <div className={`pd-box${bad ? ' bad' : ''}`} data-tip={nodeTip(e)} style={{ borderLeftColor: pcol(e.purpose) }}>
-        <div className="pd-h">
-          <b className="mono">{e.label ?? e.cmd ?? '(no record)'}</b>
-          {type && <span className="pt-tag type">{type}</span>}
-          {caret}
-        </div>
-        <div className="pd-s">
-          {e.dur != null ? dur(e.dur) : DASH}
-          {e.cpu != null ? ` · CPU ${dur(e.cpu)}` : ''}
-          {e.sub_cpu != null && e.cpu != null && e.sub_cpu > e.cpu * 1.05 ? ` · Σ ${dur(e.sub_cpu)}` : ''}
-        </div>
-        <div className="pd-s">
-          {e.n > 1 ? `${fint(e.n)} processes · ` : ''}
-          {e.signal != null ? <span className="bad">signal {e.signal}</span>
-            : e.exit_code != null ? <span className={bad ? 'bad' : undefined}>exit {e.exit_code}</span>
-            : e.ev === 'truncated' ? 'running at the end' : 'no exit seen'}
-        </div>
-      </div>
-    );
+    return {
+      kind: 'p',
+      title: e.label ?? e.cmd ?? '(no record)',
+      type,
+      caret,
+      lines: [
+        [[
+          (e.dur != null ? dur(e.dur) : DASH) +
+            (e.cpu != null ? ` · CPU ${dur(e.cpu)}` : '') +
+            (e.sub_cpu != null && e.cpu != null && e.sub_cpu > e.cpu * 1.05 ? ` · Σ ${dur(e.sub_cpu)}` : ''),
+          false,
+        ]],
+        [
+          [e.n > 1 ? `${fint(e.n)} processes · ` : '', false],
+          e.signal != null ? [`signal ${e.signal}`, true]
+            : e.exit_code != null ? [`exit ${e.exit_code}`, bad]
+            : [e.ev === 'truncated' ? 'running at the end' : 'no exit seen', false],
+        ],
+        // what it moved, with everything below it (Σ) where it has a subtree
+        ...ioLine(e.sub_io ?? e.io, !!e.sub_io),
+      ],
+      bad,
+      color: pcol(e.purpose),
+      tip: nodeTip(e),
+    };
   }
   if (e.k === 'g') {
     const fails = Object.entries(e.exits).filter(([k]) => k !== '0').reduce((a, [, n]) => a + n, 0);
-    return (
-      <div className="pd-box group" data-tip={`${fint(e.count)} runs of the same shape in a row\n${e.samples.map((x) => `${x.n}× ${x.cmdline ?? x.args ?? ''}`).join('\n')}`}>
-        <div className="pd-h">
-          <b className="mono">{e.motif.join(' › ')} ×{fint(e.reps)}</b>
-          {caret}
-        </div>
-        <div className="pd-s">{fint(e.n)} processes{e.sub_cpu != null ? ` · CPU ${dur(e.sub_cpu)}` : ''}</div>
-        <div className="pd-s">{fails ? <span className="bad">{fint(fails)} failed</span> : 'all exit 0'}{e.distinct > 1 ? ` · ${fint(e.distinct)} distinct` : ''}</div>
-      </div>
-    );
+    return {
+      kind: 'g',
+      title: `${e.motif.join(' › ')} ×${fint(e.reps)}`,
+      type: null,
+      caret,
+      lines: [
+        [[`${fint(e.n)} processes${e.sub_cpu != null ? ` · CPU ${dur(e.sub_cpu)}` : ''}`, false]],
+        [
+          fails ? [`${fint(fails)} failed`, true] : ['all exit 0', false],
+          [e.distinct > 1 ? ` · ${fint(e.distinct)} distinct` : '', false],
+        ],
+        ...ioLine(e.sub_io, true),
+      ],
+      bad: false,
+      color: null,
+      tip: `${fint(e.count)} runs of the same shape in a row\n${e.samples.map((x) => `${x.n}× ${x.cmdline ?? x.args ?? ''}`).join('\n')}`,
+    };
   }
   if (e.k === 'cap') {
-    return (
-      <div className="pd-box more">
-        <div className="pd-h"><b>+{fint(e.more)} more</b></div>
-        <div className="pd-s">click to show them all</div>
-      </div>
-    );
+    return { kind: 'more', title: `+${fint(e.more)} more`, type: null, caret: null, lines: [[['click to show them all', false]]], bad: false, color: null };
   }
   const n = e.k === 'rest' ? e.more : (e as ProcCount).n;
   const cmds = e.k === 'rest' ? [] : (e as ProcCount).cmds;
+  return {
+    kind: 'more',
+    title: `+${fint(n)} more processes`,
+    type: null,
+    caret: null,
+    lines: [
+      [[e.k === 'rest' ? 'more runs of the same shape' : 'counted, not drawn: past the read’s budget', false]],
+      ...ioLine(e.k === 'rest' ? null : (e as ProcCount).sub_io, true),
+    ],
+    bad: false,
+    color: null,
+    tip: cmds.length ? cmds.map(([c, k]) => `${k}× ${c}`).join('\n') : undefined,
+  };
+}
+
+/** One box. `onCaret` makes its caret a button of its own, for a view where a
+ *  click on the box selects it rather than opening it. */
+export function Box({
+  e,
+  open,
+  kids,
+  root,
+  onCaret,
+}: {
+  e: Item;
+  open: boolean;
+  kids: number;
+  root: boolean;
+  onCaret?: () => void;
+}) {
+  const t = boxText(e, open, kids, root);
+  const caret = !t.caret ? null : onCaret ? (
+    <button
+      className="pd-caret pd-tog"
+      aria-label={open ? 'close what it started' : `open the ${fint(kids)} it started`}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        onCaret();
+      }}
+      onDoubleClick={(ev) => ev.stopPropagation()}
+    >
+      {t.caret}
+    </button>
+  ) : (
+    <span className="pd-caret">{t.caret}</span>
+  );
   return (
-    <div className="pd-box more" data-tip={cmds.length ? cmds.map(([c, k]) => `${k}× ${c}`).join('\n') : undefined}>
-      <div className="pd-h"><b>+{fint(n)} more processes</b></div>
-      <div className="pd-s">{e.k === 'rest' ? 'more runs of the same shape' : 'counted, not drawn: past the read’s budget'}</div>
+    <div
+      className={`pd-box${t.kind === 'g' ? ' group' : t.kind === 'more' ? ' more' : t.bad ? ' bad' : ''}`}
+      data-tip={t.tip}
+      style={t.color ? { borderLeftColor: t.color } : undefined}
+    >
+      <div className="pd-h">
+        <b className={t.kind === 'more' ? undefined : 'mono'}>{t.title}</b>
+        {t.type && <span className="pt-tag type">{t.type}</span>}
+        {caret}
+      </div>
+      {t.lines.map((l, i) => (
+        <div key={i} className="pd-s">
+          {l.map(([s, bad], j) => (
+            <span key={j} className={bad ? 'bad' : undefined}>
+              {s}
+            </span>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -152,13 +256,58 @@ export function hiddenCount(root: ProcNode, rules: string[]): number {
   let n = 0;
   const walk = (e: Item) => {
     for (const k of kidsOf(e)) {
-      if (k.k === 'g') n += k.n;
-      else if (k.k === 'p' && isRoutine(k, rules)) n += k.n;
+      if (isHidden(k, rules)) n += k.k === 'g' || k.k === 'p' ? k.n : 0;
       else walk(k);
     }
   };
   walk(root);
   return n;
+}
+
+/** The boxes drawn: the open ones' children, less the routine when `hide`,
+ *  at most MAX_KIDS under a parent not in `all`. Ids are the table view's. */
+export function procNodes(root: ProcNode, open: Set<string>, hide: boolean, rules: string[], all: Set<string>): PNode[] {
+  const nodes: PNode[] = [];
+  const walk = (e: Item, id: string, parent: string | null) => {
+    // children once, so each keeps the index the table view's ids use
+    const full = kidsOf(e).map((k, i) => [k, i] as const);
+    const kids = hide ? full.filter(([k]) => !isHidden(k, rules)) : full;
+    nodes.push({ id, parent, data: { e, kids: kids.length } });
+    if (!kids.length || !open.has(id)) return;
+    const shown = all.has(id) ? kids : kids.slice(0, MAX_KIDS);
+    shown.forEach(([k, i]) => walk(k, `${id}.${i}`, id));
+    if (shown.length < kids.length) {
+      nodes.push({ id: `${id}.+`, parent: id, data: { e: { k: 'cap', more: kids.length - shown.length, parent: id }, kids: 0 } });
+    }
+  };
+  walk(root, 'r', null);
+  return nodes;
+}
+
+/** What it takes to draw box `id`: the boxes to open above it, the parents
+ *  whose "+N more" would cover it, and whether "hide routine" takes it out (the
+ *  caller turns hiding off then, and the positions here assume it has). */
+export function reveal(root: ProcNode, id: string, hide: boolean, rules: string[]): { open: string[]; all: string[]; hidden: boolean } {
+  const path: [Item, number][] = [];
+  let e: Item = root;
+  for (const i of id.split('.').slice(1).map(Number)) {
+    const k: Item | undefined = kidsOf(e)[i];
+    if (!k) break;
+    path.push([e, i]);
+    e = k;
+  }
+  const hidden = hide && path.some(([p, i]) => isHidden(kidsOf(p)[i], rules));
+  const still = hide && !hidden;
+  const open: string[] = [];
+  const all: string[] = [];
+  let at = 'r';
+  for (const [p, i] of path) {
+    open.push(at);
+    const pos = still ? kidsOf(p).slice(0, i).filter((c) => !isHidden(c, rules)).length : i;
+    if (pos >= MAX_KIDS) all.push(at);
+    at = `${at}.${i}`;
+  }
+  return { open, all, hidden };
 }
 
 export function ProcDiagram({
@@ -179,25 +328,12 @@ export function ProcDiagram({
   all: Set<string>;
   setAll: (s: Set<string>) => void;
 }) {
-  const nodes: TreeNode<{ e: Item; kids: number }>[] = [];
-  const walk = (e: Item, id: string, parent: string | null) => {
-    // children once, so each keeps the index the table view's ids use
-    const full = kidsOf(e).map((k, i) => [k, i] as const);
-    const kids = hide ? full.filter(([k]) => k.k !== 'g' && !(k.k === 'p' && isRoutine(k, rules))) : full;
-    nodes.push({ id, parent, data: { e, kids: kids.length } });
-    if (!kids.length || !open.has(id)) return;
-    const shown = all.has(id) ? kids : kids.slice(0, MAX_KIDS);
-    shown.forEach(([k, i]) => walk(k, `${id}.${i}`, id));
-    if (shown.length < kids.length) {
-      nodes.push({ id: `${id}.+`, parent: id, data: { e: { k: 'cap', more: kids.length - shown.length, parent: id }, kids: 0 } });
-    }
-  };
-  walk(root, 'r', null);
+  const nodes = procNodes(root, open, hide, rules, all);
   return (
     <TreeDiagram
       nodes={nodes}
       nodeW={206}
-      nodeH={64}
+      nodeH={80}
       gapX={14}
       gapY={26}
       className="pd"

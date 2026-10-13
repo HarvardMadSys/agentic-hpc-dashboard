@@ -235,9 +235,12 @@ def defaults():
         "reducers": {
             "tool_mix": {"head_n": 12, "dedup_sessions_max": 200000},
             "io": {"top_n": 20},
+            # `live_s`: how stale the ranked sessions may get while the view
+            # is fed live -- the panel re-reads them that often, and they are
+            # re-ranked on the read, not only at the next rebuild
             "trajectories": {"top_n": 15, "max_runs_shown": 60, "purpose_seq_cap": 80,
                              "idle_evict_s": 7200, "max_sessions": 50000,
-                             "include_key_types": ["apid", "sess", "tty"]},
+                             "include_key_types": ["apid", "sess", "tty"], "live_s": 5},
         },
         # What counts as risky differs by cluster. The rules are built in
         # (reducers/risk.py, which documents every key); this switches them

@@ -361,6 +361,11 @@ class SandboxReducer:
                 attempts[(w, u[_U_TYPE], oc)] += 1
         return out, attempts
 
+    def agent_calls(self):
+        """(host, owner pid) -> its tool calls' outcomes, for every session that
+        made one: what the agent trees tag an agent with (session_state)."""
+        return {k: dict(s["calls"]) for k, s in self._sessions()[0].items() if s["calls"]}
+
     def result(self):
         sessions, attempts = self._sessions()
         sess_sb = collections.defaultdict(collections.Counter)

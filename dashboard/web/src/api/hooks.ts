@@ -94,18 +94,44 @@ export const usePanels = (
 ): Async<PanelsResponse> =>
   useFetched((s) => getPanels(win, s, who), [win, buildNonce, who ? whoQuery(who) : '']);
 
-export const useTrajectories = (
+/** Whether the page is on screen: a hidden tab polls nothing. */
+function useVisible(): boolean {
+  const [v, setV] = useState(() => document.visibilityState !== 'hidden');
+  useEffect(() => {
+    const on = () => setV(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', on);
+    return () => document.removeEventListener('visibilitychange', on);
+  }, []);
+  return v;
+}
+
+/* `liveMs` re-reads the ranked sessions that long after each answer, while
+ * the page is on screen: the service re-ranks them from the live feed
+ * (`reducers.trajectories.live_s`), so a running session's counts move and
+ * it climbs the recency order as it works. Timed from the last answer, not
+ * on a fixed beat, so a slow reply is never cut off by the next request. */
+export function useTrajectories(
   rank: TrajRank,
   win: number | null,
   buildNonce = 0,
   who: Who | null = null,
-): Async<Trajectories> =>
-  useFetched((s) => getTrajectories(rank, win, s, who), [
+  liveMs: number | null = null,
+): Async<Trajectories> {
+  const a = useFetched((s) => getTrajectories(rank, win, s, who), [
     rank,
     win,
     buildNonce,
     who ? whoQuery(who) : '',
   ]);
+  const visible = useVisible();
+  const { reload, loading, data, error } = a;
+  useEffect(() => {
+    if (!liveMs || !visible || loading) return;
+    const t = window.setTimeout(reload, liveMs);
+    return () => clearTimeout(t);
+  }, [liveMs, visible, loading, reload, data, error]);
+  return a;
+}
 
 /** The inspector's process tree; `null` data, and no request, when nothing is
  *  selected. Not re-read on every window rebuild: the read is the expensive

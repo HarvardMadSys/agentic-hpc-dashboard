@@ -21,9 +21,11 @@
  */
 import { memo, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
-import type { ProcCount, ProcEntry, ProcGroup, ProcLink, ProcNode } from '../api/types';
+import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode } from '../api/types';
+import { ioTip, ioTotal } from '../lib/procio';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
-import { DASH, clock, dur, fint, fmt } from '../lib/format';
+import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
+import { isHidden } from './ProcDiagram';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
 interface Rest {
@@ -43,7 +45,7 @@ export interface Row {
   kids: number;
 }
 
-const ROLE_TAG: Record<string, string> = {
+export const ROLE_TAG: Record<string, string> = {
   'tool-shell': 'tool call',
   sandbox: 'sandbox',
   'embedded-tool': 'embedded',
@@ -82,7 +84,7 @@ const SIG: Record<string, string> = {
   '14': 'SIGALRM',
   '15': 'SIGTERM',
 };
-const sigName = (s: number | string) => SIG[String(s)] ?? `signal ${s}`;
+export const sigName = (s: number | string) => SIG[String(s)] ?? `signal ${s}`;
 
 function children(e: Item): Item[] {
   if (e.k === 'p') return e.kids ?? [];
@@ -90,17 +92,34 @@ function children(e: Item): Item[] {
   return [];
 }
 
-export function flatten(root: ProcNode, open: Set<string>): Row[] {
+/** The rows drawn. `hide` is the routine list when "hide routine" is on: a
+ *  row it takes out goes with everything below it, and every other row keeps
+ *  the id it has in the full tree, so a jump's id means the same row either way. */
+export function flatten(root: ProcNode, open: Set<string>, hide?: string[] | null): Row[] {
   const out: Row[] = [];
   const walk = (e: Item, id: string, depth: number, guides: boolean[], last: boolean) => {
-    const ch = children(e);
+    const ch = children(e)
+      .map((c, i) => [c, i] as const)
+      .filter(([c]) => !hide || !isHidden(c, hide));
     out.push({ id, depth, guides, last, e, kids: ch.length });
     if (!ch.length || !open.has(id)) return;
     const g = depth === 0 ? [] : [...guides, !last];
-    ch.forEach((c, i) => walk(c, `${id}.${i}`, depth + 1, g, i === ch.length - 1));
+    ch.forEach(([c, i], j) => walk(c, `${id}.${i}`, depth + 1, g, j === ch.length - 1));
   };
   walk(root, 'r', 0, [], true);
   return out;
+}
+
+/** Whether "hide routine" takes out row `id`: it, or a row above it, is routine. */
+export function hiddenAt(root: ProcNode, id: string, rules: string[]): boolean {
+  let e: Item = root;
+  for (const i of id.split('.').slice(1)) {
+    const k: Item | undefined = children(e)[Number(i)];
+    if (!k) return false;
+    if (isHidden(k, rules)) return true;
+    e = k;
+  }
+  return false;
 }
 
 /* ---------------------------------------------------------- finding a time */
@@ -274,6 +293,13 @@ function stamp(t: number | null | undefined): string {
   return `${d.toLocaleDateString()} ${clock(t)}`;
 }
 
+/** A subtree's syscall bytes; the hover splits them into read and written,
+ *  disk and network. */
+function IoCell({ io }: { io: ProcIo | null | undefined }) {
+  const v = ioTotal(io);
+  return <span data-tip={ioTip(io, 'with everything below it') ?? 'nothing read or written, or not measured'}>{v ? mb(v) : DASH}</span>;
+}
+
 function procTip(n: ProcNode): string {
   return [
     `pid ${n.pid ?? DASH}${n.ppid != null ? ' · ppid ' + n.ppid : ''}${n.user ? ' · ' + n.user : ''}`,
@@ -292,6 +318,8 @@ function procTip(n: ProcNode): string {
     n.gap ? `${n.gap} level(s) between it and that parent were never recorded` : null,
     n.orphan ? 'its record names init: it outlived its parent and was reparented' : null,
     n.cpu_nm ? `cpu not measured on ${fint(n.cpu_nm)} process(es) below` : null,
+    ioTip(n.io, 'its own I/O'),
+    ioTip(n.sub_io, 'with everything below it'),
   ]
     .filter(Boolean)
     .join('\n');
@@ -445,6 +473,7 @@ const RowView = memo(function RowView({
       </span>,
       e.ev ? fmt(e.cpu) : DASH,
       fmt(e.sub_cpu),
+      <IoCell key="io" io={e.sub_io ?? e.io} />,
       fint(e.n),
       exitCell(e),
     ];
@@ -479,6 +508,7 @@ const RowView = memo(function RowView({
       </span>,
       fmt(e.cpu),
       fmt(e.sub_cpu),
+      <IoCell key="io" io={e.sub_io} />,
       fint(e.n),
       <span key="x" data-tip={groupExitTip(e)}>
         {groupExit(e)}
@@ -489,7 +519,7 @@ const RowView = memo(function RowView({
     rowCls = ' count';
     body = <span>{`… ${fint(e.more)} more like these, in the group's totals`}</span>;
     tip = 'members of the group past the first few: counted in the group row above, not drawn one by one';
-    cells = ['', '', '', '', '', '', ''];
+    cells = ['', '', '', '', '', '', '', ''];
   } else {
     const c = e as ProcCount;
     rowCls = ' count';
@@ -512,6 +542,7 @@ const RowView = memo(function RowView({
       <span key="d">{c.start != null && c.end != null ? dur(c.end - c.start) : DASH}</span>,
       DASH,
       fmt(c.sub_cpu),
+      <IoCell key="io" io={c.sub_io} />,
       fint(c.n),
       '',
       <Bar key="b" t0={c.start} t1={c.end} cls="group" tl={tl} />,
@@ -565,6 +596,7 @@ export function ProcTree({
   timeline,
   view,
   flash,
+  hide,
 }: {
   root: ProcNode;
   open: Set<string>;
@@ -574,8 +606,10 @@ export function ProcTree({
   view?: [number, number] | null;
   /** the row a jump landed on, and a count that changes on every jump */
   flash?: { id: string; n: number } | null;
+  /** the routine list, when "hide routine" is on: those rows are not drawn */
+  hide?: string[] | null;
 }) {
-  const rows = useMemo(() => flatten(root, open), [root, open]);
+  const rows = useMemo(() => flatten(root, open, hide), [root, open, hide]);
   const full =
     timeline?.lo != null && timeline?.hi != null && timeline.hi >= timeline.lo
       ? { lo: timeline.lo, hi: timeline.hi }
@@ -613,6 +647,9 @@ export function ProcTree({
           </div>
           <div className="num" data-tip="own cpu_s plus everything below it; child_cpu_s is never added">
             Σ cpu s
+          </div>
+          <div className="num" data-tip="bytes read and written through system calls -- pipes and terminals included -- by it and everything below it; hover a cell for disk and network">
+            Σ I/O
           </div>
           <div className="num" data-tip="processes in the subtree, itself included">
             procs

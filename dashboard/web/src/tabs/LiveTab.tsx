@@ -24,6 +24,7 @@ import { WindowCharts } from './LiveCharts';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
+import { riskLine } from '../lib/sandbox';
 import type { Panels } from '../lib/panels';
 
 /* ------------------------------------------------------------- helpers */
@@ -249,13 +250,16 @@ export function LiveTab({
   const procs = nowByClass(now, 'procs');
   const procsTot = nowNum(now, ['procs_total', 'agent_procs', 'procs']) ??
     (Object.keys(procs).length ? CLS.reduce((a, c) => a + (procs[c] ?? 0), 0) : null);
+  const launchNow = nowNum(now, ['live_agent_sessions']) != null
+    ? riskLine(now.live_sessions_by_approval as unknown as Partial<Record<string, number>> | undefined)
+    : undefined;
   // One row per account, from the live reducer's roster: a person who runs
   // an agent, a shell, and an IDE is one user, not three.
   const U = L?.users;
   const usersBy = Object.fromEntries(CLS.filter((c) => U?.by_class[c] != null).map((c) => [c, U!.by_class[c]!]));
 
-  // sortable by any column (roadmap note 27); the service's order until then
-  const hostSort = useSort<string>();
+  // sortable by any column (roadmap note 27); by host until then
+  const hostSort = useSort<string>('host', 'asc');
   const hostCols = HOST_COLS.filter((c) => (L?.hosts ?? []).some((h) => typeof h[c[0]] === 'number'));
   const hosts = hostSort.sort(L?.hosts ?? [], (h, k) =>
     k === 'host' ? h.host : typeof h[k] === 'number' ? (h[k] as number) : null);
@@ -322,20 +326,21 @@ export function LiveTab({
           total={rootsTot}
           stripe="var(--s4)"
           by={roots}
-          tip={GLOSS.sessions_now + ". A person's own shell has no such session, so the human slot is blank, not 0."}
+          tip={
+            'sessions on the node in the last 10 minutes. an agent or editor session counts while its ' +
+            "process tree is running; a person's own shell reports no running tree, so a human session " +
+            '(its login session, else its terminal) counts while a process in it ended in that time.'
+          }
           note={
             <>
               {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
               {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB resident` : ''}
-              {/* Counted from the live agent-session roots' own launch argv
-                  (reducers/live.py), not the collector's `autonomous`, which
-                  never saw --permission-mode bypassPermissions. Null when no
-                  root was seen, so "none seen" never reads as "none bypassed". */}
-              {nowNum(now, ['autonomous_roots']) != null
-                ? ` · ${fint(nowNum(now, ['autonomous_roots']))} of ${fint(
-                    nowNum(now, ['live_agent_sessions']),
-                  )} running agent sessions launched with a bypass flag`
-                : ''}
+              {/* Read off the live agent-session roots' own launch argv
+                  (reducers/live.py), the way the window's agent-sessions plate
+                  reads them, not the collector's `autonomous`, which never saw
+                  --permission-mode bypassPermissions. Absent when no root was
+                  seen, so "none seen" never reads as "none bypassed". */}
+              {launchNow ? ` · ${launchNow}` : ''}
             </>
           }
         />
@@ -414,6 +419,9 @@ export function LiveTab({
           openTraj={openTraj}
           openUserTraj={openUserTraj}
           goto={goto}
+          events={L?.events}
+          tailDepth={L?.events_tail_depth ?? null}
+          hosts={(L?.hosts ?? []).map((h) => h.host)}
         />
 
         <Panel
@@ -524,25 +532,26 @@ export function EventTable({ rows }: { rows: LiveEvent[] }) {
           sort: (rs) => rs.map((e) => e.ts ?? '').sort().pop() || null,
         },
       ]}
-      sub={(rs) => <EventRows rows={rs} />}
+      sub={(rs, withUser) => <EventRows rows={rs} withUser={withUser} />}
     />
   );
 }
 
-type EvKey = 'at' | 'class' | 'pid' | 'host' | 'depth' | 'cmd' | 'ran' | 'cpu' | 'exit';
+type EvKey = 'at' | 'user' | 'class' | 'pid' | 'host' | 'depth' | 'cmd' | 'ran' | 'cpu' | 'exit';
 const evVal = (e: LiveEvent, k: EvKey) =>
-  k === 'at' ? e.epoch ?? e.ts : k === 'class' ? e.actor3 : k === 'pid' ? e.pid : k === 'host' ? e.host
+  k === 'at' ? e.epoch ?? e.ts : k === 'user' ? e.user : k === 'class' ? e.actor3 : k === 'pid' ? e.pid : k === 'host' ? e.host
   : k === 'depth' ? e.depth : k === 'cmd' ? e.comm ?? e.tool : k === 'ran' ? e.duration_s : k === 'cpu' ? e.cpu_s
   : e.signal != null ? 1000 + e.signal : e.exit_code;
 
-/** One user's processes, as rows. */
-function EventRows({ rows }: { rows: LiveEvent[] }) {
-  const s = useSort<EvKey>();
+/** One user's processes, as rows; every user's, with a user column. */
+function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }) {
+  const s = useSort<EvKey>('at');
   return (
     <table>
       <thead>
         <tr>
           <SortTh s={s} k="at">at</SortTh>
+          {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
           <SortTh s={s} k="class" first="asc">class</SortTh>
           <SortTh s={s} k="pid" num>pid</SortTh>
           <SortTh s={s} k="host" first="asc">host</SortTh>
@@ -563,6 +572,7 @@ function EventRows({ rows }: { rows: LiveEvent[] }) {
               <td className="mono" style={{ color: 'var(--muted)' }}>
                 {e.ts ?? DASH}
               </td>
+              {withUser && <td className="mono">{e.user ?? DASH}</td>}
               <td
                 style={{ color: CLS_COL[e.actor3 ?? ''] ?? 'var(--muted)' }}
                 data-tip={e.agent_type ? `agent type: ${e.agent_type}` : undefined}

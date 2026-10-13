@@ -572,6 +572,13 @@ function trajectories(nowEpoch) {
       peak_rss_mb: Number((188 + i * 61.4).toFixed(1)),
       io_rd_mb: Number((418.2 / (i * 0.2 + 1)).toFixed(1)),
       io_wr_mb: Number((88.4 / (i * 0.3 + 1)).toFixed(1)),
+      net_tx_mb: Number((12.6 / (i * 0.5 + 1)).toFixed(2)),
+      net_rx_mb: Number((96.1 / ((i % 7) * 0.4 + 1)).toFixed(2)),
+      first: nowEpoch - 1_800 - i * 4_400 - i * 300,
+      last: nowEpoch - i * 300,
+      ...(cls === 'agent' && i % 4 === 1
+        ? { running: { seen: nowEpoch - 20, n_procs: 3 + (i % 9), rss_mb: 410 + i * 12, census_at: nowEpoch - 15 } }
+        : {}),
       sandbox: cls === 'agent' ? (i % 4 === 0 ? 'sandboxed' : i % 4 === 1 ? 'unsandboxed' : i % 4 === 2 ? 'denied' : 'unknown') : 'unknown',
       approval: cls === 'agent' ? (i % 3 === 0 ? 'bypassed' : 'supervised') : 'unknown',
       sandbox_ancestry: cls === 'agent' && i % 4 < 2 ? 'bwrap' : 'none',
@@ -586,9 +593,17 @@ function trajectories(nowEpoch) {
   return {
     ...ENV('ebpfm', EBPFM_PATHS),
     window: { minutes: 1440, from: new Date((nowEpoch - 86_400) * 1000).toISOString(), to: new Date(nowEpoch * 1000).toISOString() },
-    rank_by: 'events',
+    rank_by: 'recent',
     rank_meaning: 'events = process exits attributed to the session key',
-    ranks: { events: by('n_events'), cpu_s: by('cpu_s'), distinct_tools: by('distinct_tools'), chain_runs: by('chain_runs') },
+    ranks: {
+      recent: by('last'),
+      events: by('n_events'),
+      cpu_s: by('cpu_s'),
+      peak_rss_mb: by('peak_rss_mb'),
+      io_mb: [...sids].sort((a, b) => rows[b].io_rd_mb + rows[b].io_wr_mb - rows[a].io_rd_mb - rows[a].io_wr_mb),
+      net_mb: [...sids].sort((a, b) => rows[b].net_tx_mb + rows[b].net_rx_mb - rows[a].net_tx_mb - rows[a].net_rx_mb),
+      distinct_tools: by('distinct_tools'),
+    },
     rows,
     by_class_counts: {
       agent: sids.filter((s) => rows[s].actor3 === 'agent').length,

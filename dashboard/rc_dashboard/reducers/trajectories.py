@@ -22,10 +22,21 @@ records arrive in time order, so each session's counters and its run-length
 encoded chain are appended in place.  Memory is O(sessions x chain cap), bounded
 by evicting idle sessions.
 
-"Top" is FOUR rankings, not one.  A single ranking is dominated by one poll loop
+"Top" is SEVEN rankings, not one: by processes, CPU, memory, disk I/O, network,
+distinct tools, and recency.  A single ranking is dominated by one poll loop
 and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions --
 so each list ships with `dominant_user_share_pct`, letting the panel state its
 own concentration instead of implying a fleet-wide pattern.
+
+Disk I/O is each process's OWN. The collector reads `task->signal->ioac`, which
+the kernel also credits with the I/O of every child the process reaped
+(`wait_task_zombie`), so a shell's figure holds its commands' as well -- in the
+rtx6000a feed a parent's read+write covered its exited children's in 132 of 133
+families. Summed over a session as it comes, a command's bytes counted once per
+shell above it. Here a process's figure loses what its children carried
+(`reaped`, the join between a child's exit and its parent's later one), so a sum
+over any set of processes counts each byte once. Network bytes and peak memory
+are per process already.
 
 Each row also carries `drift`: two process-level proxies for an agent leaving the
 task it started on. Neither sees the model's context; both are labelled proxies.
@@ -49,12 +60,15 @@ from ..procindex import VIA
 
 from . import pct
 
-RANKS = ("events", "cpu_s", "distinct_tools", "chain_runs")
+RANKS = ("recent", "events", "cpu_s", "peak_rss_mb", "io_mb", "net_mb", "distinct_tools")
 RANK_MEANING = {
+    "recent": "the newest process exit first, real sessions only",
     "events": "most tool calls",
     "cpu_s": "most self CPU",
+    "peak_rss_mb": "largest peak resident memory of any one process",
+    "io_mb": "most disk bytes read and written, each process's own",
+    "net_mb": "most network bytes sent and received",
     "distinct_tools": "most distinct effective_comm tokens",
-    "chain_runs": "longest run-length-compressed chain",
 }
 MAX_SEQ_RUNS = 400          # matches extract_trajectories.MAX_SEQ_RUNS
 # Tool calls that only wait on something else: polling the process table
@@ -63,11 +77,12 @@ WAIT_PURPOSES = frozenset({"poll", "slurm_mon"})
 MIN_DRIFT_N = 30            # processes; below this the thirds are noise
 DRIFT_CAP = 100000          # per-session processes kept for drift; past it, flagged
 MAX_CWDS = 200000           # distinct cwds interned per window; past it, unmeasured
+REAPED_MAX = 200000         # parents with exited children held for their own exit
 
 
 class Session:
     __slots__ = ("sid", "kt", "kv", "host", "user", "cls", "agent_type", "n", "cpu",
-                 "tools", "chain", "purpose", "first", "last", "rss", "rd", "wr",
+                 "tools", "chain", "purpose", "first", "last", "rss", "rd", "wr", "tx", "rx",
                  "sandbox", "approval", "ancestry", "autonomous", "truncated", "no_ts",
                  "users", "pids", "tree_root", "chain_t", "purpose_t",
                  "ev_t", "ev_p", "ev_c", "drift_cut", "wait", "over", "pover")
@@ -93,8 +108,10 @@ class Session:
         self.first = None
         self.last = None
         self.rss = 0.0
-        self.rd = 0.0
+        self.rd = 0.0            # disk MB, each process's own (`TrajectoryReducer.own_io`)
         self.wr = 0.0
+        self.tx = 0.0            # network MB
+        self.rx = 0.0
         self.sandbox = "unknown"
         self.approval = "unknown"
         self.ancestry = None
@@ -116,7 +133,8 @@ class Session:
         self.over = None
         self.pover = None
 
-    def add(self, rec, now):
+    def add(self, rec, now, io=(0.0, 0.0)):
+        """One exit; `io` is its own disk MB read and written."""
         e = rec.get("_ts_epoch")
         if e is None:
             self.no_ts = True          # counted, never silently stamped as "now"
@@ -141,10 +159,10 @@ class Session:
         r = rec.get("peak_rss_mb")
         if r:
             self.rss = max(self.rss, r)
-        io = rec.get("io")
-        if isinstance(io, dict):
-            self.rd += io.get("rd_mb") or 0.0
-            self.wr += io.get("wr_mb") or 0.0
+        self.rd += io[0]
+        self.wr += io[1]
+        self.tx += (rec.get("net_tx_bytes") or 0) / 1e6
+        self.rx += (rec.get("net_rx_bytes") or 0) / 1e6
         # The derived flag: the deployed collector emits `autonomous: false` even
         # on a root launched with a bypass flag.
         if rec.get("_autonomous"):
@@ -251,6 +269,8 @@ def merge_session(a, b):
     a.rss = max(a.rss, b.rss)
     a.rd += b.rd
     a.wr += b.wr
+    a.tx += b.tx
+    a.rx += b.rx
     a.autonomous += b.autonomous
     a.no_ts = a.no_ts or b.no_ts
     # first seen wins, as in `Session.add`
@@ -334,6 +354,8 @@ def fold(parts, sid, kv):
     m.rss = max(p.rss for p in parts)
     m.rd = sum(p.rd for p in parts)
     m.wr = sum(p.wr for p in parts)
+    m.tx = sum(p.tx for p in parts)
+    m.rx = sum(p.rx for p in parts)
     m.autonomous = sum(p.autonomous for p in parts)
     m.wait = sum(p.wait for p in parts)
     m.no_ts = any(p.no_ts for p in parts)
@@ -385,7 +407,7 @@ class TrajectoryReducer:
     EVENTS = ("exit", "truncated", "residency", "conn", "netio")
     KEY = "trajectories"
     # Derived from the sessions and the index on demand; not worth saving.
-    SNAPSHOT_SKIP = ("_fold_cache",)
+    SNAPSHOT_SKIP = ("_fold_cache", "_group_cache")
 
     def __init__(self, cfg, classes, window_s=None, procs=None):
         self.cfg = cfg
@@ -408,10 +430,20 @@ class TrajectoryReducer:
         self.fed = 0
         # (state key, folded rows, row sid -> the raw sids folded into it)
         self._fold_cache = (None, None, None)
+        # target sid -> (its parts and their counts, the folded session): a
+        # live view re-folds every few seconds, and between two reads only
+        # the sessions at work have changed
+        self._group_cache = {}
         # Interned per window, so a session's drift arrays hold small ints.
         self._purpose_id, self._purposes = {}, []
         self._cwd_id, self._cwds = {None: 0}, [None]
         self.cwd_overflow = 0
+        # (host, pid) -> [MB read, MB written] its exited children carried, for
+        # its own exit to give back (`own_io`), and the keys touched since
+        # `track` (for the hours' ageing).
+        self.reaped = {}
+        self.reaped_evicted = 0
+        self._rtouched = None
         # The window is the VIEW's, not a fixed config value: one reducer instance
         # exists per selected window, each ranking the sessions that window holds.
         self.window_s = window_s or int(cfg.get("live.window_min", 1440)) * 60
@@ -423,6 +455,7 @@ class TrajectoryReducer:
             self.owners[(rec.get("host"), pid)] = rec.get("_approval") or "unknown"
         if rec.get("event") != "exit":
             return
+        io = self.own_io(rec)
         sid = rec.get("_sid")
         if not sid:
             return
@@ -433,9 +466,43 @@ class TrajectoryReducer:
                 self._evict(now, force=True)
             s = self.sessions[sid] = Session(rec)
             self.by_kt[rec["_kt"]] += 1
-        s.add(rec, now)
+        s.add(rec, now, io)
         self.fed += 1
         self._track(s, rec)
+
+    def own_io(self, rec):
+        """This process's disk MB (read, written), without its reaped children's.
+
+        A child exits before the parent that reaps it, so by the parent's exit
+        every child it reaped has handed its whole figure -- its own and what
+        it reaped in turn -- to `reaped`. A child its parent never waited for
+        exits after it, and is never taken off. Only `scope: process` figures
+        include children; a `leader` one is the leader thread's alone.
+        """
+        io = rec.get("io")
+        if not isinstance(io, dict):
+            return 0.0, 0.0
+        rd, wr = io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0
+        if io.get("scope") != "process":
+            return rd, wr
+        host = rec.get("host")
+        kids = self.reaped.pop((host, rec.get("pid")), None)
+        ppid = rec.get("ppid")
+        if ppid is not None and (rd or wr):
+            key = (host, ppid)
+            acc = self.reaped.get(key)
+            if acc is None:
+                if len(self.reaped) >= REAPED_MAX:
+                    self.reaped.pop(next(iter(self.reaped)))
+                    self.reaped_evicted += 1
+                acc = self.reaped[key] = [0.0, 0.0]
+            acc[0] += rd
+            acc[1] += wr
+            if self._rtouched is not None:
+                self._rtouched.add(key)
+        if kids:
+            rd, wr = max(0.0, rd - kids[0]), max(0.0, wr - kids[1])
+        return rd, wr
 
     def _track(self, s, rec):
         if len(s.ev_p) >= DRIFT_CAP:
@@ -461,13 +528,33 @@ class TrajectoryReducer:
         s.ev_c.append(cid)
 
     # ----------------------------------------------------------------- merge
+    # A window is merged from saved hour states (`hours`). What crosses an
+    # hour is `reaped`: a shell that exits in the next hour gives back the I/O
+    # of the children it reaped in this one. So it is CARRIED into the next
+    # hour's reduction, and is not part of the saved hour.
+    CARRY_AGED = ("reaped",)
+
+    def track(self):
+        """Note every `reaped` key touched from here on, for the ageing."""
+        self._rtouched = set()
+
+    def carry(self):
+        return {"reaped": self.reaped, "touched": {"reaped": self._rtouched or ()}}
+
+    def seed(self, c):
+        self.reaped = c["reaped"]
+
+    def strip(self):
+        self.reaped = {}
+        self._rtouched = None
+
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed.
 
         Sessions merge key by key (`merge_session`): a session spanning two
         hours is one session, its counts added and its chains joined as one
-        pass would have built them. Nothing crosses an hour any other way, so
-        there is nothing to carry. The purpose and cwd ids are each state's
+        pass would have built them. The one join across hours, `reaped`, is
+        carried instead (above). The purpose and cwd ids are each state's
         own, and are renumbered into this one's.
         """
         pmap = array("H", (self._intern_purpose(p) for p in o._purposes))
@@ -497,6 +584,7 @@ class TrajectoryReducer:
         self.evicted += o.evicted
         self.fed += o.fed
         self.cwd_overflow += o.cwd_overflow
+        self.reaped_evicted += o.reaped_evicted
 
     def _intern_purpose(self, p):
         pid = self._purpose_id.get(p)
@@ -718,18 +806,27 @@ class TrajectoryReducer:
                         target = s.sid[:s.sid.rfind(":") + 1] + str(owner)
             groups.setdefault(target, []).append((s, via))
         out = []
+        cache, kept = self._group_cache, {}
         for target, members in groups.items():
             members.sort(key=lambda m: m[0].sid != target)    # the owner's own key first
             parts = [m[0] for m in members]
             if len(parts) == 1 and parts[0].sid == target:
                 s = parts[0]
             else:
-                s = fold(parts, target, target.rsplit(":", 1)[1])
+                # The same session objects, each holding the same number of
+                # records, fold to the same session: every change to a part
+                # (`Session.add`, `merge_session`) adds to its count.
+                sig = tuple((p, p.n) for p in parts)
+                hit = cache.get(target)
+                s = hit[1] if hit is not None and hit[0] == sig else \
+                    fold(parts, target, target.rsplit(":", 1)[1])
+                kept[target] = (sig, s)
             # Report how the FOLDED keys got here, at their least certain: a row
             # assembled partly by fallback must not read as fully resolved.
             vs = [v for p, v in members if p.sid != target] or [v for _, v in members]
             vs = [v for v in vs if v is not None]
             out.append((s, max(vs, key=VIA.index) if vs else None, len(parts)))
+        self._group_cache = kept
         members = {t: [m[0].sid for m in ms] for t, ms in groups.items()}
         return out, vias, members
 
@@ -753,6 +850,7 @@ class TrajectoryReducer:
             "wall_s": round((s.last - s.first), 1) if s.first and s.last else None,
             "peak_rss_mb": round(s.rss, 1),
             "io_rd_mb": round(s.rd, 3), "io_wr_mb": round(s.wr, 3),
+            "net_tx_mb": round(s.tx, 3), "net_rx_mb": round(s.rx, 3),
             "sandbox": s.sandbox, "approval": self.approval_of(s),
             "sandbox_ancestry": s.ancestry, "autonomous": s.autonomous,
             "tool_rle": chain, "chain_truncated": s.truncated or len(s.chain) > self.max_runs,
@@ -776,17 +874,28 @@ class TrajectoryReducer:
                 if (s.last or 0) >= cutoff and s.kt in self.rankable]
         ranks, rows, dom = {}, {}, {}
         keyf = {"events": lambda s: s.n, "cpu_s": lambda s: s.cpu,
+                "peak_rss_mb": lambda s: s.rss,
+                "io_mb": lambda s: s.rd + s.wr,
+                "net_mb": lambda s: s.tx + s.rx,
                 "distinct_tools": lambda s: len(s.tools),
-                "chain_runs": lambda s: len(s.chain)}
+                "recent": lambda s: s.last or 0}
+        # what a user's share of a list is a share OF: the ranked quantity, or
+        # for recency (a time, not an amount) the sessions listed
+        weight = dict(keyf, recent=lambda s: 1)
+        # Recency lists real sessions only (`rooted`): a status-bar probe runs
+        # every minute, and a tool call still running is a key of its own
+        # until its shell's exit says whose it is -- either would hold the top.
+        real = [s for s in live if self.rooted(s)]
         for r in RANKS:
-            top = sorted(live, key=keyf[r], reverse=True)[:self.top_n]
+            top = sorted(real if r == "recent" else live, key=keyf[r],
+                         reverse=True)[:self.top_n]
             ranks[r] = [s.sid for s in top]
             for s in top:
                 rows.setdefault(s.sid, self._row(s, *meta[s.sid]))
             if top:
                 byu = collections.Counter()
                 for s in top:
-                    byu[s.user] += keyf[r](s)
+                    byu[s.user] += weight[r](s)
                 tot = sum(byu.values())
                 dom[r] = pct(byu.most_common(1)[0][1], tot) if tot else 0.0
             else:
@@ -796,7 +905,7 @@ class TrajectoryReducer:
             "window": {"minutes": self.window_s // 60,
                        "from": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff)),
                        "to": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))},
-            "rank_by": "events", "rank_meaning": RANK_MEANING,
+            "rank_by": "recent", "rank_meaning": RANK_MEANING,
             "ranks": ranks, "rows": rows,
             "by_class_counts": dict(by_cls), "by_key_type": dict(self.by_kt),
             "fold": {"raw_sessions": len(self.sessions), "sessions": len(folded),
@@ -804,7 +913,8 @@ class TrajectoryReducer:
                      "index": self.procs.result() if self.procs is not None else None},
             "dominant_user_share_pct": dom,
             "summary": self.summary(live),
-            "buffer": {"sessions": len(self.sessions), "evicted": self.evicted},
+            "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
+                       "reaped": len(self.reaped), "reaped_evicted": self.reaped_evicted},
             "basis": {
                 "sessionize": "session_key='apid:<agent_pid>'; absent -> sess (cgroup "
                               "session-(\\d+)\\.scope) -> tty as user@tty -> usr "
@@ -817,6 +927,12 @@ class TrajectoryReducer:
                         "chains interleave by run start time.",
                 "rle": "run-length compression over effective_comm. True run count is "
                        "chain_runs; the displayed chain is capped at max_runs_shown.",
+                "io": "io_rd_mb / io_wr_mb sum each process's OWN disk bytes: the "
+                      "collector's figure includes every child the process reaped, "
+                      "which is taken back off at the parent's exit. A child whose "
+                      "exit the window did not see is not taken off. "
+                      "net_tx_mb / net_rx_mb are per process already; peak_rss_mb "
+                      "is the largest of any one exited process.",
                 "summary": "over every session in the window. An agent-class session "
                            "counts only when an agent process was seen at its root; "
                            "the rest (scripts probing `codex --version`) are `probes`. "
