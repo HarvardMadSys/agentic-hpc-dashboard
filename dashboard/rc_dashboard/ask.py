@@ -135,9 +135,10 @@ Answer with one JSON object and nothing else -- no prose, no code fence:
              or Internal>"}]}
 At most 8 suggestions. `risk_who` names who ran each flagged command and
 pattern, counted over the first runs the dashboard lists for it ("listed" of
-"n"), and the paths a flagged command's runs named: name the users in "users"
-and the paths in the action when a suggestion is about that rule. A
-credential's runs carry no paths -- their command line is the leak itself.
+"n"), and the paths a flagged command's runs named: name the users in "users",
+and in the action up to three of its paths, the most named first, with how
+many more there are. A credential's runs carry no paths -- their command line
+is the leak itself.
 
 `done` is what the operator has already dealt with and marked done: suggest
 none of it again -- not the same step about the same people, in any words. It
@@ -194,7 +195,15 @@ def parse_suggestions(text, keep=8):
         return None
 
     def text_of(v, cap):
-        return redact.redact(v.strip())[:cap] if isinstance(v, str) and v.strip() else None
+        if not isinstance(v, str) or not v.strip():
+            return None
+        v = redact.redact(v.strip())
+        if len(v) <= cap:
+            return v
+        # at a word, never mid-path: a cut path reads as a real one
+        cut = v[:cap - 1]
+        at = max(cut.rfind(" "), cut.rfind(","))
+        return (cut[:at] if at > cap // 2 else cut).rstrip(" ,;") + "…"
 
     out = []
     for item in obj["suggestions"][:keep]:
