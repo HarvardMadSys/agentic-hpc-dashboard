@@ -1,0 +1,163 @@
+/* Every command behind an I/O number (IoCmds.tsx): the figure that opens it,
+ * and the drawer at the right of the page that lists them. */
+.ionum {
+  all: unset;
+  cursor: pointer;
+  text-decoration: underline dotted var(--edge);
+  text-underline-offset: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.ionum:hover {
+  color: var(--crimson-ink);
+  text-decoration-color: currentColor;
+}
+.ionum:focus-visible {
+  outline: 2px solid var(--crimson-ink);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+.iocmd-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.iocmd {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(1100px, 94vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--edge);
+  box-shadow: -8px 0 24px color-mix(in srgb, var(--ink) 14%, transparent);
+  outline: none;
+}
+.iocmd-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 18px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.iocmd-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.iocmd-title h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.iocmd-sub {
+  font-size: 11.5px;
+}
+.iocmd-prog {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+}
+.iocmd-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+.iocmd-bar i {
+  display: block;
+  height: 100%;
+  background: var(--ink-2);
+  transition: width 0.4s;
+}
+.iocmd-err {
+  color: var(--crit);
+  font-size: 11.5px;
+}
+.iocmd-tot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.iocmd-tot b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.iocmd-tot .on b {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.iocmd-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 0 18px 16px;
+}
+.iocmd-t {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.iocmd-t thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+.iocmd-t td.cmd-cut {
+  max-width: 280px;
+}
+/* a figure on one line: "0.00 MB" broken in two reads as two numbers */
+.iocmd-t td.num,
+.iocmd-t th {
+  white-space: nowrap;
+}
+.iocmd-t td,
+.iocmd-t th {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.iocmd-t td.on {
+  color: var(--ink);
+  font-weight: 600;
+}
+.iocmd-t td.zero {
+  color: var(--muted);
+}
+.iocmd-when {
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+.iocmd-more {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 11px;
+}
+.iocmd-none {
+  padding: 24px 0;
+  text-align: center;
+}
+@media (max-width: 700px) {
+  .iocmd {
+    width: 100vw;
+  }
+}
+/* a chart bar or its value that opens the commands behind it (HBars `onPick`) */
+.hpick {
+  cursor: pointer;
+}
+text.hpick {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+rect.hpick:hover {
+  opacity: 0.8;
+}

@@ -15,6 +15,7 @@ import { AskScopeCtx } from './components/Ask';
 import type { AskScope } from './components/Ask';
 import { ClassFilter } from './components/ClassFilter';
 import { WhoFilter } from './components/WhoFilter';
+import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
 import { SectionList, useSections } from './components/SectionNav';
 import { WindowPicker } from './components/WindowPicker';
@@ -56,6 +57,8 @@ const TABS = [
 /* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
  * link to it (?tab=events) opens the first tab instead. */
 const HIDDEN_TABS = new Set(['events']);
+/** How long after each answer the Sessions list asks again, while it is shown. */
+const TRAJ_LIVE_MS = 5000;
 
 /** Worst status across the feeds that matter, for the header pill. */
 function headline(feeds: Record<string, FeedReport> | null): {
@@ -132,7 +135,9 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const who: Who = useMemo(() => ({ users: url.users, atypes: url.atypes }), [whoKey]);
   const panels = usePanels(url.win, live.buildNonce, who);
-  const traj = useTrajectories(url.rank, url.win, live.buildNonce, who);
+  // Re-read every few seconds while the Sessions list is on screen.
+  const traj = useTrajectories(url.rank, url.win, live.buildNonce, who,
+    url.tab === 'trajectories' ? TRAJ_LIVE_MS : null);
   // The filter's choices come with the panels whenever the unfiltered view of
   // this window is held. Kept across a fetch that has none -- a window not yet
   // built unfiltered -- so the dropdowns do not empty under the reader.
@@ -467,6 +472,7 @@ export default function App() {
 
         <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
       </main>
+      <IoCmdsDrawer win={url.win} who={who} cls={url.cls} />
       <TooltipLayer />
     </div>
   );

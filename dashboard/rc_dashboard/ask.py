@@ -463,7 +463,7 @@ def session_digest(body, with_argv=False, max_lines=300):
     bounds = body.get("bounds") or {}
     keep = ("sid", "host", "actor3", "agent_type", "user", "n_users", "n_events", "cpu_s",
             "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
-            "sandbox", "approval", "autonomous", "drift")
+            "net_tx_mb", "net_rx_mb", "sandbox", "approval", "autonomous", "drift")
     session = {k: row.get(k) for k in keep if row.get(k) is not None}
     session.update(first=_clock(row.get("first")), last=_clock(row.get("last")),
                    wall=_secs(row.get("wall_s")))

@@ -17,6 +17,7 @@
  * and printed "0% sandboxed", and it made `denied` deflate the rate exactly as
  * folding it into "not isolated" would.
  */
+import { fint } from './format';
 
 export const SB_LABEL: Record<string, string> = {
   sandboxed: 'namespace-isolated',
@@ -61,6 +62,24 @@ export const AP_SHORT: Record<string, string> = {
   na: 'n/a',
   unknown: 'unknown',
 };
+
+/** The agent sessions a plate should worry about, as one line under its
+ *  number: launched with a bypass flag, in auto mode, and (where it was
+ *  measured) running tool calls outside a sandbox. Each reads even at 0: none
+ *  is a finding. "No bypass flag" is left out: argv cannot vouch for it. */
+export function riskLine(
+  launch: Partial<Record<string, number>> | null | undefined,
+  unsandboxed?: number | null,
+): string | undefined {
+  if (!launch) return undefined;
+  return [
+    `${fint(launch.bypassed ?? 0)} with a bypass flag`,
+    `${fint(launch.auto ?? 0)} in auto mode`,
+    unsandboxed != null ? `${fint(unsandboxed)} unsandboxed` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
 
 const HATCH_UNKNOWN = 'url(#hatchUnknown)';
 const HATCH_DENIED = 'url(#hatchDenied)';

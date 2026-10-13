@@ -10,21 +10,25 @@
  * Everything a reader would look up about an account sits on its row or in its
  * drill-down (roadmap note 8): what it runs now and what that costs, what it
  * ran in the window by agent, and its last processes -- the exit stream that
- * used to be its own panel (note 18).
+ * used to be its own panel (note 18). Switched from "by user" to "every
+ * process", the panel is that stream for everyone at once.
  */
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { getLiveUser, getLiveUsers } from '../api/client';
-import type { Cascades, Cls, LiveEvent, LiveUserDetail, LiveUserRow, LiveUserSession, LiveUsers, UsageBlock } from '../api/types';
+import type { Cascades, Cls, IoSort, LiveEvent, LiveUserDetail, LiveUserRow, LiveUserSession, LiveUsers, UsageBlock } from '../api/types';
+import { Segmented } from '../components/ClassFilter';
 import { CmdCell } from '../components/Cmd';
 import { NoRows, Panel } from '../components/Panel';
 import { SortTh } from '../components/SortTh';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { serverNow } from '../lib/clock';
-import { UNTAGGED } from '../lib/filters';
+import { UNTAGGED, whoMatch } from '../lib/filters';
 import { DASH, ago, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+import type { IoQuery } from '../lib/iocmds';
+import { IoNum } from '../components/IoCmds';
 import { pcol } from '../lib/purposes';
 import { AP_LABEL } from '../lib/sandbox';
 import { useSort } from '../lib/useSort';
@@ -219,26 +223,32 @@ function Badges({ s }: { s: Pick<LiveUserSession, 'actor3' | 'approval' | 'sandb
   );
 }
 
-function Usage({ b }: { b: UsageBlock | undefined }) {
+/** A row of one user's work: its byte counts open the commands behind them
+ *  (`q`: whose, which class, which agent type). */
+function Usage({ b, q }: { b: UsageBlock | undefined; q?: Omit<IoQuery, 'sort'> }) {
+  const io = (v: number | null | undefined, sort: IoSort, lbl: string) =>
+    !v ? DASH : q ? <IoNum q={{ ...q, title: `${lbl} · ${q.title}`, sort }}>{mb(v)}</IoNum> : mb(v);
   return (
     <>
       <td className="num">{b ? fint(b.n) : DASH}</td>
       <td className="num">{b && b.cpu_s ? dur(b.cpu_s) : DASH}</td>
-      <td className="num">{b?.rd_mb ? mb(b.rd_mb) : DASH}</td>
-      <td className="num">{b?.wr_mb ? mb(b.wr_mb) : DASH}</td>
-      <td className="num">{b?.net_tx_mb ? mb(b.net_tx_mb) : DASH}</td>
-      <td className="num">{b?.net_rx_mb ? mb(b.net_rx_mb) : DASH}</td>
+      <td className="num">{io(b?.rd_mb, 'rd_mb', 'disk read')}</td>
+      <td className="num">{io(b?.wr_mb, 'wr_mb', 'disk written')}</td>
+      <td className="num">{io(b?.net_tx_mb, 'tx_mb', 'network sent')}</td>
+      <td className="num">{io(b?.net_rx_mb, 'rx_mb', 'network received')}</td>
     </>
   );
 }
 
-function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
+function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }: {
   name: string;
   windowMin: number | null;
   windowLbl: string;
   cls: Cls[];
   cascades: Cascades | undefined;
   openTraj: (sid: string) => void;
+  /** every host the service watches, the login nodes table's */
+  watched: string[];
 }) {
   const [n, setN] = useState(25);
   const [host, setHost] = useState<string>('');
@@ -255,7 +265,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
   const nested = useMemo(() => nestedAgents(cascades, name), [cascades, name]);
   // both boxes sort by any column (roadmap note 27); before the early returns,
   // as hooks must be
-  const sessSort = useSort<string>();
+  const sessSort = useSort<string>('session', 'asc');
   const winSort = useSort<string>();
   if (err) return <div className="nm">could not load {name}: {err}</div>;
   if (!d) return <div className="nm">loading {name}…</div>;
@@ -268,7 +278,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
   const usage = (b: UsageBlock | undefined, k: string) =>
     !b ? null : k === 'who' ? null : (b as unknown as Record<string, number | undefined>)[k] ?? null;
   const all = d.recent.filter((e) => !e.actor3 || cls.includes(e.actor3 as Cls));
-  const hosts = Array.from(new Set(all.map((e) => e.host).filter((h): h is string => !!h))).sort();
+  const hosts = hostsOf(watched, all);
   const recent = host ? all.filter((e) => e.host === host) : all;
   const multiHost = hosts.length > 1 || new Set(sessions.map((s) => s.host)).size > 1;
   const now = serverNow();
@@ -388,14 +398,14 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
                   const types = winSort.key
                     ? winSort.sort(Object.entries(row.type_detail?.[c] ?? {}),
                         ([t, b], k) => (k === 'who' ? typeLbl(t) : usage(b, k)))
-                    : Object.entries(row.type_detail?.[c] ?? {}).sort((a, b) => b[1].n - a[1].n);
+                    : Object.entries(row.type_detail?.[c] ?? {}).sort(([a], [b]) => typeLbl(a).localeCompare(typeLbl(b)));
                   return [
                     <tr key={c} className="u-cls">
                       <td>
                         <i className="u-dot" style={{ background: CLS_COL[c] }} />
                         {CLS_LBL[c]}
                       </td>
-                      <Usage b={row.by_class[c]} />
+                      <Usage b={row.by_class[c]} q={{ title: `${name} · ${CLS_LBL[c]}`, user: [name], class: [c], unfiltered: true }} />
                     </tr>,
                     // one nested row per agent (roadmap note 5)
                     ...types.flatMap(([t, b]) => {
@@ -405,7 +415,8 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
                       return [
                         <tr key={c + t} className="u-sub">
                           <td>{typeLbl(t)}</td>
-                          <Usage b={b} />
+                          <Usage b={b} q={{ title: `${name} · ${typeLbl(t)}`, user: [name], class: [c],
+                            agent_type: [t || UNTAGGED], unfiltered: true }} />
                         </tr>,
                         // an agent another agent started, split out (roadmap note 4)
                         ...under.map(([p, k]) => (
@@ -449,37 +460,67 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj }: {
               <button key={k} aria-pressed={n === k} onClick={() => setN(k)}>last {k}</button>
             ))}
           </span>
-          {hosts.length > 1 && (
-            <select className="wininput" value={host} onChange={(e) => setHost(e.target.value)} aria-label="host">
-              <option value="">every host</option>
-              {hosts.map((h) => <option key={h} value={h}>{h}</option>)}
-            </select>
-          )}
+          <HostPicker hosts={hosts} host={host} setHost={setHost} />
           {d.recent_held != null && (
             <span className="nm">{fint(d.recent_held)} held for this user (at most {fint(d.recent_depth)})</span>
           )}
         </div>
         {recent.length ? <RecentTable rows={recent} multiHost={hosts.length > 1} now={now} /> : (
-          <NoRows what="no exited process held for this user" />
+          <NoRows what={host ? `no exited process held for this user on ${host}` : 'no exited process held for this user'} />
         )}
       </section>
     </div>
   );
 }
 
-function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: boolean; now: number }) {
-  const s = useSort<string>();
+/** The picker every exit stream has, shown even when one host is watched, so
+ *  which host a list covers is always on screen. */
+function HostPicker({ hosts, host, setHost }: { hosts: string[]; host: string; setHost: (h: string) => void }) {
+  return (
+    <select className="u-host" value={host} onChange={(e) => setHost(e.target.value)} aria-label="host">
+      <option value="">every host</option>
+      {hosts.map((h) => <option key={h} value={h}>{h}</option>)}
+    </select>
+  );
+}
+
+/** The watched hosts, and any other host a row names, A to Z. */
+function hostsOf(watched: string[], rows: LiveEvent[]): string[] {
+  return Array.from(new Set([...watched, ...rows.map((e) => e.host)].filter((h): h is string => !!h))).sort();
+}
+
+function RecentTable({ rows, multiHost, now, withUser }: {
+  rows: LiveEvent[];
+  multiHost: boolean;
+  now: number;
+  /** every user's processes at once: who ran each */
+  withUser?: boolean;
+}) {
+  const s = useSort<string>('at');
   const val = (e: LiveEvent, k: string) =>
-    k === 'at' ? e.epoch : k === 'host' ? e.host : k === 'agent' ? e.agent_type ?? e.actor3
+    k === 'at' ? e.epoch : k === 'user' ? e.user : k === 'host' ? e.host : k === 'agent' ? e.agent_type ?? e.actor3
     : k === 'cmd' ? e.comm ?? e.tool : k === 'ran' ? e.duration_s : k === 'cpu' ? e.cpu_s
     : k === 'rd' ? e.rd_mb : k === 'wr' ? e.wr_mb : k === 'tx' ? e.net_tx_mb : k === 'rx' ? e.net_rx_mb
     : e.signal != null ? 1000 + e.signal : e.exit_code;
   return (
-    <div className="scroller">
+    // every user's at once runs long: a box of its own, its header in view
+    <div className={withUser ? 'scroller vscroll' : 'scroller'}>
       <table className="roomy u-recent">
+        {/* set widths, so the table keeps its shape whichever rows it holds;
+            the command takes what is left */}
+        <colgroup>
+          <col className="at" />
+          {withUser && <col className="user" />}
+          {multiHost && <col className="host" />}
+          <col className="agent" />
+          <col />
+          <col className="q" span={6} />
+          <col className="exit" />
+        </colgroup>
         <thead>
           <tr>
             <SortTh s={s} k="at">at</SortTh>
+            {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
             {multiHost && <SortTh s={s} k="host" first="asc">host</SortTh>}
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
             <SortTh s={s} k="cmd" first="asc">command</SortTh>
@@ -498,6 +539,7 @@ function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: b
             return (
               <tr key={i}>
                 <td className="mono nm" data-tip={e.epoch ? ago(now - e.epoch * 1000) + ' ago' : undefined}>{e.ts?.slice(5) ?? DASH}</td>
+                {withUser && <td className="mono">{e.user ?? DASH}</td>}
                 {multiHost && <td className="mono nm">{e.host ?? DASH}</td>}
                 <td>
                   <i className="u-dot" style={{ background: CLS_COL[e.actor3 ?? 'agent'] }} />
@@ -522,6 +564,61 @@ function RecentTable({ rows, multiHost, now }: { rows: LiveEvent[]; multiHost: b
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Every user's processes exited, as one stream, newest first. It is the live
+ * frame's own tail, so it moves with every frame and costs no request; the
+ * page's filters, the search, and a host narrow it, and the line under the
+ * picker says how deep the tail it reads from is. */
+function Stream({ events, depth, watched, cls, q, who, keep }: {
+  events: LiveEvent[];
+  /** how many exits the frame's tail holds, across every host and user */
+  depth: number | null;
+  watched: string[];
+  cls: Cls[];
+  /** the search box: part of a user name */
+  q: string;
+  who: { users: string[]; atypes: string[] };
+  /** a "running now" pick: only these accounts */
+  keep: Set<string> | null;
+}) {
+  const [n, setN] = useState(25);
+  const [host, setHost] = useState('');
+  const ql = q.toLowerCase();
+  const all = events
+    .filter((e) =>
+      (!e.actor3 || cls.includes(e.actor3 as Cls)) &&
+      (!ql || (e.user ?? '').toLowerCase().includes(ql)) &&
+      whoMatch(who, e.user, e.agent_type) &&
+      (!keep || keep.has(e.user ?? '')))
+    .sort((a, b) => (b.epoch ?? 0) - (a.epoch ?? 0));
+  const hosts = hostsOf(watched, all);
+  const on = host ? all.filter((e) => e.host === host) : all;
+  const rows = on.slice(0, n);
+  const narrowed = !!(ql || host || keep || who.users.length || who.atypes.length || cls.length < 3);
+  return (
+    <section className="u-stream">
+      <div className="u-ctl">
+        <span className="seg" role="group" aria-label="how many">
+          {[10, 25, 100].map((k) => (
+            <button key={k} aria-pressed={n === k} onClick={() => setN(k)}>last {k}</button>
+          ))}
+        </span>
+        <HostPicker hosts={hosts} host={host} setHost={setHost} />
+        {depth != null && (
+          <span className="nm" data-tip="the live frame holds the newest exits across every host and user; a filter picks among them, so a quiet host or user can show fewer than asked">
+            {narrowed ? `${fint(on.length)} of ` : ''}the newest {fint(events.length)} exits held
+            {events.length < depth ? ` (at most ${fint(depth)})` : ''}
+          </span>
+        )}
+      </div>
+      {rows.length ? (
+        <RecentTable rows={rows} multiHost={hosts.length > 1} now={serverNow()} withUser />
+      ) : (
+        <NoRows what={host ? `no exited process held on ${host} for the selection` : 'no exited process held for the selection'} />
+      )}
+    </section>
   );
 }
 
@@ -557,6 +654,12 @@ interface UsersProps {
   /** open a session's trajectory, or a user's sessions, on the Trajectories tab */
   openTraj: (sid: string) => void;
   openUserTraj: (user: string) => void;
+  /** the live frame's tail of exits, every user's, newest first */
+  events?: LiveEvent[];
+  /** how deep that tail is (`events_tail_depth`) */
+  tailDepth?: number | null;
+  /** every host the service watches, the login nodes table's */
+  hosts?: string[];
 }
 
 export function UsersPanel({
@@ -570,14 +673,19 @@ export function UsersPanel({
   pageTypes = [],
   openTraj,
   openUserTraj,
+  events = [],
+  tailDepth = null,
+  hosts = [],
 }: UsersProps) {
   const [q, setQ] = useState('');
+  // by user, or every process as one stream
+  const [grouped, setGrouped] = useState(true);
   const [open, setOpen] = useState<string | null>(null);
   const [remote, setRemote] = useState<LiveUsers | null>(null);
   const [run, setRun] = useState<string | null>(null);
   const fallback = knownCols(defaultCols ?? []);
   const [cols, setCols] = useState<ColKey[]>(() => loadCols(fallback.length ? fallback : DEFAULT_COLS));
-  const sort = useSort<ColKey | 'user'>();
+  const sort = useSort<ColKey | 'user'>('user', 'asc');
   const cascades = pick<Cascades>(P, 'cascades', 'ebpfm');
 
   // the frame holds the busiest rows only: past them, the server searches
@@ -641,11 +749,15 @@ export function UsersPanel({
       case 'last': return r.last_epoch;
     }
   };
-  // the service's own order until a header is clicked: agents running, then activity, then name
+  // by name until a header is clicked: the frame still holds the busiest rows
   const sorted = sort.sort(rows, val);
   const now = serverNow();
   const more = !q && !run && !pageOn && partial ? U!.rows_total - U!.rows.length : 0;
 
+  // the live tier: the class chips narrow it, the user filter does not
+  const ioCell = (r: LiveUserRow, v: number, sort: IoSort, lbl: string) => (
+    <IoNum q={{ title: `${lbl} · ${r.user}`, sort, user: [r.user], class: cls, unfiltered: true }}>{mb(v)}</IoNum>
+  );
   const cell = (r: LiveUserRow, k: ColKey) => {
     switch (k) {
       case 'agents': return <td key={k}><Running m={r.live.agent} /></td>;
@@ -653,10 +765,10 @@ export function UsersPanel({
       case 'running': return <td key={k} className="num">{runningN(r, cls) ? fint(runningN(r, cls)) : DASH}</td>;
       case 'exited': return <td key={k} className="num"><Mix r={r} cls={cls} /></td>;
       case 'cpu': { const v = sumCls(r, cls, (b) => b.cpu_s); return <td key={k} className="num">{v ? dur(v) : DASH}</td>; }
-      case 'read': { const v = sumCls(r, cls, (b) => b.rd_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
-      case 'written': { const v = sumCls(r, cls, (b) => b.wr_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
-      case 'sent': { const v = sumCls(r, cls, (b) => b.net_tx_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
-      case 'received': { const v = sumCls(r, cls, (b) => b.net_rx_mb); return <td key={k} className="num">{v ? mb(v) : DASH}</td>; }
+      case 'read': { const v = sumCls(r, cls, (b) => b.rd_mb); return <td key={k} className="num">{v ? ioCell(r, v, 'rd_mb', 'disk read') : DASH}</td>; }
+      case 'written': { const v = sumCls(r, cls, (b) => b.wr_mb); return <td key={k} className="num">{v ? ioCell(r, v, 'wr_mb', 'disk written') : DASH}</td>; }
+      case 'sent': { const v = sumCls(r, cls, (b) => b.net_tx_mb); return <td key={k} className="num">{v ? ioCell(r, v, 'tx_mb', 'network sent') : DASH}</td>; }
+      case 'received': { const v = sumCls(r, cls, (b) => b.net_rx_mb); return <td key={k} className="num">{v ? ioCell(r, v, 'rx_mb', 'network received') : DASH}</td>; }
       case 'gpu': return <td key={k} className="num">{r.gpu_h ? `${fmt(r.gpu_h)} GPU·h` : DASH}</td>;
       case 'last': return <td key={k} className="num nm">{r.last_epoch ? ago(now - r.last_epoch * 1000) : DASH}</td>;
     }
@@ -668,6 +780,15 @@ export function UsersPanel({
         <Summary counts={pageOn ? counts : U.running_by_type ?? {}} cls={cls} run={run} setRun={setRun} />
       )}
       <div className="u-ctl">
+        <Segmented<'user' | 'flat'>
+          label="rows"
+          value={grouped ? 'user' : 'flat'}
+          onChange={(v) => setGrouped(v === 'user')}
+          options={[
+            { k: 'user', lbl: 'by user', tip: 'one row per user, opened into what they run and their last processes' },
+            { k: 'flat', lbl: 'every process', tip: 'the last processes exited, every user’s, newest first, with who ran each' },
+          ]}
+        />
         <input
           className="wininput u-search"
           placeholder="find a user"
@@ -675,14 +796,19 @@ export function UsersPanel({
           onChange={(e) => setQ(e.target.value.trim())}
           aria-label="find a user"
         />
-        <ColumnPicker on={cols} setOn={setCols} gpuKnown={gpuKnown} />
-        {sort.key && (
+        {grouped && <ColumnPicker on={cols} setOn={setCols} gpuKnown={gpuKnown} />}
+        {grouped && sort.key && (
           <button className="linkbtn" onClick={() => sort.toggle(sort.key!)} data-tip="the sort in use; click a header to change it">
             sorted by {sort.key === 'user' ? 'user' : COLS.find((c) => c.k === sort.key)?.lbl}
           </button>
         )}
       </div>
-      {sorted.length ? (
+      {!grouped ? (
+        <Stream events={events} depth={tailDepth} watched={hosts} cls={cls} q={q}
+          who={{ users: pageUsers, atypes: pageTypes }}
+          // a "running now" pick is a set of accounts, all of them in `rows`
+          keep={run ? new Set(rows.map((r) => r.user)) : null} />
+      ) : sorted.length ? (
         <div className="scroller vscroll">
           <table className="roomy users">
             <thead>
@@ -719,7 +845,8 @@ export function UsersPanel({
                     <tr className="u-open">
                       <td colSpan={shownCols.length + 1}>
                         <Detail name={r.user} windowMin={windowMin} windowLbl={windowLbl} cls={cls}
-                          cascades={cascades._present === false ? undefined : cascades} openTraj={openTraj} />
+                          cascades={cascades._present === false ? undefined : cascades} openTraj={openTraj}
+                          watched={hosts} />
                       </td>
                     </tr>
                   )}
@@ -732,10 +859,10 @@ export function UsersPanel({
         <NoRows what={q ? `no user matches “${q}”` : 'no user active in the window'} />
       )}
       <div className="u-foot">
-        {sorted.length > 0 && (
+        {grouped && sorted.length > 0 && (
           <span className="nm">{`${fint(sorted.length)} user${sorted.length === 1 ? '' : 's'}`}</span>
         )}
-        {more > 0 && <span className="nm">{fint(more)} quieter users not listed · find them by name</span>}
+        {grouped && more > 0 && <span className="nm">{fint(more)} quieter users not listed · find them by name</span>}
       </div>
     </div>
   );

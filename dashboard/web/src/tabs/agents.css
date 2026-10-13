@@ -80,9 +80,6 @@ td.ws-inf {
   border-left: 1px dashed var(--edge);
   padding-left: 8px;
 }
-th.ws-inf {
-  color: var(--s4);
-}
 
 /* named-path counts, by what the command does with the path */
 .ws-ops {
@@ -313,88 +310,13 @@ table.trees .sub-chip {
   color: var(--crit);
 }
 
-/* one agent as a box, in a tree or in the grid */
-.acard {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.acard-h {
-  display: flex;
-  gap: 6px;
-  align-items: baseline;
-  min-width: 0;
-}
-.acard-h b {
-  color: var(--ink);
-  white-space: nowrap;
-}
-.acard-h .acard-user {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.acard-h .type-chip {
-  flex: none;
-  font-size: 9.5px;
-}
-.acard-b {
-  font-size: 11px;
-  color: var(--ink-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.acard-c {
-  font-size: 10.5px;
-  font-family: 'IBM Plex Mono', monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.acard-c.inferred {
-  font-style: italic;
-}
-.acard.foreign {
-  opacity: 0.6;
-}
-.acard.infra b {
-  color: var(--ink-2);
-  font-weight: 500;
-  font-family: 'IBM Plex Mono', monospace;
-}
-.atree {
-  border-top: 1px dashed var(--rule);
-  padding-top: 8px;
-  margin-top: 6px;
-}
+/* a tree's title row, and a lone agent's, at the head of the detail */
 .atree-t {
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 2px;
 }
-.agrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 8px;
-  margin: 6px 0 4px;
-}
-.agrid-cell {
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 6px 8px;
-  cursor: pointer;
-  background: var(--surface);
-}
-.agrid-cell:hover {
-  border-color: var(--edge);
-}
-.agrid-cell.on {
-  border-color: var(--ink-2);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-2) 18%, transparent);
-}
-/* an agent's blast radius, opened under the box that was clicked */
+/* an agent's blast radius, under its tree in the detail */
 .ablast {
   border: 1px solid var(--rule);
   border-left: 3px solid var(--s6);
@@ -425,33 +347,11 @@ table.trees .sub-chip {
   align-items: center;
 }
 
-/* the folded tree (AgentsTab.tsx TreeView): the box that holds the rest, a
- * subagent's box, and the way back to folded */
-.acard.more {
-  cursor: pointer;
-}
-.acard.more b {
-  color: var(--ink-2);
-}
-.acard.sub .acard-h b {
-  font-weight: 600;
-}
-.acard-h .acard-other {
-  margin-left: auto;
-  font-size: 10.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* the way back to a folded tree (AgentsTab.tsx TreeView) */
 .atree-fold {
   font-size: 11px;
   margin: 0 0 4px;
 }
-
-.acard.more.unsent {
-  cursor: default;
-}
-
 /* One view of every agent type (AgentsTab.tsx): a tree's title row, and its
  * boxes, each edged in its type's colour (lib/classes.ts AGENT_TYPE_COL). */
 .atree-t {
@@ -490,9 +390,8 @@ table.trees .sub-chip {
 }
 .anode-h {
   display: flex;
-  justify-content: space-between;
   align-items: baseline;
-  gap: 8px;
+  gap: 5px;
   min-width: 0;
 }
 .anode-h b {
@@ -501,12 +400,6 @@ table.trees .sub-chip {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.anode-n {
-  flex: none;
-  font-size: 11px;
-  color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
-}
 .anode-s {
   font-size: 10.5px;
   color: var(--ink-2);
@@ -514,11 +407,11 @@ table.trees .sub-chip {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.anode-s.mono {
+.anode-s .mono {
   font-family: 'IBM Plex Mono', monospace;
   color: var(--muted);
 }
-.anode-s.inferred {
+.anode-s .inferred {
   font-style: italic;
 }
 .anode.more {
@@ -541,7 +434,7 @@ table.trees .sub-chip {
   color: var(--ink-2);
   font-weight: 500;
 }
-.acard-h .tdot {
+.al-h .tdot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -550,4 +443,295 @@ table.trees .sub-chip {
 }
 .atree-t .nm {
   font-weight: 400;
+}
+
+/* An agent's version after its type, and its launch and sandbox as a letter
+ * in a box each, at the right of the box's first line (AgentsTab.tsx Tags):
+ * B bypass flag, A auto mode, U tool calls not sandboxed, F sandbox failed. */
+.aver {
+  flex: none;
+  font-size: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ltags {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  flex: none;
+  align-self: center;
+}
+.ltag {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  font: 600 9.5px/12px 'IBM Plex Mono', monospace;
+  text-align: center;
+  color: var(--ink-2);
+  background: var(--surface);
+  cursor: help;
+}
+.ltag.crit {
+  border-color: var(--crit);
+  color: var(--crit);
+}
+.ltag.warn {
+  border-color: var(--warn);
+  color: #8a6410;
+}
+.ltag-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 11px;
+  color: var(--ink-2);
+  margin: 0 0 8px;
+}
+.ltag-key .ltag {
+  cursor: default;
+  vertical-align: 1px;
+}
+.ltag-key .off {
+  opacity: 0.5;
+}
+
+/* The list beside the detail (AgentsTab.tsx): the mark filter above both, the
+ * rows on the left, and the row picked on the right -- the shape of
+ * Trajectories' session list beside its tree. */
+.afilter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 0 10px;
+}
+.afilter-end {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  margin-left: auto;
+  font-size: 11px;
+}
+.afilter .ltag-key {
+  margin: 0;
+  gap: 4px;
+}
+/* a mark as a filter chip: its letter, what it means, and how many wear it */
+.ltag-key button {
+  all: unset;
+  cursor: pointer;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+.ltag-key button:hover {
+  border-color: var(--rule);
+}
+.ltag-key button[aria-pressed='true'] {
+  border-color: var(--ink-2);
+  background: var(--surface);
+  color: var(--ink);
+}
+.ltag-key button:disabled {
+  cursor: default;
+  opacity: 0.5;
+  border-color: transparent;
+}
+.ltag-key button:focus-visible {
+  outline: 2px solid var(--crimson-ink);
+}
+.ltag-key .ws-flagmark {
+  margin: 0;
+}
+.amd {
+  display: grid;
+  grid-template-columns: minmax(270px, 350px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .amd {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* the list stays in view while a long blast radius scrolls past it */
+.al-list {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding-right: 2px;
+}
+@media (max-width: 1100px) {
+  .al-list {
+    position: static;
+    max-height: 60vh;
+  }
+}
+.al-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.al-user {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 6px 0 0;
+}
+.al-group:first-child .al-user {
+  margin-top: 0;
+}
+.al-item {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: 5px;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.al-item:hover {
+  border-color: var(--edge);
+}
+.al-item:focus-visible {
+  outline: 2px solid var(--crimson-ink);
+  outline-offset: -1px;
+}
+.al-item.on {
+  background: var(--surface-2);
+  border-left-color: var(--ink-2);
+}
+.al-item.fold {
+  border-left-style: dashed;
+}
+.al-h {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  min-width: 0;
+}
+.al-h b {
+  white-space: nowrap;
+}
+.al-h b.wrap {
+  white-space: normal;
+}
+.al-s {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.al-s.mono {
+  color: var(--muted);
+}
+.al-s .inferred {
+  font-style: italic;
+}
+/* writes outside its home, then its tags, at the right of the first line */
+.al-flags {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+  flex: none;
+  align-self: center;
+}
+.al-flags .ltags {
+  margin-left: 0;
+}
+.al-flags .ws-flagmark {
+  margin: 0;
+}
+.al-caret {
+  width: 9px;
+  flex: none;
+  color: var(--ink-2);
+}
+/* a fold's agents, under its row */
+.al-fold {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px 14px;
+}
+.al-foldwrap {
+  display: flex;
+  flex-direction: column;
+}
+.al-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--good);
+}
+.al-live .ld {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: beat 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .al-live .ld {
+    animation: none;
+  }
+}
+.al-idle {
+  align-self: flex-start;
+  margin: 6px 0 2px;
+}
+/* the detail stays in view beside a long list, and comes back into view
+ * when a row is picked below it (AgentsTab.tsx) */
+.al-detail {
+  position: sticky;
+  top: 12px;
+  min-width: 0;
+  scroll-margin-top: 12px;
+}
+@media (max-width: 1100px) {
+  .al-detail {
+    position: static;
+  }
+}
+.al-pane {
+  min-width: 0;
+}
+.al-pane .ablast {
+  margin-top: 10px;
+}
+.al-hint,
+.al-empty {
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+  color: var(--muted);
+  text-align: center;
+}
+.al-hint {
+  padding: 12px;
+  margin-top: 10px;
+  font-size: 11.5px;
+}
+.al-empty {
+  padding: 28px;
+}
+/* under a filter, a tree's box that does not pass it */
+.anode.dim {
+  opacity: 0.4;
 }

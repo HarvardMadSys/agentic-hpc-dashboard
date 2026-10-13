@@ -138,7 +138,7 @@ table.tj-table td .sub {
 
 /* -------------------------------------------------------------------- tree */
 .pt {
-  --pt-cols: minmax(440px, 1fr) 84px 66px 58px 64px 60px 96px 190px;
+  --pt-cols: minmax(440px, 1fr) 84px 66px 58px 64px 72px 60px 96px 190px;
   border: 1px solid var(--rule);
   border-radius: 5px;
   overflow: auto;
@@ -595,7 +595,9 @@ svg:has(> g.pickable:focus-visible) {
  * (components/ProcDiagram.tsx): a box per process, its purpose on the left
  * edge, a failure in red. */
 .pd-box {
-  height: 100%;
+  /* the whole box, its padding included: a fill or a third line that stops
+     at the content box is cut off at the bottom */
+  height: calc(100% + 12px);
   box-sizing: border-box;
   border-left: 3px solid var(--edge);
   margin: -6px -8px;
@@ -682,6 +684,8 @@ svg:has(> g.pickable:focus-visible) {
   }
 }
 .tj-list {
+  /* the rows' offsetParent, so a row's offsetTop is its place in the list */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -716,6 +720,46 @@ svg:has(> g.pickable:focus-visible) {
 .tj-item-s {
   font-size: 10.5px;
   color: var(--ink-2);
+}
+/* the ranked quantity, when the line above does not already say it */
+.tj-item-m {
+  font-size: 10.5px;
+  color: var(--ink);
+}
+/* a session whose agent is running now */
+.tj-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--good);
+  white-space: nowrap;
+}
+.tj-live .ld {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: beat 2.4s ease-in-out infinite;
+}
+/* a row the last re-read moved up, or brought in (TrajectoriesTab `useFlip`) */
+.tj-item.tj-up {
+  animation: tj-up 1.6s ease-out;
+}
+/* no 100% frame: it fades back to whatever the row is, selected or not */
+@keyframes tj-up {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--live) 16%, transparent);
+    border-color: var(--live);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tj-item.tj-up,
+  .tj-live .ld {
+    animation: none;
+  }
 }
 .tj-filter {
   font-size: 11.5px;

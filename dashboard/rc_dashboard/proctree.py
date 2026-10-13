@@ -177,13 +177,41 @@ def _add(a, b):
     return b if a is None else a if b is None else a + b
 
 
+# A process's I/O, from its exit record: disk bytes, syscall bytes (pipes and
+# terminals included) and network bytes, in MB. None when the record carries
+# none of them -- unmeasured, as `cpu` None is -- and summed up a subtree the
+# way `sub_cpu` is, so a session's tree says which commands did the I/O.
+IO_KEYS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb", "tx_mb", "rx_mb")
+
+
+def _io_of(rec):
+    io = rec.get("io") or {}
+    tx, rx = rec.get("net_tx_bytes"), rec.get("net_rx_bytes")
+    if io.get("rchar_mb") is None and io.get("rd_mb") is None and tx is None and rx is None:
+        return None
+    return (io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0, io.get("rchar_mb") or 0.0,
+            io.get("wchar_mb") or 0.0, (tx or 0) / 1e6, (rx or 0) / 1e6)
+
+
+def _io_add(a, b):
+    return b if a is None else a if b is None else tuple(x + y for x, y in zip(a, b))
+
+
+def _io_out(v):
+    """Served only where something moved: a row of zeros says nothing."""
+    if v is None or not any(v):
+        return None
+    return {k: round(x, 3) for k, x in zip(IO_KEYS, v)}
+
+
 class Agg:
     """Processes counted under one parent but not itemised."""
 
-    __slots__ = ("n", "cpu", "cpu_nm", "t0", "t1", "cmds", "kv", "depth")
+    __slots__ = ("n", "cpu", "cpu_nm", "io", "t0", "t1", "cmds", "kv", "depth")
 
     def __init__(self, kv=None, depth=None):
         self.n, self.cpu, self.cpu_nm = 0, None, 0
+        self.io = None
         self.t0 = self.t1 = None
         self.cmds = collections.Counter()
         self.kv, self.depth = kv, depth
@@ -198,13 +226,14 @@ class Agg:
         cmd = cmd or "?"
         self.cmds[cmd if cmd in self.cmds or len(self.cmds) < CMD_KEEP else "(other)"] += n
 
-    def add(self, cmd, cpu, t0, t1):
+    def add(self, cmd, cpu, t0, t1, io=None):
         """One process's own record."""
         self.n += 1
         if cpu is None:
             self.cpu_nm += 1
         else:
             self.cpu = _add(self.cpu, cpu)
+        self.io = _io_add(self.io, io)
         self._span(t0, t1)
         self._cmd(cmd, 1)
 
@@ -213,6 +242,7 @@ class Agg:
         self.n += p.n
         self.cpu = _add(self.cpu, p.sub_cpu)
         self.cpu_nm += p.cpu_nm
+        self.io = _io_add(self.io, p.sub_io)
         self._span(p.t0, p.t1)
         self._cmd(p.label, 1)
 
@@ -220,6 +250,7 @@ class Agg:
         self.n += o.n
         self.cpu = _add(self.cpu, o.cpu)
         self.cpu_nm += o.cpu_nm
+        self.io = _io_add(self.io, o.io)
         self._span(o.t0, o.t1)
         for c, k in o.cmds.items():
             self._cmd(c, k)
@@ -230,7 +261,7 @@ class Agg:
         while stack:
             q = stack.pop()
             if q.ev is not None:
-                self.add(q.cmd, q.cpu, q.start, q.end)
+                self.add(q.cmd, q.cpu, q.start, q.end, q.io)
                 n += 1
             if q.agg is not None:
                 self.merge(q.agg)
@@ -239,7 +270,8 @@ class Agg:
 
     def as_dict(self, why):
         return {"k": "agg", "why": why, "n": self.n, "sub_cpu": _r(self.cpu),
-                "cpu_nm": self.cpu_nm or None, "start": _r(self.t0), "end": _r(self.t1),
+                "cpu_nm": self.cpu_nm or None, "sub_io": _io_out(self.io),
+                "start": _r(self.t0), "end": _r(self.t1),
                 "cmds": [[c, k] for c, k in self.cmds.most_common()]}
 
 
@@ -249,7 +281,8 @@ class Proc:
     __slots__ = ("pid", "ppid", "cmd", "eff", "args", "ran", "purpose", "role", "start",
                  "end", "dur", "cpu", "code", "sig", "core", "ev", "cwd", "kv", "depth",
                  "a3", "atype", "user", "kids", "agg", "up", "link", "gap", "orphan",
-                 "hint", "n", "sub_cpu", "cpu_nm", "t0", "t1", "sig_id", "label")
+                 "hint", "n", "sub_cpu", "cpu_nm", "t0", "t1", "sig_id", "label",
+                 "io", "sub_io")
 
     def __init__(self, pid=None):
         self.pid = pid
@@ -261,6 +294,7 @@ class Proc:
         self.kids = []
         self.hint = None
         self.n, self.sub_cpu, self.cpu_nm = 0, None, 0
+        self.io = self.sub_io = None
         self.t0 = self.t1 = None
         self.sig_id, self.label = 0, None
 
@@ -279,6 +313,7 @@ class Proc:
         p.purpose = rec.get("_purpose")
         p.start, p.end = start, ts
         p.dur, p.cpu = rec.get("duration_s"), rec.get("cpu_s")
+        p.io = _io_of(rec)
         p.code, p.sig = rec.get("exit_code"), rec.get("signal")
         p.core = bool(rec.get("core_dumped"))
         p.ev = rec.get("event")
@@ -517,7 +552,7 @@ class TreeBuilder:
                     a = self.loose = self.loose or Agg()
                 else:
                     a = table[key] = Agg(rec.get("_kv"), rec.get("depth"))
-        a.add(rec.get("_command"), rec.get("cpu_s"), st, ts)
+        a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, _io_of(rec))
         for k in kids or ():
             self.absorbed += a.absorb(k)
             # Gone from the drawing, so no later child may hang from it.
@@ -770,13 +805,16 @@ def _finish(root):
         n.n = (1 if own else 0) + sum(k.n for k in n.kids) + (n.agg.n if n.agg else 0)
         cpu = n.cpu if own else None
         nm = 1 if own and n.cpu is None else 0
+        io = n.io if own else None
         for k in n.kids:
             cpu = _add(cpu, k.sub_cpu)
             nm += k.cpu_nm
+            io = _io_add(io, k.sub_io)
         if n.agg is not None:
             cpu = _add(cpu, n.agg.cpu)
             nm += n.agg.cpu_nm
-        n.sub_cpu, n.cpu_nm = cpu, nm
+            io = _io_add(io, n.agg.io)
+        n.sub_cpu, n.cpu_nm, n.sub_io = cpu, nm, io
         t0s = [t for t in [n.start] + [k.t0 for k in n.kids]
                + [n.agg.t0 if n.agg else None] if t is not None]
         t1s = [t for t in [n.end] + [k.t1 for k in n.kids]
@@ -869,7 +907,8 @@ def _proc_dict(n, parent, memo=None):
                  ("args", None if n.ran else shown(n.args, memo)),
                  ("cmdline", shown(n.ran, memo)), ("purpose", n.purpose), ("role", n.role),
                  ("exit_code", n.code), ("signal", n.sig), ("gap", n.gap),
-                 ("cpu_nm", n.cpu_nm or None)):
+                 ("cpu_nm", n.cpu_nm or None), ("io", _io_out(n.io)),
+                 ("sub_io", _io_out(n.sub_io) if n.sub_io != n.io else None)):
         if v is not None:
             d[k] = v
     if n.core:
@@ -910,9 +949,10 @@ def _group_dict(e, parent, memo=None):
         if m.dur is not None:
             dmax = m.dur if dmax is None else max(dmax, m.dur)
         samples[("cmdline", m.ran) if m.ran else ("args", m.args)] += 1
-    sub_cpu = None
+    sub_cpu = sub_io = None
     for m in members:
         sub_cpu = _add(sub_cpu, m.sub_cpu)
+        sub_io = _io_add(sub_io, m.sub_io)
     motif = [m.label for m in members[:p]]
     # When the last member started: with the itemised first few, it bounds when
     # the members that are not drawn started, which is what the page's
@@ -922,6 +962,7 @@ def _group_dict(e, parent, memo=None):
             "n": sum(m.n for m in members), "start": _r(t0), "end": _r(t1),
             "last": _r(last),
             "cpu": _r(cpu), "cpu_nm": nm or None, "sub_cpu": _r(sub_cpu),
+            "sub_io": _io_out(sub_io),
             "dur_max": _r(dmax, 4), "exits": dict(exits), "signals": dict(signals),
             "alive": alive or None,
             "distinct": len(samples),

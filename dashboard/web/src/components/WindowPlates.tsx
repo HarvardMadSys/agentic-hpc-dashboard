@@ -1,17 +1,17 @@
-/* The window in four numbers an operator acts on: how much the agents ran, what
- * it cost, how many sessions that was, and what they did that they should not
- * have. Was Overview's top row; it sits on Live now, under "right now", labeled
- * with the window it counts (roadmap notes 21 and 22).
+/* The window in three numbers an operator acts on: how much the agents ran, how
+ * many sessions that was, and what they did that they should not have. Was
+ * Overview's top row; it sits on Live now, under "right now", labeled with the
+ * window it counts (roadmap notes 21 and 22), three across like the row above.
  *
  * The headline is the agent's; the other classes sit beside it for scale.
  */
 import type { Cls, Resources, RiskPanel, Sandbox, ToolMix, Trajectories } from '../api/types';
 import { Plate } from './Plate';
 import { AGENT_TYPE_LBL, CLS_LBL } from '../lib/classes';
-import { fint, fmt, pc } from '../lib/format';
+import { fint, pc } from '../lib/format';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
-import { CALL_KNOWN, shareOfKnown } from '../lib/sandbox';
+import { CALL_KNOWN, riskLine, shareOfKnown } from '../lib/sandbox';
 import { GLOSS } from '../lib/glossary';
 
 export function WindowPlates({
@@ -32,24 +32,25 @@ export function WindowPlates({
   const have = cls.filter((c) => c in tmBy || c in resBy);
 
   const totN = have.reduce((a, c) => a + (tmBy[c]?.calls ?? 0), 0);
-  const totCpu = have.reduce((a, c) => a + (tmBy[c]?.cpu_s ?? resBy[c]?.cpu_s ?? 0), 0);
   // What each class is made of -- which agents, which editors -- on hover.
-  const typeTip = (key: 'calls_pct' | 'cpu_pct') =>
+  const typeTip =
     have
       .map((c) => {
         const parts = Object.entries(tm.by_type?.[c] ?? {})
-          .filter(([at, t]) => at && (t[key] ?? 0) >= 0.05)
-          .sort((a, b) => (b[1][key] ?? 0) - (a[1][key] ?? 0))
-          .map(([at, t]) => `${AGENT_TYPE_LBL[at] ?? at} ${pc(t[key])}`);
+          .filter(([at, t]) => at && (t.calls_pct ?? 0) >= 0.05)
+          .sort((a, b) => (b[1].calls_pct ?? 0) - (a[1].calls_pct ?? 0))
+          .map(([at, t]) => `${AGENT_TYPE_LBL[at] ?? at} ${pc(t.calls_pct)}`);
         return parts.length ? `${CLS_LBL[c] ?? c}: ${parts.join(' · ')}` : null;
       })
       .filter(Boolean)
       .join('\n') || undefined;
 
   const callIso = shareOfKnown(sb.tool_calls?.agent, 'isolated', sb.states?.tool_call_known ?? CALL_KNOWN);
-  const agentCpu = tmBy.agent?.cpu_s ?? resBy.agent?.cpu_s ?? null;
   const agentSum = cls.includes('agent') ? traj?.summary?.agent : undefined;
   const launch = sb.approval_by_class_sessions?.agent;
+  // a session whose tool calls ran and none was isolated (the Sandbox tab's
+  // session verdict); one with no tool call seen is neither
+  const sessSb = sb.by_class_sessions?.agent;
   const classSum = (rows: { classes?: Partial<Record<string, number>> }[] | undefined, c: string) =>
     (rows ?? []).reduce((a, r) => a + (r.classes?.[c] ?? 0), 0);
   const dgAgent = classSum(risk.dangerous?.rows, 'agent');
@@ -65,47 +66,28 @@ export function WindowPlates({
   const failedAgent = sb.tool_calls?.agent?.failed ?? 0;
 
   return (
-    <div className="plates">
+    <div className="plates three">
       <Plate
         k="agent processes exited"
-        tip={[GLOSS.exited, typeTip('calls_pct')].filter(Boolean).join('\n\n')}
+        tip={[GLOSS.exited, typeTip].filter(Boolean).join('\n\n')}
         total={cls.includes('agent') ? tmBy.agent?.calls ?? null : null}
         stripe="var(--s1)"
         by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.calls ?? null]))}
         note={totN ? `${pc((100 * (tmBy.agent?.calls ?? 0)) / totN)} of every process on the node` : undefined}
       />
       <Plate
-        k="agent CPU"
-        tip={[GLOSS.cpuh, typeTip('cpu_pct')].filter(Boolean).join('\n\n')}
-        total={cls.includes('agent') && agentCpu != null ? agentCpu / 3600 : null}
-        stripe="var(--s6)"
-        by={Object.fromEntries(
-          have.map((c) => {
-            const v = tmBy[c]?.cpu_s ?? resBy[c]?.cpu_s;
-            return [c, v == null ? null : v / 3600];
-          }),
-        )}
-        fmtFn={(n) => fmt(n)}
-        unit="CPU-h"
-        note={totCpu ? `${pc((100 * (agentCpu ?? 0)) / totCpu)} of all CPU on the node` : undefined}
-      />
-      <Plate
         k="agent sessions"
         total={agentSum?.sessions ?? null}
         stripe="var(--s4)"
         by={Object.fromEntries(cls.filter((c) => traj?.summary?.[c]).map((c) => [c, traj!.summary![c].sessions]))}
-        tip={GLOSS.session + '; scripts that only probe `codex --version` are not counted'}
-        note={
-          launch
-            ? [
-                launch.bypassed ? `${fint(launch.bypassed)} with a bypass flag` : null,
-                launch.auto ? `${fint(launch.auto)} in auto mode` : null,
-                launch.supervised ? `${fint(launch.supervised)} with no bypass flag` : null,
-              ]
-                .filter(Boolean)
-                .join(' · ') || undefined
-            : undefined
-        }
+        tip={[
+          GLOSS.session + '; scripts that only probe `codex --version` are not counted',
+          GLOSS.bypass,
+          GLOSS.automode,
+          'unsandboxed: the session ran tool calls and not one was namespace-isolated. ' +
+            'a session with no tool call seen is not counted as either',
+        ].join('\n\n')}
+        note={riskLine(launch, sessSb ? sessSb.unsandboxed ?? 0 : null)}
       />
       <Plate
         k="risky agent actions"

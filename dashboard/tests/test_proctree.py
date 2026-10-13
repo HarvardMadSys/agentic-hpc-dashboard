@@ -710,3 +710,40 @@ class EndToEndTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IoTest(unittest.TestCase):
+    """Each process's own I/O, and its subtree's, as `sub_cpu` sums CPU."""
+
+    def io(self, r, rd=0.0, wr=0.0, rc=0.0, wc=0.0, tx=None, rx=None):
+        r["io"] = {"rd_mb": rd, "wr_mb": wr, "rchar_mb": rc, "wchar_mb": wc}
+        if tx is not None:
+            r["net_tx_bytes"], r["net_rx_bytes"] = tx, rx or 0
+        return r
+
+    def test_own_and_subtree(self):
+        _, tree, _ = build([
+            self.io(ex(T0 + 1, 201, 200, "cat", "cat a"), rd=1.5, rc=2.0),
+            self.io(ex(T0 + 2, 202, 200, "curl", "curl x"), wr=0.5, tx=3_000_000, rx=1_000_000),
+            ex(T0 + 2.5, 203, 200, "true"),                 # no io block: unmeasured
+            self.io(ex(T0 + 3, 200, AGENT, "bash", "bash -c x", dur=5), rc=0.25),
+        ])
+        bash = find(tree, 200)
+        self.assertEqual(bash["io"]["rchar_mb"], 0.25)
+        sub = bash["sub_io"]
+        self.assertEqual((sub["rd_mb"], sub["wr_mb"], sub["rchar_mb"]), (1.5, 0.5, 2.25))
+        self.assertEqual((sub["tx_mb"], sub["rx_mb"]), (3.0, 1.0))
+        self.assertEqual(find(tree, 202)["io"]["tx_mb"], 3.0)
+        # nothing moved, or nothing measured: no block at all
+        self.assertNotIn("io", find(tree, 203))
+        # a leaf's subtree is itself: not repeated
+        self.assertNotIn("sub_io", find(tree, 201))
+
+    def test_counted_processes_keep_their_io(self):
+        # past the hold budget, processes are counted under their parent; their
+        # bytes still reach the parent's subtree total
+        recs = [self.io(ex(T0 + i, 300 + i, 200, "cat", "cat f%d" % i), rd=1.0)
+                for i in range(1, 40)]
+        recs.append(ex(T0 + 50, 200, AGENT, "bash", "bash -c loop", dur=60))
+        _, tree, _ = build(recs, hold=8)
+        self.assertAlmostEqual(find(tree, 200)["sub_io"]["rd_mb"], 39.0)

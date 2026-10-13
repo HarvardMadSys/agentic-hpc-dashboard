@@ -6,7 +6,7 @@
  * users stand in for a population -- so processes, CPU, I/O, memory, and
  * sessions sit side by side, each row sortable by any class's share.
  */
-import type { Cls, IoProcess, LiveResponse, Resources, SlurmClass, SlurmPanel, ToolMix, Trajectories } from '../api/types';
+import type { Cls, IoProcess, IoSort, LiveResponse, Resources, SlurmClass, SlurmPanel, ToolMix, Trajectories } from '../api/types';
 import { Basis, Panel } from '../components/Panel';
 import { ShareCell } from '../components/ShareCell';
 import { SortTh } from '../components/SortTh';
@@ -18,6 +18,8 @@ import { pick, winLabel } from '../lib/panels';
 import { useSort } from '../lib/useSort';
 import { Fragment } from 'react';
 import type { Panels } from '../lib/panels';
+import { coveredBy } from '../lib/iocmds';
+import { IoNum } from '../components/IoCmds';
 
 /** One row per unit: the whole point is that the ranking changes between them. */
 interface UnitRow {
@@ -29,6 +31,8 @@ interface UnitRow {
   group?: 'node' | 'slurm';
   /** a class's cell on hover: the single process behind a peak (roadmap note 27) */
   cellTip?: (c: string) => string | undefined;
+  /** a byte quantity: a click on a class's cell lists every command behind it */
+  io?: IoSort;
 }
 
 const GROUPS: Record<NonNullable<UnitRow['group']>, [string, string]> = {
@@ -90,10 +94,10 @@ export function OverviewTab({
         return v == null ? null : v / 3600;
       }, fmt: (n) => (n == null ? DASH : fmt(n) + ' h'), tip: GLOSS.cpuh,
       cellTip: (c) => topTip(c, 'cpu_s', dur, 'most CPU in one process') },
-    { k: 'disk read', get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes },
-    { k: 'disk written', get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes },
-    { k: 'network sent', get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx },
-    { k: 'network received', get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx },
+    { k: 'disk read', get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes, io: 'rd_mb' },
+    { k: 'disk written', get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes, io: 'wr_mb' },
+    { k: 'network sent', get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx, io: 'tx_mb' },
+    { k: 'network received', get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx, io: 'rx_mb' },
     { k: 'peak memory', get: peakGb, fmt: (n) => (n == null ? DASH : fmt(n) + ' GB'),
       tip: 'the most resident memory the class held at once in the window, sampled while processes ran; hover a cell for the single largest process',
       cellTip: (c) => topTip(c, 'peak_rss_mb', (v) => mb(v), 'largest single process') },
@@ -184,11 +188,17 @@ export function OverviewTab({
                       const v = u.get(c);
                       return (
                         <td key={c} data-tip={u.cellTip?.(c)}>
-                          <ShareCell
-                            pct={v == null || !tot ? null : (100 * v) / tot}
-                            sub={u.fmt ? u.fmt(v) : fint(v)}
-                            c={CLS_COL[c]}
-                          />
+                          {u.io && v ? (
+                            <IoNum q={{ title: `${u.k} · ${CLS_LBL[c] ?? c}`, sort: u.io, class: [c], ...coveredBy(io) }}>
+                              <ShareCell pct={tot ? (100 * v) / tot : null} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
+                            </IoNum>
+                          ) : (
+                            <ShareCell
+                              pct={v == null || !tot ? null : (100 * v) / tot}
+                              sub={u.fmt ? u.fmt(v) : fint(v)}
+                              c={CLS_COL[c]}
+                            />
+                          )}
                         </td>
                       );
                     })}

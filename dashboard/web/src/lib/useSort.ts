@@ -3,7 +3,14 @@
  *
  * Numbers sort largest first on the first click, text A to Z; a missing value
  * always sorts last in either direction, because "not measured" is not the
- * smallest measurement. A table with no sort chosen keeps the service's order.
+ * smallest measurement.
+ *
+ * A table's own order never ranks by a value, so it holds still while the data
+ * or a metric switch changes: ranking is what the headers are for. A table
+ * whose rows name things opens sorted by its first column, A to Z, and rows in
+ * time open newest first; that column is the `home` sort, its arrow lit, so the
+ * first click on it visibly flips it. Rows with an order of their own (the
+ * classes, the measures, the tool taxonomy) take no home and keep it.
  */
 import { useState } from 'react';
 
@@ -42,8 +49,9 @@ export function useSort<K extends string>(initial: K | null = null, initialDir: 
     if (k !== key) {
       setKey(k);
       setDir(firstDir);
-    } else if (dir === firstDir) {
-      setDir(firstDir === 'desc' ? 'asc' : 'desc');
+    } else if (dir === firstDir || k === initial) {
+      // the home column only flips: its third click would be itself again
+      setDir(dir === 'desc' ? 'asc' : 'desc');
     } else {
       // the third click: the table's own order again
       setKey(initial);
@@ -55,19 +63,21 @@ export function useSort<K extends string>(initial: K | null = null, initialDir: 
 }
 
 /** One sort per table, by an id, from a single hook: for a component that
- * draws its tables in a loop or a branch, where a hook per table cannot go. */
-export function useSortMap<K extends string = string>(): (id: string) => Sorter<K> {
+ * draws its tables in a loop or a branch, where a hook per table cannot go.
+ * `home` and `homeDir` are the table's own order, as `useSort` takes them. */
+export function useSortMap<K extends string = string>(): (id: string, home?: K, homeDir?: SortDir) => Sorter<K> {
   const [st, setSt] = useState<Record<string, { key: K | null; dir: SortDir }>>({});
-  return (id) => {
-    const cur = st[id] ?? { key: null, dir: 'desc' as SortDir };
+  return (id, home, homeDir = 'desc') => {
+    const own = { key: home ?? null, dir: homeDir };
+    const cur = st[id] ?? own;
     return {
       key: cur.key,
       dir: cur.dir,
       toggle: (k: K, firstDir: SortDir = 'desc') =>
         setSt((m) => {
-          const c = m[id] ?? { key: null, dir: 'desc' as SortDir };
+          const c = m[id] ?? own;
           if (k !== c.key) return { ...m, [id]: { key: k, dir: firstDir } };
-          if (c.dir === firstDir) return { ...m, [id]: { key: k, dir: firstDir === 'desc' ? 'asc' : 'desc' } };
+          if (c.dir === firstDir || k === home) return { ...m, [id]: { key: k, dir: c.dir === 'desc' ? 'asc' : 'desc' } };
           // the third click: the table's own order again
           const rest = { ...m };
           delete rest[id];

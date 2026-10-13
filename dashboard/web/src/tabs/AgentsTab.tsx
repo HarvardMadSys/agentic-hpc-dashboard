@@ -18,11 +18,12 @@
  *   are measured; the paths its command lines NAMED are inferred, and every
  *   place that shows them is drawn in the dashed `inferred` style.
  */
-import { ToolPanels } from './SessionsTab';
-import { useState } from 'react';
+import { ToolPanels } from './ToolPanels';
+import { useEffect, useRef, useState } from 'react';
 import type {
   Cls,
   CascadeNode,
+  IoSort,
   CascadeTree,
   Cascades,
   HomeSrc,
@@ -43,7 +44,11 @@ import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
 import { AGENT_TYPE_COL, AGENT_TYPE_LBL } from '../lib/classes';
+import { AP_LABEL, CALL_LABEL, SESSION_LABEL, label } from '../lib/sandbox';
 import { pick, winLabel } from '../lib/panels';
+import { coveredBy } from '../lib/iocmds';
+import type { IoQuery } from '../lib/iocmds';
+import { IoNum } from '../components/IoCmds';
 import type { Panels } from '../lib/panels';
 import './agents.css';
 
@@ -89,16 +94,32 @@ function nodeTip(n: CascadeNode): string {
     n.spawned_by != null ? `--spawned-by pid ${n.spawned_by}` : null,
     n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a node launcher execs), which runs the session' : null,
     n.implied ? 'implied: a tool-call shell named it as parent; it left no record itself' : null,
+    ...(n.role === 'agent' ? launchTip(n) : []),
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/** An agent's launch and its calls' sandbox verdict, in words: what its
+ * letters (Tags) say, and why a box has none. */
+function launchTip(n: CascadeNode): string[] {
+  const flags = n.approval_detail && n.approval_detail !== 'no launch flag' ? ` · ${n.approval_detail}` : '';
+  const c = Object.entries(n.sandbox_calls ?? {}).filter(([, v]) => v);
+  const all = c.reduce((a, [, v]) => a + (v ?? 0), 0);
+  const calls = c.length === 1 ? ` · ${fint(all)} call${all === 1 ? '' : 's'}`
+    : c.length ? ' · ' + c.map(([k, v]) => `${fint(v ?? 0)} ${label(CALL_LABEL, k)}`).join(', ') : '';
+  return [
+    `launch: ${label(AP_LABEL, n.approval ?? 'unknown')}${flags}`,
+    `sandbox: ${label(SESSION_LABEL, n.sandbox ?? 'no_calls')}${calls}${
+      !n.sandbox && n.agent_type === 'codex' ? ' (a Codex command run without a sandbox wrapper is not counted)' : ''}`,
+  ];
 }
 
 function OutsideWrites({ n, tip }: { n: number | null | undefined; tip?: string }) {
   if (n == null) return <span data-tip="no home to be outside of">{DASH}</span>;
   if (n === 0) return <span style={{ color: 'var(--muted)' }}>0</span>;
   return (
-    <span className="ws-flagmark" data-tip={tip ?? 'distinct paths written or deleted outside the home, named on command lines (inferred)'}>
+    <span className="ws-flagmark" data-tip={tip ?? 'distinct paths written or deleted outside the home, as its commands mention them (guessed from the text)'}>
       {fint(n)} outside
     </span>
   );
@@ -127,14 +148,14 @@ function Ops({ d }: { d: { read: number; write: number; delete: number; named: n
     ['ws-r', d.read, 'read'],
     ['ws-w', d.write, 'written'],
     ['ws-d', d.delete, 'deleted'],
-    ['ws-n', d.named, 'named, no known effect'],
+    ['ws-n', d.named, 'mentioned, with no known effect'],
   ];
   const shown = parts.filter(([, v]) => v > 0);
   if (!shown.length) return <span style={{ color: 'var(--muted)' }}>{DASH}</span>;
   return (
     <span className="ws-ops">
       {shown.map(([c, v, lbl]) => (
-        <span key={c} className={c} data-tip={`${fint(v)} distinct path${v === 1 ? '' : 's'} ${lbl} (inferred from command lines)`}>
+        <span key={c} className={c} data-tip={`${fint(v)} distinct path${v === 1 ? '' : 's'} ${lbl} (guessed from the text of its commands)`}>
           {c.slice(3)} {fint(v)}
         </span>
       ))}
@@ -181,11 +202,11 @@ function ioTip(d: WsDir): string | undefined {
   ].join('\n');
 }
 
-/* Every directory, busiest first, in a box that scrolls with its header in
- * view: the busiest dozen used to be shown and the rest were a click away. */
-function DirTable({ v }: { v: WsView }) {
+/* Every directory, A to Z, in a box that scrolls with its header in view:
+ * the busiest dozen used to be shown and the rest were a click away. */
+function DirTable({ v, ioq }: { v: WsView; ioq?: (d: WsDir, sort: IoSort) => IoQuery }) {
   const maxProcs = Math.max(1, ...v.dirs.map((d) => d.procs));
-  const s = useSort<string>();
+  const s = useSort<string>('dir', 'asc');
   const rows = s.sort(v.dirs, (d, k) =>
     k === 'dir' ? d.shown : k === 'procs' ? d.procs : k === 'rd' ? d.io?.rchar_mb ?? null
     : k === 'wr' ? d.io?.wchar_mb ?? null : k === 'named' ? d.named : d.last);
@@ -203,8 +224,8 @@ function DirTable({ v }: { v: WsView }) {
               <th />
               <SortTh s={s} k="rd" num tip="MEASURED per process: syscall bytes read by the processes that ran here">bytes read</SortTh>
               <SortTh s={s} k="wr" num tip="MEASURED per process: syscall bytes written by the processes that ran here">bytes written</SortTh>
-              <SortTh s={s} k="named" className="ws-inf" tip="INFERRED: distinct paths here that command lines named, by what the command does with them">
-                named on command lines
+              <SortTh s={s} k="named" className="ws-inf" tip="GUESSED from the text of its commands, not measured: distinct files here that its commands mention, by what each command does with them">
+                files its commands mention
               </SortTh>
               <SortTh s={s} k="seen">seen</SortTh>
             </tr>
@@ -233,10 +254,10 @@ function DirTable({ v }: { v: WsView }) {
                     )}
                   </td>
                   <td className="num" data-tip={ioTip(d)}>
-                    {d.io ? mb(d.io.rchar_mb) : DASH}
+                    {d.io ? (ioq ? <IoNum q={ioq(d, 'rchar_mb')}>{mb(d.io.rchar_mb)}</IoNum> : mb(d.io.rchar_mb)) : DASH}
                   </td>
                   <td className="num" data-tip={ioTip(d)}>
-                    {d.io ? mb(d.io.wchar_mb) : DASH}
+                    {d.io ? (ioq ? <IoNum q={ioq(d, 'wchar_mb')}>{mb(d.io.wchar_mb)}</IoNum> : mb(d.io.wchar_mb)) : DASH}
                   </td>
                   <td className="ws-inf">
                     <Ops d={d} />
@@ -388,56 +409,356 @@ function TypeStrip({ stats }: { stats: TypeStat[] }) {
 const procs = (n: number | null | undefined) =>
   n ? `${fint(n)} process${n === 1 ? '' : 'es'}` : 'ran nothing';
 
-/** An agent on its own, as a card: its type, whose it is, how much it ran,
- * whether it wrote outside its home, and where its home is. */
-function AgentCard({ n }: { n: CascadeNode }) {
+/** The agent's version, after its type, where its program's path names it. */
+function Ver({ n }: { n: CascadeNode }) {
+  return n.version ? <span className="aver" data-tip={GLOSS.version}>v{n.version}</span> : null;
+}
+
+const calls = (k: number) => (k === 1 ? 'its one tool call' : `all ${fint(k)} of its tool calls`);
+
+/** How an agent was launched, and whether its tool calls ran in a sandbox, as
+ * a letter in a box each: what is usual -- no bypass flag, calls confined, no
+ * calls at all -- shows nothing. A sandbox tried and failed is [F], never [U]:
+ * on rtx6000a every Codex sandbox fails to start, and that is not "never tried". */
+const TAGS: { k: string; cls: string; lbl: string }[] = [
+  { k: 'B', cls: 'crit', lbl: 'bypass flag' },
+  { k: 'A', cls: 'warn', lbl: 'auto mode' },
+  { k: 'U', cls: '', lbl: 'tool calls not sandboxed' },
+  { k: 'F', cls: '', lbl: 'sandbox failed to start' },
+];
+
+function tagsOf(n: CascadeNode): { k: string; tip: string }[] {
+  const out: { k: string; tip: string }[] = [];
+  const how = n.approval_detail && n.approval_detail !== 'no launch flag' ? `\nlaunched with ${n.approval_detail}` : '';
+  if (n.approval === 'bypassed') out.push({ k: 'B', tip: GLOSS.bypass + how });
+  else if (n.approval === 'auto') out.push({ k: 'A', tip: GLOSS.automode + how });
+  const c = n.sandbox_calls ?? {};
+  const iso = c.isolated ?? 0;
+  const open = c.not_isolated ?? 0;
+  const failed = c.failed ?? 0;
+  const also = open ? `; ${fint(open)} more ran without isolation` : '';
+  if (n.sandbox === 'failed') {
+    out.push({ k: 'F', tip: `sandbox failed to start: ${failed === 1 ? 'its one tool call' : `${fint(failed)} of its tool calls`} tried a sandbox, and the sandbox did not come up${also}` });
+  } else if (n.sandbox === 'unsandboxed') {
+    out.push({ k: 'U', tip: `not sandboxed: ${calls(open)} ran without isolation` });
+  } else if (n.sandbox === 'partial') {
+    out.push({ k: 'U', tip: `partly sandboxed: ${fint(iso)} of its ${fint(iso + open + failed)} tool calls ran isolated${also}${failed ? `, and ${fint(failed)} tried a sandbox that did not come up` : ''}` });
+  }
+  return out;
+}
+
+function Tags({ n }: { n: CascadeNode }) {
+  const t = tagsOf(n);
+  if (!t.length) return null;
+  return (
+    <span className="ltags">
+      {t.map(({ k, tip }) => (
+        <span key={k} className={`ltag ${TAGS.find((x) => x.k === k)?.cls ?? ''}`} data-tip={tip}>{k}</span>
+      ))}
+    </span>
+  );
+}
+
+/** The tags an entry's agents wear, each letter once, with how many wear it. */
+function TagSum({ ns }: { ns: CascadeNode[] }) {
+  const m = new Map<string, number>();
+  for (const n of ns) for (const { k } of tagsOf(n)) m.set(k, (m.get(k) ?? 0) + 1);
+  if (!m.size) return null;
+  return (
+    <span className="ltags">
+      {TAGS.filter(({ k }) => m.has(k)).map(({ k, cls, lbl }) => (
+        <span key={k} className={`ltag ${cls}`} data-tip={`${lbl}: ${fint(m.get(k))} of its ${fint(ns.length)} agents`}>
+          {k}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/* ------------------------------------------------- what the list shows
+ * Who and which type are the page's filter (WhoFilter). The list narrows
+ * further by marks: an agent passes when it wears one of the picked marks, a
+ * tag's letter or `O` for a write outside its home, and a tree passes when
+ * any of its agents does. */
+
+/** the letters, then the write outside its home, as filter chips */
+const MARKS = [...TAGS, { k: 'O', cls: '', lbl: 'wrote outside home' }];
+
+const marksOf = (n: CascadeNode): string[] => [
+  ...tagsOf(n).map((t) => t.k),
+  ...(n.workspace?.outside_writes ? ['O'] : []),
+];
+
+const passes = (marks: string[], n: CascadeNode) => marksOf(n).some((k) => marks.includes(k));
+
+/** The marks as chips, each saying what its letter means and how many agents
+ * wear it, and how the list is laid out. */
+function AgentFilter({ pts, marks, setMarks, by, setBy, shown }: {
+  pts: AgentPt[];
+  marks: string[];
+  setMarks: (m: string[]) => void;
+  by: By;
+  setBy: (b: By) => void;
+  shown: number;
+}) {
+  const n = new Map<string, number>();
+  for (const p of pts) for (const k of marksOf(p.n)) n.set(k, (n.get(k) ?? 0) + 1);
+  const toggle = (k: string) => setMarks(marks.includes(k) ? marks.filter((x) => x !== k) : [...marks, k]);
+  return (
+    <div className="afilter">
+      <span className="ltag-key">
+        {MARKS.map(({ k, cls, lbl }) => {
+          const on = marks.includes(k);
+          return (
+            <button key={k} aria-pressed={on} disabled={!on && !n.get(k)} onClick={() => toggle(k)}
+              data-tip={on ? 'click to stop filtering on it' : `show only the agents with it${marks.length ? ', or with another picked mark' : ''}`}>
+              {k === 'O' ? <span className="ws-flagmark">outside</span> : <span className={`ltag ${cls}`}>{k}</span>} {lbl}
+              <span className="nm"> {fint(n.get(k) ?? 0)}</span>
+            </button>
+          );
+        })}
+      </span>
+      <span className="afilter-end">
+        {marks.length > 0 && (
+          <>
+            <span className="nm">{fint(shown)} of {fint(pts.length)} agents</span>
+            <button className="linkbtn" onClick={() => setMarks([])}>clear</button>
+          </>
+        )}
+        <Segmented
+          value={by}
+          onChange={setBy}
+          options={[
+            { k: 'list', lbl: 'one list', tip: 'every entry in one list, the latest first' },
+            { k: 'user', lbl: 'by user', tip: 'a heading per user, the user active last first' },
+          ]}
+        />
+      </span>
+    </div>
+  );
+}
+
+/* ------------------------------------------- the list beside the detail
+ * Every tree of more than one agent, and every agent on its own, is a row of
+ * one list; the row picked opens on the right: its tree, then the blast radius
+ * of the agent picked in it. It was a page of trees above a grid of cards,
+ * where a blast radius opened below the whole tree or grid. */
+
+type By = 'list' | 'user';
+
+/** When an entry was last active. Running ones come first, the latest
+ * started first; the rest follow by when they were last seen. The service's
+ * `YYYY-MM-DD HH:MM:SS` sorts as text. */
+interface Recency {
+  running: boolean;
+  /** running: when it started (a tree: its earliest running agent) */
+  since: string;
+  last: string;
+}
+
+const newer = (a: Recency, b: Recency) =>
+  Number(b.running) - Number(a.running) ||
+  (a.running ? b.since.localeCompare(a.since) : b.last.localeCompare(a.last));
+
+const latest = (xs: (string | null)[]) => xs.reduce<string>((m, x) => (x && x > m ? x : m), '');
+const earliest = (xs: (string | null)[]) => xs.reduce<string>((m, x) => (x && (!m || x < m) ? x : m), '');
+
+function recencyOf(ns: CascadeNode[], since: 'first' | 'last'): Recency {
+  const run = ns.filter((n) => !n.exited).map((n) => n.started);
+  return {
+    running: run.length > 0,
+    since: since === 'first' ? earliest(run) : latest(run),
+    last: latest(ns.map((n) => n.last_seen)),
+  };
+}
+
+/** `MM-DD HH:MM` of the service's `YYYY-MM-DD HH:MM:SS` */
+const hm = (s: string | null | undefined) => (s ? s.slice(5, 16) : DASH);
+
+/** One time to another; the second's date is dropped on the same day. */
+function span(a: string | null | undefined, b: string | null | undefined): string {
+  if (!a || !b || a.slice(0, 16) === b.slice(0, 16)) return hm(a || b);
+  return `${hm(a)} – ${a.slice(0, 10) === b.slice(0, 10) ? b.slice(11, 16) : hm(b)}`;
+}
+
+function Live({ since }: { since: string }) {
+  return (
+    <span className="al-live" data-tip="still running at the end of the window">
+      <i className="ld" />
+      running since {hm(since)}
+    </span>
+  );
+}
+
+/** A row of the list: a tree of more than one agent, an agent on its own, or
+ * a fold of look-alike agents on their own (one user, type, and home). */
+type Entry =
+  | { k: 'tree'; key: string; t: CascadeTree; agents: CascadeNode[]; at: Recency }
+  | { k: 'lone'; key: string; p: AgentPt; at: Recency }
+  | { k: 'fold'; key: string; ps: AgentPt[]; at: Recency };
+
+/* Agents on their own that share a user, type, and home fold into one row at
+ * this many: nineteen short Codex runs in ~ are one row, not nineteen cards. */
+const FOLD_AT = 3;
+
+const entryUsers = (e: Entry): string =>
+  (e.k === 'tree' ? e.t.users.join(', ') : e.k === 'lone' ? e.p.n.user : e.ps[0].n.user) || DASH;
+
+function Outside({ n, tip }: { n: number; tip: string }) {
+  return n ? <span className="ws-flagmark" data-tip={tip}>{fint(n)} outside</span> : null;
+}
+
+/** Paths written outside their homes, over several agents, for a row that
+ * stands for them all: the same count a lone agent's row shows, summed. */
+function OutsideOf({ ns }: { ns: CascadeNode[] }) {
+  const by = ns.map((n) => n.workspace?.outside_writes ?? 0).filter((v) => v > 0);
+  const sum = by.reduce((a, v) => a + v, 0);
+  return (
+    <Outside n={sum} tip={`${fint(sum)} distinct path${sum === 1 ? '' : 's'} written or deleted outside their home, as their commands mention them (guessed from the text): ${
+      fint(by.length)} of these ${fint(ns.length)} agents wrote them, and a path two of them named counts twice`} />
+  );
+}
+
+/** An agent on its own: its type, version and tags; whose it is and its
+ * home; when it ran, how much, and whether it wrote outside its home. */
+function LoneRow({ n, on, onPick, inFold }: { n: CascadeNode; on: boolean; onPick: () => void; inFold?: boolean }) {
   const w = n.workspace;
   return (
-    <div className="acard" data-tip={nodeTip(n)}>
-      <div className="acard-h">
-        <i className="tdot" style={{ background: typeCol(n.agent_type) }} />
+    <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(n.agent_type) }}
+      onClick={onPick} data-tip={nodeTip(n)}>
+      <span className="al-h">
+        {!inFold && <i className="tdot" style={{ background: typeCol(n.agent_type) }} />}
         <b>{typeLbl(n.agent_type)}</b>
-        <span className="mono nm acard-other">{n.user ?? DASH}</span>
-      </div>
-      <div className="acard-b">
+        <Ver n={n} />
+        <span className="al-flags">
+          <Outside n={w?.outside_writes ?? 0} tip="distinct paths written or deleted outside its home, as its commands mention them (guessed from the text)" />
+          <Tags n={n} />
+        </span>
+      </span>
+      {!inFold && (
+        <span className="al-s mono">
+          {n.user ?? DASH} · <span className={n.home_src === 'first_call' ? 'inferred' : undefined}>{tildeOf(n.home, n.user)}</span>
+        </span>
+      )}
+      <span className="al-s">
+        {n.exited ? `${span(n.started, n.last_seen)}${n.duration_s != null ? ` · ${dur(n.duration_s)}` : ''}` : <Live since={n.started ?? ''} />}
+        {' · '}
         {procs(n.tool_calls)}
-        {n.cpu_s ? ` · ${dur(n.cpu_s)}` : ''}
-        {w?.outside_writes ? <span className="ws-flagmark"> {fint(w.outside_writes)} outside</span> : null}
-      </div>
-      <div className={`acard-c nm${n.home_src === 'first_call' ? ' inferred' : ''}`}>{tildeOf(n.home, n.user)}</div>
+        {n.cpu_s ? ` · ${dur(n.cpu_s)} CPU` : ''}
+      </span>
+    </button>
+  );
+}
+
+function TreeRow({ e, on, onPick }: { e: Extract<Entry, { k: 'tree' }>; on: boolean; onPick: () => void }) {
+  const { t, agents, at } = e;
+  const lead = agents.filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0];
+  const user = t.users.length === 1 ? t.users[0] : null;
+  return (
+    <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(lead?.agent_type) }}
+      onClick={onPick} data-tip="click to draw its tree">
+      <span className="al-h">
+        <b className="wrap">{composition(t, agents)}</b>
+        <span className="al-flags">
+          <OutsideOf ns={agents} />
+          <TagSum ns={agents} />
+        </span>
+      </span>
+      <span className="al-s mono">
+        {t.users.join(', ') || DASH}{lead?.home ? ` · ${tildeOf(lead.home, user)}` : ''}
+      </span>
+      <span className="al-s">
+        {at.running ? <Live since={at.since} /> : span(earliest(agents.map((n) => n.started)), at.last)}
+        {' · '}
+        {fint(t.tool_calls)} processes · {dur(t.cpu_s)} CPU
+      </span>
+    </button>
+  );
+}
+
+/** Look-alike agents on their own, as one row that opens to theirs. */
+function FoldRow({ e, open, onOpen }: { e: Extract<Entry, { k: 'fold' }>; open: boolean; onOpen: () => void }) {
+  const ns = e.ps.map((p) => p.n);
+  const n0 = ns[0];
+  const starts = ns.map((n) => n.started);
+  const took = ns.map((n) => n.duration_s).filter((d): d is number => d != null);
+  const running = ns.filter((n) => !n.exited).length;
+  return (
+    <button className={`al-item fold${open ? ' open' : ''}`} style={{ borderLeftColor: typeCol(n0.agent_type) }}
+      onClick={onOpen} aria-expanded={open}
+      data-tip={`${fint(ns.length)} ${typeLbl(n0.agent_type)} agents on their own, of one user, in one home: click to ${open ? 'fold them' : 'list them'}`}>
+      <span className="al-h">
+        <span className="al-caret">{open ? '▾' : '▸'}</span>
+        <i className="tdot" style={{ background: typeCol(n0.agent_type) }} />
+        <b>{fint(ns.length)} {typeLbl(n0.agent_type)} runs</b>
+        <span className="al-flags">
+          <OutsideOf ns={ns} />
+          <TagSum ns={ns} />
+        </span>
+      </span>
+      <span className="al-s mono">
+        {n0.user ?? DASH} · {tildeOf(n0.home, n0.user)}
+      </span>
+      <span className="al-s">
+        {running ? <span className="al-live"><i className="ld" />{fint(running)} running · </span> : null}
+        {hm(earliest(starts))} – {hm(latest(starts))}
+        {took.length ? ` · ${dur(Math.min(...took))} to ${dur(Math.max(...took))} each` : ''}
+      </span>
+    </button>
+  );
+}
+
+/** The picked agent on its own: what its row said, at the head of its blast radius. */
+function LoneHead({ n }: { n: CascadeNode }) {
+  return (
+    <div className="atree-t">
+      <span className="atree-what">
+        <b>{typeLbl(n.agent_type)}</b> <Ver n={n} />
+        <span className="nm"> · {n.user ?? DASH}</span>
+        <span className="nm mono"> · {tildeOf(n.home, n.user)}</span>
+        <span className="nm"> · {n.exited ? span(n.started, n.last_seen) : `running since ${hm(n.started)}`}</span>
+      </span>
+      <span className="atree-sum nm">
+        <Tags n={n} /> {procs(n.tool_calls)}{n.cpu_s ? ` · ${dur(n.cpu_s)} CPU` : ''}
+      </span>
     </div>
   );
 }
 
 /** An agent in a tree, named by its type -- the one thing every box needs,
- * since a tree can hold more than one -- with how much it ran. Its user and
- * home show only where they differ from the tree's title and its parent's. */
-function AgentNode({ n, treeUser, home }: { n: CascadeNode; treeUser: string | null; home: string | null }) {
+ * since a tree can hold more than one -- with its version and tags, then how
+ * much it ran, then whether it wrote outside its home. Its user and home show
+ * only where they differ from the tree's title and its parent's. Under a
+ * filter, a box that does not pass it is dimmed. */
+function AgentNode({ n, treeUser, home, dim }: { n: CascadeNode; treeUser: string | null; home: string | null; dim?: boolean }) {
   const w = n.workspace;
   const sub = (n.agent_level ?? 1) >= 2;
   const user = n.user && n.user !== treeUser ? n.user : null;
   const own = n.home && n.home !== home ? tildeOf(n.home, n.user) : null;
-  const facts = [n.cpu_s ? `${dur(n.cpu_s)} CPU` : null, user].filter(Boolean).join(' · ');
+  const facts = [procs(n.tool_calls), n.cpu_s ? `${dur(n.cpu_s)} CPU` : null].filter(Boolean).join(' · ');
   return (
     <div
-      className="anode"
+      className={`anode${dim ? ' dim' : ''}`}
       style={{ borderLeftColor: typeCol(n.agent_type) }}
       data-tip={nodeTip(n) + (sub && n.cwd_vs_parent_agent ? '\n' + PARENT_LBL[n.cwd_vs_parent_agent] : '')}
     >
       <div className="anode-h">
         <b>{typeLbl(n.agent_type)}</b>
-        <span className="anode-n">{procs(n.tool_calls)}</span>
+        <Ver n={n} />
+        <Tags n={n} />
       </div>
       <div className="anode-s">
         {facts}
-        {w?.outside_writes ? (
-          <>
-            {facts ? ' · ' : ''}
-            <span className="ws-flagmark">{fint(w.outside_writes)} outside</span>
-          </>
-        ) : null}
+        {user ? ` · ${user}` : ''}
       </div>
-      {own && <div className={`anode-s mono${n.home_src === 'first_call' ? ' inferred' : ''}`}>{own}</div>}
+      {/* writes outside its home, beside the home they are outside of */}
+      {(w?.outside_writes || own) && (
+        <div className="anode-s">
+          {w?.outside_writes ? <span className="ws-flagmark">{fint(w.outside_writes)} outside</span> : null}
+          {w?.outside_writes && own ? ' ' : null}
+          {own && <span className={`mono${n.home_src === 'first_call' ? ' inferred' : ''}`}>{own}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -530,11 +851,14 @@ function TreeTitle({ t, agents }: { t: CascadeTree; agents: CascadeNode[] }) {
   );
 }
 
-/** A tree of more than one agent, of any types, drawn as a tree, folded. */
-function TreeView({ t, sel, onSel }: {
+/** A tree of more than one agent, of any types, drawn as a tree, folded.
+ * Under a filter, the agents that pass it, and the ones above them, are drawn
+ * ahead of the fold, and every other box is dimmed. */
+function TreeView({ t, sel, onSel, match }: {
   t: CascadeTree;
   sel: string | null;
   onSel: (k: string) => void;
+  match: ((n: CascadeNode) => boolean) | null;
 }) {
   // how many of a parent's agents are open, past the first FOLD_FIRST
   const [open, setOpen] = useState<Record<string, number>>({});
@@ -573,14 +897,25 @@ function TreeView({ t, sel, onSel }: {
   // and started no other: a box of its own would only repeat the fold's count
   const trivial = (n: CascadeNode) =>
     (n.tool_calls ?? 0) <= 1 && !n.workspace?.outside_writes && !(kids.get(id(n)) ?? []).length;
+  // passes the filter, or has an agent below it that does
+  const hits = new Map<string, boolean>();
+  const hit = (n: CascadeNode): boolean => {
+    if (!match) return false;
+    let h = hits.get(id(n));
+    if (h == null) {
+      h = match(n) || (kids.get(id(n)) ?? []).some(hit);
+      hits.set(id(n), h);
+    }
+    return h;
+  };
 
   const nodes: TreeNode<TreeBox>[] = [];
   if (!rootIsAgent) nodes.push({ id: 'root', parent: null, data: { k: 'infra' } });
   const place = (at: string | null, list: CascadeNode[], home: string | null) => {
-    const sorted = [...list].sort(busier);
+    const sorted = [...list].sort((a, b) => Number(hit(b)) - Number(hit(a)) || busier(a, b));
     const opened = open[at ?? ''];
     const limit = opened ?? FOLD_FIRST;
-    const shown = sorted.filter((n, i) => keep.has(id(n)) || (i < limit && (opened != null || !trivial(n))));
+    const shown = sorted.filter((n, i) => keep.has(id(n)) || (i < limit && (opened != null || !trivial(n) || hit(n))));
     for (const n of shown) {
       nodes.push({ id: id(n), parent: at, data: { k: 'agent', n, home } });
       place(id(n), kids.get(id(n)) ?? [], n.home ?? home);
@@ -632,7 +967,7 @@ function TreeView({ t, sel, onSel }: {
         }}
         render={(x) =>
           x.data.k === 'agent' ? (
-            <AgentNode n={x.data.n} treeUser={treeUser} home={x.data.home} />
+            <AgentNode n={x.data.n} treeUser={treeUser} home={x.data.home} dim={!!match && !match(x.data.n)} />
           ) : x.data.k === 'more' ? (
             <MoreBox b={x.data} />
           ) : (
@@ -650,7 +985,7 @@ function TreeView({ t, sel, onSel }: {
 }
 
 /** One agent's blast radius, opened from its card (roadmap note 35.3). */
-function AgentBlast({ a }: { a: WsAgent | undefined }) {
+function AgentBlast({ a, from }: { a: WsAgent | undefined; from?: string | number | null }) {
   const [mode, setMode] = useState<Mode>('self');
   if (!a) {
     return <NoRows what="no blast radius was served for this agent: the service sends the busiest agents' only" />;
@@ -683,7 +1018,7 @@ function AgentBlast({ a }: { a: WsAgent | undefined }) {
         </span>
         <span>{fint(s.procs)} processes{inside != null ? `, ${pc(inside)} inside home` : ''}</span>
         <span>{fint(s.dirs)} directories</span>
-        <span className="ws-inf"><Term k="named">named</Term> <Ops d={s.named} /></span>
+        <span className="ws-inf"><Term k="named">files its commands mention</Term> <Ops d={s.named} /></span>
         <span><Term k="outsidehome">outside home</Term> <OutsideWrites n={s.outside_writes} /></span>
         {s.roots.length > 0 && (
           <span className="ws-roots">
@@ -701,12 +1036,21 @@ function AgentBlast({ a }: { a: WsAgent | undefined }) {
         )}
       </div>
       <Flags v={v} />
-      <DirTable v={v} />
+      <DirTable
+        v={v}
+        ioq={(d, sort) => ({
+          title: `${sort === 'rchar_mb' ? 'bytes read' : 'bytes written'} in ${d.shown} · ${typeLbl(a.agent_type)} pid ${a.pid}${mode === 'tree' && a.subagents.length ? ' with its subagents' : ''}`,
+          sort,
+          class: ['agent'],
+          host: a.host,
+          apid: mode === 'tree' ? [a.pid, ...a.subagents] : [a.pid],
+          cwd: d.path,
+          from,
+        })}
+      />
     </div>
   );
 }
-
-const GRID_SHOWN = 24;
 
 export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const c = pick<Cascades>(P, 'cascades', 'ebpfm');
@@ -718,24 +1062,93 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         t.nodes.filter((n) => n.role === 'agent').map((n) => ({ n, t, ws: ws.get(keyOf(t.host, n.pid)) })))
     : [];
   const stats = typeStats(pts);
-  const [selAgent, setSelAgent] = useState<string | null>(null);
-  const [allGrid, setAllGrid] = useState(false);
+  const [marks, setMarks] = useState<string[]>([]);
+  const [by, setBy] = useState<By>('list');
+  // the row picked, and the agent picked in it: a lone agent is both
+  const [sel, setSel] = useState<{ entry: string; agent: string | null } | null>(null);
+  const [opened, setOpened] = useState<string[]>([]);
+  const [showIdle, setShowIdle] = useState(false);
+  // a row picked while the page is scrolled past the top of the detail
+  // brings the detail back into view
+  const pane = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = pane.current;
+    if (el && sel && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [sel?.entry]);
 
-  // Trees with more than one agent are drawn, busiest first; a lone agent is
-  // a card. One view of every type: a Claude Code can start a Codex and a
-  // Codex a Claude Code, so a view per type drew one tree on two pages.
-  const multi = trees
-    .filter((t) => cls.includes('agent') && t.nodes.filter((n) => n.role === 'agent').length > 1)
-    .sort((a, b) => (b.tool_calls ?? 0) - (a.tool_calls ?? 0));
-  const inMulti = new Set(multi.map((t) => keyOf(t.host, t.root.pid)));
-  const lone = pts
-    .filter((p) => !inMulti.has(keyOf(p.t.host, p.t.root.pid)))
-    .sort((a, b) => (b.n.tool_calls ?? 0) - (a.n.tool_calls ?? 0));
-  const busyLone = lone.filter((p) => (p.n.tool_calls ?? 0) > 0);
-  const idleLone = lone.filter((p) => !((p.n.tool_calls ?? 0) > 0));
-  const gridShown = allGrid ? busyLone : busyLone.slice(0, GRID_SHOWN);
-  const selPt = selAgent ? pts.find((p) => keyOf(p.t.host, p.n.pid) === selAgent) : undefined;
-  const pickAgent = (k: string) => setSelAgent(selAgent === k ? null : k);
+  // One list of every type: a Claude Code can start a Codex and a Codex a
+  // Claude Code, so a view per type drew one tree on two pages. A tree of
+  // more than one agent is a row; so is an agent on its own, unless it folds.
+  const match = marks.length ? (n: CascadeNode) => passes(marks, n) : null;
+  const ok = (n: CascadeNode) => !match || match(n);
+  const entries: Entry[] = [];
+  const lone: AgentPt[] = [];
+  for (const t of trees) {
+    const agents = t.nodes.filter((n) => n.role === 'agent');
+    if (!cls.includes('agent') || !agents.length) continue;
+    if (agents.length === 1) {
+      if (ok(agents[0])) lone.push({ n: agents[0], t, ws: ws.get(keyOf(t.host, agents[0].pid)) });
+    } else if (agents.some(ok)) {
+      entries.push({ k: 'tree', key: keyOf(t.host, t.root.pid), t, agents, at: recencyOf(agents, 'first') });
+    }
+  }
+  const busy = lone.filter((p) => (p.n.tool_calls ?? 0) > 0);
+  const idle = lone.filter((p) => !((p.n.tool_calls ?? 0) > 0));
+  const alike = new Map<string, AgentPt[]>();
+  for (const p of busy) {
+    const k = `fold:${p.n.user}|${p.n.agent_type}|${p.n.home}`;
+    alike.set(k, [...(alike.get(k) ?? []), p]);
+  }
+  for (const [k, ps] of alike) {
+    if (ps.length >= FOLD_AT) {
+      ps.sort((a, b) => newer(recencyOf([a.n], 'last'), recencyOf([b.n], 'last')));
+      entries.push({ k: 'fold', key: k, ps, at: recencyOf(ps.map((p) => p.n), 'last') });
+    } else {
+      for (const p of ps) entries.push({ k: 'lone', key: keyOf(p.t.host, p.n.pid), p, at: recencyOf([p.n], 'last') });
+    }
+  }
+  entries.sort((a, b) => newer(a.at, b.at));
+  idle.sort((a, b) => newer(recencyOf([a.n], 'last'), recencyOf([b.n], 'last')));
+  const shownAgents = entries.reduce((a, e) =>
+    a + (e.k === 'tree' ? e.agents.filter(ok).length : e.k === 'fold' ? e.ps.length : 1), 0) + idle.length;
+  // by user: a heading per user, the user active last first
+  const groups: [string, Entry[]][] = [];
+  if (by === 'user') {
+    const at = new Map<string, Entry[]>();
+    for (const e of entries) {
+      const u = entryUsers(e);
+      const g = at.get(u);
+      if (g) g.push(e);
+      else {
+        const ng = [e];
+        at.set(u, ng);
+        groups.push([u, ng]);
+      }
+    }
+  } else groups.push(['', entries]);
+
+  const picked = sel ? entries.find((e) => e.key === sel.entry) ?? null : null;
+  const pickedLone = sel && !picked
+    ? [...lone].find((p) => keyOf(p.t.host, p.n.pid) === sel.entry) ?? null
+    : null;
+  const pickRow = (key: string, agent: string | null) =>
+    setSel(sel?.entry === key && sel.agent === agent ? null : { entry: key, agent });
+  const toggleFold = (k: string) => setOpened(opened.includes(k) ? opened.filter((x) => x !== k) : [...opened, k]);
+  // the arrow keys walk the rows, opening each; a fold only takes the focus
+  const walk = (ev: React.KeyboardEvent<HTMLDivElement>) => {
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    const rows = Array.from(ev.currentTarget.querySelectorAll<HTMLButtonElement>('button.al-item'));
+    const i = rows.indexOf(document.activeElement as HTMLButtonElement);
+    const next = rows[ev.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1)];
+    if (!next) return;
+    ev.preventDefault();
+    next.focus();
+    if (!next.classList.contains('fold')) next.click();
+  };
+  const loneRow = (p: AgentPt, inFold?: boolean) => {
+    const k = keyOf(p.t.host, p.n.pid);
+    return <LoneRow key={k} n={p.n} on={sel?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
+  };
 
   // The two histograms, kept for whoever wants the shape of nesting.
   const depthHist = c.depth_hist ?? {};
@@ -765,11 +1178,31 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   });
   const fanSeries: BarSeries[] = [{ k: 'n', lbl: 'started', c: 'var(--s4)' }];
 
-  const detailHere = (where: 'tree' | 'grid', t?: CascadeTree) =>
-    selPt &&
-    (where === 'tree' ? selPt.t === t : !inMulti.has(keyOf(selPt.t.host, selPt.t.root.pid))) && (
-      <AgentBlast key={selAgent} a={selPt.ws} />
-    );
+  const detail = (() => {
+    if (picked?.k === 'tree') {
+      const { t, agents } = picked;
+      const a = sel?.agent ?? null;
+      return (
+        <div className="al-pane">
+          <TreeTitle t={t} agents={agents} />
+          <TreeView key={picked.key} t={t} sel={a} match={match}
+            onSel={(k) => setSel({ entry: picked.key, agent: a === k ? null : k })} />
+          {a ? <AgentBlast key={a} a={ws.get(a)} from={coveredBy(c).from} /> : <div className="al-hint">click an agent’s box for its blast radius</div>}
+        </div>
+      );
+    }
+    const p = picked?.k === 'lone' ? picked.p : pickedLone;
+    if (p) {
+      const k = keyOf(p.t.host, p.n.pid);
+      return (
+        <div className="al-pane">
+          <LoneHead n={p.n} />
+          <AgentBlast key={k} a={p.ws} from={coveredBy(c).from} />
+        </div>
+      );
+    }
+    return <div className="al-empty">pick an agent on the left: its tree and blast radius open here</div>;
+  })();
 
   return (
     <>
@@ -791,54 +1224,38 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             empty={!pts.length}
             emptyWhat="no agent in the window"
           >
-            {multi.length > 0 && (
-              <>
-                <div className="eyebrow" data-tip="trees with more than one agent: agents that started subagents, or several sessions started side by side under one process">
-                  started together · {fint(multi.length)} tree{multi.length === 1 ? '' : 's'}
-                </div>
-                {multi.map((t) => {
-                  const agents = t.nodes.filter((n) => n.role === 'agent');
-                  return (
-                    <div key={keyOf(t.host, t.root.pid)} className="atree">
-                      <TreeTitle t={t} agents={agents} />
-                      <TreeView t={t} sel={selAgent} onSel={pickAgent} />
-                      {detailHere('tree', t)}
-                    </div>
-                  );
-                })}
-              </>
-            )}
-            {busyLone.length > 0 && (
-              <>
-                <div className="eyebrow" style={{ marginTop: multi.length ? 10 : 0 }}>
-                  on their own · {fint(busyLone.length)} agent{busyLone.length === 1 ? '' : 's'}, busiest first · click one for its blast radius
-                </div>
-                <div className="agrid">
-                  {gridShown.map((p) => {
-                    const k = keyOf(p.t.host, p.n.pid);
-                    return (
-                      <div key={k} className={`agrid-cell${selAgent === k ? ' on' : ''}`} onClick={() => pickAgent(k)}
-                        role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && pickAgent(k)}>
-                        <AgentCard n={p.n} />
-                      </div>
-                    );
-                  })}
-                </div>
-                {busyLone.length > GRID_SHOWN && !allGrid && (
-                  <button className="ws-more" onClick={() => setAllGrid(true)}>show all {fint(busyLone.length)}</button>
+            <AgentFilter pts={pts} marks={marks} setMarks={setMarks} by={by} setBy={setBy} shown={shownAgents} />
+            <div className="amd">
+              <div className="al-list" onKeyDown={walk}>
+                {!entries.length && !idle.length && <NoRows what="no agent passes the filters" />}
+                {groups.map(([u, es]) => (
+                  <div key={u} className="al-group">
+                    {u && <div className="al-user mono">{u}</div>}
+                    {es.map((e) =>
+                      e.k === 'tree' ? (
+                        <TreeRow key={e.key} e={e} on={sel?.entry === e.key} onPick={() => pickRow(e.key, null)} />
+                      ) : e.k === 'lone' ? (
+                        loneRow(e.p)
+                      ) : (
+                        <div key={e.key} className="al-foldwrap">
+                          <FoldRow e={e} open={opened.includes(e.key)} onOpen={() => toggleFold(e.key)} />
+                          {opened.includes(e.key) && <div className="al-fold">{e.ps.map((p) => loneRow(p, true))}</div>}
+                        </div>
+                      ),
+                    )}
+                  </div>
+                ))}
+                {idle.length > 0 && (
+                  <>
+                    <button className="linkbtn al-idle" onClick={() => setShowIdle(!showIdle)}>
+                      {showIdle ? 'hide' : 'show'} {fint(idle.length)} agent{idle.length === 1 ? '' : 's'} that ran nothing in the window
+                    </button>
+                    {showIdle && idle.map((p) => loneRow(p))}
+                  </>
                 )}
-                {detailHere('grid')}
-              </>
-            )}
-            {idleLone.length > 0 && (
-              <More label={`${fint(idleLone.length)} agent${idleLone.length === 1 ? '' : 's'} that ran nothing in the window`}>
-                <div className="agrid">
-                  {idleLone.map((p) => (
-                    <div key={keyOf(p.t.host, p.n.pid)} className="agrid-cell"><AgentCard n={p.n} /></div>
-                  ))}
-                </div>
-              </More>
-            )}
+              </div>
+              <div className="al-detail" ref={pane}>{detail}</div>
+            </div>
             <More label="nesting at a glance: how deep agents nest, and how many each started">
               <div className="pair-row">
                 <div>

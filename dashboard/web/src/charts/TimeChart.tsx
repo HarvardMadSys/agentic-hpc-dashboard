@@ -26,6 +26,8 @@ export interface TimeLine {
   c: string;
   v: (number | null)[] | undefined;
   dashed?: boolean;
+  /** a point opens the commands behind its bin, which starts at `t` */
+  onPick?: (t: number) => void;
 }
 
 export const anyValue = (lines: TimeLine[]) => lines.some((l) => l.v?.some((x) => x != null));
@@ -72,6 +74,7 @@ export function TimeChart({
     lbl: l.lbl,
     c: l.c,
     dashed: l.dashed,
+    onPick: l.onPick,
     pts: s.t.map((x, i) => {
       const v = l.v?.[i];
       return { x, y: v == null ? null : v * k };

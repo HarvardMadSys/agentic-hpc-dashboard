@@ -12,7 +12,7 @@
  * ran. The bins are sized to the window, which the eyebrow names.
  */
 import { useState } from 'react';
-import type { Accum, Cls, Resources, SlurmPanel } from '../api/types';
+import type { Accum, Cls, IoSort, Resources, SlurmPanel } from '../api/types';
 import { TimeChart, anyValue, binLabel, TOOL_COL } from '../charts/TimeChart';
 import type { TimeLine, View } from '../charts/TimeChart';
 import { fullClock } from '../charts/scale';
@@ -25,6 +25,7 @@ import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+import { openIoCmds } from '../lib/iocmds';
 
 type PickKey = 'wait' | 'dstate' | 'faults' | 'read' | 'write' | 'net' | 'queue' | 'jobs';
 
@@ -93,10 +94,18 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
 
   // the picker's charts
   const ioCls = shown(s?.by_class, cls);
+  // a point opens its class's commands in that bin
+  const binPick = (c: string, sort: IoSort, what: string) => (t: number) =>
+    openIoCmds({
+      title: `${what} · ${CLS_LBL[c] ?? c} · ${fullClock(t)} for ${binLabel(s?.bin_s ?? 60)}`,
+      sort, class: [c], from: t, to: t + (s?.bin_s ?? 60) - 0.001,
+    });
   const ioLines = (disk: 'rd_mb' | 'wr_mb', sys: 'rchar_mb' | 'wchar_mb', sysWord: string): TimeLine[] =>
     ioCls.flatMap((c) => [
-      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[disk] },
-      { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[sys], dashed: true },
+      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[disk],
+        onPick: binPick(c, disk, disk === 'rd_mb' ? 'disk read' : 'disk written') },
+      { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[sys], dashed: true,
+        onPick: binPick(c, sys, sys === 'rchar_mb' ? 'syscall read' : 'syscall written') },
     ]);
   const ioLegend = (sysWord: string) => [
     ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
@@ -105,8 +114,10 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
   ];
   // network: each class's bytes sent (solid) and received (dashed)
   const netLines: TimeLine[] = ioCls.flatMap((c) => [
-    { lbl: `${CLS_LBL[c] ?? c} · sent`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_tx_mb ?? [] },
-    { lbl: `${CLS_LBL[c] ?? c} · received`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_rx_mb ?? [], dashed: true },
+    { lbl: `${CLS_LBL[c] ?? c} · sent`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_tx_mb ?? [],
+      onPick: binPick(c, 'tx_mb', 'network sent') },
+    { lbl: `${CLS_LBL[c] ?? c} · received`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_rx_mb ?? [], dashed: true,
+      onPick: binPick(c, 'rx_mb', 'network received') },
   ]);
   const stallLines: TimeLine[] = Object.entries(s?.stall_by_tool ?? {}).map(([tool, v], i) => ({
     lbl: tool,
@@ -196,15 +207,15 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
                   <table>
                     <thead>
                       <tr>
-                        <SortTh s={sortOf('stall')} k="tool" first="asc">tool</SortTh>
-                        <SortTh s={sortOf('stall')} k="n" num tip="its processes that spent any time in uninterruptible sleep (D-state)">processes stalled</SortTh>
-                        <SortTh s={sortOf('stall')} k="wait_s" num tip="their time in D-state, summed">time stalled</SortTh>
-                        <SortTh s={sortOf('stall')} k="episodes" num gloss="stall">stalls</SortTh>
-                        <SortTh s={sortOf('stall')} k="max_s" num tip="the longest single stall">longest stall</SortTh>
+                        <SortTh s={sortOf('stall', 'tool', 'asc')} k="tool" first="asc">tool</SortTh>
+                        <SortTh s={sortOf('stall', 'tool', 'asc')} k="n" num tip="its processes that spent any time in uninterruptible sleep (D-state)">processes stalled</SortTh>
+                        <SortTh s={sortOf('stall', 'tool', 'asc')} k="wait_s" num tip="their time in D-state, summed">time stalled</SortTh>
+                        <SortTh s={sortOf('stall', 'tool', 'asc')} k="episodes" num gloss="stall">stalls</SortTh>
+                        <SortTh s={sortOf('stall', 'tool', 'asc')} k="max_s" num tip="the longest single stall">longest stall</SortTh>
                       </tr>
                     </thead>
                     <tbody>
-                      {sortOf('stall').sort(stalls, (t, k) =>
+                      {sortOf('stall', 'tool', 'asc').sort(stalls, (t, k) =>
                         (t as unknown as Record<string, string | number | null>)[k] ?? null,
                       ).map((t) => (
                         <tr key={t.tool}>

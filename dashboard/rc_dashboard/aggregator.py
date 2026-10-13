@@ -436,7 +436,8 @@ class Aggregator:
     ASK_LIVE = ("now", "users", "hosts", "submits", "window")
     ASK_SESSION_KEYS = ("sid", "user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
                         "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
-                        "sandbox", "approval", "host", "first", "last")
+                        "net_tx_mb", "net_rx_mb", "sandbox", "approval", "host", "first",
+                        "last", "running")
 
     def ask(self, question, window_min=None, history=(), context=None, flt=None):
         """Start one question; the agent runs in the background.
@@ -527,7 +528,7 @@ class Aggregator:
             elif key == "trajectories":
                 tr = self.trajectories(window_min, flt)
                 ranks = tr.get("ranks") or {}
-                rank = p.get("rank") if p.get("rank") in ranks else "events"
+                rank = p.get("rank") if p.get("rank") in ranks else "recent"
                 rows = tr.get("rows") or {}
                 extra["sessions"] = {
                     "summary": tr.get("summary"), "ranked_by": rank,
@@ -623,10 +624,57 @@ class Aggregator:
         win = self.window(window_min)
         flt = flt or winmod.NO_FILTER
         view = self.panels_by_window.request(win["minutes"], flt)
+        live_s = float(self.cfg.get("reducers.trajectories.live_s", 5) or 0)
         with self.lock:
+            # The panel re-reads the sessions every few seconds: re-rank them
+            # from the live-fed reducer then, not only at the next rebuild.
+            if live_s > 0:
+                view.materialize_key("trajectories", live_s)
             payload = (view.payload or {}).get("trajectories")
             out = dict(payload) if isinstance(payload, dict) else {}
+            if out.get("rows"):
+                out["rows"] = self._running_rows(out["rows"])
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
             out["_window"] = view.status()
             out["filter"] = flt.block()
             return out
+
+    def _running_rows(self, rows, now=None):
+        """The ranked rows, each whose agent is running now marked `running`.
+
+        From the live tier (under the lock): an agent root is running while
+        its own records keep arriving (`LiveReducer.LIVE_S`), and its tree's
+        newest census says how many processes it has up and how much memory
+        they hold -- when the agent is its tree's root; one a VS Code server
+        started shares that server's census, so it gets none. An agent's
+        rows are split by day; only its newest is marked. The cached rows
+        are never written to: a marked row is a copy.
+        """
+        now = now or time.time()
+        fresh = now - self.live.LIVE_S
+        newest = {}
+        for sid, r in rows.items():
+            try:
+                key = (r.get("host"), int(r.get("agent_pid")))
+            except (TypeError, ValueError):
+                continue
+            root = self.live.roots.get(key)
+            if root is None or (root.get("epoch") or 0) < fresh:
+                continue
+            cur = newest.get(key)
+            if cur is None or (r.get("last") or 0) > (rows[cur].get("last") or 0):
+                newest[key] = sid
+        if not newest:
+            return rows
+        out = dict(rows)
+        for key, sid in newest.items():
+            root = self.live.roots[key]
+            tree = self.live.trees.get(key)
+            census = tree if tree is not None and (tree.get("epoch") or 0) >= fresh else None
+            out[sid] = dict(rows[sid], running={
+                "seen": root.get("epoch"),
+                "n_procs": census.get("n_procs") if census else None,
+                "rss_mb": census.get("rss_mb") if census else None,
+                "census_at": census.get("epoch") if census else None,
+            })
+        return out

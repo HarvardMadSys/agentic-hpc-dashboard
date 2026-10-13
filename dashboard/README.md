@@ -374,9 +374,17 @@ already made once.
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
   regression in that basis is visible on the page.
-- **"Top" is four rankings, not one** — `events`, `cpu_s`, `distinct_tools`, `chain_runs`,
-  each with `dominant_user_share_pct`, because a single ranking is dominated by one poll loop
-  and one mega-user.
+- **Disk I/O is each process's own.** The collector's `io` is `task->signal->ioac`, which the
+  kernel also credits with every child the process reaped, so a shell's figure holds its
+  commands'. A session sums each process's figure less what its exited children carried
+  (`reducers/trajectories.py: own_io`, carried across hours like the other joins), so a
+  command's bytes count once, not once per shell above it.
+- **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
+  `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
+  is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a
+  status-bar probe, or a tool call whose shell has not exited yet, would otherwise hold the
+  top. The list is re-ranked from the live feed when read (`reducers.trajectories.live_s`,
+  5 s), and the page re-reads it that often while it is on screen.
 - **Scope is stated** — the eBPF tier runs on login nodes, so its resource figures are
   login-node use, not cluster use.
 

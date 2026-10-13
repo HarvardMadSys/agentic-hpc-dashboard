@@ -40,6 +40,8 @@ import time
 from ..procindex import MAX_HOPS, users_conflict
 from . import add_counts, max_of, min_of, pct
 from ..redact import redact
+from .live import agent_version
+from .sandbox import session_state
 from .workspace import tilde
 
 NODE_ROLES = ("agent", "infra", "client")
@@ -115,7 +117,7 @@ class CascadeReducer:
     EVENTS = ("exit", "truncated", "residency", "conn", "netio", "submit")
     KEY = "cascades"
 
-    def __init__(self, cfg, classes, window_s=None, procs=None, traj=None, ws=None):
+    def __init__(self, cfg, classes, window_s=None, procs=None, traj=None, ws=None, sb=None):
         self.cfg = cfg
         r = cfg.get("reducers.cascades", {}) or {}
         self.max_nodes = int(r.get("max_nodes", 20000))
@@ -125,6 +127,7 @@ class CascadeReducer:
         self.procs = procs
         self.traj = traj
         self.ws = ws
+        self.sb = sb
         self.nodes = {}                          # (host, pid) -> dict
         self.dropped = 0
         self.census = collections.Counter()      # (agent_type, role) -> exits
@@ -161,7 +164,11 @@ class CascadeReducer:
                 "pty_host": bool(role == "infra" and _PTY_HOST.search(args)),
                 "first": e, "last": e, "start": None, "exited": False,
                 "duration_s": None, "implied": False, "frontend": False,
+                "approval": None, "approval_detail": None, "version": None,
             }
+        if role == "agent":
+            _launch(n, rec.get("_approval"), rec.get("_approval_detail"),
+                    agent_version(rec.get("_command"), rec.get("args")))
         if e is not None:
             n["first"] = e if n["first"] is None else min(n["first"], e)
             n["last"] = e if n["last"] is None else max(n["last"], e)
@@ -203,6 +210,7 @@ class CascadeReducer:
             for f in ("cwd", "user", "tree_root"):
                 if cur[f] is None and n[f] is not None:
                     cur[f] = n[f]
+            _launch(cur, n["approval"], n["approval_detail"], n["version"])
             if n["exited"] or n["duration_s"] is not None:
                 cur["exited"], cur["duration_s"] = n["exited"], n["duration_s"]
         self.dropped += o.dropped
@@ -256,7 +264,8 @@ class CascadeReducer:
                     "args": None, "cwd": None, "tree_root": s.tree_root,
                     "spawned_by": None, "daemon": False, "pty_host": False,
                     "first": s.first, "last": s.last, "start": None, "exited": False,
-                    "duration_s": None, "implied": True, "frontend": False}
+                    "duration_s": None, "implied": True, "frontend": False,
+                    "approval": None, "approval_detail": None, "version": None}
 
         daemons = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -280,6 +289,11 @@ class CascadeReducer:
                     _APP_SERVER.search(n["args"] or "")
                     or (p["command"] or "") in _SCRIPT_HOSTS):
                 p["role"], p["frontend"] = "client", True
+                # the session's launch is the front-end's: `codex --yolo` starts
+                # an app-server whose own argv names no approval
+                if n["approval"] in (None, "unknown", "unobservable"):
+                    n["approval"], n["approval_detail"] = p["approval"], p["approval_detail"]
+                n["version"] = n["version"] or p["version"]
 
         kids = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -297,6 +311,9 @@ class CascadeReducer:
         for key, (home, _src) in homes.items():
             if key in folded:
                 views[key] = self.ws.view([folded[key]], home, live[key]["user"])
+        # Whether each agent's tool calls ran in a sandbox: the Sandbox tab's
+        # verdict for the session the agent owns, read from the same reducer.
+        boxed = self.sb.agent_calls() if self.sb is not None else {}
 
         trees, edges, vias = [], collections.Counter(), collections.Counter()
         depth_hist, fan_hist = collections.Counter(), collections.Counter()
@@ -306,7 +323,7 @@ class CascadeReducer:
                 edges[(_label(p), _label(n))] += 1
                 vias[n["via"]] += 1
                 continue
-            trees.append(self._tree(key, live, kids, sessions, homes, views))
+            trees.append(self._tree(key, live, kids, sessions, homes, views, boxed))
         for t in trees:
             if t["n_agents"]:
                 depth_hist[str(t["agent_depth"])] += 1
@@ -478,7 +495,7 @@ class CascadeReducer:
                 seen.add(pk)
                 cur = live[pk]
 
-    def _tree(self, root_key, live, kids, sessions, homes, views):
+    def _tree(self, root_key, live, kids, sessions, homes, views, boxed):
         nodes, fanouts = [], []
         totals = {"tool_calls": 0, "cpu_s": 0.0}
 
@@ -493,6 +510,7 @@ class CascadeReducer:
             # is what an agent below it is compared with
             anchor = home if is_agent else (n["cwd"] if n["cwd"] != "/" else None)
             v = views.get(key)
+            calls = boxed.get(key) if is_agent else None
             out = _node_out(n)
             out.update(depth=depth, agent_level=level if is_agent else None,
                        tool_calls=sess.n if sess else None,
@@ -504,7 +522,9 @@ class CascadeReducer:
                                    "outside_writes": v["summary"]["outside_writes"]}
                                   if v else None),
                        cwd_vs_parent_agent=(_rel(anchor, anchor_up)
-                                            if is_agent and anchor_up else None))
+                                            if is_agent and anchor_up else None),
+                       sandbox=session_state(calls) if calls else None,
+                       sandbox_calls=calls or None)
             if sess:
                 totals["tool_calls"] += sess.n
                 totals["cpu_s"] += sess.cpu
@@ -599,6 +619,18 @@ def _pick(nodes, cap):
     return [x for x in nodes if id(x) in keep]
 
 
+def _launch(n, approval, detail, version):
+    """Take what an agent's own record says of its launch: the approval its
+    flags set, and the version its program's path names. A bypass read off any
+    record stands -- the collector reads the uncapped argv, an emitted one may
+    be cut -- and otherwise the first verdict read is kept."""
+    if approval not in (None, "unknown") and (
+            n["approval"] in (None, "unknown") or approval == "bypassed"):
+        n["approval"], n["approval_detail"] = approval, detail
+    if n["version"] is None:
+        n["version"] = version
+
+
 def _home(n, acc):
     """(home, how it was found) for an agent node: its own cwd unless that is
     `/`, else the first directory off `/` any of its calls ran in."""
@@ -641,4 +673,6 @@ def _node_out(n):
         "started": _ts(n["start"]), "first_seen": _ts(n["first"]),
         "last_seen": _ts(n["last"]), "last_epoch": n["last"],
         "exited": n["exited"], "duration_s": n["duration_s"],
+        "approval": n["approval"], "approval_detail": n["approval_detail"],
+        "version": n["version"],
     }

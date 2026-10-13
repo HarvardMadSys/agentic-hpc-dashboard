@@ -23,6 +23,7 @@ from . import redact
 from . import windows as winmod
 from .aggregator import Aggregator
 from .export import make_predicate, meta_header, parse_filters, scan
+from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
 
 
@@ -342,10 +343,10 @@ def create_app(cfg):
         return respond(redact.payload(agg.live_user(name, window_min, n)))
 
     @app.get("/api/trajectories")
-    def api_traj(request: Request, rank: str = Query("events"),
+    def api_traj(request: Request, rank: str = Query("recent"),
                  window_min: int = Query(None)):
         out = agg.trajectories(window_min, view_filter(request, anon))
-        out["rank_by"] = rank if rank in out.get("ranks", {}) else "events"
+        out["rank_by"] = rank if rank in out.get("ranks", {}) else "recent"
         return respond(out, "trajectories")
 
     @app.get("/api/trajectory")
@@ -381,6 +382,45 @@ def create_app(cfg):
                 "anonymize": anon.status() if anon is not None else {"enabled": False}}
 
     _roots = agg.roots
+    iocmds = IoCommands(cfg, _roots)
+
+    # Every command behind an I/O number (iocmds.py): a lookup the page starts
+    # with the number's filters -- /api/events' own, plus `apid`, `host` and
+    # `cwd` for a blast-radius row -- and polls. The window is the page's.
+    @app.get("/api/io/commands")
+    def api_io_commands(request: Request, window_min: int = Query(None),
+                        apid: str = Query(None), host: str = Query(None),
+                        cwd: str = Query(None)):
+        f = parse_filters(dealias(query_lists(request), anon))
+        f.pop("q", None)
+        f["event"] = None                 # exits and truncations: iocmds.EVENTS
+        if cwd and anon is not None:
+            # a path the page showed carries aliases where names were
+            cwd = "/".join(anon.back.get(s, s) for s in cwd.split("/"))
+        minutes = agg.window(window_min)["minutes"]
+        pids = [p for p in (apid or "").split(",") if p.strip().isdigit()]
+        if pids and host:
+            # the agents as the page drew them: their keys, from the view it shows
+            flt = view_filter(request, anon)
+            with agg.lock:
+                view = agg.panels_by_window.peek(minutes, flt) or \
+                    agg.panels_by_window.peek(minutes)
+                pids = sorted(agent_keys(view, host, pids))
+        j = iocmds.start(f, minutes, pids, host, cwd)
+        return j.status()
+
+    @app.get("/api/io/commands/{jid}")
+    def api_io_commands_job(jid: str, offset: int = Query(0, ge=0),
+                            limit: int = Query(200, ge=1, le=iocmd_page_max),
+                            sort: str = Query("rd_mb"), dir: str = Query("desc")):
+        j = iocmds.get(jid)
+        if j is None:
+            raise HTTPException(404, "no such lookup: it finished long enough ago to be dropped")
+        out = j.status()
+        if j.state == "done":
+            out.update(rows=j.page(sort, dir != "asc", offset, limit),
+                       offset=offset, limit=limit, sort=sort, dir="asc" if dir == "asc" else "desc")
+        return respond(out)
 
     def search(pred, qv):
         """`q` over the command text the reader sees -- aliases, not names -- so

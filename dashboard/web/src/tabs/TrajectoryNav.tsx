@@ -24,7 +24,7 @@
 import { useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type { TrajNav, TrajectoryDetail } from '../api/types';
-import { ZOOM_HINT, ZoomNote, svgAt, useWheel, wheelFactor, wheelPan } from '../charts/primitives';
+import { ZOOM_HINT, ZoomMap, ZoomNote, svgAt, useWheel, wheelFactor, wheelPan } from '../charts/primitives';
 import { DASH, clock, dur, fint } from '../lib/format';
 import { PURP, pcol, plbl } from '../lib/purposes';
 
@@ -49,6 +49,61 @@ function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }
 }
 
 const SPAN_MIN = 1; // seconds: the narrowest zoom, whatever the bin width
+
+/** Served bins regrouped into display bins at least ~3 px wide across `w` px,
+ *  a whole number of served bins each, so a display bin is still a count of
+ *  starts over a stated width; stacked by purpose slot. */
+function regroup(den: NonNullable<TrajNav['density']>, purposes: string[], v0: number, v1: number, w: number) {
+  const k = Math.max(1, Math.ceil(Math.max(v1 - v0, 1e-6) / den.w / (w / 3)));
+  const dw = den.w * k;
+  const per = new Map<number, Map<string, number>>();
+  for (const [i, p, c] of den.bins) {
+    const t = den.lo + i * den.w;
+    if (t + den.w < v0 || t > v1) continue;
+    const j = Math.floor(i / k);
+    const m = per.get(j) ?? new Map<string, number>();
+    const key = slotOf(purposes[p] ?? 'other');
+    m.set(key, (m.get(key) ?? 0) + c);
+    per.set(j, m);
+  }
+  let top = 0;
+  for (const m of per.values()) {
+    let s = 0;
+    for (const c of m.values()) s += c;
+    top = Math.max(top, s);
+  }
+  return { per, dw, top };
+}
+
+/** Stacked bars of `regroup`'s bins, on the x scale `X`, standing on `base`. */
+function stackBars(
+  g: ReturnType<typeof regroup>,
+  lo: number,
+  X: (t: number) => number,
+  base: number,
+  ph: number,
+  W: number,
+  min = 0.8,
+): ReactNode[] {
+  const bars: ReactNode[] = [];
+  if (g.top <= 0) return bars;
+  for (const [j, m] of g.per) {
+    const t0 = lo + j * g.dw;
+    const x0 = Math.max(0, X(t0));
+    const x1 = Math.min(W, X(t0 + g.dw));
+    if (x1 <= x0) continue;
+    const w = Math.max(min, x1 - x0 - (x1 - x0 > 3 ? 0.6 : 0));
+    let y = base;
+    for (const key of ORDER) {
+      const c = m.get(key);
+      if (!c) continue;
+      const h = Math.max(min, (ph * c) / g.top);
+      y -= h;
+      bars.push(<rect key={`${j}-${key}`} x={x0} y={y} width={w} height={h} fill={pcol(key)} />);
+    }
+  }
+  return bars;
+}
 
 export interface Quick {
   key: string;
@@ -209,31 +264,15 @@ function Strip({
     zoomAt(T(p.x), wheelFactor(w));
   });
 
-  // Served bins regrouped into display bins at least ~3 px wide, a whole
-  // number of served bins each, so a display bin is still a count of starts
-  // over a stated width.
-  const shown = useMemo(() => {
-    if (!den || !den.bins.length) return null;
-    const k = Math.max(1, Math.ceil(span / den.w / (W / 3)));
-    const dw = den.w * k;
-    const per = new Map<number, Map<string, number>>();
-    for (const [i, p, c] of den.bins) {
-      const t = den.lo + i * den.w;
-      if (t + den.w < v0 || t > v1) continue;
-      const j = Math.floor(i / k);
-      const m = per.get(j) ?? new Map<string, number>();
-      const key = slotOf(nav.purposes[p] ?? 'other');
-      m.set(key, (m.get(key) ?? 0) + c);
-      per.set(j, m);
-    }
-    let top = 0;
-    for (const m of per.values()) {
-      let s = 0;
-      for (const c of m.values()) s += c;
-      top = Math.max(top, s);
-    }
-    return { per, dw, top };
-  }, [den, nav.purposes, v0, v1, span, W]);
+  const shown = useMemo(
+    () => (den && den.bins.length ? regroup(den, nav.purposes, v0, v1, W) : null),
+    [den, nav.purposes, v0, v1, W],
+  );
+  // the whole axis, for the minimap under a zoomed strip
+  const whole = useMemo(
+    () => (zoomed && den && den.bins.length ? regroup(den, nav.purposes, a0, a1, W) : null),
+    [zoomed, den, nav.purposes, a0, a1, W],
+  );
 
   const [hx, setHx] = useState<number | null>(null);
   const [kc, setKc] = useState<number | null>(null); // the keyboard's cursor, a time
@@ -294,24 +333,7 @@ function Strip({
     e.preventDefault();
   };
 
-  const bars: ReactNode[] = [];
-  if (shown && shown.top > 0) {
-    for (const [j, m] of shown.per) {
-      const t0 = den!.lo + j * shown.dw;
-      const x0 = Math.max(0, X(t0));
-      const x1 = Math.min(W, X(t0 + shown.dw));
-      if (x1 <= x0) continue;
-      const w = Math.max(0.8, x1 - x0 - (x1 - x0 > 3 ? 0.6 : 0));
-      let y = BASE;
-      for (const key of ORDER) {
-        const c = m.get(key);
-        if (!c) continue;
-        const h = Math.max(0.8, (PH * c) / shown.top);
-        y -= h;
-        bars.push(<rect key={`${j}-${key}`} x={x0} y={y} width={w} height={h} fill={pcol(key)} />);
-      }
-    }
-  }
+  const bars: ReactNode[] = shown && den ? stackBars(shown, den.lo, X, BASE, PH, W) : [];
   const fails = nav.failures.items;
   const ticksOut: ReactNode[] = [];
   fails.forEach((f, i) => {
@@ -418,6 +440,22 @@ function Strip({
           );
         })}
       </svg>
+      {zoomed && (
+        <ZoomMap
+          W={W}
+          H={26}
+          lo={a0}
+          hi={a1}
+          a={v0}
+          b={v1}
+          minSpan={Math.min(SPAN_MIN, full)}
+          onSet={(lo, hi) => setView(fit(lo, hi))}
+          onReset={() => setView(null)}
+          className="tn-svg"
+          label={`the read from ${clock(a0)} to ${clock(a1)}, with ${clock(v0)} to ${clock(v1)} in view`}
+          draw={(MX, MH) => (whole && den ? stackBars(whole, den.lo, MX, MH - 2, MH - 5, W, 0.5) : null)}
+        />
+      )}
     </>
   );
 }

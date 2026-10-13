@@ -17,6 +17,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
+from test_sandbox import CODEX_APP, codex_failed_call, root_tick     # noqa: E402
 
 PROJ = HOME + "/proj"
 
@@ -368,6 +369,48 @@ class PickTest(unittest.TestCase):
         self.assertEqual(f["agents"], f["ran_nothing"] + f["one"])
         self.assertEqual(f["outside"], 0)                    # the one that wrote outside was sent
         self.assertNotIn("folded", next(x for x in sent if x["pid"] == 400))
+
+
+class LaunchTagTest(unittest.TestCase):
+    """What an agent's box is tagged with: how it was launched, the version its
+    program names, and whether its tool calls ran in a sandbox."""
+
+    def setUp(self):
+        self.t0 = time.time() - 600
+
+    def test_an_agent_carries_its_launch_and_version(self):
+        native = HOME + "/.local/share/claude/versions/2.1.291"
+        recs = [rec("conn", self.t0, 100, 50, "2.1.291", native + " --dangerously-skip-permissions",
+                    agent_pid=100, tree_root=100, is_agent=True)]
+        n = node(tree_of(reduce(recs), 100), 100)
+        self.assertEqual((n["approval"], n["version"]), ("bypassed", "2.1.291"))
+        self.assertEqual(n["approval_detail"], "--dangerously-skip-permissions")
+
+    def test_a_codex_app_server_takes_its_front_ends_launch(self):
+        # `codex --yolo` starts the app-server; the app-server's argv names no approval
+        rel = (HOME + "/.codex/packages/app-server-daemon/releases/"
+               "0.162.1-x86_64-unknown-linux-musl/bin/codex")
+        recs = [
+            rec("residency", self.t0, 100, 50, "codex", "codex --yolo", agent_pid=100,
+                tree_root=100, is_agent=True, agent_type="codex"),
+            rec("conn", self.t0 + 1, 150, 100, "codex", rel + " app-server --listen unix://",
+                agent_pid=150, tree_root=100, is_agent=True, agent_type="codex"),
+        ]
+        n = node(tree_of(reduce(recs), 100), 150)
+        self.assertEqual((n["approval"], n["version"]), ("bypassed", "0.162.1"))
+
+    def test_calls_that_ran_unconfined_make_an_unsandboxed_agent(self):
+        n = node(tree_of(reduce(claude_session(self.t0)), 100), 100)
+        self.assertEqual((n["sandbox"], n["sandbox_calls"]), ("unsandboxed", {"not_isolated": 2}))
+
+    def test_a_sandbox_that_failed_to_start_is_failed_not_unsandboxed(self):
+        recs = [root_tick(self.t0, 1000, CODEX_APP, "codex")] + codex_failed_call(self.t0 + 1)
+        n = node(tree_of(reduce(recs), 1000), 1000)
+        self.assertEqual((n["sandbox"], n["sandbox_calls"]), ("failed", {"failed": 1}))
+
+    def test_an_agent_with_no_tool_call_has_no_sandbox_verdict(self):
+        n = node(tree_of(reduce([root_tick(self.t0, 100)]), 100), 100)
+        self.assertEqual((n["sandbox"], n["sandbox_calls"]), (None, None))
 
 
 if __name__ == "__main__":

@@ -117,6 +117,13 @@ class LiveReducer:
         # Claude Code a VS Code server started, a Codex a Claude Code started
         # -- is a root of its own here and only a member of a tree there.
         self.roots = {}
+        # (host, key type, key) -> the newest exit in a person's own session,
+        # keyed as the Trajectories tab keys one (normalize.session_key_of):
+        # its login session's scope, else its terminal, else the account. The
+        # collector sends no residency tick for a shell, so a human session
+        # counts as live while a process in it ended in the last LIVE_S.
+        self.human_sessions = {}
+        self.newest_exit = None
         # Who ran what, per account (roster.py: tiered bins, compact slots, a
         # cached window -- it has to hold at thousands of users).
         self.roster = UserRoster(
@@ -191,6 +198,15 @@ class LiveReducer:
 
     def _exit(self, rec, older=False):
         self.buckets.add(rec, rec["_a3"], cpu_s=rec.get("cpu_s"))
+        e = rec.get("_ts_epoch")
+        if e is not None:
+            if self.newest_exit is None or e > self.newest_exit:
+                self.newest_exit = e
+            # the backfill reads newest first, so a week of old logins is never held
+            if rec["_a3"] == "human" and e >= self.newest_exit - self.LIVE_S:
+                k = (rec.get("host"), rec.get("_kt"), rec.get("_kv"))
+                if e > self.human_sessions.get(k, 0):
+                    self.human_sessions[k] = e
         io = rec.get("io") or {}
         tx, rx = _mb(rec.get("net_tx_bytes")), _mb(rec.get("net_rx_bytes"))
         self.roster.add(_epoch_of(rec), rec.get("user"), rec["_a3"],
@@ -550,9 +566,10 @@ class LiveReducer:
                 for k, v in (d or {}).items():
                     if isinstance(v, (int, float)):
                         agg[cls][k] += v
-        # `residency` is emitted once per live AGENT tree, so a root count only
-        # exists for the agent class; the other classes are absent rather than 0,
-        # because the collector never claims to enumerate their roots.
+        # `residency` is emitted once per live agent or editor tree; a person's
+        # own shell has none, so the human count is their sessions with a
+        # process that ended in the last LIVE_S. It is absent rather than 0
+        # when nothing at all ended then: a stalled feed is not an idle node.
         live_trees = sum(1 for t in self.trees.values()
                          if (t.get("epoch") or 0) >= now - 600)
         roots_by_cls = {}
@@ -560,6 +577,10 @@ class LiveReducer:
             if (t.get("epoch") or 0) >= now - 600:
                 c = t.get("actor3") or "agent"
                 roots_by_cls[c] = roots_by_cls.get(c, 0) + 1
+        for k in [k for k, e in self.human_sessions.items() if e < now - self.LIVE_S]:
+            del self.human_sessions[k]
+        if self.newest_exit is not None and self.newest_exit >= now - self.LIVE_S:
+            roots_by_cls["human"] = len(self.human_sessions)
         # Live agent sessions by their launch approval. The collector's own
         # residency_totals `autonomous` cannot be used: its is_autonomous misses
         # `--permission-mode bypassPermissions`, so it read 0 on every day of

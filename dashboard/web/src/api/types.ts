@@ -538,8 +538,34 @@ export interface Sandbox extends PanelEnvelope {
 
 /* --------------------------------------------------------- trajectories */
 
-export type TrajRank = 'events' | 'cpu_s' | 'distinct_tools' | 'chain_runs';
-export const TRAJ_RANKS: TrajRank[] = ['events', 'cpu_s', 'distinct_tools', 'chain_runs'];
+export type TrajRank =
+  | 'events'
+  | 'cpu_s'
+  | 'peak_rss_mb'
+  | 'io_mb'
+  | 'net_mb'
+  | 'distinct_tools'
+  | 'recent';
+export const TRAJ_RANKS: TrajRank[] = [
+  'recent',
+  'events',
+  'cpu_s',
+  'peak_rss_mb',
+  'io_mb',
+  'net_mb',
+  'distinct_tools',
+];
+
+/** A session whose agent is running now (`aggregator._running_rows`). */
+export interface TrajRunning {
+  /** the agent's own newest record */
+  seen: number | null;
+  /** processes up in its tree, and the memory they hold, at the newest
+   *  census; null for an agent inside another program's tree */
+  n_procs: number | null;
+  rss_mb: number | null;
+  census_at: number | null;
+}
 
 /** How a session's collector keys were attributed to it, most certain first
  * (`rc_dashboard/procindex.py: VIA`). A row reports its least certain key. */
@@ -563,8 +589,13 @@ export interface TrajRow {
   chain_runs: number;
   wall_s: number | null;
   peak_rss_mb: number | null;
+  /** each process's own disk MB, summed: not its reaped children's again */
   io_rd_mb: number | null;
   io_wr_mb: number | null;
+  net_tx_mb?: number | null;
+  net_rx_mb?: number | null;
+  /** present while the session's agent is running */
+  running?: TrajRunning;
   sandbox: SandboxState | null;
   approval: ApprovalState | null;
   sandbox_ancestry: string | null;
@@ -661,6 +692,10 @@ export interface ProcNode {
   sub_cpu: number | null;
   /** processes in the subtree whose cpu_s was null */
   cpu_nm?: number;
+  /** its own disk, syscall and network bytes; absent when none moved or none was measured */
+  io?: ProcIo;
+  /** the same summed over everything below it, itself included; absent when it equals `io` */
+  sub_io?: ProcIo;
   /** `exit`, `truncated` (alive when the collector stopped), or null: no record in the read */
   ev: 'exit' | 'truncated' | null;
   link: ProcLink | null;
@@ -695,6 +730,8 @@ export interface ProcGroup {
   cpu: number | null;
   cpu_nm?: number | null;
   sub_cpu: number | null;
+  /** the members' I/O, and everything below them */
+  sub_io?: ProcIo | null;
   dur_max: number | null;
   exits: Record<string, number>;
   signals: Record<string, number>;
@@ -720,6 +757,8 @@ export interface ProcCount {
   count?: number;
   sub_cpu: number | null;
   cpu_nm: number | null;
+  /** what the counted processes moved */
+  sub_io?: ProcIo | null;
   start: number | null;
   end: number | null;
   cmds: [string, number][];
@@ -879,6 +918,15 @@ export interface CascadeNode {
   /** this agent's own blast radius in brief (no subagents); null: no record of it */
   workspace: { dirs: number; inside_pct: number | null; outside_writes: number | null } | null;
   cwd_vs_parent_agent: 'same' | 'inside' | 'above' | 'outside' | null;
+  /** its launch, off its own argv (a Codex app-server's is its front-end's) */
+  approval?: ApprovalState | null;
+  /** the launch flags as written: `--dangerously-skip-permissions`, `permission-mode=auto` */
+  approval_detail?: string | null;
+  /** read from the program's path where the path names it */
+  version?: string | null;
+  /** its tool calls' verdict, the Sandbox tab's for its session; null: it made none */
+  sandbox?: SessionSandboxState | null;
+  sandbox_calls?: Partial<Record<ToolCallOutcome, number>> | null;
   /** a tree bigger than the service sends: what this node's agents that were
    *  not sent did (the busiest are sent) */
   folded?: { agents: number; ran_nothing: number; one: number; processes: number; outside: number } | null;
@@ -1622,4 +1670,83 @@ export interface AskJob {
   error: string | null;
   elapsed_s: number;
   snapshot_kb: number;
+}
+
+/* ------------------------------------------------- every command behind I/O
+ * `/api/io/commands` (rc_dashboard/iocmds.py): a lookup over the raw records,
+ * started with an I/O number's filters and polled until it has read them. */
+
+/** What a lookup's commands can be sorted by. */
+export type IoSort =
+  | 'cmd' | 'tool' | 'n' | 'rd_mb' | 'wr_mb' | 'rchar_mb' | 'wchar_mb' | 'tx_mb' | 'rx_mb'
+  | 'cpu_s' | 'last'
+  /** read and written, or sent and received, together */
+  | 'disk_mb' | 'net_mb';
+
+/** One distinct command line and what every process that ran it moved. */
+export interface IoCmdRow {
+  /** masked, cut at 2000 characters (`cut`) */
+  cmd: string;
+  cut: boolean;
+  tool: string | null;
+  /** processes that ran it */
+  n: number;
+  /** of those, the ones with an io block */
+  io_n: number;
+  rd_mb: number;
+  wr_mb: number;
+  rchar_mb: number;
+  wchar_mb: number;
+  tx_mb: number;
+  rx_mb: number;
+  cpu_s: number;
+  users: string[];
+  first: string | null;
+  last: string | null;
+}
+
+export interface IoCmdTotals {
+  n: number;
+  io_n: number;
+  rd_mb: number;
+  wr_mb: number;
+  rchar_mb: number;
+  wchar_mb: number;
+  tx_mb: number;
+  rx_mb: number;
+  cpu_s: number;
+}
+
+export interface IoCmdJob {
+  id: string;
+  state: 'queued' | 'reading' | 'done' | 'error';
+  error: string | null;
+  query: Record<string, unknown>;
+  from: string | null;
+  to: string | null;
+  bytes: number;
+  total_bytes: number;
+  scanned: number;
+  matched: number;
+  elapsed_s: number;
+  totals?: IoCmdTotals;
+  /** distinct command lines */
+  commands?: number;
+  /** past the service's hold: counted in `totals`, not listed */
+  commands_over?: number;
+  rows?: IoCmdRow[];
+  offset?: number;
+  limit?: number;
+  sort?: IoSort;
+  dir?: 'asc' | 'desc';
+}
+
+/** A process's I/O in the trajectory tree: its own, or summed over a subtree. */
+export interface ProcIo {
+  rd_mb: number;
+  wr_mb: number;
+  rchar_mb: number;
+  wchar_mb: number;
+  tx_mb: number;
+  rx_mb: number;
 }

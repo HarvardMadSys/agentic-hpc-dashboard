@@ -254,7 +254,11 @@ function FaultTable({
   const s = useSort<string>();
   return (
     <div className="scroller">
-      <table className="faults">
+      <table className="faults" style={{ '--cols': have.length } as React.CSSProperties}>
+        <colgroup>
+          <col className="measure" />
+          <col className="cls" span={have.length} />
+        </colgroup>
         <thead>
           <tr>
             <SortTh s={s} k="measure" first="asc">average per process</SortTh>

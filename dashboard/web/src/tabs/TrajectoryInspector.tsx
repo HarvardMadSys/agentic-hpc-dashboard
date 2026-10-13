@@ -32,11 +32,13 @@ import {
   allOpen,
   ancestors,
   defaultOpen,
+  hiddenAt,
   locate,
   spots,
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
 import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount } from '../components/ProcDiagram';
+import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
@@ -379,7 +381,7 @@ export function TrajectoryInspector({
   onClose: () => void;
   /** a run picked in the ranked table; `n` changes with every pick */
   jump?: RunJump | null;
-  /** the site's routine commands, hidden from the tree on request (`ui.routine_commands`) */
+  /** the site's routine commands, hidden from either view on request (`ui.routine_commands`) */
   routine?: string[] | null;
 }) {
   // "read again": a bound of now is a different read from the one the service
@@ -394,8 +396,9 @@ export function TrajectoryInspector({
   const elapsed = useElapsed(q.loading);
   const tree: ProcNode | null = d?.found ? (d.tree ?? null) : null;
   const [open, setOpen] = useState<Set<string>>(() => new Set(['r']));
-  // The tree view (roadmap notes 38 and 39): boxes, opened from the top, with
-  // the routine taken out unless asked for. The table keeps every jump.
+  // The tree view (roadmap notes 38 and 39): boxes, opened from the top. Both
+  // views take the routine out unless asked not to; a jump that lands on a
+  // routine row turns that off, so the row it names is drawn.
   const [mode, setMode] = useState<'tree' | 'table'>('tree');
   const [hide, setHide] = useState(true);
   const [dopen, setDopen] = useState<Set<string>>(() => new Set(['r']));
@@ -494,6 +497,8 @@ export function TrajectoryInspector({
       for (const id of ancestors(found.id)) next.add(id);
       return next;
     });
+    const unhide = hide && hiddenAt(tree, found.id, rules);
+    if (unhide) setHide(false);
     setFlash((f) => ({ id: found.id, n: (f?.n ?? 0) + 1 }));
     setCursor(w.t);
     setFailIdx(w.fail ?? null);
@@ -504,6 +509,7 @@ export function TrajectoryInspector({
       <>
         <b>{`→ ${clock(w.t)}`}</b>
         {` · ${w.what}${landing(w, found)}`}
+        {unhide ? ' · it is routine, so hide routine is off' : ''}
       </>,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -691,6 +697,15 @@ export function TrajectoryInspector({
                 <button className="btn" onClick={() => (mode === 'tree' ? setDopen(new Set(['r'])) : setOpen(new Set(['r'])))}>
                   collapse
                 </button>
+                <a
+                  className="btn"
+                  href={treePopHref(sid, win, from, hide)}
+                  target="_blank"
+                  rel="noopener"
+                  data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
+                >
+                  pop out ↗
+                </a>
               </>
             )}
             <button className="btn" onClick={onClose} aria-label="close the inspector">
@@ -747,26 +762,30 @@ export function TrajectoryInspector({
             inView={inView}
           />
         )}
+        {tree && (
+          <div className="pd-bar">
+            <label data-tip="take out runs of the same command and the site's routine commands (ui.routine_commands), so the unusual processes stand out">
+              <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
+              hide routine
+            </label>
+            {hide && (
+              <span className="nm">
+                {`${fint(hiddenCount(tree, rules))} routine processes hidden`}
+              </span>
+            )}
+            <span className="nm">
+              {mode === 'tree'
+                ? '· click a box to open what it started · hover for its command'
+                : '· click a row to open what it started · hover for its command'}
+            </span>
+          </div>
+        )}
         {tree && mode === 'tree' && (
-          <>
-            <div className="pd-bar">
-              <label data-tip="take out runs of the same command and the site's routine commands (ui.routine_commands), so the unusual processes stand out">
-                <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
-                hide routine
-              </label>
-              {hide && (
-                <span className="nm">
-                  {`${fint(hiddenCount(tree, rules))} routine processes hidden`}
-                </span>
-              )}
-              <span className="nm">· click a box to open what it started · hover for its command</span>
-            </div>
-            {/* keyed on `hide`: hiding moves every parent, so start again over the root */}
-            <ProcDiagram key={hide ? 'hide' : 'all'} root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
-          </>
+          // keyed on `hide`: hiding moves every parent, so start again over the root
+          <ProcDiagram key={hide ? 'hide' : 'all'} root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
         )}
         {tree && mode === 'table' && (
-          <ProcTree root={tree} open={open} setOpen={setOpen} timeline={d?.timeline} view={treeView} flash={flash} />
+          <ProcTree root={tree} open={open} setOpen={setOpen} timeline={d?.timeline} view={treeView} flash={flash} hide={hide ? rules : null} />
         )}
         {tree && (
           <div className="pt-legend">

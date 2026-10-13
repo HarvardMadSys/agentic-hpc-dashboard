@@ -234,6 +234,125 @@ export function ZoomNote({
   );
 }
 
+/** The whole range under a zoomed chart, small, with the part in view boxed
+ * -- the chart's minimap. Drag the box to pan, drag either edge to widen or
+ * narrow it, click outside it to go there, double-click to see it all again.
+ * Shown only while zoomed: unzoomed, the chart above already is the whole.
+ *
+ * It works in the chart's axis space (`lo`-`hi`, `a`-`b`; log space on a log
+ * axis), on the same `W` and plot margins as the chart, so it lines up under
+ * it. `draw` paints the overview -- the chart's own lines, or a strip's bars --
+ * given the minimap's x scale and its height; `onSet` gets every new range,
+ * already inside the data and no narrower than `minSpan`. */
+export function ZoomMap({
+  W,
+  L = 0,
+  R = 0,
+  H = 30,
+  lo,
+  hi,
+  a,
+  b,
+  minSpan,
+  onSet,
+  onReset,
+  draw,
+  label,
+  className,
+}: {
+  W: number;
+  L?: number;
+  R?: number;
+  H?: number;
+  lo: number;
+  hi: number;
+  a: number;
+  b: number;
+  minSpan: number;
+  onSet: (a: number, b: number) => void;
+  onReset: () => void;
+  draw: (X: (v: number) => number, H: number) => ReactNode;
+  label?: string;
+  /** sizing of the chart above it, when that is not the plain `svg` rule */
+  className?: string;
+}) {
+  const pw = W - L - R;
+  const full = Math.max(hi - lo, 1e-9);
+  const X = (v: number) => L + ((v - lo) / full) * pw;
+  const V = (x: number) => lo + ((Math.min(W - R, Math.max(L, x)) - L) / pw) * full;
+  const clampTo = (v: number, p: number, q: number) => Math.min(q, Math.max(p, v));
+  const grab = useRef<{ mode: 'move' | 'l' | 'r'; sv: number; a: number; b: number } | null>(null);
+  const [mode, setMode] = useState<'move' | 'l' | 'r' | null>(null);
+  const xa = X(a);
+  const xb = X(b);
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      width={W}
+      height={H}
+      preserveAspectRatio="xMidYMin meet"
+      className={`zmap${className ? ' ' + className : ''}${mode ? ' ' + mode : ''}`}
+      role="img"
+      aria-label={label ?? 'the whole range, with the part in view boxed'}
+      data-tip="the whole range: drag the box to pan, an edge to resize, click elsewhere to go there, double-click to see it all"
+      onDoubleClick={onReset}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const p = svgAt(e.currentTarget, e, W, H);
+        if (!p) return;
+        const edge = 6 * p.k;
+        let na = a;
+        let nb = b;
+        let m: 'move' | 'l' | 'r';
+        if (Math.abs(p.x - xa) <= edge && p.x <= (xa + xb) / 2) m = 'l';
+        else if (Math.abs(p.x - xb) <= edge) m = 'r';
+        else if (p.x > xa && p.x < xb) m = 'move';
+        else {
+          // outside the box: the box goes there, and the drag carries on from it
+          const s = b - a;
+          na = clampTo(V(p.x) - s / 2, lo, hi - s);
+          nb = na + s;
+          onSet(na, nb);
+          m = 'move';
+        }
+        e.currentTarget.setPointerCapture(e.pointerId);
+        grab.current = { mode: m, sv: V(p.x), a: na, b: nb };
+        setMode(m);
+      }}
+      onPointerMove={(e) => {
+        const g = grab.current;
+        const p = g && svgAt(e.currentTarget, e, W, H);
+        if (!g || !p) return;
+        const d = V(p.x) - g.sv;
+        if (g.mode === 'move') {
+          const s = g.b - g.a;
+          const na = clampTo(g.a + d, lo, hi - s);
+          onSet(na, na + s);
+        } else if (g.mode === 'l') onSet(clampTo(g.a + d, lo, g.b - minSpan), g.b);
+        else onSet(g.a, clampTo(g.b + d, g.a + minSpan, hi));
+      }}
+      onPointerUp={() => {
+        grab.current = null;
+        setMode(null);
+      }}
+      onPointerCancel={() => {
+        grab.current = null;
+        setMode(null);
+      }}
+    >
+      <rect className="zmap-bg" x={L} y={0.5} width={pw} height={H - 1} />
+      {draw(X, H)}
+      <rect className="zmap-out" x={L} y={0.5} width={Math.max(0, xa - L)} height={H - 1} />
+      <rect className="zmap-out" x={xb} y={0.5} width={Math.max(0, W - R - xb)} height={H - 1} />
+      <rect className="zmap-win" x={xa} y={0.75} width={Math.max(2, xb - xa)} height={H - 1.5} />
+      <rect className="zmap-h" x={xa - 2} y={H / 2 - 6} width={4} height={12} rx={1.5} />
+      <rect className="zmap-h" x={xb - 2} y={H / 2 - 6} width={4} height={12} rx={1.5} />
+      <rect className="zmap-edge" x={xa - 5} y={0} width={10} height={H} />
+      <rect className="zmap-edge" x={xb - 5} y={0} width={10} height={H} />
+    </svg>
+  );
+}
+
 /** Two slanted strokes across a bar: it runs on past the zoomed ceiling. */
 function Cut({ d }: { d: string }) {
   return <path className="zoom-cut" d={d} />;
@@ -247,6 +366,8 @@ export interface HBarItem {
   c?: string;
   lbl?: string;
   tip?: string;
+  /** the bar and its value open something: the commands behind it */
+  onPick?: () => void;
 }
 
 export function HBars({
@@ -329,7 +450,9 @@ export function HBars({
                     height={bh}
                     rx={2}
                     fill={d.c || color}
-                    data-tip={d.tip || `${d.k}: ${fmt(d.v)}${u}`}
+                    className={d.onPick ? 'hpick' : undefined}
+                    onClick={d.onPick}
+                    data-tip={(d.tip || `${d.k}: ${fmt(d.v)}${u}`) + (d.onPick ? '\nclick: every command behind it' : '')}
                   />
                 )}
                 {cut && (
@@ -337,7 +460,7 @@ export function HBars({
                     d={`M${e - 13} ${y + bh + 1} L${e - 8} ${y - 1} M${e - 8} ${y + bh + 1} L${e - 3} ${y - 1}`}
                   />
                 )}
-                <text className="vlbl" x={e + 7} y={y + bh / 2 + 3.5}>
+                <text className={`vlbl${d.onPick ? ' hpick' : ''}`} x={e + 7} y={y + bh / 2 + 3.5} onClick={d.onPick}>
                   {d.lbl != null ? d.lbl : fmt(d.v)}
                 </text>
               </g>
@@ -609,6 +732,8 @@ export interface LinePt {
   y: number | null;
 }
 export interface LineSeries {
+  /** a point opens something: the commands behind that bin */
+  onPick?: (x: number) => void;
   lbl: string;
   c: string;
   pts: LinePt[];
@@ -897,7 +1022,10 @@ export function Lines({
                       cy={Y(p.y).toFixed(1)}
                       r={8}
                       fill="transparent"
-                      data-tip={`${se.lbl} · ${xname || 'x'} ${XT(p.x)} → ${yname || 'y'} ${F(p.y)}`}
+                      className={se.onPick ? 'hpick' : undefined}
+                      onClick={se.onPick ? () => se.onPick!(p.x) : undefined}
+                      data-tip={`${se.lbl} · ${xname || 'x'} ${XT(p.x)} → ${yname || 'y'} ${F(p.y)}${
+                        se.onPick ? '\nclick: every command behind it' : ''}`}
                     />
                   );
                 })}
@@ -942,6 +1070,45 @@ export function Lines({
           </text>
         )}
       </Svg>
+      {zoomed && (
+        <ZoomMap
+          W={W}
+          L={L}
+          R={R}
+          lo={T(fx0)}
+          hi={T(fx1)}
+          a={T(x0)}
+          b={T(x1)}
+          minSpan={xlog || !minSpan ? full / 1e4 : minSpan}
+          onSet={(a, b) => setView(fit(a, b))}
+          onReset={() => setView(null)}
+          label={`the whole x range, ${XT(fx0)} to ${XT(fx1)}, with ${XT(x0)} to ${XT(x1)} in view`}
+          draw={(MX, MH) => {
+            // every line over the whole range, on a y scale of its own
+            const all = series.flatMap((se) => se.pts.filter((p) => p.y != null).map((p) => p.y as number));
+            const mtop = all.length ? Math.max(...all) : 1;
+            const mbot = ylog ? (all.length ? Math.min(...all) : 1e-3) : (ymin ?? 0);
+            const my = (v: number) => (ylog ? Math.log10(Math.max(v, mbot || 1e-9)) : v);
+            const MY = (v: number) => MH - 3 - ((MH - 6) * (my(v) - my(mbot))) / (my(mtop) - my(mbot) || 1);
+            return series.map((se) =>
+              runs(se.pts).map((run, ri) =>
+                run.length > 1 ? (
+                  <path
+                    key={`${se.lbl}-${ri}`}
+                    d={run.map((p, i) => (i ? 'L' : 'M') + MX(T(p.x)).toFixed(1) + ' ' + MY(p.y as number).toFixed(1)).join(' ')}
+                    fill="none"
+                    stroke={se.c}
+                    strokeWidth={1}
+                    strokeDasharray={se.dashed ? '3 2' : undefined}
+                  />
+                ) : (
+                  <circle key={`${se.lbl}-${ri}`} cx={MX(T(run[0].x))} cy={MY(run[0].y as number)} r={1} fill={se.c} />
+                ),
+              ),
+            );
+          }}
+        />
+      )}
     </>
   );
 }

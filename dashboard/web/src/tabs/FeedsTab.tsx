@@ -51,7 +51,7 @@ function lostText(r: CollectorRun | undefined | null): string {
 }
 
 function Runs({ runs, now }: { runs: CollectorRun[]; now: number }) {
-  const s = useSort<string>();
+  const s = useSort<string>('started');
   if (!runs.length) return <NoRows what="no start or stop record in the files read" />;
   // newest first as read; the index each run had decides "running" below
   const rows = s.sort(runs.map((r, i) => ({ r, i })), ({ r }, k) =>
@@ -133,7 +133,7 @@ function HostDetail({ h, now }: { h: CollectorHost; now: number }) {
 
 function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const s = useSort<string>();
+  const s = useSort<string>('host', 'asc');
   const sorted = s.sort(hosts, (h, k) =>
     k === 'host' ? h.host : k === 'status' ? h.verdict : k === 'beat' ? h.heartbeat.age_s
     : k === 'since' ? h.running?.started ?? null : k === 'restarts' ? h.restarts

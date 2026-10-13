@@ -6,7 +6,7 @@
  */
 import { GLOSS } from '../lib/glossary';
 import { Fragment, useState } from 'react';
-import type { Cls, IoByTool, IoProcess, Resources } from '../api/types';
+import type { Cls, IoByTool, IoProcess, IoSort, Resources } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
 import { TimeChart } from './ResourcesTab';
 import type { TimeLine, View } from './ResourcesTab';
@@ -20,6 +20,8 @@ import { CmdCell } from '../components/Cmd';
 import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+import { coveredBy, openIoCmds } from '../lib/iocmds';
+import { IoNum } from '../components/IoCmds';
 import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/types';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
@@ -116,26 +118,29 @@ export function InstanceTable({ rows, showArgs }: { rows: RiskInstance[]; showAr
             sort: (rs) => rs.map((w) => w.ts ?? '').sort().pop() || null,
           },
         ]}
-        sub={(rs) => <InstanceRows rows={rs} showArgs={showArgs} />}
+        sub={(rs, withUser) => <InstanceRows rows={rs} showArgs={showArgs} withUser={withUser} />}
       />
     </div>
   );
 }
 
-/** One user's processes, as rows. */
-function InstanceRows({ rows, showArgs }: { rows: RiskInstance[]; showArgs: boolean }) {
-  const s = useSort<string>();
+/** One user's processes, as rows; every user's, with a user column. */
+function InstanceRows({ rows, showArgs, withUser }: { rows: RiskInstance[]; showArgs: boolean; withUser?: boolean }) {
+  const s = useSort<string>('at');
   if (!rows.length) return null;
   const val = (w: RiskInstance, k: string) =>
-    k === 'at' ? w.ts : k === 'pid' ? w.pid : k === 'from' ? fromLbl(w) : k === 'host' ? w.host
+    k === 'at' ? w.ts : k === 'user' ? w.user : k === 'pid' ? w.pid : k === 'from' ? fromLbl(w) : k === 'host' ? w.host
     : k === 'tool' ? w.tool : k === 'cmd' ? w.args : k === 'cpu' ? w.cpu_s
     : w.signal != null ? 1000 + w.signal : w.exit_code;
   return (
-    <div className="scroller">
+    // flat, it sits in the list's own scroll box, which holds its header in view
+    <div className={withUser ? undefined : 'scroller'}>
       <table>
         <thead>
           <tr>
-            <SortTh s={s} k="at">at</SortTh><SortTh s={s} k="pid" num>pid</SortTh>
+            <SortTh s={s} k="at">at</SortTh>
+            {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
+            <SortTh s={s} k="pid" num>pid</SortTh>
             <SortTh s={s} k="from" first="asc">from</SortTh>
             <SortTh s={s} k="host" first="asc">host</SortTh><SortTh s={s} k="tool" first="asc">tool</SortTh>
             {showArgs && <SortTh s={s} k="cmd" first="asc">command</SortTh>}
@@ -147,6 +152,7 @@ function InstanceRows({ rows, showArgs }: { rows: RiskInstance[]; showArgs: bool
           {s.sort(rows, val).map((w, i) => (
             <tr key={`${w.pid}-${i}`}>
               <td className="mono" style={{ color: 'var(--muted)' }}>{w.ts ?? DASH}</td>
+              {withUser && <td className="mono">{w.user ?? DASH}</td>}
               <td className="num mono" style={{ fontSize: '10.5px' }}
                   data-tip={w.ppid != null ? `parent pid ${w.ppid}` : undefined}>
                 {w.pid ?? DASH}
@@ -170,10 +176,17 @@ function InstanceRows({ rows, showArgs }: { rows: RiskInstance[]; showArgs: bool
 /** One direction of per-tool I/O, ranked on its own counter: disk bytes as the
  *  bar, syscall bytes in the tip. A tool that never moved a byte this way is not
  *  a top reader (or writer) and is left off rather than drawn as a zero. */
+/** A per-process counter's drawer sort: its commands, the heaviest first. */
+const QUANT_SORT: Record<string, IoSort | undefined> = {
+  rd_mb: 'rd_mb', wr_mb: 'wr_mb', rchar_mb: 'rchar_mb', wchar_mb: 'wchar_mb',
+  net_tx_mb: 'tx_mb', net_rx_mb: 'rx_mb',
+};
+
 function toolBars(
   rows: IoByTool[],
   dir: 'read' | 'write',
   color: string,
+  from?: string | number | null,
 ): HBarItem[] {
   const [disk, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
   return rows
@@ -190,6 +203,10 @@ function toolBars(
         `${mb(t[sys])} through ${dir}() syscalls` +
         (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
         `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} processes exited`,
+      onPick: () => openIoCmds({
+        title: `disk ${dir === 'read' ? 'read' : 'written'} · ${t.tool}${t.cls ? ` · ${CLS_LBL[t.cls] ?? t.cls}` : ''}`,
+        sort: disk, tool: [t.tool], class: t.cls ? [t.cls] : undefined, from,
+      }),
     }));
 }
 
@@ -327,6 +344,9 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
   const have = shown(byClass, cls);
   // every table here sorts by any column (roadmap note 27), each on its own
   const sortOf = useSortMap();
+  // a section's table opens by its first column, A to Z
+  const secSort = (sc: RiskSection) =>
+    sortOf(sc.id, sc.kind === 'login_compute' ? 'tool' : sc.kind === 'credentials' ? 'pattern' : 'command', 'asc');
 
   const totRd = have.reduce((a, c) => a + (byClass[c]?.rd_mb ?? 0), 0);
   const totWr = have.reduce((a, c) => a + (byClass[c]?.wr_mb ?? 0), 0);
@@ -360,8 +380,8 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
   }));
 
   const byTool = (io.by_tool ?? []).filter((t) => !t.cls || cls.includes(t.cls as Cls));
-  const toolReads = toolBars(byTool, 'read', 'var(--s2)');
-  const toolWrites = toolBars(byTool, 'write', 'var(--s1)');
+  const toolReads = toolBars(byTool, 'read', 'var(--s2)', coveredBy(io).from);
+  const toolWrites = toolBars(byTool, 'write', 'var(--s1)', coveredBy(io).from);
   const byUser = (io.by_user ?? []).filter((u) => !u.cls || cls.includes(u.cls as Cls));
 
   const risk = pick<RiskPanel>(P, 'risk', 'ebpfm');
@@ -631,10 +651,14 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                     <tr key={c}>
                       <td>{CLS_LBL[c] ?? c}</td>
                       <td className="num">
-                        <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
+                        <IoNum q={{ title: `network sent · ${CLS_LBL[c] ?? c}`, sort: 'tx_mb', class: [c], ...coveredBy(io) }}>
+                          <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
+                        </IoNum>
                       </td>
                       <td className="num">
-                        <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
+                        <IoNum q={{ title: `network received · ${CLS_LBL[c] ?? c}`, sort: 'rx_mb', class: [c], ...coveredBy(io) }}>
+                          <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
+                        </IoNum>
                       </td>
                       {/* an Acc like its tx/rx neighbours: the count carries the
                           same coverage, so it must show it the same way */}
@@ -671,20 +695,20 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   <th />
                 </tr>
                 <tr>
-                  <SortTh s={sortOf('io-user')} k="user" first="asc">user</SortTh>
-                  <SortTh s={sortOf('io-user')} k="cls" first="asc">class</SortTh>
-                  <SortTh s={sortOf('io-user')} k="events" num tip="processes exited">processes</SortTh>
-                  <SortTh s={sortOf('io-user')} k="rd_mb" num tip="block-layer bytes read (read_bytes)">disk</SortTh>
-                  <SortTh s={sortOf('io-user')} k="rchar_mb" num tip="bytes through read() syscalls (rchar)">syscall</SortTh>
-                  <SortTh s={sortOf('io-user')} k="wr_mb" num tip="block-layer bytes written (write_bytes)">disk</SortTh>
-                  <SortTh s={sortOf('io-user')} k="wchar_mb" num tip="bytes through write() syscalls (wchar)">syscall</SortTh>
-                  <SortTh s={sortOf('io-user')} k="net_rx_mb" num tip={GLOSS.rx}>rx</SortTh>
-                  <SortTh s={sortOf('io-user')} k="net_tx_mb" num tip={GLOSS.tx}>tx</SortTh>
-                  <SortTh s={sortOf('io-user')} k="io_coverage_pct" num tip={GLOSS.coverage}>coverage</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="user" first="asc">user</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="cls" first="asc">class</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="events" num tip="processes exited">processes</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="rd_mb" num tip="block-layer bytes read (read_bytes)">disk</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="rchar_mb" num tip="bytes through read() syscalls (rchar)">syscall</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="wr_mb" num tip="block-layer bytes written (write_bytes)">disk</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="wchar_mb" num tip="bytes through write() syscalls (wchar)">syscall</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="net_rx_mb" num tip={GLOSS.rx}>rx</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="net_tx_mb" num tip={GLOSS.tx}>tx</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="io_coverage_pct" num tip={GLOSS.coverage}>coverage</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {sortOf('io-user').sort(byUser, (u, k) =>
+                {sortOf('io-user', 'user', 'asc').sort(byUser, (u, k) =>
                   k === 'cls' ? (u.cls ? CLS_LBL[u.cls] ?? u.cls : null)
                   : ((u as unknown as Record<string, string | number | null | undefined>)[k] ?? null),
                 ).map((u, i) => (
@@ -692,12 +716,16 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                     <td className="mono">{u.user}</td>
                     <td>{u.cls ? (CLS_LBL[u.cls] ?? u.cls) : DASH}</td>
                     <td className="num">{fint(u.events)}</td>
-                    <td className="num">{mb(u.rd_mb)}</td>
-                    <td className="num">{mb(u.rchar_mb)}</td>
-                    <td className="num">{mb(u.wr_mb)}</td>
-                    <td className="num">{mb(u.wchar_mb)}</td>
-                    <td className="num">{mb(u.net_rx_mb)}</td>
-                    <td className="num">{mb(u.net_tx_mb)}</td>
+                    {([['rd_mb', u.rd_mb, 'disk read'], ['rchar_mb', u.rchar_mb, 'syscall read'],
+                      ['wr_mb', u.wr_mb, 'disk written'], ['wchar_mb', u.wchar_mb, 'syscall written'],
+                      ['rx_mb', u.net_rx_mb, 'network received'], ['tx_mb', u.net_tx_mb, 'network sent']] as const).map(([k, v, lbl]) => (
+                      <td key={k} className="num">
+                        {v ? (
+                          <IoNum q={{ title: `${lbl} · ${u.user}${u.cls ? ` · ${CLS_LBL[u.cls] ?? u.cls}` : ''}`, sort: k,
+                            user: [u.user], class: u.cls ? [u.cls] : undefined, ...coveredBy(io) }}>{mb(v)}</IoNum>
+                        ) : mb(v)}
+                      </td>
+                    ))}
                     <td className="num">
                       <Coverage pct={u.io_coverage_pct} n={u.events} />
                     </td>
@@ -726,7 +754,11 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                       : quantVal(byClass[c]?.quants?.[qk], k)),
                   ).map(([qk, c]) => (
                       <tr key={qk + c}>
-                        <td className="mono lbl" data-tip={GLOSS[qk]}>{qk}</td>
+                        <td className="mono lbl" data-tip={GLOSS[qk]}>
+                          {QUANT_SORT[qk] ? (
+                            <IoNum q={{ title: `${qk} · ${CLS_LBL[c] ?? c}`, sort: QUANT_SORT[qk]!, class: [c], ...coveredBy(io) }}>{qk}</IoNum>
+                          ) : qk}
+                        </td>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <QuantCells q={byClass[c]?.quants?.[qk]} />
                       </tr>
@@ -789,18 +821,18 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   <table>
                     <thead>
                       <tr>
-                        <SortTh s={sortOf(sc.id)} k="tool" first="asc">tool</SortTh>
-                        <SortTh s={sortOf(sc.id)} k="kind" first="asc">category</SortTh>
-                        <SortTh s={sortOf(sc.id)} k="n" num>times run</SortTh>
-                        <SortTh s={sortOf(sc.id)} k="cpu" num>CPU time</SortTh>
-                        <SortTh s={sortOf(sc.id)} k="pct" num>% of CPU</SortTh>
-                        <SortTh s={sortOf(sc.id)} k="users" num>users</SortTh>
-                        <SortTh s={sortOf(sc.id)} k="hosts" first="asc">hosts</SortTh>
+                        <SortTh s={secSort(sc)} k="tool" first="asc">tool</SortTh>
+                        <SortTh s={secSort(sc)} k="kind" first="asc">category</SortTh>
+                        <SortTh s={secSort(sc)} k="n" num>times run</SortTh>
+                        <SortTh s={secSort(sc)} k="cpu" num>CPU time</SortTh>
+                        <SortTh s={secSort(sc)} k="pct" num>% of CPU</SortTh>
+                        <SortTh s={secSort(sc)} k="users" num>users</SortTh>
+                        <SortTh s={secSort(sc)} k="hosts" first="asc">hosts</SortTh>
                         <th>run by</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {sortOf(sc.id).sort(lcRows, (r, k) =>
+                      {secSort(sc).sort(lcRows, (r, k) =>
                         k === 'tool' ? r.tool : k === 'kind' ? (r.kind ? LC_KIND[r.kind] ?? r.kind : null) : k === 'n' ? r.n
                         : k === 'cpu' ? r.cpu_s : k === 'pct' ? r.cpu_pct : k === 'users' ? r.users : r.hosts.join(' '),
                       ).map((r, i) => (
@@ -840,16 +872,16 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                 <table>
                   <thead>
                     <tr>
-                      <SortTh s={sortOf(sc.id)} k="pattern" first="asc">pattern</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="n" num>matches</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="users" num>users</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="tools" first="asc">tools</SortTh>
+                      <SortTh s={secSort(sc)} k="pattern" first="asc">pattern</SortTh>
+                      <SortTh s={secSort(sc)} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
+                      <SortTh s={secSort(sc)} k="n" num>matches</SortTh>
+                      <SortTh s={secSort(sc)} k="users" num>users</SortTh>
+                      <SortTh s={secSort(sc)} k="tools" first="asc">tools</SortTh>
                       <th>run by</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortOf(sc.id).sort(inSection(secRows, sc), (r, k) =>
+                    {secSort(sc).sort(inSection(secRows, sc), (r, k) =>
                       k === 'pattern' ? r.pattern : k === 'sev' ? r.severity : k === 'n' ? r.n
                       : k === 'users' ? r.users : r.tools.join(' '),
                     ).map((r) => (
@@ -894,17 +926,17 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                 <table>
                   <thead>
                     <tr>
-                      <SortTh s={sortOf(sc.id)} k="command" first="asc">command</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="n" num>times run</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="users" num>users</SortTh>
+                      <SortTh s={secSort(sc)} k="command" first="asc">command</SortTh>
+                      <SortTh s={secSort(sc)} k="sev" first="asc" tip={GLOSS.severity}>severity</SortTh>
+                      <SortTh s={secSort(sc)} k="n" num>times run</SortTh>
+                      <SortTh s={secSort(sc)} k="users" num>users</SortTh>
                       <th>run by</th>
-                      <SortTh s={sortOf(sc.id)} k="works" num tip="runs that exited 0: nothing stopped them">succeeded</SortTh>
-                      <SortTh s={sortOf(sc.id)} k="cpu" num>CPU s</SortTh>
+                      <SortTh s={secSort(sc)} k="works" num tip="runs that exited 0: nothing stopped them">succeeded</SortTh>
+                      <SortTh s={secSort(sc)} k="cpu" num>CPU s</SortTh>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortOf(sc.id).sort(inSection(dgRows, sc), (r, k) =>
+                    {secSort(sc).sort(inSection(dgRows, sc), (r, k) =>
                       k === 'command' ? r.command : k === 'sev' ? r.severity : k === 'n' ? r.n : k === 'users' ? r.users
                       : k === 'works' ? r.works_pct : r.cpu_s,
                     ).map((r) => (

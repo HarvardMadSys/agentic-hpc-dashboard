@@ -300,6 +300,7 @@ class PanelView:
         self.reducers = {}              # key -> reducer, live-fed after the swap
         self.dispatch = {}              # event -> [reducer]
         self.payload = {}               # materialised result(), per reducer key
+        self._fresh = {}                # key -> (when, live_records then) it was materialised
         self.touched = time.time()
         self.replay_dropped = 0
         self.live_records = 0
@@ -354,7 +355,7 @@ class PanelView:
         # One process index per window, shared by the reducers that count
         # sessions: they fold the collector's session keys through it.
         procs = red[ProcIndex.KEY] = ProcIndex(self.cfg)
-        red["sandbox"] = SandboxReducer(self.cfg, self.classes, procs=procs)
+        sb = red["sandbox"] = SandboxReducer(self.cfg, self.classes, procs=procs)
         # What each session asks of the scheduler, folded the same way. A
         # cluster without Slurm (`slurm.enabled: false`) does not reduce it at
         # all: every panel that reads it then says it is absent.
@@ -363,11 +364,12 @@ class PanelView:
                                                  window_s=self.window_s, procs=procs)
         traj = red["trajectories"] = TrajectoryReducer(
             self.cfg, self.classes, window_s=self.window_s, procs=procs)
-        # Where each agent worked; the cascades compose it per agent and subagent.
+        # Where each agent worked; the cascades compose it per agent and subagent,
+        # and tag each with whether its calls ran in a sandbox.
         ws = red[WorkspaceReducer.KEY] = WorkspaceReducer(
             self.cfg, self.classes, window_s=self.window_s, procs=procs)
         red["cascades"] = CascadeReducer(self.cfg, self.classes, window_s=self.window_s,
-                                         procs=procs, traj=traj, ws=ws)
+                                         procs=procs, traj=traj, ws=ws, sb=sb)
         red[FacetReducer.KEY] = FacetReducer(self.cfg, self.classes)
         return red
 
@@ -390,7 +392,26 @@ class PanelView:
         # The reducers hold raw argv, because their detectors need it; nothing
         # leaves for the API without its credentials masked (`redact`).
         self.payload = redact.payload(out)
+        self._fresh = {k: (time.time(), self.live_records) for k in out}
         return self.payload
+
+    def materialize_key(self, key, max_age_s):
+        """Re-materialise one reducer's payload when it is older than
+        `max_age_s` and the view has ingested since. The rest wait for the
+        next `refresh`: this is for a panel read live, between rebuilds."""
+        r = self.reducers.get(key)
+        if r is None or self._replay is not None:
+            return
+        at, seen = self._fresh.get(key, (0.0, None))
+        now = time.time()
+        if now - at < max_age_s or seen == self.live_records:
+            return
+        try:
+            out = r.result()
+        except Exception as e:
+            out = {"_error": str(e)}
+        self.payload = dict(self.payload, **{key: redact.payload(out)})
+        self._fresh[key] = (now, self.live_records)
 
     # ---------------------------------------------------------------- status
     def drift_s(self):

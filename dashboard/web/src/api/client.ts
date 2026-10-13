@@ -16,6 +16,8 @@ import type {
   AskInfo,
   AskJob,
   DoneList,
+  IoCmdJob,
+  IoSort,
   LiveUsers,
   PanelsResponse,
   TrajRank,
@@ -191,4 +193,22 @@ export function wsUrl(): string {
   if (explicit) return explicit;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.host}/ws`;
+}
+
+/** Start the lookup of every command behind an I/O number, or find the one
+ *  already reading or done for the same question (rc_dashboard/iocmds.py). */
+export function startIoCmds(params: URLSearchParams, signal?: AbortSignal): Promise<IoCmdJob> {
+  return get<IoCmdJob>(`/io/commands?${params.toString()}`, { signal });
+}
+
+/** A lookup's progress, and once it is done, one sorted page of its commands. */
+export function getIoCmds(
+  id: string,
+  page: { offset: number; limit: number; sort: IoSort; dir: 'asc' | 'desc' },
+  signal?: AbortSignal,
+): Promise<IoCmdJob> {
+  const q = new URLSearchParams({
+    offset: String(page.offset), limit: String(page.limit), sort: page.sort, dir: page.dir,
+  });
+  return get<IoCmdJob>(`/io/commands/${encodeURIComponent(id)}?${q.toString()}`, { signal });
 }
