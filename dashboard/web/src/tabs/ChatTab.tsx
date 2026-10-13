@@ -145,7 +145,7 @@ function Suggestions({ info, openUserTraj, goto, followUp }: {
           <b>{scope.windowLabel ?? 'current'}</b> window on screen
           {narrowed.length ? <> · narrowed to <b>{narrowed.join(', ')}</b></> : null} · each suggestion names
           the numbers behind it · it runs only when you press the button
-          {done.length ? <> · <b>{done.length}</b> marked done are left out</> : null}
+          {done.length ? <> · <b>{done.length}</b> marked done {done.length === 1 ? 'is' : 'are'} left out</> : null}
         </div>
         {job == null ? null : job.state === 'done' ? (
           <>
