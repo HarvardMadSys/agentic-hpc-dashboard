@@ -5,6 +5,7 @@
 No test runs a real agent: `ask.command` points at a small Python stand-in.
 """
 import json
+import os
 import sys
 import tempfile
 import time
@@ -324,18 +325,32 @@ class SuggestionsTest(unittest.TestCase):
         self.assertEqual((got["suggestions"][0]["tab"], got["suggestions"][0]["panel"]),
                          ("internal", "Internal · Sandbox"))
 
+    def test_the_paths_a_command_line_names(self):
+        for args, want in (
+                ("rm -rf /n/holylabs/x/Lab/ann/tmp ./rel /dev/null", ["/n/holylabs/x/Lab/ann/tmp"]),
+                ('bash -lc "cd /scratch/a && rm -rf /scratch/a/build 2>/dev/null"',
+                 ["/scratch/a", "/scratch/a/build"]),
+                ("wget -O /home/ann/data.tgz https://example.com/data.tgz", ["/home/ann/data.tgz"]),
+                ("/usr/bin/rm -rf ~/old", ["~/old"]),          # not the program itself
+                ("rm -rf /", []), ("", []), (None, [])):
+            self.assertEqual(ask.paths_in(args), want, args)
+        self.assertEqual(len(ask.paths_in(" ".join("/p%d" % i for i in range(20)))), 5)
+
     def test_who_ran_each_flagged_command_is_counted_from_its_listed_runs(self):
         risk = {"dangerous": {"rows": [
                     {"id": "rm_rf_shared", "command": "rm -rf", "n": 49,
-                     "instances": [{"user": "ann"}] * 9 + [{"user": "bob"}] * 3 + [{"user": None}]},
+                     "instances": [{"user": "ann", "args": "rm -rf /n/lab/shared/a"}] * 9
+                     + [{"user": "bob", "args": "rm -rf /n/lab/shared/b"}] * 3 + [{"user": None}]},
                     {"id": "quiet", "command": "x", "n": 0, "instances": []}]},
                 "secrets": {"rows": [{"id": "redis_password", "pattern": "redis -a", "n": 1,
                                       "instances": [{"user": "cy"}]}]},
                 "login_compute": {"top_procs": [{"user": "ann"}, {"user": "dee"}]}}
         who = ask.risk_who(risk)
         self.assertEqual(who["rm_rf_shared"], {"command": "rm -rf", "n": 49, "listed": 13,
-                                              "users": {"ann": 9, "bob": 3}})
+                                              "users": {"ann": 9, "bob": 3},
+                                              "paths": {"/n/lab/shared/a": 9, "/n/lab/shared/b": 3}})
         self.assertEqual(who["redis_password"]["users"], {"cy": 1})
+        self.assertNotIn("paths", who["redis_password"])     # a credential's runs carry no argv
         self.assertEqual(who["login_compute"]["users"], {"ann": 1, "dee": 1})
         self.assertNotIn("quiet", who)
         self.assertEqual(ask.risk_who(None), {})
@@ -349,6 +364,58 @@ class SuggestionsTest(unittest.TestCase):
         done = wait(a, j["id"])
         self.assertEqual(done["suggestions"]["suggestions"][0]["priority"], "high")
         self.assertIsNone(wait(a, a.submit("q", {}, None, "w")["id"])["suggestions"])
+
+
+class DoneTest(unittest.TestCase):
+    """Suggestions marked done: kept by the service, from its own answers,
+    until undone, and told to the next pass."""
+
+    def setUp(self):
+        self.cfg = Cfg()
+        self.a = ask.Asker(self.cfg)
+        self.a.jobs["j1"] = {"id": "j1", "window": "24h", "suggestions": ask.parse_suggestions(
+            SuggestionsTest.ANSWER)}
+        self.a.jobs["chat"] = {"id": "chat", "window": "24h", "suggestions": None}
+
+    def test_marking_keeps_the_services_own_suggestion_newest_first(self):
+        self.a.mark_done("j1", 1)
+        items = self.a.mark_done("j1", 0)["items"]
+        self.assertEqual([(x["job"], x["index"]) for x in items], [("j1", 0), ("j1", 1)])
+        self.assertEqual(items[0]["title"], "Ask user-1a2b3c4d to stop polling squeue")
+        self.assertEqual(items[0]["window"], "24h")
+        self.assertEqual(len(self.a.mark_done("j1", 0)["items"]), 2)      # once, not twice
+
+    def test_what_cannot_be_marked(self):
+        with self.assertRaises(LookupError):
+            self.a.mark_done("gone", 0)
+        for jid, i in (("j1", 9), ("j1", -1), ("j1", "0"), ("j1", True), ("chat", 0)):
+            with self.assertRaises(ValueError, msg=(jid, i)):
+                self.a.mark_done(jid, i)
+
+    def test_it_lasts_on_disk_until_undone(self):
+        did = self.a.mark_done("j1", 0)["items"][0]["id"]
+        again = ask.Asker(self.cfg)                       # a restart
+        self.assertEqual([x["id"] for x in again.done_list()["items"]], [did])
+        self.assertEqual(again.undo_done(did)["items"], [])
+        self.assertEqual(ask.Asker(self.cfg).done_list()["items"], [])
+        with self.assertRaises(LookupError):
+            again.undo_done(did)
+        path = self.a._done_path()
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_only_the_newest_are_kept(self):
+        self.a.DONE_KEEP = 2
+        for i in range(3):
+            self.a.mark_done("j1", i)
+        self.assertEqual([x["index"] for x in self.a.done_list()["items"]], [2, 1])
+
+    def test_the_next_pass_is_told_what_was_done(self):
+        self.a.mark_done("j1", 0)
+        told = self.a.done_for_prompt()
+        self.assertEqual(told[0]["title"], "Ask user-1a2b3c4d to stop polling squeue")
+        self.assertEqual(told[0]["users"], ["user-1a2b3c4d"])
+        self.assertTrue(told[0]["marked_done"])
+        self.assertNotIn("job", told[0])
 
 
 class SessionDigestTest(unittest.TestCase):

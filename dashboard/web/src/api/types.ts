@@ -1584,6 +1584,20 @@ export interface OperatorSuggestion {
   panel: string | null;
   tab: string | null;
 }
+/** A suggestion an operator marked done, as the service kept it. */
+export interface DoneSuggestion extends OperatorSuggestion {
+  id: string;
+  /** the answer it came from, and its place in it */
+  job: string;
+  index: number;
+  window: string | null;
+  /** epoch seconds */
+  done_at: number;
+}
+export interface DoneList {
+  /** newest first */
+  items: DoneSuggestion[];
+}
 /** One question, as the service runs it. */
 export interface AskJob {
   id: string;

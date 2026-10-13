@@ -480,6 +480,7 @@ class Aggregator:
             question, history = ask.SUGGEST_QUESTION, ()
             classes = context.get("classes")
             extra["risk_who"] = ask.risk_who(panels.get("risk"))
+            extra["done"] = self.asker.done_for_prompt()
             extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
                              "classes_shown": [c for c in classes if isinstance(c, str)][:8]
                              if isinstance(classes, list) else None}

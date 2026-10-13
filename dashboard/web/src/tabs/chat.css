@@ -177,3 +177,34 @@
   align-items: baseline;
   font-size: 11.5px;
 }
+
+/* a suggestion marked done (ChatTab.tsx): its button, and the list it goes to */
+.sugg-f .sugg-done-btn {
+  margin-left: auto;
+}
+.sugg-done summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.sugg-done ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sugg-done li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.sugg-done-t {
+  color: var(--ink-2);
+  text-decoration: line-through;
+  text-decoration-color: var(--edge);
+}

@@ -5,6 +5,9 @@
  * do? The answer comes back as JSON, which the service checks and the page
  * lays out as cards, the most urgent first, each with the numbers behind it
  * and a link to whom it concerns. It runs only when the button is pressed.
+ * A suggestion marked done is kept by the service, for everyone, until undone:
+ * it leaves the cards, waits in a "marked done" list, and the next pass is told
+ * to leave it out.
  *
  * Each question runs the agent the service is configured with (`ask` in its
  * config; by default the service user's own `codex`) over a compact snapshot
@@ -15,8 +18,9 @@
  * instead (components/Ask.tsx).
  */
 import { useEffect, useRef, useState } from 'react';
-import { getAskInfo } from '../api/client';
-import type { AskInfo, AskJob, OperatorSuggestion } from '../api/types';
+import { ApiError, getAskInfo, getDone, markDone, undoDone } from '../api/client';
+import type { AskInfo, AskJob, DoneSuggestion, OperatorSuggestion } from '../api/types';
+import { fullClock } from '../charts/scale';
 import { Md, Turn, canAsk, useAskScope, useAskThread } from '../components/Ask';
 import { Panel } from '../components/Panel';
 import { clock } from '../lib/format';
@@ -27,25 +31,31 @@ const SEV: Record<OperatorSuggestion['priority'], string> = { high: 'HIGH', medi
 
 /** The operator's suggestions, as cards: what to do, the numbers behind it,
  * and a link to each account it names. */
-function SuggestionList({ job, openUserTraj, goto, followUp }: {
+function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
   job: AskJob;
   openUserTraj: (u: string) => void;
   goto: (tab: string) => void;
   followUp: (x: OperatorSuggestion) => void;
+  isDone: (index: number) => boolean;
+  onDone: (index: number) => void;
 }) {
   const got = job.suggestions;
   if (!got) {
     // not the JSON it was asked for: the answer as written, never nothing
     return <Md text={job.answer ?? ''} />;
   }
+  // each keeps its place in the answer: a mark names that place
+  const open = got.suggestions.map((x, i) => [x, i] as const).filter(([, i]) => !isDone(i));
   return (
     <>
       {got.summary && <p className="sugg-sum">{got.summary}</p>}
       {got.suggestions.length === 0 ? (
         <p className="nm">nothing in this window needs the operator, by the model’s reading of it</p>
+      ) : open.length === 0 ? (
+        <p className="nm">every suggestion in this answer is marked done</p>
       ) : (
         <ol className="sugg-list">
-          {got.suggestions.map((x, i) => (
+          {open.map(([x, i]) => (
             <li key={i} className={`sugg ${x.priority}`}>
               <div className="sugg-h">
                 <span className={`sev ${SEV[x.priority]}`}>{x.priority}</span>
@@ -76,6 +86,10 @@ function SuggestionList({ job, openUserTraj, goto, followUp }: {
                   data-tip="put a question about this suggestion in the chat below">
                   ask about this ↓
                 </button>
+                <button className="btn sugg-done-btn" onClick={() => onDone(i)}
+                  data-tip="it leaves the list for everyone who opens this dashboard, and the next suggestions leave it out, until someone undoes it">
+                  ✓ mark as done
+                </button>
               </div>
             </li>
           ))}
@@ -95,6 +109,19 @@ function Suggestions({ info, openUserTraj, goto, followUp }: {
   const scope = useAskScope();
   const { turns, setTurns, send, err, busy } = useAskThread('rc-dash-suggest');
   const job = turns[turns.length - 1] ?? null;
+  // what anyone marked done, as the service keeps it
+  const [done, setDone] = useState<DoneSuggestion[]>([]);
+  const [doneErr, setDoneErr] = useState<string | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    getDone(ac.signal).then((d) => setDone(d.items)).catch(() => {});
+    return () => ac.abort();
+  }, [job?.id]);
+  const change = (p: Promise<{ items: DoneSuggestion[] }>) => {
+    setDoneErr(null);
+    p.then((d) => setDone(d.items)).catch((e) =>
+      setDoneErr(e instanceof ApiError ? e.message : String(e)));
+  };
   const narrowed = [...(scope.who?.users ?? []), ...(scope.who?.atypes ?? [])];
   const run = async () => {
     setTurns([]); // one set of suggestions at a time
@@ -118,10 +145,13 @@ function Suggestions({ info, openUserTraj, goto, followUp }: {
           <b>{scope.windowLabel ?? 'current'}</b> window on screen
           {narrowed.length ? <> · narrowed to <b>{narrowed.join(', ')}</b></> : null} · each suggestion names
           the numbers behind it · it runs only when you press the button
+          {done.length ? <> · <b>{done.length}</b> marked done are left out</> : null}
         </div>
         {job == null ? null : job.state === 'done' ? (
           <>
-            <SuggestionList job={job} openUserTraj={openUserTraj} goto={goto} followUp={followUp} />
+            <SuggestionList job={job} openUserTraj={openUserTraj} goto={goto} followUp={followUp}
+              isDone={(i) => done.some((d) => d.job === job.id && d.index === i)}
+              onDone={(i) => change(markDone(job.id, i))} />
             <div className="chat-meta">
               {job.agent} · {job.elapsed_s} s · {job.snapshot_kb} KB of the window’s panels · the {job.window} window
               {job.submitted ? ` · asked at ${clock(job.submitted)}` : ''}
@@ -137,6 +167,29 @@ function Suggestions({ info, openUserTraj, goto, followUp }: {
           </span>
         )}
         {err && <div className="chat-err">{err}</div>}
+        {doneErr && <div className="chat-err">{doneErr}</div>}
+        {done.length > 0 && (
+          <details className="sugg-done">
+            <summary>marked done · {done.length}</summary>
+            <ul>
+              {done.map((d) => (
+                <li key={d.id}>
+                  <span className={`sev ${SEV[d.priority] ?? 'low'}`}>{d.priority}</span>
+                  <span className="sugg-done-t">{d.title}</span>
+                  {d.users.length > 0 && <span className="mono nm">{d.users.join(', ')}</span>}
+                  <span className="nm">
+                    done {fullClock(d.done_at)}
+                    {d.window ? ` · from the ${d.window} window` : ''}
+                  </span>
+                  <button className="linkbtn" onClick={() => change(undoDone(d.id))}
+                    data-tip="bring it back: it may be suggested again">
+                    undo
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </div>
     </Panel>
   );
