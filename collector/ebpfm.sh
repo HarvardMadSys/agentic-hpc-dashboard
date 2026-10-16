@@ -48,7 +48,16 @@ IS_ROOT=0; [ "$(id -u)" = 0 ] && IS_ROOT=1
 # Defaults differ by privilege: an unprivileged run can write neither /var/log
 # nor /run, and the node tier is meant to work unprivileged.
 if [ "$IS_ROOT" = 1 ]; then
-    _DEF_OUT=/var/log/ebpfm;          _DEF_NODE=/var/log/ebpfm-login;   _DEF_PID=/run
+    # Prefer /scratch: the collector's JSONL is unbounded and these login nodes
+    # have a small root disk, while /scratch is large and root-writable. Fall
+    # back to /var/log/ebpfm where /scratch is absent (dev boxes, CI, other
+    # sites). The systemd unit sets EBPFM_OUTPUT_DIR explicitly, so this only
+    # governs a manual `ebpfm.sh start`/`once` by root.
+    if [ -d /scratch ] && [ -w /scratch ]; then
+        _DEF_OUT=/scratch/ebpfm;      _DEF_NODE=/scratch/ebpfm-login;   _DEF_PID=/run
+    else
+        _DEF_OUT=/var/log/ebpfm;      _DEF_NODE=/var/log/ebpfm-login;   _DEF_PID=/run
+    fi
 else
     _DEF_OUT="$HOME/.ebpfm/ebpf";     _DEF_NODE="$HOME/.ebpfm/login";   _DEF_PID="$HOME/.run"
 fi
@@ -62,6 +71,41 @@ NODE_LOG="$NODE_OUTPUT_DIR/${NAME}-node_${HOST}.log"
 NODE_INTERVAL="${EBPFM_NODE_INTERVAL:-300}"
 NODE_TOP_N="${EBPFM_NODE_TOP_N:-25}"
 export EBPFM_OUTPUT_DIR="$OUTPUT_DIR"
+
+# Output permissions. The collected JSONL is sensitive (argv, cwd, all-user I/O),
+# so default to no access for "other" (dirs 0750) and an optional group for
+# read. These are exported so the ebpf_trace.py child applies the SAME policy to
+# the day dirs/files it creates (it reads EBPFM_DIR_MODE/EBPFM_FILE_MODE/
+# EBPFM_GROUP). Empty EBPFM_GROUP = leave group as-is; a mode of empty or "0"
+# means "leave whatever the umask produced" (opt out of tightening).
+DIR_MODE="${EBPFM_DIR_MODE-0750}"
+FILE_MODE="${EBPFM_FILE_MODE-0640}"
+EBPFM_GROUP="${EBPFM_GROUP:-}"
+export EBPFM_DIR_MODE="$DIR_MODE"
+export EBPFM_FILE_MODE="$FILE_MODE"
+export EBPFM_GROUP
+
+# mkdir -p then apply the configured dir mode + optional group. Best-effort on
+# chmod/chgrp: a failure must not stop collection. Used at every output mkdir.
+_secure_dir() {
+    local d="$1"
+    mkdir -p "$d" || return 1
+    case "$DIR_MODE" in ''|0) : ;; *) chmod "$DIR_MODE" "$d" 2>/dev/null || true ;; esac
+    [ -n "$EBPFM_GROUP" ] && chgrp "$EBPFM_GROUP" "$d" 2>/dev/null || true
+    return 0
+}
+
+# Apply the configured file mode + optional group to an existing file.
+# Best-effort. The node tier appends via shell redirect, so its day-file is
+# created by the shell (umask) and tightened here; the ebpf tier's files are
+# handled in ebpf_trace.py.
+_secure_file() {
+    local f="$1"
+    [ -e "$f" ] || return 0
+    case "$FILE_MODE" in ''|0) : ;; *) chmod "$FILE_MODE" "$f" 2>/dev/null || true ;; esac
+    [ -n "$EBPFM_GROUP" ] && chgrp "$EBPFM_GROUP" "$f" 2>/dev/null || true
+    return 0
+}
 
 # The ebpf tier writes TWO files per host per day; stream_of() in ebpf_trace.py
 # is the authority on which record goes where. The node tier is unaffected --
@@ -431,9 +475,10 @@ cmd_dump_c()   { need_root dump-c;   exec python3 "$TRACER" --dump-c; }
 # One node-tier snapshot appended to today's file. Unprivileged.
 _node_tick() {
     local d; d="$NODE_OUTPUT_DIR/$(date +%F)"
-    mkdir -p "$d" || return 1
+    _secure_dir "$d" || return 1
     SNAPSHOT_MODE="$(_node_mode)" python3 "$NODE_SNAPSHOT" "$HOST" "$NODE_TOP_N" \
         >> "$d/$HOST.jsonl"
+    _secure_file "$d/$HOST.jsonl"
 }
 
 _node_loop() { while true; do _node_tick || true; sleep "$NODE_INTERVAL"; done; }
@@ -446,7 +491,7 @@ cmd_once() {
     fi
     if want_ebpf; then
         need_root once
-        mkdir -p "$OUTPUT_DIR"
+        _secure_dir "$OUTPUT_DIR"
         echo "ebpf tier: capturing ${dur}s on $HOST -> $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl"
         EBPFM_DURATION="$dur" python3 "$TRACER" "$HOST"
     fi
@@ -481,7 +526,8 @@ _node_start() {
         echo "node tier NOT started: $NODE_SNAPSHOT is missing" >&2
         return 1
     fi
-    mkdir -p "$NODE_OUTPUT_DIR" "$PID_DIR" || { echo "node tier: cannot create dirs" >&2; return 1; }
+    _secure_dir "$NODE_OUTPUT_DIR" || { echo "node tier: cannot create dirs" >&2; return 1; }
+    mkdir -p "$PID_DIR" || { echo "node tier: cannot create dirs" >&2; return 1; }
     SNAPSHOT_MODE="$(_node_mode)" nohup "$SELF" _node_daemon >>"$NODE_LOG" 2>&1 &
     local np=$!
     # Confirm the child SURVIVED before claiming success. $! is the nohup
@@ -534,7 +580,7 @@ _ebpf_start() {
     fi
     if p="$(_running_pid)"; then echo "$NAME already running on $HOST (pid $p)"; return 1; fi
     rm -f "$PID_FILE"
-    mkdir -p "$OUTPUT_DIR" "$PID_DIR"
+    _secure_dir "$OUTPUT_DIR"; mkdir -p "$PID_DIR"
     if command -v systemd-run >/dev/null 2>&1; then
         # into system.slice, so the drain is not charged to a capped user slice
         systemd-run --quiet --unit="${NAME}-${HOST}" --slice=system.slice \

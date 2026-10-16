@@ -18,16 +18,26 @@
 Description=ebpfm login-node eBPF collector (root tier)
 Documentation=file://@EBPFM_DIR@/README.md
 After=network.target local-fs.target
+# Output defaults to /scratch (large, root-writable; the root disk on these
+# login nodes is small). If /scratch is a separate mount, do not start until it
+# is available -- otherwise the collector would write day-files into the mount
+# POINT on the small root disk before /scratch mounts over it. systemd derives
+# the right .mount dependency from the path; harmless if /scratch is not a
+# separate mount. Admins who repoint EBPFM_OUTPUT_DIR off /scratch via
+# /etc/default/ebpfm can drop this with a unit override.
+RequiresMountsFor=/scratch
 
 [Service]
 Type=simple
 Slice=system.slice
 ExecStart=/usr/bin/env python3 @EBPFM_DIR@/ebpf_trace.py %H
+# All admin-tunable knobs AND the load-bearing EBPFM_MIN_UID live in
+# /etc/default/ebpfm. Placed BEFORE the Environment= line below on purpose:
+# systemd applies these top-to-bottom and later wins, so EBPFM_OUTPUT_DIR
+# (package-substituted, path owned by the RPM) cannot be clobbered from the env
+# file. The leading '-' makes a missing file non-fatal.
+EnvironmentFile=-/etc/default/ebpfm
 Environment=EBPFM_OUTPUT_DIR=@EBPFM_OUTPUT_DIR@
-# EBPFM_MIN_UID=0 is deliberate and load-bearing: turning it on changes what
-# actor3="human" MEANS, and would make the human population incomparable with
-# every earlier capture. Leave it off; filter downstream on `attribution`.
-Environment=EBPFM_MIN_UID=0
 
 # on-failure, NEVER always: SIGTERM makes the collector flush every live tracked
 # process as event="truncated", and those records are a lower bound on lifetime.
