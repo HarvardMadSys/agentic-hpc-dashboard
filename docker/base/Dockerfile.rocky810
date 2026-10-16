@@ -1,14 +1,9 @@
 # Rocky Linux 8.10 base image for the agentic-hpc-dashboard project.
 #
-# This mirrors the FASRC docker-base convention (rockylinux/rockylinux:8.10 with
-# PowerTools + EPEL enabled) and is the shared base for the ebpfm collector
-# image. Keeping the base separate means the collector image build does not pay
-# the repo-enable + dnf-update cost on every change, and other components in this
-# repo can reuse the same pinned userland.
 #
 # Build/push is handled by .github/workflows/base-image.yml, which publishes to
 #   ghcr.io/fasrc/agentic-hpc-dashboard/base
-FROM rockylinux/rockylinux:8.10
+FROM rockylinux/rockylinux:8
 
 # PowerTools (a.k.a. CRB on EL8) carries -devel packages EPEL builds depend on;
 # EPEL carries python3-bcc, bpftool's companions and sysstat/nfs tooling the

@@ -20,10 +20,28 @@
 # downstream on `attribution` instead. Shipped active so the value is explicit.
 EBPFM_MIN_UID=0
 
+# --- output permissions ----------------------------------------------------
+# The collected JSONL is sensitive (argv, cwd, all-user I/O), so output dirs and
+# files are created with NO access for "other" by default: dirs 0750, files
+# 0640. To grant read access to a specific team, set EBPFM_GROUP to a group name
+# or gid and the collector chgrps every dir/file it creates. Leave EBPFM_GROUP
+# empty to keep the default (root) group. Modes are octal; empty/0 means "leave
+# whatever the umask produced" (opt out of tightening).
+#EBPFM_DIR_MODE=0750
+#EBPFM_FILE_MODE=0640
+#EBPFM_GROUP=
+
 # --- output / cadence ------------------------------------------------------
 # Where additional (node-tier) output lands. The eBPF tier's own output dir is
-# fixed by the unit; this is only consulted if you also run the node tier.
-#EBPFM_NODE_OUTPUT_DIR=/var/log/ebpfm-login
+# fixed by the unit (defaults to /scratch/ebpfm — large, root-writable, unlike
+# the small root disk); this is only consulted if you also run the node tier.
+#EBPFM_NODE_OUTPUT_DIR=/scratch/ebpfm-login
+
+# Compress sealed day-files to <file>.jsonl.gz (default on). Each day's streams
+# are gzipped out of band when the day rolls over -- the live day stays plain --
+# and a startup sweep catches any sealed day a prior run left uncompressed. The
+# exits stream can exceed 1 GB/day; gzip is ~10-20x. Set to 0 to disable.
+#EBPFM_COMPRESS=1
 
 # Run for a fixed number of seconds then exit (0 = run forever, the default).
 #EBPFM_DURATION=0

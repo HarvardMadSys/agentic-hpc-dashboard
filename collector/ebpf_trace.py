@@ -122,6 +122,147 @@ HOSTNAME = (sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
 # configuration (EBPFM_* env)
 # ---------------------------------------------------------------------------
 OUTPUT_DIR    = os.environ.get('EBPFM_OUTPUT_DIR', '/var/log/ebpfm')
+
+# Output is sensitive: the eBPF tier records argv, cwd and all-user I/O across
+# every user on the node, so a day-file can contain command-line secrets and
+# private paths. Default to no access for "other" (dirs 0750, files 0640), and
+# allow an admin to hand read access to a specific GROUP. All three are
+# configurable: 0 modes mean "leave whatever the umask produced" (opt out).
+def _env_mode(name, default):
+    """Parse an octal mode like '0750'/'750'.
+
+    Unset env var           -> `default` (the secure default; we tighten).
+    Explicitly empty or '0' -> None (leave whatever the umask produced; opt out).
+    Unparseable             -> `default` (fail safe toward tighter)."""
+    if name not in os.environ:
+        return default
+    v = os.environ[name].strip()
+    if v == '' or v == '0':
+        return None
+    try:
+        return int(v, 8)
+    except ValueError:
+        return default
+DIR_MODE      = _env_mode('EBPFM_DIR_MODE', 0o750)           # output dirs; None = leave umask default
+FILE_MODE     = _env_mode('EBPFM_FILE_MODE', 0o640)          # day-files; None = leave umask default
+OUTPUT_GROUP  = (os.environ.get('EBPFM_GROUP') or '').strip() or None  # chgrp target (name or gid); None = no chown
+
+def _resolve_gid(group):
+    """Resolve a group NAME or numeric gid string to an int gid, or None.
+
+    Tries grp.getgrnam first, then falls back to `getent group`, which always
+    goes through NSS/SSSD -- important on hosts where lab groups come from
+    LDAP/SSSD rather than /etc/group and grp.getgrnam may miss them. A
+    set-but-unresolvable group is a configuration error that would otherwise
+    silently leave output root-owned, so it is announced on stderr (-> journal)
+    rather than swallowed."""
+    if not group:
+        return None
+    try:
+        return int(group)
+    except ValueError:
+        pass
+    try:
+        import grp
+        return grp.getgrnam(group).gr_gid
+    except (KeyError, ImportError):
+        pass
+    # Fallback: getent consults the full NSS stack (files + sss/ldap). Parse the
+    # gid field of `group:x:GID:members`.
+    try:
+        import subprocess
+        out = subprocess.run(['getent', 'group', group],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             universal_newlines=True)
+        if out.returncode == 0 and out.stdout:
+            fields = out.stdout.strip().split(':')
+            if len(fields) >= 3 and fields[2].isdigit():
+                return int(fields[2])
+    except Exception:
+        pass
+    sys.stderr.write(
+        "ebpfm: EBPFM_GROUP=%r could not be resolved to a gid (tried getgrnam "
+        "and `getent group`); output will keep its default group. Use a numeric "
+        "gid, or confirm the group is visible to this host (getent group %s).\n"
+        % (group, group))
+    return None
+OUTPUT_GID = _resolve_gid(OUTPUT_GROUP)
+
+def _secure_path(path, mode):
+    """Best-effort chmod + chgrp of `path` to the configured mode/group. Never
+    fatal: a collector that cannot tighten perms must still collect. chgrp needs
+    privilege the eBPF tier already has (root); it is a no-op when unset."""
+    try:
+        if mode is not None:
+            os.chmod(path, mode)
+    except OSError:
+        pass
+    if OUTPUT_GID is not None:
+        try:
+            os.chown(path, -1, OUTPUT_GID)   # -1 = leave owner, set group
+        except OSError:
+            pass
+
+# --- log compression -------------------------------------------------------
+# The day-files are unbounded (the exits stream can exceed 1 GB) and the only
+# rotation is the daily rollover -- nothing shrinks a sealed day. gzip on this
+# newline-delimited JSON is ~10-20x, so sealed days are compressed in place to
+# <file>.jsonl.gz. Only SEALED days are touched; the live day's open files are
+# never compressed. Default on; EBPFM_COMPRESS=0 disables.
+COMPRESS      = os.environ.get('EBPFM_COMPRESS', '1') != '0'
+
+def _compress_file(path):
+    """gzip `path` -> `path`.gz out of band, then apply the mode/group policy to
+    the result.
+
+    Runs in a short-lived daemon thread so a 1 GB compress never blocks the
+    drain, yet we can still chmod/chgrp the `.gz` once gzip finishes -- gzip
+    preserves the SOURCE's group, which may be stale (e.g. the .jsonl was
+    created before EBPFM_GROUP was set), so the policy is re-applied explicitly
+    rather than trusted. Best-effort and crash-safe: gzip writes `path`.gz and
+    unlinks the source only on success, so an interrupted run leaves the
+    readable `.jsonl` to retry next time. Skips when a `.gz` already exists."""
+    gz = path + '.gz'
+    if not os.path.isfile(path) or os.path.exists(gz):
+        return
+
+    def _run():
+        try:
+            import subprocess
+            rc = subprocess.call(['nice', '-n', '19', 'gzip', '-f', path],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if rc == 0:
+                _secure_path(gz, FILE_MODE)   # enforce mode+group on the .gz
+        except Exception:
+            pass
+    try:
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        pass
+
+def _compress_day(root, day, host):
+    """Compress a sealed day's stream files. Called at rollover for the day that
+    just closed, and by the startup sweep for any older sealed day."""
+    if not COMPRESS or not day:
+        return
+    for s in STREAMS:
+        _compress_file(os.path.join(root, day, '%s.%s.jsonl' % (host, s)))
+
+def _sweep_sealed_days(root, host, keep_day):
+    """At startup, gzip any sealed day left uncompressed by a prior run or crash.
+    `keep_day` (today) is skipped -- its files are about to be reopened for
+    appending and must stay plain."""
+    if not COMPRESS or not os.path.isdir(root):
+        return
+    try:
+        days = [d for d in os.listdir(root)
+                if d != keep_day and os.path.isdir(os.path.join(root, d))]
+    except OSError:
+        return
+    for d in days:
+        _compress_day(root, d, host)
+
 DURATION      = env_num('EBPFM_DURATION', 0, float)          # 0 = forever
 ARGS_MAXLEN   = env_num('EBPFM_ARGS_MAXLEN', 0, int)         # emitted argv cap; 0 = none (classification is always uncapped)
 ARGV_KMAX     = env_num('EBPFM_ARGV_KMAX', 4096, int)        # in-kernel argv read (bytes): the real limit when uncapped
@@ -1366,11 +1507,14 @@ def probe_features(BPF, verbose=True):
     if FEATURE_CACHE:
         try:
             os.makedirs(OUTPUT_DIR, exist_ok=True)
-            with open(_feature_cache_path(), 'w') as fh:
+            _secure_path(OUTPUT_DIR, DIR_MODE)
+            cache_path = _feature_cache_path()
+            with open(cache_path, 'w') as fh:
                 json.dump({'kernel': os.uname().release, 'features': sorted(accepted),
                            'rejected': rejected, 'btf_offs': btf_offsets(),
                            'blocks': list(BLOCK_NAMES),
                            'probed_at': _now()}, fh, indent=1)
+            _secure_path(cache_path, FILE_MODE)
         except Exception:
             pass
     if verbose:
@@ -1701,12 +1845,25 @@ class DailyWriter:
     def _roll(self, day):
         """Open the day's pair, closing the outgoing one. _shut() flushes first,
         so a rollover cannot strand a record in the old day's buffer."""
+        prev_day = self.day
         self._shut()
-        os.makedirs(os.path.join(self.root, day), exist_ok=True)
+        daydir = os.path.join(self.root, day)
+        os.makedirs(daydir, exist_ok=True)
+        # Tighten the day dir and the root above it: makedirs is subject to the
+        # umask, so set the configured mode explicitly. Root first so an admin
+        # browsing /scratch/ebpfm sees the same policy at every level.
+        _secure_path(self.root, DIR_MODE)
+        _secure_path(daydir, DIR_MODE)
         self.day = day
         for s in STREAMS:
-            self.fh[s] = open(self.path(s), 'a')
+            path = self.path(s)
+            self.fh[s] = open(path, 'a')
+            _secure_path(path, FILE_MODE)
             self.dirty[s] = False
+        # The outgoing day's files are now closed and complete -- compress them
+        # out of band. prev_day is None on the first open (nothing to seal).
+        if prev_day and prev_day != day:
+            _compress_day(self.root, prev_day, self.host)
 
     def _shut(self):
         self.flush()
@@ -3819,6 +3976,11 @@ def main():
         return
 
     writer = DailyWriter(OUTPUT_DIR, HOSTNAME)
+    # Catch up any sealed day left uncompressed by a prior run or a crash before
+    # it could compress at rollover. Skips today, whose files writer will reopen
+    # for appending. Fire-and-forget gzip subprocesses; cheap when nothing is
+    # pending.
+    _sweep_sealed_days(OUTPUT_DIR, HOSTNAME, datetime.now().strftime('%Y-%m-%d'))
     if _load_cidr_index is not None:
         try:
             _cidr_index = _load_cidr_index()

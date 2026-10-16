@@ -10,7 +10,15 @@
 # so a branch RPM sorts BELOW any real release and is self-identifying.
 
 %global ebpfm_libdir %{_prefix}/lib/ebpfm
-%global ebpfm_outputdir %{_localstatedir}/log/ebpfm
+# Output lands on /scratch, not /var/log: the collector's JSONL is unbounded
+# (one record per process exit, highest exactly when the node is busy) and these
+# login nodes have a SMALL root disk. /scratch is the large, root-writable local
+# volume. It is NOT owned as a %dir here -- /scratch may be a separate mount that
+# is not present at install time, and owning a dir under it would either fail or
+# strand a directory on the root disk. The collector creates it at runtime
+# (os.makedirs/exist_ok), and the unit's RequiresMountsFor=/scratch makes systemd
+# wait for the mount first.
+%global ebpfm_outputdir /scratch/ebpfm
 
 Name:           ebpfm-collector
 Version:        %{?_ebpfm_version}%{!?_ebpfm_version:0.0.0}
@@ -90,8 +98,9 @@ sed -e "s#@EBPFM_DIR@#%{ebpfm_libdir}#g" \
     -e "s#@EBPFM_OUTPUT_DIR@#%{ebpfm_outputdir}#g" \
     %{_sourcedir}/collector/ebpfm.service > %{buildroot}%{_unitdir}/ebpfm.service
 
-# Output directory, owned by the package.
-install -d -m 0750 %{buildroot}%{ebpfm_outputdir}
+# Output directory is NOT created here: it lives on /scratch (see ebpfm_outputdir
+# above), which may be an unmounted separate volume at install time. The
+# collector creates it at runtime; the unit waits for the mount.
 
 # Required sysctls, shipped as a drop-in so systemd-sysctl applies them on boot
 # and the file is owned/verifiable by the package. %post applies it immediately.
@@ -117,7 +126,6 @@ install -m 0644 %{_sourcedir}/packaging/ebpfm.default %{buildroot}%{_sysconfdir}
 %{_sysctldir}/99-ebpfm.conf
 # Service env file in /etc: admin-editable, preserve local changes on upgrade.
 %config(noreplace) %{_sysconfdir}/default/ebpfm
-%dir %attr(0750,root,root) %{ebpfm_outputdir}
 
 %post
 %systemd_post ebpfm.service
@@ -144,6 +152,6 @@ fi
 %systemd_postun_with_restart ebpfm.service
 
 %changelog
-* Thu Jan 01 2026 FASRC <rchelp@rc.fas.harvard.edu> - 0.0.0-1
+* Thu Jan 01 2026 agentic-hpc-dashboard maintainers <noreply@github.com> - 0.0.0-1
 - Initial RPM packaging of the ebpfm collector. Version/Release are set at
   build time by the release workflow; this entry is a placeholder.

@@ -18,6 +18,14 @@
 Description=ebpfm login-node eBPF collector (root tier)
 Documentation=file://@EBPFM_DIR@/README.md
 After=network.target local-fs.target
+# Output defaults to /scratch (large, root-writable; the root disk on these
+# login nodes is small). If /scratch is a separate mount, do not start until it
+# is available -- otherwise the collector would write day-files into the mount
+# POINT on the small root disk before /scratch mounts over it. systemd derives
+# the right .mount dependency from the path; harmless if /scratch is not a
+# separate mount. Admins who repoint EBPFM_OUTPUT_DIR off /scratch via
+# /etc/default/ebpfm can drop this with a unit override.
+RequiresMountsFor=/scratch
 
 [Service]
 Type=simple
