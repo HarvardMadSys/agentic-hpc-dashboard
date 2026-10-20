@@ -509,8 +509,10 @@ class TableTest(unittest.TestCase):
         self.assertFalse(T.proc[103]['is_agent'])
 
     def test_tree_root_is_topmost_agent(self):
-        T.proc_add(302, 300, comm='node', args='node /x/.vscode-server/helper.js',
-                   user='v', uid=1001)
+        # Claude Code's VS Code extension: a nested agent, so its own root
+        T.proc_add(302, 300, comm='claude', args='/x/.vscode-server/extensions/anthropic.'
+                   'claude-code-2.1.285-linux-x64/resources/native-binary/claude '
+                   '--output-format stream-json', user='v', uid=1001)
         T.proc_add(303, 302, comm='git', args='git status', user='v', uid=1001)
         self.assertTrue(T.resolve(303))
         self.assertEqual(T.proc[303]['agent_pid'], 302)   # nearest
@@ -520,7 +522,7 @@ class TableTest(unittest.TestCase):
 
     def test_invalidate_on_exec(self):
         T.resolve(102)
-        T.proc[101]['args'] = 'node /y/.claude/other.js'
+        T.proc[101].update(comm='claude', args='claude -p fix the tests')
         T._invalidate_attribution(101)
         self.assertTrue(T.resolve(102))
         self.assertEqual(T.proc[102]['agent_pid'], 101)
@@ -654,6 +656,297 @@ class TableTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# agent roots (schema 8): only an agent runtime starts a session in a tree
+# ---------------------------------------------------------------------------
+
+HOME = '/home/alice'
+SNAP = '/bin/zsh -c source %s/.claude/shell-snapshots/snapshot-zsh-1.sh && eval ' % HOME
+# A `claude rc` worker as madsys-gpu1 recorded it on 2026-10-07. The classifier
+# tags it only through the last flags; the rest names no agent path.
+RC_WORKER = (HOME + '/.local/share/claude/versions/2.1.291 --print --sdk-url '
+             'https://api.anthropic.com/v1/code/sessions/cse_01 --session-id cse_01 '
+             '--input-format stream-json --output-format stream-json --replay-user-messages '
+             '--append-system-prompt-file=' + HOME + '/.claude/bridge-spawn/cse_01-x/'
+             'append-system-prompt.txt --model claude-opus-5-5[1m]')
+
+
+class AgentRoleTest(unittest.TestCase):
+    """What a classifier-tagged process is, on argv shapes seen on madsys-gpu1
+    from 2026-09-20 to 10-07. The same table as dashboard/tests/test_sessions.py,
+    which pins dashboard/rc_dashboard/roles.py: agent_role() is its port. The
+    `claude rc` worker is its whole argv here, so the classifier tags it."""
+
+    CASES = [
+        # (agent_type, command, args, role)
+        ('claude_code', 'claude', 'claude', 'agent'),
+        ('claude_code', 'claude', 'claude --rc', 'agent'),
+        ('claude_code', 'claude', 'claude rc', 'agent'),
+        ('claude_code', 'claude', 'claude -p summarise this', 'agent'),
+        ('claude_code', '2.1.291', RC_WORKER, 'agent'),
+        ('claude_code', 'claude', HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.285'
+         '-linux-x64/resources/native-binary/claude --output-format stream-json --verbose',
+         'agent'),
+        ('claude_code', '2.1.286', HOME + '/.claude/remote/ccd-cli/2.1.286 --output-format '
+         'stream-json --verbose --input-format stream-json', 'agent'),
+        ('claude_code', '2.1.282', HOME + '/.local/share/claude/versions/2.1.282 --session-id '
+         '08749fc1-dedd-48d3-add6-8890798cd937 --agent claude', 'agent'),
+        ('claude_code', '2.1.282', 'claude bg-spare --bg-spare /tmp/cc-daemon-1/x.claim.sock',
+         'agent'),
+        ('claude_code', 'claude', HOME + '/.local/bin/claude daemon run --origin transient '
+         '--spawned-by {"label":"claude","cwd":"/x","pid":1136358}', 'infra'),
+        ('claude_code', '2.1.282', 'claude bg-pty-host --bg-pty-host /tmp/cc-daemon-1/p.sock '
+         '200 50 -- ' + HOME + '/.local/share/claude/versions/2.1.282 --session-id x', 'infra'),
+        ('claude_code', 'server', HOME + '/.claude/remote/srv/89cb/server --serve --socket '
+         + HOME + '/.claude/remote/run/c0e8/rpc.sock', 'infra'),
+        ('claude_code', 'claude', 'claude attach 189b4394', 'client'),
+        ('claude_code', 'claude', 'claude agents', 'client'),
+        ('claude_code', 'claude', 'claude --version', 'probe'),
+        ('claude_code', 'claude', HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.286'
+         '-linux-x64/resources/native-binary/claude auth status --json', 'probe'),
+        ('claude_code', 'server', HOME + '/.claude/remote/srv/89cb/server --version', 'probe'),
+        ('claude_code', '2.1.285', 'rg --no-config --files --hidden ' + HOME + '/.claude/plugins',
+         'embedded-tool'),
+        ('claude_code', '2.1.280', 'ugrep -G --ignore-files --hidden -I -rn foo', 'embedded-tool'),
+        ('claude_code', 'zsh', SNAP + "'git status'", 'tool-shell'),
+        ('claude_code', 'bash', '/bin/bash -c source ' + HOME + '/.claude/shell-snapshots/'
+         "snapshot-bash-1.sh 2>/dev/null || true && eval 'make'", 'tool-shell'),
+        ('claude_code', 'sh', 'sh -c ls -1 ' + HOME + '/.claude/projects/x', 'helper'),
+        ('claude_code', 'chmod', 'chmod 700 ' + HOME + '/.claude/remote', 'helper'),
+        ('codex', 'codex', 'codex', 'agent'),
+        ('codex', 'codex', HOME + '/.vscode-server/extensions/openai.chatgpt-26.917.62051-linux-x64'
+         '/bin/linux-x86_64/codex -c features.code_mode_host=true app-server --analytics-default',
+         'agent'),
+        ('codex', 'codex', HOME + '/.codex/packages/app-server-daemon/current/bin/codex '
+         'app-server --listen unix:// --managed-daemon', 'agent'),
+        ('codex', 'node', 'node ' + HOME + '/.nvm/versions/node/v22.22.0/bin/codex', 'agent'),
+        ('codex', 'codex', 'codex exec fix the tests', 'agent'),
+        ('codex', 'codex', 'codex app-server proxy', 'client'),
+        ('codex', 'codex', 'codex app-server daemon pid-update-loop', 'infra'),
+        ('codex', 'codex-code-mode-host', HOME + '/.codex/packages/app-server-daemon/releases/'
+         '0.159.3/bin/codex-code-mode-host', 'infra'),
+        ('codex', 'codex', HOME + '/.codex/packages/app-server-daemon/current/bin/codex --version',
+         'probe'),
+        ('codex', 'node', 'node ' + HOME + '/.nvm/versions/node/v22.22.0/bin/codex --version',
+         'probe'),
+        ('codex', 'codex-linux-sandbox', HOME + '/.codex/tmp/arg0/codex-arg0lL3/codex-linux-'
+         'sandbox --sandbox-policy-cwd ' + HOME + '/w --command-cwd /', 'sandbox'),
+        ('codex', 'bwrap', 'bwrap --as-pid-1 --new-session --die-with-parent', 'sandbox'),
+        ('bwrap', 'bwrap', '/usr/bin/bwrap --unshare-user --ro-bind / / /bin/true', 'sandbox'),
+        ('codex', 'mkdir', 'mkdir -p ' + HOME + '/.codex/packages/app-server-daemon', 'helper'),
+        ('codex', 'sh', "sh -c printf '%b' " + HOME + '/.codex/x', 'helper'),
+        ('vscode', 'code-4fe60c8b1c', HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 --cli-data-dir '
+         + HOME + '/.vscode-server/cli agent', 'ide'),
+        ('vscode', 'node', HOME + '/.vscode-server/cli/servers/Stable-07f/server/node '
+         '--dns-result-order=ipv4first ' + HOME + '/.vscode-server/cli/servers/Stable-07f/server/'
+         'out/bootstrap-fork --type=extensionHost', 'ide'),
+        ('vscode', 'cpuUsage.sh', '/bin/bash ' + HOME + '/.vscode-server/cli/servers/Stable-a44/'
+         'server/out/vs/base/node/cpuUsage.sh 123', 'helper'),
+    ]
+
+    def test_each_observed_shape_gets_its_role(self):
+        for agent_type, command, args, want in self.CASES:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(T.agent_role(agent_type, command, args), want)
+
+    def test_each_shape_is_one_the_classifier_tags(self):
+        """agent_role() is only asked about tagged processes, so a shape here
+        that the classifier would not tag tests nothing. `ugrep -G ...` names no
+        agent path: it is tagged only when its pattern or path does."""
+        for _agent_type, _command, args, _want in self.CASES:
+            if args.startswith('ugrep'):
+                continue
+            with self.subTest(args=args[:70]):
+                self.assertIsNotNone(C.classify(args))
+
+    def test_a_comm_the_kernel_cut_still_matches(self):
+        self.assertEqual(T.agent_role('codex', 'codex-linux-san', 'x'), 'sandbox')
+        self.assertEqual(T.agent_role('codex', 'codex-code-mode', 'x'), 'infra')
+
+
+class AgentRootTest(unittest.TestCase):
+    """Schema 8. Through schema 7 every process whose own argv the classifier
+    tagged became its own agent root, so a Claude session split into one
+    `agent_pid`/`session_key`/`session_uuid` per Bash tool call: 204 keys for one
+    Claude tree on madsys-gpu1 on 2026-10-06. Inside a tree, only an agent
+    runtime is a root now; the rest attach to their parent's tree."""
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        self._saved = (T.BOOT_ID, T.MIN_UID)
+        T.BOOT_ID = 'boot-aaaa'
+        T.MIN_UID = 0
+
+        def add(pid, ppid, comm, args, **kw):
+            kw.setdefault('user', 'alice')
+            kw.setdefault('uid', 1000)
+            m = T.proc_add(pid, ppid, comm=comm, args=args, **kw)
+            m['start_ticks'] = 1000 + pid
+            return m
+        self.add = add
+        # a human's shell on a tty: in no agent tree
+        add(50, 1, 'bash', '-bash', tty='pts/1')
+        # Claude Code: two Bash tool calls, a Grep, a helper and the bwrap probe
+        add(100, 50, 'claude', 'claude', tty='pts/1')
+        add(200, 100, 'zsh', SNAP + "'git status'")
+        add(201, 200, 'git', 'git status')
+        add(210, 100, '2.1.291', 'rg --no-config --files --hidden ' + HOME + '/.claude/plugins')
+        add(220, 100, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')
+        add(230, 100, 'bwrap', 'bwrap --ro-bind / / /bin/true')
+        add(231, 230, 'true', '/bin/true')
+        # a tool call that runs `claude -p`: a nested agent
+        add(240, 100, 'zsh', SNAP + "'claude -p summarise'")
+        add(241, 240, 'claude', 'claude -p summarise')
+        add(242, 241, 'git', 'git log')
+        # Codex: one sandboxed tool call and a --version probe. The kernel's comm
+        # for the sandbox is cut at 15 characters.
+        add(400, 50, 'codex', 'codex', tty='pts/1')
+        add(410, 400, 'codex-linux-san', HOME + '/.codex/tmp/arg0/codex-arg0lL3/'
+            'codex-linux-sandbox --sandbox-policy-cwd ' + HOME + '/w --command-cwd /')
+        add(411, 410, 'bash', "bash -lc 'make'")
+        add(420, 400, 'codex', 'codex --version')
+        # `claude rc` and one of its workers
+        add(500, 50, 'claude', 'claude rc', tty='pts/1')
+        add(501, 500, '2.1.291', RC_WORKER)
+        # VS Code: the server, an extension host, the Claude extension's auth
+        # probe and its session
+        add(700, 1, 'code-4fe60c8b1c', HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 '
+            '--cli-data-dir ' + HOME + '/.vscode-server/cli agent', user='v', uid=1001)
+        add(701, 700, 'node', HOME + '/.vscode-server/cli/servers/Stable-07f/server/node '
+            '--dns-result-order=ipv4first ' + HOME + '/.vscode-server/cli/servers/Stable-07f/'
+            'server/out/bootstrap-fork --type=extensionHost', user='v', uid=1001)
+        ext = HOME + ('/.vscode-server/extensions/anthropic.claude-code-2.1.286-linux-x64/'
+                      'resources/native-binary/claude')
+        add(702, 701, 'claude', ext + ' auth status --json', user='v', uid=1001)
+        add(703, 701, 'claude', ext + ' --output-format stream-json', user='v', uid=1001)
+
+    def tearDown(self):
+        T.BOOT_ID, T.MIN_UID = self._saved
+
+    def who(self, pid):
+        self.assertTrue(T.resolve(pid))
+        m = T.proc[pid]
+        return m['agent_pid'], m['depth'], m['is_agent']
+
+    def test_tool_calls_are_in_their_agents_session(self):
+        self.assertEqual(self.who(100), (100, 0, True))
+        self.assertEqual(self.who(200), (100, 1, False))      # the Bash tool call's shell
+        self.assertEqual(self.who(201), (100, 2, False))
+        self.assertEqual(self.who(210), (100, 1, False))      # Grep
+        self.assertEqual(self.who(220), (100, 1, False))      # chmod ~/.claude/...
+
+    def test_the_exit_record_names_the_agents_session(self):
+        for pid in (200, 201, 210):
+            m = T.proc[pid]
+            ident = T._base_identity(m, *T.actor_of(m))
+            self.assertEqual(ident['session_key'], 'apid:100')
+            self.assertEqual(ident['session_uuid'], T.session_uuid(100))
+            self.assertEqual(ident['tree_root_pid'], 100)
+            self.assertEqual(ident['agent_type'], 'claude_code')
+            self.assertEqual(ident['actor3'], 'agent')
+            self.assertFalse(ident['is_agent'])
+            self.assertIsNone(ident['autonomous'])
+
+    def test_codex_sandbox_and_probe_are_in_codexs_session(self):
+        self.assertEqual(T._command_of(T.proc[410]), 'codex-linux-sandbox')
+        self.assertEqual(self.who(410), (400, 1, False))
+        self.assertEqual(self.who(411), (400, 2, False))
+        self.assertEqual(self.who(420), (400, 1, False))
+
+    def test_claude_p_from_a_tool_call_is_its_own_root(self):
+        self.assertEqual(self.who(240), (100, 1, False))
+        self.assertEqual(self.who(241), (241, 0, True))
+        self.assertEqual(self.who(242), (241, 1, False))
+        self.assertEqual(T.tree_root(242), 100)
+
+    def test_claude_rc_workers_are_their_own_roots(self):
+        self.assertEqual(self.who(500), (500, 0, True))
+        self.assertEqual(self.who(501), (501, 0, True))
+        self.assertEqual(T.tree_root(501), 500)
+
+    def test_outside_any_tree_a_tagged_process_is_still_a_root(self):
+        """A human's `claude --version`, or chmod on ~/.claude/, at a prompt:
+        nothing above it is in an agent tree, so it is attributed exactly as
+        before (actor, actor3, its own session)."""
+        for pid, comm, args in ((60, 'claude', 'claude --version'),
+                                (61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')):
+            self.add(pid, 50, comm, args, tty='pts/1')
+            self.assertEqual(self.who(pid), (pid, 0, True))
+            m = T.proc[pid]
+            self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
+            ident = T._base_identity(m, 'agent', 'ancestry')
+            self.assertEqual(ident['actor3'], 'agent')
+            self.assertEqual(ident['agent_type'], 'claude_code')
+            self.assertEqual(ident['session_key'], 'apid:%d' % pid)
+
+    def test_an_ide_probe_is_in_the_ide_tree_and_its_agent_is_not(self):
+        """The extension host runs `claude auth status` every few minutes. It is
+        the IDE's work, so it joins the IDE tree and its actor3, as an untagged
+        child would. The extension's session is an agent, and its own root."""
+        self.assertEqual(self.who(701), (700, 1, False))
+        self.assertEqual(self.who(702), (700, 2, False))
+        self.assertEqual(T.proc[702]['agent_type'], 'vscode')
+        self.assertEqual(T._base_identity(T.proc[702], 'agent', 'ancestry')['actor3'],
+                         'human-vscode')
+        self.assertEqual(self.who(703), (703, 0, True))
+        self.assertEqual(T._base_identity(T.proc[703], 'agent', 'ancestry')['actor3'], 'agent')
+
+    def test_a_bwrap_in_an_agent_tree_still_reads_as_bwrap(self):
+        """bwrap takes its agent's tree and agent_type, and sandbox_ancestry,
+        which read agent_type alone through schema 7, still finds it."""
+        self.assertEqual(self.who(230), (100, 1, False))
+        self.assertEqual(T.proc[230]['agent_type'], 'claude_code')
+        self.assertEqual(T.sandbox_ancestry_of(T.proc[230]), 'bwrap')
+        self.assertEqual(self.who(231), (100, 2, False))
+        self.assertEqual(T.sandbox_ancestry_of(T.proc[231]), 'bwrap')
+        self.assertIsNone(T.sandbox_ancestry_of(T.proc[201]))
+
+    def test_every_tagged_process_still_buys_a_sandbox_read(self):
+        T.resolve(200)
+        T.proc[200]['sandbox'] = 'unsandboxed'
+        self.assertTrue(T._need_sandbox_read(T.proc[200]))
+
+    def test_an_exec_that_makes_a_root_a_tool_shell_clears_is_agent(self):
+        self.assertEqual(self.who(241), (241, 0, True))
+        T.proc[241].update(comm='zsh', args=SNAP + "'ls'")
+        T._invalidate_attribution(241)
+        self.assertEqual(self.who(241), (100, 2, False))
+        self.assertEqual(self.who(242), (100, 3, False))
+
+    def test_an_exec_out_of_any_tree_clears_the_old_attribution(self):
+        self.add(62, 1, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')
+        self.assertEqual(self.who(62), (62, 0, True))
+        T.proc[62].update(comm='sleep', args='sleep 1')
+        T._invalidate_attribution(62)
+        self.assertFalse(T.resolve(62))
+        m = T.proc[62]
+        self.assertEqual((m['agent_pid'], m['agent_type'], m['depth'], m['is_agent']),
+                         (None, None, None, False))
+
+    def test_one_session_on_the_exit_records(self):
+        """End to end: a Bash tool call's exits, as written."""
+        saved = (T.writer, T.FEATURES, T._tgid_of, T.MIN_DURATION, T.MIN_CPU)
+        T.writer = w = FakeWriter()
+        T.FEATURES = set()
+        T._tgid_of = lambda pid: pid
+        T.MIN_DURATION = T.MIN_CPU = 0.0
+        try:
+            T.on_exit(_exit_ev(pid=201, ppid=200, comm=b'git'))
+            T.on_exit(_exit_ev(pid=200, ppid=100, comm=b'zsh'))
+            T.on_exit(_exit_ev(pid=210, ppid=100, comm=b'2.1.291'))
+            T.drain_exits(final=True)
+        finally:
+            T.writer, T.FEATURES, T._tgid_of, T.MIN_DURATION, T.MIN_CPU = saved
+            T._pending_exits.clear()
+        recs = {r['pid']: r for r in w.of('exit')}
+        self.assertEqual(sorted(recs), [200, 201, 210])
+        self.assertEqual({r['session_key'] for r in recs.values()}, {'apid:100'})
+        self.assertEqual({r['session_uuid'] for r in recs.values()}, {T.session_uuid(100)})
+        self.assertEqual({p: r['depth'] for p, r in recs.items()}, {200: 1, 201: 2, 210: 1})
+        self.assertFalse(any(r['is_agent'] for r in recs.values()))
+        self.assertEqual(recs[200]['schema_version'], 8)
+
+
+# ---------------------------------------------------------------------------
 # netlink socket-diag parser (item 3a)
 # ---------------------------------------------------------------------------
 
@@ -739,10 +1032,9 @@ class EnvelopeTest(unittest.TestCase):
 
     def test_schema_version_is_pinned(self):
         """Never asserted before. A bump is a deliberate act with a downstream
-        cost, not something that should drift in unnoticed. 7 = net_endpoints,
-        the netio series, IPv6 UDP in the net_* totals, proto on conn, and the
-        envelope's source/collector dropped for collector_pid."""
-        self.assertEqual(T.SCHEMA_VERSION, 7)
+        cost, not something that should drift in unnoticed. 8 = only an agent
+        runtime starts a session inside an agent tree (AgentRootTest)."""
+        self.assertEqual(T.SCHEMA_VERSION, 8)
 
     def test_top_n(self):
         self.assertEqual(T._top_n({'a': 3, 'b': 9, 'c': 1}, 2), {'b': 9, 'a': 3})
@@ -1392,8 +1684,7 @@ class SandboxTest(unittest.TestCase):
                    user='u', uid=1000)
         T.proc[100].update(sandbox='sandboxed', sandbox_src='userns:exec',
                            sandbox_detail='user,mnt')
-        T.proc_add(101, 100, comm='node', args='node /x/.claude/cli.js',
-                   user='u', uid=1000)
+        T.proc_add(101, 100, comm='claude', args='claude', user='u', uid=1000)
 
     def tearDown(self):
         T.INIT_NS = self._init_ns
@@ -1431,10 +1722,10 @@ class SandboxTest(unittest.TestCase):
         self.assertNotEqual(v, 'unsandboxed')
 
     # --- ancestry is separate from ground truth ------------------------------
-    def test_ancestry_finds_bwrap_through_a_self_classifying_child(self):
-        """The case the collector could not see before: resolve() returns early
-        when claude_code self-classifies, so agent_type is 'claude_code' and the
-        bwrap fact lived only in tree_root_pid."""
+    def test_ancestry_finds_bwrap_through_an_agent_root_inside_it(self):
+        """The case the collector could not see before: resolve() makes claude
+        its own root, so agent_type is 'claude_code' and the bwrap fact lived
+        only in tree_root_pid."""
         self.assertTrue(T.resolve(101))
         self.assertEqual(T.proc[101]['agent_type'], 'claude_code')
         self.assertEqual(T.sandbox_ancestry_of(T.proc[101]), 'bwrap')
