@@ -1,0 +1,114 @@
+name: collector-image
+
+# Builds the ebpfm collector image FROM the project base image and pushes it to
+# the GitHub Container Registry. Shares the tag strategy of base-image.yml:
+#   * semver git tag  v1.2.3  -> 1.2.3, 1.2, latest   (releases)
+#   * branch push             -> <branch-slug>, <branch-slug>-<YYYYMMDD>-<sha>
+#   * main branch             -> additionally `edge`
+#
+# The base image is pinned per-ref so a push that rebuilds both stays
+# consistent: a tag build consumes base:latest, a main build consumes base:edge,
+# and any other branch consumes base:<branch-slug> (built by base-image.yml on
+# the same push when docker/base changed, otherwise the branch's last base).
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+    paths:
+      - "collector/**"
+      - "docker/collector/**"
+      - "docker/base/**"
+      - ".github/workflows/collector-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: collector-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/collector
+  BASE_IMAGE_NAME: ${{ github.repository }}/base
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve base image tag
+        id: base
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            base_tag="latest"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            base_tag="edge"
+          else
+            # Slugify the branch the same way docker/metadata-action does for
+            # type=ref,event=branch (slashes -> dashes).
+            base_tag="$(echo '${{ github.ref_name }}' | sed 's#[/]#-#g')"
+          fi
+          image="${REGISTRY}/${BASE_IMAGE_NAME}:${base_tag}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "Using base image: ${image}"
+
+      - name: Wait for base image to be available
+        # base-image.yml and this workflow start in parallel when a push touches
+        # docker/base, so the base tag may not exist yet. Poll the registry
+        # manifest for up to ~10 min before giving up, rather than failing on a
+        # race we expect to resolve. If docker/base was unchanged, the tag
+        # already exists from a prior run and this returns immediately.
+        run: |
+          image="${{ steps.base.outputs.image }}"
+          for i in $(seq 1 60); do
+            if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
+              echo "Base image available: $image"
+              exit 0
+            fi
+            echo "Attempt $i/60: $image not yet available; waiting 10s..."
+            sleep 10
+          done
+          echo "::error::Base image $image did not become available in time"
+          exit 1
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=raw,value={{branch}}-{{date 'YYYYMMDD'}}-{{sha}},enable=${{ github.ref_type == 'branch' }}
+            type=edge,branch=main
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/collector/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.image }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

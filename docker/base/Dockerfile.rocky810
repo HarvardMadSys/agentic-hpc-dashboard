@@ -1,0 +1,27 @@
+# Rocky Linux 8.10 base image for the agentic-hpc-dashboard project.
+#
+#
+# Build/push is handled by .github/workflows/base-image.yml, which publishes to
+#   ghcr.io/fasrc/agentic-hpc-dashboard/base
+FROM rockylinux/rockylinux:8
+
+# PowerTools (a.k.a. CRB on EL8) carries -devel packages EPEL builds depend on;
+# EPEL carries python3-bcc, bpftool's companions and sysstat/nfs tooling the
+# collector's node tier shells out to.
+RUN sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/Rocky-PowerTools.repo && \
+    dnf -y update && \
+    dnf -y install epel-release && \
+    dnf -y install \
+        scl-utils \
+        git-core \
+        rsync \
+        curl \
+        ca-certificates \
+        tar \
+        gzip \
+        rpm-build \
+        make && \
+    dnf clean all && \
+    rm -rf /var/cache/yum /var/cache/dnf
+
+CMD ["/bin/bash"]

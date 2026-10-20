@@ -1,0 +1,100 @@
+name: rpm-release
+
+# Builds the ebpfm-collector RPM and publishes it.
+#
+#   * semver git tag  v1.2.3  -> Version 1.2.3, Release 1, attached to the
+#                                GitHub Release for that tag (release artifact).
+#   * branch push             -> Version 0.0.0, Release <YYYYMMDD>.<shortsha>,
+#                                uploaded as a workflow build artifact (feature
+#                                build; sorts below any real release).
+#
+# The RPM is built inside a Rocky 8.10 container so rpmbuild and the EL8 systemd
+# macros match the target platform.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+    paths:
+      - "collector/**"
+      - "packaging/rpm/**"
+      - ".github/workflows/rpm-release.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: rpm-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:8.10
+      # amd64/x86_64 is the only target platform; GitHub's ubuntu-latest runner
+      # is amd64, so the container runs natively.
+    permissions:
+      contents: write   # needed to create/update the GitHub Release on tags
+    steps:
+      - name: Install build tooling
+        run: |
+          dnf -y install rpm-build rpmdevtools git-core
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Compute version and release
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            # Strip the leading v: v1.2.3 -> 1.2.3
+            version="${GITHUB_REF_NAME#v}"
+            release="1"
+          else
+            version="0.0.0"
+            # Datestamped feature release: YYYYMMDD.<shortsha>. The leading date
+            # keeps RPM version-compare ordering sane across branch builds.
+            release="$(date -u +%Y%m%d).$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+          echo "Building ebpfm-collector ${version}-${release}"
+
+      - name: Build RPM
+        id: build
+        run: |
+          set -euo pipefail
+          topdir="$(pwd)/rpmbuild"
+          mkdir -p "$topdir"/{BUILD,RPMS,SRPMS,SOURCES,SPECS}
+          # The spec installs straight from %{_sourcedir}, so stage the
+          # collector bundle and the packaged sysctl drop-in there.
+          cp -r collector "$topdir/SOURCES/collector"
+          mkdir -p "$topdir/SOURCES/packaging"
+          cp packaging/rpm/99-ebpfm.conf "$topdir/SOURCES/packaging/99-ebpfm.conf"
+          cp packaging/rpm/ebpfm.default "$topdir/SOURCES/packaging/ebpfm.default"
+          cp packaging/rpm/ebpfm-collector.spec "$topdir/SPECS/"
+          rpmbuild \
+            --define "_topdir $topdir" \
+            --define "_ebpfm_version ${{ steps.ver.outputs.version }}" \
+            --define "_ebpfm_release ${{ steps.ver.outputs.release }}" \
+            -bb "$topdir/SPECS/ebpfm-collector.spec"
+          rpm_path="$(find "$topdir/RPMS" -name '*.rpm' | head -n1)"
+          echo "rpm_path=${rpm_path}" >> "$GITHUB_OUTPUT"
+          echo "rpm_name=$(basename "$rpm_path")" >> "$GITHUB_OUTPUT"
+          echo "Built: ${rpm_path}"
+          rpm -qpi "$rpm_path"
+          echo "---- contents ----"
+          rpm -qpl "$rpm_path"
+
+      - name: Upload RPM as workflow artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.build.outputs.rpm_name }}
+          path: ${{ steps.build.outputs.rpm_path }}
+          if-no-files-found: error
+
+      - name: Attach RPM to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.build.outputs.rpm_path }}
+          fail_on_unmatched_files: true

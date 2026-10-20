@@ -7,6 +7,7 @@ the bugs that a live capture cannot easily reveal actually live.
     python3 -m unittest discover collector/tests
 """
 import ctypes
+import gzip
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -1147,10 +1149,18 @@ class StreamSplitTest(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_split_')
         self._mode = T.FLUSH_MODE
         T.FLUSH_MODE = 'poll'
+        # These tests assert on plain .jsonl files and exercise rollover flush
+        # semantics, not compression. Compression gzips the sealed day out of
+        # band (renaming .jsonl -> .jsonl.gz), which both removes the file these
+        # tests read and introduces a subprocess race. Disable it here; the
+        # dedicated CompressionTest covers the gzip behaviour on its own.
+        self._compress = T.COMPRESS
+        T.COMPRESS = False
         self.day = datetime.now().strftime('%Y-%m-%d')
 
     def tearDown(self):
         T.FLUSH_MODE = self._mode
+        T.COMPRESS = self._compress
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _read(self, stream, host='node0'):
@@ -1287,6 +1297,84 @@ class StreamSplitTest(unittest.TestCase):
         self.assertEqual(len(self._read('exits')), 1)
         self.assertEqual(len(self._read('snapshot')), 1)
         w.close()
+
+
+class CompressionTest(unittest.TestCase):
+    """Sealed day-files are gzipped in place to <file>.jsonl.gz; the live day is
+    left plain. The gzip runs as a fire-and-forget `nice` subprocess, so these
+    tests WAIT for it to land rather than assuming it is synchronous -- the race
+    that assumption caused is exactly what this suite exists to prevent."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='ebpfm_gz_')
+        self._mode, T.FLUSH_MODE = T.FLUSH_MODE, 'poll'
+        self._compress, T.COMPRESS = T.COMPRESS, True
+
+    def tearDown(self):
+        T.FLUSH_MODE, T.COMPRESS = self._mode, self._compress
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _wait_gz(self, path, timeout=10.0):
+        """Wait for `path`.gz to appear and the plain `path` to be unlinked."""
+        gz = path + '.gz'
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if os.path.exists(gz) and not os.path.exists(path):
+                return gz
+            time.sleep(0.05)
+        self.fail('timed out waiting for %s (gz=%s exists=%s, plain exists=%s)'
+                  % (gz, gz, os.path.exists(gz), os.path.exists(path)))
+
+    def test_rollover_gzips_sealed_day_and_leaves_live_day_plain(self):
+        w = T.DailyWriter(self.dir, 'node0')
+        w._roll('2026-01-01')
+        w.fh['exits'].write(json.dumps({'event': 'exit', 'pid': 1}) + '\n')
+        w.fh['snapshot'].write(json.dumps({'event': 'meta'}) + '\n')
+        w._roll('2026-01-02')                        # seals 2026-01-01
+        d1 = os.path.join(self.dir, '2026-01-01')
+        for s in ('exits', 'snapshot'):
+            gz = self._wait_gz(os.path.join(d1, 'node0.%s.jsonl' % s))
+            self.assertTrue(gz.endswith('.jsonl.gz'))
+        # content survives the round trip
+        with gzip.open(os.path.join(d1, 'node0.exits.jsonl.gz'), 'rt') as f:
+            recs = [json.loads(l) for l in f if l.strip()]
+        self.assertEqual(recs, [{'event': 'exit', 'pid': 1}])
+        # the LIVE day stays plain -- it is still being appended to
+        d2 = os.path.join(self.dir, '2026-01-02')
+        self.assertEqual(sorted(os.listdir(d2)),
+                         ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
+        w.close()
+
+    def test_disabled_leaves_sealed_day_uncompressed(self):
+        T.COMPRESS = False
+        w = T.DailyWriter(self.dir, 'node0')
+        w._roll('2026-01-01')
+        w.fh['exits'].write('{}\n')
+        w._roll('2026-01-02')
+        time.sleep(0.3)                              # give any (unexpected) gzip a chance
+        d1 = os.path.join(self.dir, '2026-01-01')
+        self.assertIn('node0.exits.jsonl', os.listdir(d1))
+        self.assertFalse(any(f.endswith('.gz') for f in os.listdir(d1)))
+        w.close()
+
+    def test_startup_sweep_compresses_leftover_sealed_day(self):
+        old = os.path.join(self.dir, '2025-12-31')
+        os.makedirs(old)
+        with open(os.path.join(old, 'node0.exits.jsonl'), 'w') as f:
+            f.write('{}\n')
+        T._sweep_sealed_days(self.dir, 'node0', '2026-01-02')
+        self._wait_gz(os.path.join(old, 'node0.exits.jsonl'))
+
+    def test_sweep_skips_today(self):
+        today = '2026-01-02'
+        d = os.path.join(self.dir, today)
+        os.makedirs(d)
+        with open(os.path.join(d, 'node0.exits.jsonl'), 'w') as f:
+            f.write('{}\n')
+        T._sweep_sealed_days(self.dir, 'node0', today)
+        time.sleep(0.3)
+        self.assertIn('node0.exits.jsonl', os.listdir(d), 'today must stay plain')
+        self.assertFalse(any(f.endswith('.gz') for f in os.listdir(d)))
 
 
 class SandboxTest(unittest.TestCase):
