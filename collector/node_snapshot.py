@@ -33,19 +33,11 @@ except ValueError:
 # of this file without lib/ beside it masks nothing.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 try:
-    from redact import redact_line as _redact_line
+    from redact import redact_line as _redact_line, parse_kinds as _parse_kinds
 except Exception:
     _redact_line = None
 
-
-def _redact_kinds(value):
-    if value is None:
-        return {'keys', 'prompts'}
-    kinds = {k.strip().lower() for k in value.split(',') if k.strip()}
-    return set() if kinds & {'0', 'none', 'off'} else kinds & {'keys', 'prompts'}
-
-
-REDACT = _redact_kinds(os.environ.get('EBPFM_REDACT')) if _redact_line else set()
+REDACT = _parse_kinds(os.environ.get('EBPFM_REDACT'))[0] if _redact_line else set()
 
 
 def _mask(cmd):
@@ -179,7 +171,7 @@ def parse_w(s):
                 'idle':  p[4],
                 'jcpu':  p[5],
                 'pcpu':  p[6] if len(p) > 6 else '',
-                'what':  p[7].strip()[:200] if len(p) > 7 else '',
+                'what':  _mask(p[7].strip())[:200] if len(p) > 7 else '',
             })
     return users
 

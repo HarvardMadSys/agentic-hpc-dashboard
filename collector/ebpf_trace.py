@@ -87,7 +87,7 @@ from procparse import (  # noqa: E402
     tty_name, uid_of, username, start_epoch, env_num, boot_id, read_ns, read_confinement, read_io)
 
 from slurm_args import parse_submit_args  # noqa: E402
-from redact import redact_argv, redact_line, needs_argv  # noqa: E402
+from redact import redact_argv, redact_line, needs_argv, parse_kinds  # noqa: E402
 
 try:  # provider buckets for the network records (absent -> provider=null)
     from provider_cidrs import load_index as _load_cidr_index
@@ -274,18 +274,12 @@ def _sweep_sealed_days(root, host, keep_day):
         _compress_day(root, d, host)
 
 def _redact_kinds(value):
-    """EBPFM_REDACT -> the kinds of text masked in what is written. Unset means
-    both; '0', 'none' or empty means neither (an explicit opt-out)."""
-    if value is None:
-        return frozenset(('keys', 'prompts'))
-    kinds = {k.strip().lower() for k in value.split(',') if k.strip()}
-    if kinds & {'0', 'none', 'off'}:
-        return frozenset()
-    bad = kinds - {'keys', 'prompts'}
-    if bad:
-        sys.stderr.write('ebpfm: EBPFM_REDACT ignores unknown kind(s) %s (know: keys, prompts)\n'
-                         % ', '.join(sorted(bad)))
-    return frozenset(kinds & {'keys', 'prompts'})
+    """EBPFM_REDACT -> the kinds of text masked in what is written (see
+    redact.parse_kinds: unreadable means both)."""
+    kinds, why = parse_kinds(value)
+    if why:
+        sys.stderr.write('ebpfm: %s\n' % why)
+    return kinds
 
 
 # What is masked in every command line written out (`args`, a submit record's
@@ -1049,7 +1043,10 @@ def build_bpf_text(f, offs=None):
     d.sig_maj_flt = task->signal->maj_flt;
     d.sig_nvcsw   = task->signal->nvcsw;
     d.sig_nivcsw  = task->signal->nivcsw;
-    d.has_acc     = thr_acc.lookup(&tgid) ? 1 : 0;
+    {
+        struct thr_acc_t *a = thr_acc.lookup(&tgid);
+        d.has_acc = (a && a->start == task->group_leader->start_time) ? 1 : 0;
+    }
 """
     if 'io' in f and thread_acc:
         io = """
@@ -1155,14 +1152,20 @@ TRACEPOINT_PROBE(sched, sched_stat_blocked) {
     if 'io' in f:
         acc_sig += ['rd', 'wr', 'rchar', 'wchar']
     acc_own = (['wait'] if 'sched' in f else []) + (['block'] if 'dstate_task' in f else [])
-    acc_fields = (['nthreads'] + ['b_' + x for x in acc_sig]
+    acc_fields = (['start', 'nthreads'] + ['b_' + x for x in acc_sig]
                   + ['s_' + x for x in acc_sig + acc_own]
                   + (['s_blkio', 's_swapin', 's_freepages'] if 'delay' in f else [])
                   + (['s_dstate', 's_dstate_max', 's_dstate_cnt'] if 'dstate_stat' in f else []))
+    # `start` is the process's start time: with the tgid, whose sums these are.
+    # thr_claim names the one thread that writes the record (see the gate).
+    # exit_scratch holds the record itself, off the 512-byte stack, which the
+    # accumulator's own struct would otherwise share with it.
     acc_defs = ("""
 struct thr_acc_t { u64 %s; };
 BPF_HASH(thr_acc, u32, struct thr_acc_t, 16384);
+BPF_HASH(thr_claim, u32, u64, 16384);  /* tgid -> start: this process's record is taken */
 BPF_ARRAY(thr_acc_miss, u64, 1);       /* thread exits that found thr_acc full */
+BPF_PERCPU_ARRAY(exit_scratch, struct data_t, 1);
 """ % ', '.join(acc_fields)) if thread_acc else ''
     if thread_acc:
         base = ''.join('            z.b_%s = %s;\n' % (x, sig_x[x]) for x in acc_sig)
@@ -1186,13 +1189,29 @@ BPF_ARRAY(thr_acc_miss, u64, 1);       /* thread exits that found thr_acc full *
                 }
             }
 """
-        exit_gate = """    /* Not the last thread out: add this one's counters to its process and
-     * leave the record to whichever thread is (signal->live drops to 0 before
-     * this tracepoint, for the thread that took it there). */
-    if (task->signal->live.counter > 0) {
+        exit_gate = """    /* Every thread but one adds its counters to its process and leaves; the one
+     * writes the record. signal->live drops before this tracepoint, but a
+     * thread that dropped it EARLIER can get here later -- the one tearing down
+     * a large address space does -- and it reads 0 too. So when other threads
+     * are still unreleased, the record goes to whichever claims it first. */
+    u64 st = task->group_leader->start_time;
+    int last = task->signal->live.counter == 0;
+    if (last && task->signal->nr_threads > 1 && thr_claim.insert(&tgid, &st) != 0) {
+        u64 *c = thr_claim.lookup(&tgid);
+        if (c && *c != st)
+            thr_claim.update(&tgid, &st);   /* a dead process's claim, never collected */
+        else
+            last = 0;
+    }
+    if (!last) {
         struct thr_acc_t *a = thr_acc.lookup(&tgid);
+        if (a && a->start != st) {
+            thr_acc.delete(&tgid);          /* a dead process's sums, never collected */
+            a = 0;
+        }
         if (!a) {
             struct thr_acc_t z = {};
+            z.start = st;
 %s            thr_acc.insert(&tgid, &z);
             a = thr_acc.lookup(&tgid);
         }
@@ -1222,15 +1241,29 @@ BPF_ARRAY(thr_acc_miss, u64, 1);       /* thread exits that found thr_acc full *
 """
         data_acc = """    u64 sig_utime, sig_stime, sig_run, sig_min_flt, sig_maj_flt, sig_nvcsw, sig_nivcsw;
     u64 sig_rd, sig_wr, sig_rchar, sig_wchar;
-    u8  has_acc;          // thr_acc held an entry for the process at this exit
+    u8  has_acc;          // thr_acc held this process's entry at this exit
 """
+        # `d` names the scratch copy for the rest of the probe; the macro keeps
+        # every block's `d.field` text the same in both variants
+        exit_d = """    u32 dz = 0;
+    struct data_t *dp = exit_scratch.lookup(&dz);
+    if (!dp)
+        return 0;
+    __builtin_memset(dp, 0, sizeof(*dp));
+#define d (*dp)
+"""
+        exit_d_end = '#undef d\n'
     else:
+        exit_d, exit_d_end = '    struct data_t d = {};\n', ''
         exit_gate = """    if (tgid != tid) {
 %s        return 0;   // thread-group leader only: one record per process
     }
 """ % dstate_del_thread
         exit_leader = ''
         data_acc = ''
+    # the exec event too: the acc fields make the struct too big for comfort on
+    # a stack the exec probe shares with its argv read (448 of 512 bytes)
+    exec_d, exec_d_end = exit_d, exit_d_end
     # A probe's entry stash is per THREAD and its return probe deletes it, but a
     # return the kernel never ran (kretprobe maxactive) leaves it behind; once
     # the map filled, every new thread's sends went unattributed. A thread's exit
@@ -1410,7 +1443,12 @@ TRACEPOINT_PROBE(syscalls, sys_enter_write) {
     } else {
         *left = budget - len;
     }
-    /* the clamp must stay the LAST write to len before the read below */
+    /* The clamp must stay the LAST write to len before the read below, and it
+     * must survive LLVM: from `len >= budget` it can prove len <= WRITE_MAX and
+     * delete the clamp, but a 4.18 verifier bounds a register only against a
+     * constant, and would see the map value `budget` unbounded. The empty asm
+     * hides len from that proof. */
+    asm volatile("" : "+r"(len));
     if (len > WRITE_MAX) len = WRITE_MAX;
     w->pid = pid; w->fd = (u32)args->fd; w->len = len;
     w->ktime_ns = bpf_ktime_get_ns();
@@ -1620,8 +1658,7 @@ __FORK_PROBE__
 TRACEPOINT_PROBE(sched, sched_process_exec) {
     u64 id = bpf_get_current_pid_tgid();
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    struct data_t d = {};
-    d.type     = EVT_EXEC;
+__EXEC_D__    d.type     = EVT_EXEC;
     d.pid      = id >> 32;
     d.ppid     = task->real_parent->tgid;
     d.uid      = (u32)bpf_get_current_uid_gid();
@@ -1632,12 +1669,12 @@ __TTY____CGID__
 __ARGV_EXEC____SUBMIT_EXEC__
     return 0;
 }
-
+__EXEC_D_END__
 TRACEPOINT_PROBE(sched, sched_process_exit) {
     u64 id = bpf_get_current_pid_tgid();
     u32 tgid = id >> 32, tid = (u32)id;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-__THREAD_DEL____EXIT_GATE__    struct data_t d = {};
+__THREAD_DEL____EXIT_GATE____EXIT_D__
     d.type      = EVT_EXIT;
     d.pid       = tgid;
     d.ppid      = task->real_parent->tgid;
@@ -1657,13 +1694,15 @@ __SCHED____IO____DELAY____DSTATE_TASK____DSTATE_READ____NETB_READ____PIDS____TTY
 __SUBMIT_EXIT__
     return 0;
 }
-"""
+__EXIT_D_END__"""
     return (text.replace('__INC__', '\n'.join(inc))
                 .replace('__DATA_ACC__', data_acc)
                 .replace('__FORK_PROBE__', fork_probe)
                 .replace('__THREAD_DEL__', thread_del)
                 .replace('__EXIT_GATE__', exit_gate)
                 .replace('__EXIT_LEADER__', exit_leader)
+                .replace('__EXIT_D__', exit_d).replace('__EXIT_D_END__', exit_d_end)
+                .replace('__EXEC_D__', exec_d).replace('__EXEC_D_END__', exec_d_end)
                 .replace('__ARGV_DEFS__', argv_defs)
                 .replace('__SUBMIT_DEFS__', submit_defs)
                 .replace('__DSTATE_DEFS__', dstate_defs)
@@ -2379,7 +2418,7 @@ _pending_exits = collections.deque()
 _conn_dropped = {'n': 0, 'commands': {}}   # conns whose owner never got an exit record
 # entries retired without an exit event (a lost one, or a pid recycled under
 # them), and those only seen missing once so far: retired on the second miss
-_proc_stats = {'vanished': 0}
+_proc_stats = {'vanished': 0, 'late_exits': 0}
 _proc_missing = set()
 # Exceptions a handler swallowed, by handler. They used to vanish without a
 # trace; now each residency_totals and the stop record carry the counts.
@@ -2617,13 +2656,27 @@ def resolve(pid, m=None):
         m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
         return True
     ppid = m['ppid']
-    if ppid and ppid != pid and ppid in proc and resolve(ppid):
-        pm = proc[ppid]
+    pm = proc.get(ppid) if ppid and ppid != pid else None
+    if pm is not None and _born_after(pm, m.get('fork_ktime')):
+        pm = None             # the pid was recycled since: a newer process holds it
+    if pm is not None and resolve(ppid, pm):
         m.update(attributed=True, agent_pid=pm['agent_pid'], agent_type=pm['agent_type'],
                  depth=(pm['depth'] or 0) + 1)
         return True
     m['attributed'] = False
     return False
+
+
+def _born_after(pm, kt):
+    """True when entry `pm` is a process started after kernel time `kt` -- so
+    not the parent that forked a child at `kt`, whatever pid it holds."""
+    if not kt:
+        return False
+    v = pm.get('fork_ktime')
+    if v is not None:
+        return v > kt
+    ticks = pm.get('start_ticks')
+    return bool(ticks is not None and ticks / float(CLK_TCK) - kt / 1e9 > 1.0)
 
 
 def tree_root(pid, m=None):
@@ -2684,7 +2737,8 @@ def _ingest_proc(pid, ppid=None):
     uid = uid_of(pid)
     vals = dict(comm=st['comm'], tty=tty_name(st['tty_nr']), uid=uid,
                 user=username(uid) if uid is not None else None,
-                cgroup=read_cgroup(pid), start_ep=start_epoch(st['starttime']))
+                cgroup=read_cgroup(pid), start_ep=start_epoch(st['starttime']),
+                start_ticks=st['starttime'])
     m = proc_add(pid, ppid if ppid is not None else st['ppid'])
     m.update(vals)
     if m['argv_source'] != 'kernel':
@@ -2959,25 +3013,41 @@ def _predates(m, kt):
     """True when entry `m` provably belongs to a process that existed before
     kernel time `kt`, so an event at `kt` that creates a process is not about it:
     its pid was recycled after an exit the collector never saw (a lost event).
-    Seeded entries know only their /proc start time, which is whole clock ticks
-    against a boot time rounded to the second, hence the slack."""
+    Seeded entries know only their /proc start time, in whole clock ticks,
+    hence the slack."""
     if not kt:
         return False
     for k in ('fork_ktime', 'exec_ktime'):
         v = m.get(k)
         if v is not None and v < kt:
             return True
-    se = m.get('start_ep')
-    return bool(se is not None and BTIME and (BTIME + kt / 1e9) - se > 5.0)
+    # since boot on both sides: the wall clock (and /proc's btime) can step
+    ticks = m.get('start_ticks')
+    return bool(ticks is not None and kt / 1e9 - ticks / float(CLK_TCK) > 5.0)
 
 
 def _retire(m, now=None):
     """Mark an entry whose process is gone without an exit event. It is then
-    reaped like any exited entry; there is no record to write."""
+    reaped like any exited entry; there is no record to write, so its
+    endpoint-table entries go now -- left, they would be handed to the next
+    process on the pid."""
     m['exited'] = True
     m['vanished'] = True
     m['gc_ts'] = m['gc_ts'] or (time.time() if now is None else now)
     _proc_stats['vanished'] += 1
+    if not m.get('exit_pending'):
+        _netp_release(m)
+
+
+def _replace(m):
+    """Drop entry `m` so that its pid can name a new process. Its endpoint
+    entries go with it, unless its exit record is still held (writing that
+    releases them)."""
+    if not m['exited']:
+        _retire(m)
+    elif not m.get('exit_pending') and not m.get('netp_done'):
+        _netp_release(m)
+    proc_del(m['pid'])
 
 
 def on_fork(e):
@@ -3004,7 +3074,7 @@ def on_fork(e):
             return
     m = proc_add(child, parent)
     if m['exited']:
-        proc_del(child)                       # pid recycled inside the GC window
+        _replace(m)                           # pid recycled inside the GC window
         m = proc_add(child, parent)
     if m['fork_ktime'] is None:
         m['fork_ktime'] = kt
@@ -3035,7 +3105,7 @@ def on_exec(e):
             # so it is not revived and /proc is not read (the pid may be reused).
             late = True
         else:
-            proc_del(pid)                 # a recycled pid whose fork was never seen
+            _replace(m)                   # a recycled pid whose fork was never seen
     m = proc_add(pid, e.ppid)
     m['comm'] = _cstr(e.comm) or m['comm']
     m['exec_ktime'] = e.ktime_ns
@@ -3115,7 +3185,7 @@ def on_argv(a):
     m = proc.get(pid)
     if (m is not None and m['exited'] and m.get('exit_ktime') is not None
             and a.ktime_ns > m['exit_ktime']):
-        proc_del(pid)                     # the argv of a process born on a recycled pid
+        _replace(m)                       # the argv of a process born on a recycled pid
     m = proc_add(pid, None)
     if m.get('exec_ktime') is not None and a.ktime_ns < m['exec_ktime']:
         return                            # the argv of an image already replaced
@@ -3284,16 +3354,19 @@ def _stub_identity(pid=None, uid=None, comm=None):
 def on_exit(e):
     pid = e.pid
     m = proc.get(pid)
+    start = getattr(e, 'start_ns', 0)
     if m is not None and m['exited'] and m.get('exit_ktime') is not None:
-        if e.ktime_ns == m['exit_ktime']:
-            return                            # the same event twice
-        proc_del(pid)                         # a recycled pid whose fork and exec were lost
-    elif m is not None and _predates(m, getattr(e, 'start_ns', 0)):
+        if e.ktime_ns == m['exit_ktime'] or (start and m.get('exit_start_ns') == start):
+            # The same event twice, or a second thread of the same process taking
+            # the record after the first one's claim was collected: its record
+            # is already written or held.
+            _proc_stats['late_exits'] += 1
+            return
+        _replace(m)                           # a recycled pid whose fork and exec were lost
+    elif m is not None and _predates(m, start):
         # The entry is an older process than the one exiting (the event names its
         # start): that one's exit was lost, and this one's fork and exec too.
-        if not m['exited']:
-            _retire(m)
-        proc_del(pid)
+        _replace(m)
     m = proc_add(pid, e.ppid, comm=_cstr(e.comm) or None)
     if not m['comm']:
         m['comm'] = _cstr(e.comm) or None
@@ -3313,6 +3386,7 @@ def on_exit(e):
     _inherit_sandbox(m)
     m['exited'] = True
     m['exit_ktime'] = e.ktime_ns
+    m['exit_start_ns'] = start
     m['gc_ts'] = time.time()
     m['net_io'] = bool('netbytes' in FEATURES and getattr(e, 'has_net', 0)
                        and (e.net_tx or e.net_rx))
@@ -3342,10 +3416,11 @@ _CORE_HANDLERS = {EVT_FORK: on_fork, EVT_EXEC: on_exec, EVT_EXIT: on_exit}
 # dropped `live` earlier can reach its own tracepoint later (the one tearing
 # down a large address space does), and the hold lets it land first.
 _thr_acc_tab = None        # BPF hash `thr_acc`, when the block loaded (set by main)
+_thr_claim_tab = None      # BPF hash `thr_claim`: whose thread writes the record
 _thr_acc_miss_tab = None   # BPF array `thr_acc_miss`: thread exits that found it full
 # entries taken for a record; those made by a thread that reached its tracepoint
 # after the last one (late); and records whose entry was gone (missing)
-_thr_acc_stats = {'taken': 0, 'late': 0, 'missing': 0, 'swept': 0}
+_thr_acc_stats = {'taken': 0, 'late': 0, 'missing': 0, 'stale': 0, 'swept': 0}
 
 # (event field, its signal_struct twin on the event, accumulator suffix)
 _ACC_SIGNAL = (('utime_ns', 'sig_utime', 'utime'), ('stime_ns', 'sig_stime', 'stime'),
@@ -3376,10 +3451,13 @@ def _may_have_acc(e):
 
 
 def _thread_acc_take(e):
-    """The process's accumulator, removed from the kernel map, or None."""
+    """The process's accumulator, removed from the kernel map, or None. Its
+    record claim goes too. An entry with another start time is a dead
+    process's on the same tgid, never collected: dropped, never added."""
     tab = _thr_acc_tab
     if tab is None or not _may_have_acc(e):
         return None
+    _thread_claim_drop(e)
     k = tab.Key(e.pid)
     try:
         v = tab[k]
@@ -3391,17 +3469,30 @@ def _thread_acc_take(e):
         del tab[k]
     except KeyError:
         pass
+    if getattr(v, 'start', None) not in (None, getattr(e, 'start_ns', None)):
+        _thr_acc_stats['stale'] += 1
+        return None
     _thr_acc_stats['taken'] += 1
     if not getattr(e, 'has_acc', 0):
         _thr_acc_stats['late'] += 1
     return v
 
 
+def _thread_claim_drop(e):
+    tab = _thr_claim_tab
+    if tab is not None:
+        try:
+            del tab[tab.Key(e.pid)]
+        except Exception:
+            pass
+
+
 def _thread_acc_release(e):
-    """Drop the accumulator of a process that gets no record."""
+    """Drop the accumulator and claim of a process that gets no record."""
     tab = _thr_acc_tab
     if tab is None or not _may_have_acc(e):
         return
+    _thread_claim_drop(e)
     try:
         del tab[tab.Key(e.pid)]
     except Exception:
@@ -3411,28 +3502,41 @@ def _thread_acc_release(e):
 _residency_ticks = 0
 
 
+_thr_acc_suspect = set()
+
+
 def _thread_acc_sweep(alive):
-    """Delete accumulators whose process is gone and has no exit pending: its
-    exit event was lost, so nothing else ever would, and a full map stops
-    accumulating for every process."""
+    """Delete accumulators and claims whose process is gone with no exit
+    pending: its exit event was lost, so nothing else ever would, and a full
+    map stops accumulating for every process. An entry goes on its SECOND miss,
+    a sweep apart: on the first, its process may be newer than `alive` or its
+    exit may still be in a ring."""
     tab = _thr_acc_tab
     if tab is None:
         return 0
     held = {m['pid'] for _d, m, _e, _t in _pending_exits} | _queued_exits()
-    n = 0
-    try:
-        keys = list(tab.keys())
-    except Exception:
-        return 0
-    for k in keys:
-        pid = getattr(k, 'value', k)
-        if pid in alive or pid in held:
+    n, missing = 0, set()
+    for t in (tab, _thr_claim_tab):
+        if t is None:
             continue
         try:
-            del tab[k]
-            n += 1
+            keys = list(t.keys())
         except Exception:
-            pass
+            continue
+        for k in keys:
+            pid = getattr(k, 'value', k)
+            if pid in alive or pid in held:
+                continue
+            if pid not in _thr_acc_suspect:
+                missing.add(pid)
+                continue
+            try:
+                del t[k]
+                n += t is tab
+            except Exception:
+                pass
+    _thr_acc_suspect.clear()
+    _thr_acc_suspect.update(missing)
     _thr_acc_stats['swept'] += n
     return n
 
@@ -4078,7 +4182,9 @@ _netp_kern_tab = None     # BPF array `netp_kern`: [calls, tx, rx] on kernel soc
 # the netp_new announcements and from each sweep
 _netp_index = {}
 NETP_SWEEP_TICKS = 10     # a full read of the table every this many ticks
-_netp_sweep = {'tick': 0, 'full_calls': 0, 'fallback': 0.0}
+# `lost`: announcements dropped (a full netp_new ring) since the last full read,
+# so some processes' entries are not indexed
+_netp_sweep = {'tick': 0, 'full_calls': 0, 'fallback': 0.0, 'lost': False}
 _COLLECTOR_START = time.time()     # reset by main(); floors a process's first interval
 
 
@@ -4158,6 +4264,7 @@ def netpeer_read():
         m['netp_kobj'][kk] = k
         _netp_index.setdefault(k.tgid, {})[kk] = k    # an announcement may be lost
     _netp_unclaimed = unclaimed
+    _netp_sweep['lost'] = False               # whatever was missed is indexed now
     for k in drop:
         idx = _netp_index.get(k.tgid)
         if idx is not None:
@@ -4201,15 +4308,16 @@ def _netp_read_pid(m):
 
 def _netp_collect(ms):
     """Bring the endpoint counters of processes about to be written up to date.
-    A process that moved bytes but has nothing indexed lost its announcements
-    (a full ring); for those the whole table is read, at most once a second."""
+    When announcements were lost (a full ring) -- or a process that moved bytes
+    has nothing indexed at all -- some entries are not in the index, so the
+    whole table is read instead, at most once a second; that read indexes them."""
     if _netp_tab is None:
         return
     full = False
     for m in ms:
         if m['pid'] in _netp_index:
             _netp_read_pid(m)
-        elif m['net_io']:
+        if m['net_io'] and (_netp_sweep['lost'] or m['pid'] not in _netp_index):
             full = True
     now = time.monotonic()
     if full and now - _netp_sweep['fallback'] >= 1.0:
@@ -4226,15 +4334,16 @@ def _netp_refresh_live():
 
 
 def _netp_sweep_due():
-    """A full read on the first tick, every NETP_SWEEP_TICKS, and on any tick
-    after the table was found full -- that is when entries leaked past the index
-    cost the most."""
+    """A full read on the first tick, every NETP_SWEEP_TICKS, on any tick after
+    the table was found full -- that is when entries leaked past the index cost
+    the most -- and after announcements were lost."""
     _netp_sweep['tick'] += 1
     drop = _read_netp_drop()
     calls = drop['calls'] if drop else 0
     filled = calls > _netp_sweep['full_calls']
     _netp_sweep['full_calls'] = calls
-    return filled or (_netp_sweep['tick'] - 1) % NETP_SWEEP_TICKS == 0
+    return (filled or _netp_sweep['lost']
+            or (_netp_sweep['tick'] - 1) % NETP_SWEEP_TICKS == 0)
 
 
 def _netp_release(m):
@@ -4623,15 +4732,17 @@ def residency_tick(b=None):
         st = read_stat(m['pid'])
         if st is None:
             continue                          # gone; reconcile_proc() retires it
-        se = start_epoch(st['starttime'])
         if m.get('start_ep') is None:
-            m['start_ep'] = se
-        elif se is not None and abs(se - m['start_ep']) > 5.0:
+            m['start_ep'] = start_epoch(st['starttime'])
+        if m.get('start_ticks') is None:
+            m['start_ticks'] = st['starttime']
+        elif st['starttime'] != m['start_ticks']:
             # A different process on this pid: this one's exit event was lost and
             # the pid recycled. Retire it, and give the new one its own entry.
+            # (Clock ticks since boot, not epoch seconds: /proc's btime moves
+            # when the wall clock is stepped, and every process would differ.)
             pid = m['pid']
-            _retire(m, now)
-            proc_del(pid)
+            _replace(m)
             _ingest_proc(pid)
             continue
         rss_kb = _read_vmrss_kb(m['pid']) or 0
@@ -4844,6 +4955,9 @@ def residency_tick(b=None):
         'handler_errors': dict(_handler_errors) or None,
         'proc_entries': len(proc),
         'proc_vanished': _proc_stats['vanished'],
+        # a second exit of one process, dropped (a late thread's, after the
+        # first one's record claim was collected)
+        'proc_late_exits': _proc_stats['late_exits'],
         'thread_acc': _thread_acc_report(),
     })
     writer.write(_tot)
@@ -5044,7 +5158,7 @@ def _unsafe_dirs(paths):
 
 def main():
     global FEATURES, writer, _cidr_index, _netp_tab, _netp_drop_tab, _COLLECTOR_START
-    global _thr_acc_tab, _thr_acc_miss_tab, _submit_tab, _netp_kern_tab
+    global _thr_acc_tab, _thr_acc_miss_tab, _submit_tab, _netp_kern_tab, _thr_claim_tab
     argv = sys.argv[1:]
     try:
         from bcc import BPF
@@ -5101,6 +5215,7 @@ def main():
         _netp_kern_tab = b['netp_kern']
     if 'thread_acc' in feats:
         _thr_acc_tab, _thr_acc_miss_tab = b['thr_acc'], b['thr_acc_miss']
+        _thr_claim_tab = b['thr_claim']
 
     # Events DECODED, not records written. The drain touches every fork/exec/exit
     # to keep the ancestry table current, even for processes that are never
@@ -5185,6 +5300,7 @@ def main():
 
         def _lost_netp_new(n):
             _perf_lost['netp_new'] += n
+            _netp_sweep['lost'] = True       # read the whole table, and index it
         b['netp_new'].open_perf_buffer(_cb_netp_new, page_cnt=64, lost_cb=_lost_netp_new)
     _COLLECTOR_START = time.time()
 
@@ -5333,6 +5449,7 @@ def main():
                      # because their process was gone with no exit event seen
                      'handler_errors': dict(_handler_errors) or None,
                      'proc_vanished': _proc_stats['vanished'],
+                     'proc_late_exits': _proc_stats['late_exits'],
                      # write(2) count for the whole run, against `records` above:
                      # the pair IS the I/O amplification, measured rather than
                      # assumed. +1 because this record is built before it is

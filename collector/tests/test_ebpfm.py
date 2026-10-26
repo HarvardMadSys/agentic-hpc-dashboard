@@ -213,7 +213,8 @@ class BpfTextTest(unittest.TestCase):
                    '__DSTATE_TASK__', '__DSTATE_DEL__', '__NETB_DEFS__', '__NETB_READ__',
                    '__TCP_BYTES__', '__NETP_SOCK_LOCAL__', '__NETP_SOCK_PEER__',
                    '__NETP_BIRTH__', '__NETP_SOCK_KERN__', '__DATA_ACC__', '__THREAD_DEL__',
-                   '__EXIT_GATE__', '__EXIT_LEADER__', '__ACC_DEFS__', '__FORK_PROBE__'):
+                   '__EXIT_GATE__', '__EXIT_LEADER__', '__ACC_DEFS__', '__FORK_PROBE__',
+                   '__EXIT_D__', '__EXIT_D_END__', '__EXEC_D__', '__EXEC_D_END__'):
             self.assertNotIn(ph, txt, ph)
 
     def test_dstate_task(self):
@@ -3458,6 +3459,84 @@ class GhostTest(_OrderCase):
         self.assertEqual(T.actor_of(m), (None, None))
 
 
+class ReviewFixTest(_OrderCase):
+    """Findings of the 2026-10-26 review of schema 8."""
+
+    def _exit(self, pid, kt, start, **kw):
+        ex = _exit_ev(pid=pid, ppid=100, **kw)
+        ex.ktime_ns, ex.start_ns = kt, start
+        T.on_exit(ex)
+
+    def test_a_second_exit_of_one_process_is_not_a_new_process(self):
+        """A late thread's exit after the first record's claim was collected
+        names the same start: it is dropped, not written as a recycled pid."""
+        T.on_fork(_xfork(101, kt=int(1e9)))
+        self._exit(101, int(5e9), int(1e9) - 10)
+        self._exit(101, int(6e9), int(1e9) - 10)
+        T.drain_exits(final=True)
+        self.assertEqual(len(self.W.of('exit')), 1)
+        self.assertEqual(T._proc_stats['late_exits'], 1)
+
+    def test_a_retired_process_takes_its_endpoint_entries_with_it(self):
+        saved = T._netp_tab
+        T._netp_tab = K = FakeNetpTable()
+        try:
+            T.on_fork(_xfork(101, kt=int(1e9)))
+            K.put(101, '93.184.216.34', 443, tx=900000)
+            K.announce()
+            T.on_fork(_xfork(101, kt=int(9e9)))          # the pid, recycled; the exit lost
+            self.assertEqual(K.pids(), [])
+            self.assertNotIn(101, T._netp_index)
+        finally:
+            T._netp_tab = saved
+            T._netp_index.clear()
+
+    def test_a_held_record_keeps_its_entries_through_a_replacement(self):
+        saved = T._netp_tab
+        T._netp_tab = K = FakeNetpTable()
+        try:
+            T.on_fork(_xfork(101, kt=int(1e9)))
+            K.put(101, '93.184.216.34', 443, tx=900)
+            K.announce()
+            self._exit(101, int(5e9), int(1e9) - 10, net_tx=900, net_calls=1)
+            T.on_exec(_xexec(101, kt=int(7e9)))           # held; a new process execs
+            self.assertEqual(K.pids(), [101])
+        finally:
+            T._netp_tab = saved
+            T._netp_index.clear()
+
+    def test_a_clock_step_does_not_retire_live_processes(self):
+        """/proc's btime moves when the wall clock is stepped; start ticks do not."""
+        saved = (T.read_stat, T.start_epoch, T._read_vmrss_kb)
+        T.list_pids = lambda: {1, 100, 101}
+        T.proc_add(101, 100, comm='git', args='git status', user='u', uid=1000)
+        T.proc[101].update(start_ticks=0, start_ep=1000.0)
+        T.read_stat = _fake_stat
+        T.start_epoch = lambda ticks: 1000.0 + 3600      # an hour's step
+        T._read_vmrss_kb = lambda pid: 0
+        old = T.proc[101]
+        try:
+            T.residency_tick(None)
+        finally:
+            T.read_stat, T.start_epoch, T._read_vmrss_kb = saved
+        self.assertIs(T.proc[101], old)
+        self.assertFalse(old['exited'])
+
+    def test_a_seeded_entry_predates_by_start_ticks(self):
+        m = T._new_entry(5, 1, start_ticks=100 * T.CLK_TCK)       # started at 100 s
+        self.assertFalse(T._predates(m, int(102e9)))
+        self.assertTrue(T._predates(m, int(200e9)))
+
+    def test_a_parent_born_after_the_fork_is_not_the_parent(self):
+        """The orphan of `nohup cmd &` keeps its parent's pid; once that pid is
+        recycled, the newer holder must not adopt it."""
+        T.proc_add(300, 1, comm='claude', args='claude', user='v', uid=1001,
+                   fork_ktime=int(9e9))                 # a newer process on pid 300
+        T.proc_add(301, 300, comm='python3', args='python3 job.py', user='u', uid=1000,
+                   fork_ktime=int(2e9))
+        self.assertFalse(T.resolve(301))
+
+
 class LateRecordTest(_OrderCase):
     def test_the_record_is_stamped_with_the_exit_not_the_write(self):
         T.on_fork(_xfork(101))
@@ -3537,8 +3616,8 @@ class ReconcileTest(_OrderCase):
         saved = (T.read_stat, T.start_epoch, T._read_vmrss_kb, T.read_cwd)
         T.list_pids = lambda: {1, 100, 101}
         T.proc_add(101, 100, comm='git', args='git status', user='u', uid=1000)
-        T.proc[101]['start_ep'] = 1000.0
-        T.read_stat = lambda pid: dict(_fake_stat(pid), starttime=0)
+        T.proc[101]['start_ticks'] = 5
+        T.read_stat = lambda pid: dict(_fake_stat(pid), starttime=999)
         T.start_epoch = lambda ticks: 2000.0
         T._read_vmrss_kb = lambda pid: 0
         T.read_cwd = lambda pid: None
@@ -3588,7 +3667,7 @@ class FakeAccTable(object):
 
 
 def _acc(**kw):
-    base = dict(nthreads=0, b_utime=0, b_stime=0, b_run=0, b_min_flt=0, b_maj_flt=0,
+    base = dict(start=int(1e9), nthreads=0, b_utime=0, b_stime=0, b_run=0, b_min_flt=0, b_maj_flt=0,
                 b_nvcsw=0, b_nivcsw=0, s_utime=0, s_stime=0, s_run=0, s_min_flt=0,
                 s_maj_flt=0, s_nvcsw=0, s_nivcsw=0, s_wait=0, s_dstate=0,
                 s_dstate_max=0, s_dstate_cnt=0)
@@ -3647,6 +3726,14 @@ class ThreadAccTest(unittest.TestCase):
         self.assertEqual(t.utime_ns, int(2e9) + int(3e9) + int(4e9))
         self.assertEqual(T._thr_acc_stats['late'], 1)
 
+    def test_a_dead_processs_accumulator_is_dropped_not_added(self):
+        T._thr_acc_tab = FakeAccTable({101: _acc(start=111, s_utime=int(9000e9))})
+        e = _last_thread_exit(has_acc=0, nr_threads=2, sig_utime=int(3e9))
+        e.start_ns = 222
+        t = T._exit_totals(e)
+        self.assertEqual(t.utime_ns, int(2e9) + int(3e9))
+        self.assertEqual((T._thr_acc_tab.d, T._thr_acc_stats['stale']), ({}, 1))
+
     def test_no_lookup_where_no_entry_can_exist(self):
         class Untouchable(FakeAccTable):
             def __getitem__(self, k):
@@ -3685,7 +3772,10 @@ class ThreadAccTest(unittest.TestCase):
         T._thr_acc_tab = FakeAccTable({900: _acc(), 901: _acc()})
         T._pending_exits.clear()
         T._pending_exits.append((0.0, {'pid': 901}, None, 0.0))
+        T._thr_acc_suspect.clear()
         try:
+            # second miss only: on the first its exit may still be in a ring
+            self.assertEqual(T._thread_acc_sweep(alive={1}), 0)
             self.assertEqual(T._thread_acc_sweep(alive={1}), 1)
         finally:
             T._pending_exits.clear()
@@ -3699,8 +3789,26 @@ class ThreadAccTextTest(unittest.TestCase):
         self.txt = T.build_bpf_text(self.F, offs=FAKE_OFFS)
 
     def test_the_last_thread_out_writes_the_record(self):
-        self.assertIn('if (task->signal->live.counter > 0) {', self.txt)
+        self.assertIn('int last = task->signal->live.counter == 0;', self.txt)
         self.assertNotIn('if (tgid != tid) {\n        return 0;', self.txt)
+
+    def test_one_thread_claims_the_record_when_others_are_unreleased(self):
+        """A thread that dropped `live` early can reach the tracepoint after the
+        last one and read 0 too; without a claim both wrote a record."""
+        self.assertIn('if (last && task->signal->nr_threads > 1 && thr_claim.insert(&tgid, &st) != 0) {',
+                      self.txt)
+        self.assertIn('thr_claim.update(&tgid, &st);   /* a dead process\'s claim', self.txt)
+
+    def test_a_dead_processs_sums_are_not_added_to(self):
+        self.assertIn('if (a && a->start != st) {\n            thr_acc.delete(&tgid);', self.txt)
+        self.assertIn('z.start = st;', self.txt)
+
+    def test_the_record_is_built_off_the_stack(self):
+        self.assertEqual(self.txt.count('struct data_t *dp = exit_scratch.lookup(&dz);'), 2)
+        self.assertEqual(self.txt.count('#define d (*dp)'), self.txt.count('#undef d'))
+        self.assertTrue(self.txt.rstrip().endswith('#undef d'))
+        plain = T.build_bpf_text({'signal'}, offs=FAKE_OFFS)
+        self.assertNotIn('exit_scratch', plain)
 
     def test_each_thread_adds_its_own_counter_to_its_own_field(self):
         own = {'utime': 'task->utime', 'stime': 'task->stime',
@@ -3728,7 +3836,8 @@ class ThreadAccTextTest(unittest.TestCase):
     def test_the_event_carries_its_own_and_signal_structs_apart(self):
         self.assertIn('d.utime_ns   = task->utime;\n', self.txt)
         self.assertIn('d.sig_utime   = task->signal->utime;', self.txt)
-        self.assertIn('d.has_acc     = thr_acc.lookup(&tgid) ? 1 : 0;', self.txt)
+        self.assertIn('d.has_acc = (a && a->start == task->group_leader->start_time) ? 1 : 0;',
+                      self.txt)
 
     def test_a_non_leader_last_thread_reports_the_leaders_name_and_status(self):
         self.assertIn('bpf_probe_read_str(&d.comm, sizeof(d.comm), leader->comm);', self.txt)
@@ -3847,6 +3956,18 @@ class NetpeerIndexTest(_NetpeerCase):
         self.assertTrue(T._netp_sweep_due())
         self.assertFalse(T._netp_sweep_due())             # no new misses since
 
+    def test_lost_announcements_bring_a_full_read(self):
+        """With part of a process indexed, its other entries were found only by
+        the sweep, ten ticks later."""
+        self.K.put(101, '104.18.0.1', 443, tx=100)
+        self.K.announce()
+        self.K.put(101, '140.82.112.3', 443, tx=50)      # its announcement lost
+        T._netp_sweep['lost'] = True
+        rec = self._exit(net_tx=150, net_calls=2)
+        self.assertEqual(sorted(e['tx_bytes'] for e in rec['net_endpoints']['endpoints']),
+                         [50, 100])
+        self.assertFalse(T._netp_sweep['lost'])
+
     def test_the_sweep_indexes_what_the_announcements_missed(self):
         self.K.put(101, '104.18.0.1', 443, tx=5)
         T.netpeer_read()
@@ -3931,6 +4052,8 @@ class SubmitCaptureTest(unittest.TestCase):
 
     def test_the_kernel_spends_a_budget_and_forgets_an_exec_into_anything_else(self):
         txt = T.build_bpf_text({'submit'}, offs=FAKE_OFFS)
+        # LLVM may prove the last clamp redundant and drop it; 4.18 needs it
+        self.assertIn('asm volatile("" : "+r"(len));\n    if (len > WRITE_MAX) len = WRITE_MAX;', txt)
         self.assertIn('#define SUBMIT_BUDGET %d' % T.SUBMIT_BUDGET, txt)
         self.assertIn('submit_pids.delete(&pid);           /* this write spends what is left */', txt)
         self.assertIn('} else {\n        submit_pids.delete(&d.pid);\n    }', txt)

@@ -357,14 +357,22 @@ Schema 8 is the fix for each; every point below changes what a field holds.
   Codex process went from 48,297 CPU-s at its last tick to 79.7 s at exit. `meta`
   says which you have (`counters_scope`: `process` or `leader`); `threads` is now the
   most threads seen. Not comparable with schema 7 for multi-threaded processes.
+  A thread that dropped the group's `live` count early can reach its tracepoint after
+  the last one and read zero too, so while other threads are unreleased the record
+  goes to the one that claims it (`thr_claim`); the rest add themselves. Sums carry
+  the process's start time, so a dead process's leftovers (its exit lost) never join
+  the next process on its pid, and the record lives in a per-CPU map, not on the
+  512-byte stack.
 - **`args` and `captured_tail` are masked by default** (`lib/redact.py`):
   credentials with the dashboard's own rules, and the prompt text handed to a coding
   agent on its command line (`claude -p "..."`, `codex exec "..."`, `gemini -p`, through
   node/npx/wrappers or inside `bash -c` and `sbatch --wrap`). Flags, models and
   subcommands stay; the record's `args_redacted` names what was masked. Classification
   reads the raw argv in memory, so nothing about attribution changes.
-  `EBPFM_REDACT=keys` or `prompts` keeps one kind; `0` turns it off. The node tier
-  masks its argv fields the same way.
+  `EBPFM_REDACT=keys` or `prompts` keeps one kind; `0` turns it off, and a value it
+  cannot read masks both. The node tier masks its argv fields and `w`'s command the
+  same way, but it has only `ps`'s space-joined line: there a prompt's first word can
+  survive when it is a subcommand's name (`claude -p update ...`).
 - **Kernel-socket traffic is no process's network I/O.** The NFS client sends its RPCs
   from the calling process's context, so every `ls` on an NFS path was an endpoint:
   95% of the table. A socket with no file behind it is now counted per node in
@@ -799,7 +807,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 398 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 418 tests, no root, no BPF needed
 python3 tests/bpf_compile_check.py           # compile every block with BCC, no root
 ```
 

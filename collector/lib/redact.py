@@ -353,6 +353,34 @@ _WRAPPERS = {
                        '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w', '-B')), 1),
     'strace': (frozenset(('-e', '-o', '-p', '-s', '-u', '-E')), 0),
     'ltrace': (frozenset(('-e', '-o', '-p', '-s', '-u')), 0),
+    'screen': (frozenset(('-S', '-c', '-p', '-X', '-T', '-e', '-h', '-s', '-t',
+                          '-Logfile')), 0),
+    # `flock FILE cmd ...`; its `-c CMD` form is a command string (_TAKES_C)
+    'flock': (frozenset(('-w', '--timeout', '-E', '--conflict-exit-code')), 1),
+    'numactl': (frozenset(('-N', '--cpunodebind', '-m', '--membind', '-C', '--physcpubind',
+                           '-i', '--interleave', '-p', '--preferred')), 0),
+    'systemd-run': (frozenset(('-u', '--unit', '-p', '--property', '--slice', '-E', '--setenv',
+                               '--uid', '--gid', '-M', '--machine', '--description',
+                               '--working-directory', '--nice', '-H', '--host',
+                               '--on-active', '--on-calendar', '--service-type')), 0),
+    'nsenter': (frozenset(('-t', '--target', '-S', '--setuid', '-G', '--setgid', '-w', '--wd',
+                           '-r', '--root')), 0),
+    'unshare': (frozenset(('--map-user', '--map-group', '--propagation', '--setgroups')), 0),
+    'unbuffer': (frozenset(), 0),
+}
+# a program and subcommand that run the command after them, (options, positionals)
+_CONTAINER = frozenset(('-B', '--bind', '--mount', '--env', '--env-file', '-H', '--home',
+                        '--pwd', '-W', '--workdir', '-o', '--overlay', '-S', '--scratch',
+                        '--security', '--network', '--network-args', '--app', '--fusemount',
+                        '--cwd'))
+_ENVRUN = frozenset(('-n', '--name', '-p', '--prefix', '--cwd', '-e', '--environment',
+                     '--manifest-path'))
+_SUB_WRAPPERS = {
+    ('apptainer', 'exec'): (_CONTAINER, 1), ('singularity', 'exec'): (_CONTAINER, 1),
+    ('conda', 'run'): (_ENVRUN, 0), ('mamba', 'run'): (_ENVRUN, 0),
+    ('micromamba', 'run'): (_ENVRUN, 0), ('pixi', 'run'): (_ENVRUN, 0),
+    ('poetry', 'run'): (frozenset(), 0), ('pipenv', 'run'): (frozenset(), 0),
+    ('pdm', 'run'): (frozenset(), 0), ('hatch', 'run'): (frozenset(), 0),
 }
 _INTERPRETERS = re.compile(r'^(?:node|nodejs|bun|deno|python(?:\d+(?:\.\d+)?)?|pypy3?)$')
 _INTERP_VALUE = frozenset(('-r', '--require', '--import', '--loader', '--experimental-loader',
@@ -395,19 +423,50 @@ def _package_cli(spec):
     return _PACKAGES.get(pkg)
 
 
+def _is_option(t):
+    """An option, not text that starts with a dash: an option has no spaces
+    (before any `=`), while a prompt written as a list (`- rotate the key`) does."""
+    return (len(t) > 1 and t[0] == '-' and not t[1:2].isdigit()
+            and not _PROSE.search(t.partition('=')[0]))
+
+
 def _skip_options(toks, i, value_opts):
     """Index of the first argument at or after `i` that is not an option, nor
-    the value of one."""
+    the value of one. A cluster of short options (`-dmS name`) takes a value
+    when its last letter does."""
     n = len(toks)
     while i < n:
         t = toks[i]
         if t == '--':
             return i + 1
-        if not t.startswith('-') or t == '-':
+        if not _is_option(t):
             return i
-        name = t.split('=', 1)[0]
-        i += 2 if (name in value_opts and '=' not in t) else 1
+        if '=' in t:
+            i += 1
+            continue
+        takes = t in value_opts or (t[1] != '-' and len(t) > 2 and '-' + t[-1] in value_opts)
+        i += 2 if takes else 1
     return i
+
+
+def _past_wrapper(toks, i):
+    """Index of the command the wrapper at toks[i] runs (`timeout 600 X`,
+    `apptainer exec img X`), or None when toks[i] is not a wrapper."""
+    n, base = len(toks), _basename(toks[i])
+    if base in _WRAPPERS:
+        if base == 'flock' and any(t in ('-c', '--command') or t.startswith('--command=')
+                                   for t in toks[i + 1:]):
+            return None                       # a command string: _command_strings()
+        opts, npos = _WRAPPERS[base]
+        j = _skip_options(toks, i + 1, opts)
+        if base == 'env':
+            while j < n and _ENV_ASSIGN.match(toks[j]):
+                j += 1
+        return j + npos
+    if i + 1 < n and (base, toks[i + 1]) in _SUB_WRAPPERS:
+        opts, npos = _SUB_WRAPPERS[(base, toks[i + 1])]
+        return _skip_options(toks, i + 2, opts) + npos
+    return None
 
 
 def find_cli(toks):
@@ -430,17 +489,13 @@ def find_cli(toks):
                     return None, None
             return i, name
         base = _basename(t)
-        if base in _WRAPPERS:
-            opts, npos = _WRAPPERS[base]
-            i = _skip_options(toks, i + 1, opts)
-            if base == 'env':
-                while i < n and _ENV_ASSIGN.match(toks[i]):
-                    i += 1
-            i += npos
+        j = _past_wrapper(toks, i)
+        if j is not None:
+            i = j
             continue
         if _INTERPRETERS.match(base):
             j = i + 1
-            while j < n and toks[j].startswith('-') and toks[j] != '-':
+            while j < n and _is_option(toks[j]):
                 o = toks[j]
                 if o in ('-e', '--eval', '-p', '--print', '-c'):
                     return None, None           # inline code, not a script
@@ -488,7 +543,7 @@ def _walk(spec, toks, exact=True):
     `exact` says the tokens are the real arguments. A line split on spaces is
     not: a prompt's words are separate tokens there, so nothing that would keep
     one of them -- a lone path, an id, a word after an unknown flag -- is kept."""
-    if any(t in _NO_PROMPT_FLAGS for t in toks if not _PROSE.search(t)):
+    if exact and any(t in _NO_PROMPT_FLAGS for t in toks):
         return list(toks), False            # `codex exec --help`: a usage screen
     out, fired = [], False
     pos_prompt, model_next, first = spec['pos'], False, True
@@ -509,7 +564,7 @@ def _walk(spec, toks, exact=True):
                 else:
                     out.extend(toks[i + 1:])
             break
-        if t.startswith('-') and len(t) > 1 and not t[1:2].isdigit():
+        if _is_option(t):
             name, eq, val = t.partition('=')
             if eq:
                 if val and (name in spec['prompt']
@@ -539,26 +594,31 @@ def _walk(spec, toks, exact=True):
                 continue
             i += 1
             continue
+        prose = bool(_PROSE.search(t))
         if first:
             first = False
-            sub = spec['subs'].get(t)
+            sub = None if prose else spec['subs'].get(t)
             if sub is not None:
                 out.append(t)
-                if sub == 'quiet':
+                if sub == 'quiet' and exact:
                     out.extend(toks[i + 1:])
                     break
-                pos_prompt = sub in ('prompt', 'model')
+                # split on spaces, `claude update the README` may be a prompt
+                # whose first word is a subcommand's name: mask what follows
+                pos_prompt = sub in ('prompt', 'model', 'quiet')
                 model_next = sub == 'model'
                 i += 1
                 continue
-        if model_next:
+        if model_next and not prose:
             out.append(t)
             model_next = False
-        elif exact and pos_prompt and (('/' in t and not _PROSE.search(t)) or _ID.match(t)):
+        elif (exact and pos_prompt and not prose
+                and ('/' in t or _ID.match(t))):
             # one path, no spaces: a script or a directory (cursor-agent's
             # launcher hands itself its index.js); or a session id. Not text.
             out.append(t)
-        elif pos_prompt:
+        elif pos_prompt or prose:
+            # text with spaces in it is prompt-like whatever the CLI's positionals are
             put_mask()
             fired = True
         else:
@@ -587,7 +647,81 @@ def _quote(t):
     return shlex.quote(t)
 
 
-_OPERATOR = re.compile(r'^[();<>|&\n]+$')
+_OP_CHARS = frozenset('();<>|&`')
+
+
+def shell_split(s):
+    """[(text, is_operator)] for a shell command string, split as sh splits it:
+    single and double quotes and backslashes as sh reads them; ; & | ( ) < >
+    and backticks as operators wherever they stand, glued to a word or not; a
+    newline as an operator too, since it ends a command; # starting a comment.
+    Raises ValueError on an unterminated quote.
+
+    Not shlex: before Python 3.8 its punctuation_chars do not split a word they
+    are glued to under whitespace_split, so on EL8's 3.6 `cd /p; claude -p "x"`
+    was one command, `cd`'s, and the prompt went out unmasked."""
+    out, cur, word = [], [], [False]
+    i, n = 0, len(s)
+
+    def flush():
+        if word[0]:
+            out.append((''.join(cur), False))
+            del cur[:]
+            word[0] = False
+    while i < n:
+        c = s[i]
+        if c == '\\':
+            if i + 1 < n and s[i + 1] != '\n':
+                cur.append(s[i + 1])
+                word[0] = True
+            i += 2                                # a backslash-newline joins lines
+        elif c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                raise ValueError('unterminated quote')
+            cur.append(s[i + 1:j])
+            word[0] = True
+            i = j + 1
+        elif c == '"':
+            i += 1
+            while True:
+                if i >= n:
+                    raise ValueError('unterminated quote')
+                ch = s[i]
+                if ch == '"':
+                    i += 1
+                    break
+                if ch == '\\' and i + 1 < n and s[i + 1] in '"\\$`\n':
+                    if s[i + 1] != '\n':
+                        cur.append(s[i + 1])
+                    i += 2
+                    continue
+                cur.append(ch)
+                i += 1
+            word[0] = True
+        elif c in ' \t\r':
+            flush()
+            i += 1
+        elif c == '\n':
+            flush()
+            out.append(('\n', True))
+            i += 1
+        elif c == '#' and not word[0]:
+            j = s.find('\n', i)
+            i = n if j < 0 else j
+        elif c in _OP_CHARS:
+            flush()
+            j = i
+            while j < n and s[j] in _OP_CHARS:
+                j += 1
+            out.append((s[i:j], True))
+            i = j
+        else:
+            cur.append(c)
+            word[0] = True
+            i += 1
+    flush()
+    return out
 
 
 def _redact_shell(s, depth, exact=True):
@@ -595,10 +729,7 @@ def _redact_shell(s, depth, exact=True):
     if not _CLI_WORD.search(s):
         return s, False
     try:
-        lex = shlex.shlex(s, posix=True, punctuation_chars='();<>|&\n')
-        lex.whitespace = ' \t\r'           # a newline ends a command, as `;` does
-        lex.whitespace_split = True
-        toks = list(lex)
+        toks = shell_split(s)
     except ValueError:
         # Not shell a lexer can follow -- a command line the kernel cut short, or
         # a heredoc of Python. An agent run at a command position in it is
@@ -610,16 +741,16 @@ def _redact_shell(s, depth, exact=True):
         return s[:m.end(1)] + ' ' + PROMPT_MASK, True
     out, cmd, fired = [], [], False
     for t in toks + [None]:
-        if t is None or _OPERATOR.match(t):
+        if t is None or t[1]:
             if cmd:
                 red, f = redact_prompt_argv(cmd, depth, exact)
                 fired = fired or f
                 out.extend(_quote(x) for x in red)
                 cmd = []
             if t is not None:
-                out.append(t)
+                out.append(t[0])
         else:
-            cmd.append(t)
+            cmd.append(t[0])
     if not fired:
         return s, False
     return ' '.join(out), True
@@ -635,22 +766,17 @@ def _program_at(toks):
         if _ENV_ASSIGN.match(t):
             i += 1
             continue
-        base = _basename(t)
-        if base not in _WRAPPERS:
+        j = _past_wrapper(toks, i)
+        if j is None:
             return i, via_ssh
-        via_ssh = via_ssh or base == 'ssh'
-        opts, npos = _WRAPPERS[base]
-        i = _skip_options(toks, i + 1, opts)
-        if base == 'env':
-            while i < n and _ENV_ASSIGN.match(toks[i]):
-                i += 1
-        i += npos
+        via_ssh = via_ssh or _basename(t) == 'ssh'
+        i = j
     return None, via_ssh
 
 
 # programs whose arguments are commands to run, each as one string
 _RUNS_STRINGS = frozenset(('eval', 'watch', 'tmux', 'screen'))
-_TAKES_C = frozenset(('su', 'runuser', 'script'))       # -c CMD / --command=CMD
+_TAKES_C = frozenset(('su', 'runuser', 'script', 'flock'))   # -c CMD / --command=CMD
 
 
 def _command_strings(toks):
@@ -678,10 +804,10 @@ def _command_strings(toks):
         has_c = False
         for j in range(k + 1, n):
             t = toks[j]
-            if t.startswith('-') and not t.startswith('--') and len(t) > 1:
+            if _is_option(t) and not t.startswith('--'):
                 has_c = has_c or 'c' in t[1:]
                 continue
-            if t.startswith('--'):
+            if _is_option(t):
                 continue
             if has_c:
                 out.append((j, ''))
@@ -738,8 +864,30 @@ def _shell_command_index(toks):
 
 
 # ---------------------------------------------------------------------------
-# the two entry points the collector uses
+# the setting, and the two entry points the collector uses
 # ---------------------------------------------------------------------------
+
+BOTH = frozenset(('keys', 'prompts'))
+_KIND_NAMES = {'key': 'keys', 'keys': 'keys', 'credential': 'keys', 'credentials': 'keys',
+               'secret': 'keys', 'secrets': 'keys', 'prompt': 'prompts', 'prompts': 'prompts'}
+
+
+def parse_kinds(value):
+    """EBPFM_REDACT -> (the kinds masked, a complaint or None). Unset or empty
+    means both; '0', 'none' or 'off' alone means neither. A value this cannot
+    read also means both: a typo (`prompt` for `prompts`) must not be how keys
+    get written out."""
+    if value is None or not value.strip():
+        return BOTH, None
+    toks = {k.strip().lower() for k in value.split(',') if k.strip()}
+    if toks <= {'0', 'none', 'off'}:
+        return frozenset(), None
+    bad = sorted(toks - set(_KIND_NAMES))
+    if bad:
+        return BOTH, ('EBPFM_REDACT=%r: cannot read %s; masking keys and prompts'
+                      % (value, ', '.join(bad)))
+    return frozenset(_KIND_NAMES[k] for k in toks), None
+
 
 def needs_argv(line):
     """Whether masking `line` needs its argument boundaries: it may run an agent."""

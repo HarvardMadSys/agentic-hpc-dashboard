@@ -237,6 +237,50 @@ class PromptTest(unittest.TestCase):
                 '/x/.local/share/cursor-agent/versions/2026.10.22/index.js', '--api-key', 'crsr_abc']
         self.assertEqual(red(argv), ' '.join(argv[:3]) + ' --api-key ' + K)
 
+    # --- the review's leaks ----------------------------------------------------
+    def test_operators_split_commands_glued_or_not(self):
+        """Python 3.6's shlex left `;` glued to a word under whitespace_split, so
+        on EL8 the agent run after it was never found."""
+        for script, want in (
+                ('cd /proj; claude -p "secret plan"', 'cd /proj ; claude -p %s' % P),
+                ('cd /proj;claude -p "secret plan"', 'cd /proj ; claude -p %s' % P),
+                ('cat x|claude -p "sum it up"', 'cat x | claude -p %s' % P),
+                ('echo $(claude -p "sum it up")', "echo '$' ( claude -p %s )" % P),
+                ('echo `claude -p "sum it up"`', 'echo ` claude -p %s `' % P)):
+            self.assertEqual(R.redact_argv(['bash', '-c', script])[0], 'bash -c ' + want, script)
+
+    def test_the_tokenizer_reads_quotes_as_sh_does(self):
+        self.assertEqual(R.shell_split('a "b c" \'d e\' f\\ g "h\\"i"'),
+                         [('a', False), ('b c', False), ('d e', False), ('f g', False),
+                          ('h"i', False)])
+        self.assertEqual(R.shell_split('a #b c\nd'), [('a', False), ('\n', True), ('d', False)])
+        with self.assertRaises(ValueError):
+            R.shell_split('claude -p "unterminated')
+
+    def test_a_prompt_written_as_a_list_is_masked(self):
+        self.check(['claude', '-p', '- rotate the prod DB password\n- then restart'],
+                   'claude -p %s' % P)
+        self.check(['codex', 'exec', '- fix the failing test'], 'codex exec %s' % P)
+        self.check(['claude', '-p', '- set FOO=bar in the config'], 'claude -p %s' % P)
+
+    def test_containers_and_other_wrappers(self):
+        for pre in (['apptainer', 'exec', '--nv', '-B', '/n:/n', 'img.sif'],
+                    ['singularity', 'exec', 'img.sif'], ['screen', '-dmS', 'work'],
+                    ['flock', '-w', '5', '/tmp/l'], ['numactl', '--cpunodebind=0', '-m', '0'],
+                    ['systemd-run', '--user', '--scope', '-p', 'MemoryMax=1G'],
+                    ['conda', 'run', '-n', 'agents'], ['poetry', 'run'], ['unbuffer']):
+            self.check(pre + ['claude', '-p', 'do it now'], ' '.join(pre) + ' claude -p %s' % P)
+        self.check(['flock', '/tmp/l', '-c', "claude -p 'do it now'"],
+                   'flock /tmp/l -c claude -p %s' % P)
+
+    def test_a_joined_line_takes_no_subcommand_or_usage_word_on_trust(self):
+        """The node tier only has `ps`'s joined line, where a prompt's first word
+        can be a subcommand's name and a `-v` inside it a flag."""
+        self.assertEqual(R.redact_line('claude -p update the README with the new keys')[0],
+                         'claude -p update %s' % P)
+        self.assertEqual(R.redact_line('claude -p fix the -v flag handling')[0],
+                         'claude -p %s -v %s' % (P, P))
+
     def test_a_newline_ends_a_command_in_a_script(self):
         self.check(['bash', '-c', "cd /repo\nclaude -p 'fix it now'\necho done"],
                    'bash -c cd /repo \n claude -p %s \n echo done' % P)
@@ -361,12 +405,18 @@ class CollectorTest(unittest.TestCase):
 
     def test_the_setting(self):
         self.assertEqual(T._redact_kinds(None), {'keys', 'prompts'})
+        self.assertEqual(T._redact_kinds(''), {'keys', 'prompts'})
         self.assertEqual(T._redact_kinds('0'), frozenset())
-        self.assertEqual(T._redact_kinds(''), frozenset())
         self.assertEqual(T._redact_kinds('keys'), {'keys'})
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(T._redact_kinds('keys,bogus'), {'keys'})
-        self.assertIn('bogus', err.getvalue())
+        self.assertEqual(T._redact_kinds('prompt'), {'prompts'})
+        self.assertEqual(T._redact_kinds('Credentials, Prompt'), {'keys', 'prompts'})
+
+    def test_a_setting_it_cannot_read_masks_everything(self):
+        """Failing open would write out the keys the setting meant to keep in."""
+        for v in ('keys,bogus', 'prompts-only', '0,keys'):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(T._redact_kinds(v), {'keys', 'prompts'}, v)
+            self.assertIn('cannot read', err.getvalue())
 
 
 if __name__ == '__main__':
