@@ -2,14 +2,15 @@
 
 `collector/` is **standalone**: it has no `../` imports, so the folder can be
 `scp`'d to any node — or handed to an admin as a single `ebpfm.sh bundle` file — and
-run without the rest of the repo. The price is five copied modules.
+run without the rest of the repo. The price is six copied modules.
 
 | Vendored as | Copied from | Upstream sha256 at vendor time | Local changes |
 |---|---|---|---|
 | `lib/procparse.py` | `collect/common/procparse.py` | `f4ecb417…92292f` | **added `read_cwd(pid)`** (readlink only) |
 | `lib/agent_classify.py` | `collect/common/agent_classify.py` | `0d6528d0…20f9f3` | none |
 | `lib/provider_cidrs.py` | `collect/nettcp/provider_cidrs.py` | `13f4b613…e6bad8` | none |
-| `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | **GPU sections dropped**: `nvidia-smi` is never run, and `gpu`/`gpu_pmon`/`gpu_compute_apps` are always null, kept in place because the key order is load-bearing. Login nodes have no GPUs; upstream still collects them for compute nodes |
+| `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | **GPU sections dropped**: `nvidia-smi` is never run, and `gpu`/`gpu_pmon`/`gpu_compute_apps` are always null, kept in place because the key order is load-bearing. Login nodes have no GPUs; upstream still collects them for compute nodes. **Schema 8 of the eBPF tier:** argv fields masked with `lib/redact.py` (`EBPFM_REDACT`), and `ts_epoch`, `tz`, `redact` APPENDED after every existing key, whose order stays as it was |
+| `lib/redact.py` (credential rules only) | `dashboard/rc_dashboard/redact.py` | — | **`RULES` and `MASK` verbatim**; prompt masking and the entry points are new. `tests/test_redact.py` holds the two rule sets equal whenever the dashboard is alongside |
 | `lib/slurm_args.py` | `analyze/switch_submitline_time.py` | see `.vendored.sha256` | **`parse_cli_time` returns `None`, not `numpy.nan`** (the collector has no numpy, and null is the honest absent value); the flag parsers are new |
 
 `node_snapshot.py` is the **node tier** (`ebpfm.sh start` runs it unprivileged on a

@@ -27,6 +27,37 @@ try:
 except ValueError:
     ARGS_MAXLEN = 256
 
+# Credentials and coding-agent prompts in the command lines below are masked
+# before anything is printed: EBPFM_REDACT, as for the eBPF tier (keys,prompts
+# unless set; 0 for neither), with that tier's rules from lib/redact.py. A copy
+# of this file without lib/ beside it masks nothing.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
+try:
+    from redact import redact_line as _redact_line
+except Exception:
+    _redact_line = None
+
+
+def _redact_kinds(value):
+    if value is None:
+        return {'keys', 'prompts'}
+    kinds = {k.strip().lower() for k in value.split(',') if k.strip()}
+    return set() if kinds & {'0', 'none', 'off'} else kinds & {'keys', 'prompts'}
+
+
+REDACT = _redact_kinds(os.environ.get('EBPFM_REDACT')) if _redact_line else set()
+
+
+def _mask(cmd):
+    """A command line as printed: masked, and only then cut to ARGS_MAXLEN."""
+    if cmd and REDACT:
+        try:
+            cmd = _redact_line(cmd, keys='keys' in REDACT, prompts='prompts' in REDACT)[0]
+        except Exception:
+            cmd = '[REDACTED]'        # fail closed; the snapshot itself must not fail
+    return cmd[:ARGS_MAXLEN]
+
+
 # Whole-host process tree (pid/ppid/comm for every process + agent tags), so a
 # captured `grep`/`find` can be walked up to the agent that spawned it. One
 # [pid, ppid, comm] triple per process; set SNAPSHOT_PROC_TREE=0 to disable on
@@ -502,7 +533,7 @@ def parse_d_state_procs(s):
                     'stat':  p[2],
                     'user':  p[3],
                     'wchan': p[4],
-                    'args':  p[5][:ARGS_MAXLEN],
+                    'args':  _mask(p[5]),
                 }
                 if IS_ROOT and detailed < D_STACK_MAX:
                     detailed += 1
@@ -669,7 +700,7 @@ def parse_ps(s, n):
                 'stat':    p[6],
                 'started': started,
                 'time':    p[time_i],
-                'args':    ' '.join(p[time_i+1:])[:ARGS_MAXLEN],
+                'args':    _mask(' '.join(p[time_i+1:])),
             })
         except (ValueError, IndexError):
             pass
@@ -783,7 +814,7 @@ def collect_top_io_processes(n, interval=1.0):
             'kb_wr_s':   round((b['wr']   - a['wr'])   / 1024.0 / interval, 2),
             'kb_ccwr_s': round((b['ccwr'] - a['ccwr']) / 1024.0 / interval, 2),
             'iodelay':   b['blkio'] - a['blkio'],
-            'command':   cmd[:ARGS_MAXLEN],
+            'command':   _mask(cmd),
         })
     return sorted(procs, key=lambda x: x['kb_rd_s'] + x['kb_wr_s'],
                   reverse=True)[:n]
@@ -845,7 +876,7 @@ def parse_top_sleeping(s, n):
             'cpu_pct': _float(cpu),
             'wchan':   wchan,
             'syscall': syscall,
-            'args':    args[:ARGS_MAXLEN],
+            'args':    _mask(args),
         })
         if len(out) >= n:
             break
@@ -1125,8 +1156,9 @@ with ThreadPoolExecutor(max_workers=8) as ex:
     except Exception:
         fds_out = ''
 
+_t0 = time.time()
 snapshot = {
-    'timestamp':          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    'timestamp':          datetime.fromtimestamp(_t0).strftime('%Y-%m-%d %H:%M:%S'),
     'hostname':           hostname,
     'schema_version':     SCHEMA_VERSION,
     'collector':          {'uid': os.geteuid(), 'privileged': IS_ROOT,
@@ -1166,6 +1198,12 @@ snapshot = {
     'gpu_pmon':           None,
     'gpu_compute_apps':   None,
     'slurm':              slurm_context(),
+    # Appended, never inserted: the keys above keep their order. `timestamp` is
+    # local and naive, so the hour repeated when daylight saving ends folds two
+    # snapshots onto one time; this is the same instant as epoch seconds.
+    'ts_epoch':           _t0,
+    'tz':                 time.strftime('%Z%z', time.localtime(_t0)),
+    'redact':             sorted(REDACT),
 }
 
 print(json.dumps(snapshot))

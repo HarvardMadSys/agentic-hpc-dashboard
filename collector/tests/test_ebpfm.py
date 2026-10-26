@@ -212,7 +212,8 @@ class BpfTextTest(unittest.TestCase):
                    '__ACCEPT_PROBE__', '__DSTATE_DEFS__', '__DSTATE_READ__',
                    '__DSTATE_TASK__', '__DSTATE_DEL__', '__NETB_DEFS__', '__NETB_READ__',
                    '__TCP_BYTES__', '__NETP_SOCK_LOCAL__', '__NETP_SOCK_PEER__',
-                   '__NETP_BIRTH__'):
+                   '__NETP_BIRTH__', '__NETP_SOCK_KERN__', '__DATA_ACC__', '__THREAD_DEL__',
+                   '__EXIT_GATE__', '__EXIT_LEADER__', '__ACC_DEFS__', '__FORK_PROBE__'):
             self.assertNotIn(ph, txt, ph)
 
     def test_dstate_task(self):
@@ -741,8 +742,9 @@ class EnvelopeTest(unittest.TestCase):
         """Never asserted before. A bump is a deliberate act with a downstream
         cost, not something that should drift in unnoticed. 7 = net_endpoints,
         the netio series, IPv6 UDP in the net_* totals, proto on conn, and the
-        envelope's source/collector dropped for collector_pid."""
-        self.assertEqual(T.SCHEMA_VERSION, 7)
+        envelope's source/collector dropped for collector_pid. 8 = exit counters
+        over every thread, masked args/captured_tail, NFS out of net_*."""
+        self.assertEqual(T.SCHEMA_VERSION, 8)
 
     def test_top_n(self):
         self.assertEqual(T._top_n({'a': 3, 'b': 9, 'c': 1}, 2), {'b': 9, 'a': 3})
@@ -1773,7 +1775,9 @@ class ArgsTruncationTest(unittest.TestCase):
                          has_tty=0, tty=b'', cgid=0))
             i = T._base_identity(T.proc[706], 'human', 'tty')
             self.assertEqual((i['args'], i['args_len'], i['args_truncated']), (None, None, None))
-            T.on_argv(_argv_ev(706, b'git\x00log\x00'))
+            a = _argv_ev(706, b'git\x00log\x00')
+            a.ktime_ns = 2                                   # this exec's argv
+            T.on_argv(a)
             i = T._base_identity(T.proc[706], 'human', 'tty')
             self.assertEqual((i['args'], i['args_len'], i['args_truncated']),
                              ('git log', 8, False))
@@ -1965,8 +1969,11 @@ _NET_DRIVER = r'''
 #define OFF_DPORT %(f_dport)d
 #define OFF_DADDR %(f_daddr)d
 #define OFF_V6_DADDR %(f_v6)d
+#define OFF_SK_SOCKET %(f_sk_socket)d
+#define OFF_FILE %(f_file)d
 
-struct fake { char name[32]; unsigned char sk[512]; unsigned char sa[64]; void *msg[8]; };
+struct fake { char name[32]; unsigned char sk[512]; unsigned char sa[64]; void *msg[8];
+              unsigned char so[64]; };
 static struct fake fakes[64];
 static int nfakes;
 
@@ -2028,6 +2035,13 @@ int main(void)
                 unhex(d, f->sa + (fam == 2 ? 4 : 8), fam == 2 ? 4 : 16);
                 f->msg[0] = f->sa;
             }
+        } else if (!strcmp(cmd, "file")) {      /* file SOCKNAME 0|1: its struct socket has a file, or not */
+            if (OFF_SK_SOCKET < 0 || OFF_FILE < 0)
+                return 4;
+            struct fake *f = fake_of(a);
+            void *so = f->so, *file = atoi(b) ? (void *)f : 0;
+            memcpy(f->sk + OFF_SK_SOCKET, &so, sizeof(so));
+            memcpy(f->so + OFF_FILE, &file, sizeof(file));
         } else if (!strcmp(cmd, "birth")) {     /* birth SOCKNAME INBOUND */
             %(birth_cmd)s
         } else if (!strcmp(cmd, "call")) {      /* call FN PID_TGID ARG1 ARG2 RC */
@@ -2074,8 +2088,17 @@ _DUMP_NETP = r'''
         printf("{\"map\": \"drop\", \"calls\": %llu, \"tx\": %llu, \"rx\": %llu}\n",
                (unsigned long long)*netp_drop.lookup(&i0), (unsigned long long)*netp_drop.lookup(&i1),
                (unsigned long long)*netp_drop.lookup(&i2));
+        printf("{\"map\": \"kern\", \"calls\": %llu, \"tx\": %llu, \"rx\": %llu}\n",
+               (unsigned long long)*netp_kern.lookup(&i0), (unsigned long long)*netp_kern.lookup(&i1),
+               (unsigned long long)*netp_kern.lookup(&i2));
     }
     printf("{\"map\": \"netp_args\", \"n\": %d}\n", netp_args_count());
+    for (int i = 0; i < mock_nperf; i++)
+        if (!strcmp(mock_perf[i].map, "netp_new")) {
+            struct netp_key_t *k = (struct netp_key_t *)mock_perf[i].data;
+            printf("{\"map\": \"new\", \"tgid\": %u, \"proto\": %u, \"flags\": %u, \"port\": %u, \"size\": %u}\n",
+                   k->tgid, k->proto, k->flags, k->port, mock_perf[i].size);
+        }
 '''
 _DUMP_NEST = r'''
     printf("{\"map\": \"netb_nest\", \"n\": %d}\n", netb_nest_count());
@@ -2111,6 +2134,8 @@ def _net_binary(feats, offs):
     driver = _NET_DRIVER % {'f_family': sc['skc_family'], 'f_num': sc['skc_num'],
                             'f_dport': sc['skc_dport'], 'f_daddr': sc['skc_daddr'],
                             'f_v6': sc['skc_v6_daddr'], 'probe_table': table,
+                            'f_sk_socket': offs.get('sock', {}).get('sk_socket', -1),
+                            'f_file': offs.get('socket', {}).get('file', -1),
                             'birth_cmd': birth, 'dump': dump}
     path = os.path.join(_NET_BIN_DIR[0], 'net%d' % len(_NET_BIN_CACHE))
     with open(path + '.c', 'w') as f:
@@ -2128,7 +2153,8 @@ def _run_net_c(feats, lines, offs=FAKE_OFFS):
     """Run a probe script against the compiled section; returns the maps."""
     p = subprocess.run([_net_binary(feats, offs)], input='\n'.join(lines) + '\n',
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-    out = {'netp': [], 'netb': {}, 'drop': None, 'netp_args': None, 'netb_nest': None}
+    out = {'netp': [], 'netb': {}, 'drop': None, 'kern': None, 'netp_args': None,
+           'netb_nest': None, 'new': []}
     for line in p.stdout.splitlines():
         r = json.loads(line)
         if 'error' in r:
@@ -2138,8 +2164,10 @@ def _run_net_c(feats, lines, offs=FAKE_OFFS):
             out['netp'].append(r)
         elif kind == 'netb':
             out['netb'][r['tgid']] = (r['tx'], r['rx'], r['calls'])
-        elif kind == 'drop':
-            out['drop'] = (r['calls'], r['tx'], r['rx'])
+        elif kind in ('drop', 'kern'):
+            out[kind] = (r['calls'], r['tx'], r['rx'])
+        elif kind == 'new':
+            out['new'].append(r)
         else:
             out[kind] = r['n']
     if p.returncode:
@@ -2545,11 +2573,19 @@ class FakeNetpTable(object):
     def items(self):
         return list(self.d.values())
 
+    def __getitem__(self, k):
+        return self.d[(k.tgid, k.proto, k.flags, k.port, bytes(k.addr))][1]
+
     def __delitem__(self, k):
         del self.d[(k.tgid, k.proto, k.flags, k.port, bytes(k.addr))]
 
     def pids(self):
         return sorted({t[0] for t in self.d})
+
+    def announce(self):
+        """Hand every entry to the collector as the kernel's netp_new would."""
+        for k, _v in self.d.values():
+            T._netp_index_add(k)
 
 
 class FakeDrop(object):
@@ -2582,6 +2618,8 @@ def _reset_netp_state():
     T._netp_orphans.update(entries=0, tx_bytes=0, rx_bytes=0, calls=0)
     T._netp_unclaimed.clear()
     T._netio_stats['records'] = 0
+    T._netp_index.clear()
+    T._netp_sweep.update(tick=0, full_calls=0, fallback=0.0)
 
 
 class _NetpeerCase(unittest.TestCase):
@@ -3195,6 +3233,836 @@ class ConnProtoTest(unittest.TestCase):
                                      info={'rtt_us': 31200})], [_birth_ev()])
         self.assertEqual([(r['proto'], r['stats_src'], r['rtt_ms']) for r in recs],
                          [('tcp', 'netlink', 31.2)])
+
+
+# ---------------------------------------------------------------------------
+# schema 8: Python 3.6 (EL8)
+# ---------------------------------------------------------------------------
+
+class Python36Test(unittest.TestCase):
+    """EL8's python3 is 3.6.8. Two 3.7+ calls hid behind fallbacks there."""
+
+    def setUp(self):
+        self._saved = (T.BTF_OFFS, T.subprocess if hasattr(T, 'subprocess') else None)
+        T.BTF_OFFS = None
+
+    def tearDown(self):
+        T.BTF_OFFS = self._saved[0]
+
+    def test_btf_offsets_does_not_pass_capture_output(self):
+        """subprocess.run(capture_output=) raises TypeError on 3.6, which the
+        reader swallowed: no BTF offsets anywhere on the fleet, and so no
+        tcp_accept and no BTF variant of any block."""
+        import subprocess as sp
+        from unittest import mock
+        btf = {'types': [
+            {'id': 1, 'kind': 'STRUCT', 'name': 'sock_common', 'members': [
+                {'name': 'skc_family', 'bits_offset': 128, 'type_id': 9}]},
+            {'id': 2, 'kind': 'STRUCT', 'name': 'socket', 'members': [
+                {'name': 'file', 'bits_offset': 128, 'type_id': 9}]}]}
+
+        def run36(cmd, **kw):
+            if 'capture_output' in kw:
+                raise TypeError("__init__() got an unexpected keyword argument 'capture_output'")
+            return mock.Mock(returncode=0, stdout=json.dumps(btf).encode())
+        with mock.patch.object(sp, 'run', run36), \
+                mock.patch.object(T.os.path, 'exists', lambda p: True):
+            offs = T.btf_offsets()
+        self.assertEqual(offs['sock_common']['skc_family'], 16)
+        self.assertEqual(offs['socket']['file'], 16)
+
+    def test_kernel_time_stays_on_the_monotonic_clock(self):
+        """conn records' age_s is now minus a bpf_ktime stamp; the old 3.6
+        fallback was the wall clock, which put every age ~56 years off."""
+        class Clock36(object):
+            monotonic = staticmethod(lambda: 1234.5)
+            time = staticmethod(lambda: 1.7e9)
+        saved = T.time
+        T.time = Clock36
+        try:
+            self.assertEqual(T._ktime_now(), 1234500000000)
+        finally:
+            T.time = saved
+
+
+# ---------------------------------------------------------------------------
+# schema 8: events applied in kernel-time order, and records built late
+# ---------------------------------------------------------------------------
+
+def _xexec(pid, ppid=100, kt=int(2e9), comm=b'git', uid=1000):
+    return Ev(type=T.EVT_EXEC, pid=pid, ppid=ppid, uid=uid, comm=comm, ktime_ns=kt,
+              has_tty=0, tty=b'', cgid=0)
+
+
+def _xfork(pid, ppid=100, kt=int(1e9), uid=1000):
+    return Ev(type=T.EVT_FORK, pid=pid, ppid=ppid, uid=uid, ktime_ns=kt)
+
+
+class _OrderCase(unittest.TestCase):
+    """An agent root (100) whose children the tests fork, exec and exit."""
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._pending_exits.clear()
+        del T._evq[:]
+        T._proc_missing.clear()
+        T._handler_errors.clear()
+        T._proc_stats['vanished'] = 0
+        self._saved = (T.writer, T.FEATURES, T._tgid_of, T._ingest_proc, T.read_cwd,
+                       T.MIN_DURATION, T.MIN_CPU, T.EXIT_HOLD_MS, T.list_pids)
+        T.writer = self.W = FakeWriter()
+        T.FEATURES = {'argv_user', 'tty'}
+        T._tgid_of = lambda pid: pid
+        T._ingest_proc = lambda pid, ppid=None: False      # no /proc on the test host
+        T.read_cwd = lambda pid: None
+        T.MIN_DURATION = T.MIN_CPU = 0.0
+        T.EXIT_HOLD_MS = 250
+        T.proc_add(100, 1, comm='node', args='node /x/.claude/cli.js', user='u', uid=1000)
+
+    def tearDown(self):
+        (T.writer, T.FEATURES, T._tgid_of, T._ingest_proc, T.read_cwd,
+         T.MIN_DURATION, T.MIN_CPU, T.EXIT_HOLD_MS, T.list_pids) = self._saved
+        T._pending_exits.clear()
+        del T._evq[:]
+
+    def q(self, ev, rank=None):
+        """Queue an event as main()'s callbacks do."""
+        if rank is None and getattr(ev, 'type', None) is not None:
+            T.enqueue_event(ev.ktime_ns, T.RANK_CORE, T._CORE_HANDLERS[ev.type], ev)
+        else:
+            T.enqueue_event(ev.ktime_ns, T.RANK_ARGV, T.on_argv, ev)
+
+
+class EventOrderTest(_OrderCase):
+    def test_events_apply_in_kernel_time_order_whatever_ring_they_came_off(self):
+        """BCC hands over every fork/exec/exit of a round before any argv, and a
+        process's exit (one CPU's ring) can come before its exec (another's)."""
+        ex = _exit_ev(pid=101, ppid=100)
+        ex.type, ex.ktime_ns = T.EVT_EXIT, int(5e9)
+        self.q(ex)
+        self.q(_xexec(101, kt=int(2e9)))
+        self.q(_xfork(101, kt=int(1e9)))
+        a = _argv_ev(101, b'git\x00status\x00')
+        a.ktime_ns = int(2e9)
+        self.q(a, rank='argv')
+        self.assertEqual(T.dispatch_events(), 4)
+        T.drain_exits(final=True)
+        (rec,) = self.W.of('exit')
+        self.assertEqual((rec['args'], rec['command'], rec['actor3']), ('git status', 'git', 'agent'))
+        self.assertTrue(T.proc[101]['exited'])
+
+    def test_an_exec_and_its_argv_share_a_stamp_and_the_argv_lands_second(self):
+        a = _argv_ev(101, b'git\x00log\x00')
+        a.ktime_ns = int(2e9)
+        self.q(a, rank='argv')
+        self.q(_xexec(101, kt=int(2e9)))
+        T.dispatch_events()
+        self.assertEqual(T.proc[101]['args'], 'git log')
+
+    def test_newer_events_wait_for_a_later_round(self):
+        self.q(_xfork(101, kt=int(1e9)))
+        self.q(_xfork(102, kt=int(9e9)))
+        self.assertEqual(T.dispatch_events(cutoff=int(5e9)), 1)
+        self.assertIn(101, T.proc)
+        self.assertNotIn(102, T.proc)
+        self.assertEqual(T.dispatch_events(), 1)
+        self.assertIn(102, T.proc)
+
+    def test_a_handler_that_raises_is_counted_not_silent(self):
+        def boom(ev):
+            raise ValueError('x')
+        T.enqueue_event(1, T.RANK_CORE, boom, Ev())
+        T.dispatch_events()
+        self.assertEqual(T._handler_errors['boom'], 1)
+
+
+class GhostTest(_OrderCase):
+    """An exec applied after its own exit used to set exited=False: a dead
+    process back in the table, live forever, holding its endpoint-table entries
+    and lending its identity to the next process on its pid."""
+
+    def _exit(self, pid, kt=int(5e9)):
+        ex = _exit_ev(pid=pid, ppid=100)
+        ex.ktime_ns = kt
+        T.on_exit(ex)
+
+    def test_an_exec_after_its_own_exit_does_not_revive_it(self):
+        T.on_fork(_xfork(101))
+        self._exit(101)
+        T.on_exec(_xexec(101, kt=int(2e9)))
+        self.assertTrue(T.proc[101]['exited'])
+        self.assertEqual(T.proc[101]['comm'], 'git')       # but what it said is kept
+
+    def test_its_late_argv_still_reaches_the_held_record(self):
+        T.on_fork(_xfork(101))
+        self._exit(101)
+        T.on_exec(_xexec(101, kt=int(2e9)))
+        a = _argv_ev(101, b'git\x00push\x00')
+        a.ktime_ns = int(2e9)
+        T.on_argv(a)
+        T.drain_exits(final=True)
+        self.assertEqual(self.W.of('exit')[0]['args'], 'git push')
+
+    def test_an_exec_newer_than_the_exit_is_a_new_process(self):
+        T.on_fork(_xfork(101))
+        self._exit(101)
+        T.on_exec(_xexec(101, ppid=200, kt=int(9e9), comm=b'vim', uid=1004))
+        m = T.proc[101]
+        self.assertFalse(m['exited'])
+        self.assertEqual((m['comm'], m['ppid'], m['uid']), ('vim', 200, 1004))
+        T.drain_exits(final=True)
+        self.assertEqual(self.W.of('exit')[0]['command'], 'node')   # the old one's record
+
+    def test_an_earlier_images_exec_or_argv_arriving_late_is_ignored(self):
+        T.on_fork(_xfork(101))
+        T.on_exec(_xexec(101, kt=int(3e9), comm=b'python3'))
+        a = _argv_ev(101, b'python3\x00train.py\x00')
+        a.ktime_ns = int(3e9)
+        T.on_argv(a)
+        T.on_exec(_xexec(101, kt=int(2e9), comm=b'bash'))
+        old = _argv_ev(101, b'bash\x00-c\x00python3 train.py\x00')
+        old.ktime_ns = int(2e9)
+        T.on_argv(old)
+        m = T.proc[101]
+        self.assertEqual((m['comm'], m['args'], m['exec_ktime']), ('python3', 'python3 train.py', int(3e9)))
+
+    def test_an_exit_naming_a_later_start_is_a_new_process(self):
+        """Fork, exec and the old exit all lost: the exiting process started
+        after the entry's own exec, so the entry is not its."""
+        T.on_fork(_xfork(101, kt=int(1e9)))
+        T.on_exec(_xexec(101, kt=int(2e9)))
+        old = T.proc[101]
+        ex = _exit_ev(pid=101, ppid=1, comm=b'vim')
+        ex.start_ns, ex.ktime_ns = int(8e9), int(9e9)
+        T.on_exit(ex)
+        self.assertTrue(old['vanished'])
+        self.assertIsNot(T.proc[101], old)
+        T.drain_exits(final=True)
+        self.assertEqual(self.W.of('exit'), [])        # no agent ancestry: not reported
+
+    def test_a_fork_handled_after_its_exit_is_dropped(self):
+        T.proc_add(101, 100, comm='git', args='git status', user='u', uid=1000)
+        self._exit(101)
+        T.on_fork(_xfork(101, kt=int(1e9)))
+        self.assertTrue(T.proc[101]['exited'])
+
+    def test_a_live_entry_older_than_a_new_fork_of_its_pid_is_retired(self):
+        """Its exit event was lost and the pid recycled. The new process must
+        not inherit the old one's argv, user and agent."""
+        T.on_fork(_xfork(101, kt=int(1e9)))
+        T.on_exec(_xexec(101, kt=int(2e9)))
+        T.on_fork(_xfork(101, ppid=1, kt=int(9e9), uid=1004))
+        m = T.proc[101]
+        self.assertEqual((m['ppid'], m['uid'], m['args'], m['exec_ktime']), (1, 1004, None, None))
+        self.assertEqual(T._proc_stats['vanished'], 1)
+        self.assertEqual(T.actor_of(m), (None, None))
+
+
+class LateRecordTest(_OrderCase):
+    def test_the_record_is_stamped_with_the_exit_not_the_write(self):
+        T.on_fork(_xfork(101))
+        before = time.time()
+        self.assertIsNone(T.on_exit(_exit_ev(pid=101)))
+        T._pending_exits[0] = (0.0,) + tuple(T._pending_exits[0][1:])
+        stamp = T._pending_exits[0][3]
+        time.sleep(0.01)
+        T.drain_exits()
+        rec = self.W.of('exit')[0]
+        self.assertEqual(rec['ts_epoch'], stamp)
+        self.assertLessEqual(before, rec['ts_epoch'])
+
+    def test_an_untracked_exit_is_counted_dropped_when_written(self):
+        T._dropped['n'] = 0
+        T._dropped['commands'] = {}
+        T.proc_add(900, 1, comm='cron', args='cron', user='root', uid=0)
+        T.on_exit(_exit_ev(pid=900, ppid=1, uid=0, comm=b'cron'))
+        self.assertEqual(T._dropped['n'], 0)
+        T.drain_exits(final=True)
+        self.assertEqual((T._dropped['n'], self.W.of('exit')), (1, []))
+
+
+class ReparentTest(_OrderCase):
+    def test_a_process_keeps_the_parent_that_forked_it(self):
+        """`nohup cmd &` from an agent's shell: the shell exits, cmd is
+        reparented to init, then execs. Its exec reports parent 1; its ancestry
+        is still the agent's."""
+        T.on_fork(_xfork(101, ppid=100))
+        T.on_exec(_xexec(101, ppid=1, kt=int(3e9), comm=b'python3'))
+        self.assertEqual(T.proc[101]['ppid'], 100)
+        self.assertEqual(T.actor_of(T.proc[101]), ('agent', 'ancestry'))
+
+    def test_an_entry_with_no_parent_yet_takes_the_first_one_reported(self):
+        T.proc_add(101, None, comm='x')
+        T.proc_add(101, 77)
+        self.assertEqual(T.proc[101]['ppid'], 77)
+
+    def test_the_fork_probe_names_the_forking_process_not_its_thread(self):
+        for feats in (set(), {'fork_raw'}):
+            txt = T.build_bpf_text(feats, offs=FAKE_OFFS)
+            self.assertIn('d.ppid     = bpf_get_current_pid_tgid() >> 32;', txt)
+            self.assertNotIn('args->parent_pid', txt)
+
+
+class ReconcileTest(_OrderCase):
+    def test_a_missing_entry_is_retired_on_its_second_miss(self):
+        T.proc_add(555, 1, comm='sshd', args='sshd: u', user='root', uid=0)
+        T.list_pids = lambda: {1, 100}
+        T.reconcile_proc()
+        self.assertFalse(T.proc[555]['exited'])          # its exit may still be in a ring
+        T.reconcile_proc()
+        self.assertTrue(T.proc[555]['exited'])
+        self.assertTrue(T.proc[555]['vanished'])
+        self.assertEqual(T._proc_stats['vanished'], 1)
+
+    def test_a_pid_that_comes_back_is_not_retired(self):
+        T.proc_add(555, 1, comm='sshd')
+        T.list_pids = lambda: {1, 100}
+        T.reconcile_proc()
+        T.list_pids = lambda: {1, 100, 555}
+        T.reconcile_proc()
+        T.reconcile_proc()
+        self.assertFalse(T.proc[555]['exited'])
+
+    def test_an_exit_still_queued_is_left_to_its_event(self):
+        T.proc_add(555, 1, comm='sshd')
+        ex = _exit_ev(pid=555, ppid=1)
+        ex.type = T.EVT_EXIT
+        self.q(ex)
+        T.list_pids = lambda: {1, 100}
+        T.reconcile_proc()
+        T.reconcile_proc()
+        self.assertFalse(T.proc[555]['exited'])
+
+    def test_a_tracked_pid_with_another_start_time_is_a_new_process(self):
+        saved = (T.read_stat, T.start_epoch, T._read_vmrss_kb, T.read_cwd)
+        T.list_pids = lambda: {1, 100, 101}
+        T.proc_add(101, 100, comm='git', args='git status', user='u', uid=1000)
+        T.proc[101]['start_ep'] = 1000.0
+        T.read_stat = lambda pid: dict(_fake_stat(pid), starttime=0)
+        T.start_epoch = lambda ticks: 2000.0
+        T._read_vmrss_kb = lambda pid: 0
+        T.read_cwd = lambda pid: None
+        old = T.proc[101]
+        try:
+            T.residency_tick(None)
+        finally:
+            T.read_stat, T.start_epoch, T._read_vmrss_kb, T.read_cwd = saved
+        self.assertTrue(old['vanished'])
+        self.assertIsNot(T.proc.get(101), old)
+
+    def test_residency_totals_carry_the_running_loss_counters(self):
+        saved = T._perf_lost.copy(), T._perf_seen.copy()
+        T._perf_lost.update(events=3)
+        T._perf_seen.update(events=10)
+        T.list_pids = lambda: {1, 100}
+        try:
+            T.residency_tick(None)
+        finally:
+            T._perf_lost.clear(); T._perf_lost.update(saved[0])
+            T._perf_seen.clear(); T._perf_seen.update(saved[1])
+        tot = self.W.of('residency_totals')[-1]
+        self.assertEqual((tot['perf_lost']['events'], tot['perf_seen']['events']), (3, 10))
+        self.assertEqual(tot['proc_entries'], len(T.proc))
+        self.assertIn('handler_errors', tot)
+
+
+# ---------------------------------------------------------------------------
+# schema 8: whole-process exit counters (thread_acc)
+# ---------------------------------------------------------------------------
+
+class FakeAccTable(object):
+    """The BCC hash `thr_acc`: Key(), lookup, delete."""
+    Key = staticmethod(lambda pid: pid)
+
+    def __init__(self, d=None):
+        self.d = dict(d or {})
+
+    def __getitem__(self, k):
+        return self.d[k]
+
+    def __delitem__(self, k):
+        del self.d[getattr(k, 'value', k)]
+
+    def keys(self):
+        return [Ev(value=k) for k in self.d]
+
+
+def _acc(**kw):
+    base = dict(nthreads=0, b_utime=0, b_stime=0, b_run=0, b_min_flt=0, b_maj_flt=0,
+                b_nvcsw=0, b_nivcsw=0, s_utime=0, s_stime=0, s_run=0, s_min_flt=0,
+                s_maj_flt=0, s_nvcsw=0, s_nivcsw=0, s_wait=0, s_dstate=0,
+                s_dstate_max=0, s_dstate_cnt=0)
+    base.update(kw)
+    return Ev(**base)
+
+
+def _last_thread_exit(**kw):
+    """The last thread's exit event: its own counters, signal_struct's apart."""
+    e = _exit_ev(pid=101, cpu_ns=int(2e9), run_ns=int(2e9))
+    for k in ('sig_utime', 'sig_stime', 'sig_run', 'sig_min_flt', 'sig_maj_flt',
+              'sig_nvcsw', 'sig_nivcsw', 'sig_rd', 'sig_wr', 'sig_rchar', 'sig_wchar'):
+        setattr(e, k, 0)
+    e.has_acc, e.dstate_ns, e.dstate_max, e.dstate_cnt, e.has_dstate = 0, 0, 0, 0, 0
+    for k, v in kw.items():
+        setattr(e, k, v)
+    return e
+
+
+class ThreadAccTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = (T.FEATURES, T._thr_acc_tab)
+        T.FEATURES = {'signal', 'sched', 'dstate_stat', 'thread_acc'}
+        T._thr_acc_stats.update(taken=0, late=0, missing=0, swept=0)
+
+    def tearDown(self):
+        T.FEATURES, T._thr_acc_tab = self._saved
+
+    def test_without_the_block_the_event_is_the_record(self):
+        T.FEATURES = {'signal'}
+        e = _exit_ev()
+        self.assertIs(T._exit_totals(e), e)
+
+    def test_a_single_threaded_process_is_its_own_plus_signal_struct(self):
+        T._thr_acc_tab = FakeAccTable()
+        t = T._exit_totals(_last_thread_exit(sig_utime=int(3e9), sig_min_flt=5))
+        self.assertEqual((t.utime_ns, t.min_flt), (int(5e9), 15))
+
+    def test_exited_threads_are_added_on_the_base_they_noted(self):
+        """The Codex case: 42 threads, most of the CPU in threads that were not
+        yet folded into signal_struct when the record was cut."""
+        T._thr_acc_tab = FakeAccTable({101: _acc(
+            nthreads=42, b_utime=int(1e9), s_utime=int(48000e9), s_run=int(50000e9),
+            s_wait=int(7e9), s_nvcsw=900)})
+        t = T._exit_totals(_last_thread_exit(has_acc=1, nr_threads=2,
+                                             sig_utime=int(999e9)))   # ignored: base is the acc's
+        self.assertEqual(t.utime_ns, int(2e9) + int(1e9) + int(48000e9))
+        self.assertEqual(t.run_ns, int(2e9) + int(50000e9))
+        self.assertEqual((t.wait_ns, t.nvcsw, t.nr_threads), (int(7e9), 901, 42))
+        self.assertEqual(T._thr_acc_tab.d, {})               # taken, not left to leak
+        self.assertEqual(T._thr_acc_stats['taken'], 1)
+
+    def test_an_entry_made_after_the_last_exit_adds_its_threads_to_signal_struct(self):
+        T._thr_acc_tab = FakeAccTable({101: _acc(b_utime=int(77e9), s_utime=int(4e9))})
+        t = T._exit_totals(_last_thread_exit(has_acc=0, nr_threads=2, sig_utime=int(3e9)))
+        self.assertEqual(t.utime_ns, int(2e9) + int(3e9) + int(4e9))
+        self.assertEqual(T._thr_acc_stats['late'], 1)
+
+    def test_no_lookup_where_no_entry_can_exist(self):
+        class Untouchable(FakeAccTable):
+            def __getitem__(self, k):
+                raise AssertionError('looked up a single-threaded process')
+        T._thr_acc_tab = Untouchable()
+        T._exit_totals(_last_thread_exit(has_acc=0, nr_threads=1))
+
+    def test_d_state_of_every_thread_is_summed(self):
+        T._thr_acc_tab = FakeAccTable({101: _acc(s_dstate=int(3e9), s_dstate_cnt=4,
+                                                 s_dstate_max=int(2e9))})
+        t = T._exit_totals(_last_thread_exit(has_acc=1, dstate_ns=int(1e9), dstate_cnt=1,
+                                             dstate_max=int(1e9), has_dstate=1))
+        self.assertEqual(T.pick_dstate(t, T.FEATURES), (4.0, 5, 2.0, 'stat'))
+
+    def test_the_record_carries_the_totals(self):
+        saved = (T.writer, T.EXIT_HOLD_MS, T._tgid_of)
+        T.writer = W = FakeWriter()
+        T.EXIT_HOLD_MS = 0
+        T.proc.clear(); T._children.clear()
+        T.proc_add(100, 1, comm='node', args='node /x/.codex/codex.js', user='u', uid=1000)
+        T._thr_acc_tab = FakeAccTable({100: _acc(s_utime=int(48000e9), nthreads=42)})
+        try:
+            T.on_exit(_last_thread_exit(pid=100, ppid=1, has_acc=1, nr_threads=2))
+        finally:
+            T.writer, T.EXIT_HOLD_MS, T._tgid_of = saved
+        (rec,) = W.of('exit')
+        self.assertEqual((rec['cpu_s'], rec['threads']), (48002.0, 42))
+
+    def test_an_unreported_process_releases_its_entry(self):
+        T._thr_acc_tab = FakeAccTable({900: _acc()})
+        e = _last_thread_exit(pid=900, has_acc=1)
+        T._thread_acc_release(e)
+        self.assertEqual(T._thr_acc_tab.d, {})
+
+    def test_a_sweep_drops_entries_of_processes_gone_with_no_exit_pending(self):
+        T._thr_acc_tab = FakeAccTable({900: _acc(), 901: _acc()})
+        T._pending_exits.clear()
+        T._pending_exits.append((0.0, {'pid': 901}, None, 0.0))
+        try:
+            self.assertEqual(T._thread_acc_sweep(alive={1}), 1)
+        finally:
+            T._pending_exits.clear()
+        self.assertEqual(sorted(T._thr_acc_tab.d), [901])
+
+
+class ThreadAccTextTest(unittest.TestCase):
+    F = {'signal', 'io', 'sched', 'delay', 'dstate_stat', 'thread_acc'}
+
+    def setUp(self):
+        self.txt = T.build_bpf_text(self.F, offs=FAKE_OFFS)
+
+    def test_the_last_thread_out_writes_the_record(self):
+        self.assertIn('if (task->signal->live.counter > 0) {', self.txt)
+        self.assertNotIn('if (tgid != tid) {\n        return 0;', self.txt)
+
+    def test_each_thread_adds_its_own_counter_to_its_own_field(self):
+        own = {'utime': 'task->utime', 'stime': 'task->stime',
+               'run': 'task->se.sum_exec_runtime', 'min_flt': 'task->min_flt',
+               'maj_flt': 'task->maj_flt', 'nvcsw': 'task->nvcsw', 'nivcsw': 'task->nivcsw',
+               'rd': '(u64)task->ioac.read_bytes', 'wr': '(u64)task->ioac.write_bytes',
+               'rchar': '(u64)task->ioac.rchar', 'wchar': '(u64)task->ioac.wchar',
+               'wait': 'task->sched_info.run_delay',
+               'blkio': 'task->delays->blkio_delay', 'swapin': 'task->delays->swapin_delay',
+               'freepages': 'task->delays->freepages_delay'}
+        for f, x in own.items():
+            self.assertIn('__sync_fetch_and_add(&a->s_%s, %s);' % (f, x), self.txt, f)
+
+    def test_the_base_is_signal_structs_totals(self):
+        sig = {'utime': 'task->signal->utime', 'run': 'task->signal->sum_sched_runtime',
+               'nvcsw': 'task->signal->nvcsw', 'rd': '(u64)task->signal->ioac.read_bytes'}
+        for f, x in sig.items():
+            self.assertIn('z.b_%s = %s;' % (f, x), self.txt, f)
+        self.assertIn('thr_acc.insert(&tgid, &z);', self.txt)
+
+    def test_a_threads_d_state_joins_the_process_before_it_is_dropped(self):
+        i = self.txt.index('__sync_fetch_and_add(&a->s_dstate, p->total);')
+        self.assertLess(i, self.txt.index('dstate_acc.delete(&tid);\n        return 0;'))
+
+    def test_the_event_carries_its_own_and_signal_structs_apart(self):
+        self.assertIn('d.utime_ns   = task->utime;\n', self.txt)
+        self.assertIn('d.sig_utime   = task->signal->utime;', self.txt)
+        self.assertIn('d.has_acc     = thr_acc.lookup(&tgid) ? 1 : 0;', self.txt)
+
+    def test_a_non_leader_last_thread_reports_the_leaders_name_and_status(self):
+        self.assertIn('bpf_probe_read_str(&d.comm, sizeof(d.comm), leader->comm);', self.txt)
+        self.assertIn('d.start_ns  = task->group_leader->start_time;', self.txt)
+        self.assertIn('task->signal->group_exit_code', self.txt)
+
+    def test_a_threads_probe_stashes_go_with_it(self):
+        txt = T.build_bpf_text({'netbytes', 'netbytes_udp6', 'netpeer_btf'}, offs=FAKE_OFFS)
+        body = txt.split('sched_process_exit) {', 1)[1]
+        self.assertLess(body.index('netp_args.delete(&id);'), body.index('if (tgid != tid)'))
+        self.assertIn('netb_nest.delete(&id);', body)
+
+
+# ---------------------------------------------------------------------------
+# schema 8: the endpoint table
+# ---------------------------------------------------------------------------
+
+KERN_OFFS = dict(FAKE_OFFS, sock={'sk_socket': 288}, socket={'file': 16})
+
+
+@unittest.skipUnless(_CC, 'needs a C compiler to run the generated probes')
+class KernelSocketTest(unittest.TestCase):
+    """The NFS client's RPC socket is the kernel's own -- no file behind it --
+    and sends from the calling process's context. Counted as that process's
+    network I/O it was 95% of the endpoint table."""
+    F = {'netbytes', 'netpeer_btf'}
+    APP = _pid_tgid(4242)
+
+    def setUp(self):
+        self._saved = (T.EPH_RANGE, T.NETPEER_MAX)
+        T.EPH_RANGE = (32768, 60999)
+
+    def tearDown(self):
+        T.EPH_RANGE, T.NETPEER_MAX = self._saved
+
+    def test_a_kernel_socket_counts_for_no_process(self):
+        r = _run_net_c(self.F, [_sock('nfs', '10.31.0.5', 801, 2049), 'file nfs 0']
+                       + _pair('tcp_sendmsg', self.APP, 'nfs', rc=149), offs=KERN_OFFS)
+        self.assertEqual((r['netp'], r['netb'].get(4242)), ([], None))
+        self.assertEqual(r['kern'], (1, 149, 0))
+        self.assertEqual(r['netp_args'], 0)
+
+    def test_a_socket_with_a_file_is_counted_as_before(self):
+        r = _run_net_c(self.F, [_sock('s', '104.18.0.1', 45000, 443), 'file s 1']
+                       + _pair('tcp_sendmsg', self.APP, 's', rc=1500), offs=KERN_OFFS)
+        self.assertEqual([(e['port'], e['tx']) for e in r['netp']], [(443, 1500)])
+        self.assertEqual(r['netb'][4242], (1500, 0, 1))
+        self.assertEqual(r['kern'], (0, 0, 0))
+
+    def test_each_new_entry_is_announced_once(self):
+        lines = [_sock('a', '104.18.0.1', 45000, 443), _sock('b', '140.82.112.3', 45001, 443)]
+        for _ in range(3):
+            lines += _pair('tcp_sendmsg', self.APP, 'a', rc=10)
+        lines += _pair('tcp_recvmsg', self.APP, 'b', rc=10)
+        r = _run_net_c(self.F, lines, offs=KERN_OFFS)
+        self.assertEqual(sorted((n['tgid'], n['port']) for n in r['new']),
+                         [(4242, 443), (4242, 443)])
+        self.assertEqual({n['size'] for n in r['new']}, {24})
+
+    def test_a_full_table_announces_nothing(self):
+        T.NETPEER_MAX = 1
+        lines = [_sock('a', '104.18.0.1', 45000, 443), _sock('b', '140.82.112.3', 45001, 443)]
+        lines += _pair('tcp_sendmsg', self.APP, 'a', rc=10)
+        lines += _pair('tcp_sendmsg', self.APP, 'b', rc=20)
+        r = _run_net_c(self.F, lines, offs=KERN_OFFS)
+        self.assertEqual((len(r['new']), r['drop']), (1, (1, 20, 0)))
+
+    def test_sendfile_reaches_the_table_through_tcp_sendpage(self):
+        r = _run_net_c(self.F | {'netbytes_page'}, [_sock('s', '104.18.0.1', 45000, 443)]
+                       + _pair('tcp_sendpage', self.APP, 's', rc=65536), offs=KERN_OFFS)
+        self.assertEqual([(e['port'], e['tx']) for e in r['netp']], [(443, 65536)])
+
+
+class NetpeerIndexTest(_NetpeerCase):
+    def test_an_exit_reads_its_own_entries_not_the_table(self):
+        class NoScan(FakeNetpTable):
+            def items(self):
+                raise AssertionError('the whole table was read for one exit')
+        T._netp_tab = self.K = NoScan()
+        self.K.put(101, '104.18.0.1', 443, tx=1500, rx=9000, calls=12)
+        self.K.put(555, '1.1.1.1', 443, tx=1)
+        self.K.announce()
+        rec = self._exit(net_tx=1500, net_rx=9000, net_calls=12)
+        self.assertEqual(rec['net_endpoints']['endpoints'][0]['tx_bytes'], 1500)
+        self.assertEqual(self.K.pids(), [555])           # its own released, nothing else
+        self.assertNotIn(101, T._netp_index)
+
+    def test_bytes_with_nothing_indexed_fall_back_to_one_scan(self):
+        self.K.put(101, '104.18.0.1', 443, tx=300)
+        rec = self._exit(net_tx=300, net_calls=1)
+        self.assertEqual(rec['net_endpoints']['endpoints'][0]['tx_bytes'], 300)
+
+    def test_an_unreported_exit_releases_its_indexed_entries(self):
+        T.proc_add(900, 1, comm='sshd', args='sshd: u', user='root', uid=0)
+        self.K.put(900, '10.1.1.1', 22, tx=5000)
+        self.K.announce()
+        T.on_exit(_exit_ev(pid=900, ppid=1, uid=0, comm=b'sshd', net_tx=5000, net_calls=1))
+        T.drain_exits(final=True)
+        self.assertEqual(self.K.pids(), [])
+
+    def test_a_tick_reads_only_the_reported_processes(self):
+        T.read_stat = _fake_stat
+        T.proc_add(900, 1, comm='sshd', args='sshd: u', user='root', uid=0)
+        self.K.put(101, '104.18.0.1', 443, tx=500)
+        self.K.put(900, '10.1.1.1', 22, tx=5000)
+        self.K.announce()
+        T._netp_sweep['tick'] = 1                         # not a sweep tick
+        T.residency_tick(None)
+        self.assertEqual(T.proc[101]['netp_k'] and len(T.proc[101]['netp_k']), 1)
+        self.assertIsNone(T.proc[900]['netp_k'])
+        self.assertEqual([r['pid'] for r in self.W.of('netio')], [101])
+
+    def test_a_full_table_brings_the_sweep_forward(self):
+        T._netp_sweep.update(tick=3, full_calls=0)
+        T._netp_drop_tab = FakeDrop(calls=5)
+        self.assertTrue(T._netp_sweep_due())
+        self.assertFalse(T._netp_sweep_due())             # no new misses since
+
+    def test_the_sweep_indexes_what_the_announcements_missed(self):
+        self.K.put(101, '104.18.0.1', 443, tx=5)
+        T.netpeer_read()
+        self.assertEqual(len(T._netp_index[101]), 1)
+
+    def test_kernel_socket_totals_are_reported(self):
+        T._netp_kern_tab = FakeDrop(calls=7, tx=1043)
+        try:
+            T.read_stat = _fake_stat
+            T.residency_tick(None)
+        finally:
+            T._netp_kern_tab = None
+        self.assertEqual(self.W.of('residency_totals')[-1]['netpeer_kernel'],
+                         {'calls': 7, 'tx_bytes': 1043, 'rx_bytes': 0})
+
+
+# ---------------------------------------------------------------------------
+# schema 8: submit capture
+# ---------------------------------------------------------------------------
+
+class _WriteT(ctypes.Structure):
+    _fields_ = [('pid', ctypes.c_uint32), ('fd', ctypes.c_uint32), ('len', ctypes.c_uint32),
+                ('_pad', ctypes.c_uint32), ('ktime_ns', ctypes.c_uint64),
+                ('buf', ctypes.c_char * 1024)]
+
+
+def _write_ev(pid, data):
+    w = _WriteT()
+    w.pid, w.fd, w.len, w.ktime_ns = pid, 1, len(data), 1
+    ctypes.memmove(ctypes.addressof(w) + _WriteT.buf.offset, data, len(data))
+    return w
+
+
+class FakeSubmitTab(object):
+    Key = staticmethod(lambda pid: pid)
+
+    def __init__(self):
+        self.deleted = []
+
+    def __delitem__(self, k):
+        self.deleted.append(k)
+
+
+class SubmitCaptureTest(unittest.TestCase):
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        self._saved = (T.writer, T._submit_tab, T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS)
+        T.writer = self.W = FakeWriter()
+        T._submit_tab = self.tab = FakeSubmitTab()
+
+    def tearDown(self):
+        (T.writer, T._submit_tab, T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS) = self._saved
+
+    def test_capture_stops_once_the_job_id_is_out(self):
+        T.on_write(_write_ev(700, b'srun: job 4242 queued and waiting for resources\n'))
+        self.assertEqual(self.tab.deleted, [700])
+        T.on_write(_write_ev(700, b'more\n'))
+        self.assertEqual(self.tab.deleted, [700])         # once
+
+    def test_output_without_a_job_id_keeps_capturing(self):
+        T.on_write(_write_ev(701, b'hello\n'))
+        self.assertEqual(self.tab.deleted, [])
+
+    def _submit(self, args, out):
+        T.proc_add(702, 1, comm='srun', args=args, user='u', uid=1000, tty='pts/1')
+        T.proc[702]['submit_buf'] = out
+        rec = {'actor': 'human', 'attribution': 'tty', 'command': 'srun', 'exit_code': 0,
+               'signal': None, 'start': None, 'duration_s': 1.0}
+        T._emit_submit(T.proc[702], rec)
+        return self.W.of('submit')[-1]
+
+    def test_an_interactive_session_has_no_tail(self):
+        out = b'$ cat secrets.txt\nhunter2\n'
+        r = self._submit('srun --pty bash', out)
+        self.assertEqual((r['captured_tail'], r['captured_bytes']), (None, len(out)))
+
+    def test_the_tail_has_credentials_masked(self):
+        r = self._submit('sbatch run.sh', b'Submitted batch job 9\nexport HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz0123456789\n')
+        self.assertEqual(r['job_id'], 9)
+        self.assertNotIn('hf_abcdefghij', r['captured_tail'])
+        self.assertIn('HF_TOKEN=[REDACTED]', r['captured_tail'])
+
+    def test_the_kernel_spends_a_budget_and_forgets_an_exec_into_anything_else(self):
+        txt = T.build_bpf_text({'submit'}, offs=FAKE_OFFS)
+        self.assertIn('#define SUBMIT_BUDGET %d' % T.SUBMIT_BUDGET, txt)
+        self.assertIn('submit_pids.delete(&pid);           /* this write spends what is left */', txt)
+        self.assertIn('} else {\n        submit_pids.delete(&d.pid);\n    }', txt)
+        self.assertIn('u64 ktime_ns; char buf[WRITE_MAX];', txt)
+
+
+# ---------------------------------------------------------------------------
+# schema 8: cgroups, argv size, the lock, root's trust
+# ---------------------------------------------------------------------------
+
+class CgroupIdTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = (T._kernfs_id, T._CGROUP2[:], T._cgid_last_walk, dict(T._cgid_map),
+                       T.os.walk)
+        T._cgid_map.clear()
+        T._cgid_last_walk = 0.0
+
+    def tearDown(self):
+        (T._kernfs_id, cg, T._cgid_last_walk, m, T.os.walk) = self._saved
+        T._CGROUP2[:] = cg
+        T._cgid_map.clear(); T._cgid_map.update(m)
+
+    def test_ids_come_from_file_handles_where_the_inode_is_not_the_id(self):
+        """4.18: id = generation << 32 | ino. Keyed by inode, nothing matched."""
+        T._CGROUP2[:] = ['/sys/fs/cgroup']
+        T.os.walk = lambda root: iter([('/sys/fs/cgroup', [], []),
+                                       ('/sys/fs/cgroup/user.slice/s.scope', [], [])])
+        ids = {'/sys/fs/cgroup': (1 << 32) | 1,
+               '/sys/fs/cgroup/user.slice/s.scope': (1 << 32) | 4242}
+        T._kernfs_id = lambda p: ids[p]
+        self.assertEqual(T._resolve_cgid((1 << 32) | 4242), '/user.slice/s.scope')
+
+    def test_no_unified_hierarchy_resolves_nothing(self):
+        T._CGROUP2[:] = [None]
+        self.assertIsNone(T._resolve_cgid(12345))
+
+    def test_a_miss_at_exec_reads_proc_instead_of_keeping_the_inherited_one(self):
+        saved = (T.FEATURES, T.read_cgroup, T._resolve_cgid, T._ingest_proc, T.read_cwd)
+        T.proc.clear(); T._children.clear()
+        T.FEATURES = {'cgid', 'tty', 'argv_user'}
+        T.read_cgroup = lambda pid: '/user.slice/user-1000.slice/session-9.scope'
+        T._resolve_cgid = lambda cgid: None
+        T._ingest_proc = lambda pid, ppid=None: False
+        T.read_cwd = lambda pid: None
+        try:
+            T.proc_add(1, 0, comm='systemd', cgroup='/init.scope')
+            T.proc_add(5000, 1, comm='sshd', cgroup='/init.scope')   # inherited at fork
+            ev = _xexec(5000, ppid=1, comm=b'bash')
+            ev.cgid = 77
+            T.on_exec(ev)
+            self.assertEqual(T.proc[5000]['cgroup'], '/user.slice/user-1000.slice/session-9.scope')
+        finally:
+            T.FEATURES, T.read_cgroup, T._resolve_cgid, T._ingest_proc, T.read_cwd = saved
+
+
+class ArgvSizeTest(unittest.TestCase):
+    def test_only_the_bytes_read_go_up_the_ring(self):
+        txt = T.build_bpf_text({'argv_user'}, offs=FAKE_OFFS)
+        self.assertIn('u64 sz = (u64)len + __builtin_offsetof(struct argv_t, buf);', txt)
+        self.assertIn('argv_events.perf_submit(args, a, sz);', txt)
+        self.assertNotIn('perf_submit(args, a, sizeof(*a))', txt)
+
+
+class LockTest(unittest.TestCase):
+    def test_a_second_collector_on_one_output_dir_does_not_start(self):
+        d = tempfile.mkdtemp(prefix='ebpfm_lock_')
+        try:
+            fd = T._take_lock(d, 'h')
+            self.assertIsNotNone(fd)
+            with open(os.path.join(d, '.h.lock')) as f:
+                self.assertEqual(f.read().strip(), str(os.getpid()))
+            import contextlib
+            import io
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as err:
+                T._take_lock(d, 'h')
+            self.assertIn('pid %d' % os.getpid(), err.getvalue())
+            self.assertIsNotNone(T._take_lock(d, 'other-host'))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class UnsafeDirTest(unittest.TestCase):
+    def test_a_users_directory_is_flagged(self):
+        d = tempfile.mkdtemp(prefix='ebpfm_trust_')
+        try:
+            if os.geteuid() != 0:
+                self.assertIn(os.path.realpath(d), T._unsafe_dirs([d]))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_root_owned_system_directories_are_not(self):
+        self.assertEqual([p for p in T._unsafe_dirs(['/usr/bin']) if p in ('/usr', '/usr/bin')], [])
+
+
+class WrapperTest(unittest.TestCase):
+    def setUp(self):
+        self.src = (_ROOT / 'ebpfm.sh').read_text()
+
+    def _fn(self, name):
+        m = re.search(r'^%s\(\) \{[^\n]*\n.*?^\}\n' % re.escape(name), self.src, re.M | re.S)
+        return m.group(0)
+
+    def test_the_install_dir_is_found_through_the_rpms_symlink(self):
+        self.assertIn('DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"',
+                      self.src)
+
+    def test_a_pid_file_is_trusted_only_while_its_pid_is_ours(self):
+        self.assertIn('_pid_runs "$p" ebpf_trace.py', self._fn('_running_pid'))
+        self.assertIn('_pid_runs "$p" _node_daemon', self._fn('_node_running_pid'))
+        script = (self._fn('_pid_runs') + 'w=zz; w="${w}q"\n'
+                  + '_pid_runs $$ bash && echo yes; _pid_runs $$ "$w" || echo no\n')
+        out = subprocess.run(['bash', '-c', script], stdout=subprocess.PIPE,
+                             universal_newlines=True).stdout.split()
+        self.assertEqual(out, ['yes', 'no'])
+
+    def test_status_finds_the_units_full_hostname_files(self):
+        d = tempfile.mkdtemp(prefix='ebpfm_wrap_')
+        try:
+            day = os.path.join(d, '2026-11-01')
+            os.makedirs(day)
+            open(os.path.join(day, 'node7.rc.example.edu.exits.jsonl'), 'w').close()
+            script = ('OUTPUT_DIR=%s; HOST=node7\n' % d + self._fn('_ebpf_file')
+                      + '_ebpf_file exits 2026-11-01; _ebpf_file snapshot 2026-11-01\n')
+            out = subprocess.run(['bash', '-c', script], stdout=subprocess.PIPE,
+                                 universal_newlines=True).stdout.split()
+            self.assertEqual(out, [os.path.join(day, 'node7.rc.example.edu.exits.jsonl'),
+                                   os.path.join(day, 'node7.snapshot.jsonl')])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_node_snapshot_is_bounded(self):
+        self.assertIn('$(_node_timeout) python3 "$NODE_SNAPSHOT"', self.src)
 
 
 if __name__ == '__main__':

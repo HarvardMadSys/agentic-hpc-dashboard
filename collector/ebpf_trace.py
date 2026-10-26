@@ -61,10 +61,12 @@ stream_of() is the single mapping, and the split is a filing decision, not a
 schema one: a reader that globs the day directory sees exactly what one file
 used to give it. Schema in README.md.
 """
+import bisect
 import collections
 import ctypes
 import hashlib
 import ipaddress
+import itertools
 import json
 import os
 import queue
@@ -85,6 +87,7 @@ from procparse import (  # noqa: E402
     tty_name, uid_of, username, start_epoch, env_num, boot_id, read_ns, read_confinement, read_io)
 
 from slurm_args import parse_submit_args  # noqa: E402
+from redact import redact_argv, redact_line, needs_argv  # noqa: E402
 
 try:  # provider buckets for the network records (absent -> provider=null)
     from provider_cidrs import load_index as _load_cidr_index
@@ -99,7 +102,14 @@ except Exception:  # pragma: no cover
 # tracer never forks itself -- ebpfm.sh daemonizes before Python starts -- and a
 # getpid() per record would put a syscall on the per-event path.
 COLLECTOR_PID = os.getpid()
-SCHEMA_VERSION = 7      # 7 = `net_endpoints` on exit/truncated, the `netio` series,
+SCHEMA_VERSION = 8      # 8 = exit counters cover every thread (thread_acc), `args` and
+                        #     `captured_tail` masked (credentials, agent prompts) with
+                        #     `args_redacted` saying what, kernel-socket (NFS) traffic out
+                        #     of net_* and endpoints (`netpeer_kernel`), cgroups from file
+                        #     handles, fork ppid = the forking process, running loss and
+                        #     error counters in residency_totals, meta.counters_scope,
+                        #     meta.redact, meta.unsafe_dirs
+                        # 7 = `net_endpoints` on exit/truncated, the `netio` series,
                         #     `proto` on conn, net_*_bytes now include IPv6 UDP, the
                         #     envelope trades `source`/`collector` (constants:
                         #     'ebpf', 'ebpf_marthen_new') for `collector_pid`,
@@ -263,10 +273,35 @@ def _sweep_sealed_days(root, host, keep_day):
     for d in days:
         _compress_day(root, d, host)
 
+def _redact_kinds(value):
+    """EBPFM_REDACT -> the kinds of text masked in what is written. Unset means
+    both; '0', 'none' or empty means neither (an explicit opt-out)."""
+    if value is None:
+        return frozenset(('keys', 'prompts'))
+    kinds = {k.strip().lower() for k in value.split(',') if k.strip()}
+    if kinds & {'0', 'none', 'off'}:
+        return frozenset()
+    bad = kinds - {'keys', 'prompts'}
+    if bad:
+        sys.stderr.write('ebpfm: EBPFM_REDACT ignores unknown kind(s) %s (know: keys, prompts)\n'
+                         % ', '.join(sorted(bad)))
+    return frozenset(kinds & {'keys', 'prompts'})
+
+
+# What is masked in every command line written out (`args`, a submit record's
+# `captured_tail`): 'keys' are credentials -- API keys, tokens, passwords,
+# private keys -- and 'prompts' the text handed to a coding agent on its command
+# line. Both by default. The in-memory argv stays raw, because classification,
+# the approval flags and the endpoint names are read from it. lib/redact.py.
+REDACT        = _redact_kinds(os.environ.get('EBPFM_REDACT'))
+REDACT_KEYS   = 'keys' in REDACT
+REDACT_PROMPTS = 'prompts' in REDACT
+
 DURATION      = env_num('EBPFM_DURATION', 0, float)          # 0 = forever
 ARGS_MAXLEN   = env_num('EBPFM_ARGS_MAXLEN', 0, int)         # emitted argv cap; 0 = none (classification is always uncapped)
 ARGV_KMAX     = env_num('EBPFM_ARGV_KMAX', 4096, int)        # in-kernel argv read (bytes): the real limit when uncapped
 WRITE_KMAX    = env_num('EBPFM_WRITE_KMAX', 1024, int)       # per write() capture (bytes)
+SUBMIT_BUDGET = env_num('EBPFM_SUBMIT_BUDGET', 8192, int)   # per submit tool, then capture stops
 MIN_DURATION  = env_num('EBPFM_MIN_DURATION', 0.0, float)
 MIN_CPU       = env_num('EBPFM_MIN_CPU', 0.0, float)
 INCLUDE_ROOTS = os.environ.get('EBPFM_INCLUDE_ROOTS', '1') != '0'
@@ -308,9 +343,15 @@ CONNS_TOPN    = env_num('EBPFM_CONNS_TOPN', 5, int)           # peers/providers 
 # drop every connection the process still held open, which for an agent is most
 # of them. Two poll rounds is generous; 0 restores the old inline emit.
 EXIT_HOLD_MS  = env_num('EBPFM_EXIT_HOLD_MS', 250, int)
+# How far behind "now" (kernel time) the event queue is applied. Each CPU has
+# its own perf ring and BCC drains them one after another, so a poll round
+# hands events over by ring, not by time. Anything stamped this long before the
+# round's poll began was already in its ring when the poll ran, so nothing
+# older can still arrive. See dispatch_events().
+REORDER_MS    = env_num('EBPFM_REORDER_MS', 20, int)
 CONN_ALL      = os.environ.get('EBPFM_CONN_ALL', '0') != '0'  # 1 = emit loopback/private too
 CONN_UNTRACKED = os.environ.get('EBPFM_CONN_UNTRACKED', '1') != '0'  # netlink rows with no pid
-NETPEER_MAX   = env_num('EBPFM_NETPEER_MAX', 16384, int)      # (pid, endpoint) entries in the kernel table
+NETPEER_MAX   = env_num('EBPFM_NETPEER_MAX', 65536, int)      # (pid, endpoint) entries in the kernel table (~3 MB)
 NET_ENDPOINTS_MAX = env_num('EBPFM_NET_ENDPOINTS_MAX', 256, int)  # endpoints listed per record
 WANT_NETIO    = os.environ.get('EBPFM_NETIO', '1') != '0'      # the per-tick `netio` series
 WANT_ARGV_HOSTS = os.environ.get('EBPFM_ARGV_HOSTS', '1') != '0'  # endpoint `host` from argv names
@@ -353,6 +394,17 @@ PAGE_SIZE = os.sysconf('SC_PAGE_SIZE') or 4096
 CLK_TCK   = os.sysconf('SC_CLK_TCK') or 100
 BTIME     = boot_time()
 
+
+def _ktime_now():
+    """Now on bpf_ktime_get_ns()'s clock (CLOCK_MONOTONIC), in ns.
+
+    time.monotonic_ns() is 3.7+, and EL8 runs 3.6, where the old fallback was
+    time.time() -- the WALL clock, which put every conn record's age_s about 56
+    years off on those hosts."""
+    if hasattr(time, 'monotonic_ns'):
+        return time.monotonic_ns()
+    return int(time.monotonic() * 1e9)
+
 EVT_FORK, EVT_EXEC, EVT_EXIT = 1, 2, 3
 TCP_KIND_CLOSE, TCP_KIND_ACCEPT = 1, 2
 # `netp` key flags. build_net_c() compiles these same values into the probe.
@@ -369,12 +421,15 @@ _KSTACK_FRAME = re.compile(r'\]\s+(\S+?)\+0x')   # same extraction snapshot.py u
 
 BLOCKS = [
     # name          requires        purpose
+    ('fork_raw',    (),             'fork events for new PROCESSES only, from the raw tracepoint, which has the child task; threads never reach the ring'),
     ('signal',      (),             'whole-process CPU/threads/cutime/cmaj_flt via signal_struct'),
     ('io',          (),             'task->ioac read/write/rchar/wchar (+signal->ioac when signal)'),
     ('sched',       (),             'sched_info.run_delay (run-queue wait)'),
     ('delay',       (),             'task->delays: blkio/swapin/freepages dwell (CONFIG_TASK_DELAY_ACCT)'),
     ('dstate_task', (),             'item 2: cumulative uninterruptible sleep from task->stats.sum_block_runtime (5.19+)'),
     ('dstate_stat', (),             'item 2: uninterruptible sleep accumulated from sched:sched_stat_blocked (portable)'),
+    # after the per-task blocks: what it adds up per thread depends on which loaded
+    ('thread_acc',  ('signal',),    'whole-process exit counters: each thread adds its own as it exits, the last one writes the record'),
     ('pids_signal', ('signal',),    'pgrp/sid via signal->pids[] (kernel >= 4.19 layout)'),
     ('pids_task',   (),             'pgrp/sid via group_leader->pids[].pid (kernel <= 4.18 layout)'),
     ('pids_kread',  ('signal',),    'pgrp/sid via explicit bpf_probe_read of signal->pids[] (bypasses the BCC rewriter)'),
@@ -385,6 +440,7 @@ BLOCKS = [
     ('submit',      (),             'sbatch/salloc/srun stdout/stderr capture -> job id'),
     ('netbytes',    (),             'all-protocol per-process net bytes: kretprobes on tcp/udp send+recv (makes QUIC visible)'),
     ('netbytes_udp6', ('netbytes',), 'the same over IPv6 UDP: udpv6_sendmsg/udpv6_recvmsg, which udp_* never see'),
+    ('netbytes_page', ('netbytes',), 'sendfile/splice over TCP: tcp_sendpage, which tcp_sendmsg never sees (gone in 6.5, which routes it through sendmsg)'),
     ('tcp_btf',     (),             'TCP lifetimes + bytes; tcp_sock offsets from kernel BTF (no net headers)'),
     ('tcp_hdr',     (),             'TCP lifetimes + bytes via <linux/tcp.h> (older kernels/BCC)'),
     ('tcp_basic',   (),             'TCP lifetimes without byte counters (no headers, no BTF)'),
@@ -417,6 +473,9 @@ BTF_WANT = {
     'tcp_sock':    ('bytes_received', 'bytes_acked'),
     'sock_common': ('skc_family', 'skc_rcv_saddr', 'skc_daddr', 'skc_num', 'skc_dport',
                     'skc_v6_rcv_saddr', 'skc_v6_daddr'),
+    # optional: a socket with no file is the kernel's own (see _netp_stash)
+    'sock':        ('sk_socket',),
+    'socket':      ('file',),
 }
 BTF_REQUIRED = {
     'tcp_btf':    {'tcp_sock': ('bytes_received', 'bytes_acked')},
@@ -483,8 +542,11 @@ def btf_offsets():
     if not os.path.exists('/sys/kernel/btf/vmlinux'):
         return BTF_OFFS
     try:
+        # stdout/stderr, not capture_output: that keyword is Python 3.7+, and on
+        # EL8's 3.6 the TypeError it raises was swallowed below, so every block
+        # that needs BTF (tcp_accept among them) was silently refused there.
         out = subprocess.run(['bpftool', 'btf', 'dump', 'file', '/sys/kernel/btf/vmlinux', '-j'],
-                             capture_output=True, timeout=300)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
         if out.returncode != 0:
             return BTF_OFFS
         types = json.loads(out.stdout).get('types', [])
@@ -619,11 +681,12 @@ _NETPEER_C = """
 /* ---- the endpoint of every counted send/recv --------------------------------
  * A return probe has lost its arguments, so an entry probe records which socket
  * and msghdr the call is on, per THREAD; the return probe then reads the peer and
- * adds the bytes under (process, protocol, direction, address, port). Userspace
- * reads this table every residency tick and before a networked process's record
- * is written, and deletes a process's entries only once it has exited: deleting
- * a live one would race the increments below, and 4.18 has no atomic
- * read-and-delete. */
+ * adds the bytes under (process, protocol, direction, address, port). Each new
+ * entry is announced once on `netp_new`, so userspace can keep an index of every
+ * process's entries and read or delete just those -- a process's own entries at
+ * its exit, the reported processes' at a tick -- where it used to read the whole
+ * table, up to ten times a second. A live process's entries are never deleted:
+ * that would race the increments below, and 4.18 has no atomic read-and-delete. */
 #define NETP_TCP 6
 #define NETP_UDP 17
 #define NETP_F_INBOUND %(f_inbound)d
@@ -631,41 +694,55 @@ _NETPEER_C = """
 #define NETP_F_UNKNOWN %(f_unknown)d
 #define NETP_EPH_LO %(eph_lo)d
 #define NETP_EPH_HI %(eph_hi)d
-struct netp_arg_t { u64 sk; u64 msg; };
+struct netp_arg_t { u64 sk; u64 msg; u64 kern; };
 struct netp_key_t { u32 tgid; u16 port; u8 proto; u8 flags; u8 addr[16]; };
 struct netp_val_t { u64 tx; u64 rx; u64 calls; };
 BPF_HASH(netp_args, u64, struct netp_arg_t, 16384);
 BPF_HASH(netp, struct netp_key_t, struct netp_val_t, %(netp_max)d);
 BPF_ARRAY(netp_drop, u64, 3);          /* calls, tx bytes, rx bytes that found netp full */
+BPF_ARRAY(netp_kern, u64, 3);          /* calls, tx bytes, rx bytes on kernel sockets */
+BPF_PERF_OUTPUT(netp_new);             /* one struct netp_key_t per entry created */
 
 static __always_inline void _netp_stash(u64 sk, u64 msg) {
     u64 id = bpf_get_current_pid_tgid();
     struct netp_arg_t a = {};
     a.sk = sk;
     a.msg = msg;
+__NETP_SOCK_KERN__
     netp_args.update(&id, &a);
 }
 
-static __always_inline void _netp_miss(s64 ret, int is_tx) {
-    u32 i = 0;
-    u64 *c = netp_drop.lookup(&i);
-    if (c)
-        __sync_fetch_and_add(c, 1);
-    i = is_tx ? 1 : 2;
-    c = netp_drop.lookup(&i);
-    if (c)
-        __sync_fetch_and_add(c, (u64)ret);
-}
-
-static __always_inline void _netp_add(s64 ret, int is_tx, u8 proto) {
+/* The return probe's half: this thread's stash, consumed. 0 when there is none
+ * (the call was already in flight when we attached, or its entry was lost). */
+static __always_inline int _netp_take(struct netp_arg_t *out) {
     u64 id = bpf_get_current_pid_tgid();
     struct netp_arg_t *a = netp_args.lookup(&id);
     if (!a)
-        return;                  /* the call was already in flight when we attached */
-    u64 skp = a->sk, msgp = a->msg;
+        return 0;
+    out->sk = a->sk;
+    out->msg = a->msg;
+    out->kern = a->kern;
     netp_args.delete(&id);
+    return 1;
+}
+
+static __always_inline void _netp_count(u32 slot0, s64 ret, int is_tx, int kern) {
+    u32 i = slot0;
+    u64 *c = kern ? netp_kern.lookup(&i) : netp_drop.lookup(&i);
+    if (c)
+        __sync_fetch_and_add(c, 1);
+    i = is_tx ? 1 : 2;
+    c = kern ? netp_kern.lookup(&i) : netp_drop.lookup(&i);
+    if (c && ret > 0)
+        __sync_fetch_and_add(c, (u64)ret);
+}
+
+static __always_inline void _netp_add(struct pt_regs *ctx, struct netp_arg_t *a, s64 ret,
+                                      int is_tx, u8 proto) {
+    u64 skp = a->sk, msgp = a->msg;
     if (ret <= 0 || !skp)
         return;
+    u64 id = bpf_get_current_pid_tgid();
     struct netp_key_t k = {};
     k.tgid = id >> 32;
     k.proto = proto;
@@ -724,10 +801,13 @@ __NETP_BIRTH__
     struct netp_val_t *v = netp.lookup(&k);
     if (!v) {
         struct netp_val_t z = {};
-        netp.update(&k, &z);
+        /* insert, not update: of two threads making one entry, exactly one
+         * creates it, so it is announced once and nobody resets its counts */
+        if (netp.insert(&k, &z) == 0)
+            netp_new.perf_submit(ctx, &k, sizeof(k));
         v = netp.lookup(&k);
         if (!v) {
-            _netp_miss(ret, is_tx);   /* full: the per-process totals still have it */
+            _netp_count(0, ret, is_tx, 0);  /* full: the per-process totals still have it */
             return;
         }
     }
@@ -766,6 +846,37 @@ def build_net_c(f, offs=None):
     out = [_NETB_C]
     if udp6:
         out.append(_NETB_NEST_C)
+    # A socket with no file behind it was made by the kernel for itself: the NFS
+    # client's RPC transport above all, which sends from the CALLING process's
+    # context, so every `ls` on an NFS path became network I/O of that process
+    # -- 95% of the endpoint table on the login nodes, one entry per process per
+    # NFS server, the table full most of the day. Those bytes are not the
+    # process's own traffic (its reads arrive in softirq and were never counted);
+    # they are counted apart, per node, in `netp_kern`.
+    kern = ''
+    if peer == 'netpeer_btf':
+        so_off = O.get('sock', {}).get('sk_socket')
+        file_off = O.get('socket', {}).get('file')
+        if so_off is not None and file_off is not None:
+            kern = """
+    {
+        u64 so = 0, file = 1;
+        bpf_probe_read(&so, sizeof(so), (void *)(sk + %d));
+        if (so && bpf_probe_read(&file, sizeof(file), (void *)(so + %d)) == 0 && !file)
+            a.kern = 1;
+    }
+""" % (so_off, file_off)
+    elif peer == 'netpeer_hdr':
+        kern = """
+    {
+        struct sock *s_ = (struct sock *)sk;
+        struct socket *so = 0;
+        u64 file = 1;
+        bpf_probe_read(&so, sizeof(so), &s_->sk_socket);
+        if (so && bpf_probe_read(&file, sizeof(file), &so->file) == 0 && !file)
+            a.kern = 1;
+    }
+"""
     if peer == 'netpeer_btf':
         sc = O.get('sock_common', {})
         local = """
@@ -825,6 +936,7 @@ def build_net_c(f, offs=None):
         out.append((_NETPEER_C % {'f_inbound': NETP_F_INBOUND, 'f_v6': NETP_F_V6,
                                   'f_unknown': NETP_F_UNKNOWN, 'eph_lo': EPH_RANGE[0],
                                   'eph_hi': EPH_RANGE[1], 'netp_max': NETPEER_MAX})
+                   .replace('__NETP_SOCK_KERN__', kern)
                    .replace('__NETP_SOCK_LOCAL__', local)
                    .replace('__NETP_SOCK_PEER__', sock_peer)
                    .replace('__NETP_BIRTH__', birth))
@@ -844,6 +956,8 @@ def build_net_c(f, offs=None):
            ('udp_sendmsg', 1, 'NETP_UDP'), ('udp_recvmsg', 0, 'NETP_UDP')]
     if udp6:
         fns += [('udpv6_sendmsg', 1, 'NETP_UDP'), ('udpv6_recvmsg', 0, 'NETP_UDP')]
+    if 'netbytes_page' in f:
+        fns += [('tcp_sendpage', 1, 'NETP_TCP')]
     for fn, is_tx, proto in fns:
         entry, pre = [], []
         if udp6 and fn == 'udpv6_sendmsg':
@@ -854,13 +968,23 @@ def build_net_c(f, offs=None):
                          '        return 0;              /* counted by udpv6_sendmsg */')
             pre.append('if (_netb_nest_skip())\n        return 0;')
         if peer:
-            entry.append('_netp_stash(PT_REGS_PARM1(ctx), PT_REGS_PARM2(ctx));')
+            # tcp_sendpage's second argument is a page, not a msghdr
+            entry.append('_netp_stash(PT_REGS_PARM1(ctx), %s);'
+                         % ('0' if fn == 'tcp_sendpage' else 'PT_REGS_PARM2(ctx)'))
         if entry:
             out.append('int kprobe__%s(struct pt_regs *ctx) {\n    %s\n    return 0;\n}\n'
                        % (fn, '\n    '.join(entry)))
-        body = pre + ['s64 ret = (s64)(s32)PT_REGS_RC(ctx);', '_netb_add(ret, %d);' % is_tx]
+        body = pre + ['s64 ret = (s64)(s32)PT_REGS_RC(ctx);']
         if peer:
-            body.append('_netp_add(ret, %d, %s);' % (is_tx, proto))
+            body += ['struct netp_arg_t a = {};',
+                     'if (_netp_take(&a) && a.kern) {',
+                     '    _netp_count(0, ret, %d, 1);   /* a kernel socket: not the process\'s I/O */'
+                     % is_tx,
+                     '    return 0;',
+                     '}']
+        body.append('_netb_add(ret, %d);' % is_tx)
+        if peer:
+            body.append('_netp_add(ctx, &a, ret, %d, %s);' % (is_tx, proto))
         out.append('int kretprobe__%s(struct pt_regs *ctx) {\n    %s\n    return 0;\n}\n'
                    % (fn, '\n    '.join(body)))
     return ''.join(out)
@@ -892,10 +1016,18 @@ def build_bpf_text(f, offs=None):
     read_user = 'bpf_probe_read_user' if 'argv_user' in f else 'bpf_probe_read'
 
     # ---- exit-time reads --------------------------------------------------
-    cpu = ("""
+    thread_acc = 'thread_acc' in f
+    # With thread_acc the event carries this thread's own counters and
+    # signal_struct's apart, and userspace adds the exited threads (see
+    # _exit_totals); without it, the leader's own plus signal_struct's, summed.
+    cpu_own = """
+    d.utime_ns   = task->utime;
+    d.stime_ns   = task->stime;
+""" if thread_acc else """
     d.utime_ns   = task->utime + task->signal->utime;
     d.stime_ns   = task->stime + task->signal->stime;
-    d.cutime_ns  = task->signal->cutime;
+"""
+    cpu = (cpu_own + """    d.cutime_ns  = task->signal->cutime;
     d.cstime_ns  = task->signal->cstime;
     d.nr_threads = task->signal->nr_threads;
     d.cmaj_flt   = task->signal->cmaj_flt;
@@ -909,7 +1041,28 @@ def build_bpf_text(f, offs=None):
     d.utime_ns   = task->utime;
     d.stime_ns   = task->stime;
 """)
-    if 'io' in f and 'signal' in f:
+    if thread_acc:
+        cpu += """    d.sig_utime   = task->signal->utime;
+    d.sig_stime   = task->signal->stime;
+    d.sig_run     = task->signal->sum_sched_runtime;
+    d.sig_min_flt = task->signal->min_flt;
+    d.sig_maj_flt = task->signal->maj_flt;
+    d.sig_nvcsw   = task->signal->nvcsw;
+    d.sig_nivcsw  = task->signal->nivcsw;
+    d.has_acc     = thr_acc.lookup(&tgid) ? 1 : 0;
+"""
+    if 'io' in f and thread_acc:
+        io = """
+    d.rd_bytes  = (u64)task->ioac.read_bytes;
+    d.wr_bytes  = (u64)task->ioac.write_bytes;
+    d.rchar     = (u64)task->ioac.rchar;
+    d.wchar     = (u64)task->ioac.wchar;
+    d.sig_rd    = (u64)task->signal->ioac.read_bytes;
+    d.sig_wr    = (u64)task->signal->ioac.write_bytes;
+    d.sig_rchar = (u64)task->signal->ioac.rchar;
+    d.sig_wchar = (u64)task->signal->ioac.wchar;
+"""
+    elif 'io' in f and 'signal' in f:
         io = """
     d.rd_bytes = (u64)task->ioac.read_bytes  + (u64)task->signal->ioac.read_bytes;
     d.wr_bytes = (u64)task->ioac.write_bytes + (u64)task->signal->ioac.write_bytes;
@@ -980,6 +1133,114 @@ TRACEPOINT_PROBE(sched, sched_stat_blocked) {
     # keep the map bounded: a thread that never leads still gets its entry dropped
     dstate_del_thread = '        dstate_acc.delete(&tid);\n' if 'dstate_stat' in f else ''
 
+    # ---- thread_acc: whole-process exit counters ----------------------------
+    # See _exit_totals() for why. A thread that is not the last to exit adds its
+    # own counters to its process's entry and returns; the first to do so also
+    # notes signal_struct's totals as the base. Only counters this program reads
+    # anyway are summed, so the struct follows the loaded blocks.
+    own_x = {'utime': 'task->utime', 'stime': 'task->stime',
+             'run': 'task->se.sum_exec_runtime', 'min_flt': 'task->min_flt',
+             'maj_flt': 'task->maj_flt', 'nvcsw': 'task->nvcsw', 'nivcsw': 'task->nivcsw',
+             'rd': '(u64)task->ioac.read_bytes', 'wr': '(u64)task->ioac.write_bytes',
+             'rchar': '(u64)task->ioac.rchar', 'wchar': '(u64)task->ioac.wchar',
+             'wait': 'task->sched_info.run_delay', 'block': 'task->stats.sum_block_runtime'}
+    sig_x = {'utime': 'task->signal->utime', 'stime': 'task->signal->stime',
+             'run': 'task->signal->sum_sched_runtime', 'min_flt': 'task->signal->min_flt',
+             'maj_flt': 'task->signal->maj_flt', 'nvcsw': 'task->signal->nvcsw',
+             'nivcsw': 'task->signal->nivcsw',
+             'rd': '(u64)task->signal->ioac.read_bytes',
+             'wr': '(u64)task->signal->ioac.write_bytes',
+             'rchar': '(u64)task->signal->ioac.rchar', 'wchar': '(u64)task->signal->ioac.wchar'}
+    acc_sig = ['utime', 'stime', 'run', 'min_flt', 'maj_flt', 'nvcsw', 'nivcsw']
+    if 'io' in f:
+        acc_sig += ['rd', 'wr', 'rchar', 'wchar']
+    acc_own = (['wait'] if 'sched' in f else []) + (['block'] if 'dstate_task' in f else [])
+    acc_fields = (['nthreads'] + ['b_' + x for x in acc_sig]
+                  + ['s_' + x for x in acc_sig + acc_own]
+                  + (['s_blkio', 's_swapin', 's_freepages'] if 'delay' in f else [])
+                  + (['s_dstate', 's_dstate_max', 's_dstate_cnt'] if 'dstate_stat' in f else []))
+    acc_defs = ("""
+struct thr_acc_t { u64 %s; };
+BPF_HASH(thr_acc, u32, struct thr_acc_t, 16384);
+BPF_ARRAY(thr_acc_miss, u64, 1);       /* thread exits that found thr_acc full */
+""" % ', '.join(acc_fields)) if thread_acc else ''
+    if thread_acc:
+        base = ''.join('            z.b_%s = %s;\n' % (x, sig_x[x]) for x in acc_sig)
+        adds = ''.join('            __sync_fetch_and_add(&a->s_%s, %s);\n' % (x, own_x[x])
+                       for x in acc_sig + acc_own)
+        if 'delay' in f:
+            adds += """            if (task->delays) {
+                __sync_fetch_and_add(&a->s_blkio, task->delays->blkio_delay);
+                __sync_fetch_and_add(&a->s_swapin, task->delays->swapin_delay);
+                __sync_fetch_and_add(&a->s_freepages, task->delays->freepages_delay);
+            }
+"""
+        if 'dstate_stat' in f:
+            adds += """            {
+                struct dstate_t *p = dstate_acc.lookup(&tid);
+                if (p) {
+                    __sync_fetch_and_add(&a->s_dstate, p->total);
+                    __sync_fetch_and_add(&a->s_dstate_cnt, p->cnt);
+                    if (p->max > a->s_dstate_max)
+                        a->s_dstate_max = p->max;
+                }
+            }
+"""
+        exit_gate = """    /* Not the last thread out: add this one's counters to its process and
+     * leave the record to whichever thread is (signal->live drops to 0 before
+     * this tracepoint, for the thread that took it there). */
+    if (task->signal->live.counter > 0) {
+        struct thr_acc_t *a = thr_acc.lookup(&tgid);
+        if (!a) {
+            struct thr_acc_t z = {};
+%s            thr_acc.insert(&tgid, &z);
+            a = thr_acc.lookup(&tgid);
+        }
+        if (a) {
+%s            u64 nt = task->signal->nr_threads;
+            if (nt > a->nthreads)
+                a->nthreads = nt;
+        } else {
+            u32 zero = 0;
+            u64 *c = thr_acc_miss.lookup(&zero);
+            if (c)
+                __sync_fetch_and_add(c, 1);
+        }
+%s        return 0;
+    }
+""" % (base, adds, dstate_del_thread)
+        # The last thread out may not be the leader; the process's own name, start
+        # and status are the leader's (wait(2) reports the group exit code when
+        # there was one, else the leader's own).
+        exit_leader = """    if (tgid != tid) {
+        struct task_struct *leader = task->group_leader;
+        bpf_probe_read_str(&d.comm, sizeof(d.comm), leader->comm);
+        d.start_ns  = task->group_leader->start_time;
+        d.exit_code = task->signal->group_exit_code ? task->signal->group_exit_code
+                                                    : task->group_leader->exit_code;
+    }
+"""
+        data_acc = """    u64 sig_utime, sig_stime, sig_run, sig_min_flt, sig_maj_flt, sig_nvcsw, sig_nivcsw;
+    u64 sig_rd, sig_wr, sig_rchar, sig_wchar;
+    u8  has_acc;          // thr_acc held an entry for the process at this exit
+"""
+    else:
+        exit_gate = """    if (tgid != tid) {
+%s        return 0;   // thread-group leader only: one record per process
+    }
+""" % dstate_del_thread
+        exit_leader = ''
+        data_acc = ''
+    # A probe's entry stash is per THREAD and its return probe deletes it, but a
+    # return the kernel never ran (kretprobe maxactive) leaves it behind; once
+    # the map filled, every new thread's sends went unattributed. A thread's exit
+    # is the last chance to drop it.
+    thread_del = ''
+    if 'netbytes' in f and (NETPEER_BLOCKS & f):
+        thread_del += '    netp_args.delete(&id);\n'
+    if 'netbytes_udp6' in f and 'netbytes' in f:
+        thread_del += '    netb_nest.delete(&id);\n'
+
     if 'pids_signal' in f:
         pids = """
     d.pgrp = task->signal->pids[PIDTYPE_PGID]->numbers[0].nr;
@@ -1033,6 +1294,45 @@ TRACEPOINT_PROBE(sched, sched_stat_blocked) {
     }
 """ if 'netbytes' in f else '')
 
+    # ---- fork --------------------------------------------------------------
+    # The parent is the PROCESS that forked: the tracepoint's parent_pid is the
+    # forking THREAD's id, which for a child spawned off a worker thread (a
+    # tokio runtime spawns from whichever one runs the task) named a tid the
+    # table never tracks, and the child lost its ancestry.
+    if 'fork_raw' in f:
+        fork_probe = """
+RAW_TRACEPOINT_PROBE(sched_process_fork) {
+    /* (struct task_struct *parent, struct task_struct *child) */
+    struct task_struct *child = (struct task_struct *)ctx->args[1];
+    u32 pid = 0, tgid = 0;
+    bpf_probe_read(&pid, sizeof(pid), &child->pid);
+    bpf_probe_read(&tgid, sizeof(tgid), &child->tgid);
+    if (!pid || pid != tgid)
+        return 0;              /* a new thread: userspace tracks processes only */
+    struct data_t d = {};
+    d.type     = EVT_FORK;
+    d.pid      = pid;
+    d.ppid     = bpf_get_current_pid_tgid() >> 32;
+    d.ktime_ns = bpf_ktime_get_ns();
+    d.uid      = (u32)bpf_get_current_uid_gid();
+    events.perf_submit(ctx, &d, sizeof(d));
+    return 0;
+}
+"""
+    else:
+        fork_probe = """
+TRACEPOINT_PROBE(sched, sched_process_fork) {
+    struct data_t d = {};
+    d.type     = EVT_FORK;
+    d.pid      = args->child_pid;
+    d.ppid     = bpf_get_current_pid_tgid() >> 32;
+    d.ktime_ns = bpf_ktime_get_ns();
+    d.uid      = (u32)bpf_get_current_uid_gid();
+    events.perf_submit(args, &d, sizeof(d));
+    return 0;
+}
+"""
+
     # ---- exec-time argv ----------------------------------------------------
     argv_defs = ("""
 #define ARGV_MAX %d
@@ -1061,8 +1361,15 @@ BPF_PERF_OUTPUT(argv_events);
             a->len = len;
             a->raw_len = raw;
             a->ktime_ns = d.ktime_ns;
-            if (len > 0 && %s(a->buf, len, (void *)s) == 0)
-                argv_events.perf_submit(args, a, sizeof(*a));
+            if (len > 0 && %s(a->buf, len, (void *)s) == 0) {
+                /* Only what was read: the whole 4 KB buffer went out with every
+                 * exec, short command line or not, into a ring every CPU's
+                 * execs share. Userspace reads buf[:len] and pads the rest. */
+                u64 sz = (u64)len + __builtin_offsetof(struct argv_t, buf);
+                if (sz > sizeof(*a))
+                    sz = sizeof(*a);
+                argv_events.perf_submit(args, a, sz);
+            }
         }
     }
 """ % read_user) if argv_on else ''
@@ -1071,16 +1378,22 @@ BPF_PERF_OUTPUT(argv_events);
     def _comm_test(name):
         parts = ' && '.join("d.comm[%d] == '%s'" % (i, c) for i, c in enumerate(name))
         return '(%s && d.comm[%d] == 0)' % (parts, len(name))
+    # A submit tool's stdout/stderr, for the job id it prints. Capture stops at a
+    # byte budget, or sooner once userspace has the id (it deletes the pid): an
+    # `srun --pty` session used to send every write of the whole session up the
+    # ring for the 8 KB that was kept -- 8.4M events in 6.5 days on one node.
     submit_defs = ("""
 #define WRITE_MAX %d
-struct write_t { u32 pid; u32 fd; u32 len; char buf[WRITE_MAX]; };
-BPF_HASH(submit_pids, u32, u8, 4096);
+#define SUBMIT_BUDGET %d
+struct write_t { u32 pid; u32 fd; u32 len; u32 _pad; u64 ktime_ns; char buf[WRITE_MAX]; };
+BPF_HASH(submit_pids, u32, u32, 4096);      /* pid -> bytes still to capture */
 BPF_PERCPU_ARRAY(write_scratch, struct write_t, 1);
 BPF_PERF_OUTPUT(write_events);
 
 TRACEPOINT_PROBE(syscalls, sys_enter_write) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    if (!submit_pids.lookup(&pid))
+    u32 *left = submit_pids.lookup(&pid);
+    if (!left)
         return 0;
     if (args->fd > 2)
         return 0;
@@ -1090,16 +1403,30 @@ TRACEPOINT_PROBE(syscalls, sys_enter_write) {
         return 0;
     u32 len = (u32)args->count;
     if (len > WRITE_MAX) len = WRITE_MAX;
+    u32 budget = *left;
+    if (len >= budget) {
+        len = budget;
+        submit_pids.delete(&pid);           /* this write spends what is left */
+    } else {
+        *left = budget - len;
+    }
+    /* the clamp must stay the LAST write to len before the read below */
+    if (len > WRITE_MAX) len = WRITE_MAX;
     w->pid = pid; w->fd = (u32)args->fd; w->len = len;
+    w->ktime_ns = bpf_ktime_get_ns();
     if (len > 0 && %s(w->buf, len, (void *)args->buf) == 0)
         write_events.perf_submit(args, w, sizeof(*w));
     return 0;
 }
-""" % (WRITE_KMAX, read_user)) if 'submit' in f else ''
+""" % (WRITE_KMAX, SUBMIT_BUDGET, read_user)) if 'submit' in f else ''
+    # an exec into anything else clears the pid: the flag used to outlive both
+    # the submit tool's image and, until the pid's exit, its owner
     submit_exec = ("""
     if (%s) {
-        u8 one = 1;
-        submit_pids.update(&d.pid, &one);
+        u32 budget = SUBMIT_BUDGET;
+        submit_pids.update(&d.pid, &budget);
+    } else {
+        submit_pids.delete(&d.pid);
     }
 """ % ' || '.join(_comm_test(c) for c in sorted(SUBMIT_COMMS))) if 'submit' in f else ''
     submit_exit = '    submit_pids.delete(&tgid);\n' if 'submit' in f else ''
@@ -1284,20 +1611,11 @@ struct data_t {
     u64 net_tx, net_rx, net_calls;
     u64 cgid;
     u32 nr_threads, pgrp, sid;
-};
+__DATA_ACC__};
 BPF_PERF_OUTPUT(events);
-__ARGV_DEFS____SUBMIT_DEFS____DSTATE_DEFS____TCP_COMMON____TCP_TP____ACCEPT_PROBE____NETB_DEFS__
+__ARGV_DEFS____SUBMIT_DEFS____DSTATE_DEFS____ACC_DEFS____TCP_COMMON____TCP_TP____ACCEPT_PROBE____NETB_DEFS__
 
-TRACEPOINT_PROBE(sched, sched_process_fork) {
-    struct data_t d = {};
-    d.type     = EVT_FORK;
-    d.pid      = args->child_pid;
-    d.ppid     = args->parent_pid;
-    d.ktime_ns = bpf_ktime_get_ns();
-    d.uid      = (u32)bpf_get_current_uid_gid();
-    events.perf_submit(args, &d, sizeof(d));
-    return 0;
-}
+__FORK_PROBE__
 
 TRACEPOINT_PROBE(sched, sched_process_exec) {
     u64 id = bpf_get_current_pid_tgid();
@@ -1318,11 +1636,8 @@ __ARGV_EXEC____SUBMIT_EXEC__
 TRACEPOINT_PROBE(sched, sched_process_exit) {
     u64 id = bpf_get_current_pid_tgid();
     u32 tgid = id >> 32, tid = (u32)id;
-    if (tgid != tid) {
-__DSTATE_DEL__        return 0;   // thread-group leader only: one record per process
-    }
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    struct data_t d = {};
+__THREAD_DEL____EXIT_GATE__    struct data_t d = {};
     d.type      = EVT_EXIT;
     d.pid       = tgid;
     d.ppid      = task->real_parent->tgid;
@@ -1337,16 +1652,22 @@ __CPU__
     d.min_flt   = task->min_flt;
     d.nvcsw     = task->nvcsw;
     d.nivcsw    = task->nivcsw;
-__SCHED____IO____DELAY____DSTATE_TASK____DSTATE_READ____NETB_READ____PIDS____TTY____CGID__
+__SCHED____IO____DELAY____DSTATE_TASK____DSTATE_READ____NETB_READ____PIDS____TTY____CGID____EXIT_LEADER__
     events.perf_submit(args, &d, sizeof(d));
 __SUBMIT_EXIT__
     return 0;
 }
 """
     return (text.replace('__INC__', '\n'.join(inc))
+                .replace('__DATA_ACC__', data_acc)
+                .replace('__FORK_PROBE__', fork_probe)
+                .replace('__THREAD_DEL__', thread_del)
+                .replace('__EXIT_GATE__', exit_gate)
+                .replace('__EXIT_LEADER__', exit_leader)
                 .replace('__ARGV_DEFS__', argv_defs)
                 .replace('__SUBMIT_DEFS__', submit_defs)
                 .replace('__DSTATE_DEFS__', dstate_defs)
+                .replace('__ACC_DEFS__', acc_defs)
                 .replace('__NETB_DEFS__', netb_defs)
                 .replace('__TCP_COMMON__', tcp_common_defs)
                 .replace('__TCP_TP__', tcp_tp)
@@ -1743,7 +2064,7 @@ def sandbox_ancestry_of(m):
     return out
 
 
-def _envelope(event):
+def _envelope(event, when=None):
     """The record envelope: `ts`, `ts_epoch`, `host`, `event`, `collector_pid`,
     `schema_version`.
 
@@ -1765,8 +2086,15 @@ def _envelope(event):
 
     Built here rather than copied per record type so a future envelope field
     lands on all of them; DailyWriter.write() backstops anything that still
-    constructs one by hand."""
-    return {'ts': _now(), 'ts_epoch': time.time(), 'host': HOSTNAME,
+    constructs one by hand.
+
+    `when` (epoch seconds) stamps a record for a moment already past: an exit
+    record is built at the end of its hold, but describes the exit."""
+    if when is None:
+        ts, when = _now(), time.time()
+    else:
+        ts = datetime.fromtimestamp(when).strftime('%Y-%m-%d %H:%M:%S')
+    return {'ts': ts, 'ts_epoch': when, 'host': HOSTNAME,
             'event': event, 'collector_pid': COLLECTOR_PID,
             'schema_version': SCHEMA_VERSION}
 
@@ -1936,6 +2264,22 @@ def decode_argv(buf, cap=None, truncated=False):
     return s if cap is None else s[:cap]
 
 
+def argv_tokens(buf, truncated=False):
+    r"""The same arg area as its separate arguments, cut where decode_argv cuts.
+
+    decode_argv's string cannot say where one argument ends and the next
+    begins, and redaction needs to: a prompt is ONE argument, spaces and all."""
+    if not buf:
+        return []
+    raw = buf.rstrip(b'\x00')
+    if truncated:
+        cut = raw.rfind(b'\x00')
+        raw = raw[:cut] if cut > 0 else b''
+    if not raw:
+        return []
+    return [t.decode('utf-8', 'replace') for t in raw.split(b'\x00')]
+
+
 _JOBID_PATTERNS = (
     re.compile(r'Submitted batch job (\d+)'),                      # sbatch
     re.compile(r'salloc: Granted job allocation (\d+)'),            # salloc
@@ -2033,6 +2377,104 @@ _fork_prev = None
 # _stage_exit().
 _pending_exits = collections.deque()
 _conn_dropped = {'n': 0, 'commands': {}}   # conns whose owner never got an exit record
+# entries retired without an exit event (a lost one, or a pid recycled under
+# them), and those only seen missing once so far: retired on the second miss
+_proc_stats = {'vanished': 0}
+_proc_missing = set()
+# Exceptions a handler swallowed, by handler. They used to vanish without a
+# trace; now each residency_totals and the stop record carry the counts.
+_handler_errors = collections.Counter()
+# perf events decoded and dropped per ring, cumulative; set up by main()
+_perf_seen = {}
+_perf_lost = {}
+
+
+def _count_error(where):
+    _handler_errors[where] += 1
+
+
+# ---------------------------------------------------------------------------
+# event ordering
+# ---------------------------------------------------------------------------
+# The queue holds (ktime_ns, rank, seq, handler, event). `rank` orders events
+# that share a timestamp: an exec and its argv are stamped with the same
+# ktime_ns, and the argv must come second. `seq` keeps arrival order among the
+# rest, so the sort never compares a handler or an event.
+RANK_CORE, RANK_ARGV, RANK_WRITE, RANK_TCP = 0, 1, 2, 3
+_RANK_MAX = 9
+_evq = []
+_ev_seq = itertools.count()
+
+
+def enqueue_event(ktime, rank, handler, ev):
+    _evq.append((ktime, rank, next(_ev_seq), handler, ev))
+
+
+def dispatch_events(cutoff=None):
+    """Apply queued events stamped at or before kernel time `cutoff` (None: all
+    of them), oldest first. Returns how many were applied.
+
+    The handlers assume causal order -- a process's fork before its exec, its
+    exec before its exit -- and the perf rings do not deliver it. Every CPU has
+    its own ring and BCC drains them in turn, so one poll round can hand over a
+    process's exit, read off one CPU's ring, before its own exec off another's,
+    and every argv after every exec. Applied in that order, an exec after its
+    exit revived the dead process: an entry nothing ever retired, which held its
+    endpoint-table entries forever and lent its identity to the next process on
+    the pid. And an exit record was frozen before its argv arrived."""
+    global _evq
+    if not _evq:
+        return 0
+    _evq.sort()
+    if cutoff is None:
+        due, _evq = _evq, []
+    else:
+        i = bisect.bisect_right(_evq, (cutoff, _RANK_MAX))
+        if not i:
+            return 0
+        due, _evq = _evq[:i], _evq[i:]
+    for _kt, _rank, _seq, handler, ev in due:
+        try:
+            handler(ev)
+        except Exception:
+            _count_error(handler.__name__)
+    return len(due)
+
+
+def _queued_exits():
+    """Pids whose exit event is queued but not applied yet."""
+    return {ev.pid for _kt, rank, _s, _h, ev in _evq
+            if rank == RANK_CORE and getattr(ev, 'type', None) == EVT_EXIT}
+
+
+def reconcile_proc(now=None):
+    """Retire live entries whose process is gone; returns the set of live pids,
+    or None when /proc could not be listed.
+
+    An exit event can be lost (a full perf ring), and before this nothing ever
+    retired the entry it left behind: it stayed live, kept its endpoint-table
+    entries, and handed its identity to the next process on its pid. The tick
+    only re-read processes it was going to report, so an untracked one never
+    left -- 16-20k of them at a time on a busy login node. An entry is retired
+    on its SECOND miss, a tick apart: on the first, its exit event may simply
+    still be in a ring."""
+    try:
+        alive = list_pids()
+    except Exception:
+        return None
+    now = time.time() if now is None else now
+    held = _queued_exits()
+    missing = set()
+    for pid, m in list(proc.items()):
+        if m['exited'] or pid in alive or pid in held:
+            continue
+        if pid in _proc_missing:
+            _retire(m, now)
+        else:
+            missing.add(pid)
+    _proc_missing.clear()
+    _proc_missing.update(missing)
+    return alive
 
 
 def _on_signal(signum, frame):
@@ -2045,7 +2487,8 @@ signal.signal(signal.SIGINT, _on_signal)
 
 
 def _new_entry(pid, ppid, comm=None, **kw):
-    e = {'pid': pid, 'ppid': ppid, 'comm': comm, 'args': None, 'argv_source': None,
+    e = {'pid': pid, 'ppid': ppid, 'comm': comm, 'args': None, 'args_red': None,
+         'argv_source': None,
          'argv_ktime': None, 'tty': None, 'user': None, 'uid': None, 'cgroup': None,
          'cwd': None, 'start_ticks': None,
      'args_raw_len': None, 'args_clamped': False, 'tick_cpu_s': None, 'sandbox_anc': _UNSET,
@@ -2054,12 +2497,59 @@ def _new_entry(pid, ppid, comm=None, **kw):
          'agent_pid': None, 'agent_type': None, 'depth': None,
          'exited': False, 'gc_ts': None, 'is_submit': False, 'submit_buf': None,
          'emitted': False, 'conns': None,
+         # kernel times of the fork that made the pid and of its exit, so an
+         # event handled out of order can tell whether it is about this process
+         'fork_ktime': None, 'exit_ktime': None,
          # schema 7 (see netpeer_read): the endpoint table's counters for this
          # process, what the netio series has reported of them, and its state
          'net_io': False, 'exit_pending': False, 'netp_k': None, 'netp_kobj': None,
          'netp_rep': None, 'in_series': False, 'netio_ts': None, 'netp_done': False}
     e.update(kw)
     return e
+
+
+def _set_args(m, args, source, argv=None):
+    """Set a process's command line. `argv` is the same line as separate
+    arguments, where the source kept them apart (the kernel's arg area, /proc's
+    cmdline): the emitted copy is redacted from those boundaries."""
+    m['args'], m['argv_source'] = args, source
+    m['args_red'] = _redact_now(args, argv)
+
+
+def _redact_now(args, argv):
+    """(args, as written, what was masked) for a line that needs its argument
+    boundaries masked -- one that may run a coding agent, whose prompt is a
+    single argument with spaces in it -- while they are in hand. None leaves
+    the line to _emit_args(), which needs only the string."""
+    if not (REDACT_PROMPTS and args and argv) or not needs_argv(args):
+        return None
+    try:
+        red, what = redact_argv(argv, keys=REDACT_KEYS, prompts=True)
+    except Exception:
+        _count_error('redact')
+        return None                       # _emit_args() tries again, and fails closed
+    return (args, red, what)
+
+
+def _emit_args(m):
+    """(the command line as written, sorted names of what redaction masked or
+    None). Cached on the entry against the very string it was made from, so a
+    new argv is never written out under an old masking."""
+    a = m.get('args')
+    if not a:
+        return None, None
+    if not REDACT:
+        return a, None
+    c = m.get('args_red')
+    if c is None or c[0] is not a:
+        try:
+            red, what = redact_line(a, keys=REDACT_KEYS, prompts=REDACT_PROMPTS)
+        except Exception:
+            # Fail closed: a line the masking could not read is not written out.
+            _count_error('redact')
+            red, what = '[REDACTED]', ['error']
+        c = m['args_red'] = (a, red, what)
+    return c[1], c[2]
 
 
 def _link(pid, ppid):
@@ -2076,9 +2566,14 @@ def _unlink(pid, ppid):
 
 
 def proc_add(pid, ppid, **kw):
+    """The entry for `pid`, made if new. An existing entry keeps its parent:
+    attribution follows the process that forked it, while exec and exit report
+    the CURRENT parent -- init or a subreaper for anything whose parent exited
+    first, which is how `nohup cmd &` from an agent's shell runs."""
     m = proc.get(pid)
     if m is not None:
-        proc_set_ppid(m, ppid if ppid is not None else m['ppid'])
+        if m['ppid'] is None and ppid is not None:
+            proc_set_ppid(m, ppid)
         return m
     m = _new_entry(pid, ppid, **kw)
     proc[pid] = m
@@ -2101,13 +2596,17 @@ def proc_del(pid):
     _children.pop(pid, None)
 
 
-def resolve(pid):
+def resolve(pid, m=None):
     """Nearest-agent-ancestor attribution, memoized.
 
     A fork-without-exec child carries its parent's argv (argv_source='inherit');
     that argv must NOT make the child its own agent root — it attaches to the
-    parent's tree at depth+1, as it would under the /proc poller."""
-    m = proc.get(pid)
+    parent's tree at depth+1, as it would under the /proc poller.
+
+    `m` is the entry itself when the caller holds it: an exit record is written
+    after a hold, and by then the pid may name a newer process."""
+    if m is None:
+        m = proc.get(pid)
     if m is None:
         return False
     if m['attributed'] is not None:
@@ -2127,18 +2626,19 @@ def resolve(pid):
     return False
 
 
-def tree_root(pid):
+def tree_root(pid, m=None):
     """Top-most agent ancestor — the census's session root — as opposed to
     agent_pid, the nearest one (the spawner). A VS Code helper is its own nearest
-    agent but belongs to the extension host's tree."""
-    m = proc.get(pid)
-    if m is None or not resolve(pid):
+    agent but belongs to the extension host's tree. `m` as for resolve()."""
+    if m is None:
+        m = proc.get(pid)
+    if m is None or not resolve(pid, m):
         return None
     root = m['agent_pid']
     seen = set()
     while root is not None and root not in seen:
         seen.add(root)
-        rm = proc.get(root)
+        rm = m if root == pid else proc.get(root)
         if rm is None:
             break
         pp = rm['ppid']
@@ -2188,19 +2688,36 @@ def _ingest_proc(pid, ppid=None):
     m = proc_add(pid, ppid if ppid is not None else st['ppid'])
     m.update(vals)
     if m['argv_source'] != 'kernel':
-        args = read_cmdline(pid, st['comm'])
+        args, argv = _read_argv(pid)
         if args and not args.startswith('['):
-            m['args'], m['argv_source'] = args, 'proc'
-            m['args_raw_len'] = len(args)      # read_cmdline is uncapped: exact
+            _set_args(m, args, 'proc', argv=argv)
+            m['args_raw_len'] = len(args)      # /proc's cmdline is uncapped: exact
             m['args_clamped'] = False
             m['attributed'] = None
     return True
 
 
-def seed_existing():
+def _read_argv(pid):
+    """(command line, its separate arguments) from /proc/<pid>/cmdline -- the
+    line exactly as procparse.read_cmdline() makes it -- or (None, None)."""
+    try:
+        with open('/proc/%d/cmdline' % pid, 'rb') as f:
+            raw = f.read()
+    except Exception:
+        return None, None
+    argv = argv_tokens(raw)
+    line = raw.replace(b'\x00', b' ').decode('utf-8', 'replace').strip()
+    return (line or None), argv
+
+
+def seed_existing(poll=None):
     """One-time /proc walk so pre-existing agents and parents resolve. The only
-    full scan this collector ever does."""
-    for pid in list_pids():
+    full scan this collector ever does. It runs with the probes attached, and
+    `poll` drains the perf rings into the event queue every few hundred pids,
+    so a long walk on a busy node cannot overflow them."""
+    for i, pid in enumerate(list_pids()):
+        if poll is not None and i % 256 == 255:
+            poll()
         _ingest_proc(pid)
         if WANT_CWD:
             m = proc.get(pid)
@@ -2299,9 +2816,66 @@ def _inherit_cwd(m):
         m['cwd'] = pm['cwd']
 
 
+class _FileHandle(ctypes.Structure):
+    """struct file_handle with room for the 8-byte kernfs id."""
+    _fields_ = [('handle_bytes', ctypes.c_uint), ('handle_type', ctypes.c_int),
+                ('f_handle', ctypes.c_ubyte * 8)]
+
+
+_libc = []
+
+
+def _kernfs_id(path):
+    """The id bpf_get_current_cgroup_id() returns for the cgroup at `path`, from
+    its file handle (kernfs exports the node id as one), or None.
+
+    The inode number is NOT that id everywhere: through 5.4 the id is
+    generation << 32 | ino, and the generation starts at 1, so the old
+    inode-keyed map never matched one id on EL8. Every exec there kept the
+    cgroup its process inherited at fork -- pid 1's /init.scope for anything
+    systemd starts, since it moves the child only after forking it -- and that
+    spread to everything below: 22% of one node's exit records."""
+    try:
+        if not _libc:
+            _libc.append(ctypes.CDLL(None, use_errno=True))
+        fh = _FileHandle()
+        fh.handle_bytes = 8
+        mount_id = ctypes.c_int(0)
+        if _libc[0].name_to_handle_at(-100, path.encode(), ctypes.byref(fh),
+                                      ctypes.byref(mount_id), 0) != 0:
+            return None
+        if fh.handle_bytes != 8:
+            return None
+        return int.from_bytes(bytes(fh.f_handle), 'little')
+    except Exception:
+        return None
+
+
+def _cgroup2_mount():
+    """Where the unified (v2) hierarchy is mounted -- /sys/fs/cgroup on a v2
+    host, /sys/fs/cgroup/unified on a hybrid one -- or None (pure v1). The id
+    is meaningful only there; walking every v1 hierarchy as well, as this used
+    to, let one hierarchy's inode numbers stand for another's."""
+    try:
+        with open('/proc/self/mountinfo') as f:
+            for line in f:
+                parts = line.split()
+                if '-' in parts:
+                    sep = parts.index('-')
+                    if sep + 1 < len(parts) and parts[sep + 1] == 'cgroup2':
+                        return parts[4]
+    except Exception:
+        pass
+    return None
+
+
+_CGROUP2 = []      # [mount point or None], found once
+
+
 def _resolve_cgid(cgid):
-    """cgroup v2 id -> path via /sys/fs/cgroup inode numbers. Lazy; a miss
-    triggers a rescan at most every 30 s (session scopes appear at login)."""
+    """cgroup v2 id -> path. Lazy; a miss triggers a rescan at most every 30 s
+    (session scopes appear at login), and a caller that can still read /proc
+    should, when this returns None."""
     global _cgid_last_walk
     if not cgid:
         return None
@@ -2312,14 +2886,25 @@ def _resolve_cgid(cgid):
     if now - _cgid_last_walk < 30:
         return None
     _cgid_last_walk = now
-    root = '/sys/fs/cgroup'
+    if not _CGROUP2:
+        _CGROUP2.append(_cgroup2_mount())
+    root = _CGROUP2[0]
+    if root is None:
+        return None
     try:
         for dirpath, _dirnames, _files in os.walk(root):
-            try:
-                ino = os.stat(dirpath).st_ino
-            except OSError:
-                continue
-            _cgid_map[ino] = dirpath[len(root):] or '/'
+            path = dirpath[len(root):] or '/'
+            kid = _kernfs_id(dirpath)
+            if kid is not None:
+                _cgid_map[kid] = path
+            else:
+                try:
+                    ino = os.stat(dirpath).st_ino
+                except OSError:
+                    continue
+                # no file handle: the inode, and the 4.18 id with generation 1
+                _cgid_map[ino] = path
+                _cgid_map[(1 << 32) | ino] = path
             if len(_cgid_map) > 200000:
                 break
     except Exception:
@@ -2342,7 +2927,7 @@ def actor_of(m):
     /system.slice/ssh.service while another user's VS Code sat in a
     user-N.slice session scope, so the cgroup reflects how the session was
     established, not who owns the work."""
-    if resolve(m['pid']):
+    if resolve(m['pid'], m):
         return 'agent', 'ancestry'
     if m.get('tty'):
         return 'human', 'tty'
@@ -2370,14 +2955,49 @@ def _cstr(raw):
     return str(raw).split('\x00', 1)[0]
 
 
+def _predates(m, kt):
+    """True when entry `m` provably belongs to a process that existed before
+    kernel time `kt`, so an event at `kt` that creates a process is not about it:
+    its pid was recycled after an exit the collector never saw (a lost event).
+    Seeded entries know only their /proc start time, which is whole clock ticks
+    against a boot time rounded to the second, hence the slack."""
+    if not kt:
+        return False
+    for k in ('fork_ktime', 'exec_ktime'):
+        v = m.get(k)
+        if v is not None and v < kt:
+            return True
+    se = m.get('start_ep')
+    return bool(se is not None and BTIME and (BTIME + kt / 1e9) - se > 5.0)
+
+
+def _retire(m, now=None):
+    """Mark an entry whose process is gone without an exit event. It is then
+    reaped like any exited entry; there is no record to write."""
+    m['exited'] = True
+    m['vanished'] = True
+    m['gc_ts'] = m['gc_ts'] or (time.time() if now is None else now)
+    _proc_stats['vanished'] += 1
+
+
 def on_fork(e):
     child, parent = e.pid, e.ppid
+    kt = getattr(e, 'ktime_ns', None)
+    m = proc.get(child)
+    if m is not None:
+        if m['exited']:
+            if kt and m.get('exit_ktime') and kt < m['exit_ktime']:
+                return                        # that process's own birth, handled late
+        elif _predates(m, kt):
+            _retire(m)                        # its exit was lost; the pid is new now
     # sched_process_fork fires for every clone(), threads included. A thread has
     # tgid != pid, never produces a leader exit event, and /proc/<tid>/stat
     # reports the whole group's numbers — registering one creates an immortal
     # ghost that double-counts its process.
     if child in proc and not proc[child]['exited']:
-        pass                                  # known leader (its exit arrived first)
+        pass                                  # made by an event handled earlier
+    elif 'fork_raw' in FEATURES:
+        pass                                  # the kernel sends processes only
     else:
         tgid = _tgid_of(child)
         if tgid is None or tgid != child:
@@ -2386,6 +3006,8 @@ def on_fork(e):
     if m['exited']:
         proc_del(child)                       # pid recycled inside the GC window
         m = proc_add(child, parent)
+    if m['fork_ktime'] is None:
+        m['fork_ktime'] = kt
     if m['uid'] is None and e.uid != 0xffffffff:
         m['uid'], m['user'] = e.uid, username(e.uid)
     for k in ('user', 'uid', 'cgroup', 'tty'):
@@ -2395,33 +3017,54 @@ def on_fork(e):
     pm = proc.get(parent)
     if pm is not None and m['args'] is None and pm.get('args'):
         m['args'], m['argv_source'] = pm['args'], 'inherit'
+        m['args_red'] = pm.get('args_red')     # same string, same masking
         m['args_raw_len'] = pm.get('args_raw_len')
         m['args_clamped'] = pm.get('args_clamped', False)
 
 
 def on_exec(e):
     pid = e.pid
+    m = proc.get(pid)
+    late = False
+    if m is not None and m.get('exec_ktime') is not None and e.ktime_ns < m['exec_ktime']:
+        return                            # an earlier image than the one already applied
+    if m is not None and m['exited']:
+        if m.get('exit_ktime') is not None and e.ktime_ns < m['exit_ktime']:
+            # This process's own exec, handled after its exit. What it says still
+            # belongs in the exit record, which is held; but the process is gone,
+            # so it is not revived and /proc is not read (the pid may be reused).
+            late = True
+        else:
+            proc_del(pid)                 # a recycled pid whose fork was never seen
     m = proc_add(pid, e.ppid)
-    proc_set_ppid(m, e.ppid)
     m['comm'] = _cstr(e.comm) or m['comm']
     m['exec_ktime'] = e.ktime_ns
-    m['exited'] = False
+    if not late:
+        m['exited'] = False
     m['uid'] = e.uid
     m['user'] = username(e.uid)
     m['is_submit'] = m['is_submit'] or (m['comm'] in SUBMIT_COMMS)
     # exec replaces the image, so a previous argv is stale — unless the kernel
-    # argv for THIS exec already arrived on its own ring (the rings are drained in
-    # arbitrary order; the two events carry the same ktime_ns).
+    # argv for THIS exec already arrived (it carries the same ktime_ns; the queue
+    # applies it after the exec, but an event from a round already applied can
+    # still come first).
     if not (m['argv_source'] == 'kernel' and m['argv_ktime'] == e.ktime_ns):
-        m['args'], m['argv_source'], m['argv_ktime'] = None, None, None
+        _set_args(m, None, None)
+        m['argv_ktime'] = None
         # the old image's lengths too: unknown until the new argv arrives
         m['args_raw_len'], m['args_clamped'] = None, False
     tty_known = False
     if 'tty' in FEATURES:
         m['tty'] = _cstr(e.tty) if e.has_tty else None
         tty_known = True
+    if late:
+        _invalidate_attribution(pid)
+        return
     if 'cgid' in FEATURES and e.cgid:
-        m['cgroup'] = _resolve_cgid(e.cgid) or m['cgroup']
+        # A miss reads /proc rather than keep the cgroup inherited at fork: that
+        # is the one wrong for every process a service manager starts (it forks,
+        # THEN moves the child, then the child execs).
+        m['cgroup'] = _resolve_cgid(e.cgid) or read_cgroup(pid) or m['cgroup']
     argv_kernel = ('argv_user' in FEATURES) or ('argv_kernel' in FEATURES)
     need_proc = (not argv_kernel) or ('tty' not in FEATURES) or (m['cgroup'] is None)
     if need_proc:
@@ -2469,20 +3112,50 @@ def on_exec(e):
 
 def on_argv(a):
     pid = a.pid
+    m = proc.get(pid)
+    if (m is not None and m['exited'] and m.get('exit_ktime') is not None
+            and a.ktime_ns > m['exit_ktime']):
+        proc_del(pid)                     # the argv of a process born on a recycled pid
     m = proc_add(pid, None)
+    if m.get('exec_ktime') is not None and a.ktime_ns < m['exec_ktime']:
+        return                            # the argv of an image already replaced
     raw = ctypes.string_at(ctypes.addressof(a) + type(a).buf.offset, a.len)
     # raw_len is the pre-clamp length; > a.len means the kernel truncated, which
     # decode_argv must know or a half-token can classify as a whole one.
     raw_len = getattr(a, 'raw_len', 0) or a.len
-    args = decode_argv(raw, truncated=(raw_len > a.len))
+    truncated = raw_len > a.len
+    args = decode_argv(raw, truncated=truncated)
     if args:
-        m['args'], m['argv_source'], m['argv_ktime'] = args, 'kernel', a.ktime_ns
+        _set_args(m, args, 'kernel', argv=argv_tokens(raw, truncated))
+        m['argv_ktime'] = a.ktime_ns
         m['args_raw_len'] = raw_len
-        m['args_clamped'] = raw_len > a.len    # the ARGV_KMAX read cut it
+        m['args_clamped'] = truncated           # the ARGV_KMAX read cut it
         if not m['comm']:
             m['comm'] = os.path.basename(args.split(' ', 1)[0])[:15]
         _invalidate_attribution(pid)
+        _after_argv(m)
         _ask_hosts(m)
+
+
+def _after_argv(m):
+    """What on_exec decides from argv, for the kernel argv that reaches the
+    process after its exec event (the queue applies them in that order). Rare by
+    construction: only an agent's own exec or an approval-bypass flag does
+    anything, so ordinary processes cost one regex pass."""
+    if m['exited']:
+        return
+    args = m.get('args')
+    tag = classify(args)
+    if tag is not None:
+        if WANT_CWD:
+            c = read_cwd(m['pid'])        # the session's work_dir comes from here
+            if c:
+                m['cwd'] = c
+        if WANT_SANDBOX:
+            _read_sandbox(m, 'exec')
+    mode, sb_off = approval_mode_of(args)
+    if mode and sb_off:
+        m['sandbox'], m['sandbox_src'] = 'unsandboxed', 'argv'
 
 
 def _duration_and_start(m, e):
@@ -2545,14 +3218,18 @@ def _command_of(m):
 
 def _base_identity(m, actor, attribution=None):
     agent_pid = m.get('agent_pid')
+    args, masked = _emit_args(m)
     return {
         'actor': actor,
         'actor3': actor3(actor, m.get('agent_type')),
         'attribution': attribution,
         'pid': m['pid'], 'ppid': m['ppid'], 'uid': m.get('uid'), 'user': m.get('user'),
         'tty': m.get('tty'), 'command': _command_of(m),
-        'args': ((m.get('args') or '')[:ARGS_MAXLEN] if ARGS_MAXLEN > 0
-                 else m.get('args')) or None,
+        # masked first, then cut: a cut could split a key past recognition
+        'args': ((args or '')[:ARGS_MAXLEN] if ARGS_MAXLEN > 0 else args) or None,
+        # what `args` had masked ('prompt', or the credential rule that fired),
+        # null when nothing was; the lengths below are still the raw argv's
+        'args_redacted': masked,
         'argv_source': m.get('argv_source'),
         # An honest denominator for "unresolvable" in the tool distribution: a
         # truncated shell payload was indistinguishable from a genuinely short
@@ -2575,7 +3252,7 @@ def _base_identity(m, actor, attribution=None):
         'session_key': ('apid:%s' % agent_pid) if agent_pid is not None else None,
         # session_key is pid-based and dies with a collector restart; this does not.
         'session_uuid': session_uuid(agent_pid),
-        'tree_root_pid': tree_root(m['pid']) if agent_pid is not None else None,
+        'tree_root_pid': tree_root(m['pid'], m) if agent_pid is not None else None,
         'depth': m.get('depth'), 'is_agent': bool(m.get('is_agent')),
         'autonomous': is_autonomous(m.get('args')) if m.get('is_agent') else None,
         'cgroup': m.get('cgroup'),
@@ -2606,6 +3283,17 @@ def _stub_identity(pid=None, uid=None, comm=None):
 
 def on_exit(e):
     pid = e.pid
+    m = proc.get(pid)
+    if m is not None and m['exited'] and m.get('exit_ktime') is not None:
+        if e.ktime_ns == m['exit_ktime']:
+            return                            # the same event twice
+        proc_del(pid)                         # a recycled pid whose fork and exec were lost
+    elif m is not None and _predates(m, getattr(e, 'start_ns', 0)):
+        # The entry is an older process than the one exiting (the event names its
+        # start): that one's exit was lost, and this one's fork and exec too.
+        if not m['exited']:
+            _retire(m)
+        proc_del(pid)
     m = proc_add(pid, e.ppid, comm=_cstr(e.comm) or None)
     if not m['comm']:
         m['comm'] = _cstr(e.comm) or None
@@ -2624,28 +3312,199 @@ def on_exit(e):
     _inherit_cwd(m)
     _inherit_sandbox(m)
     m['exited'] = True
+    m['exit_ktime'] = e.ktime_ns
     m['gc_ts'] = time.time()
-
-    actor, attribution = actor_of(m)
-    if actor is None:
-        _note_dropped(m)
-        return
-    if not INCLUDE_ROOTS and m['is_agent']:
-        return
-
-    start_ep, duration, dur_src = _duration_and_start(m, e)
-    cpu_s = (e.utime_ns + e.stime_ns) / 1e9
-    F = FEATURES
-    io_bytes = (e.rd_bytes + e.wr_bytes) if 'io' in F else 0
-    comm = m.get('comm') or ''
-    m['net_io'] = bool('netbytes' in F and getattr(e, 'has_net', 0)
+    m['net_io'] = bool('netbytes' in FEATURES and getattr(e, 'has_net', 0)
                        and (e.net_tx or e.net_rx))
-    # These three discard a process for being too cheap to be interesting. They
-    # are DECIDED here, where the exit event's counters are, but APPLIED at drain
-    # time (see _stage_exit) -- a 40 ms curl is below MIN_DURATION and its socket
-    # close has not arrived yet, so dropping it now would throw away the
-    # connection that made it worth keeping. A process that talked to the network
-    # is never a no-op, over TCP or not (m['net_io']).
+    _stage_exit(m, e)
+
+
+# fork, exec and exit share one ring; the queue is handed the right one
+_CORE_HANDLERS = {EVT_FORK: on_fork, EVT_EXEC: on_exec, EVT_EXIT: on_exit}
+
+
+# ---- whole-process counters (the thread_acc block) --------------------------
+#
+# sched_process_exit fires once per THREAD. The record used to be built at the
+# group leader's, from the leader's own counters plus signal_struct's -- and
+# signal_struct only holds threads the kernel has already released, which a
+# thread is AFTER its own exit tracepoint. When a process ends, its threads die
+# together and the leader is rarely the last of them, so most of a 42-thread
+# process's CPU was in nobody's record (one Codex process: 48,297 s at its last
+# residency tick, 79.7 s at exit). Faults, context switches, run time, waits and
+# D-state were the leader's alone, and peak RSS predated the last thread.
+#
+# With the block, every thread adds its own counters to a per-process entry in
+# `thr_acc` as it exits, and the record comes from the LAST thread to exit
+# (signal->live == 0). The first thread to exit also notes what signal_struct
+# held then -- threads that died before the collector attached -- as the base.
+# The entry is taken after the exit hold, not at the exit event: a thread that
+# dropped `live` earlier can reach its own tracepoint later (the one tearing
+# down a large address space does), and the hold lets it land first.
+_thr_acc_tab = None        # BPF hash `thr_acc`, when the block loaded (set by main)
+_thr_acc_miss_tab = None   # BPF array `thr_acc_miss`: thread exits that found it full
+# entries taken for a record; those made by a thread that reached its tracepoint
+# after the last one (late); and records whose entry was gone (missing)
+_thr_acc_stats = {'taken': 0, 'late': 0, 'missing': 0, 'swept': 0}
+
+# (event field, its signal_struct twin on the event, accumulator suffix)
+_ACC_SIGNAL = (('utime_ns', 'sig_utime', 'utime'), ('stime_ns', 'sig_stime', 'stime'),
+               ('run_ns', 'sig_run', 'run'), ('min_flt', 'sig_min_flt', 'min_flt'),
+               ('maj_flt', 'sig_maj_flt', 'maj_flt'), ('nvcsw', 'sig_nvcsw', 'nvcsw'),
+               ('nivcsw', 'sig_nivcsw', 'nivcsw'))
+_ACC_SIGNAL_IO = (('rd_bytes', 'sig_rd', 'rd'), ('wr_bytes', 'sig_wr', 'wr'),
+                  ('rchar', 'sig_rchar', 'rchar'), ('wchar', 'sig_wchar', 'wchar'))
+# per-thread counters with no signal_struct total: (event field, suffix, block)
+_ACC_OWN = (('wait_ns', 'wait', 'sched'), ('blkio_ns', 'blkio', 'delay'),
+            ('swapin_ns', 'swapin', 'delay'), ('freepages_ns', 'freepages', 'delay'),
+            ('block_ns', 'block', 'dstate_task'))
+# everything _exit_record() reads off the counters
+_TOTAL_FIELDS = ('utime_ns', 'stime_ns', 'run_ns', 'min_flt', 'maj_flt', 'nvcsw', 'nivcsw',
+                 'rd_bytes', 'wr_bytes', 'rchar', 'wchar', 'wait_ns', 'blkio_ns',
+                 'swapin_ns', 'freepages_ns', 'block_ns', 'has_block', 'dstate_ns',
+                 'dstate_max', 'dstate_cnt', 'has_dstate', 'nr_threads')
+
+
+class _Totals(object):
+    """A process's counters, under the exit event's own field names."""
+
+
+def _may_have_acc(e):
+    """An accumulator can exist only if one did at the exit (has_acc), or a
+    thread was still unreleased then (nr_threads > 1) and may add one late."""
+    return bool(getattr(e, 'has_acc', 0) or getattr(e, 'nr_threads', 0) > 1)
+
+
+def _thread_acc_take(e):
+    """The process's accumulator, removed from the kernel map, or None."""
+    tab = _thr_acc_tab
+    if tab is None or not _may_have_acc(e):
+        return None
+    k = tab.Key(e.pid)
+    try:
+        v = tab[k]
+    except KeyError:
+        if getattr(e, 'has_acc', 0):
+            _thr_acc_stats['missing'] += 1
+        return None
+    try:
+        del tab[k]
+    except KeyError:
+        pass
+    _thr_acc_stats['taken'] += 1
+    if not getattr(e, 'has_acc', 0):
+        _thr_acc_stats['late'] += 1
+    return v
+
+
+def _thread_acc_release(e):
+    """Drop the accumulator of a process that gets no record."""
+    tab = _thr_acc_tab
+    if tab is None or not _may_have_acc(e):
+        return
+    try:
+        del tab[tab.Key(e.pid)]
+    except Exception:
+        pass
+
+
+_residency_ticks = 0
+
+
+def _thread_acc_sweep(alive):
+    """Delete accumulators whose process is gone and has no exit pending: its
+    exit event was lost, so nothing else ever would, and a full map stops
+    accumulating for every process."""
+    tab = _thr_acc_tab
+    if tab is None:
+        return 0
+    held = {m['pid'] for _d, m, _e, _t in _pending_exits} | _queued_exits()
+    n = 0
+    try:
+        keys = list(tab.keys())
+    except Exception:
+        return 0
+    for k in keys:
+        pid = getattr(k, 'value', k)
+        if pid in alive or pid in held:
+            continue
+        try:
+            del tab[k]
+            n += 1
+        except Exception:
+            pass
+    _thr_acc_stats['swept'] += n
+    return n
+
+
+def _thread_acc_report():
+    """The thread_acc block's counters for residency_totals, or None without it."""
+    if _thr_acc_tab is None:
+        return None
+    out = dict(_thr_acc_stats)
+    try:
+        out['full'] = int(_thr_acc_miss_tab[0].value)
+    except Exception:
+        out['full'] = None
+    return out
+
+
+def _exit_totals(e):
+    """The whole process's counters at exit: the event itself without the
+    thread_acc block (the leader's, as before), else this last thread's own plus
+    the accumulator, on a base of signal_struct.
+
+    Which base: the one the accumulator noted when its first thread exited --
+    if it existed at the exit. One made LATER, by a thread that reached its
+    tracepoint after the last one, noted a signal_struct that may already hold
+    the last thread, so then the event's own signal_struct reading is the base
+    and the late entry adds only its threads."""
+    if 'thread_acc' not in FEATURES:
+        return e
+    acc = _thread_acc_take(e)
+    t = _Totals()
+    for name in _TOTAL_FIELDS:
+        setattr(t, name, getattr(e, name, 0))
+    acc_base = acc is not None and getattr(e, 'has_acc', 0)
+    fields = _ACC_SIGNAL + (_ACC_SIGNAL_IO if 'io' in FEATURES else ())
+    for own, sig, a in fields:
+        base = getattr(acc, 'b_' + a) if acc_base else getattr(e, sig, 0)
+        extra = getattr(acc, 's_' + a) if acc is not None else 0
+        setattr(t, own, getattr(e, own) + base + extra)
+    if acc is None:
+        return t
+    for own, a, blk in _ACC_OWN:
+        if blk in FEATURES:
+            setattr(t, own, getattr(e, own) + getattr(acc, 's_' + a))
+    if 'dstate_stat' in FEATURES and acc.s_dstate_cnt:
+        t.dstate_ns = getattr(e, 'dstate_ns', 0) + acc.s_dstate
+        t.dstate_cnt = getattr(e, 'dstate_cnt', 0) + acc.s_dstate_cnt
+        t.dstate_max = max(getattr(e, 'dstate_max', 0), acc.s_dstate_max)
+        t.has_dstate = 1
+    t.nr_threads = max(getattr(e, 'nr_threads', 0), acc.nthreads)
+    return t
+
+
+def _exit_record(m, e, actor, attribution, ts=None):
+    """(record, quiet) for a process's exit event `e`.
+
+    Built when the record is WRITTEN, not when the event arrives: an argv, a
+    parent or an attribution that reaches the process during the hold belongs in
+    its record, and every one of those used to be frozen out of it. `ts` is when
+    the exit was handled, which is what the record's timestamp has always said.
+
+    `quiet` is decided here and applied by the caller: a process that is too
+    cheap to be interesting is still kept when it made a connection, and its
+    socket closes arrive after its exit event."""
+    F = FEATURES
+    t = _exit_totals(e)
+    start_ep, duration, dur_src = _duration_and_start(m, e)
+    cpu_s = (t.utime_ns + t.stime_ns) / 1e9
+    io_bytes = (t.rd_bytes + t.wr_bytes) if 'io' in F else 0
+    comm = m.get('comm') or ''
+    # These three discard a process for being too cheap to be interesting. A
+    # process that talked to the network is never a no-op, over TCP or not
+    # (m['net_io']); see _write_exit.
     quiet = bool(
         (not KEEP_TIMERS and not m['is_agent'] and comm in TIMER_COMMS
          and cpu_s == 0 and io_bytes == 0)
@@ -2653,8 +3512,8 @@ def on_exit(e):
         or (cpu_s < MIN_CPU))
 
     exit_code, sig, core = decode_status(e.exit_code)
-    ds_s, ds_n, ds_max, ds_src = pick_dstate(e, F)
-    rec = _envelope('exit')
+    ds_s, ds_n, ds_max, ds_src = pick_dstate(t, F)
+    rec = _envelope('exit', ts)
     rec.update(_base_identity(m, actor, attribution))
     rec.update({
         'fork_only':    not bool(comm),
@@ -2667,17 +3526,17 @@ def on_exit(e):
         'cpu_pct':      (round(100.0 * cpu_s / duration, 1) if duration and duration >= 0.01 else None),
         'peak_rss_mb':  null_if_off(round(e.hiwater_rss_pages * PAGE_SIZE / 1048576.0, 2),
                                     'signal', F),
-        'threads':      null_if_off(e.nr_threads, 'signal', F),
-        'min_flt':      e.min_flt,
-        'maj_flt':      e.maj_flt,
+        'threads':      null_if_off(t.nr_threads, 'signal', F),
+        'min_flt':      t.min_flt,
+        'maj_flt':      t.maj_flt,
         'cmaj_flt':     null_if_off(e.cmaj_flt, 'signal', F),
-        'nvcsw':        e.nvcsw,
-        'nivcsw':       e.nivcsw,
-        'sched_run_s':  round(e.run_ns / 1e9, 4),
-        'sched_wait_s': null_if_off(round(e.wait_ns / 1e9, 4), 'sched', F),
-        'blkio_wait_s':     null_if_off(round(e.blkio_ns / 1e9, 4), 'delay', F),
-        'swapin_wait_s':    null_if_off(round(e.swapin_ns / 1e9, 4), 'delay', F),
-        'freepages_wait_s': null_if_off(round(e.freepages_ns / 1e9, 4), 'delay', F),
+        'nvcsw':        t.nvcsw,
+        'nivcsw':       t.nivcsw,
+        'sched_run_s':  round(t.run_ns / 1e9, 4),
+        'sched_wait_s': null_if_off(round(t.wait_ns / 1e9, 4), 'sched', F),
+        'blkio_wait_s':     null_if_off(round(t.blkio_ns / 1e9, 4), 'delay', F),
+        'swapin_wait_s':    null_if_off(round(t.swapin_ns / 1e9, 4), 'delay', F),
+        'freepages_wait_s': null_if_off(round(t.freepages_ns / 1e9, 4), 'delay', F),
         # item 2: uninterruptible sleep, which delay accounting does NOT cover —
         # a task parked in autofs_mount_wait shows 0 blkio_wait_s and a real
         # dstate_wait_s, and that wedge is the login nodes' known failure mode.
@@ -2692,44 +3551,56 @@ def on_exit(e):
         'pgrp':  e.pgrp if F & PIDS_BLOCKS else None,
         'sid':   e.sid if F & PIDS_BLOCKS else None,
         'exit_code': exit_code, 'signal': sig, 'core_dumped': core,
-        'io': ({'rd_mb': round(e.rd_bytes / 1e6, 3), 'wr_mb': round(e.wr_bytes / 1e6, 3),
-                'rchar_mb': round(e.rchar / 1e6, 3), 'wchar_mb': round(e.wchar / 1e6, 3),
+        'io': ({'rd_mb': round(t.rd_bytes / 1e6, 3), 'wr_mb': round(t.wr_bytes / 1e6, 3),
+                'rchar_mb': round(t.rchar / 1e6, 3), 'wchar_mb': round(t.wchar / 1e6, 3),
                 'scope': 'process' if 'signal' in F else 'leader'} if 'io' in F else None),
         # poller-compat placeholders (this record is a strict superset of proc_trace's)
         'samples': None, 'state_last': None,
     })
-    _stage_exit(m, rec, quiet)
+    return rec, quiet
 
 
 # ---------------------------------------------------------------------------
 # deferred exit records (schema 6)
 # ---------------------------------------------------------------------------
 
-def _stage_exit(m, rec, quiet):
-    """Hold an exit record for EXIT_HOLD_MS, then write it with its `conns`.
+def _stage_exit(m, e):
+    """Hold an exit for EXIT_HOLD_MS, then write its record with its `conns`.
 
     The hold exists for one kernel ordering fact: do_exit() runs
     trace_sched_process_exit() BEFORE exit_files(), so the TCP_CLOSE events for
-    the sockets this process still held are submitted AFTER the exit event that
-    produced `rec`. Writing inline would fold in only the connections that
-    happened to close during the process's life and miss every one it was still
-    holding -- for an agent, nearly all of them.
+    the sockets this process still held are submitted AFTER the exit event.
+    Writing inline would fold in only the connections that happened to close
+    during the process's life and miss every one it was still holding -- for an
+    agent, nearly all of them. The record itself is built at the end of the hold
+    (_exit_record), so whatever else arrived late lands in it too.
 
-    Cost of the hold is ordering in the FILE only: `ts_epoch` is stamped when the
-    record is built, so a consumer that sorts on it (which is what it is for) is
-    unaffected. Nothing is buffered that a stop would lose -- drain_exits(final=1)
-    runs before the stop record."""
+    Cost of the hold is ordering in the FILE only: `ts_epoch` is when the exit
+    was handled, not when the record was written, so a consumer that sorts on it
+    (which is what it is for) is unaffected. Nothing is buffered that a stop
+    would lose -- drain_exits(final=1) runs before the stop record."""
     m['exit_pending'] = True
+    ts = time.time()
     if EXIT_HOLD_MS <= 0:
-        if m['net_io']:
-            netpeer_read()
-        _write_exit(m, rec, quiet)
+        _netp_collect([m])
+        _write_exit(m, e, ts)
         return
-    _pending_exits.append((time.monotonic() + EXIT_HOLD_MS / 1000.0, m, rec, quiet))
+    _pending_exits.append((time.monotonic() + EXIT_HOLD_MS / 1000.0, m, e, ts))
 
 
-def _write_exit(m, rec, quiet):
+def _write_exit(m, e, ts=None):
     m['exit_pending'] = False
+    actor, attribution = actor_of(m)
+    if actor is None:
+        _note_dropped(m)
+        _netp_release(m)
+        _thread_acc_release(e)
+        return
+    if not INCLUDE_ROOTS and m['is_agent']:
+        _netp_release(m)
+        _thread_acc_release(e)
+        return
+    rec, quiet = _exit_record(m, e, actor, attribution, ts)
     if quiet and not m.get('conns') and not m['net_io']:
         _netp_release(m)
         return
@@ -2762,16 +3633,15 @@ def drain_exits(final=False):
         if not final and _pending_exits[0][0] > now:
             break
         due.append(_pending_exits.popleft())
-    if any(m['net_io'] or m['netp_k'] for _d, m, _r, _q in due):
+    try:
+        _netp_collect([m for _d, m, _e, _ts in due])
+    except Exception:
+        _count_error('netpeer_read')
+    for _due, m, e, ts in due:
         try:
-            netpeer_read()
+            _write_exit(m, e, ts)
         except Exception:
-            pass
-    for _due, m, rec, quiet in due:
-        try:
-            _write_exit(m, rec, quiet)
-        except Exception:
-            pass
+            _count_error('_write_exit')
     return len(due)
 
 
@@ -2779,18 +3649,51 @@ def drain_exits(final=False):
 # submit capture (item: exact process -> Slurm job key)
 # ---------------------------------------------------------------------------
 
+_submit_tab = None        # BPF hash `submit_pids` (submit block), set by main
+
+
 def on_write(w):
     m = proc_add(w.pid, None)
     m['is_submit'] = True
     raw = ctypes.string_at(ctypes.addressof(w) + type(w).buf.offset, w.len)
     buf = m.get('submit_buf') or b''
-    if len(buf) < 8192:
-        m['submit_buf'] = buf + raw[:8192 - len(buf)]
+    keep = max(SUBMIT_BUDGET, 0)
+    if len(buf) < keep:
+        buf = m['submit_buf'] = buf + raw[:keep - len(buf)]
+    # The job id is all this capture is for; once it has been printed, stop the
+    # kernel sending this process's writes at all.
+    if not m.get('submit_done') and parse_job_ids(buf.decode('utf-8', 'replace')):
+        m['submit_done'] = True
+        _submit_stop(w.pid)
+
+
+def _submit_stop(pid):
+    tab = _submit_tab
+    if tab is None:
+        return
+    try:
+        del tab[tab.Key(pid)]
+    except Exception:
+        pass
+
+
+def _interactive_submit(m):
+    """An `srun --pty` session: its captured output is the user's terminal."""
+    return '--pty' in (m.get('args') or '').split(' ')
 
 
 def _emit_submit(m, exit_rec):
     text = (m.get('submit_buf') or b'').decode('utf-8', 'replace')
     jobs = parse_job_ids(text)
+    tail = text[-300:] if text else None
+    if tail and _interactive_submit(m):
+        tail = None
+    elif tail and REDACT_KEYS:
+        try:
+            tail = redact_line(tail, keys=True, prompts=False)[0]
+        except Exception:
+            _count_error('redact')
+            tail = None
     rec = _envelope('submit')
     rec.update(_base_identity(m, exit_rec['actor'], exit_rec.get('attribution')))
     req = parse_submit_args(m.get('args'))
@@ -2805,7 +3708,9 @@ def _emit_submit(m, exit_rec):
         'exit_code': exit_rec['exit_code'], 'signal': exit_rec['signal'],
         'start': exit_rec['start'], 'duration_s': exit_rec['duration_s'],
         'captured_bytes': len(text),
-        'captured_tail': text[-300:] if text else None,
+        # the last 300 characters, credentials masked; null for an interactive
+        # (--pty) session, whose output is the user's own terminal
+        'captured_tail': tail,
     })
     writer.write(rec)
 
@@ -3011,7 +3916,7 @@ def conn_tick(b):
         # four-tuple: a join on the tuple alone would hand one's stats to the other.
         if _is_tcp_row(r):
             by_key[sockdiag.key_of(r)] = r
-    now_ktime = time.monotonic_ns() if hasattr(time, 'monotonic_ns') else int(time.time() * 1e9)
+    now_ktime = _ktime_now()
     matched = set()
     n_emitted = 0
     out_records = []
@@ -3143,9 +4048,12 @@ def _conn_stats(row):
 # ---------------------------------------------------------------------------
 #
 # The kernel keeps cumulative (tx, rx, calls) per (process, protocol, direction,
-# address, port) in `netp`. Userspace reads the whole table at every residency
-# tick and before it writes a networked process's record, keeps the latest
-# figures on the process entry, and derives two things from them:
+# address, port) in `netp`, and announces each new entry on `netp_new`, from
+# which userspace keeps an index of every process's entries. It reads a
+# process's own entries, by the index, before writing its record and -- for the
+# processes it reports -- at every residency tick; the whole table only every
+# NETP_SWEEP_TICKS ticks, or sooner once it fills, to catch what the index missed.
+# The latest figures sit on the process entry, and two things come from them:
 #
 #   net_endpoints  on exit/truncated: the process's complete lifetime list
 #   netio          at each tick: the bytes each endpoint moved since the
@@ -3165,6 +4073,12 @@ _netp_drop_tab = None     # BPF array `netp_drop`: [calls, tx, rx] that found ne
 _netp_orphans = {'entries': 0, 'tx_bytes': 0, 'rx_bytes': 0, 'calls': 0}
 _netp_unclaimed = {}      # (tgid, key) -> 1: seen at the last read with no known pid
 _netio_stats = {'records': 0}
+_netp_kern_tab = None     # BPF array `netp_kern`: [calls, tx, rx] on kernel sockets
+# tgid -> {endpoint key: BPF key}: every entry each process has in `netp`, from
+# the netp_new announcements and from each sweep
+_netp_index = {}
+NETP_SWEEP_TICKS = 10     # a full read of the table every this many ticks
+_netp_sweep = {'tick': 0, 'full_calls': 0, 'fallback': 0.0}
 _COLLECTOR_START = time.time()     # reset by main(); floors a process's first interval
 
 
@@ -3242,8 +4156,14 @@ def netpeer_read():
             m['netp_k'], m['netp_kobj'] = {}, {}
         m['netp_k'][kk] = (v.tx, v.rx, v.calls)
         m['netp_kobj'][kk] = k
+        _netp_index.setdefault(k.tgid, {})[kk] = k    # an announcement may be lost
     _netp_unclaimed = unclaimed
     for k in drop:
+        idx = _netp_index.get(k.tgid)
+        if idx is not None:
+            idx.pop((k.proto, k.flags, k.port, bytes(k.addr)), None)
+            if not idx:
+                del _netp_index[k.tgid]
         try:
             del tab[k]
         except Exception:
@@ -3251,12 +4171,80 @@ def netpeer_read():
     return len(items)
 
 
-def _netp_release(m):
-    """Delete a finished process's kernel entries. Safe once it has exited:
-    nothing but its own sends and receives adds to them."""
+def _netp_index_add(k):
+    """Index one new `netp` entry under its process (a netp_new event)."""
+    _netp_index.setdefault(k.tgid, {})[(k.proto, k.flags, k.port, bytes(k.addr))] = k
+
+
+def _netp_read_pid(m):
+    """Fold a process's own entries onto it, by the index: two syscalls per
+    entry it has, against two per entry in the table for netpeer_read(). Returns
+    how many were read."""
     tab = _netp_tab
+    keys = _netp_index.get(m['pid'])
+    if tab is None or not keys:
+        return 0
+    n = 0
+    for kk, k in list(keys.items()):
+        try:
+            v = tab[k]
+        except KeyError:
+            del keys[kk]                         # a sweep deleted it
+            continue
+        if m['netp_k'] is None:
+            m['netp_k'], m['netp_kobj'] = {}, {}
+        m['netp_k'][kk] = (v.tx, v.rx, v.calls)
+        m['netp_kobj'][kk] = k
+        n += 1
+    return n
+
+
+def _netp_collect(ms):
+    """Bring the endpoint counters of processes about to be written up to date.
+    A process that moved bytes but has nothing indexed lost its announcements
+    (a full ring); for those the whole table is read, at most once a second."""
+    if _netp_tab is None:
+        return
+    full = False
+    for m in ms:
+        if m['pid'] in _netp_index:
+            _netp_read_pid(m)
+        elif m['net_io']:
+            full = True
+    now = time.monotonic()
+    if full and now - _netp_sweep['fallback'] >= 1.0:
+        _netp_sweep['fallback'] = now
+        netpeer_read()
+
+
+def _netp_refresh_live():
+    """The tick's read: every live, reported process's own entries."""
+    for pid in list(_netp_index):
+        m = proc.get(pid)
+        if m is not None and not m['exited'] and actor_of(m)[0] is not None:
+            _netp_read_pid(m)
+
+
+def _netp_sweep_due():
+    """A full read on the first tick, every NETP_SWEEP_TICKS, and on any tick
+    after the table was found full -- that is when entries leaked past the index
+    cost the most."""
+    _netp_sweep['tick'] += 1
+    drop = _read_netp_drop()
+    calls = drop['calls'] if drop else 0
+    filled = calls > _netp_sweep['full_calls']
+    _netp_sweep['full_calls'] = calls
+    return filled or (_netp_sweep['tick'] - 1) % NETP_SWEEP_TICKS == 0
+
+
+def _netp_release(m):
+    """Delete a finished process's kernel entries, the indexed ones included.
+    Safe once it has exited: nothing but its own sends and receives adds to them."""
+    tab = _netp_tab
+    keys = dict(m['netp_kobj'] or {})
+    keys.update(_netp_index.pop(m['pid'], None) or {})
     if tab is not None:
-        for k in (m['netp_kobj'] or {}).values():
+        for k in keys.values():
             try:
                 del tab[k]
             except Exception:
@@ -3559,6 +4547,18 @@ def netio_final_live(now=None):
     return n
 
 
+def _read_netp_kern():
+    """{calls, tx_bytes, rx_bytes} on kernel sockets since start, or None."""
+    t = _netp_kern_tab
+    if t is None:
+        return None
+    try:
+        return {'calls': int(t[0].value), 'tx_bytes': int(t[1].value),
+                'rx_bytes': int(t[2].value)}
+    except Exception:
+        return None
+
+
 def _read_netp_drop():
     """{calls, tx_bytes, rx_bytes} that found the endpoint table full since start,
     or None without a table."""
@@ -3603,23 +4603,37 @@ def _read_kstack(pid):
 def residency_tick(b=None):
     """One rollup per live agent tree, plus per-actor3 and per-agent-type totals,
     the dropped bucket, the node fork rate, and the standing-connection records."""
-    global _fork_prev
+    global _fork_prev, _residency_ticks
+    now = time.time()
+    # Every entry against /proc, tracked or not: before this only the processes
+    # about to be reported were re-read, so an untracked one whose exit was lost
+    # stayed live forever.
+    alive = reconcile_proc(now)
+    _residency_ticks += 1
+    if alive is not None and _residency_ticks % 10 == 0:
+        _thread_acc_sweep(alive)
     live = [m for m in proc.values() if not m['exited']]
     trees, totals, by_type = {}, {}, {}
     stacks_read = 0
     global_frames = {}
-    now = time.time()
     for m in live:
         actor, _attr = actor_of(m)
         if actor is None:
             continue
         st = read_stat(m['pid'])
         if st is None:
-            m['exited'] = True                # vanished without an exit event we saw
-            m['gc_ts'] = m['gc_ts'] or now
-            continue
+            continue                          # gone; reconcile_proc() retires it
+        se = start_epoch(st['starttime'])
         if m.get('start_ep') is None:
-            m['start_ep'] = start_epoch(st['starttime'])
+            m['start_ep'] = se
+        elif se is not None and abs(se - m['start_ep']) > 5.0:
+            # A different process on this pid: this one's exit event was lost and
+            # the pid recycled. Retire it, and give the new one its own entry.
+            pid = m['pid']
+            _retire(m, now)
+            proc_del(pid)
+            _ingest_proc(pid)
+            continue
         rss_kb = _read_vmrss_kb(m['pid']) or 0
         cpu_s = st['cpu_ticks'] / float(CLK_TCK)
         in_d = st['state'] == 'D'
@@ -3767,11 +4781,16 @@ def residency_tick(b=None):
     # After the walk above, so a process it just found gone is not ticked.
     n_netp = n_netio = None
     try:
-        n_netp = netpeer_read()
-        if n_netp is not None:
-            n_netio = netio_tick(now)
+        if _netp_tab is not None:
+            if _netp_sweep_due():
+                n_netp = netpeer_read()
+            else:
+                _netp_refresh_live()
+                n_netp = sum(len(v) for v in _netp_index.values())
+            if n_netp is not None:
+                n_netio = netio_tick(now)
     except Exception:
-        pass
+        _count_error('netpeer_read')
 
     _tot = _envelope('residency_totals')
     _tot.update({
@@ -3813,6 +4832,19 @@ def residency_tick(b=None):
         'netpeer_entries': n_netp,
         'netpeer_full': _read_netp_drop(),
         'netpeer_orphans': dict(_netp_orphans) if n_netp is not None else None,
+        # schema 8: calls and bytes on kernel sockets (the NFS client's), which
+        # are not counted as any process's network I/O; cumulative
+        'netpeer_kernel': _read_netp_kern(),
+        # schema 8, all cumulative since start: perf events decoded and lost per
+        # ring (only the stop record had them, and a collector that runs for
+        # weeks seldom writes one), exceptions the handlers swallowed, the
+        # process table's size and the entries retired without an exit event
+        'perf_seen': dict(_perf_seen) or None,
+        'perf_lost': dict(_perf_lost) or None,
+        'handler_errors': dict(_handler_errors) or None,
+        'proc_entries': len(proc),
+        'proc_vanished': _proc_stats['vanished'],
+        'thread_acc': _thread_acc_report(),
     })
     writer.write(_tot)
     _dropped['n'] = 0
@@ -3949,8 +4981,70 @@ def _self_cgroup():
     return None
 
 
+def _take_lock(root, host):
+    """Hold <root>/.<host>.lock, exclusively, for the life of the run -- or exit.
+    Two collectors writing one host's files (the unit, and a manual start)
+    interleave their records and report every process twice. A filesystem that
+    cannot lock lets the run through."""
+    import errno
+    import fcntl
+    try:
+        os.makedirs(root, exist_ok=True)
+        fd = os.open(os.path.join(root, '.%s.lock' % host),
+                     os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return fd
+        try:
+            holder = os.pread(fd, 32, 0).decode('ascii', 'replace').strip()
+        except Exception:
+            holder = ''
+        sys.stderr.write('error: another collector%s is writing %s for %s; not starting '
+                         'a second one\n' % (' (pid %s)' % holder if holder else '', root, host))
+        sys.exit(1)
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, ('%d\n' % os.getpid()).encode())
+    except OSError:
+        pass
+    return fd
+
+
+def _unsafe_dirs(paths):
+    """Directories on the way to `paths` that someone other than root can
+    change: owned by a user, or group/other-writable without the sticky bit.
+    A collector running as root writes through each of them (a planted
+    symlink sends its appends wherever that user likes) and, for its own code
+    directory, runs what is there at its next start. Both the path as given
+    and the path with its symlinks resolved are walked."""
+    import stat as st_
+    out, seen = set(), set()
+    for path in paths:
+        for p in {os.path.abspath(path), os.path.realpath(path)}:
+            while p not in seen:
+                seen.add(p)
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    st = None
+                if st is not None and st_.S_ISDIR(st.st_mode):
+                    open_w = (st.st_mode & 0o002) or (st.st_mode & 0o020 and st.st_gid != 0)
+                    if st.st_uid != 0 or (open_w and not st.st_mode & st_.S_ISVTX):
+                        out.add(p)
+                parent = os.path.dirname(p)
+                if parent == p:
+                    break
+                p = parent
+    return sorted(out)
+
+
 def main():
     global FEATURES, writer, _cidr_index, _netp_tab, _netp_drop_tab, _COLLECTOR_START
+    global _thr_acc_tab, _thr_acc_miss_tab, _submit_tab, _netp_kern_tab
     argv = sys.argv[1:]
     try:
         from bcc import BPF
@@ -3975,6 +5069,12 @@ def main():
                               'cgroup': _self_cgroup()}, indent=1))
         return
 
+    lock_fd = _take_lock(OUTPUT_DIR, HOSTNAME)     # held until exit  # noqa: F841
+    unsafe = _unsafe_dirs([OUTPUT_DIR, _HERE]) if os.geteuid() == 0 else []
+    if unsafe:
+        sys.stderr.write('warning: running as root with output or code under directories '
+                         'other users can change: %s -- use root-owned ones\n'
+                         % ', '.join(unsafe))
     writer = DailyWriter(OUTPUT_DIR, HOSTNAME)
     # Catch up any sealed day left uncompressed by a prior run or a crash before
     # it could compress at rollover. Skips today, whose files writer will reopen
@@ -3990,57 +5090,110 @@ def main():
     if WANT_ARGV_HOSTS:
         # before seeding, so names in the argv of processes already running resolve
         threading.Thread(target=_host_worker, name='ebpfm-hosts', daemon=True).start()
-    seed_existing()
+    # Attach FIRST, then seed. The other way round, a process started between
+    # the /proc walk and the attach was in neither -- an agent started then was
+    # never attributed, nor was anything it ran. Events that arrive while
+    # seeding wait in the queue and are applied after it, in kernel-time order.
     b, FEATURES, rejected = probe_features(BPF)
     feats = FEATURES
-    _COLLECTOR_START = time.time()
     if NETPEER_BLOCKS & feats:
         _netp_tab, _netp_drop_tab = b['netp'], b['netp_drop']
+        _netp_kern_tab = b['netp_kern']
+    if 'thread_acc' in feats:
+        _thr_acc_tab, _thr_acc_miss_tab = b['thr_acc'], b['thr_acc_miss']
 
-    lost = {'events': 0, 'argv_events': 0, 'write_events': 0, 'tcp_events': 0}
     # Events DECODED, not records written. The drain touches every fork/exec/exit
     # to keep the ancestry table current, even for processes that are never
     # emitted, so this is the only number that makes the collector's userspace CPU
-    # interpretable -- and, with `lost`, the pair that says whether it kept up.
-    seen = {'events': 0, 'argv_events': 0, 'write_events': 0, 'tcp_events': 0}
+    # interpretable -- and, with the lost counts, the pair that says whether it
+    # kept up. Both are cumulative and reported every residency tick.
+    for ring in ('events', 'argv_events', 'write_events', 'tcp_events', 'netp_new'):
+        _perf_seen[ring] = 0
+        _perf_lost[ring] = 0
+    resync = {'due': False}
+
+    def _copier(table):
+        """An owned copy of a perf event. BCC's event() is a view into the ring,
+        valid only inside the callback, and the queue keeps events past it. A
+        record can be shorter than the struct (argv sends only what it read), so
+        the copy is padded with zeros rather than read past the record."""
+        tab, cls = b[table], []
+
+        def copy(data, size):
+            if not cls:
+                cls.append(type(tab.event(data)))
+            n = ctypes.sizeof(cls[0])
+            raw = ctypes.string_at(data, min(size, n))
+            if len(raw) < n:
+                raw += b'\x00' * (n - len(raw))
+            return cls[0].from_buffer_copy(raw)
+        return copy
+
+    copy_core = _copier('events')
 
     def _cb_core(cpu, data, size):
-        e = b['events'].event(data)
-        seen['events'] += 1
+        _perf_seen['events'] += 1
         try:
-            if e.type == EVT_FORK:
-                on_fork(e)
-            elif e.type == EVT_EXEC:
-                on_exec(e)
-            elif e.type == EVT_EXIT:
-                on_exit(e)
+            e = copy_core(data, size)
+            h = _CORE_HANDLERS.get(e.type)
+            if h is not None:
+                enqueue_event(e.ktime_ns, RANK_CORE, h, e)
         except Exception:
-            pass
+            _count_error('events')
 
-    def _mk_cb(table, fn):
+    def _mk_cb(table, fn, rank, stamp):
+        copy = _copier(table)
+
         def _cb(cpu, data, size):
-            seen[table] += 1
+            _perf_seen[table] += 1
             try:
-                fn(b[table].event(data))
+                ev = copy(data, size)
+                enqueue_event(getattr(ev, stamp), rank, fn, ev)
             except Exception:
-                pass
+                _count_error(table)
         return _cb
 
     def _mk_lost(name):
         def _l(n):
-            lost[name] += n
+            _perf_lost[name] += n
+            resync['due'] = True        # a lost exit leaves its entry live
         return _l
 
     b['events'].open_perf_buffer(_cb_core, page_cnt=PAGE_CNT, lost_cb=_mk_lost('events'))
     if 'argv_user' in feats or 'argv_kernel' in feats:
-        b['argv_events'].open_perf_buffer(_mk_cb('argv_events', on_argv), page_cnt=PAGE_CNT,
-                                          lost_cb=_mk_lost('argv_events'))
+        b['argv_events'].open_perf_buffer(_mk_cb('argv_events', on_argv, RANK_ARGV, 'ktime_ns'),
+                                          page_cnt=PAGE_CNT, lost_cb=_mk_lost('argv_events'))
     if 'submit' in feats:
-        b['write_events'].open_perf_buffer(_mk_cb('write_events', on_write), page_cnt=64,
-                                           lost_cb=_mk_lost('write_events'))
+        _submit_tab = b['submit_pids']
+        b['write_events'].open_perf_buffer(_mk_cb('write_events', on_write, RANK_WRITE, 'ktime_ns'),
+                                           page_cnt=64, lost_cb=_mk_lost('write_events'))
     if (TCP_BLOCKS | {'tcp_accept'}) & feats:
-        b['tcp_events'].open_perf_buffer(_mk_cb('tcp_events', on_tcp), page_cnt=64,
-                                         lost_cb=_mk_lost('tcp_events'))
+        b['tcp_events'].open_perf_buffer(_mk_cb('tcp_events', on_tcp, RANK_TCP, 'ts_ns'),
+                                         page_cnt=64, lost_cb=_mk_lost('tcp_events'))
+    if NETPEER_BLOCKS & feats:
+        # Applied at once, not queued: indexing an entry depends on nothing else.
+        key_cls = _netp_tab.Key
+        key_len = ctypes.sizeof(key_cls)
+
+        def _cb_netp_new(cpu, data, size):
+            _perf_seen['netp_new'] += 1
+            try:
+                _netp_index_add(key_cls.from_buffer_copy(
+                    ctypes.string_at(data, key_len)))
+            except Exception:
+                _count_error('netp_new')
+
+        def _lost_netp_new(n):
+            _perf_lost['netp_new'] += n
+        b['netp_new'].open_perf_buffer(_cb_netp_new, page_cnt=64, lost_cb=_lost_netp_new)
+    _COLLECTOR_START = time.time()
+
+    def _drain_rings():
+        try:
+            b.perf_buffer_poll(timeout=0)
+        except Exception:
+            _count_error('perf_buffer_poll')
+    seed_existing(poll=_drain_rings)
 
     sysctls = {'kernel.sched_schedstats': _sysctl('kernel.sched_schedstats'),
                'kernel.task_delayacct': _sysctl('kernel.task_delayacct')}
@@ -4052,6 +5205,12 @@ def main():
             'tz': _tz_name(), 'boot_id': BOOT_ID,
             'features': sorted(feats), 'features_rejected': rejected,
             'cpu_scope': 'process' if 'signal' in feats else 'leader',
+            # schema 8: whether every exit counter (run time, faults, context
+            # switches, waits, D-state, threads, I/O) covers all of a process's
+            # threads, or only the leader's and the threads already released
+            'counters_scope': 'process' if 'thread_acc' in feats else 'leader',
+            # what `args` and `captured_tail` have masked (lib/redact.py)
+            'redact': sorted(REDACT),
             'argv_source_default': 'kernel' if ('argv_user' in feats or 'argv_kernel' in feats) else 'proc',
             'dstate_src_default': ('task' if 'dstate_task' in feats
                                    else ('stat' if 'dstate_stat' in feats else None)),
@@ -4060,11 +5219,15 @@ def main():
             'sysctl': sysctls,
             'cgroup': _self_cgroup(),
             'netlink_sockdiag': sockdiag is not None,
+            # directories other users can change on the way to the output or
+            # this collector's code, which a root collector should not trust
+            'unsafe_dirs': unsafe or None,
             'config': {'args_maxlen': ARGS_MAXLEN, 'argv_kmax': ARGV_KMAX,
                        'write_kmax': WRITE_KMAX, 'residency_s': RESIDENCY_S,
                        'keep_timers': KEEP_TIMERS, 'include_roots': INCLUDE_ROOTS,
                        'tcp_all': TCP_ALL, 'conn_all': CONN_ALL,
                        'conns_topn': CONNS_TOPN, 'exit_hold_ms': EXIT_HOLD_MS,
+                       'reorder_ms': REORDER_MS,
                        'netpeer_max': NETPEER_MAX, 'net_endpoints_max': NET_ENDPOINTS_MAX,
                        'netio': WANT_NETIO, 'argv_hosts': WANT_ARGV_HOSTS,
                        # compiled into the endpoint probe; decides inbound for a
@@ -4089,23 +5252,39 @@ def main():
                      % (HOSTNAME, OUTPUT_DIR, HOSTNAME, ','.join(sorted(feats)) or 'base'))
 
     start = time.time()
-    last_gc = last_res = start
+    last_gc = last_res = last_resync = start
     while not _stop:
+        # Kernel time before the poll: every event stamped REORDER_MS before it
+        # was already in its ring, so this round's poll drained it, and all of
+        # those can be applied in order. Newer ones wait a round.
+        t0 = _ktime_now()
         try:
             b.perf_buffer_poll(timeout=POLL_MS)
         except Exception:
-            pass
+            _count_error('perf_buffer_poll')
+        try:
+            dispatch_events(t0 - REORDER_MS * 1000000)
+        except Exception:
+            _count_error('dispatch_events')
         try:
             drain_exits()
         except Exception:
-            pass
+            _count_error('drain_exits')
         # After drain_exits, so a record staged this round is covered by this
         # round's flush rather than waiting for the next one.
         try:
             writer.flush()
         except Exception:
-            pass
+            _count_error('flush')
         now = time.time()
+        if resync['due'] and now - last_resync >= 10:
+            # a lost event may have been an exit; find the entries it left live
+            resync['due'] = False
+            last_resync = now
+            try:
+                reconcile_proc(now)
+            except Exception:
+                _count_error('reconcile_proc')
         if now - last_gc > 60:
             gc()
             last_gc = now
@@ -4113,25 +5292,32 @@ def main():
             try:
                 residency_tick(b)
             except Exception:
-                pass
+                _count_error('residency_tick')
             last_res = now
         if DURATION and (now - start) >= DURATION:
             break
 
+    # Whatever the rings still hold, then everything queued, so no event is
+    # stranded behind the reorder window.
+    try:
+        b.perf_buffer_poll(timeout=0)
+        dispatch_events()
+    except Exception:
+        _count_error('dispatch_events')
     # Before flush_live, which skips m['exited'] entries: a staged exit record
     # that is still pending belongs to a process that HAS exited, so draining
     # first keeps it an `exit` and not a second, contradictory `truncated`.
     try:
         drain_exits(final=True)
     except Exception:
-        pass
+        _count_error('drain_exits')
     # The last read of the endpoint table, then the series' remainder for every
     # process still alive, so the series ends where the truncated records do.
     try:
         netpeer_read()
         netio_final_live()
     except Exception:
-        pass
+        _count_error('netpeer_read')
     n_trunc = 0
     if FLUSH_ON_EXIT:
         try:
@@ -4141,7 +5327,12 @@ def main():
     # NB: `_stop` is the module-global shutdown flag read below -- do not shadow it.
     stop_rec = _envelope('stop')
     stop_rec.update({'uptime_s': round(time.time() - start, 1), 'records': writer.n,
-                     'truncated': n_trunc, 'perf_lost': lost, 'perf_seen': seen,
+                     'truncated': n_trunc, 'perf_lost': dict(_perf_lost),
+                     'perf_seen': dict(_perf_seen),
+                     # exceptions the handlers swallowed, and entries retired
+                     # because their process was gone with no exit event seen
+                     'handler_errors': dict(_handler_errors) or None,
+                     'proc_vanished': _proc_stats['vanished'],
                      # write(2) count for the whole run, against `records` above:
                      # the pair IS the I/O amplification, measured rather than
                      # assumed. +1 because this record is built before it is
@@ -4166,8 +5357,8 @@ def main():
                      'argv_hosts': dict(_host_stats) if WANT_ARGV_HOSTS else None,
                      'reason': 'duration' if DURATION and not _stop else 'signal'})
     writer.write(stop_rec)
-    if any(lost.values()):
-        sys.stderr.write('warning: perf events dropped: %s\n' % json.dumps(lost))
+    if any(_perf_lost.values()):
+        sys.stderr.write('warning: perf events dropped: %s\n' % json.dumps(_perf_lost))
     writer.close()
 
 
