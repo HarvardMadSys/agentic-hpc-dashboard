@@ -33,18 +33,23 @@ except ValueError:
 # of this file without lib/ beside it masks nothing.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 try:
-    from redact import redact_line as _redact_line, parse_kinds as _parse_kinds
+    from redact import (redact_line as _redact_line, redact_ps_line as _redact_ps_line,
+                        parse_kinds as _parse_kinds)
 except Exception:
     _redact_line = None
 
 REDACT = _parse_kinds(os.environ.get('EBPFM_REDACT'))[0] if _redact_line else set()
 
 
-def _mask(cmd):
-    """A command line as printed: masked, and only then cut to ARGS_MAXLEN."""
+def _mask(cmd, pid=None):
+    """A command line as printed: masked, and only then cut to ARGS_MAXLEN.
+    With its pid, from the process's own arguments where they can be read
+    (redact.redact_ps_line)."""
     if cmd and REDACT:
+        kw = {'keys': 'keys' in REDACT, 'prompts': 'prompts' in REDACT}
         try:
-            cmd = _redact_line(cmd, keys='keys' in REDACT, prompts='prompts' in REDACT)[0]
+            cmd = (_redact_ps_line(cmd, pid, **kw) if pid is not None
+                   else _redact_line(cmd, **kw))[0]
         except Exception:
             cmd = '[REDACTED]'        # fail closed; the snapshot itself must not fail
     return cmd[:ARGS_MAXLEN]
@@ -525,7 +530,7 @@ def parse_d_state_procs(s):
                     'stat':  p[2],
                     'user':  p[3],
                     'wchan': p[4],
-                    'args':  _mask(p[5]),
+                    'args':  _mask(p[5], pid),
                 }
                 if IS_ROOT and detailed < D_STACK_MAX:
                     detailed += 1
@@ -692,7 +697,7 @@ def parse_ps(s, n):
                 'stat':    p[6],
                 'started': started,
                 'time':    p[time_i],
-                'args':    _mask(' '.join(p[time_i+1:])),
+                'args':    _mask(' '.join(p[time_i+1:]), p[0]),
             })
         except (ValueError, IndexError):
             pass
@@ -806,7 +811,7 @@ def collect_top_io_processes(n, interval=1.0):
             'kb_wr_s':   round((b['wr']   - a['wr'])   / 1024.0 / interval, 2),
             'kb_ccwr_s': round((b['ccwr'] - a['ccwr']) / 1024.0 / interval, 2),
             'iodelay':   b['blkio'] - a['blkio'],
-            'command':   _mask(cmd),
+            'command':   _mask(cmd, pid),
         })
     return sorted(procs, key=lambda x: x['kb_rd_s'] + x['kb_wr_s'],
                   reverse=True)[:n]
@@ -868,7 +873,7 @@ def parse_top_sleeping(s, n):
             'cpu_pct': _float(cpu),
             'wchan':   wchan,
             'syscall': syscall,
-            'args':    _mask(args),
+            'args':    _mask(args, pid),
         })
         if len(out) >= n:
             break

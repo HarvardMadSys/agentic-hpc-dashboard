@@ -8,7 +8,9 @@ import ctypes
 import importlib.util
 import io
 import os
+import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -45,6 +47,20 @@ class KeysTest(unittest.TestCase):
 
     def test_a_reference_to_a_secret_is_not_one(self):
         self.assertEqual(red(['tool', '--token', '$HF_TOKEN']), 'tool --token $HF_TOKEN')
+        for line in ('curl -H "Authorization: Bearer $TOK" https://api.x',
+                     'curl -H "Authorization: Bearer $(cat tok.txt)" https://api.x',
+                     'test -n "${OPENROUTER_API_KEY:-}"',
+                     "python3 -c 'HfApi(token=os.environ[\"HF_TOKEN\"])'",
+                     "python3 -c 'HfApi(token=False)'"):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+
+    def test_what_only_looks_like_a_user_and_password_is_left(self):
+        """Seen on the fleet: date's format and a container's uid:gid."""
+        for line in ("date -u +%Y-%m-%dT%H:%M:%SZ", "date -u +%H:%M",
+                     "podman run --user 1000:1000 img", "docker exec -u 0:0 c sh"):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+        self.assertEqual(R.redact_keys('curl -u api:wandb_v1_abcdef https://x')[0],
+                         'curl -u api:%s https://x' % K)
 
     def test_ordinary_lines_pass_untouched(self):
         for argv in (['python', 'train.py', '--max_tokens=100'], ['ls', '-la'],
@@ -76,8 +92,11 @@ class PromptTest(unittest.TestCase):
                     '--dangerously-skip-permissions'],
                    'claude --model sonnet --resume 1f2e3d4c %s --dangerously-skip-permissions' % P)
 
-    def test_a_value_that_reads_as_prose_is_masked_whatever_its_flag(self):
-        self.check(['claude', '-r', 'please carry on with the plan'], 'claude -r %s' % P)
+    def test_an_options_value_is_kept_whatever_it_reads_like(self):
+        """A session's name or a resume search term is not a prompt."""
+        argv = ['claude', '-r', 'carry on with the plan']
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None))
+        self.check(['claude', '-r', 'auth bug', 'fix it now'], 'claude -r auth bug %s' % P)
 
     def test_system_prompts_are_prompts(self):
         self.check(['claude', '--append-system-prompt', 'be terse', '-p', 'go'],
@@ -242,11 +261,11 @@ class PromptTest(unittest.TestCase):
         """Python 3.6's shlex left `;` glued to a word under whitespace_split, so
         on EL8 the agent run after it was never found."""
         for script, want in (
-                ('cd /proj; claude -p "secret plan"', 'cd /proj ; claude -p %s' % P),
-                ('cd /proj;claude -p "secret plan"', 'cd /proj ; claude -p %s' % P),
-                ('cat x|claude -p "sum it up"', 'cat x | claude -p %s' % P),
-                ('echo $(claude -p "sum it up")', "echo '$' ( claude -p %s )" % P),
-                ('echo `claude -p "sum it up"`', 'echo ` claude -p %s `' % P)):
+                ('cd /proj; claude -p "secret plan"', 'cd /proj; claude -p %s' % P),
+                ('cd /proj;claude -p "secret plan"', 'cd /proj;claude -p %s' % P),
+                ('cat x|claude -p "sum it up"', 'cat x|claude -p %s' % P),
+                ('echo $(claude -p "sum it up")', 'echo $(claude -p %s)' % P),
+                ('echo `claude -p "sum it up"`', 'echo `claude -p %s`' % P)):
             self.assertEqual(R.redact_argv(['bash', '-c', script])[0], 'bash -c ' + want, script)
 
     def test_the_tokenizer_reads_quotes_as_sh_does(self):
@@ -277,13 +296,13 @@ class PromptTest(unittest.TestCase):
         """The node tier only has `ps`'s joined line, where a prompt's first word
         can be a subcommand's name and a `-v` inside it a flag."""
         self.assertEqual(R.redact_line('claude -p update the README with the new keys')[0],
-                         'claude -p update %s' % P)
+                         'claude -p %s' % P)
         self.assertEqual(R.redact_line('claude -p fix the -v flag handling')[0],
                          'claude -p %s -v %s' % (P, P))
 
     def test_a_newline_ends_a_command_in_a_script(self):
         self.check(['bash', '-c', "cd /repo\nclaude -p 'fix it now'\necho done"],
-                   'bash -c cd /repo \n claude -p %s \n echo done' % P)
+                   'bash -c cd /repo\nclaude -p %s\necho done' % P)
 
     def test_a_joined_line_collapses_the_prompts_words(self):
         self.assertEqual(R.redact_line('claude -p fix the failing test --output-format json')[0],
@@ -293,7 +312,7 @@ class PromptTest(unittest.TestCase):
         self.assertEqual(R.redact_line('codex exec read reports/c750.md and summarize')[0],
                          'codex exec %s' % P)
         self.assertEqual(R.redact_line('claude --remote-control Usage of the API')[0],
-                         'claude --remote-control %s' % P)
+                         'claude --remote-control Usage %s' % P)
 
     def test_a_joined_shell_line_takes_the_rest_as_its_command(self):
         self.assertEqual(R.redact_line('bash -c claude -p hi there')[0],
@@ -302,6 +321,151 @@ class PromptTest(unittest.TestCase):
     def test_boundaries_keep_a_flag_inside_a_prompt_masked(self):
         """Joined, `--force` inside the prompt reads as a flag and survives."""
         self.assertEqual(red(['claude', '-p', 'use --force carefully']), 'claude -p %s' % P)
+
+
+class NotAPromptTest(unittest.TestCase):
+    """Arguments that were masked although no prompt was in them, each shape
+    taken from a day of FASRC login-node command lines (2026-10-26)."""
+
+    def same(self, argv):
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None), argv)
+
+    def same_joined(self, line):
+        self.assertEqual(R.redact_line(line), (line, None), line)
+
+    def test_session_names(self):
+        self.same(['claude', '--resume', '0c00efea-1827-48af-aef6-065adb167f58',
+                   '--name', 'Mantis shrimp', '--remote-control', 'Mantis shrimp',
+                   '--permission-mode', 'auto'])
+        self.same(['claude', '--name', 'RC - Career', '--remote-control', 'RC - Career'])
+        self.same(['claude', '--resume', '0c00efea-1827-48af-aef6-065adb167f58',
+                   '--remote-control', 'fasrc-NLO'])
+        self.same(['bash', '-lc', "claude --name 'paper co-reader' --remote-control "
+                                  "'paper co-reader' --permission-mode auto; exec bash"])
+        self.assertEqual(red(['claude', '--remote-control', 'fasrc-gammaZ', 'You are gammaZ.']),
+                         'claude --remote-control fasrc-gammaZ %s' % P)
+
+    def test_claude_codes_own_daemons(self):
+        self.same(['claude', 'bg-spare', '--bg-spare', '/tmp/cc-daemon-1/8fb1/spare/35a.claim.sock'])
+        self.same(['claude', 'bg-pty-host', '--bg-pty-host', '/tmp/cc-daemon-1/8fb1/pty/f5d.sock',
+                   '162', '64', '--', '/u/.local/share/claude/versions/2.1.301', '--session-id',
+                   'f5d34d0a-0a19-4db6-9dbe-8d7ec662d701', '--fork-session', '--resume',
+                   '/u/.claude/projects/-p/db2eab0c.jsonl', '--model', 'opus'])
+        self.same(['/u/.local/bin/claude', 'daemon', 'run', '--json-path', '/u/.claude/daemon.json',
+                   '--origin', 'transient', '--spawned-by', '{"label":"claude","pid":4040227}'])
+        self.same(['claude', 'remote-control', '--name', 'Remote Dev (FASRC)', '--capacity', '32'])
+        for argv in (['claude', 'rc'], ['claude', 'attach', 'e3b05be0'],
+                     ['/u/.local/share/claude/versions/2.1.310', '--session-id',
+                      '84647189-d9bd-4429-8f44-59fef0f97ca9', '--agent', 'claude',
+                      '--inherit-permission-mode', 'auto'],
+                     ['/u/.local/share/claude/versions/2.1.282', '--print', '--sdk-url',
+                      'https://api.anthropic.com/v1/code/sessions/cse_01Xpy', '--resume=https://'
+                      'api.anthropic.com/v1/code/sessions/cse_01Xpy', '--input-format',
+                      'stream-json', '--max-thinking-tokens', '31999']):
+            self.same(argv)
+
+    def test_codex_servers_and_sessions(self):
+        self.same(['codex', '-c', 'features.code_mode_host=true', 'app-server', '--listen',
+                   'unix://'])
+        self.same(['codex', 'app-server', 'daemon', 'pid-update-loop'])
+        self.same(['codex', '--no-daemon', 'resume', '01a032f5-fa59-73b3-ad52-dbc2c6199cea',
+                   '--yolo', '-C', '/u'])
+        self.same(['codex', 'fork'])
+        self.same(['codex', 'cloud', 'list'])
+        self.check_masked(['codex', 'exec', '--json', 'resume',
+                           '01a17649-ec8c-7c90-a4e6-0b1bbfd6e447', 'Continue the task in TASK.md'],
+                          'codex exec --json resume 01a17649-ec8c-7c90-a4e6-0b1bbfd6e447 %s' % P)
+        self.check_masked(['codex', 'cloud', 'exec', '--env', 'e1', 'fix the flaky test'],
+                          'codex cloud exec --env e1 %s' % P)
+        self.check_masked(['codex', 'queue', '--thread', 't1', '--message', 'and add tests'],
+                          'codex queue --thread t1 --message %s' % P)
+        self.check_masked(['codex', '-c', 'developer_instructions="be terse and careful"',
+                           '-m', 'o3'], 'codex -c %s -m o3' % P)
+
+    def test_cursor_agents_worker(self):
+        argv = ['/u/.local/bin/cursor-agent', '--use-system-ca',
+                '/u/.local/share/cursor-agent/versions/2026.10.19/index.js', '--api-key',
+                'crsr_abc', '--endpoint', 'https://api2.cursor.sh', 'worker', 'start',
+                '--worker-dir', '/lab/u', '--name', '/lab/u @ login1', '--label',
+                'cursor.private_worker.workspace_key=cursor-agent-worker-bf2178222d']
+        self.assertEqual(red(argv), ' '.join(argv).replace('crsr_abc', K))
+
+    def test_paths_and_ids_and_slash_commands(self):
+        self.same(['claude', '/resume'])
+        self.same(['claude', '--agents', '/lab/run/agents.json', '--resume',
+                   '41c5898e-06c4-498b-9193-6a8aef2b1f21'])
+        self.check_masked(['claude', '--agents', '{"r": {"prompt": "review it"}}'],
+                          'claude --agents %s' % P)
+
+    def test_a_one_word_prompt_is_still_one(self):
+        self.check_masked(['claude', 'continue'], 'claude %s' % P)
+        self.check_masked(['codex', 'exec', 'hello'], 'codex exec %s' % P)
+
+    def test_a_prompt_given_as_several_arguments_keeps_no_path_of_its_own(self):
+        self.check_masked(['claude', 'fix', 'the', 'bug', 'in', 'src/auth.py'], 'claude %s' % P)
+        self.check_masked(['codex', 'resume', '0199a5c2-5b1e-7f20-9c3a-1b2c3d4e5f60', 'go', 'on'],
+                          'codex resume 0199a5c2-5b1e-7f20-9c3a-1b2c3d4e5f60 %s' % P)
+
+    def test_a_command_string_keeps_its_own_text(self):
+        """Only the prompt changes: quotes, spacing and the rest stay as written."""
+        script = 'cd /p && claude -p "fix it" | tee "log 1.txt"  # note'
+        self.assertEqual(red(['bash', '-c', script]),
+                         'bash -c cd /p && claude -p %s | tee "log 1.txt"  # note' % P)
+        self.assertEqual(red(['bash', '-c', "tmux new -d 'claude -p \"fix it\"'"]),
+                         "bash -c tmux new -d 'claude -p %s'" % P)
+
+    def test_joined_lines(self):
+        """The node tier's `w` has only a joined line; so has any line whose
+        argument boundaries could not be read."""
+        for line in ('codex app-server --listen unix:// --analytics-default-enabled',
+                     'codex app-server proxy', 'claude /resume', 'claude rc',
+                     'claude auth status --json', 'claude mcp add srv -- npx some-server',
+                     'claude --output-format stream-json --verbose --max-thinking-tokens 31999',
+                     'claude --brand-new-number 31999 --brand-new-path /tmp/x.sock',
+                     'claude daemon run --origin transient --spawned-by {"pid":1}',
+                     'claude --resume 0c00efea-1827-48af-aef6-065adb167f58 --remote-control '
+                     'fasrc-NLO'):
+            self.same_joined(line)
+        self.assertEqual(R.redact_line('claude --resume 0c00efea-1827-48af-aef6-065adb167f58 '
+                                       'ORCH auto-resume: continue TASK.md now')[0],
+                         'claude --resume 0c00efea-1827-48af-aef6-065adb167f58 %s' % P)
+        self.assertEqual(R.redact_line('codex exec --json resume 01a17649-ec8c-7c90-a4e6-'
+                                       '0b1bbfd6e447 Continue the task in TASK.md')[0],
+                         'codex exec --json resume 01a17649-ec8c-7c90-a4e6-0b1bbfd6e447 %s' % P)
+
+    def check_masked(self, argv, want):
+        self.assertEqual(red(argv), want)
+
+
+class NodeTierTest(unittest.TestCase):
+    """The node tier has ps's joined lines; it masks each from the process's own
+    arguments while /proc still has them."""
+
+    def setUp(self):
+        self.argv = ['claude', '-c', 'x = 1; import time; time.sleep(30)', '--name',
+                     'Mantis shrimp']
+        self.p = subprocess.Popen(self.argv, executable=sys.executable)
+        self.line = ' '.join(self.argv)
+        for _ in range(200):                    # until the child has exec'd
+            with open('/proc/%d/cmdline' % self.p.pid, 'rb') as f:
+                if f.read():
+                    break
+            time.sleep(0.01)
+
+    def tearDown(self):
+        self.p.kill()
+        self.p.wait()
+
+    def test_a_ps_line_is_masked_from_the_processs_own_arguments(self):
+        self.assertEqual(R.redact_ps_line(self.line, self.p.pid),
+                         ('claude -c %s --name Mantis shrimp' % P, ['prompt']))
+        # joined, the session's name loses its second word
+        self.assertEqual(R.redact_line(self.line)[0], 'claude -c %s --name Mantis %s' % (P, P))
+
+    def test_a_line_the_pid_no_longer_runs_is_masked_as_joined(self):
+        line = 'claude --name Mantis shrimp'
+        self.assertEqual(R.redact_ps_line(line, self.p.pid), R.redact_line(line))
+        self.assertEqual(R.redact_ps_line(self.line, 2 ** 22 + 7), R.redact_line(self.line))
 
 
 class DashboardSyncTest(unittest.TestCase):

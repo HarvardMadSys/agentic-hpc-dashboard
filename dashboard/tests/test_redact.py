@@ -65,6 +65,12 @@ UNCHANGED = [
     "claude --permission-mode bypassPermissions -p hello",
     "ssh -o PubkeyAuthentication=no host",
     "git log --format=%H -n 5",
+    # a date format, a container's uid:gid, and secrets only referred to
+    "date -u +%Y-%m-%dT%H:%M:%SZ",
+    "podman run --user 1000:1000 img",
+    'curl -H "Authorization: Bearer $TOK" https://api.x',
+    'test -n "${OPENROUTER_API_KEY:-}"',
+    "python3 -c 'HfApi(token=os.environ[\"HF_TOKEN\"])'",
 ]
 
 

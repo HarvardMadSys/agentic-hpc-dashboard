@@ -31,8 +31,10 @@ import re
 
 MASK = "[REDACTED]"
 
-# A value that only refers to a secret is not one: `--token $HF_TOKEN`.
+# A value that only refers to a secret is not one: `--token $HF_TOKEN`. Nor is
+# a kwarg in an inline script that reads one: `token=os.environ["HF_TOKEN"]`.
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
+_NOT_CODE = r"(?!os\.|environ\b|getenv\(|Path\(|None\b|True\b|False\b|%s|\{\})"
 _VALUE = r"(\"[^\"]*\"|'[^']*'|[^\s\"']+)"
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
@@ -54,14 +56,17 @@ RULES = (
     ("private_key", (("private key",),), re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
      lambda m: MASK),
-    # Credential headers, inside -H "..." or anywhere: keep the header name and scheme.
+    # Credential headers, inside -H "..." or anywhere: keep the header name and
+    # scheme. `Bearer $TOKEN` names a secret without holding one.
     ("auth_header", (("authorization",),), re.compile(
-        r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)([^\s\"']+)", re.I),
+        r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)" + _NOT_A_REF
+        + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
+    # Nor is the `:-` of a shell default a header: `${OPENAI_API_KEY:-}`.
     ("key_header", ((":",), ("api-key", "apikey", "api_key", "auth-token", "access-token",
                              "private-token", "secret")), re.compile(
-        r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)\s*:\s*)"
-        r"([^\s\"']+)", re.I),
+        r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)"
+        r"\s*:(?![-+=?])\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
     # scheme://user:password@host -- keep the user; a long user alone is a token.
     # Anchored on the literal `://`, not on the scheme, which would be tried at
@@ -70,9 +75,11 @@ RULES = (
      lambda m: m.group(1) + MASK + m.group(3)),
     ("url_token_user", (("://",), ("@",)), re.compile(r"(://)([^/\s:@\"']{20,})(@)"),
      lambda m: m.group(1) + MASK + m.group(3)),
-    # curl/wget -u user:password, --user user:password
+    # curl/wget -u user:password, --user user:password. Not a container's
+    # `--user 1000:1000`, nor `date -u +%H:%M`.
     ("user_password", (("-u", "--user", "--proxy-user"), (":",)), re.compile(
-        r"((?:^|\s)(?:-u|--user|--proxy-user)\s*)([^\s:\"']+:)([^\s\"']+)"),
+        r"((?:^|\s)(?:-u|--user|--proxy-user)\s*)(?!\d+:\d+(?![^\s\"']))"
+        r"([\w.@-][^\s:\"']*:)([^\s\"']+)"),
      lambda m: m.group(1) + m.group(2) + MASK),
     # --token X, --hf-token=X, --api-key X, --password X, --secret X ... A flag
     # starts an argument: the `-credential` inside `git-credential` is not one.
@@ -85,7 +92,7 @@ RULES = (
     # spaces around `=` -- that is how a shell or a kwarg writes it, while
     # `token = tokens[i]` inside an inline script is code, not a credential.
     ("secret_assign", (("=",), _NAME_WORDS), re.compile(
-        r"(\b" + _SECRET_NAME + r"=)" + _NOT_A_REF + _VALUE, re.I),
+        r"(\b" + _SECRET_NAME + r"=)" + _NOT_A_REF + _NOT_CODE + _VALUE, re.I),
      lambda m: m.group(1) + MASK),
     # The same names as JSON keys: curl -d '{"password": "..."}'.
     ("secret_json", ((":",), _NAME_WORDS), re.compile(

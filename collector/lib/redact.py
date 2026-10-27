@@ -14,12 +14,13 @@ Two kinds, both on by default (EBPFM_REDACT, see ebpf_trace.py):
            like, run directly, through node/npx/uvx, under a wrapper
            (timeout, nohup, env, srun, ssh, ...) or inside a shell command
            string (`bash -c '...'`, `sbatch --wrap=...`). The agent's flags,
-           model and subcommand stay; each run of prompt text becomes one
-           PROMPT_MASK.
+           model, subcommand and session names stay; each run of prompt text
+           becomes one PROMPT_MASK.
 
 What is masked is the VALUE, never the structure around it (the dashboard's
 rule): the flag, the variable name and the subcommand stay, so a reader can
-still tell what kind of thing was there and that it was removed.
+still tell what kind of thing was there and that it was removed. In a shell
+command string only the masked words change; the rest is written as it was.
 
 The collector masks what it WRITES. Its in-memory argv stays raw: agent
 classification, the approval flags and the endpoint names are read from it.
@@ -36,8 +37,10 @@ PROMPT_MASK = "[REDACTED-PROMPT]"
 # credentials: dashboard/rc_dashboard/redact.py, verbatim from here to RULES' end
 # ---------------------------------------------------------------------------
 
-# A value that only refers to a secret is not one: `--token $HF_TOKEN`.
+# A value that only refers to a secret is not one: `--token $HF_TOKEN`. Nor is
+# a kwarg in an inline script that reads one: `token=os.environ["HF_TOKEN"]`.
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
+_NOT_CODE = r"(?!os\.|environ\b|getenv\(|Path\(|None\b|True\b|False\b|%s|\{\})"
 _VALUE = r"(\"[^\"]*\"|'[^']*'|[^\s\"']+)"
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
@@ -59,14 +62,17 @@ RULES = (
     ("private_key", (("private key",),), re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
      lambda m: MASK),
-    # Credential headers, inside -H "..." or anywhere: keep the header name and scheme.
+    # Credential headers, inside -H "..." or anywhere: keep the header name and
+    # scheme. `Bearer $TOKEN` names a secret without holding one.
     ("auth_header", (("authorization",),), re.compile(
-        r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)([^\s\"']+)", re.I),
+        r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)" + _NOT_A_REF
+        + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
+    # Nor is the `:-` of a shell default a header: `${OPENAI_API_KEY:-}`.
     ("key_header", ((":",), ("api-key", "apikey", "api_key", "auth-token", "access-token",
                              "private-token", "secret")), re.compile(
-        r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)\s*:\s*)"
-        r"([^\s\"']+)", re.I),
+        r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)"
+        r"\s*:(?![-+=?])\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
     # scheme://user:password@host -- keep the user; a long user alone is a token.
     # Anchored on the literal `://`, not on the scheme, which would be tried at
@@ -75,9 +81,11 @@ RULES = (
      lambda m: m.group(1) + MASK + m.group(3)),
     ("url_token_user", (("://",), ("@",)), re.compile(r"(://)([^/\s:@\"']{20,})(@)"),
      lambda m: m.group(1) + MASK + m.group(3)),
-    # curl/wget -u user:password, --user user:password
+    # curl/wget -u user:password, --user user:password. Not a container's
+    # `--user 1000:1000`, nor `date -u +%H:%M`.
     ("user_password", (("-u", "--user", "--proxy-user"), (":",)), re.compile(
-        r"((?:^|\s)(?:-u|--user|--proxy-user)\s*)([^\s:\"']+:)([^\s\"']+)"),
+        r"((?:^|\s)(?:-u|--user|--proxy-user)\s*)(?!\d+:\d+(?![^\s\"']))"
+        r"([\w.@-][^\s:\"']*:)([^\s\"']+)"),
      lambda m: m.group(1) + m.group(2) + MASK),
     # --token X, --hf-token=X, --api-key X, --password X, --secret X ... A flag
     # starts an argument: the `-credential` inside `git-credential` is not one.
@@ -90,7 +98,7 @@ RULES = (
     # spaces around `=` -- that is how a shell or a kwarg writes it, while
     # `token = tokens[i]` inside an inline script is code, not a credential.
     ("secret_assign", (("=",), _NAME_WORDS), re.compile(
-        r"(\b" + _SECRET_NAME + r"=)" + _NOT_A_REF + _VALUE, re.I),
+        r"(\b" + _SECRET_NAME + r"=)" + _NOT_A_REF + _NOT_CODE + _VALUE, re.I),
      lambda m: m.group(1) + MASK),
     # The same names as JSON keys: curl -d '{"password": "..."}'.
     ("secret_json", ((":",), _NAME_WORDS), re.compile(
@@ -148,58 +156,105 @@ def redact_keys(text):
 # ---------------------------------------------------------------------------
 #
 # A CLI is described by what its arguments ARE, because the prompt is whatever is
-# left once the rest is accounted for:
-#   pos     a bare positional at the top level is prompt text
-#   prompt  flags whose value is prompt text
-#   value   flags that take a value which is not (a model, a path, an id) -- a
-#           value is still masked if it reads as prose (whitespace, or long),
-#           unless it is JSON, which a prompt never is
-#   free    value flags whose values have spaces by nature (tool lists, a
-#           settings path): kept whatever they look like
-#   subs    first-positional subcommands: 'prompt' (prompt text follows), 'quiet'
-#           (no prompt anywhere after it), 'model' (one model name, then prompt
-#           text), 'files' (positionals are paths)
-#   flags   long flags known to take NO value (the next token is judged alone)
-#   need    only a CLI when one of these subcommands follows: a generic name
-# An unknown long flag followed by one short word keeps it as its value; any
-# other token after an unknown flag is judged on its own, so the failure mode of
-# a flag this table does not know is masking too much, or one word too little.
+# left once the rest is accounted for. Its options, by kind:
+#   prompt    the value is prompt text: masked
+#   text      the value is free text that can carry instructions (a config
+#             override, agent definitions, a cloud task's description): masked
+#             when it reads as prose or is a JSON object
+#   value     the value is a name, model, path, id, number or label: kept, spaces
+#             and all (a session's name is not a prompt)
+#   optional  a value only when the next argument is not an option (commander's
+#             `[name]`)
+#   many      one value or more (`--add-dir A B`): the arguments up to the next
+#             option, while none of them reads as prose
+#   flag      no value
+#   stop      nothing after it is a prompt (Claude Code's own daemon modes)
+# and its other arguments:
+#   pos       a bare positional at the top level is prompt text
+#   subs      first-positional subcommands: 'prompt' (prompt text follows),
+#             'quiet' (no prompt anywhere after it), 'model' (one model name,
+#             then prompt text); or (kind, {its own subcommands})
+#   need      only a CLI when one of these subcommands follows: a generic name
+# The claude and codex tables follow their own --help (Claude Code 2.1.309,
+# codex-cli 0.162.1), plus the modes Claude Code's daemon starts it in.
+#
+# An argument no table accounts for is judged by its shape (_reads_as_text): one
+# with whitespace in it, or a bare word, is text, masked wherever a prompt can
+# stand; a path, URL, number, id, hyphenated name or key=value is kept. An option
+# the table does not know takes the next argument as its value unless that one
+# is prose, so the failure mode of an unknown option is one word too little.
 
-def _cli(pos=True, prompt=(), value=(), free=(), flags=(), subs=None, need=None):
-    return {'pos': pos, 'prompt': frozenset(prompt), 'value': frozenset(value) | frozenset(free),
-            'free': frozenset(free), 'flags': frozenset(flags), 'subs': dict(subs or {}),
-            'need': frozenset(need or ())}
+def _cli(pos=True, prompt=(), text=(), value=(), optional=(), many=(), flags=(), stop=(),
+         subs=None, need=None):
+    kinds = {}
+    for kind, names in (('flag', flags), ('value', value), ('optional', optional),
+                        ('many', many), ('text', text), ('prompt', prompt), ('stop', stop)):
+        kinds.update(dict.fromkeys(names, kind))
+    return {'pos': pos, 'kinds': kinds,
+            'takes': frozenset(k for k, v in kinds.items() if v not in ('flag', 'stop')),
+            'subs': dict(subs or {}), 'need': frozenset(need or ())}
 
 
-_CLAUDE_QUIET = ('mcp', 'config', 'update', 'doctor', 'install', 'migrate-installer',
-                 'setup-token', 'plugin', 'plugins', 'auth', 'login', 'logout', 'agents')
+_CLAUDE_QUIET = ('agents', 'attach', 'auth', 'auto-mode', 'doctor', 'gateway', 'import',
+                 'install', 'logs', 'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm',
+                 'setup-token', 'stop', 'kill', 'ultrareview', 'update', 'upgrade',
+                 'remote-control', 'rc', 'config', 'migrate-installer', 'login', 'logout',
+                 'serve', 'setup', 'daemon', 'bg-spare', 'bg-pty-host')
+_CODEX_QUIET = ('agents', 'login', 'logout', 'mcp', 'mcp-server', 'plugin', 'app-server',
+                'remote-control', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply',
+                'a', 'archive', 'delete', 'migrate-rollouts', 'unarchive', 'exec-server',
+                'features', 'help', 'proto', 'responses-api-proxy', 'stdio-to-uds')
+_CODEX_EXEC = ('prompt', {'resume': 'prompt', 'fork': 'prompt', 'review': 'prompt',
+                          'help': 'quiet'})
 CLIS = {
     'claude': _cli(
-        prompt=('--append-system-prompt', '--system-prompt', '--agents'),
-        flags=('--print', '--continue', '--verbose', '--debug', '--dangerously-skip-permissions',
-               '--allow-dangerously-skip-permissions', '--ide', '--strict-mcp-config',
-               '--include-partial-messages', '--replay-user-messages', '--fork-session',
-               '--version', '--help'),
-        value=('--model', '--fallback-model', '--output-format', '--input-format',
-               '--permission-mode', '--session-id', '-r', '--resume', '--max-turns',
-               '--plugin-dir', '--permission-prompt-tool', '--system-prompt-file',
-               '--append-system-prompt-file', '--max-budget-usd', '--debug-file', '--effort'),
-        free=('--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools',
-              '--tools', '--mcp-config', '--settings', '--add-dir', '--setting-sources',
-              '--json-schema', '--betas'),
+        prompt=('--append-system-prompt', '--system-prompt'),
+        text=('--agents', '--cloud'),
+        flags=('--allow-dangerously-skip-permissions', '--ax-screen-reader', '--bg',
+               '--background', '--bare', '--brief', '--chrome', '--no-chrome', '-c',
+               '--continue', '--dangerously-skip-permissions', '--desktop',
+               '--disable-slash-commands', '--exclude-dynamic-system-prompt-sections',
+               '--fork-session', '--forward-subagent-text', '-h', '--help', '--ide',
+               '--include-hook-events', '--include-partial-messages',
+               '--no-session-persistence', '-p', '--print', '--replay-user-messages',
+               '--restricted', '--safe-mode', '--strict-mcp-config', '--tmux', '--verbose',
+               '-v', '--version', '--debug-to-stderr', '--enable-auth-status',
+               '--reply-on-resume', '--mcp-debug'),
+        value=('--agent', '--autocompact', '--debug-file', '--effort', '--environment',
+               '--fallback-model', '--input-format', '--json-schema', '--max-budget-usd',
+               '--model', '-n', '--name', '--output-format', '--permission-mode',
+               '--permission-prompts', '--plugin-dir', '--plugin-url',
+               '--remote-control-session-name-prefix', '--session-id', '--setting-sources',
+               '--settings', '--system-prompt-snapshot', '--system-prompt-file',
+               '--append-system-prompt-file', '--permission-prompt-tool', '--max-turns',
+               '--max-thinking-tokens', '--inherit-permission-mode', '--sdk-url',
+               '--resume-session-at'),
+        optional=('-r', '--resume', '--remote-control', '-d', '--debug', '--from-pr',
+                  '--prompt-suggestions', '--teleport', '-w', '--worktree'),
+        many=('--add-dir', '--allowedTools', '--allowed-tools', '--betas', '--disallowedTools',
+              '--disallowed-tools', '--file', '--mcp-config', '--tools'),
+        stop=('--bg-spare', '--bg-pty-host', '--preload'),
         subs=dict.fromkeys(_CLAUDE_QUIET, 'quiet')),
     'codex': _cli(
-        flags=('--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--oss', '--json',
-               '--search', '--skip-git-repo-check', '--last', '--include-plan-tool',
-               '--version', '--help'),
-        value=('-m', '--model', '-c', '--config', '-p', '--profile', '-s', '--sandbox',
-               '-a', '--ask-for-approval', '-C', '--cd', '-i', '--image', '-o',
-               '--output-last-message', '--output-schema', '--color', '--enable', '--disable',
-               '--add-dir', '--local-provider'),
-        subs=dict(dict.fromkeys(('exec', 'e', 'resume'), 'prompt'),
-                  **dict.fromkeys(('login', 'logout', 'mcp', 'mcp-server', 'app-server',
-                                   'proto', 'completion', 'debug', 'apply', 'a', 'cloud',
-                                   'sandbox', 'features', 'help'), 'quiet'))),
+        prompt=('--message',),
+        text=('-c', '--config'),
+        flags=('--strict-config', '--oss', '--approve-for-me',
+               '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
+               '--worktree', '--search', '--no-alt-screen', '--no-daemon',
+               '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+               '--json', '--last', '--all', '--include-non-interactive', '--uncommitted',
+               '--full-auto', '--yolo', '--include-plan-tool', '-h', '--help', '-V',
+               '--version'),
+        value=('-m', '--model', '--enable', '--disable', '--remote', '--remote-auth-token-env',
+               '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd',
+               '--add-dir', '-a', '--ask-for-approval', '--thread-source',
+               '--cyber-access-program', '--output-schema', '--color', '-o',
+               '--output-last-message', '--base', '--commit', '--title', '--thread', '--env',
+               '--attempts', '--branch'),
+        many=('-i', '--image'),
+        subs=dict(dict.fromkeys(_CODEX_QUIET, 'quiet'),
+                  exec=_CODEX_EXEC, e=_CODEX_EXEC, review='prompt', resume='prompt',
+                  fork='prompt', queue='prompt', cloud=('quiet', {'exec': 'prompt'}))),
     'gemini': _cli(
         prompt=('-p', '--prompt', '-i', '--prompt-interactive'),
         flags=('--yolo', '--sandbox', '--debug', '--all-files', '--show-memory-usage',
@@ -227,11 +282,17 @@ CLIS = {
                                **dict.fromkeys(('auth', 'mcp', 'serve', 'web', 'upgrade',
                                                 'models', 'agent', 'github', 'export',
                                                 'import', 'stats'), 'quiet'))),
+    # its launcher runs node with its own index.js first; a worker serves the IDE
     'cursor-agent': _cli(
-        value=('-m', '--model', '--output-format', '--resume', '-a'),
-        subs=dict.fromkeys(('login', 'logout', 'status', 'update', 'upgrade', 'mcp', 'ls',
-                            'create-chat', 'install-shell-integration',
-                            'uninstall-shell-integration'), 'quiet')),
+        flags=('--use-system-ca', '-p', '--print', '-f', '--force', '--verbose'),
+        value=('-m', '--model', '--output-format', '-a', '--api-key', '--endpoint',
+               '--worker-dir', '--name', '--label', '--worker-api-socket'),
+        optional=('--resume',),
+        subs=dict({'resume': 'prompt'},
+                  **dict.fromkeys(('login', 'logout', 'status', 'update', 'upgrade', 'mcp', 'ls',
+                                   'create-chat', 'install-shell-integration',
+                                   'uninstall-shell-integration', 'worker', 'about', 'models',
+                                   'help'), 'quiet'))),
     'goose': _cli(pos=False, prompt=('-t', '--text'),
                   value=('-i', '--instructions', '-n', '--name', '-r', '--resume',
                          '--recipe', '--provider', '--model', '--max-turns'),
@@ -484,7 +545,7 @@ def find_cli(toks):
         if name is not None:
             spec = CLIS[name]
             if spec['need']:
-                j = _skip_options(toks, i + 1, spec['value'])
+                j = _skip_options(toks, i + 1, spec['takes'])
                 if j >= n or toks[j] not in spec['need']:
                     return None, None
             return i, name
@@ -533,156 +594,242 @@ def find_cli(toks):
 
 _NO_PROMPT_FLAGS = frozenset(('--help', '-h', '--version', '-V', '-v'))
 # a session or thread id: a UUID, or a long run of hex
-_ID = re.compile(r'^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
-                 r'[0-9a-fA-F]{12}|[0-9a-fA-F]{16,})$')
+_ID = re.compile(r'(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+                 r'[0-9a-fA-F]{12}|[0-9a-fA-F]{16,})\Z')
+# What an argument that is not text looks like: a path, URL or slash command; a
+# number, version, size or time; letters with a digit among them (an id, `v2`);
+# a name joined by - _ . : @ or +, or in camelCase (`bg-spare`, `acceptEdits`);
+# key=value; an npm scope; a run of hex; stdin's `-`; an empty argument.
+_MACHINE = re.compile(
+    r'(?:|-'
+    r'|[0-9a-fA-F]{16,}'
+    r'|\S*/\S*'
+    r'|[-+]?\d\S*'
+    r'|[^\W_]*\d[^\W_]*'
+    r'|[^\W_]+(?:[-_.:@+][^\W_]+)+[-_.:]?'
+    r'|[a-z]+(?:[A-Z][a-z0-9]*)+'
+    r'|[\w.-]+=\S*'
+    r'|@[\w.-]+'
+    r')\Z')
+# Small words a sentence has and a subcommand's arguments do not.
+_SMALL_WORDS = frozenset((
+    'a', 'an', 'the', 'to', 'of', 'and', 'or', 'but', 'in', 'on', 'at', 'by', 'for', 'with',
+    'from', 'into', 'about', 'is', 'are', 'was', 'be', 'it', 'its', 'this', 'that', 'these',
+    'those', 'my', 'your', 'our', 'me', 'you', 'we', 'i', 'please', 'can', 'could',
+    'should', 'would', 'will', 'do', 'does', 'not', 'no', 'all', 'any', 'how', 'what', 'why',
+    'when'))
+
+
+def _reads_as_text(t):
+    """Whether an argument reads as words rather than as a name, path, number
+    or id: whitespace in it, or a bare word."""
+    return bool(_PROSE.search(t)) or not _MACHINE.match(t)
+
+
+def _text_value(v):
+    """A `text` option's value that may carry instructions: prose, or a JSON
+    object (agent definitions)."""
+    return bool(_PROSE.search(v)) or v.lstrip()[:1] == '{'
+
+
+def _sentence_follows(spec, toks, j):
+    """Split on spaces, whether toks[j:] go on like a sentence: four words in a
+    row, or two with a small word (`the`, `to`, `please`) among them. How
+    `claude update the README` is told from `claude auth status --json`."""
+    kinds = spec['kinds']
+    words, small, k, n = 0, False, j, len(toks)
+    while k < n:
+        t = toks[k]
+        if _is_option(t):
+            words, small = 0, False
+            name, eq, _v = t.partition('=')
+            k += 2 if not eq and kinds.get(name) not in (None, 'flag', 'stop') else 1
+            continue
+        if _reads_as_text(t):
+            words += 1
+            small = small or t.lower().rstrip('.,;:!?') in _SMALL_WORDS
+            if words >= 4 or (words >= 2 and small):
+                return True
+        else:
+            words, small = 0, False
+        k += 1
+    return False
 
 
 def _walk(spec, toks, exact=True):
-    """An agent CLI's arguments with its prompt text masked; (tokens, masked?).
+    """Which of an agent CLI's arguments are prompt text: a list as long as
+    `toks` holding None (kept), PROMPT_MASK, or the argument's new text
+    (`--prompt=[REDACTED-PROMPT]`); and whether anything was masked.
 
-    `exact` says the tokens are the real arguments. A line split on spaces is
-    not: a prompt's words are separate tokens there, so nothing that would keep
-    one of them -- a lone path, an id, a word after an unknown flag -- is kept."""
+    A run of positionals is masked whole when any of it reads as text, but for
+    a session id ahead of it: a prompt given as several arguments keeps no path
+    or name of its own. `exact` says the tokens are the real arguments. A line
+    split on spaces is not: a prompt's words are separate tokens there, so a
+    bare word is never taken for an unknown option's value, and a quiet
+    subcommand counts only when no sentence follows it."""
+    n = len(toks)
+    res = [None] * n
     if exact and any(t in _NO_PROMPT_FLAGS for t in toks):
-        return list(toks), False            # `codex exec --help`: a usage screen
-    out, fired = [], False
-    pos_prompt, model_next, first = spec['pos'], False, True
-    i, n = 0, len(toks)
+        return res, False                   # `codex exec --help`: a usage screen
+    kinds = spec['kinds']
+    pos_prompt, model_next = spec['pos'], False
+    subs, parent = spec['subs'], None       # what the next positional may be
+    run = []                                # the positionals since the last option
 
-    def put_mask():
-        if not out or out[-1] != PROMPT_MASK:
-            out.append(PROMPT_MASK)
+    def end_run():
+        if any(_reads_as_text(toks[k]) for k in run):
+            lead = 0
+            while lead < len(run) and _ID.match(toks[run[lead]]):
+                lead += 1                   # the session a prompt resumes: `resume ID ...`
+            for k in run[lead:]:
+                res[k] = PROMPT_MASK
+        del run[:]
 
+    def positional(k, t):
+        if pos_prompt:
+            run.append(k)
+        elif _PROSE.search(t):
+            res[k] = PROMPT_MASK            # text with spaces is prompt-like wherever it is
+
+    i = 0
     while i < n:
         t = toks[i]
         if t == '--':
-            out.append(t)
-            if i + 1 < n:
-                if pos_prompt:
-                    put_mask()
-                    fired = True
-                else:
-                    out.extend(toks[i + 1:])
+            end_run()
+            for k in range(i + 1, n):
+                positional(k, toks[k])
             break
         if _is_option(t):
+            end_run()
             name, eq, val = t.partition('=')
+            kind = kinds.get(name)
+            if kind == 'stop':
+                break
             if eq:
-                if val and (name in spec['prompt']
-                            or (name not in spec['free'] and _prose_value(val))):
-                    out.append(name + '=' + PROMPT_MASK)
-                    fired = True
-                else:
-                    out.append(t)
+                if val and (kind == 'prompt' or (kind == 'text' and _text_value(val))
+                            or (kind is None and _PROSE.search(val))):
+                    res[i] = name + '=' + PROMPT_MASK
                 i += 1
                 continue
-            out.append(t)
-            if i + 1 < n and (name in spec['prompt'] or name in spec['value']):
-                v = toks[i + 1]
-                if name in spec['prompt'] or (name not in spec['free'] and _prose_value(v)):
-                    out.append(PROMPT_MASK)
-                    fired = True
+            if kind == 'flag' or i + 1 >= n:
+                i += 1
+                continue
+            v = toks[i + 1]
+            if kind is None:
+                # An option this table does not know, then one argument: far
+                # likelier its value (`--effort max`) than a prompt, unless it is
+                # prose -- or, split on spaces, a word that may begin one. After a
+                # short option only a name or number is taken: those are more
+                # often switches.
+                if not (_is_option(v) or v == '--' or _PROSE.search(v)
+                        or ((not exact or name[1] != '-') and _reads_as_text(v))):
+                    i += 2
                 else:
-                    out.append(v)
-                i += 2
+                    i += 1
                 continue
-            if (exact and i + 1 < n and name.startswith('--') and name not in spec['flags']
-                    and _word_value(toks[i + 1])):
-                # A long flag this table does not know, then one short word: far
-                # likelier its value (`--effort max`) than a one-word prompt.
-                out.append(toks[i + 1])
-                i += 2
+            if kind in ('optional', 'text') and (_is_option(v) or v == '--'):
+                i += 1
                 continue
+            if kind == 'prompt' or (kind == 'text' and _text_value(v)):
+                res[i + 1] = PROMPT_MASK
+            i += 2
+            if kind == 'many':
+                while (i < n and not _is_option(toks[i]) and toks[i] != '--'
+                       and not (_PROSE.search(toks[i]) if exact else _reads_as_text(toks[i]))):
+                    i += 1
+            continue
+        # a positional
+        sub = None
+        if subs is not None:
+            if not _PROSE.search(t):
+                sub = subs.get(t)
+            if sub is None:
+                if parent == 'quiet':
+                    break                   # a quiet subcommand's own argument
+                if parent is None and '/' in t and not _PROSE.search(t):
+                    i += 1                  # the launcher's own script (cursor-agent's
+                    continue                # index.js); the subcommand may follow it
+                subs, parent = None, None
+        if sub is not None:
+            kind, nested = sub if isinstance(sub, tuple) else (sub, None)
+            if kind == 'quiet' and not nested:
+                if exact or not _sentence_follows(spec, toks, i + 1):
+                    break                   # no prompt anywhere after it
+                # split on spaces: a prompt whose first word is a subcommand's name
+                pos_prompt, subs = True, None
+                run.append(i)
+                i += 1
+                continue
+            if kind in ('prompt', 'model'):
+                pos_prompt = True
+            model_next = kind == 'model'
+            subs, parent = nested, (kind if nested else None)
             i += 1
             continue
-        prose = bool(_PROSE.search(t))
-        if first:
-            first = False
-            sub = None if prose else spec['subs'].get(t)
-            if sub is not None:
-                out.append(t)
-                if sub == 'quiet' and exact:
-                    out.extend(toks[i + 1:])
-                    break
-                # split on spaces, `claude update the README` may be a prompt
-                # whose first word is a subcommand's name: mask what follows
-                pos_prompt = sub in ('prompt', 'model', 'quiet')
-                model_next = sub == 'model'
+        if model_next:
+            model_next = False
+            if not _PROSE.search(t):
                 i += 1
                 continue
-        if model_next and not prose:
-            out.append(t)
-            model_next = False
-        elif (exact and pos_prompt and not prose
-                and ('/' in t or _ID.match(t))):
-            # one path, no spaces: a script or a directory (cursor-agent's
-            # launcher hands itself its index.js); or a session id. Not text.
-            out.append(t)
-        elif pos_prompt or prose:
-            # text with spaces in it is prompt-like whatever the CLI's positionals are
-            put_mask()
-            fired = True
-        else:
-            out.append(t)
+        positional(i, t)
         i += 1
-    return out, fired
+    end_run()
+    return res, any(r is not None for r in res)
 
 
-def _word_value(v):
-    """One short word that is not itself a flag: how a flag's value looks."""
-    return (bool(v) and not v.startswith('-') and len(v) <= 64
-            and not _PROSE.search(v))
-
-
-def _prose_value(v):
-    """A flag value that reads as text rather than as a name, path, number or
-    JSON (an MCP config, a schema) -- whose secrets the credential rules mask."""
-    if v[:1] in ('{', '['):
-        return False
-    return bool(_PROSE.search(v)) or len(v) > 256
+_PLAIN = re.compile(r'[\w@%+=:,./\[\]-]*\Z')
 
 
 def _quote(t):
-    if t in (MASK, PROMPT_MASK):
-        return t
-    return shlex.quote(t)
+    """`t` as a shell word: as it is when it needs no quotes (a mask needs
+    none), else in single quotes."""
+    return t if _PLAIN.match(t) else shlex.quote(t)
+
+
+def _requote(raw, new):
+    """`new`, written where the shell word `raw` stood: inside raw's own quotes
+    when raw is one quoted string, else quoted only if it has to be."""
+    if len(raw) > 1 and raw[0] == raw[-1] == "'" and "'" not in new:
+        return "'" + new + "'"
+    if len(raw) > 1 and raw[0] == raw[-1] == '"':
+        return '"' + new.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return _quote(new)
 
 
 _OP_CHARS = frozenset('();<>|&`')
 
 
-def shell_split(s):
-    """[(text, is_operator)] for a shell command string, split as sh splits it:
-    single and double quotes and backslashes as sh reads them; ; & | ( ) < >
-    and backticks as operators wherever they stand, glued to a word or not; a
-    newline as an operator too, since it ends a command; # starting a comment.
-    Raises ValueError on an unterminated quote.
-
-    Not shlex: before Python 3.8 its punctuation_chars do not split a word they
-    are glued to under whitespace_split, so on EL8's 3.6 `cd /p; claude -p "x"`
-    was one command, `cd`'s, and the prompt went out unmasked."""
-    out, cur, word = [], [], [False]
+def _shell_tokens(s):
+    """shell_split(), each token with where it stands in `s`: [(text, is
+    operator, start, end)]."""
+    out, cur = [], []
+    start = [None]                        # where the word being read began
     i, n = 0, len(s)
 
-    def flush():
-        if word[0]:
-            out.append((''.join(cur), False))
+    def flush(end):
+        if start[0] is not None:
+            out.append((''.join(cur), False, start[0], end))
             del cur[:]
-            word[0] = False
+            start[0] = None
     while i < n:
         c = s[i]
         if c == '\\':
             if i + 1 < n and s[i + 1] != '\n':
+                if start[0] is None:
+                    start[0] = i
                 cur.append(s[i + 1])
-                word[0] = True
             i += 2                                # a backslash-newline joins lines
         elif c == "'":
             j = s.find("'", i + 1)
             if j < 0:
                 raise ValueError('unterminated quote')
+            if start[0] is None:
+                start[0] = i
             cur.append(s[i + 1:j])
-            word[0] = True
             i = j + 1
         elif c == '"':
+            if start[0] is None:
+                start[0] = i
             i += 1
             while True:
                 if i >= n:
@@ -698,38 +845,53 @@ def shell_split(s):
                     continue
                 cur.append(ch)
                 i += 1
-            word[0] = True
         elif c in ' \t\r':
-            flush()
+            flush(i)
             i += 1
         elif c == '\n':
-            flush()
-            out.append(('\n', True))
+            flush(i)
+            out.append(('\n', True, i, i + 1))
             i += 1
-        elif c == '#' and not word[0]:
+        elif c == '#' and start[0] is None:
             j = s.find('\n', i)
             i = n if j < 0 else j
         elif c in _OP_CHARS:
-            flush()
+            flush(i)
             j = i
             while j < n and s[j] in _OP_CHARS:
                 j += 1
-            out.append((s[i:j], True))
+            out.append((s[i:j], True, i, j))
             i = j
         else:
+            if start[0] is None:
+                start[0] = i
             cur.append(c)
-            word[0] = True
             i += 1
-    flush()
+    flush(min(i, n))
     return out
 
 
+def shell_split(s):
+    """[(text, is_operator)] for a shell command string, split as sh splits it:
+    single and double quotes and backslashes as sh reads them; ; & | ( ) < >
+    and backticks as operators wherever they stand, glued to a word or not; a
+    newline as an operator too, since it ends a command; # starting a comment.
+    Raises ValueError on an unterminated quote.
+
+    Not shlex: before Python 3.8 its punctuation_chars do not split a word they
+    are glued to under whitespace_split, so on EL8's 3.6 `cd /p; claude -p "x"`
+    was one command, `cd`'s, and the prompt went out unmasked."""
+    return [(t, op) for t, op, _a, _b in _shell_tokens(s)]
+
+
 def _redact_shell(s, depth, exact=True):
-    """A shell command string with every agent prompt in it masked; (str, masked?)."""
+    """A shell command string with every agent prompt in it masked; (str,
+    masked?). Only the masked words change: the rest of the string, its quoting
+    and spacing included, is written as it was."""
     if not _CLI_WORD.search(s):
         return s, False
     try:
-        toks = shell_split(s)
+        toks = _shell_tokens(s)
     except ValueError:
         # Not shell a lexer can follow -- a command line the kernel cut short, or
         # a heredoc of Python. An agent run at a command position in it is
@@ -739,21 +901,37 @@ def _redact_shell(s, depth, exact=True):
         if m is None:
             return s, False
         return s[:m.end(1)] + ' ' + PROMPT_MASK, True
-    out, cmd, fired = [], [], False
+    edits, cmd = [], []
     for t in toks + [None]:
-        if t is None or t[1]:
-            if cmd:
-                red, f = redact_prompt_argv(cmd, depth, exact)
-                fired = fired or f
-                out.extend(_quote(x) for x in red)
-                cmd = []
-            if t is not None:
-                out.append(t[0])
-        else:
-            cmd.append(t[0])
-    if not fired:
+        if t is not None and not t[1]:
+            cmd.append(t)
+            continue
+        if cmd:
+            res, _f = _mask_argv([w[0] for w in cmd], depth, exact)
+            k = 0
+            while k < len(cmd):
+                if res[k] is None:
+                    k += 1
+                elif res[k] == PROMPT_MASK:
+                    e = k
+                    while e + 1 < len(cmd) and res[e + 1] == PROMPT_MASK:
+                        e += 1
+                    edits.append((cmd[k][2], cmd[e][3], PROMPT_MASK))
+                    k = e + 1
+                else:
+                    a, b = cmd[k][2], cmd[k][3]
+                    edits.append((a, b, _requote(s[a:b], res[k])))
+                    k += 1
+            cmd = []
+    if not edits:
         return s, False
-    return ' '.join(out), True
+    out, at = [], 0
+    for a, b, text in edits:
+        out.append(s[at:a])
+        out.append(text)
+        at = b
+    out.append(s[at:])
+    return ''.join(out), True
 
 
 def _program_at(toks):
@@ -826,27 +1004,38 @@ def _command_strings(toks):
     return out
 
 
-def redact_prompt_argv(argv, depth=0, exact=True):
-    """(argv with every agent prompt in it masked, masked?).
-
-    The agent run itself, then every command string an argument carries --
-    `bash -c '...'`, `sbatch --wrap='...'`, `tmux new 'claude ...'` -- parsed as
-    a shell would and handled the same way, three levels deep."""
-    out = list(argv)
-    fired = False
-    i, name = find_cli(out)
+def _mask_argv(argv, depth=0, exact=True):
+    """Per argument, what masking `argv` changes (see _walk), and whether it
+    changed anything: the agent run itself, then every command string an
+    argument carries -- `bash -c '...'`, `sbatch --wrap='...'`, `tmux new
+    'claude ...'` -- parsed as a shell would and handled the same way, three
+    levels deep."""
+    n = len(argv)
+    res = [None] * n
+    i, name = find_cli(argv)
     if name is not None:
-        tail, fired = _walk(CLIS[name], out[i + 1:], exact)
-        out = out[:i + 1] + tail
+        res[i + 1:] = _walk(CLIS[name], argv[i + 1:], exact)[0]
     if depth < 3:
-        for j, head in _command_strings(out):
-            t = out[j]
-            if t in (MASK, PROMPT_MASK) or not t.startswith(head):
+        cur = [argv[j] if res[j] is None else res[j] for j in range(n)]
+        for j, head in _command_strings(cur):
+            if res[j] is not None or not argv[j].startswith(head):
                 continue
-            red, f = _redact_shell(t[len(head):], depth + 1, exact)
+            red, f = _redact_shell(argv[j][len(head):], depth + 1, exact)
             if f:
-                out[j] = head + red
-                fired = True
+                res[j] = head + red
+    return res, any(r is not None for r in res)
+
+
+def redact_prompt_argv(argv, depth=0, exact=True):
+    """(argv with every agent prompt in it masked, masked?): each run of
+    masked arguments is one PROMPT_MASK."""
+    res, fired = _mask_argv(argv, depth, exact)
+    out = []
+    for t, r in zip(argv, res):
+        if r is None:
+            out.append(t)
+        elif r != PROMPT_MASK or not out or out[-1] != PROMPT_MASK:
+            out.append(r)
     return out, fired
 
 
@@ -864,7 +1053,7 @@ def _shell_command_index(toks):
 
 
 # ---------------------------------------------------------------------------
-# the setting, and the two entry points the collector uses
+# the setting, and the entry points: the tracer's two and the node tier's
 # ---------------------------------------------------------------------------
 
 BOTH = frozenset(('keys', 'prompts'))
@@ -925,3 +1114,36 @@ def redact_line(line, keys=True, prompts=True):
         line, names = redact_keys(line)
         return line, (sorted(set(names)) or None)
     return line, None
+
+
+_CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+_SPELLING = re.compile(r'[\x00-\x20\x7f?]+')
+
+
+def _proc_argv(pid, line):
+    """pid's arguments from /proc/<pid>/cmdline when they join to `line` -- the
+    same process, still running the same command -- else None. ps prints a
+    newline or a tab inside an argument as a space or a ?, so neither counts."""
+    try:
+        with open('/proc/%s/cmdline' % pid, 'rb') as f:
+            raw = f.read().rstrip(b'\0')
+    except Exception:
+        return None
+    if not raw:
+        return None
+    argv = [a.decode('utf-8', 'replace') for a in raw.split(b'\0')]
+    if _SPELLING.sub('', ' '.join(argv)) != _SPELLING.sub('', line):
+        return None
+    return argv
+
+
+def redact_ps_line(line, pid, keys=True, prompts=True):
+    """The same for the line `ps` printed for `pid`, as the node tier has it:
+    masked from the process's own arguments while /proc still has them -- ps
+    joins them with spaces, and a prompt is one argument, spaces and all, as is
+    a session's name beside it -- else from the joined line."""
+    argv = _proc_argv(pid, line) if line and prompts and needs_argv(line) else None
+    if argv is None:
+        return redact_line(line, keys, prompts)
+    red, what = redact_argv(argv, keys, prompts)
+    return _CONTROL.sub(' ', red), what
