@@ -20,7 +20,9 @@ Two kinds, both on by default (EBPFM_REDACT, see ebpf_trace.py):
 What is masked is the VALUE, never the structure around it (the dashboard's
 rule): the flag, the variable name and the subcommand stay, so a reader can
 still tell what kind of thing was there and that it was removed. In a shell
-command string only the masked words change; the rest is written as it was.
+command string only the masked words change, and a comment beside a masked
+prompt; the rest is written as it was, unless a credential in it can only be
+read with its quoting taken off (_redact_shell).
 
 The collector masks what it WRITES. Its in-memory argv stays raw: agent
 classification, the approval flags and the endpoint names are read from it.
@@ -38,10 +40,12 @@ PROMPT_MASK = "[REDACTED-PROMPT]"
 # ---------------------------------------------------------------------------
 
 # A value that only refers to a secret is not one: `--token $HF_TOKEN`. Nor is
-# a kwarg in an inline script that reads one: `token=os.environ["HF_TOKEN"]`.
+# a kwarg in an inline script that reads one, `token=os.environ["HF_TOKEN"]`,
+# or is a placeholder, `password=None)`; `password=None-of-yours` still is.
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
-_NOT_CODE = r"(?!os\.|environ\b|getenv\(|Path\(|None\b|True\b|False\b|%s|\{\})"
-_VALUE = r"(\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+_NOT_CODE = (r"(?!(?:os\.)?(?:environ\b|getenv\()|Path\("
+             r"|(?:None|True|False|%s|\{\})(?=[\s)\],;}\"']|$))")
+_VALUE = r"(\\?\"[^\"]*\"|\\?'[^']*'|[^\s\"']+)"
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
 # on the END of the name: `HF_TOKEN`, `db_password`, `AWS_SECRET_ACCESS_KEY`.
@@ -51,6 +55,21 @@ _SECRET_NAME = (r"[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|_PASS|
 
 _NAME_WORDS = ("token", "secret", "password", "passwd", "passphrase", "_pass", "_pwd", "key",
                "credential")
+
+# A container's `--user 1000:1000` is a uid and a gid, not a user and password:
+# docker's, podman's, a wrapper of theirs (`podman-hpc`, a test's
+# `fake_podman.py`), lines continued with a backslash and all.
+_UID_GID = re.compile(r"\d+:\d+\Z")
+_CONTAINER_RUN = re.compile(r"(?:^|[\s/;&|(_-])(?:docker|podman|nerdctl|buildah|enroot|kubectl|"
+                            r"crictl|ctr)\b(?:\\\n|[^;&|\n])*\Z")
+
+
+def _user_password(m):
+    """`-u user:` kept and the password masked, but for a container's uid:gid."""
+    if _UID_GID.match(m.group(2) + m.group(3)) and _CONTAINER_RUN.search(m.string, 0, m.start()):
+        return m.group(0)
+    return m.group(1) + m.group(2) + MASK
+
 
 # (name, gate, pattern, substitution). The gate is cheap substring tests on the
 # lowercased text -- every group must have one hit -- and the pattern only runs
@@ -68,11 +87,13 @@ RULES = (
         r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)" + _NOT_A_REF
         + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
-    # Nor is the `:-` of a shell default a header: `${OPENAI_API_KEY:-}`.
+    # Nor is a shell default that is empty or another variable a header --
+    # `${OPENAI_API_KEY:-}`, `${OPENAI_API_KEY:-$KEY}`, `${OPENAI_API_KEY:?unset}`
+    # -- while a default written out is the key itself.
     ("key_header", ((":",), ("api-key", "apikey", "api_key", "auth-token", "access-token",
                              "private-token", "secret")), re.compile(
         r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)"
-        r"\s*:(?![-+=?])\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
+        r"\s*:(?![-=+]?\}|[-=+][\"']?\$|\?)\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
     # scheme://user:password@host -- keep the user; a long user alone is a token.
     # Anchored on the literal `://`, not on the scheme, which would be tried at
@@ -81,12 +102,13 @@ RULES = (
      lambda m: m.group(1) + MASK + m.group(3)),
     ("url_token_user", (("://",), ("@",)), re.compile(r"(://)([^/\s:@\"']{20,})(@)"),
      lambda m: m.group(1) + MASK + m.group(3)),
-    # curl/wget -u user:password, --user user:password. Not a container's
-    # `--user 1000:1000`, nor `date -u +%H:%M`.
+    # curl/wget -u user:password, --user=user:password, quoted or not, `$USER:`
+    # too. Not `date -u +%H:%M`, numpy's `-u[:, 0]`, a container's `--user
+    # 1000:1000` (_user_password), nor a password that is a variable's.
     ("user_password", (("-u", "--user", "--proxy-user"), (":",)), re.compile(
-        r"((?:^|\s)(?:-u|--user|--proxy-user)\s*)(?!\d+:\d+(?![^\s\"']))"
-        r"([\w.@-][^\s:\"']*:)([^\s\"']+)"),
-     lambda m: m.group(1) + m.group(2) + MASK),
+        r"((?:^|\s)(?:-u|--user|--proxy-user)(?:=|\s*)[\"']?)(?![+\[])([^\s:\"']+:)(?!\$)"
+        r"([^\s\"']+)"),
+     _user_password),
     # --token X, --hf-token=X, --api-key X, --password X, --secret X ... A flag
     # starts an argument: the `-credential` inside `git-credential` is not one.
     ("secret_flag", (("-",), _NAME_WORDS), re.compile(
@@ -104,9 +126,27 @@ RULES = (
     ("secret_json", ((":",), _NAME_WORDS), re.compile(
         r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"[^\"]*\"|'[^']*')", re.I),
      lambda m: m.group(1) + MASK),
-    # ?access_token=...&key=...: query-string credentials, including signed URLs.
+    # Credential headers as JSON or TOML keys, escaped or not: an MCP server's
+    # `"headers": {"Authorization": "Bearer ..."}`, codex's `http_headers=
+    # {"X-Api-Key"="..."}`.
+    ("header_json", (("\"", "'"), ("authorization", "api-key", "apikey", "api_key", "auth-token",
+                                   "access-token", "private-token")), re.compile(
+        r"(\\?[\"'](?:(?:Proxy-)?Authorization\\?[\"']\s*[:=]\s*\\?[\"']"
+        r"(?:(?:Bearer|Basic|Token|Digest|Bot)\s+)?"
+        r"|(?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token)"
+        r"\\?[\"']\s*[:=]\s*\\?[\"']))(?!\$)([^\s\"'\\]+)", re.I),
+     lambda m: m.group(1) + MASK),
+    # A credential flag and its value as items of a JSON list: an MCP server's
+    # `"args": ["--api-key", "..."]`.
+    ("secret_flag_json", (("\"", "'"), _NAME_WORDS), re.compile(
+        r"(\\?[\"']--?[A-Za-z0-9-]*(?:token|secret|password|passwd|passphrase|api-?key|apikey|"
+        r"access-?key|private-?key|auth-?key|credentials?)\\?[\"']\s*,\s*\\?[\"'])(?!\$)"
+        r"([^\"'\\]+)", re.I),
+     lambda m: m.group(1) + MASK),
+    # ?access_token=...&key=...: query-string credentials, including signed URLs
+    # and EOS's `?authz=`.
     ("query_secret", (("?", "&"), ("=",)), re.compile(
-        r"([?&](?:access_token|refresh_token|id_token|token|api_?key|key|secret|password|"
+        r"([?&](?:access_token|refresh_token|id_token|token|authz|api_?key|key|secret|password|"
         r"sig|signature|X-Amz-Signature|X-Amz-Credential|X-Goog-Signature)=)([^&\s\"'#]+)", re.I),
      lambda m: m.group(1) + MASK),
     # mysql -pSECRET (no space), redis-cli -a SECRET, sshpass -p SECRET. Not psql:
@@ -120,8 +160,9 @@ RULES = (
      lambda m: m.group(1) + MASK),
     # Token shapes that are secrets wherever they appear, flag or not.
     ("token_shape", (("sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-",
-                      "hf_", "akia", "asia", "xox", "aiza", "npm_", "eyj"),), re.compile(
+                      "hf_", "akia", "asia", "xox", "aiza", "npm_", "eyj", "zteos64"),), re.compile(
         r"\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}"
+        r"|zteos64:[A-Za-z0-9+/=_%\-]{20,}"
         r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
         r"|glpat-[A-Za-z0-9_\-]{20,}"
         r"|hf_[A-Za-z0-9]{30,}"
@@ -161,8 +202,9 @@ def redact_keys(text):
 #   text      the value is free text that can carry instructions (a config
 #             override, agent definitions, a cloud task's description): masked
 #             when it reads as prose or is a JSON object
-#   value     the value is a name, model, path, id, number or label: kept, spaces
-#             and all (a session's name is not a prompt)
+#   value     the value is a name, model, path, id, number or label: kept, unless
+#             it reads as words where a name should stand -- a sentence after
+#             codex's -p, which is --profile, is a prompt typed from habit
 #   optional  a value only when the next argument is not an option (commander's
 #             `[name]`)
 #   many      one value or more (`--add-dir A B`): the arguments up to the next
@@ -172,44 +214,89 @@ def redact_keys(text):
 # and its other arguments:
 #   pos       a bare positional at the top level is prompt text
 #   subs      first-positional subcommands: 'prompt' (prompt text follows),
-#             'quiet' (no prompt anywhere after it), 'model' (one model name,
-#             then prompt text); or (kind, {its own subcommands})
+#             'quiet' (no prompt after it: names, commands), 'admin' (no prompt
+#             and no word of its own after it), 'model' (one name -- a model, a
+#             session -- then prompt text); or (kind, {its own subcommands})
 #   need      only a CLI when one of these subcommands follows: a generic name
+#   names     value options that name a session: kept whatever they read like
+#   prints    flags that ask for print mode, which takes a prompt
+#   hosts     a mode whose arguments after `--` are a command line of their own
 # The claude and codex tables follow their own --help (Claude Code 2.1.309,
-# codex-cli 0.162.1), plus the modes Claude Code's daemon starts it in.
+# codex-cli 0.162.1), plus the modes Claude Code's daemon starts it in and the
+# prompt options its binary has but does not list.
 #
 # An argument no table accounts for is judged by its shape (_reads_as_text): one
-# with whitespace in it, or a bare word, is text, masked wherever a prompt can
-# stand; a path, URL, number, id, hyphenated name or key=value is kept. An option
-# the table does not know takes the next argument as its value unless that one
-# is prose, so the failure mode of an unknown option is one word too little.
+# with whitespace in it, a bare word, or text in a script other than Latin is
+# text; a path, URL, number, id, hyphenated name or key=value is not. Where a
+# prompt can stand, only a path, a session id and `-` are kept (_prompt_word). An
+# option the table does not know takes the next argument as its value unless
+# that one is text, so the failure mode of an unknown option is one word too
+# little.
 
 def _cli(pos=True, prompt=(), text=(), value=(), optional=(), many=(), flags=(), stop=(),
-         subs=None, need=None):
+         subs=None, need=None, names=(), prints=(), hosts=()):
     kinds = {}
-    for kind, names in (('flag', flags), ('value', value), ('optional', optional),
-                        ('many', many), ('text', text), ('prompt', prompt), ('stop', stop)):
-        kinds.update(dict.fromkeys(names, kind))
+    for kind, opts in (('flag', flags), ('value', value), ('optional', optional),
+                       ('many', many), ('text', text), ('prompt', prompt), ('stop', stop)):
+        kinds.update(dict.fromkeys(opts, kind))
     return {'pos': pos, 'kinds': kinds,
             'takes': frozenset(k for k, v in kinds.items() if v not in ('flag', 'stop')),
-            'subs': dict(subs or {}), 'need': frozenset(need or ())}
+            'subs': dict(subs or {}), 'need': frozenset(need or ()), 'names': frozenset(names),
+            'prints': frozenset(prints), 'hosts': frozenset(hosts)}
 
 
-_CLAUDE_QUIET = ('agents', 'attach', 'auth', 'auto-mode', 'doctor', 'gateway', 'import',
-                 'install', 'logs', 'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm',
-                 'setup-token', 'stop', 'kill', 'ultrareview', 'update', 'upgrade',
-                 'remote-control', 'rc', 'config', 'migrate-installer', 'login', 'logout',
-                 'serve', 'setup', 'daemon', 'bg-spare', 'bg-pty-host')
-_CODEX_QUIET = ('agents', 'login', 'logout', 'mcp', 'mcp-server', 'plugin', 'app-server',
-                'remote-control', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply',
-                'a', 'archive', 'delete', 'migrate-rollouts', 'unarchive', 'exec-server',
-                'features', 'help', 'proto', 'responses-api-proxy', 'stdio-to-uds')
-_CODEX_EXEC = ('prompt', {'resume': 'prompt', 'fork': 'prompt', 'review': 'prompt',
+def _words(*names):
+    """A subcommand's own subcommands, none of which takes a prompt."""
+    return dict.fromkeys(names, 'quiet')
+
+
+# Claude Code's subcommands, 2.1.309's and older ones' (`config`, `setup`,
+# `login`, ...), none of which takes a prompt: an 'admin' one has no word of
+# its own after it, a 'quiet' one a name (`attach <id|name>`), and the rest
+# their own subcommands.
+_CLAUDE_SUBS = dict.fromkeys(('agents', 'doctor', 'gateway', 'purge', 'setup-token', 'update',
+                              'upgrade', 'remote-control', 'rc', 'migrate-installer', 'login',
+                              'logout', 'serve', 'setup', 'bg-spare', 'bg-pty-host'), 'admin')
+_CLAUDE_SUBS.update(dict.fromkeys(('attach', 'logs', 'stop', 'kill', 'rm', 'respawn', 'import',
+                                   'ultrareview'), 'quiet'))
+_PLUGIN = ('quiet', _words('configure', 'details', 'disable', 'enable', 'eval', 'help', 'init',
+                           'new', 'install', 'i', 'list', 'marketplace', 'prune', 'autoremove',
+                           'tag', 'test', 'uninstall', 'remove', 'update', 'validate'))
+_CLAUDE_SUBS.update({
+    'auth': ('quiet', _words('help', 'login', 'logout', 'status')),
+    'auto-mode': ('quiet', _words('config', 'critique', 'defaults', 'help', 'reset')),
+    'mcp': ('quiet', _words('add', 'add-from-claude-desktop', 'add-json', 'get', 'help', 'list',
+                            'login', 'logout', 'remove', 'reset-project-choices', 'serve')),
+    'plugin': _PLUGIN, 'plugins': _PLUGIN,
+    'daemon': ('quiet', _words('run', 'start', 'status', 'logs', 'uninstall', 'stop')),
+    'install': ('quiet', _words('stable', 'latest')),
+    'config': ('quiet', _words('get', 'set', 'remove', 'rm', 'list', 'ls', 'add'))})
+# `resume` and `fork` take a session first, an id or a thread's name
+_CODEX_EXEC = ('prompt', {'resume': 'model', 'fork': 'model', 'review': 'prompt',
                           'help': 'quiet'})
+_CODEX_SUBS = dict.fromkeys(('agents', 'logout', 'mcp-server', 'update', 'doctor', 'apply', 'a',
+                             'migrate-rollouts', 'proto', 'responses-api-proxy', 'stdio-to-uds'),
+                            'admin')
+_CODEX_SUBS.update(dict.fromkeys(('archive', 'delete', 'unarchive', 'help', 'sandbox'), 'quiet'))
+_CODEX_SUBS.update({
+    'login': ('quiet', _words('status', 'help')),
+    'mcp': ('quiet', _words('list', 'get', 'add', 'remove', 'login', 'logout', 'help')),
+    'plugin': ('quiet', _words('add', 'list', 'marketplace', 'remove', 'help')),
+    'app-server': ('quiet', _words('daemon', 'proxy', 'generate-ts', 'generate-json-schema',
+                                   'help')),
+    'remote-control': ('quiet', _words('start', 'stop', 'pair', 'help')),
+    'completion': ('quiet', _words('bash', 'zsh', 'fish', 'powershell', 'elvish')),
+    'debug': ('quiet', _words('models', 'app-server', 'prompt-input', 'help')),
+    'exec-server': ('quiet', _words('forward', 'help')),
+    'features': ('quiet', _words('list', 'enable', 'disable', 'help')),
+    'cloud': ('quiet', dict(_words('status', 'list', 'apply', 'diff', 'help'), exec='prompt')),
+    'exec': _CODEX_EXEC, 'e': _CODEX_EXEC, 'review': 'prompt', 'resume': 'model',
+    'fork': 'model', 'queue': 'prompt'})
 CLIS = {
     'claude': _cli(
-        prompt=('--append-system-prompt', '--system-prompt'),
-        text=('--agents', '--cloud'),
+        prompt=('--append-system-prompt', '--system-prompt', '--append-subagent-system-prompt',
+                '--plan-mode-instructions', '--prefill', '--prefill-b64'),
+        text=('--agents', '--cloud', '--remote'),
         flags=('--allow-dangerously-skip-permissions', '--ax-screen-reader', '--bg',
                '--background', '--bare', '--brief', '--chrome', '--no-chrome', '-c',
                '--continue', '--dangerously-skip-permissions', '--desktop',
@@ -219,7 +306,7 @@ CLIS = {
                '--no-session-persistence', '-p', '--print', '--replay-user-messages',
                '--restricted', '--safe-mode', '--strict-mcp-config', '--tmux', '--verbose',
                '-v', '--version', '--debug-to-stderr', '--enable-auth-status',
-               '--reply-on-resume', '--mcp-debug'),
+               '--reply-on-resume', '--mcp-debug', '--deep-link-origin'),
         value=('--agent', '--autocompact', '--debug-file', '--effort', '--environment',
                '--fallback-model', '--input-format', '--json-schema', '--max-budget-usd',
                '--model', '-n', '--name', '--output-format', '--permission-mode',
@@ -228,13 +315,16 @@ CLIS = {
                '--settings', '--system-prompt-snapshot', '--system-prompt-file',
                '--append-system-prompt-file', '--permission-prompt-tool', '--max-turns',
                '--max-thinking-tokens', '--inherit-permission-mode', '--sdk-url',
-               '--resume-session-at'),
+               '--resume-session-at', '--append-subagent-system-prompt-file'),
         optional=('-r', '--resume', '--remote-control', '-d', '--debug', '--from-pr',
                   '--prompt-suggestions', '--teleport', '-w', '--worktree'),
         many=('--add-dir', '--allowedTools', '--allowed-tools', '--betas', '--disallowedTools',
               '--disallowed-tools', '--file', '--mcp-config', '--tools'),
         stop=('--bg-spare', '--bg-pty-host', '--preload'),
-        subs=dict.fromkeys(_CLAUDE_QUIET, 'quiet')),
+        subs=_CLAUDE_SUBS,
+        names=('-n', '--name', '-r', '--resume', '--remote-control',
+               '--remote-control-session-name-prefix'),
+        prints=('-p', '--print'), hosts=('bg-pty-host', '--bg-pty-host')),
     'codex': _cli(
         prompt=('--message',),
         text=('-c', '--config'),
@@ -252,9 +342,11 @@ CLIS = {
                '--output-last-message', '--base', '--commit', '--title', '--thread', '--env',
                '--attempts', '--branch'),
         many=('-i', '--image'),
-        subs=dict(dict.fromkeys(_CODEX_QUIET, 'quiet'),
-                  exec=_CODEX_EXEC, e=_CODEX_EXEC, review='prompt', resume='prompt',
-                  fork='prompt', queue='prompt', cloud=('quiet', {'exec': 'prompt'}))),
+        subs=_CODEX_SUBS, names=('--title',)),
+    # the Codex plugin for Claude Code, run by node: `codex-companion.mjs task
+    # --model M --effort E "<prompt>"`
+    'codex-companion': _cli(pos=False, value=('-m', '--model', '--effort', '--cwd'),
+                            subs={'task': 'prompt'}),
     'gemini': _cli(
         prompt=('-p', '--prompt', '-i', '--prompt-interactive'),
         flags=('--yolo', '--sandbox', '--debug', '--all-files', '--show-memory-usage',
@@ -275,7 +367,7 @@ CLIS = {
                          '--read', '--file', '--weak-model', '--editor-model', '--map-tokens',
                          '--env-file', '--config', '-c')),
     # `opencode [project]` names a directory; `opencode run ...` takes the prompt
-    'opencode': _cli(pos=False,
+    'opencode': _cli(pos=False, names=('-s', '--session', '--title'),
                      value=('-m', '--model', '--agent', '-s', '--session', '-f', '--format',
                             '--port', '--hostname', '--title', '--attach', '--log-level'),
                      subs=dict({'run': 'prompt'},
@@ -287,13 +379,14 @@ CLIS = {
         flags=('--use-system-ca', '-p', '--print', '-f', '--force', '--verbose'),
         value=('-m', '--model', '--output-format', '-a', '--api-key', '--endpoint',
                '--worker-dir', '--name', '--label', '--worker-api-socket'),
-        optional=('--resume',),
+        optional=('--resume',), names=('--name', '--label', '--resume'),
+        prints=('-p', '--print'),
         subs=dict({'resume': 'prompt'},
                   **dict.fromkeys(('login', 'logout', 'status', 'update', 'upgrade', 'mcp', 'ls',
                                    'create-chat', 'install-shell-integration',
                                    'uninstall-shell-integration', 'worker', 'about', 'models',
                                    'help'), 'quiet'))),
-    'goose': _cli(pos=False, prompt=('-t', '--text'),
+    'goose': _cli(pos=False, prompt=('-t', '--text'), names=('-n', '--name', '-r', '--resume'),
                   value=('-i', '--instructions', '-n', '--name', '-r', '--resume',
                          '--recipe', '--provider', '--model', '--max-turns'),
                   subs=dict({'run': 'prompt'},
@@ -307,12 +400,13 @@ CLIS = {
     'crush': _cli(pos=False, value=('-c', '--cwd', '-D', '--data-dir', '-m', '--model'),
                   subs=dict({'run': 'prompt'},
                             **dict.fromkeys(('logs', 'update-providers', 'schema'), 'quiet'))),
-    'copilot': _cli(prompt=('-p', '--prompt'),
+    'copilot': _cli(prompt=('-p', '--prompt'), names=('--resume',),
                     value=('--model', '--allow-tool', '--deny-tool', '--add-dir',
                            '--log-dir', '--log-level', '--resume', '--agent'),
                     subs=dict.fromkeys(('help', 'version', 'login', 'logout'), 'quiet')),
     'cn': _cli(prompt=('-p', '--print'), value=('--config', '--model', '--rule', '--mcp',
-                                                '--org', '--resume', '--format')),
+                                                '--org', '--resume', '--format'),
+               names=('--resume',)),
     'droid': _cli(value=('-m', '--model', '-o', '--output-format', '--cwd', '--auto',
                          '-r', '--reasoning-effort', '-s', '--session-id', '-f', '--file'),
                   subs={'exec': 'prompt'}),
@@ -320,6 +414,7 @@ CLIS = {
                 value=('-m', '--model', '-t', '--template', '-a', '--attachment', '--at',
                        '-f', '--fragment', '--sf', '--system-fragment', '-T', '--tool',
                        '--cid', '--conversation-id', '--key', '-d', '--database'),
+                names=('--cid', '--conversation-id'),
                 subs=dict({'prompt': 'prompt', 'chat': 'prompt', 'cmd': 'prompt'},
                           **dict.fromkeys(('keys', 'models', 'logs', 'install', 'uninstall',
                                            'plugins', 'templates', 'aliases', 'embed',
@@ -342,7 +437,13 @@ CLIS = {
 
 _BY_BASENAME = {name: name for name in CLIS}
 _BY_BASENAME.update({'codex.js': 'codex', 'claude.js': 'claude', 'gemini.js': 'gemini',
-                     'qwen-code': 'qwen', 'opencode-ai': 'opencode'})
+                     'qwen-code': 'qwen', 'opencode-ai': 'opencode', 'codex.node-native': 'codex',
+                     'codex-companion.mjs': 'codex-companion'})
+# Claude Code's native binary under the names it is installed as: the npm
+# package's `claude.exe`, and with its version on (`claude.exe.2.1.281`,
+# `claude-2.1.295`).
+_CLAUDE_BINARY_NAME = r'claude(?:\.exe)?(?:[.-]\d+(?:\.\d+)*)?'
+_CLAUDE_BINARY = re.compile(_CLAUDE_BINARY_NAME + r'\Z')
 # The entry scripts an interpreter or a package runner names. Matched against
 # the script argument only, never a whole command line, and never a helper of
 # the same package: codex-linux-sandbox's arguments are the sandboxed tool
@@ -367,24 +468,43 @@ _PACKAGES = {'@anthropic-ai/claude-code': 'claude', '@openai/codex': 'codex',
 _MODULES = {'aider': 'aider', 'llm': 'llm', 'sgpt': 'sgpt'}
 
 # A cheap gate: a command line naming none of these words cannot hold a prompt
-# this module masks. `.claude/` paths do not pass it (the dot), so Claude Code's
-# own tool commands, which mention ~/.claude on every call, stay cheap.
+# this module masks. `.claude/` paths do not pass it (the dot), nor the
+# `/tmp/claude-7cb5-cwd` file Claude Code's own tool commands write, so those,
+# which mention ~/.claude on every call, stay cheap; `claude-2.1.295` does.
 _CLI_WORD = re.compile(
-    r'(?<![\w.\-])(?:' + '|'.join(sorted((re.escape(n) for n in set(_BY_BASENAME) | set(_PACKAGES)
-                                          | {'claude-code', 'gemini-cli', 'qwen-code'}),
-                                         key=len, reverse=True))
+    r'(?<![\w.\-])(?:' + _CLAUDE_BINARY_NAME + '|'
+    + '|'.join(sorted((re.escape(n) for n in set(_BY_BASENAME) | set(_PACKAGES)
+                       | {'claude-code', 'gemini-cli', 'qwen-code'}), key=len, reverse=True))
     + r')(?![\w\-])')
+# a backslash escape, as $'...' writes a newline (`$'cd x\nclaude -p ...'`),
+# however many times over it is escaped
+_ESCAPE = re.compile(r'\\+[ntrvfabeE]?')
+_QUOTING = re.compile(r'[\'"\\]')
 
-# The same names where a command starts -- the start, or after ; & | ( ` $( or
-# a newline -- past env assignments and the commonest wrappers. Used only on a
-# string the lexer could not split.
+
+def _names_cli(text):
+    """The gate: whether `text` names an agent, read as a shell reads it: an
+    escape (`\\nclaude`) as the space it stands for, and a name quoted in
+    pieces (`clau'd'e`) whole."""
+    if _CLI_WORD.search(text):
+        return True
+    if '\\' not in text and "'" not in text and '"' not in text:
+        return False
+    return bool(_CLI_WORD.search(_ESCAPE.sub(' ', text))
+                or _CLI_WORD.search(_QUOTING.sub('', text)))
+
+# The same names where a command starts -- the start, or after ; & | ( { ` $(
+# or a newline, and a reserved word (`do`, `then`) -- past env assignments and
+# the commonest wrappers. Used only on a string the lexer could not split.
 _GENERIC = ('q', 'kiro-cli')
 _CLI_AT_COMMAND = re.compile(
-    r'(?:^|[;&|\n(`]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*'
+    r'(?:^|[;&|\n({`]|\$\()\s*(?:(?:do|then|else|elif|if|while|until|!)\s+)*'
+    r'(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*'
     r'(?:(?:sudo|nohup|exec|time|env|setsid|timeout\s+\S+|nice\s+-n\s*\S+)\s+)*'
     r'(?:\S*/)?('
     + '|'.join(sorted((re.escape(n) for n in _BY_BASENAME if n not in _GENERIC),
                       key=len, reverse=True))
+    + r'|' + _CLAUDE_BINARY_NAME
     + r'|(?:q|kiro-cli)(?=\s+(?:chat|translate)\b))(?=\s|$|[;&|)])')
 
 # ---- command positions: what runs a command it was handed -------------------
@@ -453,8 +573,12 @@ _RUNNERS = {'npx': frozenset(('-p', '--package', '--cache')), 'pnpx': frozenset(
 _RUNNER_SUBS = {'uv': ('run', 'tool'), 'pnpm': ('dlx', 'exec'), 'yarn': ('dlx', 'exec'),
                 'bun': ('x',)}
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'ash', 'busybox'))
+_SHELL_VALUE = frozenset(('-o', '-O', '--rcfile', '--init-file'))
 _ENV_ASSIGN = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
 _PROSE = re.compile(r'\s')
+_FOREIGN = re.compile(r'[^\x00-\x7f]')
+# where a path or a URL starts
+_PATHLIKE = re.compile(r'(?:~?/|\.\.?/|[A-Za-z][\w+.-]*://)\S*\Z')
 
 
 def _basename(tok):
@@ -463,9 +587,12 @@ def _basename(tok):
 
 def cli_of(tok):
     """The agent CLI `tok` runs, as a program or an interpreter's script, or None."""
-    name = _BY_BASENAME.get(_basename(tok))
+    base = _basename(tok)
+    name = _BY_BASENAME.get(base)
     if name is not None:
         return name
+    if _CLAUDE_BINARY.match(base):
+        return 'claude'
     if '/' in tok:
         for name, rx in _BY_PATH:
             if rx.search(tok):
@@ -554,6 +681,20 @@ def find_cli(toks):
         if j is not None:
             i = j
             continue
+        if base in _SHELLS:
+            # `bash SCRIPT ...`: a wrapper script, which is how the kernel sees a
+            # `#!/bin/bash` one run. A -c string is _command_strings()' to read.
+            j = i + 1
+            while j < n and _is_option(toks[j]):
+                o = toks[j]
+                if not o.startswith('--') and 'c' in o[1:]:
+                    return None, None
+                j += 2 if o in _SHELL_VALUE else 1
+            if j < n:
+                name = cli_of(toks[j])
+                if name is not None:
+                    return j, name
+            return None, None
         if _INTERPRETERS.match(base):
             j = i + 1
             while j < n and _is_option(toks[j]):
@@ -620,16 +761,39 @@ _SMALL_WORDS = frozenset((
     'when'))
 
 
+def _foreign_text(t):
+    """Text in a script other than Latin, outside a path or URL. Chinese and
+    Japanese are written without spaces, so a prompt in them can be one word
+    with a digit in it (`修复第3个测试`), which would read as an id."""
+    return bool(_FOREIGN.search(t)) and not _PATHLIKE.match(t)
+
+
 def _reads_as_text(t):
     """Whether an argument reads as words rather than as a name, path, number
-    or id: whitespace in it, or a bare word."""
-    return bool(_PROSE.search(t)) or not _MACHINE.match(t)
+    or id: whitespace in it, a bare word, or text in a script other than Latin."""
+    return bool(_PROSE.search(t)) or _foreign_text(t) or not _MACHINE.match(t)
+
+
+def _prompt_word(t):
+    """Whether an argument where a prompt can stand is prompt text: anything but
+    a path, URL or slash command, a session id, stdin's `-` or an empty one.
+    A version, a snake_case word or a number may be the whole of a prompt."""
+    if _PROSE.search(t) or _foreign_text(t):
+        return True
+    return not (t in ('', '-') or '/' in t or _ID.match(t))
 
 
 def _text_value(v):
-    """A `text` option's value that may carry instructions: prose, or a JSON
-    object (agent definitions)."""
-    return bool(_PROSE.search(v)) or v.lstrip()[:1] == '{'
+    """A `text` option's value that may carry instructions: prose, a JSON
+    object (agent definitions), or text in a script other than Latin."""
+    return bool(_PROSE.search(v)) or v.lstrip()[:1] == '{' or _foreign_text(v)
+
+
+def _wordy(v):
+    """A `value` option's value that reads as words where a name, number or
+    path should stand: a prompt typed after the wrong flag. JSON (settings, a
+    schema) is not words."""
+    return v.lstrip()[:1] not in ('{', '[') and (bool(_PROSE.search(v)) or _foreign_text(v))
 
 
 def _sentence_follows(spec, toks, j):
@@ -656,40 +820,101 @@ def _sentence_follows(spec, toks, j):
     return False
 
 
+_BARE = {'kinds': {}}
+
+
+def _says(t):
+    """Whether one argument is a sentence rather than a name: four words, or
+    two with a small word among them (`focus on the auth changes`, not `Remote
+    Dev (FASRC)`), or text in a script other than Latin. JSON is a config."""
+    if t.lstrip()[:1] in ('{', '['):
+        return False
+    return _foreign_text(t) or (bool(_PROSE.search(t)) and _sentence_follows(_BARE, t.split(), 0))
+
+
+def _a_prompt_begins(spec, kind, nested, toks, i, exact, printed):
+    """Whether toks[i], the name of a subcommand that takes no prompt, is the
+    first word of a prompt instead: a sentence follows it (`claude update the
+    README`). Split on spaces, where a prompt's words are separate, so does
+    print mode, which asks for a prompt (`claude -p update deps`), and a word
+    the subcommand does not take (`claude install pytorch nightly`, `codex a
+    quick fix`); a name, path, id or version it may. What follows a `--` is
+    another command's (`claude mcp add srv -- npx ...`, a host mode's claude)."""
+    end = toks.index('--', i + 1) if '--' in toks[i + 1:] else len(toks)
+    if _sentence_follows(spec, toks[:end], i + 1):
+        return True
+    if exact:
+        return False
+    if printed:
+        return True
+    nxt = toks[i + 1] if i + 1 < len(toks) else None
+    if nxt is None or _is_option(nxt) or nxt == '--' or not _reads_as_text(nxt):
+        return False
+    if nested is not None:
+        return nxt not in nested
+    return kind == 'admin'
+
+
+def _mask_sayings(spec, toks, i, res):
+    """After a subcommand that takes no prompt, from toks[i] on, with the real
+    arguments in hand: what is said in a sentence is still masked (`claude
+    ultrareview 'focus on the auth changes'`); names, paths and ids stay, and a
+    session's name whatever it reads like."""
+    n = len(toks)
+    while i < n:
+        t = toks[i]
+        if _is_option(t):
+            name, eq, val = t.partition('=')
+            if name in spec['names']:
+                i += 1 if eq else 2
+                continue
+            if eq and _says(val):
+                res[i] = name + '=' + PROMPT_MASK
+        elif _says(t):
+            res[i] = PROMPT_MASK
+        i += 1
+
+
 def _walk(spec, toks, exact=True):
     """Which of an agent CLI's arguments are prompt text: a list as long as
     `toks` holding None (kept), PROMPT_MASK, or the argument's new text
     (`--prompt=[REDACTED-PROMPT]`); and whether anything was masked.
 
-    A run of positionals is masked whole when any of it reads as text, but for
-    a session id ahead of it: a prompt given as several arguments keeps no path
-    or name of its own. `exact` says the tokens are the real arguments. A line
-    split on spaces is not: a prompt's words are separate tokens there, so a
-    bare word is never taken for an unknown option's value, and a quiet
-    subcommand counts only when no sentence follows it."""
+    A run of positionals is masked whole unless every one of them is a path, a
+    session id or `-`, but for a session id ahead of it: a prompt given as
+    several arguments keeps no path or name of its own. `exact` says the tokens
+    are the real arguments. A line split on spaces is not: a prompt's words are
+    separate tokens there, so a bare word is never taken for an unknown option's
+    value, nor anything once a prompt has begun (`-k name` inside one), a
+    subcommand's name counts only when what follows is that subcommand's, and a
+    second value of `--add-dir A B` only when no prompt's words follow it."""
     n = len(toks)
     res = [None] * n
     if exact and any(t in _NO_PROMPT_FLAGS for t in toks):
         return res, False                   # `codex exec --help`: a usage screen
-    kinds = spec['kinds']
-    pos_prompt, model_next = spec['pos'], False
+    kinds, names = spec['kinds'], spec['names']
+    pos_prompt, model_next, printed, said = spec['pos'], False, False, False
     subs, parent = spec['subs'], None       # what the next positional may be
     run = []                                # the positionals since the last option
 
     def end_run():
-        if any(_reads_as_text(toks[k]) for k in run):
+        # Split on spaces, a run may be the rest of a session's name (`--name
+        # paper co-reader`): only what reads as text masks it there.
+        masked = any((_prompt_word if exact else _reads_as_text)(toks[k]) for k in run)
+        if masked:
             lead = 0
             while lead < len(run) and _ID.match(toks[run[lead]]):
                 lead += 1                   # the session a prompt resumes: `resume ID ...`
             for k in run[lead:]:
                 res[k] = PROMPT_MASK
         del run[:]
+        return masked
 
     def positional(k, t):
         if pos_prompt:
             run.append(k)
-        elif _PROSE.search(t):
-            res[k] = PROMPT_MASK            # text with spaces is prompt-like wherever it is
+        elif _PROSE.search(t) or _foreign_text(t):
+            res[k] = PROMPT_MASK            # text is prompt-like wherever it is
 
     i = 0
     while i < n:
@@ -700,28 +925,34 @@ def _walk(spec, toks, exact=True):
                 positional(k, toks[k])
             break
         if _is_option(t):
-            end_run()
+            said = end_run() or said
             name, eq, val = t.partition('=')
             kind = kinds.get(name)
             if kind == 'stop':
+                if exact:
+                    _mask_sayings(spec, toks, i + 1, res)
                 break
             if eq:
                 if val and (kind == 'prompt' or (kind == 'text' and _text_value(val))
-                            or (kind is None and _PROSE.search(val))):
+                            or (kind in ('value', 'optional') and name not in names
+                                and _wordy(val))
+                            or (kind is None and (_PROSE.search(val) or _foreign_text(val)))):
                     res[i] = name + '=' + PROMPT_MASK
                 i += 1
                 continue
             if kind == 'flag' or i + 1 >= n:
+                printed = printed or name in spec['prints']
                 i += 1
                 continue
             v = toks[i + 1]
             if kind is None:
                 # An option this table does not know, then one argument: far
                 # likelier its value (`--effort max`) than a prompt, unless it is
-                # prose -- or, split on spaces, a word that may begin one. After a
-                # short option only a name or number is taken: those are more
-                # often switches.
-                if not (_is_option(v) or v == '--' or _PROSE.search(v)
+                # text -- or, split on spaces, a word that may begin one, or any
+                # word once a prompt has begun. After a short option only a name
+                # or number is taken: those are more often switches.
+                if not (_is_option(v) or v == '--' or _PROSE.search(v) or _foreign_text(v)
+                        or (not exact and said)
                         or ((not exact or name[1] != '-') and _reads_as_text(v))):
                     i += 2
                 else:
@@ -730,13 +961,19 @@ def _walk(spec, toks, exact=True):
             if kind in ('optional', 'text') and (_is_option(v) or v == '--'):
                 i += 1
                 continue
-            if kind == 'prompt' or (kind == 'text' and _text_value(v)):
+            if (kind == 'prompt' or (kind == 'text' and _text_value(v))
+                    or (kind in ('value', 'optional') and name not in names and _wordy(v))):
                 res[i + 1] = PROMPT_MASK
             i += 2
             if kind == 'many':
+                first = i
                 while (i < n and not _is_option(toks[i]) and toks[i] != '--'
-                       and not (_PROSE.search(toks[i]) if exact else _reads_as_text(toks[i]))):
+                       and not (_PROSE.search(toks[i]) or _foreign_text(toks[i]) if exact
+                                else _reads_as_text(toks[i]))):
                     i += 1
+                if not exact and first < i < n and not _is_option(toks[i]) and toks[i] != '--':
+                    i = first               # split on spaces, they may be a prompt's words
+                    subs, parent = None, None
             continue
         # a positional
         sub = None
@@ -745,21 +982,29 @@ def _walk(spec, toks, exact=True):
                 sub = subs.get(t)
             if sub is None:
                 if parent == 'quiet':
+                    if exact:
+                        _mask_sayings(spec, toks, i, res)
                     break                   # a quiet subcommand's own argument
-                if parent is None and '/' in t and not _PROSE.search(t):
+                if parent is None and '/' in t and not (_PROSE.search(t) or _foreign_text(t)):
                     i += 1                  # the launcher's own script (cursor-agent's
                     continue                # index.js); the subcommand may follow it
                 subs, parent = None, None
         if sub is not None:
             kind, nested = sub if isinstance(sub, tuple) else (sub, None)
-            if kind == 'quiet' and not nested:
-                if exact or not _sentence_follows(spec, toks, i + 1):
-                    break                   # no prompt anywhere after it
-                # split on spaces: a prompt whose first word is a subcommand's name
-                pos_prompt, subs = True, None
-                run.append(i)
-                i += 1
-                continue
+            if kind in ('quiet', 'admin'):
+                if _a_prompt_begins(spec, kind, nested, toks, i, exact, printed):
+                    # a prompt whose first word is a subcommand's name
+                    pos_prompt, subs, parent = True, None, None
+                    run.append(i)
+                    i += 1
+                    continue
+                if nested:
+                    subs, parent = nested, 'quiet'
+                    i += 1
+                    continue
+                if exact:
+                    _mask_sayings(spec, toks, i + 1, res)
+                break                       # no prompt anywhere after it
             if kind in ('prompt', 'model'):
                 pos_prompt = True
             model_next = kind == 'model'
@@ -768,7 +1013,7 @@ def _walk(spec, toks, exact=True):
             continue
         if model_next:
             model_next = False
-            if not _PROSE.search(t):
+            if not (_PROSE.search(t) or _foreign_text(t)):
                 i += 1
                 continue
         positional(i, t)
@@ -797,14 +1042,123 @@ def _requote(raw, new):
 
 
 _OP_CHARS = frozenset('();<>|&`')
+_ANSI_C = {'n': '\n', 't': '\t', 'r': '\r', 'a': '\a', 'b': '\b', 'e': '\x1b', 'E': '\x1b',
+           'f': '\f', 'v': '\v'}
 
 
-def _shell_tokens(s):
+def _heredoc_delim(s, j):
+    """(delimiter, tabs stripped?) of the heredoc whose `<<` ends just before
+    s[j], quotes taken off the delimiter, or None."""
+    n = len(s)
+    strip = s[j:j + 1] == '-'
+    j += strip
+    while j < n and s[j] in ' \t':
+        j += 1
+    word = []
+    while j < n and s[j] not in ' \t\n;&|<>()':
+        c = s[j]
+        if c in '\'"':
+            k = s.find(c, j + 1)
+            if k < 0:
+                return None
+            word.append(s[j + 1:k])
+            j = k + 1
+        elif c == '\\' and j + 1 < n:
+            word.append(s[j + 1])
+            j += 2
+        else:
+            word.append(c)
+            j += 1
+    return (''.join(word), strip) if word else None
+
+
+def _heredoc_bodies(s, i, pending, spans):
+    """Where the line after the heredocs' bodies begins, the bodies starting at
+    s[i] and each running to its delimiter's own line: data, whatever quotes
+    are in it (`Don't forget`). (operator, start, end) of each into `spans`."""
+    n = len(s)
+    for k, (delim, strip, op) in enumerate(pending):
+        start = i
+        while True:
+            nl = s.find('\n', i)
+            end = n if nl < 0 else nl
+            line = s[i:end]
+            matched = (line.lstrip('\t') if strip else line) == delim
+            if matched or nl < 0:
+                spans.append((op, start, i if matched else n))
+                i = end if k == len(pending) - 1 else min(end + 1, n)
+                break
+            i = nl + 1
+    return i
+
+
+def _quoted_end(s, i):
+    """Index just past the quoted string or command substitution that starts at
+    s[i] -- '...', $'...', "...", $(...) or `...` -- read as sh reads it: the
+    $(...) and `...` inside "..." have quotes of their own, and a heredoc's
+    body inside $(...) none."""
+    n, c = len(s), s[i]
+    if c == "'":
+        j = s.find("'", i + 1)
+        if j < 0:
+            raise ValueError('unterminated quote')
+        return j + 1
+    if c in '$`' and s[i + 1:i + 2] != '(':
+        j = i + (2 if c == '$' else 1)          # $'...' or `...`: backslashes escape
+        close = "'" if c == '$' else '`'
+        while j < n and s[j] != close:
+            j += 2 if s[j] == '\\' else 1
+        if j >= n:
+            raise ValueError('unterminated quote')
+        return j + 1
+    if c == '"':
+        j = i + 1
+        while j < n:
+            ch = s[j]
+            if ch == '"':
+                return j + 1
+            if ch == '\\':
+                j += 2
+            elif ch == '`' or (ch == '$' and s[j + 1:j + 2] == '('):
+                j = _quoted_end(s, j)
+            else:
+                j += 1
+        raise ValueError('unterminated quote')
+    depth, j, pending = 0, i + 1, []            # $(...): its parentheses counted
+    while j < n:
+        ch = s[j]
+        if ch == '\\':
+            j += 2
+        elif ch in '\'"`' or (ch == '$' and s[j + 1:j + 2] == "'"):
+            j = _quoted_end(s, j)
+        elif s.startswith('<<', j) and not s.startswith('<<<', j):
+            d = _heredoc_delim(s, j + 2)
+            if d:
+                pending.append(d + (j,))
+            j += 2
+        elif ch == '\n' and pending:
+            j = _heredoc_bodies(s, j + 1, pending, [])
+            pending = []
+        else:
+            j += 1
+            depth += {'(': 1, ')': -1}.get(ch, 0)
+            if depth == 0:
+                return j
+    raise ValueError('unterminated command substitution')
+
+
+def _shell_tokens(s, comments=None, substs=None, heredocs=None):
     """shell_split(), each token with where it stands in `s`: [(text, is
-    operator, start, end)]."""
-    out, cur = [], []
+    operator, start, end)]. Where each comment stands, from its `#` to the end
+    of its line, goes into `comments` when that is a list; where the command
+    inside each `"...$(...)..."` stands, into `substs`; and each heredoc's
+    body, which is data and no token, into `heredocs` as (where its `<<`
+    stands, start, end)."""
+    out, cur, pending = [], [], []
     start = [None]                        # where the word being read began
     i, n = 0, len(s)
+    if heredocs is None:
+        heredocs = []
 
     def flush(end):
         if start[0] is not None:
@@ -827,6 +1181,29 @@ def _shell_tokens(s):
                 start[0] = i
             cur.append(s[i + 1:j])
             i = j + 1
+        elif c == '$' and s[i + 1:i + 2] == "'":
+            # $'...', as printf %q writes a prompt with a newline in it:
+            # backslash escapes inside, `\'` among them
+            if start[0] is None:
+                start[0] = i
+            j = i + 2
+            while True:
+                if j >= n:
+                    raise ValueError('unterminated quote')
+                ch = s[j]
+                if ch == "'":
+                    break
+                if ch == '\\' and j + 1 < n:
+                    cur.append(_ANSI_C.get(s[j + 1], s[j + 1]))
+                    j += 2
+                    continue
+                cur.append(ch)
+                j += 1
+            i = j + 1
+        elif c == '$' and s[i + 1:i + 2] == '"':
+            if start[0] is None:
+                start[0] = i
+            i += 1                                # $"...": a translated "..."
         elif c == '"':
             if start[0] is None:
                 start[0] = i
@@ -843,6 +1220,13 @@ def _shell_tokens(s):
                         cur.append(s[i + 1])
                     i += 2
                     continue
+                if ch == '`' or (ch == '$' and s[i + 1:i + 2] == '('):
+                    j = _quoted_end(s, i)         # a command inside, quotes and all
+                    if ch == '$' and substs is not None:
+                        substs.append((i + 2, j - 1))
+                    cur.append(s[i:j])
+                    i = j
+                    continue
                 cur.append(ch)
                 i += 1
         elif c in ' \t\r':
@@ -852,15 +1236,25 @@ def _shell_tokens(s):
             flush(i)
             out.append(('\n', True, i, i + 1))
             i += 1
+            if pending:
+                i = _heredoc_bodies(s, i, pending, heredocs)
+                del pending[:]
         elif c == '#' and start[0] is None:
             j = s.find('\n', i)
-            i = n if j < 0 else j
+            j = n if j < 0 else j
+            if comments is not None:
+                comments.append((i, j))
+            i = j
         elif c in _OP_CHARS:
             flush(i)
             j = i
             while j < n and s[j] in _OP_CHARS:
                 j += 1
             out.append((s[i:j], True, i, j))
+            if '<<' in s[i:j] and '<<<' not in s[i:j]:
+                d = _heredoc_delim(s, j)        # its body begins on the next line
+                if d:
+                    pending.append(d + (i,))
             i = j
         else:
             if start[0] is None:
@@ -884,14 +1278,36 @@ def shell_split(s):
     return [(t, op) for t, op, _a, _b in _shell_tokens(s)]
 
 
+def _key_values(text):
+    """The values the credential rules would mask in `text`, each as found."""
+    found, low = [], text.lower()
+    for _name, gate, rx, sub in RULES:
+        if all(any(w in low for w in group) for group in gate):
+            for m in rx.finditer(text):
+                whole, rep = m.group(0), sub(m)
+                p = 0
+                while p < min(len(whole), len(rep)) and whole[p] == rep[p]:
+                    p += 1
+                q = 0
+                while q < min(len(whole), len(rep)) - p and whole[-1 - q] == rep[-1 - q]:
+                    q += 1
+                found.append(whole[p:len(whole) - q].strip('\'"\\'))
+    return [v for v in found if len(v) >= 4]
+
+
 def _redact_shell(s, depth, exact=True):
-    """A shell command string with every agent prompt in it masked; (str,
-    masked?). Only the masked words change: the rest of the string, its quoting
-    and spacing included, is written as it was."""
-    if not _CLI_WORD.search(s):
+    """A shell command string with every agent prompt in it masked; (str, a
+    prompt masked?). Only the masked words change -- the rest of the string,
+    its quoting and spacing included, is written as it was -- but for a comment
+    beside a masked prompt, which goes with it, and for a credential the rules
+    cannot read through the string's quoting (`-H 'X-Api-Key: '...`, an
+    escaped quote, eval's '"'"'): then the string rebuilt from its words is
+    written, where they can."""
+    if not _names_cli(s):
         return s, False
+    comments, substs, heredocs = [], [], []
     try:
-        toks = _shell_tokens(s)
+        toks = _shell_tokens(s, comments, substs, heredocs)
     except ValueError:
         # Not shell a lexer can follow -- a command line the kernel cut short, or
         # a heredoc of Python. An agent run at a command position in it is
@@ -901,13 +1317,25 @@ def _redact_shell(s, depth, exact=True):
         if m is None:
             return s, False
         return s[:m.end(1)] + ' ' + PROMPT_MASK, True
+    bodies = dict((op, (a, b)) for op, a, b in heredocs)
     edits, cmd = [], []
-    for t in toks + [None]:
+    for k, t in enumerate(toks + [None]):
         if t is not None and not t[1]:
-            cmd.append(t)
+            nxt = toks[k + 1] if k + 1 < len(toks) else None
+            if (nxt is not None and nxt[1] and nxt[2] == t[3] and nxt[0][:1] in '<>'
+                    and s[t[2]:t[3]].isdigit()):
+                continue                    # `2>&1`: a file descriptor, no argument
+            # `do claude ...`: a command after a reserved word
+            if cmd or not (t[0] in _LEADING_WORDS and s[t[2]:t[3]] == t[0]):
+                cmd.append(t)
             continue
+        if cmd and t is not None and t[2] in bodies:
+            a, b = bodies[t[2]]
+            if s[a:b].strip() and find_cli([w[0] for w in cmd])[1] is not None:
+                edits.append((a, b, PROMPT_MASK + '\n'))    # `claude -p <<'EOF'`: its prompt
         if cmd:
-            res, _f = _mask_argv([w[0] for w in cmd], depth, exact)
+            argv = [w[0] for w in cmd]
+            res, _f = _mask_argv(argv, depth, exact)
             k = 0
             while k < len(cmd):
                 if res[k] is None:
@@ -923,15 +1351,37 @@ def _redact_shell(s, depth, exact=True):
                     edits.append((a, b, _requote(s[a:b], res[k])))
                     k += 1
             cmd = []
-    if not edits:
-        return s, False
+    for a, b in substs:
+        # `out="$(claude -p ...)"`: a command inside a quoted word, unless the
+        # word itself went
+        if not any(x <= a and b <= y for x, y, _t in edits):
+            red = _redact_string(s[a:b], depth, exact)
+            if red != s[a:b]:
+                edits.append((a, b, red))
+    fired = any(PROMPT_MASK in e[2] for e in edits)
+    for a, b in comments:
+        # A comment beside a masked prompt may be the prompt's own words, which
+        # a quoting this lexer misread turned into one; so may one with an agent
+        # run in it. Neither is written out.
+        if s[a + 1:b].strip() and (fired or _CLI_AT_COMMAND.search(s[a + 1:b])):
+            edits.append((a, b, '# ' + PROMPT_MASK))
+            fired = True
     out, at = [], 0
-    for a, b, text in edits:
+    for a, b, text in sorted(edits):
         out.append(s[at:a])
         out.append(text)
         at = b
     out.append(s[at:])
-    return ''.join(out), True
+    out = ''.join(out)
+    if "'" in s or '"' in s or '\\' in s:
+        try:
+            plain = ' '.join(t[0] for t in _shell_tokens(out))   # its words, masks and all
+        except ValueError:
+            plain = ''
+        shown = redact_keys(out)[0]
+        if any(v in shown for v in _key_values(plain)):
+            return plain, fired
+    return out, fired
 
 
 def _program_at(toks):
@@ -952,6 +1402,9 @@ def _program_at(toks):
     return None, via_ssh
 
 
+# reserved words and builtins a command can follow: `for ...; do claude ...`
+_LEADING_WORDS = frozenset(('do', 'then', 'else', 'elif', 'if', 'while', 'until', '{', '!',
+                            'command', 'builtin'))
 # programs whose arguments are commands to run, each as one string
 _RUNS_STRINGS = frozenset(('eval', 'watch', 'tmux', 'screen'))
 _TAKES_C = frozenset(('su', 'runuser', 'script', 'flock'))   # -c CMD / --command=CMD
@@ -1004,39 +1457,88 @@ def _command_strings(toks):
     return out
 
 
+def _inner_command(spec, toks, i):
+    """Where the command line a host mode runs begins, in toks from i on --
+    Claude Code's `claude bg-pty-host --bg-pty-host SOCK COLS ROWS -- claude
+    ...` -- or None."""
+    host = False
+    for j in range(i, len(toks)):
+        if toks[j] in spec['hosts']:
+            host = True
+        elif toks[j] == '--':
+            return j + 1 if host and j + 1 < len(toks) else None
+    return None
+
+
+def _render(argv, res):
+    """argv with each argument's masking applied, a run of masks as one."""
+    out = []
+    for t, r in zip(argv, res):
+        if r is None:
+            out.append(t)
+        elif r != PROMPT_MASK or not out or not out[-1].endswith(PROMPT_MASK):
+            out.append(r)
+    return out
+
+
 def _mask_argv(argv, depth=0, exact=True):
-    """Per argument, what masking `argv` changes (see _walk), and whether it
-    changed anything: the agent run itself, then every command string an
-    argument carries -- `bash -c '...'`, `sbatch --wrap='...'`, `tmux new
-    'claude ...'` -- parsed as a shell would and handled the same way, three
-    levels deep."""
+    """Per argument, what masking `argv` changes (see _walk), and whether a
+    prompt was masked: the agent run itself, the command line a host mode of
+    it runs, then every command string an argument carries -- `bash -c '...'`,
+    `sbatch --wrap='...'`, `tmux new 'claude ...'` -- parsed as a shell would
+    and handled the same way, three levels deep."""
     n = len(argv)
+    if exact and depth == 0 and n and _PROSE.search(argv[0]):
+        # A process started under a name with spaces in it -- Claude Code's own
+        # `claude bg-pty-host`, or `exec -a "..."` -- is read as those words.
+        words = argv[0].split()
+        res, fired = _mask_argv(words + list(argv[1:]), depth, exact)
+        k = len(words)
+        first = ' '.join(_render(words, res[:k])) if any(r is not None for r in res[:k]) else None
+        return [first] + res[k:], fired
     res = [None] * n
     i, name = find_cli(argv)
     if name is not None:
-        res[i + 1:] = _walk(CLIS[name], argv[i + 1:], exact)[0]
-    if depth < 3:
-        cur = [argv[j] if res[j] is None else res[j] for j in range(n)]
-        for j, head in _command_strings(cur):
-            if res[j] is not None or not argv[j].startswith(head):
-                continue
-            red, f = _redact_shell(argv[j][len(head):], depth + 1, exact)
-            if f:
-                res[j] = head + red
-    return res, any(r is not None for r in res)
+        spec = CLIS[name]
+        res[i + 1:] = _walk(spec, argv[i + 1:], exact)[0]
+        k = _inner_command(spec, argv, i + 1)
+        if k is not None:
+            inner = _mask_argv(argv[k:], depth, exact)[0]
+            res[k:] = [r if r is not None else res[k + j] for j, r in enumerate(inner)]
+    cur = [argv[j] if res[j] is None else res[j] for j in range(n)]
+    for j, head in _command_strings(cur):
+        if res[j] is not None or not argv[j].startswith(head):
+            continue
+        part = argv[j][len(head):]
+        red = _redact_string(part, depth, exact)
+        if red != part:
+            res[j] = head + red
+    return res, any(r is not None and PROMPT_MASK in r for r in res)
+
+
+# How many command strings deep are read. Claude Code's own tool calls are two
+# (`bash -c` and `eval`), and one of them running `tmux new "bash -lc '...'"`
+# four.
+_MAX_DEPTH = 6
+
+
+def _redact_string(s, depth, exact=True):
+    """A command string found at `depth` with its prompts masked, _MAX_DEPTH
+    levels deep; deeper than that, one naming an agent is masked from the name
+    on, since nothing after it can be told apart from a prompt."""
+    if depth < _MAX_DEPTH:
+        return _redact_shell(s, depth + 1, exact)[0]
+    for m in _CLI_WORD.finditer(s):
+        if m.group(0) not in _GENERIC:
+            return s[:m.end()] + ' ' + PROMPT_MASK if s[m.end():].strip() else s
+    return PROMPT_MASK if _names_cli(s) and not _CLI_WORD.search(s) else s
 
 
 def redact_prompt_argv(argv, depth=0, exact=True):
     """(argv with every agent prompt in it masked, masked?): each run of
     masked arguments is one PROMPT_MASK."""
     res, fired = _mask_argv(argv, depth, exact)
-    out = []
-    for t, r in zip(argv, res):
-        if r is None:
-            out.append(t)
-        elif r != PROMPT_MASK or not out or out[-1] != PROMPT_MASK:
-            out.append(r)
-    return out, fired
+    return _render(argv, res), fired
 
 
 def _shell_command_index(toks):
@@ -1080,7 +1582,7 @@ def parse_kinds(value):
 
 def needs_argv(line):
     """Whether masking `line` needs its argument boundaries: it may run an agent."""
-    return bool(line) and bool(_CLI_WORD.search(line))
+    return bool(line) and _names_cli(line)
 
 
 def redact_argv(argv, keys=True, prompts=True, exact=True):
@@ -1104,7 +1606,7 @@ def redact_line(line, keys=True, prompts=True):
     into one, and a shell's `-c` string is taken to run to the end of the line."""
     if not line:
         return line, None
-    if prompts and _CLI_WORD.search(line):
+    if prompts and _names_cli(line):
         toks = line.split(' ')
         k = _shell_command_index(toks)
         if k is not None:

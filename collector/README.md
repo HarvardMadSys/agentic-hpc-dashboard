@@ -443,17 +443,22 @@ Schema 8 is the fix for each; every point below changes what a field holds.
   credentials with the dashboard's own rules, and the prompt text handed to a coding
   agent on its command line (`claude -p "..."`, `codex exec "..."`, `gemini -p`, through
   node/npx/wrappers or inside `bash -c` and `sbatch --wrap`). Flags, models,
-  subcommands, session names (`--name`, `--remote-control`) and the agents' own daemons
-  (`claude daemon`, `codex app-server`) stay, and in a `bash -c` string only the prompt
-  changes; the record's `args_redacted` names what was masked. The claude and codex
-  tables follow their `--help`; an argument no table accounts for is masked when it
-  reads as words and kept when it is a path, number, id or hyphenated name.
-  Classification reads the raw argv in memory, so nothing about attribution changes.
-  `EBPFM_REDACT=keys` or `prompts` keeps one kind; `0` turns it off, and a value it
-  cannot read masks both. The node tier masks its argv fields the same way, from
-  `/proc/<pid>/cmdline`'s separate arguments while they still spell `ps`'s line; only
-  `w`'s command, which has no pid, is masked from the space-joined line, where a session
-  name's later words read as a prompt's.
+  subcommands, session names (`--name`, `--remote-control`), and the agents' own
+  daemons (`claude daemon`, `codex app-server`) stay; the record's `args_redacted` names
+  what was masked. The claude and codex tables follow their `--help`, and an option's
+  value is kept unless it reads as a sentence where a name should be (codex's `-p` is
+  `--profile`). Where a prompt can stand, only a path, id, or `-` is kept, and text in
+  a script other than Latin reads as words, spaces or not. In a `bash -c` string only
+  the prompt changes, but for a comment beside it; a heredoc's body is data, masked when
+  it feeds an agent; and a credential the rules cannot read through the string's
+  quoting is masked in the string rebuilt from its words. Classification reads the raw
+  argv in memory, so nothing about attribution changes. `EBPFM_REDACT=keys` or
+  `prompts` keeps one kind; `0` turns it off, and a value it cannot read masks both.
+  The node tier masks its argv fields the same way, from `/proc/<pid>/cmdline`'s
+  separate arguments while they still spell `ps`'s line. `w`'s command, which has no
+  pid, is masked from the space-joined line, as is a process gone before `/proc` is
+  read, an argument `ps` prints `?` in, and a multi-line script; there a session name's
+  later words read as a prompt's.
 - **Kernel-socket traffic is no process's network I/O.** The NFS client sends its RPCs
   from the calling process's context, so every `ls` on an NFS path was an endpoint:
   95% of the table. A socket with no file behind it is now counted per node in
@@ -888,7 +893,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 445 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 462 tests, no root, no BPF needed
 python3 tests/bpf_compile_check.py           # compile every block with BCC, no root
 ```
 

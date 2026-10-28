@@ -8,6 +8,7 @@ import ctypes
 import importlib.util
 import io
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -407,10 +408,11 @@ class NotAPromptTest(unittest.TestCase):
                           'codex resume 0199a5c2-5b1e-7f20-9c3a-1b2c3d4e5f60 %s' % P)
 
     def test_a_command_string_keeps_its_own_text(self):
-        """Only the prompt changes: quotes, spacing and the rest stay as written."""
+        """Only the prompt changes: quotes, spacing and the rest stay as written,
+        but for a comment beside the prompt, which goes with it."""
         script = 'cd /p && claude -p "fix it" | tee "log 1.txt"  # note'
         self.assertEqual(red(['bash', '-c', script]),
-                         'bash -c cd /p && claude -p %s | tee "log 1.txt"  # note' % P)
+                         'bash -c cd /p && claude -p %s | tee "log 1.txt"  # %s' % (P, P))
         self.assertEqual(red(['bash', '-c', "tmux new -d 'claude -p \"fix it\"'"]),
                          "bash -c tmux new -d 'claude -p %s'" % P)
 
@@ -435,6 +437,268 @@ class NotAPromptTest(unittest.TestCase):
 
     def check_masked(self, argv, want):
         self.assertEqual(red(argv), want)
+
+
+class LeakReviewTest(unittest.TestCase):
+    """What an independent review of the narrowing above found getting out: each
+    a prompt or a credential it let through. Made-up values; the shapes are the
+    review's, or a day of FASRC login-node command lines'."""
+
+    KEY = 'abcd1234efgh5678wxyz'
+
+    def same(self, argv):
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None), argv)
+
+    def same_joined(self, line):
+        self.assertEqual(R.redact_line(line), (line, None), line)
+
+    def hidden(self, out, *secrets):
+        for s in secrets:
+            self.assertNotIn(s, out)
+
+    # --- prompts ---------------------------------------------------------------
+    def test_a_prompt_with_no_spaces_in_it_is_still_one(self):
+        """Chinese and Japanese are written without spaces, and a digit or a dot
+        in them made them read as an id or a file's name."""
+        for argv in (['claude', '-p', '修复第3个测试'], ['codex', 'exec', '把train.py改成用PyTorch2.0'],
+                     ['claude', '-p', '请阅读README.md并总结'],
+                     ['ollama', 'run', 'qwen2.5', '解释Python3.12的新特性'],
+                     ['codex', 'review', '--base', 'main', '重点检查v2接口'],
+                     ['claude', '--allowedTools', 'Edit', 'Bash', '修复登录错误'],
+                     ['codex', 'exec', '-i', 'a.png', '修复登录错误'],
+                     ['claude', '--brand-new-flag', '修复登录错误']):
+            out = red(argv)
+            self.assertIn(P, out, argv)
+            self.assertNotRegex(out, '[^\x00-\x7f]', argv)
+        self.assertEqual(red(['claude', '-p', 'fix_the_auth_bug']), 'claude -p %s' % P)
+        self.assertEqual(red(['claude', '-p', 'v2']), 'claude -p %s' % P)
+        for argv in (['claude', '/resume'], ['claude', '-p', '-'], ['claude', '--add-dir', '/数据/x'],
+                     ['codex', 'resume', '0199a5c2-5b1e-7f20-9c3a-1b2c3d4e5f60']):
+            self.same(argv)
+
+    def test_a_sentence_given_to_an_option_that_takes_a_name_is_a_prompt(self):
+        """codex's -p is --profile and its -m --model: a sentence there is a
+        prompt typed from habit. Only a session's name is kept whatever it reads
+        like; a JSON config is not a sentence."""
+        for argv in (['codex', '-p', 'fix the failing test'],
+                     ['codex', 'exec', '-m', 'fix the failing test'],
+                     ['codex', '--profile=fix the failing test'], ['gemini', '-m', 'fix the failing test'],
+                     ['aider', '--model', 'fix the failing test'],
+                     ['claude', '--agent', 'You are a strict code reviewer'],
+                     ['claude', '--debug', 'fix the failing test'], ['claude', '-w', 'fix the failing test'],
+                     ['claude', '--from-pr', 'fix the failing test']):
+            self.hidden(red(argv), 'failing test', 'code reviewer')
+        self.same(['claude', '--name', 'Fix the failing test', '-r', 'carry on with the plan'])
+        self.same(['claude', '--settings', '{"model": "opus", "env": {"A": "b c"}}'])
+
+    def test_claude_codes_hidden_prompt_options(self):
+        for argv in (['claude', '--deep-link-origin', '--prefill-b64', 'UmV3cml0ZSB0aGUgYmlsbGluZw=='],
+                     ['claude', '--prefill', 'refactor_billing'],
+                     ['claude', '--plan-mode-instructions', 'plan the migration'],
+                     ['claude', '--append-subagent-system-prompt', 'be terse'],
+                     ['claude', '--remote', 'fix the flaky test']):
+            self.assertEqual(red(argv), ' '.join(argv[:-1] + [P]), argv)
+            self.hidden(R.redact_line(' '.join(argv))[0], argv[-1])
+
+    def test_a_subcommands_name_can_begin_a_prompt(self):
+        """A sentence after a subcommand that takes none is a prompt. Split on
+        spaces, so is a word the subcommand does not take, or any word once
+        print mode has asked for a prompt."""
+        self.assertEqual(red(['claude', 'setup', 'the', 'conda', 'env', 'for', 'this', 'repo']),
+                         'claude %s' % P)
+        self.assertEqual(red(['claude', 'ultrareview', 'focus on the auth changes']),
+                         'claude ultrareview %s' % P)
+        for line in ('claude -p update deps', 'claude -p rm stale checkpoints',
+                     'claude -p install pytorch nightly', 'claude -p setup CI pipeline',
+                     'claude -p install torch==2.1 and cuda-12.1 on gpu-node-3',
+                     'claude install pytorch nightly', 'codex a quick fix'):
+            self.hidden(R.redact_line(line)[0], 'deps', 'stale', 'pytorch', 'pipeline', 'torch',
+                        'quick')
+        for line in ('claude install stable', 'claude install 2.1.309', 'claude attach Mantis',
+                     'claude daemon run --json-path /u/.claude/daemon.json', 'codex cloud list',
+                     'codex completion zsh', 'codex apply task_e_0123', 'codex login status'):
+            self.same_joined(line)
+
+    def test_claude_codes_pty_host_runs_a_command_of_its_own(self):
+        """It starts as one argument, `claude bg-pty-host`, and the claude after
+        `--` carries whatever prompt options its session was given."""
+        argv = ['claude bg-pty-host', '--bg-pty-host', '/tmp/cc/pty/f5d.sock', '162', '64', '--',
+                '/u/.local/share/claude/versions/2.1.309', '--session-id',
+                'f5d34d0a-0a19-4db6-9dbe-8d7ec662d701', '--append-system-prompt',
+                'You review grant drafts for the PI', '--name', 'Grant review']
+        self.assertEqual(R.redact_argv(argv),
+                         (' '.join(argv[:10]) + ' %s --name Grant review' % P, ['prompt']))
+        self.hidden(R.redact_line(' '.join(argv))[0], 'grant drafts')
+        self.assertEqual(red(['claude', '--bg-spare', '/tmp/x.sock', 'fix the bug in auth']),
+                         'claude --bg-spare /tmp/x.sock %s' % P)
+        # and a program named with spaces by `exec -a`
+        self.assertEqual(red(['claude -p fix the bug in the auth module', '30']), 'claude -p %s' % P)
+
+    def test_a_joined_prompt_keeps_no_word_after_an_option_inside_it(self):
+        self.assertEqual(R.redact_line('claude -p run pytest -k test_payroll_secret and fix')[0],
+                         'claude -p %s -k %s' % (P, P))
+        self.assertEqual(R.redact_line('claude --add-dir /repo src/payroll.py:42 leaks salaries')[0],
+                         'claude --add-dir /repo %s' % P)
+        self.same_joined('claude --add-dir /repo /data --model opus')
+
+    def test_quoting_the_lexer_now_reads(self):
+        """`$'...'` (how printf %q writes a prompt with a newline in it) and quotes
+        inside a quoted $(...) put the lexer out of step: a `#` read as a comment
+        after that, and the rest of the line went out as it was written."""
+        for script in ("cd /x && claude -p $'it\\'s #1: fix the plan' && claude -p \"rotate the keys\"",
+                       'claude -p "count $(echo "a #b") then fix the plan"',
+                       "claude -p $'it\\'s #1: fix the plan\\nthen ship it'"):
+            self.hidden(red(['bash', '-c', script]), 'fix the plan', 'rotate', 'ship it')
+        # and a name after an escape there, `\nclaude`, or quoted in pieces, is
+        # still a name
+        self.hidden(red(['bash', '-c', "bash -c $'cd /x\\nclaude -p \\'fix the plan\\''"]),
+                    'fix the plan')
+        self.hidden(red(['bash', '-c', "cd /x && clau'd'e -p 'fix the plan'"]), 'fix the plan')
+        self.assertEqual(R.shell_split("a $'b\\'c d' \"e $(f \"g h\") i\" $\"j k\""),
+                         [('a', False), ("b'c d", False), ('e $(f "g h") i', False), ('j k', False)])
+
+    def test_a_string_read_right_has_no_way_around_the_grammar(self):
+        """A string the lexer used to give up on was masked from its first agent
+        to the end; read right, it reaches the shell's own grammar: the reserved
+        words a command follows, a command inside a quoted $(...), and strings
+        nested deeper than are read."""
+        for script in ("for f in *.py; do claude -p $'it\\'s the secret plan'; done",
+                       'if true; then codex exec "the secret plan"; fi',
+                       '{ gemini -p "the secret plan"; }', 'out="$(claude -p "the secret plan")"'):
+            self.hidden(red(['bash', '-c', script]), 'secret plan')
+        deep = 'claude -p "the secret plan"'
+        for wrap in ('tmux new -d %s', 'bash -lc %s', 'ssh host %s', 'bash -c %s') * 2:
+            deep = wrap % shlex.quote(deep)
+        self.hidden(red(['bash', '-c', deep]), 'secret plan')
+
+    def test_what_reading_more_must_not_mask(self):
+        """Seen on the fleet: Claude Code's tool calls nest four strings deep
+        (`bash -c`, `eval`, `tmux new`, `bash -lc`); `2>&1`'s 2 is a file
+        descriptor; a thread's name follows `codex exec resume`; `%q` is no
+        agent, nor `ollama-0.34.4-pull`; and split on spaces, a session's name
+        keeps its words."""
+        tool = ("source /u/.claude/shell-snapshots/snapshot-bash-1.sh && eval 'N='\"'\"'RC - DNA'\"'\"'; "
+                "tmux new-session -d -s x \"bash -lc \\\"claude --name '\"'\"'$N'\"'\"' "
+                "--permission-mode auto; exec bash\\\"\"' < /dev/null")
+        self.same(['bash', '-c', tool])
+        self.assertEqual(red(['bash', '-c', 'claude -p "hi there" --model haiku 2>&1 | tail -3']),
+                         'bash -c claude -p %s --model haiku 2>&1 | tail -3' % P)
+        self.assertEqual(red(['codex', 'exec', 'resume', 'thread-1', 'go on with it']),
+                         'codex exec resume thread-1 %s' % P)
+        self.same(['bash', '-c', "echo x  # The %q literal needs no fork"])
+        self.same(['bash', '-c', "ls -d ollama-0.34.4-pull 2>&1; claude --version"])
+        self.same_joined('claude --name paper co-reader --remote-control paper co-reader')
+
+    def test_a_heredocs_body_is_data(self):
+        """Its quotes are no shell's (`Don't forget` put the lexer out of step
+        for what followed), and fed to an agent it is the prompt."""
+        script = ("cat > n.md <<'EOF'\nDon't forget\nEOF\n"
+                  "for f in *.md; do codex exec \"review $f for the secret plan\"; done")
+        self.assertEqual(red(['bash', '-c', script]),
+                         'bash -c ' + script.replace('"review $f for the secret plan"', P))
+        script = "git commit -m \"$(cat <<'EOF'\nDon't break it\nEOF\n)\" && claude -p 'the secret plan'"
+        self.assertEqual(red(['bash', '-c', script]),
+                         'bash -c ' + script.replace("'the secret plan'", P))
+        self.assertEqual(red(['bash', '-c', "claude -p <<'EOF'\nthe secret plan\nEOF\necho done"]),
+                         "bash -c claude -p <<'EOF'\n%s\nEOF\necho done" % P)
+        self.same(['bash', '-c', "cat <<-EOF > x\n\tit's codex exec's\n\tEOF\necho done"])
+
+    def test_a_comment_beside_a_prompt_goes_with_it(self):
+        self.assertEqual(red(['bash', '-c', 'claude -p "fix it"  # then the secret plan']),
+                         'bash -c claude -p %s  # %s' % (P, P))
+        self.assertEqual(red(['bash', '-c', 'make test  # then: cd x && claude -p "the secret plan"']),
+                         'bash -c make test  # %s' % P)
+        # a comment that only names one, as `echo` would, is not an agent run
+        self.same(['bash', '-c', 'make test  # then deploy with claude -p'])
+
+    def test_agent_launchers_seen_on_the_fleet(self):
+        """Claude Code's native binary as the npm package names it and under a
+        version; codex's native shim; the Codex plugin for Claude Code; and a
+        wrapper script, which reaches the kernel as `bash SCRIPT ...`."""
+        for argv in (['/u/node_modules/@anthropic-ai/claude-code/bin/claude.exe', '-p',
+                      'review the auth module'],
+                     ['/opt/bin/claude.exe.2.1.281', '-p', '--model', 'opus', '--system-prompt',
+                      'You grade essays'],
+                     ['/opt/bin/claude-2.1.295', '-p', '--system-prompt', 'You grade essays'],
+                     ['node', '/u/.npm-global/bin/codex.node-native', 'exec', 'review the auth module'],
+                     ['node', '/u/.claude/plugins/cache/openai-codex/codex/1.0.4/scripts/'
+                      'codex-companion.mjs', 'task', '--model', 'gpt-5', '--effort', 'high',
+                      'review the auth module'],
+                     ['bash', '/home/u/.local/bin/codex', 'exec', '--sandbox', 'read-only',
+                      'review the auth module'],
+                     ['/usr/bin/env', 'bash', '/home/u/.local/bin/claude', '-p', 'review the auth module']):
+            self.hidden(red(argv), 'auth module', 'grade essays')
+            self.hidden(R.redact_line(' '.join(argv))[0], 'auth module', 'grade essays')
+        for argv in (['/u/node_modules/@anthropic-ai/claude-code/bin/claude.exe', 'daemon', 'run'],
+                     ['claude.exe'], ['bash', '/home/u/bin/claude_session.sh', 'fix'],
+                     ['bash', '-c', 'pwd -P >| /tmp/claude-7cb5-cwd']):
+            self.same(argv)
+
+    # --- credentials -------------------------------------------------------------
+    def test_a_user_and_password_however_written(self):
+        k = self.KEY
+        for line in ('curl -u $USER:%s https://x' % k, 'curl -u ${USER}:%s https://x' % k,
+                     'curl --user=alice:%s https://x' % k, 'curl --proxy-user=alice:%s https://x' % k,
+                     "curl -u 'alice:%s' https://x" % k, 'curl -u 12345:67890 https://x'):
+            self.hidden(R.redact_keys(line)[0], k, '67890')
+        for line in ("date -u '+%H:%M'", "python -c 'y = x -u[:, 0]'", 'docker run -u 1000:1000 img',
+                     'nvidia-docker run --user=0:0 img', 'podman-hpc run --user 0:0 img',
+                     'podman run \\\n  --cap-drop ALL --user 1000:1000 img',
+                     'python /x/tests/fake_podman.py run --user 1000:1000 img',
+                     'curl -s -u "api:$K" https://x'):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+
+    def test_a_key_written_as_a_shell_default(self):
+        k = self.KEY
+        for line in ('export OPENAI_API_KEY=${OPENAI_API_KEY:-%s}' % k,
+                     'curl -H x-api-key:-%s https://x' % k, ': ${ANTHROPIC_API_KEY:=%s}' % k):
+            self.hidden(R.redact_keys(line)[0], k)
+        for line in ('echo ${OPENAI_API_KEY:-$FALLBACK_KEY}',
+                     ': ${OPENAI_API_KEY:?set OPENAI_API_KEY first}'):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+
+    def test_a_credential_quoted_inside_a_command_string(self):
+        """Edited in place, a string keeps quotes the rules cannot read through:
+        where they find a credential in the string rebuilt from its words, that
+        is written instead."""
+        k = self.KEY
+        for script in ("claude -p 'fix it'; curl -u 'alice:%s' https://x" % k,
+                       "claude -p 'fix it'; curl -H 'X-Api-Key: '%s https://x" % k,
+                       'claude -p "fix it"; export HF_TOKEN=\\"%s\\"' % k,
+                       "claude -p 'fix it' && eval 'export HF_TOKEN='\"'\"'%s'\"'\"''" % k,
+                       'claude -p "fix it"; curl -H Authorization:\\ Bearer\\ %s https://x' % k):
+            out = red(['bash', '-c', script])
+            self.assertNotIn(k, out, script)
+            self.assertIn(P, out, script)
+        out = red(['bash', '-c', 'out="$(claude -p "the secret plan")"; curl -H \'X-Api-Key: \'' + k])
+        self.hidden(out, k, 'secret plan')
+
+    def test_credential_headers_as_json_keys(self):
+        k = self.KEY
+        cfg = ('{"type":"http","url":"https://h/mcp","headers":{"Authorization":"Bearer %s",'
+               '"X-API-Key":"%s"}}' % (k, k))
+        self.hidden(red(['claude', 'mcp', 'add-json', 'srv', cfg]), k)
+        self.hidden(R.redact_line('claude mcp add-json srv ' + cfg)[0], k)
+        self.hidden(red(['codex', '-c', 'model_providers.x.http_headers={"X-Api-Key"="%s"}' % k,
+                         'exec', 'go']), k)
+        self.hidden(red(['claude', '--mcp-config', '{"s":{"args":["-y","pkg","--api-key","%s"]}}' % k]),
+                    k)
+        self.hidden(red(['bash', '-c', 'claude mcp add-json srv "{\\"headers\\":{\\"Authorization\\":'
+                                       '\\"Bearer %s\\"}}"' % k]), k)
+
+    def test_a_value_that_only_starts_like_code_is_a_secret(self):
+        for line in ('env DB_PASSWORD=None-of-your-business claude', 'PASSWORD=true!x run',
+                     'PASSWORD=%s3cr3t run', 'TOKEN=OS.abc123 run', 'SECRET={}abc run'):
+            self.assertIn('=' + K, R.redact_keys(line)[0], line)
+        for line in ("python3 -c 'HfApi(token=None)'", "python3 -c 'f(password=%s, x=1)'",
+                     "python3 -c 'f(token=os.getenv(\"T\"))'"):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+
+    def test_an_eos_token(self):
+        tok = 'zteos64:' + 'QUJD' * 20
+        for line in ("ssh host xrdcp 'root://eos.example.ch//eos/user/x/f.root?authz=%s' ." % tok,
+                     'export EOSAUTHZ=%s' % tok):
+            self.hidden(R.redact_keys(line)[0], 'QUJDQUJD')
 
 
 class NodeTierTest(unittest.TestCase):

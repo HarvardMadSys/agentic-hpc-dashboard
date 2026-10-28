@@ -48,6 +48,17 @@ MASKED = [
     ("echo -----BEGIN RSA PRIVATE KEY-----\nMIIEsecretbody\n-----END RSA PRIVATE KEY----- > k",
      "MIIEsecretbody", "> k"),
     ("slack-notify xoxb-1234567890-abcdefghij", "xoxb-1234567890-abcdefghij", "slack-notify"),
+    # the user however it is written, and a password of digits outside a container
+    ("curl -u $USER:s3cretpass9 https://x", "s3cretpass9", "-u $USER:"),
+    ("curl --user=alice:s3cretpass9 https://x", "s3cretpass9", "--user=alice:"),
+    ("curl -u 'alice:s3cretpass9' https://x", "s3cretpass9", "-u 'alice:"),
+    ("curl -u 12345:67890 https://x", "67890", "-u 12345:"),
+    # a key written out as a shell default, or as a JSON header
+    ("export OPENAI_API_KEY=${OPENAI_API_KEY:-s3cretkey99}", "s3cretkey99", "OPENAI_API_KEY"),
+    ("""claude mcp add-json s '{"headers":{"Authorization":"Bearer s3cret.tok"}}'""", "s3cret.tok",
+     '"Authorization":"Bearer '),
+    ("DB_PASSWORD=None-of-yours run", "None-of-yours", "DB_PASSWORD="),
+    ("xrdcp 'root://eos.x//eos/f?authz=zteos64:" + "QUJD" * 20 + "' .", "QUJD" * 20, "?authz="),
 ]
 
 # Real command lines, from real login-node feeds, that must come back as they were.
@@ -71,6 +82,10 @@ UNCHANGED = [
     'curl -H "Authorization: Bearer $TOK" https://api.x',
     'test -n "${OPENROUTER_API_KEY:-}"',
     "python3 -c 'HfApi(token=os.environ[\"HF_TOKEN\"])'",
+    "docker exec -u 0:0 c sh",
+    "python -c 'y = x -u[:, 0]'",
+    "echo ${OPENAI_API_KEY:-$FALLBACK_KEY}",
+    ": ${OPENAI_API_KEY:?set it first}",
 ]
 
 

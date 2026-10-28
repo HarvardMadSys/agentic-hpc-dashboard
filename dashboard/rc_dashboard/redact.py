@@ -32,10 +32,12 @@ import re
 MASK = "[REDACTED]"
 
 # A value that only refers to a secret is not one: `--token $HF_TOKEN`. Nor is
-# a kwarg in an inline script that reads one: `token=os.environ["HF_TOKEN"]`.
+# a kwarg in an inline script that reads one, `token=os.environ["HF_TOKEN"]`,
+# or is a placeholder, `password=None)`; `password=None-of-yours` still is.
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
-_NOT_CODE = r"(?!os\.|environ\b|getenv\(|Path\(|None\b|True\b|False\b|%s|\{\})"
-_VALUE = r"(\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+_NOT_CODE = (r"(?!(?:os\.)?(?:environ\b|getenv\()|Path\("
+             r"|(?:None|True|False|%s|\{\})(?=[\s)\],;}\"']|$))")
+_VALUE = r"(\\?\"[^\"]*\"|\\?'[^']*'|[^\s\"']+)"
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
 # on the END of the name: `HF_TOKEN`, `db_password`, `AWS_SECRET_ACCESS_KEY`.
@@ -45,6 +47,21 @@ _SECRET_NAME = (r"[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|_PASS|
 
 _NAME_WORDS = ("token", "secret", "password", "passwd", "passphrase", "_pass", "_pwd", "key",
                "credential")
+
+# A container's `--user 1000:1000` is a uid and a gid, not a user and password:
+# docker's, podman's, a wrapper of theirs (`podman-hpc`, a test's
+# `fake_podman.py`), lines continued with a backslash and all.
+_UID_GID = re.compile(r"\d+:\d+\Z")
+_CONTAINER_RUN = re.compile(r"(?:^|[\s/;&|(_-])(?:docker|podman|nerdctl|buildah|enroot|kubectl|"
+                            r"crictl|ctr)\b(?:\\\n|[^;&|\n])*\Z")
+
+
+def _user_password(m):
+    """`-u user:` kept and the password masked, but for a container's uid:gid."""
+    if _UID_GID.match(m.group(2) + m.group(3)) and _CONTAINER_RUN.search(m.string, 0, m.start()):
+        return m.group(0)
+    return m.group(1) + m.group(2) + MASK
+
 
 # (name, gate, pattern, substitution). The gate is cheap substring tests on the
 # lowercased text -- every group must have one hit -- and the pattern only runs
@@ -62,11 +79,13 @@ RULES = (
         r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)" + _NOT_A_REF
         + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
-    # Nor is the `:-` of a shell default a header: `${OPENAI_API_KEY:-}`.
+    # Nor is a shell default that is empty or another variable a header --
+    # `${OPENAI_API_KEY:-}`, `${OPENAI_API_KEY:-$KEY}`, `${OPENAI_API_KEY:?unset}`
+    # -- while a default written out is the key itself.
     ("key_header", ((":",), ("api-key", "apikey", "api_key", "auth-token", "access-token",
                              "private-token", "secret")), re.compile(
         r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)"
-        r"\s*:(?![-+=?])\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
+        r"\s*:(?![-=+]?\}|[-=+][\"']?\$|\?)\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
      lambda m: m.group(1) + MASK),
     # scheme://user:password@host -- keep the user; a long user alone is a token.
     # Anchored on the literal `://`, not on the scheme, which would be tried at
@@ -75,12 +94,13 @@ RULES = (
      lambda m: m.group(1) + MASK + m.group(3)),
     ("url_token_user", (("://",), ("@",)), re.compile(r"(://)([^/\s:@\"']{20,})(@)"),
      lambda m: m.group(1) + MASK + m.group(3)),
-    # curl/wget -u user:password, --user user:password. Not a container's
-    # `--user 1000:1000`, nor `date -u +%H:%M`.
+    # curl/wget -u user:password, --user=user:password, quoted or not, `$USER:`
+    # too. Not `date -u +%H:%M`, numpy's `-u[:, 0]`, a container's `--user
+    # 1000:1000` (_user_password), nor a password that is a variable's.
     ("user_password", (("-u", "--user", "--proxy-user"), (":",)), re.compile(
-        r"((?:^|\s)(?:-u|--user|--proxy-user)\s*)(?!\d+:\d+(?![^\s\"']))"
-        r"([\w.@-][^\s:\"']*:)([^\s\"']+)"),
-     lambda m: m.group(1) + m.group(2) + MASK),
+        r"((?:^|\s)(?:-u|--user|--proxy-user)(?:=|\s*)[\"']?)(?![+\[])([^\s:\"']+:)(?!\$)"
+        r"([^\s\"']+)"),
+     _user_password),
     # --token X, --hf-token=X, --api-key X, --password X, --secret X ... A flag
     # starts an argument: the `-credential` inside `git-credential` is not one.
     ("secret_flag", (("-",), _NAME_WORDS), re.compile(
@@ -98,9 +118,27 @@ RULES = (
     ("secret_json", ((":",), _NAME_WORDS), re.compile(
         r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"[^\"]*\"|'[^']*')", re.I),
      lambda m: m.group(1) + MASK),
-    # ?access_token=...&key=...: query-string credentials, including signed URLs.
+    # Credential headers as JSON or TOML keys, escaped or not: an MCP server's
+    # `"headers": {"Authorization": "Bearer ..."}`, codex's `http_headers=
+    # {"X-Api-Key"="..."}`.
+    ("header_json", (("\"", "'"), ("authorization", "api-key", "apikey", "api_key", "auth-token",
+                                   "access-token", "private-token")), re.compile(
+        r"(\\?[\"'](?:(?:Proxy-)?Authorization\\?[\"']\s*[:=]\s*\\?[\"']"
+        r"(?:(?:Bearer|Basic|Token|Digest|Bot)\s+)?"
+        r"|(?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token)"
+        r"\\?[\"']\s*[:=]\s*\\?[\"']))(?!\$)([^\s\"'\\]+)", re.I),
+     lambda m: m.group(1) + MASK),
+    # A credential flag and its value as items of a JSON list: an MCP server's
+    # `"args": ["--api-key", "..."]`.
+    ("secret_flag_json", (("\"", "'"), _NAME_WORDS), re.compile(
+        r"(\\?[\"']--?[A-Za-z0-9-]*(?:token|secret|password|passwd|passphrase|api-?key|apikey|"
+        r"access-?key|private-?key|auth-?key|credentials?)\\?[\"']\s*,\s*\\?[\"'])(?!\$)"
+        r"([^\"'\\]+)", re.I),
+     lambda m: m.group(1) + MASK),
+    # ?access_token=...&key=...: query-string credentials, including signed URLs
+    # and EOS's `?authz=`.
     ("query_secret", (("?", "&"), ("=",)), re.compile(
-        r"([?&](?:access_token|refresh_token|id_token|token|api_?key|key|secret|password|"
+        r"([?&](?:access_token|refresh_token|id_token|token|authz|api_?key|key|secret|password|"
         r"sig|signature|X-Amz-Signature|X-Amz-Credential|X-Goog-Signature)=)([^&\s\"'#]+)", re.I),
      lambda m: m.group(1) + MASK),
     # mysql -pSECRET (no space), redis-cli -a SECRET, sshpass -p SECRET. Not psql:
@@ -114,8 +152,9 @@ RULES = (
      lambda m: m.group(1) + MASK),
     # Token shapes that are secrets wherever they appear, flag or not.
     ("token_shape", (("sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-",
-                      "hf_", "akia", "asia", "xox", "aiza", "npm_", "eyj"),), re.compile(
+                      "hf_", "akia", "asia", "xox", "aiza", "npm_", "eyj", "zteos64"),), re.compile(
         r"\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}"
+        r"|zteos64:[A-Za-z0-9+/=_%\-]{20,}"
         r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
         r"|glpat-[A-Za-z0-9_\-]{20,}"
         r"|hf_[A-Za-z0-9]{30,}"
