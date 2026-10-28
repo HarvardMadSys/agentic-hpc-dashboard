@@ -11,29 +11,33 @@ import { exportUrl, getEvents } from '../api/client';
 import { apiQuery, SCALAR_KEYS, countActiveScalars, windowBounds } from '../lib/filters';
 import type { ScalarKey, UrlState } from '../lib/filters';
 import { fint } from '../lib/format';
+import { APPROVAL_ORDER, AP_LABEL, SANDBOX_ORDER, SB_LABEL } from '../lib/sandbox';
 import { Panel } from './Panel';
 import { EventTable } from '../tabs/LiveTab';
 
 /** Field layout for the bar. `kind` only picks the input type. */
-const FIELDS: { k: ScalarKey; lbl: string; kind: 'text' | 'num' | 'dt' | 'select'; opts?: string[] }[] =
+const FIELDS: {
+  k: ScalarKey;
+  lbl: string;
+  kind: 'text' | 'num' | 'dt' | 'select';
+  opts?: string[];
+  optLbl?: Record<string, string>;
+}[] =
   [
     { k: 'from', lbl: 'from', kind: 'dt' },
     { k: 'to', lbl: 'to', kind: 'dt' },
+    // No user or agent-type field: those are the page-wide dropdowns above,
+    // which reach this query through `apiQuery` like the class filter does.
     { k: 'q', lbl: 'search (args)', kind: 'text' },
-    { k: 'user', lbl: 'user', kind: 'text' },
     { k: 'host', lbl: 'host', kind: 'text' },
     { k: 'tool', lbl: 'tool', kind: 'text' },
-    { k: 'agent_type', lbl: 'agent_type', kind: 'text' },
     { k: 'purpose', lbl: 'purpose', kind: 'text' },
     { k: 'bucket', lbl: 'bucket', kind: 'text' },
     { k: 'session_key', lbl: 'session_key', kind: 'text' },
-    {
-      k: 'sandbox',
-      lbl: 'sandbox',
-      kind: 'select',
-      opts: ['sandboxed', 'unsandboxed', 'denied', 'unknown'],
-    },
-    { k: 'approval', lbl: 'approval', kind: 'select', opts: ['supervised', 'bypassed', 'unknown'] },
+    // Option VALUES are the record keys the export filters on; the text is
+    // what each key measures (lib/sandbox.ts).
+    { k: 'sandbox', lbl: 'namespace isolation', kind: 'select', opts: SANDBOX_ORDER, optLbl: SB_LABEL },
+    { k: 'approval', lbl: 'approval at launch', kind: 'select', opts: APPROVAL_ORDER, optLbl: AP_LABEL },
     { k: 'depth_min', lbl: 'depth ≥', kind: 'num' },
     { k: 'depth_max', lbl: 'depth ≤', kind: 'num' },
     { k: 'cpu_min', lbl: 'cpu_s ≥', kind: 'num' },
@@ -140,7 +144,7 @@ export function EventsExplorer({
                   <option value="">any</option>
                   {f.opts!.map((o) => (
                     <option key={o} value={o}>
-                      {o}
+                      {f.optLbl?.[o] ?? o}
                     </option>
                   ))}
                 </select>
@@ -165,7 +169,7 @@ export function EventsExplorer({
             {resp?.total_scanned != null ? ` · ${fint(resp.total_scanned)} scanned` : ''}
             {resp?.truncated ? ' · truncated by the backend' : ''}
             {resp?.order === 'desc' ? ' \u00b7 newest first' : resp?.order === 'asc' ? ' \u00b7 oldest first' : ''}
-            {resp?.event_filter_defaulted ? ' \u00b7 process exits only' : ''}
+            {resp?.event_filter_defaulted ? ' \u00b7 processes exited only' : ''}
             {` · ${url.cls.length}/3 classes`}
             {nActive ? ` · ${nActive} filter${nActive > 1 ? 's' : ''}` : ''}
             {/* The window enters the query as from/to without appearing in the
@@ -196,7 +200,7 @@ export function EventsExplorer({
 
       <div className="grid wide" style={{ marginTop: 14 }}>
         <Panel
-          title="Events"
+          title="Records"
           span
           feed="ebpfm"
           empty={!loading && !error && !rows.length}

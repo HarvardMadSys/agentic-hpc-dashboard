@@ -1,0 +1,17 @@
+{
+  "//": "FASRC login nodes (boslogin*, holylogin*). Merged over the `risk` section of the config: see reducers/risk.py for every key. Login nodes here have no GPU, so nvidia-smi and nvcc are questions with no useful answer, and the built-in rules already say so.",
+  "vars": {
+    "//": "compute node names, as they appear after `ssh`",
+    "compute_hosts": "holy|bos|node|gpu|c\\d{3,}"
+  },
+  "dangerous": {
+    "disable": [],
+    "override": {},
+    "add": []
+  },
+  "secrets": {
+    "disable": [],
+    "override": {},
+    "add": []
+  }
+}

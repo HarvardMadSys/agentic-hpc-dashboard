@@ -1,0 +1,775 @@
+/* Trajectories: the clickable ranking rows and the inspector's process tree.
+ *
+ * Kept out of styles.css so the tree's rules sit next to the component that
+ * owns them. Colours are the palette tokens only: no new hue, and crimson
+ * (--s1) stays the agent class's -- a timeline bar is never crimson, because a
+ * bar is a process and not every process is the agent.
+ */
+
+/* ------------------------------------------------------------ ranking rows */
+tr.tj-row {
+  cursor: pointer;
+}
+tr.tj-row:hover td {
+  background: var(--surface-2);
+}
+tr.tj-row.sel td {
+  background: var(--sunken);
+}
+tr.tj-row.sel td:first-child {
+  box-shadow: inset 3px 0 0 var(--ink-2);
+}
+.tj-open {
+  all: unset;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--ink);
+  text-decoration: underline dotted var(--edge);
+  text-underline-offset: 3px;
+}
+.tj-open:hover {
+  text-decoration-color: var(--ink-2);
+}
+.tj-open:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+
+/* The ranked table: fifteen columns, so each gets air and none wraps -- a
+ * number broken over two lines ("13 / min") reads as two numbers. Too wide
+ * for the panel, it scrolls sideways (.scroller) rather than squeezing. */
+table.tj-table th,
+table.tj-table td {
+  padding: 9px 12px 9px 0;
+  white-space: nowrap;
+  vertical-align: top;
+}
+table.tj-table th.num,
+table.tj-table td.num {
+  padding-left: 6px;
+}
+/* the tool-run tokens are a sentence, not a value: they wrap */
+table.tj-table th.wrap,
+table.tj-table td.wrap {
+  white-space: normal;
+}
+table.tj-table td .sub {
+  font-size: 10px;
+  color: var(--muted);
+}
+.tj-date {
+  color: var(--muted);
+  margin-right: 8px;
+}
+
+/* --------------------------------------------------------------- inspector */
+.ins-id {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.ins-id .sid {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  word-break: break-all;
+}
+.ins-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+}
+.ins-facts b {
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.ins-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  align-items: center;
+  font-size: 11px;
+}
+.ins-summary > .eyebrow {
+  font-size: 9.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ins-read {
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* A bound the read hit. It changes what the tree means, so it is not a tooltip. */
+.ins-bound {
+  border: 1px solid var(--warn);
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 6px 9px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  color: var(--ink);
+}
+.ins-bound.soft {
+  border-color: var(--edge);
+  color: var(--ink-2);
+}
+.ins-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* -------------------------------------------------------------------- tree */
+.pt {
+  --pt-cols: minmax(440px, 1fr) 84px 66px 58px 64px 72px 60px 96px 190px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  overflow: auto;
+  max-height: 72vh;
+  overscroll-behavior: contain;
+  font-size: 11.5px;
+}
+.pt-in {
+  min-width: 1100px;
+}
+.pt-row,
+.pt-head {
+  display: grid;
+  grid-template-columns: var(--pt-cols);
+  align-items: stretch;
+  min-height: 23px;
+  border-bottom: 1px solid var(--rule);
+}
+.pt-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  align-items: end;
+  padding-top: 5px;
+}
+.pt-head > div {
+  padding: 0 8px 5px 0;
+  white-space: nowrap;
+}
+.pt-head > div:first-child {
+  padding-left: 8px;
+}
+.pt-row:hover {
+  background: var(--surface-2);
+}
+.pt-row > div {
+  align-self: center;
+  padding-right: 8px;
+  min-width: 0;
+}
+.pt-row > .num,
+.pt-head > .num {
+  text-align: right;
+  font-family: 'IBM Plex Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+.pt-row > .num {
+  color: var(--ink);
+  white-space: nowrap;
+}
+.pt-row > .num.dim {
+  color: var(--muted);
+}
+
+/* The tree cell: one guide per ancestor level, then this row's elbow. */
+.pt-row > .pt-tree {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  padding-left: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.pt-g,
+.pt-j {
+  flex: none;
+  width: 15px;
+  position: relative;
+}
+.pt-g.on::before,
+.pt-j::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--edge);
+}
+.pt-j.last::before {
+  bottom: 50%;
+}
+.pt-j::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  width: 8px;
+  top: 50%;
+  border-top: 1px solid var(--edge);
+}
+.pt-body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+}
+.pt-tog {
+  all: unset;
+  flex: none;
+  width: 14px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 10px;
+  line-height: 1;
+}
+.pt-tog:hover {
+  color: var(--ink);
+}
+.pt-tog:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 1px;
+}
+.pt-tog.leaf {
+  cursor: default;
+  color: var(--edge);
+}
+.pt-cmd {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+  color: var(--ink);
+  flex: none;
+}
+.pt-cmd.anon {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--muted);
+}
+.pt-arg {
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.pt-arg.boiler {
+  color: var(--muted);
+}
+.pt-count {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  background: var(--surface-2);
+  border-radius: 3px;
+  padding: 0 5px;
+  flex: none;
+}
+.pt-tag {
+  flex: none;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 15px;
+}
+.pt-tag.weak {
+  border-style: dashed;
+  border-color: var(--edge);
+}
+.pt-tag.noexit {
+  border-style: dashed;
+  border-color: var(--ink-2);
+  color: var(--ink-2);
+}
+.pt-tag.type {
+  color: var(--ink-2);
+  border-color: var(--edge);
+}
+.pt-row.count .pt-body {
+  color: var(--muted);
+  font-style: italic;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.pt-row.root {
+  background: var(--surface-2);
+}
+.pt-x {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+}
+.pt-x.ok {
+  color: var(--muted);
+}
+
+/* timeline: where each process sat in the read's span */
+.pt-row > .pt-tl,
+.pt-legend .pt-tl {
+  position: relative;
+  align-self: stretch;
+  margin-right: 8px;
+}
+.pt-tl::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px solid var(--rule);
+}
+.pt-bar {
+  position: absolute;
+  top: calc(50% - 3px);
+  height: 6px;
+  min-width: 2px;
+  border-radius: 1px;
+  background: var(--sg);
+}
+.pt-bar.bad {
+  background: var(--serious);
+}
+.pt-bar.sig {
+  background: var(--crit);
+}
+.pt-bar.open {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--ink-2) 0 3px,
+    transparent 3px 5px
+  );
+  height: 2px;
+  top: calc(50% - 1px);
+}
+.pt-bar.group {
+  background: var(--edge);
+  border: 1px solid var(--sg);
+}
+.pt-bar.clip {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 2px solid var(--ink-2);
+}
+.pt-tlhead {
+  display: flex;
+  justify-content: space-between;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  align-items: center;
+}
+.pt-legend .pt-tl {
+  display: inline-block;
+  width: 26px;
+  height: 12px;
+  margin: 0 4px 0 0;
+  vertical-align: middle;
+}
+
+/* --------------------------------------------------------------- navigator */
+/* The inspector's time navigator (TrajectoryNav.tsx): the session track, the
+ * zoomable strip of process starts, the quick jumps and the line saying where
+ * the last one landed. Purposes keep their palette slots; failures keep the
+ * timeline bars' two colours; nothing here is crimson. */
+.tn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 7px 9px 8px;
+  background: var(--surface);
+}
+.tn-cap {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+.tn-cap .eyebrow {
+  font-size: 9.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.tn-cap b {
+  font-weight: 500;
+  color: var(--ink);
+}
+.tn-svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+.tn-track .tn-svg {
+  height: 14px;
+  margin: 2px 0 4px;
+}
+.tn-svg.strip {
+  height: auto;
+}
+.tn-svg.strip:has(g:focus-visible) {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+.tn-read {
+  fill: var(--sunken);
+  stroke: var(--edge);
+  stroke-width: 1;
+}
+.tn-view {
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.tn-hover {
+  stroke: var(--ink-2);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  pointer-events: none;
+}
+.tn-cursor {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.tn-key {
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  pointer-events: none;
+}
+.tn-fail {
+  fill: var(--serious);
+  cursor: pointer;
+}
+.tn-fail.sig {
+  fill: var(--crit);
+}
+.tn-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.tn-status {
+  min-height: 17px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  word-break: break-word;
+}
+.tn-status b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* A tool token that opens its run, and the "read again" link. */
+.rle .tok {
+  all: unset;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.rle .tok:hover b {
+  text-decoration: underline dotted var(--ink-2);
+  text-underline-offset: 2px;
+}
+.rle .tok:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 1px;
+}
+.linkish {
+  all: unset;
+  cursor: pointer;
+  color: var(--crimson-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.linkish:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 1px;
+}
+
+/* A ribbon's run under the keyboard, and the pickable ribbon. */
+.ribbon-focus {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+g.pickable {
+  outline: none;
+}
+svg:has(> g.pickable:focus-visible) {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+.ins-ribbon {
+  min-width: 0;
+}
+
+/* The tree under a zoomed range: rows that ran in it keep a rule at their
+ * left edge, the rest are faded but still there -- a zoom never hides a row. */
+.pt-row.inz > .pt-tree {
+  box-shadow: inset 3px 0 0 var(--ink-2);
+}
+.pt-row.outz > div {
+  opacity: 0.42;
+}
+.pt-row.outz:hover > div {
+  opacity: 1;
+}
+.pt-bar.clipr {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 2px solid var(--ink-2);
+}
+.pt-tlhead.zoomed {
+  color: var(--ink);
+  font-weight: 600;
+}
+/* Where the last jump landed: a ring that stays until the next one, and a
+ * flash so the eye finds it after the scroll. */
+.pt-row[aria-current] {
+  box-shadow: inset 0 0 0 1.5px var(--ink-2);
+}
+.pt-row.flash {
+  animation: pt-flash 1.8s ease-out;
+}
+@keyframes pt-flash {
+  0%,
+  35% {
+    background: var(--warn);
+  }
+  100% {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pt-row.flash {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------ the process tree, as a tree
+ * (components/ProcDiagram.tsx): a box per process, its purpose on the left
+ * edge, a failure in red. */
+.pd-box {
+  /* the whole box, its padding included: a fill or a third line that stops
+     at the content box is cut off at the bottom */
+  height: calc(100% + 12px);
+  box-sizing: border-box;
+  border-left: 3px solid var(--edge);
+  margin: -6px -8px;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pd-box.group {
+  border-left-style: double;
+  background: var(--surface-2);
+}
+.pd-box.more {
+  border-left-color: var(--rule);
+  color: var(--muted);
+}
+.pd-box.bad {
+  background: color-mix(in srgb, var(--crit) 6%, transparent);
+}
+.pd-h {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.pd-h b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.pd-h .pt-tag {
+  flex: none;
+  margin-right: auto;
+}
+.pd-caret {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.pd-s {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pd-s .bad,
+.pd-box .bad {
+  color: var(--crit);
+}
+.pd .tdiag-canvas {
+  margin: 0;
+}
+.pd-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 2px 0 4px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.pd-bar label {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  cursor: pointer;
+}
+/* the session list beside the inspector: one column of compact rows */
+.tj-rank {
+  margin: 0 0 8px;
+}
+.tj-md {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .tj-md {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.tj-list {
+  /* the rows' offsetParent, so a row's offsetTop is its place in the list */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 72vh;
+  overflow: auto;
+}
+.tj-item {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: 5px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tj-item:hover {
+  border-color: var(--edge);
+}
+.tj-item.on {
+  background: var(--surface-2);
+  border-left-color: var(--ink-2);
+}
+.tj-item-h {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.tj-item-s {
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+/* the ranked quantity, when the line above does not already say it */
+.tj-item-m {
+  font-size: 10.5px;
+  color: var(--ink);
+}
+/* a session whose agent is running now */
+.tj-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--good);
+  white-space: nowrap;
+}
+.tj-live .ld {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: beat 2.4s ease-in-out infinite;
+}
+/* a row the last re-read moved up, or brought in (TrajectoriesTab `useFlip`) */
+.tj-item.tj-up {
+  animation: tj-up 1.6s ease-out;
+}
+/* no 100% frame: it fades back to whatever the row is, selected or not */
+@keyframes tj-up {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--live) 16%, transparent);
+    border-color: var(--live);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tj-item.tj-up,
+  .tj-live .ld {
+    animation: none;
+  }
+}
+.tj-filter {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.tj-empty {
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+  padding: 28px;
+  color: var(--muted);
+  text-align: center;
+}

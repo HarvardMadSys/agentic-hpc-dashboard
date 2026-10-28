@@ -1,8 +1,9 @@
 /* Stat plate: a total, and the per-class breakdown underneath it.
  *
- * Every plate carries ALL THREE classes. A single headline number with no class
- * split is the shape that let "agent" absorb VS Code, so the breakdown row is a
- * required prop, not an option.
+ * A plate carries all three classes unless its question only has an agent
+ * answer (the Sandbox tab: whether an agent's tool calls were isolated). Then
+ * `by` is left out and the row goes with it; a row of dashes for the classes
+ * the question does not apply to is noise, not a breakdown.
  */
 import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint } from '../lib/format';
@@ -18,36 +19,53 @@ export function Plate({
   fmtFn = fint,
   unit,
   classes = CLS,
+  onClick,
+  linkTip,
 }: {
   k: string;
   total: number | null | undefined;
   stripe?: string;
-  /** per-class values; a class absent from the map renders as a dash, not 0 */
-  by: Partial<Record<string, number | null>>;
+  /** per-class values; a class absent from the map renders as a dash, not 0.
+   *  Omitted: the plate is about agents alone, and shows no class row. */
+  by?: Partial<Record<string, number | null>>;
   note?: React.ReactNode;
   /** hover text for the label: how this number is counted, and what it overcounts */
   tip?: string;
   fmtFn?: (n: number | null | undefined) => string;
   unit?: string;
   classes?: Cls[];
+  /** the plate opens the section that breaks it down */
+  onClick?: () => void;
+  linkTip?: string;
 }) {
   return (
-    <div className="plate" style={{ '--stripe': stripe } as React.CSSProperties}>
+    <div
+      className={`plate${onClick ? ' link' : ''}`}
+      style={{ '--stripe': stripe } as React.CSSProperties}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => e.key === 'Enter' && onClick() : undefined}
+      data-tip={onClick ? linkTip : undefined}
+    >
       <div className="k" data-tip={tip}>
         {k}
+        {tip && <sup className="qm" aria-hidden="true">?</sup>}
       </div>
       <div className="v">
         {total == null ? DASH : fmtFn(total)}
         {unit && total != null && <small> {unit}</small>}
       </div>
-      <div className="cls3">
-        {classes.map((c) => (
-          <span key={c} data-tip={CLS_LBL[c]}>
-            <i style={{ background: CLS_COL[c] }} />
-            <b>{c in by ? fmtFn(by[c]) : DASH}</b>
-          </span>
-        ))}
-      </div>
+      {by && (
+        <div className="cls3">
+          {classes.map((c) => (
+            <span key={c} data-tip={CLS_LBL[c]}>
+              <i style={{ background: CLS_COL[c] }} />
+              <b>{c in by ? fmtFn(by[c]) : DASH}</b>
+            </span>
+          ))}
+        </div>
+      )}
       {note && <div className="n">{note}</div>}
     </div>
   );

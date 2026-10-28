@@ -4,18 +4,43 @@
  * `null` bins as gaps: a minute in which the collector wrote no record is a hole
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
-import { useMemo } from 'react';
-import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse } from '../api/types';
+import { Fragment, useMemo, useState } from 'react';
+import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Lines } from '../charts/primitives';
 import type { LineSeries } from '../charts/primitives';
+import { clockLabel, fullClock, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
-import { CLS, CLS_ABBR, CLS_COL, CLS_LBL } from '../lib/classes';
-import { DASH, dur, fint, fmt, lagStr, pc } from '../lib/format';
-import { pcol, plbl, purposeLegend } from '../lib/purposes';
+import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { Segmented } from '../components/ClassFilter';
+import type { Who } from '../lib/filters';
+import { DASH, dur, fint, fmt, pc } from '../lib/format';
+import { pcol } from '../lib/purposes';
+import { ActiveUsers, scrollToUsers } from './LiveUsers';
+import { ByUser, distinct } from '../components/ByUser';
+import { WindowPlates } from '../components/WindowPlates';
+import { WindowCharts } from './LiveCharts';
+import { SortTh } from '../components/SortTh';
+import { useSort } from '../lib/useSort';
+import { GLOSS } from '../lib/glossary';
+import { riskLine } from '../lib/sandbox';
+import type { Panels } from '../lib/panels';
 
 /* ------------------------------------------------------------- helpers */
+
+/* `depth` is the collector's count of process generations between a process
+ * and its nearest agent ancestor: its depth in that agent's process tree. */
+const DEPTH_TIP =
+  "depth in the agent's process tree:\n\n" +
+  '0 = the agent process itself\n1 = started directly by the agent (e.g. a tool-call shell)\n' +
+  '2 = started by one of those (e.g. the command that shell ran)\nand so on down the tree\n\n' +
+  "— = no agent above it: a human's own process";
+
+function depthLabel(d: number | null | undefined): string {
+  if (d == null) return DASH;
+  return d === 0 ? '0 (agent)' : String(d);
+}
 
 /** The newest bin that actually carried a value for this class. */
 function latest(rate: LiveResponse['rate'], c: string): number | null {
@@ -53,16 +78,20 @@ function nowByClass(now: LiveResponse['now'], key: string): Partial<Record<strin
   return out;
 }
 
-const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct'][] = [
-  ['roots', 'roots', 'int'],
-  ['procs', 'procs', 'int'],
-  ['events', 'events', 'int'],
-  ['rss_gb', 'RSS GB', 'num'],
+/* `roots` is the count of live agent and IDE session trees on the host: the
+ * word a reader meets is "sessions" (roadmap note 14). */
+const capFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct', gloss?: string][] = [
+  ['roots', 'sessions', 'int', 'sessions_now'],
+  ['procs', 'running', 'int', 'running'],
+  ['events', 'exited', 'int', 'exited'],
+  ['rss_gb', 'memory GB', 'num', 'rss'],
   ['cpu_pct', 'CPU', 'pct'],
   ['load_1', 'load₁', 'num'],
-  ['d_state', 'D-state', 'int'],
-  ['users', 'users', 'int'],
-  ['tcp_open_ext', 'ext TCP', 'int'],
+  ['d_state', 'D-state', 'int', 'dstate'],
+  ['users', 'users', 'int', 'user'],
+  ['tcp_open_ext', 'ext TCP', 'int', 'exttcp'],
 ];
 
 function hostCell(h: LiveHost, key: string, kind: string) {
@@ -75,6 +104,53 @@ function hostCell(h: LiveHost, key: string, kind: string) {
 }
 
 /** Per-class split for one host, if the payload carries one. */
+// editors, which the IDE class holds; every other type is an agent's
+const EDITOR_TYPES = new Set(['vscode', 'cursor', 'windsurf']);
+
+/** A host's running processes split by class, or by agent and editor type,
+ * read right after their total (the column before it). */
+function HostBreakdown({ h, cls, by }: { h: LiveHost; cls: Cls[]; by: 'class' | 'type' }) {
+  const sep = <span className="sep">{' · '}</span>;
+  if (by === 'class') {
+    const bc = hostByClass(h);
+    if (!bc) return <span className="nm">not reported per class</span>;
+    return (
+      <span className="rle">
+        {cls.map((c, i) => (
+          <span key={c} data-tip={`${CLS_LBL[c] ?? c}: processes running now`}>
+            {i ? sep : null}
+            <i className="dot" style={{ background: CLS_COL[c], marginRight: 4 }} />
+            <b>{c in bc ? fint(bc[c]) : DASH}</b>
+          </span>
+        ))}
+      </span>
+    );
+  }
+  const bt = (h.by_type ?? null) as Record<string, number> | null;
+  if (!bt || !Object.keys(bt).length) return <span className="nm">not reported per type</span>;
+  const total = typeof h.procs === 'number' ? h.procs : null;
+  const typed = Object.values(bt).reduce((a, n) => a + n, 0);
+  return (
+    <span className="rle">
+      {Object.entries(bt)
+        .sort((a, b) => b[1] - a[1])
+        .map(([t, n], i) => (
+          <span key={t}>
+            {i ? sep : null}
+            <i className="dot" style={{ background: CLS_COL[EDITOR_TYPES.has(t) ? 'ide' : 'agent'], marginRight: 4 }} />
+            {AGENT_TYPE_LBL[t] ?? t} <b>{fint(n)}</b>
+          </span>
+        ))}
+      {total != null && total > typed && (
+        <span data-tip="processes with no agent or editor above them: people’s own shells, and the rest">
+          {sep}
+          <span className="nm">no type</span> <b>{fint(total - typed)}</b>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
   const b = (h.by_class ?? h.classes ?? h.events_by_class) as unknown;
   if (b && typeof b === 'object' && !Array.isArray(b)) {
@@ -97,14 +173,34 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
 
 export function LiveTab({
   live,
+  P,
+  traj,
   cls,
+  who,
   feeds,
   goto,
+  openTraj,
+  openUserTraj,
+  userCols,
+  nodeNoun,
 }: {
   live: LiveState;
+  /** the window's reduced panels: the "last 24h" plates and every time series */
+  P: Panels;
+  traj: Trajectories | null;
   cls: Cls[];
+  /** The page's user and agent-type filter. The live tier is one shared rolling
+   *  count, not rebuilt per filter, so only rows that name a user narrow. */
+  who?: Who;
   feeds: FeedsResponse | null;
   goto: (tab: string) => void;
+  /** open a session's trajectory, or a user's sessions, on the Trajectories tab */
+  openTraj: (sid: string) => void;
+  openUserTraj: (user: string) => void;
+  /** the service's default Active users columns (`ui.user_columns`) */
+  userCols?: string[] | null;
+  /** what the watched hosts are called (`ui.node_noun`): "login nodes" */
+  nodeNoun?: string | null;
 }) {
   const L = live.live;
   const rate = L?.rate ?? [];
@@ -128,36 +224,17 @@ export function LiveTab({
     c: CLS_COL[c],
     area: c === 'agent',
     mark: c === 'agent' ? (latest(rate, c) != null ? fint(latest(rate, c)) + '/min' : null) : null,
-    pts: rate.map((r, i) => ({ x: i, y: typeof r[c] === 'number' ? (r[c] as number) : null })),
+    // x is the bin's epoch, not its index: the window slides a bin every
+    // minute, and a zoom held in indices would drift off the minutes picked.
+    pts: rate
+      .filter((r) => Number.isFinite(Number(r.epoch)))
+      .map((r) => ({ x: Number(r.epoch), y: typeof r[c] === 'number' ? (r[c] as number) : null })),
   }));
 
-  /* X ticks that stay legible at ANY window.
-   *
-   * The old rule -- every row ending `:00`, every 120th -- was correct for
-   * exactly one window: 24 h at one-minute bins. At 1 h it yields a single tick
-   * and at 7 d it yields eighty. So: pick a round interval that lands ~10 ticks
-   * across whatever is on screen, and place them on LOCAL wall-clock multiples
-   * of it, so a label reads `14:00` and not `14:07`. Local, not epoch-modulo,
-   * because a half-hour timezone would otherwise tick on the half hour. */
-  const xt = useMemo(() => {
-    if (!rate.length) return [];
-    const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080];
-    const step = STEPS.find((s) => rate.length / s <= 10) ?? STEPS[STEPS.length - 1];
-    const out: number[] = [];
-    for (let i = 0; i < rate.length; i++) {
-      const e = Number(rate[i].epoch);
-      if (!Number.isFinite(e)) continue;
-      const d = new Date(e * 1000);
-      const minuteOfDay = d.getHours() * 60 + d.getMinutes();
-      if (step >= 1440 ? minuteOfDay === 0 : minuteOfDay % step === 0) out.push(i);
-    }
-    return out;
-  }, [rate]);
-
-  const gaps = useMemo(
-    () => rate.filter((r) => cls.every((c) => typeof r[c] !== 'number')).length,
-    [rate, cls],
-  );
+  /* X ticks that stay legible at ANY window, and at any zoom into it: a round
+   * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
+   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`. */
+  const xticks = (a: number, b: number) => timeTicks(a, b, 10);
 
   const perMin = Object.fromEntries(CLS.map((c) => [c, latest(rate, c)]));
   const perMinAll = CLS.reduce<number | null>((a, c) => {
@@ -173,26 +250,21 @@ export function LiveTab({
   const procs = nowByClass(now, 'procs');
   const procsTot = nowNum(now, ['procs_total', 'agent_procs', 'procs']) ??
     (Object.keys(procs).length ? CLS.reduce((a, c) => a + (procs[c] ?? 0), 0) : null);
-  // How a user is counted, end to end. The collector walks the processes it
-  // tracks on each residency tick, buckets them by class, and emits the size of
-  // the distinct-username set per class -- so the unit at the source is
-  // "distinct users per (host, class)", over tracked live processes only, and a
-  // process whose owner will not resolve is skipped. The reducer then SUMS that
-  // across hosts, and the headline below sums the three classes, because the
-  // payload carries no `users_total` to prefer.
-  //
-  // Both sums double-count: one person on two login nodes counts twice, and one
-  // person running an agent from a shell counts in both classes. So this is an
-  // upper bound on distinct humans, not a headcount -- read it as "user
-  // sessions on the fleet". It is exact only when it says one host reporting
-  // and a single class is non-zero.
-  const users = nowByClass(now, 'users');
-  const usersTot = nowNum(now, ['users_total', 'users']) ??
-    (Object.keys(users).length ? CLS.reduce((a, c) => a + (users[c] ?? 0), 0) : null);
+  const launchNow = nowNum(now, ['live_agent_sessions']) != null
+    ? riskLine(now.live_sessions_by_approval as unknown as Partial<Record<string, number>> | undefined)
+    : undefined;
+  // One row per account, from the live reducer's roster: a person who runs
+  // an agent, a shell, and an IDE is one user, not three.
+  const U = L?.users;
+  const usersBy = Object.fromEntries(CLS.filter((c) => U?.by_class[c] != null).map((c) => [c, U!.by_class[c]!]));
 
-  const events = (L?.events ?? []).filter((e) => !e.actor3 || cls.includes(e.actor3 as Cls));
-  const submits = L?.submits ?? [];
-  const hosts = L?.hosts ?? [];
+  // sortable by any column (roadmap note 27); by host until then
+  const hostSort = useSort<string>('host', 'asc');
+  const hostCols = HOST_COLS.filter((c) => (L?.hosts ?? []).some((h) => typeof h[c[0]] === 'number'));
+  const hosts = hostSort.sort(L?.hosts ?? [], (h, k) =>
+    k === 'host' ? h.host : typeof h[k] === 'number' ? (h[k] as number) : null);
+  // what a host's running processes are, read right after their count
+  const [hostBy, setHostBy] = useState<'class' | 'type'>('class');
 
   const envelope = L
     ? null
@@ -226,16 +298,19 @@ export function LiveTab({
 
   return (
     <>
+      {/* Two rows, each saying which span it counts: the same word ("sessions",
+          "users") means a different span in each (roadmap note 1). */}
+      <div className="rowlabel">right now</div>
       <div className="plates three">
         <Plate
-          k="events / min"
+          k="processes exited / min"
           total={perMinAll}
           stripe="var(--s1)"
           by={perMin}
           tip={
-            'events recorded during the last minute that has fully elapsed.\n\n' +
-            'the minute in progress is still filling, so counting it would always ' +
-            'read low and the number would dip every time the page refreshed.'
+            GLOSS.exited + '\n\n' +
+            'counted over the last minute that has fully elapsed: the minute in progress is ' +
+            'still filling, so counting it would always read low.'
           }
           note={
             <>
@@ -247,56 +322,61 @@ export function LiveTab({
           }
         />
         <Plate
-          k="actors"
+          k="sessions · last 10 min"
           total={rootsTot}
           stripe="var(--s4)"
           by={roots}
+          tip={
+            'sessions on the node in the last 10 minutes. an agent or editor session counts while its ' +
+            "process tree is running; a person's own shell reports no running tree, so a human session " +
+            '(its login session, else its terminal) counts while a process in it ended in that time.'
+          }
           note={
             <>
-              {procsTot != null ? `${fint(procsTot)} processes` : 'processes not reported'}
+              {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
               {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB resident` : ''}
-              {nowNum(now, ['autonomous_roots']) != null
-                ? ` · ${fint(nowNum(now, ['autonomous_roots']))} with a bypass flag`
-                : ''}
+              {/* Read off the live agent-session roots' own launch argv
+                  (reducers/live.py), the way the window's agent-sessions plate
+                  reads them, not the collector's `autonomous`, which never saw
+                  --permission-mode bypassPermissions. Absent when no root was
+                  seen, so "none seen" never reads as "none bypassed". */}
+              {launchNow ? ` · ${launchNow}` : ''}
             </>
           }
         />
         <Plate
-          k="users on the fleet"
-          total={usersTot}
+          k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
+          total={U?.total ?? null}
           stripe="var(--s5)"
-          by={users}
+          by={usersBy}
           tip={
-            'distinct usernames with a running process, counted separately on ' +
-            'each host and in each class, then added up.\n\n' +
-            'someone logged in to two nodes is counted twice, and someone running ' +
-            'an agent from their own shell is counted in both classes. so this is ' +
-            'the high end of how many people could be on the fleet, not a headcount.'
+            'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +
+            'one person in several classes is one user; the class row counts the users in each.'
           }
+          onClick={scrollToUsers}
+          linkTip="see who, and what each one is running"
           note={
             <>
-              counted per host and per class, so an upper bound
-              <br />
-              {fint(hosts.length)} hosts reporting
-              {liveFeed?.lag_s != null ? ` · newest record ${lagStr(liveFeed.lag_s)} old` : ''}
+              {U ? `${fint(U.with_live_agent)} with an agent running now · ` : ''}
+              <span className="plate-go">see who {'→'}</span>
             </>
           }
         />
       </div>
 
+      <div className="rowlabel">
+        {windowLbl === 'in window' ? 'the window' : <>last <b>{windowLbl}</b></>}
+      </div>
+      <WindowPlates P={P} cls={cls} traj={traj} />
+
       <div className="grid wide">
         <Panel
-          title={`Process exits per minute · last ${windowLbl}`}
+          title={`Processes exited per minute · last ${windowLbl}`}
           span
           live
           feed={liveFeed?.name ?? 'live'}
           empty={!rate.length}
           emptyWhat="the live window holds no bins"
-          header={
-            <span className="pill" data-tip="a bin with no record is drawn as a gap, never as 0">
-              {fint(gaps)} gap bins
-            </span>
-          }
           basis={
             <Basis
               items={[
@@ -313,69 +393,87 @@ export function LiveTab({
             W={1060}
             H={230}
             ymin={0}
-            xticks={xt.length ? xt : undefined}
-            xfmt={(i) => rate[Math.round(i)]?.t ?? ''}
-            ylabel="exits / min"
+            xticks={xticks}
+            xfmt={clockLabel}
+            xtip={fullClock}
+            minSpan={3 * (L?.window?.bin_s ?? 60)}
+            ylabel="exited / min"
             xlabel={`last ${windowLbl}`}
             xname="at"
-            yname="exits/min"
+            yname="exited/min"
           />
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
 
+        <WindowCharts P={P} cls={cls} />
+
+        <ActiveUsers
+          U={U}
+          cls={cls}
+          windowMin={L?.window?.requested_minutes ?? windowMin ?? null}
+          windowLbl={`last ${windowLbl}`}
+          P={P}
+          defaultCols={userCols}
+          pageUsers={who?.users}
+          pageTypes={who?.atypes}
+          openTraj={openTraj}
+          openUserTraj={openUserTraj}
+          goto={goto}
+          events={L?.events}
+          tailDepth={L?.events_tail_depth ?? null}
+          hosts={(L?.hosts ?? []).map((h) => h.host)}
+        />
+
         <Panel
-          title="Login nodes right now"
+          title={`${capFirst(nodeNoun?.trim() || 'login nodes')} right now`}
+          ask={[{ panel: 'live', keys: ['hosts', 'now'] }]}
+          span
           live
           feed={liveFeed?.name ?? 'live'}
           empty={!hosts.length}
           emptyWhat="no host reported in the window"
+          header={
+            <Segmented
+              label="running, by"
+              value={hostBy}
+              onChange={setHostBy}
+              options={[
+                { k: 'class', lbl: 'class', tip: 'running processes split by class: agents, people, and IDEs' },
+                { k: 'type', lbl: 'agent type', tip: 'running processes split by the agent or editor they belong to; a person’s own shell has no type' },
+              ]}
+            />
+          }
         >
           <div className="scroller">
             <table>
               <thead>
                 <tr>
-                  <th>host</th>
-                  {HOST_COLS.filter((c) => hosts.some((h) => typeof h[c[0]] === 'number')).map(
-                    (c) => (
-                      <th key={c[0]} className="num">
+                  <SortTh s={hostSort} k="host" first="asc">host</SortTh>
+                  {hostCols.map((c) => (
+                    <Fragment key={c[0]}>
+                      <SortTh s={hostSort} k={c[0]} num gloss={c[3]}>
                         {c[1]}
-                      </th>
-                    ),
-                  )}
-                  <th>by class</th>
+                      </SortTh>
+                      {c[0] === 'procs' && <th className="host-by">{hostBy === 'class' ? 'by class' : 'by agent type'}</th>}
+                    </Fragment>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {hosts.map((h) => {
-                  const bc = hostByClass(h);
                   return (
                     <tr key={h.host}>
                       <td className="mono">{h.host}</td>
-                      {HOST_COLS.filter((c) => hosts.some((x) => typeof x[c[0]] === 'number')).map(
-                        (c) => (
-                          <td key={c[0]} className="num">
-                            {hostCell(h, c[0], c[2])}
-                          </td>
-                        ),
-                      )}
-                      <td>
-                        {bc ? (
-                          <span className="rle">
-                            {cls.map((c, i) => (
-                              <span key={c}>
-                                {i ? <span className="sep">{' · '}</span> : null}
-                                <i
-                                  className="dot"
-                                  style={{ background: CLS_COL[c], marginRight: 4 }}
-                                />
-                                <b>{c in bc ? fint(bc[c]) : DASH}</b>
-                              </span>
-                            ))}
-                          </span>
-                        ) : (
-                          <span className="nm">not reported per class</span>
-                        )}
-                      </td>
+                      {hostCols.map((c) => (
+                        <Fragment key={c[0]}>
+                          <td className="num">{hostCell(h, c[0], c[2])}</td>
+                          {c[0] === 'procs' && (
+                            <td className="host-by">
+                              <HostBreakdown h={h} cls={cls} by={hostBy} />
+                            </td>
+                          )}
+                        </Fragment>
+                      ))}
                     </tr>
                   );
                 })}
@@ -384,76 +482,8 @@ export function LiveTab({
           </div>
         </Panel>
 
-        <Panel
-          title="Recent sbatch / salloc"
-          live
-          feed={liveFeed?.name ?? 'live'}
-          empty={!submits.length}
-          emptyWhat="no submission in the window"
-        >
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <th>at</th>
-                  <th>user</th>
-                  <th>product</th>
-                  <th>tool</th>
-                  <th className="num">job</th>
-                  <th>partition</th>
-                  <th className="num">gpu</th>
-                  <th>array</th>
-                </tr>
-              </thead>
-              <tbody>
-                {submits.map((r, i) => (
-                  <tr key={`${r.job_id ?? ''}-${i}`}>
-                    <td className="mono" style={{ color: 'var(--muted)' }}>
-                      {r.ts ?? DASH}
-                    </td>
-                    <td className="mono">{r.user ?? DASH}</td>
-                    <td className="mono" style={{ fontSize: '10.5px' }}>
-                      {r.agent_type ?? DASH}
-                    </td>
-                    <td className="mono">{r.tool ?? DASH}</td>
-                    <td className="num">{r.job_id ?? DASH}</td>
-                    <td className="mono">{r.partition ?? DASH}</td>
-                    <td className="num">{r.gpus ?? DASH}</td>
-                    <td className="mono">{r.array ?? DASH}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
 
-        <Panel
-          title="Process exit stream"
-          span
-          live
-          feed={liveFeed?.name ?? 'live'}
-          empty={!events.length}
-          emptyWhat={
-            (L?.events?.length ?? 0) > 0
-              ? 'no event in the window matches the class filter'
-              : 'the bounded tail is empty'
-          }
-          header={
-            <>
-              <span className="pill">
-                {fint(events.length)} of {fint(L?.events?.length ?? 0)} buffered
-              </span>
-              <button className="btn" onClick={() => goto('risk')} data-tip="filter and export the full day-files">
-                search & export {'→'}
-              </button>
-            </>
-          }
-        >
-          <div className="stream">
-            <EventTable rows={events} />
-          </div>
-          <Legend items={purposeLegend()} />
-        </Panel>
+
       </div>
     </>
   );
@@ -464,24 +494,76 @@ export function LiveTab({
  * reserved for agent identity, so purpose owns the colour here. */
 export function EventTable({ rows }: { rows: LiveEvent[] }) {
   if (!rows.length) return <NoRows />;
+  const failed = (e: LiveEvent) => e.signal != null || (e.exit_code != null && e.exit_code !== 0);
+  return (
+    <ByUser
+      rows={rows}
+      user={(e) => e.user}
+      noun="process"
+      // both callers hold it in a `.stream`, which is already the scroll box
+      scroll={false}
+      cols={[
+        {
+          h: 'class',
+          cell: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3),
+          sort: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3),
+        },
+        {
+          h: 'commands',
+          cell: (rs) => <span className="mono">{distinct(rs, (e) => e.comm ?? e.tool, 4)}</span>,
+          sort: (rs) => distinct(rs, (e) => e.comm ?? e.tool, 4),
+        },
+        {
+          h: 'CPU',
+          num: true,
+          cell: (rs) => dur(rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0)),
+          sort: (rs) => rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0),
+        },
+        {
+          h: 'failed',
+          num: true,
+          tip: 'exited non-zero or on a signal',
+          cell: (rs) => (rs.some(failed) ? fint(rs.filter(failed).length) : DASH),
+          sort: (rs) => rs.filter(failed).length,
+        },
+        {
+          h: 'latest',
+          cell: (rs) => <span className="mono nm">{rs.map((e) => e.ts ?? '').sort().pop() || DASH}</span>,
+          sort: (rs) => rs.map((e) => e.ts ?? '').sort().pop() || null,
+        },
+      ]}
+      sub={(rs, withUser) => <EventRows rows={rs} withUser={withUser} />}
+    />
+  );
+}
+
+type EvKey = 'at' | 'user' | 'class' | 'pid' | 'host' | 'depth' | 'cmd' | 'ran' | 'cpu' | 'exit';
+const evVal = (e: LiveEvent, k: EvKey) =>
+  k === 'at' ? e.epoch ?? e.ts : k === 'user' ? e.user : k === 'class' ? e.actor3 : k === 'pid' ? e.pid : k === 'host' ? e.host
+  : k === 'depth' ? e.depth : k === 'cmd' ? e.comm ?? e.tool : k === 'ran' ? e.duration_s : k === 'cpu' ? e.cpu_s
+  : e.signal != null ? 1000 + e.signal : e.exit_code;
+
+/** One user's processes, as rows; every user's, with a user column. */
+function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }) {
+  const s = useSort<EvKey>('at');
   return (
     <table>
       <thead>
         <tr>
-          <th>at</th>
-          <th>class</th>
-          <th>user</th>
-          <th className="num">pid</th>
-          <th>host</th>
-          <th className="num">d</th>
-          <th>command</th>
-          <th className="num">ran</th>
-          <th className="num">cpu</th>
-          <th className="num">exit</th>
+          <SortTh s={s} k="at">at</SortTh>
+          {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
+          <SortTh s={s} k="class" first="asc">class</SortTh>
+          <SortTh s={s} k="pid" num>pid</SortTh>
+          <SortTh s={s} k="host" first="asc">host</SortTh>
+          <SortTh s={s} k="depth" num tip={DEPTH_TIP}>tree depth</SortTh>
+          <SortTh s={s} k="cmd" first="asc">command</SortTh>
+          <SortTh s={s} k="ran" num>ran</SortTh>
+          <SortTh s={s} k="cpu" num>cpu</SortTh>
+          <SortTh s={s} k="exit" num>exit</SortTh>
         </tr>
       </thead>
       <tbody>
-        {rows.map((e, i) => {
+        {s.sort(rows, evVal).map((e, i) => {
           const comm = e.comm ?? e.tool ?? '';
           const args = e.args ?? '';
           const tail = args.startsWith(comm) ? args.slice(comm.length) : args ? ' ' + args : '';
@@ -490,32 +572,29 @@ export function EventTable({ rows }: { rows: LiveEvent[] }) {
               <td className="mono" style={{ color: 'var(--muted)' }}>
                 {e.ts ?? DASH}
               </td>
+              {withUser && <td className="mono">{e.user ?? DASH}</td>}
               <td
-                className="mono"
-                style={{ fontSize: '10px', color: 'var(--muted)' }}
-                data-tip={`${CLS_LBL[e.actor3 ?? ''] ?? e.actor3 ?? 'unlabeled'}${
-                  e.agent_type ? ' · ' + e.agent_type : ''
-                }`}
+                style={{ color: CLS_COL[e.actor3 ?? ''] ?? 'var(--muted)' }}
+                data-tip={e.agent_type ? `agent type: ${e.agent_type}` : undefined}
               >
-                {CLS_ABBR[e.actor3 ?? ''] ?? '?'}
+                {CLS_LBL[e.actor3 ?? ''] ?? e.actor3 ?? 'unlabeled'}
               </td>
-              <td className="mono">{e.user ?? DASH}</td>
               <td
                 className="num mono"
                 style={{ fontSize: '10.5px' }}
-                data-tip={
-                  e.ppid != null
-                    ? `ppid ${e.ppid}${e.session_key ? ' \u00b7 ' + e.session_key : ''}`
-                    : e.session_key ?? undefined
-                }
+                data-tip={e.ppid != null ? `parent pid ${e.ppid}` : undefined}
               >
                 {e.pid ?? DASH}
               </td>
               <td className="mono" style={{ color: 'var(--muted)' }}>
                 {(e.host ?? '').replace('login', '') || DASH}
               </td>
-              <td className="num">{e.depth == null ? DASH : 'd' + e.depth}</td>
-              <td className="arg" data-tip={e.purpose ? plbl(e.purpose) : undefined}>
+              <td className="num" data-tip={DEPTH_TIP}>
+                {depthLabel(e.depth)}
+              </td>
+              {/* the cell is cut to one line, so the hover shows the whole
+                  command (masked as served) and nothing else */}
+              <td className="arg" data-tip={args || comm || undefined} data-tip-wide>
                 <span className="cmd" style={{ color: pcol(e.purpose) }}>
                   {comm || DASH}
                 </span>

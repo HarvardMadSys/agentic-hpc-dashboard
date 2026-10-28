@@ -157,6 +157,16 @@ once the map fills. Now reported as `residency_totals.conn_unmatched_births`.
 | `peak_rss_mb` (per-mm high-water) | **`signal->maxrss`** — the **thread-group** high-water mark, i.e. `ru_maxrss`'s source | Changed meaning, and a bug fix. The old read was `mm->hiwater_rss`, but the kernel runs `exit_mm()` — which sets `tsk->mm = NULL` — *before* `sched_process_exit` fires, so the guard never passed and the field was **`0.0` on every record ever emitted**, not null. For a single-threaded process the two agree exactly (verified against `getrusage`/`time -v`: 309.75 MB both ways); for a multi-threaded one the new value is the group peak, which is the more useful number but **is not the same quantity**. Any pre-fix capture's `peak_rss_mb` is a constant zero and must be discarded, not averaged |
 | intra-life RSS/CPU trajectory | lost for exited processes | `peak_rss_mb` (`signal->maxrss`) and total `cpu_s` survive and are *more* accurate; the shape between exec and exit is gone |
 
+## 8b. Schema 8: fields whose meaning changed
+
+| Field | Schema 7 | Schema 8 | Consequence |
+|---|---|---|---|
+| `cpu_s`, `sched_run_s`, `min_flt`/`maj_flt`, `nvcsw`/`nivcsw`, `sched_wait_s`, `*_wait_s`, `dstate_*`, `io`, `threads`, `peak_rss_mb` | the group leader's, plus threads already released into `signal_struct` | every thread's, with `thread_acc` (`meta.counters_scope`) | multi-threaded processes were undercounted by up to 99.8%; do not compare across the boundary |
+| `args`, `captured_tail` | raw | credentials and agent prompts masked; `args_redacted` says what | `args_len`/`args_truncated` still describe the raw argv |
+| `net_*_bytes`, `net_endpoints` | included the NFS client's RPCs | kernel sockets excluded, counted per node in `netpeer_kernel` | lower for NFS-heavy processes |
+| `cgroup` | inherited at fork when the id lookup missed, which on 4.18 was always | from file-handle ids, else `/proc` | `/init.scope` on user processes was an artefact |
+| `ppid` (fork) | the forking thread | the forking process, kept across reparenting | children of worker threads and of `nohup` keep their ancestry |
+
 Counts are **not comparable across the cutover**: the poller was CPU-quota-bound at
 1.84–3.18 Hz with a measured 0.78 s capture floor, and the eBPF tier has no floor, so it
 sees strictly more — and asymmetrically, since agents spawn proportionally more

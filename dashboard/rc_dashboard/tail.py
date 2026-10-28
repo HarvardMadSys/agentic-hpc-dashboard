@@ -35,7 +35,8 @@ import heapq
 import json
 import os
 
-from .export import iter_lines_reverse, seek_to_epoch
+from . import gz, fastjson
+from .export import dated_dirs, feed_files, iter_lines_reverse, seek_to_epoch
 from .normalize import epoch_of
 
 # The most one poll reads from one file.  A tail that has fallen behind -- or a
@@ -93,12 +94,12 @@ class FileTailSource(IngestSource):
         plan = []
         for p in self.files():
             try:
-                fh = open(p, "rb")
+                fh = gz.open_feed(p)
             except OSError:
                 continue
             with fh:
                 try:
-                    st = os.fstat(fh.fileno())
+                    st = gz.fstat(fh)
                     end = complete_end(fh, st.st_size)
                     start = end if since is None else seek_to_epoch(fh, since, end)
                 except OSError:
@@ -112,24 +113,20 @@ class FileTailSource(IngestSource):
     def files(self):
         out = []
         for root in self.roots:
-            if not os.path.isdir(root):
-                continue
-            dates = sorted(d for d in os.listdir(root)
-                           if d.startswith("20") and os.path.isdir(os.path.join(root, d)))
-            for d in dates[-self.days:]:
-                out += sorted(glob.glob(os.path.join(root, d, "*.jsonl")))
-            out += sorted(glob.glob(os.path.join(root, "*.jsonl")))[-self.days:]
+            for _d, files in dated_dirs(root, self.days):
+                out += files
+            out += feed_files(root)[-self.days:]
         return sorted(set(out))
 
     # ------------------------------------------------------------------- read
     def _read_one(self, path):
         try:
-            fh = open(path, "rb")
+            fh = gz.open_feed(path)
         except OSError:
             return
         with fh:
             try:
-                st = os.fstat(fh.fileno())
+                st = gz.fstat(fh)
             except OSError:
                 return
             rec = self.state.get(path)
@@ -158,11 +155,11 @@ class FileTailSource(IngestSource):
             if not line.strip():
                 continue
             try:
-                yield json.loads(line)
+                yield fastjson.loads(line)
             except ValueError:
                 self.stats["parse_errors"] += 1
 
-        st2 = os.stat(path)
+        st2 = gz.stat(path)
         self._remember(path, st2, offset + consumed, self.state.get(path))
 
     def _remember(self, path, st, offset, prev):
@@ -201,7 +198,7 @@ def _read_back_one(entry, stats):
                                    end=entry["end"]):
         stats["bytes"] += len(line) + 1
         try:
-            raw = json.loads(line)
+            raw = fastjson.loads(line)
         except ValueError:
             stats["parse_errors"] += 1
             continue

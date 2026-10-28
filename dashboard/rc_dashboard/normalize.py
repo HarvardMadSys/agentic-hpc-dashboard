@@ -1,6 +1,6 @@
 """Turn a raw collector record into the shape the reducers consume.
 
-The contract is SCHEMA_VERSION 7.  A thin shim keeps the pre-v4 capture usable as
+The contract is SCHEMA_VERSION 8.  A thin shim keeps the pre-v4 capture usable as
 an offline test input, but the shim's job is to make older records *honest*, not
 to pretend they are current: a field the old collector could not measure must
 arrive as None, never as 0.
@@ -22,6 +22,19 @@ record has. It also widens `net_tx_bytes` and
 a 6/7 boundary those totals are not like for like, and `schema_versions` again is
 what shows the boundary is there.
 
+Schema 8 renames nothing this module reads, but changes what a session is (it
+also masks credentials and agent prompts in `args`). Through 7, every process
+whose own argv the classifier tagged was its own agent root, so Claude Code's shell
+for each Bash tool call, its Grep re-exec, a Codex sandbox and a `--version` probe
+each had `is_agent` true, `depth` 0, and its own `agent_pid`, `session_key` and
+`session_uuid`: one session per tool call. From 8, inside an agent tree only an
+agent runtime is a root (the collector's `agent_role()`). Every other tagged process
+carries its parent's tree, at `depth` + 1, and its tree's `agent_type`, so its
+`actor3` can change too. Outside any tree a tagged process is still its own root.
+`tree_root_pid` and `actor` do not change. Nothing here branches on the version: a
+v8 key is already a session, and a capture that spans 7 and 8 mixes the two grains,
+which `schema_versions` makes visible.
+
 Three rules this module exists to enforce:
 
 1. `actor3` is derived, never approximated.  `r.get("actor3") or r.get("actor")`
@@ -36,12 +49,21 @@ Three rules this module exists to enforce:
    counted, rather than averaged in as a real zero.
 
 3. `sandbox` and `approval_mode` are separate axes.  Schema 5 carries both; for
-   an older record they are simply unknown.  `sandbox` in particular has FOUR
-   states, because "could not read" (ptrace-gated for other users when the
-   collector is unprivileged) must not be reported as "unsandboxed" -- that would
-   deflate the sandbox rate for every user except the collector's owner, a
-   systematic bias that reads like a finding.
+   an older record they are simply unknown.  `sandbox` means NAMESPACE ISOLATION
+   (the collector's /proc/<pid>/ns/* against pid 1's) and has FOUR states,
+   because "could not read" must not be reported as "unsandboxed".  The ebpf tier
+   runs as root, so that state is not ptrace-gating: across 2026-09-21..25 every
+   one of 163 such records lived under 6 ms -- the process had exited before the
+   read.  It is still not "not isolated", and it is labelled "exited before read".
+
+4. Approval is a property of the agent SESSION, read off the argv of the
+   process that runs it.  Only a process whose role (roles.py) is `agent` gets a
+   verdict; a tool shell, a probe or an IDE helper is `na`, and an untagged child
+   is `unknown` -- its session's verdict lives on the session root's record.
+   Labelling every tagged process "supervised" made 9,341 of 9,370 "agent trees"
+   on rtx6000a supervised `codex --version` polls.
 """
+import functools
 import os
 import re
 import sys
@@ -114,7 +136,20 @@ SELF_OBSERVATION = re.compile(
 IDENTITY_EVENTS = ("exit", "truncated", "residency", "conn", "netio", "submit")
 
 SANDBOX_STATES = ("sandboxed", "unsandboxed", "denied", "unknown")
-APPROVAL_STATES = ("supervised", "bypassed", "unknown")
+# The keys are what /api/events and /api/export filter on, so a key keeps its
+# meaning and only its label moves: `supervised` is shown as "no bypass flag at
+# launch", because that is all argv can say -- ~/.claude/settings.json, a
+# `--settings` file, codex's config.toml and a mid-session mode switch are all
+# invisible to it.
+#   bypassed      a bypass flag at launch
+#   auto          `--permission-mode auto`: approvals made by a classifier, not
+#                 by a human and not skipped -- neither of the other two
+#   supervised    an agent launched with no bypass flag
+#   unobservable  `codex app-server`: the policy arrives per thread over JSON-RPC
+#   na            tagged, but not an agent session (tool shell, probe, IDE, ...)
+#                 or not an agent at all
+#   unknown       an agent-tree record whose session verdict is on its root
+APPROVAL_STATES = ("bypassed", "auto", "supervised", "unobservable", "na", "unknown")
 
 
 # ------------------------------------------------------------ optional repo libs
@@ -150,14 +185,89 @@ def _load_helpers():
         eff = lambda comm, args: comm                                    # noqa: E731
     if actor3 is None:
         actor3 = _fallback_actor3
-    if autonomous is None:
-        autonomous = lambda a: bool(a and _AUTONOMOUS.search(a))         # noqa: E731
+    # `autonomous` is ALWAYS the approval reading, whatever agent_lib offers: the
+    # collector's own `is_autonomous` lacks `--permission-mode bypassPermissions`,
+    # the only bypass on rtx6000a, so `"autonomous": true` occurs 0 times in 28
+    # days of records that carry `approval_mode: "bypassed"` 30k times.
+    autonomous = lambda a: bypass_flag_of(a) is not None                  # noqa: E731
     if purpose_of is None:
         purpose_of = lambda c: _BUILTIN_PURPOSE.get(c or "", "other")    # noqa: E731
     return eff, actor3, autonomous, shell_comms, purpose_of, purpose_src, purposes
 
 
-_REAL_AGENTS = frozenset({"claude_code", "codex", "cursor", "copilot", "windsurf"})
+_REAL_AGENTS = frozenset({"claude_code", "codex", "copilot"})
+
+# The IDE class: an editor a person drives, whatever AI features it carries.
+# The collector tags the VS Code, Cursor and Windsurf remote-server trees by
+# agent type, but it counts Cursor and Windsurf as `agent`, and it calls the VS
+# Code class `human-vscode`. Both are settled here, once, so every reader sees
+# one class under one name. An agent CLI started in an IDE's terminal (Claude
+# Code, Codex) is tagged by its own agent type, so it stays `agent`.
+IDE = "ide"
+IDE_AGENT_TYPES = frozenset({"vscode", "cursor", "windsurf"})
+LEGACY_CLASS = {"human-vscode": IDE}
+# Other editors' remote servers, which the collector does not tag. Recognised
+# only by the process's OWN executable path -- a person typing
+# `ls ~/.zed_server` is not an IDE -- so their child processes stay `human`.
+_OTHER_IDE = re.compile(
+    r"^\S*?(?:/\.(?:vscode|vscodium|cursor|windsurf|positron|trae|kiro)-server/"
+    r"|/remote-dev-server(?:\.sh)?(?:\s|$)|/JetBrains/RemoteDev/|/\.zed_server/|/code-server/)")
+
+
+# Per-process waits, each bounded by the process's own lifetime.
+WAIT_FIELDS = ("blkio_wait_s", "swapin_wait_s", "freepages_wait_s", "dstate_wait_s",
+               "sched_wait_s")
+WAIT_SLACK_S = 1.0               # clock granularity between the two readings
+MAX_WAIT_NO_DUR_S = 7 * 86400    # no duration: nothing waits longer than a week
+
+
+def canonical_class(c):
+    """A class name as this dashboard spells it (`human-vscode` is `ide`)."""
+    return LEGACY_CLASS.get(c, c)
+
+
+def ide_class(a3, agent_type, args):
+    """`a3` with every IDE process moved into the IDE class."""
+    if agent_type in IDE_AGENT_TYPES:
+        return IDE
+    a3 = canonical_class(a3)
+    if a3 == "human" and args and _OTHER_IDE.search(args):
+        return IDE
+    return a3
+
+
+# The IDEs the collector counts in its `agent` totals rather than as a class.
+_AGENT_COUNTED_IDES = IDE_AGENT_TYPES - {"vscode"}
+_TICK_SUMS = ("n_procs", "threads", "rss_mb", "d_state")
+
+
+def class_totals(by_actor3, by_agent_type):
+    """A residency tick's per-class totals, under this dashboard's classes.
+
+    `human-vscode` becomes `ide`, and the Cursor and Windsurf processes the
+    collector folded into `agent` are moved across using its per-agent-type
+    breakdown, for every count that adds up. Users do not -- one person can run
+    both -- so the agent user count is left as the upper bound it already was.
+    """
+    out = {}
+    for cls, d in (by_actor3 or {}).items():
+        tgt = out.setdefault(canonical_class(cls), {})
+        for k, v in (d or {}).items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                tgt[k] = tgt.get(k, 0) + v
+            else:
+                tgt.setdefault(k, v)
+    for at in _AGENT_COUNTED_IDES & set(by_agent_type or {}):
+        d = by_agent_type[at] or {}
+        agent, ide = out.setdefault("agent", {}), out.setdefault(IDE, {})
+        for k in _TICK_SUMS + ("users",):
+            v = d.get(k)
+            if not isinstance(v, (int, float)) or not v:
+                continue
+            ide[k] = (ide.get(k) or 0) + v
+            if k != "users":
+                agent[k] = max(0, (agent.get(k) or 0) - v)
+    return out
 
 
 def _fallback_actor3(actor, agent_type):
@@ -165,25 +275,48 @@ def _fallback_actor3(actor, agent_type):
     if actor == "agent":
         if agent_type in _REAL_AGENTS or agent_type == "bwrap":
             return "agent"
-        if agent_type == "vscode":
-            return "human-vscode"
+        if agent_type in IDE_AGENT_TYPES:
+            return IDE
         return "human"
     return actor
 
 
-_AUTONOMOUS = re.compile(
-    r"--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox"
-    r"|danger-full-access|--ask-for-approval\s+never|--yolo|--sandbox\s+danger", re.I)
+# Launch flags, matched as whole argv tokens (`--x v` or `--x=v`) and only ever
+# against the argv of a process whose role is `agent`. A substring anywhere in
+# any argv made a tool call that merely greps for `danger-full-access` a bypass.
+_TOK = r"(?:^|\s)"
+_END = r"(?=\s|$)"
+_BYPASS = re.compile(
+    _TOK + r"(--dangerously-skip-permissions)" + _END
+    + r"|" + _TOK + r"(--dangerously-bypass-approvals-and-sandbox)" + _END
+    + r"|" + _TOK + r"(--yolo)" + _END
+    + r"|" + _TOK + r"(--permission-mode[ =]bypassPermissions)" + _END
+    + r"|" + _TOK + r"((?:--ask-for-approval|-a)[ =]never)" + _END
+    + r"|(approval_policy\W{0,3}=\W{0,3}never)"
+    + r"|" + _TOK + r"((?:--sandbox|-s)[ =]danger-full-access)" + _END
+    + r"|(sandbox_mode\W{0,3}=\W{0,3}danger-full-access)", re.I)
+_PERMISSION_MODE = re.compile(_TOK + r"--permission-mode[ =]([A-Za-z]+)" + _END)
+_MAY_BYPASS = re.compile(_TOK + r"--allow-dangerously-skip-permissions" + _END)
+_APP_SERVER = re.compile(_TOK + r"app-server" + _END)
+# What an older record's argv says about a sandbox it ASKED for. Intent is not
+# outcome: on rtx6000a all 612 `codex-linux-sandbox` runs exited 1 with no
+# payload, so "asked for a sandbox" must never be read as "was isolated".
+_SANDBOX_INTENT = re.compile(
+    r"codex-linux-sandbox|CURSOR_SANDBOX|--dangerously-bypass-approvals-and-sandbox"
+    r"|" + _TOK + r"(?:--sandbox|-s)[ =](?:read-only|workspace-write|danger-full-access)"
+    + _END + r"|sandbox_mode\W{0,3}=", re.I)
 
-# Approval and sandbox are different questions; the old single regex mixed them.
-_APPROVAL_ONLY = re.compile(
-    r"--dangerously-skip-permissions|--ask-for-approval\s+never|--yolo"
-    r"|--permission-mode\s+bypassPermissions", re.I)
-_BYPASS_BOTH = re.compile(
-    r"--dangerously-bypass-approvals-and-sandbox|--sandbox\s+danger-full-access"
-    r"|--sandbox\s+danger|danger-full-access", re.I)
-_SANDBOX_ON = re.compile(
-    r"codex-linux-sandbox|CURSOR_SANDBOX|--sandbox\s+(?:read-only|workspace-write)", re.I)
+
+@functools.lru_cache(maxsize=16384)
+def bypass_flag_of(args):
+    """The bypass flag on an agent's command line, as written, or None.
+
+    Cached: an agent's own command line recurs on every process it spawns that
+    inherits it, and this is the most expensive pattern the normaliser runs."""
+    m = _BYPASS.search(args or "")
+    if m is None:
+        return None
+    return next(g for g in m.groups() if g).strip()
 
 _BUILTIN_PURPOSE = {}
 for _p, _cs in {
@@ -233,14 +366,20 @@ def session_key_of(rec):
     return "usr", rec.get("user") or "?"
 
 
-def sandbox_of(rec, sv):
+def sandbox_of(rec, sv, role=None):
     """(state, source).  Four states -- `denied` is NOT `unsandboxed`.
 
     Schema 5 decides this in the collector by comparing /proc/<pid>/ns/* against
-    pid 1's.  Seccomp and capabilities are deliberately NOT part of the verdict
-    (they live in sandbox_detail): every Electron renderer is seccomp-filtered
-    and `human-vscode` is a first-class class here, and an unprivileged process
-    has CapEff=0 by definition.  For an older record we simply do not know.
+    pid 1's: it is NAMESPACE ISOLATION and nothing else.  Seccomp and
+    capabilities are deliberately NOT part of the verdict (they live in
+    sandbox_detail) -- systemd's SystemCallFilter= puts a filter on ordinary
+    daemons -- and Landlock has no /proc exposure at all, so a Landlock- or
+    seccomp-only sandbox reads as not isolated, while a container, an apptainer
+    user namespace or a PrivateTmp= unit reads as isolated.
+
+    For an older record we do not know.  Its argv can say a sandbox was ASKED
+    for (or turned off), and that is kept as the source `argv-intent` of an
+    `unknown` -- never as a verdict -- and only for the agent's own argv.
     """
     if sv >= 5 and "sandbox" in rec:
         v = rec.get("sandbox")
@@ -248,25 +387,50 @@ def sandbox_of(rec, sv):
         if v in ("sandboxed", "unsandboxed"):
             return v, src
         return ("denied" if src == "denied" else "unknown"), src
-    args = rec.get("args") or ""
-    if _BYPASS_BOTH.search(args):
-        return "unsandboxed", "argv"
-    if _SANDBOX_ON.search(args):
-        return "sandboxed", "argv"
+    if role == "agent" and _SANDBOX_INTENT.search(rec.get("args") or ""):
+        return "unknown", "argv-intent"
     return "unknown", None
 
 
-def approval_of(rec, sv, is_autonomous):
-    """(state, source).  Independent of sandbox: an agent can be confined AND
-    unattended, which is the common Codex configuration."""
-    if sv >= 5 and rec.get("approval_mode"):
-        return rec["approval_mode"], rec.get("approval_src") or "argv"
-    args = rec.get("args") or ""
-    if _BYPASS_BOTH.search(args) or _APPROVAL_ONLY.search(args):
-        return "bypassed", "argv"
-    if rec.get("is_agent"):
-        return "supervised", "argv"
-    return "unknown", None
+def approval_of(rec, role, a3=None):
+    """(state, source, detail) -- see APPROVAL_STATES.
+
+    Only the session's own process (role `agent`) carries a verdict.  The
+    collector's `approval_mode` is taken as well as this module's reading: it
+    classified the UNCAPPED argv, and the emitted one may be cut.  `detail` is
+    the launch mode as written, so the panel can show what "no bypass flag"
+    covers (`permission-mode=default`, `=acceptEdits`, nothing at all ...).
+    """
+    # An IDE's own processes are never a session, even where roles.py calls one
+    # `agent` (a Cursor or Windsurf tree, which the collector counts as an agent
+    # but the dashboard files under `ide`).
+    if role == "agent" and a3 not in ("ide", "human"):
+        args = rec.get("args") or ""
+        flag = bypass_flag_of(args)
+        pm = _PERMISSION_MODE.search(args)
+        app = rec.get("agent_type") == "codex" and _APP_SERVER.search(args) is not None
+        parts = []
+        if flag:
+            parts.append(flag.replace(" ", "=").replace("\"", "").replace("'", ""))
+        elif pm:
+            parts.append("permission-mode=" + pm.group(1))
+        if app:
+            parts.append("app-server")
+        if _MAY_BYPASS.search(args):
+            parts.append("may-switch-to-bypass")
+        detail = " ".join(parts) or "no launch flag"
+        if flag or rec.get("approval_mode") == "bypassed":
+            return "bypassed", rec.get("approval_src") or "argv", detail
+        if pm and pm.group(1).lower() == "auto":
+            return "auto", "argv", detail
+        if app:
+            return "unobservable", None, detail
+        return "supervised", "argv", detail
+    if role is not None:
+        return "na", None, None
+    if a3 in ("human", "ide"):
+        return "na", None, None
+    return "unknown", None, None
 
 
 class Normalizer:
@@ -283,9 +447,10 @@ class Normalizer:
         self.stats = {
             "schema_versions": {}, "excluded_pre_v4": {}, "dropped_users": 0,
             "parse_errors": 0, "records": 0, "skew_dropped": 0,
-            "dropped_self_observation": 0,
+            "dropped_self_observation": 0, "impossible_wait": {},
             "purpose_src": self.purpose_src,
         }
+        self._selfobs = {}       # argv -> self-observation verdict; a cache
 
     def __call__(self, rec):
         return self.normalize(rec)
@@ -294,7 +459,8 @@ class Normalizer:
         """Returns the record with derived keys added, or None if filtered out.
 
         Derived keys are additive and prefixed `_`, so the raw record is still
-        byte-faithful for the export path.
+        byte-faithful in memory, where the detectors need its argv as written.
+        Credentials are masked on the way OUT, never here (`redact`).
         """
         sv = schema_of(rec)
         s = self.stats
@@ -309,7 +475,12 @@ class Normalizer:
             a3 = rec.get("actor3")           # v4+: authoritative, incl. explicit null
         else:
             a3 = self.actor3(rec.get("actor"), rec.get("agent_type"))
-        a3 = a3 or self.unlabeled
+        a3 = ide_class(a3 or self.unlabeled, rec.get("agent_type"), rec.get("args"))
+        if ev == "residency_totals":
+            rec["_by_class"] = class_totals(rec.get("by_actor3"), rec.get("by_agent_type"))
+            tcp = rec.get("tcp_open_ext_by_actor3")
+            rec["_tcp_by_class"] = (None if tcp is None else
+                                    {canonical_class(k): v for k, v in tcp.items()})
 
         if user and (user in self.drop_global
                      or (a3 == "agent" and user in self.drop_agent)):
@@ -317,7 +488,7 @@ class Normalizer:
             return None
 
         if self.drop_self and ev in ("exit", "truncated"):
-            if SELF_OBSERVATION.search(rec.get("args") or ""):
+            if self._self_observed(rec.get("args") or ""):
                 s["dropped_self_observation"] += 1
                 return None
 
@@ -337,6 +508,7 @@ class Normalizer:
 
         if ev in ("exit", "truncated"):
             self._gate_nulls(rec, sv)
+            self._gate_impossible_waits(rec)
             comm = rec["_command"] or ""
             args = rec.get("args") or ""
             ec = self.effective_comm(comm, args)
@@ -353,11 +525,17 @@ class Normalizer:
             rec["_kt"], rec["_kv"] = kt, kv
             rec["_sid"] = "%s|%s|%s|%s:%s" % (rec.get("host"), (rec.get("ts") or "")[:10],
                                               a3, kt, kv)
-            sb, sbsrc = sandbox_of(rec, sv)
-            ap, apsrc = approval_of(rec, sv, self.is_autonomous)
+            sb, sbsrc = sandbox_of(rec, sv, rec.get("_role"))
             rec["_sandbox"], rec["_sandbox_src"] = sb, sbsrc
-            rec["_approval"], rec["_approval_src"] = ap, apsrc
             rec["_sandbox_ancestry"] = rec.get("sandbox_ancestry")
+        if ev in IDENTITY_EVENTS:
+            # Every identity block, the tick records included: a running
+            # session's root is often only ever seen in its own `conn` records
+            # (a VS Code-launched Claude is not its residency tree's root).
+            ap, apsrc, apdet = approval_of(rec, rec.get("_role"), a3)
+            rec["_approval"], rec["_approval_src"] = ap, apsrc
+            rec["_approval_detail"] = apdet
+            rec["_autonomous"] = ap == "bypassed"
 
         # Time is resolved HERE, once, so no downstream consumer invents one.
         # `ts_epoch` is schema 5; an older record only has the local-naive `ts`
@@ -366,6 +544,40 @@ class Normalizer:
         # fabrication this rewrite exists to remove.
         rec["_ts_epoch"] = epoch_of(rec)
         return rec
+
+    def _self_observed(self, args):
+        """SELF_OBSERVATION, remembered per command line: ~90% of a login node's
+        command lines are repeats, and this ran on every exit."""
+        hit = self._selfobs.get(args)
+        if hit is None:
+            hit = SELF_OBSERVATION.search(args) is not None
+            if len(self._selfobs) >= 50000:
+                self._selfobs.clear()
+            self._selfobs[args] = hit
+        return hit
+
+    def _gate_impossible_waits(self, rec):
+        """A wait longer than the process existed was never measured.
+
+        Seen for real on rtx6000a (kernel 6.17): about one block-I/O delay in
+        150 is the host's UPTIME -- 3,393,948 s on a 1.3 s process -- the
+        kernel adding `now - 0` for a wait whose start it never stamped. Three
+        such records outweighed every real block-I/O wait of the day a million
+        to one. So the value becomes None, like any unmeasured field, and the
+        record is marked so the panels can say how many they set aside.
+        """
+        dur = rec.get("duration_s")
+        limit = dur + WAIT_SLACK_S if isinstance(dur, (int, float)) else MAX_WAIT_NO_DUR_S
+        bad = None
+        for k in WAIT_FIELDS:
+            v = rec.get(k)
+            if isinstance(v, (int, float)) and v > limit:
+                rec[k] = None
+                bad = (bad or []) + [k]
+                ex = self.stats["impossible_wait"]
+                ex[k] = ex.get(k, 0) + 1
+        if bad:
+            rec["_impossible"] = bad
 
     def _gate_nulls(self, rec, sv):
         """A pre-v4 0 in a v4-only slot means 'block absent', not 'measured zero'."""

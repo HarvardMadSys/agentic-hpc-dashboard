@@ -26,6 +26,7 @@ interface Fixture {
   panels: unknown;
   live: { rate: Record<string, number | null>[]; events: Record<string, unknown>[]; [k: string]: unknown };
   trajectories: Record<string, unknown>;
+  trajectory_detail?: Record<string, unknown>;
 }
 
 function load(): Fixture {
@@ -322,6 +323,18 @@ export function mockApi(): Plugin {
             const rank = q.get('rank') || 'events';
             return send({ ...fx.trajectories, rank_by: rank,
                           _window: windowStatus(win.minutes) });
+          }
+          case '/api/trajectory': {
+            // One hand-built tree, served for any session the fixture ranks, so
+            // every row of the dev page opens something.
+            const sid = q.get('sid') || '';
+            const rows = (fx.trajectories as { rows?: Record<string, unknown> }).rows ?? {};
+            const st = windowStatus(win.minutes);
+            if (!fx.trajectory_detail || !(sid in rows)) {
+              return send({ sid, found: false, why: `no session with this id in the ${win.label} window`,
+                            _window: st, window: win });
+            }
+            return send({ ...fx.trajectory_detail, sid, row: rows[sid], _window: st, window: win });
           }
           case '/api/events': {
             const all = filterEvents(freshenLive(fx, win.minutes).events, q);

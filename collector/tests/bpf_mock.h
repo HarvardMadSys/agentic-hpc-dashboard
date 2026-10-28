@@ -85,6 +85,13 @@ static int bpf_probe_read(void *dst, u32 size, const void *src)
         name##_slots[i].used = 0;                                               \
         return 0;                                                               \
     }                                                                           \
+    /* insert(): BPF_NOEXIST -- a key that is already there is refused */      \
+    static int name##_insert(const void *k, const void *v)                      \
+    {                                                                           \
+        if (name##_find(k) >= 0)                                                \
+            return -17;                                                         \
+        return name##_update(k, v);                                             \
+    }                                                                           \
     static int name##_count(void)                                               \
     {                                                                           \
         int n = 0;                                                              \
@@ -96,7 +103,8 @@ static int bpf_probe_read(void *dst, u32 size, const void *src)
         vt *(*lookup)(const void *);                                            \
         int (*update)(const void *, const void *);                              \
         int (*delete)(const void *);                                            \
-    } name = { name##_lookup, name##_update, name##_delete }
+        int (*insert)(const void *, const void *);                              \
+    } name = { name##_lookup, name##_update, name##_delete, name##_insert }
 
 #define BPF_ARRAY(name, vt, sz)                                                 \
     static vt name##_vals[sz];                                                  \
@@ -107,10 +115,25 @@ static int bpf_probe_read(void *dst, u32 size, const void *src)
     }                                                                           \
     static struct { vt *(*lookup)(const void *); } name = { name##_lookup }
 
-static int mock_perf_submit(void *ctx, void *data, u32 size)
+/* Every perf_submit, kept (first 64 bytes) so a test can read what was sent. */
+#define MOCK_PERF_MAX 4096
+static struct { const char *map; u32 size; unsigned char data[64]; } mock_perf[MOCK_PERF_MAX];
+static int mock_nperf;
+
+static int mock_perf_record(const char *map, void *data, u32 size)
 {
-    (void)ctx; (void)data; (void)size;
+    if (mock_nperf < MOCK_PERF_MAX) {
+        mock_perf[mock_nperf].map = map;
+        mock_perf[mock_nperf].size = size;
+        memcpy(mock_perf[mock_nperf].data, data, size < 64 ? size : 64);
+        mock_nperf++;
+    }
     return 0;
 }
 #define BPF_PERF_OUTPUT(name)                                                   \
-    static struct { int (*perf_submit)(void *, void *, u32); } name = { mock_perf_submit }
+    static int name##_perf_submit(void *ctx, void *data, u32 size)              \
+    {                                                                           \
+        (void)ctx;                                                              \
+        return mock_perf_record(#name, data, size);                             \
+    }                                                                           \
+    static struct { int (*perf_submit)(void *, void *, u32); } name = { name##_perf_submit }

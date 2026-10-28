@@ -1,4 +1,4 @@
-"""Cascade and drift tests: which agents started which, and how far each wandered.
+"""Agent tree tests: which agents started which, and which are whose subagents.
 
 The shapes are the ones madsys-gpu1 actually shows (2026-09-20 .. 10-07): no
 `claude -p` or `codex exec` from a tool call in two weeks, but Remote Control
@@ -17,6 +17,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
+from test_sandbox import CODEX_APP, codex_failed_call, root_tick     # noqa: E402
 
 PROJ = HOME + "/proj"
 
@@ -91,6 +92,22 @@ class CascadeTest(unittest.TestCase):
         self.assertTrue(t["root"]["frontend"])
         self.assertEqual(p["cascades"]["summary"]["nested"], 0)
         self.assertEqual(p["cascades"]["summary"]["hosted"], 0)
+
+    def test_a_node_launcher_is_a_front_end_not_an_agent_with_a_subagent(self):
+        # npm's `codex` is a node script that execs the native binary (rtx6000a)
+        t0 = self.t0
+        native = ("/usr/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64"
+                  "/vendor/x86_64-unknown-linux-musl/codex/codex")
+        recs = [
+            rec("exit", t0 + 9, 100, 50, "node", "node /usr/local/bin/codex", agent_pid=100,
+                tree_root=100, is_agent=True, agent_type="codex"),
+            rec("exit", t0 + 8, 110, 100, "codex", native, agent_pid=110, tree_root=100,
+                is_agent=True, agent_type="codex"),
+        ]
+        p = reduce(recs)
+        t = tree_of(p, 100)
+        self.assertEqual((t["root"]["role"], t["root"]["frontend"]), ("client", True))
+        self.assertEqual((t["agent_depth"], p["cascades"]["summary"]["nested"]), (1, 0))
 
     def test_infrastructure_with_no_agent_below_is_counted_not_listed(self):
         t0 = self.t0
@@ -295,11 +312,105 @@ class DriftTest(unittest.TestCase):
         d, _ = self.drift(self.session([("git", PROJ)] * 10 + [("make", PROJ)] * 10))
         self.assertIsNone(d["mix_jsd"])
 
-    def test_the_cascade_node_carries_its_sessions_drift(self):
+    def test_the_agent_node_carries_its_session_and_home_but_no_drift(self):
+        # drift is the trajectory rows' reading; the Agents page shows where an
+        # agent worked instead (workspace.py), so its nodes carry the home
         _, p = self.drift(self.session([("git", PROJ), ("ls", "/scratch/other")]))
         n = node(tree_of(p, 100), 100)
-        self.assertEqual(n["drift"]["cwd_outside_pct"], 50.0)
+        self.assertNotIn("drift", n)
+        self.assertEqual((n["home"], n["home_src"]), (PROJ, "agent"))
         self.assertEqual(n["tool_calls"], 2)
+        self.assertEqual(n["workspace"]["dirs"], 2)
+        self.assertEqual(n["workspace"]["inside_pct"], 50.0)
+
+
+
+class PickTest(unittest.TestCase):
+    """A tree bigger than what is sent: its shape, then each parent's busiest
+    agents in turn, and what the rest did counted on their parent."""
+
+    @staticmethod
+    def agent(pid, parent, calls, fanout=0, outside=0, level=2):
+        return {"pid": pid, "parent": parent, "role": "agent", "fanout": fanout,
+                "tool_calls": calls, "cpu_s": calls / 100, "agent_level": level,
+                "workspace": {"outside_writes": outside}}
+
+    def tree(self):
+        from rc_dashboard.reducers.cascades import _pick
+        root = {"pid": 1, "parent": None, "role": "client", "fanout": 1}
+        lead = self.agent(10, 1, 5000, fanout=101, level=1)
+        # a hundred subagents walked in start order; the busy ones come last
+        subs = [self.agent(100 + i, 10, 0 if i < 40 else 1) for i in range(97)]
+        subs += [self.agent(300, 10, 59, outside=2), self.agent(301, 10, 12),
+                 self.agent(302, 10, 3)]
+        mid = self.agent(400, 10, 7, fanout=1)
+        deep = self.agent(401, 400, 2, level=3)
+        nodes = [root, lead] + subs + [mid, deep]
+        return _pick, nodes
+
+    def test_the_busiest_are_sent_and_the_shape_kept(self):
+        pick, nodes = self.tree()
+        sent = pick(nodes, 12)
+        pids = [x["pid"] for x in sent]
+        self.assertEqual(len(sent), 12)
+        self.assertEqual(pids[:2], [1, 10])                  # walk order kept
+        for must in (300, 301, 302, 400, 401):               # busiest, and the shape
+            self.assertIn(must, pids)
+        self.assertNotIn(100, pids)                          # ran nothing: folded
+
+    def test_what_was_not_sent_is_counted_on_its_parent(self):
+        pick, nodes = self.tree()
+        sent = pick(nodes, 12)
+        lead = next(x for x in sent if x["pid"] == 10)
+        sent_subs = sum(1 for x in sent if x["pid"] >= 100 and x["pid"] < 400)
+        f = lead["folded"]
+        self.assertEqual(f["agents"], 100 - sent_subs)
+        self.assertEqual(f["ran_nothing"], 40)
+        self.assertEqual(f["agents"], f["ran_nothing"] + f["one"])
+        self.assertEqual(f["outside"], 0)                    # the one that wrote outside was sent
+        self.assertNotIn("folded", next(x for x in sent if x["pid"] == 400))
+
+
+class LaunchTagTest(unittest.TestCase):
+    """What an agent's box is tagged with: how it was launched, the version its
+    program names, and whether its tool calls ran in a sandbox."""
+
+    def setUp(self):
+        self.t0 = time.time() - 600
+
+    def test_an_agent_carries_its_launch_and_version(self):
+        native = HOME + "/.local/share/claude/versions/2.1.291"
+        recs = [rec("conn", self.t0, 100, 50, "2.1.291", native + " --dangerously-skip-permissions",
+                    agent_pid=100, tree_root=100, is_agent=True)]
+        n = node(tree_of(reduce(recs), 100), 100)
+        self.assertEqual((n["approval"], n["version"]), ("bypassed", "2.1.291"))
+        self.assertEqual(n["approval_detail"], "--dangerously-skip-permissions")
+
+    def test_a_codex_app_server_takes_its_front_ends_launch(self):
+        # `codex --yolo` starts the app-server; the app-server's argv names no approval
+        rel = (HOME + "/.codex/packages/app-server-daemon/releases/"
+               "0.162.1-x86_64-unknown-linux-musl/bin/codex")
+        recs = [
+            rec("residency", self.t0, 100, 50, "codex", "codex --yolo", agent_pid=100,
+                tree_root=100, is_agent=True, agent_type="codex"),
+            rec("conn", self.t0 + 1, 150, 100, "codex", rel + " app-server --listen unix://",
+                agent_pid=150, tree_root=100, is_agent=True, agent_type="codex"),
+        ]
+        n = node(tree_of(reduce(recs), 100), 150)
+        self.assertEqual((n["approval"], n["version"]), ("bypassed", "0.162.1"))
+
+    def test_calls_that_ran_unconfined_make_an_unsandboxed_agent(self):
+        n = node(tree_of(reduce(claude_session(self.t0)), 100), 100)
+        self.assertEqual((n["sandbox"], n["sandbox_calls"]), ("unsandboxed", {"not_isolated": 2}))
+
+    def test_a_sandbox_that_failed_to_start_is_failed_not_unsandboxed(self):
+        recs = [root_tick(self.t0, 1000, CODEX_APP, "codex")] + codex_failed_call(self.t0 + 1)
+        n = node(tree_of(reduce(recs), 1000), 1000)
+        self.assertEqual((n["sandbox"], n["sandbox_calls"]), ("failed", {"failed": 1}))
+
+    def test_an_agent_with_no_tool_call_has_no_sandbox_verdict(self):
+        n = node(tree_of(reduce([root_tick(self.t0, 100)]), 100), 100)
+        self.assertEqual((n["sandbox"], n["sandbox_calls"]), (None, None))
 
 
 if __name__ == "__main__":

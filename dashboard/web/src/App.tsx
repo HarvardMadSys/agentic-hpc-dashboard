@@ -5,37 +5,60 @@
  * page should have heard something. A feed with a 24 h cadence is not stale at
  * 10 minutes, and the pill must not say so.
  */
-import { useEffect } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig, useFeeds, usePanels, useTrajectories, useWindows } from './api/hooks';
 import { useLive } from './api/useLive';
-import type { FeedReport, FeedStatus } from './api/types';
+import type { Transport } from './api/useLive';
+import { getAskInfo } from './api/client';
+import type { AskInfo, Facets, FeedReport, FeedStatus } from './api/types';
+import { AskScopeCtx } from './components/Ask';
+import type { AskScope } from './components/Ask';
 import { ClassFilter } from './components/ClassFilter';
+import { WhoFilter } from './components/WhoFilter';
+import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
+import { SectionList, useSections } from './components/SectionNav';
 import { WindowPicker } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
+import { whoQuery } from './lib/filters';
+import type { Who } from './lib/filters';
 import { useUrlState } from './lib/useUrlState';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
-import { SessionsTab } from './tabs/SessionsTab';
 import { ResourcesTab } from './tabs/ResourcesTab';
 import { RiskIoTab } from './tabs/RiskIoTab';
-import { SandboxTab } from './tabs/SandboxTab';
+import { InternalTab } from './tabs/InternalTab';
 import { TrajectoriesTab } from './tabs/TrajectoriesTab';
-import { CascadesTab } from './tabs/CascadesTab';
+import { AgentsTab } from './tabs/AgentsTab';
+import { SlurmTab } from './tabs/SlurmTab';
 import { FeedsTab } from './tabs/FeedsTab';
+import { ChatTab } from './tabs/ChatTab';
+import { EventsExplorer } from './components/EventsExplorer';
 
+/* In the order an operator reads them (roadmap notes 32 and 50): what is
+ * happening, who uses what, the agents, one session, then the detail. Old tab
+ * keys still open (lib/filters.ts TAB_ALIAS): sessions and cascades -> agents,
+ * io -> resources, sandbox -> internal. */
 const TABS = [
-  { k: 'live', lbl: 'Live', eyebrow: 'live tier' },
-  { k: 'overview', lbl: 'Overview', eyebrow: 'overview' },
-  { k: 'sessions', lbl: 'Sessions & tools', eyebrow: 'process tier' },
-  { k: 'resources', lbl: 'Resources', eyebrow: 'process tier' },
-  { k: 'risk', lbl: 'Risk & I/O', eyebrow: 'process tier' },
-  { k: 'sandbox', lbl: 'Sandbox', eyebrow: 'process tier' },
-  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'process tier' },
-  { k: 'cascades', lbl: 'Cascades', eyebrow: 'process tier' },
+  { k: 'live', lbl: 'Live', eyebrow: 'right now, and over the window' },
+  { k: 'overview', lbl: 'Overview', eyebrow: 'who uses what' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran' },
+  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time' },
+  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O' },
+  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here' },
+  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler' },
+  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask an agent about this window' },
+  { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable' },
+  { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
 ];
+
+/* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
+ * link to it (?tab=events) opens the first tab instead. */
+const HIDDEN_TABS = new Set(['events']);
+/** How long after each answer the Sessions list asks again, while it is shown. */
+const TRAJ_LIVE_MS = 5000;
 
 /** Worst status across the feeds that matter, for the header pill. */
 function headline(feeds: Record<string, FeedReport> | null): {
@@ -63,6 +86,42 @@ function headline(feeds: Record<string, FeedReport> | null): {
   };
 }
 
+/* The header pill, in words. Two separate questions share it, so it answers
+ * the one that matters more: a problem with the DATA (a feed stale or gone)
+ * outranks how the page gets its updates; with the data fine, it says whether
+ * those updates stream in or arrive on a 15 s poll. "ws" said neither. */
+const DATA_WORDS: Record<FeedStatus, [string, string]> = {
+  ok: ['live', ''],
+  stale: ['data delayed', 'a feed is older than its own max age: the numbers are not current'],
+  degraded: ['partial data', 'a feed is reporting, but not all of it'],
+  empty: ['no data yet', 'the collector is running but has written nothing in this window'],
+  missing: ['collector not found', 'a required feed has no files where it is expected'],
+};
+
+function pillOf(
+  status: FeedStatus | 'live',
+  transport: Transport,
+): { status: FeedStatus | 'live'; text: string; beat: boolean; tip: string } {
+  if (status !== 'live') {
+    const [text, tip] = DATA_WORDS[status];
+    return { status, text, beat: false, tip };
+  }
+  switch (transport) {
+    case 'ws':
+      return { status: 'live', text: 'live', beat: true,
+        tip: 'new records stream in as the collector writes them' };
+    case 'polling':
+      return { status: 'stale', text: 'refreshing every 15 s', beat: false,
+        tip: 'the live stream is unavailable, so the page asks for new data every 15 seconds' };
+    case 'connecting':
+      return { status: 'empty', text: 'connecting…', beat: false,
+        tip: 'opening the live stream to the dashboard service' };
+    default:
+      return { status: 'missing', text: 'disconnected · retrying', beat: false,
+        tip: 'the dashboard service is not answering; the page keeps retrying' };
+  }
+}
+
 export default function App() {
   const [url, setUrl] = useUrlState();
   const feeds = useFeeds();
@@ -70,8 +129,23 @@ export default function App() {
   const live = useLive(url.win);
   // `buildNonce` bumps when the service finishes reducing this window, which is
   // the only moment /api/panels has anything new to say about it.
-  const panels = usePanels(url.win, live.buildNonce);
-  const traj = useTrajectories(url.rank, url.win, live.buildNonce);
+  // The user and agent-type filter is a view of its own server-side, built
+  // like a window; memoised on its query so a re-render is not a new request.
+  const whoKey = whoQuery(url);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const who: Who = useMemo(() => ({ users: url.users, atypes: url.atypes }), [whoKey]);
+  const panels = usePanels(url.win, live.buildNonce, who);
+  // Re-read every few seconds while the Sessions list is on screen.
+  const traj = useTrajectories(url.rank, url.win, live.buildNonce, who,
+    url.tab === 'trajectories' ? TRAJ_LIVE_MS : null);
+  // The filter's choices come with the panels whenever the unfiltered view of
+  // this window is held. Kept across a fetch that has none -- a window not yet
+  // built unfiltered -- so the dropdowns do not empty under the reader.
+  const [facets, setFacets] = useState<Facets | null>(null);
+  const freshFacets = panels.data?.facets;
+  useEffect(() => {
+    if (freshFacets) setFacets(freshFacets);
+  }, [freshFacets]);
   // Seeded over REST so the picker is populated before the socket is up; the
   // websocket's `windows` frame supersedes it with live build progress.
   const windowsRest = useWindows();
@@ -81,7 +155,13 @@ export default function App() {
   const resolvedWin = live.live?.window;
   const winStatus =
     panels.data?.window_status ??
-    windows?.held?.find((w) => w.minutes === resolvedWin?.minutes) ??
+    // A held list can carry a filtered and an unfiltered view of one window:
+    // only this page's own filter's progress is this page's.
+    windows?.held?.find(
+      (w) =>
+        w.minutes === resolvedWin?.minutes &&
+        whoQuery({ users: w.filter?.users ?? [], atypes: w.filter?.agent_types ?? [] }) === whoKey,
+    ) ??
     null;
 
   // A `rebuilt` frame means the reduced panels changed on disk: re-read them.
@@ -98,7 +178,44 @@ export default function App() {
     if (wsFeeds) mergeFeeds(wsFeeds);
   }, [wsFeeds, mergeFeeds]);
 
-  const tab = TABS.find((t) => t.k === url.tab) || TABS[0];
+  // A cluster without Slurm sets `slurm.enabled: false`; its tab goes away.
+  const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
+  const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
+  const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
+  // Which deployment: the sidebar and the browser tab both say, so a frozen
+  // capture and a live feed open side by side are never confused.
+  const siteName = String(
+    (config.data?.site as Record<string, { _value?: unknown }> | undefined)?.name?._value ?? '',
+  );
+  useEffect(() => {
+    document.title = siteName ? `${siteName} · Agent Behaviour` : 'Agent Behaviour Console';
+  }, [siteName]);
+  // Names are aliased on the way out (rc_dashboard/anonymize.py): the header
+  // says so, or a reader takes `user-7f3a9c1e` for a real account.
+  const anonymized =
+    (config.data?.anonymize as Record<string, { _value?: unknown }> | undefined)?.enabled?._value ===
+    true;
+  const mainRef = useRef<HTMLElement>(null);
+  const { secs, active } = useSections(mainRef, tab.k);
+  // The agent behind every "ask" button: asked for once. Failing that, the
+  // buttons stay hidden -- a question that cannot run is not offered.
+  const [askInfo, setAskInfo] = useState<AskInfo | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    getAskInfo(ac.signal).then(setAskInfo).catch(() => {});
+    return () => ac.abort();
+  }, []);
+  const askScope: AskScope = useMemo(
+    () => ({
+      info: askInfo,
+      windowMin: resolvedWin?.minutes ?? null,
+      windowLabel: resolvedWin?.label ?? null,
+      who,
+      cls: url.cls,
+      tab: tab.lbl,
+    }),
+    [askInfo, resolvedWin?.minutes, resolvedWin?.label, who, url.cls, tab.lbl],
+  );
   const hl = headline(feeds.data);
   const P = panels.data?.panels ?? {};
 
@@ -106,29 +223,75 @@ export default function App() {
   const body = (() => {
     switch (tab.k) {
       case 'live':
-        return <LiveTab live={live} cls={url.cls} feeds={feeds.data} goto={(t) => setUrl({ tab: t }, true)} />;
+        return (
+          <LiveTab
+            live={live}
+            P={P}
+            traj={traj.data}
+            cls={url.cls}
+            who={who}
+            feeds={feeds.data}
+            goto={(t) => setUrl({ tab: t }, true)}
+            // Opening a session or a user's sessions is navigation: back returns.
+            openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
+            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+            nodeNoun={
+              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.node_noun?._value as
+                | string
+                | undefined) ?? null
+            }
+            userCols={
+              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.user_columns?._value as
+                | string[]
+                | undefined) ?? null
+            }
+          />
+        );
       case 'overview':
         return <OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />;
-      case 'sessions':
-        return <SessionsTab P={P} cls={url.cls} />;
       case 'resources':
         return <ResourcesTab P={P} cls={url.cls} />;
       case 'risk':
+        return <RiskIoTab P={P} cls={url.cls} part="risk" />;
+      case 'chat':
         return (
-          <RiskIoTab
-            P={P}
-            cls={url.cls}
-            url={url}
-            setUrl={setUrl}
+          <ChatTab
             windowMin={resolvedWin?.minutes ?? null}
+            windowLabel={resolvedWin?.label ?? null}
+            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+            goto={(t) => setUrl({ tab: t }, true)}
           />
         );
-      case 'sandbox':
-        return <SandboxTab P={P} cls={url.cls} />;
+      case 'events':
+        return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
+      case 'internal':
+        return <InternalTab P={P} cls={url.cls} />;
       case 'trajectories':
-        return <TrajectoriesTab traj={traj} rank={url.rank} setRank={(r) => setUrl({ rank: r })} cls={url.cls} />;
-      case 'cascades':
-        return <CascadesTab P={P} />;
+        return (
+          <TrajectoriesTab
+            traj={traj}
+            rank={url.rank}
+            setRank={(r) => setUrl({ rank: r })}
+            cls={url.cls}
+            win={url.win}
+            sel={url.traj}
+            // Opening a session is navigation: back closes it again.
+            select={(sid) => setUrl({ traj: sid, tfrom: null }, true)}
+            tfrom={url.tfrom}
+            setTfrom={(t) => setUrl({ tfrom: t }, true)}
+            tuser={url.tuser}
+            clearUser={() => setUrl({ tuser: null })}
+            routine={
+              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.routine_commands?._value as
+                | string[]
+                | undefined) ?? null
+            }
+          />
+        );
+      case 'slurm':
+        return <SlurmTab P={P} live={live.live} cls={url.cls} goLive={() => setUrl({ tab: 'live' }, true)} />;
+      case 'agents':
+        return <AgentsTab P={P} cls={url.cls} />;
       case 'feeds':
         return <FeedsTab feeds={feeds} config={config} builtAt={panels.data?.full_built_at ?? null} />;
       default:
@@ -144,12 +307,14 @@ export default function App() {
             <span className="bdot" />
             Agent Behaviour
           </div>
-          <div className="sub mono">FASRC &middot; rc_measurement</div>
+          <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
+            {siteName || 'rc_measurement'}
+          </div>
         </div>
         <nav>
-          {TABS.map((t) => (
+          {tabs.map((t) => (
+            <Fragment key={t.k}>
             <button
-              key={t.k}
               aria-selected={t.k === tab.k}
               onClick={() => {
                 setUrl({ tab: t.k }, true);
@@ -173,12 +338,19 @@ export default function App() {
                 )}
               </span>
             </button>
+            {t.k === tab.k && <SectionList secs={secs} active={active} />}
+            </Fragment>
           ))}
         </nav>
         <div className="foot mono">
-          transport <span style={{ color: 'var(--ink-2)' }}>{live.transport}</span>
+          updates{' '}
+          <span style={{ color: 'var(--ink-2)' }}>
+            {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
+              live.transport
+            ]}
+          </span>
           <br />
-          frame {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
+          last update {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
           <br />
           window <span style={{ color: 'var(--ink-2)' }}>{resolvedWin?.label ?? '—'}</span>
           {windows?.retention_minutes != null && (
@@ -200,21 +372,43 @@ export default function App() {
         </div>
       </aside>
 
-      <main>
+      <main ref={mainRef}>
         <div className="head">
           <div>
             <div className="eyebrow">{tab.eyebrow}</div>
             <h1>{tab.lbl}</h1>
           </div>
           <div className="status">
-            <StatusPill
-              status={hl.status}
-              text={hl.status === 'live' ? live.transport : hl.status}
-              beat={hl.status === 'live' && live.transport === 'ws'}
-            />
-            {hl.lag && (
-              <span data-tip="newest record age, against that feed's own max_age_s">
-                lag <b>{hl.lag}</b>
+            {/* A pinned clock is a capture, not a feed: "live" and a lag of a
+                second would both be false (rc_dashboard/clock.py). */}
+            {live.live?.clock?.pinned ? (
+              <>
+                <StatusPill
+                  status="empty"
+                  text="frozen capture"
+                  tip={`not a live feed: the service's clock is pinned to the capture's end and does not move\n${live.live.clock.source}`}
+                />
+                <span data-tip="every window ends here; nothing after it exists in this feed">
+                  as of <b>{live.live.clock.as_of}</b>
+                </span>
+              </>
+            ) : (
+              <StatusPill {...pillOf(hl.status, live.transport)} />
+            )}
+            {anonymized && (
+              <span
+                className="pill"
+                data-tip={
+                  'names are replaced by stable aliases (user-…, lab-…) before anything leaves ' +
+                  'the service; email addresses and user IDs are hidden'
+                }
+              >
+                anonymized
+              </span>
+            )}
+            {hl.lag && !live.live?.clock?.pinned && (
+              <span data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">
+                newest record <b>{hl.lag}</b> old
               </span>
             )}
             {hl.stale.length > 0 && (
@@ -227,8 +421,14 @@ export default function App() {
                 {hl.stale.length} feed{hl.stale.length > 1 ? 's' : ''} past max_age
               </span>
             )}
-            <span>
-              {fint(live.live?.hosts?.length ?? null)} hosts
+            <span
+              data-tip={
+                (live.live?.hosts ?? []).map((h) => h.host).join(', ') ||
+                'no host has reported yet'
+              }
+            >
+              {fint(live.live?.hosts?.length ?? null)} host
+              {(live.live?.hosts?.length ?? 0) === 1 ? '' : 's'}
             </span>
             <button className="btn" onClick={live.refresh}>
               refresh
@@ -256,12 +456,23 @@ export default function App() {
               status={winStatus}
               backfill={live.live?.backfill}
             />
-            <ClassFilter value={url.cls} onChange={(c) => setUrl({ cls: c })} />
+            <ClassFilter
+              value={url.cls}
+              onChange={(c) => setUrl({ cls: c })}
+              extra={
+                <WhoFilter
+                  who={who}
+                  facets={facets}
+                  onChange={(w) => setUrl({ users: w.users, atypes: w.atypes })}
+                />
+              }
+            />
           </>
         )}
 
-        {body}
+        <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
       </main>
+      <IoCmdsDrawer win={url.win} who={who} cls={url.cls} />
       <TooltipLayer />
     </div>
   );

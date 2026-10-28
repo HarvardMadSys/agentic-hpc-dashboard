@@ -33,6 +33,16 @@ service:
   landing in that seam are buffered and replayed, and if the buffer overflows
   the count is published as `replay_dropped` instead of quietly going missing.
 
+A user or agent-type filter is the same kind of thing as a window: a different
+set of records, so a different set of reducers, not a mask over the default
+view's numbers -- a quantile, a dedup index or a trajectory chain cannot be
+un-mixed after the fact. So the registry keys a view by `(minutes, filter)`, and
+a filtered view is built, live-fed, saved, resumed and evicted exactly as a
+window is (`ViewFilter`). The unfiltered key is the bare minutes, so the
+default view, its saved copy and the prewarm are what they were before filters
+existed; a filtered view is evicted before any unfiltered one, and never pushes
+out the default window.
+
 And one thing is reused rather than recomputed: every build's reducer state is
 saved with how far into each day-file it read (`snapshots`), so a restart or a
 return to a window evicted from the LRU resumes it -- reading only what the
@@ -40,20 +50,27 @@ collector wrote since -- instead of reducing the whole window again. A resumed
 view keeps its original `built_at`, and its status says it was restored.
 """
 import collections
+import hashlib
+import json
+import re
 import threading
 import time
 
-from . import snapshots
-from .export import resume_plan, window_plan, window_scan
+from . import hours as hourmod, redact, snapshots
+from .export import (UNTAGGED, agent_type_token, agent_type_want, parse_filters,
+                     resume_plan, window_plan, window_scan)
 from .normalize import Normalizer
 from .procindex import ProcIndex
 from .reducers.cascades import CascadeReducer
+from .reducers.facets import FacetReducer
 from .reducers.io import IoReducer
 from .reducers.resources import ResourceReducer
 from .reducers.risk import RiskReducer
 from .reducers.sandbox import SandboxReducer
+from .reducers.slurm import SlurmReducer
 from .reducers.tools import ToolMixReducer
 from .reducers.trajectories import TrajectoryReducer
+from .reducers.workspace import WorkspaceReducer
 
 HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, RiskReducer)
 # The only records a view reads. A build skips the rest before parsing them, and
@@ -62,7 +79,7 @@ HIST_REDUCERS = (ToolMixReducer, IoReducer, ResourceReducer, RiskReducer)
 # The process index and the cascades read the tick records (residency, conn,
 # netio) as well: a long-lived agent's identity is often only there.
 EVENTS = frozenset(ev for r in HIST_REDUCERS + (SandboxReducer, TrajectoryReducer,
-                                                ProcIndex, CascadeReducer)
+                                                ProcIndex, CascadeReducer, SlurmReducer)
                    for ev in r.EVENTS)
 
 # Below this a window is mostly bin-edge noise: one minute of a login fleet is a
@@ -73,6 +90,16 @@ MIN_WINDOW_MIN = 5
 # seam is sub-second in practice (the scan and the tailer reach EOF together),
 # so this is generous; what matters is that overflow is COUNTED, not silent.
 REPLAY_CAP = 20000
+
+# The build worker's queue entry for "reduce the hours closed since" (`hours`).
+HOURS_JOB = "_hours"
+
+# Values one filter may name. A filter is a whole view -- reducer state and a
+# window's read -- so a request naming hundreds is refused, not built.
+FILTER_MAX_VALUES = 64
+# Names the byte-level pre-check can match as written: a JSON writer could
+# escape anything else, and a pre-check must never miss a line.
+_PLAIN = re.compile(r"^[A-Za-z0-9._@+-]+$")
 
 
 def _newest(a, b):
@@ -146,13 +173,120 @@ def presets(cfg):
     return out
 
 
+def _byte_check(field, values):
+    """A pre-parse search for `"field": "<one of values>"`, or None when unsafe."""
+    if not values or not all(_PLAIN.match(v) for v in values):
+        return None
+    names = b"|".join(re.escape(v.encode()) for v in sorted(values))
+    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"').search
+
+
+class ViewFilter:
+    """Which users' and which agent types' records a view holds; empty is all of them.
+
+    `match` is the one predicate: the build applies it to every record it reads
+    before dispatch, and the live feed applies it to every record it hands the
+    view, so a filtered view counts exactly what an unfiltered one would have
+    counted for those people. Users and agent types AND together; values within
+    each OR. An agent type is the collector's own tag (`claude_code`, `codex`,
+    `vscode`, ...), and `none` asks for the records it did not tag -- a person's
+    own shell, and the editors it does not recognise.
+
+    Records with no user and no agent type -- the per-host `residency_totals`
+    ticks -- cannot be attributed to anyone, so a filtered view does not hold
+    them, and `NOT_NARROWED` says what that leaves out rather than letting an
+    empty series read as an idle person.
+    """
+
+    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match")
+
+    NOT_NARROWED = (
+        "resident memory and live processes over time: sampled from each host's "
+        "per-class residency ticks, which carry no user or agent type, so a "
+        "filtered view has none",
+        "login nodes right now: a host-wide snapshot",
+        "the live tier (the Live tab's plates and per-minute rate, and the live "
+        "tiles on Overview): one shared rolling count by class",
+    )
+
+    def __init__(self, users=(), agent_types=()):
+        self.users = tuple(sorted({str(u) for u in users or () if u not in (None, "")}))
+        self.agent_types = tuple(sorted(agent_type_want(
+            str(t) for t in agent_types or () if t not in (None, ""))))
+        self._u = frozenset(self.users)
+        self._t = frozenset(self.agent_types)
+        self.key = (self.users, self.agent_types) if self.users or self.agent_types \
+            else None
+        # A speed-up only, never the decision: `match` still runs on what it lets
+        # through. A narrow filter on a busy feed parses a few percent of the
+        # lines a full build does. `none` cannot be searched for -- an untagged
+        # record may carry `null` or no key at all -- so it only narrows by user.
+        checks = [c for c in (_byte_check("user", self.users),
+                              None if UNTAGGED in self._t
+                              else _byte_check("agent_type", self.agent_types))
+                  if c is not None]
+        if len(checks) == 2:
+            a, b = checks
+            self.line_match = lambda line: a(line) and b(line)
+        else:
+            self.line_match = checks[0] if checks else None
+
+    @classmethod
+    def from_params(cls, params):
+        """From query params, in `/api/events`'s vocabulary: `user`, `agent_type`,
+        each repeatable or comma-separated (`export.parse_filters`)."""
+        f = parse_filters({k: params.get(k) for k in ("user", "agent_type")})
+        users, types = f.get("user") or (), f.get("agent_type") or ()
+        if len(users) > FILTER_MAX_VALUES or len(types) > FILTER_MAX_VALUES:
+            raise ValueError("a view filter names at most %d users and %d agent "
+                             "types" % (FILTER_MAX_VALUES, FILTER_MAX_VALUES))
+        return cls(users, types)
+
+    def __bool__(self):
+        return self.key is not None
+
+    def match(self, rec):
+        if self._u and rec.get("user") not in self._u:
+            return False
+        if self._t and agent_type_token(rec.get("agent_type")) not in self._t:
+            return False
+        return True
+
+    def slug(self):
+        """A short stable name for the saved file: same filter, same name."""
+        return hashlib.sha1(json.dumps(self.key).encode()).hexdigest()[:12]
+
+    def as_dict(self):
+        """What the response says it was built for; None when unfiltered."""
+        if not self:
+            return None
+        return {"users": list(self.users), "agent_types": list(self.agent_types)}
+
+    def block(self):
+        """The `filter` block every filtered or unfiltered response carries."""
+        return {"active": bool(self), "users": list(self.users),
+                "agent_types": list(self.agent_types),
+                "not_narrowed": list(self.NOT_NARROWED) if self else []}
+
+
+NO_FILTER = ViewFilter()
+
+
+def view_key(minutes, flt=None):
+    """The registry's key for a view. Unfiltered it is the bare minutes, so the
+    default window -- its LRU slot, its queue entry, its saved file -- is keyed
+    exactly as it was before filters existed."""
+    return int(minutes) if not flt else (int(minutes), flt.key)
+
+
 class PanelView:
     """One window's historical reducers, their build state, and their drift."""
 
-    def __init__(self, cfg, classes, minutes):
+    def __init__(self, cfg, classes, minutes, flt=None):
         self.cfg = cfg
         self.classes = list(classes)
         self.minutes = int(minutes)
+        self.flt = flt or NO_FILTER
         self.window_s = self.minutes * 60
         self.state = "queued"           # queued | building | ready | error
         self.error = None
@@ -166,6 +300,7 @@ class PanelView:
         self.reducers = {}              # key -> reducer, live-fed after the swap
         self.dispatch = {}              # event -> [reducer]
         self.payload = {}               # materialised result(), per reducer key
+        self._fresh = {}                # key -> (when, live_records then) it was materialised
         self.touched = time.time()
         self.replay_dropped = 0
         self.live_records = 0
@@ -185,6 +320,8 @@ class PanelView:
         about to be discarded.
         """
         if rec.get("event") not in EVENTS:
+            return
+        if self.flt and not self.flt.match(rec):
             return
         if self._replay is not None:
             if len(self._replay) >= REPLAY_CAP:
@@ -210,15 +347,30 @@ class PanelView:
 
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
-        red = {r.KEY: r(self.cfg, self.classes) for r in HIST_REDUCERS}
+        red = {r.KEY: r(self.cfg, self.classes) for r in HIST_REDUCERS
+               if r is not ResourceReducer}
+        # Its time series bins at a width chosen for the window.
+        red[ResourceReducer.KEY] = ResourceReducer(self.cfg, self.classes,
+                                                   window_s=self.window_s)
         # One process index per window, shared by the reducers that count
         # sessions: they fold the collector's session keys through it.
         procs = red[ProcIndex.KEY] = ProcIndex(self.cfg)
-        red["sandbox"] = SandboxReducer(self.cfg, self.classes, procs=procs)
+        sb = red["sandbox"] = SandboxReducer(self.cfg, self.classes, procs=procs)
+        # What each session asks of the scheduler, folded the same way. A
+        # cluster without Slurm (`slurm.enabled: false`) does not reduce it at
+        # all: every panel that reads it then says it is absent.
+        if self.cfg.get("slurm.enabled", True):
+            red[SlurmReducer.KEY] = SlurmReducer(self.cfg, self.classes,
+                                                 window_s=self.window_s, procs=procs)
         traj = red["trajectories"] = TrajectoryReducer(
             self.cfg, self.classes, window_s=self.window_s, procs=procs)
+        # Where each agent worked; the cascades compose it per agent and subagent,
+        # and tag each with whether its calls ran in a sandbox.
+        ws = red[WorkspaceReducer.KEY] = WorkspaceReducer(
+            self.cfg, self.classes, window_s=self.window_s, procs=procs)
         red["cascades"] = CascadeReducer(self.cfg, self.classes, window_s=self.window_s,
-                                         procs=procs, traj=traj)
+                                         procs=procs, traj=traj, ws=ws, sb=sb)
+        red[FacetReducer.KEY] = FacetReducer(self.cfg, self.classes)
         return red
 
     @staticmethod
@@ -237,8 +389,29 @@ class PanelView:
                 out[key] = r.result()
             except Exception as e:
                 out[key] = {"_error": str(e)}
-        self.payload = out
-        return out
+        # The reducers hold raw argv, because their detectors need it; nothing
+        # leaves for the API without its credentials masked (`redact`).
+        self.payload = redact.payload(out)
+        self._fresh = {k: (time.time(), self.live_records) for k in out}
+        return self.payload
+
+    def materialize_key(self, key, max_age_s):
+        """Re-materialise one reducer's payload when it is older than
+        `max_age_s` and the view has ingested since. The rest wait for the
+        next `refresh`: this is for a panel read live, between rebuilds."""
+        r = self.reducers.get(key)
+        if r is None or self._replay is not None:
+            return
+        at, seen = self._fresh.get(key, (0.0, None))
+        now = time.time()
+        if now - at < max_age_s or seen == self.live_records:
+            return
+        try:
+            out = r.result()
+        except Exception as e:
+            out = {"_error": str(e)}
+        self.payload = dict(self.payload, **{key: redact.payload(out)})
+        self._fresh[key] = (now, self.live_records)
 
     # ---------------------------------------------------------------- status
     def drift_s(self):
@@ -266,6 +439,10 @@ class PanelView:
             self.cfg.get("panels.max_drift_pct", 25))) / 100.0
         st = {
             "minutes": self.minutes, "label": label(self.minutes),
+            # Which records this view holds; None is all of them. A held-window
+            # list mixes filtered and unfiltered views of the same minutes, and
+            # the page must not take one's progress for the other's.
+            "filter": self.flt.as_dict(),
             "state": self.state, "error": self.error,
             # Distinguishes a FIRST build (nothing to show; the page must say it
             # is reducing) from a drift RE-build (the previous reduction is still
@@ -319,10 +496,16 @@ class WindowRegistry:
         self.classes = list(classes)
         self.roots_fn = roots_fn
         self.lock = lock                # the aggregator's; guards reducer swaps
-        self.views = collections.OrderedDict()   # minutes -> PanelView
+        self.views = collections.OrderedDict()   # view_key -> PanelView
         self.max_views = max(1, int(cfg.get("panels.max_windows", 2)))
         self.budget_pct = max(1, int(cfg.get("panels.max_drift_pct", 25))) / 100.0
         self.store = snapshots.SnapshotStore.from_config(cfg)
+        # Hourly merge-reduce (`hours`, `panels.merge_reduce`): an unfiltered
+        # window is merged from saved hour states rather than re-read. None
+        # when off, and every window is scanned as before.
+        ret = retention_min(cfg)
+        self.hours = hourmod.HourStore.from_config(
+            cfg, classes, lambda: PanelView(cfg, classes, ret).fresh_reducers(), EVENTS)
         self._queue = collections.deque()
         self._cv = threading.Condition()
         self._worker = None
@@ -347,9 +530,15 @@ class WindowRegistry:
                     self._cv.wait(timeout=5)
                 if self._stop:
                     return
-                minutes = self._queue.popleft()
+                key = self._queue.popleft()
+            if key == HOURS_JOB:
+                try:
+                    self.hours.advance(self.roots_fn())
+                except Exception:
+                    pass                # retried at the next refresh
+                continue
             with self.lock:
-                view = self.views.get(minutes)   # may have been evicted meanwhile
+                view = self.views.get(key)       # may have been evicted meanwhile
             if view is not None:
                 try:
                     self._build(view)
@@ -357,14 +546,16 @@ class WindowRegistry:
                     view.state, view.error = "error", str(e)
                     view._replay = None
 
-    def _enqueue(self, minutes):
+    def _enqueue(self, key):
         with self._cv:
-            if minutes not in self._queue:
-                self._queue.append(minutes)
+            if key not in self._queue:
+                self._queue.append(key)
                 self._cv.notify_all()
 
     # ----------------------------------------------------------------- build
     def _build(self, view):
+        if self.hours is not None and not view.flt and hourmod.build(self, view):
+            return
         t0 = time.time()
         view.state = "building"
         view.error = None
@@ -394,7 +585,15 @@ class WindowRegistry:
         norm = Normalizer(self.cfg)      # fresh: build stats must not pollute /api/feeds
         newest = None
         n = 0
-        for rec, stats in window_scan(plan, norm, since, events=EVENTS):
+        # The same predicate the live feed applies (`PanelView.feed`), so a
+        # filtered view's scan and its live tail hold the same records. Its
+        # `newest`, and so its span and drift, are those records' own.
+        keep = view.flt.match if view.flt else None
+        every = 20000 if keep is None else 500
+        for rec, stats in window_scan(plan, norm, since, events=EVENTS,
+                                      match=view.flt.line_match):
+            if keep is not None and not keep(rec):
+                continue
             ts = rec.get("_ts_epoch")
             if ts is not None and (newest is None or ts > newest):
                 newest = ts
@@ -404,7 +603,7 @@ class WindowRegistry:
                 except Exception:
                     pass
             n += 1
-            if n % 20000 == 0:
+            if n % every == 0:
                 view.progress.update(
                     records=n, bytes=stats["bytes"],
                     pct=min(99, int(100 * stats["bytes"] / total)) if total else 99,
@@ -455,7 +654,7 @@ class WindowRegistry:
                 view.cache["note"] = (
                     "restored the %s reduction built %s, then read the %s "
                     "record(s) written since" % (
-                        label(view.minutes),
+                        label(view.minutes) + (" (filtered)" if view.flt else ""),
                         time.strftime("%Y-%m-%d %H:%M:%S",
                                       time.localtime(saved["built_at"])),
                         "{:,}".format(n)))
@@ -472,7 +671,7 @@ class WindowRegistry:
 
         if blob is not None:
             try:
-                out = self.store.save(view.minutes, roots, meta, blob)
+                out = self.store.save(view.minutes, roots, meta, blob, flt=view.flt)
                 view.cache["saved_at"] = time.strftime(
                     "%Y-%m-%d %H:%M:%S", time.localtime(out["saved_at"]))
             except Exception as e:      # a cache that cannot be written is no cache
@@ -499,7 +698,8 @@ class WindowRegistry:
                 return "saved build is dated in the future"
             return None
         try:
-            meta, state, why = self.store.load(view.minutes, roots, check)
+            meta, state, why = self.store.load(view.minutes, roots, check,
+                                               flt=view.flt)
             if meta is None:
                 view.cache["note"] = "scanned: %s" % why
                 return None
@@ -512,26 +712,28 @@ class WindowRegistry:
             reducers = snapshots.restore(view.fresh_reducers(), state)
         except Exception as e:
             view.cache["note"] = "scanned: saved build unreadable (%s); discarded" % e
-            self.store.discard(view.minutes, roots)
+            self.store.discard(view.minutes, roots, flt=view.flt)
             return None
         return (meta, reducers) + got
 
     # --------------------------------------------------------------- lookup
-    def request(self, minutes):
-        """The view for `minutes`, queueing a build when it is not held.
+    def request(self, minutes, flt=None):
+        """The view for `minutes` (and `flt`), queueing a build when it is not held.
 
         Under the aggregator's lock: the ingest thread walks this same map once
         per record, and the build worker swaps reducers into it.
         """
         minutes = int(minutes)
+        flt = flt or NO_FILTER
+        key = view_key(minutes, flt)
         with self.lock:
-            view = self.views.get(minutes)
+            view = self.views.get(key)
             fresh = view is None
             if fresh:
-                view = PanelView(self.cfg, self.classes, minutes)
-                self.views[minutes] = view
-                self._evict()
-            self.views.move_to_end(minutes)
+                view = PanelView(self.cfg, self.classes, minutes, flt)
+                self.views[key] = view
+                self._evict(keep=key, filtered=bool(flt))
+            self.views.move_to_end(key)
             view.touched = time.time()
             # A failed build must be retryable. Without this a transient read
             # error -- a day-file rotated mid-scan, a stale NFS handle -- would
@@ -541,25 +743,67 @@ class WindowRegistry:
             if retry:
                 view.state = "queued"
         if fresh or retry:
-            self._enqueue(minutes)
+            self._enqueue(key)
         return view
 
-    def _evict(self):
+    def peek(self, minutes, flt=None):
+        """The view held for this key, or None -- never queues a build."""
+        with self.lock:
+            return self.views.get(view_key(minutes, flt))
+
+    def prewarm(self, minutes_list):
+        """Build these windows in the background, behind anything asked for.
+
+        Each goes to the FRONT of the LRU, so it is the first evicted: a window
+        nobody opened must never push out one somebody did. Skipped once the
+        registry is full, for the same reason. Built, it is saved like any
+        other, so a later switch to it resumes instead of re-reading."""
+        for m in minutes_list:
+            m = int(m)
+            with self.lock:
+                if m in self.views or len(self.views) >= self.max_views:
+                    continue
+                self.views[m] = PanelView(self.cfg, self.classes, m)
+                self.views.move_to_end(m, last=False)
+            self._enqueue(m)
+
+    def _evict(self, keep=None, filtered=False):
         """Drop the least recently asked-for READY view past the cap.
 
         A building view is never evicted: its worker holds the only reference to
         the reducers it is filling, and dropping it mid-scan would spend the read
         for nothing.
+
+        Filtered views go first, oldest first, and one still waiting in the
+        queue goes too -- nothing has been read for it yet, and a reader clicking
+        through four users in a row wants the fourth, not all four built in turn.
+        Only then an unfiltered view, as before; and a FILTERED request never
+        evicts the default window, which nearly every reader is on. With no
+        filtered views held this is exactly the rule it always was.
         """
+        default = resolve(self.cfg, None)["minutes"]
         while len(self.views) > self.max_views:
-            victim = next((m for m, v in self.views.items()
-                           if v.state in ("ready", "error")), None)
+            victim = next((k for k, v in self.views.items()
+                           if k != keep and v.flt
+                           and v.state in ("ready", "error", "queued")), None)
+            if victim is None:
+                victim = next((k for k, v in self.views.items()
+                               if k != keep and not v.flt
+                               and v.state in ("ready", "error")
+                               and not (filtered and k == default)), None)
             if victim is None:
                 return                  # everything in flight: let it finish
             del self.views[victim]
+            with self._cv:
+                try:
+                    self._queue.remove(victim)
+                except ValueError:
+                    pass
 
     # ----------------------------------------------------------------- ticks
     def feed(self, rec):
+        if self.hours is not None:
+            self.hours.saw(rec.get("_ts_epoch"))
         for view in list(self.views.values()):
             view.feed(rec)
 
@@ -570,14 +814,16 @@ class WindowRegistry:
         not of how long ago they were built.
         """
         budget_pct = max(1, int(self.cfg.get("panels.max_drift_pct", 25))) / 100.0
+        if self.hours is not None and self.hours.behind(time.time(), self.roots_fn()):
+            self._enqueue(HOURS_JOB)    # reduce the hours closed since, behind the builds
         with self.lock:
             held = list(self.views.items())
-        for minutes, view in held:
+        for key, view in held:
             if view.state != "ready":
                 continue
             drift = view.drift_s() or 0
             if drift > view.window_s * budget_pct:
-                self._enqueue(minutes)
+                self._enqueue(key)
             else:
                 with self.lock:
                     view.materialize()
@@ -586,7 +832,14 @@ class WindowRegistry:
         now = now or time.time()
         with self.lock:
             held = [v.status(now) for v in self.views.values()]
+            queued = list(self._queue)
         return {"held": held, "max_windows": self.max_views,
-                "queued": list(self._queue),
+                # The unfiltered windows by minutes, as always; filtered ones
+                # apart, so a reader of `queued` never mistakes one for the other.
+                "queued": [k for k in queued if isinstance(k, int)],
+                "queued_filtered": [{"minutes": k[0], "users": list(k[1][0]),
+                                     "agent_types": list(k[1][1])}
+                                    for k in queued if isinstance(k, tuple)],
                 "presets": presets(self.cfg),
-                "retention_minutes": retention_min(self.cfg)}
+                "retention_minutes": retention_min(self.cfg),
+                "hours": self.hours.status() if self.hours is not None else None}

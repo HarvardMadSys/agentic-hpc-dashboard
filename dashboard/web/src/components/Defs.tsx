@@ -1,9 +1,9 @@
 /* One hidden SVG carrying document-level paint servers.
  *
- * `denied` is not a measured state -- it is the collector being unable to read
- * the field, and it must not look like `unsandboxed`. It therefore gets both a
- * different hue AND a hatch, so it is separable at a glance and under any
- * colour-vision deficiency.
+ * `denied` ("exited before read") is not a measured state -- the namespace links
+ * were gone when the collector looked, and it must not look like `unsandboxed`.
+ * It therefore gets both a different hue AND a hatch, so it is separable at a
+ * glance and under any colour-vision deficiency.
  */
 export function Defs() {
   return (

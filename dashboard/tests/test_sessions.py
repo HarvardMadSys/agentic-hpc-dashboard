@@ -202,6 +202,28 @@ class SessionizeTest(unittest.TestCase):
         self.assertEqual([tok for tok, _ in row["tool_rle"]],
                          ["git", "zsh", "2.1.291", "ls", "zsh"])
 
+    def test_each_run_carries_when_it_began(self):
+        # The page opens the inspector at a run: the row says when each began.
+        row = ranked(reduce(claude_session(self.t0)))[0]
+        t = self.t0
+        self.assertEqual(row["tool_t"], [round(x, 3) for x in (t + 10, t + 11, t + 20,
+                                                               t + 30, t + 31)])
+        self.assertEqual(len(row["purpose_t"]), len(row["purpose_rle"]))
+        self.assertEqual(row["purpose_t"][0], round(t + 10, 3))
+        self.assertEqual((row["first"], row["last"]), (round(t + 10, 3), round(t + 31, 3)))
+
+    def test_run_times_are_capped_exactly_as_the_runs_are(self):
+        t = self.t0
+        recs = [rec("residency", t, 100, 50, "claude", "claude", agent_pid=100,
+                    tree_root=100, is_agent=True)]
+        recs += [rec("exit", t + 1 + i, 1000 + i, 100, "a" if i % 2 else "b", "x",
+                     agent_pid=100, tree_root=100) for i in range(70)]
+        row = ranked(reduce(recs))[0]
+        self.assertEqual(len(row["tool_rle"]), 60)
+        self.assertEqual(len(row["tool_t"]), 60)
+        self.assertTrue(row["chain_truncated"])
+        self.assertEqual(row["tool_t"][-1], round(t + 60, 3))
+
     def test_a_nested_agent_keeps_its_own_trajectory(self):
         # `claude rc` spawns a worker per remote session, an agent of its own
         # inside the host's tree, which must stay a session of its own.
@@ -269,19 +291,27 @@ class SessionizeTest(unittest.TestCase):
         self.assertEqual(t["fold"]["raw_sessions"], 3)
         self.assertEqual(t["fold"]["sessions"], 1)
 
-    def test_sandbox_tree_counts_do_not_count_tool_calls_as_trees(self):
+    def test_sandbox_session_counts_do_not_count_tool_calls_as_sessions(self):
         sb = reduce(claude_session(self.t0))["sandbox"]
-        self.assertEqual(sb["n_trees"].get("agent"), 1)
+        self.assertEqual(sb["n_sessions"].get("agent"), 1)
+        self.assertEqual(sb["tool_calls"]["agent"], {"not_isolated": 2})
 
-    def test_a_folded_tree_keeps_a_known_verdict_over_its_owners_unknown(self):
+    def test_a_session_is_judged_by_its_tool_calls_not_its_owner(self):
+        """The owner's own records (pid 210, its Grep) are outside the sandbox
+        by design; only the tool calls say whether the session was confined.
+        One of two confined is `partial`, both is `sandboxed` -- even though the
+        owner's own key reads unsandboxed."""
         recs = claude_session(self.t0)
         for r in recs:
             if r["pid"] in (200, 201):          # the first tool call was confined
                 r["sandbox"], r["sandbox_src"] = "sandboxed", "ns"
-            elif r["pid"] == 210:               # the owner's own key could not be read
-                r.pop("sandbox"), r.pop("sandbox_src")
         sb = reduce(recs)["sandbox"]
-        self.assertEqual(sb["by_class_trees"]["agent"], {"sandboxed": 1})
+        self.assertEqual(sb["by_class_sessions"]["agent"], {"partial": 1})
+        for r in recs:
+            if r["pid"] in (300, 301):
+                r["sandbox"], r["sandbox_src"] = "sandboxed", "ns"
+        sb = reduce(recs)["sandbox"]
+        self.assertEqual(sb["by_class_sessions"]["agent"], {"sandboxed": 1})
 
 
 if __name__ == "__main__":

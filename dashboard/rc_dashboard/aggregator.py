@@ -22,12 +22,20 @@ Two aggregation tiers, because they have different composability:
 """
 import itertools
 import json
+import re
 import threading
 import time
 
+from . import anonymize
+from . import ask
+from . import clock
 from . import feeds as feedmod
+from . import gz
+from . import proctree
+from .health import CollectorHealth
+from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
-from .normalize import Normalizer
+from .normalize import Normalizer, canonical_class
 from .reducers.live import LiveReducer
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
@@ -41,12 +49,20 @@ from .tail import FileTailSource, read_back
 BACKFILL_BATCH = 256
 
 
+# A panel or field named in a question's context: `tool_mix`, `workspace.summary`.
+_ASK_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}(\.[A-Za-z][A-Za-z0-9_]{0,39})?")
+
+
 class Aggregator:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.classes = list(cfg.get("filters.classes") or []) + \
+        # a config written before the IDE class was named still says human-vscode
+        self.classes = [canonical_class(c) for c in cfg.get("filters.classes") or []] + \
             [cfg.get("filters.unlabeled_class", "unlabeled")]
         self.norm = Normalizer(cfg)
+        # The cluster's risk rules, built now: any secret pattern it adds must be
+        # masked (redact.extend) before the first byte is served.
+        risk_ruleset(cfg)
         self.lock = threading.RLock()
         self.reports = feedmod.resolve(cfg)
         self.source = FileTailSource(
@@ -55,6 +71,13 @@ class Aggregator:
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
+        # each collector's own account of itself: start, heartbeat, stop
+        self.health = CollectorHealth(cfg)
+        self.asker = ask.Asker(cfg)
+        # Stable aliases for every name the service sends out, or None when off.
+        # It learns accounts from the roster, so an alias a reader pastes into a
+        # filter maps back even for someone the page has not shown yet.
+        self.anon = anonymize.from_config(cfg, roster=self._accounts)
         self.panels_by_window = winmod.WindowRegistry(
             cfg, self.classes, self.roots, self.lock)
         self.node_built_at = None
@@ -65,6 +88,12 @@ class Aggregator:
         # 0, and the backfill would then count the same history a second time.
         self.positioned = threading.Event()
         self.stats = {"records": 0, "last_poll": None}
+        # Set at shutdown. The backfill runs on an executor thread, which the
+        # interpreter waits for at exit; unchecked, a restart during the minutes
+        # of a week's backfill outlived the dev runner's SIGINT grace, was
+        # SIGKILLed only through its `uv run` wrapper, and the orphan kept the
+        # port -- the next server failed to bind and every request was a 502.
+        self.stopping = False
 
     def roots(self):
         return (self.reports["ebpf"]["resolved"]
@@ -76,8 +105,14 @@ class Aggregator:
         # its build -- or its resume from the saved copy -- starts with the
         # service rather than with the first reader.
         self.panels_by_window.request(self.window(None)["minutes"])
+        # Then the cheap windows, so the first switch to one is instant rather
+        # than a scan: queued behind the default, built by the same worker.
+        self.panels_by_window.prewarm(
+            [m for m in (self.cfg.get("panels.prewarm_min") or [])
+             if m != self.window(None)["minutes"]])
 
     def stop(self):
+        self.stopping = True
         self.panels_by_window.stop()
 
     # -------------------------------------------------------------- ingestion
@@ -98,6 +133,11 @@ class Aggregator:
                     self.live.feed(rec, older=older)
                 except Exception:
                     pass          # one bad record must never stop the stream
+            if rec.get("event") in CollectorHealth.EVENTS:
+                try:
+                    self.health.feed(rec)
+                except Exception:
+                    pass
             if not older:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
@@ -124,7 +164,7 @@ class Aggregator:
         n = 0
         for f in rep.get("files", []):
             try:
-                with open(f["path"], errors="replace") as fh:
+                with gz.open_text(f["path"]) as fh:
                     lines = fh.readlines()[-keep:]
             except OSError:
                 continue
@@ -212,6 +252,10 @@ class Aggregator:
         stream = raws()
         try:
             while True:
+                if self.stopping:
+                    with self.lock:
+                        self.backfill.update(state="stopped", records=stats["records"])
+                    return stats["records"]
                 with self.lock:
                     before = stats["records"]
                     self.consume(itertools.islice(stream, BACKFILL_BATCH), older=True)
@@ -264,6 +308,28 @@ class Aggregator:
                     rep["backfill"] = dict(self.backfill)
             return self.reports
 
+    def collectors(self):
+        """Is each collector OK: its own records (`health`) and its files on disk.
+
+        Nothing here talks to a collector -- the files are the only interface, so
+        a capture copied from another cluster reads the same as a live feed.
+        """
+        with self.lock:
+            files = {}
+            for tier in ("ebpf", "ebpf_node"):
+                for f in (self.reports.get(tier) or {}).get("files", []):
+                    d = files.setdefault(f.get("host") or "?", {}).setdefault(
+                        tier, {"files": 0, "bytes": 0, "last_write": None})
+                    d["files"] += 1
+                    d["bytes"] += f.get("size") or 0
+                    d["last_write"] = max(d["last_write"] or 0, f.get("mtime") or 0) or None
+            tiers = {t: {k: (self.reports.get(t) or {}).get(k) for k in (
+                         "status", "notice", "configured", "resolved", "env", "lag",
+                         "newest_record_ts", "max_age_s", "hosts")}
+                     for t in ("ebpf", "ebpf_node")}
+            return {"hosts": self.health.report(files), "tiers": tiers,
+                    "now": time.time(), "backfill": dict(self.backfill)}
+
     def rebuild_history(self):
         """The scheduled tick: refresh the node snapshot, then every held window.
 
@@ -277,7 +343,8 @@ class Aggregator:
                 self.node_result = self.node.result()
             except Exception as e:
                 self.node_result = {"_error": str(e)}
-            self.node_built_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.node_built_at = time.strftime("%Y-%m-%d %H:%M:%S",
+                                               time.localtime(time.time()))
         self.panels_by_window.refresh()
         return self.node_result
 
@@ -285,26 +352,42 @@ class Aggregator:
         """Resolve a requested window against retention.  One rule, one place."""
         return winmod.resolve(self.cfg, window_min)
 
-    def panels(self, window_min=None):
+    def facets(self, minutes):
+        """The filter's choices, from the UNFILTERED view of this window if it is
+        held -- never a build of its own. A filtered view's own counts would
+        offer only the people already picked, and the dropdown must keep
+        offering everyone else."""
+        view = self.panels_by_window.peek(minutes)
+        fac = (view.payload or {}).get("facets") if view is not None else None
+        return fac if isinstance(fac, dict) and "_error" not in fac else None
+
+    def panels(self, window_min=None, flt=None):
         """Historical panels for one window, each stamped with its feed's presence.
 
         A window still building returns its envelope with `_status='building'`
         and the progress, rather than an empty panel: "no rows yet" and "not
         finished reading" are different facts and must not render alike.
+
+        `flt` narrows every window panel to some users or agent types; that is a
+        view of its own, built like a window (`windows.ViewFilter`), and the
+        response's `filter` says which -- and what it could not narrow.
         """
         win = self.window(window_min)
-        view = self.panels_by_window.request(win["minutes"])
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        facets = self.facets(win["minutes"])
         with self.lock:
             ebpf = feedmod.panel_meta(self.reports["ebpf"])
             node = feedmod.panel_meta(self.reports["ebpf_node"])
             status = view.status()
             out = {}
             for key, payload in (view.payload or {}).items():
-                if key == "trajectories" or key.startswith("_"):
-                    continue                       # /api/trajectories; internal state
+                if key in ("trajectories", "facets") or key.startswith("_"):
+                    continue                       # /api/trajectories; below; internal
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
                 body.update(ebpf)
                 body["_window"] = status
+                body["_filter"] = flt.as_dict()
                 out[key] = body
             # `_status` stays the FEED's status and `_window.state` the build's:
             # "the collector wrote nothing" and "we have not finished reading it"
@@ -312,7 +395,7 @@ class Aggregator:
             # zero-is-not-missing mistake wearing a different hat.
             for key in ("tool_mix", "io_process", "resources", "sandbox", "risk", "cascades"):
                 if key not in out:
-                    out[key] = dict(ebpf, _window=status)
+                    out[key] = dict(ebpf, _window=status, _filter=flt.as_dict())
             body = dict(self.node_result) if isinstance(self.node_result, dict) \
                 else {"rows": self.node_result}
             body.update(node)
@@ -324,6 +407,10 @@ class Aggregator:
                     "node_built_at": self.node_built_at,
                     "window": win,
                     "window_status": status,
+                    "filter": flt.block(),
+                    # Who and what the window holds, for the filter's choices:
+                    # the unfiltered view's counts, whichever view this is.
+                    "facets": facets,
                     "purposes": self.norm.purposes,
                     "purpose_src": self.norm.purpose_src,
                     "classes": self.classes}
@@ -337,14 +424,257 @@ class Aggregator:
                                  label=win["label"])
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
             out["backfill"] = dict(self.backfill)
+            out["clock"] = clock.status()
             return out
 
-    def trajectories(self, window_min=None):
+    def ask_info(self):
+        return ask.describe(self.cfg)
+
+    # What a question about one panel may read besides the window's panels:
+    # the live tier's small sections (never its per-minute series or its event
+    # stream), and the ranked sessions, in these fields.
+    ASK_LIVE = ("now", "users", "hosts", "submits", "window")
+    ASK_SESSION_KEYS = ("sid", "user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
+                        "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
+                        "net_tx_mb", "net_rx_mb", "sandbox", "approval", "host", "first",
+                        "last", "running")
+
+    def ask(self, question, window_min=None, history=(), context=None, flt=None):
+        """Start one question; the agent runs in the background.
+
+        With no `context` it is about the whole window. `context.parts` makes it
+        about one panel, whose data is all it is given: window panels by key
+        (`{"panel": "risk", "keys": ["sections"]}`), the live tier's small
+        sections (`{"panel": "live", "keys": ["users"]}`), or the ranked
+        sessions (`{"panel": "trajectories", "rank": "cpu_s"}`), over the
+        page's own filter (`flt`). `context.session` makes it about one session,
+        given as a digest of its process tree. `context.title` and `.tab` are
+        what the page calls the panel, for the prompt."""
+        context = context if isinstance(context, dict) else {}
+        if context.get("session") is not None:
+            return self._ask_session(question, window_min, history, context)
+        if context.get("parts") is not None:
+            return self._ask_panel(question, window_min, history, context, flt)
+        # `context.suggest`: the operator's suggestions -- the whole window the
+        # page has on screen, its filter included, asked one fixed question
+        suggest = context.get("suggest") is True
+        view = flt if suggest else None
         win = self.window(window_min)
-        view = self.panels_by_window.request(win["minutes"])
+        got = self.panels(window_min, view) or {}
+        live = self.live_payload(window_min)
+        # sessions come from their own endpoint: the per-class summary and the
+        # busiest few, in plain fields
+        tr = self.trajectories(window_min, view) or {}
+        rows = tr.get("rows") or {}
+        busiest = [rows[s] for s in (tr.get("ranks") or {}).get("events", [])[:15] if s in rows]
+        keep = ("user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
+                "distinct_tools", "peak_rss_mb", "sandbox", "approval", "host")
+        extra = {"facets": got.get("facets"),
+                 "sessions": {"summary": tr.get("summary"),
+                              "busiest": [{k: r.get(k) for k in keep} for r in busiest]}}
+        panels = got.get("panels") or {}
+        scope = None
+        if suggest:
+            st = got.get("window_status") or {}
+            if st.get("state") != "ready" and not st.get("has_payload"):
+                raise ValueError("this window is still being read; ask again when it is built")
+            question, history = ask.SUGGEST_QUESTION, ()
+            classes = context.get("classes")
+            extra["risk_who"] = ask.risk_who(panels.get("risk"))
+            extra["done"] = self.asker.done_for_prompt()
+            extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
+                             "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                             if isinstance(classes, list) else None}
+            scope = {"about": "suggestions for the operator", "parse": "suggestions",
+                     "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE}
+        if self.anon is not None:
+            # The snapshot leaves the host, for the model's provider: aliases only.
+            panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
+                                   self.anon.payload(extra))
+        return self.asker.submit(question, panels, live, win["label"], history, extra, scope)
+
+    @staticmethod
+    def _ask_label(ctx, key, cap):
+        v = ctx.get(key)
+        return v.strip()[:cap] if isinstance(v, str) else ""
+
+    def _ask_panel(self, question, window_min, history, ctx, flt):
+        parts = ctx.get("parts")
+        if not isinstance(parts, list) or not 0 < len(parts) <= 6:
+            raise ValueError("context.parts: one to six parts of one panel")
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        got = live = None
+        panels, extra, named = {}, {}, []
+        for p in parts:
+            key = p.get("panel") if isinstance(p, dict) else None
+            keys = p.get("keys") if isinstance(p, dict) else None
+            # names, not text: they are written into the model's instructions
+            if not isinstance(key, str) or not _ASK_NAME.fullmatch(key):
+                raise ValueError("context.parts: each part names a panel")
+            if keys is not None and not (isinstance(keys, list) and len(keys) <= 20 and
+                                         all(isinstance(k, str) and _ASK_NAME.fullmatch(k)
+                                             for k in keys)):
+                raise ValueError("context.parts[].keys: a list of field names")
+            if key == "live":
+                want = keys or ["now", "users", "hosts"]
+                bad = [k for k in want if k not in self.ASK_LIVE]
+                if bad:
+                    raise ValueError("the live tier has no %s to ask about" % ", ".join(bad))
+                live = live or self.live_payload(window_min)
+                extra.setdefault("live_now", {}).update(
+                    {k: live.get(k) for k in want if live.get(k) is not None})
+                named.append("live_now (%s)" % ", ".join(want))
+            elif key == "trajectories":
+                tr = self.trajectories(window_min, flt)
+                ranks = tr.get("ranks") or {}
+                rank = p.get("rank") if p.get("rank") in ranks else "recent"
+                rows = tr.get("rows") or {}
+                extra["sessions"] = {
+                    "summary": tr.get("summary"), "ranked_by": rank,
+                    "listed": [{k: rows[s].get(k) for k in self.ASK_SESSION_KEYS}
+                               for s in ranks.get(rank, [])[:40] if s in rows]}
+                named.append("sessions (the ranked list, by %s)" % rank)
+            else:
+                if got is None:
+                    body = self.panels(window_min, flt) or {}
+                    st = body.get("window_status") or {}
+                    if st.get("state") != "ready" and not st.get("has_payload"):
+                        raise ValueError("this window is still being read; ask again when "
+                                         "it is built")
+                    got = body.get("panels") or {}
+                if key not in got:
+                    # one deployment has a Slurm panel and another has not: a
+                    # part the window lacks is said to be missing, not an error
+                    named.append("panels.%s (not in this window)" % key)
+                    continue
+                body = got[key] if isinstance(got[key], dict) else {"rows": got[key]}
+                pick = {}
+                for k in keys or [k for k in body if not k.startswith("_")]:
+                    # `workspace.summary`: one field inside another
+                    top, _, sub = k.partition(".")
+                    if top.startswith("_") or top not in body:
+                        continue
+                    if not sub:
+                        pick[top] = body[top]
+                    elif isinstance(body[top], dict) and sub in body[top]:
+                        pick.setdefault(top, {})[sub] = body[top][sub]
+                if pick:
+                    panels.setdefault(key, {}).update(pick)
+                named.append("panels.%s%s" % (key, " (%s)" % ", ".join(keys) if keys else ""))
+        if not panels and not extra:
+            raise ValueError("this panel has no data in this window to ask about")
+        classes = ctx.get("classes")
+        extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
+                         "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                         if isinstance(classes, list) else None}
+        title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
+        scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),
+                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP}
+        if self.anon is not None:
+            # The snapshot leaves the host, for the model's provider: aliases only.
+            panels, extra = self.anon.payload(panels), self.anon.payload(extra)
+        return self.asker.submit(question, panels, None, win["label"], history, extra, scope)
+
+    def _ask_session(self, question, window_min, history, ctx):
+        sid = ctx.get("session")
+        if not isinstance(sid, str) or not sid or len(sid) > 400:
+            raise ValueError("context.session: a session id")
+        # Refused before the read: a question that cannot run must not make
+        # the service re-read a day of records first.
+        info = ask.describe(self.cfg)
+        if not info["enabled"] or not info["available"]:
+            raise ValueError("chat is turned off (ask.enabled)" if not info["enabled"]
+                             else info["error"] or "the agent cannot run here")
+        win = self.window(window_min)
+        body = proctree.serve(self, sid, window_min)
+        if body.get("found") is None:
+            raise ValueError("this window is still being read; ask again when it is built")
+        if not body.get("found"):
+            raise ValueError("this session is not in the %s window" % win["label"])
+        extra = ask.session_digest(body, bool(self.cfg.get("ask.include_commands", False)))
+        extra["view"] = {"window": win["label"]}
+        title = self._ask_label(ctx, "title", 160)
+        scope = {"about": title or "one session", "guide": ask.SESSION_GUIDE,
+                 "steps": ask.SESSION_STEPS}
+        if self.anon is not None:
+            extra = self.anon.payload(extra)
+        return self.asker.submit(question, None, None, win["label"], history, extra, scope)
+
+    def _accounts(self):
+        """Every account in the live roster's retention, for the anonymizer."""
         with self.lock:
+            return list(self.live.roster.last)
+
+    def ask_job(self, jid):
+        return self.asker.view(jid)
+
+    def live_users(self, window_min=None, q=None, limit=None, running=None):
+        win = self.window(window_min)
+        with self.lock:
+            return self.live.users(window_s=win["minutes"] * 60, q=q, limit=limit,
+                                   running=running)
+
+    def live_user(self, name, window_min=None, recent=25):
+        win = self.window(window_min)
+        with self.lock:
+            return self.live.user_detail(name, window_s=win["minutes"] * 60, recent=recent)
+
+    def trajectories(self, window_min=None, flt=None):
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        live_s = float(self.cfg.get("reducers.trajectories.live_s", 5) or 0)
+        with self.lock:
+            # The panel re-reads the sessions every few seconds: re-rank them
+            # from the live-fed reducer then, not only at the next rebuild.
+            if live_s > 0:
+                view.materialize_key("trajectories", live_s)
             payload = (view.payload or {}).get("trajectories")
             out = dict(payload) if isinstance(payload, dict) else {}
+            if out.get("rows"):
+                out["rows"] = self._running_rows(out["rows"])
             out.update(feedmod.panel_meta(self.reports["ebpf"]))
             out["_window"] = view.status()
+            out["filter"] = flt.block()
             return out
+
+    def _running_rows(self, rows, now=None):
+        """The ranked rows, each whose agent is running now marked `running`.
+
+        From the live tier (under the lock): an agent root is running while
+        its own records keep arriving (`LiveReducer.LIVE_S`), and its tree's
+        newest census says how many processes it has up and how much memory
+        they hold -- when the agent is its tree's root; one a VS Code server
+        started shares that server's census, so it gets none. An agent's
+        rows are split by day; only its newest is marked. The cached rows
+        are never written to: a marked row is a copy.
+        """
+        now = now or time.time()
+        fresh = now - self.live.LIVE_S
+        newest = {}
+        for sid, r in rows.items():
+            try:
+                key = (r.get("host"), int(r.get("agent_pid")))
+            except (TypeError, ValueError):
+                continue
+            root = self.live.roots.get(key)
+            if root is None or (root.get("epoch") or 0) < fresh:
+                continue
+            cur = newest.get(key)
+            if cur is None or (r.get("last") or 0) > (rows[cur].get("last") or 0):
+                newest[key] = sid
+        if not newest:
+            return rows
+        out = dict(rows)
+        for key, sid in newest.items():
+            root = self.live.roots[key]
+            tree = self.live.trees.get(key)
+            census = tree if tree is not None and (tree.get("epoch") or 0) >= fresh else None
+            out[sid] = dict(rows[sid], running={
+                "seen": root.get("epoch"),
+                "n_procs": census.get("n_procs") if census else None,
+                "rss_mb": census.get("rss_mb") if census else None,
+                "census_at": census.get("epoch") if census else None,
+            })
+        return out

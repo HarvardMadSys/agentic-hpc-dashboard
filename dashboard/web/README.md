@@ -44,7 +44,8 @@ npm run fixture      # node mock/gen_fixture.mjs -> mock/api.json
 The fixture deliberately contains the awkward states the UI has to get right: a `missing`
 feed, a `stale` feed whose `lag_s` exceeds its own `max_age_s`, an `empty` feed, `null`
 rate bins (including a 23-minute outage), accumulators with `n: 0, coverage_pct: 0`, a
-`denied` sandbox slice, and a trajectory ranking dominated by one user. To see the
+sandbox slice that `exited before read` (key `denied`), a session whose every sandbox
+attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
 reload — the middleware re-reads the file on every request.
 
@@ -87,9 +88,9 @@ backend's `next_cursor`.
 These come from the retired demo's README (git history: `dashboard/archive/README.md`).
 They are research-integrity constraints; breaking one is a reporting error, not a styling error.
 
-1. **Three classes, never two** — `agent` / `human-vscode` / `human` (+ `unlabeled`).
-   The list is closed in `src/lib/classes.ts` and labelled `agent` / `human in VS Code` /
-   `human (shell)`. Folding VS Code into "agent" is what produced the retracted GPU
+1. **Three classes, never two** — `agent` / `human` / `ide` (+ `unlabeled`).
+   The list is closed in `src/lib/classes.ts` and labelled `agent` / `human` / `IDE`, always
+   in full, never abbreviated. Folding the IDE class into "agent" is what produced the retracted GPU
    near-parity claim. `<Plate>` **requires** a per-class breakdown, so a headline number
    cannot ship without its split.
 2. **Count and cost side by side** — every categorical panel goes through
@@ -123,12 +124,15 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 
 Two more that the payloads force:
 
-- **Both grains, where both exist.** The sandbox tab shows per-event *and* per-tree; the
+- **Both grains, where both exist.** The sandbox tab shows per-event *and* per-session (the
+  session judged by its tool calls); the
   overview shows the same fleet in eight units, because the class ranking is not stable
   across them.
-- **`denied` is not `unsandboxed`.** Four sandbox states. `denied` is the collector being
-  unable to read the field (it is unprivileged), so it gets its own hue *and* a hatch
-  (`src/components/Defs.tsx`) and is excluded from the sandboxed numerator.
+- **`denied` is not `unsandboxed`.** Four sandbox states. `denied`, labelled "exited before
+  read", is the namespace links being gone when the collector looked (it is root; these are
+  few-ms processes), so it gets its own hue *and* a hatch (`src/components/Defs.tsx`). Every
+  share is a state over the KNOWN verdicts with coverage beside it (`src/lib/sandbox.ts`), so
+  neither it nor `unknown` sits silently in a denominator.
 
 ## The window control
 
@@ -156,11 +160,12 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 | **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
 | **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
-| **Resources** | `resources` | run vs wait accumulators with coverage, quantile spine, stall by tool, delay accounting shown as `not measured` |
-| **Risk & I/O** | `io_process` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network — plus the **event bench** (filter bar → `/api/events` → `/api/export`) |
-| **Sandbox** | `sandbox` | sandbox × approval as independent axes, two grains, the `ancestry_matrix` with `reading` surfaced |
-| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed |
-| **Cascades** | `cascades` | agent trees deepest first (agent / infra / client nodes, how each parent was found), **nested** (agent under agent) kept apart from **hosted** (a daemon or server running sessions), per-agent drift, depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged |
+| **Resources** | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
+| **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
+| **I/O** (`?tab=io`) | `io_process`, `resources` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
+| **Sandbox** | `sandbox` | namespace isolation × approval at launch as independent axes; tool-call outcomes per session (isolated / not / **sandbox attempt failed**), wrapper calls by outcome, launch flags as written, the `ancestry_matrix` by wrapper vs process with `reading` surfaced |
+| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree |
+| **Agents** | `cascades` | agent and subagent behaviour (`?tab=agents`, `?tab=cascades` still opens it): agent trees deepest first (agent / infra / client nodes, how each parent was found, each agent's home, directories and outside-home writes), agents with **subagents** kept apart from **hosted** sessions (a daemon or server running them); **Workspace & blast radius** per agent with a *this agent only / with its subagents* toggle -- where its processes **ran** (measured), the **bytes** they moved (measured per process), the paths its command lines **named** (inferred, drawn dashed), writes and deletes outside the home flagged by where they landed; depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged |
 | **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
 
 ### Live transport
@@ -173,7 +178,8 @@ a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels
 
 ### Filters, URL state and export
 
-Every filter — plus the active tab and the trajectory rank — lives in the query string, so
+Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`, and
+`tfrom` when a read was continued past its budget) — lives in the query string, so
 a reload or a pasted link restores the view. `src/lib/filters.ts` owns the one
 serialisation: `apiQuery()` builds the string sent to **both** `/api/events` and
 `/api/export`, so the download is exactly the view by construction rather than by

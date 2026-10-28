@@ -31,7 +31,9 @@
 # escape. system.slice has no such cap.
 set -uo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Through any symlink: the RPM links /usr/bin/ebpfm here, and the tracer and
+# node tier live next to the real file, not next to the link.
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # Absolute path to THIS script. $0 is whatever the caller typed: invoked as
 # `bash ebpfm.sh start` it is the bare relative "ebpfm.sh", which nohup then
 # looks up on PATH, not in cwd, so the node-tier child dies instantly with
@@ -113,7 +115,18 @@ _secure_file() {
 #   <host>.exits.jsonl      exit, truncated   (per-process, unbounded rate)
 #   <host>.snapshot.jsonl   everything else   (census, conns, submits, meta/stop)
 EBPF_STREAMS="snapshot exits"
-_ebpf_file() { echo "$OUTPUT_DIR/${2:-$(date +%F)}/$HOST.$1.jsonl"; }
+# The installed unit passes %H, the FULL hostname, where this script says
+# `hostname -s`; a file under either name is this host's, so status and tail
+# find the unit's files too.
+_ebpf_file() {
+    local d="$OUTPUT_DIR/${2:-$(date +%F)}" g
+    if [ ! -e "$d/$HOST.$1.jsonl" ]; then
+        for g in "$d/$HOST".*."$1".jsonl; do
+            [ -e "$g" ] && { echo "$g"; return 0; }
+        done
+    fi
+    echo "$d/$HOST.$1.jsonl"
+}
 
 fails=0
 ok()   { printf '  ok    %-30s %s\n' "$1" "${2-}"; }
@@ -476,9 +489,19 @@ cmd_dump_c()   { need_root dump-c;   exec python3 "$TRACER" --dump-c; }
 _node_tick() {
     local d; d="$NODE_OUTPUT_DIR/$(date +%F)"
     _secure_dir "$d" || return 1
-    SNAPSHOT_MODE="$(_node_mode)" python3 "$NODE_SNAPSHOT" "$HOST" "$NODE_TOP_N" \
+    # Bounded: one snapshot stuck on a hung mount would otherwise stall every
+    # later one. The next tick simply tries again.
+    SNAPSHOT_MODE="$(_node_mode)" $(_node_timeout) python3 "$NODE_SNAPSHOT" "$HOST" "$NODE_TOP_N" \
         >> "$d/$HOST.jsonl"
     _secure_file "$d/$HOST.jsonl"
+}
+
+# `timeout` with a limit just under the interval, when coreutils has it
+_node_timeout() {
+    command -v timeout >/dev/null 2>&1 || return 0
+    local lim=$((NODE_INTERVAL - 10))
+    [ "$lim" -lt 30 ] && lim=30
+    printf 'timeout -k 10 %s' "$lim"
 }
 
 _node_loop() { while true; do _node_tick || true; sleep "$NODE_INTERVAL"; done; }
@@ -497,17 +520,29 @@ cmd_once() {
     fi
 }
 
+# A pid file outlives its process -- a crash, a reboot -- and the pid in it is
+# then whatever the kernel handed it to next. Trust it only while that pid is
+# still running what we started, or `stop` would signal a stranger.
+_pid_runs() {   # _pid_runs PID WORD
+    local cmd
+    cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)" || return 1
+    case "$cmd" in *"$2"*) return 0 ;; esac
+    return 1
+}
+
 _running_pid() {
     [ -f "$PID_FILE" ] || return 1
     local p; p="$(cat "$PID_FILE" 2>/dev/null)"
-    [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null && { echo "$p"; return 0; }
+    [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null && _pid_runs "$p" ebpf_trace.py \
+        && { echo "$p"; return 0; }
     return 1
 }
 
 _node_running_pid() {
     [ -f "$NODE_PID_FILE" ] || return 1
     local p; p="$(cat "$NODE_PID_FILE" 2>/dev/null)"
-    [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null && { echo "$p"; return 0; }
+    [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null && _pid_runs "$p" _node_daemon \
+        && { echo "$p"; return 0; }
     return 1
 }
 

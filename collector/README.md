@@ -286,7 +286,7 @@ This section is the **eBPF tier**. For the node tier's 36-key snapshot schema se
 same schema the login poller has always written, which is what keeps every existing
 `log/login` consumer working.
 
-`SCHEMA_VERSION = 7`. JSONL, one record per line,
+`SCHEMA_VERSION = 8`. JSONL, one record per line,
 split across **two files per host per day**:
 
 | file | `event` | why separate |
@@ -311,10 +311,10 @@ started".
 | `conn` | residency tick | one per **standing external** socket: `proto`, RTT, retransmits, bytes, idle |
 | `netio` | residency tick; a series process's exit; stop | one per process that moved bytes: bytes per endpoint since its previous `netio` |
 | `residency` | residency tick | one per live agent tree |
-| `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate`, the endpoint table's counters |
-| `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir` |
+| `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate`, the endpoint table's counters, and (schema 8) the run's `perf_seen`/`perf_lost`, `handler_errors`, `proc_entries`, `proc_vanished`, `thread_acc`, `netpeer_kernel` |
+| `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir`, `captured_tail` (masked; null for `--pty`) |
 | `truncated` | SIGTERM | one per live tracked process, with accumulated counters |
-| `stop` | shutdown | `records`, `flushes`, `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason` |
+| `stop` | shutdown | `records`, `flushes`, `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason` |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
 `ts` is local, naive and second-granular — fine for reading one host's file, useless for
@@ -330,6 +330,160 @@ tracked as a human, so the collector's own `truncated` record and its children's
 (`bpftool`, when it dumps BTF) would otherwise read as someone's work. The `ebpfm.sh` and
 `sudo` processes above it have pids of their own and are not covered by the rule. The
 field also tells two runs in one day's file apart.
+
+### Schema 8: one session per agent, whole processes, masked text
+
+Two sets of changes share schema 8: sessions that stop splitting at every tool
+call, and the fixes from a review of a week of FASRC captures. Neither was
+deployed before the other, so no capture has one without the other.
+
+#### One session per agent, not per tool call
+
+This part renames no field. It changes what `is_agent`, `agent_pid`, `session_key`,
+`session_uuid`, `depth` and `agent_type` mean for one kind of process.
+
+Through schema 7, `resolve()` made every process whose own argv matched the classifier
+(`lib/agent_classify.py`) its own agent root: `is_agent` true, `depth` 0, `agent_pid`
+itself. The classifier matches any argv that mentions `/.claude/`, `/.codex/` or
+`.vscode-server`, so these all became roots, each starting a session of its own:
+
+- Claude Code's shell for each Bash tool call (`zsh -c source ~/.claude/shell-snapshots/…`)
+- its native binary re-executed as `rg`, `ugrep` or `bfs` for Grep and Glob
+- `codex-linux-sandbox` and `bwrap`, once per sandboxed tool call
+- `--version` and `auth status` probes, and `chmod`/`mkdir` on `~/.claude/…`
+
+One Claude tree on madsys-gpu1 on 2026-10-06 split into 204 `session_key`s this way.
+
+From schema 8, a tagged process is a root only when it is an **agent runtime**, or when
+no agent tree is above it. Anything else the classifier tags joins its parent's tree at
+`depth`+1, exactly as an untagged child does. `agent_role()` in `ebpf_trace.py` makes the
+call from the process's own argv. It ports `dashboard/rc_dashboard/roles.py`, which applies
+the same rules to older records when the dashboard reads them; keep the two in sync. It
+sorts tagged processes into `agent`, `tool-shell`, `embedded-tool`, `sandbox`, `probe`,
+`client`, `infra`, `ide` and `helper`, and only `agent` starts a session inside a tree.
+`AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1. The classifier
+itself is unchanged; see `VENDORED.md`.
+
+For a tagged process that is not an agent runtime, inside an agent tree:
+
+| field | schema 7 | schema 8 |
+|---|---|---|
+| `is_agent` | `true` | `false` |
+| `agent_pid`, `session_key`, `session_uuid` | its own | the nearest agent runtime's above it, or the tree root's if there is none |
+| `depth` | 0 | its parent's + 1 |
+| `agent_type` | its own tag | its tree's: a `bwrap` under Claude Code is `claude_code` |
+| `autonomous` | from its argv | `null`, as on every non-root |
+
+For example, a Bash tool call's shell, the command it runs and a Grep now all carry the
+Claude process's `session_key`, at depths 1, 2 and 1.
+
+- **Nested agents are still roots.** `claude -p` run from a tool call, and the
+  `--print --sdk-url` workers `claude rc` starts, keep their own sessions. `tree_root_pid`
+  still names the outermost agent, and it is unchanged for every process.
+- **Outside an agent tree nothing changes.** Running `claude --version` or
+  `chmod ~/.claude/…` at a human prompt still gives its own root, with the same `actor`
+  and `actor3`.
+- **`actor3` can move inside a tree, because `agent_type` follows the tree.** The
+  `claude auth status` probe that VS Code's extension host runs every few minutes is now
+  `vscode`, so `human-vscode`, and no longer `agent`. Something an agent runs that matches
+  `.vscode-server` is now `agent`.
+- **`sandbox_ancestry` still sees `bwrap`.** It used to rely on `agent_type`, which a
+  `bwrap` inside a tree no longer carries. The process table now keeps each process's own
+  classifier match next to its tree's. Tagged processes still each get a sandbox read at
+  exec, as they did when they were all roots.
+- **`residency` moves too.** `max_depth` grows, since tool calls sit below their agent.
+  `by_agent_type` changes along with `agent_type`. A tool shell whose command line carries
+  a bypass flag no longer counts as `autonomous`.
+- **`EBPFM_INCLUDE_ROOTS=0` keeps tool calls.** It drops roots, and a tool shell is no
+  longer one.
+- **An exec clears the old attribution.** Before, a root that exec'd into an untagged
+  command kept `is_agent: true`, and a process that lost its tree kept its old
+  `agent_pid`.
+
+This is a heuristic over argv, so it can misfile a shape it has not seen. If a new kind
+of agent runtime is misfiled, it joins its spawner's session instead of starting its own.
+Its `args`, `command` and `ppid` are still on every record, so a reader can split it out
+again. A capture that spans 7 and 8 has sessions of two different grains, and
+`schema_versions` is what shows the boundary. On schema-8 records the dashboard's fold
+finds almost nothing left to fold.
+
+#### Whole processes, ordered events, masked text
+
+A review of a week of FASRC captures (8 login nodes, 2026-10-20 to 25) found the
+endpoint table full most of the day, exit records frozen before their argv arrived,
+multi-threaded processes' CPU mostly missing, and prompts and keys in `args`.
+Schema 8 is the fix for each; every point below changes what a field holds.
+
+- **Events are applied in kernel-time order.** Each CPU has its own perf ring and BCC
+  drains them in turn, so a round handed over a process's exit before its own exec,
+  and every argv after every exec. An exec applied after its exit revived the dead
+  process: an entry nothing retired (16-20k of them live at a time on one node), which
+  kept its endpoint-table entries and lent its identity to the next process on the pid.
+  Events are now queued and applied once nothing older can still be in a ring
+  (`EBPFM_REORDER_MS`, 20). An event about an already-exited process no longer revives
+  it, a recycled pid gets a fresh entry, and every residency tick retires entries whose
+  process is gone from `/proc` (on a second miss), counted in `proc_vanished`.
+- **An exit record is built when it is written**, after the 250 ms hold, not when the
+  exit arrives, so a late argv, parent or attribution is in it. `ts_epoch` is still the
+  exit's. Args were null on 57% of sub-10 ms exits before this.
+- **Exit counters cover the whole process** with the `thread_acc` block: each thread
+  adds its own CPU, run time, faults, context switches, waits, D-state and I/O as it
+  exits, and the record comes from the last thread out. Before, the record was the
+  leader's, plus only threads already released into `signal_struct`: one 42-thread
+  Codex process went from 48,297 CPU-s at its last tick to 79.7 s at exit. `meta`
+  says which you have (`counters_scope`: `process` or `leader`); `threads` is now the
+  most threads seen. Not comparable with schema 7 for multi-threaded processes.
+  A thread that dropped the group's `live` count early can reach its tracepoint after
+  the last one and read zero too, so while other threads are unreleased the record
+  goes to the one that claims it (`thr_claim`); the rest add themselves. Sums carry
+  the process's start time, so a dead process's leftovers (its exit lost) never join
+  the next process on its pid, and the record lives in a per-CPU map, not on the
+  512-byte stack.
+- **`args` and `captured_tail` are masked by default** (`lib/redact.py`):
+  credentials with the dashboard's own rules, and the prompt text handed to a coding
+  agent on its command line (`claude -p "..."`, `codex exec "..."`, `gemini -p`, through
+  node/npx/wrappers or inside `bash -c` and `sbatch --wrap`). Flags, models,
+  subcommands, session names (`--name`, `--remote-control`), and the agents' own
+  daemons (`claude daemon`, `codex app-server`) stay; the record's `args_redacted` names
+  what was masked. The claude and codex tables follow their `--help`, and an option's
+  value is kept unless it reads as a sentence where a name should be (codex's `-p` is
+  `--profile`). Where a prompt can stand, only a path, id, or `-` is kept, and text in
+  a script other than Latin reads as words, spaces or not. In a `bash -c` string only
+  the prompt changes, but for a comment beside it; a heredoc's body is data, masked when
+  it feeds an agent; and a credential the rules cannot read through the string's
+  quoting is masked in the string rebuilt from its words. Classification reads the raw
+  argv in memory, so nothing about attribution changes. `EBPFM_REDACT=keys` or
+  `prompts` keeps one kind; `0` turns it off, and a value it cannot read masks both.
+  The node tier masks its argv fields the same way, from `/proc/<pid>/cmdline`'s
+  separate arguments while they still spell `ps`'s line. `w`'s command, which has no
+  pid, is masked from the space-joined line, as is a process gone before `/proc` is
+  read, an argument `ps` prints `?` in, and a multi-line script; there a session name's
+  later words read as a prompt's.
+- **Kernel-socket traffic is no process's network I/O.** The NFS client sends its RPCs
+  from the calling process's context, so every `ls` on an NFS path was an endpoint:
+  95% of the table. A socket with no file behind it is now counted per node in
+  `netpeer_kernel` and left out of `net_*_bytes` and `net_endpoints`.
+- **The endpoint table is read per process.** Each new entry is announced on
+  `netp_new`; a process's exit reads and deletes just its own entries, and a tick reads
+  only reported processes'. The whole table is read every 10 ticks, or sooner once it
+  fills (`netpeer_entries` is that read's count on those ticks, the indexed count on
+  others). The default size is 65,536 entries (`EBPFM_NETPEER_MAX`).
+- **`cgroup` is right for anything a service manager starts.** The id-to-path map never
+  matched on 4.18 (the id carries a generation in its top half), and a child kept the
+  cgroup it inherited at fork: `/init.scope`, on 22% of one node's records. Ids now
+  come from file handles, and a miss reads `/proc`.
+- **`ppid` is the forking process**, not its forking thread, and an entry keeps the
+  parent that forked it when exec or exit later reports init (`nohup cmd &`).
+- **Submit capture** stops at the job id, or after `EBPFM_SUBMIT_BUDGET` bytes (8192);
+  before, every write of an `srun --pty` session went up the ring (8.4M events in 6.5
+  days on one node).
+- **Startup attaches the probes, then seeds from `/proc`**, so nothing starts in a gap.
+- **Python 3.6** (EL8): the BTF read used a 3.7 keyword and failed silently, so no FAS
+  node had `tcp_accept` or any BTF block; `conn.age_s` used the wall clock there.
+- New blocks: `fork_raw` (threads never reach the ring), `thread_acc`, `netbytes_page`
+  (sendfile on kernels before 6.5). `meta.unsafe_dirs` lists directories other users
+  can change on the way to the output or the collector's code, and a second collector
+  for the same output directory and host refuses to start (`.<host>.lock`).
 
 ### Schema 7: network bytes by endpoint
 
@@ -722,12 +876,14 @@ argv read in-kernel at exec, the real limit when uncapped) ·
 `EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_TCP_ALL` ·
 `EBPFM_CONNS_TOPN` (5) · `EBPFM_EXIT_HOLD_MS` (250; `0` = emit exit records inline and
 lose the connections that close after the exit event) ·
-`EBPFM_NETPEER_MAX` (16384; the kernel endpoint table) · `EBPFM_NET_ENDPOINTS_MAX`
+`EBPFM_NETPEER_MAX` (65536; the kernel endpoint table) · `EBPFM_NET_ENDPOINTS_MAX`
 (256; endpoints listed per record) · `EBPFM_NETIO` (on; `0` = no `netio` series, keep
 `net_endpoints`) · `EBPFM_ARGV_HOSTS` (on; `0` = no `host` names from argv) ·
 `EBPFM_FLUSH_MODE` (`poll`; `record` = flush every record, the schema-5 behaviour —
 note this is NOT `EBPFM_FLUSH`, which is about flushing live *processes* at stop) ·
-`EBPFM_MIN_CPU` /
+`EBPFM_REDACT` (`keys,prompts`; `0` = write argv raw) · `EBPFM_REORDER_MS` (20; how far
+behind kernel time events are applied) · `EBPFM_SUBMIT_BUDGET` (8192; bytes of a submit
+tool's output captured) · `EBPFM_MIN_CPU` /
 `_DURATION` · `EBPFM_PERF_PAGES` · `EBPFM_POLL_MS` · `EBPFM_FEATURES` (force a block
 set) · `EBPFM_FEATURE_CACHE` · `EBPFM_PROBE_VERBOSE=1` (print the compiler line for a
 rejected block).
@@ -737,11 +893,18 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 278 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 462 tests, no root, no BPF needed
+python3 tests/bpf_compile_check.py           # compile every block with BCC, no root
 ```
 
+`bpf_compile_check.py` runs BCC's real frontend and LLVM over the generated program,
+block by block as `probe_features()` would, supplying the tracepoint argument structs
+itself (tracefs is root-only). It shows what the rewriter and the 512-byte stack limit
+accept on this host's headers; only a load shows what the verifier does.
+
 Pure helpers, the BTF member walk (including bpftool's literal `(anon)` rendering for
-unnamed union members), each BPF block compiled alone, ancestry, attribution precedence
+unnamed union members), each BPF block compiled alone, ancestry, which tagged processes
+are agent roots (schema 8: the role table and whole agent trees), attribution precedence
 (ancestry beats tty beats uid), tty **non**-inheritance, cwd inheritance, thread-clone
 skip, pid recycling, and the netlink parser against a captured response blob.
 
@@ -757,8 +920,8 @@ as text.
 ## Kernel support
 
 Developed against **6.8** (Ubuntu 24.04) and **6.17**. FASRC login nodes run **4.18**,
-where `dstate_task` (needs 5.19+), `tcp_accept` and `netpeer_btf` (need BTF) will be
-rejected; `dstate_stat` is the 4.18 path for data point 2, which is why both blocks
+where `dstate_task` (needs 5.19+) will be rejected, and `tcp_accept` and `netpeer_btf`
+need BTF -- which their Python 3.6 never read before schema 8; `dstate_stat` is the 4.18 path for data point 2, which is why both blocks
 exist and are cross-checked, and `netpeer_hdr` is the 4.18 path for the endpoint table. Run `features` on the target kernel before trusting any field, and
 `EBPFM_PROBE_VERBOSE=1` to see why a block was rejected.
 

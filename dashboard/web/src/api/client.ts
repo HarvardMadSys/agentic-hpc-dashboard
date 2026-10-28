@@ -6,15 +6,27 @@
  * ever synthesises a value.
  */
 import type {
+  CollectorsResponse,
   ConfigTree,
   EventsResponse,
   FeedsResponse,
   LiveResponse,
+  LiveUserDetail,
+  AskContext,
+  AskInfo,
+  AskJob,
+  DoneList,
+  IoCmdJob,
+  IoSort,
+  LiveUsers,
   PanelsResponse,
   TrajRank,
   Trajectories,
+  TrajectoryDetail,
   WindowsResponse,
 } from './types';
+import { whoQuery } from '../lib/filters';
+import type { Who } from '../lib/filters';
 
 /** Override for a non-root mount or a split dev backend. */
 export const API_BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) || '/api';
@@ -57,16 +69,113 @@ function win(minutes: number | null | undefined, sep = '?'): string {
 
 export const getConfig = (s?: AbortSignal) => get<ConfigTree>('/config', { signal: s });
 export const getFeeds = (s?: AbortSignal) => get<FeedsResponse>('/feeds', { signal: s });
+export const getCollectors = (s?: AbortSignal) => get<CollectorsResponse>('/collectors', { signal: s });
 export const getWindows = (s?: AbortSignal) => get<WindowsResponse>('/windows', { signal: s });
 
-export const getPanels = (minutes?: number | null, s?: AbortSignal) =>
-  get<PanelsResponse>(`/panels${win(minutes)}`, { signal: s });
+/** `&user=..&agent_type=..`, or nothing when the filter is empty -- so an
+ *  unfiltered page asks for exactly what it asked for before filters existed. */
+function who(w: Who | null | undefined): string {
+  const q = w ? whoQuery(w) : '';
+  return q ? '&' + q : '';
+}
+
+/** `who` narrows the panels to some users or agent types: a view of its own,
+ *  which the service builds like a window. */
+export const getPanels = (minutes?: number | null, s?: AbortSignal, w?: Who | null) => {
+  const q = (win(minutes, '') + who(w)).replace(/^&/, '');
+  return get<PanelsResponse>(`/panels${q ? '?' + q : ''}`, { signal: s });
+};
 export const getLive = (minutes?: number | null, s?: AbortSignal) =>
   get<LiveResponse>(`/live${win(minutes)}`, { signal: s });
 
-export const getTrajectories = (rank: TrajRank, minutes?: number | null, s?: AbortSignal) =>
+export const getLiveUsers = (q: string, minutes?: number | null, s?: AbortSignal, running?: string | null) =>
+  get<LiveUsers>(
+    `/live/users?q=${encodeURIComponent(q)}&limit=500${running ? `&running=${encodeURIComponent(running)}` : ''}${win(minutes, '&')}`,
+    { signal: s },
+  );
+export const getAskInfo = (s?: AbortSignal) => get<AskInfo>('/ask', { signal: s });
+export const getAskJob = (id: string, s?: AbortSignal) =>
+  get<AskJob>(`/ask/${encodeURIComponent(id)}`, { signal: s });
+/** Start a question; the answer is polled with getAskJob. `context` narrows it
+ *  to one panel or one session; `w`, the page's filter, rides in the query
+ *  string as on /panels, so a panel's question reads the view on screen. */
+export async function postAsk(
+  question: string,
+  minutes: number | null | undefined,
+  history: { q: string; a: string }[],
+  context?: AskContext,
+  w?: Who | null,
+): Promise<AskJob> {
+  const q = who(w).replace(/^&/, '');
+  const r = await fetch(API_BASE + '/ask' + (q ? '?' + q : ''), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ question, window_min: minutes ?? null, history, context: context ?? null }),
+  });
+  if (!r.ok) {
+    let detail = r.statusText;
+    try {
+      detail = ((await r.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      /* not JSON: the status is the message */
+    }
+    throw new ApiError(API_BASE + '/ask', r.status, detail);
+  }
+  return (await r.json()) as AskJob;
+}
+
+/** The operator's suggestions marked done: the service keeps them for
+ *  everyone, until undone. A mark names an answer and a suggestion in it. */
+export const getDone = (s?: AbortSignal) => get<DoneList>('/suggestions/done', { signal: s });
+async function doneCall(path: string, method: 'POST' | 'DELETE', body?: unknown): Promise<DoneList> {
+  const r = await fetch(API_BASE + path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    let detail = r.statusText;
+    try {
+      detail = ((await r.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      /* not JSON: the status is the message */
+    }
+    throw new ApiError(API_BASE + path, r.status, detail);
+  }
+  return (await r.json()) as DoneList;
+}
+export const markDone = (job: string, index: number) => doneCall('/suggestions/done', 'POST', { job, index });
+export const undoDone = (id: string) => doneCall(`/suggestions/done/${encodeURIComponent(id)}`, 'DELETE');
+
+export const getLiveUser = (name: string, minutes?: number | null, s?: AbortSignal, n = 25) =>
+  get<LiveUserDetail>(`/live/user?name=${encodeURIComponent(name)}&n=${n}${win(minutes, '&')}`, { signal: s });
+
+export const getTrajectories = (
+  rank: TrajRank,
+  minutes?: number | null,
+  s?: AbortSignal,
+  w?: Who | null,
+) =>
   get<Trajectories>(
-    `/trajectories?rank=${encodeURIComponent(rank)}${win(minutes, '&')}`,
+    `/trajectories?rank=${encodeURIComponent(rank)}${win(minutes, '&')}${who(w)}`,
+    { signal: s },
+  );
+
+/** One session as a process tree. A re-read of the day-files server-side, so
+ * it costs seconds on a big session; `from` continues past a read that
+ * stopped at its budget, and `to` bounds it -- the page sends "now" to ask for
+ * a fresh read instead of the one the service keeps. */
+export const getTrajectory = (
+  sid: string,
+  minutes?: number | null,
+  from?: number | null,
+  s?: AbortSignal,
+  to?: number | null,
+) =>
+  get<TrajectoryDetail>(
+    `/trajectory?sid=${encodeURIComponent(sid)}${win(minutes, '&')}${
+      from != null ? `&from=${encodeURIComponent(from)}` : ''
+    }${to != null ? `&to=${encodeURIComponent(to)}` : ''}`,
     { signal: s },
   );
 
@@ -84,4 +193,22 @@ export function wsUrl(): string {
   if (explicit) return explicit;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.host}/ws`;
+}
+
+/** Start the lookup of every command behind an I/O number, or find the one
+ *  already reading or done for the same question (rc_dashboard/iocmds.py). */
+export function startIoCmds(params: URLSearchParams, signal?: AbortSignal): Promise<IoCmdJob> {
+  return get<IoCmdJob>(`/io/commands?${params.toString()}`, { signal });
+}
+
+/** A lookup's progress, and once it is done, one sorted page of its commands. */
+export function getIoCmds(
+  id: string,
+  page: { offset: number; limit: number; sort: IoSort; dir: 'asc' | 'desc' },
+  signal?: AbortSignal,
+): Promise<IoCmdJob> {
+  const q = new URLSearchParams({
+    offset: String(page.offset), limit: String(page.limit), sort: page.sort, dir: page.dir,
+  });
+  return get<IoCmdJob>(`/io/commands/${encodeURIComponent(id)}?${q.toString()}`, { signal });
 }

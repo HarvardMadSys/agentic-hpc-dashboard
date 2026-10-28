@@ -14,7 +14,8 @@
  *   - a feed whose lag_s exceeds its own max_age_s (stale)
  *   - rate bins that are `null` (gaps), including one long outage
  *   - accumulators with `n: 0, coverage_pct: 0` ("not measured", never 0)
- *   - a `denied` sandbox slice, distinct from `unsandboxed`
+ *   - an `exited before read` (key `denied`) slice, distinct from `unsandboxed`,
+ *     and a session whose every sandbox attempt failed
  *   - a trajectory list dominated by one user
  */
 import { writeFileSync } from 'node:fs';
@@ -27,7 +28,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 const BINS = 1440; // 24 h at one bin per minute
 const HOSTS = ['holylogin01', 'holylogin02', 'holylogin03', 'boslogin01', 'boslogin02', 'boslogin03'];
-const CLASSES = ['agent', 'human-vscode', 'human'];
+const CLASSES = ['agent', 'human', 'ide'];
 
 /* diurnal weight: quiet at 05h, peak at 15h local */
 const diurnal = (min) => {
@@ -41,7 +42,7 @@ const wob = (i, salt) => {
   return x - Math.floor(x); // [0,1)
 };
 
-const BASE = { agent: 210, 'human-vscode': 96, human: 34 };
+const BASE = { agent: 210, 'ide': 96, human: 34 };
 
 /* Two deliberate holes: a 23-minute collector outage, and scattered single
  * bins where no record landed at all. */
@@ -101,7 +102,7 @@ function events(nowEpoch, n) {
       ts: new Date(epoch * 1000).toTimeString().slice(0, 8),
       epoch,
       actor3: cls,
-      agent_type: cls === 'agent' ? (wob(i, 7) < 0.7 ? 'claude_code' : 'codex') : cls === 'human-vscode' ? 'vscode' : null,
+      agent_type: cls === 'agent' ? (wob(i, 7) < 0.7 ? 'claude_code' : 'codex') : cls === 'ide' ? 'vscode' : null,
       user,
       host: HOSTS[Math.floor(wob(i, 8) * HOSTS.length)],
       depth: 2 + Math.floor(wob(i, 10) * 7),
@@ -124,7 +125,9 @@ function events(nowEpoch, n) {
                 ? 'denied'
                 : 'unknown'
           : 'unknown',
-      approval: cls === 'agent' ? (wob(i, 19) < 0.31 ? 'bypassed' : 'supervised') : 'unknown',
+      // per record only a session root carries an approval; its children are
+      // `unknown`, and nothing outside the agent class has one (`na`)
+      approval: cls === 'agent' ? (wob(i, 19) < 0.02 ? 'bypassed' : wob(i, 19) < 0.05 ? 'auto' : 'unknown') : 'na',
       session_key: `sess-${cls}-${user}-${Math.floor(i / 37)}`,
       dstate_wait_s: dstate ? Number((wob(i, 20) * 3.2).toFixed(3)) : null,
     });
@@ -166,7 +169,7 @@ const MIX = {
     files: [9.9, 2.2],
     other: [1.9, 1.3],
   },
-  'human-vscode': {
+  'ide': {
     'poll/probe': [11.2, 0.6],
     'slurm-submit': [0.4, 0.9],
     'slurm-query': [3.1, 0.8],
@@ -196,8 +199,8 @@ const MIX = {
   },
 };
 
-const CALLS = { agent: 4_812_446, 'human-vscode': 1_964_118, human: 384_902 };
-const CPU = { agent: 91_244.8, 'human-vscode': 48_611.2, human: 26_408.4 };
+const CALLS = { agent: 4_812_446, 'ide': 1_964_118, human: 384_902 };
+const CPU = { agent: 91_244.8, 'ide': 48_611.2, human: 26_408.4 };
 
 const ENV = (feed, paths, status = 'ok') => ({
   _feed: feed,
@@ -265,11 +268,6 @@ function toolMix() {
     buckets: BUCKETS,
     by_class,
     head,
-    shell_kinds: {
-      agent: { 'bash -lc': 3_114_882, 'bash -c': 812_004, 'sh -c': 94_221, interactive: 1_442 },
-      'human-vscode': { 'bash -lc': 402_118, 'bash -c': 288_904, 'sh -c': 41_002, interactive: 96_884 },
-      human: { 'bash -lc': 18_224, 'bash -c': 9_116, 'sh -c': 2_884, interactive: 141_006 },
-    },
     dedup: {
       dropped: 1_884_662,
       dropped_pct: 21.4,
@@ -283,7 +281,7 @@ function ioProcess() {
   const by_class = {};
   const shape = {
     agent: [188_442.6, 41_882.2, 918_441.2, 62_004.8, 78.4, 4_812_446, 2_884_112],
-    'human-vscode': [64_118.4, 18_204.6, 402_118.8, 24_118.2, 84.1, 1_964_118, 1_142_884],
+    'ide': [64_118.4, 18_204.6, 402_118.8, 24_118.2, 84.1, 1_964_118, 1_142_884],
     human: [21_884.2, 8_118.4, 61_442.6, 11_884.6, 64.4, 384_902, 188_442],
   };
   for (const c of CLASSES) {
@@ -298,7 +296,7 @@ function ioProcess() {
       wchar_mb: wchar,
       cache_served_mb: Number((rchar - rd).toFixed(1)),
       cache_hit_pct: hit,
-      /* agent egress is measured; human-vscode is partly measured; human TCP
+      /* agent egress is measured; IDE is partly measured; human TCP
          accounting did not resolve at all -- n:0 means NOT MEASURED. */
       net_tx_mb:
         c === 'human' ? accum(null, 0, 0) : accum(c === 'agent' ? 4_882.6 : 1_142.4, c === 'agent' ? 88_442 : 24_118, c === 'agent' ? 64.2 : 22.8),
@@ -345,16 +343,69 @@ function ioProcess() {
   };
 }
 
-function resources() {
+/* The resources time series: 10-minute bins over 24 h, the backend's width for
+ * that window. Sums by exit time for the exit fields, a sampled level for the
+ * resident fields, and the same collector outage as the live rate (as bins). */
+function resourceSeries(nowEpoch) {
+  const BIN = 600;
+  const N = 144;
+  const start = Math.floor(nowEpoch / BIN) - N + 1;
+  const t = Array.from({ length: N }, (_, i) => (start + i) * BIN);
+  const out = (i) => i * 10 >= OUTAGE[0] - 10 && i * 10 < OUTAGE[1];
+  const PER_BIN = {
+    agent: [2_100, 0.042, 0.0009, 0.0006, 0.018],
+    'ide': [960, 0.11, 0.0011, 0.0004, 0.31],
+    human: [340, 0.36, 0.0021, 0.0002, 0.42],
+  };
+  const RSS = { agent: 4_400, 'ide': 2_200, human: 38_500 };
+  const by_class = {};
+  const resident = {};
+  for (const [ci, c] of CLASSES.entries()) {
+    const [n, cpu, wait, dst, maj] = PER_BIN[c];
+    const row = { n: [], cpu_s: [], sched_wait_s: [], dstate_wait_s: [], maj_flt: [] };
+    const res = { rss_mb: [], n_procs: [], d_state: [] };
+    for (let i = 0; i < N; i++) {
+      const w = diurnal(i * 10) * (0.7 + 0.6 * wob(i, 40 + ci));
+      const k = Math.round(n * w);
+      const gap = out(i) || (c === 'human' && i % 23 === 0);
+      const nfs = i > 70 && i < 76; // an NFS hiccup: every class stalls at once
+      row.n.push(gap ? null : k);
+      // one long-lived agent exiting: its whole life's CPU in a single bin
+      row.cpu_s.push(gap ? null : Number((k * cpu * (c === 'agent' && i === 97 ? 18 : 1)).toFixed(3)));
+      row.sched_wait_s.push(gap ? null : Number((k * wait * (1 + 3 * wob(i, 50 + ci))).toFixed(3)));
+      row.dstate_wait_s.push(gap ? null : Number((k * dst * (nfs ? 25 : 1)).toFixed(3)));
+      row.maj_flt.push(gap ? null : Math.round(k * maj));
+      res.rss_mb.push(out(i) ? null : Number((RSS[c] * (0.8 + 0.4 * diurnal(i * 10))).toFixed(1)));
+      res.n_procs.push(out(i) ? null : Number((40 * w).toFixed(2)));
+      res.d_state.push(out(i) ? null : nfs ? 3 : 0);
+    }
+    by_class[c] = row;
+    resident[c] = res;
+  }
+  const stall = (i, j) =>
+    out(i) ? null : Number(((i > 70 && i < 76 ? 40 : 0.4 * wob(i, 60 + j)) / (j + 1)).toFixed(3));
+  return {
+    bin_s: BIN,
+    t,
+    by_class,
+    stall_by_tool: Object.fromEntries(TOOLS.slice(0, 6).map(([tool], j) => [tool, t.map((_, i) => stall(i, j))])),
+    stall_other: t.map((_, i) => stall(i, 6)),
+    resident,
+    resident_hosts: t.map((_, i) => (out(i) ? null : HOSTS.length)),
+    skipped: { no_ts: 0, future: 0, clipped_bins: 0 },
+  };
+}
+
+function resources(nowEpoch) {
   const by_class = {};
   const shape = {
     agent: [4_812_446, 91_244.8, 62_118.4, 188_442.6],
-    'human-vscode': [1_964_118, 48_611.2, 31_884.2, 44_118.8],
+    'ide': [1_964_118, 48_611.2, 31_884.2, 44_118.8],
     human: [384_902, 26_408.4, 18_442.6, 9_884.2],
   };
   for (const c of CLASSES) {
     const [events, cpu, run, wait] = shape[c];
-    const cov = c === 'agent' ? 58.4 : c === 'human-vscode' ? 31.2 : 12.6;
+    const cov = c === 'agent' ? 58.4 : c === 'ide' ? 31.2 : 12.6;
     by_class[c] = {
       events,
       cpu_s: cpu,
@@ -383,83 +434,93 @@ function resources() {
     by_class,
     stall_by_tool: TOOLS.slice(0, 14).map(([t], i) => ({
       tool: t,
-      cls: CLASSES[i % 3],
-      events: Math.round(400_000 / (i + 1)),
-      sched_wait_s: Number((18_000 / (i + 1.3)).toFixed(1)),
-      sched_run_s: Number((42_000 / (i + 1.1)).toFixed(1)),
-      schedstat_ratio: Number((2.3 + i * 0.4).toFixed(2)),
-      dstate_wait_s: i % 4 === 3 ? null : Number((880 / (i + 1.7)).toFixed(1)),
-      coverage_pct: Number(Math.max(4, 68 - i * 4.8).toFixed(1)),
+      wait_s: Number((880 / (i + 1.7)).toFixed(2)),
+      n: Math.round(4_000 / (i + 1)),
+      episodes: Math.round(9_000 / (i + 1)),
+      max_s: Number((4.2 / (i + 1)).toFixed(2)),
     })),
+    series: resourceSeries(nowEpoch),
     scope: { hosts: HOSTS.length, days: 2, window: '2026-09-13 00:00 to 2026-09-14 18:00' },
     cpu_basis: 'self cpu_s (utime+stime of the exiting process); child_cpu_s NEVER added',
   };
 }
 
 function sandbox() {
+  // Shaped after rtx6000a's 24 h on 2026-10-11: no tool call isolated, one Codex
+  // session whose every sandbox attempt failed, approval mostly not a bypass.
+  // Kept awkward on purpose: unknown and exited-before-read slices, a partly
+  // isolated session, and approval states argv cannot settle.
   return {
     ...ENV('ebpfm', EBPFM_PATHS),
     by_class_events: {
-      agent: { sandboxed: 2_018_442, unsandboxed: 1_142_884, denied: 1_488_226, unknown: 162_894 },
-      'human-vscode': { sandboxed: 18_442, unsandboxed: 884_112, denied: 962_118, unknown: 99_446 },
-      human: { sandboxed: 0, unsandboxed: 188_442, denied: 182_118, unknown: 14_342 },
+      agent: { sandboxed: 4_118, unsandboxed: 1_790_840, denied: 412, unknown: 18_140 },
+      ide: { unsandboxed: 996, unknown: 552 },
+      human: { sandboxed: 16, unsandboxed: 1_548, denied: 5, unknown: 12 },
     },
     approval_by_class_events: {
-      agent: { supervised: 3_118_442, bypassed: 1_488_226, unknown: 205_778 },
-      'human-vscode': { supervised: 0, bypassed: 0, unknown: 1_964_118 },
-      human: { supervised: 0, bypassed: 0, unknown: 384_902 },
+      agent: { bypassed: 2, auto: 3, supervised: 6, unobservable: 2, na: 20_676, unknown: 1_788_302 },
+      ide: { na: 1_548 },
+      human: { na: 1_565 },
     },
-    by_class_trees: {
-      agent: { sandboxed: 412, unsandboxed: 288, denied: 664, unknown: 41 },
-      'human-vscode': { sandboxed: 4, unsandboxed: 188, denied: 214, unknown: 22 },
-      human: { sandboxed: 0, unsandboxed: 488, denied: 402, unknown: 61 },
+    n_events: { agent: 1_813_510, ide: 1_548, human: 1_581 },
+    by_class_sessions: {
+      agent: { sandboxed: 1, partial: 1, failed: 2, unsandboxed: 6, unknown: 1, no_calls: 9 },
     },
-    approval_by_class_trees: {
-      agent: { supervised: 884, bypassed: 478, unknown: 43 },
-      'human-vscode': { supervised: 0, bypassed: 0, unknown: 428 },
-      human: { supervised: 0, bypassed: 0, unknown: 951 },
+    approval_by_class_sessions: {
+      agent: { bypassed: 2, auto: 7, supervised: 8, unobservable: 2, unknown: 1 },
     },
-    ancestry_matrix: [
-      {
-        ancestry: 'bwrap',
-        sandbox: 'sandboxed',
-        n: 1_884_226,
-        dstate_wait_s: 4_118.6,
-        dstate_coverage_pct: 62.4,
-        reading: 'real confinement: a bwrap ancestor and a confined mount namespace',
-      },
-      {
-        ancestry: 'bwrap',
-        sandbox: 'unsandboxed',
-        n: 188_442,
-        dstate_wait_s: 218.4,
-        dstate_coverage_pct: 58.1,
-        reading: 'capability probe: bwrap ran, the namespace did not take',
-      },
-      {
-        ancestry: 'none',
-        sandbox: 'unsandboxed',
-        n: 2_118_884,
-        dstate_wait_s: 1_884.2,
-        dstate_coverage_pct: 41.2,
-        reading: 'unconfined, as reported',
-      },
-      {
-        ancestry: 'none',
-        sandbox: 'denied',
-        n: 2_632_462,
-        dstate_wait_s: null,
-        dstate_coverage_pct: 0,
-        reading: 'unreadable: another user’s process, not evidence of anything',
-      },
+    n_sessions: { agent: 20 },
+    tool_calls: {
+      agent: { isolated: 41, not_isolated: 708, failed: 29, no_payload: 4, unknown: 3 },
+    },
+    attempts: [
+      { wrapper: 'codex-linux-sandbox', agent_type: 'codex', outcome: 'failed', n: 17 },
+      { wrapper: 'bwrap', agent_type: 'bwrap', outcome: 'isolated', n: 41 },
+      { wrapper: 'bwrap', agent_type: 'bwrap', outcome: 'failed', n: 12 },
+      { wrapper: 'bwrap', agent_type: 'bwrap', outcome: 'no_payload', n: 4 },
     ],
-    sandbox_src: { argv: 1_884_226, cgroup: 918_442, ns: 662_118, unreadable: 2_632_462 },
-    sandbox_detail: { seccomp_filtered_renderers: 884_226, note: 'every Electron renderer is seccomp-filtered' },
-    agent_only: { claude_code: { sandboxed_pct: 48.2 }, codex: { sandboxed_pct: 88.4 } },
-    states: { sandbox: ['sandboxed', 'unsandboxed', 'denied', 'unknown'], approval: ['supervised', 'bypassed', 'unknown'] },
+    sessions: [
+      { host: 'holylogin01', pid: 3_791_032, user: 'ada', actor3: 'agent', agent_type: 'claude_code', approval: 'auto', approval_detail: 'permission-mode=auto may-switch-to-bypass', state: 'unsandboxed', calls: { not_isolated: 328 }, calls_known: 328, isolated_pct: 0 },
+      { host: 'holylogin02', pid: 1_467_449, user: 'grace', actor3: 'agent', agent_type: 'codex', approval: 'supervised', approval_detail: 'no launch flag', state: 'failed', calls: { failed: 17 }, calls_known: 17, isolated_pct: 0 },
+      { host: 'holylogin01', pid: 404_264, user: 'alan', actor3: 'agent', agent_type: 'claude_code', approval: 'bypassed', approval_detail: '--permission-mode=bypassPermissions may-switch-to-bypass', state: 'partial', calls: { isolated: 41, not_isolated: 12, failed: 12 }, calls_known: 65, isolated_pct: 63.08 },
+      { host: 'boslogin01', pid: 88_120, user: 'ada', actor3: 'agent', agent_type: 'codex', approval: 'unobservable', approval_detail: 'app-server', state: 'no_calls', calls: {}, calls_known: 0, isolated_pct: null },
+      { host: 'boslogin02', pid: 22_018, user: 'edsger', actor3: 'agent', agent_type: 'claude_code', approval: 'unknown', approval_detail: null, state: 'unknown', calls: { unknown: 3 }, calls_known: 0, isolated_pct: null },
+    ],
+    sessions_total: 20,
+    launch_modes: [
+      { agent_type: 'claude_code', approval: 'supervised', detail: 'no launch flag', n: 7 },
+      { agent_type: 'claude_code', approval: 'auto', detail: 'permission-mode=auto may-switch-to-bypass', n: 7 },
+      { agent_type: 'claude_code', approval: 'bypassed', detail: '--permission-mode=bypassPermissions may-switch-to-bypass', n: 2 },
+      { agent_type: 'codex', approval: 'unobservable', detail: 'app-server', n: 2 },
+      { agent_type: 'claude_code', approval: 'supervised', detail: 'permission-mode=default', n: 1 },
+    ],
+    ancestry_matrix: [
+      { ancestry: 'none', kind: 'process', sandbox: 'unsandboxed', n: 1_793_263, dstate_wait_s: 434.2, dstate_coverage_pct: 100, reading: null },
+      { ancestry: 'none', kind: 'process', sandbox: 'unknown', n: 18_704, dstate_wait_s: 4.0, dstate_coverage_pct: 100, reading: null },
+      { ancestry: 'bwrap', kind: 'process', sandbox: 'sandboxed', n: 4_118, dstate_wait_s: 12.4, dstate_coverage_pct: 100, reading: 'under a sandbox wrapper, namespace-isolated' },
+      { ancestry: 'bwrap', kind: 'wrapper', sandbox: 'unsandboxed', n: 125, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes' },
+      { ancestry: 'codex-linux-sandbox', kind: 'wrapper', sandbox: 'unsandboxed', n: 51, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes' },
+      { ancestry: 'none', kind: 'process', sandbox: 'sandboxed', n: 16, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'isolated with no agent sandbox ancestor: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox' },
+      { ancestry: 'none', kind: 'process', sandbox: 'denied', n: 417, dstate_wait_s: null, dstate_coverage_pct: 0, reading: null },
+    ],
+    sandbox_src: { inherit: 1_791_285, 'none:tick': 1_938, 'userns:exec': 41, 'none:exec': 161, denied: 417 },
+    sandbox_detail: { nnp: 22, 'seccomp=2': 16, mnt: 41, net: 41, user: 41 },
+    agent_only: { agent: [{ sandbox: 'unsandboxed', approval: 'na', n: 20_412 }] },
+    below_capped: 0,
+    states: {
+      sandbox: ['sandboxed', 'unsandboxed', 'denied', 'unknown'],
+      sandbox_known: ['sandboxed', 'unsandboxed'],
+      session: ['sandboxed', 'partial', 'failed', 'unsandboxed', 'unknown', 'no_calls'],
+      session_known: ['sandboxed', 'partial', 'failed', 'unsandboxed'],
+      tool_call: ['isolated', 'not_isolated', 'failed', 'no_payload', 'unknown'],
+      tool_call_known: ['isolated', 'not_isolated', 'failed'],
+      approval: ['bypassed', 'auto', 'supervised', 'unobservable', 'na', 'unknown'],
+      approval_known: ['bypassed', 'auto', 'supervised'],
+    },
     notes: {
-      denied: '`denied` is the collector failing to read the field, NOT a process running unconfined',
-      axes: 'sandbox and approval_mode are independent: a confined tree can still bypass approvals',
+      meaning: 'sandbox = NAMESPACE ISOLATION; Landlock/seccomp-only sandboxes are invisible, containers count',
+      denied: "'exited before read' (key: denied) is NOT 'not isolated'",
+      failed: "'sandbox attempt failed': the wrapper exited non-zero and no payload ran under it",
     },
   };
 }
@@ -468,7 +529,7 @@ function trajectories(nowEpoch) {
   const rows = {};
   const sids = [];
   for (let i = 0; i < 28; i++) {
-    const cls = i % 7 === 6 ? 'human' : i % 3 === 1 ? 'human-vscode' : 'agent';
+    const cls = i % 7 === 6 ? 'human' : i % 3 === 1 ? 'ide' : 'agent';
     const user = cls === 'agent' && i % 4 !== 3 ? 'thomwg11' : USERS[(i + 2) % USERS.length];
     const sid = `period4-${HOSTS[i % HOSTS.length]}-${user}-${1_000 + i * 37}`;
     const nEvents = Math.round(48_000 / (i * 0.4 + 1));
@@ -502,7 +563,7 @@ function trajectories(nowEpoch) {
       host: HOSTS[i % HOSTS.length],
       user,
       actor3: cls,
-      agent_type: cls === 'agent' ? (i % 3 ? 'claude_code' : 'codex') : cls === 'human-vscode' ? 'vscode' : null,
+      agent_type: cls === 'agent' ? (i % 3 ? 'claude_code' : 'codex') : cls === 'ide' ? 'vscode' : null,
       n_events: nEvents,
       cpu_s: Number((nEvents * (0.004 + ((i % 7) * 0.02))).toFixed(2)),
       distinct_tools: 6 + ((i * 3) % 34),
@@ -511,6 +572,13 @@ function trajectories(nowEpoch) {
       peak_rss_mb: Number((188 + i * 61.4).toFixed(1)),
       io_rd_mb: Number((418.2 / (i * 0.2 + 1)).toFixed(1)),
       io_wr_mb: Number((88.4 / (i * 0.3 + 1)).toFixed(1)),
+      net_tx_mb: Number((12.6 / (i * 0.5 + 1)).toFixed(2)),
+      net_rx_mb: Number((96.1 / ((i % 7) * 0.4 + 1)).toFixed(2)),
+      first: nowEpoch - 1_800 - i * 4_400 - i * 300,
+      last: nowEpoch - i * 300,
+      ...(cls === 'agent' && i % 4 === 1
+        ? { running: { seen: nowEpoch - 20, n_procs: 3 + (i % 9), rss_mb: 410 + i * 12, census_at: nowEpoch - 15 } }
+        : {}),
       sandbox: cls === 'agent' ? (i % 4 === 0 ? 'sandboxed' : i % 4 === 1 ? 'unsandboxed' : i % 4 === 2 ? 'denied' : 'unknown') : 'unknown',
       approval: cls === 'agent' ? (i % 3 === 0 ? 'bypassed' : 'supervised') : 'unknown',
       sandbox_ancestry: cls === 'agent' && i % 4 < 2 ? 'bwrap' : 'none',
@@ -525,13 +593,21 @@ function trajectories(nowEpoch) {
   return {
     ...ENV('ebpfm', EBPFM_PATHS),
     window: { minutes: 1440, from: new Date((nowEpoch - 86_400) * 1000).toISOString(), to: new Date(nowEpoch * 1000).toISOString() },
-    rank_by: 'events',
+    rank_by: 'recent',
     rank_meaning: 'events = process exits attributed to the session key',
-    ranks: { events: by('n_events'), cpu_s: by('cpu_s'), distinct_tools: by('distinct_tools'), chain_runs: by('chain_runs') },
+    ranks: {
+      recent: by('last'),
+      events: by('n_events'),
+      cpu_s: by('cpu_s'),
+      peak_rss_mb: by('peak_rss_mb'),
+      io_mb: [...sids].sort((a, b) => rows[b].io_rd_mb + rows[b].io_wr_mb - rows[a].io_rd_mb - rows[a].io_wr_mb),
+      net_mb: [...sids].sort((a, b) => rows[b].net_tx_mb + rows[b].net_rx_mb - rows[a].net_tx_mb - rows[a].net_rx_mb),
+      distinct_tools: by('distinct_tools'),
+    },
     rows,
     by_class_counts: {
       agent: sids.filter((s) => rows[s].actor3 === 'agent').length,
-      'human-vscode': sids.filter((s) => rows[s].actor3 === 'human-vscode').length,
+      'ide': sids.filter((s) => rows[s].actor3 === 'ide').length,
       human: sids.filter((s) => rows[s].actor3 === 'human').length,
     },
     by_key_type: {
@@ -544,7 +620,288 @@ function trajectories(nowEpoch) {
   };
 }
 
+/* One inspected session, for `/api/trajectory`: the shapes the tree has to
+ * draw right -- an agent with no exit record, tool calls with the command they
+ * ran, a poll group, a 3-step cycle, a non-zero exit, a SIGKILL, a parent with
+ * no record placed by depth, a reparented orphan, a hold count and a row-budget
+ * count. Totals are summed from the leaves, so they add up the way the
+ * backend's do. */
+function trajectoryDetail(nowEpoch, traj) {
+  const sid = traj.ranks.events[0];
+  const t0 = nowEpoch - 5_400;
+  let next = 41_000;
+  const p = (o) => ({
+    k: 'p', pid: next++, cmd: 'x', start: null, end: null, dur: null, cpu: null,
+    n: 1, sub_cpu: null, ev: 'exit', link: 'ppid', exit_code: 0, ...o,
+  });
+  const run = (at, d, cmd, args, o = {}) =>
+    p({ cmd, args, start: at, end: at + d, dur: d, cpu: Number((d * 0.6).toFixed(3)), ...o });
+  const shell = (at, cmdline, kids, o = {}) => {
+    const end = Math.max(at + 0.05, ...kids.map((k) => k.end ?? at));
+    return p({ cmd: 'bash', role: 'tool-shell', cmdline, start: at, end, dur: Number((end - at).toFixed(3)), cpu: 0.004, kids, ...o });
+  };
+  const group = (motif, members, reps, items, extra = {}) => ({
+    k: 'g', motif, period: motif.length, reps, count: motif.length * reps,
+    n: motif.length * reps, start: members[0].start, end: members[members.length - 1].end,
+    cpu: Number((members.reduce((a, m) => a + (m.cpu ?? 0), 0) * (reps * motif.length / members.length)).toFixed(3)),
+    sub_cpu: null, dur_max: Math.max(...members.map((m) => m.dur ?? 0)), exits: { 0: motif.length * reps },
+    signals: {}, alive: null, distinct: 1, samples: [{ args: members[0].args, n: motif.length * reps }],
+    items, more: motif.length * reps - items.length, ...extra,
+  });
+  const polls = Array.from({ length: 5 }, (_, i) => run(t0 + 2 + i * 0.3, 0.004, 'git', 'git status --porcelain'));
+  const cycle = [];
+  for (let i = 0; i < 6; i++) {
+    const at = t0 + 900 + i * 31;
+    cycle.push(run(at, 0.02, 'squeue', 'squeue -j 812 -h -o %T'), run(at + 0.03, 0.001, 'grep', 'grep -q R'),
+      run(at + 0.05, 30, 'sleep', 'sleep 30', { cpu: 0 }));
+  }
+  const cc = Array.from({ length: 6 }, (_, i) => run(t0 + 2_400 + i * 0.4, 7.5, 'cc1plus', `cc1plus -O2 src/kernel_${i}.cc`));
+  const loop = Array.from({ length: 6 }, (_, i) => run(t0 + 3_000 + i * 0.2, 0.15, 'python', 'python -c import torch'));
+  const tree = p({
+    pid: 40_000, ppid: 39_998, cmd: 'claude', args: 'claude --resume', role: 'agent', ev: null, link: null,
+    exit_code: undefined, start: nowEpoch - 3 * 86_400, end: nowEpoch - 30,
+    actor3: traj.rows[sid].actor3, agent_type: traj.rows[sid].agent_type,
+    user: traj.rows[sid].user, cwd: '/n/home03/thomwg11/proj',
+    kids: [
+      group(['git'], polls, 41, polls.slice(0, 5)),
+      shell(t0 + 30, 'git status --short && git diff --stat', [
+        run(t0 + 30.01, 0.01, 'git', 'git status --short'), run(t0 + 30.03, 0.02, 'git', 'git diff --stat'),
+      ]),
+      p({ cmd: '2.1.291', role: 'embedded-tool', args: 'rg --no-config --files --hidden /n/home03/thomwg11/proj', start: t0 + 41, end: t0 + 41.2, dur: 0.2, cpu: 0.11 }),
+      shell(t0 + 900, 'while ! squeue -j 812 -h -o %T | grep -q R; do sleep 30; done', [
+        group(['squeue', 'grep', 'sleep'], cycle, 40, cycle.slice(0, 6)),
+      ]),
+      shell(t0 + 2_100, 'cd exp2 && python train.py --hf-token [REDACTED] --epochs 1', [
+        run(t0 + 2_100.1, 212.4, 'python', 'python train.py --hf-token [REDACTED] --epochs 1', { exit_code: 1 }),
+      ], { cwd: '/n/home03/thomwg11/proj/exp2' }),
+      shell(t0 + 2_399, 'timeout 60 make -j8', [
+        p({ cmd: 'make', args: 'make -j8', start: t0 + 2_399.5, end: t0 + 2_459.5, dur: 60, cpu: 0.4, exit_code: null, signal: 9,
+            kids: [group(['cc1plus'], cc, 24, cc.slice(0, 6))] }),
+      ], { exit_code: 124 }),
+      p({ pid: 52_211, cmd: null, ev: null, link: 'depth', gap: 1, exit_code: undefined, start: null, end: null, cpu: null, n: 0,
+          kids: [group(['python'], loop, 2_000, loop.slice(0, 6)),
+                 { k: 'agg', why: 'hold', n: 18_400, sub_cpu: 2_208.4, cpu_nm: null, start: t0 + 3_400, end: t0 + 5_300, cmds: [['python', 18_400]] }] }),
+      run(t0 + 3_100, 1_800, 'sleep', 'sleep 1800', { ppid: 1, cpu: 0, link: 'depth', orphan: true }),
+      { k: 'more', why: 'budget', count: 37, n: 112, sub_cpu: 3.8, cpu_nm: null, start: t0 + 5_000, end: t0 + 5_390, cmds: [['bash', 31], ['git ×5', 6]] },
+    ],
+  });
+  // Sum each subtree the way the backend does: own record plus everything below.
+  const fin = (e) => {
+    if (e.k === 'g') {
+      e.items.forEach(fin);
+      e.sub_cpu = e.cpu;
+      return e;
+    }
+    if (e.k !== 'p') return e;
+    (e.kids ?? []).forEach(fin);
+    const kids = e.kids ?? [];
+    e.n = (e.ev ? 1 : 0) + kids.reduce((a, k) => a + (k.n ?? 0), 0);
+    const c = [e.ev ? e.cpu : null, ...kids.map((k) => k.sub_cpu)].filter((v) => v != null);
+    e.sub_cpu = c.length ? Number(c.reduce((a, v) => a + v, 0).toFixed(3)) : null;
+    return e;
+  };
+  fin(tree);
+  const parents = [];
+  const walk = (e) => {
+    if (e.k === 'p' && e.kids?.length) parents.push(e.pid);
+    (e.kids ?? []).forEach(walk);
+  };
+  walk(tree);
+  return {
+    ...ENV('ebpfm', EBPFM_PATHS),
+    sid,
+    found: true,
+    host: traj.rows[sid].host,
+    owner_pid: 40_000,
+    keys: 41,
+    span: { first: t0, last: t0 + 5_390 },
+    scan: {
+      from: t0, to: t0 + 5_391, files: 1, bytes_planned: 412_000_000, bytes: 412_000_000,
+      parsed: tree.n + 210, skipped: 1_284_000, records: tree.n, ticks: 88, first: t0, last: t0 + 5_390,
+      stopped: null, stopped_at: null, elapsed_s: 2.4, computed_at: nowEpoch,
+    },
+    bounds: {
+      max_records: 150_000, max_bytes: 6 * 2 ** 30, hold: 20_000, per_parent: 2_000, nodes: 6_000,
+      itemised: tree.n - 18_400, counted: 18_400, shown_entries: 60, elided: 112, stubs: 2,
+    },
+    links: { ppid: 54, depth: 2 },
+    timeline: { lo: t0, hi: t0 + 5_390 },
+    tree,
+    basis: { fixture: 'mock/gen_fixture.mjs: a hand-built tree with every row shape the inspector draws' },
+  };
+}
+
 /* ------------------------------------------------------------- the bundle */
+
+/* ------------------------------------------------------- agents (cascades)
+ * The Agents tab: agent trees and each agent's workspace / blast radius. The
+ * awkward states are here on purpose: an agent started at `/` (its home is its
+ * first call's, drawn italic), a subagent whose writes land outside its
+ * parent's home (only visible "with its subagents"), a write into another
+ * user's home (high), a write into the agent's own /tmp scratch (low), an
+ * agent with no cwd at all (outside = null, never 0), a directory nobody ran in
+ * (io null), and names past the per-directory cap. */
+function wsDir(path, shown, kind, o = {}) {
+  return {
+    path, shown, inside: kind === 'home', root: o.root ?? null, kind,
+    deeper: o.deeper ?? 0, procs: o.procs ?? 0,
+    io: o.procs ? { rchar_mb: o.rd ?? 0.4, wchar_mb: o.wr ?? 0.1, rd_mb: 0.02, wr_mb: o.disk ?? 0, coverage_pct: o.cov ?? 100 } : null,
+    read: o.r ?? 0, write: o.w ?? 0, delete: o.d ?? 0, named: o.n ?? 0,
+    names_capped: o.capped ?? 0, examples: o.ex ?? [],
+    first: o.first ?? null, last: o.last ?? null,
+    flag: kind !== 'home' && ((o.d ?? 0) > 0 ? 'delete' : (o.w ?? 0) > 0 ? 'write' : null) || null,
+  };
+}
+
+function wsView(nowEpoch, dirs, extra = {}) {
+  const sum = (k) => dirs.reduce((a, d) => a + (d[k] || 0), 0);
+  const ins = dirs.filter((d) => d.inside === true);
+  const outs = dirs.filter((d) => d.inside === false);
+  const procs = sum('procs');
+  const procsIn = ins.reduce((a, d) => a + d.procs, 0);
+  const io = dirs.filter((d) => d.io);
+  const ops = (ds) => ({ read: ds.reduce((a, d) => a + d.read, 0), write: ds.reduce((a, d) => a + d.write, 0), delete: ds.reduce((a, d) => a + d.delete, 0), named: ds.reduce((a, d) => a + d.named, 0) });
+  const noHome = extra.noHome === true;
+  const roots = {};
+  for (const d of outs) {
+    const g = (roots[d.root] ??= { root: d.root, kind: d.kind, procs: 0, dirs: 0, read: 0, write: 0, delete: 0, named: 0, wchar_mb: null });
+    g.procs += d.procs; g.dirs += 1 + d.deeper; g.read += d.read; g.write += d.write; g.delete += d.delete; g.named += d.named;
+    if (d.io) g.wchar_mb = Number(((g.wchar_mb ?? 0) + d.io.wchar_mb).toFixed(3));
+  }
+  const flags = [];
+  for (const d of outs) {
+    for (const [name, o] of d.examples) {
+      if (/[wd]/.test(o)) flags.push({ path: d.path + '/' + name, shown: d.shown + '/' + name, op: o.includes('d') ? 'delete' : 'write', kind: d.kind });
+    }
+  }
+  return {
+    summary: {
+      procs: procs + (extra.noCwd ?? 0), procs_no_cwd: extra.noCwd ?? 0,
+      procs_inside: noHome ? null : procsIn, procs_outside: noHome ? null : procs - procsIn,
+      dirs: dirs.reduce((a, d) => a + 1 + d.deeper, 0), dirs_capped: 0,
+      inside_pct: noHome || !procs ? null : Number(((100 * procsIn) / procs).toFixed(2)),
+      io: io.length ? { rchar_mb: Number(io.reduce((a, d) => a + d.io.rchar_mb, 0).toFixed(3)), wchar_mb: Number(io.reduce((a, d) => a + d.io.wchar_mb, 0).toFixed(3)), rd_mb: 0.1, wr_mb: 0.0, coverage_pct: 100 } : null,
+      wchar_inside_pct: null,
+      named: ops(dirs), outside: noHome ? null : ops(outs),
+      outside_writes: noHome ? null : outs.reduce((a, d) => a + d.write + d.delete, 0),
+      unresolved: extra.unresolved ?? 0,
+      roots: Object.values(roots).sort((a, b) => b.write + b.delete - (a.write + a.delete) || b.procs - a.procs),
+      first: nowEpoch - 80_000, last: nowEpoch - 120, keys: extra.keys ?? 40,
+    },
+    dirs, dirs_more: extra.more ?? { rows: 0, procs: 0 }, flags, flags_more: 0,
+  };
+}
+
+function cascades(nowEpoch) {
+  const H = '/home/thomwg11';
+  const P = H + '/proj/climate-ml';
+  const t = (h) => nowEpoch - h * 3600;
+  const leadDirs = [
+    wsDir(P, './', 'home', { procs: 18_204, rd: 8_211.4, wr: 1_904.2, disk: 512.6, r: 31, w: 6, n: 4, ex: [['README.md', 'r'], ['train.py', 'r']], first: t(22), last: t(0.1) }),
+    wsDir(P + '/src/model', './src/model', 'home', { procs: 2_410, r: 44, w: 9, deeper: 3, capped: 12, ex: [['layers.py', 'rw'], ['attention.py', 'r']], first: t(20), last: t(0.4) }),
+    wsDir(P + '/data/era5', './data/era5', 'home', { procs: 312, rd: 41_220.8, wr: 0.2, r: 8, ex: [['t2m_2020.nc', 'r']], first: t(19), last: t(3) }),
+    wsDir(P + '/out', './out', 'home', { w: 14, d: 3, deeper: 9, ex: [['run12/ckpt.pt', 'w'], ['run03', 'd']], first: t(18), last: t(1) }),
+    wsDir('/n/holyscratch01/lab/thomwg11/era5', '/n/holyscratch01/lab/thomwg11/era5', 'shared storage', { root: '/n/holyscratch01', procs: 96, rd: 120_400.1, wr: 88_012.5, disk: 88_000.4, w: 2, r: 1, ex: [['cache.zarr', 'w'], ['index.json', 'w']], first: t(12), last: t(2) }),
+    wsDir('/home/aparker/shared-data', '~aparker/shared-data', "other user's home", { root: '~aparker', r: 2, w: 1, ex: [['labels.csv', 'w'], ['README', 'r']], first: t(6), last: t(6) }),
+    wsDir('/tmp/claude-1000/-home-thomwg11-proj-climate-ml/5d1c/scratchpad', '/tmp/claude-1000/-home-thomwg11-proj-climate-ml/5d1c/scratchpad', 'temp', { root: '/tmp', w: 4, r: 4, ex: [['plot.py', 'rw'], ['out.png', 'w']], first: t(9), last: t(0.5) }),
+    wsDir(H + '/.cache/huggingface/hub', '~/.cache/huggingface/hub', 'cache & tooling', { root: '~/.cache', procs: 4, r: 1, n: 2, ex: [['models--bert-base', 'r']], first: t(15), last: t(15) }),
+    wsDir('/', '/', 'filesystem root', { root: '/', procs: 1_204, rd: 2.1, wr: 0.01, first: t(22), last: t(0.1) }),
+  ];
+  const subDirs = [
+    wsDir('/scratch/thomwg11/eval', '/scratch/thomwg11/eval', 'shared storage', { root: '/scratch', procs: 820, rd: 312.4, wr: 96.1, w: 3, d: 1, r: 5, ex: [['tmp', 'd'], ['results.jsonl', 'w']], first: t(4), last: t(1.5) }),
+    wsDir('/scratch/thomwg11/eval/configs', '/scratch/thomwg11/eval/configs', 'shared storage', { root: '/scratch', r: 6, ex: [['base.yaml', 'r']], first: t(4), last: t(2) }),
+  ];
+  const lead = wsView(nowEpoch, leadDirs, { keys: 612, unresolved: 3, more: { rows: 4, procs: 11 } });
+  const leadTree = wsView(nowEpoch, [...leadDirs, ...subDirs], { keys: 688, unresolved: 3, more: { rows: 4, procs: 11 } });
+  const sub = wsView(nowEpoch, [
+    wsDir('/scratch/thomwg11/eval', './', 'home', { procs: 820, rd: 312.4, wr: 96.1, w: 3, d: 1, r: 5, ex: [['tmp', 'd'], ['results.jsonl', 'w']], first: t(4), last: t(1.5) }),
+    wsDir('/scratch/thomwg11/eval/configs', './configs', 'home', { r: 6, ex: [['base.yaml', 'r']], first: t(4), last: t(2) }),
+  ], { keys: 76 });
+  const ideAgent = wsView(nowEpoch, [
+    wsDir('/home/lzhang/thesis', './', 'home', { procs: 2_118, rd: 210.2, wr: 14.8, r: 12, w: 2, ex: [['chapter3.tex', 'rw']], first: t(10), last: t(0.2) }),
+    wsDir('/', '/', 'filesystem root', { root: '/', procs: 64, rd: 0.3, wr: 0.0, first: t(10), last: t(9.8) }),
+  ], { keys: 140 });
+  const homeless = wsView(nowEpoch, [], { noHome: true, noCwd: 37, keys: 3 });
+
+  const node = (o) => ({
+    ppid: null, host: 'holylogin01', role: 'agent', agent_type: 'claude_code', user: 'thomwg11',
+    command: 'claude', args: 'claude', cwd: P, implied: false, frontend: false, parent: null,
+    via: null, path: [], spawned_by: null, started: '2026-09-13 09:12:40', first_seen: '2026-09-13 09:12:40',
+    last_seen: '2026-09-14 08:51:02', exited: false, duration_s: null, depth: 0, agent_level: 1,
+    fanout: 0, tool_calls: 18_204, cpu_s: 812.4, session_keys: 612, home: P, home_src: 'agent',
+    workspace: null, cwd_vs_parent_agent: null, ...o,
+  });
+  const brief = (v) => ({ dirs: v.summary.dirs, inside_pct: v.summary.inside_pct, outside_writes: v.summary.outside_writes });
+  const trees = [
+    {
+      root: null, host: 'holylogin01', users: ['thomwg11'], agent_depth: 2, max_fanout: 1, n_nodes: 2,
+      n_agents: 2, agents_nested: 1, agent_types: ['claude_code', 'codex'], tool_calls: 19_024, cpu_s: 901.2,
+      nodes: [
+        node({ pid: 41_200, fanout: 1, workspace: brief(lead) }),
+        node({ pid: 52_877, ppid: 52_870, agent_type: 'codex', command: 'codex', args: 'codex exec --full-auto run the eval sweep', cwd: '/scratch/thomwg11/eval', parent: 41_200, via: 'ancestor', path: ['zsh'], depth: 1, agent_level: 2, tool_calls: 820, cpu_s: 88.8, session_keys: 76, home: '/scratch/thomwg11/eval', workspace: brief(sub), cwd_vs_parent_agent: 'outside', started: '2026-09-14 04:02:11', exited: true, duration_s: 9_120.4 }),
+      ],
+      nodes_truncated: false, hidden_nodes: 0,
+    },
+    {
+      root: null, host: 'holylogin02', users: ['lzhang'], agent_depth: 1, max_fanout: 0, n_nodes: 1,
+      n_agents: 1, agents_nested: 0, agent_types: ['claude_code'], tool_calls: 2_182, cpu_s: 140.2,
+      nodes: [node({ pid: 7_731, host: 'holylogin02', user: 'lzhang', cwd: '/', args: 'claude --output-format stream-json', home: '/home/lzhang/thesis', home_src: 'first_call', tool_calls: 2_182, cpu_s: 140.2, session_keys: 140, workspace: brief(ideAgent) })],
+      nodes_truncated: false, hidden_nodes: 1,
+    },
+    {
+      root: null, host: 'boslogin01', users: ['dwei'], agent_depth: 1, max_fanout: 0, n_nodes: 1,
+      n_agents: 1, agents_nested: 0, agent_types: ['claude_code'], tool_calls: 37, cpu_s: 2.1,
+      nodes: [node({ pid: 9_904, host: 'boslogin01', user: 'dwei', command: null, args: null, cwd: null, implied: true, home: null, home_src: null, tool_calls: 37, cpu_s: 2.1, session_keys: 3, workspace: brief(homeless) })],
+      nodes_truncated: false, hidden_nodes: 0,
+    },
+  ];
+  for (const tr of trees) tr.root = tr.nodes[0];
+  const agent = (n, self, tree, extra = {}) => ({
+    host: n.host, pid: n.pid, agent_type: n.agent_type, user: n.user, tree_root: extra.root ?? n.pid,
+    parent_agent: extra.parent ?? null, subagents: extra.subs ?? [], home: n.home, home_src: n.home_src,
+    home_shown: n.home ? n.home.replace('/home/' + n.user, '~') : null, self, tree,
+  });
+  return {
+    ...ENV('ebpfm', EBPFM_PATHS),
+    window: { minutes: 1440, from: '2026-09-13 09:46:40', to: '2026-09-14 09:46:40' },
+    summary: { trees: 3, nested: 1, hosted: 0, agents: 4, agents_nested: 1, agents_implied: 1, max_agent_depth: 2, max_fanout: 1, trees_without_agents: 2 },
+    depth_hist: { 1: 2, 2: 1 },
+    fanout_hist: { 1: 1 },
+    edges: [{ parent: 'claude_code agent', child: 'codex agent', n: 1 }],
+    edge_via: { ancestor: 1 },
+    trees,
+    role_census: [
+      { agent_type: 'claude_code', role: 'tool-shell', n: 14_212, cpu_s: 210.4, pct: 71.2 },
+      { agent_type: 'codex', role: 'helper', n: 3_120, cpu_s: 12.2, pct: 15.63 },
+      { agent_type: 'codex', role: 'probe', n: 2_210, cpu_s: 40.1, pct: 11.07 },
+      { agent_type: 'claude_code', role: 'agent', n: 412, cpu_s: 1_802.6, pct: 2.06 },
+      { agent_type: 'codex', role: 'sandbox', n: 6, cpu_s: 0.1, pct: 0.03 },
+    ],
+    buffer: { nodes: 9, cap: 20_000, dropped: 0 },
+    workspace: {
+      agents: [
+        agent(trees[0].nodes[0], lead, leadTree, { subs: [52_877] }),
+        agent(trees[1].nodes[0], ideAgent, null),
+        agent(trees[0].nodes[1], sub, null, { root: 41_200, parent: 41_200 }),
+        agent(trees[2].nodes[0], homeless, null),
+      ],
+      summary: { agents: 4, shown: 4, with_subagents: 1, with_outside_writes: 1, other_homes: 1, shared_roots: 2, unowned_procs: 1_204, agents_without_records: 0, collapse_depth: 4, rows_cap: 40 },
+      buffer: { keys: 871, cap: 60_000, dir_entries: 1_406, dir_entries_cap: 400_000, dropped: 0, parse_errors: 0, capped_tokens: 0, inherited_argv: 212, probes_skipped: 5_330, fed: 41_102 },
+      basis: {
+        ran_in: 'MEASURED: processes whose working directory is that directory',
+        bytes: 'MEASURED per process, not per file: credited to where the process ran',
+        named: 'INFERRED from command lines: distinct paths, read / write / delete / named',
+        not_seen: 'exact file-level reads and writes would need a collector probe (openat/unlink/rename tracepoints) that is not built',
+      },
+    },
+    basis: {
+      node: 'a process whose role is agent, infra or client (roles.py)',
+      agent_depth: 'most agents on any root-to-leaf path; 1 = no agent under another agent',
+      fanout: 'agents directly below an agent (or a tree’s root) with no other agent between',
+      subagent: 'an agent started, through any number of steps, beneath another agent',
+    },
+  };
+}
 
 function build() {
   const nowEpoch = 1_789_400_000; // fixed: the fixture must be byte-stable
@@ -685,9 +1042,9 @@ function build() {
 
   const now = {
     exits_per_min: 344,
-    roots: { agent: 1_405, 'human-vscode': 428, human: 951 },
-    procs: { agent: 18_442, 'human-vscode': 4_118, human: 1_884 },
-    users: { agent: 38, 'human-vscode': 61, human: 142 },
+    roots: { agent: 1_405, 'ide': 428, human: 951 },
+    procs: { agent: 18_442, 'ide': 4_118, human: 1_884 },
+    users: { agent: 38, 'ide': 61, human: 142 },
     rss_gb: 418.6,
     autonomous_roots: 478,
   };
@@ -703,7 +1060,7 @@ function build() {
     d_state: i === 2 ? 14 : i === 4 ? 3 : 0,
     users: 18 + i * 7,
     tcp_open_ext: 88 + i * 24,
-    by_class: { agent: 61 + i * 38, 'human-vscode': 22 + i * 12, human: 35 + i * 11 },
+    by_class: { agent: 61 + i * 38, 'ide': 22 + i * 12, human: 35 + i * 11 },
   }));
 
   const submits = Array.from({ length: 14 }, (_, i) => ({
@@ -760,9 +1117,10 @@ function build() {
       panels: {
         tool_mix: toolMix(),
         io_process: ioProcess(),
-        resources: resources(),
+        resources: resources(nowEpoch),
         sandbox: sandbox(),
         trajectories: trajectories(nowEpoch),
+        cascades: cascades(nowEpoch),
         /* An absent panel, so <EmptyState> is verifiable without the backend. */
         gpu_duty: {
           _feed: 'dcgm',
@@ -777,6 +1135,7 @@ function build() {
     },
     live,
     trajectories: trajectories(nowEpoch),
+    trajectory_detail: trajectoryDetail(nowEpoch, trajectories(nowEpoch)),
   };
 }
 

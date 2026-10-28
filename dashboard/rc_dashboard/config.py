@@ -137,13 +137,59 @@ def defaults():
             "clock_skew_s": 120,
         },
         "ingest": {"poll_ms": 1000},
+        # The service's present. "" is the wall clock; "auto" or a local time
+        # pins (and freezes) it, for a feed captured elsewhere and copied here.
+        # See clock.py.
+        "clock": {"as_of": ""},
         "rebuild": {"interval_s": 900},
+        # A cluster without Slurm turns this off and the Slurm tab goes away;
+        # nothing else depends on it (the tool mix keeps its two scheduler
+        # kinds, which simply stay empty there).
+        "slurm": {"enabled": True},
+        # Chat with an LLM about the window on screen (ask.py). Each question
+        # runs the agent CLI on this host as the service's user -- the preset
+        # `codex` uses that user's own Codex login -- with a compact, masked
+        # snapshot of the window's panels. That snapshot leaves the host.
+        "ask": {
+            "enabled": True,
+            "agent": "codex",          # a preset (ask.PRESETS), or set `command`
+            # argv, or one shell-style string; {workdir} {answer_file} {model}
+            # are filled in, the prompt arrives on stdin, and with no
+            # {answer_file} the command's stdout is the answer
+            "command": None,
+            "model": "",               # empty: the agent's own default
+            "timeout_s": 240,
+            "max_concurrent": 1,       # a second question waits, not a second agent
+            "context_kb": 120,         # the snapshot's size budget
+            "include_commands": False,  # command lines stay out unless set
+            # The answerer's instructions. Empty: the built-in (ask.DEFAULT_SYSTEM).
+            # A file is re-read on every question, so it can be tuned live and
+            # wins over the inline text. {deployment} {site} {window} are filled in.
+            "system_prompt": "",
+            "system_prompt_file": "",
+            # the short map of where things are in the snapshot, sent after the
+            # system prompt; turn off only if your prompt describes the data itself
+            "snapshot_guide": True,
+        },
+        # Which deployment this is, on every page: two dashboards side by side
+        # -- a frozen capture from one cluster, the live feed of another -- must
+        # not be mistaken for each other.
+        # `description`: what this deployment watches, in a few words ("FASRC
+        # login nodes", "a GPU workstation"). The chat agent is told it rather
+        # than assuming any kind of machine; empty says nothing.
+        "site": {"name": "", "description": ""},
         "panels": {
             # Historical reducers hold no time index, so a window change rebuilds
             # them from the rows.  Each built window costs reducer state, so the
-            # registry is an LRU rather than unbounded: two lets a reader compare
-            # a narrow and a wide view without a third evicting both.
-            "max_windows": 2,
+            # registry is an LRU rather than unbounded. Five holds the default,
+            # the prewarmed short windows and one wide one a reader opened; a
+            # sixth evicts the least recently asked-for (which then resumes from
+            # its saved copy rather than re-reading).
+            "max_windows": 5,
+            # Built in the background after the default window, so switching to
+            # them is instant. Only the cheap ones: a 7d build reads the whole
+            # week, and is left to the reader who asks for it.
+            "prewarm_min": [60, 360, 720],
             # A built view keeps ingesting, so it drifts past its own window.
             # Re-scan once drift reaches this share of the window -- proportional
             # by design: a 1h view refreshes often and cheaply, a 7d view rarely
@@ -156,11 +202,31 @@ def defaults():
             # and config; ~12 MB per day of window on one login node.
             "cache_windows": True,
             "cache_keep": 8,
+            # Reduce each record ONCE, into the state of its epoch hour, saved
+            # under <cache.dir>/hours; a window is then its first part-hour
+            # read as before, its whole hours merged from their saved states,
+            # and the open hour read as before (hours.py). A window switch, a
+            # drift refresh or a restart costs the edges and a merge, not a
+            # re-read. A view filtered to users or agent types is still read.
+            "merge_reduce": True,
+            # An hour is closed, and reduced, once the newest record is this far
+            # past its end: the collector writes a poll round at a time and
+            # hosts' clocks disagree. Never less than live.clock_skew_s plus a
+            # poll round. A record that comes later still is merged into its
+            # hour's saved state, not lost.
+            "hour_grace_s": 300,
+            # Save each whole epoch day as one merged state too, so a 7 d window
+            # merges ~7 states rather than ~168.
+            "day_cache": True,
+            # Pause between two hours' reductions, so a backlog of hours (the
+            # first 7 d window after a code change) never holds the live tier
+            # off for the length of the read.
+            "hour_pause_s": 0.02,
         },
         "filters": {
             "drop_global": ["juncheng"],     # the monitoring operator
             "drop_agent": ["flamraoui"],     # period3 agent build skew
-            "classes": ["agent", "human-vscode", "human"],
+            "classes": ["agent", "human", "ide"],
             "unlabeled_class": "unlabeled",
             # the collector's own probes (node_snapshot's mpstat/iostat/sar/
             # nfsiostat/nvidia-smi shell-outs). Counted, not silent.
@@ -169,11 +235,75 @@ def defaults():
         "reducers": {
             "tool_mix": {"head_n": 12, "dedup_sessions_max": 200000},
             "io": {"top_n": 20},
+            # `live_s`: how stale the ranked sessions may get while the view
+            # is fed live -- the panel re-reads them that often, and they are
+            # re-ranked on the read, not only at the next rebuild
             "trajectories": {"top_n": 15, "max_runs_shown": 60, "purpose_seq_cap": 80,
                              "idle_evict_s": 7200, "max_sessions": 50000,
-                             "include_key_types": ["apid", "sess", "tty"]},
+                             "include_key_types": ["apid", "sess", "tty"], "live_s": 5},
+        },
+        # What counts as risky differs by cluster. The rules are built in
+        # (reducers/risk.py, which documents every key); this switches them
+        # off, changes or adds to them, and sets the cluster's variables.
+        # `profile` is a JSON file of the same shape merged over this section
+        # at load, so a cluster's rules travel as one file (risk-profiles/).
+        "risk": {
+            "profile": "",
+            "vars": {"compute_hosts": r"holy|bos|node|gpu|c\d{3,}"},
+            "dangerous": {"disable": [], "override": {}, "add": []},
+            "secrets": {"disable": [], "override": {}, "add": []},
+            "login_compute": {"compute": ["build", "interpreter"], "transfer": ["net/data"]},
+            # The Risk tab's sections, in order: kind login_compute, commands or
+            # credentials; `rules` a list of ids, or "rest". See reducers/risk.py.
+            "sections": [
+                {"id": "login_compute", "kind": "login_compute",
+                 "title": "Compute on a login node"},
+                {"id": "commands", "kind": "commands", "rules": "rest",
+                 "title": "Commands that should not run here"},
+                {"id": "credentials", "kind": "credentials", "rules": "rest",
+                 "title": "Credentials exposed in argv"},
+            ],
         },
         "export": {"max_rows": 5000000},
+        # Replace every username, lab or Slurm account name, email address and
+        # numeric user ID in what the service sends out with a stable alias
+        # (anonymize.py). Off by default: a deployment for the cluster's own
+        # staff shows real names unless told otherwise. `salt` empty: one is
+        # generated into <cache.dir>/anonymize.salt and reused; changing it
+        # reshuffles every alias. The patterns name where homes and lab trees
+        # sit on this cluster -- see anonymize.HOME_PATTERNS for the defaults.
+        # What the page opens on, before a reader changes it. Nothing here
+        # changes a number, so the saved builds ignore the section.
+        # user_columns: the Active users table's columns (agents, ides, running,
+        # exited, cpu, read, written, sent, received, gpu, last; `net` is sent
+        # and received); a reader's own choice is kept in their browser.
+        "ui": {
+            # What the hosts this dashboard watches are called on the page:
+            # "Login nodes right now". A workstation fleet says "hosts".
+            "node_noun": "login nodes",
+            "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
+            # What a trajectory's tree hides when "hide routine" is on, beside
+            # runs of the same command: a command, a command and its first
+            # argument ("git status"), or "shell-snapshot" for an agent's shell
+            # sourcing its saved environment.
+            "routine_commands": [
+                "lsb_release", "getconf", "uname", "sleep", "pgrep", "ps", "tr", "cut",
+                "dirname", "basename", "readlink", "realpath", "which", "hostname", "id",
+                "whoami", "date", "tty", "stty", "tput", "locale", "nproc", "true", "false",
+                "git status", "git rev-parse", "git config", "git symbolic-ref",
+                "shell-snapshot",
+            ],
+        },
+        "anonymize": {
+            "enabled": False,
+            "salt": "",
+            "labs": True,
+            "emails": True,
+            "uids": True,
+            "keep": ["root"],
+            "home_patterns": [],
+            "lab_patterns": [],
+        },
         "cache": {"dir": os.path.join(HERE, ".cache"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,
@@ -203,16 +333,32 @@ ENV_MAP = {
     "live.event_tail": ("RC_DASH_LIVE_EVENT_TAIL", int),
     "live.backfill_hours": ("RC_DASH_BACKFILL_HOURS", int),
     "panels.max_windows": ("RC_DASH_MAX_WINDOWS", int),
+    "panels.prewarm_min": ("RC_DASH_PREWARM", lambda v: [int(x) for x in _csv(v)]),
     "panels.max_drift_pct": ("RC_DASH_MAX_DRIFT_PCT", int),
     "panels.cache_windows": ("RC_DASH_CACHE_WINDOWS",
                              lambda v: v not in ("0", "false", "no")),
+    "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE",
+                            lambda v: v not in ("0", "false", "no")),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
+    "clock.as_of": ("RC_DASH_AS_OF", str),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
     "filters.drop_agent": ("RC_DASH_DROP_AGENT_USERS", _csv),
     "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS",
                                       lambda v: v not in ("0", "false", "no")),
     "export.max_rows": ("RC_DASH_EXPORT_MAX_ROWS", int),
+    "risk.profile": ("RC_DASH_RISK_PROFILE", str),
+    "slurm.enabled": ("RC_DASH_SLURM", lambda v: v not in ("0", "false", "no", "off")),
+    "ask.enabled": ("RC_DASH_ASK", lambda v: v not in ("0", "false", "no", "off")),
+    "anonymize.enabled": ("RC_DASH_ANONYMIZE",
+                          lambda v: v not in ("0", "false", "no", "off")),
+    "ask.agent": ("RC_DASH_ASK_AGENT", str),
+    "ask.model": ("RC_DASH_ASK_MODEL", str),
+    "ask.command": ("RC_DASH_ASK_CMD", str),
+    "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
+    "site.name": ("RC_DASH_SITE_NAME", str),
+    "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
+    "site.description": ("RC_DASH_SITE_DESC", str),
     "cache.dir": ("RC_DASH_CACHE_DIR", str),
     "server.host": ("RC_DASH_HOST", str),
     "server.port": ("RC_DASH_PORT", int),
@@ -232,6 +378,7 @@ CLI_MAP = {
     "live_window_min": "live.window_min",
     "retention_min": "live.retention_min",
     "backfill_hours": "live.backfill_hours",
+    "as_of": "clock.as_of",
     "port": "server.port",
     "host": "server.host",
     "static_dir": "server.static_dir",
@@ -307,6 +454,9 @@ class Config:
         out = {}
         for path, val in self._leaves():
             entry = {"_value": val, "_origin": self.origin(path)}
+            if path == "anonymize.salt" and val:
+                # With the salt, a list of candidate names turns every alias back.
+                entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
                 cand = val if isinstance(val, list) else [val]
                 entry["_existing"] = [p for p in cand if p and os.path.exists(p)]
@@ -375,6 +525,29 @@ def load(args=None, config_path=None):
                 continue        # argparse default == absent, never an override
             _set(tree, dotted, val)
             origins[dotted] = "cli:--%s" % dest.replace("_", "-")
+
+    # A risk profile: a cluster's rules in one file, merged over the `risk`
+    # section. Read here, not by the reducer, so its CONTENT is in the resolved
+    # config -- and so in every saved window's fingerprint, where a path alone
+    # would let changed rules resume old counts.
+    prof = _get(tree, "risk.profile", "")
+    if prof:
+        pth = prof if os.path.isabs(prof) else os.path.join(HERE, prof)
+        try:
+            with open(pth) as fh:
+                ptree = strip_comments(json.load(fh))
+        except (OSError, ValueError) as e:
+            raise SystemExit("risk.profile %s: %s" % (pth, e))
+        ptree.pop("profile", None)
+        _deep_merge(tree["risk"], ptree)
+
+        def mark(node, prefix):
+            for k, v in node.items():
+                if isinstance(v, dict) and v:
+                    mark(v, prefix + "." + k)
+                else:
+                    origins[prefix + "." + k] = "profile:%s" % pth
+        mark(ptree, "risk")
 
     # candidate-probe annotation for the multi-root feeds
     for feed in ("ebpf", "ebpf_node"):

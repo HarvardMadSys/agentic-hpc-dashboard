@@ -3,14 +3,26 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  CollectorsResponse,
   ConfigTree,
   FeedsResponse,
   PanelsResponse,
   TrajRank,
   Trajectories,
+  TrajectoryDetail,
   WindowsResponse,
 } from './types';
-import { getConfig, getFeeds, getPanels, getTrajectories, getWindows } from './client';
+import {
+  getCollectors,
+  getConfig,
+  getFeeds,
+  getPanels,
+  getTrajectories,
+  getTrajectory,
+  getWindows,
+} from './client';
+import { whoQuery } from '../lib/filters';
+import type { Who } from '../lib/filters';
 
 export interface Async<T> {
   data: T | null;
@@ -58,18 +70,85 @@ function useFetched<T>(fn: (s?: AbortSignal) => Promise<T>, deps: unknown[]): As
 
 export const useConfig = (): Async<ConfigTree> => useFetched(getConfig, []);
 
+/** Each collector's state, re-read every `everyMs` while the caller is mounted. */
+export function useCollectors(everyMs = 20000): Async<CollectorsResponse> {
+  const a = useFetched(getCollectors, []);
+  const { reload } = a;
+  useEffect(() => {
+    const t = setInterval(reload, everyMs);
+    return () => clearInterval(t);
+  }, [reload, everyMs]);
+  return a;
+}
+
 /* The window is a dependency, not a filter applied after the fetch: the
  * historical tier is REDUCED per window server-side, so changing it is a new
- * request, and `buildNonce` re-requests when that build finishes. */
-export const usePanels = (win: number | null, buildNonce = 0): Async<PanelsResponse> =>
-  useFetched((s) => getPanels(win, s), [win, buildNonce]);
+ * request, and `buildNonce` re-requests when that build finishes. The user and
+ * agent-type filter is the same kind of thing -- its own reduced view -- and is
+ * a dependency by its query string, so a new array with the same values is not
+ * a new request. */
+export const usePanels = (
+  win: number | null,
+  buildNonce = 0,
+  who: Who | null = null,
+): Async<PanelsResponse> =>
+  useFetched((s) => getPanels(win, s, who), [win, buildNonce, who ? whoQuery(who) : '']);
 
-export const useTrajectories = (
+/** Whether the page is on screen: a hidden tab polls nothing. */
+function useVisible(): boolean {
+  const [v, setV] = useState(() => document.visibilityState !== 'hidden');
+  useEffect(() => {
+    const on = () => setV(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', on);
+    return () => document.removeEventListener('visibilitychange', on);
+  }, []);
+  return v;
+}
+
+/* `liveMs` re-reads the ranked sessions that long after each answer, while
+ * the page is on screen: the service re-ranks them from the live feed
+ * (`reducers.trajectories.live_s`), so a running session's counts move and
+ * it climbs the recency order as it works. Timed from the last answer, not
+ * on a fixed beat, so a slow reply is never cut off by the next request. */
+export function useTrajectories(
   rank: TrajRank,
   win: number | null,
   buildNonce = 0,
-): Async<Trajectories> =>
-  useFetched((s) => getTrajectories(rank, win, s), [rank, win, buildNonce]);
+  who: Who | null = null,
+  liveMs: number | null = null,
+): Async<Trajectories> {
+  const a = useFetched((s) => getTrajectories(rank, win, s, who), [
+    rank,
+    win,
+    buildNonce,
+    who ? whoQuery(who) : '',
+  ]);
+  const visible = useVisible();
+  const { reload, loading, data, error } = a;
+  useEffect(() => {
+    if (!liveMs || !visible || loading) return;
+    const t = window.setTimeout(reload, liveMs);
+    return () => clearTimeout(t);
+  }, [liveMs, visible, loading, reload, data, error]);
+  return a;
+}
+
+/** The inspector's process tree; `null` data, and no request, when nothing is
+ *  selected. Not re-read on every window rebuild: the read is the expensive
+ *  part, and the service keeps recent trees for ten minutes -- `to` (now)
+ *  asks for a fresh read past that. */
+export const useTrajectory = (
+  sid: string | null,
+  win: number | null,
+  from: number | null,
+  to: number | null = null,
+): Async<TrajectoryDetail | null> =>
+  useFetched((s) => (sid ? getTrajectory(sid, win, from, s, to) : Promise.resolve(null)), [
+    sid,
+    win,
+    from,
+    to,
+  ]);
 
 /** `/api/feeds` also arrives over the websocket; `seed` lets the WS overwrite it. */
 export function useFeeds(): Async<FeedsResponse> & { merge: (f: FeedsResponse) => void } {

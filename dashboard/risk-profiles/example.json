@@ -1,0 +1,93 @@
+{
+  "//": "risk-profiles/example.json -- every key of a risk profile, annotated. Documentation: risk-profiles/README.md.",
+  "//1": "Use: RC_DASH_RISK_PROFILE=risk-profiles/<site>.json, or \"risk\": {\"profile\": ...} in the config.",
+  "//2": "Merged over the config's `risk` section: objects key by key, lists replaced whole.",
+  "//3": "Keys starting with // are comments, at any depth. Copy this file, keep what you need.",
+
+  "vars": {
+    "//": "{{name}} in any pattern below is replaced by this regex text before it is compiled.",
+    "//compute_hosts": "used by the built-in ssh_compute: the names of this cluster's compute nodes",
+    "compute_hosts": "holy|bos|node|gpu|c\\d{3,}",
+    "//shared_roots": "a variable of this site's own, used by the rm_rf_shared override below",
+    "shared_roots": "/n/|/scratch/|/net/"
+  },
+
+  "dangerous": {
+    "//": "Matched against \"<command> <args>\", case-insensitively. Built-in ids: README.md.",
+
+    "//disable": "built-in rules this site does not count",
+    "disable": ["headless_browser"],
+
+    "//override": "change any of label, severity, axis, pattern, gate of a built-in rule",
+    "override": {
+      "pip_install": {
+        "//": "this site allows pip install --user on login: keep counting it, rank it lower",
+        "severity": "low"
+      },
+      "rm_rf_shared": {
+        "//": "the built-in matches any rm -rf; here only one aimed at shared storage counts.",
+        "//gate": "a new pattern drops the built-in gate; this one still always contains rm, so it may keep one",
+        "label": "rm -rf on shared storage",
+        "pattern": "(?:^|/)rm\\b[^\\n]*\\s-[a-zA-Z]*(?:[rR][a-zA-Z]*f|f[a-zA-Z]*[rR])[^\\n]*\\s(?:{{shared_roots}})",
+        "gate": ["rm"]
+      }
+    },
+
+    "//add": "this site's own rules. id and pattern are required; the rest default.",
+    "add": [
+      {
+        "id": "container_build_login",
+        "label": "apptainer/singularity build on a login node",
+        "severity": "med",
+        "axis": "policy-unaware",
+        "pattern": "(?:^|/)(?:apptainer|singularity)\\b[^\\n]*\\bbuild\\b",
+        "gate": ["apptainer", "singularity"]
+      },
+      {
+        "id": "rclone_sync_login",
+        "label": "rclone sync or copy on a login node",
+        "//gate": "omitted: the rule then runs on every command line, which is always correct",
+        "pattern": "(?:^|/)rclone\\b[^\\n]*\\b(?:sync|copy)\\b"
+      }
+    ]
+  },
+
+  "secrets": {
+    "//": "Matched against the arguments only, case-sensitively. The value is never shown, and every",
+    "//1": "pattern added or changed here is also masked in every command line the page shows.",
+    "disable": [],
+    "override": {
+      "token_flag": { "severity": "HIGH" }
+    },
+    "add": [
+      {
+        "id": "site_api_token",
+        "label": "this site's API token",
+        "severity": "HIGH",
+        "pattern": "\\bRCT-[A-Z0-9]{12}\\b",
+        "gate": ["RCT-"]
+      }
+    ]
+  },
+
+  "login_compute": {
+    "//": "tool buckets (rc_dashboard/tool_buckets.py) counted as compute on a login node, and as bulk transfer",
+    "compute": ["build", "interpreter"],
+    "transfer": ["net/data"]
+  },
+
+  "//sections": "The Risk tab, top to bottom: which sections this cluster has, their titles, and which rules each shows.",
+  "//sections1": "kind is login_compute, commands or credentials. rules: a list of ids, or \"rest\" for every enabled rule",
+  "//sections2": "no other section of that kind lists. A rule no section shows is not counted; a kind no section uses is not computed.",
+  "sections": [
+    {"id": "login_compute", "kind": "login_compute", "title": "Compute on a login node"},
+    {
+      "id": "data_movement",
+      "kind": "commands",
+      "title": "Data movement on a login node",
+      "rules": ["bulk_download", "hf_download", "rclone_sync_login"]
+    },
+    {"id": "commands", "kind": "commands", "title": "Other commands that should not run here", "rules": "rest"},
+    {"id": "credentials", "kind": "credentials", "title": "Credentials exposed in argv", "rules": "rest"}
+  ]
+}

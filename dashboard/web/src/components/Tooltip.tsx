@@ -25,6 +25,8 @@ export function TooltipLayer() {
         return;
       }
       el.textContent = txt;
+      // a whole command line reads better in a wider box than a sentence does
+      el.classList.toggle('wide', (src as HTMLElement).hasAttribute('data-tip-wide'));
       el.style.opacity = '1';
       const r = el.getBoundingClientRect();
       let x = e.clientX + 13;
