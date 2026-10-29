@@ -1040,8 +1040,14 @@ function build() {
     },
   };
 
+  /* The plate's minute is the service's last full one: the row before the
+   * minute still filling, and its total is that row's sum. */
+  const rate = rateRows(nowEpoch);
+  const lastFull = Object.fromEntries(CLASSES.map((c) => [c, rate[rate.length - 2][c]]));
+  const counted = Object.values(lastFull).filter((v) => v != null);
   const now = {
-    exits_per_min: 344,
+    exits_per_min: counted.length ? counted.reduce((a, v) => a + v, 0) : null,
+    exits_per_min_by_class: lastFull,
     roots: { agent: 1_405, 'ide': 428, human: 951 },
     procs: { agent: 18_442, 'ide': 4_118, human: 1_884 },
     users: { agent: 38, 'ide': 61, human: 142 },
@@ -1076,7 +1082,7 @@ function build() {
 
   const live = {
     window: { minutes: BINS, from: new Date((nowEpoch - BINS * 60) * 1000).toISOString(), to: nowIso },
-    rate: rateRows(nowEpoch),
+    rate,
     now,
     hosts,
     events: events(nowEpoch, 400),
