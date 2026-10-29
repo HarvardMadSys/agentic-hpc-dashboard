@@ -104,8 +104,15 @@ def claude_session(t0, root=100):
     ]
 
 
+CODEX_STANDALONE = (HOME + "/.codex/packages/standalone/releases/0.162.1-x86_64-unknown-"
+                    "linux-musl/bin/codex")
+CLAUDE_VSCODE = (HOME + "/.vscode-server/extensions/anthropic.claude-code-2.1.300-linux-x64/"
+                 "resources/native-binary/claude")
+
+
 class RoleTest(unittest.TestCase):
-    """What a classifier-tagged process actually is, on argv shapes seen on madsys-gpu1."""
+    """What a classifier-tagged process actually is, on argv shapes seen on
+    madsys-gpu1 and the FAS login nodes."""
 
     CASES = [
         # (agent_type, command, args, role)
@@ -139,6 +146,9 @@ class RoleTest(unittest.TestCase):
         ("claude_code", "claude", HOME + "/.vscode-server/extensions/anthropic.claude-code-2.1.286"
          "-linux-x64/resources/native-binary/claude auth status --json", "probe"),
         ("claude_code", "server", HOME + "/.claude/remote/srv/89cb/server --version", "probe"),
+        # the VS Code extension's binary run as the Chrome MCP server, by the
+        # extension host (FAS login nodes, 2026-10-20 .. 10-28)
+        ("claude_code", "claude", CLAUDE_VSCODE + " --claude-in-chrome-mcp", "helper"),
         ("claude_code", "2.1.285", "rg --no-config --files --hidden " + HOME + "/.claude/plugins",
          "embedded-tool"),
         ("claude_code", "2.1.280", "ugrep -G --ignore-files --hidden -I -rn foo", "embedded-tool"),
@@ -167,6 +177,19 @@ class RoleTest(unittest.TestCase):
          "sandbox --sandbox-policy-cwd " + HOME + "/w --command-cwd /", "sandbox"),
         ("codex", "bwrap", "bwrap --as-pid-1 --new-session --die-with-parent", "sandbox"),
         ("bwrap", "bwrap", "/usr/bin/bwrap --unshare-user --ro-bind / / /bin/true", "sandbox"),
+        # Codex's sandboxed fs helper, from each place Codex is installed, and
+        # the sandbox that runs it (FAS login nodes, 2026-10-20 .. 10-28)
+        ("codex", "codex", CODEX_STANDALONE + " --codex-run-as-fs-helper", "helper"),
+        ("codex", "codex", HOME + "/.vscode-server/extensions/openai.chatgpt-26.1007.21434-linux-x64"
+         "/bin/linux-x86_64/codex --codex-run-as-fs-helper", "helper"),
+        ("codex", "codex", HOME + "/.codex/packages/app-server-daemon/releases/0.165.0-x86_64-"
+         "unknown-linux-musl/bin/codex --codex-run-as-fs-helper", "helper"),
+        ("codex", "codex", HOME + "/.nvm/versions/node/v25.9.0/lib/node_modules/@openai/codex/"
+         "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex "
+         "--codex-run-as-fs-helper", "helper"),
+        ("codex", "codex", "codex-linux-sandbox --sandbox-policy-cwd " + HOME + "/w --command-cwd / "
+         '--permission-profile {"type":"managed"} --apply-seccomp-then-exec -- '
+         + CODEX_STANDALONE + " --codex-run-as-fs-helper", "sandbox"),
         ("codex", "mkdir", "mkdir -p " + HOME + "/.codex/packages/app-server-daemon", "helper"),
         ("codex", "sh", "sh -c printf '%b' " + HOME + "/.codex/x", "helper"),
         ("vscode", "code-4fe60c8b1c", HOME + "/.vscode-server/code-4fe60c8b1cdac1c4 --cli-data-dir "
@@ -182,6 +205,27 @@ class RoleTest(unittest.TestCase):
         for agent_type, command, args, want in self.CASES:
             with self.subTest(args=args[:70]):
                 self.assertEqual(role_of(agent_type, command, args), want)
+
+    def test_the_binaries_other_helpers_are_helpers_too(self):
+        """Not seen on a node yet, but picked the same way: the rest of Codex's
+        `--codex-run-as-*`, and the two other servers Claude 2.1.309's entry
+        point runs in place of a session."""
+        for agent_type, command, args in (
+                ("codex", "codex", CODEX_STANDALONE + " --codex-run-as-apply-patch x"),
+                ("claude_code", "claude", "claude --chrome-native-host"),
+                ("claude_code", "2.1.309", HOME + "/.local/share/claude/versions/2.1.309 "
+                 "--eval-mock-server /tmp/eval/spec.json n1")):
+            with self.subTest(args=args[-40:]):
+                self.assertEqual(role_of(agent_type, command, args), "helper")
+
+    def test_a_helper_flag_counts_only_as_the_first_argument(self):
+        """Both binaries take a helper from their first argument alone (Codex's
+        argv[1], Claude's `process.argv[2]`), so the same flag further on -- in
+        a prompt, say -- leaves the session a session."""
+        self.assertEqual(role_of("codex", "codex", "codex exec why --codex-run-as-fs-helper"),
+                         "agent")
+        self.assertEqual(role_of("claude_code", "claude",
+                                 "claude -p what is --claude-in-chrome-mcp"), "agent")
 
 
 class SessionizeTest(unittest.TestCase):
@@ -241,6 +285,27 @@ class SessionizeTest(unittest.TestCase):
         ]
         rows = ranked(reduce(recs))
         self.assertEqual(sorted(r["agent_pid"] for r in rows), ["100", "150"])
+
+    def test_codexs_fs_helper_is_a_tool_call_of_codexs_session(self):
+        # A sandboxed file access runs the Codex binary as its own fs helper,
+        # under `codex-linux-sandbox`, and the classifier tags both. Read as an
+        # agent, each helper was a session of its own: 6 699 of them on the FAS
+        # login nodes from 2026-10-26 to 10-28.
+        t0 = self.t0
+        recs = [
+            rec("residency", t0, 400, 50, "codex", CODEX_STANDALONE + " app-server --listen "
+                "unix://", agent_type="codex", agent_pid=400, tree_root=400, is_agent=True),
+            rec("exit", t0 + 5, 431, 430, "codex", CODEX_STANDALONE + " --codex-run-as-fs-helper",
+                agent_type="codex", agent_pid=431, tree_root=400, is_agent=True),
+            rec("exit", t0 + 6, 430, 400, "codex", "codex-linux-sandbox --sandbox-policy-cwd "
+                + HOME + "/w --command-cwd / --apply-seccomp-then-exec -- " + CODEX_STANDALONE
+                + " --codex-run-as-fs-helper",
+                agent_type="codex", agent_pid=430, tree_root=400, is_agent=True),
+        ]
+        rows = ranked(reduce(recs))
+        self.assertEqual([r["agent_pid"] for r in rows], ["400"])
+        # the two keys, apid:430 and apid:431, walked up to Codex
+        self.assertEqual((rows[0]["fragments"], rows[0]["owner_via"]), (2, "ancestor"))
 
     def test_a_tool_shell_whose_parent_was_never_seen_folds_into_that_parent(self):
         # The Bash tool's shell is spawned by the agent itself, so an unseen
