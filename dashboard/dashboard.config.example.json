@@ -54,7 +54,8 @@
   "//ui2": "written sent received gpu last. A reader's own choice is kept in their browser.",
   "//ui3": "routine_commands: what a trajectory's tree hides when 'hide routine' is on, beside",
   "//ui4": "runs of the same command: a command, a command and its first argument, or",
-  "//ui5": "'shell-snapshot' (an agent's shell sourcing its saved environment).",
+  "//ui5": "'shell-snapshot' (an agent's shell sourcing its saved environment). A shell that",
+  "//ui6": "ran only these, or one of them piped through filters (ps | grep root), goes too.",
   "ui": {
     "node_noun": "login nodes",
     "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],

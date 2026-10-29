@@ -7,11 +7,12 @@
  * directly; a click on a box opens what that process started.
  *
  * "Hide routine" (on by default) takes out what a reader has seen a thousand
- * times -- runs of the same command (the read's folded repeats, `pgrep ×120`)
- * and the commands on the site's routine list (`ui.routine_commands`:
- * lsb_release, getconf, git status, a shell sourcing its snapshot, ...) -- so
- * the processes that are not routine are the ones left to see. What it hid is
- * counted above the tree, never dropped silently.
+ * times -- runs of the same command (the read's folded repeats, `pgrep ×120`),
+ * the commands on the site's routine list (`ui.routine_commands`:
+ * lsb_release, getconf, git status, a shell sourcing its snapshot, ...), and
+ * the shells that ran nothing else (`sh -c getconf PAGESIZE`, a subshell) --
+ * so the processes that are not routine are the ones left to see. What it hid
+ * is counted above the tree, never dropped silently.
  */
 import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcNode } from '../api/types';
 import { ioBrief, ioTip } from '../lib/procio';
@@ -58,9 +59,8 @@ function gitSub(args: string): string | null {
   return null;
 }
 
-export function isRoutine(e: ProcNode, rules: string[]): boolean {
-  const cmd = e.eff ?? e.cmd ?? '';
-  const args = e.cmdline ?? e.args ?? '';
+/** A command line on the routine list: `cmd`, or `cmd` and its first argument. */
+function listed(cmd: string, args: string, rules: string[]): boolean {
   for (const r of rules) {
     if (r === 'shell-snapshot') {
       if (args.includes('/shell-snapshots/snapshot-')) return true;
@@ -74,11 +74,93 @@ export function isRoutine(e: ProcNode, rules: string[]): boolean {
   return false;
 }
 
+/** A process on the routine list. */
+export function isRoutine(e: ProcNode, rules: string[]): boolean {
+  return listed(e.eff ?? e.cmd ?? '', e.cmdline ?? e.args ?? '', rules);
+}
+
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh']);
+/** What a routine command's output can be piped through and stay routine. */
+const FILTERS = new Set(['grep', 'egrep', 'fgrep', 'sed', 'awk', 'gawk', 'mawk', 'head', 'tail', 'sort', 'uniq', 'wc', 'cut', 'tr']);
+
+const base = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+/** A shell, or a script one runs: by its command, or by its argv[0]
+ *  (`/bin/bash cpuUsage.sh`), which a script's subshells inherit too. */
+function isShell(e: ProcNode): boolean {
+  return SHELLS.has(e.cmd ?? '') || SHELLS.has(base((e.args ?? '').split(/\s+/, 1)[0]));
+}
+
+/** What a shell was told to run: a tool call's command, or what follows -c.
+ *  None for a subshell: the command line it carries is its parent's. */
+function scriptOf(e: ProcNode): string | null {
+  if (e.cmdline) return e.cmdline;
+  if (e.fork) return null;
+  const t = (e.args ?? '').split(/\s+/);
+  const i = t.findIndex((w, j) => j > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
+  return i > 0 ? t.slice(i + 1).join(' ') : null;
+}
+
+/** One pipeline from a routine command through filters: `ps -F -A -l | grep
+ *  root`. Anything more a shell can do -- a `;`, a newline, `&&`, a redirect,
+ *  a substitution -- and it is not. */
+function routinePipe(script: string, rules: string[]): boolean {
+  if (/[;&<>`(){}\n\r]|\|\|/.test(script)) return false;
+  const stages = script.split('|').map((s) => s.trim().split(/\s+/).filter(Boolean));
+  if (stages.length < 2 || stages.some((s) => !s.length)) return false;
+  const [head, ...rest] = stages;
+  return listed(base(head[0]), head.join(' '), rules) && rest.every((s) => FILTERS.has(base(s[0])));
+}
+
+/** `routine`'s answers, per routine list: a shell's answer needs everything
+ *  below it, and the views ask again on every render. */
+const judged = new WeakMap<string[], WeakMap<ProcEntry, boolean>>();
+
+/** Whether entry `e` is routine:
+ *  - a process on the routine list;
+ *  - a shell that exited cleanly and ran nothing but routine (`sh -c getconf
+ *    PAGESIZE`, a subshell whose own subshells are a run), or only a routine
+ *    pipeline (`ps -F -A -l | grep root`);
+ *  - a subshell that exited cleanly and ran nothing at all;
+ *  - a run whose members are routine. A run's members past the itemised few
+ *    have their shape, so the few stand for them.
+ *  A shell that failed is never routine: a failure is what a reader is after.
+ *  Repeats count only back to back (a run): the same command again later,
+ *  between other work, is not a run -- under an agent it is the agent's step
+ *  (user, 2026-10-29). */
+function routine(e: ProcEntry, rules: string[]): boolean {
+  let seen = judged.get(rules);
+  if (!seen) judged.set(rules, (seen = new WeakMap()));
+  let v = seen.get(e);
+  if (v === undefined) {
+    v = judge(e, rules);
+    seen.set(e, v);
+  }
+  return v;
+}
+
+function judge(e: ProcEntry, rules: string[]): boolean {
+  if (e.k === 'g') return e.items.every((m) => routine(m, rules));
+  if (e.k !== 'p') return false;
+  if (isRoutine(e, rules)) return true;
+  if (e.ev !== 'exit' || failed(e) || !isShell(e)) return false;
+  const kids = e.kids ?? [];
+  if (!kids.length) return !!e.fork;
+  if (kids.every((k) => routine(k, rules))) return true;
+  // a filter that started anything (sed's `e`) is not only a filter
+  const script = scriptOf(e);
+  return (
+    script != null &&
+    routinePipe(script, rules) &&
+    kids.every((k) => routine(k, rules) || (k.k === 'p' && FILTERS.has(k.cmd ?? '') && !k.kids?.length))
+  );
+}
+
 /** What "hide routine" takes out, with everything below it: a run of the
- *  same command, or a process on the routine list. The table view hides the
+ *  same command, or a routine process (`routine`). The table view hides the
  *  same rows. */
 export function isHidden(e: { k: string }, rules: string[]): boolean {
-  return e.k === 'g' || (e.k === 'p' && isRoutine(e as ProcNode, rules));
+  return e.k === 'g' || (e.k === 'p' && routine(e as ProcNode, rules));
 }
 
 /* --------------------------------------------------------------- boxes */

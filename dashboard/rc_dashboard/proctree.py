@@ -301,7 +301,7 @@ class Proc:
                  "end", "dur", "cpu", "code", "sig", "core", "ev", "cwd", "kv", "depth",
                  "a3", "atype", "user", "kids", "agg", "up", "link", "gap", "orphan",
                  "hint", "n", "sub_cpu", "cpu_nm", "t0", "t1", "sig_id", "label",
-                 "io", "sub_io", "gone", "leaf")
+                 "io", "sub_io", "gone", "leaf", "fork")
 
     def __init__(self, pid=None):
         self.pid = pid
@@ -311,7 +311,8 @@ class Proc:
         self.atype = self.user = self.agg = self.up = self.link = self.gap = None
         # `gone`: counted since, under its parent. `leaf`: itemised childless in
         # a newest-first read, so the first to be counted when room is needed.
-        self.core = self.orphan = self.gone = self.leaf = False
+        # `fork`: it never exec'd (`from_record`).
+        self.core = self.orphan = self.gone = self.leaf = self.fork = False
         self.kids = []
         self.hint = None
         self.n, self.sub_cpu, self.cpu_nm = 0, None, 0
@@ -337,6 +338,11 @@ class Proc:
         p.io = _io_of(rec)
         p.code, p.sig = rec.get("exit_code"), rec.get("signal")
         p.core = bool(rec.get("core_dumped"))
+        # A fork that never exec'd: the collector gave it its parent's argv
+        # ("inherit") and saw no exec of its own (an exec it saw whose argv never
+        # came keeps the inherited one too). A shell's subshell, so a
+        # `zsh /bin/zsh -i` under an interactive zsh is not a second one.
+        p.fork = rec.get("argv_source") == "inherit" and rec.get("duration_src") != "exec"
         p.ev = rec.get("event")
         p.cwd, p.kv = rec.get("cwd"), rec.get("_kv")
         d = rec.get("depth")
@@ -970,12 +976,13 @@ def _finish(root, newest=False):
         # and `lsb_release -a` run 746 times must read as one run of 746, not
         # as 746 rows that differ in which `cut` won. How it was placed is part
         # of it, so a group never mixes a measured parent link with an
-        # inferred one.
+        # inferred one; and so is whether it exec'd, so a run of subshells
+        # never takes in a shell of the same name.
         ran_cmds = {k.cmd for k in n.kids}
         if n.agg is not None:
             ran_cmds.update(n.agg.cmds)
         n.sig_id = shapes.setdefault(
-            (n.cmd, n.eff, n.role, n.link, n.gap, n.orphan, frozenset(ran_cmds)),
+            (n.cmd, n.eff, n.role, n.link, n.gap, n.orphan, n.fork, frozenset(ran_cmds)),
             len(shapes) + 1)
 
 
@@ -1051,6 +1058,8 @@ def _proc_dict(n, parent, memo=None):
         d["core"] = True
     if n.orphan:
         d["orphan"] = True
+    if n.fork:
+        d["fork"] = True
     # Only where it changes: a tool call's own cwd is the drift signal, and
     # repeating the parent's on every row would bury it.
     if n.cwd and (parent is None or n.cwd != parent.cwd):
