@@ -166,13 +166,20 @@ const NAME_KEYS = ['command', 'pattern', 'tool', 'user', 'host', 'wrapper', 'age
 
 function names(d: Record<string, unknown>): string[] {
   const out: string[] = [];
+  const add = (s: string) => {
+    if (s && !out.includes(s)) out.push(s);
+  };
   for (const k of NAME_KEYS) {
     const v = d[k];
     if ((typeof v === 'string' && v.trim()) || typeof v === 'number') {
       const s = String(v).trim();
-      if (!out.includes(s)) out.push(s);
+      add(s);
       // a host is often shown by its short name
-      if (k === 'host' && s.includes('.') && !out.includes(s.split('.')[0])) out.push(s.split('.')[0]);
+      if (k === 'host' && s.includes('.')) add(s.split('.')[0]);
+      // the model's copy of every string is masked, the page's labels are not:
+      // what comes before the mask still names the row
+      const cut = s.indexOf('[REDACTED]');
+      if (cut >= 6) add(s.slice(0, cut).trim());
     }
   }
   return out;
