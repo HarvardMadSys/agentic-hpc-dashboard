@@ -291,6 +291,103 @@ class BoundsTest(unittest.TestCase):
         self.assertIsNone(find(tree, 201)["cpu"])
 
 
+def shape(node):
+    """A node's children as pids, with `agg` / `g` / `more` for the rest."""
+    return [k["pid"] if k["k"] == "p" else k["k"] for k in kids(node)]
+
+
+class NewestTest(unittest.TestCase):
+    """Newest first moves every budget's cut to the oldest end, not only the sort."""
+
+    def test_children_are_listed_newest_first_at_every_level(self):
+        _, tree, _ = build([
+            ex(T0 + 1, 201, 200, "git", "git status", kv=200),
+            ex(T0 + 2, 202, 200, "sed", "sed -n 1,9p f", kv=200),
+            ex(T0 + 3, 200, AGENT, "zsh", depth=0, kv=200, role="tool-shell", dur=3),
+            ex(T0 + 5, 302, AGENT, "ls", dur=1.0),
+        ], keys=(AGENT, 200), newest=True)
+        self.assertEqual(shape(tree), [302, 200])
+        self.assertEqual(shape(find(tree, 200)), [202, 201])
+
+    def test_past_the_hold_budget_the_oldest_are_counted_and_the_newest_drawn(self):
+        recs = [ex(T0 + i, 3000 + i, AGENT, "cmd%d" % (i % 7)) for i in range(50)]
+        b, tree, _ = build(recs, hold=20, newest=True)
+        self.assertEqual(b.matched, 50)
+        self.assertEqual(b.itemised - b.absorbed, 20)
+        self.assertEqual(sorted(p["pid"] for p in procs(tree) if p["pid"] != AGENT),
+                         list(range(3030, 3050)))
+        self.assertEqual(shape(tree)[:3], [3049, 3048, 3047])
+        self.assertEqual(shape(tree)[-1], "agg", "the counted oldest, at the bottom")
+        self.assertEqual(kids(tree)[-1]["n"], 30)
+        self.assertEqual(tree["n"], 50, "every record read is in the root's count")
+
+    def test_an_old_command_is_counted_under_the_shell_that_ran_it(self):
+        b, tree, _ = build([
+            ex(T0 + 1, 201, 200, "git", "git status", kv=200),
+            ex(T0 + 2, 202, 200, "sed", "sed -n 1,9p f", kv=200),
+            ex(T0 + 3, 200, AGENT, "zsh", depth=0, kv=200, role="tool-shell", dur=3),
+        ] + [ex(T0 + 10 + i, 600 + i, AGENT, "c%d" % i) for i in range(3)],
+            keys=(AGENT, 200), hold=3, newest=True)
+        self.assertEqual(shape(tree), [602, 601, "agg", 200])
+        self.assertEqual(kids(tree)[2]["cmds"], [["c0", 1]])
+        shell = find(tree, 200)
+        self.assertEqual(shape(shell), ["agg"], "what the shell ran, counted under it")
+        self.assertEqual((kids(shell)[0]["n"], shell["n"]), (2, 3))
+        self.assertEqual(tree["n"], 6)
+        self.assertEqual(b.itemised - b.absorbed, 3)
+
+    def test_one_poll_loop_keeps_its_newest_and_a_later_call_is_still_drawn(self):
+        recs = [ex(T0 + i * 0.01, 10000 + i, 900, "python", kv=900, depth=1)
+                for i in range(400)]
+        recs.append(ex(T0 + 10, 900, AGENT, "zsh", kv=900, depth=0, dur=11))
+        recs.append(ex(T0 + 11, 901, AGENT, "git", kv=AGENT, depth=1))
+        b, tree, _ = build(recs, keys=(AGENT, 900), hold=1000, per_parent=50, newest=True)
+        g, a = kids(find(tree, 900))
+        self.assertEqual((g["k"], g["count"]), ("g", 50))
+        self.assertEqual(g["items"][0]["pid"], 10399, "the loop's newest, drawn first")
+        self.assertEqual((a["k"], a["n"]), ("agg", 350))
+        self.assertEqual(find(tree, 901)["cmd"], "git")
+        self.assertEqual(tree["n"], 402)
+
+    def test_the_entry_budget_cuts_the_oldest_end(self):
+        recs = []
+        for i in range(40):
+            sh = 5000 + 10 * i
+            recs.append(ex(T0 + i, sh + 1, sh, "c%d" % i, kv=sh, depth=1))
+            recs.append(ex(T0 + i + 0.5, sh, AGENT, "s%d" % i, kv=sh, depth=0, dur=1))
+        keys = [AGENT] + [5000 + 10 * i for i in range(40)]
+        _, tree, stats = build(recs, keys=keys, budget=50, newest=True)
+        top = kids(tree)
+        self.assertEqual(len(top), 40, "the first level is whole")
+        whole = [p["pid"] for p in top if shape(p) and shape(p)[0] != "more"]
+        self.assertEqual(whole, [5000 + 10 * i for i in range(39, 30, -1)],
+                         "the newest nine calls keep what they ran")
+        self.assertEqual(stats["elided"], 31)
+
+    def test_a_group_itemises_its_newest_members(self):
+        recs = [ex(T0 + i, 400 + i, AGENT, "pgrep", "pgrep -f vite") for i in range(20)]
+        _, tree, _ = build(recs, newest=True)
+        g = kids(tree)[0]
+        self.assertEqual((g["k"], g["count"]), ("g", 20))
+        self.assertEqual([m["pid"] for m in g["items"]], [419, 418, 417, 416, 415, 414])
+        self.assertEqual(g["more"], 14)
+
+    def test_either_order_counts_the_same_processes(self):
+        recs = []
+        for i in range(30):
+            sh = 7000 + 10 * i
+            recs += [ex(T0 + i, sh + 1, sh, "rg", kv=sh), ex(T0 + i + 0.1, sh + 2, sh, "sed", kv=sh),
+                     ex(T0 + i + 0.5, sh, AGENT, "zsh", kv=sh, depth=0, dur=1, cpu=0.02)]
+        recs += [ex(T0 + 40 + i * 0.01, 9000 + i, AGENT, "pgrep") for i in range(60)]
+        keys = [AGENT] + [7000 + 10 * i for i in range(30)]
+        for kw in ({"hold": 25}, {"hold": 25, "per_parent": 10}, {"hold": 1000}):
+            _, old, _ = build(recs, keys=keys, budget=40, **kw)
+            bn, new, _ = build(recs, keys=keys, budget=40, newest=True, **kw)
+            self.assertEqual((new["n"], new["sub_cpu"]), (old["n"], old["sub_cpu"]), kw)
+            self.assertEqual(new["n"], 150)
+            self.assertLessEqual(bn.itemised - bn.absorbed, bn.hard)
+
+
 class NavTest(unittest.TestCase):
     """The navigator is the read's, not the served rows': every record counts."""
 
@@ -641,6 +738,29 @@ class EndToEndTest(unittest.TestCase):
         later = self.inspect(frm=body["scan"]["stopped_at"])
         self.assertEqual(later["scan"]["records"], 12 - 5 + 1,
                          "the record at the cut is read again, never skipped")
+
+    def test_newest_first_reads_to_the_end_and_is_kept_apart(self):
+        old = proctree.DEFAULTS["inspect_max_records"]
+        proctree.DEFAULTS["inspect_max_records"] = 5
+        try:
+            oldest = self.inspect()
+            newest = self.inspect(order="newest")
+        finally:
+            proctree.DEFAULTS["inspect_max_records"] = old
+        self.assertEqual((oldest["order"], oldest["scan"]["stopped"]), ("oldest", "records"))
+        self.assertEqual(newest["order"], "newest")
+        self.assertFalse(newest["cached"], "not the oldest-first tree served again")
+        self.assertIsNone(newest["scan"]["stopped"], "its record budget bounds time alone")
+        self.assertEqual(newest["scan"]["records"], 12)
+        self.assertEqual(newest["bounds"]["max_records"],
+                         proctree.DEFAULTS["inspect_newest_records"])
+        starts = [k["start"] for k in kids(newest["tree"]) if k.get("start") is not None]
+        self.assertEqual(starts, sorted(starts, reverse=True))
+        self.assertEqual(newest["tree"]["n"], 12)
+
+    def test_an_unknown_order_reads_oldest_first(self):
+        self.assertEqual(self.inspect(order="sideways")["order"], "oldest")
+        self.assertTrue(self.inspect()["cached"], "and is the oldest-first read")
 
     def test_the_rows_keys_are_found_without_folding_the_window(self):
         traj = self.view.reducers["trajectories"]

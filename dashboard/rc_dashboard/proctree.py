@@ -51,6 +51,19 @@ that from EVERY record it matched, itemised or only counted (`nav`): process
 starts per time bin by purpose, the busiest minute, the first tool call, the
 longest process and the failures. A navigator drawn from the served rows alone
 would show the itemised few and hide the counted many.
+
+Which end of a long session is drawn is the reader's choice (`order`). Each of
+the read's budgets keeps one end and counts the other -- the records read, the
+processes itemised, the entries served -- and by default all three keep the
+OLDEST, because that is the order the records arrive in. Newest first moves all
+three. The read goes on to the session's end: the hold keeps no more drawn
+however much is read, so its record budget bounds time alone. A process that
+finds the hold full, or its command's quota under one parent, is made room for
+by counting the oldest drawn one under that one's parent, rather than being
+counted itself. And siblings are listed, grouped, and served newest first, so
+the entry budget cuts the deep end of the oldest subtrees. Sorting the served
+rows alone would put at the top the very processes the budgets had counted
+rather than drawn.
 """
 import collections
 import gzip
@@ -98,6 +111,8 @@ BIN_WIDTHS = (0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 
 DENSITY_BINS = 2400
 FAIL_KEEP = 2000         # failures listed by time; past it, counted
 TOOL_ROLES = ("tool-shell", "sandbox", "embedded-tool")
+ORDERS = ("oldest", "newest")   # how siblings are listed, and which end is drawn
+COMPACT_SLACK = 4096     # stale entries a newest-first queue holds before a sweep
 WARM_TOP = 3             # sessions of the default ranking kept read in the background
 WARM_EVERY = 30          # seconds between the warmer's looks
 
@@ -105,6 +120,10 @@ DEFAULTS = {
     # Matched exit records read before the scan stops and says where. At ~25 us a
     # record through json + the normaliser this is several seconds of work.
     "inspect_max_records": 150000,
+    # The same for a newest-first read, which reads on to the session's end and
+    # keeps only the newest `inspect_hold` drawn: memory is bounded however
+    # much it reads, so this bounds time alone -- tens of seconds at the top.
+    "inspect_newest_records": 600000,
     # Bytes of day-file read before the scan stops, likewise.
     "inspect_max_bytes": 6 << 30,
     # Processes itemised; past it a process with nothing below it is counted
@@ -282,7 +301,7 @@ class Proc:
                  "end", "dur", "cpu", "code", "sig", "core", "ev", "cwd", "kv", "depth",
                  "a3", "atype", "user", "kids", "agg", "up", "link", "gap", "orphan",
                  "hint", "n", "sub_cpu", "cpu_nm", "t0", "t1", "sig_id", "label",
-                 "io", "sub_io")
+                 "io", "sub_io", "gone", "leaf")
 
     def __init__(self, pid=None):
         self.pid = pid
@@ -290,7 +309,9 @@ class Proc:
         self.role = self.start = self.end = self.dur = self.cpu = self.code = None
         self.sig = self.ev = self.cwd = self.kv = self.depth = self.a3 = None
         self.atype = self.user = self.agg = self.up = self.link = self.gap = None
-        self.core = self.orphan = False
+        # `gone`: counted since, under its parent. `leaf`: itemised childless in
+        # a newest-first read, so the first to be counted when room is needed.
+        self.core = self.orphan = self.gone = self.leaf = False
         self.kids = []
         self.hint = None
         self.n, self.sub_cpu, self.cpu_nm = 0, None, 0
@@ -362,14 +383,27 @@ class TreeBuilder:
     Bounded: at most `hold` processes are itemised (`hard` counting the parents
     kept past it for structure), and what arrives after is counted under its
     parent. Every such count is published, never dropped.
+
+    `newest`: the same bounds keep the newest instead. A process that finds no
+    room is drawn anyway, and the oldest childless one drawn is counted under
+    its parent in its place (`_room`), so the drawn processes are the newest
+    `hold` -- and of one command under one parent, the newest `per_parent`.
     """
 
     def __init__(self, hold=DEFAULTS["inspect_hold"],
-                 per_parent=DEFAULTS["inspect_per_parent"]):
+                 per_parent=DEFAULTS["inspect_per_parent"], newest=False):
         self.hold = max(1, int(hold))
         self.hard = self.hold + self.hold // 2
         self.per_parent = max(1, int(per_parent))
-        self.leaves = collections.Counter()   # (ppid, command) -> childless itemised
+        self.newest = bool(newest)
+        # Newest first: the childless processes drawn, oldest first, in all and
+        # per (ppid, command). An entry counted since is skipped when reached,
+        # and swept out when they outnumber the drawn (`_compact`).
+        self.fifo = collections.deque()
+        self.fifo_k = {}
+        self.live_leaves = 0
+        # (ppid, command) -> childless itemised; newest first, those still drawn
+        self.leaves = collections.Counter()
         self.pending = {}           # pid -> [Proc] whose record names it as parent
         self.pending_agg = {}       # pid -> Agg, the same past the hold budget
         self.orphans = []           # [Proc] whose record names no usable parent
@@ -407,6 +441,12 @@ class TreeBuilder:
         pid = rec.get("pid")
         st = _started(rec, ts)
         self._note(rec, pid, st, ts)
+        if self.newest:
+            # Room is made before this process claims what waited for it: the
+            # one counted to make it may be one of those, or the parent this
+            # one names, and is counted where it stands before it is claimed.
+            waited = bool(self.pending.get(pid)) or pid in self.pending_agg
+            self._room(not waited, (rec.get("ppid"), rec.get("_command")))
         kids = self.pending.pop(pid, None) if pid is not None else None
         if kids and st is not None:
             # A child that started before this process did had an earlier
@@ -428,7 +468,9 @@ class TreeBuilder:
             par = None
         leaf = not kids and agg is None
         lk = (ppid, rec.get("_command"))
-        if (self.itemised >= (self.hold if leaf else self.hard)
+        # Newest first, the processes counted since leave their room behind.
+        drawn = self.itemised - self.absorbed if self.newest else self.itemised
+        if (drawn >= (self.hold if leaf else self.hard)
                 or (leaf and self.leaves[lk] >= self.per_parent)):
             self._count(rec, ppid, st, ts, kids, agg, par)
             return
@@ -436,6 +478,11 @@ class TreeBuilder:
         self.itemised += 1
         if leaf:
             self.leaves[lk] += 1
+            if self.newest:
+                p.leaf = True
+                self.live_leaves += 1
+                self.fifo.append(p)
+                self.fifo_k.setdefault(lk, collections.deque()).append(p)
         for k in kids or ():
             k.up, k.link = p, "ppid"
         p.kids = kids or []
@@ -546,24 +593,106 @@ class TreeBuilder:
         else:
             table, key = ((self.orphan_agg, rec.get("_kv")) if ppid in NO_PARENT
                           else (self.pending_agg, ppid))
-            a = table.get(key)
-            if a is None:
-                if len(self.pending_agg) + len(self.orphan_agg) >= self.hold:
-                    a = self.loose = self.loose or Agg()
-                else:
-                    a = table[key] = Agg(rec.get("_kv"), rec.get("depth"))
+            a = self._agg_at(table, key, rec.get("_kv"), rec.get("depth"))
         a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, _io_of(rec))
         for k in kids or ():
             self.absorbed += a.absorb(k)
-            # Gone from the drawing, so no later child may hang from it.
-            stack = [k]
-            while stack:
-                q = stack.pop()
-                if self.closed.get(q.pid) is q:
-                    del self.closed[q.pid]
-                stack.extend(q.kids)
+            self._drop(k)
         if agg is not None:
             a.merge(agg)
+
+    def _agg_at(self, table, key, kv, depth):
+        """The count waiting under `key` in `table`, begun if there is none."""
+        a = table.get(key)
+        if a is None:
+            if len(self.pending_agg) + len(self.orphan_agg) >= self.hold:
+                a = self.loose = self.loose or Agg()
+            else:
+                a = table[key] = Agg(kv, depth)
+        return a
+
+    def _drop(self, p):
+        """`p` and everything under it, gone from the drawing into a count."""
+        stack = [p]
+        while stack:
+            q = stack.pop()
+            q.gone = True
+            # No later child may hang from it.
+            if self.closed.get(q.pid) is q:
+                del self.closed[q.pid]
+            if q.leaf:
+                q.leaf = False
+                self.live_leaves -= 1
+                lk = (q.ppid, q.cmd)
+                self.leaves[lk] -= 1
+                if self.leaves[lk] <= 0:
+                    del self.leaves[lk]
+            stack.extend(q.kids)
+
+    def _room(self, leaf, lk):
+        """Newest first: count the oldest drawn processes until one more fits.
+
+        A childless one past its command's quota under its parent takes the
+        place of the oldest of that command there; any other, of the oldest
+        childless one drawn at all.
+        """
+        if leaf and self.leaves[lk] >= self.per_parent:
+            self._demote(self.fifo_k.get(lk))
+        while self.itemised - self.absorbed >= (self.hold if leaf else self.hard):
+            if not self._demote(self.fifo):
+                break
+        if len(self.fifo) > 2 * self.live_leaves + COMPACT_SLACK:
+            self._compact()
+
+    def _demote(self, q):
+        """Count the oldest process still drawn in queue `q` under its parent.
+
+        Wherever it waits -- under a parent that exited, for a parent still to
+        exit, or with no parent to wait for -- its count goes where a process
+        arriving past the hold there would have gone (`_count`). False when
+        there is none left to count.
+        """
+        while q:
+            p = q.popleft()
+            if p.gone:
+                continue
+            mine = self.fifo_k.get((p.ppid, p.cmd))
+            if q is self.fifo and mine is not None:
+                # The oldest drawn of all is the oldest of its command too: what
+                # is ahead of it there was counted already.
+                while mine and (mine[0] is p or mine[0].gone):
+                    mine.popleft()
+            if mine is not None and not mine:
+                del self.fifo_k[(p.ppid, p.cmd)]
+            if p.up is not None:
+                p.up.kids.remove(p)
+                if p.up.agg is None:
+                    p.up.agg = Agg(p.kv, p.depth)
+                a = p.up.agg
+            else:
+                waiting = self.pending.get(p.ppid)
+                if waiting is not None and p in waiting:
+                    waiting.remove(p)
+                    if not waiting:
+                        del self.pending[p.ppid]
+                    a = self._agg_at(self.pending_agg, p.ppid, p.kv, p.depth)
+                else:
+                    self.orphans.remove(p)
+                    a = self._agg_at(self.orphan_agg, p.kv, p.kv, p.depth)
+            self.absorbed += a.absorb(p)
+            self._drop(p)
+            return True
+        return False
+
+    def _compact(self):
+        """Sweep out of the newest-first queues the entries counted since."""
+        self.fifo = collections.deque(p for p in self.fifo if not p.gone)
+        for lk, q in list(self.fifo_k.items()):
+            left = [p for p in q if not p.gone]
+            if left:
+                self.fifo_k[lk] = collections.deque(left)
+            else:
+                del self.fifo_k[lk]
 
     def _tick(self, rec):
         pid = rec.get("pid")
@@ -736,8 +865,12 @@ class TreeBuilder:
 
     # --------------------------------------------------------------- render
     def render(self, root, budget):
-        """The tree as served: grouped, totalled, and cut to `budget` entries."""
-        _finish(root)
+        """The tree as served: grouped, totalled, and cut to `budget` entries.
+
+        Served in the order the siblings are listed, so newest first the cut
+        falls on the deep end of the oldest subtrees.
+        """
+        _finish(root, self.newest)
         stats = {"shown": 0, "elided": 0, "links": collections.Counter()}
         budget = max(1, int(budget))
         memo = {}
@@ -747,7 +880,7 @@ class TreeBuilder:
         queue = collections.deque([(root, out)])
         while queue:
             node, d = queue.popleft()
-            entries = _entries(node)
+            entries = _entries(node, self.newest)
             kids = []
             for i, e in enumerate(entries):
                 if left[0] <= 0:
@@ -790,8 +923,9 @@ def _merge_agg(node, a):
     node.agg.merge(a)
 
 
-def _finish(root):
-    """Totals, start order, labels and shape signatures, bottom up."""
+def _finish(root, newest=False):
+    """Totals, start order (newest first, if asked), labels and shape
+    signatures, bottom up. A process with no start time is listed last."""
     order, stack = [], [root]
     while stack:
         n = stack.pop()
@@ -799,8 +933,9 @@ def _finish(root):
         stack.extend(n.kids)
     shapes = {}
     unique = 0
+    sign = -1 if newest else 1
     for n in reversed(order):
-        n.kids.sort(key=lambda k: (k.t0 is None, k.t0 or 0.0, k.pid or 0))
+        n.kids.sort(key=lambda k: (k.t0 is None, sign * (k.t0 or 0.0), sign * (k.pid or 0)))
         own = n.ev is not None
         n.n = (1 if own else 0) + sum(k.n for k in n.kids) + (n.agg.n if n.agg else 0)
         cpu = n.cpu if own else None
@@ -870,7 +1005,7 @@ def runs(sigs):
     return out
 
 
-def _entries(node):
+def _entries(node, newest=False):
     """A node's children as served: processes, groups, and its counted rest."""
     kids = node.kids
     out = []
@@ -883,12 +1018,13 @@ def _entries(node):
     if a is not None:
         # In time order with its siblings, by when the first counted one began,
         # rather than trailing them all: it happened somewhere, and where is
-        # part of the trajectory.
+        # part of the trajectory. Newest first, the same place seen from the
+        # other end.
         at = len(out)
         if a.t0 is not None:
             for j, e in enumerate(out):
                 t = e.t0 if isinstance(e, Proc) else e[0][0].t0
-                if t is not None and t > a.t0:
+                if t is not None and (t < a.t0 if newest else t > a.t0):
                     at = j
                     break
         out.insert(at, a)
@@ -1284,7 +1420,8 @@ def _remember(key, body):
             _cache.popitem(last=False)
 
 
-def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background=False):
+def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background=False,
+            order="oldest"):
     """The process tree of row `sid` in `view`'s window.
 
     `frm`/`to` (epoch seconds) narrow the read inside the session's span: the
@@ -1293,12 +1430,16 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     A built tree is served again for CACHE_TTL seconds, the last CACHE_KEEP of
     them, until the window is rebuilt (`installed_at` is in the key).
 
+    `order` is one of ORDERS, anything else the first: which end of the
+    session the tree lists first, and draws in full (see the module's notes).
+
     `background` is the warmer's read (`_warm_loop`): it never waits for the
     scan, gives way mid-read to anyone who opens a session, and returns None
     when it did.
     """
     now = now or time.time()
-    key = (sid, view.minutes, view.installed_at, frm, to)
+    order = order if order in ORDERS else ORDERS[0]
+    key = (sid, view.minutes, view.installed_at, frm, to, order)
     hit = _cached(key, now)
     if hit is not None:
         return hit
@@ -1319,7 +1460,8 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
             return hit
         try:
             body = _inspect(cfg, view, lock, roots, sid, frm, to,
-                            give_way=(lambda: _waiting[0] > 0) if background else None)
+                            give_way=(lambda: _waiting[0] > 0) if background else None,
+                            order=order)
         except _GiveWay:
             return None
         if body.get("found"):
@@ -1329,8 +1471,11 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
         _scan_lock.release()
 
 
-def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
+def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"):
     lim = _limits(cfg)
+    newest = order == "newest"
+    # Newest first reads on to the session's end: see `inspect_newest_records`.
+    max_records = lim["inspect_newest_records" if newest else "inspect_max_records"]
     with lock:
         status = view.status()
         red = view.reducers or {}
@@ -1370,7 +1515,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
     if mine:
         plan, total = mine, sum(e["size"] - e["start"] for e in mine)
 
-    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"])
+    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
@@ -1385,7 +1530,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
         b.feed(rec)
         if give_way is not None and not b.matched & 255 and give_way():
             raise _GiveWay
-        if b.matched >= lim["inspect_max_records"]:
+        if b.matched >= max_records:
             stopped, stopped_at = "records", rec.get("_ts_epoch")
             break
         if stats["bytes"] >= lim["inspect_max_bytes"]:
@@ -1425,7 +1570,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
     lo = since if b.first is None else min(since, b.first)
     return {
         "sid": sid, "found": True, "row": row, "host": host, "owner_pid": owner,
-        "keys": len(members),
+        "keys": len(members), "order": order,
         "span": {"first": first, "last": last},
         "scan": {"from": since, "to": until, "files": len(plan),
                  "bytes_planned": total, "bytes": stats.get("bytes", 0),
@@ -1436,7 +1581,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
                  "stopped": stopped, "stopped_at": stopped_at,
                  "elapsed_s": round(elapsed, 2),
                  "computed_at": round(time.time(), 3)},
-        "bounds": {"max_records": lim["inspect_max_records"],
+        "bounds": {"max_records": max_records,
                    "max_bytes": lim["inspect_max_bytes"],
                    "hold": b.hold, "per_parent": b.per_parent,
                    "nodes": lim["inspect_nodes"],
@@ -1466,8 +1611,15 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
                       "itemised, %d childless ones of one command per parent (the "
                       "rest counted under their parent, k=agg); %d entries served "
                       "breadth first (the rest counted, k=more)"
-                      % (lim["inspect_max_records"], lim["inspect_max_bytes"] >> 30,
+                      % (max_records, lim["inspect_max_bytes"] >> 30,
                          b.hold, b.per_parent, lim["inspect_nodes"]),
+            "order": ("newest first: siblings by latest start first. The read goes "
+                      "on to the session's end and every budget keeps the newest, so "
+                      "the oldest processes are the ones counted (k=agg) or past the "
+                      "served entries (k=more)" if newest else
+                      "oldest first: siblings by start. Every budget keeps the "
+                      "oldest, so the newest processes are the ones counted (k=agg) "
+                      "or past the served entries (k=more)"),
             "args": "masked, then cut to %d characters" % PREVIEW,
             "nav": "from every record the read matched, itemised or counted: process "
                    "starts binned by purpose on the read's axis (a start before it "
@@ -1494,7 +1646,7 @@ def response(body, accept_encoding):
     return raw, {"Vary": "Accept-Encoding"}
 
 
-def serve(agg, sid, window_min=None, frm=None, to=None):
+def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     """`/api/trajectory`: `inspect` over the aggregator's view of that window."""
     _warm["last_open"] = time.time()
     if _warm["thread"] is None:
@@ -1503,7 +1655,7 @@ def serve(agg, sid, window_min=None, frm=None, to=None):
         _warm["thread"].start()
     win = agg.window(window_min)
     view = agg.panels_by_window.request(win["minutes"])
-    body = inspect(agg.cfg, view, agg.lock, agg.roots(), sid, frm, to)
+    body = inspect(agg.cfg, view, agg.lock, agg.roots(), sid, frm, to, order=order)
     body["window"] = win
     body.update(feedmod.panel_meta(agg.reports["ebpf"]))
     return body

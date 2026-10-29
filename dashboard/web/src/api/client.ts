@@ -20,6 +20,7 @@ import type {
   IoSort,
   LiveUsers,
   PanelsResponse,
+  TrajOrder,
   TrajRank,
   Trajectories,
   TrajectoryDetail,
@@ -164,18 +165,21 @@ export const getTrajectories = (
 /** One session as a process tree. A re-read of the day-files server-side, so
  * it costs seconds on a big session; `from` continues past a read that
  * stopped at its budget, and `to` bounds it -- the page sends "now" to ask for
- * a fresh read instead of the one the service keeps. */
+ * a fresh read instead of the one the service keeps. `order` newest asks for
+ * the newest end listed first and drawn in full; oldest is the default, and
+ * is left off the URL. */
 export const getTrajectory = (
   sid: string,
   minutes?: number | null,
   from?: number | null,
   s?: AbortSignal,
   to?: number | null,
+  order: TrajOrder = 'oldest',
 ) =>
   get<TrajectoryDetail>(
     `/trajectory?sid=${encodeURIComponent(sid)}${win(minutes, '&')}${
       from != null ? `&from=${encodeURIComponent(from)}` : ''
-    }${to != null ? `&to=${encodeURIComponent(to)}` : ''}`,
+    }${to != null ? `&to=${encodeURIComponent(to)}` : ''}${order === 'newest' ? '&order=newest' : ''}`,
     { signal: s },
   );
 
