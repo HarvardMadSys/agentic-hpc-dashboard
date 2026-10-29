@@ -718,6 +718,8 @@ export interface ProcNode {
   gap?: number;
   /** its record names init: it outlived its parent */
   orphan?: boolean;
+  /** a fork that never exec'd, such as a shell's subshell: its command line is its parent's */
+  fork?: boolean;
   core?: boolean;
   exit_code?: number | null;
   signal?: number | null;

@@ -240,6 +240,42 @@ class GroupTest(unittest.TestCase):
                          "a stub or an agent never folds into a group")
 
 
+def forked(rec, src="task"):
+    """`rec` as a fork that never exec'd: the collector's argv is its parent's."""
+    rec.update(argv_source="inherit", duration_src=src)
+    return rec
+
+
+class SubshellTest(unittest.TestCase):
+    """A shell's subshell is a fork that never exec'd, so its command line is
+    its parent's: `zsh /bin/zsh -i` under an interactive zsh is not a second
+    interactive shell. "Hide routine" needs to tell the two apart."""
+
+    def test_a_fork_that_never_execd_says_so(self):
+        recs = [forked(ex(T0 + 1, 901, 900, "zsh", "/bin/zsh -i")),
+                forked(ex(T0 + 2, 902, 900, "python3", "python3 train.py"), "proc"),
+                dict(ex(T0 + 3, 903, 900, "zsh", "/bin/zsh -i"),
+                     argv_source="kernel", duration_src="exec"),
+                # its exec was seen, but its own argv never arrived
+                forked(ex(T0 + 4, 904, 900, "getconf", "/bin/zsh -i"), "exec"),
+                ex(T0 + 9, 900, AGENT, "zsh", "/bin/zsh -i", dur=10)]
+        _, tree, _ = build(recs)
+        self.assertTrue(find(tree, 901)["fork"])
+        self.assertTrue(find(tree, 902)["fork"], "a fork, whatever it runs")
+        for pid in (900, 903, 904):
+            self.assertNotIn("fork", find(tree, pid))
+
+    def test_a_run_never_mixes_forks_with_shells_that_execd(self):
+        recs = [forked(ex(T0 + i, 910 + i, 900, "zsh", "/bin/zsh -i")) for i in range(3)]
+        recs += [ex(T0 + 3 + i, 920 + i, 900, "zsh", "/bin/zsh -i") for i in range(3)]
+        recs.append(ex(T0 + 9, 900, AGENT, "zsh", "/bin/zsh -i", dur=10))
+        _, tree, _ = build(recs)
+        runs_ = kids(find(tree, 900))
+        self.assertEqual([(g["k"], g["count"]) for g in runs_], [("g", 3), ("g", 3)])
+        self.assertEqual([all(i.get("fork") for i in g["items"]) for g in runs_],
+                         [True, False])
+
+
 class BoundsTest(unittest.TestCase):
 
     def test_past_the_hold_budget_processes_are_counted_not_dropped(self):

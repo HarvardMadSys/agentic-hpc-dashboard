@@ -288,7 +288,8 @@ def defaults():
             # What a trajectory's tree hides when "hide routine" is on, beside
             # runs of the same command: a command, a command and its first
             # argument ("git status"), or "shell-snapshot" for an agent's shell
-            # sourcing its saved environment.
+            # sourcing its saved environment. A shell that ran only these, or
+            # one of them piped through filters (`ps | grep root`), goes too.
             "routine_commands": [
                 "lsb_release", "getconf", "uname", "sleep", "pgrep", "ps", "tr", "cut",
                 "dirname", "basename", "readlink", "realpath", "which", "hostname", "id",

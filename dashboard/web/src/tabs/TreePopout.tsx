@@ -832,7 +832,7 @@ export default function TreePopout() {
         </div>
         <div className="tp-tools">
           <span className="tp-grp">
-            <label data-tip="take out runs of the same command and the site's routine commands (ui.routine_commands), so the unusual processes stand out">
+            <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
             </label>
