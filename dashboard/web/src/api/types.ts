@@ -1670,6 +1670,38 @@ export interface AskJob {
   error: string | null;
   elapsed_s: number;
   snapshot_kb: number;
+  /** what each ref the answer cites was (ask.Asker._cites); null until answered,
+   *  absent from a job asked before citations */
+  cites?: Record<string, AskCite> | null;
+  /** what the question was read over, so a citation opens the page on it */
+  view?: AskView | null;
+}
+
+/** A moment of one session's tree to open the inspector at. */
+export interface CiteJump {
+  t: number;
+  by: 'start' | 'end';
+  pid?: number | null;
+  zoom?: [number, number];
+}
+
+/** One cited ref: where it sits in the snapshot, what the model saw of it (its
+ *  refs taken out, a long list said as a count; an outline's line is the line),
+ *  and the hints that open it -- a session, or a moment of this session. */
+export interface AskCite {
+  path: (string | number)[];
+  data: unknown;
+  go: { sid?: string | null; jump?: CiteJump } | null;
+}
+
+/** The window, filter, classes, and session a question was read over, in the
+ *  page's own URL keys. No filter is no filter, not "whatever is on screen". */
+export interface AskView {
+  window_min: number | null;
+  users: string[];
+  atypes: string[];
+  cls: string[] | null;
+  sid: string | null;
 }
 
 /* ------------------------------------------------- every command behind I/O
