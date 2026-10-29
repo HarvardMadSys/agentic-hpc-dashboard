@@ -613,6 +613,9 @@ class CiteTest(unittest.TestCase):
         self.assertEqual(p["rows"], "50 rows")
         self.assertEqual(p["tags"], ["a", "b"])
         self.assertEqual(ask.preview("  [a3] git status: dur 1 s"), "git status: dur 1 s")
+        # the lines a cited object holds carry refs of their own: not shown
+        self.assertEqual(ask.preview({"first": ["[d6] getopt exit 4", "[d7] git exit 1"]}),
+                         {"first": ["getopt exit 4", "git exit 1"]})
 
     def test_the_job_says_which_view_its_links_open(self):
         a = ask.Asker(Cfg(**{"ask.command": echo("ok")}))

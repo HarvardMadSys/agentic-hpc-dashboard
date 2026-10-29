@@ -676,6 +676,8 @@ def preview(obj, items=24, str_max=240):
 
     def val(v, depth, items, str_max):
         if isinstance(v, str):
+            # a line of a list the object holds has its own ref: not shown
+            v = _LINE_REF.sub("", v.lstrip(" "), count=1) if _LINE_REF.match(v.lstrip(" ")) else v
             return v if len(v) <= str_max else v[:str_max] + "…"
         if isinstance(v, dict):
             keys = [k for k in v if k != REF_KEY]

@@ -217,7 +217,9 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
   }
   const [place, rest] = got;
   const tabLbl = TAB_LBL[place.tab] ?? place.tab;
-  const where = place.panel ? `${tabLbl} › ${place.panel}` : tabLbl;
+  // an answer about one session is read inside that session's inspector
+  const here = place.panel === INSPECTOR && !!view?.sid;
+  const where = here ? 'this session' : place.panel ? `${tabLbl} › ${place.panel}` : tabLbl;
   const base = viewPatch(view);
   const nm = names(d);
 
@@ -244,7 +246,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
     const who = typeof d.user === 'string' ? `${d.user}’s ` : '';
     const kind = String(d.agent_type ?? d.actor3 ?? d.cls ?? '').trim();
     return {
-      where: `${TAB_LBL.trajectories} › ${INSPECTOR}`,
+      where: sid === view?.sid ? 'this session' : `${TAB_LBL.trajectories} › ${INSPECTOR}`,
       label: `${who}${kind ? kind + ' ' : ''}session`,
       arrival: {
         patch: { ...base, tab: 'trajectories', traj: sid, tfrom: null, tuser: null },
@@ -257,7 +259,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
   if (place.panel === INSPECTOR) {
     return {
       where,
-      label: rest.length ? human(rest[0]) : human(c.path[0]),
+      label: c.path.filter((k) => typeof k === 'string').map(human).join(' › '),
       arrival: view?.sid
         ? { patch: { ...base, tab: 'trajectories', traj: view.sid, tuser: null }, anchor: slug(INSPECTOR), find: [] }
         : null,
@@ -279,12 +281,12 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
 }
 
 /** The link that opens a citation: in a new tab, it arrives by its hash. */
-export function hrefOf(a: Arrival | null): string | undefined {
+export function hrefOf(a: Arrival | null, what: string): string | undefined {
   if (!a) return undefined;
   const q = urlQuery({ ...parseUrl(location.search), ...a.patch });
   // the query already holds the patch: the hash says only how to arrive
   const { anchor, titled, find, sid, jump } = a;
-  const h = encodeURIComponent(JSON.stringify({ patch: {}, anchor, titled, find, sid, jump }));
+  const h = encodeURIComponent(JSON.stringify({ patch: {}, anchor, titled, find, sid, jump, what }));
   return `${location.pathname}${q ? '?' + q : ''}#cite=${h}`;
 }
 
@@ -406,8 +408,10 @@ export function arriveFromHash() {
   if (!h.startsWith('#cite=')) return;
   history.replaceState(null, '', location.pathname + location.search);
   try {
-    const a = JSON.parse(decodeURIComponent(h.slice('#cite='.length))) as Arrival;
-    if (a && typeof a === 'object' && Array.isArray(a.find)) arrive(a, 'the cited source');
+    const a = JSON.parse(decodeURIComponent(h.slice('#cite='.length))) as Arrival & { what?: unknown };
+    if (a && typeof a === 'object' && Array.isArray(a.find)) {
+      arrive(a, typeof a.what === 'string' && a.what ? a.what : 'the cited source');
+    }
   } catch {
     /* a hand-edited link: the page as it opened */
   }
