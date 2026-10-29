@@ -62,6 +62,10 @@ Three rules this module exists to enforce:
    is `unknown` -- its session's verdict lives on the session root's record.
    Labelling every tagged process "supervised" made 9,341 of 9,370 "agent trees"
    on rtx6000a supervised `codex --version` polls.
+
+5. Where a session is driven from -- its launch SURFACE -- is read off that same
+   process's argv, and is `unknown` where the argv does not say: a Codex
+   app-server daemon serves whichever client attaches to it.
 """
 import functools
 import os
@@ -69,7 +73,7 @@ import re
 import sys
 from datetime import datetime
 
-from .roles import role_of
+from .roles import role_of, subcommand
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -150,6 +154,20 @@ SANDBOX_STATES = ("sandboxed", "unsandboxed", "denied", "unknown")
 #                 or not an agent at all
 #   unknown       an agent-tree record whose session verdict is on its root
 APPROVAL_STATES = ("bypassed", "auto", "supervised", "unobservable", "na", "unknown")
+# Where an agent session is driven from, in two groups. CLI:
+#   terminal   a person at the agent's own interactive UI, in a terminal, tmux,
+#              an IDE's terminal, or a `claude daemon` background session
+#   script     a program drives it: `claude -p`, the Agent SDK's stream-json,
+#              `codex exec`, an MCP server
+# and app:
+#   desktop    the Claude desktop app's Code tab (`ccd-cli`) or the Codex app,
+#              each over SSH
+#   extension  an IDE extension's own bundled binary
+#   web        Remote Control, from a browser or a phone
+#   unknown    the argv does not say: a Codex app-server daemon serves whichever
+#              client attaches to it, and one on stdio was started by a program
+#              whose own record is not there
+SURFACES = ("terminal", "script", "desktop", "extension", "web", "unknown")
 
 
 # ------------------------------------------------------------ optional repo libs
@@ -433,6 +451,107 @@ def approval_of(rec, role, a3=None):
     return "unknown", None, None
 
 
+# A surface's evidence, all of it the agent's own record. A path names the
+# program a client installs and runs: the Claude desktop app's `ccd-cli`, an IDE
+# extension's bundled binary. But where a binary is installed does not say who
+# runs it -- two users run the VS Code extension's `codex exec` from a terminal --
+# so a mode (`exec`, `-p`, the interactive UI) decides first, and the extension
+# is the one running its binary only in its own shapes: Claude's stream-json,
+# Codex's app-server, or no mode at all and no terminal. The Codex app starts its
+# remote app-server through the login shell's `codex`, so only its flags mark it:
+# a unix socket, code mode.
+_CCD_CLI = "/.claude/remote/ccd-cli/"
+_EXTENSION = re.compile(r"/\.([a-z]+)(?:-server(?:-insiders)?)?/extensions/"
+                        r"(?:anthropic\.claude-code|openai\.chatgpt)-")
+_IDE_NAMES = {"vscode": "VS Code", "cursor": "Cursor", "windsurf": "Windsurf",
+              "positron": "Positron"}
+_SDK_URL = re.compile(_TOK + r"--sdk-url(?=[\s=]|$)")
+_PRINT = re.compile(_TOK + r"(?:-p|--print)" + _END)
+_STREAM_JSON = re.compile(_TOK + r"--(?:input|output)-format[ =]stream-json" + _END)
+_AGENT_SDK = "/claude-agent-sdk"
+_REMOTE_CONTROL = re.compile(_TOK + r"--remote-control" + _END)
+_LISTEN_UNIX = re.compile(_TOK + r"--listen[ =]unix://")
+_CODE_MODE_HOST = re.compile(r"features\.code_mode_host=true")
+_EXPERIMENTAL_JSON = re.compile(_TOK + r"--experimental-json" + _END)
+
+
+def surface_of(rec, role, a3=None):
+    """(surface, detail) -- see SURFACES -- for an agent session's own process,
+    or for a process hosting sessions whose argv names their client.
+
+    Only those say, as for approval: a tool shell, a child, a client and an
+    IDE's own process get (None, None). `detail` names the client, or the mode.
+    """
+    if a3 in ("ide", "human"):
+        return None, None
+    command = rec.get("_command") or rec.get("command") or rec.get("comm")
+    if role == "infra":
+        return _host_surface(rec.get("agent_type"), command, rec.get("args") or "")
+    if role != "agent":
+        return None, None
+    return _surface(rec.get("agent_type"), command, rec.get("args") or "",
+                    rec.get("tty") not in (None, "", "?", "-"))
+
+
+@functools.lru_cache(maxsize=1024)
+def _host_surface(agent_type, command, args):
+    """A host is not a session, but its sessions are driven from where it says:
+    a trajectory row keyed on the desktop app's server held thousands of its
+    processes on rtx6000a."""
+    if "/.claude/remote/srv/" in args:
+        return "desktop", "Claude desktop app"
+    sub = subcommand(command, args)
+    if agent_type == "codex":
+        if sub == "remote-control":
+            return "web", "Codex Remote Control"
+        if sub == "app-server":          # `app-server daemon`: the shared daemon's keeper
+            return "unknown", "shared app server"
+        return None, None
+    if sub in ("rc", "remote-control"):
+        return "web", "Claude Remote Control"
+    if sub in ("daemon", "bg-pty-host"):
+        return "terminal", "background session"
+    return None, None
+
+
+@functools.lru_cache(maxsize=4096)
+def _surface(agent_type, command, args, tty):
+    """Cached: an agent's own argv recurs on every tick its session sends."""
+    m = _EXTENSION.search(args)
+    ide = _IDE_NAMES.get(m.group(1), m.group(1)) if m else None
+    sub = subcommand(command, args)
+    if agent_type == "codex":
+        if sub == "exec":
+            return "script", "Codex SDK" if _EXPERIMENTAL_JSON.search(args) else "codex exec"
+        if sub in ("mcp-server", "mcp"):
+            return "script", "MCP server"
+        if sub == "app-server":
+            if ide:
+                return "extension", ide
+            if _REMOTE_CONTROL.search(args):
+                return "web", "Codex Remote Control"
+            if not _LISTEN_UNIX.search(args):
+                return "unknown", "app server"
+            if _CODE_MODE_HOST.search(args):
+                return "desktop", "Codex app"
+            return "unknown", "shared app server"
+    elif _CCD_CLI in args:
+        return "desktop", "Claude desktop app"
+    elif _SDK_URL.search(args):
+        return "web", "Claude Remote Control"
+    elif sub == "mcp":
+        return "script", "MCP server"
+    elif _STREAM_JSON.search(args) or _AGENT_SDK in args:
+        return ("extension", ide) if ide else ("script", "Agent SDK")
+    elif _PRINT.search(args):
+        return "script", "claude -p" if agent_type == "claude_code" else "-p"
+    elif sub == "bg-spare":
+        return "terminal", "background session"
+    if ide and not tty:
+        return "extension", ide
+    return "terminal", "interactive"
+
+
 class Normalizer:
     """Stateful because the exclusion filters and the counters are per-run."""
 
@@ -536,6 +655,7 @@ class Normalizer:
             rec["_approval"], rec["_approval_src"] = ap, apsrc
             rec["_approval_detail"] = apdet
             rec["_autonomous"] = ap == "bypassed"
+            rec["_surface"], rec["_surface_detail"] = surface_of(rec, rec.get("_role"), a3)
 
         # Time is resolved HERE, once, so no downstream consumer invents one.
         # `ts_epoch` is schema 5; an older record only has the local-naive `ts`

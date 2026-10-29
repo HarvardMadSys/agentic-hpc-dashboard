@@ -525,6 +525,17 @@ function sandbox() {
   };
 }
 
+/* Where an agent session is driven from (normalize.surface_of), cycling through
+ * every surface so the page shows each chip, an unknown one included. */
+const SURFACES = {
+  claude_code: [['terminal', 'interactive'], ['desktop', 'Claude desktop app'], ['extension', 'VS Code'], ['script', 'claude -p'], ['web', 'Claude Remote Control']],
+  codex: [['terminal', 'interactive'], ['desktop', 'Codex app'], ['extension', 'VS Code'], ['script', 'codex exec'], ['unknown', 'shared app server']],
+};
+const surfaceOf = (i, agentType) => {
+  const s = SURFACES[agentType]?.[i % 5];
+  return { surface: s ? s[0] : null, surface_detail: s ? s[1] : null };
+};
+
 function trajectories(nowEpoch) {
   const rows = {};
   const sids = [];
@@ -581,6 +592,7 @@ function trajectories(nowEpoch) {
         : {}),
       sandbox: cls === 'agent' ? (i % 4 === 0 ? 'sandboxed' : i % 4 === 1 ? 'unsandboxed' : i % 4 === 2 ? 'denied' : 'unknown') : 'unknown',
       approval: cls === 'agent' ? (i % 3 === 0 ? 'bypassed' : 'supervised') : 'unknown',
+      ...surfaceOf(i, cls === 'agent' ? (i % 3 ? 'claude_code' : 'codex') : null),
       sandbox_ancestry: cls === 'agent' && i % 4 < 2 ? 'bwrap' : 'none',
       autonomous: cls === 'agent' && i % 3 === 0,
       tool_rle: runs,
@@ -829,7 +841,7 @@ function cascades(nowEpoch) {
     via: null, path: [], spawned_by: null, started: '2026-09-13 09:12:40', first_seen: '2026-09-13 09:12:40',
     last_seen: '2026-09-14 08:51:02', exited: false, duration_s: null, depth: 0, agent_level: 1,
     fanout: 0, tool_calls: 18_204, cpu_s: 812.4, session_keys: 612, home: P, home_src: 'agent',
-    workspace: null, cwd_vs_parent_agent: null, ...o,
+    workspace: null, cwd_vs_parent_agent: null, surface: 'terminal', surface_detail: 'interactive', ...o,
   });
   const brief = (v) => ({ dirs: v.summary.dirs, inside_pct: v.summary.inside_pct, outside_writes: v.summary.outside_writes });
   const trees = [
@@ -838,20 +850,20 @@ function cascades(nowEpoch) {
       n_agents: 2, agents_nested: 1, agent_types: ['claude_code', 'codex'], tool_calls: 19_024, cpu_s: 901.2,
       nodes: [
         node({ pid: 41_200, fanout: 1, workspace: brief(lead) }),
-        node({ pid: 52_877, ppid: 52_870, agent_type: 'codex', command: 'codex', args: 'codex exec --full-auto run the eval sweep', cwd: '/scratch/thomwg11/eval', parent: 41_200, via: 'ancestor', path: ['zsh'], depth: 1, agent_level: 2, tool_calls: 820, cpu_s: 88.8, session_keys: 76, home: '/scratch/thomwg11/eval', workspace: brief(sub), cwd_vs_parent_agent: 'outside', started: '2026-09-14 04:02:11', exited: true, duration_s: 9_120.4 }),
+        node({ pid: 52_877, ppid: 52_870, agent_type: 'codex', command: 'codex', args: 'codex exec --full-auto run the eval sweep', cwd: '/scratch/thomwg11/eval', parent: 41_200, via: 'ancestor', path: ['zsh'], depth: 1, agent_level: 2, tool_calls: 820, cpu_s: 88.8, session_keys: 76, home: '/scratch/thomwg11/eval', workspace: brief(sub), cwd_vs_parent_agent: 'outside', started: '2026-09-14 04:02:11', exited: true, duration_s: 9_120.4, surface: 'script', surface_detail: 'codex exec' }),
       ],
       nodes_truncated: false, hidden_nodes: 0,
     },
     {
       root: null, host: 'holylogin02', users: ['lzhang'], agent_depth: 1, max_fanout: 0, n_nodes: 1,
       n_agents: 1, agents_nested: 0, agent_types: ['claude_code'], tool_calls: 2_182, cpu_s: 140.2,
-      nodes: [node({ pid: 7_731, host: 'holylogin02', user: 'lzhang', cwd: '/', args: 'claude --output-format stream-json', home: '/home/lzhang/thesis', home_src: 'first_call', tool_calls: 2_182, cpu_s: 140.2, session_keys: 140, workspace: brief(ideAgent) })],
+      nodes: [node({ pid: 7_731, host: 'holylogin02', user: 'lzhang', cwd: '/', args: '/home/lzhang/.vscode-server/extensions/anthropic.claude-code-2.1.308-linux-x64/resources/native-binary/claude --output-format stream-json', home: '/home/lzhang/thesis', home_src: 'first_call', tool_calls: 2_182, cpu_s: 140.2, session_keys: 140, workspace: brief(ideAgent), surface: 'extension', surface_detail: 'VS Code' })],
       nodes_truncated: false, hidden_nodes: 1,
     },
     {
       root: null, host: 'boslogin01', users: ['dwei'], agent_depth: 1, max_fanout: 0, n_nodes: 1,
       n_agents: 1, agents_nested: 0, agent_types: ['claude_code'], tool_calls: 37, cpu_s: 2.1,
-      nodes: [node({ pid: 9_904, host: 'boslogin01', user: 'dwei', command: null, args: null, cwd: null, implied: true, home: null, home_src: null, tool_calls: 37, cpu_s: 2.1, session_keys: 3, workspace: brief(homeless) })],
+      nodes: [node({ pid: 9_904, host: 'boslogin01', user: 'dwei', command: null, args: null, cwd: null, implied: true, home: null, home_src: null, tool_calls: 37, cpu_s: 2.1, session_keys: 3, workspace: brief(homeless), surface: 'unknown', surface_detail: null })],
       nodes_truncated: false, hidden_nodes: 0,
     },
   ];

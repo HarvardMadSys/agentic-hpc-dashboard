@@ -7132,6 +7132,8 @@
       "last": 1789400000,
       "sandbox": "sandboxed",
       "approval": "bypassed",
+      "surface": "terminal",
+      "surface_detail": "interactive",
       "sandbox_ancestry": "bwrap",
       "autonomous": true,
       "tool_rle": [
@@ -7241,6 +7243,8 @@
       "last": 1789399700,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -7350,6 +7354,8 @@
       "last": 1789399400,
       "sandbox": "denied",
       "approval": "supervised",
+      "surface": "extension",
+      "surface_detail": "VS Code",
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -7459,6 +7465,8 @@
       "last": 1789399100,
       "sandbox": "unknown",
       "approval": "bypassed",
+      "surface": "script",
+      "surface_detail": "codex exec",
       "sandbox_ancestry": "none",
       "autonomous": true,
       "tool_rle": [
@@ -7568,6 +7576,8 @@
       "last": 1789398800,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -7683,6 +7693,8 @@
       },
       "sandbox": "unsandboxed",
       "approval": "supervised",
+      "surface": "terminal",
+      "surface_detail": "interactive",
       "sandbox_ancestry": "bwrap",
       "autonomous": false,
       "tool_rle": [
@@ -7792,6 +7804,8 @@
       "last": 1789398200,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -7901,6 +7915,8 @@
       "last": 1789397900,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -8010,6 +8026,8 @@
       "last": 1789397600,
       "sandbox": "sandboxed",
       "approval": "supervised",
+      "surface": "script",
+      "surface_detail": "claude -p",
       "sandbox_ancestry": "bwrap",
       "autonomous": false,
       "tool_rle": [
@@ -8125,6 +8143,8 @@
       },
       "sandbox": "unsandboxed",
       "approval": "bypassed",
+      "surface": "unknown",
+      "surface_detail": "shared app server",
       "sandbox_ancestry": "bwrap",
       "autonomous": true,
       "tool_rle": [
@@ -8234,6 +8254,8 @@
       "last": 1789397000,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -8343,6 +8365,8 @@
       "last": 1789396700,
       "sandbox": "unknown",
       "approval": "supervised",
+      "surface": "desktop",
+      "surface_detail": "Claude desktop app",
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -8452,6 +8476,8 @@
       "last": 1789396400,
       "sandbox": "sandboxed",
       "approval": "bypassed",
+      "surface": "extension",
+      "surface_detail": "VS Code",
       "sandbox_ancestry": "bwrap",
       "autonomous": true,
       "tool_rle": [
@@ -8561,6 +8587,8 @@
       "last": 1789396100,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -8670,6 +8698,8 @@
       "last": 1789395800,
       "sandbox": "denied",
       "approval": "supervised",
+      "surface": "web",
+      "surface_detail": "Claude Remote Control",
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -8779,6 +8809,8 @@
       "last": 1789395500,
       "sandbox": "unknown",
       "approval": "bypassed",
+      "surface": "terminal",
+      "surface_detail": "interactive",
       "sandbox_ancestry": "none",
       "autonomous": true,
       "tool_rle": [
@@ -8888,6 +8920,8 @@
       "last": 1789395200,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -9003,6 +9037,8 @@
       },
       "sandbox": "unsandboxed",
       "approval": "supervised",
+      "surface": "extension",
+      "surface_detail": "VS Code",
       "sandbox_ancestry": "bwrap",
       "autonomous": false,
       "tool_rle": [
@@ -9112,6 +9148,8 @@
       "last": 1789394600,
       "sandbox": "denied",
       "approval": "bypassed",
+      "surface": "script",
+      "surface_detail": "codex exec",
       "sandbox_ancestry": "none",
       "autonomous": true,
       "tool_rle": [
@@ -9221,6 +9259,8 @@
       "last": 1789394300,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -9330,6 +9370,8 @@
       "last": 1789394000,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -9445,6 +9487,8 @@
       },
       "sandbox": "unsandboxed",
       "approval": "bypassed",
+      "surface": "desktop",
+      "surface_detail": "Codex app",
       "sandbox_ancestry": "bwrap",
       "autonomous": true,
       "tool_rle": [
@@ -9554,6 +9598,8 @@
       "last": 1789393400,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -9663,6 +9709,8 @@
       "last": 1789393100,
       "sandbox": "unknown",
       "approval": "supervised",
+      "surface": "script",
+      "surface_detail": "claude -p",
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -9772,6 +9820,8 @@
       "last": 1789392800,
       "sandbox": "sandboxed",
       "approval": "bypassed",
+      "surface": "unknown",
+      "surface_detail": "shared app server",
       "sandbox_ancestry": "bwrap",
       "autonomous": true,
       "tool_rle": [
@@ -9881,6 +9931,8 @@
       "last": 1789392500,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -9990,6 +10042,8 @@
       "last": 1789392200,
       "sandbox": "denied",
       "approval": "supervised",
+      "surface": "desktop",
+      "surface_detail": "Claude desktop app",
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -10099,6 +10153,8 @@
       "last": 1789391900,
       "sandbox": "unknown",
       "approval": "unknown",
+      "surface": null,
+      "surface_detail": null,
       "sandbox_ancestry": "none",
       "autonomous": false,
       "tool_rle": [
@@ -10283,6 +10339,8 @@
         "outside_writes": 7
        },
        "cwd_vs_parent_agent": null,
+       "surface": "terminal",
+       "surface_detail": "interactive",
        "pid": 41200
       },
       "host": "holylogin01",
@@ -10335,6 +10393,8 @@
          "outside_writes": 7
         },
         "cwd_vs_parent_agent": null,
+        "surface": "terminal",
+        "surface_detail": "interactive",
         "pid": 41200
        },
        {
@@ -10373,6 +10433,8 @@
          "outside_writes": 0
         },
         "cwd_vs_parent_agent": "outside",
+        "surface": "script",
+        "surface_detail": "codex exec",
         "pid": 52877
        }
       ],
@@ -10387,7 +10449,7 @@
        "agent_type": "claude_code",
        "user": "lzhang",
        "command": "claude",
-       "args": "claude --output-format stream-json",
+       "args": "/home/lzhang/.vscode-server/extensions/anthropic.claude-code-2.1.308-linux-x64/resources/native-binary/claude --output-format stream-json",
        "cwd": "/",
        "implied": false,
        "frontend": false,
@@ -10414,6 +10476,8 @@
         "outside_writes": 0
        },
        "cwd_vs_parent_agent": null,
+       "surface": "extension",
+       "surface_detail": "VS Code",
        "pid": 7731
       },
       "host": "holylogin02",
@@ -10438,7 +10502,7 @@
         "agent_type": "claude_code",
         "user": "lzhang",
         "command": "claude",
-        "args": "claude --output-format stream-json",
+        "args": "/home/lzhang/.vscode-server/extensions/anthropic.claude-code-2.1.308-linux-x64/resources/native-binary/claude --output-format stream-json",
         "cwd": "/",
         "implied": false,
         "frontend": false,
@@ -10465,6 +10529,8 @@
          "outside_writes": 0
         },
         "cwd_vs_parent_agent": null,
+        "surface": "extension",
+        "surface_detail": "VS Code",
         "pid": 7731
        }
       ],
@@ -10506,6 +10572,8 @@
         "outside_writes": null
        },
        "cwd_vs_parent_agent": null,
+       "surface": "unknown",
+       "surface_detail": null,
        "pid": 9904
       },
       "host": "boslogin01",
@@ -10557,6 +10625,8 @@
          "outside_writes": null
         },
         "cwd_vs_parent_agent": null,
+        "surface": "unknown",
+        "surface_detail": null,
         "pid": 9904
        }
       ],
@@ -31278,6 +31348,8 @@
     "last": 1789400000,
     "sandbox": "sandboxed",
     "approval": "bypassed",
+    "surface": "terminal",
+    "surface_detail": "interactive",
     "sandbox_ancestry": "bwrap",
     "autonomous": true,
     "tool_rle": [
@@ -31387,6 +31459,8 @@
     "last": 1789399700,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -31496,6 +31570,8 @@
     "last": 1789399400,
     "sandbox": "denied",
     "approval": "supervised",
+    "surface": "extension",
+    "surface_detail": "VS Code",
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -31605,6 +31681,8 @@
     "last": 1789399100,
     "sandbox": "unknown",
     "approval": "bypassed",
+    "surface": "script",
+    "surface_detail": "codex exec",
     "sandbox_ancestry": "none",
     "autonomous": true,
     "tool_rle": [
@@ -31714,6 +31792,8 @@
     "last": 1789398800,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -31829,6 +31909,8 @@
     },
     "sandbox": "unsandboxed",
     "approval": "supervised",
+    "surface": "terminal",
+    "surface_detail": "interactive",
     "sandbox_ancestry": "bwrap",
     "autonomous": false,
     "tool_rle": [
@@ -31938,6 +32020,8 @@
     "last": 1789398200,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -32047,6 +32131,8 @@
     "last": 1789397900,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -32156,6 +32242,8 @@
     "last": 1789397600,
     "sandbox": "sandboxed",
     "approval": "supervised",
+    "surface": "script",
+    "surface_detail": "claude -p",
     "sandbox_ancestry": "bwrap",
     "autonomous": false,
     "tool_rle": [
@@ -32271,6 +32359,8 @@
     },
     "sandbox": "unsandboxed",
     "approval": "bypassed",
+    "surface": "unknown",
+    "surface_detail": "shared app server",
     "sandbox_ancestry": "bwrap",
     "autonomous": true,
     "tool_rle": [
@@ -32380,6 +32470,8 @@
     "last": 1789397000,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -32489,6 +32581,8 @@
     "last": 1789396700,
     "sandbox": "unknown",
     "approval": "supervised",
+    "surface": "desktop",
+    "surface_detail": "Claude desktop app",
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -32598,6 +32692,8 @@
     "last": 1789396400,
     "sandbox": "sandboxed",
     "approval": "bypassed",
+    "surface": "extension",
+    "surface_detail": "VS Code",
     "sandbox_ancestry": "bwrap",
     "autonomous": true,
     "tool_rle": [
@@ -32707,6 +32803,8 @@
     "last": 1789396100,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -32816,6 +32914,8 @@
     "last": 1789395800,
     "sandbox": "denied",
     "approval": "supervised",
+    "surface": "web",
+    "surface_detail": "Claude Remote Control",
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -32925,6 +33025,8 @@
     "last": 1789395500,
     "sandbox": "unknown",
     "approval": "bypassed",
+    "surface": "terminal",
+    "surface_detail": "interactive",
     "sandbox_ancestry": "none",
     "autonomous": true,
     "tool_rle": [
@@ -33034,6 +33136,8 @@
     "last": 1789395200,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -33149,6 +33253,8 @@
     },
     "sandbox": "unsandboxed",
     "approval": "supervised",
+    "surface": "extension",
+    "surface_detail": "VS Code",
     "sandbox_ancestry": "bwrap",
     "autonomous": false,
     "tool_rle": [
@@ -33258,6 +33364,8 @@
     "last": 1789394600,
     "sandbox": "denied",
     "approval": "bypassed",
+    "surface": "script",
+    "surface_detail": "codex exec",
     "sandbox_ancestry": "none",
     "autonomous": true,
     "tool_rle": [
@@ -33367,6 +33475,8 @@
     "last": 1789394300,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -33476,6 +33586,8 @@
     "last": 1789394000,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -33591,6 +33703,8 @@
     },
     "sandbox": "unsandboxed",
     "approval": "bypassed",
+    "surface": "desktop",
+    "surface_detail": "Codex app",
     "sandbox_ancestry": "bwrap",
     "autonomous": true,
     "tool_rle": [
@@ -33700,6 +33814,8 @@
     "last": 1789393400,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -33809,6 +33925,8 @@
     "last": 1789393100,
     "sandbox": "unknown",
     "approval": "supervised",
+    "surface": "script",
+    "surface_detail": "claude -p",
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -33918,6 +34036,8 @@
     "last": 1789392800,
     "sandbox": "sandboxed",
     "approval": "bypassed",
+    "surface": "unknown",
+    "surface_detail": "shared app server",
     "sandbox_ancestry": "bwrap",
     "autonomous": true,
     "tool_rle": [
@@ -34027,6 +34147,8 @@
     "last": 1789392500,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -34136,6 +34258,8 @@
     "last": 1789392200,
     "sandbox": "denied",
     "approval": "supervised",
+    "surface": "desktop",
+    "surface_detail": "Claude desktop app",
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [
@@ -34245,6 +34369,8 @@
     "last": 1789391900,
     "sandbox": "unknown",
     "approval": "unknown",
+    "surface": null,
+    "surface_detail": null,
     "sandbox_ancestry": "none",
     "autonomous": false,
     "tool_rle": [

@@ -165,10 +165,15 @@ class CascadeReducer:
                 "first": e, "last": e, "start": None, "exited": False,
                 "duration_s": None, "implied": False, "frontend": False,
                 "approval": None, "approval_detail": None, "version": None,
+                "surface": None, "surface_detail": None,
             }
         if role == "agent":
             _launch(n, rec.get("_approval"), rec.get("_approval_detail"),
-                    agent_version(rec.get("_command"), rec.get("args")))
+                    agent_version(rec.get("_command"), rec.get("args")),
+                    rec.get("_surface"), rec.get("_surface_detail"))
+        elif n["surface"] is None and rec.get("_surface") is not None:
+            # a host: where the sessions it holds are driven from
+            n["surface"], n["surface_detail"] = rec["_surface"], rec.get("_surface_detail")
         if e is not None:
             n["first"] = e if n["first"] is None else min(n["first"], e)
             n["last"] = e if n["last"] is None else max(n["last"], e)
@@ -210,7 +215,8 @@ class CascadeReducer:
             for f in ("cwd", "user", "tree_root"):
                 if cur[f] is None and n[f] is not None:
                     cur[f] = n[f]
-            _launch(cur, n["approval"], n["approval_detail"], n["version"])
+            _launch(cur, n["approval"], n["approval_detail"], n["version"],
+                    n["surface"], n["surface_detail"])
             if n["exited"] or n["duration_s"] is not None:
                 cur["exited"], cur["duration_s"] = n["exited"], n["duration_s"]
         self.dropped += o.dropped
@@ -265,7 +271,8 @@ class CascadeReducer:
                     "spawned_by": None, "daemon": False, "pty_host": False,
                     "first": s.first, "last": s.last, "start": None, "exited": False,
                     "duration_s": None, "implied": True, "frontend": False,
-                    "approval": None, "approval_detail": None, "version": None}
+                    "approval": None, "approval_detail": None, "version": None,
+                    "surface": None, "surface_detail": None}
 
         daemons = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -294,6 +301,9 @@ class CascadeReducer:
                 if n["approval"] in (None, "unknown", "unobservable"):
                     n["approval"], n["approval_detail"] = p["approval"], p["approval_detail"]
                 n["version"] = n["version"] or p["version"]
+                # and so is its surface: a daemon names no client of its own
+                if n["surface"] in (None, "unknown") and p["surface"] is not None:
+                    n["surface"], n["surface_detail"] = p["surface"], p["surface_detail"]
 
         kids = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -619,16 +629,19 @@ def _pick(nodes, cap):
     return [x for x in nodes if id(x) in keep]
 
 
-def _launch(n, approval, detail, version):
+def _launch(n, approval, detail, version, surface=None, surface_detail=None):
     """Take what an agent's own record says of its launch: the approval its
-    flags set, and the version its program's path names. A bypass read off any
-    record stands -- the collector reads the uncapped argv, an emitted one may
-    be cut -- and otherwise the first verdict read is kept."""
+    flags set, the version its program's path names, and where it is driven
+    from (normalize.surface_of). A bypass read off any record stands -- the
+    collector reads the uncapped argv, an emitted one may be cut -- and
+    otherwise the first verdict read is kept."""
     if approval not in (None, "unknown") and (
             n["approval"] in (None, "unknown") or approval == "bypassed"):
         n["approval"], n["approval_detail"] = approval, detail
     if n["version"] is None:
         n["version"] = version
+    if surface is not None and n["surface"] in (None, "unknown"):
+        n["surface"], n["surface_detail"] = surface, surface_detail
 
 
 def _home(n, acc):
@@ -675,4 +688,8 @@ def _node_out(n):
         "exited": n["exited"], "duration_s": n["duration_s"],
         "approval": n["approval"], "approval_detail": n["approval_detail"],
         "version": n["version"],
+        # an agent whose own record was never read cannot say where it was
+        # driven from; a host says it for its sessions, a client has none
+        "surface": n["surface"] or ("unknown" if n["role"] == "agent" else None),
+        "surface_detail": n["surface_detail"],
     }

@@ -27,6 +27,7 @@ import type { Item, PNode } from '../components/ProcDiagram';
 import { LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, sigName, spots } from '../components/ProcTree';
 import { treeGeometry } from '../components/TreeDiagram';
 import type { TreeGeo } from '../components/TreeDiagram';
+import { SurfaceChip } from '../components/SurfaceChip';
 import { TooltipLayer } from '../components/Tooltip';
 import { serverNow } from '../lib/clock';
 import { DASH, clock, dur, fint, fmt } from '../lib/format';
@@ -814,6 +815,7 @@ export default function TreePopout() {
           <span className="eyebrow">process tree</span>
           <h1>{name ? name.key : (u.sid ?? 'no session')}</h1>
           {name?.date && <span className="tp-sub">{name.date}</span>}
+          <SurfaceChip s={d?.row?.surface} detail={d?.row?.surface_detail} />
           {d?.row && <span className="tp-sub">{`${d.row.user} · ${d.row.host}`}</span>}
           {scan && (
             <span className="tp-sub" data-tip={scan.stopped ? `the read stopped at its ${scan.stopped} budget` : undefined}>

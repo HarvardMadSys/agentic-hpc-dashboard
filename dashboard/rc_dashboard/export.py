@@ -613,7 +613,7 @@ def meta_header(f, reports, cfg, matched, truncated, elapsed):
         "schema_versions": reports["ebpf"].get("schema_versions") or {},
         "elapsed_s": round(elapsed, 2),
         "note": "Records are the collector's own, plus additive `_`-prefixed derived "
-                "keys (_a3, _eff, _purpose, _sandbox, _approval, _sid, _ts_epoch). "
+                "keys (_a3, _eff, _purpose, _sandbox, _approval, _surface, _sid, _ts_epoch). "
                 "Original fields are unmodified, except that credential values in "
                 "args / captured_tail are replaced by [REDACTED] (rc_dashboard/redact.py).",
     }}

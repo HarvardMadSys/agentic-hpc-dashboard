@@ -78,7 +78,18 @@ _USAGE = ("cpu_s", "rd_mb", "wr_mb", "net_tx_mb", "net_rx_mb")
 def _inner(r):
     """An agent root as a session's row: what it is and how it was launched."""
     return {"pid": r["pid"], "agent_type": r["agent_type"], "approval": r["approval"],
-            "version": r["version"], "sandbox": r["sandbox"], "epoch": r["epoch"]}
+            "version": r["version"], "sandbox": r["sandbox"], "epoch": r["epoch"],
+            "surface": r["surface"], "surface_detail": r["surface_detail"]}
+
+
+def _fronted(r, up):
+    """An agent root with the surface of the same agent's process that started
+    it, where its own argv names none: the Codex app-server daemon a terminal UI
+    starts, the UI being its front-end (cascades.py)."""
+    if r["surface"] == "unknown" and up is not None and up["agent_type"] == r["agent_type"] \
+            and up["surface"] != "unknown":
+        return dict(r, surface=up["surface"], surface_detail=up["surface_detail"])
+    return r
 
 
 def _usage():
@@ -179,6 +190,9 @@ class LiveReducer:
             return
         e = rec.get("_ts_epoch")
         cur = self.roots.get(key)
+        started_by = (cur or {}).get("ppid")
+        if started_by in (None, 0, 1):
+            started_by = rec.get("ppid")
         if cur is None or (e is not None and (cur["epoch"] is None or e > cur["epoch"])):
             self.roots[key] = {
                 "epoch": e, "approval": rec.get("_approval") or "unknown",
@@ -186,7 +200,11 @@ class LiveReducer:
                 "user": rec.get("user"), "pid": pid,
                 "version": agent_version(rec.get("comm"), rec.get("args"))
                 or (cur or {}).get("version"),
-                "sandbox": rec.get("_sandbox")}
+                "sandbox": rec.get("_sandbox"),
+                "surface": rec.get("_surface") or "unknown",
+                "surface_detail": rec.get("_surface_detail"),
+                # the process that started it, not init after it was reparented
+                "ppid": started_by}
 
     @staticmethod
     def _place(tail, row, older):
@@ -271,6 +289,7 @@ class LiveReducer:
             "state_counts": rec.get("state_counts"),
             "top_procs": rec.get("top_procs"),
             "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
+            "surface": rec.get("_surface"), "surface_detail": rec.get("_surface_detail"),
             "epoch": rec.get("_ts_epoch"), "user": rec.get("user"),
             "actor3": rec.get("_a3"), "root_pid": key[1],
             # the trajectory this session is, today (roadmap note 7), and the
@@ -509,11 +528,16 @@ class LiveReducer:
             d["rss_ticks"] = t.get("rss_n")
             key = (t.get("host"), t.get("root_pid"))
             own = mine.get(key)
+            # the tree root's own reading: an agent's, or a host's (the desktop
+            # app's server, `claude rc`) for the sessions it holds
+            d["surface"], d["surface_detail"] = t.get("surface"), t.get("surface_detail")
             if own is not None:
                 placed.add(key)
                 d["approval"] = own["approval"]
                 d["version"] = d["version"] or own["version"]
-            d["agents"] = [_inner(r) for r in sorted(inside.get(key, ()), key=lambda r: r["pid"])]
+                d["surface"], d["surface_detail"] = own["surface"], own["surface_detail"]
+            d["agents"] = [_inner(_fronted(r, mine.get((key[0], r["ppid"]))))
+                           for r in sorted(inside.get(key, ()), key=lambda r: r["pid"])]
             placed.update((key[0], r["pid"]) for r in inside.get(key, ()))
             sessions.append(d)
         # an agent seen running whose tree sent no census in the last 10 min

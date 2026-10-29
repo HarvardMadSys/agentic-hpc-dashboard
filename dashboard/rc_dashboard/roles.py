@@ -183,3 +183,18 @@ def spawned_by_agent(role, command):
     """True for a process its agent starts directly: its parent IS the agent."""
     return role == "tool-shell" or \
         (role == "sandbox" and (command or "").startswith("codex-linux-san"))
+
+
+def subcommand(command, args):
+    """The agent executable's first positional argument (`exec`, `app-server`,
+    `mcp-server`), or None: there is none, or this is not an agent executable.
+    Read as `role_of` reads it, so a word of a prompt is not one."""
+    toks = (args or "").split()
+    i = _exe_index(command or "", toks)
+    if i is None:
+        return None
+    # a script the kernel ran through its #! line: argv[0] is the interpreter
+    if i == 0 and len(toks) > 1 and _base(toks[0]) != command and _base(toks[1]) == command:
+        i = 1
+    pos = _positionals(toks[i + 1:])
+    return pos[0] if pos else None

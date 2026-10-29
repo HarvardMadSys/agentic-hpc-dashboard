@@ -37,7 +37,9 @@ import { sessionName } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
 import { serverNow } from '../lib/clock';
 import { pcol, plbl } from '../lib/purposes';
+import { surfaceSplit } from '../lib/surfaces';
 import { absent } from '../lib/panels';
+import { SurfaceChip } from '../components/SurfaceChip';
 import { TrajectoryInspector } from './TrajectoryInspector';
 import type { RunJump } from './TrajectoryInspector';
 import './trajectories.css';
@@ -204,6 +206,7 @@ export function TrajectoriesTab({
   const shownList = tuser ? listed.filter((r) => (r.user ?? (r.users ?? [])[0]) === tuser) : listed;
   const sum = t?.summary ?? {};
   const agent = cls.includes('agent') ? sum.agent : undefined;
+  const split = surfaceSplit(agent?.by_surface);
   const shownCls = cls.filter((c) => c in sum);
   const byCls = (f: (d: TrajSummary) => number | null) =>
     Object.fromEntries(shownCls.map((c) => [c, f(sum[c])]));
@@ -232,6 +235,12 @@ export function TrajectoriesTab({
                   ? ` · the busiest makes ${pc(agent.top_user_share_pct)} of agent processes`
                   : ''}
                 {agent.probes ? ` · ${fint(agent.probes)} one-off probes set aside` : ''}
+                {split && (
+                  <>
+                    <br />
+                    <span data-tip={split.tip}>{split.text}</span>
+                  </>
+                )}
               </>
             ) : undefined
           }
@@ -334,6 +343,7 @@ export function TrajectoriesTab({
                   <span className="tj-item-h">
                     <b>{nm.key}</b>
                     <span className="tj-date">{nm.date}</span>
+                    <SurfaceChip s={r.surface} detail={r.surface_detail} />
                     {r.running && (
                       <span className="tj-live" data-tip={liveTip(r)}>
                         <i className="ld" />
