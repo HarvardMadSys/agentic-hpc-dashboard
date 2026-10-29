@@ -95,9 +95,13 @@ STRAGGLER_CAP = 100000
 PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what an hour's state means. `live.py` is not here:
 # the live tier is not reduced into hours, and a change to it must not discard
-# a week of them.
+# a week of them -- so no reducer an hour holds may import it (the cascades
+# take `agent_version` from roles.py). Nor clock.py, which says which hours are
+# closed, or feeds.py, which finds the day-files. test_window_cache checks that
+# every module an hour imports is one or the other.
 CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.py",
-              "tool_buckets.py", "proctree.py", "fastjson.py", "snapshots.py", "hours.py")
+              "tool_buckets.py", "proctree.py", "fastjson.py", "snapshots.py", "hours.py",
+              "gz.py")
 # Config that changes nothing a reduction holds: the server, the window
 # registry's own knobs, the live tier's views and backfill, the clock, the
 # masking of names on the way out (anonymize.py), and the other feeds and the

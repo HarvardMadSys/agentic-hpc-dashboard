@@ -6,6 +6,8 @@ build and nothing races it.
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import ast
+import glob
 import os
 import pickle
 import shutil
@@ -281,7 +283,66 @@ class RoundTripTest(CacheCase):
             self.assertEqual(restored[key].result(), r.result(), key)
 
 
+def _imports(path):
+    """The package modules one source file imports, anywhere in it."""
+    here, out = os.path.dirname(path), set()
+    for n in ast.walk(ast.parse(Path(path).read_text())):
+        if not isinstance(n, ast.ImportFrom) or not n.level:
+            continue
+        base = here
+        for _ in range(n.level - 1):
+            base = os.path.dirname(base)
+        mod = os.path.join(base, *n.module.split(".")) if n.module else base
+        if os.path.exists(mod + ".py"):
+            out.add(mod + ".py")
+            continue
+        for a in n.names:       # a package: the submodules named, or its __init__
+            sub = os.path.join(mod, a.name + ".py")
+            out.add(sub if os.path.exists(sub) else os.path.join(mod, "__init__.py"))
+    return {os.path.normpath(p) for p in out if os.path.exists(p)}
+
+
+def _reached(roots, stop):
+    """Every package module `roots` import, in any number of steps, without
+    walking on past a module in `stop`. Paths are the package's own."""
+    pkg = snapshots.PKG
+    seen, todo = set(), [os.path.join(pkg, r) for r in roots]
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        if os.path.relpath(p, pkg) not in stop:
+            todo.extend(_imports(p))
+    return {os.path.relpath(p, pkg) for p in seen}
+
+
+def _reducers():
+    return {"reducers/" + os.path.basename(p)
+            for p in glob.glob(os.path.join(snapshots.PKG, "reducers", "*.py"))}
+
+
 class FingerprintTest(unittest.TestCase):
+
+    def test_every_module_a_saved_build_counts_with_is_in_its_fingerprint(self):
+        # Out on purpose: the hours, which a saved build never holds, and
+        # feeds.py, which finds the day-files whose roots the fingerprint holds.
+        out = {"hours.py", "feeds.py"}
+        got = _reached(["normalize.py", "export.py", "windows.py", "snapshots.py",
+                        "redact.py"] + sorted(_reducers()), out)
+        self.assertEqual(got - set(snapshots.CODE_FILES) - _reducers() - out, set())
+
+    def test_every_module_an_hour_counts_with_is_in_its_fingerprint(self):
+        # The hours leave the live tier out of their fingerprint, so no reducer
+        # an hour holds may reach it. Out on purpose: clock.py, which says which
+        # hours are closed, and feeds.py, which finds the day-files.
+        from rc_dashboard import hours
+        held = _reducers() - {"reducers/live.py"}
+        out = {"clock.py", "feeds.py"}
+        got = _reached(["normalize.py", "export.py", "redact.py", "hours.py"] + sorted(held),
+                       out)
+        self.assertNotIn("reducers/live.py", got)
+        self.assertEqual(got - set(hours.CODE_FILES) - held - out, set())
 
     def test_a_change_to_the_roles_is_a_change_of_code(self):
         # roles.py decides which processes are sessions, so a build saved under

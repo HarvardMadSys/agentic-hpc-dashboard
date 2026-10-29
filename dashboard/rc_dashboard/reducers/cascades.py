@@ -40,7 +40,7 @@ import time
 from ..procindex import MAX_HOPS, users_conflict
 from . import add_counts, max_of, min_of, pct
 from ..redact import redact
-from .live import agent_version
+from ..roles import agent_version
 from .sandbox import session_state
 from .workspace import tilde
 

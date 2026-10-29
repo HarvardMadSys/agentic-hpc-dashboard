@@ -199,6 +199,26 @@ def role_of(agent_type, command, args):
     return "agent"
 
 
+# An agent's version, where the name or path of its program says it: Claude
+# Code's native installs (`~/.local/share/claude/versions/2.1.291`,
+# `~/.claude/remote/ccd-cli/2.1.295-8b2928c...`, a process named
+# `2.1.295-8b2928c`) and the Codex app-server daemon
+# (`.../releases/0.162.1-x86_64.../bin/codex`). A plain `claude` or `codex`, or
+# Codex run through npm, names none, and gets none rather than a guess. Here
+# and not in the live tier, which keeps it too: the cascades count with it,
+# and an hour's fingerprint holds this module, not the live tier's.
+_VERSION_NAME = re.compile(r"^v?(\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.]+)?$")
+_VERSION_PATH = re.compile(r"/(?:versions|ccd-cli|releases)/v?(\d+\.\d+\.\d+)")
+
+
+def agent_version(comm, args):
+    m = _VERSION_NAME.match(comm or "")
+    if m:
+        return m.group(1)
+    m = _VERSION_PATH.search(args or "")
+    return m.group(1) if m else None
+
+
 def spawned_by_agent(role, command):
     """True for a process its agent starts directly: its parent IS the agent."""
     return role == "tool-shell" or \

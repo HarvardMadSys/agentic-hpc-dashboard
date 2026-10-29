@@ -55,11 +55,16 @@ FORMAT = 1
 PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what a reducer's state means: with the scan and the
 # normaliser, the modules they and the reducers count a record with -- which
-# processes are sessions (roles.py), whose session a key is (procindex.py), and
-# the rest hours.py fingerprints for an hour. Not hours.py itself: a saved build
-# is a scan's, never the hours'.
+# processes are sessions (roles.py), whose session a key is (procindex.py), what
+# an offset into a compressed day-file is (gz.py), the live tier's bins and
+# roster (buckets.py, roster.py), and the rest hours.py fingerprints for an hour.
+# Not hours.py itself, which a saved build never goes through (`windows._build`
+# saves only a scan), nor feeds.py, which finds the day-files: the fingerprint
+# holds the roots it resolves. test_window_cache checks that every module a
+# build imports is one or the other.
 CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py", "redact.py",
-              "roles.py", "procindex.py", "proctree.py", "tool_buckets.py", "fastjson.py")
+              "roles.py", "procindex.py", "proctree.py", "tool_buckets.py", "fastjson.py",
+              "gz.py", "buckets.py", "roster.py")
 HELPER_MODULES = ("agent_lib", "tool_bucket_lib", "purpose_lib", "deep_traj_lib")
 
 
