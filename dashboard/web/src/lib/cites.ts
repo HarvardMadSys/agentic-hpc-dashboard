@@ -294,18 +294,22 @@ export function registerJumper(sid: string, f: Jumper): () => void {
   };
 }
 
+/** A cell's text without the disclosure mark a row that opens leads with. */
+const cellText = (c: Element) => (c.textContent ?? '').replace(/^[\s▸▾►▼›]+/, '').trim();
+
 /** The row of `root` the texts name: a cell that says exactly one of them
- *  beats a row that mentions it in passing, and the first text beats the rest. */
+ *  beats a row that mentions it in passing, and the first text beats the rest.
+ *  Never a line of an answer or its sources, which name the same things. */
 function findRow(root: ParentNode, needles: string[]): HTMLElement | null {
   const rows = Array.from(root.querySelectorAll<HTMLElement>('tr, li, [role="row"]')).filter(
-    (r) => !r.closest('thead') && r.offsetParent !== null,
+    (r) => !r.closest('thead, .chat, .askbox, .cite-src') && r.offsetParent !== null,
   );
   for (const n of needles) {
     let best: HTMLElement | null = null;
     for (const r of rows) {
       const t = r.textContent ?? '';
       if (!t.includes(n)) continue;
-      if (Array.from(r.children).some((c) => (c.textContent ?? '').trim() === n)) return r;
+      if (Array.from(r.children).some((c) => cellText(c) === n)) return r;
       if (!best || t.length < (best.textContent ?? '').length) best = r;
     }
     if (best) return best;
@@ -381,6 +385,10 @@ export function go(a: Arrival, what: string) {
   if (url !== location.pathname + location.search) {
     history.pushState(null, '', url);
     window.dispatchEvent(new PopStateEvent('popstate'));
+    // the page draws the tab it is going to first: until then the rows on
+    // screen are the ones it is leaving
+    requestAnimationFrame(() => requestAnimationFrame(() => arrive(a, what)));
+    return;
   }
   arrive(a, what);
 }
