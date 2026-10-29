@@ -7,12 +7,14 @@ name: base-image
 #   * semver git tag  v1.2.3  -> 1.2.3, 1.2, latest   (releases)
 #   * branch push             -> <branch-slug>, <branch-slug>-<YYYYMMDD>-<sha>
 #   * main branch             -> additionally `edge`
+#   * develop                 -> nothing: its pushes are not built
 # Datestamped tags give a branch build an immutable handle; the moving
 # branch-slug tag always points at that branch's newest build.
 
 on:
   push:
-    branches: ["**"]
+    # Every branch but develop: a push to develop builds and publishes nothing.
+    branches-ignore: ["develop"]
     tags: ["v*.*.*"]
     paths:
       - "docker/base/**"
