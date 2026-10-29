@@ -40,7 +40,10 @@
     "//system_prompt1": "re-read on every question and wins. {deployment} {site} {window} are filled in.",
     "system_prompt": "",
     "system_prompt_file": "",
-    "snapshot_guide": true
+    "snapshot_guide": true,
+    "//citations": "every row the model is given carries a ref it cites after each figure; the",
+    "//citations1": "page links each to its row, with a preview of what the model saw. false: none",
+    "citations": true
   },
 
   "site": { "name": "", "description": "" },
