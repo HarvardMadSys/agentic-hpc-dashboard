@@ -22,6 +22,15 @@ are filled in, the prompt arrives on stdin, and a command with no
 `{answer_file}` has its stdout taken as the answer. `max_concurrent` (1)
 bounds how many agents run at once: on a small deployment a second question
 waits rather than starting a second agent.
+
+Every answer cites its sources (`ask.citations`, on by default). Each object
+the model reads carries a `ref` -- every section, the dicts up to REF_DEPTH
+levels into it, every row of a list -- and each line of an outline starts with
+its own; the model is told to put the ref of what it took a figure from after
+the figure, in brackets (`[b7]`). The job keeps, for each ref the answer cites,
+where the object sits, what the model saw of it (`preview`), and what the page
+needs to open it (`_go`, hints a producer put on the object, which never reach
+the model). A ref the model made up cites nothing and is kept out.
 """
 import collections
 import json
@@ -58,6 +67,29 @@ DROP_KEYS = frozenset((
     "_feed", "_status", "_present", "_filter", "resident_hosts",
 ))
 ARGV_KEYS = frozenset(("args", "argv", "cmd", "command_line", "_argv"))
+
+# Citations. A ref is a section's prefix and a number (`b7`); a bracket cites
+# one or several (`[b7]`, `[b7, c2]`).
+REF_KEY = "ref"
+REF_DEPTH = 2
+_REF = r"[a-z]{1,2}\d{1,5}"
+CITE_RE = re.compile(r"\[(%s(?:\s*[,;]\s*%s)*)\]" % (_REF, _REF))
+_ONE_REF = re.compile(_REF)
+# a bracket with the space before it: an earlier answer goes back without them
+_CITE_STRIP = re.compile(r"\s*" + CITE_RE.pattern)
+# every ref the snapshot text still holds, once the budget has cut it
+_HELD = re.compile(r'"%s":"(%s)"|\[(%s)\] ' % (REF_KEY, _REF, _REF))
+_LINE_REF = re.compile(r"^\[%s\] " % _REF)
+_MORE = re.compile(r"\.\.\. (\d+) more")
+
+CITE_GUIDE = """Cite where every figure comes from. Each object in the snapshot carries a
+"ref", and each line of an outline starts with its own in brackets. Right after a
+number or a claim you take from the snapshot, put the ref of the most specific object
+that holds it in square brackets, like this: "git ran 4,210 times [b7]". Two
+sources: [b7][c12]. Use only refs written in the snapshot, exactly as written: never
+make one up, and never cite one for something it does not hold."""
+CITE_GUIDE_JSON = """In the JSON, the citations go inside the strings they support: "evidence" and
+"action"."""
 
 DEFAULT_SYSTEM = """You are the assistant inside an agent-observability dashboard.
 People ask what AI coding agents (Claude Code, Codex, ...), people working in a
@@ -390,20 +422,36 @@ def _tree_line(e, with_argv, root=False):
     return line
 
 
-def _outline(root, with_argv, max_lines=300, max_depth=6, open_n=10):
+def _jump(t, pid=None, **kv):
+    """The hint that opens the inspector at a process (or a run of them):
+    the moment it started, and the process when it is one."""
+    if t is None:
+        return None
+    return {"jump": dict({"t": t, "by": "start", "pid": pid}, **kv)}
+
+
+def _outline(root, with_argv, max_lines=300, max_depth=6, open_n=10, hints=None):
     """The tree as indented lines. A parent with more children than it opens
     lists them by command first; then it opens the ones that started others,
     the costliest first, then the costliest of the rest -- `open_n` near the
     root, half that deeper, two of any one command -- in the order they
     started. What the read only counted is one line under its parent, never a
-    census entry."""
+    census entry. `hints`, a list, is filled beside the lines: where each
+    process's line jumps to, None for a line that is no one process."""
     lines = []
+    hints = hints if hints is not None else []
+
+    def add(text, hint=None):
+        lines.append(text)
+        hints.append(hint)
 
     def emit(e, depth):
         if len(lines) >= max_lines:
             return
         pad = "  " * depth
-        lines.append(pad + _tree_line(e, with_argv, root=depth == 0))
+        add(pad + _tree_line(e, with_argv, root=depth == 0),
+            _jump(e.get("start"), e.get("pid")) if e.get("k") == "p"
+            else _jump(e.get("start")) if e.get("k") == "g" else None)
         kids = (e.get("kids") or []) if e.get("k") == "p" else []
         if not kids or depth >= max_depth:
             return
@@ -420,7 +468,7 @@ def _outline(root, with_argv, max_lines=300, max_depth=6, open_n=10):
                 row[2] += _failed(c) if c.get("k") == "p" else sum(
                     n for x, n in (c.get("exits") or {}).items() if x != "0")
             top = sorted(census.items(), key=lambda kv: -kv[1][1])[:12]
-            lines.append(pad + "  %d children by command: %s%s" % (
+            add(pad + "  %d children by command: %s%s" % (
                 len(rest),
                 "; ".join("%s x%d%s%s" % (nm, r[0],
                                           " (%d processes)" % r[1] if r[1] > r[0] else "",
@@ -442,14 +490,14 @@ def _outline(root, with_argv, max_lines=300, max_depth=6, open_n=10):
         for c in pick:
             emit(c, depth + 1)
         if len(pick) < len(rest) and len(lines) < max_lines:
-            lines.append(pad + "  ... %d more children, in the census above" % (len(rest) - len(pick)))
+            add(pad + "  ... %d more children, in the census above" % (len(rest) - len(pick)))
         for c in summ:
             if len(lines) < max_lines:
-                lines.append(pad + "  " + _tree_line(c, with_argv))
+                add(pad + "  " + _tree_line(c, with_argv))
 
     emit(root, 0)
     if len(lines) >= max_lines:
-        lines.append("... the outline stops at %d lines" % max_lines)
+        add("... the outline stops at %d lines" % max_lines)
     return lines
 
 
@@ -467,6 +515,8 @@ def session_digest(body, with_argv=False, max_lines=300):
     session = {k: row.get(k) for k in keep if row.get(k) is not None}
     session.update(first=_clock(row.get("first")), last=_clock(row.get("last")),
                    wall=_secs(row.get("wall_s")))
+    if row.get("sid"):
+        session["_go"] = {"sid": row["sid"]}
     shares = collections.Counter()
     for k, n in row.get("purpose_rle") or []:
         shares[k] += n
@@ -482,10 +532,16 @@ def session_digest(body, with_argv=False, max_lines=300):
             return None
         out = {"cmd": m.get("cmd"), "at": _clock(m.get("t"))}
         out.update({k: v for k, v in kv.items() if v is not None})
+        go = _jump(m.get("t"), m.get("pid"))
+        if go:
+            out["_go"] = go
         return out
 
     longest = nav.get("longest")
     busiest = nav.get("busiest")
+    hints = []
+    tree = _outline(body.get("tree") or {}, with_argv, max_lines, hints=hints) \
+        if body.get("tree") else []
     return {
         "session": session,
         "tools": _runs(row.get("tool_rle"), 200)
@@ -494,16 +550,19 @@ def session_digest(body, with_argv=False, max_lines=300):
                      "share_pct": {k: round(100 * n / total, 1) for k, n in shares.most_common()}},
         "landmarks": {
             "first_tool_call": mark(nav.get("first_tool")),
-            "busiest_minute": {"at": _clock(busiest["t"]), "process_starts": busiest["n"]}
+            "busiest_minute": {"at": _clock(busiest["t"]), "process_starts": busiest["n"],
+                               "_go": _jump(busiest["t"], zoom=[busiest["t"], busiest["t"] + 60])}
                               if busiest else None,
             "longest_process": mark(longest, dur=_secs((longest or {}).get("dur"))),
             "failures": {"total": fails.get("n") or 0,
                          "by_command": ["%s x%d" % kv for kv in by.most_common(15)],
                          "first": ["%s %s %s" % (_clock(t0), cmd, "signal %s" % sig if sig is not None
                                                  else "exit %s" % code)
-                                   for t0, _t1, _pid, cmd, code, sig in items[:8]]},
+                                   for t0, _t1, _pid, cmd, code, sig in items[:8]],
+                         "_go_first": [_jump(t0, pid) for t0, _t1, pid, _c, _x, _s in items[:8]]},
         },
-        "tree": _outline(body.get("tree") or {}, with_argv, max_lines) if body.get("tree") else [],
+        "tree": tree,
+        "_go_tree": hints,
         "read": {"records": scan.get("records"), "itemised": bounds.get("itemised"),
                  "counted": bounds.get("counted"),
                  "stopped": scan.get("stopped"),
@@ -511,16 +570,22 @@ def session_digest(body, with_argv=False, max_lines=300):
     }
 
 
-def _compact(obj, list_max, str_max, with_argv, drop=DROP_KEYS):
+def _compact(obj, list_max, str_max, with_argv, drop=DROP_KEYS, hints=False):
+    """`hints`: keep the link hints (`_go`, `_go_<key>`) as they are, for
+    `_cite` to take off; without it they go with the rest of what is dropped."""
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
+            if k == "_go" or k.startswith("_go_"):
+                if hints:
+                    out[k] = v
+                continue
             if k in drop or (not with_argv and k in ARGV_KEYS):
                 continue
-            out[k] = _compact(v, list_max, str_max, with_argv, drop)
+            out[k] = _compact(v, list_max, str_max, with_argv, drop, hints)
         return out
     if isinstance(obj, list):
-        head = [_compact(v, list_max, str_max, with_argv, drop) for v in obj[:list_max]]
+        head = [_compact(v, list_max, str_max, with_argv, drop, hints) for v in obj[:list_max]]
         if len(obj) > list_max:
             head.append("... %d more" % (len(obj) - list_max))
         return head
@@ -534,6 +599,108 @@ def _compact(obj, list_max, str_max, with_argv, drop=DROP_KEYS):
     return obj
 
 
+def _prefix(i):
+    """The i-th section's ref prefix: a..z, then aa..zz."""
+    a = "abcdefghijklmnopqrstuvwxyz"
+    return a[i] if i < 26 else a[(i - 26) // 26 % 26] + a[(i - 26) % 26]
+
+
+def _cite(sec, prefix, path, hints=None):
+    """Give one compacted section its refs, in place.
+
+    A dict gets one -- its first key, so the model reads the ref before what it
+    names -- at the section, up to REF_DEPTH levels into it, in a list at any
+    depth, and wherever a producer put a hint on it; a deeper dict is cited by
+    the nearest one above it that has a ref. A list of strings gets refs only
+    where its producer said what each line is (`_go_<key>` beside it, or
+    `hints` for a section that is one such list): an outline's processes,
+    a list of failures. Returns the section and {ref: {path, obj, go}}."""
+    table, n = {}, [0]
+
+    def ref(p, obj, go):
+        n[0] += 1
+        r = "%s%d" % (prefix, n[0])
+        table[r] = {"path": list(p), "obj": obj, "go": go if isinstance(go, dict) else None}
+        return r
+
+    def lines(v, go, p):
+        for i, s in enumerate(v):
+            g = go[i] if i < len(go) else None
+            if isinstance(s, str) and isinstance(g, dict):
+                body = s.lstrip(" ")
+                v[i] = "%s[%s] %s" % (s[:len(s) - len(body)], ref(p + (i,), body, g), body)
+
+    def walk(o, p, depth, row):
+        if isinstance(o, dict):
+            go = o.pop("_go", None)
+            sub = {k[4:]: o.pop(k) for k in [k for k in o if k.startswith("_go_")]}
+            if row or depth <= REF_DEPTH or go is not None:
+                items = list(o.items())
+                o.clear()
+                o[REF_KEY] = ref(p, o, go)
+                o.update(items)
+            for k, v in o.items():
+                if k == REF_KEY:
+                    continue
+                if isinstance(v, list) and isinstance(sub.get(k), list):
+                    lines(v, sub[k], p + (k,))
+                else:
+                    walk(v, p + (k,), depth + 1, False)
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                walk(v, p + (i,), depth + 1, True)
+
+    if isinstance(sec, list) and isinstance(hints, list):
+        lines(sec, hints, tuple(path))
+    else:
+        walk(sec, tuple(path), 0, False)
+    return sec, table
+
+
+def cited(text):
+    """The refs an answer cites, in the order it first cites them."""
+    out = []
+    for m in CITE_RE.finditer(text or ""):
+        for r in _ONE_REF.findall(m.group(1)):
+            if r not in out:
+                out.append(r)
+    return out
+
+
+def preview(obj, items=24, str_max=240):
+    """What the page shows of a cited object: the object as the model saw it,
+    its refs taken out, and anything bulky said in a word -- a list of rows is
+    how many there were. An outline's line is the line."""
+    if isinstance(obj, str):
+        return _LINE_REF.sub("", obj.strip(), count=1)
+
+    def val(v, depth, items, str_max):
+        if isinstance(v, str):
+            return v if len(v) <= str_max else v[:str_max] + "…"
+        if isinstance(v, dict):
+            keys = [k for k in v if k != REF_KEY]
+            if depth > 2:
+                return "{%d fields}" % len(keys)
+            out = {k: val(v[k], depth + 1, items, str_max) for k in keys[:items]}
+            if len(keys) > items:
+                out["…"] = "%d more fields" % (len(keys) - items)
+            return out
+        if isinstance(v, list):
+            body, more = v, 0
+            m = _MORE.fullmatch(v[-1]) if v and isinstance(v[-1], str) else None
+            if m:
+                body, more = v[:-1], int(m.group(1))
+            if len(body) <= 8 and not any(isinstance(x, (dict, list)) for x in body):
+                return [val(x, depth + 1, items, str_max) for x in v]
+            return "%d rows" % (len(body) + more)
+        return v
+
+    out = val(obj, 0, items, str_max)
+    if len(json.dumps(out, default=str)) > 4000:
+        out = val(obj, 0, 12, 80)
+    return out
+
+
 STEPS = ((12, 200), (8, 160), (5, 120), (3, 80), (2, 60), (1, 40))
 # One panel: its lists start long and its strings may carry a `basis` note.
 LOCAL_STEPS = ((60, 400), (30, 300), (15, 200), (8, 160), (5, 120), (3, 80), (2, 60), (1, 40))
@@ -542,7 +709,7 @@ SESSION_STEPS = ((400, 300), (200, 240), (100, 200), (50, 160), (25, 120), (12, 
 
 
 def snapshot(panels, live=None, budget_kb=120, with_argv=False, extra=None,
-             steps=STEPS, keep=()):
+             steps=STEPS, keep=(), cites=None):
     """The window as compact JSON text, inside `budget_kb`.
 
     Each section is compacted on its own, and while the whole is over budget
@@ -552,32 +719,56 @@ def snapshot(panels, live=None, budget_kb=120, with_argv=False, extra=None,
 
     `steps` and `keep` are for a question about one panel or one session,
     whose budget is not shared: longer lists, and the fields in `keep` (the
-    panel's own notes on how it counts) are not dropped."""
+    panel's own notes on how it counts) are not dropped.
+
+    `cites`, a dict, turns citations on: every section is given its refs
+    (`_cite`) before it is measured, so they are paid for out of the same
+    budget, and `cites` is filled with every ref the text holds. An extra
+    `_go_<section>` is the hints for a section that is a list of lines."""
     drop = DROP_KEYS - frozenset(keep)
     sections = {"panels." + k: v for k, v in (panels or {}).items()}
     if live:
         sections["live_now"] = {k: live.get(k) for k in ("now", "users", "hosts", "window")
                                 if live.get(k) is not None}
+    lines = {}
     for k, v in (extra or {}).items():
-        sections[k] = v
+        if k.startswith("_go_"):
+            lines[k[4:]] = v
+        else:
+            sections[k] = v
+    tables = {} if cites is not None else None
+    prefix = {k: _prefix(i) for i, k in enumerate(sections)}
+
+    def build(k, s):
+        obj = _compact(sections[k], *steps[s], with_argv, drop, hints=tables is not None)
+        if tables is not None:
+            path = ("panels", k[len("panels."):]) if k.startswith("panels.") else (k,)
+            obj, tables[k] = _cite(obj, prefix[k], path, lines.get(k))
+        return json.dumps(obj, separators=(",", ":"), default=str)
+
     step = {k: 0 for k in sections}
-    part = {k: json.dumps(_compact(v, *steps[0], with_argv, drop), separators=(",", ":"),
-                          default=str) for k, v in sections.items()}
+    part = {k: build(k, 0) for k in sections}
     while sum(len(t) for t in part.values()) > budget_kb * 1024:
         k = max((k for k in part if step[k] < len(steps) - 1),
                 key=lambda k: len(part[k]), default=None)
         if k is None:
             break
         step[k] += 1
-        part[k] = json.dumps(_compact(sections[k], *steps[step[k]], with_argv, drop),
-                             separators=(",", ":"), default=str)
+        part[k] = build(k, step[k])
     out = {"panels": {}}
     for k, t in part.items():
         if k.startswith("panels."):
             out["panels"][k[len("panels."):]] = json.loads(t)
         else:
             out[k] = json.loads(t)
-    return json.dumps(out, separators=(",", ":"))[:budget_kb * 1024]
+    whole = json.dumps(out, separators=(",", ":"))
+    text = whole[:budget_kb * 1024]
+    if tables is not None:
+        # past the cut, a ref is one the model never read
+        held = ({a or b for a, b in _HELD.findall(text)} if len(text) < len(whole) else None)
+        for t in tables.values():
+            cites.update((r, e) for r, e in t.items() if held is None or r in held)
+    return text
 
 
 def deployment(cfg, live=None):
@@ -612,16 +803,20 @@ def system_text(cfg, about="not described", window_label=""):
 
 
 def prompt(question, snap, window_label, history=(), about="not described",
-           system=DEFAULT_SYSTEM, guide=True, guide_text=None):
+           system=DEFAULT_SYSTEM, guide=True, guide_text=None, cite_text=None):
     """`guide_text` replaces the whole-window GUIDE for a question about one
     panel or one session: the snapshot is laid out differently, and saying so
-    is what keeps the model from looking for panels that are not there."""
+    is what keeps the model from looking for panels that are not there.
+    `cite_text` asks for citations; an earlier answer goes back without its
+    own, whose refs named another snapshot's objects."""
     turns = ""
     for h in list(history)[-3:]:
-        q, a = (h.get("q") or "").strip(), (h.get("a") or "").strip()
+        q, a = (h.get("q") or "").strip(), _CITE_STRIP.sub("", h.get("a") or "").strip()
         if q and a:
             turns += "\nEarlier question: %s\nYour earlier answer: %s\n" % (q[:600], a[:1500])
     head = system + ("\n\n" + (guide_text or GUIDE) if guide else "")
+    if cite_text:
+        head += "\n\n" + cite_text
     return ("%s\n\nDeployment: %s.\nWindow: %s.%s\n\nQuestion: %s\n\n<snapshot>\n%s\n</snapshot>\n"
             % (head, about, window_label, turns, question.strip(), snap))
 
@@ -761,9 +956,11 @@ class Asker:
             return {"items": list(done)}
 
     def done_for_prompt(self, keep=50):
-        """What the model is told the operator already dealt with."""
+        """What the model is told the operator already dealt with, without the
+        citations it was suggested with: they named another snapshot's rows."""
         with self.lock:
-            return [{"title": x.get("title"), "action": x.get("action"),
+            return [{"title": x.get("title"),
+                     "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
                      "users": x.get("users") or [], "panel": x.get("panel"),
                      "marked_done": _clock(x.get("done_at"))}
                     for x in self._done_items()[:keep]]
@@ -784,24 +981,34 @@ class Asker:
         if not question:
             raise ValueError("ask a question")
         system_text(self.cfg)            # an unreadable prompt file fails here
+        refs = {} if self.cfg.get("ask.citations", True) else None
         snap = snapshot(panels, live, int(self.cfg.get("ask.context_kb", 120)),
                         bool(self.cfg.get("ask.include_commands", False)), extra,
-                        scope.get("steps") or STEPS, scope.get("keep") or ())
+                        scope.get("steps") or STEPS, scope.get("keep") or (), cites=refs)
+        # `view`: the window, filter, and session the data was read over, so
+        # a citation opens the page on what the model saw. `_refs` is every
+        # ref the snapshot holds, until the answer says which it cites.
         job = {"id": uuid.uuid4().hex[:12], "state": "queued", "question": question[:2000],
                "window": window_label, "about": scope.get("about"),
                "parse": scope.get("parse"), "suggestions": None,
                "agent": info["agent"], "model": info["model"],
                "submitted": time.time(), "started": None, "finished": None,
                "progress": "waiting for a free agent", "answer": None, "error": None,
-               "snapshot_kb": round(len(snap) / 1024, 1)}
+               "snapshot_kb": round(len(snap) / 1024, 1),
+               "view": scope.get("view"), "cites": None, "_refs": refs}
         with self.lock:
             self.jobs[job["id"]] = job
             while len(self.jobs) > self.KEEP:
                 self.jobs.popitem(last=False)
         about = deployment(self.cfg, live)
+        cite_text = None
+        if refs is not None:
+            cite_text = CITE_GUIDE + ("\n" + CITE_GUIDE_JSON if scope.get("parse") == "suggestions"
+                                      else "")
         text = prompt(question, snap, window_label, history, about,
                       system_text(self.cfg, about, window_label),
-                      bool(self.cfg.get("ask.snapshot_guide", True)), scope.get("guide"))
+                      bool(self.cfg.get("ask.snapshot_guide", True)), scope.get("guide"),
+                      cite_text)
         threading.Thread(target=self._run, args=(job, text), daemon=True,
                          name="ask-%s" % job["id"]).start()
         return self.view(job["id"])
@@ -811,7 +1018,7 @@ class Asker:
             j = self.jobs.get(jid)
             if j is None:
                 return None
-            out = dict(j)
+            out = {k: v for k, v in j.items() if not k.startswith("_")}
         end = out["finished"] or time.time()
         out["elapsed_s"] = round(end - (out["started"] or out["submitted"]), 1)
         return out
@@ -870,11 +1077,29 @@ class Asker:
                 answer = redact.redact(answer) if answer else "(no answer)"
                 self._set(job, state="done", answer=answer, progress=None, finished=time.time(),
                           suggestions=parse_suggestions(answer)
-                          if job.get("parse") == "suggestions" else None)
+                          if job.get("parse") == "suggestions" else None,
+                          cites=self._cites(job, answer))
             except Exception as e:
                 self._set(job, state="error", error=str(e), progress=None, finished=time.time())
             finally:
+                # the whole table is let go once the answer has said what it cites
+                self._set(job, _refs=None)
                 shutil.rmtree(work, ignore_errors=True)
+
+    @staticmethod
+    def _cites(job, answer):
+        """What each ref the answer cites was: where it sits, what the model
+        saw of it, and how the page opens it. A ref the snapshot never held
+        cites nothing and is left out; the page marks it as such."""
+        refs = job.get("_refs")
+        if refs is None:
+            return {}
+        out = {}
+        for r in cited(answer):
+            e = refs.get(r)
+            if e is not None:
+                out[r] = {"path": e["path"], "data": preview(e["obj"]), "go": e["go"]}
+        return out
 
 
 def _kill(proc):

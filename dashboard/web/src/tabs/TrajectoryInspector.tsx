@@ -43,6 +43,7 @@ import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { serverNow } from '../lib/clock';
+import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
@@ -444,6 +445,12 @@ export function TrajectoryInspector({
     setWant({ ...jump, t: jump.t, by: 'end' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jump?.n]);
+
+  // A citation in an answer about this session: the moment it cites (lib/cites.ts).
+  useEffect(
+    () => registerJumper(sid, (j, what) => setWant({ t: j.t, by: j.by, pid: j.pid, zoom: j.zoom, what })),
+    [sid],
+  );
 
   const index = useMemo(() => (tree ? spots(tree) : []), [tree]);
   const axis: [number, number] | null =

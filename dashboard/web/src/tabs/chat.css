@@ -208,3 +208,185 @@
   text-decoration: line-through;
   text-decoration-color: var(--edge);
 }
+
+/* Citations (components/Cite.tsx): a numbered chip after the figure it backs,
+   a preview of what the model was given, the answer's sources under it, and
+   the flash where a citation lands (lib/cites.ts). */
+.cites {
+  white-space: nowrap;
+}
+.cite,
+.cite-n {
+  display: inline-block;
+  min-width: 16px;
+  height: 15px;
+  margin: 0 1px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--crimson-wash);
+  color: var(--crimson-ink);
+  font: 600 10px/15px 'IBM Plex Mono', monospace;
+  text-align: center;
+  text-decoration: none;
+  vertical-align: 2px;
+}
+.cite {
+  cursor: pointer;
+}
+.cite:hover,
+.cite:focus-visible {
+  background: var(--crimson);
+  color: var(--surface);
+  outline: none;
+}
+.cite.cite-bad {
+  background: var(--sunken);
+  color: var(--muted);
+  text-decoration: line-through;
+  cursor: help;
+}
+.cite-pop {
+  position: fixed;
+  z-index: 60;
+  width: min(380px, calc(100vw - 16px));
+  max-height: min(420px, 70vh);
+  overflow: auto;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.cite-pop-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.cite-pop-l {
+  margin: 4px 0 8px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.cite-pop-k {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.cite-data {
+  width: 100%;
+  border-collapse: collapse;
+  font: 11px/1.45 'IBM Plex Mono', monospace;
+}
+.cite-data th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  padding: 1px 10px 1px 0;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.cite-data td {
+  padding: 1px 0;
+  overflow-wrap: anywhere;
+}
+.cite-line {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.45 'IBM Plex Mono', monospace;
+  background: var(--sunken);
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.cite-pop-f {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 11px;
+}
+.cite-src {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+}
+.cite-src-h {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.cite-src ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cite-src li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cite-src-l {
+  color: var(--ink-2);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+a.cite-src-l:hover {
+  text-decoration: underline;
+}
+.cite-where {
+  color: var(--muted);
+}
+/* where a citation lands: a table row lights its cells, since an outline on
+   a row is not drawn by every browser */
+.cite-hit:not(tr) {
+  animation: cite-ring 2.6s ease-out;
+}
+tr.cite-hit > td,
+tr.cite-hit > th {
+  animation: cite-wash 2.6s ease-out;
+}
+@keyframes cite-ring {
+  0%,
+  35% {
+    outline: 2px solid var(--crimson);
+    outline-offset: 2px;
+  }
+  100% {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+}
+@keyframes cite-wash {
+  0%,
+  35% {
+    background-color: var(--crimson-wash);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cite-hit:not(tr) {
+    animation: none;
+    outline: 2px solid var(--crimson);
+    outline-offset: 2px;
+  }
+  tr.cite-hit > td,
+  tr.cite-hit > th {
+    animation: none;
+    background-color: var(--crimson-wash);
+  }
+}

@@ -469,11 +469,14 @@ class Aggregator:
         busiest = [rows[s] for s in (tr.get("ranks") or {}).get("events", [])[:15] if s in rows]
         keep = ("user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
                 "distinct_tools", "peak_rss_mb", "sandbox", "approval", "host")
+        # a busiest session's sid is a hint, for a citation to open it by: the
+        # model has no use for it
         extra = {"facets": got.get("facets"),
                  "sessions": {"summary": tr.get("summary"),
-                              "busiest": [{k: r.get(k) for k in keep} for r in busiest]}}
+                              "busiest": [dict({k: r.get(k) for k in keep}, _go={"sid": r.get("sid")})
+                                          for r in busiest]}}
         panels = got.get("panels") or {}
-        scope = None
+        scope = {"view": self._ask_view(win, view, context.get("classes"))}
         if suggest:
             st = got.get("window_status") or {}
             if st.get("state") != "ready" and not st.get("has_payload"):
@@ -485,18 +488,32 @@ class Aggregator:
             extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
                              "classes_shown": [c for c in classes if isinstance(c, str)][:8]
                              if isinstance(classes, list) else None}
-            scope = {"about": "suggestions for the operator", "parse": "suggestions",
-                     "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE}
+            scope.update({"about": "suggestions for the operator", "parse": "suggestions",
+                          "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE})
         if self.anon is not None:
             # The snapshot leaves the host, for the model's provider: aliases only.
             panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
                                    self.anon.payload(extra))
+            scope["view"] = self.anon.payload(scope["view"])
         return self.asker.submit(question, panels, live, win["label"], history, extra, scope)
 
     @staticmethod
     def _ask_label(ctx, key, cap):
         v = ctx.get(key)
         return v.strip()[:cap] if isinstance(v, str) else ""
+
+    @staticmethod
+    def _ask_view(win, flt=None, classes=None, sid=None):
+        """What a question was asked over, as the page's own URL keys, so a
+        citation in its answer opens the page on the data the model saw: the
+        window, the filter (none is no filter, not "whatever is on screen"),
+        the classes shown, and the session."""
+        flt = flt or winmod.NO_FILTER
+        return {"window_min": win["minutes"], "users": list(flt.users),
+                "atypes": list(flt.agent_types),
+                "cls": [c for c in classes if isinstance(c, str)][:8]
+                if isinstance(classes, list) else None,
+                "sid": sid}
 
     def _ask_panel(self, question, window_min, history, ctx, flt):
         parts = ctx.get("parts")
@@ -570,10 +587,12 @@ class Aggregator:
                          if isinstance(classes, list) else None}
         title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
         scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),
-                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP}
+                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP,
+                 "view": self._ask_view(win, flt, classes)}
         if self.anon is not None:
             # The snapshot leaves the host, for the model's provider: aliases only.
             panels, extra = self.anon.payload(panels), self.anon.payload(extra)
+            scope["view"] = self.anon.payload(scope["view"])
         return self.asker.submit(question, panels, None, win["label"], history, extra, scope)
 
     def _ask_session(self, question, window_min, history, ctx):
@@ -596,9 +615,10 @@ class Aggregator:
         extra["view"] = {"window": win["label"]}
         title = self._ask_label(ctx, "title", 160)
         scope = {"about": title or "one session", "guide": ask.SESSION_GUIDE,
-                 "steps": ask.SESSION_STEPS}
+                 "steps": ask.SESSION_STEPS, "view": self._ask_view(win, sid=sid)}
         if self.anon is not None:
             extra = self.anon.payload(extra)
+            scope["view"] = self.anon.payload(scope["view"])
         return self.asker.submit(question, None, None, win["label"], history, extra, scope)
 
     def _accounts(self):

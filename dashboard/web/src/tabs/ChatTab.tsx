@@ -21,8 +21,10 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiError, getAskInfo, getDone, markDone, undoDone } from '../api/client';
 import type { AskInfo, AskJob, DoneSuggestion, OperatorSuggestion } from '../api/types';
 import { fullClock } from '../charts/scale';
-import { Md, Turn, canAsk, useAskScope, useAskThread } from '../components/Ask';
+import { CiteText, Md, Turn, canAsk, useAskScope, useAskThread } from '../components/Ask';
+import { Sources, citeCtx } from '../components/Cite';
 import { Panel } from '../components/Panel';
+import { stripCites } from '../lib/cites';
 import { clock } from '../lib/format';
 import './chat.css';
 
@@ -42,13 +44,25 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
   const got = job.suggestions;
   if (!got) {
     // not the JSON it was asked for: the answer as written, never nothing
-    return <Md text={job.answer ?? ''} />;
+    const cite = citeCtx(job, [job.answer]);
+    return (
+      <>
+        <Md text={job.answer ?? ''} cite={cite} />
+        {cite && <Sources ctx={cite} />}
+      </>
+    );
   }
   // each keeps its place in the answer: a mark names that place
   const open = got.suggestions.map((x, i) => [x, i] as const).filter(([, i]) => !isDone(i));
+  // numbered over the cards on screen, in the order they are read
+  const cite = citeCtx(job, [got.summary, ...open.flatMap(([x]) => [x.action, x.evidence])]);
   return (
     <>
-      {got.summary && <p className="sugg-sum">{got.summary}</p>}
+      {got.summary && (
+        <p className="sugg-sum">
+          <CiteText text={got.summary} cite={cite} />
+        </p>
+      )}
       {got.suggestions.length === 0 ? (
         <p className="nm">nothing in this window needs the operator, by the model’s reading of it</p>
       ) : open.length === 0 ? (
@@ -61,11 +75,15 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
                 <span className={`sev ${SEV[x.priority]}`}>{x.priority}</span>
                 <b>{x.title}</b>
               </div>
-              {x.action && <div className="sugg-a">{x.action}</div>}
+              {x.action && (
+                <div className="sugg-a">
+                  <CiteText text={x.action} cite={cite} />
+                </div>
+              )}
               {x.evidence && (
                 <div className="sugg-e">
                   <span className="nm">the numbers · </span>
-                  {x.evidence}
+                  <CiteText text={x.evidence} cite={cite} />
                 </div>
               )}
               <div className="sugg-f">
@@ -95,6 +113,7 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
           ))}
         </ol>
       )}
+      {cite && <Sources ctx={cite} />}
     </>
   );
 }
@@ -218,8 +237,9 @@ export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto 
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // a suggestion's "ask about this": a question in the box, ready to send
+  // without its citations: they name the suggestions' snapshot, not the next one
   const followUp = (x: OperatorSuggestion) => {
-    setDraft(`Tell me more about this suggestion: “${x.title}”${x.evidence ? ` (${x.evidence})` : ''}. `);
+    setDraft(`Tell me more about this suggestion: “${x.title}”${x.evidence ? ` (${stripCites(x.evidence)})` : ''}. `);
     inputRef.current?.focus();
     inputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   };

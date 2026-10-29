@@ -16,7 +16,10 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError, getAskJob, postAsk } from '../api/client';
 import type { AskContext, AskInfo, AskJob, AskPart, Cls } from '../api/types';
+import { refsOf } from '../lib/cites';
 import type { Who } from '../lib/filters';
+import { CiteMark, Sources, citeCtx } from './Cite';
+import type { CiteCtx } from './Cite';
 import '../tabs/chat.css';
 
 /* ----------------------------------------------------------- the scope */
@@ -50,32 +53,50 @@ export const canAsk = (info: AskInfo | null) => !!info && info.enabled && info.a
 /* ------------------------------------------------------------ markdown */
 
 /* A small, safe markdown subset -- paragraphs, bullet and numbered lists,
- * **bold**, and `code` -- built as elements, never as HTML. */
-function inline(text: string): ReactNode[] {
+ * **bold**, and `code` -- built as elements, never as HTML. With `cite`, a
+ * bracket of refs (`[b7]`, `[b7, c2]`) is a chip per source (Cite.tsx);
+ * without, an answer from before citations reads as it was written. */
+function inline(text: string, cite?: CiteCtx | null): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`|\[([a-z]{1,2}\d{1,5}(?:\s*[,;]\s*[a-z]{1,2}\d{1,5})*)\]/g;
   let at = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
+    if (m[3] != null && !cite) continue;
     if (m.index > at) out.push(text.slice(at, m.index));
-    out.push(m[1] != null ? <b key={m.index}>{m[1]}</b> : <code key={m.index}>{m[2]}</code>);
+    if (m[1] != null) out.push(<b key={m.index}>{inline(m[1], cite)}</b>);
+    else if (m[2] != null) out.push(<code key={m.index}>{m[2]}</code>);
+    else {
+      out.push(
+        <span key={m.index} className="cites">
+          {refsOf(m[3]).map((r) => (
+            <CiteMark key={r} r={r} ctx={cite!} />
+          ))}
+        </span>,
+      );
+    }
     at = m.index + m[0].length;
   }
   if (at < text.length) out.push(text.slice(at));
   return out;
 }
 
-export function Md({ text }: { text: string }) {
+/** One line of an answer, its citations as chips: a suggestion's fields. */
+export function CiteText({ text, cite }: { text: string; cite?: CiteCtx | null }) {
+  return <>{inline(text, cite)}</>;
+}
+
+export function Md({ text, cite }: { text: string; cite?: CiteCtx | null }) {
   const blocks: ReactNode[] = [];
   let list: { ordered: boolean; items: string[] } | null = null;
   let para: string[] = [];
   const flushPara = () => {
-    if (para.length) blocks.push(<p key={blocks.length}>{inline(para.join(' '))}</p>);
+    if (para.length) blocks.push(<p key={blocks.length}>{inline(para.join(' '), cite)}</p>);
     para = [];
   };
   const flushList = () => {
     if (list) {
-      const items = list.items.map((t, i) => <li key={i}>{inline(t)}</li>);
+      const items = list.items.map((t, i) => <li key={i}>{inline(t, cite)}</li>);
       blocks.push(list.ordered ? <ol key={blocks.length}>{items}</ol> : <ul key={blocks.length}>{items}</ul>);
     }
     list = null;
@@ -174,14 +195,19 @@ export function useAskThread(key: string) {
   return { turns, setTurns, send, err, busy: pending.length > 0 };
 }
 
-/** One question and its answer, as the thread shows it. */
+/** One question and its answer, as the thread shows it: the answer's
+ *  citations as chips, and its sources under it. */
 export function Turn({ t, scope }: { t: AskJob; scope?: string }) {
+  const cite = t.state === 'done' ? citeCtx(t, [t.answer]) : null;
   return (
     <div className="turn">
       <div className="q">{t.question}</div>
       <div className="a">
         {t.state === 'done' ? (
-          <Md text={t.answer ?? ''} />
+          <>
+            <Md text={t.answer ?? ''} cite={cite} />
+            {cite && <Sources ctx={cite} />}
+          </>
         ) : t.state === 'error' ? (
           <span className="chat-err">{t.error}</span>
         ) : (
