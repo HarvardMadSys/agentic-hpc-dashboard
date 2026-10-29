@@ -83,10 +83,12 @@ def code_digest():
 def fingerprint(code, cfg, roots):
     """16 hex chars naming the code, config and feed a saved state belongs to.
 
-    Not `anonymize` (names are masked on the way out, after the reducers) and
-    not `ui` (what the page opens on): neither changes anything a saved state
-    holds, so switching them is a restart, not a rebuild."""
-    tree = {k: v for k, v in cfg.as_dict().items() if k not in ("server", "anonymize", "ui")}
+    Not `anonymize` (names are masked on the way out, after the reducers), not
+    `ui` (what the page opens on), and not `ask` (a question reads a built
+    view, it never builds one): none changes anything a saved state holds, so
+    switching them is a restart, not a rebuild."""
+    tree = {k: v for k, v in cfg.as_dict().items()
+            if k not in ("server", "anonymize", "ui", "ask")}
     blob = json.dumps([code, tree, list(roots)], sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
