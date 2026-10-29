@@ -235,6 +235,12 @@ def plan_span(files, lo, prev=None):
     within a poll round; and never later than where the previous hour's read
     of the same file stopped (`prev`), so every byte of a file is read by some
     hour -- the records a host wrote late are found, not skipped over.
+
+    A day the collector compressed since that read (`x.jsonl` is now
+    `x.jsonl.gz`) is the same bytes under a new name and inode, at the same
+    uncompressed offsets: it is matched to the read of its plain name by its
+    head alone. Unmatched, the slack before `lo` -- records the previous hour
+    already took -- would be taken again as late arrivals for it.
     """
     out = []
     for p in files:
@@ -248,9 +254,10 @@ def plan_span(files, lo, prev=None):
                 start = seek_to_epoch(fh, lo - SCAN_SLACK_S, size)
         except OSError:
             continue
-        pv = (prev or {}).get(p)
-        if pv and (pv["dev"], pv["ino"], pv["head_n"], pv["head"]) == \
-                (e["dev"], e["ino"], e["head_n"], e["head"]) and pv["stop"] <= size:
+        pv, same = (prev or {}).get(p), ("dev", "ino", "head_n", "head")
+        if pv is None and gz.is_gz(p):
+            pv, same = (prev or {}).get(gz.plain_name(p)), ("head_n", "head")
+        if pv and all(pv[k] == e[k] for k in same) and pv["stop"] <= size:
             e["prev_stop"] = pv["stop"]
             start = min(start, pv["stop"])
         e["start"] = e["stop"] = start
@@ -644,9 +651,10 @@ class HourStore:
             meta = self.meta(h)
             # Where each record it took sits: an hour read again (the seam
             # after a fresh start, a file lost) meets the same records again,
-            # and must not merge them twice.
-            done = {(p, o) for p, o in (meta or {}).get("patched", ())}
-            recs = [x for x in recs if (x[2], x[3]) not in done]
+            # and must not merge them twice. By plain name: a day compressed
+            # since holds them at the same offsets in its `.gz`.
+            done = {(gz.plain_name(p), o) for p, o in (meta or {}).get("patched", ())}
+            recs = [x for x in recs if (gz.plain_name(x[2]), x[3]) not in done]
             if not recs:
                 continue
             red = self.load("h", h)
@@ -662,7 +670,7 @@ class HourStore:
                 if hasattr(r, "bin_s"):
                     r.bin_s = HOUR_BIN_S
             meta = dict(meta, stragglers=meta.get("stragglers", 0) + n,
-                        patched=list(done) + [(x[2], x[3]) for x in recs],
+                        patched=list(done) + [(gz.plain_name(x[2]), x[3]) for x in recs],
                         records=meta.get("records", 0) + n,
                         newest=max(x for x in (meta.get("newest"), newest) if x is not None),
                         patched_at=time.time())

@@ -20,14 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import clock, gz                      # noqa: E402
+from rc_dashboard.aggregator import Aggregator          # noqa: E402
 from rc_dashboard.export import (dated_dirs, feed_files, iter_lines_reverse,  # noqa: E402
                                  make_predicate, parse_filters, resume_plan, scan,
                                  seek_to_epoch, window_plan, window_scan)
 from rc_dashboard.feeds import host_of                  # noqa: E402
 from rc_dashboard.normalize import Normalizer           # noqa: E402
-from rc_dashboard.tail import FileTailSource            # noqa: E402
+from rc_dashboard.tail import FileTailSource, read_back  # noqa: E402
 from rc_dashboard.windows import EVENTS                 # noqa: E402
-from test_ingest import DAY, FeedCase, exit_rec, line   # noqa: E402
+from test_ingest import DAY, NONE, FeedCase, exit_rec, line   # noqa: E402
 
 
 def payload(n, seed):
@@ -181,6 +182,109 @@ class CompressedFeed(FeedCase):
         # a 1 h window plans 2 days; two empty newer dirs once left it none
         plan, _ = window_plan([self.zroot], self.now - 3600, 2)
         self.assertEqual(len(plan), 1)
+
+
+class CompressedUnderTheTail(FeedCase):
+    """A day the tail was following as plain JSONL, compressed in place at the
+    rollover (`FeedCase.compress`). Where the tail stopped in the `.jsonl` is
+    where it takes up the `.jsonl.gz`: no record read twice, none skipped."""
+
+    def setUp(self):
+        super().setUp()
+        gz._indexes.clear()
+        self.recs = [exit_rec(self.now - 600 + 60 * i, pid=i) for i in range(8)]
+
+    def tearDown(self):
+        gz._indexes.clear()
+        super().tearDown()
+
+    @staticmethod
+    def pids(recs):
+        return [r["pid"] for r in recs]
+
+    def test_a_day_read_then_compressed_is_not_read_again(self):
+        self.append("h1.exits.jsonl", self.recs[:5])
+        src = FileTailSource([self.root])
+        self.assertEqual(self.pids(src.poll()), [0, 1, 2, 3, 4])
+        self.compress("h1.exits.jsonl")
+        # a `.gz` the tail never followed as plain JSONL is new: read whole
+        self.append("h2.exits.jsonl", [exit_rec(self.now - 30, pid=99, host="h2")])
+        self.compress("h2.exits.jsonl")
+        self.assertEqual(self.pids(src.poll()), [99])
+        self.assertEqual(self.pids(src.poll()), [])
+
+    def test_lines_written_just_before_the_compression_arrive_once(self):
+        # The day's last poll round lands after the tail's last read -- half
+        # of its first line was there already -- and the day is sealed and
+        # compressed before the tail looks again.
+        sixth = line(self.recs[5])
+        self.append("h1.exits.jsonl", self.recs[:5], raw=sixth[:20])
+        src = FileTailSource([self.root])
+        self.assertEqual(self.pids(src.poll()), [0, 1, 2, 3, 4])
+        self.append("h1.exits.jsonl", [],
+                    raw=sixth[20:] + line(self.recs[6]) + line(self.recs[7]))
+        self.compress("h1.exits.jsonl")
+        self.assertEqual(self.pids(src.poll()), [5, 6, 7])
+        self.assertEqual(self.pids(src.poll()), [])
+
+    def test_a_compression_while_a_read_is_handed_out_loses_no_offset(self):
+        # gzip can finish between the tail's read of the plain file and its
+        # noting how far that read got.
+        self.append("h1.exits.jsonl", self.recs[:5])
+        src = FileTailSource([self.root])
+        poll = src.poll()
+        got = [next(poll)["pid"]]
+        self.compress("h1.exits.jsonl")
+        got += self.pids(poll)
+        self.assertEqual(got, [0, 1, 2, 3, 4])
+        self.assertEqual(self.pids(src.poll()), [])
+
+    def test_a_prune_between_the_compression_and_the_next_poll_keeps_the_offset(self):
+        # `poll_once` polls, then prunes: a day compressed in between has left
+        # the listing before the tail has met its `.gz`.
+        self.append("h1.exits.jsonl", self.recs[:5])
+        src = FileTailSource([self.root])
+        list(src.poll())
+        self.append("h1.exits.jsonl", self.recs[5:])
+        self.compress("h1.exits.jsonl")
+        src.prune_state()
+        self.assertEqual(self.pids(src.poll()), [5, 6, 7])
+        src.prune_state()                  # the plain name is followed no more
+        self.assertEqual(list(src.state), [self.path("h1.exits.jsonl.gz")])
+
+    def test_a_day_compressed_after_positioning_is_read_back_and_followed_once(self):
+        # A start just after midnight: the tail is handed yesterday as plain
+        # JSONL, and the compression lands before the read-back opens it.
+        self.append("h1.exits.jsonl", self.recs[:5])
+        src = FileTailSource([self.root])
+        plan = src.position(self.now - 3600)
+        self.append("h1.exits.jsonl", self.recs[5:])
+        self.compress("h1.exits.jsonl")
+        stats = {"bytes": 0, "parse_errors": 0}
+        self.assertEqual(self.pids(raw for _ts, raw in read_back(plan, stats)),
+                         [4, 3, 2, 1, 0])
+        self.assertEqual(self.pids(src.poll()), [5, 6, 7])
+        self.assertEqual(self.pids(src.poll()), [])
+
+    def test_a_gz_shorter_than_where_the_tail_was_is_read_from_its_start(self):
+        # Not the bytes the tail was reading: like a truncated file, read again.
+        self.append("h1.exits.jsonl", self.recs[:5])
+        src = FileTailSource([self.root])
+        list(src.poll())
+        os.unlink(self.path("h1.exits.jsonl"))
+        self.append("h1.exits.jsonl", self.recs[6:])
+        self.compress("h1.exits.jsonl")
+        self.assertEqual(self.pids(src.poll()), [6, 7])
+        self.assertEqual(src.stats["resets"], 1)
+
+    def test_the_live_tier_counts_a_compressed_day_once(self):
+        self.append("h1.exits.jsonl", self.thirty_exits())
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        agg.poll_once()
+        self.compress("h1.exits.jsonl")
+        agg.poll_once()
+        self.assertEqual(self.events(agg), dict(NONE, agent=20, human=10))
 
 
 class BoundedScan(CompressedFeed):
