@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
-from test_ingest import FeedCase                  # noqa: E402
+from test_ingest import DAY, FeedCase             # noqa: E402
 import test_merge as TM                           # noqa: E402
 
 HOUR = 3600
@@ -49,12 +49,12 @@ class HourCase(FeedCase):
         self.clock.stop()
         super().tearDown()
 
-    def write(self, recs):
+    def write(self, recs, day=DAY):
         by_host = {}
         for r in recs:
             by_host.setdefault(r["host"], []).append(r)
         for host, rs in by_host.items():
-            self.append("%s.jsonl" % host, rs)
+            self.append("%s.jsonl" % host, rs, day=day)
 
     def cfg(self, merge=True, **panels):
         c = super().cfg()
@@ -198,6 +198,58 @@ class LateRecordTest(HourCase):
         for key in ("facets", "io_process", "risk", "resources", "tool_mix"):
             with self.subTest(reducer=key):
                 self.assertEqual(TM.diff(want[key], got[key]), [])
+
+
+class CompressedDayTest(HourCase):
+    """At the rollover the collector compresses the day that closed in place
+    (`FeedCase.compress`): the same bytes under a new name and a new inode. An
+    hour read after that must still know where the hour before it stopped."""
+
+    NEXT = "2026-09-26"
+
+    def compress_day(self):
+        for name in os.listdir(os.path.join(self.root, DAY)):
+            self.compress(name)
+
+    def test_a_day_compressed_between_two_hours_is_counted_once(self):
+        # Hours reduced through the newest closed one from the plain files;
+        # then midnight: the day is compressed, the next day's files go on.
+        self.write(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR))
+        reg = self.registry(self.cfg())
+        self.assertEqual(self.build(reg, 300).cache["source"], "hours")
+        last = reg.hours.chain[0]
+        self.compress_day()
+        self.write(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9), day=self.NEXT)
+        view = self.build(reg, 300)
+        self.assertGreater(reg.hours.chain[0], last)
+        # The next hour's read starts SCAN_SLACK_S early, in records the hour
+        # before already took: they are not late arrivals for it.
+        self.assertEqual(reg.hours.meta(last)["stragglers"], 0)
+        got = self.payload(view)
+        want = self.payload(self.build(self.registry(self.cfg(merge=False)), 300))
+        # Two batches from one generator: these two join across their seam
+        # differently in a merge and in a scan with no compression at all.
+        for key in sorted(set(want) - {"_procs", "trajectories"}):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(want[key], got[key]), [])
+
+    def test_a_late_record_met_again_after_its_day_was_compressed_is_taken_once(self):
+        # LateRecordTest's late record, merged into its hour from the plain
+        # file; then the day is compressed and the hour after read again.
+        self.write(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR))
+        reg = self.registry(self.cfg())
+        self.build(reg, 300)
+        late_t = NOW - 3 * HOUR + 120
+        late = TM.plain("exit", late_t, 999999, 1, "pip", "pip install late",
+                        user="erin")
+        self.write([late] + gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9))
+        self.build(reg, 300)
+        store, h = reg.hours, int(late_t // HOUR)
+        self.assertEqual(store.meta(h)["stragglers"], 1)
+        self.compress_day()
+        store._drop("h", h + 1)
+        store.ensure([self.root], h + 1, h + 2)
+        self.assertEqual(store.meta(h)["stragglers"], 1)
 
 
 class AdvanceTest(HourCase):

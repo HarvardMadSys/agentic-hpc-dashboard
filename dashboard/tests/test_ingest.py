@@ -7,6 +7,7 @@ through the calls `app.py` makes.
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import gzip
 import json
 import os
 import shutil
@@ -63,14 +64,25 @@ class FeedCase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def path(self, name):
-        return os.path.join(self.root, DAY, name)
+    def path(self, name, day=DAY):
+        return os.path.join(self.root, day, name)
 
-    def append(self, name, recs, raw=b""):
-        with open(self.path(name), "ab") as fh:
+    def append(self, name, recs, raw=b"", day=DAY):
+        os.makedirs(os.path.join(self.root, day), exist_ok=True)
+        with open(self.path(name, day), "ab") as fh:
             for r in recs:
                 fh.write(line(r))
             fh.write(raw)
+
+    def compress(self, name, day=DAY):
+        """What the collector does to a sealed day (`_compress_day`, `gzip -f`):
+        the `.gz` written beside the file, then the file unlinked -- the same
+        bytes under a new name and a new inode."""
+        p = self.path(name, day)
+        with open(p, "rb") as src, gzip.open(p + ".gz", "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(p, p + ".gz")
+        os.unlink(p)
 
     def cfg(self, **live):
         tree = configmod.defaults()
