@@ -17,9 +17,10 @@ A snapshot is used only when all of these hold, and is otherwise ignored and the
 window scanned as before:
 
 * **Same code and config.** The fingerprint covers the reducers, the normaliser,
-  the scan, this module, the optional `analyze/` helpers they import, and every
-  config key outside `server`. Changing how a record is counted must never
-  resume a reduction counted the old way.
+  the scan, this module, the modules they count a record with (`CODE_FILES`),
+  the optional `analyze/` helpers they import, and every config key outside
+  `server`. Changing how a record is counted must never resume a reduction
+  counted the old way.
 * **Same files.** Every file it read is still there, the same inode with the
   same first 4 KB, at least as long, with a line ending at the saved offset.
 * **Inside the window's drift budget** (`panels.max_drift_pct`), measured from
@@ -52,8 +53,13 @@ import time
 
 FORMAT = 1
 PKG = os.path.dirname(os.path.abspath(__file__))
-# Everything that decides what a reducer's state means.
-CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py", "redact.py")
+# Everything that decides what a reducer's state means: with the scan and the
+# normaliser, the modules they and the reducers count a record with -- which
+# processes are sessions (roles.py), whose session a key is (procindex.py), and
+# the rest hours.py fingerprints for an hour. Not hours.py itself: a saved build
+# is a scan's, never the hours'.
+CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py", "redact.py",
+              "roles.py", "procindex.py", "proctree.py", "tool_buckets.py", "fastjson.py")
 HELPER_MODULES = ("agent_lib", "tool_bucket_lib", "purpose_lib", "deep_traj_lib")
 
 

@@ -8,7 +8,9 @@ build and nothing races it.
 """
 import os
 import pickle
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -277,6 +279,32 @@ class RoundTripTest(CacheCase):
                                      pickle.loads(snapshots.capture(view.reducers)))
         for key, r in view.reducers.items():
             self.assertEqual(restored[key].result(), r.result(), key)
+
+
+class FingerprintTest(unittest.TestCase):
+
+    def test_a_change_to_the_roles_is_a_change_of_code(self):
+        # roles.py decides which processes are sessions, so a build saved under
+        # the old roles must not resume under new ones. Only the hours held it
+        # in their fingerprint, and a filtered view resumes a saved build,
+        # never the hours.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        pkg = os.path.join(tmp, "rc_dashboard")
+        shutil.copytree(snapshots.PKG, pkg, ignore=shutil.ignore_patterns("__pycache__"))
+        self.addCleanup(setattr, snapshots, "PKG", snapshots.PKG)
+        snapshots.PKG = pkg
+        before = snapshots.code_digest()
+        with open(os.path.join(pkg, "roles.py"), "a") as fh:
+            fh.write("\n# one more helper flag\n")
+        self.assertNotEqual(snapshots.code_digest(), before)
+
+    def test_what_decides_an_hour_decides_a_saved_build(self):
+        # A saved build and a saved hour hold the state of the same normaliser
+        # and reducers, so a module that changes what an hour means changes
+        # what a saved build means. hours.py itself decides only the hours.
+        from rc_dashboard import hours
+        self.assertEqual(set(hours.CODE_FILES) - set(snapshots.CODE_FILES), {"hours.py"})
 
 
 if __name__ == "__main__":
