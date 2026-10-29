@@ -17,12 +17,18 @@
  * lands on, scroll the tree to it and light it up, and say on the line under
  * the quick jumps what it landed on -- the process itself, or the row that
  * counts it when it is counted rather than drawn.
+ *
+ * Oldest first or newest first (`?torder=`) is asked of the service, not
+ * sorted here: the read's budgets keep one end drawn and count the other, and
+ * newest first moves them to keep the newest (rc_dashboard/proctree.py). A
+ * page-side reverse would put at the top the processes the service had only
+ * counted. The order the tree came in (`order`) is the one jumps go by.
  */
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { sessionName } from '../lib/sessions';
 import type { ReactNode } from 'react';
 import { useTrajectory } from '../api/hooks';
-import type { OwnerVia, ProcNode, TrajRow, TrajectoryDetail } from '../api/types';
+import type { OwnerVia, ProcNode, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
 import { PROC_LINKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import {
@@ -278,6 +284,7 @@ function ReadLine({
   const b = d.bounds;
   if (!s || !b) return null;
   const links = PROC_LINKS.filter((k) => k !== 'ppid' && d.links?.[k]);
+  const newest = d.order === 'newest';
   return (
     <div className="ins-read">
       <div>
@@ -316,7 +323,7 @@ function ReadLine({
               s.stopped === 'records' ? `${fint(b.max_records)}-record` : `${bytes(b.max_bytes)}`
             } budget: this tree covers ${clock(s.first)}–${clock(s.stopped_at)} of a session that ran ${clock(
               d.span?.first,
-            )}–${clock(d.span?.last)}`}
+            )}–${clock(d.span?.last)}${newest ? ', so its newest are the newest read, not the session’s' : ''}`}
           </span>
           {s.stopped_at != null && (
             <button className="btn primary" onClick={() => setFrom(s.stopped_at)}>
@@ -335,14 +342,20 @@ function ReadLine({
       )}
       {b.counted > 0 && (
         <div className="ins-bound soft">
-          {`${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): past ${fint(
-            b.per_parent,
-          )} childless processes of one command under one parent, or ${fint(b.hold)} in all`}
+          {newest
+            ? `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the oldest, past the newest ${fint(
+                b.hold,
+              )} in all or the newest ${fint(b.per_parent)} childless processes of one command under one parent`
+            : `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): past ${fint(
+                b.per_parent,
+              )} childless processes of one command under one parent, or ${fint(b.hold)} in all`}
         </div>
       )}
       {b.elided > 0 && (
         <div className="ins-bound soft">
-          {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget, allotted breadth first: counted in ⋯ rows at the deepest levels`}
+          {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget, allotted breadth first${
+            newest ? ' and newest first: counted in ⋯ rows at the deepest levels of the oldest' : ': counted in ⋯ rows at the deepest levels'
+          }`}
         </div>
       )}
     </div>
@@ -369,6 +382,8 @@ export function TrajectoryInspector({
   win,
   from,
   setFrom,
+  order = 'oldest',
+  setOrder,
   onClose,
   jump,
   routine,
@@ -379,6 +394,9 @@ export function TrajectoryInspector({
   win: number | null;
   from: number | null;
   setFrom: (t: number | null) => void;
+  /** which end of the session is listed first and drawn in full */
+  order?: TrajOrder;
+  setOrder?: (o: TrajOrder) => void;
   onClose: () => void;
   /** a run picked in the ranked table; `n` changes with every pick */
   jump?: RunJump | null;
@@ -392,10 +410,12 @@ export function TrajectoryInspector({
     setTo(null);
     setFrom(t);
   };
-  const q = useTrajectory(sid, win, from, to);
+  const q = useTrajectory(sid, win, from, to, order);
   const d = q.data && q.data.sid === sid && !q.loading ? q.data : null;
   const elapsed = useElapsed(q.loading);
   const tree: ProcNode | null = d?.found ? (d.tree ?? null) : null;
+  // the order the rows came in, which a service predating `order` leaves oldest
+  const newest = d?.order === 'newest';
   const [open, setOpen] = useState<Set<string>>(() => new Set(['r']));
   // The tree view (roadmap notes 38 and 39): boxes, opened from the top. Both
   // views take the routine out unless asked not to; a jump that lands on a
@@ -494,7 +514,7 @@ export function TrajectoryInspector({
       w = failReq(i) ?? w;
     }
     setWant(null);
-    const found = locate(index, w);
+    const found = locate(index, w, newest);
     if (!found) {
       setNote(`${w.what}: nothing in the tree to land on`);
       return;
@@ -697,6 +717,28 @@ export function TrajectoryInspector({
                     { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline; landmarks and the strip jump here' },
                   ]}
                 />
+                {setOrder && (
+                  <Segmented
+                    value={order}
+                    onChange={setOrder}
+                    options={[
+                      {
+                        k: 'oldest',
+                        lbl: 'oldest first',
+                        tip:
+                          "each process's children by when they started, the first at the top. In a busy session " +
+                          'the newest are the ones counted in ⋯ rows rather than drawn',
+                      },
+                      {
+                        k: 'newest',
+                        lbl: 'newest first',
+                        tip:
+                          "each process's children by when they started, the latest at the top. The service reads " +
+                          'on to the session’s end and draws the newest in full; the oldest are the ones counted in ⋯ rows',
+                      },
+                    ]}
+                  />
+                )}
                 <button className="btn" onClick={() => (mode === 'tree' ? setDopen(allOpen(tree)) : setOpen(allOpen(tree)))}
                   data-tip="open every process the read served">
                   expand all
@@ -706,7 +748,7 @@ export function TrajectoryInspector({
                 </button>
                 <a
                   className="btn"
-                  href={treePopHref(sid, win, from, hide)}
+                  href={treePopHref(sid, win, from, hide, order)}
                   target="_blank"
                   rel="noopener"
                   data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
@@ -792,7 +834,17 @@ export function TrajectoryInspector({
           <ProcDiagram key={hide ? 'hide' : 'all'} root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
         )}
         {tree && mode === 'table' && (
-          <ProcTree root={tree} open={open} setOpen={setOpen} timeline={d?.timeline} view={treeView} flash={flash} hide={hide ? rules : null} />
+          <ProcTree
+            root={tree}
+            open={open}
+            setOpen={setOpen}
+            timeline={d?.timeline}
+            view={treeView}
+            flash={flash}
+            hide={hide ? rules : null}
+            newest={newest}
+            onOrder={setOrder}
+          />
         )}
         {tree && (
           <div className="pt-legend">

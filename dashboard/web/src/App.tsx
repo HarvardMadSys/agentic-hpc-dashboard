@@ -282,6 +282,8 @@ export default function App() {
             select={(sid) => setUrl({ traj: sid, tfrom: null }, true)}
             tfrom={url.tfrom}
             setTfrom={(t) => setUrl({ tfrom: t }, true)}
+            torder={url.torder}
+            setTorder={(o) => setUrl({ torder: o })}
             tuser={url.tuser}
             clearUser={() => setUrl({ tuser: null })}
             routine={

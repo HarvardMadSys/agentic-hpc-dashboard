@@ -472,9 +472,18 @@ function Details({
 /* ------------------------------------------------------------------ page */
 
 export default function TreePopout() {
-  const [u] = useState(() => readTreePop(window.location.search) ?? { sid: null, win: null, from: null, hide: true });
+  const [u] = useState(
+    () =>
+      readTreePop(window.location.search) ?? {
+        sid: null,
+        win: null,
+        from: null,
+        hide: true,
+        order: 'oldest' as const,
+      },
+  );
   const [to, setTo] = useState<number | null>(null);
-  const q = useTrajectory(u.sid, u.win, u.from, to);
+  const q = useTrajectory(u.sid, u.win, u.from, to, u.order);
   const config = useConfig();
   const routine = (config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.routine_commands?._value as
     | string[]
@@ -808,7 +817,7 @@ export default function TreePopout() {
           {d?.row && <span className="tp-sub">{`${d.row.user} · ${d.row.host}`}</span>}
           {scan && (
             <span className="tp-sub" data-tip={scan.stopped ? `the read stopped at its ${scan.stopped} budget` : undefined}>
-              {`read ${stamp(scan.first ?? scan.from)} → ${stamp(scan.last ?? scan.to)} · ${fint(scan.records)} records${scan.stopped ? ' · stopped at its budget' : ''}`}
+              {`read ${stamp(scan.first ?? scan.from)} → ${stamp(scan.last ?? scan.to)} · ${fint(scan.records)} records${scan.stopped ? ' · stopped at its budget' : ''}${d?.order === 'newest' ? ' · newest first' : ''}`}
             </span>
           )}
           <span className="tp-sp" />

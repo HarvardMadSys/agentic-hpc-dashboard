@@ -556,6 +556,10 @@ export const TRAJ_RANKS: TrajRank[] = [
   'distinct_tools',
 ];
 
+/** Which end of a session the inspector lists first, and draws in full
+ *  (`ORDERS` in rc_dashboard/proctree.py). */
+export type TrajOrder = 'oldest' | 'newest';
+
 /** A session whose agent is running now (`aggregator._running_rows`). */
 export interface TrajRunning {
   /** the agent's own newest record */
@@ -776,6 +780,8 @@ export interface TrajectoryDetail extends PanelEnvelope {
   host?: string;
   owner_pid?: number | null;
   keys?: number;
+  /** the order the tree was served in; absent from a service that predates it */
+  order?: TrajOrder;
   window?: WindowSpec;
   span?: { first: number | null; last: number | null };
   scan?: {

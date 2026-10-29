@@ -177,6 +177,19 @@ table.tj-table td .sub {
 .pt-head > div:first-child {
   padding-left: 8px;
 }
+/* "started" is the order the rows are in, and flips it as a sortable header would */
+.pt-head .sort-arrow {
+  margin-left: 3px;
+  font-size: 8px;
+  color: var(--ink-2);
+}
+.pt-head .pt-sort {
+  cursor: pointer;
+  user-select: none;
+}
+.pt-head .pt-sort:hover {
+  color: var(--ink);
+}
 .pt-row:hover {
   background: var(--surface-2);
 }

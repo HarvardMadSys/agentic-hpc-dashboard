@@ -283,7 +283,7 @@ scanned.
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way |
-| `GET /api/trajectory?sid=&window_min=&from=` | one session as a **process tree**, re-read on demand (below) |
+| `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
@@ -306,6 +306,15 @@ counted groups. Every bound is in the response, never applied quietly: the read 
 counted under their parent, and `inspect_nodes` (6 000) rows are served breadth first with the rest
 counted. Command lines are masked (`redact.py`) and then cut to 220 characters. One read runs at
 a time and is served again for a minute.
+
+Each of those bounds keeps one end of the session and counts the other, and by default all of
+them keep the **oldest**, the order the records arrive in. `order=newest` moves every one of them
+rather than sorting the result. Siblings are listed latest start first, and the rows are served
+breadth first in that order, so the row budget cuts the deep end of the oldest subtrees. A process
+that finds the hold full, or its command's quota under one parent, is drawn anyway, and the oldest
+drawn one is counted under its parent in its place. The read goes on to the session's end, up to
+`inspect_newest_records` (600 000): however much it reads, it keeps only the newest
+`inspect_hold` drawn, so that budget bounds time alone. Totals are the same in either order.
 
 Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
 `from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox

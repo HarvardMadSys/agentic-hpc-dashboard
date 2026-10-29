@@ -13,7 +13,7 @@
  */
 import { CLS } from './classes';
 import { serverNow } from './clock';
-import type { Cls, TrajRank } from '../api/types';
+import type { Cls, TrajOrder, TrajRank } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
 
 /** Scalar filter params, in the order the backend documents them. */
@@ -46,7 +46,7 @@ export type ScalarKey = (typeof SCALAR_KEYS)[number];
  * keys, and `UI_OMIT_AT` below is a mapped type over them, so adding a key here
  * without deciding what value omits it is a compile error.
  */
-export const UI_KEYS = ['tab', 'rank', 'win', 'traj', 'tfrom', 'tuser'] as const;
+export const UI_KEYS = ['tab', 'rank', 'win', 'traj', 'tfrom', 'tuser', 'torder'] as const;
 export type UiKey = (typeof UI_KEYS)[number];
 
 /** The page-wide user and agent-type filter; empty lists are everyone. */
@@ -80,6 +80,9 @@ export interface UrlState extends Filters {
    *  "trajectories →" (roadmap note 7): a view, not a filter, so nothing is
    *  rebuilt for it. */
   tuser: string | null;
+  /** Which end of a session the inspector lists first and draws in full. It
+   *  stays as other sessions are opened: it is how this reader reads them. */
+  torder: TrajOrder;
 }
 
 /** The value at which each UI key is left out of the URL, so a default-valued
@@ -91,6 +94,7 @@ const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
   traj: null,
   tfrom: null,
   tuser: null,
+  torder: 'oldest',
 };
 
 // A saved link ranked by a ranking since removed (`chain_runs`) opens on the default.
@@ -153,6 +157,7 @@ export function parseUrl(search: string): UrlState {
     traj: p.get('traj') || null,
     tfrom: Number.isFinite(tfrom) && tfrom > 0 ? tfrom : null,
     tuser: p.get('tuser') || null,
+    torder: p.get('torder') === 'newest' ? 'newest' : 'oldest',
   };
 }
 

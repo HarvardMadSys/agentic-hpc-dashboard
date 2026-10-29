@@ -7,6 +7,7 @@ import type {
   ConfigTree,
   FeedsResponse,
   PanelsResponse,
+  TrajOrder,
   TrajRank,
   Trajectories,
   TrajectoryDetail,
@@ -142,12 +143,14 @@ export const useTrajectory = (
   win: number | null,
   from: number | null,
   to: number | null = null,
+  order: TrajOrder = 'oldest',
 ): Async<TrajectoryDetail | null> =>
-  useFetched((s) => (sid ? getTrajectory(sid, win, from, s, to) : Promise.resolve(null)), [
+  useFetched((s) => (sid ? getTrajectory(sid, win, from, s, to, order) : Promise.resolve(null)), [
     sid,
     win,
     from,
     to,
+    order,
   ]);
 
 /** `/api/feeds` also arrives over the websocket; `seed` lets the WS overwrite it. */

@@ -26,7 +26,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { Async } from '../api/hooks';
-import type { Cls, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
+import type { Cls, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import { Panel } from '../components/Panel';
@@ -152,6 +152,8 @@ export function TrajectoriesTab({
   select,
   tfrom,
   setTfrom,
+  torder = 'oldest',
+  setTorder = () => {},
   tuser = null,
   clearUser = () => {},
   routine = null,
@@ -167,6 +169,9 @@ export function TrajectoriesTab({
   select: (sid: string | null) => void;
   tfrom: number | null;
   setTfrom: (t: number | null) => void;
+  /** which end of a session the inspector lists first and draws in full */
+  torder?: TrajOrder;
+  setTorder?: (o: TrajOrder) => void;
   /** open on this user's sessions (from Active users' "trajectories →") */
   tuser?: string | null;
   clearUser?: () => void;
@@ -359,6 +364,8 @@ export function TrajectoriesTab({
               win={win}
               from={tfrom}
               setFrom={setTfrom}
+              order={torder}
+              setOrder={setTorder}
               onClose={() => open(null)}
               jump={jump?.sid === sel ? jump.j : null}
               routine={routine}

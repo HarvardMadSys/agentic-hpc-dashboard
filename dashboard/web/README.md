@@ -164,7 +164,7 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 | **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
 | **I/O** (`?tab=io`) | `io_process`, `resources` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
 | **Sandbox** | `sandbox` | namespace isolation × approval at launch as independent axes; tool-call outcomes per session (isolated / not / **sandbox attempt failed**), wrapper calls by outcome, launch flags as written, the `ancestry_matrix` by wrapper vs process with `reading` surfaced |
-| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree |
+| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |
 | **Agents** | `cascades` | agent and subagent behaviour (`?tab=agents`, `?tab=cascades` still opens it): agent trees deepest first (agent / infra / client nodes, how each parent was found, each agent's home, directories and outside-home writes), agents with **subagents** kept apart from **hosted** sessions (a daemon or server running them); **Workspace & blast radius** per agent with a *this agent only / with its subagents* toggle -- where its processes **ran** (measured), the **bytes** they moved (measured per process), the paths its command lines **named** (inferred, drawn dashed), writes and deletes outside the home flagged by where they landed; depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged |
 | **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
 
@@ -178,8 +178,9 @@ a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels
 
 ### Filters, URL state and export
 
-Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`, and
-`tfrom` when a read was continued past its budget) — lives in the query string, so
+Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`,
+`tfrom` when a read was continued past its budget, and `torder=newest` when it is read newest
+first) — lives in the query string, so
 a reload or a pasted link restores the view. `src/lib/filters.ts` owns the one
 serialisation: `apiQuery()` builds the string sent to **both** `/api/events` and
 `/api/export`, so the download is exactly the view by construction rather than by
