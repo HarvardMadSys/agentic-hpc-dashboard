@@ -91,6 +91,7 @@ export const GLOSS: Record<string, string> = {
   exitedbeforeread: 'exited before read: the process was gone before its namespaces could be read',
   headless: 'headless: an agent running without a terminal, started by a script or a server',
   version: 'version: the agent’s version, read from the program’s path where the path shows it',
+  surface: 'driven from: where an agent session is run from, read off the agent’s own command line. CLI = a terminal, or a script; app = a desktop app, an IDE extension, or the web',
 
   // risk
   credentials: 'credentials in argv: a password or token typed into a command line, where any user on the node can read it with ps; counted, never shown',

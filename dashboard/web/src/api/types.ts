@@ -471,6 +471,11 @@ export type ToolCallOutcome = 'isolated' | 'not_isolated' | 'failed' | 'no_paylo
 /** Read off the session root's own argv; only a role-`agent` process has one. */
 export type ApprovalState = 'bypassed' | 'auto' | 'supervised' | 'unobservable' | 'na' | 'unknown';
 
+/** Where an agent session is driven from, off its own argv
+ *  (`rc_dashboard/normalize.py: SURFACES`). CLI: `terminal`, `script`;
+ *  app: `desktop`, `extension`, `web`. */
+export type Surface = 'terminal' | 'script' | 'desktop' | 'extension' | 'web' | 'unknown';
+
 export interface AncestryRow {
   ancestry: string;
   /** `wrapper` (bwrap / codex-linux-sandbox, read before it unshares) or `process` */
@@ -602,6 +607,10 @@ export interface TrajRow {
   running?: TrajRunning;
   sandbox: SandboxState | null;
   approval: ApprovalState | null;
+  /** its root's; null for a session that is not an agent's */
+  surface?: Surface | null;
+  /** the client or the mode, where the argv names it: `Claude desktop app`, `VS Code` */
+  surface_detail?: string | null;
   sandbox_ancestry: string | null;
   autonomous: boolean | null;
   tool_rle: [string, number][];
@@ -636,6 +645,8 @@ export interface TrajSummary {
   longest: { sid: string; wall_s: number; user: string | null; agent_type: string | null; tool_calls: number } | null;
   /** share of tool calls that only wait: process-table and scheduler polling */
   wait_pct: number | null;
+  /** agent sessions by where each is driven from; null for the other classes */
+  by_surface?: Partial<Record<Surface, number>> | null;
 }
 export interface Trajectories extends PanelEnvelope {
   window: unknown;
@@ -930,6 +941,10 @@ export interface CascadeNode {
   approval_detail?: string | null;
   /** read from the program's path where the path names it */
   version?: string | null;
+  /** where it is driven from, off its own argv (a Codex app-server's is its
+   *  front-end's); null for a node that is not an agent */
+  surface?: Surface | null;
+  surface_detail?: string | null;
   /** its tool calls' verdict, the Sandbox tab's for its session; null: it made none */
   sandbox?: SessionSandboxState | null;
   sandbox_calls?: Partial<Record<ToolCallOutcome, number>> | null;
@@ -1413,6 +1428,9 @@ export interface LiveUserSession {
   sid?: string | null;
   /** read from the program's path where the path names it */
   version?: string | null;
+  /** its root agent's; null when the root is a host (the desktop app's server) */
+  surface?: Surface | null;
+  surface_detail?: string | null;
   /** the most, and the average, resident memory over every tick seen */
   rss_peak_mb?: number | null;
   rss_mean_mb?: number | null;
@@ -1431,6 +1449,8 @@ export interface LiveInnerAgent {
   version: string | null;
   sandbox: string | null;
   epoch: number | null;
+  surface: Surface | null;
+  surface_detail: string | null;
 }
 export interface LiveUserDetail {
   user: string;

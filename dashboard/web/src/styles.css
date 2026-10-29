@@ -1875,6 +1875,33 @@ td.lbl[data-tip] {
 .u-badge.nm {
   color: var(--muted);
 }
+/* Where an agent session is driven from (components/SurfaceChip.tsx): a CLI
+ * outlined, an app filled, and an unknown one dashed, as everything unread is. */
+.surf {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--edge);
+  border-radius: 99px;
+  font: 9.5px/13px 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  white-space: nowrap;
+  cursor: help;
+}
+.surf-g {
+  font-weight: 600;
+}
+.surf-app {
+  background: var(--sunken);
+  border-color: var(--sunken);
+  color: var(--ink);
+}
+.surf-unknown {
+  border-style: dashed;
+  color: var(--muted);
+}
 table tr.u-cls td {
   font-weight: 600;
 }

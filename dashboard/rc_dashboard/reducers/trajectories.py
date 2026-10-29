@@ -78,6 +78,7 @@ MIN_DRIFT_N = 30            # processes; below this the thirds are noise
 DRIFT_CAP = 100000          # per-session processes kept for drift; past it, flagged
 MAX_CWDS = 200000           # distinct cwds interned per window; past it, unmeasured
 REAPED_MAX = 200000         # parents with exited children held for their own exit
+_NO_PARENT = (None, 0, 1)   # a ppid that names no process that started it
 
 
 class Session:
@@ -213,6 +214,16 @@ def _bump(d, k):
     d = d if d is not None else {}
     d[k] = d.get(k, 0) + 1
     return d
+
+
+def _own_surface(table, key, v):
+    """Hold an agent root's [surface, detail, ppid, agent type]: the newest
+    reading, with the first parent seen. A process its parent outlives is
+    reparented to init, and the one that started it is the one that says."""
+    cur = table.get(key)
+    if cur is not None and cur[2] not in _NO_PARENT:
+        v = [v[0], v[1], cur[2], v[3]]
+    table[key] = v
 
 
 def _rle_merge(seq, times, over, bseq, btimes, bover, cap):
@@ -425,6 +436,10 @@ class TrajectoryReducer:
         # (host, agent pid) -> approval, read off the agent's OWN record: the
         # session's approval, whatever its tool calls' records say.
         self.owners = {}
+        # (host, agent pid) -> [surface, detail, ppid, agent type], from the same
+        # record, and from a host's (normalize.surface_of); the ppid is the
+        # first one seen, before any reparenting to init
+        self.surfaces = {}
         self.by_kt = collections.Counter()
         self.evicted = 0
         self.fed = 0
@@ -450,9 +465,17 @@ class TrajectoryReducer:
 
     def feed(self, rec):
         pid = rec.get("pid")
-        if rec.get("_role") == "agent" and rec.get("_a3") == "agent" \
+        role = rec.get("_role")
+        if role in ("agent", "infra") and rec.get("_a3") == "agent" \
                 and pid is not None and pid == rec.get("agent_pid"):
-            self.owners[(rec.get("host"), pid)] = rec.get("_approval") or "unknown"
+            if role == "agent":
+                self.owners[(rec.get("host"), pid)] = rec.get("_approval") or "unknown"
+            # a host is never a session (`rooted`), but a row keyed on it is
+            # driven from where its argv says
+            if role == "agent" or rec.get("_surface") is not None:
+                _own_surface(self.surfaces, (rec.get("host"), pid),
+                             [rec.get("_surface") or "unknown", rec.get("_surface_detail"),
+                              rec.get("ppid"), rec.get("agent_type")])
         if rec.get("event") != "exit":
             return
         io = self.own_io(rec)
@@ -581,6 +604,8 @@ class TrajectoryReducer:
         for kt, n in o.by_kt.items():
             self.by_kt[kt] += n - held.get(kt, 0)
         self.owners.update(o.owners)    # the newest record of a root wins, as in `feed`
+        for key, v in o.surfaces.items():
+            _own_surface(self.surfaces, key, v)
         self.evicted += o.evicted
         self.fed += o.fed
         self.cwd_overflow += o.cwd_overflow
@@ -665,11 +690,13 @@ class TrajectoryReducer:
         for s in live:
             d = acc.setdefault(s.cls, {"sessions": 0, "probes": 0, "calls": [], "wall": [],
                                        "users": collections.Counter(), "wait": 0,
-                                       "longest": None})
+                                       "longest": None, "surfaces": collections.Counter()})
             if not self.rooted(s):
                 d["probes"] += 1
                 continue
             d["sessions"] += 1
+            if s.cls == "agent":
+                d["surfaces"][self.surface_of(s)[0]] += 1
             d["calls"].append(s.n)
             d["users"][s.user] += s.n
             d["wait"] += s.wait
@@ -694,6 +721,8 @@ class TrajectoryReducer:
                 "wall_p90_s": round(q(d["wall"], .9), 1) if d["wall"] else None,
                 "longest": d["longest"],
                 "wait_pct": pct(d["wait"], calls) if calls else None,
+                # agent sessions only: a person's login has no launch surface
+                "by_surface": dict(d["surfaces"]) if cls == "agent" else None,
             }
         return out
 
@@ -705,6 +734,27 @@ class TrajectoryReducer:
             return self.owners.get((s.host, int(s.kv)), "unknown")
         except (TypeError, ValueError):
             return "unknown"
+
+    def surface_of(self, s):
+        """(surface, detail) of an agent session: its root's own, `unknown` when
+        that record was not seen. A Codex app-server whose argv names no client
+        takes the surface of the same agent's process that started it -- the
+        terminal UI it is the front-end of (cascades.py) -- and stays unknown
+        when that is init: a daemon serves whichever client attaches."""
+        if s.cls != "agent":
+            return None, None
+        try:
+            own = self.surfaces.get((s.host, int(s.kv))) if s.kt == "apid" else None
+        except (TypeError, ValueError):
+            own = None
+        if own is None:
+            return "unknown", None
+        surface, detail, ppid, agent_type = own
+        if surface == "unknown" and ppid not in _NO_PARENT:
+            up = self.surfaces.get((s.host, ppid))
+            if up is not None and up[3] == agent_type and up[0] != "unknown":
+                return up[0], up[1]
+        return surface, detail
 
     def anchor_of(self, s):
         """The agent process's own cwd, when the session is keyed on one."""
@@ -833,6 +883,7 @@ class TrajectoryReducer:
     def _row(self, s, via=None, n_keys=1):
         chain = s.chain[:self.max_runs]
         purpose = s.purpose[:self.purpose_cap]
+        surface, surface_detail = self.surface_of(s)
         return {
             "sid": s.sid, "key_type": s.kt, "host": s.host, "user": s.user,
             # how many collector session keys this row folds together, and how
@@ -852,6 +903,7 @@ class TrajectoryReducer:
             "io_rd_mb": round(s.rd, 3), "io_wr_mb": round(s.wr, 3),
             "net_tx_mb": round(s.tx, 3), "net_rx_mb": round(s.rx, 3),
             "sandbox": s.sandbox, "approval": self.approval_of(s),
+            "surface": surface, "surface_detail": surface_detail,
             "sandbox_ancestry": s.ancestry, "autonomous": s.autonomous,
             "tool_rle": chain, "chain_truncated": s.truncated or len(s.chain) > self.max_runs,
             "purpose_rle": purpose,

@@ -44,6 +44,7 @@ import {
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
 import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount } from '../components/ProcDiagram';
+import { SurfaceChip } from '../components/SurfaceChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
@@ -199,6 +200,7 @@ function Facts({
           {CLS_LBL[cls] ?? cls}
         </span>
         {r.agent_type && <span className="mono">{r.agent_type}</span>}
+        <SurfaceChip s={r.surface} detail={r.surface_detail} />
         <span className="mono">
           {r.user ?? DASH}@{r.host ?? DASH}
         </span>

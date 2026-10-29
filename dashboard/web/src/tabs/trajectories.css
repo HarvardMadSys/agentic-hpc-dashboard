@@ -724,11 +724,17 @@ svg:has(> g.pickable:focus-visible) {
   background: var(--surface-2);
   border-left-color: var(--ink-2);
 }
+/* a name, its date, where it is driven from and whether it runs: they wrap as
+   whole items, so a narrow column never breaks the name or the date */
 .tj-item-h {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 2px 6px;
   align-items: baseline;
   font-size: 12px;
+}
+.tj-item-h .tj-date {
+  white-space: nowrap;
 }
 .tj-item-s {
   font-size: 10.5px;

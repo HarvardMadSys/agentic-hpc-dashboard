@@ -379,6 +379,24 @@ already made once.
   (settings files, codex `config.toml` and a mid-session switch are invisible),
   `unobservable` (`codex app-server` takes its policy per thread), `na` (a tool shell, probe,
   IDE helper or human process) and `unknown` (a child: its verdict is on the root).
+- **Where a session is driven from is read off the same argv, and `unknown` is never
+  guessed.** `normalize.surface_of` gives every agent session root one of five surfaces in
+  two groups. CLI: `terminal` (the agent's own interactive UI, `claude daemon` background
+  sessions included) and `script` (`claude -p`, the Agent SDK's stream-json, `codex exec`,
+  an MCP server). App: `desktop` (`~/.claude/remote/ccd-cli/`, the Claude desktop app's Code
+  tab over SSH; `codex -c features.code_mode_host=true app-server --listen unix://`, the
+  Codex app's Remote SSH), `extension` (an IDE extension's bundled binary under
+  `.vscode-server/extensions/` and the like) and `web` (Remote Control: `--sdk-url`,
+  `app-server --remote-control`). A mode decides before a path: the extension runs its
+  binary only as Claude's stream-json, Codex's `app-server`, or with no mode and no
+  terminal, so its `codex exec` run by hand from a terminal is a `script`. A Codex
+  `--managed-daemon` app-server serves whichever
+  client attaches, so its argv names none: it takes its terminal UI's surface when that UI
+  started it, as it takes its approval (`cascades.py`), and is otherwise `unknown`. A host
+  (the desktop app's `~/.claude/remote/srv/` server, `claude rc`, `claude daemon`) is never a
+  session, but a row or a box keyed on one says where its sessions are driven from. Shown as
+  a chip on agent boxes, session rows and live sessions, and as the CLI/app split on the
+  Trajectories sessions plate; there is no filter on it yet.
 - **CPU is `sum(cpu_s)`, self, once per process.** `child_cpu_s` is never added:
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
