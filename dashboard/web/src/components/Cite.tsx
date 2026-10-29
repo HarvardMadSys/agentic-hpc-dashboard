@@ -168,6 +168,7 @@ export function CiteLink({ r, ctx, className, children }: {
     );
   }
   const t = target(cite, ctx.view);
+  const what = `source ${n}: ${t.label}`;
   const onClick = (e: ReactMouseEvent<HTMLAnchorElement>) => {
     if (!t.arrival) {
       e.preventDefault();
@@ -177,14 +178,14 @@ export function CiteLink({ r, ctx, className, children }: {
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     setOpen(false);
-    go(t.arrival, `source ${n}: ${t.label}`);
+    go(t.arrival, what);
   };
   return (
     <>
       <a
         ref={at}
         className={className}
-        href={hrefOf(t.arrival)}
+        href={hrefOf(t.arrival, what)}
         onClick={onClick}
         onMouseEnter={() => later(() => setOpen(true), 120)}
         onMouseLeave={() => later(() => setOpen(false), 160)}
