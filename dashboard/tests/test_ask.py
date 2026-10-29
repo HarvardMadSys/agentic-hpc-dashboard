@@ -17,6 +17,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import ask                                         # noqa: E402
+from rc_dashboard import config as configmod                         # noqa: E402
+from rc_dashboard import hours, snapshots                            # noqa: E402
 from rc_dashboard.aggregator import Aggregator                       # noqa: E402
 
 PY = sys.executable
@@ -143,6 +145,43 @@ class CommandTest(unittest.TestCase):
         d = ask.describe(Cfg(**{"ask.command": ["no-such-agent-binary"]}))
         self.assertFalse(d["available"])
         self.assertIn("not found", d["error"])
+
+    def test_a_command_is_named_by_the_program_it_runs(self):
+        for cmd, name in ((["/home/u/.local/bin/codex", "exec", "-"], "codex"),
+                          ("env FOO=1 -i /opt/bin/claude -p", "claude"),
+                          (["my-agent"], "my-agent")):
+            self.assertEqual(ask.describe(Cfg(**{"ask.command": cmd}))["agent"], name, cmd)
+        self.assertEqual(ask.describe(Cfg())["agent"], "codex")         # the preset, by name
+        self.assertEqual(ask.describe(Cfg(**{"ask.command": "env"}))["agent"], "custom")
+
+
+class AskSettingsTest(unittest.TestCase):
+    """An ask setting changes the questions, never what a saved window holds:
+    changing one is a restart, not a rebuild."""
+
+    @staticmethod
+    def cfg(section, **kv):
+        tree = configmod.defaults()
+        tree[section].update(kv)
+        return configmod.Config(tree, {}, None)
+
+    def test_no_saved_window_or_hour_is_rebuilt_for_an_ask_setting(self):
+        a = self.cfg("ask")
+        b = self.cfg("ask", command=["/home/u/.local/bin/codex", "exec", "-"], model="gpt-x",
+                     timeout_s=600, citations=False)
+        for fp in (snapshots.fingerprint, hours.fingerprint):
+            self.assertEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]), fp.__module__)
+
+    def test_a_setting_a_reduction_holds_still_is(self):
+        a = self.cfg("reducers")
+        tree = configmod.defaults()
+        tree["reducers"]["trajectories"]["top_n"] = 99
+        b = configmod.Config(tree, {}, None)
+        for fp in (snapshots.fingerprint, hours.fingerprint):
+            self.assertNotEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]), fp.__module__)
+
+    def test_citations_is_a_setting_of_its_own(self):
+        self.assertIs(configmod.defaults()["ask"]["citations"], True)
 
 
 class JobTest(unittest.TestCase):

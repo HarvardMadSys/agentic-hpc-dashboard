@@ -842,8 +842,20 @@ def argv_for(cfg, workdir, answer_file):
     return out
 
 
+def _program(argv):
+    """The program a command runs, by name: `codex` for
+    `/home/u/.local/bin/codex exec ...`, past an `env` and its settings."""
+    rest = list(argv)
+    if rest and os.path.basename(rest[0]) == "env":
+        rest = rest[1:]
+        while rest and ("=" in rest[0] or rest[0].startswith("-")):
+            rest = rest[1:]
+    return os.path.basename(rest[0]) if rest and rest[0] else None
+
+
 def describe(cfg):
-    """What the page shows about the agent, and whether it can run here."""
+    """What the page shows about the agent, and whether it can run here. A
+    command of one's own is named by the program it runs, as a preset is."""
     try:
         argv = argv_for(cfg, "<workdir>", "<answer>")
         exe = shutil.which(argv[0]) if argv else None
@@ -851,7 +863,8 @@ def describe(cfg):
     except ValueError as e:
         argv, exe, err = [], None, str(e)
     return {"enabled": bool(cfg.get("ask.enabled", True)),
-            "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command") else "custom",
+            "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")
+            else _program(argv) or "custom",
             "model": cfg.get("ask.model") or None,
             "command": " ".join(argv[:3]) + (" ..." if len(argv) > 3 else ""),
             "available": bool(exe) and not err, "error": err,

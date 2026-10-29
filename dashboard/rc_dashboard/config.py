@@ -170,6 +170,9 @@ def defaults():
             # the short map of where things are in the snapshot, sent after the
             # system prompt; turn off only if your prompt describes the data itself
             "snapshot_guide": True,
+            # every row the model is given carries a ref it cites after each
+            # figure, and the page links each to its row (ask.CITE_GUIDE)
+            "citations": True,
         },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
