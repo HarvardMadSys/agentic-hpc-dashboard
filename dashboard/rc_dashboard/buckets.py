@@ -117,9 +117,9 @@ class RollingBuckets:
         """One row per bin, oldest first, aligned to wall-clock minutes.
 
         A bin with no records is `None`, never 0 -- the chart must show a gap,
-        not a measured zero.  A narrower `window_s` slices the same bins rather
-        than re-deriving them: the 1-hour view is the last 60 rows of the 7-day
-        view, to the record.
+        not a measured zero (`_cells`).  A narrower `window_s` slices the same
+        bins rather than re-deriving them: the 1-hour view is the last 60 rows
+        of the 7-day view, to the record.
 
         The label carries the date once the view is wider than a day: `14:03`
         alone is ambiguous across a multi-day window, and an axis that repeats
@@ -130,13 +130,25 @@ class RollingBuckets:
         fmt = "%H:%M" if (end - start + 1) * self.bin_s <= 86400 else "%m-%d %H:%M"
         rows = []
         for idx in range(start, end + 1):
-            slot = self.bins.get(idx)
             row = {"t": time.strftime(fmt, time.localtime(idx * self.bin_s)),
                    "epoch": idx * self.bin_s}
-            for c in classes:
-                row[c] = (slot.get(c, {}).get(counter) if slot else None)
+            row.update(self._cells(self.bins.get(idx), classes, counter))
             rows.append(row)
         return rows
+
+    @staticmethod
+    def _cells(slot, classes, counter):
+        """One bin's value per class.
+
+        A bin no record landed in is `None` for every class: a hole, not an
+        idle node.  In a bin that holds records, a class with none is a
+        measured 0 -- the collector was writing that minute and saw nothing of
+        that class end -- while a class whose records all lacked `counter`
+        stays `None`.
+        """
+        if not slot:
+            return dict.fromkeys(classes)
+        return {c: slot[c].get(counter) if c in slot else 0 for c in classes}
 
     def totals(self, classes=None, now=None, window_s=None):
         """Summed counters over the SAME bins `series` would draw."""
@@ -154,8 +166,7 @@ class RollingBuckets:
         return out
 
     def last_complete_bin(self, classes, now=None):
-        """The newest bin that is definitely finished -- never the in-progress one."""
+        """The newest bin that is definitely finished -- never the in-progress
+        one -- as the same cells `series` draws for it."""
         now = now or time.time()
-        idx = self._index(now) - 1
-        slot = self.bins.get(idx, {})
-        return {c: slot.get(c, {}).get("n", 0) for c in classes}
+        return self._cells(self.bins.get(self._index(now) - 1), classes, "n")

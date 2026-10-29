@@ -236,7 +236,10 @@ export function LiveTab({
    * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`. */
   const xticks = (a: number, b: number) => timeTicks(a, b, 10);
 
-  const perMin = Object.fromEntries(CLS.map((c) => [c, latest(rate, c)]));
+  // The last full minute as the service counted it, not each class's newest
+  // bin with a value: that is the minute still filling, or for a quiet class
+  // one from hours ago.
+  const perMin = nowByClass(now, 'exits_per_min_by_class');
   const perMinAll = CLS.reduce<number | null>((a, c) => {
     const v = perMin[c];
     return v == null ? a : (a ?? 0) + v;
@@ -382,7 +385,8 @@ export function LiveTab({
               items={[
                 ['window', L?.window ? JSON.stringify(L.window) : null],
                 ['transport', live.transport],
-                ['gaps', 'a minute with no record is null and is drawn as a hole in the line'],
+                ['gaps', 'a minute with no record at all is null and is drawn as a hole in the line; ' +
+                  'in a minute with records, a class with none is 0'],
                 ['backfill', L?.backfill ? JSON.stringify(L.backfill) : null],
               ]}
             />

@@ -669,7 +669,7 @@ class LiveReducer:
             # bare name; a headline number is the map's sum, never a separate
             # figure that could drift from it.
             "now": {
-                "exits_per_min": sum(last.values()),
+                "exits_per_min": _sum_or_none(last.values()),
                 "exits_per_min_by_class": last,
                 "events": {c: totals.get(c, {}).get("n", 0) for c in self.classes},
                 "cpu_s": {c: round(totals.get(c, {}).get("cpu_s", 0.0), 1)

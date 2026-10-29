@@ -21949,7 +21949,12 @@
    }
   ],
   "now": {
-   "exits_per_min": 344,
+   "exits_per_min": 134,
+   "exits_per_min_by_class": {
+    "agent": 78,
+    "human": 19,
+    "ide": 37
+   },
    "roots": {
     "agent": 1405,
     "ide": 428,
