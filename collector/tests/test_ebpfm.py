@@ -670,13 +670,18 @@ RC_WORKER = (HOME + '/.local/share/claude/versions/2.1.291 --print --sdk-url '
              '--input-format stream-json --output-format stream-json --replay-user-messages '
              '--append-system-prompt-file=' + HOME + '/.claude/bridge-spawn/cse_01-x/'
              'append-system-prompt.txt --model claude-opus-5-5[1m]')
+CODEX_STANDALONE = (HOME + '/.codex/packages/standalone/releases/0.162.1-x86_64-unknown-'
+                    'linux-musl/bin/codex')
+CLAUDE_VSCODE = (HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.300-linux-x64/'
+                 'resources/native-binary/claude')
 
 
 class AgentRoleTest(unittest.TestCase):
     """What a classifier-tagged process is, on argv shapes seen on madsys-gpu1
-    from 2026-09-20 to 10-07. The same table as dashboard/tests/test_sessions.py,
-    which pins dashboard/rc_dashboard/roles.py: agent_role() is its port. The
-    `claude rc` worker is its whole argv here, so the classifier tags it."""
+    from 2026-09-20 to 10-07 and on the FAS login nodes from 2026-10-20 to 10-28.
+    The same table as dashboard/tests/test_sessions.py, which pins
+    dashboard/rc_dashboard/roles.py: agent_role() is its port. The `claude rc`
+    worker is its whole argv here, so the classifier tags it."""
 
     CASES = [
         # (agent_type, command, args, role)
@@ -706,6 +711,9 @@ class AgentRoleTest(unittest.TestCase):
         ('claude_code', 'claude', HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.286'
          '-linux-x64/resources/native-binary/claude auth status --json', 'probe'),
         ('claude_code', 'server', HOME + '/.claude/remote/srv/89cb/server --version', 'probe'),
+        # the VS Code extension's binary run as the Chrome MCP server, by the
+        # extension host (FAS login nodes)
+        ('claude_code', 'claude', CLAUDE_VSCODE + ' --claude-in-chrome-mcp', 'helper'),
         ('claude_code', '2.1.285', 'rg --no-config --files --hidden ' + HOME + '/.claude/plugins',
          'embedded-tool'),
         ('claude_code', '2.1.280', 'ugrep -G --ignore-files --hidden -I -rn foo', 'embedded-tool'),
@@ -734,6 +742,19 @@ class AgentRoleTest(unittest.TestCase):
          'sandbox --sandbox-policy-cwd ' + HOME + '/w --command-cwd /', 'sandbox'),
         ('codex', 'bwrap', 'bwrap --as-pid-1 --new-session --die-with-parent', 'sandbox'),
         ('bwrap', 'bwrap', '/usr/bin/bwrap --unshare-user --ro-bind / / /bin/true', 'sandbox'),
+        # Codex's sandboxed fs helper, from each place Codex is installed, and the
+        # sandbox that runs it (FAS login nodes)
+        ('codex', 'codex', CODEX_STANDALONE + ' --codex-run-as-fs-helper', 'helper'),
+        ('codex', 'codex', HOME + '/.vscode-server/extensions/openai.chatgpt-26.1007.21434-linux-x64'
+         '/bin/linux-x86_64/codex --codex-run-as-fs-helper', 'helper'),
+        ('codex', 'codex', HOME + '/.codex/packages/app-server-daemon/releases/0.165.0-x86_64-'
+         'unknown-linux-musl/bin/codex --codex-run-as-fs-helper', 'helper'),
+        ('codex', 'codex', HOME + '/.nvm/versions/node/v25.9.0/lib/node_modules/@openai/codex/'
+         'node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex '
+         '--codex-run-as-fs-helper', 'helper'),
+        ('codex', 'codex', 'codex-linux-sandbox --sandbox-policy-cwd ' + HOME + '/w --command-cwd / '
+         '--permission-profile {"type":"managed"} --apply-seccomp-then-exec -- '
+         + CODEX_STANDALONE + ' --codex-run-as-fs-helper', 'sandbox'),
         ('codex', 'mkdir', 'mkdir -p ' + HOME + '/.codex/packages/app-server-daemon', 'helper'),
         ('codex', 'sh', "sh -c printf '%b' " + HOME + '/.codex/x', 'helper'),
         ('vscode', 'code-4fe60c8b1c', HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 --cli-data-dir '
@@ -763,6 +784,27 @@ class AgentRoleTest(unittest.TestCase):
     def test_a_comm_the_kernel_cut_still_matches(self):
         self.assertEqual(T.agent_role('codex', 'codex-linux-san', 'x'), 'sandbox')
         self.assertEqual(T.agent_role('codex', 'codex-code-mode', 'x'), 'infra')
+
+    def test_the_binaries_other_helpers_are_helpers_too(self):
+        """Not seen on a node yet, but picked the same way: the rest of Codex's
+        `--codex-run-as-*`, and the two other servers Claude 2.1.309's entry
+        point runs in place of a session."""
+        for agent_type, command, args in (
+                ('codex', 'codex', CODEX_STANDALONE + ' --codex-run-as-apply-patch x'),
+                ('claude_code', 'claude', 'claude --chrome-native-host'),
+                ('claude_code', '2.1.309', HOME + '/.local/share/claude/versions/2.1.309 '
+                 '--eval-mock-server /tmp/eval/spec.json n1')):
+            with self.subTest(args=args[-40:]):
+                self.assertEqual(T.agent_role(agent_type, command, args), 'helper')
+
+    def test_a_helper_flag_counts_only_as_the_first_argument(self):
+        """Both binaries take a helper from their first argument alone (Codex's
+        argv[1], Claude's `process.argv[2]`), so the same flag further on -- in
+        a prompt, say -- leaves the session a session."""
+        self.assertEqual(T.agent_role('codex', 'codex', 'codex exec why --codex-run-as-fs-helper'),
+                         'agent')
+        self.assertEqual(T.agent_role('claude_code', 'claude',
+                                      'claude -p what is --claude-in-chrome-mcp'), 'agent')
 
 
 class AgentRootTest(unittest.TestCase):
@@ -806,11 +848,16 @@ class AgentRootTest(unittest.TestCase):
             'codex-linux-sandbox --sandbox-policy-cwd ' + HOME + '/w --command-cwd /')
         add(411, 410, 'bash', "bash -lc 'make'")
         add(420, 400, 'codex', 'codex --version')
+        # a sandboxed file access: the sandbox runs Codex's own fs helper
+        add(430, 400, 'codex', 'codex-linux-sandbox --sandbox-policy-cwd ' + HOME + '/w '
+            '--command-cwd / --apply-seccomp-then-exec -- ' + CODEX_STANDALONE
+            + ' --codex-run-as-fs-helper')
+        add(431, 430, 'codex', CODEX_STANDALONE + ' --codex-run-as-fs-helper')
         # `claude rc` and one of its workers
         add(500, 50, 'claude', 'claude rc', tty='pts/1')
         add(501, 500, '2.1.291', RC_WORKER)
         # VS Code: the server, an extension host, the Claude extension's auth
-        # probe and its session
+        # probe, its session, and the Chrome MCP server the extension host starts
         add(700, 1, 'code-4fe60c8b1c', HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 '
             '--cli-data-dir ' + HOME + '/.vscode-server/cli agent', user='v', uid=1001)
         add(701, 700, 'node', HOME + '/.vscode-server/cli/servers/Stable-07f/server/node '
@@ -820,6 +867,7 @@ class AgentRootTest(unittest.TestCase):
                       'resources/native-binary/claude')
         add(702, 701, 'claude', ext + ' auth status --json', user='v', uid=1001)
         add(703, 701, 'claude', ext + ' --output-format stream-json', user='v', uid=1001)
+        add(704, 701, 'claude', ext + ' --claude-in-chrome-mcp', user='v', uid=1001)
 
     def tearDown(self):
         T.BOOT_ID, T.MIN_UID = self._saved
@@ -853,6 +901,18 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(self.who(410), (400, 1, False))
         self.assertEqual(self.who(411), (400, 2, False))
         self.assertEqual(self.who(420), (400, 1, False))
+
+    def test_an_agent_binary_run_as_its_own_helper_joins_the_tree_above_it(self):
+        """Codex's fs helper under a tool call's sandbox, and the Chrome MCP
+        server VS Code's extension host starts, are the agent binary in a mode
+        that is no session: each joins the tree above it. As agents they were a
+        session apiece, 6 699 fs helpers on the FAS login nodes on 2026-10-26..28."""
+        self.assertEqual(self.who(430), (400, 1, False))
+        self.assertEqual(self.who(431), (400, 2, False))
+        self.assertEqual(self.who(704), (700, 2, False))
+        self.assertEqual(T.proc[704]['agent_type'], 'vscode')
+        self.assertEqual(T._base_identity(T.proc[704], 'agent', 'ancestry')['actor3'],
+                         'human-vscode')
 
     def test_claude_p_from_a_tool_call_is_its_own_root(self):
         self.assertEqual(self.who(240), (100, 1, False))
