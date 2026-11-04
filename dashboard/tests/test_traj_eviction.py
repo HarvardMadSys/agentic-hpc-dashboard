@@ -132,7 +132,7 @@ def from_hours(c, recs):
 def agents(view):
     """agent pid -> its row's calls, every agent the window holds."""
     traj = view.reducers["trajectories"]
-    return {pid: s.n for (_, pid), (s, _, _) in traj.agent_sessions().items()}
+    return {pid: s.n for (_, pid, _), (s, _, _) in traj.agent_sessions().items()}
 
 
 class PastTheCapTest(unittest.TestCase):

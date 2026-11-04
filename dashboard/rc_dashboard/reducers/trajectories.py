@@ -696,12 +696,14 @@ def under(path, anchor):
 
 
 def _agent_key(s):
-    """`(host, agent pid)` of a folded row keyed on an agent, else None: what the rows of one
-    agent on different days have in common."""
+    """`(host, agent pid, user)` of a folded row keyed on an agent, else None: what the rows of one
+    agent on different days have in common. A pid is reused, and a process keeps its user, so a
+    row of another user is another agent's: on boslogin06 on 2026-10-08 and 09, 8 of the 74 agents
+    with a row on each day were two users'."""
     if s.kt != "apid":
         return None
     try:
-        return s.host, int(s.kv)
+        return s.host, int(s.kv), s.user
     except (TypeError, ValueError):
         return None
 
@@ -1219,11 +1221,11 @@ class TrajectoryReducer:
         One session across midnight. A row is one local day, and an agent
         that works past midnight has a row for each. Every one of them serves
         the same block, of the whole session, so that midnight cuts no task or
-        phase. The rows joined are those of the current fold with the same
-        host, agent pid, and user (`agent_sessions` groups an agent's rows by
-        the first two, but a pid is reused), keyed on the agent (`apid`), with
-        a time, and whose calls are read. A row the window evicted is not
-        held, and so is not joined. Their call logs are folded
+        phase. The rows joined are those of the current fold of the same agent
+        (`_agent_key`: host, agent pid, and user, as `agent_sessions` groups
+        them), keyed on the agent (`apid`), with a time, and whose calls are
+        read. A row the window evicted is not held, and so is not joined.
+        Their call logs are folded
         (`PhaseLog.fold`: the calls in order of start, the first `max_calls`
         held, the rest counted as `cut`, from `cut_at`), and the pending
         entries of all their collector keys are read with them, as of the
@@ -1289,13 +1291,10 @@ class TrajectoryReducer:
     def _day_rows(self, s, members):
         """`[(row, members)]`, the day rows whose calls make one block with row
         `s` (`phase_block`), in time order, `s` among them with its `members`.
-        The others are the current fold's rows of the same agent that have a
-        time and whose calls are read. A pid is reused, and a process keeps its
-        user, so a row of another user is another agent's: on boslogin06 on
-        2026-10-08 and 09, 8 of the 74 agents with a row on each day were two
-        users'. The fold is made if it is stale (`folded`), as `result` makes
-        it before it reads a row. `s` alone when it is not keyed on an agent or
-        has no time."""
+        The others are the current fold's rows of the same agent
+        (`_agent_key`) that have a time and whose calls are read. The fold is
+        made if it is stale (`folded`), as `result` makes it before it reads a
+        row. `s` alone when it is not keyed on an agent or has no time."""
         rows = [(s, members)]
         key = _agent_key(s)
         if key is not None and s.first is not None:
@@ -1303,7 +1302,7 @@ class TrajectoryReducer:
             held = self._fold_cache[2]      # after the line above, which makes the fold if need be
             rows += [(r, held.get(r.sid) or [r.sid]) for r, _via, _k in others
                      if r.sid != s.sid and r.first is not None and r.cls == "agent"
-                     and r.agent_type in PHASE_AGENTS and r.user == s.user]
+                     and r.agent_type in PHASE_AGENTS]
             rows.sort(key=lambda row: (row[0].first, row[0].sid))
         return rows
 
@@ -1858,9 +1857,9 @@ class TrajectoryReducer:
         return None
 
     def _by_agent(self, since=None):
-        """(host, agent pid) -> [(session, owner_via, n_keys)]: the folded rows
-        of each agent, one for each day and class (the sid carries both).
-        Sessions last active before `since` are left out."""
+        """(host, agent pid, user) -> [(session, owner_via, n_keys)]: the folded
+        rows of each agent (`_agent_key`), one for each day and class (the sid
+        carries both). Sessions last active before `since` are left out."""
         by = {}
         for s, via, k in self.folded()[0]:
             key = _agent_key(s)
@@ -1877,11 +1876,12 @@ class TrajectoryReducer:
         return self._day_idx[1]
 
     def agent_sessions(self, since=None):
-        """(host, agent pid) -> (session, owner_via, n_keys), one per agent.
+        """(host, agent pid, user) -> (session, owner_via, n_keys), one per agent.
 
         Rows are split by day and class (the sid carries both); an agent is
-        not, so its rows are folded again here. Sessions last active before
-        `since` are left out.
+        not, so its rows are folded again here. A pid is reused, so the rows of
+        two users with one are two agents (`_agent_key`). Sessions last active
+        before `since` are left out.
         """
         out = {}
         for key, items in self._by_agent(since).items():

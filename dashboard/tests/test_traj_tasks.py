@@ -900,6 +900,22 @@ class AcrossMidnightTest(unittest.TestCase):
             self.assertEqual((row["n_calls"], row["phases"]["n_calls"]), (n, n))
             self.assertEqual({p["sid"] for p in row["phases"]["list"]}, {None})
 
+    def test_another_users_agent_with_the_same_pid_is_another_session(self):
+        # `agent_sessions` folds an agent's day rows by the same rule as the block above: host,
+        # agent pid, and user. Alice's agent on the first day and bob's on the second share a pid
+        # on one host, so they stay two sessions, while carol's one agent across midnight is one.
+        m = self.m
+        recs = [root8(m - 3500)] + reads(m - 2950, 30, 201)
+        recs += reads(m + 100, 20, 301, user="bob")
+        recs += [root8(m - 3500, root=500, user="carol")]
+        recs += reads(m - 2950, 61, 601, root=500, user="carol")
+        traj = fed(sorted(recs, key=lambda r: r["ts_epoch"]), configured())
+        got = traj.agent_sessions()
+        self.assertEqual(sorted(got), [("h1", 100, "alice"), ("h1", 100, "bob"),
+                                       ("h1", 500, "carol")])
+        self.assertEqual({k[2]: (s.user, s.n) for k, (s, _via, _keys) in got.items()},
+                         {"alice": ("alice", 30), "bob": ("bob", 20), "carol": ("carol", 61)})
+
     def test_a_row_with_no_time_is_no_day_of_the_session(self):
         # A record with no time is a row of its own, whose id has no day. It has no span to hold
         # a phase, so it is no part of the session, and the session is no part of it.
