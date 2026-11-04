@@ -36,6 +36,7 @@ from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
 from .normalize import Normalizer, canonical_class
+from .procindex import users_conflict
 from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
@@ -504,8 +505,10 @@ class Aggregator:
 
     @staticmethod
     def _agent_sessions(tr):
-        """(host, agent pid) -> its session's sid, the newest day's when it ran
-        on several: a cited agent opens its trajectory by it."""
+        """(host, agent pid) -> {user: (last, sid)}: for each user whose agent
+        held the pid, the session of its newest day, which a cited agent opens
+        its trajectory by (`_agent_session`). A pid is reused, so another
+        user's agent with the same pid is another session."""
         out = {}
         for sid, r in ((tr or {}).get("rows") or {}).items():
             parts = sid.split("|") if isinstance(sid, str) else []
@@ -515,10 +518,24 @@ class Aggregator:
                 key = (parts[0], int(parts[3][len("apid:"):]))
             except ValueError:
                 continue
+            held = out.setdefault(key, {})
+            user = (r or {}).get("user")
             last = (r or {}).get("last") or 0
-            if key not in out or last > out[key][0]:
-                out[key] = (last, sid)
-        return {k: sid for k, (_last, sid) in out.items()}
+            if user not in held or last > held[user][0]:
+                held[user] = (last, sid)
+        return out
+
+    @staticmethod
+    def _agent_session(sessions, host, pid, user):
+        """The sid a cited agent opens, or None. Of the sessions that held its
+        pid, its own user's; failing that, the newest that does not conflict
+        with its user (`users_conflict`: a session with no user, or root's, is
+        not another user's)."""
+        held = sessions.get((host, pid)) or {}
+        if user and user in held:
+            return held[user][1]
+        near = [v for u, v in held.items() if not users_conflict(user, u)]
+        return max(near)[1] if near else None
 
     @staticmethod
     def _cascade_hints(panels, sessions):
@@ -534,10 +551,13 @@ class Aggregator:
         def hinted(row, sid):
             return dict(row, _go={"sid": sid}) if sid else row
 
+        def sid_of(host, agent):
+            return Aggregator._agent_session(sessions, host, agent.get("pid"), agent.get("user"))
+
         ws = c.get("workspace")
         if isinstance(ws, dict) and isinstance(ws.get("agents"), list):
             c["workspace"] = dict(ws, agents=[
-                hinted(a, sessions.get((a.get("host"), a.get("pid")))) if isinstance(a, dict) else a
+                hinted(a, sid_of(a.get("host"), a)) if isinstance(a, dict) else a
                 for a in ws["agents"]])
         if isinstance(c.get("trees"), list):
             trees = []
@@ -547,8 +567,7 @@ class Aggregator:
                     agents = sorted((n for n in t.get("nodes") or []
                                      if isinstance(n, dict) and n.get("role") == "agent"),
                                     key=lambda n: (n.get("agent_level") or 1, -(n.get("tool_calls") or 0)))
-                    sid = next((sessions[(t.get("host"), n.get("pid"))] for n in agents
-                                if (t.get("host"), n.get("pid")) in sessions), None)
+                    sid = next(filter(None, (sid_of(t.get("host"), n) for n in agents)), None)
                 trees.append(hinted(t, sid) if isinstance(t, dict) else t)
             c["trees"] = trees
         return dict(panels, cascades=c)
