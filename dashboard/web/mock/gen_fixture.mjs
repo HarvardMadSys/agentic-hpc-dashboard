@@ -17,6 +17,15 @@
  *   - an `exited before read` (key `denied`) slice, distinct from `unsandboxed`,
  *     and a session whose every sandbox attempt failed
  *   - a trajectory list dominated by one user
+ *   - agent rows with phases: every kind, guesses, a cut call log, a running
+ *     row for each live edge (`running`, `idle`, `unknown`), and rows that
+ *     carry `{unavailable}`: an agent type the service does not read, a person,
+ *     and an IDE
+ *   - tasks above the phases: labels quoted from a commit, a log entry, and a
+ *     pull request, and built from names; a lone stretch; gaps with a call the
+ *     agent moved past still running, with a call still running that has no
+ *     preview, and with none; an open task at each live edge; and one agent
+ *     over two day rows
  */
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -532,17 +541,404 @@ const SURFACES = {
   codex: [['terminal', 'interactive'], ['desktop', 'Codex app'], ['extension', 'VS Code'], ['script', 'codex exec'], ['unknown', 'shared app server']],
 };
 const surfaceOf = (i, agentType) => {
-  const s = SURFACES[agentType]?.[i % 5];
+  // any other agent type is a CLI as far as its argv says (normalize._surface); a person or an IDE has none
+  const s = SURFACES[agentType]?.[i % 5] ?? (agentType ? ['terminal', 'interactive'] : null);
   return { surface: s ? s[0] : null, surface_detail: s ? s[1] : null };
 };
+
+/* ------------------------------------------------------------------ phases
+ * What `reducers/phase_segment.py` serves on an agent row: `n_calls`, and a
+ * `phases` block of a handful of stretches that tile the session. Built here
+ * from the row's index alone, in closed form, so the fixture stays byte-stable.
+ *
+ * Across the rows: every kind; a loop with guessed slices, and a run and a
+ * build that begin at one; a guess; waits on Slurm, a process, a file, a fixed sleep, and
+ * something else; a mixed phase; a call that outlived its phase; an idle gap;
+ * an open last phase on the running rows (the one the census calls idle has
+ * none: a call still running would contradict it); housekeeping, with commands
+ * under a process that never exited on some rows, among the top five shapes on
+ * most of them and past it on one (`never_exited` counts them either way, R43);
+ * one row whose call log was cut;
+ * and a session of more than nine phases, for the line that elides its middle.
+ *
+ * A script is a row's phases in order: `k` the kind, `w` its share of the time
+ * left once the guesses and idle gaps have theirs (those have their own length,
+ * as the segmenter's rules fix them: a guess is 20 s to 5 min, an idle gap 5 min
+ * or more), `n` its calls, and `top` the commands that ran most, with how many
+ * calls each. `lead` makes a phase begin at a guessed slice, for the reason it
+ * gives, `leadS` seconds long (a guess's own length when left out, 20 s to 5 min).
+ * A row's own factor scales the counts, so rows on one script do not read alike.
+ *
+ * Above the phases, tasks (`reducers/phase_tasks.py`, which makes a block's `v` 2).
+ * A spec that carries `task` begins one, and the specs after it are its phases
+ * until the next that does, so the tasks tile the phases as the service's do. A
+ * task is `{label, source, ref, names, lone}`: a `source` of `commit`, `log`, or
+ * `pr` makes its label a quote, and none a label built from names; `ref` is the
+ * number of a pull request edited by its number (`gh pr edit 235`), and empty for
+ * one that was created (`gh pr create`), which has none yet; `lone` sets a
+ * stretch of a few calls apart. A task never begins at a guess or an idle gap,
+ * which belong to the task before it. An idle spec with `gap` is a cutting gap,
+ * past the hour a task cuts at, and the task before it keeps that phase while the
+ * task after it says the gap; one with `s` is that many seconds, which an hour
+ * or less leaves inside its task. Its `alive` lists the calls the agent moved past
+ * that were still running as it began, as `[preview, name]`: the preview is `null`
+ * for a call still running, which has none (R65), and the name is the one the
+ * service gives the call in the task's gap, which the idle phase does not carry.
+ * Each script has its headline, in `PHASE_HEADLINES`.
+ *
+ * One agent over two day rows (`DAY_PAIR`) is the last two rows. Both serve one
+ * block, of the whole session, which lists its `days`, and each task and phase has
+ * the `sid` of the day that holds its start (`trajectories.day_of`). One task runs
+ * across midnight. */
+const BASIS = 'read from the commands the agent ran and the words it wrote in them'; // `phase_segment.BASIS`
+const CUT_GAP_S = 3600; // `phase_tasks.DEFAULTS.gap_s`: a gap this long with nothing the agent waits on cuts a task
+const NEVER_EXITED = 'under a process that never exited';
+const PHASES_UNAVAILABLE = 'phases not available for this agent type';
+/* The agent types whose commands the service reads (`phase_rules.PHASE_AGENTS`). Every other row, an agent
+ * of another type, a person, and an IDE alike, is sent `{unavailable}` and a null `n_calls`. */
+const PHASE_AGENTS = new Set(['claude_code', 'codex']);
+const PHASE_SCRIPTS = [
+  // reading, a guess, a test loop whose pauses are guessed, and a run that begins at a guess. The first task is
+  // quoted from the commit that closes it, the second is built from names
+  [
+    { k: 'explore', w: 2, n: 22, task: { label: 'Read io chunks one at a time', source: 'commit', names: ['src/io.py', 'tests/test_io.py'] }, top: [['rg -n "def run_step" src/', 9], ['ls -la src/', 6], ["sed -n '1,80p' src/train.py", 5]] },
+    { k: 'edit_guess', guess: 'a pause after reading, before the test run' },
+    { k: 'test', w: 1, n: 6, top: [['python -m pytest tests -x -q', 4], ['ruff check src', 2]] },
+    { k: 'loop', w: 4, n: 14, top: [['python -m pytest tests/test_io.py -x -q', 6]] },
+    { k: 'git', w: 0.4, n: 5, top: [['git status --short', 2], ['git diff --stat', 2], ['git commit -am "Read io chunks one at a time"', 1]] },
+    { k: 'explore', w: 1, n: 8, task: { label: 'Run src/train.py · config/base.yaml', names: ['src/train.py', 'config/base.yaml'] }, top: [['cat src/io.py', 3], ['rg -n "def read_chunk" src/', 3]] },
+    { k: 'run', w: 1.5, n: 4, lead: 'a pause after reading, before the run', top: [['python train.py --epochs 1', 3]] },
+    { k: 'edit', w: 0.7, n: 4, top: [["sed -i 's/batch=32/batch=64/' config/base.yaml", 3], ["cat > notes.md <<'EOF'", 1]] },
+    { k: 'git', w: 0.3, n: 3, top: [['git status --short', 2], ['git diff', 1]] },
+  ],
+  // a Slurm job: a mixed phase, a wait on Slurm, a run that left a background job going, idle. The first task is
+  // quoted from a pull request, and is followed by a cutting gap in which a call the agent moved past is still running
+  [
+    { k: 'explore', w: 1.5, n: 19, mix: [['explore', 8], ['run', 6], ['build', 5]], task: { label: 'Train on Slurm with an 8-hour limit', source: 'pr', ref: '#235', names: ['jobs/train.sbatch', 'kernels'] }, top: [['ls -la jobs/', 5], ['cat config/base.yaml', 3], ['make -n kernels', 3]] },
+    { k: 'edit', w: 1, n: 6, top: [["cat > jobs/train.sbatch <<'EOF'", 2], ["sed -i 's/--time=1:00/--time=8:00/' jobs/train.sbatch", 3]] },
+    { k: 'build', w: 1, n: 4, top: [['make -j8 kernels', 3]] },
+    { k: 'slurm', w: 0.4, n: 4, top: [['sbatch jobs/train.sbatch', 1], ['squeue -u thomwg11', 2], ['scontrol show job 812', 1]] },
+    { k: 'wait', w: 5, pace: ['squeue -j 812 -h -o %T', 120, 'slurm'] },
+    { k: 'run', w: 1.5, n: 3, top: [['python eval.py --ckpt out/best.pt', 2], ['python plot.py out/metrics.csv', 1]], past: [['nohup python train.py --epochs 40 > train.log 2>&1 &', 9600]] },
+    { k: 'idle', gap: true, alive: [['python eval.py --ckpt out/best.pt', 'eval.py']] },
+    { k: 'explore', w: 0.5, n: 6, task: { label: 'Read train.log · out/', names: ['train.log', 'out/'] }, top: [['tail -n 20 train.log', 4], ['ls out/', 2]] },
+    { k: 'git', w: 0.2, n: 3, top: [['git status --short', 3]] },
+  ],
+  // a benchmark: a guess before the tests, a build that begins at a guess (a label on a dark slot lies over
+  // its hatching, and the session is short enough that the slice is wide), a wait on a process. The first task is
+  // quoted from the title of an entry the agent appended to its PLAN.md, the second is built from names
+  [
+    { k: 'explore', w: 2, n: 30, task: { label: 'Switch the model to gelu', source: 'log', names: ['src/model.py'] }, top: [['ls -la src/', 10], ['rg -n "class Model" src/', 8], ["sed -n '1,120p' src/model.py", 6]] },
+    { k: 'edit_guess', guess: 'a pause after reading, before the test run' },
+    { k: 'test', w: 1, n: 6, top: [['python -m pytest -q', 4], ['ruff check src', 2]] },
+    { k: 'edit', w: 1, n: 5, top: [["cat > src/model.py <<'EOF'", 3], ["sed -i 's/relu/gelu/' src/model.py", 2], ["cat >> PLAN.md <<'EOF'", 1]] },
+    { k: 'build', w: 1, n: 3, lead: 'a pause after reading, before the test run', leadS: 240, top: [['cmake --build build -j 16', 3]] },
+    { k: 'run', w: 2, n: 5, task: { label: 'Run bench.py', names: ['bench.py'] }, top: [['python bench.py --size 4096', 3], ['python bench.py --size 8192', 2]] },
+    { k: 'wait', w: 1, pace: ['pgrep -f bench.py', 30, 'process'] },
+    { k: 'git', w: 0.3, n: 3, top: [['git status --short', 2], ['git log --oneline -5', 1]] },
+  ],
+  // fourteen phases, so a line of them has to elide its middle. Two tasks built from names, a cutting gap in which a
+  // call is still running that has no preview of its own and is named by the programs seen under it, and after it a
+  // lone stretch
+  [
+    { k: 'explore', w: 1.5, n: 18, task: { label: 'Read src/app.py · README.md', names: ['src/app.py', 'README.md'] }, top: [['ls -la', 6], ['rg -n "TODO" .', 6], ['cat README.md', 3]] },
+    { k: 'edit', w: 1, n: 6, top: [["sed -i 's/TODO/DONE/' src/app.py", 4]] },
+    { k: 'test', w: 1, n: 5, top: [['python -m pytest -q', 5]] },
+    { k: 'git', w: 0.3, n: 3, top: [['git status --short', 3]] },
+    { k: 'explore', w: 1, n: 9, task: { label: 'Run src/app.py · logs/run.out', names: ['src/app.py', 'logs/run.out'] }, top: [['cat src/app.py', 5], ['ls tests/', 4]] },
+    { k: 'edit_guess', guess: 'a pause after reading, before the run' },
+    { k: 'run', w: 2.5, n: 4, top: [['python app.py --check', 4]] },
+    { k: 'wait', w: 1.5, n: 4, waits: 'output', top: [['tail -n 5 logs/run.out', 4]] },
+    { k: 'explore', w: 1, n: 7, top: [['rg -n "check" src/', 7]] },
+    { k: 'edit', w: 1, n: 5, top: [["sed -i 's/check/verify/' src/app.py", 5]] },
+    { k: 'build', w: 1, n: 4, top: [['make -j4', 4]] },
+    { k: 'test', w: 1.5, n: 6, top: [['python -m pytest -q', 6]] },
+    { k: 'idle', gap: true, alive: [[null, 'pgrep and sleep']] },
+    { k: 'git', w: 0.3, n: 3, task: { lone: true, label: 'Commit src/app.py', names: ['src/app.py'] }, top: [['git status --short', 2], ['git diff --stat', 1]] },
+  ],
+  // commands that were not recorded, waits with no pace, and a wait on something else. Two tasks built from names,
+  // with an idle gap of 25 minutes inside the first, which is too short to cut it
+  [
+    { k: 'unknown', w: 0.5, n: 3, task: { label: 'Run sweep.py · data/raw.csv', names: ['sweep.py', 'data/raw.csv'] } },
+    { k: 'explore', w: 1.5, n: 12, top: [['ls -la data/', 5], ['head -n 3 data/raw.csv', 4], ['wc -l data/raw.csv', 3]] },
+    { k: 'wait', w: 1, n: 2, waits: 'sleep', top: [['sleep 600', 2]] },
+    { k: 'run', w: 2, n: 4, top: [['python sweep.py --grid coarse', 4]] },
+    { k: 'idle', s: 1500 },
+    { k: 'test', w: 1, n: 5, top: [['python -m pytest tests -q', 5]] },
+    { k: 'git', w: 0.3, n: 3, top: [['git status --short', 3]] },
+    { k: 'wait', w: 1.5, pace: ['python check_status.py', 300, 'command'], task: { label: 'Wait on check_status.py · out/summary.txt', names: ['check_status.py', 'out/summary.txt'] } },
+    { k: 'explore', w: 0.6, n: 6, top: [['cat out/summary.txt', 4], ['ls out/', 2]] },
+  ],
+];
+/* A script's headline: the project, then the names that two of its tasks or more hold. The third has none that
+ * recur, so it is the project alone, and the last has neither, so the service sends `null`. */
+const PHASE_HEADLINES = ['proj · src/io.py', 'proj · train.log', 'proj', 'proj · src/app.py', null];
+
+/* One agent over two day rows. It works past midnight: a first task on the first day; one that runs across midnight
+ * (the build it holds begins on the first day and ends on the second, so its sid is the first day's and its phases
+ * after midnight are the second's); a cutting gap with nothing running; and a Slurm task on the second day. The task
+ * across midnight is quoted from a pull request that `gh pr create` made, so it has no `ref`, and its source is the
+ * bare `PR`. `i` is the index its counts and its housekeeping follow, and `midAt` the phase midnight falls in, 40% of
+ * the way through it. */
+const DAY_PAIR = {
+  i: 28,
+  user: 'thomwg11',
+  host: 'boslogin02',
+  apid: 4242,
+  start: 52_900, // seconds before the present: midnight (EDT, where the fixture's present is 11:33) falls in `midAt`
+  span: 32_400,
+  midAt: 6,
+  headline: 'proj · src/loader.py',
+  specs: [
+    { k: 'explore', w: 1.5, n: 18, task: { label: 'Edit and test src/loader.py · tests/test_loader.py', names: ['src/loader.py', 'tests/test_loader.py'] }, top: [['rg -n "def decode" src/', 8], ['ls -la src/', 6], ['cat src/loader.py', 4]] },
+    { k: 'edit', w: 1, n: 7, top: [["sed -i 's/read(/seek(/' src/loader.py", 4], ["cat > tests/test_loader.py <<'EOF'", 3]] },
+    { k: 'test', w: 1, n: 6, top: [['python -m pytest tests/test_loader.py -x -q', 6]] },
+    { k: 'git', w: 0.3, n: 3, top: [['git status --short', 2], ['git diff --stat', 1]] },
+    { k: 'explore', w: 1, n: 9, task: { label: 'Seek-based frame decoding', source: 'pr', ref: '', names: ['src/loader.py', 'src/video_io.py'] }, top: [['rg -n "seek" src/', 5], ['cat src/video_io.py', 4]] },
+    { k: 'edit', w: 1.5, n: 10, top: [["sed -i 's/frames/seek_frames/' src/video_io.py", 6], ["cat > src/seek.py <<'EOF'", 4]] },
+    { k: 'build', w: 1, n: 4, top: [['make -j8 ext', 4]] },
+    { k: 'test', w: 2, n: 8, top: [['python -m pytest tests -x -q', 8]] },
+    { k: 'git', w: 0.4, n: 4, top: [['git status --short', 2], ['gh pr create --title "Seek-based frame decoding"', 1], ['git push origin seek-decode', 1]] },
+    { k: 'idle', gap: true, s: 7_900 },
+    { k: 'slurm', w: 0.5, n: 4, task: { label: 'Run on Slurm jobs/sweep.sbatch · out/sweep', names: ['jobs/sweep.sbatch', 'out/sweep'] }, top: [['sbatch jobs/sweep.sbatch', 1], ['squeue -u thomwg11', 2], ['scontrol show job 913', 1]] },
+    { k: 'wait', w: 3, pace: ['squeue -j 913 -h -o %T', 120, 'slurm'] },
+    { k: 'explore', w: 1, n: 6, top: [['tail -n 20 out/sweep/log.txt', 4], ['ls out/sweep', 2]] },
+    { k: 'git', w: 0.3, n: 3, top: [['git status --short', 3]] },
+  ],
+};
+/* What a running row ends in, and what its census says, by its place among the running
+ * rows. First, a call open that the census sees. Second, none: the census calls the
+ * session idle, which an open call would contradict. Third, a call open with no census to
+ * say. Fourth, a call open that the census sees, again. A call still running is never named
+ * by a child's text (R65): `top` holds the finished calls, and `seen` the programs seen
+ * under the open one. */
+const LIVE_TAILS = [
+  { k: 'slurm', w: 3, n: 2, open: true, seen: ['srun', 'python'], top: [['squeue -u thomwg11', 1]] },
+  null,
+  { k: 'run', w: 3, n: 1, open: true, seen: ['python'], top: [] },
+  { k: 'test', w: 2, n: 1, open: true, seen: ['python', 'git', 'nvidia-smi'], top: [] },
+];
+const liveNow = (nowEpoch) => [
+  { state: 'running', cmds: [['python', 2], ['srun', 1]], cat: 'slurm', at: nowEpoch - 15 },
+  { state: 'idle', at: nowEpoch - 15 },
+  { state: 'unknown' },
+  { state: 'running', cmds: [['pytest', 1]], cat: 'test', at: nowEpoch - 15 },
+];
+
+const r3 = (x) => Number(x.toFixed(3));
+const sumOf = (pairs) => pairs.reduce((a, [, c]) => a + c, 0);
+
+/* A script's phases laid over `[t0, t1]`, in the shape `phase_segment._phase` gives them. */
+function phaseList(i, t0, t1, specs) {
+  const f = 1 + (i % 4) * 0.5;
+  const sc = (n) => Math.max(1, Math.round(n * f));
+  const guessS = 30 + ((i * 29) % 150);
+  const idleS = Math.max(300, Math.round((t1 - t0) * 0.12));
+  const cutS = Math.max(CUT_GAP_S + 300, idleS); // a cutting gap is past the hour
+  const own = specs.map((s) => (s.k === 'edit_guess' ? guessS : s.k === 'idle' ? s.s ?? (s.gap ? cutS : idleS) : null));
+  const room = Math.max(0, t1 - t0 - own.reduce((a, d) => a + (d ?? 0), 0));
+  const wsum = specs.reduce((a, s, j) => a + (own[j] == null ? s.w : 0), 0);
+  let at = t0;
+  let began = t0; // where the phase before this one began
+  return specs.map((s, j) => {
+    const a = at;
+    const b = j === specs.length - 1 ? t1 : a + (own[j] ?? (room * s.w) / wsum);
+    at = b;
+    const before = began;
+    began = a;
+    const p = {
+      kind: s.k, t0: r3(a), t1: r3(b), n: 0, mix: [], top: [], guess: null, slices: null, rounds: null,
+      waits_on: null, every_s: null, times: null, every_cmd: null, open: false, seen: null, ran_past: null,
+      alive: null,
+    };
+    if (s.k === 'idle') {
+      // calls from the phase before it that were still running as it began: a few seconds in, three seconds apart
+      if (s.alive) p.alive = s.alive.map(([cmd], k) => [cmd, r3(before + 2 + 3 * k)]);
+      return p;
+    }
+    if (s.k === 'edit_guess') return { ...p, guess: s.guess };
+    const d = b - a;
+    let top = (s.top ?? []).map(([c, m]) => [c, sc(m)]);
+    let n = sc(s.n ?? 1);
+    if (s.pace) {
+      const [cmd, every, on] = s.pace;
+      p.waits_on = on;
+      p.every_s = every;
+      p.every_cmd = cmd;
+      p.times = Math.max(1, Math.round(d / every));
+      top = [[cmd, p.times]];
+      n = p.times;
+    }
+    if (s.waits) p.waits_on = s.waits;
+    if (s.k === 'loop') {
+      p.rounds = top[0][1];
+      const cuts = Math.min(p.rounds - 3, 4);
+      const len = Math.min(25 + ((i * 13) % 60), d / (2 * cuts + 2));
+      p.slices = Array.from({ length: cuts }, (_, k) => {
+        const mid = a + ((k + 1) * d) / (cuts + 1);
+        return [r3(mid - len / 2), r3(mid + len / 2)];
+      });
+      p.guess = `a pause between two runs of ${top[0][0]}`;
+      n = Math.max(n, p.rounds + 2);
+    }
+    if (s.lead) {
+      p.slices = [[r3(a), r3(a + Math.min(s.leadS ?? guessS, d * 0.3))]];
+      p.guess = s.lead;
+    }
+    p.mix = (s.mix ?? []).map(([c, m]) => [c, sc(m)]);
+    p.top = top;
+    p.n = Math.max(n, sumOf(top), sumOf(p.mix));
+    p.open = s.open === true;
+    p.seen = p.open ? s.seen ?? [] : null;
+    p.ran_past = s.past ?? null;
+    return p;
+  });
+}
+
+/* The agent's own commands, by shape and by the minute each began in. `never` of them ran
+ * under a process that never exited: counted, and in no minute, and in `never_exited` whether
+ * or not their shape is among the top five (R43). */
+function phaseHousekeeping(i, t0, t1, never) {
+  const K = Math.max(6, Math.min(40, Math.floor((t1 - t0) / 300)));
+  const bins = Array.from({ length: K }, (_, k) => [
+    Math.floor((t0 + ((k + 0.5) * (t1 - t0)) / K) / 60) * 60,
+    1 + ((i * 7 + k * 13) % 9),
+  ]);
+  const placed = sumOf(bins);
+  const part = (share) => Math.floor(placed * share);
+  const by = { realpath: part(0.25), uname: part(0.1), ls: part(0.06), other: part(0.04) };
+  by.git = placed - by.realpath - by.uname - by.ls - by.other;
+  if (never > 0) by[NEVER_EXITED] = never;
+  const shapes = Object.entries(by)
+    .filter(([, c]) => c > 0)
+    .sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))
+    .slice(0, 5);
+  return { n: placed + never, shapes, bins, cut: never, never_exited: never };
+}
+
+/* The tasks of a script's phases `list`, as `phase_tasks.name_tasks` gives them: a spec that carries `task` begins
+ * one, and its range is the phases up to the next. A range that ends in a cutting gap keeps that idle phase, and
+ * the task is over where the gap began; the next task says the gap, with the calls the idle phase lists and the
+ * name the spec gives each. `cutAt` is the call log's, when it cut the calls: the last task, and any that ends after
+ * it, are incomplete. */
+function taskList(list, specs, cutAt) {
+  const starts = specs.flatMap((s, j) => (s.task ? [j] : []));
+  if (starts[0] !== 0) throw new Error('the first phase of a script begins its first task');
+  return starts.map((a, j) => {
+    const z = j + 1 < starts.length ? starts[j + 1] : specs.length;
+    const mine = list.slice(a, z);
+    const d = specs[a].task;
+    const t1 = specs[z - 1].gap === true ? list[z - 1].t0 : list[z - 1].t1;
+    const before = a > 0 && specs[a - 1].gap === true ? list[a - 1] : null;
+    return {
+      kind: d.lone ? 'lone' : 'task',
+      t0: list[a].t0,
+      t1,
+      n: mine.reduce((sum, p) => sum + p.n, 0),
+      label: d.label,
+      source: d.source ?? null,
+      ref: d.ref ?? '',
+      names: [...d.names],
+      phases: [a, z],
+      open: mine.some((p) => p.open),
+      incomplete: cutAt != null && (j === starts.length - 1 || t1 > cutAt),
+      gap: before
+        ? { s: r3(before.t1 - before.t0), alive: (before.alive ?? []).map(([cmd, since], k) => [cmd, since, specs[a - 1].alive[k][1]]) }
+        : null,
+      sid: null,
+    };
+  });
+}
+
+/* The sid of the day among `days` whose span holds `t`, else of the nearest, the earlier of two the same
+ * distance away (`trajectories.day_of`). */
+function dayOf(days, t) {
+  let best = null;
+  let near = Infinity;
+  for (const d of days) {
+    const away = t < d.first ? d.first - t : Math.max(0, t - d.last);
+    if (away < near) {
+      best = d.sid;
+      near = away;
+    }
+  }
+  return best;
+}
+
+/* `n_calls` and `phases` for the agent row `i`, whose session ran `[first, last]`. `live` is its
+ * place among the running rows, or -1. `script` is `{specs, headline}` for a session that is no
+ * row's own (`DAY_PAIR`), else the script of its place among the rows. */
+function phaseFields(i, first, last, live, script = null) {
+  const t0 = first + 12;
+  const cutLog = i === 2; // the log held the first of its calls and counted the rest
+  const t1 = cutLog ? t0 + (last - t0) * 0.7 : last;
+  const tail = live >= 0 ? LIVE_TAILS[live % LIVE_TAILS.length] : null;
+  const k = i % PHASE_SCRIPTS.length;
+  const specs = [...(script?.specs ?? PHASE_SCRIPTS[k]), ...(tail ? [tail] : [])];
+  const list = phaseList(i, t0, t1, specs);
+  const cut = cutLog ? 120 : 0;
+  const cut_at = cutLog ? r3(t1 - 20) : null;
+  const n_calls = list.reduce((a, p) => a + p.n, 0) + cut;
+  const tasks = taskList(list, specs, cut_at);
+  tasks.forEach((t, j) => {
+    for (let at = t.phases[0]; at < t.phases[1]; at++) {
+      list[at].task = j;
+      list[at].sid = null;
+    }
+  });
+  return {
+    n_calls,
+    phases: {
+      v: 2,
+      basis: BASIS,
+      n_calls,
+      cut,
+      cut_at,
+      // every fourth row has commands under a process that never exited; row 14's few fall below the top five
+      housekeeping: phaseHousekeeping(i, t0, t1, i % 4 !== 2 ? 0 : i === 14 ? 5 : 12),
+      list,
+      tasks,
+      headline: script ? script.headline : PHASE_HEADLINES[k],
+    },
+  };
+}
+
+/* One agent over two day rows (`DAY_PAIR`): the rows' ids, first and last records, and own call counts, and the one
+ * block both serve, which lists the `days` and gives each task and phase the sid of the day that holds its start.
+ * Midnight falls inside the phase `midAt`. */
+function dayPair(nowEpoch) {
+  const first = nowEpoch - DAY_PAIR.start;
+  const { n_calls, phases } = phaseFields(DAY_PAIR.i, first, first + DAY_PAIR.span, -1, DAY_PAIR);
+  const mid = phases.list[DAY_PAIR.midAt].t0 + 0.4 * (phases.list[DAY_PAIR.midAt].t1 - phases.list[DAY_PAIR.midAt].t0);
+  const id = (date) => `${DAY_PAIR.host}|${date}|agent|apid:${DAY_PAIR.apid}`;
+  const days = [
+    { sid: id('2026-09-13'), first, last: r3(mid - 4) },
+    { sid: id('2026-09-14'), first: r3(mid + 3), last: first + DAY_PAIR.span },
+  ];
+  for (const x of [...phases.list, ...phases.tasks]) x.sid = dayOf(days, x.t0);
+  phases.days = days;
+  // each row counts the calls of its own day: the phases that begin on it
+  const own = (d) => phases.list.filter((p) => p.sid === d.sid).reduce((a, p) => a + p.n, 0);
+  return { days: days.map((d) => ({ ...d, n_calls: own(d) })), phases, n_calls };
+}
 
 function trajectories(nowEpoch) {
   const rows = {};
   const sids = [];
-  for (let i = 0; i < 28; i++) {
-    const cls = i % 7 === 6 ? 'human' : i % 3 === 1 ? 'ide' : 'agent';
-    const user = cls === 'agent' && i % 4 !== 3 ? 'thomwg11' : USERS[(i + 2) % USERS.length];
-    const sid = `period4-${HOSTS[i % HOSTS.length]}-${user}-${1_000 + i * 37}`;
+  const edges = liveNow(nowEpoch);
+  const pair = dayPair(nowEpoch);
+  let nRunning = 0; // the running rows so far: each has its own live edge
+  // 28 rows of their own, then the two days of one agent (`DAY_PAIR`), whose ids are the service's own form
+  for (let i = 0; i < 28 + pair.days.length; i++) {
+    const day = i >= 28 ? pair.days[i - 28] : null;
+    const g = day ? DAY_PAIR.i : i; // what a row's attributes follow: both days of an agent share them
+    const cls = day ? 'agent' : i % 7 === 6 ? 'human' : i % 3 === 1 ? 'ide' : 'agent';
+    const live = !day && cls === 'agent' && i % 4 === 1 ? nRunning++ : -1;
+    const first = day ? day.first : nowEpoch - 1_800 - i * 4_400 - i * 300;
+    const last = day ? day.last : nowEpoch - i * 300;
+    const user = day ? DAY_PAIR.user : cls === 'agent' && i % 4 !== 3 ? 'thomwg11' : USERS[(i + 2) % USERS.length];
+    const host = day ? DAY_PAIR.host : HOSTS[i % HOSTS.length];
+    const sid = day ? day.sid : `period4-${host}-${user}-${1_000 + i * 37}`;
     const nEvents = Math.round(48_000 / (i * 0.4 + 1));
     const runs = [
       ['pgrep', 40 + ((i * 17) % 160)],
@@ -568,36 +964,48 @@ function trajectories(nowEpoch) {
       ['slurm_sub', 1],
       ['poll', 12 + ((i * 7) % 40)],
     ];
+    // Row 3 is an agent of a type the service does not read (Copilot); Claude Code and Codex alternate on the rest.
+    const agentType = day ? 'claude_code' : cls === 'agent' ? (i === 3 ? 'copilot' : i % 3 ? 'claude_code' : 'codex') : cls === 'ide' ? (i === 4 ? 'cursor' : 'vscode') : null;
     rows[sid] = {
       sid,
-      key_type: i % 5 === 4 ? 'cgroup' : 'session_scope',
-      host: HOSTS[i % HOSTS.length],
+      key_type: day ? 'apid' : i % 5 === 4 ? 'cgroup' : 'session_scope',
+      host,
       user,
       actor3: cls,
-      agent_type: cls === 'agent' ? (i % 3 ? 'claude_code' : 'codex') : cls === 'ide' ? 'vscode' : null,
+      agent_type: agentType,
       n_events: nEvents,
       cpu_s: Number((nEvents * (0.004 + ((i % 7) * 0.02))).toFixed(2)),
       distinct_tools: 6 + ((i * 3) % 34),
       chain_runs: runs.length + (i % 11),
-      wall_s: 1_800 + i * 4_400,
+      wall_s: Math.round(last - first),
       peak_rss_mb: Number((188 + i * 61.4).toFixed(1)),
       io_rd_mb: Number((418.2 / (i * 0.2 + 1)).toFixed(1)),
       io_wr_mb: Number((88.4 / (i * 0.3 + 1)).toFixed(1)),
       net_tx_mb: Number((12.6 / (i * 0.5 + 1)).toFixed(2)),
       net_rx_mb: Number((96.1 / ((i % 7) * 0.4 + 1)).toFixed(2)),
-      first: nowEpoch - 1_800 - i * 4_400 - i * 300,
-      last: nowEpoch - i * 300,
-      ...(cls === 'agent' && i % 4 === 1
-        ? { running: { seen: nowEpoch - 20, n_procs: 3 + (i % 9), rss_mb: 410 + i * 12, census_at: nowEpoch - 15 } }
+      first,
+      last,
+      ...(live >= 0
+        ? { running: { seen: nowEpoch - 20, n_procs: 3 + (i % 9), rss_mb: 410 + i * 12, census_at: nowEpoch - 15, now: edges[live % edges.length] } }
         : {}),
-      sandbox: cls === 'agent' ? (i % 4 === 0 ? 'sandboxed' : i % 4 === 1 ? 'unsandboxed' : i % 4 === 2 ? 'denied' : 'unknown') : 'unknown',
-      approval: cls === 'agent' ? (i % 3 === 0 ? 'bypassed' : 'supervised') : 'unknown',
-      ...surfaceOf(i, cls === 'agent' ? (i % 3 ? 'claude_code' : 'codex') : null),
-      sandbox_ancestry: cls === 'agent' && i % 4 < 2 ? 'bwrap' : 'none',
-      autonomous: cls === 'agent' && i % 3 === 0,
+      sandbox: cls === 'agent' ? (g % 4 === 0 ? 'sandboxed' : g % 4 === 1 ? 'unsandboxed' : g % 4 === 2 ? 'denied' : 'unknown') : 'unknown',
+      approval: cls === 'agent' ? (g % 3 === 0 ? 'bypassed' : 'supervised') : 'unknown',
+      ...surfaceOf(g, cls === 'agent' ? agentType : null),
+      sandbox_ancestry: cls === 'agent' && g % 4 < 2 ? 'bwrap' : 'none',
+      autonomous: cls === 'agent' && g % 3 === 0,
       tool_rle: runs,
       chain_truncated: i % 6 === 0,
       purpose_rle: purposeRuns,
+      // An agent of a type the service reads carries its phases. Every other row, the Copilot
+      // row (3), a person, and an IDE (the Cursor row among them), carries `{unavailable}` and a
+      // null `n_calls`, as the service sends it (tests/test_traj_phases.py); the page notes it
+      // under an agent's row alone, so a person's row and an IDE's read as they always did (R41).
+      // The two days of one agent serve the one block, each with the count of its own day.
+      ...(day
+        ? { n_calls: day.n_calls, phases: pair.phases }
+        : PHASE_AGENTS.has(agentType)
+          ? phaseFields(i, first, last, live)
+          : { n_calls: null, phases: { unavailable: PHASES_UNAVAILABLE } }),
     };
     sids.push(sid);
   }
@@ -629,6 +1037,78 @@ function trajectories(nowEpoch) {
     dominant_user_share_pct: 71.4,
     buffer: { capacity: 4_096, held: sids.length, evicted: 118 },
     basis: 'tool_rle is the run-length encoding of effective_comm in exit order; chains over 4096 runs are truncated',
+  };
+}
+
+/* The navigator the service builds from every record the read matched (`TreeBuilder.nav`, proctree.py): process
+ * starts per bin by purpose, stacked as the chart draws them, and the landmarks. Here it is built from the
+ * hand-built tree, so it holds what the tree holds, the counted rows and groups too, and a session that has
+ * a navigator can draw its chart. Bins of 30 s from `lo`; a start before it is counted and not binned. */
+const NAV_PURPOSES = ['poll', 'runtime', 'filesearch', 'slurm_mon', 'slurm_sub', 'build', 'compute', 'data', 'other'];
+const NAV_PURPOSE_OF = {
+  squeue: 'slurm_mon', grep: 'poll', sleep: 'poll', git: 'other', python: 'compute', make: 'build',
+  cc1plus: 'build', rg: 'filesearch', cat: 'filesearch', sbatch: 'slurm_sub', bash: 'runtime',
+};
+function navOf(tree, lo, hi) {
+  const w = 30;
+  const cells = new Map(); // bin * 16 + purpose index -> starts
+  let before = 0;
+  const add = (t, cmd, n = 1) => {
+    if (t == null || !n) return;
+    if (t < lo) {
+      before += n;
+      return;
+    }
+    const k = Math.floor((t - lo) / w) * 16 + NAV_PURPOSES.indexOf(NAV_PURPOSE_OF[cmd] ?? 'other');
+    cells.set(k, (cells.get(k) ?? 0) + n);
+  };
+  // `n` starts over [a, z], an even share to each bin it touches: counted rows and groups have no start of their own
+  const spread = (a, z, n, cmd) => {
+    if (a == null || z == null || !n) return;
+    const bins = Math.floor((z - a) / w) + 1;
+    for (let i = 0; i < bins; i++) add(a + i * w, cmd, Math.floor(n / bins) + (i < n % bins ? 1 : 0));
+  };
+  const fails = [];
+  let first = null;
+  let longest = null;
+  const walk = (e, root) => {
+    if (e.k === 'p') {
+      if (e.cmd) add(e.start, e.cmd);
+      if (e.exit_code || e.signal) fails.push([e.start, e.end, e.pid, e.cmd, e.exit_code ?? null, e.signal ?? null]);
+      if (!root && e.role === 'tool-shell' && (!first || e.start < first.t)) {
+        first = { t: e.start, end: e.end, pid: e.pid, cmd: e.cmdline ?? e.cmd, via: 'tool' };
+      }
+      if (!root && e.dur != null && (!longest || e.dur > longest.dur)) {
+        longest = { t: e.start, end: e.end, pid: e.pid, cmd: e.cmd, dur: e.dur };
+      }
+      (e.kids ?? []).forEach((k) => walk(k, false));
+    } else if (e.k === 'g') {
+      spread(e.start, e.end, e.count, e.motif?.[0]);
+    } else if (e.k === 'agg' || e.k === 'more') {
+      spread(e.start, e.end, e.n, 'other');
+    }
+  };
+  walk(tree, true);
+  fails.sort((a, b) => (a[0] ?? 0) - (b[0] ?? 0));
+  const bins = [...cells]
+    .map(([k, c]) => [Math.floor(k / 16), k % 16, c])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const perMinute = new Map();
+  for (const [b, , c] of bins) {
+    const m = Math.floor((lo + b * w) / 60) * 60;
+    perMinute.set(m, (perMinute.get(m) ?? 0) + c);
+  }
+  let busiest = null;
+  for (const [t, n] of perMinute) if (!busiest || n > busiest.n) busiest = { t, n };
+  return {
+    starts: bins.reduce((a, [, , c]) => a + c, 0),
+    no_start: 0,
+    purposes: NAV_PURPOSES,
+    density: { lo, w, n: Math.ceil((hi - lo) / w) + 1, before, bins },
+    busiest,
+    first_tool: first,
+    longest,
+    failures: { n: fails.length, listed: fails.length, items: fails },
   };
 }
 
@@ -738,6 +1218,7 @@ function trajectoryDetail(nowEpoch, traj) {
     },
     links: { ppid: 54, depth: 2 },
     timeline: { lo: t0, hi: t0 + 5_390 },
+    nav: navOf(tree, t0, t0 + 5_390),
     tree,
     basis: { fixture: 'mock/gen_fixture.mjs: a hand-built tree with every row shape the inspector draws' },
   };

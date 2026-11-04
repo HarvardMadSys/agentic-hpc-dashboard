@@ -21,6 +21,7 @@ import time
 from ..buckets import RollingBuckets, _epoch_of
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
+from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
 
@@ -97,6 +98,93 @@ def _usage():
             "net_rx_mb": 0.0, "net_mb": 0.0}
 
 
+# What is running at a session's live edge. A command that is still running has left no exit
+# record, but the collector's per-minute census of an agent tree lists the commands up in it
+# (`by_command`: the top 15 by how many processes run each). The agent and its helpers (MCP
+# servers) are up in every tick, so the least a command has been over the session's ticks is its
+# baseline, and what is up beyond that is a call running. A baseline says nothing is running only
+# if it began with the session: a call already up in the earliest tick held is in it.
+CENSUS_SHOWN = 5        # the commands `running_now` lists
+NAME_SHOWN = 40         # characters of one command's name it shows, after masking
+START_AGE_S = 150       # a baseline began with the session if its root was this young, at most
+                        # (two census ticks, 60 s apart, and slack) at the earliest tick held
+
+
+def _census(raw):
+    """A tick's `by_command` as {command: processes up}, or None where it carries none. An entry
+    that is not a name with a positive whole count is left out. The root is always up in a tree
+    that sent a tick, so a map with nothing left is a bad record, not an empty tree: it is no
+    census, and never reads as idle."""
+    if not isinstance(raw, dict):
+        return None
+    return {c: n for c, n in raw.items()
+            if type(n) is int and n > 0 and isinstance(c, str)} or None
+
+
+def _least(base, byc):
+    """The baseline once `byc`, one more tick's census, is counted: the least of each command over
+    the ticks so far. A command a tick lacks has a count of 0 there, and so drops out for good. A
+    tick with no census (None) says nothing about any command, so `base` stays as it was. It is a
+    new dict where anything changed and never an edit in place, since ticks share them."""
+    if byc is None:
+        return base
+    if base is None:
+        return byc
+    if all(byc.get(c, 0) >= n for c, n in base.items()):
+        return base
+    return {c: min(n, byc[c]) for c, n in base.items() if c in byc}
+
+
+def _age(raw):
+    """A tick's `age_s`, its root's age, or None where it carries none: null is not 0, and a value
+    that is no number is none."""
+    return raw if isinstance(raw, (int, float)) and not isinstance(raw, bool) else None
+
+
+def _younger(a, b):
+    """The lesser of two ages, either of which may be None (no age)."""
+    return b if a is None or (b is not None and b < a) else a
+
+
+def running_now(tree, fresh):
+    """What the census says is running in an agent tree, from its newest tick.
+
+    `{"state": "running", "cmds": [[command, processes]], "cat": category, "at": census time}`
+    where something is up beyond the baseline, `{"state": "idle", "at": census time}` where only
+    the baseline is, and `{"state": "unknown"}` where there is no census to read: `tree` is None
+    (an agent a VS Code server started shares that server's census, so has none of its own), or
+    its newest tick is older than the epoch `fresh`, carries no time, or carries no census.
+    Idle is said of a census that was read, never for want of one.
+
+    Idle is also said only of a baseline that began with the session, one whose earliest tick
+    held was of a root START_AGE_S old at most (a tick with no age is not). A baseline formed
+    later, from a session older than the ticks held or whose start the backfill has not yet
+    reached, may hold a call that was already up, so nothing beyond it is not known to be nothing.
+    Running is positive evidence and does not depend on that.
+
+    `cmds` is what is up beyond the baseline, largest first and a tie by name, the first
+    CENSUS_SHOWN of it, each name masked and cut. `cat` is the first of `phase_rules.CATS` that
+    any of those has when its name is read as a one-word command, so a program no table names
+    counts as run.
+    """
+    if tree is None:
+        return {"state": "unknown"}
+    at, up = tree.get("epoch"), tree.get("by_command")
+    if at is None or at < fresh or up is None:
+        return {"state": "unknown"}
+    base = tree.get("base") or {}
+    beyond = sorted(((c, n - base.get(c, 0)) for c, n in up.items() if n > base.get(c, 0)),
+                    key=lambda kv: (-kv[1], kv[0]))[:CENSUS_SHOWN]
+    if not beyond:
+        start_age = tree.get("base_age")
+        if start_age is None or start_age > START_AGE_S:
+            return {"state": "unknown"}
+        return {"state": "idle", "at": at}
+    cats = {category_of_argv(c, c) for c, _ in beyond}
+    return {"state": "running", "cmds": [[redact(c)[:NAME_SHOWN], n] for c, n in beyond],
+            "cat": next((k for k in CATS if k in cats), "unknown"), "at": at}
+
+
 class LiveReducer:
     # conn / netio are read for one thing: the identity block of a running agent
     # root, which carries its launch flags. Residency alone cannot give that -- its
@@ -118,7 +206,10 @@ class LiveReducer:
         self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 500)))
         self.submit_tail = collections.deque(maxlen=int(cfg.get("live.submit_tail", 50)))
         self.hosts = {}          # host -> newest residency_totals-derived rollup
-        self.trees = {}          # (host, tree_root_pid) -> newest residency tick
+        # (host, tree_root_pid) -> newest residency tick, with the commands it lists
+        # (`by_command`), their least over the session's ticks (`base`), and the least age its
+        # root had at any of the ticks that made it (`base_age`): `running_now`
+        self.trees = {}
         self.window_s = self.retention_s
         self.submits_in_window = collections.deque()
         self.conn_unmatched_births = None
@@ -273,11 +364,16 @@ class LiveReducer:
         cur = self.trees.get(key)
         uuid = rec.get("session_uuid")
         same = cur is not None and (uuid is None or cur.get("uuid") in (None, uuid))
+        byc = _census(rec.get("by_command"))
+        # how old the root was at a tick that adds to the baseline: one with no census adds none
+        age = _age(rec.get("age_s")) if byc is not None else None
         if older and cur is not None:
             # a newer tick already holds this tree; an older one of the SAME
-            # session still counts toward its memory history
+            # session still counts toward its memory history and its baseline
             if same:
                 self._rss_tick(cur, rec.get("rss_mb"))
+                cur["base"] = _least(cur.get("base"), byc)
+                cur["base_age"] = _younger(cur.get("base_age"), age)
             return
         t = {
             "host": rec.get("host"), "agent_type": rec.get("agent_type"),
@@ -297,6 +393,9 @@ class LiveReducer:
             "sid": rec.get("_sid"), "uuid": uuid,
             "version": agent_version(rec.get("comm"), rec.get("args"))
             or (cur.get("version") if same else None),
+            # a new session on the same pid starts its baseline afresh, from this tick
+            "by_command": byc, "base": _least(cur.get("base") if same else None, byc),
+            "base_age": _younger(cur.get("base_age") if same else None, age),
         }
         if same:
             # a pid reused by a new session starts its history afresh

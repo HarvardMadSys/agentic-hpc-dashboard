@@ -10,6 +10,7 @@ thread (`WindowRegistry._build`), as in test_window_cache.
 import json
 import os
 import pickle
+import shutil
 import sys
 import threading
 import time
@@ -284,6 +285,145 @@ class AdvanceTest(HourCase):
         self.assertEqual(st["queued_filtered"], [])
         view = self.build(reg, 300)
         self.assertIn("reducing 0 new hour", view.cache["note"])
+
+
+class InterruptedBuildTest(HourCase):
+    """R67: a build stopped after it saved an hour is resumed as the build that was never stopped
+    would have made the window. Every hour a run saves also saves the join state it carries out of
+    that hour (its chain), so the resume starts at the last saved hour, from that hour's chain,
+    and reduces nothing twice."""
+
+    def setUp(self):
+        super().setUp()
+        self.write(gen(SINCE + 1, NOW - 30))
+
+    def wipe(self):
+        for d in ("hours", "windows"):
+            shutil.rmtree(os.path.join(self.tmp, "cache", d), ignore_errors=True)
+
+    def stop_after(self, k):
+        """A patch that stops every build at its `k`th saved hour, as a killed service would, and
+        the hours each build saved."""
+        real, saved = hours.HourStore._save_hour, []
+
+        def save_then_stop(store, hour, red, meta):
+            size = real(store, hour, red, meta)
+            saved.append(hour)
+            if len(saved) % k == 0:
+                raise RuntimeError("stopped")
+            return size
+        return mock.patch.object(hours.HourStore, "_save_hour", save_then_stop), saved
+
+    def chains(self):
+        d = os.path.join(self.tmp, "cache", "hours")
+        return sorted(int(n[1:].split(".")[0]) for n in os.listdir(d)
+                      if n[0] == "c" and n[1:2].isdigit())
+
+    def same(self, want, view):
+        self.assertEqual(view.cache["source"], "hours")
+        got = self.payload(view)
+        for key in sorted(want):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(want[key], got[key]), [])
+
+    def test_a_build_interrupted_after_an_hour_is_resumed_from_that_hours_chain(self):
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        cfg = self.cfg()
+        clean = self.registry(cfg)
+        self.assertEqual(TM.diff(want["trajectories"], self.payload(self.build(clean))["trajectories"]), [])
+        whole = clean.hours.stats["hours_reduced"]          # what a build never stopped reduces
+        self.assertGreaterEqual(whole, 3)
+        newest = clean.hours.chain[0]
+        self.assertEqual(self.chains(), [newest])           # a completed run keeps its last chain only
+        for stop_after in (1, 2):
+            with self.subTest(stop_after=stop_after):
+                self.wipe()
+                patch, saved = self.stop_after(stop_after)
+                with patch:
+                    self.build(self.registry(cfg))          # the build falls back to a scan
+                self.assertEqual(len(saved), stop_after)
+                self.assertEqual(self.chains()[-1], saved[-1])  # the last saved hour's chain is saved
+                again = self.registry(cfg)                  # a restart, same code and config
+                view = self.build(again)
+                # from the last saved hour's chain: no hour reduced twice
+                self.assertEqual(again.hours.stats["hours_reduced"], whole - stop_after)
+                self.same(want, view)
+                self.assertEqual(self.chains(), [newest])
+
+    def test_hours_saved_with_no_chain_are_reduced_again_from_where_their_run_began(self):
+        # As the code before per-hour chains left them: `_began`'s walk back is the fallback
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        cfg = self.cfg()
+        clean = self.registry(cfg)
+        self.build(clean)
+        whole = clean.hours.stats["hours_reduced"]
+        self.wipe()
+        patch, saved = self.stop_after(2)
+        with patch, mock.patch.object(hours.HourStore, "_save_chain", lambda *a, **k: 0):
+            self.build(self.registry(cfg))
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(self.chains(), [])
+        again = self.registry(cfg)
+        view = self.build(again)
+        self.assertEqual(again.hours.stats["hours_reduced"], whole)
+        self.same(want, view)
+
+    def test_a_run_before_the_chain_stopped_is_resumed_from_its_last_hour(self):
+        # (b): the window widened past the saved hours (a narrower window saved the newest), and
+        # the build stopped within the run before them: mid-run, and after its last hour, before
+        # the saved hour after it is reduced again with the run's join state
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        cfg = self.cfg()
+        h_hi = self.registry(cfg).hours.closed_end(NOW, [self.root])
+        for stop_after in (1, 2):
+            with self.subTest(stop_after=stop_after):
+                self.wipe()
+                self.registry(cfg).hours.ensure([self.root], h_hi - 1, h_hi)
+                self.assertEqual(self.chains(), [h_hi - 1])
+                patch, saved = self.stop_after(stop_after)
+                with patch:
+                    self.build(self.registry(cfg))
+                self.assertEqual(saved, [h_hi - 3, h_hi - 2][:stop_after])
+                again = self.registry(cfg)
+                view = self.build(again)
+                # the rest of the run, and the hour after it once more: nothing else twice
+                self.assertEqual(again.hours.stats["hours_reduced"], 3 - stop_after)
+                self.same(want, view)
+                self.assertEqual(self.chains(), [h_hi - 1])
+
+    def test_a_gap_fill_stopped_past_max_gap_h_is_resumed_from_its_last_hour(self):
+        # (c): a run carrying on from the chain, stopped after more saved hours than MAX_GAP_H
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        cfg = self.cfg()
+        h_hi = self.registry(cfg).hours.closed_end(NOW, [self.root])
+        with mock.patch.object(hours, "MAX_GAP_H", 0):
+            self.registry(cfg).hours.ensure([self.root], h_hi - 3, h_hi - 2)
+            patch, saved = self.stop_after(1)
+            with patch:
+                self.build(self.registry(cfg))
+            self.assertEqual(saved, [h_hi - 2])
+            again = self.registry(cfg)
+            view = self.build(again)
+            self.assertEqual(again.hours.stats["hours_reduced"], 1)
+            self.same(want, view)
+
+    def test_a_build_stopped_after_every_new_hour_still_reaches_the_windows_end(self):
+        # Progress: each restart saves one more hour, however often the service is stopped
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        cfg = self.cfg()
+        h_hi = self.registry(cfg).hours.closed_end(NOW, [self.root])
+        patch, saved = self.stop_after(1)
+        with patch:
+            for _ in range(6):
+                reg = self.registry(cfg)
+                if reg.hours.missing([self.root], h_hi - 3, h_hi) == 0:
+                    break
+                self.build(reg)
+        self.assertEqual(saved, [h_hi - 3, h_hi - 2, h_hi - 1])    # each hour once, in order
+        again = self.registry(cfg)
+        view = self.build(again)
+        self.assertEqual(again.hours.stats["hours_reduced"], 0)
+        self.same(want, view)
 
 
 class ClosingTest(HourCase):

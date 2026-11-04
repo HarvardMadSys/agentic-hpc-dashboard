@@ -190,22 +190,26 @@ class FilteredBuildTest(FilterCase):
     def test_filtered_and_unfiltered_builds_never_resume_each_other(self):
         glen = ViewFilter(["glen"])
         self.feed_who(150, 50)
-        self.build(self.registry())
-        self.build(self.registry(), flt=glen)
-        d = os.path.join(self.tmp, "cache", "windows")
-        stems = sorted(n.split(".")[0] for n in os.listdir(d))
-        self.assertEqual(stems, ["w%d" % WIN, "w%d-%s" % (WIN, glen.slug())])
+        # Every build at one present, as in the only-those-records test above:
+        # the resumed build and the fresh one are compared whole, window stamps
+        # and all.
+        with mock.patch("time.time", return_value=self.now):
+            self.build(self.registry())
+            self.build(self.registry(), flt=glen)
+            d = os.path.join(self.tmp, "cache", "windows")
+            stems = sorted(n.split(".")[0] for n in os.listdir(d))
+            self.assertEqual(stems, ["w%d" % WIN, "w%d-%s" % (WIN, glen.slug())])
 
-        self.feed_who(40, 10)
-        again = self.build(self.registry(), flt=glen)
-        self.assertEqual(again.cache["source"], "snapshot", again.cache["note"])
-        self.assertEqual(again.progress["records"], 4)
+            self.feed_who(40, 10)
+            again = self.build(self.registry(), flt=glen)
+            self.assertEqual(again.cache["source"], "snapshot", again.cache["note"])
+            self.assertEqual(again.progress["records"], 4)
 
-        # With its own copy gone it scans -- it never picks up the unfiltered one.
-        for n in os.listdir(d):
-            if n.startswith("w%d-" % WIN):
-                os.unlink(os.path.join(d, n))
-        fresh = self.build(self.registry(), flt=glen)
+            # With its own copy gone it scans -- it never picks up the unfiltered one.
+            for n in os.listdir(d):
+                if n.startswith("w%d-" % WIN):
+                    os.unlink(os.path.join(d, n))
+            fresh = self.build(self.registry(), flt=glen)
         self.assertEqual(fresh.cache["source"], "scan")
         self.assertIn("no saved build", fresh.cache["note"])
         self.assertEqual(fresh.payload, again.payload)

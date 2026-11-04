@@ -36,7 +36,7 @@ from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
 from .normalize import Normalizer, canonical_class
-from .reducers.live import LiveReducer
+from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
 
@@ -475,7 +475,7 @@ class Aggregator:
                  "sessions": {"summary": tr.get("summary"),
                               "busiest": [dict({k: r.get(k) for k in keep}, _go={"sid": r.get("sid")})
                                           for r in busiest]}}
-        panels = got.get("panels") or {}
+        panels = self._cascade_hints(got.get("panels") or {}, self._agent_sessions(tr))
         scope = {"view": self._ask_view(win, view, context.get("classes"))}
         if suggest:
             st = got.get("window_status") or {}
@@ -501,6 +501,57 @@ class Aggregator:
     def _ask_label(ctx, key, cap):
         v = ctx.get(key)
         return v.strip()[:cap] if isinstance(v, str) else ""
+
+    @staticmethod
+    def _agent_sessions(tr):
+        """(host, agent pid) -> its session's sid, the newest day's when it ran
+        on several: a cited agent opens its trajectory by it."""
+        out = {}
+        for sid, r in ((tr or {}).get("rows") or {}).items():
+            parts = sid.split("|") if isinstance(sid, str) else []
+            if len(parts) != 4 or not parts[3].startswith("apid:"):
+                continue
+            try:
+                key = (parts[0], int(parts[3][len("apid:"):]))
+            except ValueError:
+                continue
+            last = (r or {}).get("last") or 0
+            if key not in out or last > out[key][0]:
+                out[key] = (last, sid)
+        return {k: sid for k, (_last, sid) in out.items()}
+
+    @staticmethod
+    def _cascade_hints(panels, sessions):
+        """The panels with each agent of the cascades panel, and each tree by
+        its lead agent, pointing at its session (`_go.sid`), so a citation of
+        one -- or of a folder it wrote -- opens its trajectory. A copy: the
+        panel itself is served to the page as it is."""
+        c = (panels or {}).get("cascades")
+        if not isinstance(c, dict) or not sessions:
+            return panels
+        c = dict(c)
+
+        def hinted(row, sid):
+            return dict(row, _go={"sid": sid}) if sid else row
+
+        ws = c.get("workspace")
+        if isinstance(ws, dict) and isinstance(ws.get("agents"), list):
+            c["workspace"] = dict(ws, agents=[
+                hinted(a, sessions.get((a.get("host"), a.get("pid")))) if isinstance(a, dict) else a
+                for a in ws["agents"]])
+        if isinstance(c.get("trees"), list):
+            trees = []
+            for t in c["trees"]:
+                sid = None
+                if isinstance(t, dict):
+                    agents = sorted((n for n in t.get("nodes") or []
+                                     if isinstance(n, dict) and n.get("role") == "agent"),
+                                    key=lambda n: (n.get("agent_level") or 1, -(n.get("tool_calls") or 0)))
+                    sid = next((sessions[(t.get("host"), n.get("pid"))] for n in agents
+                                if (t.get("host"), n.get("pid")) in sessions), None)
+                trees.append(hinted(t, sid) if isinstance(t, dict) else t)
+            c["trees"] = trees
+        return dict(panels, cascades=c)
 
     @staticmethod
     def _ask_view(win, flt=None, classes=None, sid=None):
@@ -581,6 +632,8 @@ class Aggregator:
                 named.append("panels.%s%s" % (key, " (%s)" % ", ".join(keys) if keys else ""))
         if not panels and not extra:
             raise ValueError("this panel has no data in this window to ask about")
+        if "cascades" in panels:
+            panels = self._cascade_hints(panels, self._agent_sessions(self.trajectories(window_min, flt)))
         classes = ctx.get("classes")
         extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
                          "classes_shown": [c for c in classes if isinstance(c, str)][:8]
@@ -665,10 +718,11 @@ class Aggregator:
         From the live tier (under the lock): an agent root is running while
         its own records keep arriving (`LiveReducer.LIVE_S`), and its tree's
         newest census says how many processes it has up and how much memory
-        they hold -- when the agent is its tree's root; one a VS Code server
-        started shares that server's census, so it gets none. An agent's
-        rows are split by day; only its newest is marked. The cached rows
-        are never written to: a marked row is a copy.
+        they hold, and what of that is a call running (`now`, from
+        `running_now`) -- when the agent is its tree's root; one a VS Code
+        server started shares that server's census, so it gets none and its
+        `now` is unknown. An agent's rows are split by day; only its newest is
+        marked. The cached rows are never written to: a marked row is a copy.
         """
         now = now or time.time()
         fresh = now - self.live.LIVE_S
@@ -696,5 +750,6 @@ class Aggregator:
                 "n_procs": census.get("n_procs") if census else None,
                 "rss_mb": census.get("rss_mb") if census else None,
                 "census_at": census.get("epoch") if census else None,
+                "now": running_now(census, fresh),
             })
         return out

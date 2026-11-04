@@ -216,7 +216,10 @@
       "//4": "'sessions active in the last 2h' while labelling itself 24h.",
       "//5": "max_sessions is therefore the memory bound, and it applies PER held",
       "//6": "window: lower it if you raise live.retention_min on a busy fleet.",
-      "idle_evict_s": 7200, "max_sessions": 50000,
+      "//7": "Past it, whole sessions (process trees) go, the least recently active",
+      "//8": "first. A FAS login node makes 45k keys on a median day, 105k at most,",
+      "//9": "and each held costs about 6 KB: 150k holds a busy day whole.",
+      "idle_evict_s": 7200, "max_sessions": 150000,
       "include_key_types": ["apid", "sess", "tty"],
       "//": "'usr' is excluded: a usr-keyed group is 'everything that user did',",
       "//1": "which is not a trajectory. It is counted in by_key_type, never ranked."

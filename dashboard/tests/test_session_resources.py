@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -53,7 +54,23 @@ def session(t0, root=100, user="alice", host="h1", scope="process"):
     ]
 
 
-class OwnIoTest(unittest.TestCase):
+# The present the tests below run at: noon today, `time.time` patched as a
+# pinned clock runs the service (clock.py). They build sessions minutes before
+# "now" and read each as one row, and a session's rows split at local midnight
+# (its sid carries the date), so "now" must not be just after one.
+NOON = time.mktime(time.localtime()[:3] + (12, 0, 0, 0, 0, -1))
+
+
+class NoonCase(unittest.TestCase):
+    """Each test with the clock pinned to NOON."""
+
+    def setUp(self):
+        clock = mock.patch("time.time", return_value=NOON)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+
+class OwnIoTest(NoonCase):
 
     def test_a_shell_does_not_count_its_childs_disk_io_again(self):
         row = ranked(reduce(session(time.time() - 600)))[0]
@@ -71,9 +88,10 @@ class OwnIoTest(unittest.TestCase):
         self.assertEqual(row["peak_rss_mb"], 120.0)
 
 
-class RanksTest(unittest.TestCase):
+class RanksTest(NoonCase):
 
     def setUp(self):
+        super().setUp()
         t0 = time.time() - 3000
         # bob's session is the later one and moves the most bytes; alice's the
         # larger process, with more processes
@@ -125,6 +143,11 @@ class SeamTest(unittest.TestCase):
 
     def setUp(self):
         seam = (int(NOW // HOUR) - 1) * HOUR
+        # An hour's seam, not a day's: a session's rows split at local midnight
+        # (its sid carries the date), and `row` reads only one. During the
+        # 02:00 hour the seam above is midnight, so take the hour before it.
+        if time.localtime(seam - 30)[:3] != time.localtime(seam + 40)[:3]:
+            seam -= HOUR
         recs = session(seam - 30)
         # move the shell's exit (and the Grep after it) past the seam
         recs[2]["ts_epoch"] = seam + 30
@@ -155,7 +178,7 @@ class SeamTest(unittest.TestCase):
         self.assertAlmostEqual(self.row(cold)["io_rd_mb"], 21.5)
 
 
-class LiveTest(unittest.TestCase):
+class LiveTest(NoonCase):
     """The panel re-reads the sessions every few seconds while a view is fed."""
 
     def view(self, recs):

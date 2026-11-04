@@ -14,7 +14,7 @@
  * chart's bar) lands on its panel; a part no panel draws lands on its tab.
  */
 import type { AskCite, AskView, CiteJump, Cls } from '../api/types';
-import { CLS } from './classes';
+import { AGENT_TYPE_LBL, CLS } from './classes';
 import { parseUrl, urlQuery } from './filters';
 import type { UrlState } from './filters';
 
@@ -137,12 +137,17 @@ function placeOf(path: (string | number)[]): [Place, (string | number)[]] | null
 
 /** Where a citation goes, and how it is found once the page is there. */
 export interface Arrival {
-  /** what to set in the URL: the tab, and the window and filter it was read over */
+  /** what to set in the URL: the tab, the window it was read over, and the
+   *  filter that narrows the page to what it is about */
   patch: Partial<UrlState>;
   anchor?: string;
   titled?: string;
   /** the texts that name its row, the most telling first */
   find: string[];
+  /** the agents it is (`host:pid`): an agent's row is found by these */
+  keys?: string[];
+  /** its rows are drawn from a view the filter builds: wait for them */
+  waits?: boolean;
   /** a moment of this session's tree */
   sid?: string;
   jump?: CiteJump;
@@ -153,16 +158,21 @@ export interface Target {
   where: string;
   /** what it is: "rm -rf against a shared path" */
   label: string;
+  /** what a click narrows the page to: "marthen", "the human class"; null: nothing */
+  narrows: string | null;
   /** null: the page draws it nowhere (the question's own view) */
   arrival: Arrival | null;
+  /** an agent's part opens its trajectory; the panel it was read from is this */
+  also?: { where: string; arrival: Arrival; narrows: string | null };
 }
 
 const rec = (d: unknown): Record<string, unknown> =>
   d && typeof d === 'object' && !Array.isArray(d) ? (d as Record<string, unknown>) : {};
 
-/** The fields that name a row, the most telling first. */
+/** The fields that name a row, the most telling first; a folder by the path
+ *  the page shows it as. */
 const NAME_KEYS = ['command', 'pattern', 'tool', 'user', 'host', 'wrapper', 'agent_type', 'b', 'label',
-  'title', 'ancestry', 'why', 'root', 'id'];
+  'title', 'ancestry', 'why', 'root', 'id', 'shown', 'path'];
 
 function names(d: Record<string, unknown>): string[] {
   const out: string[] = [];
@@ -205,6 +215,50 @@ function viewPatch(v: AskView | null | undefined): Partial<UrlState> {
   return p;
 }
 
+const isCls = (k: unknown): k is Cls => typeof k === 'string' && (CLS as string[]).includes(k);
+
+/** The page filter that narrows to what a citation is about, so a click shows
+ *  it rather than only scrolling to it: its one user, its one agent type, its
+ *  one class. A row of many users narrows to none of them, and an agent is
+ *  narrowed by its user, not its type -- a Claude Code's tree holds the Codex
+ *  it started, which a type would cut out. */
+function narrowing(c: AskCite, d: Record<string, unknown>): { patch: Partial<UrlState>; said: string[] } {
+  const patch: Partial<UrlState> = {};
+  const said: string[] = [];
+  const keys = c.path.filter((k): k is string => typeof k === 'string');
+  let user = typeof d.user === 'string' && d.user ? d.user : null;
+  if (!user && Array.isArray(d.users) && d.users.length === 1 && typeof d.users[0] === 'string') user = d.users[0];
+  // a "who ran it" count is keyed by user: one user is that user
+  if (!user && keys[keys.length - 1] === 'users' && Object.keys(d).length === 1) user = Object.keys(d)[0];
+  if (user) {
+    patch.users = [user];
+    said.push(user);
+  }
+  const ti = keys.indexOf('by_agent_type');
+  const atype = ti >= 0 ? keys[ti + 1] : keys[0] === 'facets' && keys[1] === 'agent_types' ? d.agent_type : null;
+  if (!user && typeof atype === 'string' && atype) {
+    patch.atypes = [atype];
+    said.push(atype);
+  }
+  // the class a part of a panel is about (`by_class.human`), or a row's own
+  const cls = [...keys].reverse().find(isCls) ?? (isCls(d.actor3) ? d.actor3 : isCls(d.cls) ? d.cls : null);
+  if (cls) {
+    patch.cls = [cls];
+    said.push(`the ${cls === 'ide' ? 'IDE' : cls} class`);
+  }
+  return { patch, said };
+}
+
+/** The agents a row is: its own (`host`, `pid`), or a tree's, by its root
+ *  process (`root.pid`). */
+function agentKeys(d: Record<string, unknown>): string[] | undefined {
+  const host = typeof d.host === 'string' ? d.host : null;
+  if (!host) return undefined;
+  const root = typeof d.root === 'number' ? d.root : rec(d.root).pid;
+  const out = [d.pid, root].filter((p): p is number => typeof p === 'number').map((p) => `${host}:${p}`);
+  return out.length ? out : undefined;
+}
+
 /** Where one citation goes. */
 export function target(c: AskCite, view: AskView | null | undefined): Target {
   const got = placeOf(c.path);
@@ -213,7 +267,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
   const sid = sidOf(c);
   const jump = c.go?.jump;
   if (!got) {
-    return { where: 'the question', label: c.path.map(human).join(' › ') || 'its view', arrival: null };
+    return { where: 'the question', label: c.path.map(human).join(' › ') || 'its view', narrows: null, arrival: null };
   }
   const [place, rest] = got;
   const tabLbl = TAB_LBL[place.tab] ?? place.tab;
@@ -222,6 +276,21 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
   const where = here ? 'this session' : place.panel ? `${tabLbl} › ${place.panel}` : tabLbl;
   const base = viewPatch(view);
   const nm = names(d);
+  // whom it is: its own fields, or for a part of a row that names no one (a
+  // folder an agent read), the row's (`of`)
+  const owner = rec(c.of);
+  const who: Record<string, unknown> = { ...owner, ...d };
+  // the part of the panel it sits in: `poll` alone does not say whose
+  const part = rest.filter((k) => typeof k === 'string' && k !== 'rows').map(human).join(' › ');
+  const label = nm[0] ? (part ? `${nm[0]} · ${part}` : nm[0]) : part || place.panel || tabLbl;
+  const { patch, said } = narrowing(c, who);
+  const panelArrival: Arrival = {
+    patch: { ...base, ...patch, tab: place.tab },
+    anchor: place.titled ? undefined : place.panel ? (place.anchor ?? slug(place.panel)) : undefined,
+    titled: place.titled,
+    find: nm,
+    keys: agentKeys(who),
+  };
 
   // a moment of the session asked about. The read it is in is the jump's to
   // find (TrajectoryInspector pages to it), so the page on screen is kept.
@@ -233,6 +302,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
     return {
       where,
       label: mark ?? (line ? line.slice(0, 90) : rest.length ? human(rest[0]) : 'process'),
+      narrows: null,
       arrival: {
         patch: { ...base, tab: 'trajectories', traj: view.sid, tuser: null },
         find: [],
@@ -241,18 +311,26 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
       },
     };
   }
-  // a session: it opens in the inspector
+  // a session, an agent, or a part of one (a folder an agent read): it opens
+  // as the session's trajectory, which is it and nothing else; the panel it
+  // was read from, filtered to it, is a link of its own
   if (sid) {
-    const who = typeof d.user === 'string' ? `${d.user}’s ` : '';
-    const kind = String(d.agent_type ?? d.actor3 ?? d.cls ?? '').trim();
+    const whose = typeof who.user === 'string' ? `${who.user}’s ` : '';
+    const at = typeof who.agent_type === 'string' ? who.agent_type : null;
+    const kind = (at ? AGENT_TYPE_LBL[at] ?? at : String(who.actor3 ?? who.cls ?? '')).trim();
+    const sess = `${whose}${kind ? kind + ' ' : ''}session`;
+    const isSession = place.tab === 'trajectories';
     return {
       where: sid === view?.sid ? 'this session' : `${TAB_LBL.trajectories} › ${INSPECTOR}`,
-      label: `${who}${kind ? kind + ' ' : ''}session`,
+      // a part of it by its own name; the agent or the session itself as the session
+      label: c.of ? `${nm[0] ?? part} in ${sess}` : sess,
+      narrows: null,
       arrival: {
         patch: { ...base, tab: 'trajectories', traj: sid, tfrom: null, tuser: null },
         anchor: slug(INSPECTOR),
         find: [],
       },
+      also: isSession ? undefined : { where, arrival: panelArrival, narrows: said.length ? said.join(', ') : null },
     };
   }
   // the session asked about, as a whole
@@ -260,33 +338,43 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
     return {
       where,
       label: c.path.filter((k) => typeof k === 'string').map(human).join(' › '),
+      narrows: null,
       arrival: view?.sid
         ? { patch: { ...base, tab: 'trajectories', traj: view.sid, tuser: null }, anchor: slug(INSPECTOR), find: [] }
         : null,
     };
   }
-  // the part of the panel it sits in: `poll` alone does not say whose
-  const part = rest.filter((k) => typeof k === 'string' && k !== 'rows').map(human).join(' › ');
-  const label = nm[0] ? (part ? `${nm[0]} · ${part}` : nm[0]) : part || place.panel || tabLbl;
   return {
     where,
-    label,
-    arrival: {
-      patch: { ...base, tab: place.tab },
-      anchor: place.titled ? undefined : place.panel ? (place.anchor ?? slug(place.panel)) : undefined,
-      titled: place.titled,
-      find: nm,
-    },
+    label: c.of && typeof owner.user === 'string' ? `${label} · ${owner.user}’s` : label,
+    narrows: said.length ? said.join(', ') : null,
+    arrival: panelArrival,
   };
+}
+
+const sameList = (a: readonly string[] | undefined, b: readonly string[] | undefined) =>
+  (a ?? []).length === (b ?? []).length && (a ?? []).every((x) => (b ?? []).includes(x));
+
+/** Whether going to `a` from the page `from` asks for a view the service may
+ *  still have to build -- another filter or window -- whose rows come later. */
+function builds(a: Arrival, from: UrlState): boolean {
+  const p = a.patch;
+  return (
+    (p.users !== undefined && !sameList(p.users, from.users)) ||
+    (p.atypes !== undefined && !sameList(p.atypes, from.atypes)) ||
+    (p.win !== undefined && p.win !== from.win)
+  );
 }
 
 /** The link that opens a citation: in a new tab, it arrives by its hash. */
 export function hrefOf(a: Arrival | null, what: string): string | undefined {
   if (!a) return undefined;
   const q = urlQuery({ ...parseUrl(location.search), ...a.patch });
-  // the query already holds the patch: the hash says only how to arrive
-  const { anchor, titled, find, sid, jump } = a;
-  const h = encodeURIComponent(JSON.stringify({ patch: {}, anchor, titled, find, sid, jump, what }));
+  // the query already holds the patch: the hash says only how to arrive; a
+  // new page builds its filtered view from nothing, so its rows are waited for
+  const { anchor, titled, find, keys, sid, jump } = a;
+  const waits = !!(a.patch.users?.length || a.patch.atypes?.length);
+  const h = encodeURIComponent(JSON.stringify({ patch: { tab: a.patch.tab }, anchor, titled, find, keys, waits, sid, jump, what }));
   return `${location.pathname}${q ? '?' + q : ''}#cite=${h}`;
 }
 
@@ -326,6 +414,48 @@ function findRow(root: ParentNode, needles: string[]): HTMLElement | null {
   return null;
 }
 
+/** The element the citation is: an agent's row by its keys (the agent's own
+ *  row before a fold that holds it), else the row its texts name. */
+function targetIn(scope: ParentNode, a: Arrival): HTMLElement | null {
+  for (const k of a.keys ?? []) {
+    const all = Array.from(scope.querySelectorAll<HTMLElement>(`[data-keys~="${k.replace(/["\\]/g, '\\$&')}"]`))
+      .filter((e) => e.offsetParent !== null);
+    const own = all.find((e) => !e.classList.contains('fold')) ?? all[0];
+    if (own) return own;
+  }
+  return a.find.length ? findRow(scope, a.find) : null;
+}
+
+/** Open the row a citation landed on, so it shows what it is: an agent's row
+ *  draws its tree, a row that folds out lists what it counts. One already
+ *  open stays open. */
+function openRow(el: HTMLElement) {
+  if (el.matches('button.al-item:not(.on):not(.fold), tr.xrow:not(.open), tr.u-row:not(.open)')) el.click();
+}
+
+/** In the tree an agent's row drew, the cited agent's own box: picked, so
+ *  its blast radius opens beside the tree. The tree draws after the row
+ *  opens, so this looks again for a moment; an agent folded away in it
+ *  ("+3 more") leaves the tree as it is. */
+function pickNode(keys: string[], tries = 0) {
+  for (const k of keys) {
+    const el = document.querySelector<HTMLElement>(`.tnode[data-id="${k.replace(/["\\]/g, '\\$&')}"]`);
+    if (el) {
+      if (!el.classList.contains('on')) el.click();
+      return;
+    }
+  }
+  if (tries < 15) window.setTimeout(() => pickNode(keys, tries + 1), 150);
+}
+
+/** A fold of look-alike agents holding the one cited: opened, it draws the
+ *  agent's own row, which is looked for next. */
+function openFold(el: HTMLElement): boolean {
+  if (!el.matches('button.al-item.fold')) return false;
+  if (el.getAttribute('aria-expanded') !== 'true') el.click();
+  return true;
+}
+
 function panelOf(a: Arrival): HTMLElement | null {
   if (a.anchor) return document.getElementById(a.anchor);
   if (a.titled) {
@@ -349,12 +479,18 @@ function light(el: HTMLElement, center: boolean) {
   window.setTimeout(() => el.classList.remove('cite-hit'), 2600);
 }
 
-/** Once the page is on its tab: go to the citation's row, or its panel, or
- *  the moment of the session. The tab draws after its data, so this looks
- *  again for a while; a row still missing by then lands on its panel. */
+/** Once the page is on its tab: go to the citation's row and open it, or to
+ *  its panel, or to the moment of the session. The tab draws after its data,
+ *  so this looks again for a while -- for minutes when the filter it set has
+ *  a view to build, showing the panel meanwhile -- and stops when the reader
+ *  goes to another tab. A row still missing by then leaves the panel lit. */
 export function arrive(a: Arrival, what: string) {
   const t0 = performance.now();
+  const tab = a.patch.tab;
+  const patience = a.waits ? 300000 : 10000;
+  let shown = false;
   const tick = () => {
+    if (tab && (parseUrl(location.search).tab || 'live') !== tab) return;
     const late = performance.now() - t0;
     if (a.jump && a.sid) {
       const j = jumpers.get(a.sid);
@@ -365,23 +501,33 @@ export function arrive(a: Arrival, what: string) {
     } else {
       const panel = panelOf(a);
       const scope = panel ?? (a.anchor || a.titled ? null : document.querySelector('main'));
-      const row = scope && a.find.length ? findRow(scope, a.find) : null;
+      const row = scope ? targetIn(scope, a) : null;
       if (row) {
-        light(row, true);
+        if (openFold(row)) {
+          window.setTimeout(tick, 150);
+          return;
+        }
+        // opened first: the page redraws the row's classes as it opens, and
+        // would take the light off with them
+        openRow(row);
+        requestAnimationFrame(() => requestAnimationFrame(() => light(row, true)));
+        if (a.keys?.length && row.matches('button.al-item')) pickNode(a.keys);
         return;
       }
-      if (panel && (!a.find.length || late > 2500)) {
+      const sought = a.find.length > 0 || (a.keys?.length ?? 0) > 0;
+      if (panel && !shown && (!sought || late > 2500)) {
         light(panel, false);
-        return;
+        shown = true;
+        if (!sought) return;
       }
       // a row the tab does not draw: the tab, from its top
-      if (!a.anchor && !a.titled && late > 2500) {
+      if (!a.anchor && !a.titled && late > 2500 && !a.waits) {
         window.scrollTo({ top: 0, behavior: motion() });
         return;
       }
     }
-    if (late < 10000) window.setTimeout(tick, 120);
-    else if (!a.jump) window.scrollTo({ top: 0, behavior: motion() });
+    if (late < patience) window.setTimeout(tick, late < 10000 ? 120 : 500);
+    else if (!a.jump && !shown) window.scrollTo({ top: 0, behavior: motion() });
   };
   tick();
 }
@@ -389,17 +535,19 @@ export function arrive(a: Arrival, what: string) {
 /** Go to a citation in this tab: the URL first (Back returns to the answer),
  *  then the row. */
 export function go(a: Arrival, what: string) {
-  const q = urlQuery({ ...parseUrl(location.search), ...a.patch });
+  const from = parseUrl(location.search);
+  const q = urlQuery({ ...from, ...a.patch });
   const url = `${location.pathname}${q ? '?' + q : ''}`;
+  const b = { ...a, waits: builds(a, from) };
   if (url !== location.pathname + location.search) {
     history.pushState(null, '', url);
     window.dispatchEvent(new PopStateEvent('popstate'));
     // the page draws the tab it is going to first: until then the rows on
     // screen are the ones it is leaving
-    requestAnimationFrame(() => requestAnimationFrame(() => arrive(a, what)));
+    requestAnimationFrame(() => requestAnimationFrame(() => arrive(b, what)));
     return;
   }
-  arrive(a, what);
+  arrive(b, what);
 }
 
 /** A page opened from a citation's link arrives at it, once. */

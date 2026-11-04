@@ -115,6 +115,18 @@ ORDERS = ("oldest", "newest")   # how siblings are listed, and which end is draw
 COMPACT_SLACK = 4096     # stale entries a newest-first queue holds before a sweep
 WARM_TOP = 3             # sessions of the default ranking kept read in the background
 WARM_EVERY = 30          # seconds between the warmer's looks
+# What a person mistyped at a terminal, for the page's "hide typos" (`_typos`).
+SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh"})
+HUMAN = ("human", "ide")  # the classes a person types in; an agent's failure is its own
+# What a shell runs with a name it could not find (bash's command_not_found_handle):
+# Ubuntu's `command-not-found -- clera`, and PackageKit's on RHEL.
+NOT_FOUND_HELPERS = frozenset({"command-not-found", "pk-command-not-found"})
+RETYPE_QUICK = 10.0      # seconds: a failed try that ran longer was work, not a slip
+RETYPE_PAUSE = (0.5, 120.0)  # seconds the shell sat idle before a line a person typed,
+                             # and at most from a failed try to the next line
+RETYPE_EDITS = (3, 5)    # edits a retyped line is from the try: 3, or a 5th of its length
+# Programs whose exit 1 is an answer, not a failure: no line matched, the files differ.
+ANSWERS = frozenset({"grep", "egrep", "fgrep", "zgrep", "rg", "ag", "diff", "cmp"})
 
 DEFAULTS = {
     # Matched exit records read before the scan stops and says where. At ~25 us a
@@ -301,7 +313,7 @@ class Proc:
                  "end", "dur", "cpu", "code", "sig", "core", "ev", "cwd", "kv", "depth",
                  "a3", "atype", "user", "kids", "agg", "up", "link", "gap", "orphan",
                  "hint", "n", "sub_cpu", "cpu_nm", "t0", "t1", "sig_id", "label",
-                 "io", "sub_io", "gone", "leaf", "fork")
+                 "io", "sub_io", "gone", "leaf", "fork", "typo", "typed", "tries")
 
     def __init__(self, pid=None):
         self.pid = pid
@@ -311,7 +323,7 @@ class Proc:
         self.atype = self.user = self.agg = self.up = self.link = self.gap = None
         # `gone`: counted since, under its parent. `leaf`: itemised childless in
         # a newest-first read, so the first to be counted when room is needed.
-        # `fork`: it never exec'd (`from_record`).
+        # `fork`: it never exec'd (`from_record`; None: its parent will say).
         self.core = self.orphan = self.gone = self.leaf = self.fork = False
         self.kids = []
         self.hint = None
@@ -319,6 +331,11 @@ class Proc:
         self.io = self.sub_io = None
         self.t0 = self.t1 = None
         self.sig_id, self.label = 0, None
+        # `typo`: what a person mistyped (`_typos`), with the name they typed
+        # when a helper was handed it; `tries`: how many failed tries of a
+        # line that worked came just before it.
+        self.typo = self.typed = None
+        self.tries = 0
 
     @classmethod
     def from_record(cls, rec, start, ts):
@@ -338,11 +355,18 @@ class Proc:
         p.io = _io_of(rec)
         p.code, p.sig = rec.get("exit_code"), rec.get("signal")
         p.core = bool(rec.get("core_dumped"))
-        # A fork that never exec'd: the collector gave it its parent's argv
-        # ("inherit") and saw no exec of its own (an exec it saw whose argv never
-        # came keeps the inherited one too). A shell's subshell, so a
-        # `zsh /bin/zsh -i` under an interactive zsh is not a second one.
-        p.fork = rec.get("argv_source") == "inherit" and rec.get("duration_src") != "exec"
+        # A fork that never exec'd: a shell's subshell, so a `zsh /bin/zsh -i`
+        # under an interactive zsh is not a second one. No exec on record is not
+        # enough: schema 7 drained its rings in any order, so an exec could be
+        # handled after the exit was written, and that exit names the program
+        # the process became. A fork keeps the name it was born with, so it is
+        # one whose name is still the one its inherited argv gives, or, with no
+        # argv at all, still its parent's (`_finish`: None until then).
+        src, how = rec.get("argv_source"), rec.get("duration_src")
+        if src == "inherit" and how in ("task", "proc"):
+            p.fork = p.cmd in _argv_names(args)
+        elif src is None and how == "task":
+            p.fork = None
         p.ev = rec.get("event")
         p.cwd, p.kv = rec.get("cwd"), rec.get("_kv")
         d = rec.get("depth")
@@ -367,6 +391,17 @@ class Proc:
         p.a3, p.atype = info.get("a3"), info.get("atype")
         p.kv, p.depth = info.get("kv"), info.get("depth")
         return p
+
+
+def _argv_names(args):
+    """What a command line names its process: argv[0] (a login shell's `-`
+    dropped), or argv[1] when it is no option -- the script an interpreter
+    runs, which the kernel names the process for."""
+    t = (args or "").split(None, 2)
+    out = {t[0].rpartition("/")[2].lstrip("-")} if t else set()
+    if len(t) > 1 and not t[1].startswith("-"):
+        out.add(t[1].rpartition("/")[2])
+    return out
 
 
 def _alive_at(p, t):
@@ -877,6 +912,7 @@ class TreeBuilder:
         falls on the deep end of the oldest subtrees.
         """
         _finish(root, self.newest)
+        _typos(root)
         stats = {"shown": 0, "elided": 0, "links": collections.Counter()}
         budget = max(1, int(budget))
         memo = {}
@@ -941,6 +977,11 @@ def _finish(root, newest=False):
     unique = 0
     sign = -1 if newest else 1
     for n in reversed(order):
+        if n.fork is None:
+            # No argv to tell by: a fork has its parent's name. Only the parent
+            # its own record (or the index) names will do, not a placement.
+            par = n.up if n.link in ("ppid", "index") else None
+            n.fork = par is not None and par.cmd is not None and par.cmd == n.cmd
         n.kids.sort(key=lambda k: (k.t0 is None, sign * (k.t0 or 0.0), sign * (k.pid or 0)))
         own = n.ev is not None
         n.n = (1 if own else 0) + sum(k.n for k in n.kids) + (n.agg.n if n.agg else 0)
@@ -984,6 +1025,173 @@ def _finish(root, newest=False):
         n.sig_id = shapes.setdefault(
             (n.cmd, n.eff, n.role, n.link, n.gap, n.orphan, n.fork, frozenset(ran_cmds)),
             len(shapes) + 1)
+
+
+def _typos(root):
+    """Flag what a person mistyped at a terminal, for the page's "hide typos"
+    (user, 2026-10-29). Only among the commands of a shell a person types into
+    (`_interactive`), and only in the classes a person types in: an agent's
+    failed call is the agent's own step.
+
+    - `not-found`: a name the shell could not run. Bash forks, finds nothing,
+      and the fork exits 127 (126: not executable) carrying its parent's argv.
+      The name is lost -- bash looks it up with stat and never calls execve --
+      unless the distro's helper was handed it (`command-not-found -- clera`).
+    - `retried`: a line that failed within RETYPE_QUICK seconds and was typed
+      again, corrected: the next line typed at the same shell is the same
+      program with its arguments a few keystrokes apart (`_alike`), and it
+      worked. A line typed is one the shell started after sitting idle for a
+      person's pause, so neither a loop's next turn nor what the prompt runs
+      as the last line exits is one. Tries in a row, each like the last, all
+      fold into the line that worked, which counts them (`tries`); a line that
+      never worked folds nothing.
+
+    On FAS's eight login nodes on 2026-10-28 people's shells had 1,756 names
+    not found, 1,384 of them in six shells whose prompt runs a missing command,
+    and 31 lines typed again: 29 slips (`squeue -me`, `git pll`, `less x.PY`)
+    and two changes of plan (`git push` then `git stash`, a clone over SSH then
+    over HTTPS).
+    """
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        stack.extend(n.kids)
+        if not n.kids or (n.a3 is not None and n.a3 not in HUMAN) or not _interactive(n):
+            continue
+        for p in n.kids:
+            if p.a3 in HUMAN and _not_found(p):
+                p.typo = "not-found"
+        _retyped(n)
+
+
+def _interactive(n):
+    """A shell a person types into: a login shell (`-bash`), or one given no
+    command and no script (`bash`, `zsh -l`, VS Code's `bash --init-file ...`).
+    Its subshells carry its argv, so a line typed in one counts as well, and a
+    shell still running at the end of the read -- drawn from the index, which
+    holds no person's shell, and so with no argv -- is known by them."""
+    cmd, args = n.cmd, n.args
+    if not args:
+        f = next((k for k in n.kids if k.fork and k.args), None)
+        if f is not None:
+            cmd, args = f.cmd, f.args
+    if cmd not in SHELLS or not args:
+        return False
+    t = args.split()
+    if t[0].startswith("-"):
+        return True
+    i = 1
+    while i < len(t):
+        w = t[i]
+        if w == "--":
+            return i + 1 == len(t)
+        if w in ("--init-file", "--rcfile", "-o", "+o", "-O", "+O"):
+            i += 2
+        elif w.startswith("--"):
+            i += 1
+        elif w[0] in "-+" and len(w) > 1:
+            if "c" in w[1:]:
+                return False        # a command to run
+            i += 1
+        else:
+            return False            # a script to run
+    return True
+
+
+def _not_found(p):
+    """A fork that never exec'd and exited 126 or 127 having started nothing
+    but the not-found helper -- with what the helper asks itself: Ubuntu's runs
+    `snap advise-snap --command clera` -- whose name goes to `typed`."""
+    if (p.fork is not True or p.ev != "exit" or p.sig is not None
+            or p.code not in (126, 127) or p.agg is not None):
+        return False
+    if any(k.cmd not in NOT_FOUND_HELPERS for k in p.kids):
+        return False
+    for k in p.kids:
+        t = (k.args or "").split()
+        i = t.index("--") + 1 if "--" in t else next(
+            (j + 1 for j, w in enumerate(t) if w.rpartition("/")[2] in NOT_FOUND_HELPERS), len(t))
+        p.typed = t[i] if i < len(t) else p.typed
+    return True
+
+
+def _slip(p):
+    """A line that failed quickly: it exec'd, and within RETYPE_QUICK seconds
+    exited non-zero -- past 1 for a program whose 1 is an answer (`ANSWERS`):
+    a grep that matched nothing then another pattern is a search, not a slip
+    -- or by a signal, though not SIGPIPE, which a pager closing sends."""
+    if p.fork or p.ev != "exit" or p.a3 not in HUMAN or not p.args:
+        return False
+    if p.start is None or p.end is None or p.end - p.start >= RETYPE_QUICK:
+        return False
+    if p.sig is not None:
+        return p.sig != 13
+    return p.code not in (0, None) and not (p.code == 1 and p.cmd in ANSWERS)
+
+
+def _alike(a, b):
+    """Two command lines whose arguments, past argv[0], are a few keystrokes
+    apart (`_edits`): `squeue -me` and `squeue --me`, `du h-s` and `du -hs`,
+    `cp a/ b/` and `cp -r a/ b/`. Not `git commit x` and `git add x`, nor
+    `tmux ls` and `tmux new -s work`; and a line with no arguments was not
+    mistyped in them."""
+    a, b = a.partition(" ")[2].strip(), (b or "").partition(" ")[2].strip()
+    if not a or not b or a == b:
+        return False
+    cap = max(RETYPE_EDITS[0], max(len(a), len(b)) // RETYPE_EDITS[1])
+    return abs(len(a) - len(b)) <= cap and _edits(a, b, cap) <= cap
+
+
+def _edits(a, b, cap):
+    """The edits from `a` to `b` -- a character put in, taken out, or changed,
+    or two neighbours swapped -- or cap + 1 once there are more than `cap`."""
+    out = cap + 1
+    prev2, prev = None, [j if j <= cap else out for j in range(len(b) + 1)]
+    for i in range(1, len(a) + 1):
+        lo, hi = max(1, i - cap), min(len(b), i + cap)
+        cur = [out] * (len(b) + 1)
+        cur[0] = i if i <= cap else out
+        for j in range(lo, hi + 1):
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                v = min(v, prev2[j - 2] + 1)
+            cur[j] = min(v, out)
+        if min(cur[lo - 1:hi + 1]) >= out:
+            return out
+        prev2, prev = prev, cur
+    return prev[len(b)]
+
+
+def _retyped(n):
+    """`_typos`' lines typed again, among shell `n`'s commands."""
+    seq = sorted((k for k in n.kids if k.start is not None and k.end is not None),
+                 key=lambda k: k.start)
+    # The lines a person typed, in order: each started once everything the
+    # shell had started before it had been over for a person's pause. A name
+    # not found is passed over, a typo of its own between the two.
+    typed, busy = [], None
+    for k in seq:
+        if (busy is None or k.start - busy >= RETYPE_PAUSE[0]) and k.typo is None:
+            typed.append(k)
+        busy = k.end if busy is None else max(busy, k.end)
+    a = n.agg
+    before = {}                     # id(line) -> the failed try typed right before it
+    for p, q in zip(typed, typed[1:]):
+        if (not _slip(p) or q.start - p.end > RETYPE_PAUSE[1] or q.fork or q.cmd != p.cmd
+                or q.a3 not in HUMAN or not _alike(p.args, q.args)):
+            continue
+        # a process counted rather than drawn could have been a line between
+        if a is not None and a.t0 is not None and a.t0 <= q.start and (a.t1 or a.t0) >= p.end:
+            continue
+        before[id(q)] = p
+    for q in typed:
+        if q.ev != "exit" or q.code != 0 or q.sig is not None:
+            continue
+        p = before.get(id(q))
+        while p is not None and p.typo is None:
+            p.typo = "retried"
+            q.tries += 1
+            p = before.get(id(p))
 
 
 def runs(sigs):
@@ -1060,6 +1268,12 @@ def _proc_dict(n, parent, memo=None):
         d["orphan"] = True
     if n.fork:
         d["fork"] = True
+    if n.typo:
+        d["typo"] = n.typo
+        if n.typed:
+            d["typed"] = shown(n.typed, memo)
+    if n.tries:
+        d["tries"] = n.tries
     # Only where it changes: a tool call's own cwd is the drift signal, and
     # repeating the parent's on every row would bury it.
     if n.cwd and (parent is None or n.cwd != parent.cwd):
@@ -1076,9 +1290,10 @@ def _group_dict(e, parent, memo=None):
     members, p, reps = e
     exits, signals = collections.Counter(), collections.Counter()
     samples = collections.Counter()
-    alive = 0
+    alive = typos = 0
     cpu, nm, t0, t1, dmax = None, 0, None, None, None
     for m in members:
+        typos += m.typo is not None
         if m.ev == "truncated":
             alive += 1
         elif m.sig is not None:
@@ -1110,6 +1325,9 @@ def _group_dict(e, parent, memo=None):
             "sub_io": _io_out(sub_io),
             "dur_max": _r(dmax, 4), "exits": dict(exits), "signals": dict(signals),
             "alive": alive or None,
+            # members a person mistyped (`_typos`): all of them, and "hide typos"
+            # takes the run out
+            "typos": typos or None,
             "distinct": len(samples),
             "samples": [{key: shown(text, memo), "n": k}
                         for (key, text), k in samples.most_common(SAMPLES) if text]}
@@ -1384,7 +1602,7 @@ def lookup(traj, sid):
     members.sort(key=lambda m: m[0].sid != sid)       # the owner's own key first
     parts = [m[0] for m in members]
     s = parts[0] if len(parts) == 1 and parts[0].sid == sid else \
-        fold_sessions(parts, sid, tail)
+        fold_sessions(parts, sid, tail, traj.phase_params)
     vs = [v for p, v in members if p.sid != sid] or [v for _, v in members]
     vs = [v for v in vs if v is not None]
     return s, (max(vs, key=VIA.index) if vs else None), len(parts), [p.sid for p in parts]
@@ -1497,7 +1715,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
             return {"sid": sid, "found": False, "_window": status,
                     "why": "no session with this id in the %s window" % status["label"]}
         s, via, nkeys, members = hit
-        row = traj._row(s, via, nkeys)
+        row = traj._row(s, via, nkeys, members)
         host, first, last = s.host, s.first, s.last
         owner = int(s.kv) if s.kt == "apid" and str(s.kv).isdigit() else None
         keys = set()
@@ -1665,6 +1883,17 @@ def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     win = agg.window(window_min)
     view = agg.panels_by_window.request(win["minutes"])
     body = inspect(agg.cfg, view, agg.lock, agg.roots(), sid, frm, to, order=order)
+    row = body.get("row")
+    if isinstance(row, dict):
+        # A running agent's row says so, as the ranking's does. Only its newest row of the agent's
+        # is marked (a row is split by day), so the ranked rows come along for that choice. The
+        # row is the cached body's own, shared: the marked one is a copy.
+        with agg.lock:
+            ranked = ((view.payload or {}).get("trajectories") or {}).get("rows")
+            rows = dict(ranked) if isinstance(ranked, dict) else {}
+            rows[sid] = row
+            marked = agg._running_rows(rows)[sid]
+        body = dict(body, row=marked)
     body["window"] = win
     body.update(feedmod.panel_meta(agg.reports["ebpf"]))
     return body
