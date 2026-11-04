@@ -361,7 +361,9 @@ call from the process's own argv. It ports `dashboard/rc_dashboard/roles.py`, wh
 the same rules to older records when the dashboard reads them; keep the two in sync. It
 sorts tagged processes into `agent`, `tool-shell`, `embedded-tool`, `sandbox`, `probe`,
 `client`, `infra`, `ide` and `helper`, and only `agent` starts a session inside a tree.
-`AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1. The classifier
+`AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1 and the FAS login
+nodes. Among them is the agent binary run as a helper of its own, which is `helper`:
+Codex's `--codex-run-as-fs-helper` and Claude's `--claude-in-chrome-mcp`. The classifier
 itself is unchanged; see `VENDORED.md`.
 
 For a tagged process that is not an agent runtime, inside an agent tree:

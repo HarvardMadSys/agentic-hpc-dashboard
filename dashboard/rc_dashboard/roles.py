@@ -17,6 +17,13 @@ mostly not agents:
 * Codex's self-update script (`mkdir`, `find`, `ln`, `mv` under `~/.codex/`)
 * VS Code's server, its extension hosts and their helper scripts
 
+The FAS login nodes (2026-10-20 .. 10-28) add the agent binary run as a helper of
+its own, chosen by its first argument: Codex's sandboxed filesystem helper
+(`codex --codex-run-as-fs-helper`, 15 945 processes from 63 users, each inside a
+tool call's `codex-linux-sandbox`), and the Claude binary in VS Code's Claude
+extension run as the Chrome MCP server (`claude --claude-in-chrome-mcp`, started
+by the extension host itself).
+
 So the role is decided here, from the process's own argv, and only `agent` is a
 session. Roles, in the order they are tested:
 
@@ -29,7 +36,9 @@ session. Roles, in the order they are tested:
                  Claude Desktop's remote server)
   agent          an agent session runtime: the thing that talks to the model and runs tools
   tool-shell     the shell a Claude Code Bash tool call runs in
-  helper         tagged only because its argv mentions an agent path
+  helper         tagged only because its argv mentions an agent path, or the agent
+                 binary run as a helper of its own (Codex's fs helper, Claude's
+                 Chrome MCP server)
 
 `tool-shell` and `codex-linux-sandbox` are started by their agent directly,
 never through anything in between, so `spawned_by_agent` lets a caller take the
@@ -73,6 +82,15 @@ _IDE_TYPES = frozenset({"vscode"})
 
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "fish"})
 _TOOL_SHELL = re.compile(r"/\.claude/shell-snapshots/")
+
+# The agent binary run as a helper of its own, which the binary picks from its
+# first argument alone: Codex's `--codex-run-as-*` (fs-helper, apply-patch,
+# process-setup), and the servers Claude's binary runs in place of a session --
+# the Chrome extension's MCP server, its native host, and an eval's mock MCP
+# server (2.1.309's entry point tests `process.argv[2]` for each).
+_HELPER_FLAGS = frozenset({"--claude-in-chrome-mcp", "--chrome-native-host",
+                           "--eval-mock-server"})
+_HELPER_PREFIX = ("--codex-run-as-",)
 
 _PROBE_FLAGS = frozenset({"--version", "-v", "-V", "--help", "-h", "--update"})
 _PROBE_SUB = frozenset({"doctor", "update", "upgrade", "install", "auth", "config",
@@ -161,6 +179,8 @@ def role_of(agent_type, command, args):
     if i == 0 and argv0 in _EMBEDDED:
         return "embedded-tool"
     rest = toks[i + 1:]
+    if rest and (rest[0] in _HELPER_FLAGS or rest[0].startswith(_HELPER_PREFIX)):
+        return "helper"
     if _PROBE_FLAGS.intersection(rest):
         return "probe"
     pos = _positionals(rest)
@@ -177,6 +197,26 @@ def role_of(agent_type, command, args):
     if sub in _INFRA_SUB:
         return "infra"
     return "agent"
+
+
+# An agent's version, where the name or path of its program says it: Claude
+# Code's native installs (`~/.local/share/claude/versions/2.1.291`,
+# `~/.claude/remote/ccd-cli/2.1.295-8b2928c...`, a process named
+# `2.1.295-8b2928c`) and the Codex app-server daemon
+# (`.../releases/0.162.1-x86_64.../bin/codex`). A plain `claude` or `codex`, or
+# Codex run through npm, names none, and gets none rather than a guess. Here
+# and not in the live tier, which keeps it too: the cascades count with it,
+# and an hour's fingerprint holds this module, not the live tier's.
+_VERSION_NAME = re.compile(r"^v?(\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.]+)?$")
+_VERSION_PATH = re.compile(r"/(?:versions|ccd-cli|releases)/v?(\d+\.\d+\.\d+)")
+
+
+def agent_version(comm, args):
+    m = _VERSION_NAME.match(comm or "")
+    if m:
+        return m.group(1)
+    m = _VERSION_PATH.search(args or "")
+    return m.group(1) if m else None
 
 
 def spawned_by_agent(role, command):

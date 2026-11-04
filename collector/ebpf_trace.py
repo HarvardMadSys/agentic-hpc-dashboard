@@ -2656,8 +2656,8 @@ def proc_del(pid):
 #
 # A port of dashboard/rc_dashboard/roles.py, which applies the same rules to
 # schema <= 7 records at read time; keep the two in sync. It is a heuristic over
-# argv, calibrated on madsys-gpu1's shapes from 2026-09-20 to 10-07. Roles, in the
-# order they are tested:
+# argv, calibrated on madsys-gpu1's shapes from 2026-09-20 to 10-07 and the FAS
+# login nodes' from 2026-10-20 to 10-28. Roles, in the order they are tested:
 #
 #   sandbox        the per-call confinement wrapper (codex-linux-sandbox, bwrap)
 #   ide            an IDE server process (VS Code / Cursor / Windsurf server, extension host)
@@ -2667,7 +2667,9 @@ def proc_del(pid):
 #   infra          hosts sessions without being one (claude daemon, bg-pty-host, remote server)
 #   agent          an agent session runtime: the thing that talks to the model and runs tools
 #   tool-shell     the shell a Claude Code Bash tool call runs in
-#   helper         tagged only because its argv mentions an agent path
+#   helper         tagged only because its argv mentions an agent path, or the agent
+#                  binary run as a helper of its own (Codex's fs helper, Claude's
+#                  Chrome MCP server)
 
 # The agent executables. Claude's native binary is installed as its version
 # (`~/.local/share/claude/versions/2.1.291`), so its comm is a version string.
@@ -2687,6 +2689,12 @@ _ROLE_IDE_SERVER = re.compile(
 _ROLE_IDE_EXE = re.compile(r'^code-[0-9a-f]{6,}')
 _ROLE_SHELLS = frozenset({'sh', 'bash', 'zsh', 'dash', 'fish'})
 _ROLE_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
+# The agent binary run as a helper of its own, picked by its first argument alone:
+# Codex's sandboxed fs helper and the rest of `--codex-run-as-*`, Claude's Chrome
+# MCP server and native host, and its eval mock MCP server
+_ROLE_HELPER_FLAGS = frozenset({'--claude-in-chrome-mcp', '--chrome-native-host',
+                                '--eval-mock-server'})
+_ROLE_HELPER_PREFIX = ('--codex-run-as-',)
 _ROLE_PROBE_FLAGS = frozenset({'--version', '-v', '-V', '--help', '-h', '--update'})
 _ROLE_PROBE_SUB = frozenset({'doctor', 'update', 'upgrade', 'install', 'auth', 'config',
                              'completion', 'setup-token', 'migrate-installer', 'plugin',
@@ -2770,6 +2778,8 @@ def agent_role(agent_type, command, args):
     if i == 0 and argv0 in _ROLE_EMBEDDED:
         return 'embedded-tool'
     rest = toks[i + 1:]
+    if rest and (rest[0] in _ROLE_HELPER_FLAGS or rest[0].startswith(_ROLE_HELPER_PREFIX)):
+        return 'helper'
     if _ROLE_PROBE_FLAGS.intersection(rest):
         return 'probe'
     pos = _role_positionals(rest)

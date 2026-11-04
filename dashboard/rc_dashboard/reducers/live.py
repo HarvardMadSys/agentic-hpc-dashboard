@@ -15,12 +15,12 @@ is better evidence than a census count.
 """
 import collections
 import itertools
-import re
 import time
 
 from ..buckets import RollingBuckets, _epoch_of
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
+from ..roles import agent_version
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
 
@@ -47,24 +47,6 @@ def _conn_count(v, kind="ext"):
     if isinstance(v, (int, float)):
         return v
     return None
-
-
-# An agent's version, where the name or path of its program says it: Claude
-# Code's native installs (`~/.local/share/claude/versions/2.1.291`,
-# `~/.claude/remote/ccd-cli/2.1.295-8b2928c...`, a process named
-# `2.1.295-8b2928c`) and the Codex app-server daemon
-# (`.../releases/0.162.1-x86_64.../bin/codex`). A plain `claude` or `codex`, or
-# Codex run through npm, names none, and gets none rather than a guess.
-_VERSION_NAME = re.compile(r"^v?(\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.]+)?$")
-_VERSION_PATH = re.compile(r"/(?:versions|ccd-cli|releases)/v?(\d+\.\d+\.\d+)")
-
-
-def agent_version(comm, args):
-    m = _VERSION_NAME.match(comm or "")
-    if m:
-        return m.group(1)
-    m = _VERSION_PATH.search(args or "")
-    return m.group(1) if m else None
 
 
 def _mb(b):
