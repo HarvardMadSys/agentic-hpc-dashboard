@@ -353,10 +353,13 @@ def create_app(cfg):
     def api_trajectory(request: Request, sid: str = Query(...),
                        window_min: int = Query(None),
                        frm: float = Query(None, alias="from"),
-                       to: float = Query(None)):
+                       to: float = Query(None),
+                       order: str = Query("oldest")):
         """One ranked session as a process tree, re-read on demand (proctree.py).
 
         Sync on purpose: the read runs in the threadpool, never on the loop.
+        `order` is `oldest` or `newest`: which end is listed first and drawn in
+        full; anything else reads as `oldest`.
 
         Takes no user / agent-type filter, deliberately. The session is named by
         its `sid`, which the page only offers from the (filtered) ranking, and
@@ -365,7 +368,7 @@ def create_app(cfg):
         its root rather than narrow it.
         """
         body = masked(redact.payload(proctree.serve(agg, dealias_sid(sid, anon), window_min,
-                                                    frm, to)), "trajectory")
+                                                    frm, to, order)), "trajectory")
         raw, headers = proctree.response(body, request.headers.get("accept-encoding"))
         # One chunk: the body is already whole, this only lets it go out gzipped.
         return StreamingResponse(iter([raw]), media_type="application/json",

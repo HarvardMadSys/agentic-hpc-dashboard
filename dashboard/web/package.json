@@ -12,7 +12,8 @@
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "fixture": "node mock/gen_fixture.mjs",
-    "check:no-random": "! grep -rn 'Math\\.random' src/ || (echo 'FAIL: Math.random() in src/' && exit 1)"
+    "check:no-random": "! grep -rn 'Math\\.random' src/ || (echo 'FAIL: Math.random() in src/' && exit 1)",
+    "check:phases": "node --test mock/check_phases.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

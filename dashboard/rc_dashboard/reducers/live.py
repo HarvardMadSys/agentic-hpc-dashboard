@@ -21,6 +21,7 @@ from ..buckets import RollingBuckets, _epoch_of
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
+from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
 
@@ -60,12 +61,110 @@ _USAGE = ("cpu_s", "rd_mb", "wr_mb", "net_tx_mb", "net_rx_mb")
 def _inner(r):
     """An agent root as a session's row: what it is and how it was launched."""
     return {"pid": r["pid"], "agent_type": r["agent_type"], "approval": r["approval"],
-            "version": r["version"], "sandbox": r["sandbox"], "epoch": r["epoch"]}
+            "version": r["version"], "sandbox": r["sandbox"], "epoch": r["epoch"],
+            "surface": r["surface"], "surface_detail": r["surface_detail"]}
+
+
+def _fronted(r, up):
+    """An agent root with the surface of the same agent's process that started
+    it, where its own argv names none: the Codex app-server daemon a terminal UI
+    starts, the UI being its front-end (cascades.py)."""
+    if r["surface"] == "unknown" and up is not None and up["agent_type"] == r["agent_type"] \
+            and up["surface"] != "unknown":
+        return dict(r, surface=up["surface"], surface_detail=up["surface_detail"])
+    return r
 
 
 def _usage():
     return {"n": 0, "cpu_s": 0.0, "rd_mb": 0.0, "wr_mb": 0.0, "net_tx_mb": 0.0,
             "net_rx_mb": 0.0, "net_mb": 0.0}
+
+
+# What is running at a session's live edge. A command that is still running has left no exit
+# record, but the collector's per-minute census of an agent tree lists the commands up in it
+# (`by_command`: the top 15 by how many processes run each). The agent and its helpers (MCP
+# servers) are up in every tick, so the least a command has been over the session's ticks is its
+# baseline, and what is up beyond that is a call running. A baseline says nothing is running only
+# if it began with the session: a call already up in the earliest tick held is in it.
+CENSUS_SHOWN = 5        # the commands `running_now` lists
+NAME_SHOWN = 40         # characters of one command's name it shows, after masking
+START_AGE_S = 150       # a baseline began with the session if its root was this young, at most
+                        # (two census ticks, 60 s apart, and slack) at the earliest tick held
+
+
+def _census(raw):
+    """A tick's `by_command` as {command: processes up}, or None where it carries none. An entry
+    that is not a name with a positive whole count is left out. The root is always up in a tree
+    that sent a tick, so a map with nothing left is a bad record, not an empty tree: it is no
+    census, and never reads as idle."""
+    if not isinstance(raw, dict):
+        return None
+    return {c: n for c, n in raw.items()
+            if type(n) is int and n > 0 and isinstance(c, str)} or None
+
+
+def _least(base, byc):
+    """The baseline once `byc`, one more tick's census, is counted: the least of each command over
+    the ticks so far. A command a tick lacks has a count of 0 there, and so drops out for good. A
+    tick with no census (None) says nothing about any command, so `base` stays as it was. It is a
+    new dict where anything changed and never an edit in place, since ticks share them."""
+    if byc is None:
+        return base
+    if base is None:
+        return byc
+    if all(byc.get(c, 0) >= n for c, n in base.items()):
+        return base
+    return {c: min(n, byc[c]) for c, n in base.items() if c in byc}
+
+
+def _age(raw):
+    """A tick's `age_s`, its root's age, or None where it carries none: null is not 0, and a value
+    that is no number is none."""
+    return raw if isinstance(raw, (int, float)) and not isinstance(raw, bool) else None
+
+
+def _younger(a, b):
+    """The lesser of two ages, either of which may be None (no age)."""
+    return b if a is None or (b is not None and b < a) else a
+
+
+def running_now(tree, fresh):
+    """What the census says is running in an agent tree, from its newest tick.
+
+    `{"state": "running", "cmds": [[command, processes]], "cat": category, "at": census time}`
+    where something is up beyond the baseline, `{"state": "idle", "at": census time}` where only
+    the baseline is, and `{"state": "unknown"}` where there is no census to read: `tree` is None
+    (an agent a VS Code server started shares that server's census, so has none of its own), or
+    its newest tick is older than the epoch `fresh`, carries no time, or carries no census.
+    Idle is said of a census that was read, never for want of one.
+
+    Idle is also said only of a baseline that began with the session, one whose earliest tick
+    held was of a root START_AGE_S old at most (a tick with no age is not). A baseline formed
+    later, from a session older than the ticks held or whose start the backfill has not yet
+    reached, may hold a call that was already up, so nothing beyond it is not known to be nothing.
+    Running is positive evidence and does not depend on that.
+
+    `cmds` is what is up beyond the baseline, largest first and a tie by name, the first
+    CENSUS_SHOWN of it, each name masked and cut. `cat` is the first of `phase_rules.CATS` that
+    any of those has when its name is read as a one-word command, so a program no table names
+    counts as run.
+    """
+    if tree is None:
+        return {"state": "unknown"}
+    at, up = tree.get("epoch"), tree.get("by_command")
+    if at is None or at < fresh or up is None:
+        return {"state": "unknown"}
+    base = tree.get("base") or {}
+    beyond = sorted(((c, n - base.get(c, 0)) for c, n in up.items() if n > base.get(c, 0)),
+                    key=lambda kv: (-kv[1], kv[0]))[:CENSUS_SHOWN]
+    if not beyond:
+        start_age = tree.get("base_age")
+        if start_age is None or start_age > START_AGE_S:
+            return {"state": "unknown"}
+        return {"state": "idle", "at": at}
+    cats = {category_of_argv(c, c) for c, _ in beyond}
+    return {"state": "running", "cmds": [[redact(c)[:NAME_SHOWN], n] for c, n in beyond],
+            "cat": next((k for k in CATS if k in cats), "unknown"), "at": at}
 
 
 class LiveReducer:
@@ -89,7 +188,10 @@ class LiveReducer:
         self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 500)))
         self.submit_tail = collections.deque(maxlen=int(cfg.get("live.submit_tail", 50)))
         self.hosts = {}          # host -> newest residency_totals-derived rollup
-        self.trees = {}          # (host, tree_root_pid) -> newest residency tick
+        # (host, tree_root_pid) -> newest residency tick, with the commands it lists
+        # (`by_command`), their least over the session's ticks (`base`), and the least age its
+        # root had at any of the ticks that made it (`base_age`): `running_now`
+        self.trees = {}
         self.window_s = self.retention_s
         self.submits_in_window = collections.deque()
         self.conn_unmatched_births = None
@@ -161,6 +263,9 @@ class LiveReducer:
             return
         e = rec.get("_ts_epoch")
         cur = self.roots.get(key)
+        started_by = (cur or {}).get("ppid")
+        if started_by in (None, 0, 1):
+            started_by = rec.get("ppid")
         if cur is None or (e is not None and (cur["epoch"] is None or e > cur["epoch"])):
             self.roots[key] = {
                 "epoch": e, "approval": rec.get("_approval") or "unknown",
@@ -168,7 +273,11 @@ class LiveReducer:
                 "user": rec.get("user"), "pid": pid,
                 "version": agent_version(rec.get("comm"), rec.get("args"))
                 or (cur or {}).get("version"),
-                "sandbox": rec.get("_sandbox")}
+                "sandbox": rec.get("_sandbox"),
+                "surface": rec.get("_surface") or "unknown",
+                "surface_detail": rec.get("_surface_detail"),
+                # the process that started it, not init after it was reparented
+                "ppid": started_by}
 
     @staticmethod
     def _place(tail, row, older):
@@ -237,11 +346,16 @@ class LiveReducer:
         cur = self.trees.get(key)
         uuid = rec.get("session_uuid")
         same = cur is not None and (uuid is None or cur.get("uuid") in (None, uuid))
+        byc = _census(rec.get("by_command"))
+        # how old the root was at a tick that adds to the baseline: one with no census adds none
+        age = _age(rec.get("age_s")) if byc is not None else None
         if older and cur is not None:
             # a newer tick already holds this tree; an older one of the SAME
-            # session still counts toward its memory history
+            # session still counts toward its memory history and its baseline
             if same:
                 self._rss_tick(cur, rec.get("rss_mb"))
+                cur["base"] = _least(cur.get("base"), byc)
+                cur["base_age"] = _younger(cur.get("base_age"), age)
             return
         t = {
             "host": rec.get("host"), "agent_type": rec.get("agent_type"),
@@ -253,6 +367,7 @@ class LiveReducer:
             "state_counts": rec.get("state_counts"),
             "top_procs": rec.get("top_procs"),
             "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
+            "surface": rec.get("_surface"), "surface_detail": rec.get("_surface_detail"),
             "epoch": rec.get("_ts_epoch"), "user": rec.get("user"),
             "actor3": rec.get("_a3"), "root_pid": key[1],
             # the trajectory this session is, today (roadmap note 7), and the
@@ -260,6 +375,9 @@ class LiveReducer:
             "sid": rec.get("_sid"), "uuid": uuid,
             "version": agent_version(rec.get("comm"), rec.get("args"))
             or (cur.get("version") if same else None),
+            # a new session on the same pid starts its baseline afresh, from this tick
+            "by_command": byc, "base": _least(cur.get("base") if same else None, byc),
+            "base_age": _younger(cur.get("base_age") if same else None, age),
         }
         if same:
             # a pid reused by a new session starts its history afresh
@@ -491,11 +609,16 @@ class LiveReducer:
             d["rss_ticks"] = t.get("rss_n")
             key = (t.get("host"), t.get("root_pid"))
             own = mine.get(key)
+            # the tree root's own reading: an agent's, or a host's (the desktop
+            # app's server, `claude rc`) for the sessions it holds
+            d["surface"], d["surface_detail"] = t.get("surface"), t.get("surface_detail")
             if own is not None:
                 placed.add(key)
                 d["approval"] = own["approval"]
                 d["version"] = d["version"] or own["version"]
-            d["agents"] = [_inner(r) for r in sorted(inside.get(key, ()), key=lambda r: r["pid"])]
+                d["surface"], d["surface_detail"] = own["surface"], own["surface_detail"]
+            d["agents"] = [_inner(_fronted(r, mine.get((key[0], r["ppid"]))))
+                           for r in sorted(inside.get(key, ()), key=lambda r: r["pid"])]
             placed.update((key[0], r["pid"]) for r in inside.get(key, ()))
             sessions.append(d)
         # an agent seen running whose tree sent no census in the last 10 min
@@ -651,7 +774,7 @@ class LiveReducer:
             # bare name; a headline number is the map's sum, never a separate
             # figure that could drift from it.
             "now": {
-                "exits_per_min": sum(last.values()),
+                "exits_per_min": _sum_or_none(last.values()),
                 "exits_per_min_by_class": last,
                 "events": {c: totals.get(c, {}).get("n", 0) for c in self.classes},
                 "cpu_s": {c: round(totals.get(c, {}).get("cpu_s", 0.0), 1)

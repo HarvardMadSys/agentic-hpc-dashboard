@@ -16,10 +16,16 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import test_merge as TM                                              # noqa: E402
 from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
 from test_sandbox import CODEX_APP, codex_failed_call, root_tick     # noqa: E402
 
 PROJ = HOME + "/proj"
+
+
+def midnight(days_back):
+    """The local midnight that starts the day `days_back` days ago."""
+    return time.mktime(time.localtime(time.time() - days_back * 86400)[:3] + (0, 0, 0, 0, 0, -1))
 
 
 def tree_of(payload, root_pid):
@@ -242,6 +248,25 @@ class CascadeTest(unittest.TestCase):
     def test_a_reused_pid_that_started_after_the_child_is_not_its_parent(self):
         p = self.reused_parent_pid("haoran")      # same user: only the start times say no
         self.assertIsNone(node(tree_of(p, 28324), 28324)["parent"])
+
+    def test_two_users_agents_that_share_a_pid_are_one_agent_in_the_tree(self):
+        # Neither agent left a record of its own, so each is known from its tool calls, as the
+        # agent they ran under (`parent`): alice's before midnight, and bob's after it, with
+        # fewer calls and the pid she had. `agent_sessions` keeps the two apart, and a node is by
+        # host and pid, so the earlier session is the one agent shown, with its own calls.
+        m = midnight(2)
+        raw = claude_session(m - 3000)[1:]
+        raw += [dict(r, user="bob") for r in claude_session(m + 600)[1:-2]]
+        view = TM.one_pass(TM.normalized(raw))
+        sessions = view.reducers["trajectories"].agent_sessions()
+        self.assertEqual({k: (s.user, s.n, via) for k, (s, via, _) in sessions.items()},
+                         {("h1", 100, "alice"): ("alice", 5, "parent"),
+                          ("h1", 100, "bob"): ("bob", 3, "parent")})
+        panel = view.reducers["cascades"].result(m + 3700)
+        self.assertEqual((panel["summary"]["agents"], panel["summary"]["agents_implied"]), (1, 1))
+        (tree,) = panel["trees"]
+        self.assertEqual([(n["pid"], n["user"], n["implied"], n["tool_calls"])
+                          for n in tree["nodes"]], [(100, "alice", True, 5)])
 
     def test_the_role_census_counts_what_the_classifier_tagged(self):
         census = reduce(claude_session(self.t0))["cascades"]["role_census"]

@@ -40,6 +40,8 @@ import { TreeDiagram } from '../components/TreeDiagram';
 import type { TreeNode } from '../components/TreeDiagram';
 import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
+import { SurfaceChip } from '../components/SurfaceChip';
+import { surfaceTip } from '../lib/surfaces';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
@@ -94,6 +96,7 @@ function nodeTip(n: CascadeNode): string {
     n.spawned_by != null ? `--spawned-by pid ${n.spawned_by}` : null,
     n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a node launcher execs), which runs the session' : null,
     n.implied ? 'implied: a tool-call shell named it as parent; it left no record itself' : null,
+    n.role === 'agent' && n.surface ? `driven from: ${surfaceTip(n.surface, n.surface_detail).split('\n')[0]}` : null,
     ...(n.role === 'agent' ? launchTip(n) : []),
   ]
     .filter(Boolean)
@@ -621,15 +624,20 @@ function OutsideOf({ ns }: { ns: CascadeNode[] }) {
 
 /** An agent on its own: its type, version and tags; whose it is and its
  * home; when it ran, how much, and whether it wrote outside its home. */
-function LoneRow({ n, on, onPick, inFold }: { n: CascadeNode; on: boolean; onPick: () => void; inFold?: boolean }) {
+function LoneRow({ n, on, onPick, inFold, keys }: {
+  n: CascadeNode; on: boolean; onPick: () => void; inFold?: boolean;
+  /** the agent's `host:pid`, by which an Ask LLM citation finds its row (lib/cites.ts) */
+  keys: string;
+}) {
   const w = n.workspace;
   return (
     <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(n.agent_type) }}
-      onClick={onPick} data-tip={nodeTip(n)}>
+      onClick={onPick} data-tip={nodeTip(n)} data-keys={keys}>
       <span className="al-h">
         {!inFold && <i className="tdot" style={{ background: typeCol(n.agent_type) }} />}
         <b>{typeLbl(n.agent_type)}</b>
         <Ver n={n} />
+        <SurfaceChip s={n.surface} detail={n.surface_detail} />
         <span className="al-flags">
           <Outside n={w?.outside_writes ?? 0} tip="distinct paths written or deleted outside its home, as its commands mention them (guessed from the text)" />
           <Tags n={n} />
@@ -654,9 +662,11 @@ function TreeRow({ e, on, onPick }: { e: Extract<Entry, { k: 'tree' }>; on: bool
   const { t, agents, at } = e;
   const lead = agents.filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0];
   const user = t.users.length === 1 ? t.users[0] : null;
+  // the tree's root and every agent in it, for a citation to find it by
+  const keys = [e.key, ...agents.map((n) => keyOf(t.host, n.pid))].join(' ');
   return (
     <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(lead?.agent_type) }}
-      onClick={onPick} data-tip="click to draw its tree">
+      onClick={onPick} data-tip="click to draw its tree" data-keys={keys}>
       <span className="al-h">
         <b className="wrap">{composition(t, agents)}</b>
         <span className="al-flags">
@@ -685,12 +695,16 @@ function FoldRow({ e, open, onOpen }: { e: Extract<Entry, { k: 'fold' }>; open: 
   const running = ns.filter((n) => !n.exited).length;
   return (
     <button className={`al-item fold${open ? ' open' : ''}`} style={{ borderLeftColor: typeCol(n0.agent_type) }}
-      onClick={onOpen} aria-expanded={open}
+      onClick={onOpen} aria-expanded={open} data-keys={e.ps.map((p) => keyOf(p.t.host, p.n.pid)).join(' ')}
       data-tip={`${fint(ns.length)} ${typeLbl(n0.agent_type)} agents on their own, of one user, in one home: click to ${open ? 'fold them' : 'list them'}`}>
       <span className="al-h">
         <span className="al-caret">{open ? '▾' : '▸'}</span>
         <i className="tdot" style={{ background: typeCol(n0.agent_type) }} />
         <b>{fint(ns.length)} {typeLbl(n0.agent_type)} runs</b>
+        {/* where they are driven from, when that is one place for all of them */}
+        {ns.every((n) => n.surface === n0.surface && n.surface_detail === n0.surface_detail) && (
+          <SurfaceChip s={n0.surface} detail={n0.surface_detail} />
+        )}
         <span className="al-flags">
           <OutsideOf ns={ns} />
           <TagSum ns={ns} />
@@ -713,7 +727,7 @@ function LoneHead({ n }: { n: CascadeNode }) {
   return (
     <div className="atree-t">
       <span className="atree-what">
-        <b>{typeLbl(n.agent_type)}</b> <Ver n={n} />
+        <b>{typeLbl(n.agent_type)}</b> <Ver n={n} /> <SurfaceChip s={n.surface} detail={n.surface_detail} />
         <span className="nm"> · {n.user ?? DASH}</span>
         <span className="nm mono"> · {tildeOf(n.home, n.user)}</span>
         <span className="nm"> · {n.exited ? span(n.started, n.last_seen) : `running since ${hm(n.started)}`}</span>
@@ -751,9 +765,13 @@ function AgentNode({ n, treeUser, home, dim }: { n: CascadeNode; treeUser: strin
         {facts}
         {user ? ` · ${user}` : ''}
       </div>
-      {/* writes outside its home, beside the home they are outside of */}
-      {(w?.outside_writes || own) && (
+      {/* where it is driven from, on a line of its own: a box is narrow, and
+          the first two lines are its type's and its numbers'. Then writes
+          outside its home, beside the home they are outside of */}
+      {(n.surface || w?.outside_writes || own) && (
         <div className="anode-s">
+          <SurfaceChip s={n.surface} detail={n.surface_detail} />
+          {n.surface && (w?.outside_writes || own) ? ' ' : null}
           {w?.outside_writes ? <span className="ws-flagmark">{fint(w.outside_writes)} outside</span> : null}
           {w?.outside_writes && own ? ' ' : null}
           {own && <span className={`mono${n.home_src === 'first_call' ? ' inferred' : ''}`}>{own}</span>}
@@ -974,6 +992,8 @@ function TreeView({ t, sel, onSel, match }: {
             <div className="anode infra" data-tip={`started under\n${nodeTip(t.root)}`}>
               <div className="anode-h">
                 <b className="mono">{t.root.command ?? 'process'}</b>
+                {/* a host says where the sessions it runs are driven from */}
+                <SurfaceChip s={t.root.surface} detail={t.root.surface_detail} />
               </div>
               <div className="anode-s nm">{t.root.role === 'client' ? 'a client that launched the agents' : 'runs the agents below'}</div>
             </div>
@@ -1147,7 +1167,7 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   };
   const loneRow = (p: AgentPt, inFold?: boolean) => {
     const k = keyOf(p.t.host, p.n.pid);
-    return <LoneRow key={k} n={p.n} on={sel?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
+    return <LoneRow key={k} keys={k} n={p.n} on={sel?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
   };
 
   // The two histograms, kept for whoever wants the shape of nesting.

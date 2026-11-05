@@ -113,6 +113,14 @@ table.tj-table td .sub {
   flex-direction: column;
   gap: 4px;
 }
+/* the session's headline, above the navigator: the project, and the names its tasks recur on */
+.ins-headline {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
 /* A bound the read hit. It changes what the tree means, so it is not a tooltip. */
 .ins-bound {
   border: 1px solid var(--warn);
@@ -176,6 +184,19 @@ table.tj-table td .sub {
 }
 .pt-head > div:first-child {
   padding-left: 8px;
+}
+/* "started" is the order the rows are in, and flips it as a sortable header would */
+.pt-head .sort-arrow {
+  margin-left: 3px;
+  font-size: 8px;
+  color: var(--ink-2);
+}
+.pt-head .pt-sort {
+  cursor: pointer;
+  user-select: none;
+}
+.pt-head .pt-sort:hover {
+  color: var(--ink);
 }
 .pt-row:hover {
   background: var(--surface-2);
@@ -442,7 +463,8 @@ table.tj-table td .sub {
 }
 .tn-track .tn-svg {
   height: 14px;
-  margin: 2px 0 4px;
+  margin: 2px 0 4px var(--tn-gut);
+  width: calc(100% - var(--tn-gut));
 }
 .tn-svg.strip {
   height: auto;
@@ -502,6 +524,107 @@ table.tj-table td .sub {
 .tn-status b {
   color: var(--ink);
   font-weight: 600;
+}
+
+/* The chart with the phases behind it (TrajectoryNav `Strip`): the basis line above it, the phases as tinted bands
+ * behind the process starts, a thin row of the agent's own commands under the bars, and the captions under the
+ * axis. A chart with phases is drawn at its box's own pixel width, so its names are 10 px at any width. */
+.tn-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tn-basis {
+  margin-top: 3px;
+}
+/* a phase's tint, behind the bars: the bands and the legend's swatches are both this class, so a swatch is the
+   band's colour at the band's opacity. Tuned on the nine slots over the surface: at 0.20 the closest two tints
+   (wait and git, build and test) are still 5 apart in CIELAB, and the weakest bar over any tint (the grey
+   `other` over wait's crimson) is 1.8:1, against 2.6:1 on the bare surface. Lighter and the tints run together;
+   darker and the bars sink into them */
+.tn-band {
+  fill-opacity: 0.2;
+}
+/* the task lane above the bands (TrajectoryNav `Strip`): a block for each task, in the slots a selected row of the ranked
+   table has (`tr.tj-row.sel`): the `--sunken` fill, with `--ink-2` for its outline and its words (7.4:1 on the fill). Not
+   the crimson: that is the wait phase's hue (`--s1`) in the bands right below the lane, and a crimson lane would read as
+   waiting. A block too narrow for an outline is a sliver in `--ink-2`. A lone stretch is no task, and is only a dashed
+   outline in `--muted`, as an idle band's is, drawn in the script */
+.tn-task {
+  fill: var(--sunken);
+  stroke: var(--ink-2);
+  stroke-width: 1;
+}
+.tn-task.sliver {
+  fill: var(--ink-2);
+  stroke: none;
+}
+.tn-task-lbl {
+  fill: var(--ink-2);
+}
+/* the level captions in the left gutter (TrajectoryNav): `--tn-gut` is set on `.tn` from `GUTTER` (lib/phases.ts), the widest
+   caption and its room, and the session track, the chart's plot, and the zoom map all start after it, so their axes line up and
+   no caption is over a band or a bar. A caption is a `.tn-cap` with an `.eyebrow`, as the session track's is, muted, and
+   stands beside the row it names, centred on it: the chart sets its top and height */
+.tn-plot {
+  position: relative;
+  padding-left: var(--tn-gut);
+}
+.tn .zmap {
+  margin-left: var(--tn-gut);
+  width: calc(100% - var(--tn-gut));
+}
+.tn-lane-cap {
+  position: absolute;
+  left: 0;
+  align-items: center;
+  white-space: nowrap;
+  user-select: none;
+}
+/* the legend of the chart's colours, under its axis: a swatch and a name for each kind of phase whose bands fall on
+   the read's axis, in the caption's own secondary text, wrapping as a box narrows */
+.tn-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin-top: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.tn-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* a tint is pale, so the swatch has a hairline round it to be seen on the surface */
+.tn-swatch {
+  flex: none;
+  box-sizing: content-box;
+  border: 1px solid var(--rule);
+}
+/* the zoom note stands above the basis line, not next to the chart, so its hint shows by the chart being hovered
+   (styles.css has it for a note that is) */
+.tn-strip:has(svg.strip:hover) > .zoomnote .hint {
+  visibility: visible;
+}
+/* the same for the chart with no phases, which has no `.tn-strip` and no basis line: its note is straight under `.tn`, and the
+   plot (`.tn-plot`, with the svg in it) comes right after, so the svg is not the note's next sibling as styles.css wants */
+.tn > .zoomnote:has(+ .tn-plot svg.strip:hover) .hint {
+  visibility: visible;
+}
+.tn-hk-bg {
+  fill: var(--sunken);
+}
+.tn-hk-tick {
+  fill: var(--muted);
+}
+/* a line of caption under the chart */
+.tn-note {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--ink-2);
 }
 
 /* A tool token that opens its run, and the "read again" link. */
@@ -711,11 +834,17 @@ svg:has(> g.pickable:focus-visible) {
   background: var(--surface-2);
   border-left-color: var(--ink-2);
 }
+/* a name, its date, where it is driven from and whether it runs: they wrap as
+   whole items, so a narrow column never breaks the name or the date */
 .tj-item-h {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 2px 6px;
   align-items: baseline;
   font-size: 12px;
+}
+.tj-item-h .tj-date {
+  white-space: nowrap;
 }
 .tj-item-s {
   font-size: 10.5px;
@@ -725,6 +854,338 @@ svg:has(> g.pickable:focus-visible) {
 .tj-item-m {
   font-size: 10.5px;
   color: var(--ink);
+}
+/* a session's phases (components/PhaseBand.tsx): the band stands where the purpose
+   ribbon did, and this line names its tasks, or where it has none says the phases
+   in the order they came. It is two lines at most, with an ellipsis, so that two long
+   quotes do not make a tall row, and all of it is in its hover (`data-tip`, TrajectoriesTab.tsx) */
+.tj-seq {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+/* where a task or a lone stretch after the first begins, on that band: a line across it, in the ink of the inspector's task lane
+   (`.tn-task`). It is 1 px wide with crisp edges, so it is whole device pixels and not a blur across two, and it is dark, so it reads
+   apart from the pale 0.6 px that parts two bands (`GAP`). A thinner stroke is too faint to see at density 1. It takes no pointer: the
+   band under it keeps its hover */
+.ph-tick {
+  stroke: var(--ink-2);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+/* why an agent's row has no band: its type is not one whose commands are read */
+.tj-note {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+/* a band's names, on the inspector's chart, in the bands with room for one */
+.ph-lbl {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  pointer-events: none;
+  user-select: none;
+}
+/* a name over hatching keeps a halo, so the hatch does not run through its letters. The halo's colour (the
+   surface) is set on the text itself (TrajectoryNav `Strip`, `name`), as an attribute, which a `stroke` rule
+   here would override */
+.ph-halo {
+  paint-order: stroke;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+/* the inspector's phase list (PhaseList.tsx): the chart in words, a row to a phase, under the navigator. It
+   is never cut by entries: past about twelve rows (a row is some 25px) it scrolls on its own, so a long
+   session's 139 phases leave the navigator above and the tree below in reach (R55). Scrolling past its end
+   goes on to the page. */
+.pl {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(12 * 25px + 6px);
+  overflow-y: auto;
+  margin: 6px 0 2px;
+  padding: 2px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: var(--surface);
+}
+.pl-row {
+  all: unset;
+  box-sizing: border-box;
+  flex: none;
+  display: grid;
+  grid-template-columns: 12px 10.5em 10.5em 4.5em minmax(0, 1fr);
+  gap: 0 8px;
+  align-items: start;
+  padding: 4px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 11.5px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.pl-row:first-child {
+  border-top: 0;
+}
+.pl-row:hover {
+  background: var(--surface-2);
+}
+.pl-row.edge {
+  cursor: default;
+}
+.pl-row.edge:hover {
+  background: none;
+}
+.pl-row:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: -2px;
+}
+/* the chip is the segment in little: a fill, a hatch in the guess's colour with a dashed edge, or (idle, and the live
+   edge where it shows nothing) an empty dashed edge with no fill. A dotted one is an edge that cannot be said. */
+.pl-chip {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border-radius: 2px;
+}
+.pl-chip.guess {
+  border: 1px dashed var(--s5);
+  background: repeating-linear-gradient(45deg, var(--s5) 0 1.4px, var(--surface) 1.4px 4px);
+}
+.pl-chip.idle {
+  border: 1px dashed var(--muted);
+}
+.pl-chip.unknown {
+  border: 1px dotted var(--muted);
+}
+/* every name is in the ink, a guess's too: its colour is on its chip, since --s5 as text is 3.46:1 on the
+   surface and the ink is 16.2:1 there (14.5:1 on a hovered row) */
+.pl-name {
+  color: var(--ink);
+}
+.pl-name.idle,
+.pl-name.edge {
+  color: var(--ink-2);
+}
+.pl-when,
+.pl-dur {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.pl-what {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.pl-note {
+  flex: none;
+  margin-top: 2px;
+  padding: 4px 0 3px;
+  border-top: 1px solid var(--rule);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+/* in a narrow box the words go under the name, the times, and the length, not beside them */
+@media (max-width: 720px) {
+  .pl-row {
+    grid-template-columns: 12px minmax(0, 1fr) auto auto;
+  }
+  .pl-what {
+    grid-column: 2 / -1;
+  }
+}
+/* the inspector's three-level list (TaskList.tsx), in the phase list's box (`.pl`): a row to each task, a muted line for a gap and a
+   quiet row for a lone stretch between them (`--ink-2`, since it takes a click: below), and under an open task the phase list's own
+   rows (`.pl-row`), and under an open phase its commands.
+   A task row is a chevron that opens it and, beside it, a button that picks it: the number, when it began and ended, its label
+   with where its words came from, and what it holds. The open task's row is the shade a selected row has (`.tj-item.on`). The box
+   scrolls on its own as the phase list does, but holds more: a long session's ten tasks and the gaps between them are about
+   four hundred and fifty px, closed, and should be seen at a glance. */
+.tl {
+  max-height: 480px;
+}
+.tl-row {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0 2px;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.tl-row:first-child {
+  border-top: 0;
+}
+.tl-row.open,
+.tl-row:hover {
+  background: var(--surface-2);
+}
+/* the chevron of a task and of a phase: a button of its own, so that a click on it opens and closes and does not pick */
+.tl-tog {
+  all: unset;
+  box-sizing: border-box;
+  flex: none;
+  width: 16px;
+  padding: 5px 0;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.tl-tog:hover {
+  color: var(--ink);
+}
+.tl-tog:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: -2px;
+}
+.tl-tog.none {
+  cursor: default;
+}
+.tl-pick {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 20px 110px minmax(0, 1fr) auto;
+  gap: 0 8px;
+  align-items: baseline;
+  padding: 5px 4px 5px 0;
+  cursor: pointer;
+}
+.tl-pick:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: -2px;
+}
+.tl-num,
+.tl-when {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.tl-num {
+  text-align: right;
+}
+.tl-label {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.tl-row.open .tl-label {
+  font-weight: 500;
+}
+/* where a quoted label's words came from: `commit`, `PR #235`, or `log`. It is inside the row's button, as the label is, so it is
+   interactive text and needs 4.5 to 1 (`--ink-2`, 8.98 to 1 on the surface; `--muted` is 3.82 to 1) */
+.tl-src {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.tl-what {
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+/* that a call in the task is still running, or that its call log was full: under its label, and inside the row's button as the
+   label is, so it is interactive text and needs 4.5 to 1: `--ink-2`, as the source beside the label is, and not `--muted` */
+.tl-state {
+  grid-column: 3 / -1;
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+/* a gap between two tasks, and a lone stretch, are quiet lines among the task rows; the gap's begins under the span, and a lone
+   stretch has no number, so it begins there too. Quieter is not the same colour, though. A gap line is a note, with no click, and is
+   `--muted`. A lone stretch's line is a row to click, so its text is interactive and needs 4.5 to 1, which `--muted` is not (3.82 to
+   1 on the surface, at 11 px): it is `--ink-2` (8.98 to 1), which is still quieter than a task's label, in `--ink` */
+.tl-gap {
+  flex: none;
+  padding: 3px 0 3px 46px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.tl-row.lone .tl-pick {
+  display: block;
+  padding-left: 28px;
+}
+.tl-line {
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.tl-row.lone .tl-state {
+  display: block;
+}
+/* what is under an open task: its phases, each a chevron and the phase list's row, set in under the task's own chevron */
+.tl-phases {
+  flex: none;
+  padding-left: 18px;
+}
+.tl-ph {
+  display: flex;
+  align-items: flex-start;
+  gap: 0 2px;
+}
+.tl-ph > .pl-row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tl-ph .tl-tog {
+  padding: 4px 0;
+}
+/* what is under an open phase: the commands that ran most in it, a line each, and the button that shows its calls in the tree */
+.tl-calls {
+  padding: 1px 0 5px 38px;
+}
+.tl-cmd {
+  padding: 1px 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-tree {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 11px;
+}
+/* in a narrow box a task's span and what it holds take the first line, and its label the line under them */
+@media (max-width: 720px) {
+  .tl-pick {
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+  }
+  .tl-num {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .tl-when {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .tl-what {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .tl-label {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .tl-state {
+    grid-column: 2 / -1;
+  }
 }
 /* a session whose agent is running now */
 .tj-live {

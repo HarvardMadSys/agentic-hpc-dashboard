@@ -471,6 +471,11 @@ export type ToolCallOutcome = 'isolated' | 'not_isolated' | 'failed' | 'no_paylo
 /** Read off the session root's own argv; only a role-`agent` process has one. */
 export type ApprovalState = 'bypassed' | 'auto' | 'supervised' | 'unobservable' | 'na' | 'unknown';
 
+/** Where an agent session is driven from, off its own argv
+ *  (`rc_dashboard/normalize.py: SURFACES`). CLI: `terminal`, `script`;
+ *  app: `desktop`, `extension`, `web`. */
+export type Surface = 'terminal' | 'script' | 'desktop' | 'extension' | 'web' | 'unknown';
+
 export interface AncestryRow {
   ancestry: string;
   /** `wrapper` (bwrap / codex-linux-sandbox, read before it unshares) or `process` */
@@ -556,6 +561,191 @@ export const TRAJ_RANKS: TrajRank[] = [
   'distinct_tools',
 ];
 
+/** Which end of a session the inspector lists first, and draws in full
+ *  (`ORDERS` in rc_dashboard/proctree.py). */
+export type TrajOrder = 'oldest' | 'newest';
+
+/* ---------------------------------------------------------------- phases
+ * What an agent was doing, read from the commands it ran
+ * (`rc_dashboard/reducers/phase_segment.py`): a handful of labelled stretches,
+ * carried by an agent session's row and by the inspector's `row`.
+ */
+
+export type PhaseKind =
+  | 'explore'
+  | 'edit'
+  | 'edit_guess'
+  | 'build'
+  | 'test'
+  | 'loop'
+  | 'run'
+  | 'slurm'
+  | 'wait'
+  | 'git'
+  | 'idle'
+  | 'unknown';
+
+/** What a wait waits on, from the command that polls it (`phase_rules.waits_on`). */
+export type WaitsOn = 'slurm' | 'process' | 'output' | 'sleep' | 'command';
+
+export interface Phase {
+  kind: PhaseKind;
+  /** epoch seconds. A phase runs until the next one starts; the last runs until every call has ended */
+  t0: number;
+  t1: number;
+  /** tool calls in it; 0 for an idle gap and for a guess */
+  n: number;
+  /** `[category, calls]`, the top three: empty unless the dominant category holds under half the calls */
+  mix: [string, number][];
+  /** masked command previews, by how many calls ran each */
+  top: [string, number][];
+  /** why the pauses read as editing: on an `edit_guess`, and on any phase that holds guessed `slices`.
+   *  A phase is a guess when its `kind` says so, not when this is set */
+  guess: string | null;
+  /** guessed edits before or inside its calls, `[t0, t1]`. A loop's, but any phase can carry them,
+   *  and a run's `t0` can begin at one */
+  slices: [number, number][] | null;
+  /** runs of the command, in a loop */
+  rounds: number | null;
+  waits_on: WaitsOn | null;
+  /** a wait's pace: the mean gap between its polling command's starts, and how many it started in this phase */
+  every_s: number | null;
+  times: number | null;
+  /** the command that pace is named for: a finished call's preview, or the program run most under a call
+   *  still running (R65, the first of its `seen`). Null with no pace */
+  every_cmd: string | null;
+  /** a call in it is still running */
+  open: boolean;
+  /** the programs seen under its calls still running, up to five, masked and cut as the census names them;
+   *  null when it has none (R65). Most run first, a tie going to the first seen; a login shell's startup
+   *  helpers left out, and Claude's binary under its version name read `claude` (leftovers L3). A call
+   *  still running is never named by its first child's text */
+  seen: string[] | null;
+  /** `[preview, seconds]`: a process that outlived its call, or a call that ran past this phase. Never a call
+   *  still running (R65) */
+  ran_past: [string | null, number][] | null;
+  /** an idle gap's: `[preview, since]` for each call from an earlier step that was still running as the gap began,
+   *  three at most, the earliest first. The agent had moved past it, and it may have ended inside the gap. The
+   *  preview is null for a call still running, which has none of its own (R65). Null on any other phase, and on an
+   *  idle one with nothing running. Absent from a block of the first version */
+  alive?: [string | null, number][] | null;
+  /** the task it belongs to: an index into the block's `tasks`. Absent from a block of the first version */
+  task?: number;
+  /** the day row that holds it, for an agent over several days (`PhaseBlock.days`); null for one of one day.
+   *  Absent from a block of the first version */
+  sid?: string | null;
+}
+
+/** What the agent ran that the model did not ask for. Counted, never a phase. */
+export interface PhaseHousekeeping {
+  n: number;
+  /** `[shape, commands]`, the top five */
+  shapes: [string, number][];
+  /** `[minute epoch, commands begun in it]`, in time order */
+  bins: [number, number][];
+  /** counted in `n` and in no minute: no time, past the bin bound, or under a process that never exited */
+  cut: number;
+  /** of `n`, the commands under a process that never exited: not known to be the agent's own, so told apart
+   *  from the rest. Counted on its own, because `shapes` holds only the top five and may not list their shape */
+  never_exited: number;
+}
+
+/** Where the agent's own words in a task's label came from (`phase_names.SOURCES`): the title of a pull request it
+ *  opened or edited, the subject of a commit, or the title of an entry it wrote in a log or plan file. */
+export type TaskSource = 'pr' | 'commit' | 'log';
+
+/** The cutting gap before a task: an hour or more in which the agent waited on nothing it had started. */
+export interface TaskGap {
+  /** how long, in seconds */
+  s: number;
+  /** `[preview, since, name]` for each call from an earlier step that was still running as the gap began, three at
+   *  most, the earliest first. The agent had moved past it, and it may have ended inside the gap. The preview is null
+   *  for a call still running, which has none of its own (R65). The name is what the gap line calls it: the script it
+   *  ran, else what it tested, the job it submitted, or the folder it made, as a label shows them, else for a call
+   *  still running the programs seen under it (`pgrep and sleep`), else null. Empty when none was running */
+  alive: [string | null, number, string | null][];
+}
+
+/** A stretch of a session that was about one thing (`rc_dashboard/reducers/phase_tasks.py`), above the fine phases:
+ *  named from the agent's own words when it wrote any, else from the names its commands held. */
+export interface Task {
+  /** `lone`: a few calls hours from other work, set apart. It is no task, and it counts for no cap */
+  kind: 'task' | 'lone';
+  /** epoch seconds: from its first call's start to where the next task begins. A task before a cutting gap ends
+   *  where the agent stopped waiting on its calls, and the session's last where its last call ended */
+  t0: number;
+  t1: number;
+  /** tool calls in it */
+  n: number;
+  label: string;
+  /** where the words in `label` came from. Null for a label built from names, which is no quote */
+  source: TaskSource | null;
+  /** `#235` for a pull request edited by its number, else '' */
+  ref: string;
+  /** the names its commands held, at most two, as a label shows them. The service sends them for a quoted task too;
+   *  a built label is made of them */
+  names: string[];
+  /** `[first, end)` in the block's `list`. A block's tasks tile its phases in order, so the idle phase of the
+   *  cutting gap after a task is the task's, and the next task's `gap` says it */
+  phases: [number, number];
+  /** a call in it is still running */
+  open: boolean;
+  /** the call log was cut, and the calls it left out may belong here: it ends after the cut, or it is the last */
+  incomplete: boolean;
+  /** the cutting gap before it; null for the first, and where the work moved on with no gap between */
+  gap: TaskGap | null;
+  /** the day row that holds it, for an agent over several days (`PhaseBlock.days`); null for one of one day */
+  sid: string | null;
+}
+
+/** One day row of an agent that worked across midnight, as its block lists it. */
+export interface PhaseDay {
+  sid: string;
+  /** the row's first and last record, epoch seconds */
+  first: number;
+  last: number;
+}
+
+export interface PhaseBlock {
+  /** 2 for a block that carries its tasks; a block of the first version has no `tasks`, `headline`, or `days` */
+  v: number;
+  basis: string;
+  /** every tool call seen, the cut ones included. For an agent over several days, the whole session's */
+  n_calls: number;
+  /** calls past the log's bound: in `n_calls` and in no phase. The earliest began at `cut_at` */
+  cut: number;
+  cut_at: number | null;
+  housekeeping: PhaseHousekeeping;
+  list: Phase[];
+  /** the session's tasks, in time order, tiling `list` */
+  tasks?: Task[];
+  /** the project, and the names that recur across the tasks: `KempnerForge · PRs #229, #233 · video_io.py`. Null
+   *  when it has neither */
+  headline?: string | null;
+  /** for an agent over several day rows: the rows, in time order. Each of them serves this one block, of the whole
+   *  session, so that midnight cuts no task or phase; a `sid` on a task or a phase says which row holds it. Absent
+   *  for an agent of one day */
+  days?: PhaseDay[];
+}
+
+/** A row whose calls are not recognized: an agent type outside Claude Code and Codex, a person, an IDE. */
+export interface PhasesUnavailable {
+  unavailable: string;
+}
+
+/** What the per-minute census says is running at a session's live edge
+ *  (`running_now`, rc_dashboard/reducers/live.py). `idle` is a proxy for it:
+ *  nothing beyond what has been up since the session began. */
+export interface TrajNow {
+  state: 'running' | 'idle' | 'unknown';
+  /** what is up beyond that, `[command, processes]`, most first */
+  cmds?: [string, number][];
+  /** the first phase category any of `cmds` has */
+  cat?: string;
+  /** the census tick it was read from */
+  at?: number;
+}
+
 /** A session whose agent is running now (`aggregator._running_rows`). */
 export interface TrajRunning {
   /** the agent's own newest record */
@@ -565,6 +755,8 @@ export interface TrajRunning {
   n_procs: number | null;
   rss_mb: number | null;
   census_at: number | null;
+  /** what is running at the live edge; absent from a service that predates phases */
+  now?: TrajNow;
 }
 
 /** How a session's collector keys were attributed to it, most certain first
@@ -598,6 +790,10 @@ export interface TrajRow {
   running?: TrajRunning;
   sandbox: SandboxState | null;
   approval: ApprovalState | null;
+  /** its root's; null for a session that is not an agent's */
+  surface?: Surface | null;
+  /** the client or the mode, where the argv names it: `Claude desktop app`, `VS Code` */
+  surface_detail?: string | null;
   sandbox_ancestry: string | null;
   autonomous: boolean | null;
   tool_rle: [string, number][];
@@ -611,6 +807,12 @@ export interface TrajRow {
   /** the session's first and last record in the window */
   first?: number | null;
   last?: number | null;
+  /** its tool calls, read from the commands its agent ran. Null where its calls are not
+   *  recognized: not counted, which is not none. Absent from a service that predates phases.
+   *  A row of an agent over several days counts its own day's, and the block's is the session's */
+  n_calls?: number | null;
+  /** what the agent was doing; `{unavailable}` where its calls are not recognized */
+  phases?: PhaseBlock | PhasesUnavailable;
   users?: string[];
   n_users?: number;
   pids?: number[];
@@ -632,9 +834,12 @@ export interface TrajSummary {
   longest: { sid: string; wall_s: number; user: string | null; agent_type: string | null; tool_calls: number } | null;
   /** share of tool calls that only wait: process-table and scheduler polling */
   wait_pct: number | null;
+  /** agent sessions by where each is driven from; null for the other classes */
+  by_surface?: Partial<Record<Surface, number>> | null;
 }
 export interface Trajectories extends PanelEnvelope {
-  window: unknown;
+  /** the window the ranks were read over: how long it is, and its ends as the service's local time */
+  window: { minutes: number; from: string | null; to: string | null };
   filter?: ViewFilterBlock;
   rank_by: TrajRank;
   rank_meaning: string;
@@ -703,6 +908,15 @@ export interface ProcNode {
   gap?: number;
   /** its record names init: it outlived its parent */
   orphan?: boolean;
+  /** a fork that never exec'd, such as a shell's subshell: its command line is its parent's */
+  fork?: boolean;
+  /** what a person mistyped at a terminal ("hide typos"): a name the shell
+   *  could not find, or a line that failed and was typed again, corrected */
+  typo?: 'not-found' | 'retried';
+  /** the name a not-found helper was handed (`command-not-found -- clera`); masked */
+  typed?: string;
+  /** failed tries of this line, typed just before it and corrected */
+  tries?: number;
   core?: boolean;
   exit_code?: number | null;
   signal?: number | null;
@@ -736,6 +950,8 @@ export interface ProcGroup {
   exits: Record<string, number>;
   signals: Record<string, number>;
   alive: number | null;
+  /** members a person mistyped (`ProcNode.typo`) */
+  typos?: number | null;
   /** distinct command lines among the members */
   distinct: number;
   samples: { args?: string; cmdline?: string; n: number }[];
@@ -776,6 +992,8 @@ export interface TrajectoryDetail extends PanelEnvelope {
   host?: string;
   owner_pid?: number | null;
   keys?: number;
+  /** the order the tree was served in; absent from a service that predates it */
+  order?: TrajOrder;
   window?: WindowSpec;
   span?: { first: number | null; last: number | null };
   scan?: {
@@ -924,6 +1142,10 @@ export interface CascadeNode {
   approval_detail?: string | null;
   /** read from the program's path where the path names it */
   version?: string | null;
+  /** where it is driven from, off its own argv (a Codex app-server's is its
+   *  front-end's); null for a node that is not an agent */
+  surface?: Surface | null;
+  surface_detail?: string | null;
   /** its tool calls' verdict, the Sandbox tab's for its session; null: it made none */
   sandbox?: SessionSandboxState | null;
   sandbox_calls?: Partial<Record<ToolCallOutcome, number>> | null;
@@ -1407,6 +1629,9 @@ export interface LiveUserSession {
   sid?: string | null;
   /** read from the program's path where the path names it */
   version?: string | null;
+  /** its root agent's; null when the root is a host (the desktop app's server) */
+  surface?: Surface | null;
+  surface_detail?: string | null;
   /** the most, and the average, resident memory over every tick seen */
   rss_peak_mb?: number | null;
   rss_mean_mb?: number | null;
@@ -1425,6 +1650,8 @@ export interface LiveInnerAgent {
   version: string | null;
   sandbox: string | null;
   epoch: number | null;
+  surface: Surface | null;
+  surface_detail: string | null;
 }
 export interface LiveUserDetail {
   user: string;
@@ -1670,6 +1897,41 @@ export interface AskJob {
   error: string | null;
   elapsed_s: number;
   snapshot_kb: number;
+  /** what each ref the answer cites was (ask.Asker._cites); null until answered,
+   *  absent from a job asked before citations */
+  cites?: Record<string, AskCite> | null;
+  /** what the question was read over, so a citation opens the page on it */
+  view?: AskView | null;
+}
+
+/** A moment of one session's tree to open the inspector at. */
+export interface CiteJump {
+  t: number;
+  by: 'start' | 'end';
+  pid?: number | null;
+  zoom?: [number, number];
+}
+
+/** One cited ref: where it sits in the snapshot, what the model saw of it (its
+ *  refs taken out, a long list said as a count; an outline's line is the line),
+ *  and the hints that open it -- a session, or a moment of this session. */
+export interface AskCite {
+  path: (string | number)[];
+  data: unknown;
+  go: { sid?: string | null; jump?: CiteJump } | null;
+  /** for a part of a row that names no one (a folder an agent read): who the
+   *  row above it is -- its user, host, pid, agent type, class */
+  of?: Record<string, unknown> | null;
+}
+
+/** The window, filter, classes, and session a question was read over, in the
+ *  page's own URL keys. No filter is no filter, not "whatever is on screen". */
+export interface AskView {
+  window_min: number | null;
+  users: string[];
+  atypes: string[];
+  cls: string[] | null;
+  sid: string | null;
 }
 
 /* ------------------------------------------------- every command behind I/O

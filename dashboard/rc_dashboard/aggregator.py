@@ -36,7 +36,8 @@ from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
 from .normalize import Normalizer, canonical_class
-from .reducers.live import LiveReducer
+from .procindex import users_conflict
+from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
 
@@ -469,11 +470,14 @@ class Aggregator:
         busiest = [rows[s] for s in (tr.get("ranks") or {}).get("events", [])[:15] if s in rows]
         keep = ("user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
                 "distinct_tools", "peak_rss_mb", "sandbox", "approval", "host")
+        # a busiest session's sid is a hint, for a citation to open it by: the
+        # model has no use for it
         extra = {"facets": got.get("facets"),
                  "sessions": {"summary": tr.get("summary"),
-                              "busiest": [{k: r.get(k) for k in keep} for r in busiest]}}
-        panels = got.get("panels") or {}
-        scope = None
+                              "busiest": [dict({k: r.get(k) for k in keep}, _go={"sid": r.get("sid")})
+                                          for r in busiest]}}
+        panels = self._cascade_hints(got.get("panels") or {}, self._agent_sessions(tr))
+        scope = {"view": self._ask_view(win, view, context.get("classes"))}
         if suggest:
             st = got.get("window_status") or {}
             if st.get("state") != "ready" and not st.get("has_payload"):
@@ -485,18 +489,101 @@ class Aggregator:
             extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
                              "classes_shown": [c for c in classes if isinstance(c, str)][:8]
                              if isinstance(classes, list) else None}
-            scope = {"about": "suggestions for the operator", "parse": "suggestions",
-                     "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE}
+            scope.update({"about": "suggestions for the operator", "parse": "suggestions",
+                          "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE})
         if self.anon is not None:
             # The snapshot leaves the host, for the model's provider: aliases only.
             panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
                                    self.anon.payload(extra))
+            scope["view"] = self.anon.payload(scope["view"])
         return self.asker.submit(question, panels, live, win["label"], history, extra, scope)
 
     @staticmethod
     def _ask_label(ctx, key, cap):
         v = ctx.get(key)
         return v.strip()[:cap] if isinstance(v, str) else ""
+
+    @staticmethod
+    def _agent_sessions(tr):
+        """(host, agent pid) -> {user: (last, sid)}: for each user whose agent
+        held the pid, the session of its newest day, which a cited agent opens
+        its trajectory by (`_agent_session`). A pid is reused, so another
+        user's agent with the same pid is another session."""
+        out = {}
+        for sid, r in ((tr or {}).get("rows") or {}).items():
+            parts = sid.split("|") if isinstance(sid, str) else []
+            if len(parts) != 4 or not parts[3].startswith("apid:"):
+                continue
+            try:
+                key = (parts[0], int(parts[3][len("apid:"):]))
+            except ValueError:
+                continue
+            held = out.setdefault(key, {})
+            user = (r or {}).get("user")
+            last = (r or {}).get("last") or 0
+            if user not in held or last > held[user][0]:
+                held[user] = (last, sid)
+        return out
+
+    @staticmethod
+    def _agent_session(sessions, host, pid, user):
+        """The sid a cited agent opens, or None. Of the sessions that held its
+        pid, its own user's; failing that, the newest that does not conflict
+        with its user (`users_conflict`: a session with no user, or root's, is
+        not another user's)."""
+        held = sessions.get((host, pid)) or {}
+        if user and user in held:
+            return held[user][1]
+        near = [v for u, v in held.items() if not users_conflict(user, u)]
+        return max(near)[1] if near else None
+
+    @staticmethod
+    def _cascade_hints(panels, sessions):
+        """The panels with each agent of the cascades panel, and each tree by
+        its lead agent, pointing at its session (`_go.sid`), so a citation of
+        one -- or of a folder it wrote -- opens its trajectory. A copy: the
+        panel itself is served to the page as it is."""
+        c = (panels or {}).get("cascades")
+        if not isinstance(c, dict) or not sessions:
+            return panels
+        c = dict(c)
+
+        def hinted(row, sid):
+            return dict(row, _go={"sid": sid}) if sid else row
+
+        def sid_of(host, agent):
+            return Aggregator._agent_session(sessions, host, agent.get("pid"), agent.get("user"))
+
+        ws = c.get("workspace")
+        if isinstance(ws, dict) and isinstance(ws.get("agents"), list):
+            c["workspace"] = dict(ws, agents=[
+                hinted(a, sid_of(a.get("host"), a)) if isinstance(a, dict) else a
+                for a in ws["agents"]])
+        if isinstance(c.get("trees"), list):
+            trees = []
+            for t in c["trees"]:
+                sid = None
+                if isinstance(t, dict):
+                    agents = sorted((n for n in t.get("nodes") or []
+                                     if isinstance(n, dict) and n.get("role") == "agent"),
+                                    key=lambda n: (n.get("agent_level") or 1, -(n.get("tool_calls") or 0)))
+                    sid = next(filter(None, (sid_of(t.get("host"), n) for n in agents)), None)
+                trees.append(hinted(t, sid) if isinstance(t, dict) else t)
+            c["trees"] = trees
+        return dict(panels, cascades=c)
+
+    @staticmethod
+    def _ask_view(win, flt=None, classes=None, sid=None):
+        """What a question was asked over, as the page's own URL keys, so a
+        citation in its answer opens the page on the data the model saw: the
+        window, the filter (none is no filter, not "whatever is on screen"),
+        the classes shown, and the session."""
+        flt = flt or winmod.NO_FILTER
+        return {"window_min": win["minutes"], "users": list(flt.users),
+                "atypes": list(flt.agent_types),
+                "cls": [c for c in classes if isinstance(c, str)][:8]
+                if isinstance(classes, list) else None,
+                "sid": sid}
 
     def _ask_panel(self, question, window_min, history, ctx, flt):
         parts = ctx.get("parts")
@@ -564,16 +651,20 @@ class Aggregator:
                 named.append("panels.%s%s" % (key, " (%s)" % ", ".join(keys) if keys else ""))
         if not panels and not extra:
             raise ValueError("this panel has no data in this window to ask about")
+        if "cascades" in panels:
+            panels = self._cascade_hints(panels, self._agent_sessions(self.trajectories(window_min, flt)))
         classes = ctx.get("classes")
         extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
                          "classes_shown": [c for c in classes if isinstance(c, str)][:8]
                          if isinstance(classes, list) else None}
         title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
         scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),
-                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP}
+                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP,
+                 "view": self._ask_view(win, flt, classes)}
         if self.anon is not None:
             # The snapshot leaves the host, for the model's provider: aliases only.
             panels, extra = self.anon.payload(panels), self.anon.payload(extra)
+            scope["view"] = self.anon.payload(scope["view"])
         return self.asker.submit(question, panels, None, win["label"], history, extra, scope)
 
     def _ask_session(self, question, window_min, history, ctx):
@@ -596,9 +687,10 @@ class Aggregator:
         extra["view"] = {"window": win["label"]}
         title = self._ask_label(ctx, "title", 160)
         scope = {"about": title or "one session", "guide": ask.SESSION_GUIDE,
-                 "steps": ask.SESSION_STEPS}
+                 "steps": ask.SESSION_STEPS, "view": self._ask_view(win, sid=sid)}
         if self.anon is not None:
             extra = self.anon.payload(extra)
+            scope["view"] = self.anon.payload(scope["view"])
         return self.asker.submit(question, None, None, win["label"], history, extra, scope)
 
     def _accounts(self):
@@ -645,10 +737,11 @@ class Aggregator:
         From the live tier (under the lock): an agent root is running while
         its own records keep arriving (`LiveReducer.LIVE_S`), and its tree's
         newest census says how many processes it has up and how much memory
-        they hold -- when the agent is its tree's root; one a VS Code server
-        started shares that server's census, so it gets none. An agent's
-        rows are split by day; only its newest is marked. The cached rows
-        are never written to: a marked row is a copy.
+        they hold, and what of that is a call running (`now`, from
+        `running_now`) -- when the agent is its tree's root; one a VS Code
+        server started shares that server's census, so it gets none and its
+        `now` is unknown. An agent's rows are split by day; only its newest is
+        marked. The cached rows are never written to: a marked row is a copy.
         """
         now = now or time.time()
         fresh = now - self.live.LIVE_S
@@ -676,5 +769,6 @@ class Aggregator:
                 "n_procs": census.get("n_procs") if census else None,
                 "rss_mb": census.get("rss_mb") if census else None,
                 "census_at": census.get("epoch") if census else None,
+                "now": running_now(census, fresh),
             })
         return out

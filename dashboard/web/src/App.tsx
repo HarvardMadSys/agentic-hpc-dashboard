@@ -24,6 +24,7 @@ import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
 import { useUrlState } from './lib/useUrlState';
+import { arriveFromHash } from './lib/cites';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
 import { ResourcesTab } from './tabs/ResourcesTab';
@@ -124,6 +125,8 @@ function pillOf(
 
 export default function App() {
   const [url, setUrl] = useUrlState();
+  // a page opened from an answer's citation goes to what it cites, once
+  useEffect(() => arriveFromHash(), []);
   const feeds = useFeeds();
   const config = useConfig();
   const live = useLive(url.win);
@@ -279,6 +282,8 @@ export default function App() {
             select={(sid) => setUrl({ traj: sid, tfrom: null }, true)}
             tfrom={url.tfrom}
             setTfrom={(t) => setUrl({ tfrom: t }, true)}
+            torder={url.torder}
+            setTorder={(o) => setUrl({ torder: o })}
             tuser={url.tuser}
             clearUser={() => setUrl({ tuser: null })}
             routine={

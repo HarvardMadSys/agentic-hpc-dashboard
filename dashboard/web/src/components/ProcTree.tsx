@@ -21,11 +21,12 @@
  */
 import { memo, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
-import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode } from '../api/types';
+import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode, TrajOrder } from '../api/types';
 import { ioTip, ioTotal } from '../lib/procio';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
-import { isHidden } from './ProcDiagram';
+import { hiders, isHidden, typoLabel, typoTip } from './ProcDiagram';
+import type { Hide } from './ProcDiagram';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
 interface Rest {
@@ -92,10 +93,10 @@ function children(e: Item): Item[] {
   return [];
 }
 
-/** The rows drawn. `hide` is the routine list when "hide routine" is on: a
+/** The rows drawn. `hide` is what "hide routine" and "hide typos" take out: a
  *  row it takes out goes with everything below it, and every other row keeps
  *  the id it has in the full tree, so a jump's id means the same row either way. */
-export function flatten(root: ProcNode, open: Set<string>, hide?: string[] | null): Row[] {
+export function flatten(root: ProcNode, open: Set<string>, hide?: Hide | null): Row[] {
   const out: Row[] = [];
   const walk = (e: Item, id: string, depth: number, guides: boolean[], last: boolean) => {
     const ch = children(e)
@@ -110,16 +111,20 @@ export function flatten(root: ProcNode, open: Set<string>, hide?: string[] | nul
   return out;
 }
 
-/** Whether "hide routine" takes out row `id`: it, or a row above it, is routine. */
-export function hiddenAt(root: ProcNode, id: string, rules: string[]): boolean {
+/** Which of `h`'s switches take out row `id`: it, or a row above it, is
+ *  routine or a typo. */
+export function hiddenAt(root: ProcNode, id: string, h: Hide): { routine: boolean; typos: boolean } {
+  const off = { routine: false, typos: false };
   let e: Item = root;
   for (const i of id.split('.').slice(1)) {
     const k: Item | undefined = children(e)[Number(i)];
-    if (!k) return false;
-    if (isHidden(k, rules)) return true;
+    if (!k) break;
+    const w = hiders(k, h);
+    off.routine = off.routine || w.routine;
+    off.typos = off.typos || w.typos;
     e = k;
   }
-  return false;
+  return off;
 }
 
 /* ---------------------------------------------------------- finding a time */
@@ -160,12 +165,16 @@ export interface Found {
   kind: 'p' | 'rest' | 'agg' | 'more';
 }
 
-/** The span of times a counted row's processes `by`, and how many there are. */
-function spanOf(e: Item, by: 'start' | 'end'): [number | null, number | null, number] {
+/** The span of times a counted row's processes `by`, and how many there are.
+ *  A group's members past the itemised few came after them, or, `newest`
+ *  first, before them. */
+function spanOf(e: Item, by: 'start' | 'end', newest = false): [number | null, number | null, number] {
   if (e.k === 'rest') {
     const g = e.of;
     const last = g.items[g.items.length - 1];
-    const a = (last ? (by === 'start' ? last.start : last.end) : null) ?? g.start;
+    const at = last ? (by === 'start' ? last.start : last.end) : null;
+    if (newest) return [g.start, at ?? (by === 'start' ? (g.last ?? g.end) : g.end), e.more];
+    const a = at ?? g.start;
     const b = by === 'start' ? (g.last ?? g.end) : g.end;
     return [a, b, e.more];
   }
@@ -182,9 +191,10 @@ function spanOf(e: Item, by: 'start' | 'end'): [number | null, number | null, nu
  * contains `t` is scored by the wait to its next one were they spread evenly,
  * half the span over `n`, so a dense poll loop wins over a row a minute away
  * and a sparse one does not. Ties go to the earlier row in the tree, so a
- * tool-call shell comes before the command it ran.
+ * tool-call shell comes before the command it ran. `newest`: the tree was
+ * served newest first, which moves where a group's undrawn members lie.
  */
-export function locate(list: Spot[], q: JumpReq): Found | null {
+export function locate(list: Spot[], q: JumpReq, newest = false): Found | null {
   const EPS = 0.0015;
   const key = (e: ProcNode) => (q.by === 'end' ? e.end : e.start);
   if (q.pid != null || q.purpose != null || q.tool != null) {
@@ -210,7 +220,7 @@ export function locate(list: Spot[], q: JumpReq): Found | null {
       if (v != null && v >= q.t - EPS) sc = Math.max(0, v - q.t);
       if (e.start != null && (last == null || (last.e as ProcNode).start! <= e.start)) last = s;
     } else if (e.k === 'rest' || e.k === 'agg' || e.k === 'more') {
-      const [a, b, n] = spanOf(e, q.by);
+      const [a, b, n] = spanOf(e, q.by, newest);
       if (a != null && b != null) {
         if (q.t <= a) sc = a - q.t;
         else if (q.t <= b) sc = (b - a) / Math.max(1, n) / 2;
@@ -317,6 +327,7 @@ function procTip(n: ProcNode): string {
     n.link ? `parent: ${LINK_TIP[n.link]}` : null,
     n.gap ? `${n.gap} level(s) between it and that parent were never recorded` : null,
     n.orphan ? 'its record names init: it outlived its parent and was reparented' : null,
+    typoTip(n),
     n.cpu_nm ? `cpu not measured on ${fint(n.cpu_nm)} process(es) below` : null,
     ioTip(n.io, 'its own I/O'),
     ioTip(n.sub_io, 'with everything below it'),
@@ -386,9 +397,16 @@ function Bar({ t0, t1, cls, tl, tip }: { t0: number | null; t1: number | null; c
 /* -------------------------------------------------------------------- row */
 
 /** When a row's processes ran, for marking the rows inside a zoomed range. */
-function ranOf(e: Item): [number | null, number | null] {
+function ranOf(e: Item, newest: boolean): [number | null, number | null] {
   if (e.k === 'p') return [e.start, e.end ?? e.start];
-  if (e.k === 'rest') return [spanOf(e, 'start')[0], e.of.end];
+  if (e.k === 'rest') {
+    if (newest) {
+      // older than the last one drawn: from the group's first start to its end
+      const last = e.of.items[e.of.items.length - 1];
+      return [e.of.start, last?.end ?? e.of.end];
+    }
+    return [spanOf(e, 'start')[0], e.of.end];
+  }
   return [e.start, e.end];
 }
 
@@ -399,6 +417,7 @@ const RowView = memo(function RowView({
   tl,
   zoomed,
   flash,
+  newest,
 }: {
   r: Row;
   open: boolean;
@@ -407,6 +426,8 @@ const RowView = memo(function RowView({
   /** a zoomed range is on: mark whether this row ran inside it */
   zoomed: boolean;
   flash: boolean;
+  /** the tree was served newest first */
+  newest: boolean;
 }) {
   const e = r.e;
   const lo = tl?.lo ?? null;
@@ -455,6 +476,11 @@ const RowView = memo(function RowView({
         {e.orphan && (
           <span className="pt-tag weak" data-tip="its record names init: it outlived its parent and was reparented">
             reparented
+          </span>
+        )}
+        {typoLabel(e) && (
+          <span className={`pt-tag${e.typo ? ' weak' : ''}`} data-tip={typoTip(e) ?? undefined}>
+            {typoLabel(e)}
           </span>
         )}
         {e.cwd && r.depth > 0 && (
@@ -517,8 +543,10 @@ const RowView = memo(function RowView({
     ];
   } else if (e.k === 'rest') {
     rowCls = ' count';
-    body = <span>{`… ${fint(e.more)} more like these, in the group's totals`}</span>;
-    tip = 'members of the group past the first few: counted in the group row above, not drawn one by one';
+    body = <span>{`… ${fint(e.more)} ${newest ? 'older' : 'more'} like these, in the group's totals`}</span>;
+    tip = `${
+      newest ? "the group's older members, past the newest few" : 'members of the group past the first few'
+    }: counted in the group row above, not drawn one by one`;
     cells = ['', '', '', '', '', '', '', ''];
   } else {
     const c = e as ProcCount;
@@ -535,8 +563,12 @@ const RowView = memo(function RowView({
       );
     tip =
       c.k === 'agg'
-        ? "past the inspector's hold budget: counted with their CPU and time span under this parent, but not drawn one by one"
-        : 'past the number of rows the inspector serves, which it allots breadth first: counted here, deepest levels first to go';
+        ? `${
+            newest ? "the oldest, past the newest the inspector's hold budget draws" : "past the inspector's hold budget"
+          }: counted with their CPU and time span under this parent, but not drawn one by one`
+        : newest
+          ? 'past the number of rows the inspector serves, which it allots breadth first and newest first: counted here, the deepest levels of the oldest first to go'
+          : 'past the number of rows the inspector serves, which it allots breadth first: counted here, deepest levels first to go';
     cells = [
       when(c.start, lo),
       <span key="d">{c.start != null && c.end != null ? dur(c.end - c.start) : DASH}</span>,
@@ -550,7 +582,7 @@ const RowView = memo(function RowView({
   }
 
   if (zoomed && tl) {
-    const [a, b] = ranOf(e);
+    const [a, b] = ranOf(e, newest);
     const inside = a != null && a <= tl.hi && (b ?? a) >= tl.lo;
     rowCls += inside ? ' inz' : ' outz';
   }
@@ -597,6 +629,8 @@ export function ProcTree({
   view,
   flash,
   hide,
+  newest = false,
+  onOrder,
 }: {
   root: ProcNode;
   open: Set<string>;
@@ -606,9 +640,14 @@ export function ProcTree({
   view?: [number, number] | null;
   /** the row a jump landed on, and a count that changes on every jump */
   flash?: { id: string; n: number } | null;
-  /** the routine list, when "hide routine" is on: those rows are not drawn */
-  hide?: string[] | null;
+  /** what "hide routine" and "hide typos" take out: those rows are not drawn */
+  hide?: Hide | null;
+  /** the tree was served newest first: the order its rows are in */
+  newest?: boolean;
+  /** asks for the other order; the "started" header flips it, as a sort would */
+  onOrder?: (o: TrajOrder) => void;
 }) {
+  const flip = onOrder ? () => onOrder(newest ? 'oldest' : 'newest') : undefined;
   const rows = useMemo(() => flatten(root, open, hide), [root, open, hide]);
   const full =
     timeline?.lo != null && timeline?.hi != null && timeline.hi >= timeline.lo
@@ -640,7 +679,32 @@ export function ProcTree({
       <div className="pt-in">
         <div className="pt-head">
           <div>process · what it ran</div>
-          <div className="num">started</div>
+          <div
+            className={`num${flip ? ' pt-sort' : ''}`}
+            role={flip ? 'button' : undefined}
+            tabIndex={flip ? 0 : undefined}
+            aria-label={`started: ${newest ? 'newest' : 'oldest'} first${flip ? `; activate for ${newest ? 'oldest' : 'newest'} first` : ''}`}
+            onClick={flip}
+            onKeyDown={
+              flip
+                ? (ev) => {
+                    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+                    ev.preventDefault();
+                    flip();
+                  }
+                : undefined
+            }
+            data-tip={`each process's children by when they started, ${
+              newest
+                ? 'newest first. The newest are the ones drawn in full; the oldest are counted in ⋯ rows'
+                : 'oldest first. In a busy session the newest are the ones counted in ⋯ rows'
+            }${flip ? `\nclick: ${newest ? 'oldest' : 'newest'} first` : ''}`}
+          >
+            started
+            <span className="sort-arrow" aria-hidden="true">
+              {newest ? '▼' : '▲'}
+            </span>
+          </div>
           <div className="num">took</div>
           <div className="num" data-tip="the process's own cpu_s">
             cpu s
@@ -672,6 +736,7 @@ export function ProcTree({
               tl={tl}
               zoomed={!!view}
               flash={on}
+              newest={newest}
             />
           );
         })}

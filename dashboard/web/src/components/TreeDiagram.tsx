@@ -199,6 +199,7 @@ export function TreeDiagram<T>({
               else els.current.delete(p.n.id);
             }}
             className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}`}
+            data-id={p.n.id}
             style={{ left: p.x, top: p.y, width: nodeW, height: nodeH }}
             onClick={click ? () => click(p.n.id) : undefined}
             role={click ? 'button' : undefined}

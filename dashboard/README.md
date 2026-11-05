@@ -199,8 +199,16 @@ sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the pa
 `window` block claimed 1440 minutes, so "top trajectories in the window" actually ranked
 sessions active in the last two hours. Eviction now never reaches inside the window
 (`max(idle_evict_s, window)`), which makes the label true and makes
-`reducers.trajectories.max_sessions` (50 000) the real memory bound — worth lowering if you
-raise retention on a busy fleet, since it applies per held window.
+`reducers.trajectories.max_sessions` (150 000) the real memory bound — worth lowering if you
+raise retention on a busy fleet, since it applies per held window. Past it, whole sessions go,
+the least recently active first, each judged by its own newest record. A session there is its
+process tree: schema 7 keys each tool call apart, so a session at work all day is hundreds of
+keys, and a FAS login node makes 45 000 keys on a median day and up to 105 000. A key held
+costs about 6 KB, so the cap is about 950 MB a window, which a 7 d view of a busy node
+reaches; a 24 h view of one holds its day whole. (Under 50 000 no order could: on boslogin06
+on 2026-10-28 the sessions active in the last four hours alone held 52 840 keys. And it used
+to go key by key and against the clock: a window merged from its hours oldest first met the
+cap with every session looking idle, and kept only each long session's afternoon.)
 
 Built windows are an LRU of `panels.max_windows` (2), and builds are serialised on one worker:
 two concurrent rebuilds would contend for the same page cache and each make the other look
@@ -282,8 +290,8 @@ scanned.
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
-| `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way |
-| `GET /api/trajectory?sid=&window_min=&from=` | one session as a **process tree**, re-read on demand (below) |
+| `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#trajectories-tasks-phases-and-processes)) |
+| `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
@@ -306,6 +314,15 @@ counted groups. Every bound is in the response, never applied quietly: the read 
 counted under their parent, and `inspect_nodes` (6 000) rows are served breadth first with the rest
 counted. Command lines are masked (`redact.py`) and then cut to 220 characters. One read runs at
 a time and is served again for a minute.
+
+Each of those bounds keeps one end of the session and counts the other, and by default all of
+them keep the **oldest**, the order the records arrive in. `order=newest` moves every one of them
+rather than sorting the result. Siblings are listed latest start first, and the rows are served
+breadth first in that order, so the row budget cuts the deep end of the oldest subtrees. A process
+that finds the hold full, or its command's quota under one parent, is drawn anyway, and the oldest
+drawn one is counted under its parent in its place. The read goes on to the session's end, up to
+`inspect_newest_records` (600 000): however much it reads, it keeps only the newest
+`inspect_hold` drawn, so that budget bounds time alone. Totals are the same in either order.
 
 Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
 `from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox
@@ -370,6 +387,24 @@ already made once.
   (settings files, codex `config.toml` and a mid-session switch are invisible),
   `unobservable` (`codex app-server` takes its policy per thread), `na` (a tool shell, probe,
   IDE helper or human process) and `unknown` (a child: its verdict is on the root).
+- **Where a session is driven from is read off the same argv, and `unknown` is never
+  guessed.** `normalize.surface_of` gives every agent session root one of five surfaces in
+  two groups. CLI: `terminal` (the agent's own interactive UI, `claude daemon` background
+  sessions included) and `script` (`claude -p`, the Agent SDK's stream-json, `codex exec`,
+  an MCP server). App: `desktop` (`~/.claude/remote/ccd-cli/`, the Claude desktop app's Code
+  tab over SSH; `codex -c features.code_mode_host=true app-server --listen unix://`, the
+  Codex app's Remote SSH), `extension` (an IDE extension's bundled binary under
+  `.vscode-server/extensions/` and the like) and `web` (Remote Control: `--sdk-url`,
+  `app-server --remote-control`). A mode decides before a path: the extension runs its
+  binary only as Claude's stream-json, Codex's `app-server`, or with no mode and no
+  terminal, so its `codex exec` run by hand from a terminal is a `script`. A Codex
+  `--managed-daemon` app-server serves whichever
+  client attaches, so its argv names none: it takes its terminal UI's surface when that UI
+  started it, as it takes its approval (`cascades.py`), and is otherwise `unknown`. A host
+  (the desktop app's `~/.claude/remote/srv/` server, `claude rc`, `claude daemon`) is never a
+  session, but a row or a box keyed on one says where its sessions are driven from. Shown as
+  a chip on agent boxes, session rows and live sessions, and as the CLI/app split on the
+  Trajectories sessions plate; there is no filter on it yet.
 - **CPU is `sum(cpu_s)`, self, once per process.** `child_cpu_s` is never added:
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
@@ -467,6 +502,159 @@ are reachable without a login through the tunnel. The header says *anonymized* w
 
 `tests/test_anonymize_leak.py` starts the app over a feed full of names, then reads every route
 and the websocket. No byte may carry one.
+
+## Trajectories: tasks, phases, and processes
+
+An agent session's row says what the agent was doing at three levels, which the page calls **Tasks**,
+**Phases**, and **Processes**.
+
+| level | what it is | built by |
+|---|---|---|
+| Tasks | stretches of the session that were about one thing, each labeled for what it was for | `reducers/phase_tasks.py` cuts and labels them, from the names and the agent's own words that `reducers/phase_names.py` reads out of each command |
+| Phases | what the agent spent its time on inside a task: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle | `reducers/phase_segment.py`, from the tool calls `reducers/phase_rules.py` names |
+| Processes | every process the session ran, in its tree | `/api/trajectory` (`proctree.py`) |
+
+A row of Claude Code or Codex carries the first two as `phases`: the `list` of phases, the `tasks` above
+them (each phase says which one it belongs to), a `headline` (the project, then the names that recur
+across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`. A row of any other
+agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`: not recognized is not none.
+How the page draws the levels is in [`web/README.md`](web/README.md#trajectories-tasks-phases-and-processes).
+
+All of it is read from the commands the agent ran and the words it wrote in them, and from nothing else,
+as the basis line over the inspector's chart says. Reading and editing inside the agent, its thinking, and
+a log entry it writes with its own Write or Edit tool leave no command, so none of them is seen. No model
+writes a label, and no transcript, prompt, or file on disk is read. The cutting and the naming are
+heuristics over command text, and their thresholds were tuned on seven hand-labeled sessions of boslogin06
+and rtx6000a. `rc_dashboard/phase_report.py` reads a day of a feed as a window build does, prints the
+phases and tasks of the agents it is asked for, and summarizes every row, which is what the thresholds are
+tuned against.
+
+**Where a task begins.** Calls that start within `phases.step_s` of a step's first call are one step, and
+every cut falls between two steps. A task is cut
+
+- at a gap of `gap_s` or more in which the agent waited on nothing. The agent waits on the calls of the step
+  it just made, and on a process a finished call left running (`nohup job &`) while that runs. A call from
+  an earlier step that is still running when a later step begins is one it moved past, and holds nothing
+  open. The service lists such calls with the gap, three at most, each with the name the gap line calls it
+  by: the script it ran, else what it tested, the job it submitted, or the folder it made, as a label shows
+  them, and for a call still running with none of these the programs seen under it (`pgrep and sleep`).
+  The page names the first: `scratchpad/linktest still running since 13:05:44`, and by its command where it
+  has no name;
+- where a name new to the session starts to recur: a step holds a name that first occurs in it, and the
+  name turns up again in at least `new_steps` later steps of the stretch, the `new_steps`-th of them within
+  `new_window_s` of the first. A search term and a folder changed into are no object, and begin no task;
+- after a commit or a pull request that closes a burst of git (git calls and nothing else, each within two
+  minutes of the one before), when the names in the `new_window_s` before the burst and after it overlap by
+  less than `close_overlap`. Bursts that start within `close_series_s` of the end of the one before close
+  once, after the last.
+
+Polls and bursts are folded before names are counted: a command on a timer counts once, and so does one run
+again within three minutes, so a job polled a hundred times is named once. A piece shorter than `min_s`, or
+with fewer than `min_calls` calls, then merges into the neighbor it is more alike, unless it holds the
+agent's own words, and never across a cutting gap. A local day merges down toward `cap` tasks, its most
+alike neighbors first. A few calls hours from other work (at most `lone_calls`, all within `lone_s`, with a
+cutting gap on each side or at the session's edge) are a **lone stretch**: no task, never merged into one,
+and not counted toward the cap. Every session with calls has at least one task.
+
+A row is cut and named again each time it is built, so a task that holds a call still running is open, and
+is named from the calls it has so far. A session's call log holds `phases.max_calls` calls. Past that, calls
+are counted and placed in no phase, and the last span, a lone stretch if that is what it is, and any span
+that ends after the first call dropped, say they are incomplete.
+
+**How a task is labeled.** There are two sources, and the page shows which one a label came from.
+
+- **The agent's own words**, when a command in the task holds any: the title of a pull request
+  (`gh pr create` or `gh pr edit` with `--title`), the subject of a commit (`git commit -m`, or `-F -` with
+  a heredoc), or the title of an entry it writes to a Markdown file whose name has `log`, `plan`, `notes`,
+  `handoff`, `progress`, `changelog`, or the like as a word of its own: a part of the name split on `_`,
+  `-`, `.`, and camel case, so `CHAT_LOG.md` and `progressNotes.md` are logs and `methodology.md` is not.
+  An entry is the text that a `cat` or `tee` heredoc, an
+  `echo`, or a `printf` writes, and its title is its first heading or bold line, else its first line with a
+  word in it. A pull request's title wins over a commit's subject, and a commit's over a log entry. Of
+  several pull requests or commits the last counts, since it closes the work, and of several log entries the
+  first, since it usually states the goal. Only text in the command counts, so `git commit -F msg.txt` has
+  none, and the words are masked as every command is (`redact.py`). The page shows them as a quote: in
+  quotation marks, with their source (`commit`, `PR #235`, or `log`).
+- **Otherwise, names.** The label is a verb for the category that holds most of the task's time (`Read`,
+  `Edit`, `Edit and test`, `Test`, `Build`, `Install`, `Run`, `Run on Slurm`, `Wait on`, `Commit`, or
+  `Search for`), then the one or two names most specific to the task. A name is a file a command runs,
+  tests, writes, or reads, a folder it makes or changes into, a Slurm job, a pull request, a branch, a
+  worktree, a package it installs, a name it gave its own scratch, what it searched for, or another
+  argument that reads as a name (`marinQC51`). Some text names nothing a reader knows and is no name: the
+  value of an option that the reader knows takes one (the partition of `srun -p kempner_h100`), anything
+  Slurm's queue and accounting commands are given (`squeue -u xq404`), the operands of a shell test, which
+  are a loop's stop condition and not its work (`[[ "$s" =~ ^(COMPLETED|NODE_FAIL) ]]`), Claude Code's id
+  for a subagent's worktree (`agent-a69e2723ecfaa3a16`), Claude Code's own folders in its temporary folder
+  (`/tmp/claude-<uid>/<project>/<session>/scratchpad`), and what it keeps in its home: `~/.claude/projects`,
+  a project's folder in it, a session's transcript `<uuid>.jsonl` and the folder `<uuid>/` beside it, and
+  the project's `memory` folder and its index `MEMORY.md`. A relative path is read in the folder the
+  command changed into, so `MEMORY.md` after `cd ~/.claude/projects/x/memory` is the index. What the agent
+  makes inside these folders, a script in its scratchpad or a note in `memory`, is named as usual. A name
+  scores by the steps of the task that hold it and how few of the session's spans, tasks and lone stretches
+  alike, hold it, more where it first occurs, and by its kind: the objects a task works on count in full, a
+  name the agent gave its own scratch 0.8, a file only read 0.6, another argument that reads as a name 0.5,
+  a folder changed into 0.1, and a search term 0.05 (`phase_tasks.WEIGHTS`). In a session of two spans or
+  more, a name that every span holds, lone stretches included, scores nothing. With one span, every name is
+  in every span and still scores. A name that is the session's user names no task. The page shows a built
+  label with no quotation marks and no source, so it is never taken for something the agent wrote.
+
+The headline is the project, then up to `headline_names` names that two tasks or more hold, but for the
+session's user. The project is the folder the agent was launched in or, when that is a home folder or is
+named for a person, the folder its commands change into most that is not. A folder is named for a person
+when its name, or a part of it split on `_`, `-`, and `.`, is the user's, or is the name of a home or lab
+folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netscratch_rroe`), as
+`anonymize.py` finds them.
+
+**Four things a plain reading of the commands gets wrong**, which the rules account for:
+
+- **A program held in a variable** reads as the program it names. The assignment earlier in the call gives
+  it (`PY=../venv/bin/python; $PY -m pytest tests/x.py`, `S='sbatch --parsable'; $S job.sh`). Failing that,
+  a variable named for Python (`$PY`, `$PYTHON`) or one whose first argument is `-m`, `-c`, `-`, or a `.py`
+  file is Python, read by the Python rules: `-m pytest` is a test, a heredoc follows the heredoc rules, and a
+  script is read by its name (`$PY check_env.py` is a test, `$PY train.py` a run). Nothing else is read, and
+  `$CMD --flag x` stays unknown.
+- **The Codex desktop app's reads of its own plugins** are housekeeping, not the model's calls. The app
+  `cat`s the icons of the plugins it lists, hundreds in a minute: one file in an `assets/` folder under
+  `.codex/.tmp/plugins/`, `.codex/.tmp/bundled-marketplaces/`, or `.codex/plugins/cache/`. Only the app's own
+  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill stays a call, and so does a `cat`
+  whose argv was not recorded.
+- **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
+  (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
+  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
+  to what the agent started most recently, so it does not take the time of the work that follows it. A gap
+  that begins while it runs lists it (`alive`), and once it ends, its time past the phase it began in is
+  said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The session's last phase
+  ends at the latest end of all the session's calls, or of a process one of them left running, whichever is
+  later, so the lane does not end while anything the agent started still runs.
+- **A session across midnight is one block.** A row is one local day, since its session id carries the day,
+  so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
+  the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
+  lists the rows (`{sid, first, last}`), and `sid` on a task or a phase says which row holds it: the row
+  whose span, first record to last, holds its start, else the nearest. A row's own `n_calls` stays its day's,
+  and the block's counts the session's.
+
+**Config.** `reducers.trajectories.tasks` sets the thresholds. It equals `phase_tasks.DEFAULTS`, where each
+one is documented, and a test holds the two equal. `reducers.trajectories.phases`, beside it, does the same
+for the fine phases (`reducers/phase_segment.py`). Like the rest of `reducers`, both are part of the config a
+saved window or hour is fingerprinted by, so a changed value builds them again rather than resuming them
+(*The time window*). A saved state needs that only for the phase thresholds read as records arrive, which
+bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max`, and `idle_s`).
+The rest, every task threshold among them, are read when a row is built: the reducer cuts and names a row
+each time it serves it, with the thresholds it runs with, and no saved state holds a task.
+
+| key | default | meaning |
+|---|---|---|
+| `gap_s` | 3600 | a gap this many seconds long, with nothing the agent waits on, cuts a task |
+| `lone_calls` | 8 | the most calls a lone stretch holds |
+| `lone_s` | 7200 | the seconds its calls must all start within |
+| `new_steps` | 5 | the later steps of the stretch a new name must turn up in, at least, to begin a task |
+| `new_window_s` | 1800 | the seconds after it first occurs by which the `new_steps`-th of those steps must start |
+| `close_overlap` | 0.5 | a closing commit or pull request cuts when the names around it overlap by less than this: the share of all their names that are in both |
+| `close_series_s` | 300 | bursts of git that start this many seconds or fewer after the end of the one before close once, after the last |
+| `min_s` | 600 | a task shorter than this merges into a neighbor |
+| `min_calls` | 5 | a task with fewer calls than this merges into a neighbor |
+| `cap` | 10 | the number of tasks a local day is merged down toward |
+| `headline_names` | 3 | the names the headline lists after the project |
 
 ## Agents: subagents and blast radius
 
@@ -597,6 +785,8 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), live, node |
+| `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), and the names and the agent's own words the tasks are labeled from (`phase_names`) |
+| `rc_dashboard/phase_report.py` | the report the phase and task thresholds are tuned against |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |

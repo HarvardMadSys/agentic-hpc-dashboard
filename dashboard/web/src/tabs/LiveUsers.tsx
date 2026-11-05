@@ -29,6 +29,7 @@ import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import type { IoQuery } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
+import { SurfaceChip } from '../components/SurfaceChip';
 import { pcol } from '../lib/purposes';
 import { AP_LABEL } from '../lib/sandbox';
 import { useSort } from '../lib/useSort';
@@ -317,6 +318,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                               program's path names it, else nothing (note 13) */}
                           {s.version && <span className="u-ver" data-tip={GLOSS.version}>v{s.version}</span>}
                         </span>
+                        <SurfaceChip s={s.surface} detail={s.surface_detail} />
                         <Badges s={s} />
                         {s.no_census && (
                           <span className="nm" data-tip="seen running in the last 10 min, but its process tree sent no 60-second census, so what it holds is not known">
@@ -354,6 +356,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                             {typeLbl(a.agent_type ?? '')}
                             {a.version && <span className="u-ver" data-tip={GLOSS.version}>v{a.version}</span>}
                           </span>
+                          <SurfaceChip s={a.surface} detail={a.surface_detail} />
                           <span className="nm">
                             {s.actor3 === 'agent' ? 'started by' : 'started from'} {typeLbl(s.agent_type ?? '')}
                           </span>

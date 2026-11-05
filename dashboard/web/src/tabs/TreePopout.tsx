@@ -22,11 +22,15 @@ import {
   hiddenCount,
   procNodes,
   reveal,
+  typoLabel,
+  typoTip,
+  unhidNote,
 } from '../components/ProcDiagram';
-import type { Item, PNode } from '../components/ProcDiagram';
+import type { Hide, Item, PNode } from '../components/ProcDiagram';
 import { LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, sigName, spots } from '../components/ProcTree';
 import { treeGeometry } from '../components/TreeDiagram';
 import type { TreeGeo } from '../components/TreeDiagram';
+import { SurfaceChip } from '../components/SurfaceChip';
 import { TooltipLayer } from '../components/Tooltip';
 import { serverNow } from '../lib/clock';
 import { DASH, clock, dur, fint, fmt } from '../lib/format';
@@ -323,6 +327,11 @@ function ProcDetails({ e }: { e: ProcNode }) {
           </Pair>
         )}
         {e.orphan && <Pair k="reparented">its record names init: it outlived its parent</Pair>}
+        {typoLabel(e) && (
+          <Pair k={e.typo ? 'typo' : 'typed again'} tip={typoTip(e) ?? undefined}>
+            {typoLabel(e)}
+          </Pair>
+        )}
       </dl>
       {e.cmdline && (
         <>
@@ -472,9 +481,19 @@ function Details({
 /* ------------------------------------------------------------------ page */
 
 export default function TreePopout() {
-  const [u] = useState(() => readTreePop(window.location.search) ?? { sid: null, win: null, from: null, hide: true });
+  const [u] = useState(
+    () =>
+      readTreePop(window.location.search) ?? {
+        sid: null,
+        win: null,
+        from: null,
+        hide: true,
+        typos: true,
+        order: 'oldest' as const,
+      },
+  );
   const [to, setTo] = useState<number | null>(null);
-  const q = useTrajectory(u.sid, u.win, u.from, to);
+  const q = useTrajectory(u.sid, u.win, u.from, to, u.order);
   const config = useConfig();
   const routine = (config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.routine_commands?._value as
     | string[]
@@ -484,6 +503,9 @@ export default function TreePopout() {
   const tree: ProcNode | null = d?.found ? (d.tree ?? null) : null;
 
   const [hide, setHide] = useState(u.hide);
+  const [typos, setTypos] = useState(u.typos);
+  const hiding = useMemo<Hide>(() => ({ routine: hide ? rules : null, typos }), [hide, rules, typos]);
+  const hid = useMemo(() => (tree ? hiddenCount(tree, hiding) : null), [tree, hiding]);
   const [open, setOpen] = useState<Set<string>>(() => new Set(['r']));
   const [all, setAll] = useState<Set<string>>(() => new Set());
   const [sel, setSel] = useState<string | null>(null);
@@ -497,7 +519,7 @@ export default function TreePopout() {
     document.title = name ? `${name.key} · process tree` : 'Process tree';
   }, [name?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const nodes = useMemo(() => (tree ? procNodes(tree, open, hide, rules, all) : []), [tree, open, hide, rules, all]);
+  const nodes = useMemo(() => (tree ? procNodes(tree, open, hiding, all) : []), [tree, open, hiding, all]);
   const geo = useMemo(() => treeGeometry(nodes, NW, NH, GX, GY), [nodes]);
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 
@@ -604,15 +626,14 @@ export default function TreePopout() {
     if (n?.data.e.k === 'cap') toggle(id);
     else setSel(id);
   };
-  /** Draw box `id` -- opening what is above it, and showing the routine when
-   *  it is routine -- select it, and bring it into view. */
+  /** Draw box `id` -- opening what is above it, and showing the routine or the
+   *  typos when it is either -- select it, and bring it into view. */
   const show = (id: string, zoom: boolean) => {
     if (!tree) return;
-    const r = reveal(tree, id, hide, rules);
-    if (r.hidden) {
-      setHide(false);
-      setNote('it is routine, so hide routine is off');
-    } else setNote(null);
+    const r = reveal(tree, id, hiding);
+    if (r.off.routine) setHide(false);
+    if (r.off.typos) setTypos(false);
+    setNote(unhidNote(r.off) || null);
     if (r.open.some((x) => !open.has(x))) setOpen(new Set([...open, ...r.open]));
     if (r.all.some((x) => !all.has(x))) setAll(new Set([...all, ...r.all]));
     setSel(id);
@@ -805,10 +826,11 @@ export default function TreePopout() {
           <span className="eyebrow">process tree</span>
           <h1>{name ? name.key : (u.sid ?? 'no session')}</h1>
           {name?.date && <span className="tp-sub">{name.date}</span>}
+          <SurfaceChip s={d?.row?.surface} detail={d?.row?.surface_detail} />
           {d?.row && <span className="tp-sub">{`${d.row.user} · ${d.row.host}`}</span>}
           {scan && (
             <span className="tp-sub" data-tip={scan.stopped ? `the read stopped at its ${scan.stopped} budget` : undefined}>
-              {`read ${stamp(scan.first ?? scan.from)} → ${stamp(scan.last ?? scan.to)} · ${fint(scan.records)} records${scan.stopped ? ' · stopped at its budget' : ''}`}
+              {`read ${stamp(scan.first ?? scan.from)} → ${stamp(scan.last ?? scan.to)} · ${fint(scan.records)} records${scan.stopped ? ' · stopped at its budget' : ''}${d?.order === 'newest' ? ' · newest first' : ''}`}
             </span>
           )}
           <span className="tp-sp" />
@@ -821,11 +843,18 @@ export default function TreePopout() {
         </div>
         <div className="tp-tools">
           <span className="tp-grp">
-            <label data-tip="take out runs of the same command and the site's routine commands (ui.routine_commands), so the unusual processes stand out">
+            <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
             </label>
-            {hide && tree && <span className="nm">{`${fint(hiddenCount(tree, rules))} hidden`}</span>}
+            {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
+          </span>
+          <span className="tp-grp">
+            <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+              <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
+              hide typos
+            </label>
+            {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
           </span>
           <span className="tp-grp">
             <button className="btn" onClick={() => tree && setOpen(allOpen(tree))} disabled={!tree} data-tip="open every process the read served">

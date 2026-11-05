@@ -7,13 +7,15 @@ name: rpm-release
 #   * branch push             -> Version 0.0.0, Release <YYYYMMDD>.<shortsha>,
 #                                uploaded as a workflow build artifact (feature
 #                                build; sorts below any real release).
+#   * develop                 -> nothing: its pushes are not built
 #
 # The RPM is built inside a Rocky 8.10 container so rpmbuild and the EL8 systemd
 # macros match the target platform.
 
 on:
   push:
-    branches: ["**"]
+    # Every branch but develop: a push to develop builds and publishes nothing.
+    branches-ignore: ["develop"]
     tags: ["v*.*.*"]
     paths:
       - "collector/**"

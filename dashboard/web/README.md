@@ -6,7 +6,7 @@ backend serves as static files.
 
 ```
 src/api/        the contract: types, fetch client, hooks, the live websocket
-src/lib/        classes, purposes, formatters, URL/filter state, panel lookup
+src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the words and geometry of phases and tasks
 src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
 src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer
 src/tabs/       one module per tab
@@ -48,6 +48,25 @@ sandbox slice that `exited before read` (key `denied`), a session whose every sa
 attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
 reload — the middleware re-reads the file on every request.
+
+The fixture's agent rows carry the tasks the page has to word: quoted from a commit, from a log entry, and
+from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
+still running and one that names none; a task still open at the live edge; a task under a call log that was
+cut; and one agent over two day rows, which serve one block. `npm run check:phases` reads every task and
+phase of every row of it.
+
+The fixture's sessions sit at its own `now_epoch`, so every live frame the mock sends
+carries that as the service's clock (`clock.now`) and the page's "now" follows it: a
+running session's live edge is minutes long, not the days between the fixture and today.
+It stands still, like a capture's clock. `RC_MOCK_PINNED=1 npm run dev` also says it is
+pinned (`clock.pinned`), as a frozen capture does, to see what the page says then.
+
+The inspector's read (`/api/trajectory`) is one hand-built tree with its navigator (process starts
+per bin, the landmarks, the failures), laid on the row's own span as the service reads a session: from
+the first record, or from `?from=` where the inspector pages, for as long as the tree runs, so a long
+session stops at its budget with the rest unread. The row's phases, the chart's process starts, and the
+session track then agree about when it ran, and the phases behind the bars can be clicked through pages.
+This is done in `mock/plugin.ts`, so a change to it needs the dev server restarted; `api.json` is re-read.
 
 ## Build
 
@@ -164,9 +183,48 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 | **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
 | **I/O** (`?tab=io`) | `io_process`, `resources` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
 | **Sandbox** | `sandbox` | namespace isolation × approval at launch as independent axes; tool-call outcomes per session (isolated / not / **sandbox attempt failed**), wrapper calls by outcome, launch flags as written, the `ancestry_matrix` by wrapper vs process with `reading` surfaced |
-| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), purpose ribbon + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree |
+| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), a ribbon (the purpose of each process, or for an agent whose commands are read its phases, with a line naming its tasks: [below](#trajectories-tasks-phases-and-processes)) + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |
 | **Agents** | `cascades` | agent and subagent behaviour (`?tab=agents`, `?tab=cascades` still opens it): agent trees deepest first (agent / infra / client nodes, how each parent was found, each agent's home, directories and outside-home writes), agents with **subagents** kept apart from **hosted** sessions (a daemon or server running them); **Workspace & blast radius** per agent with a *this agent only / with its subagents* toggle -- where its processes **ran** (measured), the **bytes** they moved (measured per process), the paths its command lines **named** (inferred, drawn dashed), writes and deletes outside the home flagged by where they landed; depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged |
 | **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
+
+### Trajectories: tasks, phases, and processes
+
+A session of an agent whose commands are read (Claude Code and Codex) is drawn at three levels, which the
+page names **Tasks**, **Phases**, and **Processes** (`LEVELS`, `src/lib/phases.ts`). The service builds them
+and holds every threshold (`dashboard/README.md`, *Trajectories: tasks, phases, and processes*); the page has
+none of its own. The words and the geometry for them are in `src/lib/phases.ts` and `src/lib/tasks.ts`, so the
+table, the chart, and the list say one thing.
+
+- **The table row** (`src/tabs/TrajectoriesTab.tsx`, `src/components/PhaseBand.tsx`) draws the session's
+  phases as a thin band, with a tick across it where each task or lone stretch after the first span begins.
+  The tick is a 1 px line at the later span's first call, which across a cutting gap is the end of the gap.
+  Under the band a line names the tasks, the first two in order and a count of the rest:
+  `“Fix the loader” → Run train.py · config/base.yaml → 3 more`. It is two lines at most, with an ellipsis,
+  and its hover has the whole of it. A row whose block has no task keeps the order its phases came in,
+  `explore → edit → test`, in the same line, and has no tick.
+- **The inspector** (`src/tabs/TrajectoryInspector.tsx`) shows the session's headline, then a chart with a
+  **Tasks** lane above the **Phases**, which are tinted behind the **Processes**, the bars. A gutter at the
+  chart's left captions the three. Under the chart is a list (`src/tabs/TaskList.tsx`): a task opens into
+  its phases, a phase into the commands that ran most in it, and a button from there to its calls in the
+  tree. A click on a task, in the lane or in the list, zooms the chart to it. A block with no tasks has the
+  phase list alone (`src/tabs/PhaseList.tsx`).
+- **A label says where it came from.** The agent's own words are a quote, in quotation marks, with their
+  source (`commit`, `PR #235`, or `log`) where there is room for it. A label built from the names in the
+  task's commands has neither, so it is never taken for something the agent wrote. The basis line over the
+  chart reads `tasks · read from the commands the agent ran and the words it wrote in them`.
+- **A lone stretch**, a few calls hours from other work, is no task. It has no number, its block in the lane
+  is a dashed outline, the list gives it a line of its own (`3 calls at 10:41:24 · read src/app.py`), and
+  neither the numbering nor the row's line counts it. The row's band does tick where it begins, as it does
+  where a task does. A cutting gap is a line of its own too (`2.1 h with no new calls`), and it names the
+  first of the calls the agent moved past that were still running, by the name the service gives it, else
+  by its command (`· scratchpad/linktest still running since 13:05:44`).
+- **The Codex app's reads of its own plugins** are housekeeping, so they are counted in the line under the
+  chart (`housekeeping, not the model: …`, as the `app assets` shape) and are no call in any phase.
+- **A session across midnight** is a row to a day, and each row serves the one block, so each draws the
+  whole session's band, line, and list. A task or a phase picked in the list that the other day's row holds
+  opens that row and goes there (`jumpTo` in the tab), whenever the window holds that row: its last record,
+  as the block's `days` gives it, is at or after the window's start. The table need not list it. Where the
+  window does not hold it, the pick is made on the open row.
 
 ### Live transport
 
@@ -178,8 +236,9 @@ a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels
 
 ### Filters, URL state and export
 
-Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`, and
-`tfrom` when a read was continued past its budget) — lives in the query string, so
+Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`,
+`tfrom` when a read was continued past its budget, and `torder=newest` when it is read newest
+first) — lives in the query string, so
 a reload or a pasted link restores the view. `src/lib/filters.ts` owns the one
 serialisation: `apiQuery()` builds the string sent to **both** `/api/events` and
 `/api/export`, so the download is exactly the view by construction rather than by

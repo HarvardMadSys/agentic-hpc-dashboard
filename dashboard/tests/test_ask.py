@@ -6,15 +6,20 @@ No test runs a real agent: `ask.command` points at a small Python stand-in.
 """
 import json
 import os
+import re
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import ask                                         # noqa: E402
+from rc_dashboard import config as configmod                         # noqa: E402
+from rc_dashboard import hours, snapshots                            # noqa: E402
+from rc_dashboard.aggregator import Aggregator                       # noqa: E402
 
 PY = sys.executable
 
@@ -140,6 +145,43 @@ class CommandTest(unittest.TestCase):
         d = ask.describe(Cfg(**{"ask.command": ["no-such-agent-binary"]}))
         self.assertFalse(d["available"])
         self.assertIn("not found", d["error"])
+
+    def test_a_command_is_named_by_the_program_it_runs(self):
+        for cmd, name in ((["/home/u/.local/bin/codex", "exec", "-"], "codex"),
+                          ("env FOO=1 -i /opt/bin/claude -p", "claude"),
+                          (["my-agent"], "my-agent")):
+            self.assertEqual(ask.describe(Cfg(**{"ask.command": cmd}))["agent"], name, cmd)
+        self.assertEqual(ask.describe(Cfg())["agent"], "codex")         # the preset, by name
+        self.assertEqual(ask.describe(Cfg(**{"ask.command": "env"}))["agent"], "custom")
+
+
+class AskSettingsTest(unittest.TestCase):
+    """An ask setting changes the questions, never what a saved window holds:
+    changing one is a restart, not a rebuild."""
+
+    @staticmethod
+    def cfg(section, **kv):
+        tree = configmod.defaults()
+        tree[section].update(kv)
+        return configmod.Config(tree, {}, None)
+
+    def test_no_saved_window_or_hour_is_rebuilt_for_an_ask_setting(self):
+        a = self.cfg("ask")
+        b = self.cfg("ask", command=["/home/u/.local/bin/codex", "exec", "-"], model="gpt-x",
+                     timeout_s=600, citations=False)
+        for fp in (snapshots.fingerprint, hours.fingerprint):
+            self.assertEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]), fp.__module__)
+
+    def test_a_setting_a_reduction_holds_still_is(self):
+        a = self.cfg("reducers")
+        tree = configmod.defaults()
+        tree["reducers"]["trajectories"]["top_n"] = 99
+        b = configmod.Config(tree, {}, None)
+        for fp in (snapshots.fingerprint, hours.fingerprint):
+            self.assertNotEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]), fp.__module__)
+
+    def test_citations_is_a_setting_of_its_own(self):
+        self.assertIs(configmod.defaults()["ask"]["citations"], True)
 
 
 class JobTest(unittest.TestCase):
@@ -422,6 +464,14 @@ class DoneTest(unittest.TestCase):
         self.assertTrue(told[0]["marked_done"])
         self.assertNotIn("job", told[0])
 
+    def test_the_next_pass_is_not_handed_the_old_citations(self):
+        self.a.jobs["j2"] = {"id": "j2", "window": "24h", "suggestions": ask.parse_suggestions(
+            json.dumps({"summary": None, "suggestions": [
+                {"priority": "high", "title": "Stop rm", "action": "email them [c4, c7] now",
+                 "evidence": "188 runs [c4]"}]}))}
+        self.a.mark_done("j2", 0)
+        self.assertEqual(self.a.done_for_prompt()[0]["action"], "email them now")
+
 
 class SessionDigestTest(unittest.TestCase):
     """A session for a question: totals, sequence, landmarks, and an outline."""
@@ -460,6 +510,277 @@ class SessionDigestTest(unittest.TestCase):
     def test_a_long_outline_stops_and_says_so(self):
         lines = ask.session_digest(session_body(), max_lines=5)["tree"]
         self.assertEqual(lines[-1], "... the outline stops at 5 lines")
+
+
+REF = re.compile(r"\[([a-z]{1,2}\d+)\] ")
+
+
+def echo(answer):
+    """An agent that reads the prompt and answers `answer`."""
+    return [PY, "-c", "import sys; sys.stdin.read(); print(sys.argv[1])", answer]
+
+
+class CiteTest(unittest.TestCase):
+    """Citations: every section, sub-section, and row the model reads carries a
+    ref; the answer cites them; and the job keeps what each cited ref was --
+    where it sits, the data the model saw, and where the page shows it."""
+
+    def snap(self, panels=PANELS, **kv):
+        cites = {}
+        return json.loads(ask.snapshot(panels, cites=cites, **kv)), cites
+
+    def test_sections_sub_sections_and_rows_carry_a_ref_first(self):
+        s, cites = self.snap()
+        tm, risk = s["panels"]["tool_mix"], s["panels"]["risk"]
+        self.assertEqual(list(tm)[0], "ref")
+        self.assertEqual(list(risk["dangerous"])[0], "ref")
+        row = risk["dangerous"]["rows"][0]
+        self.assertEqual(list(row)[0], "ref")
+        rows = [r for r in tm["by_class"]["agent"]["rows"] if isinstance(r, dict)]
+        refs = [r["ref"] for r in rows]
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(len(set(refs)), 12)
+        # one prefix per section: tool_mix's refs never collide with risk's
+        self.assertNotEqual(re.sub(r"\d", "", tm["ref"]), re.sub(r"\d", "", risk["ref"]))
+        c = cites[row["ref"]]
+        self.assertEqual(c["path"], ["panels", "risk", "dangerous", "rows", 0])
+        self.assertEqual(c["obj"]["command"], "rm -rf")
+        self.assertNotIn("args", c["obj"])          # what the model saw, not the record
+
+    def test_a_dict_three_levels_down_is_cited_by_its_parent(self):
+        s, _ = self.snap({"resources": {"by_class": {"agent": {"quants": {"p50": 1}}}}})
+        agent = s["panels"]["resources"]["by_class"]["agent"]
+        self.assertIn("ref", agent)
+        self.assertNotIn("ref", agent["quants"])
+
+    def test_link_hints_ride_with_the_ref_and_never_reach_the_model(self):
+        cites = {}
+        text = ask.snapshot({"x": {"rows": [{"user": "alice",
+                                              "_go": {"sid": "h|d|agent|apid:1", "t": 5}}]}},
+                            cites=cites)
+        self.assertNotIn("_go", text)
+        self.assertNotIn("apid:1", text)
+        row = json.loads(text)["panels"]["x"]["rows"][0]
+        # carried whole: its `t` is not the bulky per-bin field compaction drops
+        self.assertEqual(cites[row["ref"]]["go"], {"sid": "h|d|agent|apid:1", "t": 5})
+
+    def test_outline_lines_and_landmarks_name_their_process(self):
+        cites = {}
+        s = json.loads(ask.snapshot(None, extra=ask.session_digest(session_body()),
+                                    steps=ask.SESSION_STEPS, cites=cites))
+        self.assertNotIn("_go_tree", s)
+        first = REF.match(s["tree"][0])
+        self.assertIsNotNone(first, s["tree"][0])
+        self.assertTrue(s["tree"][0][len(first.group(0)):].startswith("server [claude_code"))
+        self.assertEqual(cites[first.group(1)]["go"]["jump"], {"t": 0.0, "by": "start", "pid": 1})
+        nvcc = next(x for x in s["tree"] if "nvcc" in x)
+        self.assertRegex(nvcc, r"^    \[[a-z]{1,2}\d+\] nvcc")     # the indent stays in front
+        census = next(x for x in s["tree"] if "children by command" in x)
+        self.assertNotRegex(census, r"\[[a-z]{1,2}\d+\]")          # not a process: no ref
+        lm = s["landmarks"]
+        self.assertEqual(cites[lm["longest_process"]["ref"]]["go"]["jump"]["t"], 1e9 + 100)
+        fail = REF.match(lm["failures"]["first"][0])
+        self.assertEqual(cites[fail.group(1)]["go"]["jump"],
+                         {"t": 1e9, "by": "start", "pid": 100})
+        self.assertEqual(cites[s["session"]["ref"]]["go"], {"sid": "h|2026-10-12|agent|apid:1"})
+
+    def test_a_ref_the_budget_cut_off_is_not_kept(self):
+        # keys compaction cannot shorten: the text is cut at the budget
+        cites = {}
+        text = ask.snapshot({"p%d" % i: {"k" * 300: i} for i in range(12)}, budget_kb=2,
+                            cites=cites)
+        self.assertEqual(len(text), 2 * 1024)
+        self.assertTrue(0 < len(cites) < 12)
+        for r in cites:
+            self.assertIn('"ref":"%s"' % r, text)
+
+    def test_the_answer_keeps_what_it_cites_and_nothing_made_up(self):
+        s, _ = self.snap()
+        row = s["panels"]["risk"]["dangerous"]["rows"][0]["ref"]
+        sec = s["panels"]["tool_mix"]["ref"]
+        answer = "One rm -rf [%s]; see [%s, zz99] and [zz98]." % (row, sec)
+        a = ask.Asker(Cfg(**{"ask.command": echo(answer)}))
+        v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["answer"], answer)
+        self.assertEqual(set(v["cites"]), {row, sec})
+        c = v["cites"][row]
+        self.assertEqual(c["path"], ["panels", "risk", "dangerous", "rows", 0])
+        self.assertEqual(c["data"]["command"], "rm -rf")
+        self.assertNotIn("ref", c["data"])
+        self.assertNotIn("obj", c)
+
+    def test_the_agent_is_asked_to_cite_unless_turned_off(self):
+        for on in (True, False):
+            out = tempfile.mktemp()
+            cmd = [PY, "-c", "import sys; open(sys.argv[1], 'w').write(sys.stdin.read());"
+                             "print('ok [a1]')", out]
+            a = ask.Asker(Cfg(**{"ask.command": cmd, "ask.citations": on}))
+            v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+            with open(out) as fh:
+                sent = fh.read()
+            self.assertEqual(ask.CITE_GUIDE in sent, on)
+            self.assertEqual('"ref":"a1"' in sent, on)
+            self.assertEqual(bool(v["cites"]), on)
+
+    def test_an_earlier_answer_goes_back_without_its_citations(self):
+        t = ask.prompt("q", "{}", "w", history=[{"q": "before?", "a": "yes [b7] and [c2, c3]."}],
+                       cite_text=ask.CITE_GUIDE)
+        self.assertIn(ask.CITE_GUIDE, t)
+        self.assertIn("Your earlier answer: yes and.", t)
+
+    def test_suggestions_cite_inside_their_fields(self):
+        s, _ = self.snap()
+        ref = s["panels"]["risk"]["dangerous"]["rows"][0]["ref"]
+        answer = json.dumps({"summary": "s", "suggestions": [
+            {"priority": "high", "title": "Stop rm", "action": "email them",
+             "evidence": "1 rm -rf on login [%s]" % ref, "users": [], "panel": "Risk & Warning"}]})
+        a = ask.Asker(Cfg(**{"ask.command": echo(answer)}))
+        v = wait(a, a.submit(ask.SUGGEST_QUESTION, PANELS, None, "w",
+                             scope={"parse": "suggestions"})["id"])
+        self.assertIn("[%s]" % ref, v["suggestions"]["suggestions"][0]["evidence"])
+        self.assertEqual(set(v["cites"]), {ref})
+
+    def test_a_preview_is_small_and_says_what_it_left_out(self):
+        p = ask.preview({"ref": "a1", "user": "alice", "note": "y" * 1000,
+                         "by_class": {"ref": "a2", "agent": 3, "human": {"n": 1}},
+                         "rows": [{"i": i} for i in range(12)] + ["... 38 more"],
+                         "tags": ["a", "b"]})
+        self.assertNotIn("ref", p)
+        self.assertEqual(p["user"], "alice")
+        self.assertLessEqual(len(p["note"]), 241)
+        self.assertEqual(p["by_class"], {"agent": 3, "human": {"n": 1}})
+        self.assertEqual(p["rows"], "50 rows")
+        self.assertEqual(p["tags"], ["a", "b"])
+        self.assertEqual(ask.preview("  [a3] git status: dur 1 s"), "git status: dur 1 s")
+        # the lines a cited object holds carry refs of their own: not shown
+        self.assertEqual(ask.preview({"first": ["[d6] getopt exit 4", "[d7] git exit 1"]}),
+                         {"first": ["getopt exit 4", "git exit 1"]})
+
+    def test_a_nested_part_is_cited_as_its_owners(self):
+        """A folder an agent read is cited by itself, and is that agent's: the
+        cite carries the agent's session hint and who it is."""
+        panels = {"cascades": {"workspace": {"agents": [
+            {"host": "h", "pid": 7, "user": "tianle", "agent_type": "codex",
+             "_go": {"sid": "h|d|agent|apid:7"},
+             "self": {"dirs": [{"path": "/madsys/tianle/out6k/e9", "shown": "./out6k/e9",
+                                "read": 6}]}}]}}}
+        s, _ = self.snap(panels)
+        agent = s["panels"]["cascades"]["workspace"]["agents"][0]
+        d = agent["self"]["dirs"][0]["ref"]
+        a = ask.Asker(Cfg(**{"ask.command": echo("it read it 6 times [%s]" % d)}))
+        v = wait(a, a.submit("q", panels, None, "w")["id"])
+        c = v["cites"][d]
+        self.assertEqual(c["data"]["read"], 6)
+        self.assertEqual(c["go"], {"sid": "h|d|agent|apid:7"})
+        self.assertEqual(c["of"], {"user": "tianle", "host": "h", "pid": 7, "agent_type": "codex"})
+        # a row that names its own owner says so itself
+        a2 = ask.Asker(Cfg(**{"ask.command": echo("the agent [%s]" % agent["ref"])}))
+        own = wait(a2, a2.submit("q", panels, None, "w")["id"])["cites"][agent["ref"]]
+        self.assertIsNone(own["of"])
+
+    def test_the_job_says_which_view_its_links_open(self):
+        a = ask.Asker(Cfg(**{"ask.command": echo("ok")}))
+        view = {"window_min": 60, "users": ["alice"], "atypes": [], "cls": ["agent"], "sid": None}
+        self.assertEqual(a.submit("q", {}, None, "w", scope={"view": view})["view"], view)
+        self.assertIsNone(a.submit("q", {}, None, "w")["view"])
+
+
+class AggregatorCiteTest(unittest.TestCase):
+    """What the aggregator hands the snapshot so a cited row can be opened."""
+
+    def agg(self):
+        agg = Aggregator.__new__(Aggregator)
+        agg.anon = None
+        agg.window = lambda m: {"minutes": 60, "label": "last 1 h"}
+        agg.panels = lambda m, v=None: {"panels": {}, "facets": None,
+                                        "window_status": {"state": "ready"}}
+        agg.live_payload = lambda m: {}
+        agg.trajectories = lambda m, v=None: {
+            "rows": {"h|d|agent|apid:1": {"sid": "h|d|agent|apid:1", "user": "alice",
+                                          "n_events": 9}},
+            "ranks": {"events": ["h|d|agent|apid:1"], "recent": ["h|d|agent|apid:1"]},
+            "summary": {}}
+        agg.asker = mock.Mock()
+        agg.asker.submit.return_value = {"id": "x"}
+        return agg
+
+    def test_the_busiest_sessions_carry_their_sid_as_a_hint(self):
+        agg = self.agg()
+        agg.ask("q", 60)
+        extra, scope = agg.asker.submit.call_args[0][5:7]
+        row = extra["sessions"]["busiest"][0]
+        self.assertNotIn("sid", row)
+        self.assertEqual(row["_go"], {"sid": "h|d|agent|apid:1"})
+        self.assertEqual(scope["view"]["window_min"], 60)
+
+    def test_agents_and_trees_point_at_their_sessions(self):
+        agg = self.agg()
+        cascades = {"workspace": {"agents": [{"host": "h", "pid": 1, "user": "alice"},
+                                             {"host": "h", "pid": 2, "user": "bo"}]},
+                    "trees": [{"host": "h", "root": {"pid": 9}, "nodes": [
+                        {"pid": 9, "role": "infra"}, {"pid": 1, "role": "agent", "agent_level": 1}]}]}
+        agg.panels = lambda m, v=None: {"panels": {"cascades": cascades}, "facets": None,
+                                        "window_status": {"state": "ready"}}
+        agg.trajectories = lambda m, v=None: {
+            "rows": {"h|2026-10-28|agent|apid:1": {"last": 10}, "h|2026-10-29|agent|apid:1": {"last": 20},
+                     "h|2026-10-29|human|tty:alice@pts/1": {"last": 30}},
+            "ranks": {"events": [], "recent": []}, "summary": {}}
+        agg.ask("q", 60)
+        sent = agg.asker.submit.call_args[0][1]["cascades"]
+        agents = sent["workspace"]["agents"]
+        self.assertEqual(agents[0]["_go"], {"sid": "h|2026-10-29|agent|apid:1"})   # its newest day
+        self.assertNotIn("_go", agents[1])                                        # no session of its own
+        self.assertEqual(sent["trees"][0]["_go"], {"sid": "h|2026-10-29|agent|apid:1"})
+        # the page's own panel is served as it was
+        self.assertNotIn("_go", cascades["workspace"]["agents"][0])
+        self.assertNotIn("_go", cascades["trees"][0])
+
+    def test_a_pid_two_users_share_points_each_agent_at_its_own_session(self):
+        # A pid is reused: bob's agent has the pid alice's had and ran after hers, so the newest
+        # session of the pid is his. Alice's agent opens her own newest day, and his opens his.
+        agg = self.agg()
+        cascades = {"workspace": {"agents": [{"host": "h", "pid": 1, "user": "alice"},
+                                             {"host": "h", "pid": 1, "user": "bob"},
+                                             {"host": "h", "pid": 2, "user": "alice"}]},
+                    "trees": [{"host": "h", "root": {"pid": 1}, "nodes": [
+                        {"pid": 1, "role": "agent", "agent_level": 1, "user": "alice"}]}]}
+        agg.panels = lambda m, v=None: {"panels": {"cascades": cascades}, "facets": None,
+                                        "window_status": {"state": "ready"}}
+        agg.trajectories = lambda m, v=None: {
+            "rows": {"h|2026-10-27|agent|apid:1": {"last": 5, "user": "alice"},
+                     "h|2026-10-28|agent|apid:1": {"last": 10, "user": "alice"},
+                     "h|2026-10-29|agent|apid:1": {"last": 20, "user": "bob"},
+                     "h|2026-10-29|agent|apid:2": {"last": 30, "user": "bob"}},
+            "ranks": {"events": [], "recent": []}, "summary": {}}
+        agg.ask("q", 60)
+        sent = agg.asker.submit.call_args[0][1]["cascades"]
+        agents = sent["workspace"]["agents"]
+        self.assertEqual(agents[0]["_go"], {"sid": "h|2026-10-28|agent|apid:1"})
+        self.assertEqual(agents[1]["_go"], {"sid": "h|2026-10-29|agent|apid:1"})
+        self.assertNotIn("_go", agents[2])                  # pid 2 was only ever bob's
+        self.assertEqual(sent["trees"][0]["_go"], {"sid": "h|2026-10-28|agent|apid:1"})
+
+    def test_a_session_with_no_user_or_root_is_not_another_users(self):
+        # An agent with no session of its own user's opens the newest of the sessions that no
+        # other named user held: a row with no user, or root's, may be its own. Bob's is not.
+        found = Aggregator._agent_session
+        sessions = Aggregator._agent_sessions({"rows": {
+            "h|2026-10-27|agent|apid:1": {"last": 5},
+            "h|2026-10-28|agent|apid:1": {"last": 9, "user": "root"},
+            "h|2026-10-29|agent|apid:1": {"last": 12, "user": "bob"}}})
+        self.assertEqual(found(sessions, "h", 1, "alice"), "h|2026-10-28|agent|apid:1")
+        self.assertEqual(found(sessions, "h", 1, "bob"), "h|2026-10-29|agent|apid:1")
+        self.assertEqual(found(sessions, "h", 1, None), "h|2026-10-29|agent|apid:1")
+        self.assertIsNone(found(sessions, "h", 2, "alice"))
+        self.assertIsNone(found(sessions, "other", 1, "alice"))
+
+    def test_a_panel_question_states_its_view(self):
+        agg = self.agg()
+        agg._ask_panel("q", 60, (), {"parts": [{"panel": "trajectories"}],
+                                     "classes": ["agent"]}, None)
+        scope = agg.asker.submit.call_args[0][6]
+        self.assertEqual(scope["view"], {"window_min": 60, "users": [], "atypes": [],
+                                         "cls": ["agent"], "sid": None})
 
 if __name__ == "__main__":
     unittest.main()

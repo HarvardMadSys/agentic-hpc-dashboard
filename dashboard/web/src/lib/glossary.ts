@@ -91,6 +91,7 @@ export const GLOSS: Record<string, string> = {
   exitedbeforeread: 'exited before read: the process was gone before its namespaces could be read',
   headless: 'headless: an agent running without a terminal, started by a script or a server',
   version: 'version: the agent’s version, read from the program’s path where the path shows it',
+  surface: 'driven from: where an agent session is run from, read off the agent’s own command line. CLI = a terminal, or a script; app = a desktop app, an IDE extension, or the web',
 
   // risk
   credentials: 'credentials in argv: a password or token typed into a command line, where any user on the node can read it with ps; counted, never shown',
@@ -113,6 +114,8 @@ export const GLOSS: Record<string, string> = {
   // trajectories
   trajectory: 'trajectory: one session’s commands in order, as a process tree',
   purpose: 'purpose: what kind of work each command was (polling, files, build, compute, …), as a colored strip over the session',
+  tasks: 'tasks: what an agent was working on. A task can start after an hour or more in which the agent waited on nothing, when its work moves to something new, or after a commit or pull request. A quoted label is the agent’s own words. Any other label is a verb and the names its commands used. A dashed block is a few calls hours from other work.',
+  phases: 'phases: what an agent was doing, read from the commands it ran: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle. Reading and editing inside the agent, and its thinking, leave no command, so an edit shows only when a command makes it or, hatched, as a guess',
   keys: 'keys: how many collector session ids this row combines',
   wall: 'wall: elapsed time from the session’s first process to its last',
   sigmacpu: 'Σ CPU: CPU of the process and everything below it',

@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
 import { getLive, wsUrl } from './client';
-import { syncServerClock } from '../lib/clock';
+import { setClockPinned, syncServerClock } from '../lib/clock';
 
 export type Transport = 'connecting' | 'ws' | 'polling' | 'down';
 
@@ -65,6 +65,9 @@ export function useLive(windowMin: number | null): LiveState {
 
   const accept = useCallback((l: LiveResponse) => {
     syncServerClock(l.clock?.now);
+    // Every frame says whether the clock is pinned; one that does not (an older
+    // service) is the wall clock, which does grow.
+    setClockPinned(l.clock?.pinned === true);
     setLive(l);
     setReceivedAt(Date.now());
     setError(null);

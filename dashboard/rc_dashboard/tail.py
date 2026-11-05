@@ -29,6 +29,12 @@ Two correctness rules, both from how the collector writes:
   first seen after startup -- a new date directory, a new host -- is new to this
   process and is read from byte 0.  Hosts roll over independently, so several
   date dirs stay in the window.
+
+  The one exception is a day the collector compresses at its rollover
+  (`_compress_day`): `x.jsonl` becomes `x.jsonl.gz`, a new name and a new inode
+  holding the same bytes.  Offsets into a `.gz` count its uncompressed bytes
+  (`gz.open_feed`), so the `.gz` takes up where the plain file was left -- read
+  from byte 0, the whole day would be counted twice.
 """
 import glob
 import heapq
@@ -78,9 +84,16 @@ class FileTailSource(IngestSource):
 
     # ------------------------------------------------------------------ state
     def prune_state(self):
-        """Forget files that have left the date window, so the map stays small."""
+        """Forget files that have left the date window, so the map stays small.
+
+        A plain file compressed since the last poll has left the listing too,
+        but its offset is where its `.gz` takes up: it is kept until the tail
+        has met the `.gz`.
+        """
         keep = set(self.files())
-        self.state = {k: v for k, v in self.state.items() if k in keep}
+        self.state = {k: v for k, v in self.state.items()
+                      if k in keep or (k + gz.SUFFIX in keep
+                                       and k + gz.SUFFIX not in self.state)}
 
     def position(self, since):
         """Hand every current file to the tail at its end; return what lies behind.
@@ -130,6 +143,8 @@ class FileTailSource(IngestSource):
             except OSError:
                 return
             rec = self.state.get(path)
+            if rec is None and gz.is_gz(path):
+                rec = self._compressed(path, st)
             offset = 0
             if rec and rec.get("dev") == st.st_dev and rec.get("inode") == st.st_ino:
                 offset = rec.get("offset", 0)
@@ -159,8 +174,18 @@ class FileTailSource(IngestSource):
             except ValueError:
                 self.stats["parse_errors"] += 1
 
-        st2 = gz.stat(path)
-        self._remember(path, st2, offset + consumed, self.state.get(path))
+        # The inode that was read, not the path's now: a day compressed since
+        # has no plain file left to stat, and its `.gz` takes up from here.
+        self._remember(path, st, offset + consumed, self.state.get(path))
+
+    def _compressed(self, path, st):
+        """The offset record of `.gz` file `path` if this tail followed it under
+        its plain name, moved to the `.gz`; else None."""
+        twin = self.state.get(gz.plain_name(path))
+        if twin is None:
+            return None
+        rec = self.state[path] = dict(twin, dev=st.st_dev, inode=st.st_ino)
+        return rec
 
     def _remember(self, path, st, offset, prev):
         self.state[path] = {"dev": st.st_dev, "inode": st.st_ino,
@@ -194,8 +219,12 @@ def read_back(plan, stats):
 
 def _read_back_one(entry, stats):
     last = float("inf")
-    for line in iter_lines_reverse(entry["path"], start=entry["start"],
-                                   end=entry["end"]):
+    path = entry["path"]
+    # Compressed since it was positioned: the range holds in the `.gz` as well.
+    if not gz.is_gz(path) and not os.path.exists(path) \
+            and os.path.exists(path + gz.SUFFIX):
+        path += gz.SUFFIX
+    for line in iter_lines_reverse(path, start=entry["start"], end=entry["end"]):
         stats["bytes"] += len(line) + 1
         try:
             raw = fastjson.loads(line)

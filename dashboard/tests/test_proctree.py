@@ -240,6 +240,257 @@ class GroupTest(unittest.TestCase):
                          "a stub or an agent never folds into a group")
 
 
+def forked(rec, src="task"):
+    """`rec` as a fork that never exec'd: the collector's argv is its parent's."""
+    rec.update(argv_source="inherit", duration_src=src)
+    return rec
+
+
+def argvless(rec):
+    """`rec` with no exec and no argv on record: its parent's was never known."""
+    rec.update(args="", duration_src="task")
+    return rec
+
+
+class SubshellTest(unittest.TestCase):
+    """A shell's subshell is a fork that never exec'd, so its command line is
+    its parent's: `zsh /bin/zsh -i` under an interactive zsh is not a second
+    interactive shell. "Hide routine" needs to tell the two apart."""
+
+    def test_a_fork_that_never_execd_says_so(self):
+        recs = [forked(ex(T0 + 1, 901, 900, "zsh", "/bin/zsh -i")),
+                forked(ex(T0 + 2, 902, 900, "python3", "python3 train.py"), "proc"),
+                dict(ex(T0 + 3, 903, 900, "zsh", "/bin/zsh -i"),
+                     argv_source="kernel", duration_src="exec"),
+                # its exec was seen, but its own argv never arrived
+                forked(ex(T0 + 4, 904, 900, "getconf", "/bin/zsh -i"), "exec"),
+                ex(T0 + 9, 900, AGENT, "zsh", "/bin/zsh -i", dur=10)]
+        _, tree, _ = build(recs)
+        self.assertTrue(find(tree, 901)["fork"])
+        self.assertTrue(find(tree, 902)["fork"], "a fork, whatever it runs")
+        for pid in (900, 903, 904):
+            self.assertNotIn("fork", find(tree, pid))
+
+    def test_a_run_never_mixes_forks_with_shells_that_execd(self):
+        recs = [forked(ex(T0 + i, 910 + i, 900, "zsh", "/bin/zsh -i")) for i in range(3)]
+        recs += [ex(T0 + 3 + i, 920 + i, 900, "zsh", "/bin/zsh -i") for i in range(3)]
+        recs.append(ex(T0 + 9, 900, AGENT, "zsh", "/bin/zsh -i", dur=10))
+        _, tree, _ = build(recs)
+        runs_ = kids(find(tree, 900))
+        self.assertEqual([(g["k"], g["count"]) for g in runs_], [("g", 3), ("g", 3)])
+        self.assertEqual([all(i.get("fork") for i in g["items"]) for g in runs_],
+                         [True, False])
+
+    def test_an_exec_handled_after_the_exit_is_not_a_fork(self):
+        # Schema 7 drained its rings in any order, so a process's exec could be
+        # handled after its exit was written: no exec on record, but the exit
+        # names the program it became, which its inherited argv does not.
+        recs = [forked(ex(T0 + 1, 931, 930, "cat", "/bin/bash ./x.sh")),
+                forked(ex(T0 + 2, 932, 930, "x.sh", "/bin/bash ./x.sh")),
+                forked(ex(T0 + 3, 933, 930, "git", "sh -c git status")),
+                ex(T0 + 9, 930, AGENT, "x.sh", "/bin/bash ./x.sh", dur=10),
+                forked(ex(T0 + 11, 941, 940, "bash", "-bash")),
+                ex(T0 + 19, 940, AGENT, "bash", "-bash", dur=10)]
+        _, tree, _ = build(recs)
+        self.assertNotIn("fork", find(tree, 931), "cat is not what `/bin/bash ./x.sh` is called")
+        self.assertTrue(find(tree, 932)["fork"], "a script's subshell has the script's name")
+        self.assertNotIn("fork", find(tree, 933), "what follows -c is not the shell's name")
+        self.assertTrue(find(tree, 941)["fork"], "a login shell's subshell")
+
+    def test_with_no_argv_its_parent_names_it(self):
+        recs = [argvless(ex(T0 + 1, 951, 950, "bash")),
+                argvless(ex(T0 + 2, 952, 950, "cat")),
+                argvless(ex(T0 + 3, 961, 960, "bash")),
+                argvless(ex(T0 + 4, 971, 970, "bash")),
+                ex(T0 + 9, 950, AGENT, "bash", "bash -c x", dur=10)]
+        index = {960: {"ppid": AGENT, "cmd": "bash", "owner": AGENT}}
+        _, tree, _ = build(recs, index=index.get)
+        self.assertTrue(find(tree, 951)["fork"], "a subshell of the bash that started it")
+        self.assertNotIn("fork", find(tree, 952), "an exec handled after its exit")
+        self.assertTrue(find(tree, 961)["fork"], "a parent with no record, named by the index")
+        self.assertNotIn("fork", find(tree, 971), "a parent nothing names: no evidence either way")
+
+
+SHELL = 700
+
+
+def line(start, pid, cmd, args=None, *, dur=0.05, a3="human", ppid=SHELL, **kw):
+    """A command a person ran at their login shell, `start` seconds in."""
+    rec = ex(T0 + start + dur, pid, ppid, cmd, args, dur=dur, **kw)
+    rec["_a3"] = a3
+    return rec
+
+
+def at_shell(recs, args="-bash", a3="human", cmd="bash"):
+    """`recs`, and the shell they were typed at, which outlives them."""
+    shell = ex(T0 + 900, SHELL, AGENT, cmd, args, dur=1000)
+    shell["_a3"] = a3
+    return recs + [shell]
+
+
+class TypoTest(unittest.TestCase):
+    """What "hide typos" takes out (user, 2026-10-29): a name a person's shell
+    could not find, and a line that failed and was typed again, corrected.
+    Only at a shell a person types into, never an agent's."""
+
+    def flags(self, tree, pids):
+        return {pid: (find(tree, pid).get("typo"), find(tree, pid).get("tries"))
+                for pid in pids}
+
+    def test_a_name_not_found_is_a_typo(self):
+        recs = at_shell([
+            forked(line(10, 701, "bash", "-bash", dur=0.003, code=127)),
+            # Ubuntu: the fork runs the helper, which is handed the name and
+            # asks snap for a package that has it
+            line(20.02, 709, "snap", "/usr/bin/snap advise-snap --format=json --command clera",
+                 dur=0.03, ppid=703),
+            line(20, 703, "command-not-found", "/usr/bin/python3 /usr/lib/command-not-found -- clera",
+                 dur=0.1, code=127, ppid=702),
+            forked(line(20, 702, "bash", "-bash", dur=0.11, code=127)),
+            forked(line(30, 704, "bash", "-bash", dur=0.003, code=126)),
+            # a subshell that ran nothing, and one that ran a command which failed
+            forked(line(40, 705, "bash", "-bash", dur=0.003)),
+            line(50, 707, "make", "make all", code=127, ppid=706),
+            forked(line(50, 706, "bash", "-bash", dur=1, code=127)),
+            # a script not found: its interpreter ran, so it is no fork
+            line(60, 708, "bash", "bash ./rnu.sh", code=127),
+        ])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [701, 702, 703, 704, 705, 706, 708]), {
+            701: ("not-found", None), 702: ("not-found", None), 703: (None, None),
+            704: ("not-found", None), 705: (None, None), 706: (None, None), 708: (None, None)})
+        self.assertEqual(find(tree, 702)["typed"], "clera")
+        self.assertNotIn("typed", find(tree, 701), "bash never hands the name to the kernel")
+
+    def test_only_at_a_shell_a_person_types_into(self):
+        def typo_under(args, a3="human", cmd="bash"):
+            recs = at_shell([forked(line(10, 701, cmd, args, dur=0.003, code=127, a3=a3))], args, a3, cmd)
+            _, tree, _ = build(recs)
+            return find(tree, 701).get("typo")
+
+        self.assertEqual(typo_under("-bash"), "not-found")
+        self.assertEqual(typo_under("/bin/bash --init-file /x/shellIntegration-bash.sh", "ide"),
+                         "not-found", "a VS Code terminal")
+        self.assertEqual(typo_under("zsh -l", cmd="zsh"), "not-found")
+        self.assertEqual(typo_under("bash --login -i"), "not-found")
+        self.assertIsNone(typo_under("-bash", "agent"), "an agent's shell")
+        self.assertIsNone(typo_under("bash -c gti status"), "a command, not a terminal")
+        self.assertIsNone(typo_under("bash -lc gti status"))
+        self.assertIsNone(typo_under("/bin/bash ./run.sh"), "a script")
+        self.assertIsNone(typo_under("bash --rcfile ~/.rc ./run.sh"))
+        self.assertIsNone(typo_under("python3 x.py", cmd="python3"), "no shell at all")
+
+    def test_a_shell_still_running_is_known_by_its_subshells(self):
+        # No record of the login shell in the read: it is drawn as a stub with
+        # no argv, and its subshells' inherited argv says what it is.
+        recs = [forked(line(10, 701, "bash", "-bash", dur=0.003, code=127)),
+                line(20, 702, "squeue", "squeue -me", code=1),
+                line(25, 703, "squeue", "squeue --me")]
+        _, tree, _ = build(recs)
+        self.assertIsNone(find(tree, SHELL)["ev"], "drawn without a record of its own")
+        self.assertEqual(self.flags(tree, [701, 702, 703]), {
+            701: ("not-found", None), 702: ("retried", None), 703: (None, 1)})
+        # with no subshell to say, nothing is known of it
+        _, tree, _ = build(recs[1:])
+        self.assertEqual(self.flags(tree, [702, 703]), {702: (None, None), 703: (None, None)})
+
+    def test_a_line_typed_again_corrected_folds_into_it(self):
+        recs = at_shell([
+            line(10, 711, "squeue", "squeue -me", code=1),
+            line(15, 712, "squeue", "squeue --me"),
+            line(30, 713, "git", "git pll", code=1),
+            line(31.2, 714, "git", "git pull", dur=2),
+            line(60, 715, "ssh", "ssh holylogin97", code=255),
+            line(63, 716, "ssh", "ssh holylogin07", dur=20),
+            # grep's 2 is an error, where its 1 is an answer
+            line(90, 717, "grep", "grep -r TODO scr/", code=2),
+            line(94, 718, "grep", "grep -r TODO src/"),
+        ])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [711, 712, 713, 714, 715, 716, 717, 718]), {
+            711: ("retried", None), 712: (None, 1), 713: ("retried", None), 714: (None, 1),
+            715: ("retried", None), 716: (None, 1), 717: ("retried", None), 718: (None, 1)})
+
+    def test_tries_in_a_row_fold_into_the_line_that_worked(self):
+        recs = at_shell([
+            line(10, 721, "squeue", "squeue -p sapphir", code=1),
+            line(14, 722, "squeue", "squeue -p saphire", code=1),
+            line(19, 723, "squeue", "squeue -p sapphire"),
+            # tries that never worked fold nothing
+            line(40, 724, "ls", "ls /n/holylabs/LABS/x_lab", code=2),
+            line(45, 725, "ls", "ls /n/holylabs/LABS/x_lab/", code=2),
+        ])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [721, 722, 723, 724, 725]), {
+            721: ("retried", None), 722: ("retried", None), 723: (None, 2),
+            724: (None, None), 725: (None, None)})
+
+    def test_what_is_not_a_line_typed_again(self):
+        cases = [
+            ("the same line again", [("git", "git pull", 1, 0.5, None), ("git", "git pull", 0, 5, None)]),
+            ("a loop: no pause", [("grep", "grep -q x a.out", 1, 0.01, None),
+                                  ("grep", "grep -q x b.out", 0, 0.02, None)]),
+            ("work that failed", [("python", "python fit.py --lr 0.1", 1, 30, None),
+                                  ("python", "python fit.py --lr 0.01", 0, 10, None)]),
+            ("too long after", [("squeue", "squeue -me", 1, 0.1, None),
+                                ("squeue", "squeue --me", 0, 200, None)]),
+            ("another program", [("sqeue", "sqeue --me", 1, 0.1, None),
+                                 ("squeue", "squeue --me", 0, 5, None)]),
+            ("alike only in its path", [("tmux", "/usr/bin/tmux ls", 1, 0.1, None),
+                                        ("tmux", "/usr/bin/tmux new -s work", 0, 3, None)]),
+            ("another step on the same file", [("git", "git commit README.md", 1, 0.1, None),
+                                               ("git", "git add README.md", 0, 4, None)]),
+            ("no arguments to mistype", [("tmux", "tmux", 1, 0.1, None), ("tmux", "tmux ls", 0, 2, None)]),
+            ("a search that found nothing", [("grep", "grep number_samples cfg.yaml", 1, 0.01, None),
+                                             ("grep", "grep number cfg.yaml", 0, 3, None)]),
+            ("a pager closed, not a failure", [("git", "git log", None, 4, 13),
+                                               ("git", "git log -5", 0, 3, None)]),
+            ("the fix failed too", [("ls", "ls chunk", 2, 0.1, None), ("ls", "ls chunks", 1, 3, None)]),
+        ]
+        for why, ((c1, a1, code1, d1, sig1), (c2, a2, code2, gap, sig2)) in cases:
+            with self.subTest(why):
+                recs = at_shell([line(10, 731, c1, a1, dur=d1, code=code1, signal=sig1),
+                                 line(10 + d1 + gap, 732, c2, a2, code=code2, signal=sig2)])
+                _, tree, _ = build(recs)
+                self.assertEqual(self.flags(tree, [731, 732]), {731: (None, None), 732: (None, None)})
+
+    def test_a_loops_next_turn_is_not_a_line_typed(self):
+        # `until grep -q done a.log; do sleep 5; done`, then the next file:
+        # every turn starts as the last one ends, so none of them was typed
+        recs = at_shell([line(10, 781, "grep", "grep -q done a.log", dur=0.01, code=1),
+                         line(10.02, 782, "sleep", "sleep 5", dur=5),
+                         line(15.03, 783, "grep", "grep -q done b.log", dur=0.01)])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [781, 783]), {781: (None, None), 783: (None, None)})
+
+    def test_an_agents_line_typed_again_is_its_own_step(self):
+        recs = at_shell([line(10, 741, "squeue", "squeue -me", code=1, a3="agent"),
+                         line(15, 742, "squeue", "squeue --me", a3="agent")], a3="agent")
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [741, 742]), {741: (None, None), 742: (None, None)})
+
+    def test_what_the_prompt_runs_is_not_the_next_line(self):
+        # a prompt that runs git as the last line exits is no line typed
+        recs = at_shell([line(10, 751, "squeue", "squeue -me", code=1),
+                         line(10.06, 752, "git", "git rev-parse --abbrev-ref HEAD", dur=0.01),
+                         forked(line(10.08, 753, "bash", "-bash", dur=0.003, code=127)),
+                         line(16, 754, "squeue", "squeue --me")])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [751, 752, 753, 754]), {
+            751: ("retried", None), 752: (None, None), 753: ("not-found", None), 754: (None, 1)})
+
+    def test_a_run_says_how_many_of_its_members_are_typos(self):
+        recs = at_shell([forked(line(10 + i, 761 + i, "bash", "-bash", dur=0.003, code=127))
+                         for i in range(4)]
+                        + [line(15, 770, "vim", "vim notes.md", dur=60)]
+                        + [forked(line(80 + i, 771 + i, "bash", "-bash", dur=0.003, code=127 if i else 0))
+                           for i in range(4)])
+        _, tree, _ = build(recs)
+        groups = [g for g in kids(find(tree, SHELL)) if g["k"] == "g"]
+        self.assertEqual([(g["count"], g.get("typos")) for g in groups], [(4, 4), (4, 3)],
+                         "a run of names not found, and one with a subshell that ran nothing")
+
+
 class BoundsTest(unittest.TestCase):
 
     def test_past_the_hold_budget_processes_are_counted_not_dropped(self):
@@ -289,6 +540,103 @@ class BoundsTest(unittest.TestCase):
         self.assertIsNone(tree["sub_cpu"])
         self.assertEqual(tree["cpu_nm"], 2)
         self.assertIsNone(find(tree, 201)["cpu"])
+
+
+def shape(node):
+    """A node's children as pids, with `agg` / `g` / `more` for the rest."""
+    return [k["pid"] if k["k"] == "p" else k["k"] for k in kids(node)]
+
+
+class NewestTest(unittest.TestCase):
+    """Newest first moves every budget's cut to the oldest end, not only the sort."""
+
+    def test_children_are_listed_newest_first_at_every_level(self):
+        _, tree, _ = build([
+            ex(T0 + 1, 201, 200, "git", "git status", kv=200),
+            ex(T0 + 2, 202, 200, "sed", "sed -n 1,9p f", kv=200),
+            ex(T0 + 3, 200, AGENT, "zsh", depth=0, kv=200, role="tool-shell", dur=3),
+            ex(T0 + 5, 302, AGENT, "ls", dur=1.0),
+        ], keys=(AGENT, 200), newest=True)
+        self.assertEqual(shape(tree), [302, 200])
+        self.assertEqual(shape(find(tree, 200)), [202, 201])
+
+    def test_past_the_hold_budget_the_oldest_are_counted_and_the_newest_drawn(self):
+        recs = [ex(T0 + i, 3000 + i, AGENT, "cmd%d" % (i % 7)) for i in range(50)]
+        b, tree, _ = build(recs, hold=20, newest=True)
+        self.assertEqual(b.matched, 50)
+        self.assertEqual(b.itemised - b.absorbed, 20)
+        self.assertEqual(sorted(p["pid"] for p in procs(tree) if p["pid"] != AGENT),
+                         list(range(3030, 3050)))
+        self.assertEqual(shape(tree)[:3], [3049, 3048, 3047])
+        self.assertEqual(shape(tree)[-1], "agg", "the counted oldest, at the bottom")
+        self.assertEqual(kids(tree)[-1]["n"], 30)
+        self.assertEqual(tree["n"], 50, "every record read is in the root's count")
+
+    def test_an_old_command_is_counted_under_the_shell_that_ran_it(self):
+        b, tree, _ = build([
+            ex(T0 + 1, 201, 200, "git", "git status", kv=200),
+            ex(T0 + 2, 202, 200, "sed", "sed -n 1,9p f", kv=200),
+            ex(T0 + 3, 200, AGENT, "zsh", depth=0, kv=200, role="tool-shell", dur=3),
+        ] + [ex(T0 + 10 + i, 600 + i, AGENT, "c%d" % i) for i in range(3)],
+            keys=(AGENT, 200), hold=3, newest=True)
+        self.assertEqual(shape(tree), [602, 601, "agg", 200])
+        self.assertEqual(kids(tree)[2]["cmds"], [["c0", 1]])
+        shell = find(tree, 200)
+        self.assertEqual(shape(shell), ["agg"], "what the shell ran, counted under it")
+        self.assertEqual((kids(shell)[0]["n"], shell["n"]), (2, 3))
+        self.assertEqual(tree["n"], 6)
+        self.assertEqual(b.itemised - b.absorbed, 3)
+
+    def test_one_poll_loop_keeps_its_newest_and_a_later_call_is_still_drawn(self):
+        recs = [ex(T0 + i * 0.01, 10000 + i, 900, "python", kv=900, depth=1)
+                for i in range(400)]
+        recs.append(ex(T0 + 10, 900, AGENT, "zsh", kv=900, depth=0, dur=11))
+        recs.append(ex(T0 + 11, 901, AGENT, "git", kv=AGENT, depth=1))
+        b, tree, _ = build(recs, keys=(AGENT, 900), hold=1000, per_parent=50, newest=True)
+        g, a = kids(find(tree, 900))
+        self.assertEqual((g["k"], g["count"]), ("g", 50))
+        self.assertEqual(g["items"][0]["pid"], 10399, "the loop's newest, drawn first")
+        self.assertEqual((a["k"], a["n"]), ("agg", 350))
+        self.assertEqual(find(tree, 901)["cmd"], "git")
+        self.assertEqual(tree["n"], 402)
+
+    def test_the_entry_budget_cuts_the_oldest_end(self):
+        recs = []
+        for i in range(40):
+            sh = 5000 + 10 * i
+            recs.append(ex(T0 + i, sh + 1, sh, "c%d" % i, kv=sh, depth=1))
+            recs.append(ex(T0 + i + 0.5, sh, AGENT, "s%d" % i, kv=sh, depth=0, dur=1))
+        keys = [AGENT] + [5000 + 10 * i for i in range(40)]
+        _, tree, stats = build(recs, keys=keys, budget=50, newest=True)
+        top = kids(tree)
+        self.assertEqual(len(top), 40, "the first level is whole")
+        whole = [p["pid"] for p in top if shape(p) and shape(p)[0] != "more"]
+        self.assertEqual(whole, [5000 + 10 * i for i in range(39, 30, -1)],
+                         "the newest nine calls keep what they ran")
+        self.assertEqual(stats["elided"], 31)
+
+    def test_a_group_itemises_its_newest_members(self):
+        recs = [ex(T0 + i, 400 + i, AGENT, "pgrep", "pgrep -f vite") for i in range(20)]
+        _, tree, _ = build(recs, newest=True)
+        g = kids(tree)[0]
+        self.assertEqual((g["k"], g["count"]), ("g", 20))
+        self.assertEqual([m["pid"] for m in g["items"]], [419, 418, 417, 416, 415, 414])
+        self.assertEqual(g["more"], 14)
+
+    def test_either_order_counts_the_same_processes(self):
+        recs = []
+        for i in range(30):
+            sh = 7000 + 10 * i
+            recs += [ex(T0 + i, sh + 1, sh, "rg", kv=sh), ex(T0 + i + 0.1, sh + 2, sh, "sed", kv=sh),
+                     ex(T0 + i + 0.5, sh, AGENT, "zsh", kv=sh, depth=0, dur=1, cpu=0.02)]
+        recs += [ex(T0 + 40 + i * 0.01, 9000 + i, AGENT, "pgrep") for i in range(60)]
+        keys = [AGENT] + [7000 + 10 * i for i in range(30)]
+        for kw in ({"hold": 25}, {"hold": 25, "per_parent": 10}, {"hold": 1000}):
+            _, old, _ = build(recs, keys=keys, budget=40, **kw)
+            bn, new, _ = build(recs, keys=keys, budget=40, newest=True, **kw)
+            self.assertEqual((new["n"], new["sub_cpu"]), (old["n"], old["sub_cpu"]), kw)
+            self.assertEqual(new["n"], 150)
+            self.assertLessEqual(bn.itemised - bn.absorbed, bn.hard)
 
 
 class NavTest(unittest.TestCase):
@@ -641,6 +989,29 @@ class EndToEndTest(unittest.TestCase):
         later = self.inspect(frm=body["scan"]["stopped_at"])
         self.assertEqual(later["scan"]["records"], 12 - 5 + 1,
                          "the record at the cut is read again, never skipped")
+
+    def test_newest_first_reads_to_the_end_and_is_kept_apart(self):
+        old = proctree.DEFAULTS["inspect_max_records"]
+        proctree.DEFAULTS["inspect_max_records"] = 5
+        try:
+            oldest = self.inspect()
+            newest = self.inspect(order="newest")
+        finally:
+            proctree.DEFAULTS["inspect_max_records"] = old
+        self.assertEqual((oldest["order"], oldest["scan"]["stopped"]), ("oldest", "records"))
+        self.assertEqual(newest["order"], "newest")
+        self.assertFalse(newest["cached"], "not the oldest-first tree served again")
+        self.assertIsNone(newest["scan"]["stopped"], "its record budget bounds time alone")
+        self.assertEqual(newest["scan"]["records"], 12)
+        self.assertEqual(newest["bounds"]["max_records"],
+                         proctree.DEFAULTS["inspect_newest_records"])
+        starts = [k["start"] for k in kids(newest["tree"]) if k.get("start") is not None]
+        self.assertEqual(starts, sorted(starts, reverse=True))
+        self.assertEqual(newest["tree"]["n"], 12)
+
+    def test_an_unknown_order_reads_oldest_first(self):
+        self.assertEqual(self.inspect(order="sideways")["order"], "oldest")
+        self.assertTrue(self.inspect()["cached"], "and is the oldest-first read")
 
     def test_the_rows_keys_are_found_without_folding_the_window(self):
         traj = self.view.reducers["trajectories"]

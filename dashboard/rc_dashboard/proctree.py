@@ -51,6 +51,19 @@ that from EVERY record it matched, itemised or only counted (`nav`): process
 starts per time bin by purpose, the busiest minute, the first tool call, the
 longest process and the failures. A navigator drawn from the served rows alone
 would show the itemised few and hide the counted many.
+
+Which end of a long session is drawn is the reader's choice (`order`). Each of
+the read's budgets keeps one end and counts the other -- the records read, the
+processes itemised, the entries served -- and by default all three keep the
+OLDEST, because that is the order the records arrive in. Newest first moves all
+three. The read goes on to the session's end: the hold keeps no more drawn
+however much is read, so its record budget bounds time alone. A process that
+finds the hold full, or its command's quota under one parent, is made room for
+by counting the oldest drawn one under that one's parent, rather than being
+counted itself. And siblings are listed, grouped, and served newest first, so
+the entry budget cuts the deep end of the oldest subtrees. Sorting the served
+rows alone would put at the top the very processes the budgets had counted
+rather than drawn.
 """
 import collections
 import gzip
@@ -98,13 +111,31 @@ BIN_WIDTHS = (0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 
 DENSITY_BINS = 2400
 FAIL_KEEP = 2000         # failures listed by time; past it, counted
 TOOL_ROLES = ("tool-shell", "sandbox", "embedded-tool")
+ORDERS = ("oldest", "newest")   # how siblings are listed, and which end is drawn
+COMPACT_SLACK = 4096     # stale entries a newest-first queue holds before a sweep
 WARM_TOP = 3             # sessions of the default ranking kept read in the background
 WARM_EVERY = 30          # seconds between the warmer's looks
+# What a person mistyped at a terminal, for the page's "hide typos" (`_typos`).
+SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh"})
+HUMAN = ("human", "ide")  # the classes a person types in; an agent's failure is its own
+# What a shell runs with a name it could not find (bash's command_not_found_handle):
+# Ubuntu's `command-not-found -- clera`, and PackageKit's on RHEL.
+NOT_FOUND_HELPERS = frozenset({"command-not-found", "pk-command-not-found"})
+RETYPE_QUICK = 10.0      # seconds: a failed try that ran longer was work, not a slip
+RETYPE_PAUSE = (0.5, 120.0)  # seconds the shell sat idle before a line a person typed,
+                             # and at most from a failed try to the next line
+RETYPE_EDITS = (3, 5)    # edits a retyped line is from the try: 3, or a 5th of its length
+# Programs whose exit 1 is an answer, not a failure: no line matched, the files differ.
+ANSWERS = frozenset({"grep", "egrep", "fgrep", "zgrep", "rg", "ag", "diff", "cmp"})
 
 DEFAULTS = {
     # Matched exit records read before the scan stops and says where. At ~25 us a
     # record through json + the normaliser this is several seconds of work.
     "inspect_max_records": 150000,
+    # The same for a newest-first read, which reads on to the session's end and
+    # keeps only the newest `inspect_hold` drawn: memory is bounded however
+    # much it reads, so this bounds time alone -- tens of seconds at the top.
+    "inspect_newest_records": 600000,
     # Bytes of day-file read before the scan stops, likewise.
     "inspect_max_bytes": 6 << 30,
     # Processes itemised; past it a process with nothing below it is counted
@@ -282,7 +313,7 @@ class Proc:
                  "end", "dur", "cpu", "code", "sig", "core", "ev", "cwd", "kv", "depth",
                  "a3", "atype", "user", "kids", "agg", "up", "link", "gap", "orphan",
                  "hint", "n", "sub_cpu", "cpu_nm", "t0", "t1", "sig_id", "label",
-                 "io", "sub_io")
+                 "io", "sub_io", "gone", "leaf", "fork", "typo", "typed", "tries")
 
     def __init__(self, pid=None):
         self.pid = pid
@@ -290,13 +321,21 @@ class Proc:
         self.role = self.start = self.end = self.dur = self.cpu = self.code = None
         self.sig = self.ev = self.cwd = self.kv = self.depth = self.a3 = None
         self.atype = self.user = self.agg = self.up = self.link = self.gap = None
-        self.core = self.orphan = False
+        # `gone`: counted since, under its parent. `leaf`: itemised childless in
+        # a newest-first read, so the first to be counted when room is needed.
+        # `fork`: it never exec'd (`from_record`; None: its parent will say).
+        self.core = self.orphan = self.gone = self.leaf = self.fork = False
         self.kids = []
         self.hint = None
         self.n, self.sub_cpu, self.cpu_nm = 0, None, 0
         self.io = self.sub_io = None
         self.t0 = self.t1 = None
         self.sig_id, self.label = 0, None
+        # `typo`: what a person mistyped (`_typos`), with the name they typed
+        # when a helper was handed it; `tries`: how many failed tries of a
+        # line that worked came just before it.
+        self.typo = self.typed = None
+        self.tries = 0
 
     @classmethod
     def from_record(cls, rec, start, ts):
@@ -316,6 +355,18 @@ class Proc:
         p.io = _io_of(rec)
         p.code, p.sig = rec.get("exit_code"), rec.get("signal")
         p.core = bool(rec.get("core_dumped"))
+        # A fork that never exec'd: a shell's subshell, so a `zsh /bin/zsh -i`
+        # under an interactive zsh is not a second one. No exec on record is not
+        # enough: schema 7 drained its rings in any order, so an exec could be
+        # handled after the exit was written, and that exit names the program
+        # the process became. A fork keeps the name it was born with, so it is
+        # one whose name is still the one its inherited argv gives, or, with no
+        # argv at all, still its parent's (`_finish`: None until then).
+        src, how = rec.get("argv_source"), rec.get("duration_src")
+        if src == "inherit" and how in ("task", "proc"):
+            p.fork = p.cmd in _argv_names(args)
+        elif src is None and how == "task":
+            p.fork = None
         p.ev = rec.get("event")
         p.cwd, p.kv = rec.get("cwd"), rec.get("_kv")
         d = rec.get("depth")
@@ -342,6 +393,17 @@ class Proc:
         return p
 
 
+def _argv_names(args):
+    """What a command line names its process: argv[0] (a login shell's `-`
+    dropped), or argv[1] when it is no option -- the script an interpreter
+    runs, which the kernel names the process for."""
+    t = (args or "").split(None, 2)
+    out = {t[0].rpartition("/")[2].lstrip("-")} if t else set()
+    if len(t) > 1 and not t[1].startswith("-"):
+        out.add(t[1].rpartition("/")[2])
+    return out
+
+
 def _alive_at(p, t):
     """Was `p` running at `t` (give or take the clock's second)?"""
     if p.start is None or t is None:
@@ -362,14 +424,27 @@ class TreeBuilder:
     Bounded: at most `hold` processes are itemised (`hard` counting the parents
     kept past it for structure), and what arrives after is counted under its
     parent. Every such count is published, never dropped.
+
+    `newest`: the same bounds keep the newest instead. A process that finds no
+    room is drawn anyway, and the oldest childless one drawn is counted under
+    its parent in its place (`_room`), so the drawn processes are the newest
+    `hold` -- and of one command under one parent, the newest `per_parent`.
     """
 
     def __init__(self, hold=DEFAULTS["inspect_hold"],
-                 per_parent=DEFAULTS["inspect_per_parent"]):
+                 per_parent=DEFAULTS["inspect_per_parent"], newest=False):
         self.hold = max(1, int(hold))
         self.hard = self.hold + self.hold // 2
         self.per_parent = max(1, int(per_parent))
-        self.leaves = collections.Counter()   # (ppid, command) -> childless itemised
+        self.newest = bool(newest)
+        # Newest first: the childless processes drawn, oldest first, in all and
+        # per (ppid, command). An entry counted since is skipped when reached,
+        # and swept out when they outnumber the drawn (`_compact`).
+        self.fifo = collections.deque()
+        self.fifo_k = {}
+        self.live_leaves = 0
+        # (ppid, command) -> childless itemised; newest first, those still drawn
+        self.leaves = collections.Counter()
         self.pending = {}           # pid -> [Proc] whose record names it as parent
         self.pending_agg = {}       # pid -> Agg, the same past the hold budget
         self.orphans = []           # [Proc] whose record names no usable parent
@@ -407,6 +482,12 @@ class TreeBuilder:
         pid = rec.get("pid")
         st = _started(rec, ts)
         self._note(rec, pid, st, ts)
+        if self.newest:
+            # Room is made before this process claims what waited for it: the
+            # one counted to make it may be one of those, or the parent this
+            # one names, and is counted where it stands before it is claimed.
+            waited = bool(self.pending.get(pid)) or pid in self.pending_agg
+            self._room(not waited, (rec.get("ppid"), rec.get("_command")))
         kids = self.pending.pop(pid, None) if pid is not None else None
         if kids and st is not None:
             # A child that started before this process did had an earlier
@@ -428,7 +509,9 @@ class TreeBuilder:
             par = None
         leaf = not kids and agg is None
         lk = (ppid, rec.get("_command"))
-        if (self.itemised >= (self.hold if leaf else self.hard)
+        # Newest first, the processes counted since leave their room behind.
+        drawn = self.itemised - self.absorbed if self.newest else self.itemised
+        if (drawn >= (self.hold if leaf else self.hard)
                 or (leaf and self.leaves[lk] >= self.per_parent)):
             self._count(rec, ppid, st, ts, kids, agg, par)
             return
@@ -436,6 +519,11 @@ class TreeBuilder:
         self.itemised += 1
         if leaf:
             self.leaves[lk] += 1
+            if self.newest:
+                p.leaf = True
+                self.live_leaves += 1
+                self.fifo.append(p)
+                self.fifo_k.setdefault(lk, collections.deque()).append(p)
         for k in kids or ():
             k.up, k.link = p, "ppid"
         p.kids = kids or []
@@ -546,24 +634,106 @@ class TreeBuilder:
         else:
             table, key = ((self.orphan_agg, rec.get("_kv")) if ppid in NO_PARENT
                           else (self.pending_agg, ppid))
-            a = table.get(key)
-            if a is None:
-                if len(self.pending_agg) + len(self.orphan_agg) >= self.hold:
-                    a = self.loose = self.loose or Agg()
-                else:
-                    a = table[key] = Agg(rec.get("_kv"), rec.get("depth"))
+            a = self._agg_at(table, key, rec.get("_kv"), rec.get("depth"))
         a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, _io_of(rec))
         for k in kids or ():
             self.absorbed += a.absorb(k)
-            # Gone from the drawing, so no later child may hang from it.
-            stack = [k]
-            while stack:
-                q = stack.pop()
-                if self.closed.get(q.pid) is q:
-                    del self.closed[q.pid]
-                stack.extend(q.kids)
+            self._drop(k)
         if agg is not None:
             a.merge(agg)
+
+    def _agg_at(self, table, key, kv, depth):
+        """The count waiting under `key` in `table`, begun if there is none."""
+        a = table.get(key)
+        if a is None:
+            if len(self.pending_agg) + len(self.orphan_agg) >= self.hold:
+                a = self.loose = self.loose or Agg()
+            else:
+                a = table[key] = Agg(kv, depth)
+        return a
+
+    def _drop(self, p):
+        """`p` and everything under it, gone from the drawing into a count."""
+        stack = [p]
+        while stack:
+            q = stack.pop()
+            q.gone = True
+            # No later child may hang from it.
+            if self.closed.get(q.pid) is q:
+                del self.closed[q.pid]
+            if q.leaf:
+                q.leaf = False
+                self.live_leaves -= 1
+                lk = (q.ppid, q.cmd)
+                self.leaves[lk] -= 1
+                if self.leaves[lk] <= 0:
+                    del self.leaves[lk]
+            stack.extend(q.kids)
+
+    def _room(self, leaf, lk):
+        """Newest first: count the oldest drawn processes until one more fits.
+
+        A childless one past its command's quota under its parent takes the
+        place of the oldest of that command there; any other, of the oldest
+        childless one drawn at all.
+        """
+        if leaf and self.leaves[lk] >= self.per_parent:
+            self._demote(self.fifo_k.get(lk))
+        while self.itemised - self.absorbed >= (self.hold if leaf else self.hard):
+            if not self._demote(self.fifo):
+                break
+        if len(self.fifo) > 2 * self.live_leaves + COMPACT_SLACK:
+            self._compact()
+
+    def _demote(self, q):
+        """Count the oldest process still drawn in queue `q` under its parent.
+
+        Wherever it waits -- under a parent that exited, for a parent still to
+        exit, or with no parent to wait for -- its count goes where a process
+        arriving past the hold there would have gone (`_count`). False when
+        there is none left to count.
+        """
+        while q:
+            p = q.popleft()
+            if p.gone:
+                continue
+            mine = self.fifo_k.get((p.ppid, p.cmd))
+            if q is self.fifo and mine is not None:
+                # The oldest drawn of all is the oldest of its command too: what
+                # is ahead of it there was counted already.
+                while mine and (mine[0] is p or mine[0].gone):
+                    mine.popleft()
+            if mine is not None and not mine:
+                del self.fifo_k[(p.ppid, p.cmd)]
+            if p.up is not None:
+                p.up.kids.remove(p)
+                if p.up.agg is None:
+                    p.up.agg = Agg(p.kv, p.depth)
+                a = p.up.agg
+            else:
+                waiting = self.pending.get(p.ppid)
+                if waiting is not None and p in waiting:
+                    waiting.remove(p)
+                    if not waiting:
+                        del self.pending[p.ppid]
+                    a = self._agg_at(self.pending_agg, p.ppid, p.kv, p.depth)
+                else:
+                    self.orphans.remove(p)
+                    a = self._agg_at(self.orphan_agg, p.kv, p.kv, p.depth)
+            self.absorbed += a.absorb(p)
+            self._drop(p)
+            return True
+        return False
+
+    def _compact(self):
+        """Sweep out of the newest-first queues the entries counted since."""
+        self.fifo = collections.deque(p for p in self.fifo if not p.gone)
+        for lk, q in list(self.fifo_k.items()):
+            left = [p for p in q if not p.gone]
+            if left:
+                self.fifo_k[lk] = collections.deque(left)
+            else:
+                del self.fifo_k[lk]
 
     def _tick(self, rec):
         pid = rec.get("pid")
@@ -736,8 +906,13 @@ class TreeBuilder:
 
     # --------------------------------------------------------------- render
     def render(self, root, budget):
-        """The tree as served: grouped, totalled, and cut to `budget` entries."""
-        _finish(root)
+        """The tree as served: grouped, totalled, and cut to `budget` entries.
+
+        Served in the order the siblings are listed, so newest first the cut
+        falls on the deep end of the oldest subtrees.
+        """
+        _finish(root, self.newest)
+        _typos(root)
         stats = {"shown": 0, "elided": 0, "links": collections.Counter()}
         budget = max(1, int(budget))
         memo = {}
@@ -747,7 +922,7 @@ class TreeBuilder:
         queue = collections.deque([(root, out)])
         while queue:
             node, d = queue.popleft()
-            entries = _entries(node)
+            entries = _entries(node, self.newest)
             kids = []
             for i, e in enumerate(entries):
                 if left[0] <= 0:
@@ -790,8 +965,9 @@ def _merge_agg(node, a):
     node.agg.merge(a)
 
 
-def _finish(root):
-    """Totals, start order, labels and shape signatures, bottom up."""
+def _finish(root, newest=False):
+    """Totals, start order (newest first, if asked), labels and shape
+    signatures, bottom up. A process with no start time is listed last."""
     order, stack = [], [root]
     while stack:
         n = stack.pop()
@@ -799,8 +975,14 @@ def _finish(root):
         stack.extend(n.kids)
     shapes = {}
     unique = 0
+    sign = -1 if newest else 1
     for n in reversed(order):
-        n.kids.sort(key=lambda k: (k.t0 is None, k.t0 or 0.0, k.pid or 0))
+        if n.fork is None:
+            # No argv to tell by: a fork has its parent's name. Only the parent
+            # its own record (or the index) names will do, not a placement.
+            par = n.up if n.link in ("ppid", "index") else None
+            n.fork = par is not None and par.cmd is not None and par.cmd == n.cmd
+        n.kids.sort(key=lambda k: (k.t0 is None, sign * (k.t0 or 0.0), sign * (k.pid or 0)))
         own = n.ev is not None
         n.n = (1 if own else 0) + sum(k.n for k in n.kids) + (n.agg.n if n.agg else 0)
         cpu = n.cpu if own else None
@@ -835,13 +1017,181 @@ def _finish(root):
         # and `lsb_release -a` run 746 times must read as one run of 746, not
         # as 746 rows that differ in which `cut` won. How it was placed is part
         # of it, so a group never mixes a measured parent link with an
-        # inferred one.
+        # inferred one; and so is whether it exec'd, so a run of subshells
+        # never takes in a shell of the same name.
         ran_cmds = {k.cmd for k in n.kids}
         if n.agg is not None:
             ran_cmds.update(n.agg.cmds)
         n.sig_id = shapes.setdefault(
-            (n.cmd, n.eff, n.role, n.link, n.gap, n.orphan, frozenset(ran_cmds)),
+            (n.cmd, n.eff, n.role, n.link, n.gap, n.orphan, n.fork, frozenset(ran_cmds)),
             len(shapes) + 1)
+
+
+def _typos(root):
+    """Flag what a person mistyped at a terminal, for the page's "hide typos"
+    (user, 2026-10-29). Only among the commands of a shell a person types into
+    (`_interactive`), and only in the classes a person types in: an agent's
+    failed call is the agent's own step.
+
+    - `not-found`: a name the shell could not run. Bash forks, finds nothing,
+      and the fork exits 127 (126: not executable) carrying its parent's argv.
+      The name is lost -- bash looks it up with stat and never calls execve --
+      unless the distro's helper was handed it (`command-not-found -- clera`).
+    - `retried`: a line that failed within RETYPE_QUICK seconds and was typed
+      again, corrected: the next line typed at the same shell is the same
+      program with its arguments a few keystrokes apart (`_alike`), and it
+      worked. A line typed is one the shell started after sitting idle for a
+      person's pause, so neither a loop's next turn nor what the prompt runs
+      as the last line exits is one. Tries in a row, each like the last, all
+      fold into the line that worked, which counts them (`tries`); a line that
+      never worked folds nothing.
+
+    On FAS's eight login nodes on 2026-10-28 people's shells had 1,756 names
+    not found, 1,384 of them in six shells whose prompt runs a missing command,
+    and 31 lines typed again: 29 slips (`squeue -me`, `git pll`, `less x.PY`)
+    and two changes of plan (`git push` then `git stash`, a clone over SSH then
+    over HTTPS).
+    """
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        stack.extend(n.kids)
+        if not n.kids or (n.a3 is not None and n.a3 not in HUMAN) or not _interactive(n):
+            continue
+        for p in n.kids:
+            if p.a3 in HUMAN and _not_found(p):
+                p.typo = "not-found"
+        _retyped(n)
+
+
+def _interactive(n):
+    """A shell a person types into: a login shell (`-bash`), or one given no
+    command and no script (`bash`, `zsh -l`, VS Code's `bash --init-file ...`).
+    Its subshells carry its argv, so a line typed in one counts as well, and a
+    shell still running at the end of the read -- drawn from the index, which
+    holds no person's shell, and so with no argv -- is known by them."""
+    cmd, args = n.cmd, n.args
+    if not args:
+        f = next((k for k in n.kids if k.fork and k.args), None)
+        if f is not None:
+            cmd, args = f.cmd, f.args
+    if cmd not in SHELLS or not args:
+        return False
+    t = args.split()
+    if t[0].startswith("-"):
+        return True
+    i = 1
+    while i < len(t):
+        w = t[i]
+        if w == "--":
+            return i + 1 == len(t)
+        if w in ("--init-file", "--rcfile", "-o", "+o", "-O", "+O"):
+            i += 2
+        elif w.startswith("--"):
+            i += 1
+        elif w[0] in "-+" and len(w) > 1:
+            if "c" in w[1:]:
+                return False        # a command to run
+            i += 1
+        else:
+            return False            # a script to run
+    return True
+
+
+def _not_found(p):
+    """A fork that never exec'd and exited 126 or 127 having started nothing
+    but the not-found helper -- with what the helper asks itself: Ubuntu's runs
+    `snap advise-snap --command clera` -- whose name goes to `typed`."""
+    if (p.fork is not True or p.ev != "exit" or p.sig is not None
+            or p.code not in (126, 127) or p.agg is not None):
+        return False
+    if any(k.cmd not in NOT_FOUND_HELPERS for k in p.kids):
+        return False
+    for k in p.kids:
+        t = (k.args or "").split()
+        i = t.index("--") + 1 if "--" in t else next(
+            (j + 1 for j, w in enumerate(t) if w.rpartition("/")[2] in NOT_FOUND_HELPERS), len(t))
+        p.typed = t[i] if i < len(t) else p.typed
+    return True
+
+
+def _slip(p):
+    """A line that failed quickly: it exec'd, and within RETYPE_QUICK seconds
+    exited non-zero -- past 1 for a program whose 1 is an answer (`ANSWERS`):
+    a grep that matched nothing then another pattern is a search, not a slip
+    -- or by a signal, though not SIGPIPE, which a pager closing sends."""
+    if p.fork or p.ev != "exit" or p.a3 not in HUMAN or not p.args:
+        return False
+    if p.start is None or p.end is None or p.end - p.start >= RETYPE_QUICK:
+        return False
+    if p.sig is not None:
+        return p.sig != 13
+    return p.code not in (0, None) and not (p.code == 1 and p.cmd in ANSWERS)
+
+
+def _alike(a, b):
+    """Two command lines whose arguments, past argv[0], are a few keystrokes
+    apart (`_edits`): `squeue -me` and `squeue --me`, `du h-s` and `du -hs`,
+    `cp a/ b/` and `cp -r a/ b/`. Not `git commit x` and `git add x`, nor
+    `tmux ls` and `tmux new -s work`; and a line with no arguments was not
+    mistyped in them."""
+    a, b = a.partition(" ")[2].strip(), (b or "").partition(" ")[2].strip()
+    if not a or not b or a == b:
+        return False
+    cap = max(RETYPE_EDITS[0], max(len(a), len(b)) // RETYPE_EDITS[1])
+    return abs(len(a) - len(b)) <= cap and _edits(a, b, cap) <= cap
+
+
+def _edits(a, b, cap):
+    """The edits from `a` to `b` -- a character put in, taken out, or changed,
+    or two neighbours swapped -- or cap + 1 once there are more than `cap`."""
+    out = cap + 1
+    prev2, prev = None, [j if j <= cap else out for j in range(len(b) + 1)]
+    for i in range(1, len(a) + 1):
+        lo, hi = max(1, i - cap), min(len(b), i + cap)
+        cur = [out] * (len(b) + 1)
+        cur[0] = i if i <= cap else out
+        for j in range(lo, hi + 1):
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                v = min(v, prev2[j - 2] + 1)
+            cur[j] = min(v, out)
+        if min(cur[lo - 1:hi + 1]) >= out:
+            return out
+        prev2, prev = prev, cur
+    return prev[len(b)]
+
+
+def _retyped(n):
+    """`_typos`' lines typed again, among shell `n`'s commands."""
+    seq = sorted((k for k in n.kids if k.start is not None and k.end is not None),
+                 key=lambda k: k.start)
+    # The lines a person typed, in order: each started once everything the
+    # shell had started before it had been over for a person's pause. A name
+    # not found is passed over, a typo of its own between the two.
+    typed, busy = [], None
+    for k in seq:
+        if (busy is None or k.start - busy >= RETYPE_PAUSE[0]) and k.typo is None:
+            typed.append(k)
+        busy = k.end if busy is None else max(busy, k.end)
+    a = n.agg
+    before = {}                     # id(line) -> the failed try typed right before it
+    for p, q in zip(typed, typed[1:]):
+        if (not _slip(p) or q.start - p.end > RETYPE_PAUSE[1] or q.fork or q.cmd != p.cmd
+                or q.a3 not in HUMAN or not _alike(p.args, q.args)):
+            continue
+        # a process counted rather than drawn could have been a line between
+        if a is not None and a.t0 is not None and a.t0 <= q.start and (a.t1 or a.t0) >= p.end:
+            continue
+        before[id(q)] = p
+    for q in typed:
+        if q.ev != "exit" or q.code != 0 or q.sig is not None:
+            continue
+        p = before.get(id(q))
+        while p is not None and p.typo is None:
+            p.typo = "retried"
+            q.tries += 1
+            p = before.get(id(p))
 
 
 def runs(sigs):
@@ -870,7 +1220,7 @@ def runs(sigs):
     return out
 
 
-def _entries(node):
+def _entries(node, newest=False):
     """A node's children as served: processes, groups, and its counted rest."""
     kids = node.kids
     out = []
@@ -883,12 +1233,13 @@ def _entries(node):
     if a is not None:
         # In time order with its siblings, by when the first counted one began,
         # rather than trailing them all: it happened somewhere, and where is
-        # part of the trajectory.
+        # part of the trajectory. Newest first, the same place seen from the
+        # other end.
         at = len(out)
         if a.t0 is not None:
             for j, e in enumerate(out):
                 t = e.t0 if isinstance(e, Proc) else e[0][0].t0
-                if t is not None and t > a.t0:
+                if t is not None and (t < a.t0 if newest else t > a.t0):
                     at = j
                     break
         out.insert(at, a)
@@ -915,6 +1266,14 @@ def _proc_dict(n, parent, memo=None):
         d["core"] = True
     if n.orphan:
         d["orphan"] = True
+    if n.fork:
+        d["fork"] = True
+    if n.typo:
+        d["typo"] = n.typo
+        if n.typed:
+            d["typed"] = shown(n.typed, memo)
+    if n.tries:
+        d["tries"] = n.tries
     # Only where it changes: a tool call's own cwd is the drift signal, and
     # repeating the parent's on every row would bury it.
     if n.cwd and (parent is None or n.cwd != parent.cwd):
@@ -931,9 +1290,10 @@ def _group_dict(e, parent, memo=None):
     members, p, reps = e
     exits, signals = collections.Counter(), collections.Counter()
     samples = collections.Counter()
-    alive = 0
+    alive = typos = 0
     cpu, nm, t0, t1, dmax = None, 0, None, None, None
     for m in members:
+        typos += m.typo is not None
         if m.ev == "truncated":
             alive += 1
         elif m.sig is not None:
@@ -965,6 +1325,9 @@ def _group_dict(e, parent, memo=None):
             "sub_io": _io_out(sub_io),
             "dur_max": _r(dmax, 4), "exits": dict(exits), "signals": dict(signals),
             "alive": alive or None,
+            # members a person mistyped (`_typos`): all of them, and "hide typos"
+            # takes the run out
+            "typos": typos or None,
             "distinct": len(samples),
             "samples": [{key: shown(text, memo), "n": k}
                         for (key, text), k in samples.most_common(SAMPLES) if text]}
@@ -1239,7 +1602,7 @@ def lookup(traj, sid):
     members.sort(key=lambda m: m[0].sid != sid)       # the owner's own key first
     parts = [m[0] for m in members]
     s = parts[0] if len(parts) == 1 and parts[0].sid == sid else \
-        fold_sessions(parts, sid, tail)
+        fold_sessions(parts, sid, tail, traj.phase_params)
     vs = [v for p, v in members if p.sid != sid] or [v for _, v in members]
     vs = [v for v in vs if v is not None]
     return s, (max(vs, key=VIA.index) if vs else None), len(parts), [p.sid for p in parts]
@@ -1284,7 +1647,8 @@ def _remember(key, body):
             _cache.popitem(last=False)
 
 
-def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background=False):
+def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background=False,
+            order="oldest"):
     """The process tree of row `sid` in `view`'s window.
 
     `frm`/`to` (epoch seconds) narrow the read inside the session's span: the
@@ -1293,12 +1657,16 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     A built tree is served again for CACHE_TTL seconds, the last CACHE_KEEP of
     them, until the window is rebuilt (`installed_at` is in the key).
 
+    `order` is one of ORDERS, anything else the first: which end of the
+    session the tree lists first, and draws in full (see the module's notes).
+
     `background` is the warmer's read (`_warm_loop`): it never waits for the
     scan, gives way mid-read to anyone who opens a session, and returns None
     when it did.
     """
     now = now or time.time()
-    key = (sid, view.minutes, view.installed_at, frm, to)
+    order = order if order in ORDERS else ORDERS[0]
+    key = (sid, view.minutes, view.installed_at, frm, to, order)
     hit = _cached(key, now)
     if hit is not None:
         return hit
@@ -1319,7 +1687,8 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
             return hit
         try:
             body = _inspect(cfg, view, lock, roots, sid, frm, to,
-                            give_way=(lambda: _waiting[0] > 0) if background else None)
+                            give_way=(lambda: _waiting[0] > 0) if background else None,
+                            order=order)
         except _GiveWay:
             return None
         if body.get("found"):
@@ -1329,8 +1698,11 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
         _scan_lock.release()
 
 
-def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
+def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"):
     lim = _limits(cfg)
+    newest = order == "newest"
+    # Newest first reads on to the session's end: see `inspect_newest_records`.
+    max_records = lim["inspect_newest_records" if newest else "inspect_max_records"]
     with lock:
         status = view.status()
         red = view.reducers or {}
@@ -1343,7 +1715,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
             return {"sid": sid, "found": False, "_window": status,
                     "why": "no session with this id in the %s window" % status["label"]}
         s, via, nkeys, members = hit
-        row = traj._row(s, via, nkeys)
+        row = traj._row(s, via, nkeys, members)
         host, first, last = s.host, s.first, s.last
         owner = int(s.kv) if s.kt == "apid" and str(s.kv).isdigit() else None
         keys = set()
@@ -1370,7 +1742,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
     if mine:
         plan, total = mine, sum(e["size"] - e["start"] for e in mine)
 
-    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"])
+    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
@@ -1385,7 +1757,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
         b.feed(rec)
         if give_way is not None and not b.matched & 255 and give_way():
             raise _GiveWay
-        if b.matched >= lim["inspect_max_records"]:
+        if b.matched >= max_records:
             stopped, stopped_at = "records", rec.get("_ts_epoch")
             break
         if stats["bytes"] >= lim["inspect_max_bytes"]:
@@ -1425,7 +1797,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
     lo = since if b.first is None else min(since, b.first)
     return {
         "sid": sid, "found": True, "row": row, "host": host, "owner_pid": owner,
-        "keys": len(members),
+        "keys": len(members), "order": order,
         "span": {"first": first, "last": last},
         "scan": {"from": since, "to": until, "files": len(plan),
                  "bytes_planned": total, "bytes": stats.get("bytes", 0),
@@ -1436,7 +1808,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
                  "stopped": stopped, "stopped_at": stopped_at,
                  "elapsed_s": round(elapsed, 2),
                  "computed_at": round(time.time(), 3)},
-        "bounds": {"max_records": lim["inspect_max_records"],
+        "bounds": {"max_records": max_records,
                    "max_bytes": lim["inspect_max_bytes"],
                    "hold": b.hold, "per_parent": b.per_parent,
                    "nodes": lim["inspect_nodes"],
@@ -1466,8 +1838,15 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None):
                       "itemised, %d childless ones of one command per parent (the "
                       "rest counted under their parent, k=agg); %d entries served "
                       "breadth first (the rest counted, k=more)"
-                      % (lim["inspect_max_records"], lim["inspect_max_bytes"] >> 30,
+                      % (max_records, lim["inspect_max_bytes"] >> 30,
                          b.hold, b.per_parent, lim["inspect_nodes"]),
+            "order": ("newest first: siblings by latest start first. The read goes "
+                      "on to the session's end and every budget keeps the newest, so "
+                      "the oldest processes are the ones counted (k=agg) or past the "
+                      "served entries (k=more)" if newest else
+                      "oldest first: siblings by start. Every budget keeps the "
+                      "oldest, so the newest processes are the ones counted (k=agg) "
+                      "or past the served entries (k=more)"),
             "args": "masked, then cut to %d characters" % PREVIEW,
             "nav": "from every record the read matched, itemised or counted: process "
                    "starts binned by purpose on the read's axis (a start before it "
@@ -1494,7 +1873,7 @@ def response(body, accept_encoding):
     return raw, {"Vary": "Accept-Encoding"}
 
 
-def serve(agg, sid, window_min=None, frm=None, to=None):
+def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     """`/api/trajectory`: `inspect` over the aggregator's view of that window."""
     _warm["last_open"] = time.time()
     if _warm["thread"] is None:
@@ -1503,7 +1882,18 @@ def serve(agg, sid, window_min=None, frm=None, to=None):
         _warm["thread"].start()
     win = agg.window(window_min)
     view = agg.panels_by_window.request(win["minutes"])
-    body = inspect(agg.cfg, view, agg.lock, agg.roots(), sid, frm, to)
+    body = inspect(agg.cfg, view, agg.lock, agg.roots(), sid, frm, to, order=order)
+    row = body.get("row")
+    if isinstance(row, dict):
+        # A running agent's row says so, as the ranking's does. Only its newest row of the agent's
+        # is marked (a row is split by day), so the ranked rows come along for that choice. The
+        # row is the cached body's own, shared: the marked one is a copy.
+        with agg.lock:
+            ranked = ((view.payload or {}).get("trajectories") or {}).get("rows")
+            rows = dict(ranked) if isinstance(ranked, dict) else {}
+            rows[sid] = row
+            marked = agg._running_rows(rows)[sid]
+        body = dict(body, row=marked)
     body["window"] = win
     body.update(feedmod.panel_meta(agg.reports["ebpf"]))
     return body

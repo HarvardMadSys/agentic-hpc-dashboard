@@ -305,8 +305,9 @@ class LeakTest(unittest.TestCase):
                                      {"panel": "gpu_jobs"}]})
         snap = json.loads(sent.split("<snapshot>")[1].split("</snapshot>")[0])
         self.assertEqual(set(snap["panels"]), {"cascades"})
-        self.assertEqual(set(snap["panels"]["cascades"]), {"summary", "workspace"})
-        self.assertEqual(set(snap["panels"]["cascades"]["workspace"]), {"summary"})
+        # each also carries the ref an answer cites it by
+        self.assertEqual(set(snap["panels"]["cascades"]) - {"ref"}, {"summary", "workspace"})
+        self.assertEqual(set(snap["panels"]["cascades"]["workspace"]) - {"ref"}, {"summary"})
         self.assertIn("panels.gpu_jobs (not in this window)", sent)
 
     def test_a_question_about_nothing_known_is_refused(self):
