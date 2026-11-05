@@ -624,11 +624,15 @@ function OutsideOf({ ns }: { ns: CascadeNode[] }) {
 
 /** An agent on its own: its type, version and tags; whose it is and its
  * home; when it ran, how much, and whether it wrote outside its home. */
-function LoneRow({ n, on, onPick, inFold }: { n: CascadeNode; on: boolean; onPick: () => void; inFold?: boolean }) {
+function LoneRow({ n, on, onPick, inFold, keys }: {
+  n: CascadeNode; on: boolean; onPick: () => void; inFold?: boolean;
+  /** the agent's `host:pid`, by which an Ask LLM citation finds its row (lib/cites.ts) */
+  keys: string;
+}) {
   const w = n.workspace;
   return (
     <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(n.agent_type) }}
-      onClick={onPick} data-tip={nodeTip(n)}>
+      onClick={onPick} data-tip={nodeTip(n)} data-keys={keys}>
       <span className="al-h">
         {!inFold && <i className="tdot" style={{ background: typeCol(n.agent_type) }} />}
         <b>{typeLbl(n.agent_type)}</b>
@@ -658,9 +662,11 @@ function TreeRow({ e, on, onPick }: { e: Extract<Entry, { k: 'tree' }>; on: bool
   const { t, agents, at } = e;
   const lead = agents.filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0];
   const user = t.users.length === 1 ? t.users[0] : null;
+  // the tree's root and every agent in it, for a citation to find it by
+  const keys = [e.key, ...agents.map((n) => keyOf(t.host, n.pid))].join(' ');
   return (
     <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(lead?.agent_type) }}
-      onClick={onPick} data-tip="click to draw its tree">
+      onClick={onPick} data-tip="click to draw its tree" data-keys={keys}>
       <span className="al-h">
         <b className="wrap">{composition(t, agents)}</b>
         <span className="al-flags">
@@ -689,7 +695,7 @@ function FoldRow({ e, open, onOpen }: { e: Extract<Entry, { k: 'fold' }>; open: 
   const running = ns.filter((n) => !n.exited).length;
   return (
     <button className={`al-item fold${open ? ' open' : ''}`} style={{ borderLeftColor: typeCol(n0.agent_type) }}
-      onClick={onOpen} aria-expanded={open}
+      onClick={onOpen} aria-expanded={open} data-keys={e.ps.map((p) => keyOf(p.t.host, p.n.pid)).join(' ')}
       data-tip={`${fint(ns.length)} ${typeLbl(n0.agent_type)} agents on their own, of one user, in one home: click to ${open ? 'fold them' : 'list them'}`}>
       <span className="al-h">
         <span className="al-caret">{open ? '▾' : '▸'}</span>
@@ -1161,7 +1167,7 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   };
   const loneRow = (p: AgentPt, inFold?: boolean) => {
     const k = keyOf(p.t.host, p.n.pid);
-    return <LoneRow key={k} n={p.n} on={sel?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
+    return <LoneRow key={k} keys={k} n={p.n} on={sel?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
   };
 
   // The two histograms, kept for whoever wants the shape of nesting.

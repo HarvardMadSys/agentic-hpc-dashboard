@@ -47,7 +47,10 @@ saved state, which says so (`stragglers`). Its joins with the rest of that
 hour are the one thing such a record loses.
 
 **Saved.** Under `<cache.dir>/hours/`, one file per hour (`h<epoch hour>`),
-per merged day (`d<epoch day>`) and one for the carried join state, each named
+per merged day (`d<epoch day>`), and per hour a run may start after, the join
+state that hour ends with (its chain, `c<epoch hour>`). Every hour reduced
+saves its chain first, then itself, so a build stopped after any hour resumes
+there; a chain is dropped once no run can start from it. Each is named
 by a fingerprint of the code and config that decide what a reduction means --
 a state reduced by other code is never merged, and is pruned (all but the
 newest other generation, which another process may share the directory with). A pickle header
@@ -391,10 +394,12 @@ class HourStore:
         self.roots = None
         self.have = set()               # hours saved under the current fingerprint
         self.days = set()
-        self.chain = None               # (hour, carry, ages): the newest hour's join state
+        self.chains = set()             # hours whose chain is saved
+        self.chain = None               # (hour, carry, ages): the newest chain
         self.stats = {"hours_reduced": 0, "records": 0, "bytes": 0, "stragglers": 0,
                       "stragglers_lost": 0, "patched_hours": 0, "reduce_s": 0.0,
-                      "merged_states": 0, "days_built": 0, "pruned": 0}
+                      "merged_states": 0, "days_built": 0, "pruned": 0, "chains_saved": 0,
+                      "chain_bytes": 0}
         self._cls = {k: type(r) for k, r in fresh().items()}
 
     @classmethod
@@ -429,7 +434,7 @@ class HourStore:
         if fp == self.fp:
             return
         self.fp, self.roots = fp, list(roots)
-        self.have, self.days, self.chain = set(), set(), None
+        self.have, self.days, self.chains, self.chain = set(), set(), set(), None
         try:
             names = os.listdir(self.dir)
         except OSError:
@@ -446,19 +451,13 @@ class HourStore:
                 self.have.add(idx)
             elif stem[0] == "d":
                 self.days.add(idx)
-        try:
-            meta, body = self._read(self._path("carry", 0))
-            if meta and meta.get("kind") == "carry":
-                hour, carry, ages = pickle.loads(body)
-                if hour in self.have:
-                    self.chain = (hour, carry, ages)
-        except Exception:
-            self.chain = None
+            elif stem[0] == "c":
+                self.chains.add(idx)
+        self.chain = self._newest_chain()
         self.prune()
 
     def _path(self, kind, idx):
-        stem = "carry" if kind == "carry" else "%s%d" % (kind, idx)
-        return os.path.join(self.dir, "%s.%s.hr" % (stem, self.fp))
+        return os.path.join(self.dir, "%s%d.%s.hr" % (kind, idx, self.fp))
 
     def _write(self, path, meta, blob):
         """`blob` is a pickle: a reducer set's comes from `snapshots.capture`."""
@@ -507,7 +506,7 @@ class HourStore:
             os.unlink(self._path(kind, idx))
         except OSError:
             pass
-        (self.have if kind == "h" else self.days).discard(idx)
+        {"h": self.have, "d": self.days, "c": self.chains}[kind].discard(idx)
 
     def load(self, kind, idx):
         """A saved hour (`h`) or day (`d`) as a live reducer set, or None."""
@@ -533,10 +532,57 @@ class HourStore:
         self.have.add(hour)
         return size
 
-    def _save_chain(self):
-        if self.chain is not None:
-            self._write(self._path("carry", 0), {"kind": "carry", "hour": self.chain[0]},
-                        pickle.dumps(self.chain, protocol=pickle.HIGHEST_PROTOCOL))
+    def _save_chain(self, hour, carry, ages):
+        """Save the join state hour `hour` ends with, which the hour after it starts from."""
+        size = self._write(self._path("c", hour), {"kind": "carry", "hour": hour},
+                           pickle.dumps((hour, carry, ages), protocol=pickle.HIGHEST_PROTOCOL))
+        self.chains.add(hour)
+        self.stats["chains_saved"] += 1
+        self.stats["chain_bytes"] += size
+        return size
+
+    def _load_chain(self, hour):
+        """Hour `hour`'s saved chain, `(hour, carry, ages)`, or None. One that cannot be read is
+        dropped, and a run starts as if it had none."""
+        if hour not in self.chains or hour not in self.have:
+            return None
+        try:
+            meta, body = self._read(self._path("c", hour))
+            if meta is None or meta.get("kind") != "carry":
+                raise ValueError("not a chain")
+            got = pickle.loads(body)
+            if got[0] != hour:
+                raise ValueError("another hour's chain")
+            return got
+        except Exception:
+            self._drop("c", hour)
+            return None
+
+    def _newest_chain(self):
+        """The newest saved hour's chain that can be read, or None."""
+        for h in sorted(self.chains & self.have, reverse=True):
+            got = self._load_chain(h)
+            if got is not None:
+                return got
+        return None
+
+    def _stale(self, h):
+        """Whether saved hour `h` started afresh though the hour before it now has a chain: a run
+        before it ended there after `h` was saved (a narrower window's hours, then a wider
+        window), and stopped before it reduced `h` again with its join state."""
+        if h not in self.have or h - 1 not in self.chains or h - 1 not in self.have:
+            return False
+        m = self.meta(h)
+        return m is not None and not m.get("carried")
+
+    def _prune_chains(self):
+        """Keep the chains a run can start from: the newest, and each whose next hour is not
+        saved, or is saved afresh and waits to be reduced again from it (`_stale`)."""
+        newest = None if self.chain is None else self.chain[0]
+        for h in sorted(self.chains):
+            if h == newest or (h in self.have and (h + 1 not in self.have or self._stale(h + 1))):
+                continue
+            self._drop("c", h)
 
     # --------------------------------------------------------------- reduce
     def _hour_set(self):
@@ -545,15 +591,32 @@ class HourStore:
     def ensure(self, roots, h_lo, h_hi, progress=None):
         """Reduce whichever of hours `[h_lo, h_hi)` are not saved, in order.
 
-        A run of missing hours continues the newest hour's carried join state
-        when it starts right after it (or within MAX_GAP_H, filling the gap);
-        otherwise it starts afresh, and if a saved hour that started afresh
-        follows it, that hour is reduced again with the run's join state, so
-        the seam between the two holds no unjoined records.
+        A run of missing hours carries on from the chain of the hour just
+        before it, when that hour saved one; else it continues the newest
+        chain when that is within MAX_GAP_H before it, filling the gap; else
+        it starts afresh. If a saved hour that started afresh follows it,
+        that hour is reduced again with the run's join state, so the seam
+        between the two holds no unjoined records; and a run stopped before
+        it did so leaves that hour `_stale`, reduced again here.
+
+        Every hour a run saves also saves its chain (`_reduce_run`), so a
+        build stopped after any hour resumes there and reduces nothing
+        twice (R67): starting cold after it, it would drop every join across
+        that seam, and a call seen through its children would read "still
+        running". It costs about 0.16 s an hour on boslogin06 (a 2 MB
+        chain), stopped or not. Hours saved with no chain (one that could
+        not be written or read) still resume where their run began, afresh
+        as it did, and are reduced again (`_began`).
+
+        Still open (pre-existing): the saved hours after that reduced-again
+        hour were carried on from its afresh state, and are not reduced
+        again.
         Returns the number of hours reduced.
         """
         self._sync(roots)
-        need = [h for h in range(h_lo, h_hi) if h not in self.have]
+        need = {h for h in range(h_lo, h_hi) if h not in self.have}
+        need.update(h + 1 for h in self.chains if h_lo <= h + 1 < h_hi and self._stale(h + 1))
+        need = sorted(need)
         if not need:
             return 0
         runs, start = [], need[0]
@@ -571,28 +634,61 @@ class HourStore:
 
         files = self._files(roots, runs[0][0])
         n = 0
-        for a, b in runs:
-            chain = self.chain
-            if chain is not None and a > chain[0] and a - chain[0] - 1 <= MAX_GAP_H:
-                total += a - chain[0] - 1
-                a, carry, ages = chain[0] + 1, chain[1], chain[2]
-            else:
-                carry, ages = None, {}
-            carry, ages = self._reduce_run(files, a, b, carry, ages, tick)
-            n += b - a
-            if chain is None or b - 1 >= chain[0]:
-                self.chain = (b - 1, carry, ages)
-                self._save_chain()
-            elif b in self.have:
-                m = self.meta(b)
-                if m is not None and not m.get("carried"):
-                    total += 1
-                    carry, ages = self._reduce_run(files, b, b + 1, carry, ages, tick)
-                    n += 1
-                    if b == self.chain[0]:
-                        self.chain = (b, carry, ages)
-                        self._save_chain()
+        try:
+            for a, b in runs:
+                chain = self.chain
+                prev = chain if chain is not None and chain[0] == a - 1 else self._load_chain(a - 1)
+                if prev is not None:
+                    carry, ages = prev[1], prev[2]
+                elif chain is not None and a > chain[0] and a - chain[0] - 1 <= MAX_GAP_H:
+                    total += a - chain[0] - 1
+                    a, carry, ages = chain[0] + 1, chain[1], chain[2]
+                else:
+                    # never past the chain: hours before it are its run's, and a hole among them
+                    # is filled afresh, as before
+                    began = a if chain is not None and chain[0] >= a else self._began(
+                        a, None if chain is None else chain[0])
+                    if began < a:
+                        total += a - began
+                        files = self._files(roots, min(began, runs[0][0]))
+                    a, carry, ages = began, None, {}
+                carry, ages = self._reduce_run(files, a, b, carry, ages, tick)
+                n += b - a
+                if chain is None or b - 1 >= chain[0]:
+                    self.chain = (b - 1, carry, ages)
+                elif b in self.have:
+                    m = self.meta(b)
+                    if m is not None and not m.get("carried"):
+                        total += 1
+                        carry, ages = self._reduce_run(files, b, b + 1, carry, ages, tick)
+                        n += 1
+                        if b == self.chain[0]:
+                            self.chain = (b, carry, ages)
+        except BaseException:
+            # A run stopped mid-way may have changed the join state it was handed in place:
+            # the newest chain is read again from where it was saved.
+            self.chain = self._newest_chain()
+            raise
+        self._prune_chains()
         return n
+
+    def _began(self, a, floor=None):
+        """Where the run that saved the hours just before `a` began, when no
+        chain carries on from them (hours whose chain could not be written or
+        read): the saved hour it started afresh in, the hours after it each
+        carried. `a` itself when the hour before is not saved, or one of
+        those hours cannot be read, or the walk back passes an hour not saved
+        or reaches `floor` (the chain's hour): no run can be redone from
+        there."""
+        h = a - 1
+        while h in self.have and (floor is None or h > floor):
+            m = self.meta(h)
+            if m is None:
+                return a
+            if not m.get("carried"):
+                return h
+            h -= 1
+        return a
 
     def _files(self, roots, oldest_hour):
         # a run may reach back MAX_GAP_H further, to the newest saved hour
@@ -601,7 +697,9 @@ class HourStore:
 
     def _reduce_run(self, files, a, b, carry, ages, tick=None):
         """Hours `[a, b)`, each seeded with the join state the one before
-        ended with. Returns the join state the last one ended with."""
+        ended with. Each saves that state for itself, its chain, then itself,
+        and drops the chain of the hour before. Returns the join state the
+        last one ended with."""
         norm = Normalizer(self.cfg)
         pm = self.meta(a - 1)
         # With no read of the hour before to go by, a record from before this
@@ -622,13 +720,21 @@ class HourStore:
             strip(red)
             files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop")}
                           for e in plan]
+            # Aged before it is saved: the chain is what the next hour starts from. Handed on
+            # as it is, since it is saved: the next hour may change it in place, and a window
+            # installs a copy (`install_carry`).
+            carry, ages = age(self._cls, carry, ages, h)
+            # The chain first, then the hour: a saved hour always has the state it carries
+            # out, so a build stopped after it resumes there (R67). One saved for an hour
+            # whose own save did not complete belongs to no saved hour, and is never used.
+            self._save_chain(h, carry, ages)
             self._save_hour(h, red, {"records": n, "newest": newest, "carried": carried,
                                      "files": files_meta, "stragglers": 0,
                                      "reduced_at": time.time()})
             del red
-            # Handed on as it is: the hour is saved, so the next one may change
-            # it in place, and a window installs a copy (`install_carry`).
-            carry, ages = age(self._cls, carry, ages, h)
+            # no run starts at this hour now
+            if h - 1 in self.chains:
+                self._drop("c", h - 1)
             if strays:
                 self._patch(strays, norm)
             prev = {f["path"]: f for f in files_meta}
@@ -806,7 +912,7 @@ class HourStore:
                 idx = int(stem[1:])
             except ValueError:
                 continue
-            if (stem[0] == "h" and idx < oldest) or (stem[0] == "d" and idx * 24 < oldest):
+            if (stem[0] in "hc" and idx < oldest) or (stem[0] == "d" and idx * 24 < oldest):
                 self._drop(stem[0], idx)
                 self.stats["pruned"] += 1
         if len(other) > 1:
@@ -840,7 +946,7 @@ class HourStore:
         """Read from the API thread while the build thread works: every value
         is taken whole (a sorted copy, a tuple), never iterated live."""
         have, chain = sorted(self.have), self.chain
-        return {"hours": len(have), "days": len(self.days),
+        return {"hours": len(have), "days": len(self.days), "chains": len(self.chains),
                 "newest_hour": (time.strftime("%Y-%m-%d %H:00", time.localtime(
                     have[-1] * HOUR)) if have else None),
                 "carried_through": (time.strftime("%Y-%m-%d %H:00", time.localtime(

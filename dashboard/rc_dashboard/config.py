@@ -240,10 +240,29 @@ def defaults():
             "io": {"top_n": 20},
             # `live_s`: how stale the ranked sessions may get while the view
             # is fed live -- the panel re-reads them that often, and they are
-            # re-ranked on the read, not only at the next rebuild
+            # re-ranked on the read, not only at the next rebuild.
+            # `max_sessions`: session keys held per window, about 6 KB each.
+            # Schema 7 keys each tool call apart, and a FAS login node makes
+            # up to ~105 000 in a day: a busy day is held whole.
             "trajectories": {"top_n": 15, "max_runs_shown": 60, "purpose_seq_cap": 80,
-                             "idle_evict_s": 7200, "max_sessions": 50000,
-                             "include_key_types": ["apid", "sess", "tty"], "live_s": 5},
+                             "idle_evict_s": 7200, "max_sessions": 150000,
+                             "include_key_types": ["apid", "sess", "tty"], "live_s": 5,
+                             # An agent row's phases: reducers/phase_segment.py documents
+                             # each threshold. Its DEFAULTS, tuned on two real days
+                             # (rc_dashboard/phase_report.py); a test holds the two equal.
+                             "phases": {"idle_s": 300, "guess_min_s": 20, "absorb_calls": 6,
+                                        "absorb_s": 300, "poll_min": 5, "poll_cv": 0.25,
+                                        "poll_cv_strict": 0.10, "step_s": 1.0,
+                                        "top_commands": 3, "max_calls": 20000,
+                                        "hk_bin_cap": 10080, "pend_max": 50000},
+                             # The tasks above them: reducers/phase_tasks.py documents each
+                             # threshold. Its DEFAULTS, tuned on seven hand-labeled sessions
+                             # (rc_dashboard/phase_report.py); a test holds the two equal.
+                             "tasks": {"gap_s": 3600, "lone_calls": 8, "lone_s": 7200,
+                                       "new_steps": 5, "new_window_s": 1800,
+                                       "close_overlap": 0.5, "close_series_s": 300,
+                                       "min_s": 600, "min_calls": 5, "cap": 10,
+                                       "headline_names": 3}},
         },
         # What counts as risky differs by cluster. The rules are built in
         # (reducers/risk.py, which documents every key); this switches them

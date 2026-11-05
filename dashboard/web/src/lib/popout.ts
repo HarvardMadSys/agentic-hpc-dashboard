@@ -1,8 +1,8 @@
 /* The process tree in a tab of its own (tabs/TreePopout.tsx): its link, and
  * the way back. The pop-out reads the session the way the inspector does, so
  * the link carries what that read is keyed on -- the session, the window,
- * where the read starts, and which end it draws -- and whether the routine
- * was hidden. */
+ * where the read starts, and which end it draws -- and whether the routine and
+ * the typos were hidden. */
 import type { TrajOrder } from '../api/types';
 
 export interface TreePop {
@@ -10,6 +10,7 @@ export interface TreePop {
   win: number | null;
   from: number | null;
   hide: boolean;
+  typos: boolean;
   order: TrajOrder;
 }
 
@@ -19,11 +20,13 @@ export function treePopHref(
   from: number | null,
   hide: boolean,
   order: TrajOrder = 'oldest',
+  typos = true,
 ): string {
   const p = new URLSearchParams({ pop: 'tree', traj: sid });
   if (win != null) p.set('win', String(win));
   if (from != null) p.set('tfrom', String(from));
   if (!hide) p.set('hide', '0');
+  if (!typos) p.set('typos', '0');
   if (order === 'newest') p.set('torder', order);
   return `${window.location.pathname}?${p}`;
 }
@@ -40,6 +43,7 @@ export function readTreePop(search: string): TreePop | null {
     win: num('win'),
     from: num('tfrom'),
     hide: p.get('hide') !== '0',
+    typos: p.get('typos') !== '0',
     order: p.get('torder') === 'newest' ? 'newest' : 'oldest',
   };
 }

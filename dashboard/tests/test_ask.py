@@ -656,6 +656,28 @@ class CiteTest(unittest.TestCase):
         self.assertEqual(ask.preview({"first": ["[d6] getopt exit 4", "[d7] git exit 1"]}),
                          {"first": ["getopt exit 4", "git exit 1"]})
 
+    def test_a_nested_part_is_cited_as_its_owners(self):
+        """A folder an agent read is cited by itself, and is that agent's: the
+        cite carries the agent's session hint and who it is."""
+        panels = {"cascades": {"workspace": {"agents": [
+            {"host": "h", "pid": 7, "user": "tianle", "agent_type": "codex",
+             "_go": {"sid": "h|d|agent|apid:7"},
+             "self": {"dirs": [{"path": "/madsys/tianle/out6k/e9", "shown": "./out6k/e9",
+                                "read": 6}]}}]}}}
+        s, _ = self.snap(panels)
+        agent = s["panels"]["cascades"]["workspace"]["agents"][0]
+        d = agent["self"]["dirs"][0]["ref"]
+        a = ask.Asker(Cfg(**{"ask.command": echo("it read it 6 times [%s]" % d)}))
+        v = wait(a, a.submit("q", panels, None, "w")["id"])
+        c = v["cites"][d]
+        self.assertEqual(c["data"]["read"], 6)
+        self.assertEqual(c["go"], {"sid": "h|d|agent|apid:7"})
+        self.assertEqual(c["of"], {"user": "tianle", "host": "h", "pid": 7, "agent_type": "codex"})
+        # a row that names its own owner says so itself
+        a2 = ask.Asker(Cfg(**{"ask.command": echo("the agent [%s]" % agent["ref"])}))
+        own = wait(a2, a2.submit("q", panels, None, "w")["id"])["cites"][agent["ref"]]
+        self.assertIsNone(own["of"])
+
     def test_the_job_says_which_view_its_links_open(self):
         a = ask.Asker(Cfg(**{"ask.command": echo("ok")}))
         view = {"window_min": 60, "users": ["alice"], "atypes": [], "cls": ["agent"], "sid": None}
@@ -690,6 +712,67 @@ class AggregatorCiteTest(unittest.TestCase):
         self.assertNotIn("sid", row)
         self.assertEqual(row["_go"], {"sid": "h|d|agent|apid:1"})
         self.assertEqual(scope["view"]["window_min"], 60)
+
+    def test_agents_and_trees_point_at_their_sessions(self):
+        agg = self.agg()
+        cascades = {"workspace": {"agents": [{"host": "h", "pid": 1, "user": "alice"},
+                                             {"host": "h", "pid": 2, "user": "bo"}]},
+                    "trees": [{"host": "h", "root": {"pid": 9}, "nodes": [
+                        {"pid": 9, "role": "infra"}, {"pid": 1, "role": "agent", "agent_level": 1}]}]}
+        agg.panels = lambda m, v=None: {"panels": {"cascades": cascades}, "facets": None,
+                                        "window_status": {"state": "ready"}}
+        agg.trajectories = lambda m, v=None: {
+            "rows": {"h|2026-10-28|agent|apid:1": {"last": 10}, "h|2026-10-29|agent|apid:1": {"last": 20},
+                     "h|2026-10-29|human|tty:alice@pts/1": {"last": 30}},
+            "ranks": {"events": [], "recent": []}, "summary": {}}
+        agg.ask("q", 60)
+        sent = agg.asker.submit.call_args[0][1]["cascades"]
+        agents = sent["workspace"]["agents"]
+        self.assertEqual(agents[0]["_go"], {"sid": "h|2026-10-29|agent|apid:1"})   # its newest day
+        self.assertNotIn("_go", agents[1])                                        # no session of its own
+        self.assertEqual(sent["trees"][0]["_go"], {"sid": "h|2026-10-29|agent|apid:1"})
+        # the page's own panel is served as it was
+        self.assertNotIn("_go", cascades["workspace"]["agents"][0])
+        self.assertNotIn("_go", cascades["trees"][0])
+
+    def test_a_pid_two_users_share_points_each_agent_at_its_own_session(self):
+        # A pid is reused: bob's agent has the pid alice's had and ran after hers, so the newest
+        # session of the pid is his. Alice's agent opens her own newest day, and his opens his.
+        agg = self.agg()
+        cascades = {"workspace": {"agents": [{"host": "h", "pid": 1, "user": "alice"},
+                                             {"host": "h", "pid": 1, "user": "bob"},
+                                             {"host": "h", "pid": 2, "user": "alice"}]},
+                    "trees": [{"host": "h", "root": {"pid": 1}, "nodes": [
+                        {"pid": 1, "role": "agent", "agent_level": 1, "user": "alice"}]}]}
+        agg.panels = lambda m, v=None: {"panels": {"cascades": cascades}, "facets": None,
+                                        "window_status": {"state": "ready"}}
+        agg.trajectories = lambda m, v=None: {
+            "rows": {"h|2026-10-27|agent|apid:1": {"last": 5, "user": "alice"},
+                     "h|2026-10-28|agent|apid:1": {"last": 10, "user": "alice"},
+                     "h|2026-10-29|agent|apid:1": {"last": 20, "user": "bob"},
+                     "h|2026-10-29|agent|apid:2": {"last": 30, "user": "bob"}},
+            "ranks": {"events": [], "recent": []}, "summary": {}}
+        agg.ask("q", 60)
+        sent = agg.asker.submit.call_args[0][1]["cascades"]
+        agents = sent["workspace"]["agents"]
+        self.assertEqual(agents[0]["_go"], {"sid": "h|2026-10-28|agent|apid:1"})
+        self.assertEqual(agents[1]["_go"], {"sid": "h|2026-10-29|agent|apid:1"})
+        self.assertNotIn("_go", agents[2])                  # pid 2 was only ever bob's
+        self.assertEqual(sent["trees"][0]["_go"], {"sid": "h|2026-10-28|agent|apid:1"})
+
+    def test_a_session_with_no_user_or_root_is_not_another_users(self):
+        # An agent with no session of its own user's opens the newest of the sessions that no
+        # other named user held: a row with no user, or root's, may be its own. Bob's is not.
+        found = Aggregator._agent_session
+        sessions = Aggregator._agent_sessions({"rows": {
+            "h|2026-10-27|agent|apid:1": {"last": 5},
+            "h|2026-10-28|agent|apid:1": {"last": 9, "user": "root"},
+            "h|2026-10-29|agent|apid:1": {"last": 12, "user": "bob"}}})
+        self.assertEqual(found(sessions, "h", 1, "alice"), "h|2026-10-28|agent|apid:1")
+        self.assertEqual(found(sessions, "h", 1, "bob"), "h|2026-10-29|agent|apid:1")
+        self.assertEqual(found(sessions, "h", 1, None), "h|2026-10-29|agent|apid:1")
+        self.assertIsNone(found(sessions, "h", 2, "alice"))
+        self.assertIsNone(found(sessions, "other", 1, "alice"))
 
     def test_a_panel_question_states_its_view(self):
         agg = self.agg()

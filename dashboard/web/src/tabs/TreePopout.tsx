@@ -22,8 +22,11 @@ import {
   hiddenCount,
   procNodes,
   reveal,
+  typoLabel,
+  typoTip,
+  unhidNote,
 } from '../components/ProcDiagram';
-import type { Item, PNode } from '../components/ProcDiagram';
+import type { Hide, Item, PNode } from '../components/ProcDiagram';
 import { LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, sigName, spots } from '../components/ProcTree';
 import { treeGeometry } from '../components/TreeDiagram';
 import type { TreeGeo } from '../components/TreeDiagram';
@@ -324,6 +327,11 @@ function ProcDetails({ e }: { e: ProcNode }) {
           </Pair>
         )}
         {e.orphan && <Pair k="reparented">its record names init: it outlived its parent</Pair>}
+        {typoLabel(e) && (
+          <Pair k={e.typo ? 'typo' : 'typed again'} tip={typoTip(e) ?? undefined}>
+            {typoLabel(e)}
+          </Pair>
+        )}
       </dl>
       {e.cmdline && (
         <>
@@ -480,6 +488,7 @@ export default function TreePopout() {
         win: null,
         from: null,
         hide: true,
+        typos: true,
         order: 'oldest' as const,
       },
   );
@@ -494,6 +503,9 @@ export default function TreePopout() {
   const tree: ProcNode | null = d?.found ? (d.tree ?? null) : null;
 
   const [hide, setHide] = useState(u.hide);
+  const [typos, setTypos] = useState(u.typos);
+  const hiding = useMemo<Hide>(() => ({ routine: hide ? rules : null, typos }), [hide, rules, typos]);
+  const hid = useMemo(() => (tree ? hiddenCount(tree, hiding) : null), [tree, hiding]);
   const [open, setOpen] = useState<Set<string>>(() => new Set(['r']));
   const [all, setAll] = useState<Set<string>>(() => new Set());
   const [sel, setSel] = useState<string | null>(null);
@@ -507,7 +519,7 @@ export default function TreePopout() {
     document.title = name ? `${name.key} · process tree` : 'Process tree';
   }, [name?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const nodes = useMemo(() => (tree ? procNodes(tree, open, hide, rules, all) : []), [tree, open, hide, rules, all]);
+  const nodes = useMemo(() => (tree ? procNodes(tree, open, hiding, all) : []), [tree, open, hiding, all]);
   const geo = useMemo(() => treeGeometry(nodes, NW, NH, GX, GY), [nodes]);
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 
@@ -614,15 +626,14 @@ export default function TreePopout() {
     if (n?.data.e.k === 'cap') toggle(id);
     else setSel(id);
   };
-  /** Draw box `id` -- opening what is above it, and showing the routine when
-   *  it is routine -- select it, and bring it into view. */
+  /** Draw box `id` -- opening what is above it, and showing the routine or the
+   *  typos when it is either -- select it, and bring it into view. */
   const show = (id: string, zoom: boolean) => {
     if (!tree) return;
-    const r = reveal(tree, id, hide, rules);
-    if (r.hidden) {
-      setHide(false);
-      setNote('it is routine, so hide routine is off');
-    } else setNote(null);
+    const r = reveal(tree, id, hiding);
+    if (r.off.routine) setHide(false);
+    if (r.off.typos) setTypos(false);
+    setNote(unhidNote(r.off) || null);
     if (r.open.some((x) => !open.has(x))) setOpen(new Set([...open, ...r.open]));
     if (r.all.some((x) => !all.has(x))) setAll(new Set([...all, ...r.all]));
     setSel(id);
@@ -836,7 +847,14 @@ export default function TreePopout() {
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
             </label>
-            {hide && tree && <span className="nm">{`${fint(hiddenCount(tree, rules))} hidden`}</span>}
+            {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
+          </span>
+          <span className="tp-grp">
+            <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+              <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
+              hide typos
+            </label>
+            {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
           </span>
           <span className="tp-grp">
             <button className="btn" onClick={() => tree && setOpen(allOpen(tree))} disabled={!tree} data-tip="open every process the read served">

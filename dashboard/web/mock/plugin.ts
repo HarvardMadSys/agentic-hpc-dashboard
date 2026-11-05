@@ -134,6 +134,76 @@ function resolveWindow(q: URLSearchParams) {
            retention_minutes: MOCK_RETENTION_MIN, label: label(n) };
 }
 
+/* ------------------------------------------------------ the inspector's read */
+
+// A hand-built payload, shifted as it comes: its shape is the service's, which `src/api/types.ts` types.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = any;
+
+/** Every `start` and `end` of a tree, `delta` seconds on. */
+function shiftTimes(v: Json, delta: number): Json {
+  if (Array.isArray(v)) return v.map((x) => shiftTimes(x, delta));
+  if (v && typeof v === 'object') {
+    const out: Json = {};
+    for (const [k, x] of Object.entries(v)) {
+      out[k] = (k === 'start' || k === 'end') && typeof x === 'number' ? x + delta : shiftTimes(x, delta);
+    }
+    return out;
+  }
+  return v;
+}
+
+/** The navigator's times, `delta` seconds on. */
+function shiftNav(nav: Json, delta: number): Json {
+  const on = (t: number | null) => (t == null ? null : t + delta);
+  const mark = (m: Json) => m && { ...m, t: on(m.t), end: on(m.end) };
+  return {
+    ...nav,
+    density: nav.density && { ...nav.density, lo: nav.density.lo + delta },
+    busiest: nav.busiest && { ...nav.busiest, t: nav.busiest.t + delta },
+    first_tool: mark(nav.first_tool),
+    longest: mark(nav.longest),
+    failures: {
+      ...nav.failures,
+      items: nav.failures.items.map((f: Json[]) => [on(f[0]), on(f[1]), ...f.slice(2)]),
+    },
+  };
+}
+
+/** The one hand-built tree, read as the service reads a session: from its first record, or from `from` where the
+ *  inspector pages, for as long as the tree runs (the service's budget) or until the session's last record. The
+ *  session's own span is the row's, so the session track, the chart's phases, and the list agree about when it ran,
+ *  and a long session stops at its budget with the rest unread. A short one leaves the tree's later processes
+ *  past the read's end, off the axis. */
+function alignDetail(d: Json, row: Json, from: number | null): Json {
+  const lo: number = d.timeline.lo;
+  const hi: number = d.timeline.hi;
+  const first: number = row.first ?? lo;
+  const last: number = row.last ?? hi;
+  const start = from != null ? Math.min(Math.max(first, from), last) : first;
+  const end = Math.min(last, start + (hi - lo));
+  const stopped = end < last - 1;
+  const delta = start - lo;
+  return {
+    ...d,
+    tree: shiftTimes(d.tree, delta),
+    nav: d.nav && shiftNav(d.nav, delta),
+    span: { first, last },
+    scan: {
+      ...d.scan,
+      from: start,
+      first: start,
+      last: end,
+      to: end + 1,
+      stopped: stopped ? 'records' : null,
+      stopped_at: stopped ? end : null,
+      // a page is a read of its own: the inspector waits for one whose stamp differs
+      computed_at: d.scan.computed_at + (from != null ? (Math.floor(from) % 997) + 1 : 0),
+    },
+    timeline: { lo: start, hi: end },
+  };
+}
+
 function windowStatus(minutes: number) {
   const now = new Date();
   const stamp = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');
@@ -149,8 +219,34 @@ function windowStatus(minutes: number) {
   };
 }
 
+/* The server's present, as every live frame says it (rc_dashboard/clock.py), for
+ * the page's own "now" (src/lib/clock.ts) to follow.
+ *
+ * The fixture's trajectory rows -- a session's first and last record, its
+ * phases -- all sit at the fixture's own `now_epoch`, while `freshenLive` stamps
+ * the live tab onto the wall clock. A page that followed the wall clock would read
+ * a running session as days into its live edge, so the frame carries the
+ * fixture's present and the page aligns to it, as it would to a real service's.
+ * It stands still, as a capture's clock does: one that ran would leave the
+ * fixture's rows further behind it with every minute the dev server stays up.
+ *
+ * `RC_MOCK_PINNED=1` says so the way a frozen capture does (`pinned`, `as_of`),
+ * to see what the page says of a clock that will not move. */
+function fixtureClock(fx: Fixture) {
+  const pinned = process.env.RC_MOCK_PINNED === '1';
+  return {
+    pinned,
+    now: fx.now_epoch,
+    as_of: pinned ? new Date(fx.now_epoch * 1000).toISOString().slice(0, 19).replace('T', ' ') : null,
+    source: "mock/api.json: the fixture's own present",
+    behind_wall_s: Math.floor(Date.now() / 1000) - fx.now_epoch,
+  };
+}
+
 /* Re-stamp the fixture's fixed clock onto the wall clock, so the live tab shows
- * a window that ends now. Values are untouched -- only the timestamps move. */
+ * a window that ends now. Values are untouched -- only the timestamps move. The
+ * frame's `clock` is the exception: it is the fixture's own (above), which the
+ * page's "now" follows. */
 function freshenLive(fx: Fixture, minutes = MOCK_RETENTION_MIN) {
   const nowEpoch = Math.floor(Date.now() / 1000);
   const shift = nowEpoch - fx.now_epoch;
@@ -187,6 +283,7 @@ function freshenLive(fx: Fixture, minutes = MOCK_RETENTION_MIN) {
     ...live,
     rate,
     events,
+    clock: fixtureClock(fx),
     window: {
       ...(live.window || {}),
       minutes: span,
@@ -326,7 +423,8 @@ export function mockApi(): Plugin {
           }
           case '/api/trajectory': {
             // One hand-built tree, served for any session the fixture ranks, so
-            // every row of the dev page opens something.
+            // every row of the dev page opens something: laid on the row's own
+            // span, and paged by `from`, as the service reads a session.
             const sid = q.get('sid') || '';
             const rows = (fx.trajectories as { rows?: Record<string, unknown> }).rows ?? {};
             const st = windowStatus(win.minutes);
@@ -334,7 +432,10 @@ export function mockApi(): Plugin {
               return send({ sid, found: false, why: `no session with this id in the ${win.label} window`,
                             _window: st, window: win });
             }
-            return send({ ...fx.trajectory_detail, sid, row: rows[sid], _window: st, window: win });
+            const asked = q.get('from');
+            const from = asked != null && Number.isFinite(Number(asked)) ? Number(asked) : null;
+            return send({ ...alignDetail(fx.trajectory_detail, rows[sid], from), sid, row: rows[sid],
+                          _window: st, window: win });
           }
           case '/api/events': {
             const all = filterEvents(freshenLive(fx, win.minutes).events, q);

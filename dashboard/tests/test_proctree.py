@@ -246,6 +246,12 @@ def forked(rec, src="task"):
     return rec
 
 
+def argvless(rec):
+    """`rec` with no exec and no argv on record: its parent's was never known."""
+    rec.update(args="", duration_src="task")
+    return rec
+
+
 class SubshellTest(unittest.TestCase):
     """A shell's subshell is a fork that never exec'd, so its command line is
     its parent's: `zsh /bin/zsh -i` under an interactive zsh is not a second
@@ -274,6 +280,215 @@ class SubshellTest(unittest.TestCase):
         self.assertEqual([(g["k"], g["count"]) for g in runs_], [("g", 3), ("g", 3)])
         self.assertEqual([all(i.get("fork") for i in g["items"]) for g in runs_],
                          [True, False])
+
+    def test_an_exec_handled_after_the_exit_is_not_a_fork(self):
+        # Schema 7 drained its rings in any order, so a process's exec could be
+        # handled after its exit was written: no exec on record, but the exit
+        # names the program it became, which its inherited argv does not.
+        recs = [forked(ex(T0 + 1, 931, 930, "cat", "/bin/bash ./x.sh")),
+                forked(ex(T0 + 2, 932, 930, "x.sh", "/bin/bash ./x.sh")),
+                forked(ex(T0 + 3, 933, 930, "git", "sh -c git status")),
+                ex(T0 + 9, 930, AGENT, "x.sh", "/bin/bash ./x.sh", dur=10),
+                forked(ex(T0 + 11, 941, 940, "bash", "-bash")),
+                ex(T0 + 19, 940, AGENT, "bash", "-bash", dur=10)]
+        _, tree, _ = build(recs)
+        self.assertNotIn("fork", find(tree, 931), "cat is not what `/bin/bash ./x.sh` is called")
+        self.assertTrue(find(tree, 932)["fork"], "a script's subshell has the script's name")
+        self.assertNotIn("fork", find(tree, 933), "what follows -c is not the shell's name")
+        self.assertTrue(find(tree, 941)["fork"], "a login shell's subshell")
+
+    def test_with_no_argv_its_parent_names_it(self):
+        recs = [argvless(ex(T0 + 1, 951, 950, "bash")),
+                argvless(ex(T0 + 2, 952, 950, "cat")),
+                argvless(ex(T0 + 3, 961, 960, "bash")),
+                argvless(ex(T0 + 4, 971, 970, "bash")),
+                ex(T0 + 9, 950, AGENT, "bash", "bash -c x", dur=10)]
+        index = {960: {"ppid": AGENT, "cmd": "bash", "owner": AGENT}}
+        _, tree, _ = build(recs, index=index.get)
+        self.assertTrue(find(tree, 951)["fork"], "a subshell of the bash that started it")
+        self.assertNotIn("fork", find(tree, 952), "an exec handled after its exit")
+        self.assertTrue(find(tree, 961)["fork"], "a parent with no record, named by the index")
+        self.assertNotIn("fork", find(tree, 971), "a parent nothing names: no evidence either way")
+
+
+SHELL = 700
+
+
+def line(start, pid, cmd, args=None, *, dur=0.05, a3="human", ppid=SHELL, **kw):
+    """A command a person ran at their login shell, `start` seconds in."""
+    rec = ex(T0 + start + dur, pid, ppid, cmd, args, dur=dur, **kw)
+    rec["_a3"] = a3
+    return rec
+
+
+def at_shell(recs, args="-bash", a3="human", cmd="bash"):
+    """`recs`, and the shell they were typed at, which outlives them."""
+    shell = ex(T0 + 900, SHELL, AGENT, cmd, args, dur=1000)
+    shell["_a3"] = a3
+    return recs + [shell]
+
+
+class TypoTest(unittest.TestCase):
+    """What "hide typos" takes out (user, 2026-10-29): a name a person's shell
+    could not find, and a line that failed and was typed again, corrected.
+    Only at a shell a person types into, never an agent's."""
+
+    def flags(self, tree, pids):
+        return {pid: (find(tree, pid).get("typo"), find(tree, pid).get("tries"))
+                for pid in pids}
+
+    def test_a_name_not_found_is_a_typo(self):
+        recs = at_shell([
+            forked(line(10, 701, "bash", "-bash", dur=0.003, code=127)),
+            # Ubuntu: the fork runs the helper, which is handed the name and
+            # asks snap for a package that has it
+            line(20.02, 709, "snap", "/usr/bin/snap advise-snap --format=json --command clera",
+                 dur=0.03, ppid=703),
+            line(20, 703, "command-not-found", "/usr/bin/python3 /usr/lib/command-not-found -- clera",
+                 dur=0.1, code=127, ppid=702),
+            forked(line(20, 702, "bash", "-bash", dur=0.11, code=127)),
+            forked(line(30, 704, "bash", "-bash", dur=0.003, code=126)),
+            # a subshell that ran nothing, and one that ran a command which failed
+            forked(line(40, 705, "bash", "-bash", dur=0.003)),
+            line(50, 707, "make", "make all", code=127, ppid=706),
+            forked(line(50, 706, "bash", "-bash", dur=1, code=127)),
+            # a script not found: its interpreter ran, so it is no fork
+            line(60, 708, "bash", "bash ./rnu.sh", code=127),
+        ])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [701, 702, 703, 704, 705, 706, 708]), {
+            701: ("not-found", None), 702: ("not-found", None), 703: (None, None),
+            704: ("not-found", None), 705: (None, None), 706: (None, None), 708: (None, None)})
+        self.assertEqual(find(tree, 702)["typed"], "clera")
+        self.assertNotIn("typed", find(tree, 701), "bash never hands the name to the kernel")
+
+    def test_only_at_a_shell_a_person_types_into(self):
+        def typo_under(args, a3="human", cmd="bash"):
+            recs = at_shell([forked(line(10, 701, cmd, args, dur=0.003, code=127, a3=a3))], args, a3, cmd)
+            _, tree, _ = build(recs)
+            return find(tree, 701).get("typo")
+
+        self.assertEqual(typo_under("-bash"), "not-found")
+        self.assertEqual(typo_under("/bin/bash --init-file /x/shellIntegration-bash.sh", "ide"),
+                         "not-found", "a VS Code terminal")
+        self.assertEqual(typo_under("zsh -l", cmd="zsh"), "not-found")
+        self.assertEqual(typo_under("bash --login -i"), "not-found")
+        self.assertIsNone(typo_under("-bash", "agent"), "an agent's shell")
+        self.assertIsNone(typo_under("bash -c gti status"), "a command, not a terminal")
+        self.assertIsNone(typo_under("bash -lc gti status"))
+        self.assertIsNone(typo_under("/bin/bash ./run.sh"), "a script")
+        self.assertIsNone(typo_under("bash --rcfile ~/.rc ./run.sh"))
+        self.assertIsNone(typo_under("python3 x.py", cmd="python3"), "no shell at all")
+
+    def test_a_shell_still_running_is_known_by_its_subshells(self):
+        # No record of the login shell in the read: it is drawn as a stub with
+        # no argv, and its subshells' inherited argv says what it is.
+        recs = [forked(line(10, 701, "bash", "-bash", dur=0.003, code=127)),
+                line(20, 702, "squeue", "squeue -me", code=1),
+                line(25, 703, "squeue", "squeue --me")]
+        _, tree, _ = build(recs)
+        self.assertIsNone(find(tree, SHELL)["ev"], "drawn without a record of its own")
+        self.assertEqual(self.flags(tree, [701, 702, 703]), {
+            701: ("not-found", None), 702: ("retried", None), 703: (None, 1)})
+        # with no subshell to say, nothing is known of it
+        _, tree, _ = build(recs[1:])
+        self.assertEqual(self.flags(tree, [702, 703]), {702: (None, None), 703: (None, None)})
+
+    def test_a_line_typed_again_corrected_folds_into_it(self):
+        recs = at_shell([
+            line(10, 711, "squeue", "squeue -me", code=1),
+            line(15, 712, "squeue", "squeue --me"),
+            line(30, 713, "git", "git pll", code=1),
+            line(31.2, 714, "git", "git pull", dur=2),
+            line(60, 715, "ssh", "ssh holylogin97", code=255),
+            line(63, 716, "ssh", "ssh holylogin07", dur=20),
+            # grep's 2 is an error, where its 1 is an answer
+            line(90, 717, "grep", "grep -r TODO scr/", code=2),
+            line(94, 718, "grep", "grep -r TODO src/"),
+        ])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [711, 712, 713, 714, 715, 716, 717, 718]), {
+            711: ("retried", None), 712: (None, 1), 713: ("retried", None), 714: (None, 1),
+            715: ("retried", None), 716: (None, 1), 717: ("retried", None), 718: (None, 1)})
+
+    def test_tries_in_a_row_fold_into_the_line_that_worked(self):
+        recs = at_shell([
+            line(10, 721, "squeue", "squeue -p sapphir", code=1),
+            line(14, 722, "squeue", "squeue -p saphire", code=1),
+            line(19, 723, "squeue", "squeue -p sapphire"),
+            # tries that never worked fold nothing
+            line(40, 724, "ls", "ls /n/holylabs/LABS/x_lab", code=2),
+            line(45, 725, "ls", "ls /n/holylabs/LABS/x_lab/", code=2),
+        ])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [721, 722, 723, 724, 725]), {
+            721: ("retried", None), 722: ("retried", None), 723: (None, 2),
+            724: (None, None), 725: (None, None)})
+
+    def test_what_is_not_a_line_typed_again(self):
+        cases = [
+            ("the same line again", [("git", "git pull", 1, 0.5, None), ("git", "git pull", 0, 5, None)]),
+            ("a loop: no pause", [("grep", "grep -q x a.out", 1, 0.01, None),
+                                  ("grep", "grep -q x b.out", 0, 0.02, None)]),
+            ("work that failed", [("python", "python fit.py --lr 0.1", 1, 30, None),
+                                  ("python", "python fit.py --lr 0.01", 0, 10, None)]),
+            ("too long after", [("squeue", "squeue -me", 1, 0.1, None),
+                                ("squeue", "squeue --me", 0, 200, None)]),
+            ("another program", [("sqeue", "sqeue --me", 1, 0.1, None),
+                                 ("squeue", "squeue --me", 0, 5, None)]),
+            ("alike only in its path", [("tmux", "/usr/bin/tmux ls", 1, 0.1, None),
+                                        ("tmux", "/usr/bin/tmux new -s work", 0, 3, None)]),
+            ("another step on the same file", [("git", "git commit README.md", 1, 0.1, None),
+                                               ("git", "git add README.md", 0, 4, None)]),
+            ("no arguments to mistype", [("tmux", "tmux", 1, 0.1, None), ("tmux", "tmux ls", 0, 2, None)]),
+            ("a search that found nothing", [("grep", "grep number_samples cfg.yaml", 1, 0.01, None),
+                                             ("grep", "grep number cfg.yaml", 0, 3, None)]),
+            ("a pager closed, not a failure", [("git", "git log", None, 4, 13),
+                                               ("git", "git log -5", 0, 3, None)]),
+            ("the fix failed too", [("ls", "ls chunk", 2, 0.1, None), ("ls", "ls chunks", 1, 3, None)]),
+        ]
+        for why, ((c1, a1, code1, d1, sig1), (c2, a2, code2, gap, sig2)) in cases:
+            with self.subTest(why):
+                recs = at_shell([line(10, 731, c1, a1, dur=d1, code=code1, signal=sig1),
+                                 line(10 + d1 + gap, 732, c2, a2, code=code2, signal=sig2)])
+                _, tree, _ = build(recs)
+                self.assertEqual(self.flags(tree, [731, 732]), {731: (None, None), 732: (None, None)})
+
+    def test_a_loops_next_turn_is_not_a_line_typed(self):
+        # `until grep -q done a.log; do sleep 5; done`, then the next file:
+        # every turn starts as the last one ends, so none of them was typed
+        recs = at_shell([line(10, 781, "grep", "grep -q done a.log", dur=0.01, code=1),
+                         line(10.02, 782, "sleep", "sleep 5", dur=5),
+                         line(15.03, 783, "grep", "grep -q done b.log", dur=0.01)])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [781, 783]), {781: (None, None), 783: (None, None)})
+
+    def test_an_agents_line_typed_again_is_its_own_step(self):
+        recs = at_shell([line(10, 741, "squeue", "squeue -me", code=1, a3="agent"),
+                         line(15, 742, "squeue", "squeue --me", a3="agent")], a3="agent")
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [741, 742]), {741: (None, None), 742: (None, None)})
+
+    def test_what_the_prompt_runs_is_not_the_next_line(self):
+        # a prompt that runs git as the last line exits is no line typed
+        recs = at_shell([line(10, 751, "squeue", "squeue -me", code=1),
+                         line(10.06, 752, "git", "git rev-parse --abbrev-ref HEAD", dur=0.01),
+                         forked(line(10.08, 753, "bash", "-bash", dur=0.003, code=127)),
+                         line(16, 754, "squeue", "squeue --me")])
+        _, tree, _ = build(recs)
+        self.assertEqual(self.flags(tree, [751, 752, 753, 754]), {
+            751: ("retried", None), 752: (None, None), 753: ("not-found", None), 754: (None, 1)})
+
+    def test_a_run_says_how_many_of_its_members_are_typos(self):
+        recs = at_shell([forked(line(10 + i, 761 + i, "bash", "-bash", dur=0.003, code=127))
+                         for i in range(4)]
+                        + [line(15, 770, "vim", "vim notes.md", dur=60)]
+                        + [forked(line(80 + i, 771 + i, "bash", "-bash", dur=0.003, code=127 if i else 0))
+                           for i in range(4)])
+        _, tree, _ = build(recs)
+        groups = [g for g in kids(find(tree, SHELL)) if g["k"] == "g"]
+        self.assertEqual([(g["count"], g.get("typos")) for g in groups], [(4, 4), (4, 3)],
+                         "a run of names not found, and one with a subshell that ran nothing")
 
 
 class BoundsTest(unittest.TestCase):

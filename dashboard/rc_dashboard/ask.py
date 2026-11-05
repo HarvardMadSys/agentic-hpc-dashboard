@@ -657,6 +657,23 @@ def _cite(sec, prefix, path, hints=None):
     return sec, table
 
 
+# What says whom a row is: a part of a row that names none of them is its row's.
+IDENT_KEYS = ("user", "host", "pid", "agent_type", "actor3")
+
+
+def _names_owner(obj):
+    return isinstance(obj, dict) and any(obj.get(k) is not None for k in IDENT_KEYS)
+
+
+def _owner(by_path, path):
+    """The nearest cited-able row above `path` that names whom it is."""
+    for k in range(len(path) - 1, 0, -1):
+        e = by_path.get(tuple(path[:k]))
+        if e is not None and _names_owner(e["obj"]):
+            return e
+    return None
+
+
 def cited(text):
     """The refs an answer cites, in the order it first cites them."""
     out = []
@@ -1105,15 +1122,30 @@ class Asker:
     def _cites(job, answer):
         """What each ref the answer cites was: where it sits, what the model
         saw of it, and how the page opens it. A ref the snapshot never held
-        cites nothing and is left out; the page marks it as such."""
+        cites nothing and is left out; the page marks it as such.
+
+        A part of a row is its row's: a folder an agent read is cited by
+        itself, holds no name, and is that agent's. Such a cite carries `of`,
+        who the nearest row above it is (IDENT_KEYS), and that row's hints
+        when it has none of its own, so the page opens the agent's."""
         refs = job.get("_refs")
         if refs is None:
             return {}
+        by_path = None
         out = {}
         for r in cited(answer):
             e = refs.get(r)
-            if e is not None:
-                out[r] = {"path": e["path"], "data": preview(e["obj"]), "go": e["go"]}
+            if e is None:
+                continue
+            go, of = e["go"], None
+            if not _names_owner(e["obj"]):
+                if by_path is None:
+                    by_path = {tuple(x["path"]): x for x in refs.values()}
+                owner = _owner(by_path, e["path"])
+                if owner is not None:
+                    of = {k: owner["obj"][k] for k in IDENT_KEYS if owner["obj"].get(k) is not None}
+                    go = go or owner["go"]
+            out[r] = {"path": e["path"], "data": preview(e["obj"]), "go": go, "of": of}
         return out
 
 

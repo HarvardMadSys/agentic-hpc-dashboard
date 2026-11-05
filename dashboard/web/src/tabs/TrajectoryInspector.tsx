@@ -18,6 +18,23 @@
  * the quick jumps what it landed on -- the process itself, or the row that
  * counts it when it is counted rather than drawn.
  *
+ * A phase picked by its name on the navigator's chart, or in the list under it, is one
+ * more such jump (`onPhase`): to the phase's start, with the chart zoomed to its span. A task
+ * picked by its block in the chart's lane is another (`onTask`): to the task's start, with the
+ * chart zoomed to its own span. The phases and the tasks are the row's own, the same block the
+ * sessions list draws, and the ranking's row is the fresher of the two this component has, so
+ * it is read first. Above the navigator is the session's headline, the project and the names its
+ * tasks recur on, where the block has one. Under it is the list: a task opens into its phases
+ * and a phase into its commands where the block has tasks (TaskList.tsx), and it is the list of
+ * phases alone where it has none (PhaseList.tsx). Either list picks as the chart does, and the
+ * task that holds the chart's zoom is open in the three-level list.
+ *
+ * An agent that ran past midnight is a row to a day, each serving the one block, and a task or
+ * phase says which row holds it. A pick of one the other day's row holds is a jump to that row
+ * (`onJump`) whenever the window holds that row: the tab opens it, as a new inspector, and hands
+ * it the jump (`pendingJump`), which it goes to as any pick once it has read itself. Where the
+ * window does not hold it, the pick is made on this row.
+ *
  * Oldest first or newest first (`?torder=`) is asked of the service, not
  * sorted here: the read's budgets keep one end drawn and count the other, and
  * newest first moves them to keep the newest (rc_dashboard/proctree.py). A
@@ -28,7 +45,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { sessionName } from '../lib/sessions';
 import type { ReactNode } from 'react';
 import { useTrajectory } from '../api/hooks';
-import type { OwnerVia, ProcNode, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
+import type { OwnerVia, Phase, PhaseDay, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
 import { PROC_LINKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import {
@@ -43,7 +60,8 @@ import {
   spots,
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
-import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount } from '../components/ProcDiagram';
+import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount, unhidNote } from '../components/ProcDiagram';
+import type { Hide } from '../components/ProcDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
@@ -52,9 +70,13 @@ import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { serverNow } from '../lib/clock';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
+import { isBlock, phaseLbl } from '../lib/phases';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
-import { TrajectoryNav } from './TrajectoryNav';
+import { otherDay, taskLabel } from '../lib/tasks';
+import { PhaseList } from './PhaseList';
+import { TaskList } from './TaskList';
+import { SPAN_MIN, TrajectoryNav } from './TrajectoryNav';
 import type { Quick } from './TrajectoryNav';
 import './trajectories.css';
 
@@ -77,6 +99,17 @@ export interface Pending extends JumpReq {
 /** A ribbon run or a tool token picked in the ranked table, for the inspector
  *  to go to once it has read the tree; `t` null: the run's start is unknown. */
 export type RunJump = Omit<Pending, 't' | 'by'> & { t: number | null; n: number };
+
+/** A task or phase picked on one day's row of a session that ran past midnight, though another day's row holds it: that row, and
+ *  the stretch to go to in it, which is the zoom a pick on the same row would make. `what` is what the picked stretch is, for the
+ *  line that says where the jump landed. The tab opens the row (TrajectoriesTab.tsx), and the row goes to the stretch once it
+ *  has read itself. */
+export interface DayJump {
+  sid: string;
+  t0: number;
+  t1: number;
+  what?: string;
+}
 
 /** The jump to run `i` of a row's purpose ribbon or tool tokens. Its time is
  *  when the run's first record was written, which is when that process
@@ -388,6 +421,8 @@ export function TrajectoryInspector({
   setOrder,
   onClose,
   jump,
+  onJump,
+  pendingJump,
   routine,
 }: {
   sid: string;
@@ -402,6 +437,14 @@ export function TrajectoryInspector({
   onClose: () => void;
   /** a run picked in the ranked table; `n` changes with every pick */
   jump?: RunJump | null;
+  /** a task or phase picked here that another day's row of this session holds: the row to open, as the block's `days` lists it
+   *  (its `sid`, and its span, which says whether the window holds it), and the stretch to go to in it (`t0` to `t1`, and what it is).
+   *  The tab opens that row, which is a new inspector, and hands it the jump back. It says whether it did: it opens no row the
+   *  window does not hold, and then the pick is made on this row */
+  onJump?: (day: PhaseDay, t0: number, t1: number, what?: string) => boolean;
+  /** the jump this row was opened for, from the other day's row of the session: gone to once this row has read itself. One for
+   *  another row is not this row's, and is left */
+  pendingJump?: DayJump | null;
   /** the site's routine commands, hidden from either view on request (`ui.routine_commands`) */
   routine?: string[] | null;
 }) {
@@ -420,14 +463,21 @@ export function TrajectoryInspector({
   const newest = d?.order === 'newest';
   const [open, setOpen] = useState<Set<string>>(() => new Set(['r']));
   // The tree view (roadmap notes 38 and 39): boxes, opened from the top. Both
-  // views take the routine out unless asked not to; a jump that lands on a
-  // routine row turns that off, so the row it names is drawn.
+  // views take the routine and the typos out unless asked not to; a jump that
+  // lands on such a row turns that off, so the row it names is drawn.
   const [mode, setMode] = useState<'tree' | 'table'>('tree');
   const [hide, setHide] = useState(true);
+  const [typos, setTypos] = useState(true);
   const [dopen, setDopen] = useState<Set<string>>(() => new Set(['r']));
   const [dall, setDall] = useState<Set<string>>(() => new Set());
   const rules = routine?.length ? routine : DEFAULT_ROUTINE;
+  const hiding = useMemo<Hide>(() => ({ routine: hide ? rules : null, typos }), [hide, rules, typos]);
+  const hid = useMemo(() => (tree ? hiddenCount(tree, hiding) : null), [tree, hiding]);
   const [view, setView] = useState<[number, number] | null>(null);
+  // A pick's zoom as wide as the read is none (`fitView`), as a task as long as the read is, so the chart is not zoomed though it was
+  // asked to be. The stretch it was asked to zoom to stands in for the zoom in the list, which opens the task that holds it. It is let
+  // go when the reader zooms the chart or resets it (`zoomTo`), and when a read begins anew.
+  const [aim, setAim] = useState<[number, number] | null>(null);
   // The tree follows the zoom a beat behind the strip: a fully expanded tree is
   // thousands of rows, and the strip must not wait for them on every frame.
   const treeView = useDeferredValue(view);
@@ -443,6 +493,7 @@ export function TrajectoryInspector({
     setDall(new Set());
     // a new read is a new axis and new rows: nothing from the last one applies
     setView(null);
+    setAim(null);
     setFlash(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stampKey]);
@@ -474,6 +525,20 @@ export function TrajectoryInspector({
     [sid],
   );
 
+  // The jump this row was opened for, if it was: a task or phase picked on the other day's row of this session (`onJump`). It is gone
+  // to as any pick is, which waits for the read, so the zoom is made on this row's own axis. The row of another jump takes none.
+  const jumpHere = pendingJump && pendingJump.sid === sid ? pendingJump : null;
+  useEffect(() => {
+    if (!jumpHere) return;
+    setWant({
+      t: jumpHere.t0,
+      by: 'start',
+      what: jumpHere.what ?? `the first process started at or after ${clock(jumpHere.t0)}`,
+      zoom: [jumpHere.t0, jumpHere.t1],
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpHere]);
+
   const index = useMemo(() => (tree ? spots(tree) : []), [tree]);
   const axis: [number, number] | null =
     d?.timeline?.lo != null && d.timeline.hi != null && d.timeline.hi >= d.timeline.lo
@@ -485,6 +550,12 @@ export function TrajectoryInspector({
     if (s >= axis[1] - axis[0]) return null;
     const lo = Math.min(Math.max(v[0], axis[0]), axis[1] - s);
     return [lo, lo + s];
+  };
+  // A zoom the reader makes on the chart (a wheel, a drag, the map, a reset) is the zoom the list follows, so what the chart could not
+  // zoom to is let go (`aim`).
+  const zoomTo = (v: [number, number] | null) => {
+    setAim(null);
+    setView(v);
   };
 
   // Carry out a jump once there is a tree to land in. Declared after the
@@ -526,19 +597,24 @@ export function TrajectoryInspector({
       for (const id of ancestors(found.id)) next.add(id);
       return next;
     });
-    const unhide = hide && hiddenAt(tree, found.id, rules);
-    if (unhide) setHide(false);
+    const off = hiddenAt(tree, found.id, hiding);
+    if (off.routine) setHide(false);
+    if (off.typos) setTypos(false);
     setFlash((f) => ({ id: found.id, n: (f?.n ?? 0) + 1 }));
     setCursor(w.t);
     setFailIdx(w.fail ?? null);
-    if (w.zoom) setView(fitView(w.zoom));
-    else
+    if (w.zoom) {
+      // where the chart cannot zoom to it, the list is told what it was asked to zoom to (`aim`)
+      const zoom = fitView(w.zoom);
+      setView(zoom);
+      setAim(zoom ? null : w.zoom);
+    } else
       setView((v) => (v && (w.t < v[0] || w.t > v[1]) ? fitView([w.t - (v[1] - v[0]) / 2, w.t + (v[1] - v[0]) / 2]) : v));
     setNote(
       <>
         <b>{`→ ${clock(w.t)}`}</b>
         {` · ${w.what}${landing(w, found)}`}
-        {unhide ? ' · it is routine, so hide routine is off' : ''}
+        {off.routine || off.typos ? ` · ${unhidNote(off)}` : ''}
       </>,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -698,6 +774,47 @@ export function TrajectoryInspector({
   const n = row?.n_events ?? null;
   const env = d && d.found !== false ? d : null;
 
+  // The row the ranking holds is fresher than the one the read carried, which the service may have kept for a
+  // minute: the phases, and what is running at their live edge, are read from it first.
+  const r = row ?? d?.row ?? null;
+  const ph = r?.phases;
+  const block = isBlock(ph) ? ph : undefined;
+  const edge = r?.running?.now ?? null;
+  // A task or a phase picked, in the chart or in a list: the jump to its start, with the chart zoomed to its span. Where another day's
+  // row of the session holds it (`otherDay`: a session past midnight is a row to a day, serving one block), the jump is made on that
+  // row, which the tab opens (`onJump`) and which goes to it once it has read itself (`pendingJump`). The tab is given the row as the
+  // block's `days` lists it, whose span says whether the window holds it. Else the jump is made here, and a pick this read does not
+  // hold is read in, as any other jump is. So it is where the window does not hold the other row, which the tab says by not jumping.
+  const pick = (w: Pending & { zoom: [number, number] }, item: { sid?: string | null }) => {
+    const away = otherDay(item, sid);
+    const day = away ? block?.days?.find((x) => x.sid === away) : undefined;
+    if (day && onJump?.(day, w.t, w.zoom[1], w.what)) return;
+    setWant(w);
+  };
+  // a phase: the tree opens at the first process started at or after its start, and the chart zooms to its span
+  const onPhase = (p: Phase) =>
+    pick(
+      {
+        t: p.t0,
+        by: 'start',
+        what: `${phaseLbl(p.kind)} ${clock(p.t0)}–${clock(p.t1)}`,
+        zoom: [p.t0, p.t1],
+      },
+      p,
+    );
+  // a task or a lone stretch: the jump a phase makes, to its start and with the chart zoomed to its own span, or to the narrowest
+  // zoom the chart has (`SPAN_MIN`) where the task is shorter, as a lone stretch of one call is
+  const onTask = (t: Task) =>
+    pick(
+      {
+        t: t.t0,
+        by: 'start',
+        what: `${taskLabel(t)} ${clock(t.t0)}–${clock(t.t1)}`,
+        zoom: [t.t0, Math.max(t.t1, t.t0 + SPAN_MIN)],
+      },
+      t,
+    );
+
   return (
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
       <Panel
@@ -750,7 +867,7 @@ export function TrajectoryInspector({
                 </button>
                 <a
                   className="btn"
-                  href={treePopHref(sid, win, from, hide, order)}
+                  href={treePopHref(sid, win, from, hide, order, typos)}
                   target="_blank"
                   rel="noopener"
                   data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
@@ -797,12 +914,17 @@ export function TrajectoryInspector({
           </div>
         )}
         {d?.found && <ReadLine d={d} from={from} setFrom={page} reread={() => setTo(Math.ceil(serverNow() / 1000))} />}
+        {d?.found && axis && block?.headline && (
+          <div className="ins-headline" data-tip="the project the agent worked in, and the names that recur across its tasks">
+            {block.headline}
+          </div>
+        )}
         {d?.found && axis && (
           <TrajectoryNav
             d={d}
             axis={axis}
             view={view}
-            setView={setView}
+            setView={zoomTo}
             cursor={cursor}
             onPick={(t) =>
               setWant({ t, by: 'start', what: `the first process started at or after ${clock(t)}` })
@@ -811,19 +933,30 @@ export function TrajectoryInspector({
             quick={quick}
             status={note ?? <span className="nm">{`pick a moment on the strip, or a landmark ${DASH} the tree opens there`}</span>}
             inView={inView}
+            phases={block}
+            now={edge}
+            onPhase={onPhase}
+            onTask={onTask}
           />
         )}
+        {d?.found && axis && block && block.list.length > 0 &&
+          (block.tasks?.length ? (
+            <TaskList block={block} now={edge} view={view ?? aim} onTask={onTask} onPhase={onPhase} />
+          ) : (
+            <PhaseList block={block} now={edge} onPick={onPhase} />
+          ))}
         {tree && (
           <div className="pd-bar">
             <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
             </label>
-            {hide && (
-              <span className="nm">
-                {`${fint(hiddenCount(tree, rules))} routine processes hidden`}
-              </span>
-            )}
+            {hide && hid && <span className="nm">{`${fint(hid.routine)} routine processes hidden`}</span>}
+            <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+              <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
+              hide typos
+            </label>
+            {typos && hid && <span className="nm">{`${fint(hid.typos)} ${hid.typos === 1 ? 'typo' : 'typos'} hidden`}</span>}
             <span className="nm">
               {mode === 'tree'
                 ? '· click a box to open what it started · hover for its command'
@@ -832,8 +965,16 @@ export function TrajectoryInspector({
           </div>
         )}
         {tree && mode === 'tree' && (
-          // keyed on `hide`: hiding moves every parent, so start again over the root
-          <ProcDiagram key={hide ? 'hide' : 'all'} root={tree} open={dopen} setOpen={setDopen} hide={hide} rules={rules} all={dall} setAll={setDall} />
+          // keyed on what is hidden: hiding moves every parent, so start again over the root
+          <ProcDiagram
+            key={`${hide ? 'hide' : 'all'}${typos ? '-typos' : ''}`}
+            root={tree}
+            open={dopen}
+            setOpen={setDopen}
+            hide={hiding}
+            all={dall}
+            setAll={setDall}
+          />
         )}
         {tree && mode === 'table' && (
           <ProcTree
@@ -843,7 +984,7 @@ export function TrajectoryInspector({
             timeline={d?.timeline}
             view={treeView}
             flash={flash}
-            hide={hide ? rules : null}
+            hide={hiding}
             newest={newest}
             onOrder={setOrder}
           />

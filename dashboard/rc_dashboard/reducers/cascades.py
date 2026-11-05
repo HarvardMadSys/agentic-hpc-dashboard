@@ -257,12 +257,18 @@ class CascadeReducer:
         cutoff = now - self.window_s
         live = {k: dict(n) for k, n in self.nodes.items() if (n["last"] or 0) >= cutoff}
         sessions = self.traj.agent_sessions(since=cutoff) if self.traj is not None else {}
+        # The sessions are by host, pid, and user, since a pid is reused, and the nodes are by
+        # host and pid: a node takes the session of its own user (`_tree`).
+        by_pid = collections.defaultdict(dict)
+        for (host, pid, user), entry in sessions.items():
+            by_pid[(host, pid)][user] = entry
 
         # An agent whose own process left no record -- a Claude Desktop ccd-cli
         # session talks to the API over the server's bridge, so it holds no
         # socket and never appears in a `conn` -- is still known from its tool
         # calls: a tool-call shell's parent IS its agent (owner_via=parent).
-        for (host, pid), (s, via, _) in sessions.items():
+        # Of two users' sessions that share a pid, the one listed first is the node.
+        for (host, pid, _user), (s, via, _) in sessions.items():
             if via == "parent" and (host, pid) not in live:
                 live[(host, pid)] = {
                     "host": host, "pid": pid, "ppid": None, "role": "agent",
@@ -333,7 +339,7 @@ class CascadeReducer:
                 edges[(_label(p), _label(n))] += 1
                 vias[n["via"]] += 1
                 continue
-            trees.append(self._tree(key, live, kids, sessions, homes, views, boxed))
+            trees.append(self._tree(key, live, kids, by_pid, homes, views, boxed))
         for t in trees:
             if t["n_agents"]:
                 depth_hist[str(t["agent_depth"])] += 1
@@ -505,7 +511,7 @@ class CascadeReducer:
                 seen.add(pk)
                 cur = live[pk]
 
-    def _tree(self, root_key, live, kids, sessions, homes, views, boxed):
+    def _tree(self, root_key, live, kids, by_pid, homes, views, boxed):
         nodes, fanouts = [], []
         totals = {"tool_calls": 0, "cpu_s": 0.0}
 
@@ -513,7 +519,10 @@ class CascadeReducer:
             n = live[key]
             is_agent = n["role"] == "agent"
             level = level + 1 if is_agent else level
-            s = sessions.get(key)
+            held = by_pid.get(key)
+            # the session of the pid that is the node's user's, else the first listed: the
+            # node's user is read from the agent's own records, a session's from its first call
+            s = (held.get(n["user"]) or next(iter(held.values()))) if held else None
             sess = s[0] if s else None
             home, home_src = homes.get(key, (None, None))
             # a node that is not an agent has no home of its own; its cwd, off `/`,

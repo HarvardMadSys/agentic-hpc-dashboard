@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -141,22 +142,29 @@ class ResumeTest(CacheCase):
 
     def test_a_resumed_window_matches_a_fresh_build_over_the_same_records(self):
         self.feed(150, 90)
-        self.build(self.registry())
+        # Every build at one present, as a pinned clock runs the service
+        # (clock.py): the trajectories and cascades payloads stamp their window
+        # to the second, and a resumed build and a fresh one that straddled a
+        # second differed there and nowhere else.
+        with mock.patch("time.time", return_value=self.now):
+            self.build(self.registry())
 
-        # Written while the service was down: a resume reads only these.
-        self.feed(55, 50)
-        self.feed(50, 30, host="h2")
-        resumed = self.build(self.registry())
-        self.assertEqual(resumed.cache["source"], "snapshot", resumed.cache["note"])
-        self.assertEqual(resumed.progress["records"], 80)
+            # Written while the service was down: a resume reads only these.
+            self.feed(55, 50)
+            self.feed(50, 30, host="h2")
+            resumed = self.build(self.registry())
+            self.assertEqual(resumed.cache["source"], "snapshot", resumed.cache["note"])
+            self.assertEqual(resumed.progress["records"], 80)
 
-        os.unlink(self.snapshot_file())
-        fresh = self.build(self.registry())
+            os.unlink(self.snapshot_file())
+            fresh = self.build(self.registry())
         self.assertEqual(fresh.cache["source"], "scan")
         self.assertEqual(resumed.payload, fresh.payload)
 
     def test_a_resumed_window_keeps_its_age_and_reports_the_catch_up_as_drift(self):
         self.feed(150, 90)
+        # On the wall clock, not at one present: there a resume that re-stamped
+        # `built_at` would match the first build's all the same.
         first = self.build(self.registry())
         self.feed(55, 50)
         resumed = self.build(self.registry())
@@ -169,15 +177,16 @@ class ResumeTest(CacheCase):
 
     def test_resuming_twice_reads_each_record_once(self):
         self.feed(150, 90)
-        self.build(self.registry())
-        self.feed(55, 20)
-        self.build(self.registry())
-        self.feed(30, 20)
-        again = self.build(self.registry())
-        self.assertEqual(again.progress["records"], 20)
+        with mock.patch("time.time", return_value=self.now):     # as in the first test
+            self.build(self.registry())
+            self.feed(55, 20)
+            self.build(self.registry())
+            self.feed(30, 20)
+            again = self.build(self.registry())
+            self.assertEqual(again.progress["records"], 20)
 
-        os.unlink(self.snapshot_file())
-        self.assertEqual(again.payload, self.build(self.registry()).payload)
+            os.unlink(self.snapshot_file())
+            self.assertEqual(again.payload, self.build(self.registry()).payload)
 
     def test_a_live_record_the_resume_already_read_is_not_counted_again(self):
         self.feed(150, 90)
@@ -279,8 +288,11 @@ class RoundTripTest(CacheCase):
         view = self.build(self.registry())
         restored = snapshots.restore(view.fresh_reducers(),
                                      pickle.loads(snapshots.capture(view.reducers)))
-        for key, r in view.reducers.items():
-            self.assertEqual(restored[key].result(), r.result(), key)
+        # Both results at one present: the trajectories and cascades results
+        # stamp their window to the second, and two reads can straddle one.
+        with mock.patch("time.time", return_value=self.now):
+            for key, r in view.reducers.items():
+                self.assertEqual(restored[key].result(), r.result(), key)
 
 
 def _imports(path):

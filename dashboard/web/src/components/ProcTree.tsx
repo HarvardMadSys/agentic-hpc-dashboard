@@ -25,7 +25,8 @@ import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode, TrajO
 import { ioTip, ioTotal } from '../lib/procio';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
-import { isHidden } from './ProcDiagram';
+import { hiders, isHidden, typoLabel, typoTip } from './ProcDiagram';
+import type { Hide } from './ProcDiagram';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
 interface Rest {
@@ -92,10 +93,10 @@ function children(e: Item): Item[] {
   return [];
 }
 
-/** The rows drawn. `hide` is the routine list when "hide routine" is on: a
+/** The rows drawn. `hide` is what "hide routine" and "hide typos" take out: a
  *  row it takes out goes with everything below it, and every other row keeps
  *  the id it has in the full tree, so a jump's id means the same row either way. */
-export function flatten(root: ProcNode, open: Set<string>, hide?: string[] | null): Row[] {
+export function flatten(root: ProcNode, open: Set<string>, hide?: Hide | null): Row[] {
   const out: Row[] = [];
   const walk = (e: Item, id: string, depth: number, guides: boolean[], last: boolean) => {
     const ch = children(e)
@@ -110,16 +111,20 @@ export function flatten(root: ProcNode, open: Set<string>, hide?: string[] | nul
   return out;
 }
 
-/** Whether "hide routine" takes out row `id`: it, or a row above it, is routine. */
-export function hiddenAt(root: ProcNode, id: string, rules: string[]): boolean {
+/** Which of `h`'s switches take out row `id`: it, or a row above it, is
+ *  routine or a typo. */
+export function hiddenAt(root: ProcNode, id: string, h: Hide): { routine: boolean; typos: boolean } {
+  const off = { routine: false, typos: false };
   let e: Item = root;
   for (const i of id.split('.').slice(1)) {
     const k: Item | undefined = children(e)[Number(i)];
-    if (!k) return false;
-    if (isHidden(k, rules)) return true;
+    if (!k) break;
+    const w = hiders(k, h);
+    off.routine = off.routine || w.routine;
+    off.typos = off.typos || w.typos;
     e = k;
   }
-  return false;
+  return off;
 }
 
 /* ---------------------------------------------------------- finding a time */
@@ -322,6 +327,7 @@ function procTip(n: ProcNode): string {
     n.link ? `parent: ${LINK_TIP[n.link]}` : null,
     n.gap ? `${n.gap} level(s) between it and that parent were never recorded` : null,
     n.orphan ? 'its record names init: it outlived its parent and was reparented' : null,
+    typoTip(n),
     n.cpu_nm ? `cpu not measured on ${fint(n.cpu_nm)} process(es) below` : null,
     ioTip(n.io, 'its own I/O'),
     ioTip(n.sub_io, 'with everything below it'),
@@ -470,6 +476,11 @@ const RowView = memo(function RowView({
         {e.orphan && (
           <span className="pt-tag weak" data-tip="its record names init: it outlived its parent and was reparented">
             reparented
+          </span>
+        )}
+        {typoLabel(e) && (
+          <span className={`pt-tag${e.typo ? ' weak' : ''}`} data-tip={typoTip(e) ?? undefined}>
+            {typoLabel(e)}
           </span>
         )}
         {e.cwd && r.depth > 0 && (
@@ -629,8 +640,8 @@ export function ProcTree({
   view?: [number, number] | null;
   /** the row a jump landed on, and a count that changes on every jump */
   flash?: { id: string; n: number } | null;
-  /** the routine list, when "hide routine" is on: those rows are not drawn */
-  hide?: string[] | null;
+  /** what "hide routine" and "hide typos" take out: those rows are not drawn */
+  hide?: Hide | null;
   /** the tree was served newest first: the order its rows are in */
   newest?: boolean;
   /** asks for the other order; the "started" header flips it, as a sort would */
