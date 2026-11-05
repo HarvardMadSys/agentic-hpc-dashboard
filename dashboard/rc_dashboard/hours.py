@@ -100,8 +100,10 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 # the live tier is not reduced into hours, and a change to it must not discard
 # a week of them -- so no reducer an hour holds may import it (the cascades
 # take `agent_version` from roles.py). Nor clock.py, which says which hours are
-# closed, or feeds.py, which finds the day-files. test_window_cache checks that
-# every module an hour imports is one or the other.
+# closed, feeds.py, which finds the day-files, or anonymize.py, whose home
+# patterns only name a task's project when a read builds a phase block, which
+# no hour keeps. test_window_cache checks that every module an hour imports is
+# one or the other.
 CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.py",
               "tool_buckets.py", "proctree.py", "fastjson.py", "snapshots.py", "hours.py",
               "gz.py")
