@@ -106,7 +106,36 @@ def cost(rng):
         out["io"] = {"rchar_mb": round(rng.random() * 9, 3), "wchar_mb": round(rng.random(), 3),
                      "rd_mb": round(rng.random() * 2, 3), "wr_mb": round(rng.random(), 3),
                      "scope": rng.choice(["process", "leader"])}
+    if out["net_tx_bytes"] or out["net_rx_bytes"]:
+        endpoints(out)
     return out
+
+
+# Documentation addresses (RFC 5737); the provider and reach are the address's
+# own, as the collector's CIDR buckets make them.
+ENDPOINT_ADDRS = {"192.0.2.1": "aws", "192.0.2.2": None, "198.51.100.9": None,
+                  "203.0.113.4": "aws"}
+
+
+def endpoints(out):
+    """Where a process's bytes went (schema 7), now and then left out, as a
+    collector without the netpeer blocks leaves it. Drawn from a generator of
+    its own, seeded by the process's other measurements, so every other draw in
+    the stream is the one it always was."""
+    erng = random.Random(repr(sorted(out.items())))
+    if erng.random() < .15:
+        return
+    eps = []
+    for addr in erng.sample(sorted(ENDPOINT_ADDRS), erng.randint(1, 3)):
+        eps.append({"proto": erng.choice(["tcp", "udp"]), "addr": addr,
+                    "port": erng.choice([22, 53, 443]),
+                    "host": "example.org" if addr == "192.0.2.1" and erng.random() < .5 else None,
+                    "inbound": erng.random() < .2, "external": not addr.startswith("198."),
+                    "provider": ENDPOINT_ADDRS[addr], "tx_bytes": erng.randrange(5000),
+                    "rx_bytes": erng.randrange(5000), "calls": erng.randrange(1, 40)})
+    out["net_endpoints"] = {
+        "n": len(eps), "in_series": False, "endpoints": eps,
+        "unattributed": erng.choice([None, None, {"tx_bytes": 3, "rx_bytes": 4, "calls": 1}])}
 
 
 COMMANDS = [

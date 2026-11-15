@@ -18,7 +18,7 @@ mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```bash
 npm install
 npm run dev          # http://localhost:5173 — /api/* and /ws answered from mock/api.json
-npm run dev:real     # /api and /ws proxied to a running backend
+npm run dev:real     # /api, /ws, /login, and /logout proxied to a running backend
 ```
 
 `npm run dev` needs **no backend**: a Vite middleware (`mock/plugin.ts`) answers every
@@ -288,7 +288,8 @@ table, the chart, and the list say one thing.
   first of the calls the agent moved past that were still running, by the name the service gives it, else
   by its command (`· scratchpad/linktest still running since 13:05:44`).
 - **The Codex app's reads of its own plugins** are housekeeping, so they are counted in the line under the
-  chart (`housekeeping, not the model: …`, as the `app assets` shape) and are no call in any phase.
+  chart (`housekeeping, not the model: …`, as the `app assets` shape) and are no call in any phase. So is a
+  `cat` with no argv that ran within 2 s of one of them.
 - **A session across midnight** is a row to a day, and each row serves the one block, so each draws the
   whole session's band, line, and list. A task or a phase picked in the list that the other day's row holds
   opens that row and goes there (`jumpTo` in the tab), whenever the window holds that row: its last record,

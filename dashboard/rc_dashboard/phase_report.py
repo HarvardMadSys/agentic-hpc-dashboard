@@ -354,13 +354,15 @@ def session_calls(traj, days):
     for d in days:
         s, _via, _n, mem = traj.lookup(d["sid"])
         parts.append((s, traj._pending_of(mem)))
-    log = PhaseLog.fold([s.phase for s, _entries in parts], traj.phase_params["max_calls"])
+    log = PhaseLog.fold([s.phase for s, _entries in parts], traj.phase_params["max_calls"],
+                        app_s=traj.phase_params["app_read_s"])
     last = max(s.last for s, _entries in parts)
     block, own = list(log.calls), {}
     for s, entries in parts:
         opened, hidden = traj._open_calls(parts[0][0].agent_type, last, entries)
         block += opened
-        own[s.sid] = (list(s.phase.calls) + opened, hidden)
+        own[s.sid] = (list(s.phase.calls_in(log, traj.phase_params["app_read_s"])) + opened,
+                      hidden)
     return {sid: Calls(block, calls, hidden) for sid, (calls, hidden) in own.items()}
 
 
