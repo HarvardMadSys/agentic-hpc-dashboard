@@ -235,14 +235,12 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
       <Plate
         k={`agent users · last ${win}`}
         total={f ? f.users : null}
-        stripe="var(--s1)"
         tip="accounts with at least one agent session in the window: an agent process seen at the root of its tree, as the Trajectories plates count one"
         note={f ? `${fint(running)} with an agent running now` : undefined}
       />
       <Plate
         k="agent sessions"
         total={f ? f.sessions : null}
-        stripe="var(--s6)"
         tip="one session is one agent run, its rows on two days together; a typical one is the median"
         note={f ? `typically open ${dur(f.wall_p50_s)} · ${f.calls_p50 != null ? plural(f.calls_p50, 'call') : 'calls not read'}` : undefined}
       />
@@ -250,7 +248,7 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
         k="launched with a bypass flag"
         total={bp?.pct ?? null}
         fmtFn={(n) => pc(n)}
-        stripe={(f?.approval.bypassed ?? 0) > 0 ? 'var(--crit)' : 'var(--s2)'}
+        alarm={(f?.approval.bypassed ?? 0) > 0}
         tip={`${GLOSS.bypass}. A share of the sessions whose launch is known: a Codex app server takes its policy per thread, and a session whose own record was not seen says nothing`}
         note={bp?.known ? `${fint(f?.approval.bypassed ?? 0)} of ${fint(bp.known)} sessions whose launch is known` : undefined}
       />
@@ -258,7 +256,6 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
         k="driven from a script"
         total={sc?.pct ?? null}
         fmtFn={(n) => pc(n)}
-        stripe="var(--s4)"
         tip="sessions with no one at a terminal: claude -p, codex exec, the Agent and Codex SDKs, an MCP server. A share of the sessions whose launcher is known"
         note={sc?.known ? `${fint(sc.n)} of ${fint(sc.known)} sessions` : undefined}
       />

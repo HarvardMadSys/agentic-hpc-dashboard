@@ -262,7 +262,6 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         <Plate
           k="agent tool calls isolated"
           total={callIso.agent?.pct ?? null}
-          stripe="var(--s5)"
           fmtFn={(n) => (n == null ? DASH : pc(n))}
           tip="a tool call is a sandbox-wrapper invocation or a Claude Code Bash shell; a failed attempt counts as not isolated, an unreadable payload is left out"
           note={agentOf(callIso.agent, 'agent tool calls', 'whose outcome is known')}
@@ -270,7 +269,6 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         <Plate
           k="agent sandbox attempts failed"
           total={failedAgent}
-          stripe="var(--s4)"
           tip="a bwrap / codex-linux-sandbox call that exited non-zero with no payload under it: the sandbox was tried and did not come up"
           note={
             wrapperCalls
@@ -281,7 +279,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         <Plate
           k="agent sessions launched with a bypass flag"
           total={sessBypass.agent?.pct ?? null}
-          stripe="var(--crit)"
+          alarm={(sessBypass.agent?.pct ?? 0) > 0}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
           tip="read off each session root's own argv. Settings files, codex config.toml and a mid-session switch are invisible; `codex app-server` is not observable and is left out of the share."
           note={agentOf(sessBypass.agent, 'agent sessions', 'whose launch flags are readable')}

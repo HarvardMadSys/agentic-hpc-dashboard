@@ -325,7 +325,6 @@ export function LiveTab({
         <Plate
           k="processes exited / min"
           total={perMinAll}
-          stripe="var(--s1)"
           by={perMin}
           tip={
             GLOSS.exited + '\n\n' +
@@ -344,7 +343,6 @@ export function LiveTab({
         <Plate
           k="sessions · last 10 min"
           total={rootsTot}
-          stripe="var(--s4)"
           by={roots}
           tip={
             'sessions on the node in the last 10 minutes. an agent or editor session counts while its ' +
@@ -367,7 +365,6 @@ export function LiveTab({
         <Plate
           k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
           total={U?.total ?? null}
-          stripe="var(--s5)"
           by={usersBy}
           tip={
             'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +

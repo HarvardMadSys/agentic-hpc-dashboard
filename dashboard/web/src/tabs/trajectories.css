@@ -137,11 +137,59 @@ table.tj-table td .sub {
   border-color: var(--edge);
   color: var(--ink-2);
 }
+/* how the read was made: the quieter half of the read's line */
+.ins-scan {
+  color: var(--muted);
+}
+/* The limits on what the tree draws, each named with its count on one line; the
+ * full wording opens under it. */
+details.ins-limits > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  color: var(--ink-2);
+}
+details.ins-limits > summary::-webkit-details-marker {
+  display: none;
+}
+details.ins-limits > summary::before {
+  content: '\25B8';
+  color: var(--muted);
+  font-size: 10px;
+}
+details.ins-limits[open] > summary::before {
+  content: '\25BE';
+}
+details.ins-limits > summary:hover {
+  color: var(--ink);
+}
+details.ins-limits > summary .eyebrow {
+  font-size: 9.5px;
+}
+.ins-limits-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 2px 16px;
+  padding-left: 10px;
+  border-left: 2px solid var(--rule);
+  color: var(--ink-2);
+}
 .ins-tools {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
   align-items: center;
+}
+/* the close button is the last thing in the row, a square beside the others */
+.ins-tools .ins-close {
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 8px 4px;
 }
 
 /* -------------------------------------------------------------------- tree */
@@ -508,13 +556,22 @@ table.tj-table td .sub {
 .tn-fail.sig {
   fill: var(--crit);
 }
+/* the quick jumps, and beside them the line saying where the last one went */
+.tn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin-top: 6px;
+}
 .tn-quick {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 6px;
 }
 .tn-status {
+  flex: 1 1 220px;
+  min-width: 0;
   min-height: 17px;
   font-family: 'IBM Plex Mono', monospace;
   font-size: 10.5px;
@@ -790,6 +847,14 @@ svg:has(> g.pickable:focus-visible) {
   gap: 5px;
   align-items: center;
   cursor: pointer;
+}
+.pd-bar label + .nm {
+  margin-right: 8px;
+}
+/* how to use the tree: at the row's far end, out of the way of the controls */
+.pd-bar .pd-hint {
+  margin-left: auto;
+  font-size: 10.5px;
 }
 /* the session list beside the inspector: one column of compact rows */
 .tj-rank {
