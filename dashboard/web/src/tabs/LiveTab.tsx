@@ -7,9 +7,9 @@
 import { Fragment, useMemo, useState } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
-import { Lines } from '../charts/primitives';
+import { Fluid, Lines } from '../charts/primitives';
 import type { LineSeries } from '../charts/primitives';
-import { clockLabel, fullClock, timeTicks } from '../charts/scale';
+import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
@@ -233,8 +233,9 @@ export function LiveTab({
 
   /* X ticks that stay legible at ANY window, and at any zoom into it: a round
    * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
-   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`. */
-  const xticks = (a: number, b: number) => timeTicks(a, b, 10);
+   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`.
+   * Fewer where the chart is drawn narrow (`tickTarget`), so none overprint. */
+  const xticks = (W: number) => (a: number, b: number) => timeTicks(a, b, tickTarget(W, 10));
 
   // The last full minute as the service counted it, not each class's newest
   // bin with a value: that is the minute still filling, or for a quiet class
@@ -392,20 +393,24 @@ export function LiveTab({
             />
           }
         >
-          <Lines
-            series={series}
-            W={1060}
-            H={230}
-            ymin={0}
-            xticks={xticks}
-            xfmt={clockLabel}
-            xtip={fullClock}
-            minSpan={3 * (L?.window?.bin_s ?? 60)}
-            ylabel="exited / min"
-            xlabel={`last ${windowLbl}`}
-            xname="at"
-            yname="exited/min"
-          />
+          <Fluid natural={1060}>
+            {(W) => (
+              <Lines
+                series={series}
+                W={W}
+                H={230}
+                ymin={0}
+                xticks={xticks(W)}
+                xfmt={clockLabel}
+                xtip={fullClock}
+                minSpan={3 * (L?.window?.bin_s ?? 60)}
+                ylabel="exited / min"
+                xlabel={`last ${windowLbl}`}
+                xname="at"
+                yname="exited/min"
+              />
+            )}
+          </Fluid>
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
 

@@ -38,6 +38,13 @@ export function SortTh<K extends string>({
     <th
       className={[num ? 'num' : '', 'sortable', on ? 'sorted' : '', className ?? ''].filter(Boolean).join(' ')}
       onClick={() => s.toggle(k, first)}
+      // sortable from the keyboard as well: a tab stop, and Enter or Space
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        s.toggle(k, first);
+      }}
       aria-sort={on ? (s.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
       colSpan={colSpan}
       rowSpan={rowSpan}
