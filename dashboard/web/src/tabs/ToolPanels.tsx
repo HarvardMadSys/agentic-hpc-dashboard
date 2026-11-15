@@ -194,7 +194,7 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
                 return (
                   <tr key={b}>
                     <td><Term tip={BUCKET_TIP[b]}>{b}</Term></td>
-                    <td style={{ minWidth: 320 }}>
+                    <td className="whocell">
                       <span className="whobar">
                         {have.map((c) => {
                           const v = rowVal(get(c, b), metric) ?? 0;
@@ -209,12 +209,13 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
                         {have.map((c) => {
                           const v = rowVal(get(c, b), metric) ?? 0;
                           const io = ioSort(metric);
+                          // an empty slot keeps each class's share in its own column, row to row
                           return v > 0 ? (
                             <span key={c}><i style={{ background: CLS_COL[c] }} />{io ? (
                               <IoNum q={{ title: `${METRICS.find((m) => m.k === metric)!.lbl} · ${b} · ${scope.lbl(c)}`,
                                 sort: io, bucket: [b], ...scope.ioq(c), ...coveredBy(tm) }}>{pc((100 * v) / tot)}</IoNum>
                             ) : pc((100 * v) / tot)}</span>
-                          ) : null;
+                          ) : <span key={c} />;
                         })}
                       </span>
                     </td>

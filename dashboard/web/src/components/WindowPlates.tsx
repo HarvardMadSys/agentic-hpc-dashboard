@@ -71,14 +71,12 @@ export function WindowPlates({
         k="agent processes exited"
         tip={[GLOSS.exited, typeTip].filter(Boolean).join('\n\n')}
         total={cls.includes('agent') ? tmBy.agent?.calls ?? null : null}
-        stripe="var(--s1)"
         by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.calls ?? null]))}
         note={totN ? `${pc((100 * (tmBy.agent?.calls ?? 0)) / totN)} of every process on the node` : undefined}
       />
       <Plate
         k="agent sessions"
         total={agentSum?.sessions ?? null}
-        stripe="var(--s4)"
         by={Object.fromEntries(cls.filter((c) => traj?.summary?.[c]).map((c) => [c, traj!.summary![c].sessions]))}
         tip={[
           GLOSS.session + '; scripts that only probe `codex --version` are not counted',
@@ -92,7 +90,7 @@ export function WindowPlates({
       <Plate
         k="risky agent actions"
         total={cls.includes('agent') && risk._present ? riskyAgent : null}
-        stripe="var(--crit)"
+        alarm={(riskyAgent ?? 0) > 0}
         by={riskyBy}
         tip="commands this site's rules flag (rm -rf on a shared path, builds where they should not run, bulk downloads, …), plus credentials written into a command line"
         note={

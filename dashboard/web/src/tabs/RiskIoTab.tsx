@@ -440,7 +440,6 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                 key={sc.id}
                 k={sc.title}
                 total={cls.includes('agent') ? lc?.by_class?.agent?.cpu_h ?? (lc ? 0 : null) : null}
-                stripe="var(--s8)"
                 by={Object.fromEntries(have.map((c) => [c, lc?.by_class?.[c]?.cpu_h ?? (lc ? 0 : null)]))}
                 fmtFn={(n) => fmt(n)}
                 unit="CPU-h"
@@ -457,7 +456,6 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                 key={sc.id}
                 k={sc.title}
                 total={cls.includes('agent') ? by.agent ?? 0 : null}
-                stripe="var(--s7)"
                 by={by}
                 fmtFn={fint}
                 tip="credentials agents wrote into a command line, where any user on the node can read them with ps; the other classes beside it. Counted, never shown."
@@ -476,7 +474,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
               key={sc.id}
               k={sc.title}
               total={cls.includes('agent') ? by.agent ?? 0 : null}
-              stripe="var(--crit)"
+              alarm={cls.includes('agent') && (by.agent ?? 0) > 0}
               by={by}
               fmtFn={fint}
               tip={`agents' runs matching this section's rules (${sc.rules.length}); the other classes beside it`}
@@ -492,7 +490,6 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
         <Plate
           k="agent disk read"
           total={cls.includes('agent') ? byClass.agent?.rd_mb ?? null : null}
-          stripe="var(--s2)"
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rd_mb ?? null]))}
           fmtFn={(n) => mb(n)}
           note={totRd ? `${pc((100 * (byClass.agent?.rd_mb ?? 0)) / totRd)} of all disk reads` : undefined}
@@ -500,7 +497,6 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
         <Plate
           k="agent disk written"
           total={cls.includes('agent') ? byClass.agent?.wr_mb ?? null : null}
-          stripe="var(--s1)"
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.wr_mb ?? null]))}
           fmtFn={(n) => mb(n)}
           note={totWr ? `${pc((100 * (byClass.agent?.wr_mb ?? 0)) / totWr)} of all disk writes` : undefined}
@@ -508,7 +504,6 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
         <Plate
           k="agent network sent"
           total={cls.includes('agent') ? (byClass.agent?.net_tx_mb?.n ? byClass.agent.net_tx_mb.total ?? null : null) : null}
-          stripe="var(--s4)"
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_tx_mb?.n ? byClass[c]!.net_tx_mb.total ?? null : null]))}
           fmtFn={(n) => mb(n)}
           tip="bytes sent over the network by the processes, as each exited"
@@ -517,7 +512,6 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
         <Plate
           k="agent network received"
           total={cls.includes('agent') ? (byClass.agent?.net_rx_mb?.n ? byClass.agent.net_rx_mb.total ?? null : null) : null}
-          stripe="var(--s5)"
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_rx_mb?.n ? byClass[c]!.net_rx_mb.total ?? null : null]))}
           fmtFn={(n) => mb(n)}
           tip="bytes received over the network by the processes, as each exited"
