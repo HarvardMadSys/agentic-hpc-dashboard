@@ -4,6 +4,11 @@
  * answer (the Sandbox tab: whether an agent's tool calls were isolated). Then
  * `by` is left out and the row goes with it; a row of dashes for the classes
  * the question does not apply to is noise, not a breakdown.
+ *
+ * A plate has no colour of its own. The series hues mean agent, human and IDE
+ * everywhere else on the page, so a stripe in one of them on an unrelated
+ * number reads as a class it is not. The one accent a plate takes is `alarm`:
+ * a red edge for a count that is a problem when it is above zero.
  */
 import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint } from '../lib/format';
@@ -12,7 +17,7 @@ import type { Cls } from '../api/types';
 export function Plate({
   k,
   total,
-  stripe = 'var(--s1)',
+  alarm = false,
   by,
   note,
   tip,
@@ -24,7 +29,8 @@ export function Plate({
 }: {
   k: string;
   total: number | null | undefined;
-  stripe?: string;
+  /** a red edge: this count is a problem, and it is above zero */
+  alarm?: boolean;
   /** per-class values; a class absent from the map renders as a dash, not 0.
    *  Omitted: the plate is about agents alone, and shows no class row. */
   by?: Partial<Record<string, number | null>>;
@@ -40,8 +46,7 @@ export function Plate({
 }) {
   return (
     <div
-      className={`plate${onClick ? ' link' : ''}`}
-      style={{ '--stripe': stripe } as React.CSSProperties}
+      className={`plate${onClick ? ' link' : ''}${alarm ? ' alarm' : ''}`}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
