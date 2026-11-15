@@ -20,6 +20,7 @@ Two aggregation tiers, because they have different composability:
   offsets it read to (`snapshots`), which is the persisted sketch state that
   makes a restarted view resumable rather than re-read.
 """
+import collections
 import itertools
 import json
 import re
@@ -31,6 +32,7 @@ from . import ask
 from . import clock
 from . import feeds as feedmod
 from . import gz
+from . import portraits
 from . import proctree
 from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
@@ -95,6 +97,10 @@ class Aggregator:
         # SIGKILLed only through its `uv run` wrapper, and the orphan kept the
         # port -- the next server failed to bind and every request was a 502.
         self.stopping = False
+        # The Users tab's portraits, composed from a view's reducers when read
+        # (portraits.py): (view key, what) -> (stamp, when, records, body), where
+        # what is "inputs", "roster" or ("user", name) (`_held`).
+        self._portraits = collections.OrderedDict()
 
     def roots(self):
         return (self.reports["ebpf"]["resolved"]
@@ -730,6 +736,109 @@ class Aggregator:
             out["_window"] = view.status()
             out["filter"] = flt.block()
             return out
+
+    # What the Users tab holds between reads, by view: the inputs it takes from
+    # the sandbox and Slurm reducers, its roster, and the portrait of each user
+    # opened. Plain data all: nothing held references a reducer, so a window the
+    # registry drops, or rebuilds, is not kept alive here.
+    PORTRAITS_HELD = 32
+
+    def _running_fn(self, now):
+        """`running(host, pid)`: whether that agent is running now -- its own
+        records still arriving (`LiveReducer.LIVE_S`), as `_running_rows` reads
+        it. Under the lock."""
+        fresh = now - self.live.LIVE_S
+        roots = self.live.roots
+
+        def running(host, pid):
+            r = roots.get((host, pid))
+            return r is not None and (r.get("epoch") or 0) >= fresh
+        return running
+
+    def _held(self, view, what, build):
+        """`build()`, held while `view` has not changed: built again once the view
+        has ingested since and `reducers.trajectories.live_s` has passed (as the
+        ranked sessions are re-ranked), or when its reducers were swapped in
+        anew. Under the lock. Nothing is held before the view is built."""
+        live_s = float(self.cfg.get("reducers.trajectories.live_s", 5) or 0)
+        key = (winmod.view_key(view.minutes, view.flt), what)
+        stamp = (id(view.reducers.get("trajectories")), view.installed_at)
+        held = self._portraits.get(key)
+        at = time.monotonic()
+        if held is not None and held[0] == stamp and (
+                held[2] == view.live_records or at - held[1] < live_s):
+            self._portraits.move_to_end(key)
+            return held[3]
+        out = build()
+        if out is not None:
+            self._portraits[key] = (stamp, at, view.live_records, out)
+            self._portraits.move_to_end(key)
+            while len(self._portraits) > self.PORTRAITS_HELD:
+                self._portraits.popitem(last=False)
+        return out
+
+    def _context(self, view):
+        """A `portraits.Context` for one read of the view, None before it is built.
+        The context itself references the reducers and is never kept; the inputs
+        it takes from the sandbox and Slurm are (`portraits.inputs`), so a portrait
+        opened from the roster does not walk every tool call of the window again."""
+        if view.reducers.get("trajectories") is None:
+            return None
+        got = self._held(view, "inputs", lambda: portraits.inputs(view.reducers))
+        now = time.time()
+        return portraits.Context(view.reducers, now, self._running_fn(now), **got)
+
+    def _roster(self, view):
+        def build():
+            ctx = self._context(view)
+            return portraits.roster(ctx) if ctx is not None else None
+        return self._held(view, "roster", build)
+
+    def _envelope(self, out, view, flt):
+        out.update(feedmod.panel_meta(self.reports["ebpf"]))
+        out["_window"] = view.status()
+        out["filter"] = flt.block()
+        return out
+
+    def users(self, window_min=None, flt=None):
+        """The Users tab's roster: every user with an agent session in the
+        window, narrowed by `flt` as the trajectories are (portraits.py). While
+        the window is first being read it has no rows, and `_window` says so."""
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        with self.lock:
+            body = self._roster(view)
+            out = dict(body) if body else {"users": [], "fleet": None,
+                                           "traits": portraits.catalogue(),
+                                           "rules": dict(portraits.RULES)}
+            return self._envelope(out, view, flt)
+
+    def user(self, name, window_min=None, flt=None):
+        """One user's portrait (portraits.py). Read against the whole window's
+        users (`fleet`) when the unfiltered view is held, even under a filter: a
+        filter to one user would otherwise compare them with themselves.
+        `found` is None while the window is first being read."""
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        base = self.panels_by_window.peek(win["minutes"]) if flt else view
+        with self.lock:
+            ros = None
+            if base is not None and base.reducers:
+                ros = self._roster(base)
+            fleet_of = "window" if base is not None and ros is not None else None
+            if ros is None and base is not view:
+                ros = self._roster(view)
+                fleet_of = "selection" if ros is not None else None
+            def build():
+                ctx = self._context(view)
+                return portraits.portrait(ctx, name, (ros or {}).get("fleet")) \
+                    if ctx is not None else None
+            body = self._held(view, ("user", name), build)
+            out = dict(body) if body else {"user": name, "found": None}
+            out["fleet_of"] = fleet_of
+            return self._envelope(out, view, flt)
 
     def _running_rows(self, rows, now=None):
         """The ranked rows, each whose agent is running now marked `running`.

@@ -67,6 +67,13 @@ def feed(now):
             ("alice", "ls /tmp/claude-1234/-home-alice-proj/scratchpad", "agent"),
             ("bob.smith", "vim /home/bob.smith/thesis.tex", "human"),
             ("bob.smith", "ls /n/holylabs/tambe_lab/Lab/bob.smith", "human")]
+    # the agent's own tick, first, since a day-file is in time order: a session
+    # with an agent at its root, as the Users tab's portraits count one
+    recs.append({"schema_version": 6, "event": "residency", "ts": stamp(now - 2500),
+                 "ts_epoch": now - 2500, "host": "h1", "user": "alice", "uid": UID,
+                 "actor3": "agent", "agent_type": "claude_code", "pid": 4242, "ppid": 1,
+                 "agent_pid": 4242, "tree_root_pid": 4242, "depth": 0, "is_agent": True,
+                 "comm": "claude", "args": "claude", "cwd": "/home/alice/proj"})
     for i in range(40):
         user, args, a3 = cmds[i % len(cmds)]
         recs.append(exit_rec(now - 60 * (40 - i), 5000 + i, user, args, a3))
@@ -214,8 +221,19 @@ class LeakTest(unittest.TestCase):
             seen.append(path)
         for must in ("/api/panels", "/api/live", "/api/trajectories", "/api/trajectory",
                      "/api/events", "/api/export", "/api/live/users", "/api/live/user",
+                     "/api/users", "/api/user",
                      "/api/config", "/api/feeds", "/api/health", "/api/windows"):
             self.assertIn(must, seen)
+
+    def test_a_portrait_takes_an_alias_and_a_real_name_finds_nobody(self):
+        alice = self.anon.user_alias("alice")
+        roster = json.loads(self.get("/api/users")[1])
+        self.assertIn(alice, [r["user"] for r in roster["users"]])
+        got = json.loads(self.get("/api/user?name=%s" % alice)[1])
+        self.assertTrue(got["found"])
+        self.assertEqual(got["user"], alice)
+        self.assertClean("/api/user", json.dumps(got))
+        self.assertFalse(json.loads(self.get("/api/user?name=alice")[1])["found"])
 
     def test_the_aliases_do_arrive(self):
         alice, bob = self.anon.user_alias("alice"), self.anon.user_alias("bob.smith")

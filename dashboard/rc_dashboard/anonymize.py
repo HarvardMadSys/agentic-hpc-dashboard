@@ -20,7 +20,8 @@ What counts as a name:
   accounts the config names (`filters.drop_global`, `filters.drop_agent`);
 * a path segment the home patterns capture (`/n/home08/<name>/`), known or not
   -- which is how a person who never ran anything on the node, but whose files
-  an agent read, is caught;
+  an agent read, is caught -- and the same home as `~<name>`, as the Agents
+  tab's workspace writes another user's home (`TILDE_HOME`);
 * labs: `--account=X` or `-A X` on a Slurm command line, `<x>_lab` tokens, and
   the `LABS/<lab>/` and `netscratch/<lab>/` segments of those paths.
 
@@ -79,6 +80,13 @@ HOME_PATTERNS = (
     r"-(?:Lab|Users|Everyone)-(?P<name>[A-Za-z0-9]+)",
     r"-n-lab-storage-[a-z0-9-]*?-lab-(?P<name>[A-Za-z0-9]+)",
 )
+# Another user's home in the spelling this service writes itself: the Agents
+# tab's workspace shows `/n/home03/<name>/data` as `~<name>/data`
+# (reducers/workspace.py: `tilde`), and a command line can say `cd ~<name>/x`.
+# Not one of the site's layouts, so it is applied whatever `home_patterns` says.
+# Only a `~` that begins a word and a name that ends at a `/` or a word's end:
+# `HEAD~1` and `~90 s` are no homes, and `_in_place` refuses a name with no letter.
+TILDE_HOME = r"(?:^|(?<=[\s\"'=(:,]))~(?P<name>[A-Za-z0-9._-]+)(?=/|$|[\s\"',)])"
 # A Slurm account on a Slurm command line, and FAS's `<pi>_lab` naming.
 # Overridable in `anonymize.lab_patterns`. `-A` alone is also `ls -A` and
 # `ssh -A`, hence the anchor on the command.
@@ -91,7 +99,7 @@ LAB_PATTERNS = (
 # Cheap substring gates, as in `redact`: most strings pass none, and a pattern
 # only runs on a string its gate admits.
 _PATTERN_GATES = (("home", "LABS", "holylabs", "netscratch", "lab_storage", "lab-storage",
-                   "Users", "Everyone", "-Lab-"),
+                   "Users", "Everyone", "-Lab-", "~"),
                   ("sbatch", "srun", "salloc", "sacct", "squeue", "sshare", "sreport",
                    "scontrol", "_lab"))
 
@@ -127,7 +135,7 @@ class Anonymizer:
         self.mask_labs, self.mask_emails, self.mask_uids = bool(labs), bool(emails), bool(uids)
         self.keep = frozenset(keep or ())
         self.reserved = frozenset(CLASSES + AGENT_TYPES + STRUCTURAL) | self.keep
-        self._home = [re.compile(p) for p in home_patterns or ()]
+        self._home = [re.compile(p) for p in home_patterns or ()] + [re.compile(TILDE_HOME)]
         self._labp = [re.compile(p) for p in lab_patterns or ()] if self.mask_labs else []
         self._roster = roster
         self._roster_n = -1

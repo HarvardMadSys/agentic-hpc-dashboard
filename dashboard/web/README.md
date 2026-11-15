@@ -38,8 +38,14 @@ RC_MOCK=0 npm run dev               # same thing
 Regenerate the fixture after changing its shape (deterministic — no RNG, byte-stable):
 
 ```bash
-npm run fixture      # node mock/gen_fixture.mjs -> mock/api.json
+TZ=America/New_York npm run fixture      # node mock/gen_fixture.mjs -> mock/api.json
 ```
+
+The live tab's clock strings (the rate's minute labels, and the `ts` of its events and submissions) are written
+in the generator's local time, and the committed file was made in `America/New_York`: regenerated in another
+zone, those strings change and nothing else does. The Users
+section (`users`) is the fixture's own trajectory rows composed as `rc_dashboard/portraits.py` composes the
+service's, with its hours in a fixed EDT, so it is the same in any zone.
 
 The fixture deliberately contains the awkward states the UI has to get right: a `missing`
 feed, a `stale` feed whose `lag_s` exceeds its own `max_age_s`, an `empty` feed, `null`
@@ -178,6 +184,7 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 |---|---|---|
 | **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
 | **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
+| **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits -- filterable by trait; a row opens the user's **portrait** (`?portrait=`): the numbers as a paragraph read against the window's users, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
 | **Resources** | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
 | **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
@@ -238,7 +245,7 @@ a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels
 
 Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`,
 `tfrom` when a read was continued past its budget, and `torder=newest` when it is read newest
-first) — lives in the query string, so
+first), and the portrait open on the Users tab (`portrait`) — lives in the query string, so
 a reload or a pasted link restores the view. `src/lib/filters.ts` owns the one
 serialisation: `apiQuery()` builds the string sent to **both** `/api/events` and
 `/api/export`, so the download is exactly the view by construction rather than by

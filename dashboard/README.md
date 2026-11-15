@@ -292,6 +292,8 @@ scanned.
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#trajectories-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
+| `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
+| `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
@@ -479,8 +481,9 @@ are reachable without a login through the tunnel. The header says *anonymized* w
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
   - Any segment of a home or lab path, masked where it stands even for someone who never ran
-    anything here: `/n/home08/<name>/`, `/n/holylabs/<lab>/Lab/<name>/`, and Claude Code's
-    `-n-home08-<name>-` spelling of a folder.
+    anything here: `/n/home08/<name>/`, `/n/holylabs/<lab>/Lab/<name>/`, Claude Code's
+    `-n-home08-<name>-` spelling of a folder, and `~<name>/`, as the Agents tab's workspace
+    writes another user's home (`anonymize.TILDE_HOME`, applied whatever the home patterns say).
   - Labs, from a Slurm `--account` or `-A`, from `<x>_lab`, and from lab paths.
 
   Names match as whole words, a dotted one also in its hyphen spelling, and a name clipped off
@@ -718,6 +721,50 @@ are masked (`redact`) and no raw argv is served.
 The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the trajectory rows' reading and stay
 on the Trajectories tab; the Agents page no longer carries them.
 
+## Users: a portrait of each user
+
+The **Users** tab (`?tab=users`, a portrait open as `&portrait=<user>`) says how each person works with
+coding agents: which agents, launched how and from where, what the agents' commands do, how long a session
+runs and how many run at once, when in the day, what they work on, and what they ask of the scheduler.
+
+Nothing here is reduced or saved. `rc_dashboard/portraits.py` composes it, when it is read, from the reducers
+a window view already holds -- the trajectories, the sandbox and Slurm -- and from the live tier for what is
+running now, so it can never disagree with the tabs those reducers fill. It holds no state a saved window or
+hour must keep: it is not in either fingerprint (`snapshots.CODE_FILES`, `hours.CODE_FILES`), no reducer
+imports it, and changing it rebuilds nothing.
+
+| part | from | what it says |
+|---|---|---|
+| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; the Sandbox tab's verdict on its tool calls |
+| rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
+| work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
+| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Trajectories row sums them |
+| scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the Slurm tab folds them |
+
+- **A session is one agent run.** The rows Trajectories lists for one agent on two days are one session
+  here, as the agent's phase block already is. Only rooted sessions count, as the Trajectories plates count
+  them, so a status bar probing `codex --version` every minute is none. A session belongs to the account its
+  records name first.
+- **Unread is not none.** An agent whose commands the service does not read (anything but Claude Code and
+  Codex) has calls of null, shown as *not read*, never 0.
+- **A share is over the known values**, with the rest counted beside it: a Codex app server's approval is
+  unobservable, and a session whose own record was not seen has no surface.
+- **Traits** are plain statements ("launches with approval bypassed", "keeps several sessions open at once"),
+  each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
+  them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made
+  by a model, and a user can hold none.
+- **The work is read from commands**, as everything on the Trajectories tab is: an agent's own Read and Edit
+  tools, and its thinking, leave no command. An agent that edits only through its own tools shows no editing.
+- **One user's portrait reads the phase blocks** of their newest `PHASE_SESSIONS` (80) sessions, the same
+  blocks the Trajectories rows show and cache, and lists at most 60 sessions and 40 tasks; the rest are counted.
+  Under a user filter it is read against the whole window's users when that view is held (`fleet_of`).
+
+Cost: the roster walks every folded session and its call log once; the sandbox's verdicts walk every tool call
+of the window, which is most of it. The aggregator holds each view's inputs (`portraits.Context`), its roster
+and each open portrait, and builds them again once the view has ingested and `reducers.trajectories.live_s`
+has passed, as the ranked sessions are re-ranked. On 500 synthetic sessions with 100 000 calls the roster took
+about 0.3 s, and a portrait read from the roster's inputs about 20 ms.
+
 ## Slurm: how sessions use the scheduler
 
 "An agent submitted job N" says nothing about agent behaviour; how agents drive the
@@ -787,6 +834,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), live, node |
 | `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), and the names and the agent's own words the tasks are labeled from (`phase_names`) |
 | `rc_dashboard/phase_report.py` | the report the phase and task thresholds are tuned against |
+| `rc_dashboard/portraits.py` | the Users tab: each user's portrait, composed from a view's trajectories, sandbox and Slurm reducers when read; the traits and their rules |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
