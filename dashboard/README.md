@@ -757,6 +757,18 @@ imports it, and changing it rebuilds nothing.
   scheduler, what the agents leave behind in their own words, what they work on, and when. The service decides
   each part by `RULES`, and the page words it: one sentence under each user in the roster, and that sentence,
   point by point, at the head of their portrait.
+- **A figure of each user** draws the same row (`web/src/components/PortraitFigure.tsx`): a person at a desk,
+  drawn the same for everyone (no one's picture is held, and the names are aliases), and round them a part for
+  each number: a robot for each session open at once, coloured by agent, its antenna lit while it runs; the
+  laptop's emblem for where most sessions are driven from, the person leaning back when that is scripts; a
+  padlock for launches that bypassed approval, a shield for auto mode, capsules for the sandboxed trait; a shelf
+  of what the actions are for, each icon's area its share; a 24-hour clock of active minutes; the moon for the
+  overnight trait; papers for what the agents wrote; a mug or a stopwatch for long or short sessions; an
+  hourglass for polling; a server with a light for each Slurm job. Each part says its numbers and the rule
+  behind it on hover, and a key says what each one means. The only numbers the page adds are drawing caps (six
+  robots, five sheets, ten lights), each said where it applies; a calls count the service could not make is
+  drawn as unread, never as an empty shelf. It leads the portrait, and the roster shows everyone's side by side
+  (*figures*). `npm run check:figures` renders every fixture user's figure and checks it against their row.
 - **Traits** are plain statements ("launches with approval bypassed", "keeps several sessions open at once"),
   each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
   them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made

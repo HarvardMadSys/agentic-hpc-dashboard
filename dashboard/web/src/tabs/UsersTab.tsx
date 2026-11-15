@@ -36,6 +36,8 @@ import type {
 import { clockLabel, fullClock, timeTicks } from '../charts/scale';
 import { Svg } from '../charts/primitives';
 import { NoRows, Panel } from '../components/Panel';
+import { FigureKey, PortraitFigure } from '../components/PortraitFigure';
+import { Segmented } from '../components/ClassFilter';
 import { absent } from '../lib/panels';
 import { Plate } from '../components/Plate';
 import { SortTh } from '../components/SortTh';
@@ -281,6 +283,8 @@ function Roster({
 }) {
   const [q, setQ] = useState('');
   const [trait, setTrait] = useState<string | null>(null);
+  // the roster as a table, or as everyone's figure side by side
+  const [view, setView] = useState<'table' | 'figures'>('table');
   // rows name people: A to Z until a header is clicked (lib/useSort.ts)
   const s = useSort<RosterKey>('user', 'asc');
   const catalogue = U.traits ?? [];
@@ -331,9 +335,53 @@ function Roster({
           onChange={(e) => setQ(e.target.value.trim())}
           aria-label="find a user"
         />
+        <Segmented
+          value={view}
+          onChange={setView}
+          options={[
+            { k: 'table', lbl: 'table', tip: 'one row a user, sortable' },
+            { k: 'figures', lbl: 'figures', tip: 'each user drawn from their numbers, in the table’s order; hover a part of a figure for what it says' },
+          ]}
+        />
         <span className="nm">click a user for their portrait</span>
       </div>
-      {sorted.length ? (
+      {sorted.length && view === 'figures' ? (
+        <div className="ur-gallery">
+          {sorted.map((r) => {
+            const on = open === r.user;
+            const toggle = () => setOpen(on ? null : r.user);
+            return (
+              <div
+                key={r.user}
+                className={`ur-card${on ? ' open' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={on}
+                onClick={toggle}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle();
+                  }
+                }}
+              >
+                <PortraitFigure row={r} catalogue={catalogue} />
+                <div className="ur-cardhead">
+                  <span className="mono u-name">{r.user}</span>
+                  {r.running > 0 && (
+                    <span className="ur-live" data-tip={`${plural(r.running, 'session')} running now`}>
+                      <i />
+                      {fint(r.running)}
+                    </span>
+                  )}
+                  <span className="nm ur-cardn">{plural(r.sessions, 'session')}</span>
+                </div>
+                <p className="ur-cardline">{leverageHeadline(r)}</p>
+              </div>
+            );
+          })}
+        </div>
+      ) : sorted.length ? (
         <div className="scroller vscroll">
           <table className="roomy users ur-roster wrap-head">
             <thead>
@@ -440,20 +488,25 @@ function Head({ p, row, catalogue }: { p: UserPortrait; row: UserRow; catalogue:
   ];
   return (
     <div className="ur-head">
-      <div className="ur-who">
-        <span className="ur-mono" aria-hidden="true">{row.user.slice(0, 1).toUpperCase()}</span>
-        <div>
-          <h2 className="mono">{row.user}</h2>
-          <div className="nm">
-            {row.hosts.join(' · ')}
-            {row.first != null && row.last != null && ` · ${fullClock(row.first)} → ${fullClock(row.last)}`}
-            {row.running > 0 && (
-              <span className="ur-live" data-tip="sessions whose agent is still sending records"><i />{plural(row.running, 'session')} running now</span>
-            )}
+      <div className="ur-top">
+        <figure className="ur-fig">
+          <PortraitFigure row={row} catalogue={catalogue} tz={p.tz} />
+          <FigureKey />
+        </figure>
+        <div className="ur-topr">
+          <div className="ur-who">
+            <h2 className="mono">{row.user}</h2>
+            <div className="nm">
+              {row.hosts.join(' · ')}
+              {row.first != null && row.last != null && ` · ${fullClock(row.first)} → ${fullClock(row.last)}`}
+              {row.running > 0 && (
+                <span className="ur-live" data-tip="sessions whose agent is still sending records"><i />{plural(row.running, 'session')} running now</span>
+              )}
+            </div>
           </div>
+          <Leveraging p={p} row={row} />
         </div>
       </div>
-      <Leveraging p={p} row={row} />
       {row.traits.length > 0 && (
         <div className="ur-traits">
           {row.traits.map((t) => (

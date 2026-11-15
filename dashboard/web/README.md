@@ -8,7 +8,7 @@ backend serves as static files.
 src/api/        the contract: types, fetch client, hooks, the live websocket
 src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the words and geometry of phases and tasks
 src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
-src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer
+src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure
 src/tabs/       one module per tab
 mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```
@@ -59,7 +59,8 @@ The fixture's agent rows carry the tasks the page has to word: quoted from a com
 from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
 still running and one that names none; a task still open at the live edge; a task under a call log that was
 cut; and one agent over two day rows, which serve one block. `npm run check:phases` reads every task and
-phase of every row of it.
+phase of every row of it, and `npm run check:figures` draws every user's portrait figure and checks each
+part against their row.
 
 The fixture's sessions sit at its own `now_epoch`, so every live frame the mock sends
 carries that as the service's clock (`clock.now`) and the page's "now" follows it: a
@@ -184,7 +185,7 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 |---|---|---|
 | **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
 | **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
-| **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait; a row opens the user's **portrait** (`?portrait=`): how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
+| **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait, and shown as a table or as **figures**, each user drawn from their numbers (`src/components/PortraitFigure.tsx`: a part for each number, its numbers and rule on hover, a key beside it); a row or a figure opens the user's **portrait** (`?portrait=`): their figure, how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
 | **Resources** | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
 | **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |

@@ -93,6 +93,33 @@ export function busiestHour(hours: number[] | null | undefined): [number, number
 /** `14:00–15:00`. */
 export const hourSpan = (h: number): string => `${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00`;
 
+/** `n` items shared out over `types` by their counts, largest remainder first: the
+ *  robots over agents, the server's lights over jobs and refusals. When there are
+ *  at least as many items as types, each type gets one. Ties go to the earlier
+ *  type, so the same counts always share out the same way. */
+export function apportion(types: [string, number][], n: number): string[] {
+  const total = types.reduce((a, [, k]) => a + k, 0);
+  if (n <= 0 || total <= 0) return [];
+  if (n < types.length) return types.slice(0, n).map(([t]) => t);
+  const q = types.map(([, k]) => (k * n) / total);
+  const a = q.map((x) => Math.max(1, Math.floor(x)));
+  let s = a.reduce((x, y) => x + y, 0);
+  while (s < n) {
+    let best = 0;
+    for (let i = 1; i < a.length; i++) if (q[i] - a[i] > q[best] - a[best]) best = i;
+    a[best]++;
+    s++;
+  }
+  while (s > n) {
+    let best = -1;
+    for (let i = 0; i < a.length; i++) if (a[i] > 1 && (best < 0 || a[i] - q[i] > a[best] - q[best])) best = i;
+    if (best < 0) break;
+    a[best]--;
+    s--;
+  }
+  return types.flatMap(([t], i) => Array<string>(a[i]).fill(t));
+}
+
 /** The rule behind a trait, from the catalogue the service sends with it. */
 export function ruleOf(catalogue: TraitRule[] | null | undefined, id: string): string | undefined {
   return catalogue?.find((t) => t.id === id)?.rule;
