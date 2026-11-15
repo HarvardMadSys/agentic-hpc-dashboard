@@ -2,20 +2,29 @@
 """Feed schema 9, prototyped against a schema-8 feed: convert, prove the round trip, measure.
 
     python3 prototype.py demo <dir> [--hours 24] [--hosts 2]   # a synthetic schema-8 feed
-    python3 prototype.py run <ebpf root> <out dir> [--node <node root>]
+    python3 prototype.py run <ebpf root> <out dir> [--node <node root>] [--tz <zone>]
 
 `<ebpf root>` holds the collector's day directories,
 `<YYYY-MM-DD>/<host>.{exits,snapshot}.jsonl[.gz]`. `--node` points at the node
 tier's root and is read only for each host's boot time (`proc_stat.btime`).
+`--tz` is the collector's time zone (an IANA name, e.g. America/New_York), the
+zone schema 8's naive `ts` and `start` strings were written in; without it, the
+zone this runs in. A wrong zone moves no instant here -- `start_epoch` comes from
+`ts_epoch - duration_s` -- but every rebuilt string then differs, and the report
+shows how many.
 
-`run` does three things, per host per day, so memory is bounded by one day-file:
+`run` reads the feed twice. The first pass keeps, for the whole feed, every
+process's life and every session's facts (`Index`): on a multi-week, many-node
+feed that index is what memory grows with. The second pass then does three
+things one host-day at a time, holding that host-day's records:
 
 1. convert  writes the schema-9 feed under <out dir>/v9: the same two streams plus
             `<host>.procs.jsonl`, which holds the `session` and `proc` definitions;
-2. verify   expands every schema-9 record back into the schema-8 record it came
-            from and compares them field by field. A difference that is not on the
-            declared list (DECLARED below) fails the run: nothing may be lost that
-            the declaration does not name;
+2. verify   reads the three files it just wrote back from disk, expands every
+            schema-9 record into the schema-8 record it came from, and compares
+            them field by field. A difference that is not on the declared list
+            (DECLARED below) fails the run: nothing may be lost that the
+            declaration does not name;
 3. measure  bytes (plain, gzip -6 as the collector seals a day, zstd -3), orjson
             parse time and stdlib encode time, for schema 8 as the collector writes
             it, schema 8 with compact separators, and schema 9; and, for the exits
@@ -26,7 +35,12 @@ A schema-8 record carries no process start time in clock ticks, so `pk` and `ppk
 are rebuilt here from `ts_epoch - duration_s` (exits) and `ts_epoch - age_s`
 (residency) against the boot time. The collector reads them exactly
 (`task->start_time`); the rebuilt ones are the right length for measuring and are
-never compared.
+never compared. A process no exit or residency record gives a start for (seen
+only on other ticks, or only as a parent) gets a guessed one, kept apart from
+the real lives so it can never take a real process's key; the report counts
+them, and counts pid reuse from real lives only. A host with no node-tier boot
+time counts ticks from 30 days before its first record; the report counts those
+hosts too.
 
 Standard library only; orjson, zstandard and pyarrow are used when installed.
 """
@@ -40,6 +54,7 @@ import re
 import sys
 import time
 import zlib
+from datetime import datetime
 
 try:
     import orjson
@@ -79,20 +94,44 @@ MIB = 1048576
 # Every difference the round trip may show, and why. Anything else fails `verify`.
 DECLARED = {
     "ts": "rebuilt from ts_epoch; the collector stamps the two separately, so the "
-          "string can sit one second off",
+          "string can sit one second off -- or every one differs, when --tz is not "
+          "the collector's zone",
+    "start": "rebuilt from start_epoch (ts_epoch - duration_s); differs where the "
+             "string is more than 2 s from that instant read in this zone: --tz not "
+             "the collector's, or the hour a DST change repeats",
     "collector_pid": "on per-process records, rebuilt from the latest meta of the host",
     "cpu_pct": "rebuilt from the rounded cpu_s/duration_s, so the last digit can move",
-    "conns.peers": "superseded by net_endpoints (endpoint rows gain conns/failed); "
-                   "checked separately below",
+    "conns.peers": "each merged into an endpoint row that agrees on bytes and counts, "
+                   "or kept whole in conns.peers_unmatched; checked separately below",
     "conns.providers": "derivable from net_endpoints' rows",
 }
 
+# The zone schema 8's naive strings are read and written in (`--tz`); None is
+# the zone this process runs in.
+ZONE = None
+
 
 def stamp(epoch):
+    if ZONE is not None:
+        return datetime.fromtimestamp(epoch, ZONE).strftime(TS)
     return time.strftime(TS, time.localtime(epoch))
 
 
+def sess_of(r):
+    """The session a schema-8 record names: its session_uuid, or `apid:<pid>` where
+    the collector could not digest one (`session_uuid()` returns null when the
+    root's start time is unreadable) but the record is still in an agent tree."""
+    if r.get("session_uuid"):
+        return r["session_uuid"]
+    return "apid:%d" % r["agent_pid"] if r.get("agent_pid") is not None else None
+
+
 def parse_stamp(s):
+    """The instant a naive string names in ZONE. In the hour a DST change repeats
+    it is a guess (the first of the two), which is why no instant is taken from a
+    string that disagrees with `ts_epoch - duration_s` (`to_v9`)."""
+    if ZONE is not None:
+        return datetime.strptime(s, TS).replace(tzinfo=ZONE).timestamp()
     return time.mktime(time.strptime(s, TS))
 
 
@@ -168,11 +207,15 @@ class Index:
 
     def __init__(self, btime):
         self.btime = dict(btime)
+        self.btime_guessed = set()                     # hosts with no node-tier boot time
         self.lives = collections.defaultdict(list)     # (host, pid) -> [[start, end|None]]
+        # Starts no exit or residency gave, kept apart from `lives`: (host, pid)
+        # -> [[first seen, last seen]]. Never matched before a real life, never
+        # counted as pid reuse.
+        self.guesses = collections.defaultdict(list)
         self.sessions = {}                             # (host, sess) -> facts
         self.runs = collections.defaultdict(list)      # host -> [(ts, collector_pid, meta)]
         self.conflicts = collections.Counter()         # session facts that disagreed
-        self.approx = 0                                # pk built from first sight
 
     def _life(self, host, pid, start, end):
         for life in self.lives[(host, pid)]:
@@ -188,11 +231,12 @@ class Index:
             self.runs[host].append((ts, r.get("collector_pid"), r))
         if host not in self.btime:
             self.btime[host] = (ts or 0) - 30 * 86400
+            self.btime_guessed.add(host)
         if ev in EXIT_EVENTS and r.get("pid") is not None:
             self._life(host, r["pid"], exit_start(r), ts)
         elif ev == "residency" and r.get("pid") is not None and r.get("age_s") is not None:
             self._life(host, r["pid"], ts - r["age_s"], None)
-        sess = r.get("session_uuid")
+        sess = sess_of(r)
         if sess:
             s = self.sessions.setdefault((host, sess), {
                 "agent_type": r.get("agent_type"), "agent_pid": r.get("agent_pid"),
@@ -214,20 +258,45 @@ class Index:
             runs.sort(key=lambda x: x[0])
 
     def pk(self, host, pid, at):
-        """'<pid>.<start ticks since boot>' for the process `pid` alive at `at`."""
+        """'<pid>.<start ticks since boot>' for the process `pid` alive at `at`.
+
+        A real life (an exit's or a residency's) always wins. Without one, a
+        guess: the latest guess for that pid that began before `at`, stretched to
+        `at`, unless a real life of the same pid began in between -- the pid was
+        reused, so the guess cannot be the same process -- and otherwise a new
+        guess starting at `at`. The real lives are never changed here, so what a
+        lookup returns does not depend on which lookups came before it."""
         if pid is None:
             return None
-        lives = self.lives[(host, pid)]
         start = None
-        for s, e in lives:
+        for s, e in self.lives.get((host, pid), ()):
             if s <= at + 2.0 and (e is None or e >= at - 2.0):
                 start = s
         if start is None:
-            self.approx += 1
-            self._life(host, pid, at, None)
-            lives.sort(key=lambda x: x[0])
-            start = at
+            start = self._guess(host, pid, at)
         return "%d.%d" % (pid, max(0, int(round((start - self.btime[host]) * HZ))))
+
+    def _guess(self, host, pid, at):
+        guesses = self.guesses[(host, pid)]
+        g = None
+        for cand in guesses:                    # in order of first sight
+            if cand[0] <= at + 2.0:
+                g = cand
+        if g is not None:
+            lo, hi = sorted((g[1], at))
+            if not any(lo < s <= hi for s, _e in self.lives.get((host, pid), ())):
+                g[1] = max(g[1], at)
+                return g[0]
+        guesses.append([at, at])
+        guesses.sort(key=lambda x: x[0])
+        return at
+
+    def guessed(self):
+        return sum(len(g) for g in self.guesses.values())
+
+    def reused(self):
+        """(host, pid) pairs that named more than one process, from real lives only."""
+        return sum(1 for lives in self.lives.values() if len(lives) > 1)
 
     def start_of(self, pk_, host):
         return round(self.btime[host] + int(pk_.split(".")[1]) / HZ, 2)
@@ -261,17 +330,33 @@ def io_v9(io8):
     return out
 
 
+def peer_merged(p, e):
+    """Whether endpoint row `e` holds everything peer `p` says: the same TCP
+    endpoint, the same bytes, and the peer's connection counts."""
+    return (e.get("proto") == "tcp" and e.get("addr") == p.get("daddr")
+            and e.get("port") == p.get("dport") and e.get("tx_bytes") == p.get("tx_bytes")
+            and e.get("rx_bytes") == p.get("rx_bytes") and e.get("conns") == p.get("n")
+            and e.get("failed") == p.get("failed"))
+
+
 def endpoints_v9(ne, conns):
     """net_endpoints without its derivable `n`; TCP rows gain the connection counts
-    `conns.peers` held. Returns (block, peers that matched no endpoint row)."""
+    `conns.peers` held. Returns (block, peers not merged).
+
+    A peer merges into a row only when both name the same TCP endpoint AND carry
+    the same bytes: the two come from different probes (`tcp_info` against the
+    send/recv endpoint table), so a peer whose bytes differ is an independent
+    measurement and is kept whole, in `conns.peers_unmatched`."""
     left = list((conns or {}).get("peers") or [])
     if ne is None:
         return None, left
     rows = [dict(e) for e in ne.get("endpoints") or []]
     for p in list(left):
         for e in rows:
-            if e.get("proto") == "tcp" and e.get("addr") == p.get("daddr") \
-                    and e.get("port") == p.get("dport"):
+            if "conns" not in e and e.get("proto") == "tcp" \
+                    and e.get("addr") == p.get("daddr") and e.get("port") == p.get("dport") \
+                    and e.get("tx_bytes") == p.get("tx_bytes") \
+                    and e.get("rx_bytes") == p.get("rx_bytes"):
                 e["conns"], e["failed"] = p.get("n"), p.get("failed")
                 left.remove(p)
                 break
@@ -337,16 +422,25 @@ def to_v9(r, ix, day, counts):
         out.update((k, v) for k, v in r.items() if k not in ENVELOPE)
         return out
 
-    sess = r.get("session_uuid") or (
-        "apid:%d" % r["agent_pid"] if r.get("agent_pid") is not None else None)
+    sess = sess_of(r)
     tracked = r.get("actor") is not None
     if ev in EXIT_EVENTS:
         start = round(exit_start(r), 3)
         if r.get("start") and stamp(start) != r["start"]:
-            # ts_epoch is stamped when the exit is handled, a little after the
-            # kernel's exit; the collector writes start_epoch from exec_ktime instead
-            counts["start_epoch adjusted to its string"] += 1
-            start = parse_stamp(r["start"]) + 0.5
+            s = parse_stamp(r["start"])
+            if s - 2.0 <= start <= s + 3.0:
+                # The same instant, a second boundary apart: ts_epoch is stamped
+                # when the exit is handled, a little after the kernel's exit (the
+                # collector would write start_epoch from exec_ktime). Moved into
+                # the string's second, so the string comes back as written.
+                counts["start_epoch moved into its string's second"] += 1
+                start = round(min(max(start, s), s + 0.999), 3)
+            else:
+                # Not the same instant read in this zone: --tz is not the
+                # collector's, or the string is in an hour a DST change repeats.
+                # The instant stays the one ts_epoch - duration_s gives.
+                counts["start string more than 2 s from ts_epoch - duration_s "
+                       "(--tz not the collector's?)"] += 1
         pk_ = ix.pk(host, r.get("pid"), start)
         ppk = ix.pk(host, r.get("ppid"), start) if r.get("ppid") else None
         out.update(pk=pk_, ppk=ppk, sess=sess)
@@ -418,14 +512,20 @@ def to_v8(r, ix, defs, sessions):
     if ev in EXIT_EVENTS:
         ident = r
     elif r.get("pk") is not None:
-        lst = defs[r["pk"]]
-        ident = lst[bisect.bisect_right([d[0] for d in lst], ts) - 1][1]
+        lst = defs.get(r["pk"]) or []
+        i = bisect.bisect_right([d[0] for d in lst], ts) - 1
+        if i < 0:
+            raise LookupError("no proc definition of %s at or before %s" % (r["pk"], ts))
+        ident = lst[i][1]
     else:
         ident = dict.fromkeys(V8_IDENTITY)
         ident.update(pid=r.get("pid"), uid=r.get("uid"), user=r.get("user"),
                      command=r.get("command"))
     sess = r.get("sess") if ev in TICK_EVENTS else ident.get("sess")
     s = sessions.get(sess) if sess else None
+    if sess and (s is None or s["ts_epoch"] > ts):
+        # every reference comes after its definition (`define_session`)
+        raise LookupError("no session definition of %s at or before %s" % (sess, ts))
     for k in V8_IDENTITY:
         out[k] = ident.get(k)
     if s is not None:
@@ -460,8 +560,14 @@ def to_v8(r, ix, defs, sessions):
         elif k == "net_endpoints" and v is not None:
             rows = [{kk: vv for kk, vv in e.items() if kk not in ("conns", "failed")}
                     for e in v.get("endpoints") or []]
-            out[k] = dict(n=len(rows), **{kk: vv for kk, vv in v.items() if kk != "endpoints"})
+            # `n` counts every distinct endpoint; past the cap the cut ones are in
+            # `overflow.n` (collector `_endpoint_list`)
+            n_all = len(rows) + ((v.get("overflow") or {}).get("n") or 0)
+            out[k] = dict(n=n_all, **{kk: vv for kk, vv in v.items() if kk != "endpoints"})
             out[k]["endpoints"] = rows
+        elif k == "conns" and v is not None:
+            # the peers themselves are checked against the record they came from
+            out[k] = {kk: vv for kk, vv in v.items() if kk != "peers_unmatched"}
         else:
             out[k] = v
     if ev in EXIT_EVENTS:
@@ -624,20 +730,35 @@ def run(ebpf_root, out_dir, node_root=None):
                 m.add("v8 as written", s, collector_style(r))
                 m.add("v8 compact", s, compact(r))
 
-        # verify: expand from the files just written, as a reader would
+        # verify: read the three files back and expand them, as a reader would --
+        # the definitions too, so a procs file written out of order or cut short
+        # fails here rather than passing on what memory still held
+        written = {s: read_records(os.path.join(dst, "%s.%s.jsonl" % (host, s)))
+                   for s in ("procs",) + tuple(recs)}
         defs = collections.defaultdict(list)
         sessions = {}
-        for r in d.out:
+        for r in written["procs"]:
             if r["event"] == "proc":
                 defs[r["pk"]].append((r["ts_epoch"], r))
             else:
                 sessions[r["sess"]] = r
+        for pk_ in defs:
+            defs[pk_].sort(key=lambda d_: d_[0])
         for s, rs in recs.items():
+            if len(written[s]) != len(rs):
+                undeclared["%s records (written %d, read %d)" % (
+                    s, len(rs), len(written[s]))] += 1
+                continue
             for i, r8 in enumerate(rs):
-                r9 = v9[s][i]
+                r9 = written[s][i]
                 if s == "exits":
-                    m.add_exit(r8, r9)
-                back = to_v8(json.loads(compact(r9)), ix, defs, sessions)
+                    m.add_exit(r8, v9[s][i])
+                try:
+                    back = to_v8(r9, ix, defs, sessions)
+                except LookupError as e:        # a reference with no definition
+                    undeclared["unresolved reference"] += 1
+                    examples.setdefault("unresolved reference", (r9.get("pk"), repr(e)))
+                    continue
                 n += 1
                 for p in diff(r8, back):
                     if p in DECLARED:
@@ -646,13 +767,18 @@ def run(ebpf_root, out_dir, node_root=None):
                         undeclared[p] += 1
                         examples.setdefault(p, (r8.get(p.split(".")[0]),
                                                 back.get(p.split(".")[0])))
+                # `conns.peers` is a declared difference only because every peer is
+                # still in the v9 record: merged into an endpoint row that agrees on
+                # bytes and counts, or kept whole. A peer in neither is lost.
+                kept = ((r9.get("conns") or {}).get("peers_unmatched")) or []
+                rows = ((r9.get("net_endpoints") or {}).get("endpoints")) or []
                 for p in (r8.get("conns") or {}).get("peers") or []:
                     peers_checked += 1
-                    rows = (r8.get("net_endpoints") or {}).get("endpoints") or []
-                    peers_matched += any(
-                        e.get("addr") == p.get("daddr") and e.get("port") == p.get("dport")
-                        and e.get("tx_bytes") == p.get("tx_bytes")
-                        and e.get("rx_bytes") == p.get("rx_bytes") for e in rows)
+                    if any(peer_merged(p, e) for e in rows):
+                        peers_matched += 1
+                    elif p not in kept:
+                        undeclared["conns.peers (not kept)"] += 1
+                        examples.setdefault("conns.peers (not kept)", (p, None))
 
     report(m, ix, counts, n, declared, undeclared, examples, peers_checked, peers_matched,
            out_dir)
@@ -671,14 +797,18 @@ def report(m, ix, counts, n, declared, undeclared, examples, peers_checked, peer
         p("     UNDECLARED %-28s %7d  e.g. %r" % (k, c, examples[k]))
     for k, c in declared.most_common():
         p("     declared   %-28s %7d  %s" % (k, c, DECLARED[k]))
-    p("   conns.peers whose (addr, port, tx, rx) is a net_endpoints row: %d of %d"
-      % (peers_matched, peers_checked))
+    p("   conns.peers merged into an endpoint row that agrees on bytes and counts: %d of "
+      "%d; the rest kept whole in conns.peers_unmatched" % (peers_matched, peers_checked))
     for k, c in counts.most_common():
         p("   %s: %d" % (k, c))
-    p("   pk rebuilt from first sight (no exit or residency gave a start): %d" % ix.approx)
-    reused = sum(1 for lives in ix.lives.values() if len(lives) > 1)
-    p("   (host, pid) pairs that named more than one process: %d of %d -- one pk each in v9"
-      % (reused, len(ix.lives)))
+    p("   processes given a guessed start (no exit or residency gave one): %d"
+      % ix.guessed())
+    p("   (host, pid) pairs that named more than one process, from real lives only: "
+      "%d of %d -- one pk each in v9" % (ix.reused(), len(ix.lives)))
+    if ix.btime_guessed:
+        p("   hosts with no node-tier boot time (pk ticks from 30 days before their "
+          "first record): %d (%s)" % (len(ix.btime_guessed),
+                                      ", ".join(sorted(ix.btime_guessed))))
     if ix.conflicts:
         p("   session facts that disagreed across records: %s" % dict(ix.conflicts))
 
@@ -775,9 +905,15 @@ def main(argv=None):
     r.add_argument("ebpf_root")
     r.add_argument("out_dir")
     r.add_argument("--node")
+    r.add_argument("--tz", help="the collector's time zone, an IANA name (default: this "
+                                "process's)")
     a = ap.parse_args(argv)
     if a.cmd == "demo":
         return demo(a.dir, a.hours, a.hosts)
+    if a.tz:
+        global ZONE
+        from zoneinfo import ZoneInfo
+        ZONE = ZoneInfo(a.tz)
     return run(a.ebpf_root, a.out_dir, a.node)
 
 

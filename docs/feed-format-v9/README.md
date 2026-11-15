@@ -121,7 +121,8 @@ on exit order.
 - `cpu_pct` is `cpu_s / duration_s`.
 - `cpu_scope` and `io.scope` restate `meta.counters_scope`.
 - `samples` and `state_last` are always null (`normalize.py`, `ALWAYS_NULL`).
-- `net_endpoints.n` is the length of its list.
+- `net_endpoints.n` is the length of its list plus `overflow.n`, the endpoints cut
+  past the cap.
 
 Together these are 7.7 % of an exit's bytes.
 
@@ -229,7 +230,7 @@ identity. Changes from schema 8:
 | dropped, constant per capture | `collector_pid`, `cpu_scope`, `io.scope` (all in `meta`) |
 | dropped, always null | `samples`, `state_last` |
 | renamed, because the unit changed | `peak_rss_mb` → `peak_rss_bytes`; `io.{rd,wr,rchar,wchar}_mb` → `io.*_bytes` |
-| merged | `conns.peers[]` → each TCP row of `net_endpoints.endpoints[]` gains `conns` and `failed` |
+| merged | `conns.peers[]` → each TCP row of `net_endpoints.endpoints[]` that agrees on a peer's bytes gains its `conns` and `failed` |
 
 `actor3` stays inline even though it can be derived from `actor` and the session's
 `agent_type`. It is the class axis every filter reads, and keeping it means an exit is
@@ -240,8 +241,9 @@ classed correctly even when its session definition is missing. `approval_mode` a
 `conns` keeps its connection statistics, which only the TCP birth map knows: `n`,
 `accepted`, `established`, `failed`, `conn_s_total`, the connect latencies and
 `peers_total`. It also keeps its `rx_bytes`/`tx_bytes`, which come from `tcp_info`, a
-second measurement independent of the endpoint table. A peer that matches no endpoint
-row is kept, as `conns.peers_unmatched`, not dropped.
+second measurement independent of the endpoint table. For the same reason a peer merges
+into an endpoint row only when the row agrees on its bytes. A peer whose bytes differ, or
+that matches no row, is kept whole in `conns.peers_unmatched`, not dropped.
 
 A short-lived tool call, schema 9:
 
@@ -344,7 +346,7 @@ by field, except for the differences declared below:
 | declared difference | records | why |
 |---|---:|---|
 | `cpu_pct` | 277 | rebuilt from rounded `cpu_s`/`duration_s`, so the last digit moves |
-| `conns.peers`, `conns.providers` | 83 | merged into endpoint rows; all 83 peers matched a row on addr, port and both byte counts |
+| `conns.peers`, `conns.providers` | 83 | merged into endpoint rows; all 83 peers matched a row on addr, port and both byte counts (one that did not would be kept whole, and one in neither place fails the run) |
 | `ts` | 1 | rebuilt from `ts_epoch`; the collector stamps them separately |
 
 **Projection.** This assumes a real exit record is composed like the synthetic one. On
@@ -451,12 +453,23 @@ python3 docs/feed-format-v9/prototype.py demo /tmp/feed --hours 72 --hosts 4
 python3 docs/feed-format-v9/prototype.py run /tmp/feed/feed/ebpf /tmp/v9 --node /tmp/feed/feed/node
 ```
 
-On a real capture, point `run` at the collector's root, for example
-`prototype.py run /var/log/ebpfm /tmp/v9 --node /var/log/ebpfm-login`. It reads plain
-or `.gz` day files and processes one host-day at a time. It exits 1 if any field
-differs in a way not declared above.
+On a real capture, point `run` at the collector's root and give it the collector's time
+zone, for example
+`prototype.py run /var/log/ebpfm /tmp/v9 --node /var/log/ebpfm-login --tz America/New_York`.
+Schema 8's `ts` and `start` are naive local strings, so they can only be rebuilt in the
+zone they were written in. A wrong `--tz` moves no instant (`start_epoch` comes from
+`ts_epoch - duration_s`), but the report then shows every `ts` and `start` as a declared
+difference.
+
+It reads plain or `.gz` day files. The first pass keeps an index of every process and
+session over the whole feed, which is what memory grows with on a multi-week, many-node
+capture. The second pass holds one host-day at a time, and verifies from the files it
+just wrote, read back from disk. It exits 1 if any field differs in a way not declared
+above, or if a record refers to a definition its day's `procs` file does not hold.
 
 A schema-8 record has no start ticks, so the prototype rebuilds `pk`/`ppk` from
 `ts_epoch - duration_s` and `ts_epoch - age_s`. That gets their length right for
-measuring; they are never compared. Processes seen only on ticks get a `pk` from first
-sight; the report counts them (129 here).
+measuring; they are never compared. A process that no exit or residency gives a start for
+gets a guessed one, kept apart from the real lives, so it can never take a real process's
+key. The report counts those (129 here), counts pid reuse from real lives only, and counts
+hosts whose boot time had to be guessed.
