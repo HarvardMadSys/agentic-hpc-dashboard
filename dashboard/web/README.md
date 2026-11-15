@@ -8,7 +8,7 @@ backend serves as static files.
 src/api/        the contract: types, fetch client, hooks, the live websocket
 src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks
 src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
-src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure
+src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure, Icon, CommandPalette
 src/tabs/       one module per tab
 mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```
@@ -108,7 +108,8 @@ ported from the retired demo template (git history: `dashboard/archive/`), for t
 reasons that are constraints here rather than preferences: there is no code path that can introduce a second
 value axis, and the colours are the CSS custom properties verbatim, so no library theme can
 substitute a hue. There is no table library either — the event explorer pages on the
-backend's `next_cursor`.
+backend's `next_cursor`. Nor an icon library: `src/components/Icon.tsx` draws the page's
+few icons as paths, in the text colour, so no icon is ever a series colour.
 
 ## The rules this code enforces
 
@@ -151,8 +152,8 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 7. **Data only** — a panel carries a title, its feed, and the chart or table. Every
    `notes` / `basis` / `cpu_basis` / `scope` / `dedup.rule` string goes into `<Basis>`, a
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
-8. **Responsive to ~900px** — below 900px the rail becomes a horizontal nav and the grid
-   collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
+8. **Responsive to ~900px** — below 900px the rail becomes a drawer, opened from a top bar
+   that names the tab, and the grid collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
    never scrolls horizontally. A time series is drawn at its container's width, at 1:1
    (`<Fluid>`, `src/charts/primitives.tsx`), so it fills its panel and its 10px labels stay
    10px at any width; on a narrow plot its ticks thin out (`tickTarget`) rather than
@@ -195,6 +196,20 @@ Three rules it follows, all of them the same rule this page follows everywhere:
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
 
+## The rail and "go to"
+
+The rail lists the tabs in their reading order under four words (Monitor, Agents, Cluster,
+More), each with its icon, and the open tab's sections under it. It folds to the icons alone
+(`[`, or the button at its foot), which this browser remembers (`localStorage`, a per-viewer
+convenience: storage that is absent or refuses just leaves it unfolded). Its foot says how
+the page gets its data: the transport as a light, the last update, the window, and when the
+panels were built.
+
+**Go to** (`src/components/CommandPalette.tsx`), opened with Ctrl+K or Cmd+K anywhere, or `/`
+outside a field: type to reach a tab, a section of the open tab, a window preset, or an
+action (refresh, show all three classes, fold the rail). It offers only what the page already
+holds, so it can never name a tab, section or window that is not there.
+
 ## Keyboard
 
 Every control is a tab stop with a visible focus ring (controls restyled from `all: unset`
@@ -203,6 +218,14 @@ sorts with Enter or Space, and a control's `data-tip` shows under it when it is 
 Tab (`src/components/Tooltip.tsx`), since the caveat about how a number is counted lives there.
 The tip is visual only: its layer is `aria-hidden`, and no control points at it with
 `aria-describedby`, so a screen reader does not announce it.
+
+| key | does |
+|---|---|
+| Ctrl+K, Cmd+K | opens or closes **go to**, anywhere |
+| `/` | opens **go to**, outside a field |
+| `[` | folds or unfolds the rail, outside a field |
+| ↑ ↓ Enter, Esc | in **go to**: move, go, close (focus returns where it was) |
+| Esc | closes the rail's drawer below 900px |
 
 ## Tabs
 

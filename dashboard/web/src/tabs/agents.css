@@ -265,17 +265,21 @@ table.trees .sub-chip {
   gap: 10px;
   margin-bottom: 14px;
 }
+/* a card like the page's plates: the same corners and lift */
 .atype {
   all: unset;
   box-sizing: border-box;
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-left: 3px solid var(--s1);
-  border-radius: 6px;
-  padding: 10px 12px;
+  border-left: 4px solid var(--s1);
+  border-radius: 10px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 3px;
+  box-shadow:
+    0 1px 2px rgba(30, 30, 30, 0.04),
+    0 4px 10px -6px rgba(30, 30, 30, 0.06);
 }
 
 .atype.on {
@@ -720,18 +724,34 @@ table.trees .sub-chip {
 }
 .al-hint,
 .al-empty {
-  border: 1px dashed var(--rule);
-  border-radius: 6px;
+  border: 1px dashed var(--edge);
+  border-radius: 10px;
   color: var(--muted);
   text-align: center;
+  background: var(--surface);
 }
 .al-hint {
   padding: 12px;
   margin-top: 10px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
+/* nothing picked yet: an empty card that says where to look, not a gap */
 .al-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 200px;
   padding: 28px;
+  font-size: 13px;
+}
+.al-empty .icon {
+  box-sizing: content-box;
+  padding: 10px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
 }
 /* under a filter, a tree's box that does not pass it */
 .anode.dim {
