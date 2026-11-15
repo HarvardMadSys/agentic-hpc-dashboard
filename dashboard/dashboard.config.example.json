@@ -228,5 +228,10 @@
 
   "export": { "max_rows": 5000000 },
   "cache":  { "dir": "dashboard/.cache", "reducer_version": 3 },
-  "server": { "host": "127.0.0.1", "port": 8080, "static_dir": "dashboard/web/dist" }
+  "//server": "auth.password_hash: a salted scrypt hash of the one password readers sign in with.",
+  "//server1": "`python -m rc_dashboard new-password` makes the password, writes it to a file only you",
+  "//server2": "can read, and prints the hash. Empty: no sign-in, and the page is open to anyone who",
+  "//server3": "reaches the port. A session lasts auth.session_days. A new password signs everyone out.",
+  "server": { "host": "127.0.0.1", "port": 8080, "static_dir": "dashboard/web/dist",
+              "auth": { "password_hash": "", "session_days": 30 } }
 }

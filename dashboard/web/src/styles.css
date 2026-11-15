@@ -402,6 +402,28 @@ section.panel {
   background: var(--surface-2);
   color: var(--ink);
 }
+/* Sign out, above the fold button while the service asks for a password: the
+   same quiet row, and the same 40px icon when the rail is folded */
+.rail-signout {
+  margin: 8px 12px 0;
+}
+.rail-signout button {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.rail-signout button:hover {
+  background: var(--surface-2);
+  color: var(--crimson-ink);
+}
 /* the drawer's close, below 900px only (scoped past .iconbtn, which follows) */
 .rail .rail-close {
   display: none;
@@ -446,6 +468,7 @@ section.panel {
   .app.mini .foot dl,
   .app.mini .foot-t,
   .app.mini .foot-warn-t,
+  .app.mini .rail-signout span,
   .app.mini .rail-toggle span {
     position: absolute;
     width: 1px;
@@ -505,6 +528,14 @@ section.panel {
   }
   .app.mini .rail-toggle {
     margin: 6px auto 0;
+    width: 40px;
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .app.mini .rail-signout {
+    margin: 6px auto 0;
+  }
+  .app.mini .rail-signout button {
     width: 40px;
     justify-content: center;
     padding: 8px 0;
@@ -2807,6 +2838,7 @@ td.host-by {
 .linkbtn:focus-visible,
 .rail-search:focus-visible,
 .rail-toggle:focus-visible,
+.rail-signout button:focus-visible,
 .iconbtn:focus-visible,
 .subtabs button:focus-visible,
 .rail nav button:focus-visible {

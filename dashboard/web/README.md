@@ -18,7 +18,7 @@ mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```bash
 npm install
 npm run dev          # http://localhost:5173 — /api/* and /ws answered from mock/api.json
-npm run dev:real     # /api and /ws proxied to a running backend
+npm run dev:real     # /api, /ws, /login, and /logout proxied to a running backend
 ```
 
 `npm run dev` needs **no backend**: a Vite middleware (`mock/plugin.ts`) answers every

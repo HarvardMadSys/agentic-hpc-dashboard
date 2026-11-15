@@ -17,6 +17,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import auth as authmod
 from . import feeds as feedmod
 from . import proctree
 from . import redact
@@ -68,6 +69,8 @@ def view_filter(request, anon=None):
 
 
 def create_app(cfg):
+    # First, so a malformed password hash stops the service before it reads anything.
+    gate = authmod.from_config(cfg)
     agg = Aggregator(cfg)
     anon = agg.anon
 
@@ -100,6 +103,7 @@ def create_app(cfg):
                   default_response_class=AnonJSONResponse)
     app.state.cfg = cfg
     app.state.agg = agg
+    app.state.auth = gate
     # ws -> the window that client is viewing. A dict rather than a set because
     # the live frame is window-specific: one payload per DISTINCT window, not
     # one per client, so ten readers on the default window still cost one build.
@@ -607,4 +611,11 @@ def create_app(cfg):
                 "api": ["/api/health", "/api/feeds", "/api/live", "/api/panels",
                         "/api/trajectories", "/api/events", "/api/export"],
             }, status_code=503)
+
+    # -------------------------------------------------------------- sign-in
+    # Around every route above and the static mount, so a route added later is
+    # covered without anyone remembering to be (auth.py).
+    if gate is not None:
+        app.add_middleware(authmod.AuthMiddleware, gate=gate,
+                           site=str(cfg.get("site.name") or ""))
     return app
