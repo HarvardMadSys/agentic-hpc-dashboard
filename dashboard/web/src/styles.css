@@ -1015,6 +1015,12 @@ tbody tr:last-child td {
   background: var(--crit);
   animation: none;
 }
+/* the demo's own records (rc_dashboard/demo): never to be taken for a measurement */
+.pill.synthetic {
+  border-color: var(--warn);
+  border-style: dashed;
+  color: #8a6410;
+}
 @keyframes beat {
   0%,
   100% {

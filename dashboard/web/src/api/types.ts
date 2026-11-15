@@ -55,6 +55,8 @@ export interface FeedReport {
   rows: number | null;
   notice: string | null;
   backfill: unknown;
+  /** hosts whose records were written by the demo (rc_dashboard/demo), not measured */
+  synthetic_hosts?: string[];
 }
 export type FeedsResponse = Record<string, FeedReport>;
 
@@ -104,6 +106,8 @@ export interface CollectorHost {
   runs: CollectorRun[];
   restarts: number;
   files: Partial<Record<'ebpf' | 'ebpf_node', CollectorTierFiles>>;
+  /** its records were written by the demo (rc_dashboard/demo), not by a collector */
+  synthetic?: boolean;
 }
 
 export interface CollectorsResponse {

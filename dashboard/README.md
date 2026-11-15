@@ -31,6 +31,9 @@ uv run python -m rc_dashboard serve
 
 Reach a remote instance over a tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`.
 
+No cluster at hand? [Demo mode](#demo-mode) runs the same service over a synthetic feed it
+writes itself: `uv run python -m rc_dashboard demo`.
+
 ## Configuration
 
 Every source is configurable, resolved **per key** in the order
@@ -69,6 +72,7 @@ silently repoint the readers along with the writer.
 |---|---|---|---|---|---|
 | `run-dev.sh` | 8086 | this dev cluster's live feed, `/scratch/marthen/ebpfm/{ebpf,login}` (rtx6000a) | wall | `gpu-dev.json` | off |
 | `run-fasrc.sh` | 8085 | FAS RC capture, `/scratch/marthen/fas-rc-test-data` (boslogin06, 2026-10-08..09, `.jsonl.gz`) | pinned to the capture's end | `fasrc.json` | on |
+| `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
 Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
 (`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `site.name` (`RC_DASH_SITE_NAME`) is
@@ -81,6 +85,72 @@ The FAS RC `sacct` export (`/scratch/marthen/agentic-hpc-measurement/raw_data/sa
 file a day, 2026-08-23..09-30) is not read: the service is stdlib-only and has no parquet reader,
 and those days overlap neither deployment's eBPF data, so no job id the collector saw can be
 joined to them.
+
+## Demo mode
+
+```bash
+cd dashboard && uv sync && (cd web && npm ci && npm run build)
+uv run python -m rc_dashboard demo        # http://127.0.0.1:8080
+./run-demo.sh                             # the same with hot reload, on :8087
+```
+
+For showing the dashboard where there is no cluster: a laptop, a talk, a reviewer. `demo`
+writes a few days of collector records for fictional login nodes into `.cache/demo/feed`,
+keeps appending to them in real time, and starts the service, unchanged, over them
+(`rc_dashboard/demo/`). The tail, the backfill, every reducer, the saved builds and the
+websocket run as they do on a cluster; the page is not fed from a fixture, so what it shows
+is what the service makes of the records, and the Live tab moves.
+
+**Nothing in it was measured, and it says so everywhere.** Every record carries
+`"synthetic": true`, a key no collector writes. `health.py` notes each host whose records
+carry it, the feeds report lists them (`synthetic_hosts`), and the header shows
+*synthetic data* beside the live pill whenever any host's do; the Feeds tab marks each such
+host. The site is named *demo · synthetic data*, and its description, which the Ask LLM
+agent is given, says no record was measured. Because the mark travels with the records, a
+service pointed at a demo feed by hand, or an export of one, still says it. Use a demo to
+show the dashboard, never to report on one.
+
+**What it writes.** Two hosts, `demo-login01` and `-02`, and 28 people: twelve with a part
+to play (`demo/cast.py`) and a crowd. Their sessions are built from the argv shapes and the
+schema-8 rules the collector and the reducers document, so each tab has what it is for:
+
+| tab | what the demo puts there |
+|---|---|
+| Live, Overview, Resources | a working day and a quieter night: VS Code left connected, agents run from cron, an agent watching a job overnight |
+| Agents | Claude Code in a terminal, `claude -p` and `codex exec` from scripts and from other agents' tool calls (nested), the desktop app's server and Remote Control hosting sessions, VS Code's Claude extension, the Codex app; writes outside the home for the blast radius |
+| Trajectories | sessions cut into tasks labeled in the agent's own words (commit subjects, a pull request's title, a `PROGRESS.md` entry), phases from explore to an edit-test loop, a Slurm job polled to its end |
+| Risk & Warning | a year regridded on the login node, `pip`/`conda` installs, builds, `ssh` to compute nodes, `nvidia-smi`, `rm -rf` on shared scratch, credentials on command lines (masked, as schema 8 writes them) |
+| Slurm | agents submitting with `--parsable` and polling the queue; people submitting arrays and checking now and then; refusals with the scheduler's own words |
+| Internal (Sandbox) | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap` |
+| Feeds | per host: a heartbeat a minute, a nightly collector restart with its lost-event count, a kernel limit on one host |
+
+Costs are drawn per command from ranges that look like a login node's; they make the
+panels' shapes recognisable and are a model of nothing.
+
+**What it overrides**, whatever the shell or the config file says -- `run.sh` exports the
+cluster's feed roots, and a demo must never read them: both feed roots (the demo's own),
+the other feeds (a path in the demo dir that does not exist, so they read *not set up*),
+`cache.dir` (so no real deployment's saved builds are evicted), `clock.as_of` (the wall
+clock), `live.retention_min` and `live.backfill_hours` (the history written), and
+`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
+`--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
+
+| flag | env | default | |
+|---|---|---|---|
+| `--demo-days` | `RC_DASH_DEMO_DAYS` | 3 | history written before serving, 1..14 |
+| `--demo-hosts` | `RC_DASH_DEMO_HOSTS` | 2 | login nodes, 1..6 |
+| `--demo-seed` | `RC_DASH_DEMO_SEED` | `demo` | another seed is another set of sessions |
+| `--demo-dir` | `RC_DASH_DEMO_DIR` | `.cache/demo` | the feed, the saved builds, the stamp |
+| `--demo-fresh` | | | discard the feed and write it again |
+| `--demo-write-only` | | | write the history and exit |
+
+**Restarts resume it.** The feed is a function of the seed, the host count and the clock:
+the same span cut into windows anywhere is the same bytes (`demo/world.py`;
+`tests/test_demo.py` checks it). `demo.json` stamps how far the feed was written, so a
+restart -- `run.sh` restarts on every save -- cuts whatever a stopped round left past that,
+then writes on from it; nothing is written twice and nothing is missed. A stamp from another
+seed or host count, or one older than the history asked for, starts the feed afresh. One
+demo writes a directory at a time (`.demo.lock`), as one collector writes a host.
 
 ## A capture from another cluster
 
@@ -792,6 +862,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (`seek_to_epoch`) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
+| `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
 
 ## Ingestion, precisely
