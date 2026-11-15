@@ -21,7 +21,7 @@ from . import agents, cast, host as hostmod, sessions
 
 # Bump when what a seed writes changes: a feed from another generator is
 # written again rather than resumed into a mixture of the two.
-GENERATOR = 1
+GENERATOR = 2
 
 # The longest any session runs: how far back a window looks for plans.
 MAX_SESSION_S = 20 * 3600

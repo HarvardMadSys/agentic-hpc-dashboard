@@ -1,0 +1,29 @@
+// The dashboard's demo mode on Cloudflare (README.md): a Worker in front of one
+// container running `rc_dashboard demo`, built from docker/demo/Dockerfile.
+//
+//   npm ci && npx wrangler login && npx wrangler deploy
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-dashboard-demo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "DashboardDemo",
+      // Built by `wrangler deploy` with the local Docker, from the repo root, as
+      // .github/workflows/collector-image.yml builds docker/collector.
+      "image": "../../docker/demo/Dockerfile",
+      "image_build_context": "../..",
+      // 1/4 vCPU and 1 GiB. The demo holds ~130 MB and listens ~11 s after a cold
+      // start at this size; standard-1 halves that and costs more while awake.
+      "instance_type": "basic",
+      // One demo for every visitor, and a ceiling on what it can cost.
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "DEMO", "class_name": "DashboardDemo" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DashboardDemo"] }]
+}
