@@ -42,6 +42,8 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
   const view = zoom && zoom.win === winKey ? zoom.v : null;
   const onView = (v: View) => setZoom(v ? { win: winKey, v } : null);
   const z = { view, onView };
+  // The picker's chart is the only chart on its panel: it takes the panel's width.
+  const zw = { ...z, wide: true };
   const [picked, setPicked] = useState<PickKey>('wait');
   // the tables folded under the charts sort too (roadmap note 27)
   const sortOf = useSortMap();
@@ -154,7 +156,7 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
         return (
           <>
             {anyValue(lines) ? (
-              <TimeChart {...z} s={s} lines={lines} perMin ylabel="wait s / min" yname="wait s/min" />
+              <TimeChart {...zw} s={s} lines={lines} perMin ylabel="wait s / min" yname="wait s/min" />
             ) : (
               <p className="nm">schedstat was not readable for any selected class</p>
             )}
@@ -196,7 +198,7 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
         return (
           <>
             {anyValue(stallLines) ? (
-              <TimeChart {...z} s={s} lines={stallLines} perMin ylabel="D-state s / min" yname="D-state s/min" />
+              <TimeChart {...zw} s={s} lines={stallLines} perMin ylabel="D-state s / min" yname="D-state s/min" />
             ) : (
               <NoRows what="no process stalled in uninterruptible sleep in the window" />
             )}
@@ -236,14 +238,14 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
       case 'faults': {
         const lines = byCls('maj_flt');
         return anyValue(lines)
-          ? <TimeChart {...z} s={s} lines={lines} perMin ylabel="faults / min" yname="faults/min" />
+          ? <TimeChart {...zw} s={s} lines={lines} perMin ylabel="faults / min" yname="faults/min" />
           : <NoRows what="no major fault was recorded in the window for the selection" />;
       }
       case 'read':
         return (
           <>
             <div className="eyebrow">solid: read from the disk · dashed: passed through read(), the gap is the <Term k="pagecache">page cache</Term></div>
-            <TimeChart {...z} s={s} lines={ioLines('rd_mb', 'rchar_mb', 'read()')} ylabel="MB / min"
+            <TimeChart {...zw} s={s} lines={ioLines('rd_mb', 'rchar_mb', 'read()')} ylabel="MB / min"
               yname="read" perMin legend={ioLegend('read() calls')} />
           </>
         );
@@ -251,7 +253,7 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
         return (
           <>
             <div className="eyebrow">solid: written to the disk · dashed: passed through write()</div>
-            <TimeChart {...z} s={s} lines={ioLines('wr_mb', 'wchar_mb', 'write()')} ylabel="MB / min"
+            <TimeChart {...zw} s={s} lines={ioLines('wr_mb', 'wchar_mb', 'write()')} ylabel="MB / min"
               yname="written" perMin legend={ioLegend('write() calls')} />
           </>
         );
@@ -259,7 +261,7 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
         return anyValue(netLines) ? (
           <>
             <div className="eyebrow">solid: sent · dashed: received, by the processes that exited in each bin</div>
-            <TimeChart {...z} s={s} lines={netLines} ylabel="MB / min" yname="network" perMin
+            <TimeChart {...zw} s={s} lines={netLines} ylabel="MB / min" yname="network" perMin
               legend={[
                 ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
                 { k: 'sent', c: 'var(--ink-2)', solid: true },
@@ -270,9 +272,9 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
           <NoRows what="no TCP accounting for the selection in the window" />
         );
       case 'queue':
-        return ss ? <TimeChart {...z} s={ss} lines={slurmLines('queries')} ylabel={`checks / ${dur(ss.bin_s)}`} yname="checks" /> : null;
+        return ss ? <TimeChart {...zw} s={ss} lines={slurmLines('queries')} ylabel={`checks / ${dur(ss.bin_s)}`} yname="checks" /> : null;
       case 'jobs':
-        return ss ? <TimeChart {...z} s={ss} lines={slurmLines('jobs')} ylabel={`jobs / ${dur(ss.bin_s)}`} yname="jobs" /> : null;
+        return ss ? <TimeChart {...zw} s={ss} lines={slurmLines('jobs')} ylabel={`jobs / ${dur(ss.bin_s)}`} yname="jobs" /> : null;
       default:
         return null;
     }

@@ -99,6 +99,20 @@ const DATA_WORDS: Record<FeedStatus, [string, string]> = {
   missing: ['collector not found', 'a required feed has no files where it is expected'],
 };
 
+/** A build time for the rail: `Sep 14, 15:33` local, the exact stamp on hover. */
+function stamp(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function pillOf(
   status: FeedStatus | 'live',
   transport: Transport,
@@ -220,6 +234,15 @@ export default function App() {
     [askInfo, resolvedWin?.minutes, resolvedWin?.label, who, url.cls, tab.lbl],
   );
   const hl = headline(feeds.data);
+  // Which feeds are past their own max age rides on the pill's hover rather
+  // than as a second warning beside it: the pill already says the data is late.
+  const pill = pillOf(hl.status, live.transport);
+  if (hl.stale.length) {
+    pill.tip = [
+      pill.tip,
+      ...hl.stale.map((f) => `${f.name}: lag ${lagStr(f.lag_s)} > max ${lagStr(f.max_age_s)}`),
+    ].join('\n');
+  }
   const P = panels.data?.panels ?? {};
 
   const nClasses = url.cls.length;
@@ -327,57 +350,58 @@ export default function App() {
               }}
             >
               {t.lbl}
-              <span className="n">
-                {t.k === 'live' ? (
-                  <i
-                    className="dot"
-                    style={{
-                      background: live.transport === 'ws' ? 'var(--live)' : 'var(--warn)',
-                      borderRadius: '50%',
-                    }}
-                  />
-                ) : t.k === tab.k ? (
-                  '●'
-                ) : (
-                  ''
-                )}
-              </span>
+              {/* Live's dot is the transport; the open tab needs no marker
+                  beyond its highlight. */}
+              {t.k === 'live' && (
+                <i
+                  className="dot"
+                  style={{
+                    background: live.transport === 'ws' ? 'var(--live)' : 'var(--warn)',
+                    borderRadius: '50%',
+                  }}
+                />
+              )}
             </button>
             {t.k === tab.k && <SectionList secs={secs} active={active} />}
             </Fragment>
           ))}
         </nav>
-        <div className="foot mono">
-          updates{' '}
-          <span style={{ color: 'var(--ink-2)' }}>
+        <dl className="foot mono">
+          <dt>updates</dt>
+          <dd data-tip="how the page gets new records: streamed over the socket, or a 15 s poll">
             {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
               live.transport
             ]}
-          </span>
-          <br />
-          last update {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
-          <br />
-          window <span style={{ color: 'var(--ink-2)' }}>{resolvedWin?.label ?? '—'}</span>
+          </dd>
+          <dt>last</dt>
+          <dd>{live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}</dd>
           {windows?.retention_minutes != null && (
-            <span> of {Math.round(windows.retention_minutes / 60)}h held</span>
+            <>
+              <dt>held</dt>
+              <dd data-tip="how far back this service keeps records; no window can reach past it">
+                {Math.round(windows.retention_minutes / 60)}h
+              </dd>
+            </>
           )}
-          <br />
-          panels built {panels.data?.full_built_at ?? '—'}
-          {/* Restored from a saved build: the age above is that build's, and
-              everything written since was read from the files on top of it. */}
-          {winStatus?.cache?.source === 'snapshot' && (
-            <span data-tip={winStatus.cache.note ?? ''}> · restored</span>
-          )}
-          <br />
+          <dt>built</dt>
+          <dd data-tip={`panels built ${panels.data?.full_built_at ?? '—'}`}>
+            {stamp(panels.data?.full_built_at)}
+            {/* Restored from a saved build: the age above is that build's, and
+                everything written since was read from the files on top of it. */}
+            {winStatus?.cache?.source === 'snapshot' && (
+              <span data-tip={winStatus.cache.note ?? ''}> · restored</span>
+            )}
+          </dd>
           {nClasses < 3 && (
-            <span style={{ color: 'var(--crimson-ink)' }}>
-              {nClasses} of 3 classes shown
-            </span>
+            <dd className="warn">{nClasses} of 3 classes shown</dd>
           )}
-        </div>
+        </dl>
       </aside>
 
       <main ref={mainRef}>
+        {/* Title, status and the window/class/who controls are one block: all
+            of it answers "what am I looking at", so it reads as one header. */}
+        <div className="masthead">
         <div className="head">
           <div>
             <div className="eyebrow">{tab.eyebrow}</div>
@@ -398,7 +422,7 @@ export default function App() {
                 </span>
               </>
             ) : (
-              <StatusPill {...pillOf(hl.status, live.transport)} />
+              <StatusPill {...pill} />
             )}
             {anonymized && (
               <span
@@ -416,16 +440,6 @@ export default function App() {
                 newest record <b>{hl.lag}</b> old
               </span>
             )}
-            {hl.stale.length > 0 && (
-              <span
-                style={{ color: '#8a6410' }}
-                data-tip={hl.stale
-                  .map((f) => `${f.name}: lag ${lagStr(f.lag_s)} > max ${lagStr(f.max_age_s)}`)
-                  .join('\n')}
-              >
-                {hl.stale.length} feed{hl.stale.length > 1 ? 's' : ''} past max_age
-              </span>
-            )}
             <span
               data-tip={
                 (live.live?.hosts ?? []).map((h) => h.host).join(', ') ||
@@ -435,24 +449,14 @@ export default function App() {
               {fint(live.live?.hosts?.length ?? null)} host
               {(live.live?.hosts?.length ?? 0) === 1 ? '' : 's'}
             </span>
-            <button className="btn" onClick={live.refresh}>
+            <button className="btn" onClick={live.refresh} data-tip="ask the service for the latest now">
               refresh
             </button>
           </div>
         </div>
 
-        {(panels.error || live.error || feeds.error) && (
-          <div className="err" style={{ marginBottom: 14 }}>
-            {[panels.error && `/api/panels: ${panels.error}`,
-              feeds.error && `/api/feeds: ${feeds.error}`,
-              live.error && `/api/live: ${live.error}`]
-              .filter(Boolean)
-              .join(' · ')}
-          </div>
-        )}
-
         {tab.k !== 'feeds' && (
-          <>
+          <div className="toolbar">
             <WindowPicker
               value={url.win}
               onChange={(w) => setUrl({ win: w })}
@@ -472,7 +476,18 @@ export default function App() {
                 />
               }
             />
-          </>
+          </div>
+        )}
+        </div>
+
+        {(panels.error || live.error || feeds.error) && (
+          <div className="err" style={{ marginBottom: 14 }}>
+            {[panels.error && `/api/panels: ${panels.error}`,
+              feeds.error && `/api/feeds: ${feeds.error}`,
+              live.error && `/api/live: ${live.error}`]
+              .filter(Boolean)
+              .join(' · ')}
+          </div>
         )}
 
         <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>

@@ -374,7 +374,6 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
         <Plate
           k={`agent jobs submitted ${win}`}
           total={cls.includes('agent') && sp._present ? a?.jobs ?? 0 : null}
-          stripe="var(--s1)"
           by={byOf((c) => c.jobs)}
           tip="submissions that came back with a job id; dry runs and steps into a held allocation are not jobs"
           note={a ? `${fint(a.sessions)} agent sessions · busiest ${fint(a.peak_per_min)} in one minute` : undefined}
@@ -383,7 +382,6 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
           k="queue checks per job"
           total={cls.includes('agent') ? a?.queries_per_job ?? null : null}
           fmtFn={fmt}
-          stripe="var(--s5)"
           by={byOf((c) => c.queries_per_job)}
           tip="squeue, sacct, scontrol, sinfo, … calls for every job submitted: an agent waiting on a job polls; a person mostly does not"
           note={a ? `${fint(a.queries)} queue checks by agents` : undefined}
@@ -391,7 +389,7 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
         <Plate
           k="agent sessions polling the queue"
           total={cls.includes('agent') && sp._present ? a?.polling_sessions ?? 0 : null}
-          stripe={(a?.polling_sessions ?? 0) > 0 ? 'var(--crit)' : 'var(--s2)'}
+          alarm={(a?.polling_sessions ?? 0) > 0}
           by={byOf((c) => c.polling_sessions)}
           tip="a session that polled the scheduler at least every 3 minutes for 10 minutes or more"
           note={a ? `${fmt(a.polling_h)} h spent polling` : undefined}
@@ -399,7 +397,7 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
         <Plate
           k="submissions refused"
           total={cls.includes('agent') && sp._present ? a?.rejected ?? 0 : null}
-          stripe={(a?.rejected ?? 0) > 0 ? 'var(--crit)' : 'var(--s2)'}
+          alarm={(a?.rejected ?? 0) > 0}
           by={byOf((c) => c.rejected)}
           tip="no job id, a non-zero exit, and the scheduler's own refusal"
           note={a?.rejected ? `${pc(a.rejected_pct)} of agent submissions${topWhy ? ` · most: ${topWhy.why}` : ''}` : undefined}

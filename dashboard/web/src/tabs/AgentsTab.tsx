@@ -387,12 +387,12 @@ function TypeStrip({ stats }: { stats: TypeStat[] }) {
             {fint(s.agents)} <small>agent{s.agents === 1 ? '' : 's'}</small>
           </div>
           <div className="n">
+            {fint(s.procs)} processes · {dur(s.cpu)} CPU
+          </div>
+          <div className="n">
             <span className="q-mark" data-tip={GLOSS.subagent}>{fint(s.nested)} subagent{s.nested === 1 ? '' : 's'}</span>
             {' · '}
             <span className="q-mark" data-tip="agents of this type that started another agent, of any type">{fint(s.started)} started one</span>
-          </div>
-          <div className="n">
-            {fint(s.procs)} processes · {dur(s.cpu)} CPU
           </div>
           <div className="n">
             <span className={`q-mark${s.outside ? ' warnword' : ''}`} data-tip={GLOSS.outsidehome}>

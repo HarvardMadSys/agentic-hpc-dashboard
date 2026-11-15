@@ -154,10 +154,9 @@ nav button[aria-selected='true'] {
   font-weight: 600;
   box-shadow: inset 2px 0 0 var(--crimson);
 }
-nav .n {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 10px;
-  color: var(--muted);
+nav button .dot {
+  width: 6px;
+  height: 6px;
 }
 /* the open tab's sections, under its button in the rail */
 .secnav {
@@ -190,13 +189,32 @@ section.panel {
   scroll-margin-top: 14px;
 }
 
+/* The rail's footer: how the page is fed, as a short key/value list. */
 .rail .foot {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
   padding: 14px 18px 0;
-  margin-top: 10px;
+  margin: 10px 0 0;
   border-top: 1px solid var(--rule);
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--muted);
   line-height: 1.6;
+}
+.rail .foot dt {
+  color: var(--muted);
+}
+.rail .foot dd {
+  margin: 0;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail .foot dd.warn {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  color: var(--crimson-ink);
 }
 
 main {
@@ -204,15 +222,21 @@ main {
   max-width: 1560px;
   min-width: 0;
 }
+/* Title, status and the view controls: one block, one rule under it. */
+.masthead {
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 18px;
+}
 .head {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: 12px 16px;
   align-items: flex-end;
   justify-content: space-between;
+  padding-bottom: 12px;
+}
+.masthead > .head:last-child {
   padding-bottom: 14px;
-  border-bottom: 1px solid var(--rule);
-  margin-bottom: 18px;
 }
 .head h1 {
   font-size: 23px;
@@ -294,7 +318,7 @@ main {
 }
 
 /* ------------------------------------------------------------ window picker
- * Sits directly above the class filter: both answer "what is on screen", and a
+ * Sits directly beside the class filter: both answer "what is on screen", and a
  * reader checking one should not have to hunt for the other. */
 .winpick {
   display: flex;
@@ -302,6 +326,28 @@ main {
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;
+}
+
+/* The page's view controls on one row under the title: window, then class and
+ * who. Every control in it is the same height, so the row reads as one strip. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 28px;
+  padding-bottom: 12px;
+}
+.toolbar > .winpick,
+.toolbar > .filters {
+  margin: 0;
+}
+.toolbar .seg button,
+.toolbar .chip,
+.toolbar .who-btn,
+.toolbar .wininput {
+  line-height: 16px;
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 .wininput {
   all: unset;
@@ -407,14 +453,16 @@ main {
   display: flex;
   flex-direction: column;
 }
-.plate::before {
+/* No colour of its own (components/Plate.tsx): only a count that is a problem
+ * gets an edge, and it is red. */
+.plate.alarm::before {
   content: '';
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
   width: 3px;
-  background: var(--stripe, var(--s1));
+  background: var(--crit);
 }
 .plate .k {
   font-size: 10px;
@@ -2032,31 +2080,40 @@ table tr.section.fold:hover td {
   border-color: var(--ink-2);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-2) 18%, transparent);
 }
-/* the tool mix read across: one bar per kind of tool, split by who ran it */
+/* the tool mix read across: one bar per kind of tool, split by who ran it, and
+ * each class's share on the same line beside it */
+td.whocell {
+  min-width: 320px;
+}
+td.whocell > span {
+  vertical-align: middle;
+}
 .whobar {
-  display: flex;
+  display: inline-flex;
+  width: 360px;
+  max-width: 50%;
   height: 10px;
   border-radius: 2px;
   overflow: hidden;
   background: var(--rule);
-  max-width: 360px;
 }
 .whobar i {
   display: block;
   height: 100%;
 }
 .whopct {
-  display: flex;
+  display: inline-flex;
   gap: 10px;
+  margin-left: 14px;
   font-size: 10.5px;
   color: var(--ink-2);
-  margin-top: 3px;
   font-family: 'IBM Plex Mono', monospace;
 }
 .whopct span {
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  min-width: 48px;
 }
 .whopct i {
   width: 7px;

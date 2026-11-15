@@ -155,9 +155,9 @@ Two more that the payloads force:
 
 ## The window control
 
-`src/components/WindowPicker.tsx`, directly above the class filter — both answer "what is on
-screen", and a reader checking one should not have to hunt for the other. It is URL-backed as
-`?win=<minutes>`, like every other view knob.
+`src/components/WindowPicker.tsx`, on one row with the class and who filters under the page
+title — all of them answer "what is on screen", and a reader checking one should not have to
+hunt for the others. It is URL-backed as `?win=<minutes>`, like every other view knob.
 
 Three rules it follows, all of them the same rule this page follows everywhere:
 

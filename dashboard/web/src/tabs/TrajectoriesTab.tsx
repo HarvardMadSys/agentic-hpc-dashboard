@@ -339,7 +339,6 @@ export function TrajectoriesTab({
         <Plate
           k="agent sessions in window"
           total={agent?.sessions ?? null}
-          stripe="var(--s1)"
           by={byCls((d) => d.sessions)}
           tip={
             'a session is one agent process and everything it ran (for agents), or one ' +
@@ -368,7 +367,6 @@ export function TrajectoriesTab({
         <Plate
           k="processes per agent session · median"
           total={agent?.calls_p50 ?? null}
-          stripe="var(--s4)"
           by={byCls((d) => d.calls_p50)}
           note={
             agent?.calls_p50 != null
@@ -379,7 +377,6 @@ export function TrajectoriesTab({
         <Plate
           k="agent session length · median"
           total={agent?.wall_p50_s ?? null}
-          stripe="var(--s6)"
           by={byCls((d) => d.wall_p50_s)}
           fmtFn={(n) => dur(n)}
           tip={
@@ -397,7 +394,6 @@ export function TrajectoriesTab({
         <Plate
           k="agent processes spent waiting"
           total={agent?.wait_pct ?? null}
-          stripe="var(--s2)"
           by={byCls((d) => d.wait_pct)}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
           tip={

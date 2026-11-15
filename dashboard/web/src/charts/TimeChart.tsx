@@ -52,6 +52,7 @@ export function TimeChart({
   yfmt,
   ymax,
   legend,
+  wide = false,
 }: {
   /** any binned series: only its clock (`t`, `bin_s`) is read here */
   s: { t: number[]; bin_s: number };
@@ -66,6 +67,8 @@ export function TimeChart({
   ymax?: number;
   /** a legend other than one swatch per line, e.g. classes plus a line-style key */
   legend?: { k: string; c: string; dashed?: boolean; solid?: boolean }[];
+  /** drawn across a whole panel rather than half of one */
+  wide?: boolean;
 }) {
   const k = scale * (perMin ? 60 / s.bin_s : 1);
   const x0 = s.t[0];
@@ -84,8 +87,8 @@ export function TimeChart({
     <>
       <Lines
         series={series}
-        W={520}
-        H={210}
+        W={wide ? 1060 : 520}
+        H={wide ? 230 : 210}
         ymin={0}
         ymax={ymax}
         yfmt={yfmt}

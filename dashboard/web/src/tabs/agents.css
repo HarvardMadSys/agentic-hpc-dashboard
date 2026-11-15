@@ -261,7 +261,8 @@ table.trees .sub-chip {
  * A strip compares the types; one is open at a time. */
 .atype-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  /* wide enough that a card's lines do not wrap */
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
