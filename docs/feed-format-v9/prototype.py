@@ -87,8 +87,15 @@ ENVELOPE = ("ts", "ts_epoch", "host", "event", "collector_pid", "schema_version"
 RUN_EVENTS = ("meta", "stop", "residency_totals")      # keep collector_pid (health.py)
 EXIT_EVENTS = ("exit", "truncated")
 TICK_EVENTS = ("residency", "conn", "netio", "submit")
-# Exit fields schema 9 drops: derivable, per-capture constants, or always null.
-EXIT_DROP = ("start", "cpu_pct", "cpu_scope", "samples", "state_last")
+# What schema 9 drops from an `exit` or `truncated` record is only what it can
+# rebuild for THAT record. An `exit` (`_exit_record`) always has `cpu_pct`
+# (cpu_s / duration_s), and `samples`/`state_last` are null poller placeholders.
+# A `truncated` record is built elsewhere (`flush_live`): it has no `cpu_pct`, its
+# `state_last` is the process's last /proc state, its `cpu_scope` is always
+# `process`, and its counters' `io.scope` is `proc`. So `samples` and `state_last`
+# are dropped only when null, and a scope only when it is the capture's own
+# (`meta.cpu_scope`, `meta.counters_scope`).
+NULL_ONLY = ("samples", "state_last")
 MIB = 1048576
 
 # Every difference the round trip may show, and why. Anything else fails `verify`.
@@ -103,7 +110,6 @@ DECLARED = {
     "cpu_pct": "rebuilt from the rounded cpu_s/duration_s, so the last digit can move",
     "conns.peers": "each merged into an endpoint row that agrees on bytes and counts, "
                    "or kept whole in conns.peers_unmatched; checked separately below",
-    "conns.providers": "derivable from net_endpoints' rows",
 }
 
 # The zone schema 8's naive strings are read and written in (`--tz`); None is
@@ -232,7 +238,11 @@ class Index:
         if host not in self.btime:
             self.btime[host] = (ts or 0) - 30 * 86400
             self.btime_guessed.add(host)
-        if ev in EXIT_EVENTS and r.get("pid") is not None:
+        if ev in EXIT_EVENTS and r.get("pid") is not None \
+                and (r.get("duration_s") is not None or r.get("start")):
+            # Only a record that knows its start is a life: one that does not (a
+            # truncated process with no exec time and no /proc start) would be a
+            # life starting at its own timestamp, and a second process on its pid.
             self._life(host, r["pid"], exit_start(r), ts)
         elif ev == "residency" and r.get("pid") is not None and r.get("age_s") is not None:
             self._life(host, r["pid"], ts - r["age_s"], None)
@@ -318,15 +328,26 @@ def exit_start(r):
 
 # --------------------------------------------------------------------------- convert
 
-def io_v9(io8):
+def scopes(ix, host, ts):
+    """The capture's own scopes for a record at `ts`: its run's `meta`."""
+    meta = ix.run_at(host, ts)[1]
+    return (meta.get("cpu_scope") or "process", meta.get("counters_scope") or "process")
+
+
+def io_v9(io8, scope):
+    """The io block in bytes. `scope` goes only where it is not the capture's
+    (`scope`): a truncated record's counters are /proc's (`proc`)."""
     if io8 is None:
         return None
     out = {}
     for k, v in io8.items():
         if k == "scope":
-            continue                     # a property of the capture: meta.counters_scope
-        out[k[:-3] + "_bytes" if k.endswith("_mb") else k] = (
-            None if v is None else int(round(v * 1e6)))
+            if v != scope:
+                out["scope"] = v
+        elif k.endswith("_mb"):
+            out[k[:-3] + "_bytes"] = None if v is None else int(round(v * 1e6))
+        else:
+            out[k] = v
     return out
 
 
@@ -366,9 +387,12 @@ def endpoints_v9(ne, conns):
 
 
 def conns_v9(c, peers_left):
+    """The conns block without `peers`, which the endpoint rows now hold.
+    `providers` stays: it counts every connection (`_conn_fold`), failed ones
+    and those past the top-N peers included, which no endpoint row can."""
     if c is None:
         return None
-    out = {k: v for k, v in c.items() if k not in ("peers", "providers")}
+    out = {k: v for k, v in c.items() if k != "peers"}
     if peers_left:                       # never silently dropped
         out["peers_unmatched"] = peers_left
     return out
@@ -445,7 +469,10 @@ def to_v9(r, ix, day, counts):
         ppk = ix.pk(host, r.get("ppid"), start) if r.get("ppid") else None
         out.update(pk=pk_, ppk=ppk, sess=sess)
         out.update((k, r.get(k)) for k in PROC_KEYS)
-        out["start_epoch"] = round(start, 3)
+        # Null where the collector did not know the start (no exec time and no
+        # /proc start, so `start` is null), as it was: `pk` still needs one,
+        # and takes the guess above.
+        out["start_epoch"] = round(start, 3) if r.get("start") is not None else None
         define_session(ix, day, host, sess, ts)
     elif tracked:
         pk_ = ix.pk(host, r.get("pid"), ts)
@@ -461,17 +488,27 @@ def to_v9(r, ix, day, counts):
     peers_left = []
     if ev in EXIT_EVENTS:
         ne, peers_left = endpoints_v9(r.get("net_endpoints"), r.get("conns"))
+        cpu_scope, io_scope = scopes(ix, host, ts)
     for k, v in r.items():
         if k in ENVELOPE or k in V8_IDENTITY:
             continue
         if ev in EXIT_EVENTS:
-            if k in EXIT_DROP:
+            if k == "start":
+                continue                    # start_epoch, above
+            if k == "cpu_pct" and ev == "exit":
+                continue                    # cpu_s / duration_s, rebuilt
+            if k in NULL_ONLY and v is None:
                 continue
+            if k == "cpu_scope" and v == cpu_scope:
+                continue                    # the capture's, in meta
             if k == "peak_rss_mb":
                 out["peak_rss_bytes"] = None if v is None else int(round(v * MIB))
                 continue
+            if k == "rss_mb":               # a truncated record's VmRSS at the stop
+                out["rss_bytes"] = None if v is None else int(round(v * MIB))
+                continue
             if k == "io":
-                out["io"] = io_v9(v)
+                out["io"] = io_v9(v, io_scope)
                 continue
             if k == "conns":
                 out["conns"] = conns_v9(v, peers_left)
@@ -548,15 +585,22 @@ def to_v8(r, ix, defs, sessions):
         if k == "peak_rss_bytes":
             out["peak_rss_mb"] = None if v is None else round(v / MIB, 2)
         elif k == "rss_bytes":
-            out["rss_mb"] = None if v is None else round(v / MIB, 1)
+            # the collector rounds a truncated record's to 2 places, a residency's to 1
+            places = 2 if ev in EXIT_EVENTS else 1
+            out["rss_mb"] = None if v is None else round(v / MIB, places)
         elif k == "top_procs" and v:
             out[k] = [{("rss_mb" if kk == "rss_bytes" else kk):
                        (round(vv / MIB, 1) if kk == "rss_bytes" and vv is not None else vv)
                        for kk, vv in p.items()} for p in v]
         elif k == "io" and v is not None:
-            out["io"] = {(kk[:-6] + "_mb" if kk.endswith("_bytes") else kk):
-                         (None if vv is None else round(vv / 1e6, 3)) for kk, vv in v.items()}
-            out["io"]["scope"] = meta.get("counters_scope") or "process"
+            io = {}
+            for kk, vv in v.items():
+                if kk.endswith("_bytes"):
+                    io[kk[:-6] + "_mb"] = None if vv is None else round(vv / 1e6, 3)
+                else:
+                    io[kk] = vv
+            io.setdefault("scope", meta.get("counters_scope") or "process")
+            out["io"] = io
         elif k == "net_endpoints" and v is not None:
             rows = [{kk: vv for kk, vv in e.items() if kk not in ("conns", "failed")}
                     for e in v.get("endpoints") or []]
@@ -572,10 +616,13 @@ def to_v8(r, ix, defs, sessions):
             out[k] = v
     if ev in EXIT_EVENTS:
         out["start"] = stamp(r["start_epoch"]) if r.get("start_epoch") is not None else None
-        d, c = out.get("duration_s"), out.get("cpu_s")
-        out["cpu_pct"] = round(100.0 * c / d, 1) if d and d >= 0.01 and c is not None else None
-        out["cpu_scope"] = meta.get("cpu_scope") or "process"
-        out["samples"] = out["state_last"] = None
+        if ev == "exit":
+            d, c = out.get("duration_s"), out.get("cpu_s")
+            out["cpu_pct"] = (round(100.0 * c / d, 1) if d and d >= 0.01 and c is not None
+                              else None)
+        out.setdefault("cpu_scope", meta.get("cpu_scope") or "process")
+        for k in NULL_ONLY:
+            out.setdefault(k, None)
     return out
 
 

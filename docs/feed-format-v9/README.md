@@ -115,12 +115,17 @@ agent SESSION", yet the feed has no session record to hold it. `sandbox.py:44` e
 why it must read the root's own record: a first-record-wins rule made the answer depend
 on exit order.
 
-**F4. Some fields are derivable, constant per capture, or always null.**
+**F4. On an exit, some fields are derivable, constant per capture, or always null.**
 - `ts` restates `ts_epoch` as a local, naive string.
 - `session_key` is `"apid:" + agent_pid`.
 - `cpu_pct` is `cpu_s / duration_s`.
-- `cpu_scope` and `io.scope` restate `meta.counters_scope`.
+- `cpu_scope` and `io.scope` restate `meta.cpu_scope` and `meta.counters_scope`.
 - `samples` and `state_last` are always null (`normalize.py`, `ALWAYS_NULL`).
+
+A `truncated` record, written for each live process at stop (`flush_live`), is built
+differently. It has no `cpu_pct`, its `state_last` is the process's last `/proc` state,
+and its counters come from `/proc` (`io.scope` is `proc`). So these fields can be dropped
+only where they hold what the rule says, not by name.
 - `net_endpoints.n` is the length of its list plus `overflow.n`, the endpoints cut
   past the cap.
 
@@ -226,10 +231,10 @@ identity. Changes from schema 8:
 |---|---|
 | added | `pk`, `ppk`, `sess`, `start_epoch` (replaces `start`) |
 | moved to `session` | `agent_type`, `agent_pid` (as `root_pk`), `tree_root_pid` (as `tree_root_pk`), `session_uuid` (as `sess`), `autonomous` |
-| dropped, derivable | `ts`, `session_key`, `cpu_pct`, `net_endpoints.n`, `conns.providers` |
-| dropped, constant per capture | `collector_pid`, `cpu_scope`, `io.scope` (all in `meta`) |
-| dropped, always null | `samples`, `state_last` |
-| renamed, because the unit changed | `peak_rss_mb` → `peak_rss_bytes`; `io.{rd,wr,rchar,wchar}_mb` → `io.*_bytes` |
+| dropped, derivable | `ts`, `session_key`, `cpu_pct` (on an `exit`), `net_endpoints.n` |
+| dropped where it is the capture's | `collector_pid`; `cpu_scope` and `io.scope` when they equal `meta`'s, kept otherwise (a `truncated` record's `/proc` counters keep `io.scope: proc`) |
+| dropped when null | `samples`, `state_last` (a `truncated` record's `state_last` is kept) |
+| renamed, because the unit changed | `peak_rss_mb` → `peak_rss_bytes`; `rss_mb` (a `truncated` record's) → `rss_bytes`; `io.{rd,wr,rchar,wchar}_mb` → `io.*_bytes` |
 | merged | `conns.peers[]` → each TCP row of `net_endpoints.endpoints[]` that agrees on a peer's bytes gains its `conns` and `failed` |
 
 `actor3` stays inline even though it can be derived from `actor` and the session's
@@ -239,8 +244,10 @@ classed correctly even when its session definition is missing. `approval_mode` a
 (`_approval_of`). The session record carries the root's values.
 
 `conns` keeps its connection statistics, which only the TCP birth map knows: `n`,
-`accepted`, `established`, `failed`, `conn_s_total`, the connect latencies and
-`peers_total`. It also keeps its `rx_bytes`/`tx_bytes`, which come from `tcp_info`, a
+`accepted`, `established`, `failed`, `conn_s_total`, the connect latencies,
+`peers_total`, and `providers`. `providers` counts every connection by provider,
+failed ones and those past the top-N `peers` included, which no endpoint row can rebuild.
+It also keeps its `rx_bytes`/`tx_bytes`, which come from `tcp_info`, a
 second measurement independent of the endpoint table. For the same reason a peer merges
 into an endpoint row only when the row agrees on its bytes. A peer whose bytes differ, or
 that matches no row, is kept whole in `conns.peers_unmatched`, not dropped.
@@ -346,7 +353,7 @@ by field, except for the differences declared below:
 | declared difference | records | why |
 |---|---:|---|
 | `cpu_pct` | 277 | rebuilt from rounded `cpu_s`/`duration_s`, so the last digit moves |
-| `conns.peers`, `conns.providers` | 83 | merged into endpoint rows; all 83 peers matched a row on addr, port and both byte counts (one that did not would be kept whole, and one in neither place fails the run) |
+| `conns.peers` | 83 | merged into endpoint rows; all 83 peers matched a row on addr, port and both byte counts (one that did not would be kept whole, and one in neither place fails the run) |
 | `ts` | 1 | rebuilt from `ts_epoch`; the collector stamps them separately |
 
 **Projection.** This assumes a real exit record is composed like the synthetic one. On
@@ -360,7 +367,7 @@ would replace this guess with a measurement.
 
 ### 4.1 Omit null fields
 
-Writing only non-null keys: plain 70.8 % on exits (vs 80.4 %), gzip 93.5 % (vs 96.5 %).
+Writing only non-null keys: plain 70.8 % on exits (vs 80.4 %), gzip 93.6 % (vs 96.5 %).
 Over the whole feed this saves another 4.6 points plain and 1.7 points gzip. **Not
 proposed.** The project decided that absent and null must not be confused
 (`_stub_identity`), and this small gain does not justify reopening that decision.
