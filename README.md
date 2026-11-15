@@ -134,6 +134,8 @@ writes itself, for fictional login nodes and users. Every page says *synthetic d
 cd dashboard && uv run python -m rc_dashboard demo     # after the web build above; http://127.0.0.1:8080
 bash run-demo.sh                                       # or with hot reload, on :8087
 ```
+As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare Worker:
+[`deploy/cloudflare`](deploy/cloudflare/README.md).
 
 ## Configuration -- Dashboard
 ```bash

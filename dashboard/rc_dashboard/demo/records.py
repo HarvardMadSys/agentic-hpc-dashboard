@@ -22,8 +22,14 @@ def stamp(epoch):
     return time.strftime(TS, time.localtime(epoch))
 
 
-def line(rec):
-    return (json.dumps(rec, separators=(",", ":")) + "\n").encode()
+try:                                    # a dashboard dependency, and 5x json's speed
+    import orjson
+
+    def line(rec):
+        return orjson.dumps(rec) + b"\n"
+except ImportError:                     # pragma: no cover
+    def line(rec):
+        return (json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
 
 def envelope(event, t, host, collector_pid):
