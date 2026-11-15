@@ -284,6 +284,15 @@ export default function App() {
   // Records the demo made up (rc_dashboard/demo) say so themselves, and the
   // header says it whenever any host's do, whatever the site is called.
   const synthetic = Object.values(feeds.data ?? {}).flatMap((f) => f.synthetic_hosts ?? []);
+  // A password is set (rc_dashboard/auth.py), so the rail offers to sign out.
+  // /api/config shows the hash as "(hidden)" when set and "" when not.
+  const passwordSet = Boolean(
+    (
+      (config.data?.server as Record<string, unknown> | undefined)?.auth as
+        | Record<string, { _value?: unknown }>
+        | undefined
+    )?.password_hash?._value,
+  );
   const mainRef = useRef<HTMLElement>(null);
   const { secs, active } = useSections(mainRef, tab.k);
   // The window and the filters, one strip held at the top while the tab scrolls
@@ -664,6 +673,16 @@ export default function App() {
             <span className="foot-warn-n">{nClasses}</span>
             <span className="foot-warn-t"> of 3 classes shown</span>
           </div>
+        )}
+        {/* Only while the service asks for a password (rc_dashboard/auth.py). A
+            form, so signing out works without the page's own code. */}
+        {passwordSet && (
+          <form className="rail-signout" method="post" action="/logout">
+            <button type="submit" data-tip="sign this browser out; the page then asks for the password again">
+              <Icon name="signout" size={16} />
+              <span>Sign out</span>
+            </button>
+          </form>
         )}
         <button
           className="rail-toggle"

@@ -374,6 +374,10 @@ scanned.
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
+| `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
+| `POST /logout` | signing out: the cookie cleared, then the form |
+
+With a password set, every route above asks for it ([Password](#password)).
 
 `window_min` is optional everywhere and omitting it is `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -546,8 +550,9 @@ every key, annotated.
 email address, and numeric user ID in what the service sends out -- every HTTP response,
 websocket frame, export line, and the Ask-LLM snapshot -- with a stable alias: `user-7f3a9c1e`,
 `lab-1b2c3d4e`, `[email]`, and `[uid]`. It is off by default, so a deployment for the cluster's
-own staff shows real names. `run-dev.sh` and `run-fasrc.sh` turn it on, because both instances
-are reachable without a login through the tunnel. The header says *anonymized* while it is on.
+own staff shows real names. `run-dev.sh` and `run-fasrc.sh` leave it off (user, 2026-10-13), and
+the tunnel serves their pages only to readers who sign in ([Password](#password)). The header says
+*anonymized* while it is on.
 
 - **Stable, not reversible.** An alias is 8 hex characters of an HMAC under a secret salt:
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
@@ -582,6 +587,47 @@ are reachable without a login through the tunnel. The header says *anonymized* w
 
 `tests/test_anonymize_leak.py` starts the app over a feed full of names, then reads every route
 and the websocket. No byte may carry one.
+
+## Password
+
+`server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`) puts the whole service behind one
+password: the page, its assets, every `/api` route (Ask LLM included), and the websocket. It is
+empty by default, which leaves the page open to anyone who reaches the port.
+
+```bash
+cd dashboard && .venv/bin/python -m rc_dashboard new-password --netrc-host dash.example.org
+```
+
+makes a 16-character password with `secrets`, from upper and lower case, digits, and 18
+symbols, with each class present: about 101 bits. It writes the password to
+`~/.config/rc-dashboard/password` and a netrc for curl beside it, both mode 0600, and prints
+only the salted scrypt hash. Put the hash in the gitignored `dashboard.config.json`, then
+restart:
+
+```json
+"server": { "auth": { "password_hash": "scrypt$32768$8$1$..." } }
+```
+
+- **Browsers** get a sign-in form, with a 401, at whatever URL they asked for, and land back
+  on it once signed in. The session is a cookie that lasts `server.auth.session_days` (30). It
+  is HttpOnly and SameSite=Lax, Secure when the request came over https (a proxy such as
+  cloudflared says so in `X-Forwarded-Proto`), and named `rc_dash_<port>`, so two instances on
+  one host keep separate ones. *Sign out*, at the foot of the sidebar, ends it. A page whose
+  session runs out goes back to the form on its next request.
+- **Scripts** send the password as HTTP Basic auth, with any user name:
+  `curl --netrc-file ~/.config/rc-dashboard/netrc http://127.0.0.1:8085/api/health`. The
+  password then never appears on a command line, where `ps` would show it to other users.
+- **What the service keeps.** Only the hash. A password is checked with scrypt, one check at a
+  time, compared in constant time, and a wrong one waits a second more. The cookie is an expiry
+  and its HMAC, under a key drawn from `<cache.dir>/session.key` (made once, mode 0600) and the
+  hash, so a new password or a deleted key file signs everyone out. `/api/config` and
+  `--print-config` show the hash as `(hidden)`.
+- **A restart, not a rebuild.** `server` is left out of both saved-state fingerprints, so
+  setting, changing, or clearing the password costs a restart. A malformed hash stops the
+  service at start rather than serving it open.
+
+`tests/test_auth.py` starts the app with a password, then reads every route, an asset, and the
+websocket, with and without it.
 
 ## Trajectories: tasks, phases, and processes
 

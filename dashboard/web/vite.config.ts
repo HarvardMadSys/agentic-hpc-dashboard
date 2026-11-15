@@ -71,7 +71,9 @@ function buildInfo(): Plugin {
  *
  * Dev has two modes:
  *   npm run dev        -> /api and /ws answered from mock/api.json (no backend)
- *   npm run dev:real   -> /api and /ws proxied to RC_BACKEND (default :8787)
+ *   npm run dev:real   -> /api, /ws, /login, and /logout proxied to RC_BACKEND
+ *                         (default :8787); the last two are the sign-in form's,
+ *                         for a backend with a password (rc_dashboard/auth.py)
  */
 export default defineConfig(({ mode }) => {
   const real = mode === 'real' || process.env.RC_MOCK === '0';
@@ -99,6 +101,8 @@ export default defineConfig(({ mode }) => {
           proxy: {
             '/api': { target, changeOrigin: true },
             '/ws': { target, ws: true, changeOrigin: true },
+            '/login': { target, changeOrigin: true },
+            '/logout': { target, changeOrigin: true },
           },
         }
       : undefined,

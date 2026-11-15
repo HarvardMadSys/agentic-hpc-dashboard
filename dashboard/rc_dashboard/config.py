@@ -331,7 +331,12 @@ def defaults():
         "cache": {"dir": os.path.join(HERE, ".cache"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,
-                   "static_dir": os.path.join(HERE, "web", "dist")},
+                   "static_dir": os.path.join(HERE, "web", "dist"),
+                   # Sign-in (auth.py): a salted scrypt hash of the one password
+                   # readers sign in with, made by `python -m rc_dashboard
+                   # new-password`. Empty leaves the page open to anyone who
+                   # reaches the port. A session lasts `session_days`.
+                   "auth": {"password_hash": "", "session_days": 30}},
     }
 
 
@@ -387,7 +392,11 @@ ENV_MAP = {
     "server.host": ("RC_DASH_HOST", str),
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
+    "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
 }
+
+# Secrets: /api/config and --print-config say whether each is set, never what it is.
+HIDDEN = ("anonymize.salt", "server.auth.password_hash")
 
 # retired names still honoured, with a one-line warning
 ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
@@ -484,8 +493,9 @@ class Config:
         out = {}
         for path, val in self._leaves():
             entry = {"_value": val, "_origin": self.origin(path)}
-            if path == "anonymize.salt" and val:
-                # With the salt, a list of candidate names turns every alias back.
+            if path in HIDDEN and val:
+                # With the salt, a list of candidate names turns every alias
+                # back. The password hash is no use to a reader either.
                 entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
                 cand = val if isinstance(val, list) else [val]
