@@ -194,18 +194,21 @@ function cookieOf(request: Request, name: string): string | null {
   return null;
 }
 
-/** Only a path on this site: never a redirect elsewhere. `next` is resolved as a
- * browser would (which reads `/\evil.example` as `//evil.example`), and anything
- * that lands on another origin, or contains a backslash at all, is "/". */
+/** Where to send a visitor after sign-in: always an absolute URL on this site.
+ * `next` is resolved as a browser would (which reads `/\evil.example` as
+ * `//evil.example`); anything on another origin, or with a backslash at all, is
+ * the site's root. Absolute, never a bare path: a path that normalizes to
+ * `//host` (`/.//evil.example`) would be read by the browser as another site. */
 function backTo(next: string | null, site: URL): string {
-  if (!next || !next.startsWith("/") || next.includes("\\")) return "/";
+  const root = new URL("/", site).href;
+  if (!next || next.includes("\\")) return root;
   let to: URL;
   try {
     to = new URL(next, site);
   } catch {
-    return "/";
+    return root;
   }
-  return to.origin === site.origin ? to.pathname + to.search + to.hash : "/";
+  return to.origin === site.origin ? to.href : root;
 }
 
 /** Plain http on the open internet: the password must never cross it. Loopback
