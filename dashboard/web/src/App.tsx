@@ -26,6 +26,11 @@ import { whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
 import { useUrlState } from './lib/useUrlState';
 import { useStickyBar } from './lib/sticky';
+import { CLS } from './lib/classes';
+import { Icon } from './components/Icon';
+import type { IconName } from './components/Icon';
+import { CommandPalette } from './components/CommandPalette';
+import type { PaletteItem } from './components/CommandPalette';
 import { arriveFromHash } from './lib/cites';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
@@ -45,20 +50,29 @@ import { EventsExplorer } from './components/EventsExplorer';
  * one session, then the detail. Old tab keys still open (lib/filters.ts
  * TAB_ALIAS): sessions and cascades -> agents, io -> resources, sandbox ->
  * internal. */
-const TABS = [
-  { k: 'live', lbl: 'Live', eyebrow: 'right now, and over the window' },
-  { k: 'overview', lbl: 'Overview', eyebrow: 'who uses what' },
-  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents' },
-  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran' },
-  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time' },
-  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O' },
-  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here' },
-  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler' },
-  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask an agent about this window' },
-  { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable' },
-  { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet' },
-  { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance' },
+/* The rail groups them under four words, in the same order: nothing moves. */
+const TABS: { k: string; lbl: string; eyebrow: string; icon: IconName; group: string }[] = [
+  { k: 'live', lbl: 'Live', eyebrow: 'right now, and over the window', icon: 'live', group: 'Monitor' },
+  { k: 'overview', lbl: 'Overview', eyebrow: 'who uses what', icon: 'overview', group: 'Monitor' },
+  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Agents' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Agents' },
+  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time', icon: 'trajectories', group: 'Agents' },
+  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Cluster' },
+  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here', icon: 'risk', group: 'Cluster' },
+  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'slurm', group: 'Cluster' },
+  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask an agent about this window', icon: 'chat', group: 'More' },
+  { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
+  { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
+  { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance', icon: 'feeds', group: 'More' },
 ];
+
+/** The rail folded to its icons, remembered in this browser only. */
+const RAIL_KEY = 'rc.railFolded';
+const TRANSPORT_WORDS = { ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' };
+
+/** A key typed into a field is the field's, never a shortcut. */
+const typing = (t: EventTarget | null) =>
+  t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
 /* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
  * link to it (?tab=events) opens the first tab instead. */
@@ -211,6 +225,66 @@ export default function App() {
   const controlsRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const stuck = useStickyBar(controlsRef, sentinelRef, showControls);
+
+  // The rail folded to its icons: a reader's convenience, kept in this browser.
+  // Storage can be absent or refuse (a private window); the rail just unfolds.
+  const [mini, setMini] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(RAIL_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(RAIL_KEY, mini ? '1' : '0');
+    } catch {
+      /* not kept: it unfolds next time */
+    }
+  }, [mini]);
+  // Below 900px the rail is a drawer over the page, opened from the top bar.
+  const [navOpen, setNavOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Ctrl+K or Cmd+K anywhere, or `/` outside a field, opens "go to"; `[` folds the rail.
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if (e.key === '[') {
+        e.preventDefault();
+        setMini((m) => !m);
+      }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, []);
+
+  // The drawer: Escape closes it, the page under it holds still, and it closes
+  // by itself when the window grows past the width where the rail is a column.
+  useEffect(() => {
+    if (!navOpen) return;
+    const k = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setNavOpen(false);
+    };
+    const wide = window.matchMedia('(min-width: 901px)');
+    const grew = () => wide.matches && setNavOpen(false);
+    window.addEventListener('keydown', k);
+    wide.addEventListener('change', grew);
+    document.body.classList.add('noscroll');
+    return () => {
+      window.removeEventListener('keydown', k);
+      wide.removeEventListener('change', grew);
+      document.body.classList.remove('noscroll');
+    };
+  }, [navOpen]);
   // The agent behind every "ask" button: asked for once. Failing that, the
   // buttons stay hidden -- a question that cannot run is not offered.
   const [askInfo, setAskInfo] = useState<AskInfo | null>(null);
@@ -329,98 +403,219 @@ export default function App() {
     }
   })();
 
+  // Opening a tab is navigation: back returns. The drawer closes behind it.
+  const goTab = (k: string) => {
+    setUrl({ tab: k }, true);
+    window.scrollTo({ top: 0 });
+    setNavOpen(false);
+  };
+  const footWords = TRANSPORT_WORDS[live.transport];
+  const footAgo = live.receivedAt ? ago(Date.now() - live.receivedAt) : '—';
+
+  // What "go to" offers: only what this page can already do.
+  const paletteItems: PaletteItem[] = [
+    ...tabs.map((t) => ({
+      id: `tab:${t.k}`,
+      group: 'Tabs',
+      label: t.lbl,
+      hint: t.eyebrow,
+      icon: t.icon,
+      keywords: t.group,
+      run: () => goTab(t.k),
+    })),
+    ...secs.map((s) => ({
+      id: `sec:${s.id}`,
+      group: `On ${tab.lbl}`,
+      label: s.title,
+      icon: 'section' as IconName,
+      keywords: 'section panel',
+      run: () => document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    })),
+    ...(showControls
+      ? (windows?.presets ?? []).map((p) => ({
+          id: `win:${p.minutes}`,
+          group: 'Window',
+          label: `Last ${p.label}`,
+          hint: p.minutes === resolvedWin?.minutes ? 'showing now' : undefined,
+          icon: 'window' as IconName,
+          keywords: 'window time range span',
+          run: () => setUrl({ win: p.minutes }),
+        }))
+      : []),
+    ...(showControls && nClasses < 3
+      ? [{
+          id: 'act:classes',
+          group: 'Actions',
+          label: 'Show all three classes',
+          icon: 'overview' as IconName,
+          keywords: 'class filter agent human ide',
+          run: () => setUrl({ cls: [...CLS] }),
+        }]
+      : []),
+    {
+      id: 'act:refresh',
+      group: 'Actions',
+      label: 'Refresh the data',
+      icon: 'refresh',
+      keywords: 'reload update',
+      run: live.refresh,
+    },
+    {
+      id: 'act:rail',
+      group: 'Actions',
+      label: mini ? 'Unfold the sidebar' : 'Fold the sidebar to icons',
+      hint: '[',
+      icon: mini ? 'expand' : 'collapse',
+      keywords: 'sidebar rail collapse expand',
+      run: () => setMini((m) => !m),
+    },
+  ];
+
   return (
-    <div className="app">
-      <aside className="rail">
+    <div className={`app${mini ? ' mini' : ''}`}>
+      {/* Below 900px the rail is a drawer, and this bar opens it. */}
+      <div className="topbar">
+        <button
+          className="iconbtn"
+          aria-label="open the menu"
+          aria-expanded={navOpen}
+          aria-controls="rail"
+          onClick={() => setNavOpen(true)}
+        >
+          <Icon name="menu" />
+        </button>
+        <span className="topbar-brand">
+          <span className="bdot" />
+          Agent Behaviour
+        </span>
+        <span className="topbar-tab">
+          <Icon name={tab.icon} size={16} />
+          {tab.lbl}
+        </span>
+        <button className="iconbtn" aria-label="go to a tab, a section or a window" onClick={() => setPaletteOpen(true)}>
+          <Icon name="search" />
+        </button>
+      </div>
+      {navOpen && <div className="rail-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />}
+      <aside className={`rail${navOpen ? ' open' : ''}`} id="rail" aria-label="tabs">
+        <button className="iconbtn rail-close" aria-label="close the menu" onClick={() => setNavOpen(false)}>
+          <Icon name="close" />
+        </button>
         <div className="brand">
           <div className="mark">
-            <span className="bdot" />
-            Agent Behaviour
+            <span className="bmark" aria-hidden="true">
+              <Icon name="agents" size={15} />
+            </span>
+            <span className="mark-t">Agent Behaviour</span>
           </div>
           <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
             {siteName || 'rc_measurement'}
           </div>
         </div>
+        <button
+          className="rail-search"
+          onClick={() => setPaletteOpen(true)}
+          data-tip={mini ? 'go to a tab, a section or a window ( / or Ctrl K )' : undefined}
+        >
+          <Icon name="search" size={16} />
+          <span className="rail-search-t">Go to…</span>
+          <kbd>/</kbd>
+        </button>
         <nav>
-          {tabs.map((t) => (
+          {tabs.map((t, i) => (
             <Fragment key={t.k}>
-            <button
-              aria-selected={t.k === tab.k}
-              onClick={() => {
-                setUrl({ tab: t.k }, true);
-                window.scrollTo({ top: 0 });
-              }}
-            >
-              {t.lbl}
-              <span className="n">
-                {t.k === 'live' ? (
+              {(i === 0 || tabs[i - 1].group !== t.group) && <div className="navgroup">{t.group}</div>}
+              <button
+                aria-selected={t.k === tab.k}
+                aria-current={t.k === tab.k ? 'page' : undefined}
+                data-tip={mini ? t.lbl : undefined}
+                onClick={() => goTab(t.k)}
+              >
+                <Icon name={t.icon} />
+                <span className="navlbl">{t.lbl}</span>
+                {t.k === 'live' && (
                   <i
-                    className="dot"
-                    style={{
-                      background: live.transport === 'ws' ? 'var(--live)' : 'var(--warn)',
-                      borderRadius: '50%',
-                    }}
+                    className={`navdot${live.transport === 'ws' ? '' : ' off'}`}
+                    aria-label={live.transport === 'ws' ? 'streaming' : 'not streaming'}
                   />
-                ) : t.k === tab.k ? (
-                  '●'
-                ) : (
-                  ''
                 )}
-              </span>
-            </button>
-            {t.k === tab.k && <SectionList secs={secs} active={active} />}
+              </button>
+              {t.k === tab.k && !mini && <SectionList secs={secs} active={active} />}
             </Fragment>
           ))}
         </nav>
-        {/* One fact to a line, and a value never broken mid-token: a timestamp
-            split across two lines reads as two values. */}
-        <dl className="foot mono">
-          <div>
-            <dt>updates</dt>
-            <dd>
-              {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
-                live.transport
-              ]}
-            </dd>
+        {/* How the page gets its data. One fact to a line, and a value never
+            broken mid-token: a timestamp split across two lines reads as two
+            values. Folded, the dot alone, with the facts on hover. */}
+        <div
+          className="foot mono"
+          data-tip={
+            mini
+              ? `updates ${footWords}\nlast update ${footAgo}\nwindow ${resolvedWin?.label ?? '—'}\npanels built ${panels.data?.full_built_at ?? '—'}`
+              : undefined
+          }
+        >
+          <div className="foot-status">
+            <i className={`sdot ${live.transport}`} />
+            <span className="foot-t">
+              updates <b>{footWords}</b>
+            </span>
           </div>
-          <div>
-            <dt>last update</dt>
-            <dd>{live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}</dd>
-          </div>
-          <div>
-            <dt>window</dt>
-            <dd>
-              {resolvedWin?.label ?? '—'}
-              {windows?.retention_minutes != null && (
-                <span className="held"> of {Math.round(windows.retention_minutes / 60)}h held</span>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>panels built</dt>
-            <dd>
-              {panels.data?.full_built_at ?? '—'}
-              {/* Restored from a saved build: the age above is that build's, and
-                  everything written since was read from the files on top of it. */}
-              {winStatus?.cache?.source === 'snapshot' && (
-                <span className="held" data-tip={winStatus.cache.note ?? ''}> · restored</span>
-              )}
-            </dd>
-          </div>
-        </dl>
-        <BuildStamp />
+          <dl>
+            <div>
+              <dt>last update</dt>
+              <dd>{footAgo}</dd>
+            </div>
+            <div>
+              <dt>window</dt>
+              <dd>
+                {resolvedWin?.label ?? '—'}
+                {windows?.retention_minutes != null && (
+                  <span className="held"> of {Math.round(windows.retention_minutes / 60)}h held</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>panels built</dt>
+              <dd>
+                {panels.data?.full_built_at ?? '—'}
+                {/* Restored from a saved build: the age above is that build's, and
+                    everything written since was read from the files on top of it. */}
+                {winStatus?.cache?.source === 'snapshot' && (
+                  <span className="held" data-tip={winStatus.cache.note ?? ''}> · restored</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+          <BuildStamp />
+        </div>
         {nClasses < 3 && (
           <div className="foot-warn mono" data-tip="the class filter above the panels hides the rest">
-            {nClasses} of 3 classes shown
+            <span className="foot-warn-n">{nClasses}</span>
+            <span className="foot-warn-t"> of 3 classes shown</span>
           </div>
         )}
+        <button
+          className="rail-toggle"
+          onClick={() => setMini(!mini)}
+          aria-pressed={mini}
+          data-tip={mini ? 'unfold the sidebar ( [ )' : 'fold the sidebar to its icons ( [ )'}
+        >
+          <Icon name={mini ? 'expand' : 'collapse'} size={16} />
+          <span>fold</span>
+        </button>
       </aside>
 
       <main ref={mainRef}>
-        <div className="head">
-          <div>
-            <div className="eyebrow">{tab.eyebrow}</div>
-            <h1>{tab.lbl}</h1>
+        <div className={`head${showControls ? ' with-bar' : ''}`}>
+          <div className="head-title">
+            <span className="head-icon" aria-hidden="true">
+              <Icon name={tab.icon} size={20} />
+            </span>
+            <div>
+              <h1>{tab.lbl}</h1>
+              <div className="head-sub">{tab.eyebrow}</div>
+            </div>
           </div>
           <div className="status">
             {/* A pinned clock is a capture, not a feed: "live" and a lag of a
@@ -432,7 +627,7 @@ export default function App() {
                   text="frozen capture"
                   tip={`not a live feed: the service's clock is pinned to the capture's end and does not move\n${live.live.clock.source}`}
                 />
-                <span data-tip="every window ends here; nothing after it exists in this feed">
+                <span className="stat" data-tip="every window ends here; nothing after it exists in this feed">
                   as of <b>{live.live.clock.as_of}</b>
                 </span>
               </>
@@ -451,13 +646,13 @@ export default function App() {
               </span>
             )}
             {hl.lag && !live.live?.clock?.pinned && (
-              <span data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">
+              <span className="stat" data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">
                 newest record <b>{hl.lag}</b> old
               </span>
             )}
             {hl.stale.length > 0 && (
               <span
-                style={{ color: '#8a6410' }}
+                className="stat warn"
                 data-tip={hl.stale
                   .map((f) => `${f.name}: lag ${lagStr(f.lag_s)} > max ${lagStr(f.max_age_s)}`)
                   .join('\n')}
@@ -466,15 +661,18 @@ export default function App() {
               </span>
             )}
             <span
+              className="stat"
               data-tip={
                 (live.live?.hosts ?? []).map((h) => h.host).join(', ') ||
                 'no host has reported yet'
               }
             >
-              {fint(live.live?.hosts?.length ?? null)} host
+              <Icon name="hosts" size={14} />
+              <b>{fint(live.live?.hosts?.length ?? null)}</b> host
               {(live.live?.hosts?.length ?? 0) === 1 ? '' : 's'}
             </span>
-            <button className="btn" onClick={live.refresh}>
+            <button className="btn" onClick={live.refresh} data-tip="ask the service for everything on this page again">
+              <Icon name="refresh" size={14} />
               refresh
             </button>
           </div>
@@ -525,6 +723,7 @@ export default function App() {
         <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
       </main>
       <IoCmdsDrawer win={url.win} who={who} cls={url.cls} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} items={paletteItems} />
       <TooltipLayer />
     </div>
   );

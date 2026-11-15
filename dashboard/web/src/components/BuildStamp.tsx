@@ -18,7 +18,7 @@ export function BuildStamp() {
   const { commit, dirty, builtAt } = info;
   const built = builtAt ? new Date(builtAt) : null;
   return (
-    <div className="build mono">
+    <div className="build">
       <span
         data-tip={
           commit == null
