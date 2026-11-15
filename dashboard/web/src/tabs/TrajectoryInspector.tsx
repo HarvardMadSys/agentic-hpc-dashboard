@@ -816,7 +816,7 @@ export function TrajectoryInspector({
     );
 
   return (
-    <div ref={ref} className="span2" style={{ scrollMarginTop: 'calc(var(--controls-h) + 12px)' }}>
+    <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
       <Panel
         title="Session inspector — process tree"
         ask={{ session: sid }}

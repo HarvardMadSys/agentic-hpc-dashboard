@@ -73,6 +73,7 @@ This is done in `mock/plugin.ts`, so a change to it needs the dev server restart
 ```bash
 npm run build        # tsc -b && vite build  ->  dist/
 npm run typecheck    # tsc -b, no emit
+npm run check:charts # node --test: the chart tick and width rules in src/charts/scale.ts
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -163,10 +164,12 @@ Two more that the payloads force:
 `src/components/WindowPicker.tsx`, in one control bar with the class filter and the user and
 agent-type dropdowns — both answer "what is on screen", and a reader checking one should not
 have to hunt for the other. The bar sticks to the top of the page as a tab scrolls
-(`src/lib/sticky.ts`), so the answer is still in view at the foot of a long tab; it publishes
-its height as `--controls-h`, which panel anchors, the trajectory inspector and the Agents
-tab's sticky list and detail clear. On a phone (640px and below) it scrolls with the page. It
-is URL-backed as `?win=<minutes>`, like every other view knob.
+(`src/lib/sticky.ts`), so the answer is still in view at the foot of a long tab. It publishes
+its height as `--controls-h`, which is the page's `scroll-padding-top`, so nothing the browser
+scrolls to (a control reached with Tab, a panel picked in the section list, the trajectory
+inspector) lands under it, and which the Agents tab's sticky list and detail stick below. On a
+phone (640px and below) it scrolls with the page. It is URL-backed as `?win=<minutes>`, like
+every other view knob.
 
 Three rules it follows, all of them the same rule this page follows everywhere:
 
@@ -187,6 +190,8 @@ Every control is a tab stop with a visible focus ring (controls restyled from `a
 restate it at the foot of `src/styles.css`). A sortable header (`src/components/SortTh.tsx`)
 sorts with Enter or Space, and a control's `data-tip` shows under it when it is reached with
 Tab (`src/components/Tooltip.tsx`), since the caveat about how a number is counted lives there.
+The tip is visual only: its layer is `aria-hidden`, and no control points at it with
+`aria-describedby`, so a screen reader does not announce it.
 
 ## Tabs
 

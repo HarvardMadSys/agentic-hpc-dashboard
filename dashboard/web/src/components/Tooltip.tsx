@@ -63,23 +63,43 @@ export function TooltipLayer() {
     const leave = () => {
       el.style.opacity = '0';
     };
+    // under the control, or over it where there is no room below
+    const placeAt = (t: Element, src: HTMLElement) => {
+      const r = fill(src);
+      const a = t.getBoundingClientRect();
+      const x = Math.min(a.left, innerWidth - 8 - r.width);
+      let y = a.bottom + 6;
+      if (y + r.height > innerHeight - 8) y = a.top - r.height - 6;
+      el.style.left = Math.max(8, x) + 'px';
+      el.style.top = Math.max(8, y) + 'px';
+    };
+    // A control reached with Tab is scrolled into view by the browser after
+    // the focus event, so the tip is placed again over the next two frames,
+    // from where the control landed. A scroll inside those frames is that one,
+    // not the reader moving away, and keeps the tip; any later scroll hides it.
+    let settle = 0;
     // Keyboard focus only: a click also focuses its button, and the pointer's
     // tip is already showing there.
     const focus = (e: FocusEvent) => {
       const t = e.target;
       if (!(t instanceof Element) || !keyboardFocus(t)) return;
       const src = tipOf(t);
+      cancelAnimationFrame(settle);
+      settle = 0;
       if (!src) {
         el.style.opacity = '0';
         return;
       }
-      const r = fill(src);
-      const a = t.getBoundingClientRect();
-      let x = Math.min(a.left, innerWidth - 8 - r.width);
-      let y = a.bottom + 6;
-      if (y + r.height > innerHeight - 8) y = a.top - r.height - 6;
-      el.style.left = Math.max(8, x) + 'px';
-      el.style.top = Math.max(8, y) + 'px';
+      placeAt(t, src);
+      let frames = 2;
+      const again = () => {
+        if (document.activeElement === t) placeAt(t, src);
+        settle = --frames > 0 ? requestAnimationFrame(again) : 0;
+      };
+      settle = requestAnimationFrame(again);
+    };
+    const scrolled = () => {
+      if (!settle) leave();
     };
     const esc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') leave();
@@ -89,14 +109,15 @@ export function TooltipLayer() {
     document.addEventListener('focusin', focus);
     document.addEventListener('focusout', leave);
     document.addEventListener('keydown', esc);
-    window.addEventListener('scroll', leave, true);
+    window.addEventListener('scroll', scrolled, true);
     return () => {
+      cancelAnimationFrame(settle);
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseleave', leave);
       document.removeEventListener('focusin', focus);
       document.removeEventListener('focusout', leave);
       document.removeEventListener('keydown', esc);
-      window.removeEventListener('scroll', leave, true);
+      window.removeEventListener('scroll', scrolled, true);
     };
   }, []);
 

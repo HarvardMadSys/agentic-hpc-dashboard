@@ -188,9 +188,10 @@ nav .n {
   color: var(--ink);
   border-left-color: var(--crimson);
 }
-/* a panel picked in the section list lands below the sticky control bar */
+/* a panel picked in the section list lands 14px below the sticky control bar
+   (the bar itself is kept clear by the page's scroll padding, below) */
 section.panel {
-  scroll-margin-top: calc(var(--controls-h) + 14px);
+  scroll-margin-top: 14px;
 }
 
 /* the rail's foot: how the page gets its data, one fact to a line */
@@ -363,6 +364,13 @@ main {
 .controls .winpick,
 .controls .filters {
   margin-bottom: 0;
+}
+/* Whatever the browser scrolls to keeps clear of the bar: a control reached
+ * with Tab, a panel picked in the section list, a scrollIntoView. The bar's
+ * height is the page's own scroll padding, so a control under the bar counts
+ * as out of view and is brought out from under it (focus not obscured). */
+html {
+  scroll-padding-top: var(--controls-h);
 }
 /* the line the bar sticks at: once it scrolls out of view, the bar is stuck */
 .controls-sentinel {

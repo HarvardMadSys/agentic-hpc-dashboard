@@ -2,10 +2,12 @@
  * the window and the class, user and agent-type filters, so a tab three
  * screens long still says at its foot what is on screen.
  *
- * Its height is published as `--controls-h`, so whatever else sticks to the
- * top or is scrolled there -- a panel picked in the rail's section list, the
- * Agents tab's list and detail, the trajectory inspector -- lands below the bar
- * rather than under it. Where the bar does not stick (a phone), it is 0.
+ * Its height is published as `--controls-h`. It is the page's scroll padding
+ * (styles.css), so whatever the browser scrolls to -- a control reached with
+ * Tab, a panel picked in the rail's section list, the trajectory inspector --
+ * lands below the bar rather than under it; and what else sticks to the top
+ * (the Agents tab's list and detail) sticks below it. Where the bar does not
+ * stick (a phone), it is 0.
  */
 import { useEffect, useLayoutEffect, useState } from 'react';
 import type { RefObject } from 'react';
