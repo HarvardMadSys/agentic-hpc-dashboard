@@ -254,7 +254,8 @@ def defaults():
                                         "absorb_s": 300, "poll_min": 5, "poll_cv": 0.25,
                                         "poll_cv_strict": 0.10, "step_s": 1.0,
                                         "top_commands": 3, "max_calls": 20000,
-                                        "hk_bin_cap": 10080, "pend_max": 50000},
+                                        "hk_bin_cap": 10080, "pend_max": 50000,
+                                        "app_read_s": 2.0},
                              # The tasks above them: reducers/phase_tasks.py documents each
                              # threshold. Its DEFAULTS, tuned on seven hand-labeled sessions
                              # (rc_dashboard/phase_report.py); a test holds the two equal.

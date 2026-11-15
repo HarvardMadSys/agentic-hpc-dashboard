@@ -696,8 +696,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 - **The Codex desktop app's reads of its own plugins** are housekeeping, not the model's calls. The app
   `cat`s the icons of the plugins it lists, hundreds in a minute: one file in an `assets/` folder under
   `.codex/.tmp/plugins/`, `.codex/.tmp/bundled-marketplaces/`, or `.codex/plugins/cache/`. Only the app's own
-  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill stays a call, and so does a `cat`
-  whose argv was not recorded.
+  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill stays a call. A `cat` whose argv was
+  not recorded (schema 7) names no file, so it is read by when it ran: it is the app's when it began within
+  2 s (`reducers.trajectories.phases.app_read_s`) of one of the app's reads in the same row, before it or
+  after, and a call otherwise. On boslogin06 on 2026-10-09 that took 230 of the day's 8,434 Codex calls,
+  226 of them from one row. A wider window would take the model's own reads, which come as soon as 15 s
+  after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
   no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
