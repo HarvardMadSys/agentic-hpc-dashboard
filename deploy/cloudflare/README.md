@@ -29,6 +29,32 @@ Until then, and after every idle spell, the page says the demo is starting and r
 itself. Plain `http://` reaches it too, or is redirected to `https://` if the zone has
 *Always Use HTTPS* on.
 
+### Deploying from GitHub
+
+[`.github/workflows/demo-deploy.yml`](../../.github/workflows/demo-deploy.yml) runs the same
+`npx wrangler deploy` on every push to `develop` that changes what the demo runs: the
+service (`dashboard/rc_dashboard`, `pyproject.toml`, `uv.lock`), the page (`dashboard/web`),
+`docker/demo`, or this folder. A change to the collector or a test does not redeploy. It can
+also be run by hand from the repository's Actions tab (*demo-deploy*, *Run workflow*), for
+example after rotating the token. The runner's Docker builds the image, and wrangler is the
+version pinned in `package.json`, as for a deploy by hand. Deploys queue rather than cancel
+one another, because a deploy is not transactional: the new Worker can be live before its
+image has rolled out.
+
+It needs two repository secrets (*Settings*, *Secrets and variables*, *Actions*), from the
+Cloudflare account that holds the `agentic-system.org` zone:
+
+| secret | value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | an API token (*My Profile*, *API Tokens*, *Create Token*) from the **Edit Cloudflare Workers** template, with **Account · Containers · Edit** added, scoped to that account and its `agentic-system.org` zone |
+| `CLOUDFLARE_ACCOUNT_ID` | that account's ID (the Workers overview shows it) |
+
+Until both are set, the workflow fails at its first step and names the missing secret, so a
+push to `develop` never looks deployed when it was not. Cloudflare's docs name the template
+for Workers and the Containers permission. They do not say what attaching the Custom Domain
+needs beyond the template: if a deploy fails at the domain, add **Zone · DNS · Edit** for
+`agentic-system.org` to the token.
+
 ## What runs
 
 | | |

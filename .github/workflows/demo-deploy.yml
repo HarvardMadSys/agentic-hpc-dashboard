@@ -1,0 +1,100 @@
+name: demo-deploy
+
+# Deploys the public demo (deploy/cloudflare: a Worker in front of one Cloudflare
+# Container running `rc_dashboard demo`) whenever develop changes what the demo
+# runs. It is the same `wrangler deploy` deploy/cloudflare/README.md runs by
+# hand: wrangler builds docker/demo/Dockerfile with the runner's Docker, pushes
+# the image to Cloudflare's registry, and deploys the Worker and the container.
+#
+# develop, not main: the demo is develop's page (the other workflows build
+# nothing from develop because they publish release images; this publishes only
+# the demo, which is meant to show the newest page).
+#
+# Needs two repository secrets (Settings -> Secrets and variables -> Actions),
+# from the Cloudflare account that holds the agentic-system.org zone:
+#   CLOUDFLARE_API_TOKEN   a token from the "Edit Cloudflare Workers" template,
+#                          with Account -> Containers -> Edit added
+#   CLOUDFLARE_ACCOUNT_ID  that account's ID
+# See deploy/cloudflare/README.md, "Deploying from GitHub".
+
+on:
+  push:
+    branches: ["develop"]
+    # Only what goes into the image (docker/demo/Dockerfile.dockerignore) or
+    # into the Worker: a change to the collector or a test does not redeploy.
+    paths:
+      - "dashboard/pyproject.toml"
+      - "dashboard/uv.lock"
+      - "dashboard/rc_dashboard/**"
+      - "dashboard/web/**"
+      - "docker/demo/**"
+      - "deploy/cloudflare/**"
+      - ".github/workflows/demo-deploy.yml"
+  # A redeploy by hand, from the Actions tab: after rotating the token, or to
+  # put the demo back after a `wrangler delete`.
+  workflow_dispatch:
+
+# One deploy at a time, and never cut one short: a deploy is not transactional
+# (the new Worker can be live before its image has rolled out), so a newer push
+# waits for the running deploy and then deploys on top of it.
+concurrency:
+  group: demo-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment:
+      name: demo
+      url: https://hpc-dashboard.agentic-system.org
+    defaults:
+      run:
+        working-directory: deploy/cloudflare
+    steps:
+      - name: Check the Cloudflare secrets are set
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        working-directory: .
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::the demo was not deployed: repository secret(s)$missing not set. See deploy/cloudflare/README.md, \"Deploying from GitHub\"."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: deploy/cloudflare/package-lock.json
+
+      # wrangler is pinned in deploy/cloudflare/package.json, so CI deploys with
+      # the same version a deploy by hand does.
+      - name: Install wrangler
+        run: npm ci --no-audit --no-fund
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
+
+      - name: Summary
+        if: success()
+        working-directory: .
+        run: |
+          {
+            echo "### Demo deployed"
+            echo
+            echo "\`${GITHUB_SHA::7}\` from \`${GITHUB_REF_NAME}\` is deploying to <https://hpc-dashboard.agentic-system.org>."
+            echo "The container rolls out over the next few minutes; until it is up the page says the demo is starting."
+          } >> "$GITHUB_STEP_SUMMARY"
