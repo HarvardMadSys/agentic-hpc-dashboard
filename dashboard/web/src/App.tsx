@@ -25,6 +25,7 @@ import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
 import { useUrlState } from './lib/useUrlState';
+import { useStickyBar } from './lib/sticky';
 import { arriveFromHash } from './lib/cites';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
@@ -201,6 +202,12 @@ export default function App() {
     true;
   const mainRef = useRef<HTMLElement>(null);
   const { secs, active } = useSections(mainRef, tab.k);
+  // The window and the filters, one strip held at the top while the tab scrolls
+  // (lib/sticky.ts). Feeds is about the service, not a window of data: none.
+  const showControls = tab.k !== 'feeds';
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const stuck = useStickyBar(controlsRef, sentinelRef, showControls);
   // The agent behind every "ask" button: asked for once. Failing that, the
   // buttons stay hidden -- a question that cannot run is not offered.
   const [askInfo, setAskInfo] = useState<AskInfo | null>(null);
@@ -348,35 +355,48 @@ export default function App() {
             </Fragment>
           ))}
         </nav>
-        <div className="foot mono">
-          updates{' '}
-          <span style={{ color: 'var(--ink-2)' }}>
-            {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
-              live.transport
-            ]}
-          </span>
-          <br />
-          last update {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
-          <br />
-          window <span style={{ color: 'var(--ink-2)' }}>{resolvedWin?.label ?? '—'}</span>
-          {windows?.retention_minutes != null && (
-            <span> of {Math.round(windows.retention_minutes / 60)}h held</span>
-          )}
-          <br />
-          panels built {panels.data?.full_built_at ?? '—'}
-          {/* Restored from a saved build: the age above is that build's, and
-              everything written since was read from the files on top of it. */}
-          {winStatus?.cache?.source === 'snapshot' && (
-            <span data-tip={winStatus.cache.note ?? ''}> · restored</span>
-          )}
-          <br />
-          {nClasses < 3 && (
-            <span style={{ color: 'var(--crimson-ink)' }}>
-              {nClasses} of 3 classes shown
-            </span>
-          )}
-          <BuildStamp />
-        </div>
+        {/* One fact to a line, and a value never broken mid-token: a timestamp
+            split across two lines reads as two values. */}
+        <dl className="foot mono">
+          <div>
+            <dt>updates</dt>
+            <dd>
+              {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
+                live.transport
+              ]}
+            </dd>
+          </div>
+          <div>
+            <dt>last update</dt>
+            <dd>{live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}</dd>
+          </div>
+          <div>
+            <dt>window</dt>
+            <dd>
+              {resolvedWin?.label ?? '—'}
+              {windows?.retention_minutes != null && (
+                <span className="held"> of {Math.round(windows.retention_minutes / 60)}h held</span>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>panels built</dt>
+            <dd>
+              {panels.data?.full_built_at ?? '—'}
+              {/* Restored from a saved build: the age above is that build's, and
+                  everything written since was read from the files on top of it. */}
+              {winStatus?.cache?.source === 'snapshot' && (
+                <span className="held" data-tip={winStatus.cache.note ?? ''}> · restored</span>
+              )}
+            </dd>
+          </div>
+        </dl>
+        <BuildStamp />
+        {nClasses < 3 && (
+          <div className="foot-warn mono" data-tip="the class filter above the panels hides the rest">
+            {nClasses} of 3 classes shown
+          </div>
+        )}
       </aside>
 
       <main ref={mainRef}>
@@ -453,27 +473,35 @@ export default function App() {
           </div>
         )}
 
-        {tab.k !== 'feeds' && (
+        {showControls && (
           <>
-            <WindowPicker
-              value={url.win}
-              onChange={(w) => setUrl({ win: w })}
-              windows={windows}
-              resolved={resolvedWin}
-              status={winStatus}
-              backfill={live.live?.backfill}
-            />
-            <ClassFilter
-              value={url.cls}
-              onChange={(c) => setUrl({ cls: c })}
-              extra={
-                <WhoFilter
-                  who={who}
-                  facets={facets}
-                  onChange={(w) => setUrl({ users: w.users, atypes: w.atypes })}
-                />
-              }
-            />
+            <div ref={sentinelRef} className="controls-sentinel" aria-hidden="true" />
+            <div
+              ref={controlsRef}
+              className={`controls${stuck ? ' stuck' : ''}`}
+              role="group"
+              aria-label="time window and filters"
+            >
+              <WindowPicker
+                value={url.win}
+                onChange={(w) => setUrl({ win: w })}
+                windows={windows}
+                resolved={resolvedWin}
+                status={winStatus}
+                backfill={live.live?.backfill}
+              />
+              <ClassFilter
+                value={url.cls}
+                onChange={(c) => setUrl({ cls: c })}
+                extra={
+                  <WhoFilter
+                    who={who}
+                    facets={facets}
+                    onChange={(w) => setUrl({ users: w.users, atypes: w.atypes })}
+                  />
+                }
+              />
+            </div>
           </>
         )}
 
