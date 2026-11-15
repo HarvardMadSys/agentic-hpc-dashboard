@@ -1138,10 +1138,17 @@ function Portrait({
   const q = useUserPortrait(name, win, buildNonce, who, EVERY_MS);
   const p = q.data?.user === name ? q.data : null;
   const ref = useRef<HTMLDivElement>(null);
-  // a portrait opened from the roster is scrolled to, once per user
+  // A portrait opened from the roster is scrolled to once per user, when its
+  // answer has come. Scrolled as it mounts, it is one short panel still
+  // waiting, the page below it is too short to bring its top up, and nothing
+  // scrolls again once it grows: it stayed at the foot of the screen.
+  const scrolled = useRef<string | null>(null);
+  const arrived = !!p || !!q.error;
   useEffect(() => {
+    if (!arrived || scrolled.current === name) return;
+    scrolled.current = name;
     ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [name]);
+  }, [name, arrived]);
   const winLbl = p?._window?.label ?? null;
   const closeBtn = (
     <button className="btn" onClick={close} data-tip="close this portrait">close</button>
