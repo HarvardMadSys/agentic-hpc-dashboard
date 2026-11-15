@@ -45,25 +45,38 @@ import { UsersTab } from './tabs/UsersTab';
 import { EventsExplorer } from './components/EventsExplorer';
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
- * happening, who uses what and how each user works with agents, the agents,
+ * happening and who uses what, how each user works with agents, the agents,
  * one session, then the detail. Old tab keys still open (lib/filters.ts
  * TAB_ALIAS): sessions and cascades -> agents, io -> resources, sandbox ->
- * internal. */
-/* The rail groups them under four words, in the same order: nothing moves. */
-const TABS: { k: string; lbl: string; eyebrow: string; icon: IconName; group: string }[] = [
-  { k: 'live', lbl: 'Live', eyebrow: 'right now, and over the window', icon: 'live', group: 'Monitor' },
-  { k: 'overview', lbl: 'Overview', eyebrow: 'who uses what', icon: 'overview', group: 'Monitor' },
-  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Agents' },
-  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Agents' },
-  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time', icon: 'trajectories', group: 'Agents' },
-  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Cluster' },
-  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here', icon: 'risk', group: 'Cluster' },
-  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'slurm', group: 'Cluster' },
+ * internal, and overview -> live, where its table now is.
+ *
+ * Fewer stops in the rail: Overview's last table is a section of Live, and
+ * Resources, Risk & Warning and Slurm are one entry, the login nodes, with a
+ * sub-tab each. A sub-tab keeps its own key, so `?tab=resources`, a citation
+ * and every link into it land where they always did. */
+type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes' };
+const TABS: Tab[] = [
+  { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor' },
+  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Monitor' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Monitor' },
+  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time', icon: 'trajectories', group: 'Monitor' },
+  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
+  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes' },
+  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'queue', group: 'Monitor', parent: 'nodes' },
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask an agent about this window', icon: 'chat', group: 'More' },
   { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance', icon: 'feeds', group: 'More' },
 ];
+/** The one entry the three node tabs share. It is named in the site's own
+ *  word for its hosts (`ui.node_noun`, "login nodes"): their figures are
+ *  login-node use, not the cluster's (README, "Scope is stated"). */
+const NODES_EYEBROW = 'what runs on them, what should not, and what they ask of the scheduler';
+/** A link to a tab that folded into another lands on the part it became. */
+const LANDS_ON: Record<string, string> = { overview: 'sec-who-uses-what' };
+/** The tab the page was opened on, read once, before the link is rewritten
+ *  (an effect can run twice on mount, and the second saw the rewritten link). */
+const OPENED_ON = new URLSearchParams(window.location.search).get('tab') ?? '';
 
 /** The rail folded to its icons, remembered in this browser only. */
 const RAIL_KEY = 'rc.railFolded';
@@ -203,6 +216,57 @@ export default function App() {
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
   const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
   const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
+  // What the site calls its hosts (`ui.node_noun`): the node tabs' entry and
+  // Live's per-host panel both say it.
+  const nodeNoun =
+    ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.node_noun?._value as
+      | string
+      | undefined) ?? null;
+  const nodesWord = nodeNoun?.trim() || 'login nodes';
+  const nodesLbl = nodesWord.charAt(0).toUpperCase() + nodesWord.slice(1);
+
+  // The rail's entries: a tab, or the one entry its sub-tabs share.
+  type RailItem = { key: string; lbl: string; icon: IconName; group: string; tabs: Tab[] };
+  const railItems: RailItem[] = [];
+  for (const t of tabs) {
+    const key = t.parent ?? t.k;
+    const have = railItems.find((r) => r.key === key);
+    if (have) have.tabs.push(t);
+    else
+      railItems.push(
+        t.parent
+          ? { key, lbl: nodesLbl, icon: 'nodes', group: t.group, tabs: [t] }
+          : { key, lbl: t.lbl, icon: t.icon, group: t.group, tabs: [t] },
+      );
+  }
+  const railOn = railItems.find((r) => r.tabs.includes(tab)) ?? railItems[0];
+  /** the open tab's parent entry, when it is a sub-tab */
+  const parent = tab.parent ? railOn : null;
+  // Back to a parent entry from elsewhere, the sub-tab last open there opens.
+  const [lastSub, setLastSub] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const p = tab.parent;
+    if (p) setLastSub((m) => (m[p] === tab.k ? m : { ...m, [p]: tab.k }));
+  }, [tab.k, tab.parent]);
+
+  // A link to a tab that folded into another (`?tab=overview`) lands on the
+  // part it became, once that part is on the page; the link is rewritten to
+  // the tab it is now.
+  useEffect(() => {
+    const sec = LANDS_ON[OPENED_ON];
+    if (!sec) return;
+    setUrl({ tab: url.tab });
+    let tries = 0;
+    const t = window.setInterval(() => {
+      const el = document.getElementById(sec);
+      if (el || ++tries > 50) {
+        window.clearInterval(t);
+        el?.scrollIntoView({ block: 'start' });
+      }
+    }, 120);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Which deployment: the sidebar and the browser tab both say, so a frozen
   // capture and a live feed open side by side are never confused.
   const siteName = String(
@@ -325,20 +389,16 @@ export default function App() {
             // Opening a session or a user's sessions is navigation: back returns.
             openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
             openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
-            nodeNoun={
-              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.node_noun?._value as
-                | string
-                | undefined) ?? null
-            }
+            nodeNoun={nodeNoun}
             userCols={
               ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.user_columns?._value as
                 | string[]
                 | undefined) ?? null
             }
+            // the old Overview tab's table, under the rate chart
+            whoUses={<OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />}
           />
         );
-      case 'overview':
-        return <OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />;
       case 'users':
         return (
           <UsersTab
@@ -411,6 +471,11 @@ export default function App() {
     window.scrollTo({ top: 0 });
     setNavOpen(false);
   };
+  /** a rail entry: its tab, or for a parent the sub-tab last open there */
+  const goRail = (r: RailItem) => {
+    const last = lastSub[r.key];
+    goTab(r.tabs.some((t) => t.k === last) ? last : r.tabs[0].k);
+  };
   const footWords = TRANSPORT_WORDS[live.transport];
   const footAgo = live.receivedAt ? ago(Date.now() - live.receivedAt) : '—';
 
@@ -419,10 +484,12 @@ export default function App() {
     ...tabs.map((t) => ({
       id: `tab:${t.k}`,
       group: 'Tabs',
-      label: t.lbl,
+      // a sub-tab under its entry's name: "Login nodes · Slurm"
+      label: t.parent ? `${nodesLbl} · ${t.lbl}` : t.lbl,
       hint: t.eyebrow,
       icon: t.icon,
-      keywords: t.group,
+      // the old tab names still find where their panels went
+      keywords: `${t.group}${t.k === 'live' ? ' overview who uses what' : ''}${t.parent ? ' nodes host' : ''}`,
       run: () => goTab(t.k),
     })),
     ...secs.map((s) => ({
@@ -491,8 +558,8 @@ export default function App() {
           Agent Behaviour
         </span>
         <span className="topbar-tab">
-          <Icon name={tab.icon} size={16} />
-          {tab.lbl}
+          <Icon name={railOn.icon} size={16} />
+          {railOn.lbl}
         </span>
         <button className="iconbtn" aria-label="go to a tab, a section or a window" onClick={() => setPaletteOpen(true)}>
           <Icon name="search" />
@@ -524,25 +591,25 @@ export default function App() {
           <kbd>/</kbd>
         </button>
         <nav>
-          {tabs.map((t, i) => (
-            <Fragment key={t.k}>
-              {(i === 0 || tabs[i - 1].group !== t.group) && <div className="navgroup">{t.group}</div>}
+          {railItems.map((r, i) => (
+            <Fragment key={r.key}>
+              {(i === 0 || railItems[i - 1].group !== r.group) && <div className="navgroup">{r.group}</div>}
               <button
-                aria-selected={t.k === tab.k}
-                aria-current={t.k === tab.k ? 'page' : undefined}
-                data-tip={mini ? t.lbl : undefined}
-                onClick={() => goTab(t.k)}
+                aria-selected={r === railOn}
+                aria-current={r === railOn ? 'page' : undefined}
+                data-tip={mini ? r.lbl : undefined}
+                onClick={() => goRail(r)}
               >
-                <Icon name={t.icon} />
-                <span className="navlbl">{t.lbl}</span>
-                {t.k === 'live' && (
+                <Icon name={r.icon} />
+                <span className="navlbl">{r.lbl}</span>
+                {r.key === 'live' && (
                   <>
                     <i className={`navdot${live.transport === 'ws' ? '' : ' off'}`} aria-hidden="true" />
                     <span className="vh">{live.transport === 'ws' ? ', streaming' : ', not streaming'}</span>
                   </>
                 )}
               </button>
-              {t.k === tab.k && !mini && <SectionList secs={secs} active={active} />}
+              {r === railOn && !mini && <SectionList secs={secs} active={active} />}
             </Fragment>
           ))}
         </nav>
@@ -611,11 +678,11 @@ export default function App() {
         <div className={`head${showControls ? ' with-bar' : ''}`}>
           <div className="head-title">
             <span className="head-icon" aria-hidden="true">
-              <Icon name={tab.icon} size={20} />
+              <Icon name={railOn.icon} size={20} />
             </span>
             <div>
-              <h1>{tab.lbl}</h1>
-              <div className="head-sub">{tab.eyebrow}</div>
+              <h1>{railOn.lbl}</h1>
+              <div className="head-sub">{parent ? NODES_EYEBROW : tab.eyebrow}</div>
             </div>
           </div>
           <div className="status">
@@ -688,6 +755,23 @@ export default function App() {
               refresh
             </button>
           </div>
+          {/* A parent entry's sub-tabs. Each is a tab of its own in the URL, so
+              this is navigation (aria-current), not an ARIA tab panel. */}
+          {parent && parent.tabs.length > 1 && (
+            <nav className="subtabs" aria-label={parent.lbl}>
+              {parent.tabs.map((t) => (
+                <button
+                  key={t.k}
+                  aria-current={t.k === tab.k ? 'page' : undefined}
+                  onClick={() => goTab(t.k)}
+                  data-tip={t.eyebrow}
+                >
+                  <Icon name={t.icon} size={16} />
+                  {t.lbl}
+                </button>
+              ))}
+            </nav>
+          )}
         </div>
 
         {(panels.error || live.error || feeds.error) && (

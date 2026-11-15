@@ -111,6 +111,8 @@ const TAB_ALIAS: Record<string, string> = {
   sessions: 'agents',
   io: 'resources',
   sandbox: 'internal',
+  // Overview's one table is a section of Live now; App.tsx lands such a link on it
+  overview: 'live',
 };
 
 /** How a filter asks for the processes the collector gave no agent type. */
