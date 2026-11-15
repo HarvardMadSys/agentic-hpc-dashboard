@@ -491,7 +491,7 @@ class WindowRegistry:
     seek-based plan is that a build is I/O-bound on exactly its window.
     """
 
-    def __init__(self, cfg, classes, roots_fn, lock):
+    def __init__(self, cfg, classes, roots_fn, lock, ready=None):
         self.cfg = cfg
         self.classes = list(classes)
         self.roots_fn = roots_fn
@@ -510,6 +510,12 @@ class WindowRegistry:
         self._cv = threading.Condition()
         self._worker = None
         self._stop = False
+        # Set when builds may start (the aggregator's `positioned`), or None. A
+        # build is pure Python and keeps the GIL; the tail's positioning inflates
+        # .gz files in short C calls that must each win it back, and beside a
+        # build it got 5% of a core on rtx6000b (2026-11-13) -- while the live
+        # tail, which reads nothing until positioning ends, stood still.
+        self.ready = ready
 
     # ---------------------------------------------------------------- worker
     def start(self):
@@ -524,6 +530,8 @@ class WindowRegistry:
             self._cv.notify_all()
 
     def _run(self):
+        while self.ready is not None and not self.ready.is_set() and not self._stop:
+            self.ready.wait(0.5)
         while not self._stop:
             with self._cv:
                 while not self._queue and not self._stop:
@@ -554,6 +562,12 @@ class WindowRegistry:
 
     # ----------------------------------------------------------------- build
     def _build(self, view):
+        # Make room first. A request evicts only a ready view, so a window that
+        # someone asks for while another view builds can leave both held past
+        # `max_windows`. Apply the cap again here, before this build reads, with
+        # the same rule as a request and with this view kept.
+        with self.lock:
+            self._evict(keep=view_key(view.minutes, view.flt), filtered=bool(view.flt))
         if self.hours is not None and not view.flt and hourmod.build(self, view):
             return
         t0 = time.time()

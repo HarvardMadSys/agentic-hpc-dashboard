@@ -878,8 +878,11 @@ per-record path is a few dict lookups. On rtx6000a's 2026-10-10 (1.89 M records,
 build) `feed` took 2.4 s, ~1.4 µs a record, and the saved window grew by 2.4 MB. State is one
 entry per collector session key, capped at `reducers.workspace.max_keys` (150 000) keys,
 `max_dirs` (300) directories per key, `max_dir_entries` (400 000) overall, 64 named paths per
-directory and 32 per command line; past any cap the excess is counted, not kept. Served paths
-are masked (`redact`) and no raw argv is served.
+directory and 32 per command line; past any cap the excess is counted, not kept. At the key
+cap, a new key first drops the keys last seen before the window began. The keys are walked
+for that only once the oldest key the previous walk kept has left the window, so a cap full of
+keys inside the window costs one walk, not one per record. Served paths are masked
+(`redact`) and no raw argv is served.
 
 The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the trajectory rows' reading and stay
 on the Trajectories tab; the Agents page no longer carries them.

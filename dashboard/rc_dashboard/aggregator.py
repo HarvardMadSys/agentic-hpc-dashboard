@@ -85,15 +85,17 @@ class Aggregator:
         # Names for the Network bytes panel's endpoints, looked up in the
         # background and applied when the panel is read; None when off.
         self.rdns = endpoints.from_config(cfg)
-        self.panels_by_window = winmod.WindowRegistry(
-            cfg, self.classes, self.roots, self.lock)
-        self.node_built_at = None
-        self.node_result = {}
-        self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
         # Set once every file has been handed to the tail.  Until then a poll
         # reads nothing: a file the tail holds no offset for is read from byte
         # 0, and the backfill would then count the same history a second time.
+        # The window builds wait for it too: positioning is minutes long, and
+        # beside a build it is starved of the GIL (windows.WindowRegistry.ready).
         self.positioned = threading.Event()
+        self.panels_by_window = winmod.WindowRegistry(
+            cfg, self.classes, self.roots, self.lock, ready=self.positioned)
+        self.node_built_at = None
+        self.node_result = {}
+        self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
         self.stats = {"records": 0, "last_poll": None}
         # Set at shutdown. The backfill runs on an executor thread, which the
         # interpreter waits for at exit; unchecked, a restart during the minutes
@@ -220,10 +222,19 @@ class Aggregator:
         hours = int(self.cfg.get("live.backfill_hours", 168))
         span = min(hours * 3600, self.live.retention_s) if hours > 0 else 0
         since = time.time() - span if span else None
+        with self.lock:
+            self.backfill = {"state": "positioning", "pct": 0, "records": 0,
+                             "hours": hours if span else 0}
         try:
+            # Outside the lock. Positioning opens every file and builds each sealed
+            # day's .gz seek index: 4 minutes for a week of 8 login nodes on
+            # rtx6000b. The lock is the window registry's too, so every read of the
+            # views and of the live tier -- the event loop's among them -- would
+            # wait, and the page answered nothing. Nothing else uses the tail until
+            # `positioned` is set: poll_once reads nothing before it.
+            plan = self.source.position(since)
+            total = sum(e["end"] - e["start"] for e in plan)
             with self.lock:
-                plan = self.source.position(since)
-                total = sum(e["end"] - e["start"] for e in plan)
                 self.backfill = {
                     "state": "running" if span else "skipped",
                     "pct": 0 if span else 100, "records": 0,

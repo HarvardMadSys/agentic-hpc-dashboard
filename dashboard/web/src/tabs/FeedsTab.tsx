@@ -336,7 +336,10 @@ function Backfill({ b }: { b: Record<string, unknown> | null | undefined }) {
   const n = (k: string) => (typeof b[k] === 'number' ? (b[k] as number) : null);
   const s = String(b.state ?? '');
   const text =
-    s === 'running'
+    s === 'positioning'
+      ? // each file opened, each sealed .gz indexed: minutes for a week of 8 nodes
+        'finding where the history starts in each file; reading begins next'
+      : s === 'running'
       ? `reading history back to ${b.from ?? DASH}: ${fint(n('pct'))}% · ${fint(n('records'))} records so far`
       : s === 'done'
         ? // a frozen clock (a captured feed) measures every duration as 0: say none
