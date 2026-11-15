@@ -19,8 +19,26 @@
  * to each dashboard page it serves. Only here, on the public demo: the image,
  * `rc_dashboard demo` and every deployment on a cluster load no tracker, and a
  * cluster's URLs, whose filters carry real user names, reach no third party.
+ *
+ * The demo takes a password (the DEMO_PASSWORD secret: `npx wrangler secret
+ * put DEMO_PASSWORD`). Without the cookie the sign-in sets, a page gets the
+ * sign-in page, which says whom to ask (CONTACT), and anything else a 401;
+ * neither wakes the container. With no secret set the demo is closed, never
+ * open. Changing the secret signs everyone out.
  */
 import { Container } from "@cloudflare/containers";
+
+declare global {
+  interface Env {
+    DEMO_PASSWORD?: string;
+  }
+}
+
+/** Whom a visitor asks for the password. */
+const CONTACT = "admin@agentic-system.org";
+const COOKIE = "demo_auth";
+const SIGNED_IN_FOR_S = 30 * 86400;
+const SIGN_IN_PATH = "/__demo/sign-in";
 
 const SLEEP_AFTER = "15m";
 /** How long one request waits for a starting demo before it answers "starting". */
@@ -149,8 +167,160 @@ function counted(response: Response): Response {
     .transform(response);
 }
 
+// ------------------------------------------------------------------ password
+
+/** The cookie's value: an HMAC of a fixed label under the password, so it holds
+ * no password, and a new password makes every old cookie worthless. */
+async function token(password: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(password), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode("rc-dashboard-demo/v1"));
+  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Equal strings, compared in time that does not depend on where they differ. */
+function same(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  return x.byteLength === y.byteLength && crypto.subtle.timingSafeEqual(x, y);
+}
+
+function cookieOf(request: Request, name: string): string | null {
+  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+/** Where to send a visitor after sign-in: always an absolute URL on this site.
+ * `next` is resolved as a browser would (which reads `/\evil.example` as
+ * `//evil.example`); anything on another origin, or with a backslash at all, is
+ * the site's root. Absolute, never a bare path: a path that normalizes to
+ * `//host` (`/.//evil.example`) would be read by the browser as another site. */
+function backTo(next: string | null, site: URL): string {
+  const root = new URL("/", site).href;
+  if (!next || next.includes("\\")) return root;
+  let to: URL;
+  try {
+    to = new URL(next, site);
+  } catch {
+    return root;
+  }
+  return to.origin === site.origin ? to.href : root;
+}
+
+/** Plain http on the open internet: the password must never cross it. Loopback
+ * is left alone, for `wrangler dev`. */
+function insecure(url: URL): boolean {
+  return url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+}
+
+const esc = (s: string) =>
+  s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function signInPage(next: string, wrong: boolean, status: number): Response {
+  const page = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>demo · synthetic data · Agent Behaviour</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f4f1;
+         color: #1e1e1e; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { width: min(26rem, 100% - 2.5rem); padding: 2rem 0; }
+  h1 { margin: 0; font-size: 1.35rem; }
+  .sub { margin: .1rem 0 1.2rem; font: 12px ui-monospace, Menlo, monospace; color: #8a6410;
+         border: 1px dashed #c99a2e; border-radius: 99px; padding: .15rem .6rem; display: inline-block; }
+  form { display: flex; gap: .5rem; margin: 1rem 0 .4rem; }
+  input { flex: 1; min-width: 0; font: inherit; padding: .5rem .7rem; border: 1px solid #c9c4bc;
+          border-radius: 8px; background: #fff; }
+  button { font: inherit; padding: .5rem 1rem; border: 0; border-radius: 8px; background: #a51c30;
+           color: #fff; cursor: pointer; }
+  .wrong { color: #a51c30; font-size: 13.5px; margin: 0; }
+  .muted { color: #6b6b6b; font-size: 13.5px; }
+  a { color: #a51c30; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Agent Behaviour</h1>
+  <div class="sub">demo · synthetic data</div>
+  <p>This demo of the dashboard runs on made-up records for fictional login nodes and their
+  users. It takes a password.</p>
+  <form method="post" action="${SIGN_IN_PATH}">
+    <input type="hidden" name="next" value="${esc(next)}">
+    <input type="password" name="password" placeholder="Password" aria-label="Password"
+           autocomplete="current-password" required autofocus>
+    <button type="submit">Enter</button>
+  </form>
+  ${wrong ? '<p class="wrong">That password is not right.</p>' : ""}
+  <p class="muted">For a password, write to
+  <a href="mailto:${CONTACT}?subject=Agent%20dashboard%20demo">${CONTACT}</a>.</p>
+</main>
+</body>
+</html>
+`;
+  return new Response(page, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex",
+    },
+  });
+}
+
+/** The gate: null to let the request through, or the answer to give instead. */
+async function gate(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (insecure(url)) {
+    // Before any form is shown or read, whatever the zone's Always Use HTTPS says.
+    url.protocol = "https:";
+    return Response.redirect(url.toString(), 308);
+  }
+  const password = env.DEMO_PASSWORD ?? "";
+  const want = password ? await token(password) : null;
+
+  if (url.pathname === SIGN_IN_PATH && request.method === "POST") {
+    const form = await request.formData().catch(() => null);
+    const next = backTo(form?.get("next")?.toString() ?? null, url);
+    const given = form?.get("password")?.toString() ?? "";
+    if (!want || !same(await token(given), want)) {
+      await new Promise((r) => setTimeout(r, 1000)); // a slower guess
+      return signInPage(next, true, 401);
+    }
+    return new Response(null, {
+      status: 303,
+      headers: {
+        location: next,
+        "cache-control": "no-store",
+        "set-cookie": `${COOKIE}=${want}; Path=/; Max-Age=${SIGNED_IN_FOR_S}; HttpOnly; Secure; SameSite=Lax`,
+      },
+    });
+  }
+
+  const have = cookieOf(request, COOKIE);
+  if (want && have && same(have, want)) return null;
+
+  const page =
+    request.method === "GET" &&
+    !request.headers.has("upgrade") &&
+    (request.headers.get("accept") ?? "").includes("text/html");
+  if (page) return signInPage(backTo(url.pathname + url.search, url), false, 401);
+  return Response.json(
+    { error: "password", detail: `the demo takes a password; ask ${CONTACT}` },
+    { status: 401, headers: { "cache-control": "no-store" } },
+  );
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
+    const stop = await gate(request, env);
+    if (stop) return stop;
     return counted(await env.DEMO.getByName("demo").fetch(request));
   },
 } satisfies ExportedHandler<Env>;
