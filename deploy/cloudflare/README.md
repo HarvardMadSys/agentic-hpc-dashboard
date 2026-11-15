@@ -51,15 +51,23 @@ It needs two secrets from the Cloudflare account that holds the `agentic-system.
 Put them on the **`demo` environment**, not on the repository, so that no other workflow or
 branch can read a token that edits that account's Workers and Containers:
 
-1. *Settings*, *Environments*, *New environment*, `demo` (the first run creates it too).
+1. *Settings*, *Environments*, *New environment*, `demo`. Do this before the workflow's first
+   run: a run that finds no `demo` environment creates one with no branch rule, which
+   protects nothing until step 2 is done.
 2. Under *Deployment branches and tags*, choose *Selected branches and tags* and add
-   `develop`.
-3. Add the two environment secrets:
+   `develop`. This rule, not the job's `if`, is what keeps the token from other branches: a
+   run started by hand uses the workflow file of the branch it is started on, which can
+   have the `if` taken out.
+3. Only then, add the two environment secrets:
 
 | secret | value |
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | an API token (*My Profile*, *API Tokens*, *Create Token*) from the **Edit Cloudflare Workers** template, with **Account · Containers · Edit** added, scoped to that account and its `agentic-system.org` zone |
 | `CLOUDFLARE_ACCOUNT_ID` | that account's ID (the Workers overview shows it) |
+
+Never add them as repository secrets as well (*Settings*, *Secrets and variables*,
+*Actions*, *Repository secrets* should hold no `CLOUDFLARE_*`): a repository secret is
+readable by any workflow on any branch, whatever the environment's rule says.
 
 Until both are set, the workflow fails at its first step and names the missing secret, so a
 push to `develop` never looks deployed when it was not. Cloudflare's docs name the template

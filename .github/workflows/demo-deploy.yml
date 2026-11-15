@@ -48,10 +48,16 @@ concurrency:
   group: demo-deploy
   cancel-in-progress: false
 
+# Nothing by default; the job asks for what it reads.
+permissions: {}
+
 jobs:
   deploy:
     # The public demo is develop's page: a run started by hand from another
-    # branch does nothing.
+    # branch does nothing. This is a convenience, not the security boundary: a
+    # run by hand uses the workflow file of the branch it starts on, which can
+    # drop this line. The `demo` environment's develop-only branch rule is what
+    # keeps the token from any other branch, and must exist before the secrets.
     if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     permissions:
@@ -80,6 +86,10 @@ jobs:
       # Actions pinned to a commit, not a tag, since the deploy token is in this job.
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # nothing here pushes, so leave no GitHub token in .git/config for
+          # later steps (npm's install scripts among them) to read
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
