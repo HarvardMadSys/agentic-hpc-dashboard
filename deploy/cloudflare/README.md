@@ -39,6 +39,7 @@ itself. Plain `http://` reaches it too, or is redirected to `https://` if the zo
 | instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~130 MB |
 | at most | one instance (`max_instances: 1`) |
 | outbound internet | none (`enableInternet = false`); Ask LLM is off in the image |
+| visits | counted by [Statcounter](https://statcounter.com/): the Worker adds its code (`STATCOUNTER` in `src/index.ts`) to the end of each dashboard page, never to the "starting" page, which reloads itself, nor to an API reply |
 | time zone | `America/New_York` (`TZ` in the Dockerfile): whose working day the fictional people keep |
 
 **Cold start.** The container sleeps after 15 minutes with no request and no websocket
@@ -69,7 +70,9 @@ npm run typecheck                    # wrangler types && tsc --noEmit
 To change: the history and the time zone in `docker/demo/Dockerfile`; the address, the
 instance size and the ceiling in `wrangler.jsonc` (`standard-1` halves a cold start, and
 costs more while awake; `"workers_dev": false` leaves only the Custom Domain); the idle
-time and the wait in `src/index.ts`. A hostname in a zone of another account cannot be a
+time, the wait and the Statcounter code in `src/index.ts`. The code is added here, by the
+Worker, and nowhere else: the image and the service load no tracker, so a dashboard on a
+cluster, whose URLs carry real user names, sends nothing to a third party. A hostname in a zone of another account cannot be a
 Custom Domain: deploy from that account, or delete `routes` for the `workers.dev` URL alone.
 
 ## Without Cloudflare
