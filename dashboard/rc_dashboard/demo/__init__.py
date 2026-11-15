@@ -30,6 +30,9 @@ exports the cluster's feed roots, and a demo must never read them):
     clock.as_of                               "" -- the wall clock: the feed is live
     live.retention_min, backfill_hours        the history written, so every window is filled
     site.name, site.description               as above
+    server.rdns.enabled                       off: the Network bytes panel names its
+                                              endpoints by the records' own host names,
+                                              and a demo asks no DNS server about them
 
 The feed is a pure function of the seed, the host count and the clock
 (`world.World`): the same window over the same seed is the same bytes, and a
@@ -93,7 +96,8 @@ def configure(cfg, opts):
             ("live.backfill_hours", days * 24),
             ("live.window_min", min(1440, mins)),
             ("site.name", SITE_NAME),
-            ("site.description", SITE_DESC)):
+            ("site.description", SITE_DESC),
+            ("server.rdns.enabled", False)):
         cfg.set(key, val, "demo")
     return cfg
 

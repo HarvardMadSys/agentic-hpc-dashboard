@@ -336,7 +336,12 @@ def defaults():
                    # readers sign in with, made by `python -m rc_dashboard
                    # new-password`. Empty leaves the page open to anyone who
                    # reaches the port. A session lasts `session_days`.
-                   "auth": {"password_hash": "", "session_days": 30}},
+                   "auth": {"password_hash": "", "session_days": 30},
+                   # Name the endpoints on the Network bytes panel by reverse
+                   # DNS (endpoints.py): `workers` lookups at a time, from this
+                   # host, off the request path, kept in <cache.dir>/rdns.json.
+                   # Off: names come only from the records' command lines.
+                   "rdns": {"enabled": True, "workers": 4}},
     }
 
 
@@ -393,6 +398,7 @@ ENV_MAP = {
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
+    "server.rdns.enabled": ("RC_DASH_RDNS", lambda v: v not in ("0", "false", "no", "off")),
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.

@@ -629,6 +629,42 @@ restart:
 `tests/test_auth.py` starts the app with a password, then reads every route, an asset, and the
 websocket, with and without it.
 
+## Network endpoints
+
+The Network bytes panel, in the I/O section of the Resources tab (under *Login nodes* in the
+rail), lists beside its bars the ten remote endpoints the processes made the most send and
+receive calls to. A switch ranks them by bytes sent and received instead. Each row splits its
+calls or bytes by class, and the list follows the who filter and the class choice like the bars.
+It is counted from the collector's `net_endpoints` block (schema 7) as each process exited, so a
+capture from an older collector shows no list. Demo mode turns the lookups below off, so its
+made-up endpoints keep the host names its records give.
+
+- **One row per name.** The I/O reducer adds up the calls and bytes of every remote address
+  (`reducers/io.py`), and the service names each address when the panel is read
+  (`endpoints.py`): by a reverse-DNS lookup from this host, else by a name a process's command
+  line gave for it (the collector's `host`), else by the address itself. Addresses with one name
+  are one row. Inbound endpoints, whose address is a client's, stay apart from outbound ones.
+  Hover a name for its addresses, its ports, and where the name came from.
+- **Lookups never hold up a request.** A few background threads look the addresses up, the
+  busiest first, and keep the answers in `<cache.dir>/rdns.json` (mode 0600), so a restart asks
+  nothing again. A name is asked for again after a week, "no name" after a day, and a lookup
+  that failed after ten minutes, with the old answer served meanwhile. While names are pending,
+  the page reads the panels again a few times. The lookups are this host's: a private address
+  in another site's capture is named as this host's resolver names it.
+- **Exact for any mix of classes.** The service sends the top ten by calls and by bytes for
+  every mix of classes, so the page can rank the classes it shows and still hold their whole top
+  ten.
+- **What it cannot show is said.** The note under the list gives the share of the bars' bytes
+  whose endpoint is known, the bytes a block held with no address, and the processes that moved
+  bytes with no endpoint block at all.
+- **A restart, not a rebuild.** `server.rdns.enabled` (`RC_DASH_RDNS`, on by default) turns the
+  lookups off, and names then come only from command lines. `server.rdns.workers` (4) sets how
+  many run at once. A name is applied when the panel is read and never saved in a reducer's
+  state, so neither setting touches a saved build.
+
+`tests/test_endpoints.py` covers the names, the lookups, the grouping, the ranking, and the
+served payload, and `tests/test_io.py` covers the reducer.
+
 ## Trajectories: tasks, phases, and processes
 
 An agent session's row says what the agent was doing at three levels, which the page calls **Tasks**,

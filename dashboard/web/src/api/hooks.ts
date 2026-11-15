@@ -91,13 +91,38 @@ export function useCollectors(everyMs = 20000): Async<CollectorsResponse> {
  * request, and `buildNonce` re-requests when that build finishes. The user and
  * agent-type filter is the same kind of thing -- its own reduced view -- and is
  * a dependency by its query string, so a new array with the same values is not
- * a new request. */
-export const usePanels = (
+ * a new request.
+ *
+ * The Network bytes panel's endpoint names are looked up in the background
+ * after the service first lists the addresses (rc_dashboard/endpoints.py), so
+ * while some are pending the panels are read again, later each time, and only
+ * a few times: a name still missing after that waits for the next build. */
+const NAME_REREADS_MS = [3000, 6000, 12000, 24000, 48000];
+
+export function usePanels(
   win: number | null,
   buildNonce = 0,
   who: Who | null = null,
-): Async<PanelsResponse> =>
-  useFetched((s) => getPanels(win, s, who), [win, buildNonce, who ? whoQuery(who) : '']);
+): Async<PanelsResponse> {
+  const view = `${win}|${who ? whoQuery(who) : ''}`;
+  const a = useFetched((s) => getPanels(win, s, who), [win, buildNonce, view]);
+  const { data, loading, reload } = a;
+  const pending = (data?.panels?.io_process?.endpoints as { pending?: number } | undefined)?.pending ?? 0;
+  const rereads = useRef({ view, n: 0 });
+  useEffect(() => {
+    const r = rereads.current;
+    if (r.view !== view || !pending) rereads.current = { view, n: 0 };
+    const n = rereads.current.n;
+    // not while a read is out: its answer may hold the names, or be another view's
+    if (!pending || loading || n >= NAME_REREADS_MS.length) return;
+    const t = setTimeout(() => {
+      rereads.current.n = n + 1;
+      reload();
+    }, NAME_REREADS_MS[n]);
+    return () => clearTimeout(t);
+  }, [data, loading, pending, reload, view]);
+  return a;
+}
 
 /** Whether the page is on screen: a hidden tab polls nothing. */
 function useVisible(): boolean {

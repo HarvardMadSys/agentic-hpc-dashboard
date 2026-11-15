@@ -2715,6 +2715,54 @@ td.host-by {
   padding-left: 4px;
 }
 
+/* Network bytes: the bars and the endpoint list side by side, the list under
+   the bars when the panel is too narrow for both (NetEndpoints.tsx) */
+.net-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 32px;
+  align-items: flex-start;
+}
+.net-bars {
+  flex: 0 1 540px;
+  min-width: 0;
+}
+.net-ends {
+  flex: 1 1 520px;
+  min-width: 0;
+}
+.net-ends-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 6px;
+}
+.net-ends-note {
+  margin-top: 8px;
+  line-height: 1.5;
+}
+/* narrower share tracks: one column per class beside five of its own */
+table.ep-table {
+  --track: 44px;
+}
+td.ep-name {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ep-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+}
+
 /* -------------------------------------------------- go to (Ctrl K, Cmd K, /)
  * components/CommandPalette.tsx: a tab, a section of this one, a window. */
 .cmdk-wrap {

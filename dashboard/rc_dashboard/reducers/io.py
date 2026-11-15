@@ -13,6 +13,17 @@ BPF block was unavailable, so every total ships with its coverage.
 Reads and writes are kept apart end to end: the per-tool and per-user rows are
 cut to the top N on EACH counter and unioned, so a tool that only writes is not
 dropped for reading little.
+
+`net_endpoints` (schema 7) says where those bytes went: every endpoint of the
+process's life, with its bytes each way and its send and receive calls. They are
+added up per remote address and class, as each process exits, like the totals.
+Inbound stays apart from outbound: the collector keys an inbound endpoint by the
+local port, so its address is the client's. Every address is kept, not a top N.
+The page names addresses when the panel is read (endpoints.py) and ranks the
+names, and one name can gather many small addresses, so a cut here would drop
+part of a name's traffic. What the list cannot show is counted beside it: the
+bytes a block holds with no address listed (`unattributed`, `overflow`,
+`unaccounted`), and the processes that moved bytes with no block at all.
 """
 import collections
 import heapq
@@ -20,6 +31,34 @@ import heapq
 from . import Acc, Quant, add_counts, pct
 
 IO_KEYS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
+# The losses a `net_endpoints` block states, beside its endpoints.
+EP_LOSSES = ("unattributed", "overflow", "unaccounted")
+# Per address, the ports and the command-line names kept in the result: labels
+# for the page, which shows a few.
+EP_PORTS = 5
+EP_HOSTS = 3
+
+
+def _count(v):
+    """A collector byte or call count as an int; absent or junk is none."""
+    return int(v) if isinstance(v, (int, float)) and v > 0 else 0
+
+
+def _endpoint():
+    return {"by_class": {}, "ports": collections.Counter(), "hosts": collections.Counter(),
+            "procs": 0, "external": False, "provider": None}
+
+
+def _ep_cover():
+    # listed: bytes and calls with an address; lost: what a block holds with
+    # none listed; missing: processes that moved bytes with no block at all
+    return {"procs": 0, "calls": 0, "tx": 0, "rx": 0,
+            "lost_calls": 0, "lost_tx": 0, "lost_rx": 0, "missing": 0, "missing_bytes": 0}
+
+
+def _top(counts, n):
+    """The `n` biggest counts, ties by name: the same whatever order they came in."""
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n])
 
 
 def _heaviest(rows, n):
@@ -51,6 +90,9 @@ class IoReducer:
         self.by_user = collections.defaultdict(lambda: {
             "events": 0, "with_io": 0, "rchar_mb": 0.0, "wchar_mb": 0.0,
             "rd_mb": 0.0, "wr_mb": 0.0, "net_tx_mb": 0.0, "net_rx_mb": 0.0, "cls": None})
+        # (remote address, inbound) -> its calls and bytes per class
+        self.endpoints = collections.defaultdict(_endpoint)
+        self.ep_cover = collections.defaultdict(_ep_cover)
 
     def feed(self, rec):
         c = self.cls[rec["_a3"]]
@@ -93,6 +135,51 @@ class IoReducer:
         if nc is not None:
             t["net_calls"] += nc
 
+        ne = rec.get("net_endpoints")
+        if isinstance(ne, dict):
+            self._feed_endpoints(rec["_a3"], ne)
+        elif (tx or 0) + (rx or 0) > 0:
+            cv = self.ep_cover[rec["_a3"]]
+            cv["missing"] += 1
+            cv["missing_bytes"] += (tx or 0) + (rx or 0)
+
+    def _feed_endpoints(self, cls, ne):
+        cv = self.ep_cover[cls]
+        cv["procs"] += 1
+        seen = set()
+        for e in ne.get("endpoints") or ():
+            if not isinstance(e, dict) or not e.get("addr"):
+                continue
+            key = (str(e["addr"]), bool(e.get("inbound")))
+            row = self.endpoints[key]
+            calls, tx, rx = _count(e.get("calls")), _count(e.get("tx_bytes")), \
+                _count(e.get("rx_bytes"))
+            by = row["by_class"].get(cls)
+            if by is None:
+                by = row["by_class"][cls] = {"calls": 0, "tx": 0, "rx": 0}
+            by["calls"] += calls
+            by["tx"] += tx
+            by["rx"] += rx
+            row["ports"]["%s/%s" % (e.get("proto") or "?", e.get("port"))] += calls
+            if key not in seen:
+                seen.add(key)
+                row["procs"] += 1
+                if e.get("host"):
+                    row["hosts"][str(e["host"])] += 1
+            if e.get("external"):
+                row["external"] = True
+            if row["provider"] is None and e.get("provider"):
+                row["provider"] = str(e["provider"])
+            cv["calls"] += calls
+            cv["tx"] += tx
+            cv["rx"] += rx
+        for k in EP_LOSSES:
+            lost = ne.get(k)
+            if isinstance(lost, dict):
+                cv["lost_calls"] += _count(lost.get("calls"))
+                cv["lost_tx"] += _count(lost.get("tx_bytes"))
+                cv["lost_rx"] += _count(lost.get("rx_bytes"))
+
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed."""
         for cls, c in o.cls.items():
@@ -116,6 +203,39 @@ class IoReducer:
                     m[k] = v            # the newest record's, as one pass keeps it
                 else:
                     m[k] += v
+        for key, e in o.endpoints.items():
+            m = self.endpoints[key]
+            for cls, by in e["by_class"].items():
+                add_counts(m["by_class"].setdefault(cls, {"calls": 0, "tx": 0, "rx": 0}), by)
+            add_counts(m["ports"], e["ports"])
+            add_counts(m["hosts"], e["hosts"])
+            m["procs"] += e["procs"]
+            m["external"] = m["external"] or e["external"]
+            if m["provider"] is None:
+                m["provider"] = e["provider"]   # the earlier one's, as one pass keeps it
+        for cls, cv in o.ep_cover.items():
+            add_counts(self.ep_cover[cls], cv)
+
+    def _endpoint_rows(self):
+        """Every address, the most calls first, then the most bytes."""
+        order = {c: i for i, c in enumerate(self.classes)}
+
+        def total(e, k):
+            return sum(by[k] for by in e["by_class"].values())
+        rows = []
+        for (addr, inbound), e in self.endpoints.items():
+            rows.append({
+                "addr": addr, "inbound": inbound, "external": e["external"],
+                "provider": e["provider"], "procs": e["procs"],
+                "hosts": _top(e["hosts"], EP_HOSTS), "ports": _top(e["ports"], EP_PORTS),
+                "by_class": {c: dict(e["by_class"][c]) for c in
+                             sorted(e["by_class"], key=lambda c: (order.get(c, len(order)), c))},
+                "_calls": total(e, "calls"), "_bytes": total(e, "tx") + total(e, "rx"),
+            })
+        rows.sort(key=lambda r: (-r["_calls"], -r["_bytes"], r["addr"], r["inbound"]))
+        for r in rows:
+            del r["_calls"], r["_bytes"]
+        return rows
 
     def result(self):
         by_class = {}
@@ -152,6 +272,10 @@ class IoReducer:
             "by_class": by_class,
             "by_tool": [_tool_row(k, v) for k, v in _heaviest(self.by_tool, self.top_n)],
             "by_user": [_row("user", k, v) for k, v in _heaviest(self.by_user, self.top_n)],
+            # Replaced by `endpoints`, the named and ranked list, when the panel
+            # is read (Aggregator.panels): it never leaves the service as it is.
+            "endpoint_addrs": {"rows": self._endpoint_rows(),
+                               "cover": {c: dict(v) for c, v in self.ep_cover.items()}},
             "notes": {
                 "cache_served_mb": "max(0, rchar - rd). rchar counts ALL read() bytes "
                                    "including pipes, sockets and procfs, so this is an "

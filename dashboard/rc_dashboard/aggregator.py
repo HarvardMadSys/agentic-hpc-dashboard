@@ -30,6 +30,7 @@ import time
 from . import anonymize
 from . import ask
 from . import clock
+from . import endpoints
 from . import feeds as feedmod
 from . import gz
 from . import portraits
@@ -81,6 +82,9 @@ class Aggregator:
         # It learns accounts from the roster, so an alias a reader pastes into a
         # filter maps back even for someone the page has not shown yet.
         self.anon = anonymize.from_config(cfg, roster=self._accounts)
+        # Names for the Network bytes panel's endpoints, looked up in the
+        # background and applied when the panel is read; None when off.
+        self.rdns = endpoints.from_config(cfg)
         self.panels_by_window = winmod.WindowRegistry(
             cfg, self.classes, self.roots, self.lock)
         self.node_built_at = None
@@ -121,6 +125,8 @@ class Aggregator:
     def stop(self):
         self.stopping = True
         self.panels_by_window.stop()
+        if self.rdns is not None:
+            self.rdns.close()
 
     # -------------------------------------------------------------- ingestion
     def consume(self, records, older=False):
@@ -410,20 +416,24 @@ class Aggregator:
                 else {"rows": self.node_result}
             body.update(node)
             out["node"] = body
-            return {"panels": out,
-                    # The node tier is a snapshot of current state, not a window
-                    # aggregate, so it keeps its own build stamp.
-                    "full_built_at": status["built_at"] or self.node_built_at,
-                    "node_built_at": self.node_built_at,
-                    "window": win,
-                    "window_status": status,
-                    "filter": flt.block(),
-                    # Who and what the window holds, for the filter's choices:
-                    # the unfiltered view's counts, whichever view this is.
-                    "facets": facets,
-                    "purposes": self.norm.purposes,
-                    "purpose_src": self.norm.purpose_src,
-                    "classes": self.classes}
+            res = {"panels": out,
+                   # The node tier is a snapshot of current state, not a window
+                   # aggregate, so it keeps its own build stamp.
+                   "full_built_at": status["built_at"] or self.node_built_at,
+                   "node_built_at": self.node_built_at,
+                   "window": win,
+                   "window_status": status,
+                   "filter": flt.block(),
+                   # Who and what the window holds, for the filter's choices:
+                   # the unfiltered view's counts, whichever view this is.
+                   "facets": facets,
+                   "purposes": self.norm.purposes,
+                   "purpose_src": self.norm.purpose_src,
+                   "classes": self.classes}
+        # The endpoints, named and ranked on the way out (endpoints.py), after
+        # the lock: this reads only the response's own copy of the panel.
+        out["io_process"] = endpoints.serve(out["io_process"], self.rdns, self.classes)
+        return res
 
     def live_payload(self, window_min=None):
         win = self.window(window_min)
