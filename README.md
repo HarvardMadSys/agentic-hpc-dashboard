@@ -137,6 +137,10 @@ bash run-demo.sh                                       # or with hot reload, on 
 As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare Worker,
 <https://hpc-dashboard.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md).
 
+The real service, live, on a host of your own: [`deploy/fleet`](deploy/fleet/README.md)
+streams each node's collector files to that host over ssh (`fleet/fleet_stream.py`) and
+runs the dashboard over them behind a password, all set from one settings file.
+
 ## Configuration -- Dashboard
 ```bash
 RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # Where the ebpf collected data reside
