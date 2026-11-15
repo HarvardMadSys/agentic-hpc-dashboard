@@ -5,6 +5,7 @@
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
 import { Fragment, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Fluid, Lines } from '../charts/primitives';
@@ -183,6 +184,7 @@ export function LiveTab({
   openUserTraj,
   userCols,
   nodeNoun,
+  whoUses,
 }: {
   live: LiveState;
   /** the window's reduced panels: the "last 24h" plates and every time series */
@@ -201,6 +203,9 @@ export function LiveTab({
   userCols?: string[] | null;
   /** what the watched hosts are called (`ui.node_noun`): "login nodes" */
   nodeNoun?: string | null;
+  /** "Who uses what", the old Overview tab's table: each class's share of the
+   *  window in every unit, drawn under the rate chart (App.tsx) */
+  whoUses?: ReactNode;
 }) {
   const L = live.live;
   const rate = L?.rate ?? [];
@@ -282,16 +287,27 @@ export function LiveTab({
 
   if (envelope) {
     return (
-      <div className="grid wide">
-        <Panel title="Live tier" span feed={envelope._feed}>
-          <EmptyState
-            feed={envelope._feed}
-            paths={[...envelope._paths]}
-            status={envelope._status}
-            notice={envelope._notice}
-          />
-        </Panel>
-      </div>
+      <>
+        <div className="grid wide">
+          <Panel title="Live tier" span feed={envelope._feed}>
+            <EmptyState
+              feed={envelope._feed}
+              paths={[...envelope._paths]}
+              status={envelope._status}
+              notice={envelope._notice}
+            />
+          </Panel>
+        </div>
+        {/* "Who uses what" is read from the window's panels, not the live tier:
+            with the live tier missing it still has its numbers, as it did on
+            the Overview tab it came from */}
+        {whoUses && (
+          <>
+            <div className="grid-gap" />
+            {whoUses}
+          </>
+        )}
+      </>
     );
   }
 
@@ -413,6 +429,9 @@ export function LiveTab({
           </Fluid>
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
+
+        {/* what happened, then who did it: the window's shares, in every unit */}
+        {whoUses && <div className="span2">{whoUses}</div>}
 
         <WindowCharts P={P} cls={cls} />
 
