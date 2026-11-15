@@ -10,8 +10,10 @@ name: demo-deploy
 # nothing from develop because they publish release images; this publishes only
 # the demo, which is meant to show the newest page).
 #
-# Needs two repository secrets (Settings -> Secrets and variables -> Actions),
-# from the Cloudflare account that holds the agentic-system.org zone:
+# Needs two secrets from the Cloudflare account that holds the agentic-system.org
+# zone, set on the `demo` environment (Settings -> Environments -> demo) with
+# its deployment branches limited to develop, so no other branch or workflow
+# can read a token that edits that account's Workers and Containers:
 #   CLOUDFLARE_API_TOKEN   a token from the "Edit Cloudflare Workers" template,
 #                          with Account -> Containers -> Edit added
 #   CLOUDFLARE_ACCOUNT_ID  that account's ID
@@ -30,19 +32,27 @@ on:
       - "docker/demo/**"
       - "deploy/cloudflare/**"
       - ".github/workflows/demo-deploy.yml"
-  # A redeploy by hand, from the Actions tab: after rotating the token, or to
-  # put the demo back after a `wrangler delete`.
+  # A redeploy by hand, from the Actions tab: after rotating the token, after a
+  # security fix to a base image (they are tags, so a rebuilt one reaches the
+  # demo only at the next deploy), or to put the demo back after a
+  # `wrangler delete`. Only develop deploys (the job's `if`); run from any other
+  # branch, the job is skipped.
   workflow_dispatch:
 
 # One deploy at a time, and never cut one short: a deploy is not transactional
-# (the new Worker can be live before its image has rolled out), so a newer push
-# waits for the running deploy and then deploys on top of it.
+# (the new Worker can be live before its image has rolled out). A push while a
+# deploy runs waits for it; GitHub keeps one waiting run per group, so a later
+# push replaces the waiting one, which then shows as cancelled. The newest
+# commit always deploys last.
 concurrency:
   group: demo-deploy
   cancel-in-progress: false
 
 jobs:
   deploy:
+    # The public demo is develop's page: a run started by hand from another
+    # branch does nothing.
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,15 +73,16 @@ jobs:
           [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
           if [ -n "$missing" ]; then
-            echo "::error::the demo was not deployed: repository secret(s)$missing not set. See deploy/cloudflare/README.md, \"Deploying from GitHub\"."
+            echo "::error::the demo was not deployed: secret(s)$missing not set on the demo environment. See deploy/cloudflare/README.md, \"Deploying from GitHub\"."
             exit 1
           fi
 
+      # Actions pinned to a commit, not a tag, since the deploy token is in this job.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -81,6 +92,11 @@ jobs:
       # the same version a deploy by hand does.
       - name: Install wrangler
         run: npm ci --no-audit --no-fund
+
+      # wrangler bundles the Worker with esbuild, which strips types without
+      # checking them: a type error stops here, before it is live.
+      - name: Type-check the Worker
+        run: npm run typecheck
 
       - name: Deploy
         env:

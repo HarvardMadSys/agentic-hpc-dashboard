@@ -35,14 +35,26 @@ itself. Plain `http://` reaches it too, or is redirected to `https://` if the zo
 `npx wrangler deploy` on every push to `develop` that changes what the demo runs: the
 service (`dashboard/rc_dashboard`, `pyproject.toml`, `uv.lock`), the page (`dashboard/web`),
 `docker/demo`, or this folder. A change to the collector or a test does not redeploy. It can
-also be run by hand from the repository's Actions tab (*demo-deploy*, *Run workflow*), for
-example after rotating the token. The runner's Docker builds the image, and wrangler is the
-version pinned in `package.json`, as for a deploy by hand. Deploys queue rather than cancel
-one another, because a deploy is not transactional: the new Worker can be live before its
-image has rolled out.
+also be run by hand from the repository's Actions tab (*demo-deploy*, *Run workflow*, on
+`develop`): after rotating the token, or after a security fix to a base image, since
+`docker/demo/Dockerfile` names them by tag and a rebuilt one reaches the demo only at the
+next deploy. Only `develop` deploys; a run started from another branch is skipped.
 
-It needs two repository secrets (*Settings*, *Secrets and variables*, *Actions*), from the
-Cloudflare account that holds the `agentic-system.org` zone:
+The runner's Docker builds the image, and wrangler is the version pinned in `package.json`,
+as for a deploy by hand. `npm run typecheck` runs first, since wrangler's bundler strips
+types without checking them. Deploys queue rather than cancel one another, because a deploy
+is not transactional: the new Worker can be live before its image has rolled out. GitHub
+keeps one waiting run, so of several pushes during a deploy the newest is the one that
+deploys next, and the ones it replaced show as cancelled.
+
+It needs two secrets from the Cloudflare account that holds the `agentic-system.org` zone.
+Put them on the **`demo` environment**, not on the repository, so that no other workflow or
+branch can read a token that edits that account's Workers and Containers:
+
+1. *Settings*, *Environments*, *New environment*, `demo` (the first run creates it too).
+2. Under *Deployment branches and tags*, choose *Selected branches and tags* and add
+   `develop`.
+3. Add the two environment secrets:
 
 | secret | value |
 |---|---|
