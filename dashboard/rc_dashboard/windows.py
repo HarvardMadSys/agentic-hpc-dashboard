@@ -48,6 +48,11 @@ saved with how far into each day-file it read (`snapshots`), so a restart or a
 return to a window evicted from the LRU resumes it -- reading only what the
 collector wrote since -- instead of reducing the whole window again. A resumed
 view keeps its original `built_at`, and its status says it was restored.
+
+The panels each view materialises are saved as well (`payloads`), so a view the
+registry creates -- after a restart, or for a window the LRU dropped -- shows
+the last ones at once, with their age, as a drift re-build shows its previous
+reduction, until its own build swaps fresh ones in.
 """
 import collections
 import hashlib
@@ -56,7 +61,7 @@ import re
 import threading
 import time
 
-from . import hours as hourmod, redact, snapshots
+from . import hours as hourmod, payloads, redact, snapshots
 from .export import (UNTAGGED, agent_type_token, agent_type_want, parse_filters,
                      resume_plan, window_plan, window_scan)
 from .normalize import Normalizer
@@ -300,6 +305,7 @@ class PanelView:
         self.reducers = {}              # key -> reducer, live-fed after the swap
         self.dispatch = {}              # event -> [reducer]
         self.payload = {}               # materialised result(), per reducer key
+        self.materialized_at = None     # epoch `payload` was materialised (all keys)
         self._fresh = {}                # key -> (when, live_records then) it was materialised
         self.touched = time.time()
         self.replay_dropped = 0
@@ -309,7 +315,12 @@ class PanelView:
         # Where the reducers came from and what happened to the saved copy:
         # `source` is "scan" or "snapshot", `note` says why a snapshot was or
         # was not used, `saved_at` when this build was last written down.
-        self.cache = {"source": None, "note": None, "saved_at": None}
+        # And the panels (`payloads`): `restored` says, while the view shows
+        # panels saved by an earlier view of its window, which ones; `panels_saved_at`
+        # is when its own were last written down; `panels_note` why saved
+        # panels were not shown, or why its own could not be saved.
+        self.cache = {"source": None, "note": None, "saved_at": None,
+                      "restored": None, "panels_saved_at": None, "panels_note": None}
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec):
@@ -392,7 +403,10 @@ class PanelView:
         # The reducers hold raw argv, because their detectors need it; nothing
         # leaves for the API without its credentials masked (`redact`).
         self.payload = redact.payload(out)
-        self._fresh = {k: (time.time(), self.live_records) for k in out}
+        self.materialized_at = time.time()
+        self._fresh = {k: (self.materialized_at, self.live_records) for k in out}
+        # These panels are the view's own: any it showed from a saved copy are gone.
+        self.cache["restored"] = None
         return self.payload
 
     def materialize_key(self, key, max_age_s):
@@ -412,6 +426,32 @@ class PanelView:
             out = {"_error": str(e)}
         self.payload = dict(self.payload, **{key: redact.payload(out)})
         self._fresh[key] = (now, self.live_records)
+
+    # ---------------------------------------------------------- saved panels
+    def saved_panels(self):
+        """`(meta, payload)`: what `payloads` saves of this view, the panels last
+        materialised and the span they cover. Under the aggregator's lock."""
+        meta = {k: getattr(self, k) for k in payloads.SPAN}
+        meta.update(materialized_at=self.materialized_at, source=self.cache.get("source"))
+        return meta, self.payload
+
+    def show_saved(self, meta, payload):
+        """Show panels an earlier view of this window saved, until this view's
+        own build swaps fresh ones in: as a drift re-build shows its previous
+        reduction, with that reduction's own span, age and drift.
+
+        No reducer is installed, so the live feed still waits for the build, and
+        `installed_at` stays unset, so the page re-fetches when the build lands.
+        Under the aggregator's lock."""
+        self.payload = payload
+        for k in payloads.SPAN:
+            setattr(self, k, meta.get(k))
+        self.materialized_at = meta.get("materialized_at")
+        at = self.materialized_at or self.built_at
+        self.cache["restored"] = (
+            "showing the %s panels saved at %s, until this window is built again"
+            % (label(self.minutes) + (" (filtered)" if self.flt else ""),
+               time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(at)) if at else "an unknown time"))
 
     # ---------------------------------------------------------------- status
     def drift_s(self):
@@ -500,6 +540,9 @@ class WindowRegistry:
         self.max_views = max(1, int(cfg.get("panels.max_windows", 2)))
         self.budget_pct = max(1, int(cfg.get("panels.max_drift_pct", 25))) / 100.0
         self.store = snapshots.SnapshotStore.from_config(cfg)
+        # The panels each view last served, shown by a view this registry
+        # creates until its own build lands (`payloads`). None when off.
+        self.payloads = payloads.PayloadStore.from_config(cfg)
         # Hourly merge-reduce (`hours`, `panels.merge_reduce`): an unfiltered
         # window is merged from saved hour states rather than re-read. None
         # when off, and every window is scanned as before.
@@ -555,6 +598,7 @@ class WindowRegistry:
     # ----------------------------------------------------------------- build
     def _build(self, view):
         if self.hours is not None and not view.flt and hourmod.build(self, view):
+            self._save_panels(view)
             return
         t0 = time.time()
         view.state = "building"
@@ -676,6 +720,64 @@ class WindowRegistry:
                     "%Y-%m-%d %H:%M:%S", time.localtime(out["saved_at"]))
             except Exception as e:      # a cache that cannot be written is no cache
                 view.cache["note"] = "not saved: %s" % e
+        self._save_panels(view)
+
+    # ---------------------------------------------------------- saved panels
+    def _show_saved(self, view):
+        """Give a view this registry just created the panels saved for its window,
+        when there are any it may show (`payloads`). Read outside the lock, shown
+        under it, and only while the view has nothing of its own: a build that
+        landed first wins."""
+        if self.payloads is None:
+            return
+        budget = view.window_s * self.budget_pct
+        now = time.time()
+
+        def check(meta):
+            built = meta.get("built_at")
+            if built is None:
+                return "the saved panels carry no build time"
+            age = now - built
+            if age > budget:
+                return ("saved panels were built %s ago, past this window's %s drift "
+                        "budget" % (label(max(1, age // 60)), label(max(1, budget // 60))))
+            if age < -60:
+                return "saved panels are dated in the future"
+            return None
+        try:
+            meta, payload, why = self.payloads.load(view.minutes, self.roots_fn(),
+                                                    view.flt, check)
+        except Exception as e:          # never a reason to fail the window
+            meta, payload, why = None, None, "saved panels unreadable (%s)" % e
+        with self.lock:
+            if view.payload or view.reducers or view.state == "ready":
+                return
+            if meta is None:
+                view.cache["panels_note"] = "panels not restored: %s" % why
+                return
+            view.show_saved(meta, payload)
+            view.cache["panels_note"] = None
+
+    def _save_panels(self, view):
+        """Write down the panels a view just materialised (`payloads`). Taken
+        under the lock, written outside it: the panels are never changed in
+        place, only replaced."""
+        if self.payloads is None:
+            return
+        with self.lock:
+            if view.state != "ready" or not view.payload or view.cache.get("restored"):
+                return
+            meta, payload = view.saved_panels()
+        try:
+            out = self.payloads.save(view.minutes, self.roots_fn(), meta, payload,
+                                     flt=view.flt)
+        except Exception as e:          # a cache that cannot be written is no cache
+            view.cache["panels_note"] = "panels not saved: %s" % e
+            return
+        if out is not None:
+            view.cache["panels_saved_at"] = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(out["saved_at"]))
+            view.cache["panels_note"] = None
 
     def _resume(self, view, roots, t0):
         """The saved reduction for this window and what is left to read, or None.
@@ -742,6 +844,10 @@ class WindowRegistry:
             retry = view.state == "error"
             if retry:
                 view.state = "queued"
+        if fresh:
+            # Before its build is queued, so no build can be in flight: the
+            # saved panels go up first, and the build replaces them.
+            self._show_saved(view)
         if fresh or retry:
             self._enqueue(key)
         return view
@@ -763,8 +869,9 @@ class WindowRegistry:
             with self.lock:
                 if m in self.views or len(self.views) >= self.max_views:
                     continue
-                self.views[m] = PanelView(self.cfg, self.classes, m)
+                view = self.views[m] = PanelView(self.cfg, self.classes, m)
                 self.views.move_to_end(m, last=False)
+            self._show_saved(view)
             self._enqueue(m)
 
     def _evict(self, keep=None, filtered=False):
@@ -827,6 +934,7 @@ class WindowRegistry:
             else:
                 with self.lock:
                     view.materialize()
+                self._save_panels(view)
 
     def status(self, now=None):
         now = now or time.time()

@@ -327,6 +327,19 @@ one failed:
 A drift re-build always scans: it exists to move the window's start forward, which an older copy
 cannot do. Pickle runs code for whoever can write the file, so the directory is created 0700,
 files 0600, and a symlink or a file another user owns or can write is never loaded.
+
+**The panels are saved too** (`payloads.py`). What a view materialises -- every reducer's
+`result()`, credentials masked -- is written to `<cache.dir>/payloads/` after each build and each
+refresh tick, with the span it covers. A view the registry creates (after a restart, or for a
+window the LRU dropped) shows those panels at once, as a drift re-build shows its previous
+reduction: their own `built_at`, coverage and drift, and the "rebuilding" pill, whose tip says
+when they were saved (`cache.restored` in the window status). Its own build then swaps fresh panels
+in. Saved panels are shown only for the same code and config (what a saved build and a saved hour
+are keyed on), the same window and filter, and within the drift budget; otherwise
+`cache.panels_note` says why not. They are a picture of what the page showed, never an input: no
+build reads them. A day's panels on the two-host demo feed are ~0.4 MB, 0.12 MB compressed, and
+load in ~5 ms.
+
 `panels.cache_windows=false` (`RC_DASH_CACHE_WINDOWS=0`) turns all of it off.
 
 ### Hourly merge-reduce

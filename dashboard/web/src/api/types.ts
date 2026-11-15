@@ -222,6 +222,14 @@ export interface WindowStatus {
     /** Why a saved build was or was not used, or why this one was not saved. */
     note: string | null;
     saved_at: string | null;
+    /** While the view shows panels an earlier view of its window saved
+     *  (after a restart, or for a window the LRU dropped): which ones. Null
+     *  once its own build has landed. */
+    restored?: string | null;
+    /** When this view's own panels were last saved. */
+    panels_saved_at?: string | null;
+    /** Why saved panels were not shown, or why this view's could not be saved. */
+    panels_note?: string | null;
   };
 }
 

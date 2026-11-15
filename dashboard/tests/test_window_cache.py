@@ -338,11 +338,12 @@ class FingerprintTest(unittest.TestCase):
 
     def test_every_module_a_saved_build_counts_with_is_in_its_fingerprint(self):
         # Out on purpose: the hours, which a saved build never holds, feeds.py,
-        # which finds the day-files whose roots the fingerprint holds, and
+        # which finds the day-files whose roots the fingerprint holds,
         # anonymize.py, whose home patterns the trajectories read only to name
         # a task's project when a read builds a phase block (`_phase_cache`,
-        # which SNAPSHOT_SKIP leaves unsaved).
-        out = {"hours.py", "feeds.py", "anonymize.py"}
+        # which SNAPSHOT_SKIP leaves unsaved), and payloads.py, which saves the
+        # panels a build served and nothing a build reads.
+        out = {"hours.py", "feeds.py", "anonymize.py", "payloads.py"}
         got = _reached(["normalize.py", "export.py", "windows.py", "snapshots.py",
                         "redact.py"] + sorted(_reducers()), out)
         self.assertEqual(got - set(snapshots.CODE_FILES) - _reducers() - out, set())

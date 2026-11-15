@@ -192,7 +192,9 @@ export function Panel({
           {building && !blank && (
             <span
               className="pill"
-              data-tip={`showing the previous ${building.label} reduction while a fresh one is built — ${building.progress.pct}% read`}
+              data-tip={building.cache?.restored
+                ? `${building.cache.restored} — ${building.progress.pct}% read`
+                : `showing the previous ${building.label} reduction while a fresh one is built — ${building.progress.pct}% read`}
             >
               <i className="ld" />
               rebuilding {building.progress.pct}%
