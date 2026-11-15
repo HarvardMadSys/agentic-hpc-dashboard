@@ -131,6 +131,9 @@ export function OverviewTab({
     <div className="grid wide">
       <Panel
         title={`Who uses what · ${win}`}
+        // a fixed anchor: the title carries the window, and a link to the old
+        // Overview tab, or a citation of `facets`, lands here on Live
+        id="sec-who-uses-what"
         ask={[
           { panel: 'tool_mix', keys: ['by_class'] },
           { panel: 'resources', keys: ['by_class', 'top', 'oncpu_set_aside'] },
