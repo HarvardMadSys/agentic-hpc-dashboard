@@ -287,16 +287,27 @@ export function LiveTab({
 
   if (envelope) {
     return (
-      <div className="grid wide">
-        <Panel title="Live tier" span feed={envelope._feed}>
-          <EmptyState
-            feed={envelope._feed}
-            paths={[...envelope._paths]}
-            status={envelope._status}
-            notice={envelope._notice}
-          />
-        </Panel>
-      </div>
+      <>
+        <div className="grid wide">
+          <Panel title="Live tier" span feed={envelope._feed}>
+            <EmptyState
+              feed={envelope._feed}
+              paths={[...envelope._paths]}
+              status={envelope._status}
+              notice={envelope._notice}
+            />
+          </Panel>
+        </div>
+        {/* "Who uses what" is read from the window's panels, not the live tier:
+            with the live tier missing it still has its numbers, as it did on
+            the Overview tab it came from */}
+        {whoUses && (
+          <>
+            <div className="grid-gap" />
+            {whoUses}
+          </>
+        )}
+      </>
     );
   }
 
