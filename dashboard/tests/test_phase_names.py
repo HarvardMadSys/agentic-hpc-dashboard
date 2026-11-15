@@ -26,6 +26,7 @@ from rc_dashboard.reducers.phase_names import (KINDS, MAX_NAMES, MAX_WORDS,  # n
 from rc_dashboard.reducers.phase_rules import _MAX_TEXT, _commands  # noqa: E402
 
 TOKEN = "ghp_" + "a" * 36
+SESSION_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"     # a session's id, in Claude Code's folders
 # Options of sbatch that take a value, from its manual, apart from the job name (`-J`).
 SBATCH_VALUED = (
     "-A --account --acctg-freq -a --array --batch --bb --bbf -b --begin -D --chdir "
@@ -304,7 +305,9 @@ class FilesTest(unittest.TestCase):
         self.assertEqual(of("write", "cp old.py dir/new.py"), ["dir/new.py"])
         self.assertEqual(of("write", "mv a.md b.md"), ["b.md"])
         for text in ("cp a.py dir/", "cp -t dir a.py", "cp a.py", "python run.py > /dev/null",
-                     "python run.py > out.log", "sed 's/a/b/' src/a.py", "cat a.py"):
+                     "python run.py > out.log", "sed 's/a/b/' src/a.py", "cat a.py",
+                     "mv -t dir a.py b.py", "cp -vt dir a.py b.py",
+                     "mv --target-directory=dir a.py b.py"):
             self.assertEqual(of("write", text), [], text)
 
     def test_files_that_python_writes_by_a_literal_or_a_name(self):
@@ -400,8 +403,12 @@ class ThingsTest(unittest.TestCase):
         self.assertEqual(of("dir", "cp -R a b/"), ["b"])
         self.assertEqual(of("dir", "cp --recursive a b/"), ["b"])
         self.assertEqual(of("dir", "cp --archive a b/"), ["b"])
+        # the destination of `-t` is the folder it gives, and every other word is a source
+        self.assertEqual(of("dir", "cp -r -t out/ a b/"), ["out"])
+        self.assertEqual(of("dir", "cp -r a --target-directory=out/"), ["out"])
         for text in ("mkdir plain", 'mkdir -p "$OUT"', "mkdir -p $(date)/x", "rsync -a src/ dest",
-                     "rsync -a src/", "cp a b/", "git worktree list", "git worktree add"):
+                     "rsync -a src/", "cp a b/", "git worktree list", "git worktree add",
+                     "cp -rt out src/ lib/", "cp -r -t out/"):
             self.assertEqual(of("dir", text), [], text)
 
     def test_jobs(self):
@@ -526,7 +533,8 @@ class ThingsTest(unittest.TestCase):
         self.assertEqual(of("scratch", "cat ~/tmp/notes_1.txt tmp/final/merge_real.log"),
                          ["notes_1", "merge_real"])
         self.assertEqual(of("scratch", "export LOG=data/logs/x.log"), ["x"])
-        self.assertEqual(of("scratch", "D=/tmp/claude-1/p/abc/scratchpad/stage_2"), ["stage_2"])
+        self.assertEqual(of("scratch", "D=/tmp/claude-1/-p/%s/scratchpad/stage_2" % SESSION_ID),
+                         ["stage_2"])
         self.assertEqual(of("scratch", "cp a.py /tmp/b.py; sed -i s/x/y/ $SCRATCH/c.py"),
                          ["b", "c"])
         for text in ("cat results/a.json", "echo hi > $SCRATCH/update_*.log", "cat $SCRATCH/",
@@ -562,17 +570,21 @@ class ThingsTest(unittest.TestCase):
         self.assertEqual(of("grep", "grep -c 'x$|y$' a.txt"), ["x$|y$"])
 
     def test_claude_codes_output_of_a_background_task_is_no_scratch_name(self):
-        # Matched by its path, wherever the temporary folder is. Until 2026-11-03 such an id was a
-        # scratch name: `b3tp2mtp4` below was one.
-        for text in ("cat /tmp/claude-1004/-madsys-x/1a2b3c4d/tasks/bkkcpfyha.output | tail -5",
-                     "cat /n/home/x/tmp/claude-61005/s/tasks/b3tp2mtp4.output",
-                     "tail -20 /private/tmp/claude-501/-Users-x/0a1b/tasks/b02dzvoij.output",
-                     "O=$TMPDIR/claude-7/p/s/tasks/bp2h1x336.output; sleep 30; cat $O"):
-            self.assertEqual(of("scratch", text), [], text)
+        # Matched by its path, in a temporary folder named `tmp` or `$TMPDIR`. Until 2026-11-03 such
+        # an id was a scratch name: `b3tp2mtp4` below was one.
+        for text in ("cat /tmp/claude-5001/-n-home-x/%s/tasks/bkkcpfyha.output | tail -5",
+                     "cat /n/home/x/tmp/claude-61005/-n-home-x/%s/tasks/b3tp2mtp4.output",
+                     "tail -20 /private/tmp/claude-501/-Users-x/%s/tasks/b02dzvoij.output",
+                     "O=$TMPDIR/claude-7/-p/%s/tasks/bp2h1x336.output; sleep 30; cat $O"):
+            self.assertEqual(of("scratch", text % SESSION_ID), [], text)
         # a name of the same shape that the agent gave its own file is still one, and so is the
-        # output of a `tasks/` folder that is not Claude Code's
+        # output of a `tasks/` folder that is not Claude Code's: one in no session's folder, or in
+        # a folder whose name is no session's id (until 2026-11-03 any folder at that depth was)
         self.assertEqual(of("scratch", "python bench.py > /tmp/burstgpt2.log"), ["burstgpt2"])
         self.assertEqual(of("scratch", "cat /tmp/run/tasks/b3tp2mtp4.output"), ["b3tp2mtp4"])
+        self.assertEqual(
+            of("scratch", "cat /tmp/claude-5001/-n-home-x/0a1b/tasks/b3tp2mtp4.output"),
+            ["b3tp2mtp4"])
 
     def test_cd_targets(self):
         self.assertEqual(of("cd", "cd /a/b/c/ && ls"), ["c"])
@@ -667,7 +679,9 @@ class ThingsTest(unittest.TestCase):
                      "conda run -n scbench_r7 python x.py", "pip install -P pin_1 numpy",
                      "gh pr create --title Fix --label bug_fix_1", "git -C repo_2 status",
                      "git push -o skip_ci origin main", "mkdir -p -m mode_7 out",
-                     "singularity exec -B bind_1 img.sif ls", "sed -n -e p_1 x.txt"):
+                     "singularity exec -B bind_1 img.sif ls", "sed -n -e p_1 x.txt",
+                     "cp -t dest_1 a.py b.py", "mv -t old_2 x.py", "cp -rt out_4 src/ lib/",
+                     "mv --target-directory old_3 x.py y.py"):
             self.assertEqual(of("word", text), [], text)
         # and the same text where no option took it is a word still
         self.assertEqual(of("word", "srun -p gpu_1 python x.py kempner_h100"), ["kempner_h100"])
@@ -700,29 +714,64 @@ class ThingsTest(unittest.TestCase):
         # what the loop runs is read as it was: a word of the command beside the test is a word
         self.assertEqual(of("word", "until [ -f done_5 ]; do tool run_6; sleep 9; done"), ["run_6"])
 
+    def test_a_lookup_of_a_program_gives_no_words(self):
+        # What `which`, `whereis`, `type`, and `command -v` are given is a program's name. On
+        # boslogin06 on 2026-10-09 lookups put `python3` in a label and a headline (until
+        # 2026-11-03).
+        for text in ("which python3", "PY=$(which python3); $PY run.py", "which -a python3 python",
+                     "command -v python3 uv", "command -V flake8", "type -P python3",
+                     "whereis minimap2"):
+            self.assertEqual(of("word", text), [], text)
+        # `command` that runs a program is read as the program it runs
+        self.assertEqual(of("word", "command tool run_1"), ["run_1"])
+
+    def test_the_host_ssh_logs_in_to_is_no_word(self):
+        # It is where the command ran, not what it worked on. On boslogin06 on 2026-10-09 an agent
+        # that looked at each login node by `ssh` put `boslogin07` in a label, and one that looked
+        # at its job's compute node put the node in another (until 2026-11-03).
+        for text in ("ssh -o BatchMode=yes -o ConnectTimeout=5 boslogin07 cat /proc/loadavg",
+                     "ssh -p 2222 -l gus7 holylogin05 uptime", "ssh gus7@boslogin07 hostname",
+                     "timeout 10 ssh -J jump01 node0042 nproc"):
+            self.assertEqual(of("word", text), [], text)
+        # what ssh runs there is read as any other argument, and a host that a task works on is a
+        # word, as in an analysis of each login node's records
+        self.assertEqual(of("word", "ssh boslogin07 tool run_1"), ["run_1"])
+        self.assertEqual(of("word", "python3 split.py boslogin07"), ["boslogin07"])
+
     def test_a_subagents_worktree_id_is_no_name(self):
         # Claude Code's ids for the worktrees of two subagents were in the headline of boslogin06's
         # apid 1412291 on 2026-10-09: `sim-ew · sim/assemble.py · agent-a69e2723ecfaa3a16 · …`
         self.assertEqual(names_of("cd /n/home04/x/m/.claude/worktrees/agent-a69e2723ecfaa3a16/nlo "
                                   "&& cat assemble.py"), (("cd", "nlo"), ("read", "assemble.py")))
         for text in ("cd /r/.claude/worktrees/agent-a90e1b12ed275ef3f",
-                     "git worktree add .claude/worktrees/agent-a1b2",
-                     "git -C /r/.claude/worktrees/agent-a1b2 status", "tool agent-a69e2723ecfaa3a16"):
+                     "git worktree add .claude/worktrees/agent-a8fbd34d0d9d56827",
+                     "git -C /r/.claude/worktrees/agent-a0b5d6c2d3c949431 status",
+                     "tool agent-a69e2723ecfaa3a16"):
             self.assertEqual(names_of(text), (), text)
         # a worktree the agent names is a name, and so is a word that is not hex after `agent-`
         self.assertEqual(of("worktree", "cd /r/.claude/worktrees/agent-review && ls"),
                          ["agent-review"])
         self.assertEqual(of("word", "tool agent-x1"), ["agent-x1"])
+        # and so is `agent-` and hex digits at a length other than the 17 of Claude Code's ids
+        # (until 2026-11-03 any number of hex digits made it none)
+        self.assertEqual(of("worktree", "git worktree add .claude/worktrees/agent-1"), ["agent-1"])
+        self.assertEqual(of("job", "sbatch -J agent-bad x.sbatch"), ["agent-bad", "x.sbatch"])
+        self.assertEqual(of("word", "tool agent-1 agent-a1b2"), ["agent-1", "agent-a1b2"])
+        self.assertEqual(of("worktree", "ls /r/.claude/worktrees/agent-a69e2723ecfaa3a1 "
+                                        "/r/.claude/worktrees/agent-a69e2723ecfaa3a16b"),
+                         ["agent-a69e2723ecfaa3a1", "agent-a69e2723ecfaa3a16b"])
 
     def test_claude_codes_own_folders_are_no_name(self):
         # Claude Code's temporary folder, the project and the session under it, and the session's
         # scratchpad and tasks: `Read 0d1e2f30-…/scratchpad` labeled a task of boslogin06's apid
         # 3801554 on 2026-10-09, and the scratchpad was a scratch name in apid 4193830's headline
         sp = "/tmp/claude-61002/-n-home02-x/0d1e2f30-b24b-4a90-91c8-76d345cac98f/scratchpad"
+        session = "/tmp/claude-1/-p/" + SESSION_ID
         for text in ("mkdir -p %s" % sp, "cd %s && ls" % sp, "D=%s" % sp, "D=%s/" % sp,
-                     "mkdir -p /tmp/claude-1/p/abc/tasks", "cd /tmp/claude-1/p/abc",
-                     "cd /tmp/claude-1/p", "cd $TMPDIR/claude-7/p/s/scratchpad",
-                     "X=/n/home/x/tmp/claude-61005/s/0a1b/scratchpad"):
+                     "mkdir -p %s/tasks" % session, "cd %s" % session, "cd /tmp/claude-1/-p",
+                     "cd /tmp/claude-1", "cd $TMPDIR/claude-7/-p/%s/scratchpad" % SESSION_ID,
+                     "cd ${TMPDIR}/claude-7/", "X=/private/tmp/claude-501/-Users-x",
+                     "X=/n/home/x/tmp/claude-61005/-n-home-x/%s/scratchpad" % SESSION_ID):
             self.assertEqual(names_of(text), (), text)
         # what the agent makes in its scratchpad is its own
         self.assertEqual(names_of("SP=%s; mkdir -p $SP/ext && cd $SP/ext" % sp),
@@ -732,17 +781,36 @@ class ThingsTest(unittest.TestCase):
                          (("run", "scratchpad/q.py"), ("scratch", "q_out")))
         self.assertEqual(of("scratch", "D=%s/sweep" % sp), ["sweep"])
 
+    def test_claude_codes_folders_are_told_by_their_shapes(self):
+        # In `claude-<uid>`, the project by its path with `-` for each character but a letter or a
+        # digit, and in that the session by its id; `claude-<uid>` alone in a folder named `tmp`
+        # or `$TMPDIR`. A folder the agent makes in `claude-<uid>` itself, and a folder of its own
+        # named `claude-3`, are names: until 2026-11-03 any folder at those depths was none.
+        # Agents made `rev` and `fix_cleanup` there on boslogin06 on 2026-10-09.
+        self.assertEqual(names_of("mkdir -p /tmp/claude-61001/rev && cd /tmp/claude-61001/rev"),
+                         (("dir", "claude-61001/rev"), ("cd", "rev")))
+        self.assertEqual(of("scratch", "D=/tmp/claude-61001/fix_cleanup"), ["fix_cleanup"])
+        self.assertEqual(names_of("cd ~/src/claude-3 && mkdir -p claude-3/runs"),
+                         (("cd", "claude-3"), ("dir", "claude-3/runs")))
+        # a project and a session of those shapes are Claude Code's in any temporary folder
+        self.assertEqual(names_of("cd /n/scratch/x/claude-61001/-p/%s/scratchpad" % SESSION_ID), ())
+
     def test_a_file_at_the_depth_of_claude_codes_folder_is_a_name(self):
         # The agent of boslogin06's apid 1184368 on 2026-10-09 wrote `/tmp/claude-61001/rev/
         # conncmp.py`, at the depth of a session's folder, and apid 1825381's read
-        # `/tmp/claude-61003/paper.txt`, at the depth of a project's. They are the agent's files.
+        # `/tmp/claude-61003/paper.txt`, at the depth of a project's. They are the agent's files,
+        # and in `/tmp` they are scratch too, as its files in the scratchpad are (until 2026-11-03
+        # a file at the depth of one of Claude Code's folders was no scratch name)
         self.assertEqual(names_of("cat > /tmp/claude-61001/rev/conncmp.py <<'EOF'\nimport sys\n"
                                   "EOF\npython /tmp/claude-61001/rev/conncmp.py"),
-                         (("write", "rev/conncmp.py"), ("run", "rev/conncmp.py")))
+                         (("write", "rev/conncmp.py"), ("scratch", "conncmp"),
+                          ("run", "rev/conncmp.py")))
         self.assertEqual(names_of("sed -i 's|a|b|' /tmp/claude-61001/rev/conncmp.py"),
-                         (("write", "rev/conncmp.py"),))
+                         (("write", "rev/conncmp.py"), ("scratch", "conncmp")))
         self.assertEqual(names_of("head -40 /tmp/claude-61003/paper.txt"),
-                         (("read", "claude-61003/paper.txt"),))
+                         (("read", "claude-61003/paper.txt"), ("scratch", "paper")))
+        self.assertEqual(names_of("cat > /tmp/claude-1/-p/%s/scratchpad/q.py <<'EOF'\nx\nEOF"
+                                  % SESSION_ID), (("write", "scratchpad/q.py"), ("scratch", "q")))
         # and a file in `~/.claude/projects` that is no transcript and no index is a name too
         self.assertEqual(of("read", "cat ~/.claude/projects/-a/notes.md"), ["-a/notes.md"])
 
@@ -754,7 +822,7 @@ class ThingsTest(unittest.TestCase):
         # `… · memory/MEMORY.md` on 2026-11-01.
         home = "/n/home01/tpoe/.claude/projects"
         slug = home + "/-n-netscratch-alpha-lab-Lab-jdoe"
-        session = slug + "/3b2a1c0d-eda1-4c9a-bcbd-2a03b975c3ac"
+        session = slug + "/3b2a1c0d-5e7f-4a21-9c6d-0b8e4f2a7d13"
         memory = "/home/gus/.claude/projects/-home-gus-workspace-nimbus/memory"
         self.assertEqual(names_of("grep -o 'submit_chain() {' %s.jsonl | head -1" % session),
                          (("grep", "submit_chain() {"),))
@@ -777,7 +845,7 @@ class ThingsTest(unittest.TestCase):
                                   % memory), (("grep", "router-worktree"),))
         self.assertEqual(names_of("M=%s; cat $M/memory/MEMORY.md; cat ${M}/memory/MEMORY.md"
                                   % slug), ())
-        self.assertEqual(names_of("cd /tmp/claude-1/p/abc && mkdir -p scratchpad"), ())
+        self.assertEqual(names_of("cd /tmp/claude-1/-p/%s && mkdir -p scratchpad" % SESSION_ID), ())
         # the notes the agent writes in `memory` are its own
         self.assertEqual(names_of("cd %s/; cat >> project_mark1_A_depletion.md <<'EOF'\n"
                                   "**UPDATE:** Fig 3A\nEOF\ngrep -q Fig3A MEMORY.md" % memory),
@@ -786,12 +854,29 @@ class ThingsTest(unittest.TestCase):
                          (("read", "memory/project-nimbus-load-scaling.md"),))
         self.assertEqual(names_of("cd %s && cd .. && cat notes.md" % memory),
                          (("read", "notes.md"),))
-        # a `memory` folder elsewhere, and Codex's memory, are names: the rule is what Claude Code
-        # keeps in its home
+        # a `memory` folder elsewhere is a name: the rule is what Claude Code keeps in its home
         self.assertEqual(names_of("cd /r/memory && cat MEMORY.md"),
                          (("cd", "memory"), ("read", "MEMORY.md")))
-        self.assertEqual(of("read", "cat /n/home08/j/.codex/memories/MEMORY.md"),
-                         ["memories/MEMORY.md"])
+
+    def test_what_codex_keeps_for_its_memory_is_no_name(self):
+        # `~/.codex/memories` and its index `MEMORY.md`. On boslogin06 on 2026-10-09 eight calls of
+        # Codex rows named `memories/MEMORY.md` (until 2026-11-03).
+        memories = "/n/home08/j/.codex/memories"
+        for text in ("cat %s/MEMORY.md" % memories, "nl -ba %s/MEMORY.md | sed -n 1,80p" % memories,
+                     "sed -n 1,120p ~/.codex/memories/MEMORY.md", "cd %s && ls" % memories,
+                     "cd %s/ && wc -l MEMORY.md" % memories, "mkdir -p %s" % memories,
+                     "echo '- quota' >> %s/MEMORY.md" % memories):
+            self.assertEqual(names_of(text), (), text)
+        self.assertEqual(names_of("rg -n tokenizer %s/MEMORY.md" % memories),
+                         (("grep", "tokenizer"),))
+        # the notes the agent writes there are its own, and a `memories` folder elsewhere is a name
+        self.assertEqual(names_of("cat %s/gpu-quota.md" % memories),
+                         (("read", "memories/gpu-quota.md"),))
+        self.assertEqual(names_of("cd %s && cat >> gpu-quota.md <<'EOF'\nx\nEOF" % memories),
+                         (("write", "gpu-quota.md"),))
+        self.assertEqual(names_of("cd /r/memories && cat MEMORY.md"),
+                         (("cd", "memories"), ("read", "MEMORY.md")))
+        self.assertEqual(of("read", "cat /r/.codex/notes/MEMORY.md"), ["notes/MEMORY.md"])
 
 
 class BoundsAndMaskingTest(unittest.TestCase):

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_merge as TM                                     # noqa: E402
 from rc_dashboard import config as configmod                # noqa: E402
-from rc_dashboard import hours, proctree, snapshots         # noqa: E402
+from rc_dashboard import hours, phase_report, proctree, snapshots   # noqa: E402
 from rc_dashboard.normalize import Normalizer               # noqa: E402
 from rc_dashboard.reducers import phase_segment             # noqa: E402
 from rc_dashboard.reducers import trajectories as trajmod   # noqa: E402
@@ -1201,6 +1201,197 @@ class MergeHoursTest(unittest.TestCase):
         self.assertEqual(one["trajectories"]["buffer"]["phase_past_due_evicted"], 0)
         self.assertEqual(len([t for p in row_of(one)["phases"]["list"]
                               for t, _ in (p["ran_past"] or ())]), 5)
+
+
+# ------------------------------------------------------------------ the Codex app's reads
+ICON = HOME + "/.codex/.tmp/plugins/plugins/slack/assets/app-icon.png"
+APP = "codex -c features.code_mode_host=true app-server --listen unix://"
+
+
+def app7(t, root=300):
+    """A tick of the Codex desktop app's runtime, schema 7."""
+    return rec("residency", t, root, 1, "codex", APP, agent_pid=root, tree_root=root,
+               is_agent=True, agent_type="codex", age_s=60)
+
+
+def icon7(t, pid, root=300):
+    """One of the app's reads of a plugin's icon, schema 7. Its argv names `.codex`, so the
+    classifier tags it: a key of its own, at depth 0, as each was on boslogin06."""
+    return rec("exit", t, pid, root, "cat", "/bin/cat " + ICON, agent_pid=pid, tree_root=root,
+               is_agent=True, depth=0, agent_type="codex", duration_s=0.002)
+
+
+def blind7(t, pid, root=300):
+    """A `cat` whose argv was not recorded, schema 7: nothing tags it, so it is the runtime's
+    key."""
+    return rec("exit", t, pid, root, "cat", "", agent_pid=root, tree_root=root,
+               agent_type="codex", duration_s=0.002)
+
+
+def named7(t, pid, args, root=300):
+    """The model's own `cat`, its argv kept."""
+    return rec("exit", t, pid, root, "cat", args, agent_pid=root, tree_root=root,
+               agent_type="codex", duration_s=0.002)
+
+
+def codex8(t, pid, args, root=300):
+    """A schema-8 direct child of a Codex runtime: the read of an icon, or with `args=""` a `cat`
+    whose argv was not recorded. Both are the runtime's key."""
+    return s8(t, pid, root, "cat", args, root=root, agent_type="codex", duration_s=0.002)
+
+
+def by_time(recs):
+    return sorted(recs, key=lambda r: r["ts_epoch"])
+
+
+def app_reads(row):
+    return dict(row["phases"]["housekeeping"]["shapes"]).get("app assets", 0)
+
+
+class CodexAppReadsTest(unittest.TestCase):
+    """The Codex desktop app reads its plugins' icons in bursts, and schema 7 keeps no argv for some
+    of those `cat`s. One that names no file is the app's when it began within `app_read_s` (2 s) of
+    one of the app's own reads in the same row, before the read or after it, whichever record came
+    first and however the records were split by hour or by key. Far from them it is the model's."""
+
+    def test_a_cat_with_no_argv_inside_a_burst_is_the_apps(self):
+        t = T0 + 600
+        recs = [app7(T0)]
+        recs += [blind7(t - 1.5, 600), blind7(t - 0.2, 601)]          # before the first read
+        recs += [icon7(t + 0.1 * k, 610 + k) for k in range(11)]       # t to t + 1
+        recs += [blind7(t + 0.55, 630), blind7(t + 2.9, 631)]           # inside it, and after it
+        recs += [named7(t + 0.3, 640, "cat AGENTS.md")]                 # the model's, named
+        recs += [blind7(t + 900, 650)]                                  # far from any read
+        payload = reduce(by_time(recs))
+        row = row_of(payload, pid=300)
+        self.assertEqual(row["fragments"], 12)          # the runtime's key and each read's own
+        self.assertEqual(row["n_calls"], 2)             # the named read, and the far one
+        self.assertEqual(app_reads(row), 11 + 4)
+        self.assertEqual(row["phases"]["n_calls"], 2)
+        top = [cmd for p in row["phases"]["list"] for cmd, _n in p["top"]]
+        self.assertIn("cat AGENTS.md", top)
+
+    def test_the_same_in_one_key_is_taken_as_the_records_come(self):
+        # Schema 8 names the runtime on every record, so its reads and its `cat`s share one key:
+        # a `cat` after a read is the app's at once, and one before it is taken by the read.
+        t = T0 + 600
+        recs = [root8(T0, root=300, command="codex", args=APP, agent_type="codex")]
+        recs += [codex8(t - 1.5, 600, ""), codex8(t, 610, "/bin/cat " + ICON),
+                 codex8(t + 1.0, 611, "/bin/cat " + ICON), codex8(t + 2.9, 620, ""),
+                 codex8(t + 900, 630, "")]
+        row = row_of(reduce(by_time(recs)), pid=300)
+        self.assertEqual((row["fragments"], row["n_calls"], app_reads(row)), (1, 1, 4))
+
+    def test_the_window_is_two_seconds_on_either_side_of_a_read(self):
+        self.assertEqual(phase_segment.DEFAULTS["app_read_s"], 2.0)
+        t = T0 + 600
+        for gap, apps in ((1.9, True), (2.1, False), (-1.9, True), (-2.1, False)):
+            for layout in ("schema 7", "schema 8"):
+                with self.subTest(gap=gap, layout=layout):
+                    if layout == "schema 7":
+                        recs = [app7(T0), icon7(t, 610), blind7(t + gap, 600)]
+                    else:
+                        recs = [root8(T0, root=300, command="codex", args=APP, agent_type="codex"),
+                                codex8(t, 610, "/bin/cat " + ICON), codex8(t + gap, 600, "")]
+                    row = row_of(reduce(by_time(recs)), pid=300)
+                    self.assertEqual((row["n_calls"], app_reads(row)),
+                                     (0, 2) if apps else (1, 1))
+
+    def test_only_a_cat_with_no_argv_is_taken(self):
+        # The model's own reads beside a burst keep their argv and stay calls, and a program other
+        # than `cat` whose argv was not kept is no read of the app's.
+        t = T0 + 600
+        recs = [app7(T0), icon7(t, 610), named7(t + 0.5, 600, "cat README.md"),
+                rec("exit", t + 0.6, 601, 300, "exe", "", agent_pid=300, tree_root=300,
+                    agent_type="codex", duration_s=0.002),
+                rec("exit", t + 0.7, 602, 300, "bash", "/usr/bin/bash -lc cat notes.txt",
+                    agent_pid=300, tree_root=300, agent_type="codex", duration_s=0.002)]
+        row = row_of(reduce(by_time(recs)), pid=300)
+        self.assertEqual((row["n_calls"], app_reads(row)), (3, 1))
+
+    def test_a_fold_leaves_the_keys_it_folds_as_they_were(self):
+        t = T0 + 600
+        traj = fed(by_time([app7(T0), blind7(t - 0.5, 600), icon7(t, 610), blind7(t + 900, 650)]))
+        rows = traj.result()["rows"]
+        row, = [r for r in rows.values() if r["agent_pid"] == "300"]
+        self.assertEqual((row["n_calls"], app_reads(row)), (1, 2))
+        own, = [s for s in traj.sessions.values() if s.kv == "300"]
+        self.assertEqual(own.phase.n, 2)                # the runtime's key holds both still
+        self.assertEqual(len(own.phase.no_argv), 2)
+
+    def test_across_midnight_the_days_still_add_up(self):
+        # A read just before midnight and a `cat` with no argv just after it: two day rows, and the
+        # block both serve takes the `cat`. The new day's row counts its own calls less that one,
+        # so the rows' counts still add up to the block's, and the report reads them alike.
+        midnight = time.mktime(time.localtime(time.time() - 7200)[:3] + (0, 0, 0, 0, 0, -1))
+        tick = dict(root=300, command="codex", args=APP, agent_type="codex")
+        traj = fed(by_time([root8(midnight - 900, **tick),
+                            codex8(midnight - 600, 601, "cat AGENTS.md"),
+                            codex8(midnight - 0.5, 610, "/bin/cat " + ICON),
+                            root8(midnight + 5, **tick), codex8(midnight + 0.5, 620, ""),
+                            codex8(midnight + 600, 630, "")]))
+        old, new = sorted((r for r in traj.result(midnight + 650)["rows"].values()
+                           if r["agent_pid"] == "300"), key=lambda r: r["first"])
+        self.assertEqual(old["phases"], new["phases"])
+        self.assertEqual((old["n_calls"], new["n_calls"], new["phases"]["n_calls"]), (1, 1, 2))
+        self.assertEqual(app_reads(new), 2)
+        held = phase_report.session_calls(traj, new["phases"]["days"])
+        self.assertEqual([len(held[r["sid"]].own) for r in (old, new)], [1, 1])
+        self.assertEqual(len(held[new["sid"]].block), 2)
+
+    def test_the_rule_survives_merging_hours(self):
+        b = seam(5400)
+        raw = []
+        # schema 8, one key each: a read before the hour turns and a `cat` after it (300), and the
+        # other way around (301); neither hour alone holds both
+        for root, read, cat in ((300, b - 0.8, b + 0.9), (301, b + 0.8, b - 0.9)):
+            raw += [root8(b - 3000 + k, root=root, command="codex", args=APP, agent_type="codex")
+                    for k in range(0, 6000, 600)]
+            raw += [codex8(read, root + 10, "/bin/cat " + ICON, root=root),
+                    codex8(cat, root + 20, "", root=root),
+                    codex8(b + 1200, root + 30, "", root=root)]          # far from the read
+        # schema 7: each read its own key, folded into the runtime's when the window is read
+        raw += [app7(b - 3000 + k, root=400) for k in range(0, 6000, 600)]
+        raw += [icon7(b - 0.3, 410, root=400), blind7(b + 0.5, 420, root=400),
+                blind7(b - 1200, 430, root=400)]
+        raw = by_time(raw)
+        one = TM.materialize(TM.one_pass(TM.normalized(raw)))
+        saved, carry, fresh = TM.hour_states(TM.normalized(raw))
+        self.assertGreaterEqual(len(saved), 2)
+        got = TM.materialize(TM.merged(saved, fresh, carry))
+        for pid in (300, 301, 400):
+            with self.subTest(agent=pid):
+                a, c = row_of(one, pid), row_of(got, pid)
+                self.assertEqual(a["phases"], c["phases"])
+                self.assertEqual((a["n_calls"], app_reads(a)), (1, 2))
+                self.assertEqual(c["n_calls"], 1)
+        self.assertEqual(TM.diff(one["trajectories"], got["trajectories"]), [])
+
+    def test_the_rule_survives_a_snapshot_round_trip(self):
+        t = T0 + 600
+        recs = [app7(T0), blind7(t - 0.5, 600), icon7(t, 610), blind7(t + 900, 650),
+                root8(T0, root=500, command="codex", args=APP, agent_type="codex"),
+                codex8(t + 30, 520, "", root=500)]       # no read of the app's yet in its row
+        c = cfg()
+        view = PanelView(c, TM.classes(c), 1440)
+        view.reducers = view.fresh_reducers()
+        norm = Normalizer(c)
+        TM.feed(view.reducers, [norm.normalize(r) for r in by_time(recs)])
+        before = view.reducers["trajectories"].result()["rows"]
+        red = snapshots.restore(view.fresh_reducers(),
+                                pickle.loads(snapshots.capture(view.reducers)))
+        after = red["trajectories"].result()["rows"]
+        self.assertEqual(after, before)
+        for agent, want in (("300", (1, 2)), ("500", (1, 0))):
+            row, = [r for r in after.values() if r["agent_pid"] == agent]
+            self.assertEqual((row["n_calls"], app_reads(row)), want)
+        # the restored state goes on: a read that comes after takes the `cat` held before it
+        late = [norm.normalize(codex8(t + 31, 530, "/bin/cat " + ICON, root=500))]
+        for reducers in (view.reducers, red):
+            TM.feed(reducers, late)
+            row, = [r for r in reducers["trajectories"].result()["rows"].values()
+                    if r["agent_pid"] == "500"]
+            self.assertEqual((row["n_calls"], app_reads(row)), (0, 2))
 
 
 if __name__ == "__main__":
