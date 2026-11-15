@@ -1519,6 +1519,17 @@ tbody tr:last-child td {
   border-style: dashed;
   color: #8a6410;
 }
+/* The demo's banner (App.tsx): shown whenever a host's records are synthetic. */
+.fake-note {
+  margin: 0 0 16px;
+  padding: 8px 14px;
+  border: 1px dashed var(--warn);
+  border-radius: 10px;
+  background: #fdf6e3;
+  color: #6b4e0c;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
 @keyframes beat {
   0%,
   100% {
