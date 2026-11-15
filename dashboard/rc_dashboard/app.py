@@ -342,6 +342,24 @@ def create_app(cfg):
             name = anon.dealias_user(name)
         return respond(redact.payload(agg.live_user(name, window_min, n)))
 
+    @app.get("/api/users")
+    def api_users(request: Request, window_min: int = Query(None)):
+        """Every user with an agent session in the window, and how each works
+        with their agents (portraits.py); narrowed by `user` / `agent_type` as
+        the trajectories are."""
+        return respond(redact.payload(agg.users(window_min, view_filter(request, anon))),
+                       "users")
+
+    @app.get("/api/user")
+    def api_user(request: Request, name: str = Query(...), window_min: int = Query(None)):
+        """One user's portrait: their sessions, rhythm, work, tasks and traits.
+        `name` is the alias the page shows when names are anonymized; a real
+        name then finds nobody, as on /api/live/user."""
+        if anon is not None:
+            name = anon.dealias_user(name)
+        return respond(redact.payload(agg.user(name, window_min, view_filter(request, anon))),
+                       "user")
+
     @app.get("/api/trajectories")
     def api_traj(request: Request, rank: str = Query("recent"),
                  window_min: int = Query(None)):
