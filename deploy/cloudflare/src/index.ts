@@ -14,6 +14,11 @@
  * demo cold waits at most READY_WAIT_MS for it and otherwise gets a page that
  * says it is starting and reloads itself (an API call, a 503). The container
  * goes on starting regardless; the next request finds it further along.
+ *
+ * Visits are counted by Statcounter, whose code (STATCOUNTER) this Worker adds
+ * to each dashboard page it serves. Only here, on the public demo: the image,
+ * `rc_dashboard demo` and every deployment on a cluster load no tracker, and a
+ * cluster's URLs, whose filters carry real user names, reach no third party.
  */
 import { Container } from "@cloudflare/containers";
 
@@ -106,8 +111,46 @@ const STARTING_PAGE = `<!doctype html>
 </html>
 `;
 
+/** Statcounter's default code for the openData-AgenticSystem project, as it gives it. */
+const STATCOUNTER = `<!-- Default Statcounter code for openData-AgenticSystem
+https://data.agentic-system.org -->
+<script type="text/javascript">
+var sc_project=13354152;
+var sc_invisible=1;
+var sc_security="3a3407c0";
+</script>
+<script type="text/javascript"
+src="https://www.statcounter.com/counter/counter.js"
+async></script>
+<noscript><div class="statcounter"><a title="Web Analytics
+Made Easy - Statcounter" href="https://statcounter.com/"
+target="_blank"><img class="statcounter"
+src="https://c.statcounter.com/13354152/0/3a3407c0/1/"
+alt="Web Analytics Made Easy - Statcounter"
+referrerPolicy="no-referrer-when-downgrade"></a></div></noscript>
+<!-- End of Statcounter Code -->
+`;
+
+/** A dashboard page with STATCOUNTER at the end of its body, where Statcounter
+ * asks for it; anything else as it came. Only a 200 page is counted: never the
+ * "starting" page (a 503), which reloads itself every few seconds and would
+ * count each reload as a visit, and never an API reply or the websocket. */
+function counted(response: Response): Response {
+  const type = response.headers.get("content-type") ?? "";
+  if (response.status !== 200 || !type.startsWith("text/html")) {
+    return response;
+  }
+  return new HTMLRewriter()
+    .on("body", {
+      element(body) {
+        body.append(STATCOUNTER, { html: true });
+      },
+    })
+    .transform(response);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
-    return env.DEMO.getByName("demo").fetch(request);
+    return counted(await env.DEMO.getByName("demo").fetch(request));
   },
 } satisfies ExportedHandler<Env>;
