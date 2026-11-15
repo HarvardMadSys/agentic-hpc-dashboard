@@ -8,6 +8,7 @@ window build uses, as test_sessions does.
 """
 import collections
 import json
+import os
 import sys
 import time
 import unittest
@@ -459,6 +460,75 @@ class TraitRulesTest(unittest.TestCase):
         ids = [t["id"] for t in portraits.catalogue()]
         self.assertEqual(len(ids), len(set(ids)))
         self.assertTrue(all(t["rule"] and t["label"] for t in portraits.catalogue()))
+
+
+class _Zone:
+    """Run under the time zone `tz`, and put the process's own back after."""
+
+    def __init__(self, tz):
+        self.tz = tz
+
+    def __enter__(self):
+        self.was = os.environ.get("TZ")
+        os.environ["TZ"] = self.tz
+        time.tzset()
+
+    def __exit__(self, *exc):
+        if self.was is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self.was
+        time.tzset()
+
+
+class LocalHourTest(unittest.TestCase):
+    """Active minutes go to their local hour, minute by minute, where the offset is
+    not whole hours too: a UTC hour there holds two local hours."""
+
+    ZONES = ("America/New_York", "Asia/Kolkata", "Asia/Kathmandu", "America/St_Johns",
+             "Australia/Adelaide")
+
+    def test_every_minute_of_a_day_is_in_its_own_local_hour(self):
+        day0 = (int(time.time()) // 86400 - 2) * 1440        # an epoch minute two days back
+        for tz in self.ZONES:
+            with self.subTest(tz=tz), _Zone(tz):
+                clock = portraits._Clock()
+                wrong = [m for m in range(day0, day0 + 1440)
+                         if clock.at(m) != tuple(time.localtime(m * 60)[i] for i in (6, 3))]
+                self.assertEqual(wrong, [], "%d minutes in another local hour" % len(wrong))
+
+    def test_a_call_past_the_half_hour_counts_in_its_local_hour(self):
+        with _Zone("Asia/Kolkata"):
+            hour = (int(time.time()) // 3600 - 3) * 3600     # a UTC hour in the window, past
+            t0 = hour + 45 * 60                              # every call 45 minutes into it
+            local = time.localtime(t0)
+            self.assertEqual(local.tm_min, 15, "45 past in UTC is a quarter past in Kolkata")
+            row = rows_of(portraits.roster(portraits.Context(
+                build(agent("ann", 1000, t0, ["ls"] * 2, gap=10)))))["ann"]
+            self.assertEqual([h for h, n in enumerate(row["hours"]) if n], [local.tm_hour])
+
+
+class UnattributedTest(unittest.TestCase):
+    """A session whose records name no user and no uid is no one's row."""
+
+    def test_counted_apart_and_never_a_user_of_no_name(self):
+        t0 = time.time() - 3600
+        recs = agent("ann", 1000, t0, ["ls"] * 3) + agent(None, 5000, t0, ["ls"] * 3)
+        for r in recs:
+            r.pop("uid", None)
+        ros = portraits.roster(portraits.Context(build(recs)))
+        self.assertEqual([r["user"] for r in ros["users"]], ["ann"])
+        self.assertEqual(ros["unattributed"], 1)
+        self.assertEqual((ros["fleet"]["users"], ros["fleet"]["sessions"]), (1, 1))
+
+    def test_a_uid_with_no_name_is_still_someone(self):
+        t0 = time.time() - 3600
+        recs = agent(None, 5000, t0, ["ls"] * 3)
+        for r in recs:
+            r["uid"] = 4242
+        ros = portraits.roster(portraits.Context(build(recs)))
+        self.assertEqual([r["user"] for r in ros["users"]], ["uid:4242"])
+        self.assertEqual(ros["unattributed"], 0)
 
 
 if __name__ == "__main__":

@@ -303,17 +303,20 @@ def _peak_open(sessions):
 
 
 class _Clock:
-    """Local (weekday, hour) of an epoch minute, one `localtime` per hour."""
+    """Local (weekday, hour) of an epoch minute, one `localtime` per minute asked
+    for. Not one per UTC hour: where the offset is not whole hours (Asia/Kolkata
+    is +5:30, Asia/Kathmandu +5:45) a UTC hour holds two local hours, and the
+    minutes past the change would land in the hour before it. A `localtime` is
+    well under a microsecond, and a window holds at most one per minute."""
 
     def __init__(self):
         self.held = {}
 
     def at(self, minute):
-        h = minute // 60
-        got = self.held.get(h)
+        got = self.held.get(minute)
         if got is None:
-            lt = time.localtime(h * 3600)
-            got = self.held[h] = (lt.tm_wday, lt.tm_hour)
+            lt = time.localtime(minute * 60)
+            got = self.held[minute] = (lt.tm_wday, lt.tm_hour)
         return got
 
 
@@ -663,6 +666,8 @@ class Context:
         self._slurm_red = reducers.get("slurm")
         self._boxed, self._slurm = boxed, slurm
         self._users = {}
+        # agent sessions whose records named no user and no uid: no one's row
+        self.unattributed = 0
 
     def ready(self):
         """False before the view is built: there is nothing to read yet."""
@@ -682,13 +687,21 @@ class Context:
 
     def by_user(self, only=None):
         """`{user: [session]}`: every user with an agent session in the window,
-        or `only` that one, whose sessions are all a portrait builds."""
+        or `only` that one, whose sessions are all a portrait builds. A session
+        whose records named no user and no uid (the trajectories reducer falls
+        back to `uid:N` where it can) is no one's: it has no row, no portrait to
+        open and no name to find it by, so it is counted apart, in
+        `unattributed`, rather than listed as a user of no name."""
         if only not in self._users:
             users = collections.defaultdict(list)
+            nobody = 0
             for key, rows in agent_sessions(self.traj, self.now).items():
-                if only is None or key[2] == only:
+                if not key[2]:
+                    nobody += 1
+                elif only is None or key[2] == only:
                     users[key[2]].append(_session(self.traj, key, rows, self.boxed, self.running))
             self._users[only] = dict(users)
+            self.unattributed = nobody
         return self._users[only]
 
 
@@ -703,6 +716,7 @@ def roster(ctx):
     rows.sort(key=lambda r: (-r["sessions"], -(r["calls"] or 0), str(r["user"])))
     every = [s for ss in by_user.values() for s in ss]
     return {"window": _window(ctx.traj, ctx.now), "users": rows, "fleet": _fleet(rows, every),
+            "unattributed": ctx.unattributed,
             "traits": catalogue(), "rules": dict(RULES), "basis": BASIS}
 
 

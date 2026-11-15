@@ -292,7 +292,7 @@ scanned.
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#trajectories-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
-| `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
+| `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
@@ -744,7 +744,9 @@ imports it, and changing it rebuilds nothing.
 - **A session is one agent run.** The rows Trajectories lists for one agent on two days are one session
   here, as the agent's phase block already is. Only rooted sessions count, as the Trajectories plates count
   them, so a status bar probing `codex --version` every minute is none. A session belongs to the account its
-  records name first.
+  records name first. One whose records name no user and no uid (the trajectories reducer falls back to
+  `uid:N` where there is one) is no one's row: the roster counts it apart (`unattributed`) and says so under
+  the table, and the Trajectories tab lists it with the rest.
 - **Unread is not none.** An agent whose commands the service does not read (anything but Claude Code and
   Codex) has calls of null, shown as *not read*, never 0.
 - **A share is over the known values**, with the rest counted beside it: a Codex app server's approval is

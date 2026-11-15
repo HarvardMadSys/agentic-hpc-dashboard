@@ -1806,7 +1806,7 @@ function users(nowEpoch, traj) {
       tz: 'EDT',
     };
   }
-  return { roster: { ...shared, users: rows, fleet }, portraits };
+  return { roster: { ...shared, users: rows, fleet, unattributed: 0 }, portraits };
 }
 
 function build() {

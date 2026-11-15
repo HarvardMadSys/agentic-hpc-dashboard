@@ -1816,6 +1816,8 @@ export interface UsersResponse extends PanelEnvelope {
   filter?: ViewFilterBlock;
   users: UserRow[];
   fleet: UsersFleet | null;
+  /** agent sessions whose records named no user and no uid: no one's row, so counted here instead */
+  unattributed?: number;
   traits: TraitRule[];
   rules: Record<string, number>;
   basis?: Record<string, string>;

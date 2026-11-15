@@ -445,6 +445,14 @@ function Roster({
       )}
       <div className="u-foot">
         {sorted.length > 0 && <span className="nm">{plural(sorted.length, 'user')}{sorted.length < rows.length ? ` of ${fint(rows.length)}` : ''}</span>}
+        {(U.unattributed ?? 0) > 0 && (
+          <span
+            className="nm"
+            data-tip="an agent session whose records named no user and no uid is no one’s row: there is no one to draw and no name to open it by. The Trajectories tab lists it with the rest"
+          >
+            {plural(U.unattributed ?? 0, 'agent session')} whose user was not read {U.unattributed === 1 ? 'is' : 'are'} not listed
+          </span>
+        )}
       </div>
     </div>
   );
