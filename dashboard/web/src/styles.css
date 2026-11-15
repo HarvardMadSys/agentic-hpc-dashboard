@@ -192,7 +192,7 @@ kbd {
   color: var(--ink-2);
   white-space: nowrap;
 }
-nav {
+.rail nav {
   display: flex;
   flex-direction: column;
   padding: 2px 10px 10px;
@@ -208,7 +208,7 @@ nav {
   color: var(--muted);
   white-space: nowrap;
 }
-nav button {
+.rail nav button {
   all: unset;
   cursor: pointer;
   position: relative;
@@ -221,7 +221,7 @@ nav button {
   color: var(--ink-2);
   white-space: nowrap;
 }
-nav button .icon {
+.rail nav button .icon {
   flex: none;
   color: var(--muted);
 }
@@ -230,22 +230,22 @@ nav button .icon {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-nav button:hover {
+.rail nav button:hover {
   background: var(--surface-2);
   color: var(--ink);
 }
-nav button:hover .icon {
+.rail nav button:hover .icon {
   color: var(--ink-2);
 }
-nav button[aria-selected='true'] {
+.rail nav button[aria-selected='true'] {
   background: var(--crimson-wash);
   color: var(--crimson-ink);
   font-weight: 600;
 }
-nav button[aria-selected='true'] .icon {
+.rail nav button[aria-selected='true'] .icon {
   color: var(--crimson);
 }
-nav button[aria-selected='true']::before {
+.rail nav button[aria-selected='true']::before {
   content: '';
   position: absolute;
   left: -10px;
@@ -467,7 +467,7 @@ section.panel {
     justify-content: center;
     padding: 8px 0;
   }
-  .app.mini nav {
+  .app.mini .rail nav {
     padding: 2px 8px 10px;
   }
   .app.mini .navgroup {
@@ -477,11 +477,11 @@ section.panel {
     color: transparent;
     overflow: hidden;
   }
-  .app.mini nav button {
+  .app.mini .rail nav button {
     justify-content: center;
     padding: 9px 0;
   }
-  .app.mini nav button[aria-selected='true']::before {
+  .app.mini .rail nav button[aria-selected='true']::before {
     left: -8px;
   }
   .app.mini .navdot {
@@ -571,6 +571,42 @@ main {
 }
 .head-sub::first-letter {
   text-transform: uppercase;
+}
+/* A parent entry's sub-tabs (the login nodes: Resources, Risk & Warning,
+ * Slurm), along the foot of the head. The open one is underlined, and the
+ * underline sits on the toolbar band's top rule. */
+.subtabs {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 2px 0 -16px;
+}
+.subtabs button {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px 11px;
+  border-bottom: 2px solid transparent;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.subtabs button .icon {
+  color: var(--muted);
+}
+.subtabs button:hover {
+  color: var(--ink);
+}
+.subtabs button[aria-current='page'] {
+  color: var(--crimson-ink);
+  border-bottom-color: var(--crimson);
+  font-weight: 600;
+}
+.subtabs button[aria-current='page'] .icon {
+  color: var(--crimson);
 }
 /* how current the data is, each fact a chip */
 .status .stat {
@@ -2756,7 +2792,9 @@ td.host-by {
 .linkbtn:focus-visible,
 .rail-search:focus-visible,
 .rail-toggle:focus-visible,
-.iconbtn:focus-visible {
+.iconbtn:focus-visible,
+.subtabs button:focus-visible,
+.rail nav button:focus-visible {
   outline: 2px solid var(--crimson);
   outline-offset: 2px;
 }

@@ -171,9 +171,8 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 Two more that the payloads force:
 
 - **Both grains, where both exist.** The sandbox tab shows per-event *and* per-session (the
-  session judged by its tool calls); the
-  overview shows the same fleet in eight units, because the class ranking is not stable
-  across them.
+  session judged by its tool calls); Live's *Who uses what* shows the same fleet in eight
+  units, because the class ranking is not stable across them.
 - **`denied` is not `unsandboxed`.** Four sandbox states. `denied`, labelled "exited before
   read", is the namespace links being gone when the collector looked (it is root; these are
   few-ms processes), so it gets its own hue *and* a hatch (`src/components/Defs.tsx`). Every
@@ -207,8 +206,13 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 
 ## The rail and "go to"
 
-The rail lists the tabs in their reading order under four words (Monitor, Agents, Cluster,
-More), each with its icon, and the open tab's sections under it. It folds to the icons alone
+The rail lists the tabs in their reading order under two words, Monitor and More, each with
+its icon, and the open tab's sections under it. Resources, Risk & Warning and Slurm share one
+entry, named in the site's own word for its hosts (`ui.node_noun`, "Login nodes"; their
+figures are login-node use, not the cluster's), with a sub-tab each along the foot of the
+head. A sub-tab keeps its own key (`?tab=resources`, `risk`, `slurm`), so links and citations
+land where they did, and the entry reopens the sub-tab last used. Overview's one table is a
+section of Live (*Who uses what*), and `?tab=overview` lands on it. It folds to the icons alone
 (`[`, or the button at its foot), which this browser remembers (`localStorage`, a per-viewer
 convenience: storage that is absent or refuses just leaves it unfolded). Its foot says how
 the page gets its data: the transport as a light, the last update, the window, and when the
@@ -240,12 +244,12 @@ The tip is visual only: its layer is `aria-hidden`, and no control points at it 
 
 | tab | source | notes |
 |---|---|---|
-| **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
-| **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
+| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, *Who uses what* (each class's share of the window in eight units, the old Overview tab; `?tab=overview` lands on it), per-host table with a per-class split, bounded event stream, submissions |
 | **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait, and shown as a table or as **figures**, each user drawn from their numbers (`src/components/PortraitFigure.tsx`: a part for each number, its numbers and rule on hover, a key beside it); a row or a figure opens the user's **portrait** (`?portrait=`): their figure, how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
-| **Resources** | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
-| **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
+| **Login nodes › Resources** (`?tab=resources`) | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
+| **Login nodes › Risk & Warning** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
+| **Login nodes › Slurm** (`?tab=slurm`) | `slurm`, `live_now.submits` | sessions at the scheduler, how each class uses it, the submissions it refused, the latest submissions; gone where `slurm.enabled` is false |
 | **I/O** (`?tab=io`) | `io_process`, `resources` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
 | **Sandbox** | `sandbox` | namespace isolation × approval at launch as independent axes; tool-call outcomes per session (isolated / not / **sandbox attempt failed**), wrapper calls by outcome, launch flags as written, the `ancestry_matrix` by wrapper vs process with `reading` surfaced |
 | **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), a ribbon (the purpose of each process, or for an agent whose commands are read its phases, with a line naming its tasks: [below](#trajectories-tasks-phases-and-processes)) + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |

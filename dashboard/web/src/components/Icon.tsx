@@ -56,13 +56,23 @@ const PATHS = {
       {dot(10, 13.4, 0.95)}
     </>
   ),
-  slurm: (
+  // the login nodes: a rack of two hosts
+  nodes: (
     <>
       <rect x="3.4" y="3.4" width="13.2" height="5.6" rx="1.5" />
       <rect x="3.4" y="11" width="13.2" height="5.6" rx="1.5" />
       <path d="M10 6.2h3.8M10 13.8h3.8" />
       {dot(6.4, 6.2, 0.95)}
       {dot(6.4, 13.8, 0.95)}
+    </>
+  ),
+  // the scheduler: a queue of jobs
+  queue: (
+    <>
+      <path d="M8 5.5h8.5M8 10h8.5M8 14.5h8.5" />
+      {dot(4.4, 5.5, 1.1)}
+      {dot(4.4, 10, 1.1)}
+      {dot(4.4, 14.5, 1.1)}
     </>
   ),
   chat: (
