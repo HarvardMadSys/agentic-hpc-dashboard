@@ -6,9 +6,9 @@ backend serves as static files.
 
 ```
 src/api/        the contract: types, fetch client, hooks, the live websocket
-src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the words and geometry of phases and tasks
+src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks
 src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
-src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer
+src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure, Icon, CommandPalette
 src/tabs/       one module per tab
 mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```
@@ -38,8 +38,14 @@ RC_MOCK=0 npm run dev               # same thing
 Regenerate the fixture after changing its shape (deterministic — no RNG, byte-stable):
 
 ```bash
-npm run fixture      # node mock/gen_fixture.mjs -> mock/api.json
+TZ=America/New_York npm run fixture      # node mock/gen_fixture.mjs -> mock/api.json
 ```
+
+The live tab's clock strings (the rate's minute labels, and the `ts` of its events and submissions) are written
+in the generator's local time, and the committed file was made in `America/New_York`: regenerated in another
+zone, those strings change and nothing else does. The Users
+section (`users`) is the fixture's own trajectory rows composed as `rc_dashboard/portraits.py` composes the
+service's, with its hours in a fixed EDT, so it is the same in any zone.
 
 The fixture deliberately contains the awkward states the UI has to get right: a `missing`
 feed, a `stale` feed whose `lag_s` exceeds its own `max_age_s`, an `empty` feed, `null`
@@ -53,7 +59,8 @@ The fixture's agent rows carry the tasks the page has to word: quoted from a com
 from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
 still running and one that names none; a task still open at the live edge; a task under a call log that was
 cut; and one agent over two day rows, which serve one block. `npm run check:phases` reads every task and
-phase of every row of it.
+phase of every row of it, and `npm run check:figures` draws every user's portrait figure and checks each
+part against their row.
 
 The fixture's sessions sit at its own `now_epoch`, so every live frame the mock sends
 carries that as the service's clock (`clock.now`) and the page's "now" follows it: a
@@ -73,6 +80,7 @@ This is done in `mock/plugin.ts`, so a change to it needs the dev server restart
 ```bash
 npm run build        # tsc -b && vite build  ->  dist/
 npm run typecheck    # tsc -b, no emit
+npm run check:charts # node --test: the chart tick and width rules in src/charts/scale.ts
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -100,7 +108,8 @@ ported from the retired demo template (git history: `dashboard/archive/`), for t
 reasons that are constraints here rather than preferences: there is no code path that can introduce a second
 value axis, and the colours are the CSS custom properties verbatim, so no library theme can
 substitute a hue. There is no table library either — the event explorer pages on the
-backend's `next_cursor`.
+backend's `next_cursor`. Nor an icon library: `src/components/Icon.tsx` draws the page's
+few icons as paths, in the text colour, so no icon is ever a series colour.
 
 ## The rules this code enforces
 
@@ -119,7 +128,9 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 3. **Colour** — Harvard palette, light only, tokens copied from the archived template.
    Crimson `#A51C30` (`--s1`) is reserved for `agent`. Eight series slots plus one grey
    tail (`--sg`); the purpose table in `src/lib/purposes.ts` folds everything outside its
-   eight slots into `other` rather than inventing a ninth hue.
+   eight slots into `other` rather than inventing a ninth hue. A series that is not a
+   class — a tool, or a direction such as egress and ingress — takes its hue from
+   `TOOL_COL` (`src/charts/TimeChart.tsx`), never a class's.
 4. **Zero is not missing** — `_present === false` renders the shared `<EmptyState>`:
    the panel frame, the title, the feed name, and one line per `_paths` entry, verbatim
    (`no data from /var/log/ebpfm`). A feed that IS present but has no rows renders
@@ -130,23 +141,29 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    `null` rate bin arrives as `null` and `Lines` emits a separate subpath around it, so a
    minute with no record is a **hole in the line** — never a 0, never a straight line
    drawn across the hole. The dev fixture lives in `mock/`, outside `src/`, so it cannot
-   reach the production bundle.
+   reach the production bundle. The service's demo mode (`rc_dashboard/demo`) feeds it
+   records that were never measured, and the page says so on every tab: the feeds report
+   lists the hosts whose records carry `"synthetic": true` (`synthetic_hosts`), and while
+   any does, the header shows a dashed **synthetic data** pill beside the live one and the
+   Feeds tab tags each such host.
 6. **Coverage is part of the number** — `<Coverage>`, `<AccumCell>` and `<QuantCells>`
    print `coverage_pct` next to every value that carries one. An accumulator or quantile
    with `n: 0` renders the words **`not measured`**, never `0`.
 7. **Data only** — a panel carries a title, its feed, and the chart or table. Every
    `notes` / `basis` / `cpu_basis` / `scope` / `dedup.rule` string goes into `<Basis>`, a
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
-8. **Responsive to ~900px** — below 900px the rail becomes a horizontal nav and the grid
-   collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
-   never scrolls horizontally.
+8. **Responsive to ~900px** — below 900px the rail becomes a drawer, opened from a top bar
+   that names the tab, and the grid collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
+   never scrolls horizontally. A time series is drawn at its container's width, at 1:1
+   (`<Fluid>`, `src/charts/primitives.tsx`), so it fills its panel and its 10px labels stay
+   10px at any width; on a narrow plot its ticks thin out (`tickTarget`) rather than
+   overprint.
 
 Two more that the payloads force:
 
 - **Both grains, where both exist.** The sandbox tab shows per-event *and* per-session (the
-  session judged by its tool calls); the
-  overview shows the same fleet in eight units, because the class ranking is not stable
-  across them.
+  session judged by its tool calls); Live's *Who uses what* shows the same fleet in eight
+  units, because the class ranking is not stable across them.
 - **`denied` is not `unsandboxed`.** Four sandbox states. `denied`, labelled "exited before
   read", is the namespace links being gone when the collector looked (it is root; these are
   few-ms processes), so it gets its own hue *and* a hatch (`src/components/Defs.tsx`). Every
@@ -155,9 +172,15 @@ Two more that the payloads force:
 
 ## The window control
 
-`src/components/WindowPicker.tsx`, on one row with the class and who filters under the page
-title — all of them answer "what is on screen", and a reader checking one should not have to
-hunt for the others. It is URL-backed as `?win=<minutes>`, like every other view knob.
+`src/components/WindowPicker.tsx`, in one control bar with the class filter and the user and
+agent-type dropdowns — both answer "what is on screen", and a reader checking one should not
+have to hunt for the other. The bar sticks to the top of the page as a tab scrolls
+(`src/lib/sticky.ts`), so the answer is still in view at the foot of a long tab. It publishes
+its height as `--controls-h`, which is the page's `scroll-padding-top`, so nothing the browser
+scrolls to (a control reached with Tab, a panel picked in the section list, the trajectory
+inspector) lands under it, and which the Agents tab's sticky list and detail stick below. On a
+phone (640px and below) it scrolls with the page. It is URL-backed as `?win=<minutes>`, like
+every other view knob.
 
 Three rules it follows, all of them the same rule this page follows everywhere:
 
@@ -172,15 +195,52 @@ Three rules it follows, all of them the same rule this page follows everywhere:
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
 
+## The rail and "go to"
+
+The rail lists the tabs in their reading order under two words, Monitor and More, each with
+its icon, and the open tab's sections under it. Resources, Risk & Warning and Slurm share one
+entry, named in the site's own word for its hosts (`ui.node_noun`, "Login nodes"; their
+figures are login-node use, not the cluster's), with a sub-tab each along the foot of the
+head. A sub-tab keeps its own key (`?tab=resources`, `risk`, `slurm`), so links and citations
+land where they did, and the entry reopens the sub-tab last used. Overview's one table is a
+section of Live (*Who uses what*), and `?tab=overview` lands on it. It folds to the icons alone
+(`[`, or the button at its foot), which this browser remembers (`localStorage`, a per-viewer
+convenience: storage that is absent or refuses just leaves it unfolded). Its foot says how
+the page gets its data: the transport as a light, the last update, the window, and when the
+panels were built.
+
+**Go to** (`src/components/CommandPalette.tsx`), opened with Ctrl+K or Cmd+K anywhere, or `/`
+outside a field: type to reach a tab, a section of the open tab, a window preset, or an
+action (refresh, show all three classes, fold the rail). It offers only what the page already
+holds, so it can never name a tab, section or window that is not there.
+
+## Keyboard
+
+Every control is a tab stop with a visible focus ring (controls restyled from `all: unset`
+restate it at the foot of `src/styles.css`). A sortable header (`src/components/SortTh.tsx`)
+sorts with Enter or Space, and a control's `data-tip` shows under it when it is reached with
+Tab (`src/components/Tooltip.tsx`), since the caveat about how a number is counted lives there.
+The tip is visual only: its layer is `aria-hidden`, and no control points at it with
+`aria-describedby`, so a screen reader does not announce it.
+
+| key | does |
+|---|---|
+| Ctrl+K, Cmd+K | opens or closes **go to**, anywhere |
+| `/` | opens **go to**, outside a field |
+| `[` | folds or unfolds the rail, outside a field |
+| ↑ ↓ Enter, Esc | in **go to**: move, go, close (focus returns where it was) |
+| Esc | closes the rail's drawer below 900px |
+
 ## Tabs
 
 | tab | source | notes |
 |---|---|---|
-| **Live** | `WS /ws`, `GET /api/live` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, per-host table with a per-class split, bounded event stream, submissions |
-| **Overview** | `/api/panels?window_min=` | share of calls vs share of CPU; the same fleet in eight units |
+| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, *Who uses what* (each class's share of the window in eight units, the old Overview tab; `?tab=overview` lands on it), per-host table with a per-class split, bounded event stream, submissions |
+| **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait, and shown as a table or as **figures**, each user drawn from their numbers (`src/components/PortraitFigure.tsx`: a part for each number, its numbers and rule on hover, a key beside it); a row or a figure opens the user's **portrait** (`?portrait=`): their figure, how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
 | **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
-| **Resources** | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
-| **Risk** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
+| **Login nodes › Resources** (`?tab=resources`) | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
+| **Login nodes › Risk & Warning** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
+| **Login nodes › Slurm** (`?tab=slurm`) | `slurm`, `live_now.submits` | sessions at the scheduler, how each class uses it, the submissions it refused, the latest submissions; gone where `slurm.enabled` is false |
 | **I/O** (`?tab=io`) | `io_process`, `resources` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
 | **Sandbox** | `sandbox` | namespace isolation × approval at launch as independent axes; tool-call outcomes per session (isolated / not / **sandbox attempt failed**), wrapper calls by outcome, launch flags as written, the `ancestry_matrix` by wrapper vs process with `reading` surfaced |
 | **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), a ribbon (the purpose of each process, or for an agent whose commands are read its phases, with a line naming its tasks: [below](#trajectories-tasks-phases-and-processes)) + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |
@@ -238,7 +298,7 @@ a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels
 
 Every filter — plus the active tab, the trajectory rank and the inspected trajectory (`traj`,
 `tfrom` when a read was continued past its budget, and `torder=newest` when it is read newest
-first) — lives in the query string, so
+first), and the portrait open on the Users tab (`portrait`) — lives in the query string, so
 a reload or a pasted link restores the view. `src/lib/filters.ts` owns the one
 serialisation: `apiQuery()` builds the string sent to **both** `/api/events` and
 `/api/export`, so the download is exactly the view by construction rather than by

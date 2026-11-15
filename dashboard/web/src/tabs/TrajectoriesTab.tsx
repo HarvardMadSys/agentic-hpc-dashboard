@@ -50,6 +50,7 @@ import type { Cls, PhaseDay, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajecto
 import { TRAJ_RANKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import { Panel } from '../components/Panel';
+import { Icon } from '../components/Icon';
 import { PhaseBand } from '../components/PhaseBand';
 import { Segmented } from '../components/ClassFilter';
 import { Plate } from '../components/Plate';
@@ -502,7 +503,10 @@ export function TrajectoriesTab({
               routine={routine}
             />
           ) : (
-            <div className="tj-empty">pick a session on the left: its process tree opens here</div>
+            <div className="tj-empty">
+              <Icon name="pointLeft" size={20} />
+              <span>pick a session on the left: its process tree opens here</span>
+            </div>
           )}
         </div>
       </div>

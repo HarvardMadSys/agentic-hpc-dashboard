@@ -8,13 +8,14 @@ import { GLOSS } from '../lib/glossary';
 import { Fragment, useState } from 'react';
 import type { Cls, IoByTool, IoProcess, IoSort, Resources } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
+import { TOOL_COL } from '../charts/TimeChart';
 import { TimeChart } from './ResourcesTab';
 import type { TimeLine, View } from './ResourcesTab';
 import type { BarGroup, HBarItem } from '../charts/primitives';
 import { Legend, More, NoRows, Panel } from '../components/Panel';
 import { AccumCell, Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
 import { Plate } from '../components/Plate';
-import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { ByUser, distinct } from '../components/ByUser';
 import { CmdCell } from '../components/Cmd';
 import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
@@ -182,21 +183,34 @@ const QUANT_SORT: Record<string, IoSort | undefined> = {
   net_tx_mb: 'tx_mb', net_rx_mb: 'rx_mb',
 };
 
+/* A tool is not a class. A row the service split by class wears its class's
+ * hue, and the chart then carries the key to them; a row with no class (the
+ * service's own `by_tool` has none) wears one tool hue, never a class's:
+ * crimson there read as "every write was an agent's". */
+const TOOL_HUE = TOOL_COL[0];
+
 function toolBars(
   rows: IoByTool[],
   dir: 'read' | 'write',
-  color: string,
   from?: string | number | null,
-): HBarItem[] {
+): { items: HBarItem[]; key: { k: string; c: string }[] } {
   const [disk, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
-  return rows
+  const top = rows
     .filter((t) => (t[disk] ?? 0) > 0)
     .sort((a, b) => (b[disk] ?? 0) - (a[disk] ?? 0))
-    .slice(0, 14)
+    .slice(0, 14);
+  const split = CLS.filter((c) => top.some((t) => t.cls === c));
+  const key = split.length
+    ? [
+        ...split.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] })),
+        ...(top.some((t) => !t.cls) ? [{ k: 'every class', c: TOOL_HUE }] : []),
+      ]
+    : [];
+  const items = top
     .map((t) => ({
       k: t.tool,
       v: t[disk] ?? null,
-      c: t.cls ? CLS_COL[t.cls] : color,
+      c: t.cls ? CLS_COL[t.cls] : TOOL_HUE,
       lbl: mb(t[disk]),
       tip:
         `${t.tool}: ${dir === 'read' ? 'read' : 'wrote'} ${mb(t[disk])} on disk, ` +
@@ -208,6 +222,7 @@ function toolBars(
         sort: disk, tool: [t.tool], class: t.cls ? [t.cls] : undefined, from,
       }),
     }));
+  return { items, key };
 }
 
 /** The rules the Risk tab counted with: they differ by cluster (a `risk`
@@ -380,8 +395,8 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
   }));
 
   const byTool = (io.by_tool ?? []).filter((t) => !t.cls || cls.includes(t.cls as Cls));
-  const toolReads = toolBars(byTool, 'read', 'var(--s2)', coveredBy(io).from);
-  const toolWrites = toolBars(byTool, 'write', 'var(--s1)', coveredBy(io).from);
+  const toolReads = toolBars(byTool, 'read', coveredBy(io).from);
+  const toolWrites = toolBars(byTool, 'write', coveredBy(io).from);
   const byUser = (io.by_user ?? []).filter((u) => !u.cls || cls.includes(u.cls as Cls));
 
   const risk = pick<RiskPanel>(P, 'risk', 'ebpfm');
@@ -584,20 +599,22 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
           title="Reads by tool"
           ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
-          empty={!toolReads.length}
+          empty={!toolReads.items.length}
           emptyWhat="no tool read from disk in the selection"
         >
-          <HBars items={toolReads} labelW={150} valW={100} />
+          <HBars items={toolReads.items} labelW={150} valW={100} />
+          <Legend items={toolReads.key} />
         </Panel>
 
         <Panel
           title="Writes by tool"
           ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
-          empty={!toolWrites.length}
+          empty={!toolWrites.items.length}
           emptyWhat="no tool wrote to disk in the selection"
         >
-          <HBars items={toolWrites} labelW={150} valW={100} />
+          <HBars items={toolWrites.items} labelW={150} valW={100} />
+          <Legend items={toolWrites.key} />
         </Panel>
 
         <Panel
@@ -607,11 +624,14 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
           empty={!have.length || netGroups.every((g) => g.v.tx == null && g.v.rx == null)}
           emptyWhat="no TCP accounting for the selection"
         >
+          {/* The groups are the classes; the bars in each are directions, so
+              they wear hues no class owns: crimson egress under "IDE" read as
+              agent. */}
           <GroupBars
             groups={netGroups}
             series={[
-              { k: 'tx', lbl: 'egress (tx)', c: 'var(--s1)' },
-              { k: 'rx', lbl: 'ingress (rx)', c: 'var(--s2)' },
+              { k: 'tx', lbl: 'egress (tx)', c: TOOL_COL[0] },
+              { k: 'rx', lbl: 'ingress (rx)', c: TOOL_COL[1] },
             ]}
             W={520}
             H={200}
@@ -620,8 +640,8 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
           />
           <Legend
             items={[
-              { k: 'egress (tx)', c: 'var(--s1)' },
-              { k: 'ingress (rx)', c: 'var(--s2)' },
+              { k: 'egress (tx)', c: TOOL_COL[0] },
+              { k: 'ingress (rx)', c: TOOL_COL[1] },
             ]}
           />
           <More label="network bytes per class">

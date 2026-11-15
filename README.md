@@ -128,6 +128,15 @@ Bash script bundling
 bash run.sh
 ```
 
+Demo mode, with no cluster, collector or root: the same service over a synthetic feed it
+writes itself, for fictional login nodes and users. Every page says *synthetic data*.
+```bash
+cd dashboard && uv run python -m rc_dashboard demo     # after the web build above; http://127.0.0.1:8080
+bash run-demo.sh                                       # or with hot reload, on :8087
+```
+As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare Worker,
+<https://hpc-dashboard.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md).
+
 ## Configuration -- Dashboard
 ```bash
 RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # Where the ebpf collected data reside

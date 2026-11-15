@@ -5,11 +5,12 @@
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
 import { Fragment, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
-import { Lines } from '../charts/primitives';
+import { Fluid, Lines } from '../charts/primitives';
 import type { LineSeries } from '../charts/primitives';
-import { clockLabel, fullClock, timeTicks } from '../charts/scale';
+import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
@@ -183,6 +184,7 @@ export function LiveTab({
   openUserTraj,
   userCols,
   nodeNoun,
+  whoUses,
 }: {
   live: LiveState;
   /** the window's reduced panels: the "last 24h" plates and every time series */
@@ -201,6 +203,9 @@ export function LiveTab({
   userCols?: string[] | null;
   /** what the watched hosts are called (`ui.node_noun`): "login nodes" */
   nodeNoun?: string | null;
+  /** "Who uses what", the old Overview tab's table: each class's share of the
+   *  window in every unit, drawn under the rate chart (App.tsx) */
+  whoUses?: ReactNode;
 }) {
   const L = live.live;
   const rate = L?.rate ?? [];
@@ -233,8 +238,9 @@ export function LiveTab({
 
   /* X ticks that stay legible at ANY window, and at any zoom into it: a round
    * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
-   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`. */
-  const xticks = (a: number, b: number) => timeTicks(a, b, 10);
+   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`.
+   * Fewer where the chart is drawn narrow (`tickTarget`), so none overprint. */
+  const xticks = (W: number) => (a: number, b: number) => timeTicks(a, b, tickTarget(W, 10));
 
   // The last full minute as the service counted it, not each class's newest
   // bin with a value: that is the minute still filling, or for a quiet class
@@ -281,16 +287,27 @@ export function LiveTab({
 
   if (envelope) {
     return (
-      <div className="grid wide">
-        <Panel title="Live tier" span feed={envelope._feed}>
-          <EmptyState
-            feed={envelope._feed}
-            paths={[...envelope._paths]}
-            status={envelope._status}
-            notice={envelope._notice}
-          />
-        </Panel>
-      </div>
+      <>
+        <div className="grid wide">
+          <Panel title="Live tier" span feed={envelope._feed}>
+            <EmptyState
+              feed={envelope._feed}
+              paths={[...envelope._paths]}
+              status={envelope._status}
+              notice={envelope._notice}
+            />
+          </Panel>
+        </div>
+        {/* "Who uses what" is read from the window's panels, not the live tier:
+            with the live tier missing it still has its numbers, as it did on
+            the Overview tab it came from */}
+        {whoUses && (
+          <>
+            <div className="grid-gap" />
+            {whoUses}
+          </>
+        )}
+      </>
     );
   }
 
@@ -389,22 +406,29 @@ export function LiveTab({
             />
           }
         >
-          <Lines
-            series={series}
-            W={1060}
-            H={230}
-            ymin={0}
-            xticks={xticks}
-            xfmt={clockLabel}
-            xtip={fullClock}
-            minSpan={3 * (L?.window?.bin_s ?? 60)}
-            ylabel="exited / min"
-            xlabel={`last ${windowLbl}`}
-            xname="at"
-            yname="exited/min"
-          />
+          <Fluid natural={1060}>
+            {(W) => (
+              <Lines
+                series={series}
+                W={W}
+                H={230}
+                ymin={0}
+                xticks={xticks(W)}
+                xfmt={clockLabel}
+                xtip={fullClock}
+                minSpan={3 * (L?.window?.bin_s ?? 60)}
+                ylabel="exited / min"
+                xlabel={`last ${windowLbl}`}
+                xname="at"
+                yname="exited/min"
+              />
+            )}
+          </Fluid>
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
+
+        {/* what happened, then who did it: the window's shares, in every unit */}
+        {whoUses && <div className="span2">{whoUses}</div>}
 
         <WindowCharts P={P} cls={cls} />
 

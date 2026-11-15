@@ -36,6 +36,7 @@ import { GroupBars } from '../charts/primitives';
 import type { BarGroup, BarSeries } from '../charts/primitives';
 import { Segmented } from '../components/ClassFilter';
 import { More, Panel, NoRows } from '../components/Panel';
+import { Icon } from '../components/Icon';
 import { TreeDiagram } from '../components/TreeDiagram';
 import type { TreeNode } from '../components/TreeDiagram';
 import { Term } from '../components/Term';
@@ -52,6 +53,7 @@ import { coveredBy } from '../lib/iocmds';
 import type { IoQuery } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
 import type { Panels } from '../lib/panels';
+import { stickyTop } from '../lib/sticky';
 import './agents.css';
 
 const HOME_TIP: Record<HomeSrc, string> = {
@@ -1088,12 +1090,12 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const [sel, setSel] = useState<{ entry: string; agent: string | null } | null>(null);
   const [opened, setOpened] = useState<string[]>([]);
   const [showIdle, setShowIdle] = useState(false);
-  // a row picked while the page is scrolled past the top of the detail
-  // brings the detail back into view
+  // a row picked while the page is scrolled past the top of the detail -- out
+  // of view, or under the sticky control bar -- brings the detail back into view
   const pane = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = pane.current;
-    if (el && sel && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (el && sel && el.getBoundingClientRect().top < stickyTop()) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }, [sel?.entry]);
 
   // One list of every type: a Claude Code can start a Codex and a Codex a
@@ -1221,7 +1223,12 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </div>
       );
     }
-    return <div className="al-empty">pick an agent on the left: its tree and blast radius open here</div>;
+    return (
+      <div className="al-empty">
+        <Icon name="pointLeft" size={20} />
+        <span>pick an agent on the left: its tree and blast radius open here</span>
+      </div>
+    );
   })();
 
   return (

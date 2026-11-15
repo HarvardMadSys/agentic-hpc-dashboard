@@ -10,6 +10,8 @@
  *
  * Sizing follows the template's one portable idiom: natural width/height
  * attributes plus a viewBox, scaled by CSS (`max-width:100%; height:auto`).
+ * CSS only ever shrinks a chart, so a time series sits in a <Fluid> box, which
+ * measures its container and draws the chart at that width, at 1:1.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
@@ -35,6 +37,51 @@ export function Svg({ w, h, children, label }: SvgProps) {
     >
       {children}
     </svg>
+  );
+}
+
+/** The width a chart has to fill, measured off its container, so that it is
+ * drawn at 1:1 and a 10px label stays 10px. Scaled by CSS alone, a 520-wide
+ * chart in a full-width panel stayed 520 wide beside half a panel of nothing,
+ * and a 1060-wide one on a phone was shrunk to labels 3px tall. Until the
+ * first measurement, and wherever none can be taken, the natural width
+ * stands. Below `min` the chart is drawn at `min` and CSS shrinks it, as
+ * before: a sliver of a box makes no readable plot at 1:1 either. The height
+ * stays the chart's own, so a resize never moves the page under the reader. */
+export function useFluidWidth(natural: number, min = 300) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState<number | null>(null);
+  // before paint, so the first frame is already at the measured width
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const read = () => {
+      const cw = Math.floor(el.clientWidth);
+      if (cw > 0) setW(Math.max(min, cw));
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [min]);
+  return { ref, W: w ?? natural };
+}
+
+/** A box as wide as its container, which hands that width to the chart in it. */
+export function Fluid({
+  natural,
+  min,
+  children,
+}: {
+  natural: number;
+  min?: number;
+  children: (W: number) => ReactNode;
+}) {
+  const { ref, W } = useFluidWidth(natural, min);
+  return (
+    <div ref={ref} className="fluid">
+      {children(W)}
+    </div>
   );
 }
 

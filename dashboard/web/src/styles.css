@@ -44,6 +44,8 @@
   --seq3: #c4707f;
   --seq4: #a51c30;
   --live: #4db848;
+  /* the sticky control bar's height, published by lib/sticky.ts while it sticks */
+  --controls-h: 0px;
 }
 
 * {
@@ -85,34 +87,59 @@ button {
 }
 
 /* ------------------------------------------------------------------ shell */
+/* The rail: the tabs in four groups, each with its icon. It folds to the
+ * icons alone ([ or the button at its foot), and below 900px it is a drawer.
+ * Chrome only: no series colour is used here, so nothing reads as a class. */
 .app {
+  --rail-w: 232px;
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
   min-height: 100vh;
+  transition: grid-template-columns 0.18s ease;
+}
+.app.mini {
+  --rail-w: 64px;
 }
 .rail {
   background: var(--surface);
   border-right: 1px solid var(--rule);
-  padding: 20px 0 28px;
+  padding: 16px 0 14px;
   position: sticky;
   top: 0;
   align-self: start;
   height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  scrollbar-width: thin;
 }
 .brand {
-  padding: 0 18px 18px;
-  border-bottom: 1px solid var(--rule);
+  padding: 0 16px 14px;
 }
 .brand .mark {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   font-size: 15px;
+  white-space: nowrap;
 }
-.brand .bdot {
+/* the mark: the page's accent, and the one place crimson is a fill in chrome */
+.bmark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: #fff;
+  background: var(--crimson);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 2px 6px rgba(165, 28, 48, 0.28);
+}
+.brand .bdot,
+.topbar .bdot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
@@ -121,42 +148,137 @@ button {
   box-shadow: 0 0 0 3px rgba(165, 28, 48, 0.18);
 }
 .brand .sub {
-  margin-top: 6px;
+  margin: 6px 0 0 40px;
   font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-nav {
-  display: flex;
-  flex-direction: column;
-  padding: 12px 10px;
-  gap: 2px;
-}
-nav button {
+/* "go to": the command palette, from the rail */
+.rail-search {
   all: unset;
+  box-sizing: border-box;
   cursor: pointer;
+  margin: 0 12px 6px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border-radius: 5px;
-  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  background: var(--page);
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.rail-search:hover {
+  border-color: var(--edge);
   color: var(--ink-2);
 }
-nav button:hover {
+.rail-search-t {
+  flex: 1;
+}
+kbd {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border: 1px solid var(--edge);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.rail nav {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 10px 10px;
+  gap: 1px;
+}
+.navgroup {
+  margin: 10px 10px 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.rail nav button {
+  all: unset;
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.rail nav button .icon {
+  flex: none;
+  color: var(--muted);
+}
+.navlbl {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail nav button:hover {
   background: var(--surface-2);
   color: var(--ink);
 }
-nav button[aria-selected='true'] {
-  background: var(--sunken);
-  color: var(--ink);
-  font-weight: 600;
-  box-shadow: inset 2px 0 0 var(--crimson);
+.rail nav button:hover .icon {
+  color: var(--ink-2);
 }
-nav button .dot {
-  width: 6px;
-  height: 6px;
+.rail nav button[aria-selected='true'] {
+  background: var(--crimson-wash);
+  color: var(--crimson-ink);
+  font-weight: 600;
+}
+.rail nav button[aria-selected='true'] .icon {
+  color: var(--crimson);
+}
+.rail nav button[aria-selected='true']::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--crimson);
+}
+/* words for a screen reader only: in the page, not on the screen */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* Live's transport, beside its name: streaming, or not */
+.navdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--live);
+  box-shadow: 0 0 0 3px rgba(77, 184, 72, 0.18);
+}
+.navdot.off {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(252, 179, 21, 0.2);
 }
 /* the open tab's sections, under its button in the rail */
 .secnav {
@@ -185,63 +307,318 @@ nav button .dot {
   color: var(--ink);
   border-left-color: var(--crimson);
 }
+/* a panel picked in the section list lands 14px below the sticky control bar
+   (the bar itself is kept clear by the page's scroll padding, below) */
 section.panel {
   scroll-margin-top: 14px;
 }
 
-/* The rail's footer: how the page is fed, as a short key/value list. */
+/* the rail's foot: how the page gets its data, one fact to a line, as a card */
 .rail .foot {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 2px 10px;
-  padding: 14px 18px 0;
-  margin: 10px 0 0;
-  border-top: 1px solid var(--rule);
-  font-size: 10.5px;
-  color: var(--muted);
+  margin: auto 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--page);
+  font-size: 11px;
   line-height: 1.6;
-}
-.rail .foot dt {
   color: var(--muted);
 }
+.foot-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.foot-status b {
+  color: var(--ink);
+  font-weight: 600;
+}
+/* the transport, as a light: streaming, polling, connecting, down */
+.sdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--edge);
+}
+.sdot.ws {
+  background: var(--live);
+  box-shadow: 0 0 0 3px rgba(77, 184, 72, 0.18);
+  animation: beat 2.4s ease-in-out infinite;
+}
+.sdot.polling,
+.sdot.connecting {
+  background: var(--warn);
+}
+.sdot.down {
+  background: var(--crit);
+}
+.rail .foot dl {
+  margin: 6px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule);
+}
+.rail .foot dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+}
+/* a value moves to a line of its own, whole, rather than breaking inside
+   itself: `2026-09-` above `14T15:33:20Z` read as two values */
 .rail .foot dd {
   margin: 0;
   color: var(--ink-2);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.rail .foot dd.warn {
-  grid-column: 1 / -1;
-  margin-top: 4px;
+.rail .foot .held {
+  color: var(--muted);
+  white-space: normal;
+}
+.foot-warn {
+  margin: 8px 12px 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--crimson-wash);
   color: var(--crimson-ink);
+  font-size: 11px;
+  cursor: help;
+  white-space: nowrap;
+}
+.rail-toggle {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  margin: 8px 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.rail-toggle:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+/* the drawer's close, below 900px only (scoped past .iconbtn, which follows) */
+.rail .rail-close {
+  display: none;
+}
+/* an icon-only button: the rail's close, the top bar's menu and "go to" */
+.iconbtn {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  flex: none;
+}
+.iconbtn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+/* the top bar exists below 900px only */
+.topbar {
+  display: none;
+}
+
+/* Folded to its icons, the rail keeps every tab one click away and names it
+ * on hover; the section list and the foot's facts wait for it to unfold. */
+@media (min-width: 901px) {
+  .app.mini .brand {
+    padding: 0 0 14px;
+    display: grid;
+    justify-items: center;
+  }
+  /* Folded, the words leave the screen but not the page: each tab, "go to",
+     the fold button and the foot's facts keep their names for a screen
+     reader (the icons and the hover tip are aria-hidden). */
+  .app.mini .mark-t,
+  .app.mini .brand .sub,
+  .app.mini .rail-search-t,
+  .app.mini .navlbl,
+  .app.mini .foot dl,
+  .app.mini .foot-t,
+  .app.mini .foot-warn-t,
+  .app.mini .rail-toggle span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .app.mini .rail-search kbd {
+    display: none;
+  }
+  .app.mini .rail-search {
+    margin: 0 auto 6px;
+    width: 40px;
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .app.mini .rail nav {
+    padding: 2px 8px 10px;
+  }
+  .app.mini .navgroup {
+    height: 1px;
+    margin: 10px 8px;
+    background: var(--rule);
+    color: transparent;
+    overflow: hidden;
+  }
+  .app.mini .rail nav button {
+    justify-content: center;
+    padding: 9px 0;
+  }
+  .app.mini .rail nav button[aria-selected='true']::before {
+    left: -8px;
+  }
+  .app.mini .navdot {
+    position: absolute;
+    top: 6px;
+    right: 9px;
+    width: 6px;
+    height: 6px;
+  }
+  .app.mini .rail .foot {
+    margin: auto 0 0;
+    padding: 10px 0;
+    border: 0;
+    background: none;
+    display: grid;
+    justify-items: center;
+    cursor: help;
+  }
+  .app.mini .foot-warn {
+    margin: 6px auto 0;
+    padding: 2px 7px;
+  }
+  .app.mini .rail-toggle {
+    margin: 6px auto 0;
+    width: 40px;
+    justify-content: center;
+    padding: 8px 0;
+  }
 }
 
 main {
-  padding: 22px 26px 70px;
+  /* the side padding, named so the control bar can reach across it */
+  --gutter: 26px;
+  padding: 22px var(--gutter) 70px;
   max-width: 1560px;
   min-width: 0;
 }
-/* Title, status and the view controls: one block, one rule under it. */
-.masthead {
-  border-bottom: 1px solid var(--rule);
-  margin-bottom: 18px;
-}
+/* The page's head: the tab's icon and name, what it answers, and how current
+ * the data is. With the control bar under it, the bar is its lower edge. */
 .head {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 16px;
-  align-items: flex-end;
+  gap: 14px 20px;
+  align-items: center;
   justify-content: space-between;
-  padding-bottom: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 18px;
 }
-.masthead > .head:last-child {
-  padding-bottom: 14px;
+.head.with-bar {
+  border-bottom: 0;
+  margin-bottom: 0;
+}
+.head-title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.head-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--crimson);
+  background: var(--crimson-wash);
+  box-shadow: inset 0 0 0 1px rgba(165, 28, 48, 0.12);
 }
 .head h1 {
-  font-size: 23px;
+  font-size: 24px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.head-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.head-sub::first-letter {
+  text-transform: uppercase;
+}
+/* A parent entry's sub-tabs (the login nodes: Resources, Risk & Warning,
+ * Slurm), along the foot of the head. The open one is underlined, and the
+ * underline sits on the toolbar band's top rule. */
+.subtabs {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 2px 0 -16px;
+}
+.subtabs button {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px 11px;
+  border-bottom: 2px solid transparent;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.subtabs button .icon {
+  color: var(--muted);
+}
+.subtabs button:hover {
+  color: var(--ink);
+}
+.subtabs button[aria-current='page'] {
+  color: var(--crimson-ink);
+  border-bottom-color: var(--crimson);
+  font-weight: 600;
+}
+.subtabs button[aria-current='page'] .icon {
+  color: var(--crimson);
+}
+/* how current the data is, each fact a chip */
+.status .stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 99px;
+  background: var(--surface);
+  white-space: nowrap;
+}
+.status .stat .icon {
+  color: var(--muted);
+}
+.status .stat.warn {
+  border-color: var(--warn);
+  color: #8a6410;
+  background: #fff8e6;
 }
 .eyebrow {
   font-size: 10px;
@@ -275,8 +652,14 @@ main {
   background: var(--surface);
   color: var(--ink);
 }
+/* A class switched off says so with its outline and its swatch, not by fading
+ * the whole chip: at half opacity its name fell to about 2.4:1 on the page,
+ * the one word on it a reader has to read. */
 .chip[aria-pressed='false'] {
-  opacity: 0.5;
+  border-style: dashed;
+}
+.chip[aria-pressed='false'] .sw {
+  opacity: 0.3;
 }
 .chip[disabled] {
   cursor: not-allowed;
@@ -317,37 +700,77 @@ main {
   background: var(--surface-2);
 }
 
-/* ------------------------------------------------------------ window picker
- * Sits directly beside the class filter: both answer "what is on screen", and a
- * reader checking one should not have to hunt for the other. */
+/* -------------------------------------------------------------- control bar
+ * The window picker and the class filter (with the user and agent-type
+ * dropdowns) share one strip, one row where it fits: both answer "what is on
+ * screen". It sticks to the top of the page as the tab scrolls, so the answer
+ * is still in view at the foot of a long tab (lib/sticky.ts). It runs edge to
+ * edge across main's gutter, so a panel scrolling beneath it is hidden whole. */
+.controls {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 0;
+  margin: 0 calc(-1 * var(--gutter)) 18px;
+  padding: 9px var(--gutter);
+  background: var(--surface);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  transition: box-shadow 0.15s;
+}
+.controls.stuck {
+  box-shadow: 0 10px 18px -16px rgba(30, 30, 30, 0.5);
+}
+.controls .winpick,
+.controls .filters {
+  margin-bottom: 0;
+}
+/* the window, then a rule, then who is on screen */
+.controls > .winpick {
+  padding-right: 20px;
+  margin-right: 20px;
+  border-right: 1px solid var(--rule);
+}
+@media (max-width: 1180px) {
+  .controls {
+    gap: 8px 20px;
+  }
+  .controls > .winpick {
+    padding-right: 0;
+    margin-right: 0;
+    border-right: 0;
+  }
+}
+/* Whatever the browser scrolls to keeps clear of the bar: a control reached
+ * with Tab, a panel picked in the section list, a scrollIntoView. The bar's
+ * height is the page's own scroll padding, so a control under the bar counts
+ * as out of view and is brought out from under it (focus not obscured). */
+html {
+  scroll-padding-top: var(--controls-h);
+}
+/* the line the bar sticks at: once it scrolls out of view, the bar is stuck */
+.controls-sentinel {
+  height: 1px;
+  margin-bottom: -1px;
+}
+/* on a phone the bar wraps to three rows; held at the top it would take a
+   seventh of the screen from the panels, so there it scrolls with the page */
+@media (max-width: 640px) {
+  .controls {
+    position: static;
+  }
+}
+
+/* ------------------------------------------------------------ window picker */
 .winpick {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;
-}
-
-/* The page's view controls on one row under the title: window, then class and
- * who. Every control in it is the same height, so the row reads as one strip. */
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 28px;
-  padding-bottom: 12px;
-}
-.toolbar > .winpick,
-.toolbar > .filters {
-  margin: 0;
-}
-.toolbar .seg button,
-.toolbar .chip,
-.toolbar .who-btn,
-.toolbar .wininput {
-  line-height: 16px;
-  padding-top: 4px;
-  padding-bottom: 4px;
 }
 .wininput {
   all: unset;
@@ -397,26 +820,44 @@ main {
 .span2 {
   grid-column: 1 / -1;
 }
+/* A panel is a card: a lifted surface, its title over a rule, then its body. */
 .panel {
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 14px 15px 15px;
+  border-radius: 10px;
+  padding: 14px 16px 16px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  box-shadow:
+    0 1px 2px rgba(30, 30, 30, 0.04),
+    0 4px 10px -6px rgba(30, 30, 30, 0.06);
 }
 .panel > header {
   display: flex;
   gap: 10px;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
+  min-height: 28px;
+  margin: -2px -16px 0;
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--rule);
 }
 .panel h3 {
-  font-size: 14px;
+  font-size: 14.5px;
   font-weight: 600;
-  letter-spacing: -0.005em;
+  letter-spacing: -0.01em;
+}
+/* "none" under a title already has the title's rule above it */
+.panel > header + .none {
+  border-top: 0;
+  padding-top: 2px;
+}
+/* a row lights under the pointer, so a value can be read across a wide row;
+   zero specificity, so a table that lights its own rows keeps its rule */
+:where(table:not(.ur-roster)) > tbody > tr:where(:not(.xsub, .u-open, .byuser-sub, .section, .grp)):hover > td {
+  background: var(--surface-2);
 }
 .panel .src {
   font-size: 10px;
@@ -429,8 +870,8 @@ main {
 .plates {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
 @media (min-width: 1040px) {
   .plates {
@@ -446,23 +887,24 @@ main {
 .plate {
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 13px 14px;
+  border-radius: 10px;
+  padding: 14px 16px 14px 18px;
   position: relative;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  box-shadow:
+    0 1px 2px rgba(30, 30, 30, 0.04),
+    0 4px 10px -6px rgba(30, 30, 30, 0.06);
 }
-/* No colour of its own (components/Plate.tsx): only a count that is a problem
- * gets an edge, and it is red. */
-.plate.alarm::before {
+.plate::before {
   content: '';
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
-  width: 3px;
-  background: var(--crit);
+  width: 4px;
+  background: var(--stripe, var(--s1));
 }
 .plate .k {
   font-size: 10px;
@@ -479,11 +921,14 @@ main {
   cursor: help;
 }
 .plate .v {
-  font-size: 29px;
+  font-size: 32px;
   font-weight: 600;
-  letter-spacing: -0.02em;
-  margin-top: 5px;
+  letter-spacing: -0.025em;
+  margin-top: 6px;
   line-height: 1.05;
+  /* a live count changes every few seconds: in proportional figures it
+     shifted sideways with each new value */
+  font-variant-numeric: tabular-nums;
 }
 .plate .v small {
   font-size: 14px;
@@ -560,6 +1005,11 @@ svg {
   max-width: 100%;
   height: auto;
   overflow: hidden;
+}
+/* the box a chart measures to draw itself at its container's width (Fluid) */
+.fluid {
+  width: 100%;
+  min-width: 0;
 }
 .axis text,
 .tick {
@@ -1063,6 +1513,12 @@ tbody tr:last-child td {
   background: var(--crit);
   animation: none;
 }
+/* the demo's own records (rc_dashboard/demo): never to be taken for a measurement */
+.pill.synthetic {
+  border-color: var(--warn);
+  border-style: dashed;
+  color: #8a6410;
+}
 @keyframes beat {
   0%,
   100% {
@@ -1403,34 +1859,105 @@ details.basis .body b {
   align-items: center;
 }
 
+/* Below 900px the page is one column: a top bar with the tab's name, and the
+ * rail as a drawer over the page, opened from the bar's menu button. Folding
+ * means nothing here; the drawer always shows the names. */
 @media (max-width: 900px) {
-  .app {
-    grid-template-columns: 1fr;
+  .app,
+  .app.mini {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 8px 8px 6px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+  }
+  .topbar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+  .topbar-tab {
+    flex: 1;
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding-left: 10px;
+    margin-left: 2px;
+    border-left: 1px solid var(--rule);
+    color: var(--ink-2);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .topbar-tab .icon {
+    color: var(--crimson);
   }
   .rail {
-    position: static;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 70;
+    width: min(300px, 86vw);
     height: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--rule);
-    overflow: visible;
+    border-right: 1px solid var(--rule);
+    box-shadow: 8px 0 30px rgba(30, 30, 30, 0.18);
+    transform: translateX(-104%);
+    visibility: hidden;
+    transition:
+      transform 0.2s ease,
+      visibility 0.2s;
   }
-  nav {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .rail.open {
+    transform: none;
+    visibility: visible;
   }
-  nav button {
-    flex: none;
+  .rail .rail-close {
+    display: grid;
+    position: absolute;
+    top: 12px;
+    right: 10px;
+  }
+  .rail-toggle {
+    display: none;
+  }
+  .rail-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    background: rgba(30, 30, 30, 0.32);
   }
   .secnav {
     display: none;
   }
   main {
-    padding: 18px 14px 60px;
+    --gutter: 14px;
+    padding: 16px var(--gutter) 60px;
+  }
+  .head-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+  }
+  .head h1 {
+    font-size: 21px;
   }
   .grid,
   .grid.wide {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+body.noscroll {
+  overflow: hidden;
 }
 @media (prefers-reduced-motion: reduce) {
   * {
@@ -1799,9 +2326,24 @@ th.sorted .sort-arrow {
   align-items: center;
   margin-bottom: 4px;
 }
+/* A segmented control that may wrap is drawn as separate keys with a gap:
+ * joined, its second row hung under the first with a ragged, half-bordered
+ * edge (the rank switcher in the Sessions column; Live's picker on a phone). */
 .seg.wrap {
   flex-wrap: wrap;
   max-width: 100%;
+  gap: 4px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.seg.wrap button,
+.seg.wrap button:last-child {
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+}
+.seg.wrap button[aria-pressed='true'] {
+  border-color: var(--ink-2);
 }
 .intro {
   color: var(--ink-2);
@@ -2080,40 +2622,31 @@ table tr.section.fold:hover td {
   border-color: var(--ink-2);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-2) 18%, transparent);
 }
-/* the tool mix read across: one bar per kind of tool, split by who ran it, and
- * each class's share on the same line beside it */
-td.whocell {
-  min-width: 320px;
-}
-td.whocell > span {
-  vertical-align: middle;
-}
+/* the tool mix read across: one bar per kind of tool, split by who ran it */
 .whobar {
-  display: inline-flex;
-  width: 360px;
-  max-width: 50%;
+  display: flex;
   height: 10px;
   border-radius: 2px;
   overflow: hidden;
   background: var(--rule);
+  max-width: 360px;
 }
 .whobar i {
   display: block;
   height: 100%;
 }
 .whopct {
-  display: inline-flex;
+  display: flex;
   gap: 10px;
-  margin-left: 14px;
   font-size: 10.5px;
   color: var(--ink-2);
+  margin-top: 3px;
   font-family: 'IBM Plex Mono', monospace;
 }
 .whopct span {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  min-width: 48px;
 }
 .whopct i {
   width: 7px;
@@ -2127,4 +2660,141 @@ td.host-by {
   text-align: left;
   white-space: nowrap;
   padding-left: 4px;
+}
+
+/* -------------------------------------------------- go to (Ctrl K, Cmd K, /)
+ * components/CommandPalette.tsx: a tab, a section of this one, a window. */
+.cmdk-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(30, 30, 30, 0.3);
+}
+.cmdk {
+  width: min(640px, 100%);
+  max-height: min(540px, 76vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  box-shadow:
+    0 24px 60px rgba(30, 30, 30, 0.28),
+    0 2px 8px rgba(30, 30, 30, 0.12);
+}
+.cmdk-in {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--muted);
+}
+.cmdk-in input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  color: var(--ink);
+}
+.cmdk-in input::placeholder {
+  color: var(--muted);
+}
+.cmdk-list {
+  overflow-y: auto;
+  padding: 6px;
+  overscroll-behavior: contain;
+}
+.cmdk-group {
+  padding: 9px 10px 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.cmdk-item .icon {
+  flex: none;
+  color: var(--muted);
+}
+.cmdk-item[aria-selected='true'] {
+  background: var(--crimson-wash);
+  color: var(--crimson-ink);
+}
+.cmdk-item[aria-selected='true'] .icon {
+  color: var(--crimson);
+}
+.cmdk-lbl {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-hint {
+  margin-left: auto;
+  padding-left: 14px;
+  max-width: 55%;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-none {
+  padding: 18px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.cmdk-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--rule);
+  background: var(--page);
+  font-size: 11px;
+  color: var(--muted);
+}
+.cmdk-foot kbd {
+  margin-right: 3px;
+}
+
+/* ---------------------------------------------------------- keyboard focus
+ * These controls are restyled from `all: unset`, which unsets the page-wide
+ * focus ring too, and their rules come after it in this file, so the ring
+ * lost: a keyboard reader could not see which window, class or button was
+ * about to be pressed. One ring for all of them, restated where it wins. */
+.chip:focus-visible,
+.btn:focus-visible,
+.wininput:focus-visible,
+.u-pick:focus-visible,
+.linkbtn:focus-visible,
+.rail-search:focus-visible,
+.rail-toggle:focus-visible,
+.iconbtn:focus-visible,
+.subtabs button:focus-visible,
+.rail nav button:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+/* inside a box that clips (a segmented control, a table that scrolls): drawn
+   inside the control, where the clip cannot cut it off */
+.seg button:focus-visible,
+th.sortable:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: -2px;
 }

@@ -31,6 +31,9 @@ uv run python -m rc_dashboard serve
 
 Reach a remote instance over a tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`.
 
+No cluster at hand? [Demo mode](#demo-mode) runs the same service over a synthetic feed it
+writes itself: `uv run python -m rc_dashboard demo`.
+
 ## Configuration
 
 Every source is configurable, resolved **per key** in the order
@@ -69,6 +72,7 @@ silently repoint the readers along with the writer.
 |---|---|---|---|---|---|
 | `run-dev.sh` | 8086 | this dev cluster's live feed, `/scratch/marthen/ebpfm/{ebpf,login}` (rtx6000a) | wall | `gpu-dev.json` | off |
 | `run-fasrc.sh` | 8085 | FAS RC capture, `/scratch/marthen/fas-rc-test-data` (boslogin06, 2026-10-08..09, `.jsonl.gz`) | pinned to the capture's end | `fasrc.json` | on |
+| `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
 Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
 (`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `site.name` (`RC_DASH_SITE_NAME`) is
@@ -81,6 +85,79 @@ The FAS RC `sacct` export (`/scratch/marthen/agentic-hpc-measurement/raw_data/sa
 file a day, 2026-08-23..09-30) is not read: the service is stdlib-only and has no parquet reader,
 and those days overlap neither deployment's eBPF data, so no job id the collector saw can be
 joined to them.
+
+## Demo mode
+
+```bash
+cd dashboard && uv sync && (cd web && npm ci && npm run build)
+uv run python -m rc_dashboard demo        # http://127.0.0.1:8080
+./run-demo.sh                             # the same with hot reload, on :8087
+```
+
+For showing the dashboard where there is no cluster: a laptop, a talk, a reviewer. `demo`
+writes a few days of collector records for fictional login nodes into `.cache/demo/feed`,
+keeps appending to them in real time, and starts the service, unchanged, over them
+(`rc_dashboard/demo/`). The tail, the backfill, every reducer, the saved builds and the
+websocket run as they do on a cluster; the page is not fed from a fixture, so what it shows
+is what the service makes of the records, and the Live tab moves.
+
+**Nothing in it was measured, and it says so everywhere.** Every record carries
+`"synthetic": true`, a key no collector writes. `health.py` notes each host whose records
+carry it, the feeds report lists them (`synthetic_hosts`), and the header shows
+*synthetic data* beside the live pill whenever any host's do; the Feeds tab marks each such
+host. The site is named *demo · synthetic data*, and its description, which the Ask LLM
+agent is given, says no record was measured. Because the mark travels with the records, a
+service pointed at a demo feed by hand, or an export of one, still says it. Use a demo to
+show the dashboard, never to report on one.
+
+**What it writes.** Two hosts, `demo-login01` and `-02`, and 28 people: twelve with a part
+to play (`demo/cast.py`) and a crowd. Their sessions are built from the argv shapes and the
+schema-8 rules the collector and the reducers document, so each tab has what it is for:
+
+| tab | what the demo puts there |
+|---|---|
+| Live, Overview, Resources | a working day and a quieter night: VS Code left connected, agents run from cron, an agent watching a job overnight |
+| Agents | Claude Code in a terminal, `claude -p` and `codex exec` from scripts and from other agents' tool calls (nested), the desktop app's server and Remote Control hosting sessions, VS Code's Claude extension, the Codex app; writes outside the home for the blast radius |
+| Trajectories | sessions cut into tasks labeled in the agent's own words (commit subjects, a pull request's title, a `PROGRESS.md` entry), phases from explore to an edit-test loop, a Slurm job polled to its end |
+| Risk & Warning | a year regridded on the login node, `pip`/`conda` installs, builds, `ssh` to compute nodes, `nvidia-smi`, `rm -rf` on shared scratch, credentials on command lines (masked, as schema 8 writes them) |
+| Slurm | agents submitting with `--parsable` and polling the queue; people submitting arrays and checking now and then; refusals with the scheduler's own words |
+| Internal (Sandbox) | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap` |
+| Feeds | per host: a heartbeat a minute, a nightly collector restart with its lost-event count, a kernel limit on one host |
+
+Costs are drawn per command from ranges that look like a login node's; they make the
+panels' shapes recognisable and are a model of nothing.
+
+**What it overrides**, whatever the shell or the config file says -- `run.sh` exports the
+cluster's feed roots, and a demo must never read them: both feed roots (the demo's own),
+the other feeds (a path in the demo dir that does not exist, so they read *not set up*),
+`cache.dir` (so no real deployment's saved builds are evicted), `clock.as_of` (the wall
+clock), `live.retention_min` and `live.backfill_hours` (the history written), and
+`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
+`--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
+
+| flag | env | default | |
+|---|---|---|---|
+| `--demo-days` | `RC_DASH_DEMO_DAYS` | 3 | history written before serving, 1..14 |
+| `--demo-hosts` | `RC_DASH_DEMO_HOSTS` | 2 | login nodes, 1..6 |
+| `--demo-seed` | `RC_DASH_DEMO_SEED` | `demo` | another seed is another set of sessions |
+| `--demo-dir` | `RC_DASH_DEMO_DIR` | `.cache/demo` | the feed, the saved builds, the stamp |
+| `--demo-fresh` | | | discard the feed and write it again |
+| `--demo-write-only` | | | write the history and exit |
+
+**Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) is the demo in one
+image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
+working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
+that image behind a Cloudflare Worker at <https://hpc-dashboard.agentic-system.org>: one
+shared instance that sleeps when nobody is looking and says it is starting while it wakes.
+
+**Restarts resume it.** The feed is a function of the seed, the host count and the clock:
+the same span cut into windows anywhere is the same bytes (`demo/world.py`;
+`tests/test_demo.py` checks it). `demo.json` stamps how far the feed was written, so a
+restart -- `run.sh` restarts on every save -- cuts whatever a stopped round left past that,
+then writes on from it; nothing is written twice and nothing is missed. A stamp from another
+seed or host count, or one older than the history asked for, starts the feed afresh. One
+demo writes a directory at a time (`.demo.lock`), as one collector writes a host. Three days
+of two hosts is ~85 MB, written in about two seconds.
 
 ## A capture from another cluster
 
@@ -292,6 +369,8 @@ scanned.
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#trajectories-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
+| `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
+| `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
@@ -479,8 +558,9 @@ are reachable without a login through the tunnel. The header says *anonymized* w
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
   - Any segment of a home or lab path, masked where it stands even for someone who never ran
-    anything here: `/n/home08/<name>/`, `/n/holylabs/<lab>/Lab/<name>/`, and Claude Code's
-    `-n-home08-<name>-` spelling of a folder.
+    anything here: `/n/home08/<name>/`, `/n/holylabs/<lab>/Lab/<name>/`, Claude Code's
+    `-n-home08-<name>-` spelling of a folder, and `~<name>/`, as the Agents tab's workspace
+    writes another user's home (`anonymize.TILDE_HOME`, applied whatever the home patterns say).
   - Labs, from a Slurm `--account` or `-A`, from `<x>_lab`, and from lab paths.
 
   Names match as whole words, a dotted one also in its hyphen spelling, and a name clipped off
@@ -718,6 +798,72 @@ are masked (`redact`) and no raw argv is served.
 The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the trajectory rows' reading and stay
 on the Trajectories tab; the Agents page no longer carries them.
 
+## Users: a portrait of each user
+
+The **Users** tab (`?tab=users`, a portrait open as `&portrait=<user>`) says how each person works with
+coding agents: which agents, launched how and from where, what the agents' commands do, how long a session
+runs and how many run at once, when in the day, what they work on, and what they ask of the scheduler.
+
+Nothing here is reduced or saved. `rc_dashboard/portraits.py` composes it, when it is read, from the reducers
+a window view already holds -- the trajectories, the sandbox and Slurm -- and from the live tier for what is
+running now, so it can never disagree with the tabs those reducers fill. It holds no state a saved window or
+hour must keep: it is not in either fingerprint (`snapshots.CODE_FILES`, `hours.CODE_FILES`), no reducer
+imports it, and changing it rebuilds nothing.
+
+| part | from | what it says |
+|---|---|---|
+| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; the Sandbox tab's verdict on its tool calls |
+| rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
+| work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
+| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Trajectories row sums them |
+| scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the Slurm tab folds them |
+
+- **A session is one agent run.** The rows Trajectories lists for one agent on two days are one session
+  here, as the agent's phase block already is. Only rooted sessions count, as the Trajectories plates count
+  them, so a status bar probing `codex --version` every minute is none. A session belongs to the account its
+  records name first. One whose records name no user and no uid (the trajectories reducer falls back to
+  `uid:N` where there is one) is no one's row: the roster counts it apart (`unattributed`) and says so under
+  the table, and the Trajectories tab lists it with the rest.
+- **Unread is not none.** An agent whose commands the service does not read (anything but Claude Code and
+  Codex) has calls of null, shown as *not read*, never 0.
+- **A share is over the known values**, with the rest counted beside it: a Codex app server's approval is
+  unobservable, and a session whose own record was not seen has no surface.
+- **How they leverage agents** puts the same numbers together (`portraits.leverage`): the way most of their
+  sessions are driven (a terminal, scripts, an IDE, the desktop app or the web, else several places), the
+  freedom the agents start with, how many run at once, what the agents' actions are for (`portraits.USES`:
+  their calls grouped into exploring, editing and testing, building, running programs, Slurm and git, with
+  waiting and unrecorded calls left out, and the uses that hold most of them named), how much is waiting, the
+  scheduler, what the agents leave behind in their own words, what they work on, and when. The service decides
+  each part by `RULES`, and the page words it: one sentence under each user in the roster, and that sentence,
+  point by point, at the head of their portrait.
+- **A figure of each user** draws the same row (`web/src/components/PortraitFigure.tsx`): a person at a desk,
+  drawn the same for everyone (no one's picture is held, and the names are aliases), and round them a part for
+  each number: a robot for each session open at once, coloured by agent, its antenna lit while it runs; the
+  laptop's emblem for where most sessions are driven from, the person leaning back when that is scripts; a
+  padlock for launches that bypassed approval, a shield for auto mode, capsules for the sandboxed trait; a shelf
+  of what the actions are for, each icon's area its share; a 24-hour clock of active minutes; the moon for the
+  overnight trait; papers for what the agents wrote; a mug or a stopwatch for long or short sessions; an
+  hourglass for polling; a server with a light for each Slurm job. Each part says its numbers and the rule
+  behind it on hover, and a key says what each one means. The only numbers the page adds are drawing caps (six
+  robots, five sheets, ten lights), each said where it applies; a calls count the service could not make is
+  drawn as unread, never as an empty shelf. It leads the portrait, and the roster shows everyone's side by side
+  (*figures*). `npm run check:figures` renders every fixture user's figure and checks it against their row.
+- **Traits** are plain statements ("launches with approval bypassed", "keeps several sessions open at once"),
+  each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
+  them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made
+  by a model, and a user can hold none.
+- **The work is read from commands**, as everything on the Trajectories tab is: an agent's own Read and Edit
+  tools, and its thinking, leave no command. An agent that edits only through its own tools shows no editing.
+- **One user's portrait reads the phase blocks** of their newest `PHASE_SESSIONS` (80) sessions, the same
+  blocks the Trajectories rows show and cache, and lists at most 60 sessions and 40 tasks; the rest are counted.
+  Under a user filter it is read against the whole window's users when that view is held (`fleet_of`).
+
+Cost: the roster walks every folded session and its call log once; the sandbox's verdicts walk every tool call
+of the window, which is most of it. The aggregator holds each view's inputs (`portraits.Context`), its roster
+and each open portrait, and builds them again once the view has ingested and `reducers.trajectories.live_s`
+has passed, as the ranked sessions are re-ranked. On 500 synthetic sessions with 100 000 calls the roster took
+about 0.3 s, and a portrait read from the roster's inputs about 20 ms.
+
 ## Slurm: how sessions use the scheduler
 
 "An agent submitted job N" says nothing about agent behaviour; how agents drive the
@@ -787,11 +933,13 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), live, node |
 | `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), and the names and the agent's own words the tasks are labeled from (`phase_names`) |
 | `rc_dashboard/phase_report.py` | the report the phase and task thresholds are tuned against |
+| `rc_dashboard/portraits.py` | the Users tab: each user's portrait, composed from a view's trajectories, sandbox and Slurm reducers when read; the traits and their rules |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (`seek_to_epoch`) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
+| `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
 
 ## Ingestion, precisely
