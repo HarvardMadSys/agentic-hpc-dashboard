@@ -18,7 +18,15 @@ cd deploy/cloudflare
 npm ci
 npx wrangler login
 npx wrangler deploy      # builds docker/demo/Dockerfile, pushes it, deploys the Worker
+npx wrangler secret put DEMO_PASSWORD   # the demo's password; until it is set, nobody gets in
 ```
+
+**The password.** Visitors sign in once and stay signed in for 30 days on that browser (a
+cookie). Without it, a page shows a sign-in page that says to write to
+admin@agentic-system.org (`CONTACT` in `src/index.ts`), and an API call gets a 401; neither
+wakes the container. A wrong password is answered a second late. To change the password, run
+`npx wrangler secret put DEMO_PASSWORD` again: it takes effect at once, no deploy needed, and
+signs everyone out. With no secret set the demo stays closed.
 
 The demo is then at <https://hpc-dashboard.agentic-system.org>, and at the
 `https://agent-dashboard-demo.<your-subdomain>.workers.dev` URL the deploy prints. The
@@ -39,6 +47,7 @@ itself. Plain `http://` reaches it too, or is redirected to `https://` if the zo
 | instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~130 MB |
 | at most | one instance (`max_instances: 1`) |
 | outbound internet | none (`enableInternet = false`); Ask LLM is off in the image |
+| access | a password (the `DEMO_PASSWORD` secret), checked by the Worker before anything reaches the container |
 | visits | counted by [Statcounter](https://statcounter.com/): the Worker adds its code (`STATCOUNTER` in `src/index.ts`) to the end of each dashboard page, never to the "starting" page, which reloads itself, nor to an API reply |
 | time zone | `America/New_York` (`TZ` in the Dockerfile): whose working day the fictional people keep |
 
