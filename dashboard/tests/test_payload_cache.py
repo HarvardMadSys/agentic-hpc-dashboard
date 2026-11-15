@@ -161,6 +161,31 @@ class RestoreTest(PanelsCase):
                          {k: v for k, v in want.items() if k != "_window"})
 
 
+    def test_what_is_built_from_reducers_reads_as_a_first_build_meanwhile(self):
+        # The Users tab's roster and portraits come from the view's reducers, which
+        # a view showing saved panels does not have yet: their status must say
+        # "first build" (the page shows "reading"), never "has panels" over an empty
+        # roster ("no user ran an agent session").
+        self.feed(150, 90)
+        cfg = self.cfg()
+        agg = Aggregator(cfg)
+        agg.panels_by_window._build(agg.panels_by_window.request(WIN))
+        self.assertTrue(agg.users(WIN)["_window"]["has_payload"])
+
+        again = Aggregator(cfg)            # a restart
+        self.assertTrue(again.panels(WIN)["window_status"]["has_payload"])
+        users = again.users(WIN)
+        self.assertEqual(users["users"], [])
+        self.assertFalse(users["_window"]["has_payload"])
+        one = again.user("alice", WIN)
+        self.assertIsNone(one["found"])
+        self.assertFalse(one["_window"]["has_payload"])
+
+        reg = again.panels_by_window
+        reg._build(reg.request(WIN))
+        self.assertTrue(again.users(WIN)["_window"]["has_payload"])
+
+
 class RefusalTest(PanelsCase):
 
     def test_panels_from_other_code_or_config_are_not_shown(self):
