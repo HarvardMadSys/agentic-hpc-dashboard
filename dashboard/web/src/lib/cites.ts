@@ -56,7 +56,6 @@ interface Place {
 /** As App.tsx's TABS names them. */
 const TAB_LBL: Record<string, string> = {
   live: 'Live',
-  overview: 'Overview',
   agents: 'Agents',
   trajectories: 'Trajectories',
   resources: 'Resources',
@@ -109,7 +108,7 @@ const PLACES: [string, Place][] = [
   ['live_now.submits', { tab: 'slurm', panel: 'Latest submissions' }],
   ['live_now', { tab: 'live' }],
   ['facets.users', { tab: 'live', panel: 'Active users', anchor: 'live-users' }],
-  ['facets', { tab: 'overview' }],
+  ['facets', { tab: 'live', panel: 'Who uses what', anchor: 'sec-who-uses-what' }],
   ['sessions', { tab: 'trajectories', panel: 'Sessions', anchor: 'sec-ranked-sessions' }],
   // one session's digest (ask.session_digest): the inspector it was asked from
   ['session', { tab: 'trajectories', panel: INSPECTOR }],
