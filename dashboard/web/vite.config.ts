@@ -1,6 +1,69 @@
+import { execFileSync } from 'node:child_process';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import type { Plugin, ViteDevServer } from 'vite';
 import { mockApi } from './mock/plugin.ts';
+
+/* `virtual:build-info`: which code the page is, for the foot of the rail -- the
+ * commit HEAD was at, whether anything under web/ differed from it, and when
+ * the bundle was built (src/build-info.d.ts has the shape).
+ *
+ * Read each time the module is loaded, never once in this file: `./run.sh build`
+ * keeps one `vite build --watch` alive across every rebuild, and a `define`
+ * would stamp all of them with the watcher's start. The dev server bundles
+ * nothing, so it has no build time, and it drops the module on every page load
+ * so that a reload sees a commit made since.
+ *
+ * No git, or not a checkout: `commit` is null and the page says it cannot
+ * tell, rather than naming one.
+ */
+function buildInfo(): Plugin {
+  const ID = 'virtual:build-info';
+  const RID = '\0' + ID;
+  let root = '';
+  let serve = false;
+  let server: ViteDevServer | null = null;
+  const git = (...args: string[]): string | null => {
+    try {
+      return execFileSync('git', args, {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return null;
+    }
+  };
+  return {
+    name: 'rc-build-info',
+    configResolved(c) {
+      root = c.root;
+      serve = c.command === 'serve';
+    },
+    configureServer(s) {
+      server = s;
+    },
+    transformIndexHtml() {
+      const graph = server?.environments.client.moduleGraph;
+      const mod = graph?.getModuleById(RID);
+      if (graph && mod) graph.invalidateModule(mod);
+    },
+    resolveId: (id) => (id === ID ? RID : undefined),
+    load(id) {
+      if (id !== RID) return;
+      const commit = git('rev-parse', 'HEAD');
+      // Only web/ goes into the bundle. --no-optional-locks: a rebuild set off
+      // by a checkout must not take the index lock from under it.
+      const status = commit == null ? null : git('--no-optional-locks', 'status', '--porcelain', '--', '.');
+      return `export default ${JSON.stringify({
+        commit,
+        dirty: status == null ? null : status !== '',
+        builtAt: serve ? null : new Date().toISOString(),
+      })};`;
+    },
+  };
+}
 
 /* The backend serves `web/dist/` as static files and answers `/api/*` and `/ws`
  * on the same origin, so asset URLs are relative (`base: './'`) and the API is
@@ -15,7 +78,7 @@ export default defineConfig(({ mode }) => {
   const target = process.env.RC_BACKEND || 'http://127.0.0.1:8787';
   return {
     base: './',
-    plugins: [react(), ...(real ? [] : [mockApi()])],
+    plugins: [react(), buildInfo(), ...(real ? [] : [mockApi()])],
     build: {
       outDir: 'dist',
       emptyOutDir: true,

@@ -13,6 +13,7 @@ import { getAskInfo } from './api/client';
 import type { AskInfo, Facets, FeedReport, FeedStatus } from './api/types';
 import { AskScopeCtx } from './components/Ask';
 import type { AskScope } from './components/Ask';
+import { BuildStamp } from './components/BuildStamp';
 import { ClassFilter } from './components/ClassFilter';
 import { WhoFilter } from './components/WhoFilter';
 import { IoCmdsDrawer } from './components/IoCmds';
@@ -374,6 +375,7 @@ export default function App() {
               {nClasses} of 3 classes shown
             </span>
           )}
+          <BuildStamp />
         </div>
       </aside>
 
