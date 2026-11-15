@@ -6,16 +6,20 @@ window build uses, as test_sessions does.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_portraits -q
 """
+import collections
 import json
 import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import portraits                       # noqa: E402
+from rc_dashboard import windows as winmod               # noqa: E402
+from rc_dashboard.aggregator import Aggregator           # noqa: E402
 from rc_dashboard.normalize import Normalizer            # noqa: E402
 from rc_dashboard.windows import PanelView               # noqa: E402
 from test_sessions import cfg, rec                       # noqa: E402
@@ -345,6 +349,43 @@ class LeverageTest(unittest.TestCase):
         self.assertIsNone(few["when"]["night_pct"])          # under night_min active minutes
         self.assertIsNone(few["parallel"])
         self.assertIsNone(self.row()["when"])
+
+
+class _QuietView:
+    """The parts of a PanelView the aggregator's `_held` reads, for a view that
+    ingests nothing: a quiet feed, or a filter whose users went quiet."""
+    minutes, flt = 1440, winmod.NO_FILTER
+    reducers = {"trajectories": object()}
+    installed_at, live_records = 1.0, 0
+
+
+class HeldAgeTest(unittest.TestCase):
+    """A roster or a portrait holds what time alone changes (running now, the
+    window's edge), so it is built again after a while even when its view has
+    ingested nothing; the sandbox and Slurm inputs change with records only."""
+
+    def test_a_roster_is_built_again_on_a_quiet_feed_and_its_inputs_are_not(self):
+        agg = Aggregator.__new__(Aggregator)
+        agg.cfg, agg._portraits = cfg(), collections.OrderedDict()
+        built = collections.Counter()
+        clock = [1000.0]
+
+        def read(what, max_age=None):
+            return agg._held(_QuietView, what, lambda: built.update([what]) or {"at": clock[0]},
+                             max_age)
+
+        cap = Aggregator.PORTRAITS_MAX_AGE_S
+        with mock.patch.object(time, "monotonic", lambda: clock[0]):
+            read("roster", cap)
+            read("inputs")
+            clock[0] += cap / 2
+            read("roster", cap)
+            self.assertEqual(built["roster"], 1, "young: held")
+            clock[0] += cap
+            self.assertEqual(read("roster", cap), {"at": clock[0]}, "old: built again")
+            clock[0] += 86400
+            read("inputs")
+        self.assertEqual(built, {"roster": 2, "inputs": 1})
 
 
 class TraitRulesTest(unittest.TestCase):

@@ -742,6 +742,14 @@ class Aggregator:
     # opened. Plain data all: nothing held references a reducer, so a window the
     # registry drops, or rebuilds, is not kept alive here.
     PORTRAITS_HELD = 32
+    # How long a roster or a portrait is served without being built again, even
+    # when its view has ingested nothing since: each holds what time alone
+    # changes -- which agents are running now (`LiveReducer.LIVE_S`, which
+    # `/api/trajectories` reads afresh on every request) and which sessions are
+    # still inside the window -- so a quiet feed, or a filtered view whose users
+    # went quiet, must not hold them. The inputs change with records only, and
+    # are kept for as long as the view is unchanged.
+    PORTRAITS_MAX_AGE_S = 60
 
     def _running_fn(self, now):
         """`running(host, pid)`: whether that agent is running now -- its own
@@ -755,20 +763,23 @@ class Aggregator:
             return r is not None and (r.get("epoch") or 0) >= fresh
         return running
 
-    def _held(self, view, what, build):
+    def _held(self, view, what, build, max_age=None):
         """`build()`, held while `view` has not changed: built again once the view
         has ingested since and `reducers.trajectories.live_s` has passed (as the
-        ranked sessions are re-ranked), or when its reducers were swapped in
-        anew. Under the lock. Nothing is held before the view is built."""
+        ranked sessions are re-ranked), when its reducers were swapped in anew,
+        or, given `max_age`, once that many seconds have passed whatever the view
+        ingested. Under the lock. Nothing is held before the view is built."""
         live_s = float(self.cfg.get("reducers.trajectories.live_s", 5) or 0)
         key = (winmod.view_key(view.minutes, view.flt), what)
         stamp = (id(view.reducers.get("trajectories")), view.installed_at)
         held = self._portraits.get(key)
         at = time.monotonic()
-        if held is not None and held[0] == stamp and (
-                held[2] == view.live_records or at - held[1] < live_s):
-            self._portraits.move_to_end(key)
-            return held[3]
+        if held is not None and held[0] == stamp:
+            age = at - held[1]
+            if age < live_s or (held[2] == view.live_records
+                                and (max_age is None or age < max_age)):
+                self._portraits.move_to_end(key)
+                return held[3]
         out = build()
         if out is not None:
             self._portraits[key] = (stamp, at, view.live_records, out)
@@ -792,7 +803,7 @@ class Aggregator:
         def build():
             ctx = self._context(view)
             return portraits.roster(ctx) if ctx is not None else None
-        return self._held(view, "roster", build)
+        return self._held(view, "roster", build, self.PORTRAITS_MAX_AGE_S)
 
     def _envelope(self, out, view, flt):
         out.update(feedmod.panel_meta(self.reports["ebpf"]))
@@ -835,7 +846,7 @@ class Aggregator:
                 ctx = self._context(view)
                 return portraits.portrait(ctx, name, (ros or {}).get("fleet")) \
                     if ctx is not None else None
-            body = self._held(view, ("user", name), build)
+            body = self._held(view, ("user", name), build, self.PORTRAITS_MAX_AGE_S)
             out = dict(body) if body else {"user": name, "found": None}
             out["fleet_of"] = fleet_of
             return self._envelope(out, view, flt)
