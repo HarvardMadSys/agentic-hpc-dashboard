@@ -313,6 +313,9 @@ class Aggregator:
                         "self_observation": self.norm.stats["dropped_self_observation"],
                     }
                     rep["backfill"] = dict(self.backfill)
+                    # written by the demo (rc_dashboard/demo), not measured: the
+                    # header says so whenever any host's records do
+                    rep["synthetic_hosts"] = self.health.synthetic_hosts()
             return self.reports
 
     def collectors(self):

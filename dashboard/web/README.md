@@ -150,7 +150,11 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    `null` rate bin arrives as `null` and `Lines` emits a separate subpath around it, so a
    minute with no record is a **hole in the line** — never a 0, never a straight line
    drawn across the hole. The dev fixture lives in `mock/`, outside `src/`, so it cannot
-   reach the production bundle.
+   reach the production bundle. The service's demo mode (`rc_dashboard/demo`) feeds it
+   records that were never measured, and the page says so on every tab: the feeds report
+   lists the hosts whose records carry `"synthetic": true` (`synthetic_hosts`), and while
+   any does, the header shows a dashed **synthetic data** pill beside the live one and the
+   Feeds tab tags each such host.
 6. **Coverage is part of the number** — `<Coverage>`, `<AccumCell>` and `<QuantCells>`
    print `coverage_pct` next to every value that carries one. An accumulator or quantile
    with `n: 0` renders the words **`not measured`**, never `0`.

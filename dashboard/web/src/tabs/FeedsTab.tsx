@@ -161,6 +161,14 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
               <tr className={`byuser-row${o ? ' open' : ''}`} onClick={() => setOpen((m) => ({ ...m, [h.host]: !o }))}>
                 <td className="mono">
                   <span className="caret">{o ? '▾' : '▸'}</span> <b>{h.host}</b>
+                  {h.synthetic && (
+                    <>
+                      {' '}
+                      <span className="pill synthetic" data-tip="written by the demo (rc_dashboard/demo), not by a collector: nothing from this host was measured">
+                        synthetic
+                      </span>
+                    </>
+                  )}
                 </td>
                 <td>
                   <StatusPill status={v.pill} text={v.text} tip={v.tip} />

@@ -217,6 +217,9 @@ export default function App() {
   const anonymized =
     (config.data?.anonymize as Record<string, { _value?: unknown }> | undefined)?.enabled?._value ===
     true;
+  // Records the demo made up (rc_dashboard/demo) say so themselves, and the
+  // header says it whenever any host's do, whatever the site is called.
+  const synthetic = Object.values(feeds.data ?? {}).flatMap((f) => f.synthetic_hosts ?? []);
   const mainRef = useRef<HTMLElement>(null);
   const { secs, active } = useSections(mainRef, tab.k);
   // The window and the filters, one strip held at the top while the tab scrolls
@@ -643,6 +646,17 @@ export default function App() {
                 }
               >
                 anonymized
+              </span>
+            )}
+            {synthetic.length > 0 && (
+              <span
+                className="pill synthetic"
+                data-tip={
+                  'a demo: every record here was made up by rc_dashboard/demo -- fictional hosts, ' +
+                  `users and sessions; nothing was measured\n${synthetic.join(', ')}`
+                }
+              >
+                synthetic data
               </span>
             )}
             {hl.lag && !live.live?.clock?.pinned && (
