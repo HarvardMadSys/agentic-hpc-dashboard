@@ -54856,5 +54856,5754 @@
   "basis": {
    "fixture": "mock/gen_fixture.mjs: a hand-built tree with every row shape the inspector draws"
   }
+ },
+ "users": {
+  "roster": {
+   "_feed": "ebpfm",
+   "_status": "ok",
+   "_present": true,
+   "_paths": [
+    "/var/log/ebpfm/exit_2026-09-14.jsonl",
+    "/var/log/ebpfm/exit_2026-09-13.jsonl"
+   ],
+   "_notice": null,
+   "window": {
+    "minutes": 1440,
+    "from": "2026-09-13T15:33:20.000Z",
+    "to": "2026-09-14T15:33:20.000Z"
+   },
+   "traits": [
+    {
+     "id": "interactive",
+     "label": "works in the agent's own terminal",
+     "tone": "",
+     "rule": "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"
+    },
+    {
+     "id": "scripted",
+     "label": "runs agents from scripts",
+     "tone": "",
+     "rule": "50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal"
+    },
+    {
+     "id": "app",
+     "label": "drives agents from an app or an IDE",
+     "tone": "",
+     "rule": "50% or more of the sessions are driven from the desktop app, an IDE extension, or the web"
+    },
+    {
+     "id": "bypass",
+     "label": "launches with approval bypassed",
+     "tone": "crit",
+     "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
+    },
+    {
+     "id": "auto",
+     "label": "launches in auto mode",
+     "tone": "warn",
+     "rule": "50% or more of the sessions whose launch is known were started in auto mode"
+    },
+    {
+     "id": "sandboxed",
+     "label": "tool calls run sandboxed",
+     "tone": "ok",
+     "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+    },
+    {
+     "id": "multi_agent",
+     "label": "uses more than one agent",
+     "tone": "",
+     "rule": "sessions of two agent types or more"
+    },
+    {
+     "id": "parallel",
+     "label": "keeps several sessions open at once",
+     "tone": "",
+     "rule": "3 sessions or more open at the same moment"
+    },
+    {
+     "id": "long",
+     "label": "long sessions",
+     "tone": "",
+     "rule": "the median session is open 2 h or longer"
+    },
+    {
+     "id": "short",
+     "label": "many short sessions",
+     "tone": "",
+     "rule": "10 sessions or more, and the median one is open 10 min or less"
+    },
+    {
+     "id": "explorer",
+     "label": "agents mostly read and search",
+     "tone": "",
+     "rule": "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"
+    },
+    {
+     "id": "tester",
+     "label": "agents test often",
+     "tone": "",
+     "rule": "15% or more of the calls run tests, of 20 calls or more"
+    },
+    {
+     "id": "builder",
+     "label": "agents build often",
+     "tone": "",
+     "rule": "15% or more of the calls build, compile or install, of 20 calls or more"
+    },
+    {
+     "id": "slurm",
+     "label": "agents drive Slurm",
+     "tone": "",
+     "rule": "an agent session submitted a job, or 10% or more of the calls are Slurm commands"
+    },
+    {
+     "id": "poller",
+     "label": "agents poll",
+     "tone": "warn",
+     "rule": "an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more"
+    },
+    {
+     "id": "committer",
+     "label": "agents commit their work",
+     "tone": "",
+     "rule": "an agent wrote a commit message or a pull request's title in a command"
+    },
+    {
+     "id": "overnight",
+     "label": "agents active overnight",
+     "tone": "",
+     "rule": "25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more"
+    }
+   ],
+   "rules": {
+    "interactive": 0.6,
+    "scripted": 0.5,
+    "app": 0.5,
+    "bypass": 0.5,
+    "auto": 0.5,
+    "sandboxed": 0.5,
+    "parallel": 3,
+    "long_s": 7200,
+    "short_n": 10,
+    "short_s": 600,
+    "explore": 0.6,
+    "test": 0.15,
+    "build": 0.15,
+    "slurm": 0.1,
+    "wait": 0.25,
+    "night": 0.25,
+    "night_min": 60,
+    "min_calls": 20,
+    "mode": 0.5,
+    "mostly": 0.5,
+    "project": 0.5
+   },
+   "basis": {
+    "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+    "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
+   },
+   "users": [
+    {
+     "user": "thomwg11",
+     "sessions": 13,
+     "running": 4,
+     "hosts": [
+      "boslogin01",
+      "boslogin02",
+      "boslogin03",
+      "holylogin01",
+      "holylogin03"
+     ],
+     "agent_types": {
+      "claude_code": 7,
+      "codex": 6
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 3,
+      "desktop": 2,
+      "terminal": 2,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 7,
+      "bypassed": 6
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4
+     },
+     "calls": 2447,
+     "calls_sessions": 13,
+     "calls_p50": 124,
+     "cats": {
+      "test": 149,
+      "slurm": 22,
+      "run": 76,
+      "build": 44,
+      "edit": 110,
+      "git": 88,
+      "wait": 1309,
+      "explore": 515,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 2,
+      "log": 3,
+      "pr": 3
+     },
+     "processes": 161677,
+     "cpu_s": 6393.51,
+     "rd_mb": 2000.1,
+     "wr_mb": 344.9,
+     "net_tx_mb": 37.89,
+     "net_rx_mb": 848.87,
+     "peak_rss_mb": 1968.6,
+     "wall_s": 740400,
+     "wall_p50_s": 54600,
+     "wall_max_s": 116200,
+     "first": 1789276000,
+     "last": 1789400000,
+     "active_min": 1184,
+     "hours": [
+      33,
+      42,
+      68,
+      70,
+      62,
+      53,
+      51,
+      49,
+      73,
+      76,
+      48,
+      65,
+      40,
+      45,
+      38,
+      40,
+      38,
+      41,
+      38,
+      39,
+      42,
+      46,
+      45,
+      42
+     ],
+     "peak_open": 11,
+     "projects": [
+      [
+       "proj",
+       10
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 13,
+      "jobs": 14,
+      "rejected": 2,
+      "asked": 16,
+      "queries": 93,
+      "queries_per_job": 6.6,
+      "cancels": 0,
+      "parsable": 11,
+      "parsable_pct": 68.75,
+      "polling_sessions": 7,
+      "polling_s": 114200,
+      "longest_loop": {
+       "from": 1789276600,
+       "to": 1789305650,
+       "polls": 11,
+       "span_s": 29050,
+       "every_s": 2640.9,
+       "polling": true
+      },
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "traits": [
+      {
+       "id": "app",
+       "label": "drives agents from an app or an IDE",
+       "tone": "",
+       "detail": "6 of 11 sessions"
+      },
+      {
+       "id": "multi_agent",
+       "label": "uses more than one agent",
+       "tone": "",
+       "detail": "2 agent types"
+      },
+      {
+       "id": "parallel",
+       "label": "keeps several sessions open at once",
+       "tone": "",
+       "detail": "up to 11"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 15.2 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "14 jobs submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "7 sessions polled the queue for 31.7 h"
+      },
+      {
+       "id": "committer",
+       "label": "agents commit their work",
+       "tone": "",
+       "detail": "2 commit messages, 3 pull requests"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "28% of 1,184 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "mixed",
+       "n": 3,
+       "of": 11
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 6,
+       "auto": 0,
+       "of": 13
+      },
+      "parallel": 11,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 515,
+        "pct": 51.3
+       },
+       {
+        "id": "develop",
+        "n": 259,
+        "pct": 25.8
+       },
+       {
+        "id": "git",
+        "n": 88,
+        "pct": 8.8
+       },
+       {
+        "id": "run",
+        "n": 76,
+        "pct": 7.6
+       },
+       {
+        "id": "build",
+        "n": 44,
+        "pct": 4.4
+       },
+       {
+        "id": "hpc",
+        "n": 22,
+        "pct": 2.2
+       }
+      ],
+      "actions": 1004,
+      "mostly": 1,
+      "waiting": {
+       "n": 1309,
+       "of": 2327,
+       "pct": 56.3
+      },
+      "project": {
+       "name": "proj",
+       "n": 10,
+       "of": 13,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 9,
+       "minutes": 76,
+       "night_pct": 27.7
+      }
+     }
+    },
+    {
+     "user": "dwei",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin03"
+     ],
+     "agent_types": {
+      "claude_code": 1
+     },
+     "surfaces": {
+      "desktop": 1
+     },
+     "approval": {
+      "supervised": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": 281,
+     "calls_sessions": 1,
+     "calls_p50": 281,
+     "cats": {
+      "slurm": 11,
+      "run": 8,
+      "build": 10,
+      "edit": 15,
+      "git": 8,
+      "wait": 166,
+      "explore": 63
+     },
+     "words": {
+      "pr": 1
+     },
+     "processes": 8889,
+     "cpu_s": 746.68,
+     "rd_mb": 130.7,
+     "wr_mb": 20.6,
+     "net_tx_mb": 1.94,
+     "net_rx_mb": 36.96,
+     "peak_rss_mb": 863.4,
+     "wall_s": 50200,
+     "wall_p50_s": 50200,
+     "wall_max_s": 50200,
+     "first": 1789346500,
+     "last": 1789396700,
+     "active_min": 281,
+     "hours": [
+      16,
+      30,
+      30,
+      30,
+      30,
+      30,
+      19,
+      5,
+      0,
+      4,
+      19,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      9,
+      29,
+      19,
+      11
+     ],
+     "peak_open": 1,
+     "projects": [
+      [
+       "proj",
+       1
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 5,
+      "queries_per_job": 5,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 0,
+      "polling_s": 0,
+      "longest_loop": null,
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "traits": [
+      {
+       "id": "app",
+       "label": "drives agents from an app or an IDE",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 13.9 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "59% of 281 calls"
+      },
+      {
+       "id": "committer",
+       "label": "agents commit their work",
+       "tone": "",
+       "detail": "1 pull request"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "59% of 281 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "app",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 63,
+        "pct": 54.8
+       },
+       {
+        "id": "develop",
+        "n": 15,
+        "pct": 13
+       },
+       {
+        "id": "hpc",
+        "n": 11,
+        "pct": 9.6
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 8.7
+       },
+       {
+        "id": "run",
+        "n": 8,
+        "pct": 7
+       },
+       {
+        "id": "git",
+        "n": 8,
+        "pct": 7
+       }
+      ],
+      "actions": 115,
+      "mostly": 1,
+      "waiting": {
+       "n": 166,
+       "of": 281,
+       "pct": 59.1
+      },
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 1,
+       "minutes": 30,
+       "night_pct": 59.1
+      }
+     }
+    },
+    {
+     "user": "rkoshy",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin03"
+     ],
+     "agent_types": {
+      "claude_code": 1
+     },
+     "surfaces": {
+      "script": 1
+     },
+     "approval": {
+      "supervised": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": 188,
+     "calls_sessions": 1,
+     "calls_p50": 188,
+     "cats": {
+      "test": 28,
+      "run": 10,
+      "build": 10,
+      "edit": 28,
+      "git": 16,
+      "wait": 10,
+      "explore": 86
+     },
+     "words": {},
+     "processes": 4706,
+     "cpu_s": 207.06,
+     "rd_mb": 74.7,
+     "wr_mb": 11.2,
+     "net_tx_mb": 1.01,
+     "net_rx_mb": 53.39,
+     "peak_rss_mb": 1600.2,
+     "wall_s": 103000,
+     "wall_p50_s": 103000,
+     "wall_max_s": 103000,
+     "first": 1789290100,
+     "last": 1789393100,
+     "active_min": 188,
+     "hours": [
+      7,
+      6,
+      5,
+      6,
+      5,
+      19,
+      16,
+      15,
+      8,
+      16,
+      7,
+      11,
+      12,
+      12,
+      2,
+      2,
+      2,
+      2,
+      3,
+      4,
+      3,
+      8,
+      10,
+      7
+     ],
+     "peak_open": 1,
+     "projects": [
+      [
+       "proj",
+       1
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 8,
+      "queries_per_job": 8,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 1,
+      "polling_s": 25750,
+      "longest_loop": {
+       "from": 1789290700,
+       "to": 1789316450,
+       "polls": 8,
+       "span_s": 25750,
+       "every_s": 3218.8,
+       "polling": true
+      },
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "traits": [
+      {
+       "id": "scripted",
+       "label": "runs agents from scripts",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 28.6 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "1 session polled the queue for 7.2 h"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "26% of 188 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "script",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 86,
+        "pct": 48.3
+       },
+       {
+        "id": "develop",
+        "n": 56,
+        "pct": 31.5
+       },
+       {
+        "id": "git",
+        "n": 16,
+        "pct": 9
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 5.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 5.6
+       }
+      ],
+      "actions": 178,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 5,
+       "minutes": 19,
+       "night_pct": 25.5
+      }
+     }
+    },
+    {
+     "user": "mmarthen",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin01"
+     ],
+     "agent_types": {
+      "codex": 1
+     },
+     "surfaces": {
+      "terminal": 1
+     },
+     "approval": {
+      "bypassed": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": 167,
+     "calls_sessions": 1,
+     "calls_p50": 167,
+     "cats": {
+      "test": 50,
+      "run": 10,
+      "edit": 11,
+      "git": 21,
+      "explore": 75
+     },
+     "words": {
+      "commit": 1
+     },
+     "processes": 6857,
+     "cpu_s": 164.57,
+     "rd_mb": 104.5,
+     "wr_mb": 16.1,
+     "net_tx_mb": 1.48,
+     "net_rx_mb": 68.64,
+     "peak_rss_mb": 1109,
+     "wall_s": 67800,
+     "wall_p50_s": 67800,
+     "wall_max_s": 67800,
+     "first": 1789327700,
+     "last": 1789395500,
+     "active_min": 167,
+     "hours": [
+      5,
+      5,
+      6,
+      10,
+      14,
+      12,
+      3,
+      4,
+      6,
+      11,
+      4,
+      0,
+      0,
+      0,
+      0,
+      9,
+      16,
+      16,
+      15,
+      8,
+      8,
+      5,
+      5,
+      5
+     ],
+     "peak_open": 1,
+     "projects": [
+      [
+       "proj",
+       1
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 9,
+      "queries_per_job": 9,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 1,
+      "polling_s": 16950,
+      "longest_loop": {
+       "from": 1789328300,
+       "to": 1789345250,
+       "polls": 9,
+       "span_s": 16950,
+       "every_s": 1883.3,
+       "polling": true
+      },
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "traits": [
+      {
+       "id": "interactive",
+       "label": "works in the agent's own terminal",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "bypass",
+       "label": "launches with approval bypassed",
+       "tone": "crit",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 18.8 h"
+      },
+      {
+       "id": "tester",
+       "label": "agents test often",
+       "tone": "",
+       "detail": "30% of 167 calls"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "1 session polled the queue for 4.7 h"
+      },
+      {
+       "id": "committer",
+       "label": "agents commit their work",
+       "tone": "",
+       "detail": "1 commit message"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "31% of 167 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 75,
+        "pct": 44.9
+       },
+       {
+        "id": "develop",
+        "n": 61,
+        "pct": 36.5
+       },
+       {
+        "id": "git",
+        "n": 21,
+        "pct": 12.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 6
+       }
+      ],
+      "actions": 167,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 16,
+       "minutes": 16,
+       "night_pct": 31.1
+      }
+     }
+    },
+    {
+     "user": "jsilva",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin01"
+     ],
+     "agent_types": {
+      "copilot": 1
+     },
+     "surfaces": {
+      "terminal": 1
+     },
+     "approval": {
+      "bypassed": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": null,
+     "calls_sessions": 0,
+     "calls_p50": null,
+     "cats": {},
+     "words": {},
+     "processes": 21818,
+     "cpu_s": 1396.35,
+     "rd_mb": 261.4,
+     "wr_mb": 46.5,
+     "net_tx_mb": 5.04,
+     "net_rx_mb": 43.68,
+     "peak_rss_mb": 372.2,
+     "wall_s": 15000,
+     "wall_p50_s": 15000,
+     "wall_max_s": 15000,
+     "first": 1789384100,
+     "last": 1789399100,
+     "active_min": 0,
+     "hours": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "peak_open": 1,
+     "projects": [],
+     "projects_total": 0,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 6,
+      "queries_per_job": 6,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 0,
+      "polling_s": 0,
+      "longest_loop": null,
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "traits": [
+      {
+       "id": "interactive",
+       "label": "works in the agent's own terminal",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "bypass",
+       "label": "launches with approval bypassed",
+       "tone": "crit",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 4.2 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [],
+      "actions": 0,
+      "mostly": 0,
+      "waiting": null,
+      "project": null,
+      "when": null
+     }
+    }
+   ],
+   "fleet": {
+    "users": 5,
+    "sessions": 17,
+    "sessions_per_user_p50": 1,
+    "wall_p50_s": 54600,
+    "calls_p50": 148,
+    "active_min_p50": 188,
+    "peak_open_p50": 1,
+    "running": 4,
+    "agent_types": {
+     "claude_code": 9,
+     "codex": 7,
+     "copilot": 1
+    },
+    "surfaces": {
+     "extension": 3,
+     "script": 4,
+     "desktop": 3,
+     "terminal": 4,
+     "unknown": 2,
+     "web": 1
+    },
+    "approval": {
+     "supervised": 9,
+     "bypassed": 8
+    },
+    "sandbox": {
+     "sandboxed": 5,
+     "failed": 4,
+     "unsandboxed": 4,
+     "no_calls": 4
+    },
+    "cats": {
+     "test": 227,
+     "slurm": 33,
+     "run": 104,
+     "build": 64,
+     "edit": 164,
+     "git": 133,
+     "wait": 1485,
+     "explore": 739,
+     "unknown": 14
+    },
+    "words": {
+     "commit": 3,
+     "log": 3,
+     "pr": 4
+    },
+    "traits": {
+     "long": 5,
+     "slurm": 5,
+     "overnight": 4,
+     "poller": 4,
+     "committer": 3,
+     "app": 2,
+     "bypass": 2,
+     "interactive": 2,
+     "multi_agent": 1,
+     "parallel": 1,
+     "scripted": 1,
+     "tester": 1
+    }
+   },
+   "unattributed": 0
+  },
+  "portraits": {
+   "thomwg11": {
+    "_feed": "ebpfm",
+    "_status": "ok",
+    "_present": true,
+    "_paths": [
+     "/var/log/ebpfm/exit_2026-09-14.jsonl",
+     "/var/log/ebpfm/exit_2026-09-13.jsonl"
+    ],
+    "_notice": null,
+    "window": {
+     "minutes": 1440,
+     "from": "2026-09-13T15:33:20.000Z",
+     "to": "2026-09-14T15:33:20.000Z"
+    },
+    "traits": [
+     {
+      "id": "interactive",
+      "label": "works in the agent's own terminal",
+      "tone": "",
+      "rule": "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"
+     },
+     {
+      "id": "scripted",
+      "label": "runs agents from scripts",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal"
+     },
+     {
+      "id": "app",
+      "label": "drives agents from an app or an IDE",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from the desktop app, an IDE extension, or the web"
+     },
+     {
+      "id": "bypass",
+      "label": "launches with approval bypassed",
+      "tone": "crit",
+      "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
+     },
+     {
+      "id": "auto",
+      "label": "launches in auto mode",
+      "tone": "warn",
+      "rule": "50% or more of the sessions whose launch is known were started in auto mode"
+     },
+     {
+      "id": "sandboxed",
+      "label": "tool calls run sandboxed",
+      "tone": "ok",
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+     },
+     {
+      "id": "multi_agent",
+      "label": "uses more than one agent",
+      "tone": "",
+      "rule": "sessions of two agent types or more"
+     },
+     {
+      "id": "parallel",
+      "label": "keeps several sessions open at once",
+      "tone": "",
+      "rule": "3 sessions or more open at the same moment"
+     },
+     {
+      "id": "long",
+      "label": "long sessions",
+      "tone": "",
+      "rule": "the median session is open 2 h or longer"
+     },
+     {
+      "id": "short",
+      "label": "many short sessions",
+      "tone": "",
+      "rule": "10 sessions or more, and the median one is open 10 min or less"
+     },
+     {
+      "id": "explorer",
+      "label": "agents mostly read and search",
+      "tone": "",
+      "rule": "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"
+     },
+     {
+      "id": "tester",
+      "label": "agents test often",
+      "tone": "",
+      "rule": "15% or more of the calls run tests, of 20 calls or more"
+     },
+     {
+      "id": "builder",
+      "label": "agents build often",
+      "tone": "",
+      "rule": "15% or more of the calls build, compile or install, of 20 calls or more"
+     },
+     {
+      "id": "slurm",
+      "label": "agents drive Slurm",
+      "tone": "",
+      "rule": "an agent session submitted a job, or 10% or more of the calls are Slurm commands"
+     },
+     {
+      "id": "poller",
+      "label": "agents poll",
+      "tone": "warn",
+      "rule": "an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more"
+     },
+     {
+      "id": "committer",
+      "label": "agents commit their work",
+      "tone": "",
+      "rule": "an agent wrote a commit message or a pull request's title in a command"
+     },
+     {
+      "id": "overnight",
+      "label": "agents active overnight",
+      "tone": "",
+      "rule": "25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more"
+     }
+    ],
+    "rules": {
+     "interactive": 0.6,
+     "scripted": 0.5,
+     "app": 0.5,
+     "bypass": 0.5,
+     "auto": 0.5,
+     "sandboxed": 0.5,
+     "parallel": 3,
+     "long_s": 7200,
+     "short_n": 10,
+     "short_s": 600,
+     "explore": 0.6,
+     "test": 0.15,
+     "build": 0.15,
+     "slurm": 0.1,
+     "wait": 0.25,
+     "night": 0.25,
+     "night_min": 60,
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
+    },
+    "basis": {
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
+    },
+    "user": "thomwg11",
+    "found": true,
+    "fleet_of": "window",
+    "fleet": {
+     "users": 5,
+     "sessions": 17,
+     "sessions_per_user_p50": 1,
+     "wall_p50_s": 54600,
+     "calls_p50": 148,
+     "active_min_p50": 188,
+     "peak_open_p50": 1,
+     "running": 4,
+     "agent_types": {
+      "claude_code": 9,
+      "codex": 7,
+      "copilot": 1
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 4,
+      "desktop": 3,
+      "terminal": 4,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 9,
+      "bypassed": 8
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4,
+      "no_calls": 4
+     },
+     "cats": {
+      "test": 227,
+      "slurm": 33,
+      "run": 104,
+      "build": 64,
+      "edit": 164,
+      "git": 133,
+      "wait": 1485,
+      "explore": 739,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 3,
+      "log": 3,
+      "pr": 4
+     },
+     "traits": {
+      "long": 5,
+      "slurm": 5,
+      "overnight": 4,
+      "poller": 4,
+      "committer": 3,
+      "app": 2,
+      "bypass": 2,
+      "interactive": 2,
+      "multi_agent": 1,
+      "parallel": 1,
+      "scripted": 1,
+      "tester": 1
+     }
+    },
+    "row": {
+     "user": "thomwg11",
+     "sessions": 13,
+     "running": 4,
+     "hosts": [
+      "boslogin01",
+      "boslogin02",
+      "boslogin03",
+      "holylogin01",
+      "holylogin03"
+     ],
+     "agent_types": {
+      "claude_code": 7,
+      "codex": 6
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 3,
+      "desktop": 2,
+      "terminal": 2,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 7,
+      "bypassed": 6
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4
+     },
+     "calls": 2447,
+     "calls_sessions": 13,
+     "calls_p50": 124,
+     "cats": {
+      "test": 149,
+      "slurm": 22,
+      "run": 76,
+      "build": 44,
+      "edit": 110,
+      "git": 88,
+      "wait": 1309,
+      "explore": 515,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 2,
+      "log": 3,
+      "pr": 3
+     },
+     "processes": 161677,
+     "cpu_s": 6393.51,
+     "rd_mb": 2000.1,
+     "wr_mb": 344.9,
+     "net_tx_mb": 37.89,
+     "net_rx_mb": 848.87,
+     "peak_rss_mb": 1968.6,
+     "wall_s": 740400,
+     "wall_p50_s": 54600,
+     "wall_max_s": 116200,
+     "first": 1789276000,
+     "last": 1789400000,
+     "active_min": 1184,
+     "hours": [
+      33,
+      42,
+      68,
+      70,
+      62,
+      53,
+      51,
+      49,
+      73,
+      76,
+      48,
+      65,
+      40,
+      45,
+      38,
+      40,
+      38,
+      41,
+      38,
+      39,
+      42,
+      46,
+      45,
+      42
+     ],
+     "peak_open": 11,
+     "projects": [
+      [
+       "proj",
+       10
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 13,
+      "jobs": 14,
+      "rejected": 2,
+      "asked": 16,
+      "queries": 93,
+      "queries_per_job": 6.6,
+      "cancels": 0,
+      "parsable": 11,
+      "parsable_pct": 68.75,
+      "polling_sessions": 7,
+      "polling_s": 114200,
+      "longest_loop": {
+       "from": 1789276600,
+       "to": 1789305650,
+       "polls": 11,
+       "span_s": 29050,
+       "every_s": 2640.9,
+       "polling": true
+      },
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "grid": [
+      [
+       33,
+       33,
+       58,
+       59,
+       50,
+       47,
+       44,
+       40,
+       56,
+       60,
+       32,
+       30,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       9,
+       10,
+       11,
+       12,
+       6,
+       7,
+       9,
+       17,
+       16,
+       16,
+       35,
+       40,
+       45,
+       38,
+       40,
+       38,
+       41,
+       38,
+       39,
+       42,
+       46,
+       45,
+       42
+      ]
+     ],
+     "traits": [
+      {
+       "id": "app",
+       "label": "drives agents from an app or an IDE",
+       "tone": "",
+       "detail": "6 of 11 sessions"
+      },
+      {
+       "id": "multi_agent",
+       "label": "uses more than one agent",
+       "tone": "",
+       "detail": "2 agent types"
+      },
+      {
+       "id": "parallel",
+       "label": "keeps several sessions open at once",
+       "tone": "",
+       "detail": "up to 11"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 15.2 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "14 jobs submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "7 sessions polled the queue for 31.7 h"
+      },
+      {
+       "id": "committer",
+       "label": "agents commit their work",
+       "tone": "",
+       "detail": "2 commit messages, 3 pull requests"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "28% of 1,184 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "mixed",
+       "n": 3,
+       "of": 11
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 6,
+       "auto": 0,
+       "of": 13
+      },
+      "parallel": 11,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 515,
+        "pct": 51.3
+       },
+       {
+        "id": "develop",
+        "n": 259,
+        "pct": 25.8
+       },
+       {
+        "id": "git",
+        "n": 88,
+        "pct": 8.8
+       },
+       {
+        "id": "run",
+        "n": 76,
+        "pct": 7.6
+       },
+       {
+        "id": "build",
+        "n": 44,
+        "pct": 4.4
+       },
+       {
+        "id": "hpc",
+        "n": 22,
+        "pct": 2.2
+       }
+      ],
+      "actions": 1004,
+      "mostly": 1,
+      "waiting": {
+       "n": 1309,
+       "of": 2327,
+       "pct": 56.3
+      },
+      "project": {
+       "name": "proj",
+       "n": 10,
+       "of": 13,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 9,
+       "minutes": 76,
+       "night_pct": 27.7
+      }
+     }
+    },
+    "phases": {
+     "time_s": {
+      "wait": 170211.028,
+      "explore": 149588.738,
+      "run": 143342.153,
+      "test": 77568.572,
+      "idle": 51804,
+      "edit": 50519.427,
+      "build": 39066.197,
+      "git": 22352.197,
+      "unknown": 12360.953,
+      "slurm": 12156.089,
+      "loop": 7440.246,
+      "edit_guess": 658
+     },
+     "calls": {
+      "test": 149,
+      "run": 76,
+      "edit": 110,
+      "git": 88,
+      "explore": 515,
+      "build": 44,
+      "wait": 1309,
+      "slurm": 22,
+      "unknown": 14
+     },
+     "sessions": 13,
+     "of": 13
+    },
+    "tasks": {
+     "n": 27,
+     "lone": 2,
+     "quoted": {
+      "log": 3,
+      "pr": 3,
+      "commit": 2
+     },
+     "recent": [
+      {
+       "label": "Run src/train.py · config/base.yaml",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/train.py",
+        "config/base.yaml"
+       ],
+       "t0": 1789399435.505,
+       "t1": 1789400000,
+       "n": 19,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1000",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Read io chunks one at a time",
+       "source": "commit",
+       "ref": "",
+       "names": [
+        "src/io.py",
+        "tests/test_io.py"
+       ],
+       "t0": 1789398212,
+       "t1": 1789399435.505,
+       "n": 47,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1000",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Run bench.py",
+       "source": null,
+       "ref": "",
+       "names": [
+        "bench.py"
+       ],
+       "t0": 1789393311.807,
+       "t1": 1789396223.6,
+       "n": 45,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1074",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Switch the model to gelu",
+       "source": "log",
+       "ref": "",
+       "names": [
+        "src/model.py"
+       ],
+       "t0": 1789388812,
+       "t1": 1789393311.807,
+       "n": 90,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1074",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Run src/train.py · config/base.yaml",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/train.py",
+        "config/base.yaml"
+       ],
+       "t0": 1789387457.95,
+       "t1": 1789398500,
+       "n": 33,
+       "open": true,
+       "sid": "period4-boslogin03-thomwg11-1185",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Wait on check_status.py · out/summary.txt",
+       "source": null,
+       "ref": "",
+       "names": [
+        "check_status.py",
+        "out/summary.txt"
+       ],
+       "t0": 1789387328,
+       "t1": 1789397300,
+       "n": 33,
+       "open": false,
+       "sid": "period4-boslogin01-thomwg11-1333",
+       "agent_type": "codex",
+       "project": null
+      },
+      {
+       "label": "Read train.log · out/",
+       "source": null,
+       "ref": "",
+       "names": [
+        "train.log",
+        "out/"
+       ],
+       "t0": 1789385752.117,
+       "t1": 1789392200,
+       "n": 18,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1962",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Wait on check_status.py · out/summary.txt",
+       "source": null,
+       "ref": "",
+       "names": [
+        "check_status.py",
+        "out/summary.txt"
+       ],
+       "t0": 1789380328,
+       "t1": 1789395800,
+       "n": 49,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1518",
+       "agent_type": "claude_code",
+       "project": null
+      },
+      {
+       "label": "Read train.log · out/",
+       "source": null,
+       "ref": "",
+       "names": [
+        "train.log",
+        "out/"
+       ],
+       "t0": 1789376616.832,
+       "t1": 1789393700,
+       "n": 16,
+       "open": true,
+       "sid": "period4-boslogin01-thomwg11-1777",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Run bench.py",
+       "source": null,
+       "ref": "",
+       "names": [
+        "bench.py"
+       ],
+       "t0": 1789374727.349,
+       "t1": 1789396400,
+       "n": 227,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1444",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Read io chunks one at a time",
+       "source": "commit",
+       "ref": "",
+       "names": [
+        "src/io.py",
+        "tests/test_io.py"
+       ],
+       "t0": 1789374712,
+       "t1": 1789387457.95,
+       "n": 71,
+       "open": false,
+       "sid": "period4-boslogin03-thomwg11-1185",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Run on Slurm jobs/sweep.sbatch · out/sweep",
+       "source": null,
+       "ref": "",
+       "names": [
+        "jobs/sweep.sbatch",
+        "out/sweep"
+       ],
+       "t0": 1789371393.628,
+       "t1": 1789379500,
+       "n": 55,
+       "open": false,
+       "sid": "boslogin02|2026-09-14|agent|apid:4242",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Run src/app.py · logs/run.out",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/app.py",
+        "logs/run.out"
+       ],
+       "t0": 1789369675.279,
+       "t1": 1789392445.478,
+       "n": 39,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1296",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Wait on check_status.py · out/summary.txt",
+       "source": null,
+       "ref": "",
+       "names": [
+        "check_status.py",
+        "out/summary.txt"
+       ],
+       "t0": 1789366328,
+       "t1": 1789392800,
+       "n": 69,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1888",
+       "agent_type": "codex",
+       "project": null
+      },
+      {
+       "label": "Read src/app.py · README.md",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/app.py",
+        "README.md"
+       ],
+       "t0": 1789360612,
+       "t1": 1789369675.279,
+       "n": 32,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1296",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Run sweep.py · data/raw.csv",
+       "source": null,
+       "ref": "",
+       "names": [
+        "sweep.py",
+        "data/raw.csv"
+       ],
+       "t0": 1789355912,
+       "t1": 1789387328,
+       "n": 46,
+       "open": false,
+       "sid": "period4-boslogin01-thomwg11-1333",
+       "agent_type": "codex",
+       "project": null
+      },
+      {
+       "label": "Seek-based frame decoding",
+       "source": "pr",
+       "ref": "",
+       "names": [
+        "src/loader.py",
+        "src/video_io.py"
+       ],
+       "t0": 1789353529.545,
+       "t1": 1789363493.628,
+       "n": 35,
+       "open": false,
+       "sid": "boslogin02|2026-09-13|agent|apid:4242",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Run bench.py",
+       "source": null,
+       "ref": "",
+       "names": [
+        "bench.py"
+       ],
+       "t0": 1789352241.195,
+       "t1": 1789394900,
+       "n": 241,
+       "open": true,
+       "sid": "period4-boslogin03-thomwg11-1629",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Edit and test src/loader.py · tests/test_loader.py",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/loader.py",
+        "tests/test_loader.py"
+       ],
+       "t0": 1789347112,
+       "t1": 1789353529.545,
+       "n": 34,
+       "open": false,
+       "sid": "boslogin02|2026-09-13|agent|apid:4242",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Switch the model to gelu",
+       "source": "log",
+       "ref": "",
+       "names": [
+        "src/model.py"
+       ],
+       "t0": 1789341812,
+       "t1": 1789374727.349,
+       "n": 45,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1444",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Run src/app.py · logs/run.out",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/app.py",
+        "logs/run.out"
+       ],
+       "t0": 1789333496.897,
+       "t1": 1789383311.14,
+       "n": 78,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1666",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Run sweep.py · data/raw.csv",
+       "source": null,
+       "ref": "",
+       "names": [
+        "sweep.py",
+        "data/raw.csv"
+       ],
+       "t0": 1789332412,
+       "t1": 1789380328,
+       "n": 58,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1518",
+       "agent_type": "claude_code",
+       "project": null
+      },
+      {
+       "label": "Switch the model to gelu",
+       "source": "log",
+       "ref": "",
+       "names": [
+        "src/model.py"
+       ],
+       "t0": 1789318312,
+       "t1": 1789352241.195,
+       "n": 69,
+       "open": false,
+       "sid": "period4-boslogin03-thomwg11-1629",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Read src/app.py · README.md",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/app.py",
+        "README.md"
+       ],
+       "t0": 1789313612,
+       "t1": 1789333496.897,
+       "n": 64,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1666",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Train on Slurm with an 8-hour limit",
+       "source": "pr",
+       "ref": "#235",
+       "names": [
+        "jobs/train.sbatch",
+        "kernels"
+       ],
+       "t0": 1789299512,
+       "t1": 1789365313.832,
+       "n": 320,
+       "open": false,
+       "sid": "period4-boslogin01-thomwg11-1777",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Run sweep.py · data/raw.csv",
+       "source": null,
+       "ref": "",
+       "names": [
+        "sweep.py",
+        "data/raw.csv"
+       ],
+       "t0": 1789285412,
+       "t1": 1789366328,
+       "n": 29,
+       "open": false,
+       "sid": "period4-holylogin01-thomwg11-1888",
+       "agent_type": "codex",
+       "project": null
+      },
+      {
+       "label": "Train on Slurm with an 8-hour limit",
+       "source": "pr",
+       "ref": "#235",
+       "names": [
+        "jobs/train.sbatch",
+        "kernels"
+       ],
+       "t0": 1789276012,
+       "t1": 1789371809.117,
+       "n": 456,
+       "open": false,
+       "sid": "period4-holylogin03-thomwg11-1962",
+       "agent_type": "claude_code",
+       "project": "proj"
+      }
+     ],
+     "listed_of": 27
+    },
+    "sessions": [
+     {
+      "user": "thomwg11",
+      "host": "holylogin01",
+      "pid": 2000,
+      "agent_type": "codex",
+      "surface": "terminal",
+      "surface_detail": "interactive",
+      "approval": "bypassed",
+      "sandbox": "sandboxed",
+      "first": 1789398200,
+      "last": 1789400000,
+      "wall_s": 1800,
+      "calls": 66,
+      "processes": 48000,
+      "cpu_s": 192,
+      "rd_mb": 418.2,
+      "wr_mb": 88.4,
+      "net_tx_mb": 12.6,
+      "net_rx_mb": 96.1,
+      "peak_rss_mb": 188,
+      "running": false,
+      "sid": "period4-holylogin01-thomwg11-1000",
+      "sids": [
+       "period4-holylogin01-thomwg11-1000"
+      ],
+      "project": "proj",
+      "headline": "proj · src/io.py",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 483.853,
+       "edit_guess": 30,
+       "test": 161.284,
+       "loop": 645.138,
+       "git": 112.899,
+       "run": 241.927,
+       "edit": 112.899
+      },
+      "cats": {
+       "test": 20,
+       "run": 4,
+       "edit": 4,
+       "git": 8,
+       "explore": 30
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin03",
+      "pid": 2017,
+      "agent_type": "claude_code",
+      "surface": "extension",
+      "surface_detail": "VS Code",
+      "approval": "supervised",
+      "sandbox": "failed",
+      "first": 1789388800,
+      "last": 1789399400,
+      "wall_s": 10600,
+      "calls": 255,
+      "processes": 26667,
+      "cpu_s": 1173.35,
+      "rd_mb": 298.7,
+      "wr_mb": 55.3,
+      "net_tx_mb": 6.3,
+      "net_rx_mb": 53.39,
+      "peak_rss_mb": 310.8,
+      "running": false,
+      "sid": "period4-holylogin03-thomwg11-1074",
+      "sids": [
+       "period4-holylogin03-thomwg11-1074"
+      ],
+      "project": "proj",
+      "headline": "proj",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 1764.723,
+       "edit_guess": 88,
+       "test": 882.361,
+       "edit": 882.362,
+       "build": 882.361,
+       "run": 1764.723,
+       "wait": 882.362,
+       "git": 264.708
+      },
+      "cats": {
+       "test": 12,
+       "run": 10,
+       "build": 6,
+       "edit": 12,
+       "git": 6,
+       "wait": 29,
+       "explore": 60
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "boslogin03",
+      "pid": 2051,
+      "agent_type": "claude_code",
+      "surface": "terminal",
+      "surface_detail": "interactive",
+      "approval": "supervised",
+      "sandbox": "unsandboxed",
+      "first": 1789374700,
+      "last": 1789398500,
+      "wall_s": 23800,
+      "calls": 104,
+      "processes": 16000,
+      "cpu_s": 1664,
+      "rd_mb": 209.1,
+      "wr_mb": 35.4,
+      "net_tx_mb": 3.6,
+      "net_rx_mb": 32.03,
+      "peak_rss_mb": 495,
+      "running": true,
+      "sid": "period4-boslogin03-thomwg11-1185",
+      "sids": [
+       "period4-boslogin03-thomwg11-1185"
+      ],
+      "project": "proj",
+      "headline": "proj · src/io.py",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 5096.331,
+       "edit_guess": 175,
+       "test": 1698.777,
+       "loop": 6795.108,
+       "git": 1189.144,
+       "run": 2548.165,
+       "edit": 1189.144,
+       "slurm": 5096.331
+      },
+      "cats": {
+       "test": 30,
+       "slurm": 3,
+       "run": 6,
+       "edit": 7,
+       "git": 13,
+       "explore": 45
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin03",
+      "pid": 2068,
+      "agent_type": "claude_code",
+      "surface": "script",
+      "surface_detail": "claude -p",
+      "approval": "supervised",
+      "sandbox": "sandboxed",
+      "first": 1789360600,
+      "last": 1789397600,
+      "wall_s": 37000,
+      "calls": 74,
+      "processes": 11429,
+      "cpu_s": 274.3,
+      "rd_mb": 160.8,
+      "wr_mb": 26,
+      "net_tx_mb": 2.52,
+      "net_rx_mb": 68.64,
+      "peak_rss_mb": 679.2,
+      "running": false,
+      "sid": "period4-holylogin03-thomwg11-1296",
+      "sids": [
+       "period4-holylogin03-thomwg11-1296"
+      ],
+      "project": "proj",
+      "headline": "proj · src/app.py",
+      "tasks": 2,
+      "quoted": 0,
+      "phase_s": {
+       "explore": 8347.758,
+       "edit": 4770.147,
+       "test": 5962.683,
+       "git": 1431.044,
+       "edit_guess": 112,
+       "run": 5962.684,
+       "wait": 3577.61,
+       "build": 2385.074,
+       "idle": 4439
+      },
+      "cats": {
+       "test": 11,
+       "run": 4,
+       "build": 4,
+       "edit": 11,
+       "git": 6,
+       "wait": 4,
+       "explore": 34
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "boslogin01",
+      "pid": 2085,
+      "agent_type": "codex",
+      "surface": "unknown",
+      "surface_detail": "shared app server",
+      "approval": "bypassed",
+      "sandbox": "unsandboxed",
+      "first": 1789355900,
+      "last": 1789397300,
+      "wall_s": 41400,
+      "calls": 79,
+      "processes": 10435,
+      "cpu_s": 459.14,
+      "rd_mb": 149.4,
+      "wr_mb": 23.9,
+      "net_tx_mb": 2.29,
+      "net_rx_mb": 53.39,
+      "peak_rss_mb": 740.6,
+      "running": true,
+      "sid": "period4-boslogin01-thomwg11-1333",
+      "sids": [
+       "period4-boslogin01-thomwg11-1333"
+      ],
+      "project": null,
+      "headline": null,
+      "tasks": 2,
+      "quoted": 0,
+      "phase_s": {
+       "unknown": 2374.286,
+       "explore": 9972,
+       "wait": 11871.428,
+       "run": 9497.143,
+       "idle": 1500,
+       "test": 4748.572,
+       "git": 1424.571
+      },
+      "cats": {
+       "test": 8,
+       "run": 6,
+       "git": 5,
+       "wait": 27,
+       "explore": 28,
+       "unknown": 5
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin01",
+      "pid": 2119,
+      "agent_type": "codex",
+      "surface": "extension",
+      "surface_detail": "VS Code",
+      "approval": "bypassed",
+      "sandbox": "sandboxed",
+      "first": 1789341800,
+      "last": 1789396400,
+      "wall_s": 54600,
+      "calls": 272,
+      "processes": 8276,
+      "cpu_s": 860.7,
+      "rd_mb": 123,
+      "wr_mb": 19.2,
+      "net_tx_mb": 1.8,
+      "net_rx_mb": 32.03,
+      "peak_rss_mb": 924.8,
+      "running": false,
+      "sid": "period4-holylogin01-thomwg11-1444",
+      "sids": [
+       "period4-holylogin01-thomwg11-1444"
+      ],
+      "project": "proj",
+      "headline": "proj",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 13134.94,
+       "edit_guess": 78,
+       "test": 6567.47,
+       "edit": 6567.47,
+       "build": 6567.469,
+       "run": 13134.94,
+       "wait": 6567.47,
+       "git": 1970.241
+      },
+      "cats": {
+       "test": 6,
+       "run": 5,
+       "build": 3,
+       "edit": 6,
+       "git": 3,
+       "wait": 219,
+       "explore": 30
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin03",
+      "pid": 2136,
+      "agent_type": "claude_code",
+      "surface": "web",
+      "surface_detail": "Claude Remote Control",
+      "approval": "supervised",
+      "sandbox": "failed",
+      "first": 1789332400,
+      "last": 1789395800,
+      "wall_s": 63400,
+      "calls": 107,
+      "processes": 7273,
+      "cpu_s": 29.09,
+      "rd_mb": 110.1,
+      "wr_mb": 17,
+      "net_tx_mb": 1.57,
+      "net_rx_mb": 96.1,
+      "peak_rss_mb": 1047.6,
+      "running": false,
+      "sid": "period4-holylogin03-thomwg11-1518",
+      "sids": [
+       "period4-holylogin03-thomwg11-1518"
+      ],
+      "project": null,
+      "headline": null,
+      "tasks": 2,
+      "quoted": 0,
+      "phase_s": {
+       "unknown": 3683.81,
+       "explore": 15471.999,
+       "wait": 18419.048,
+       "run": 14735.238,
+       "idle": 1500,
+       "test": 7367.619,
+       "git": 2210.286
+      },
+      "cats": {
+       "test": 10,
+       "run": 8,
+       "git": 6,
+       "wait": 41,
+       "explore": 36,
+       "unknown": 6
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "boslogin03",
+      "pid": 2170,
+      "agent_type": "claude_code",
+      "surface": "extension",
+      "surface_detail": "VS Code",
+      "approval": "supervised",
+      "sandbox": "unsandboxed",
+      "first": 1789318300,
+      "last": 1789394900,
+      "wall_s": 76600,
+      "calls": 310,
+      "processes": 6154,
+      "cpu_s": 393.86,
+      "rd_mb": 95,
+      "wr_mb": 14.5,
+      "net_tx_mb": 1.33,
+      "net_rx_mb": 43.68,
+      "peak_rss_mb": 1231.8,
+      "running": true,
+      "sid": "period4-boslogin03-thomwg11-1629",
+      "sids": [
+       "period4-boslogin03-thomwg11-1629"
+      ],
+      "project": "proj",
+      "headline": "proj",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 13542.478,
+       "edit_guess": 73,
+       "test": 6771.239,
+       "edit": 6771.239,
+       "build": 6771.239,
+       "run": 33856.195,
+       "wait": 6771.239,
+       "git": 2031.371
+      },
+      "cats": {
+       "test": 9,
+       "run": 10,
+       "build": 5,
+       "edit": 10,
+       "git": 5,
+       "wait": 226,
+       "explore": 45
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin01",
+      "pid": 2187,
+      "agent_type": "codex",
+      "surface": "script",
+      "surface_detail": "codex exec",
+      "approval": "bypassed",
+      "sandbox": "failed",
+      "first": 1789313600,
+      "last": 1789394600,
+      "wall_s": 81000,
+      "calls": 148,
+      "processes": 5854,
+      "cpu_s": 491.74,
+      "rd_mb": 90.9,
+      "wr_mb": 13.8,
+      "net_tx_mb": 1.26,
+      "net_rx_mb": 36.96,
+      "peak_rss_mb": 1293.2,
+      "running": false,
+      "sid": "period4-holylogin01-thomwg11-1666",
+      "sids": [
+       "period4-holylogin01-thomwg11-1666"
+      ],
+      "project": "proj",
+      "headline": "proj · src/app.py",
+      "tasks": 2,
+      "quoted": 0,
+      "phase_s": {
+       "explore": 18315.037,
+       "edit": 10465.736,
+       "test": 13082.17,
+       "git": 3139.72,
+       "edit_guess": 102,
+       "run": 13082.169,
+       "wait": 7849.301,
+       "build": 5232.867,
+       "idle": 9719
+      },
+      "cats": {
+       "test": 22,
+       "run": 8,
+       "build": 8,
+       "edit": 22,
+       "git": 12,
+       "wait": 8,
+       "explore": 68
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "boslogin01",
+      "pid": 2204,
+      "agent_type": "codex",
+      "surface": "desktop",
+      "surface_detail": "Codex app",
+      "approval": "bypassed",
+      "sandbox": "unsandboxed",
+      "first": 1789299500,
+      "last": 1789393700,
+      "wall_s": 94200,
+      "calls": 336,
+      "processes": 5106,
+      "cpu_s": 20.42,
+      "rd_mb": 80.4,
+      "wr_mb": 12.1,
+      "net_tx_mb": 1.1,
+      "net_rx_mb": 96.1,
+      "peak_rss_mb": 1477.4,
+      "running": true,
+      "sid": "period4-boslogin01-thomwg11-1777",
+      "sids": [
+       "period4-boslogin01-thomwg11-1777"
+      ],
+      "project": "proj",
+      "headline": "proj · train.log",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 12654.199,
+       "edit": 6327.099,
+       "build": 6327.099,
+       "slurm": 2530.84,
+       "wait": 31635.496,
+       "run": 9490.649,
+       "idle": 11303,
+       "git": 1265.42,
+       "test": 12654.198
+      },
+      "cats": {
+       "test": 2,
+       "slurm": 7,
+       "run": 5,
+       "build": 6,
+       "edit": 9,
+       "git": 5,
+       "wait": 264,
+       "explore": 38
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin01",
+      "pid": 2238,
+      "agent_type": "codex",
+      "surface": "unknown",
+      "surface_detail": "shared app server",
+      "approval": "bypassed",
+      "sandbox": "sandboxed",
+      "first": 1789285400,
+      "last": 1789392800,
+      "wall_s": 107400,
+      "calls": 98,
+      "processes": 4528,
+      "cpu_s": 289.79,
+      "rd_mb": 72.1,
+      "wr_mb": 10.8,
+      "net_tx_mb": 0.97,
+      "net_rx_mb": 43.68,
+      "peak_rss_mb": 1661.6,
+      "running": false,
+      "sid": "period4-holylogin01-thomwg11-1888",
+      "sids": [
+       "period4-holylogin01-thomwg11-1888"
+      ],
+      "project": null,
+      "headline": null,
+      "tasks": 2,
+      "quoted": 0,
+      "phase_s": {
+       "unknown": 6302.857,
+       "explore": 26472.001,
+       "wait": 31514.285,
+       "run": 25211.428,
+       "idle": 1500,
+       "test": 12605.715,
+       "git": 3781.714
+      },
+      "cats": {
+       "test": 5,
+       "run": 4,
+       "git": 3,
+       "wait": 65,
+       "explore": 18,
+       "unknown": 3
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "holylogin03",
+      "pid": 2255,
+      "agent_type": "claude_code",
+      "surface": "desktop",
+      "surface_detail": "Claude desktop app",
+      "approval": "supervised",
+      "sandbox": "failed",
+      "first": 1789276000,
+      "last": 1789392200,
+      "wall_s": 116200,
+      "calls": 474,
+      "processes": 4211,
+      "cpu_s": 437.94,
+      "rd_mb": 67.5,
+      "wr_mb": 10,
+      "net_tx_mb": 0.9,
+      "net_rx_mb": 32.03,
+      "peak_rss_mb": 1784.4,
+      "running": false,
+      "sid": "period4-holylogin03-thomwg11-1962",
+      "sids": [
+       "period4-holylogin03-thomwg11-1962"
+      ],
+      "project": "proj",
+      "headline": "proj · train.log",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 18422.523,
+       "edit": 9211.261,
+       "build": 9211.261,
+       "slurm": 3684.505,
+       "wait": 46056.306,
+       "run": 13816.892,
+       "idle": 13943,
+       "git": 1842.252
+      },
+      "cats": {
+       "slurm": 8,
+       "run": 6,
+       "build": 8,
+       "edit": 12,
+       "git": 6,
+       "wait": 384,
+       "explore": 50
+      }
+     },
+     {
+      "user": "thomwg11",
+      "host": "boslogin02",
+      "pid": 2272,
+      "agent_type": "claude_code",
+      "surface": "script",
+      "surface_detail": "claude -p",
+      "approval": "supervised",
+      "sandbox": "sandboxed",
+      "first": 1789347100,
+      "last": 1789379500,
+      "wall_s": 32400,
+      "calls": 124,
+      "processes": 7744,
+      "cpu_s": 107.18,
+      "rd_mb": 124.9,
+      "wr_mb": 18.5,
+      "net_tx_mb": 1.65,
+      "net_rx_mb": 164.74,
+      "peak_rss_mb": 1968.6,
+      "running": false,
+      "sid": "boslogin02|2026-09-14|agent|apid:4242",
+      "sids": [
+       "boslogin02|2026-09-13|agent|apid:4242",
+       "boslogin02|2026-09-14|agent|apid:4242"
+      ],
+      "project": "proj",
+      "headline": "proj · src/loader.py",
+      "tasks": 3,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 5910.896,
+       "edit": 4222.07,
+       "test": 5066.484,
+       "git": 1688.827,
+       "build": 1688.827,
+       "idle": 7900,
+       "slurm": 844.413,
+       "wait": 5066.483
+      },
+      "cats": {
+       "test": 14,
+       "slurm": 4,
+       "build": 4,
+       "edit": 17,
+       "git": 10,
+       "wait": 42,
+       "explore": 33
+      }
+     }
+    ],
+    "sessions_total": 13,
+    "commands": [
+     [
+      "squeue -j 812 -h -o %T",
+      648
+     ],
+     [
+      "pgrep -f bench.py",
+      474
+     ],
+     [
+      "python check_status.py",
+      124
+     ],
+     [
+      "git status --short",
+      66
+     ],
+     [
+      "ls -la src/",
+      66
+     ],
+     [
+      "python -m pytest -q",
+      51
+     ],
+     [
+      "squeue -j 913 -h -o %T",
+      42
+     ],
+     [
+      "rg -n \"class Model\" src/",
+      36
+     ]
+    ],
+    "tz": "EDT"
+   },
+   "jsilva": {
+    "_feed": "ebpfm",
+    "_status": "ok",
+    "_present": true,
+    "_paths": [
+     "/var/log/ebpfm/exit_2026-09-14.jsonl",
+     "/var/log/ebpfm/exit_2026-09-13.jsonl"
+    ],
+    "_notice": null,
+    "window": {
+     "minutes": 1440,
+     "from": "2026-09-13T15:33:20.000Z",
+     "to": "2026-09-14T15:33:20.000Z"
+    },
+    "traits": [
+     {
+      "id": "interactive",
+      "label": "works in the agent's own terminal",
+      "tone": "",
+      "rule": "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"
+     },
+     {
+      "id": "scripted",
+      "label": "runs agents from scripts",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal"
+     },
+     {
+      "id": "app",
+      "label": "drives agents from an app or an IDE",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from the desktop app, an IDE extension, or the web"
+     },
+     {
+      "id": "bypass",
+      "label": "launches with approval bypassed",
+      "tone": "crit",
+      "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
+     },
+     {
+      "id": "auto",
+      "label": "launches in auto mode",
+      "tone": "warn",
+      "rule": "50% or more of the sessions whose launch is known were started in auto mode"
+     },
+     {
+      "id": "sandboxed",
+      "label": "tool calls run sandboxed",
+      "tone": "ok",
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+     },
+     {
+      "id": "multi_agent",
+      "label": "uses more than one agent",
+      "tone": "",
+      "rule": "sessions of two agent types or more"
+     },
+     {
+      "id": "parallel",
+      "label": "keeps several sessions open at once",
+      "tone": "",
+      "rule": "3 sessions or more open at the same moment"
+     },
+     {
+      "id": "long",
+      "label": "long sessions",
+      "tone": "",
+      "rule": "the median session is open 2 h or longer"
+     },
+     {
+      "id": "short",
+      "label": "many short sessions",
+      "tone": "",
+      "rule": "10 sessions or more, and the median one is open 10 min or less"
+     },
+     {
+      "id": "explorer",
+      "label": "agents mostly read and search",
+      "tone": "",
+      "rule": "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"
+     },
+     {
+      "id": "tester",
+      "label": "agents test often",
+      "tone": "",
+      "rule": "15% or more of the calls run tests, of 20 calls or more"
+     },
+     {
+      "id": "builder",
+      "label": "agents build often",
+      "tone": "",
+      "rule": "15% or more of the calls build, compile or install, of 20 calls or more"
+     },
+     {
+      "id": "slurm",
+      "label": "agents drive Slurm",
+      "tone": "",
+      "rule": "an agent session submitted a job, or 10% or more of the calls are Slurm commands"
+     },
+     {
+      "id": "poller",
+      "label": "agents poll",
+      "tone": "warn",
+      "rule": "an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more"
+     },
+     {
+      "id": "committer",
+      "label": "agents commit their work",
+      "tone": "",
+      "rule": "an agent wrote a commit message or a pull request's title in a command"
+     },
+     {
+      "id": "overnight",
+      "label": "agents active overnight",
+      "tone": "",
+      "rule": "25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more"
+     }
+    ],
+    "rules": {
+     "interactive": 0.6,
+     "scripted": 0.5,
+     "app": 0.5,
+     "bypass": 0.5,
+     "auto": 0.5,
+     "sandboxed": 0.5,
+     "parallel": 3,
+     "long_s": 7200,
+     "short_n": 10,
+     "short_s": 600,
+     "explore": 0.6,
+     "test": 0.15,
+     "build": 0.15,
+     "slurm": 0.1,
+     "wait": 0.25,
+     "night": 0.25,
+     "night_min": 60,
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
+    },
+    "basis": {
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
+    },
+    "user": "jsilva",
+    "found": true,
+    "fleet_of": "window",
+    "fleet": {
+     "users": 5,
+     "sessions": 17,
+     "sessions_per_user_p50": 1,
+     "wall_p50_s": 54600,
+     "calls_p50": 148,
+     "active_min_p50": 188,
+     "peak_open_p50": 1,
+     "running": 4,
+     "agent_types": {
+      "claude_code": 9,
+      "codex": 7,
+      "copilot": 1
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 4,
+      "desktop": 3,
+      "terminal": 4,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 9,
+      "bypassed": 8
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4,
+      "no_calls": 4
+     },
+     "cats": {
+      "test": 227,
+      "slurm": 33,
+      "run": 104,
+      "build": 64,
+      "edit": 164,
+      "git": 133,
+      "wait": 1485,
+      "explore": 739,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 3,
+      "log": 3,
+      "pr": 4
+     },
+     "traits": {
+      "long": 5,
+      "slurm": 5,
+      "overnight": 4,
+      "poller": 4,
+      "committer": 3,
+      "app": 2,
+      "bypass": 2,
+      "interactive": 2,
+      "multi_agent": 1,
+      "parallel": 1,
+      "scripted": 1,
+      "tester": 1
+     }
+    },
+    "row": {
+     "user": "jsilva",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin01"
+     ],
+     "agent_types": {
+      "copilot": 1
+     },
+     "surfaces": {
+      "terminal": 1
+     },
+     "approval": {
+      "bypassed": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": null,
+     "calls_sessions": 0,
+     "calls_p50": null,
+     "cats": {},
+     "words": {},
+     "processes": 21818,
+     "cpu_s": 1396.35,
+     "rd_mb": 261.4,
+     "wr_mb": 46.5,
+     "net_tx_mb": 5.04,
+     "net_rx_mb": 43.68,
+     "peak_rss_mb": 372.2,
+     "wall_s": 15000,
+     "wall_p50_s": 15000,
+     "wall_max_s": 15000,
+     "first": 1789384100,
+     "last": 1789399100,
+     "active_min": 0,
+     "hours": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "peak_open": 1,
+     "projects": [],
+     "projects_total": 0,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 6,
+      "queries_per_job": 6,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 0,
+      "polling_s": 0,
+      "longest_loop": null,
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "grid": [
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     "traits": [
+      {
+       "id": "interactive",
+       "label": "works in the agent's own terminal",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "bypass",
+       "label": "launches with approval bypassed",
+       "tone": "crit",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 4.2 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [],
+      "actions": 0,
+      "mostly": 0,
+      "waiting": null,
+      "project": null,
+      "when": null
+     }
+    },
+    "phases": {
+     "time_s": {},
+     "calls": {},
+     "sessions": 0,
+     "of": 0
+    },
+    "tasks": {
+     "n": 0,
+     "lone": 0,
+     "quoted": {},
+     "recent": [],
+     "listed_of": 0
+    },
+    "sessions": [
+     {
+      "user": "jsilva",
+      "host": "boslogin01",
+      "pid": 2034,
+      "agent_type": "copilot",
+      "surface": "terminal",
+      "surface_detail": "interactive",
+      "approval": "bypassed",
+      "sandbox": "no_calls",
+      "first": 1789384100,
+      "last": 1789399100,
+      "wall_s": 15000,
+      "calls": null,
+      "processes": 21818,
+      "cpu_s": 1396.35,
+      "rd_mb": 261.4,
+      "wr_mb": 46.5,
+      "net_tx_mb": 5.04,
+      "net_rx_mb": 43.68,
+      "peak_rss_mb": 372.2,
+      "running": false,
+      "sid": "period4-boslogin01-jsilva-1111",
+      "sids": [
+       "period4-boslogin01-jsilva-1111"
+      ],
+      "project": null,
+      "headline": null,
+      "tasks": null,
+      "quoted": null,
+      "phase_s": null,
+      "cats": {}
+     }
+    ],
+    "sessions_total": 1,
+    "commands": [],
+    "tz": "EDT"
+   },
+   "dwei": {
+    "_feed": "ebpfm",
+    "_status": "ok",
+    "_present": true,
+    "_paths": [
+     "/var/log/ebpfm/exit_2026-09-14.jsonl",
+     "/var/log/ebpfm/exit_2026-09-13.jsonl"
+    ],
+    "_notice": null,
+    "window": {
+     "minutes": 1440,
+     "from": "2026-09-13T15:33:20.000Z",
+     "to": "2026-09-14T15:33:20.000Z"
+    },
+    "traits": [
+     {
+      "id": "interactive",
+      "label": "works in the agent's own terminal",
+      "tone": "",
+      "rule": "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"
+     },
+     {
+      "id": "scripted",
+      "label": "runs agents from scripts",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal"
+     },
+     {
+      "id": "app",
+      "label": "drives agents from an app or an IDE",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from the desktop app, an IDE extension, or the web"
+     },
+     {
+      "id": "bypass",
+      "label": "launches with approval bypassed",
+      "tone": "crit",
+      "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
+     },
+     {
+      "id": "auto",
+      "label": "launches in auto mode",
+      "tone": "warn",
+      "rule": "50% or more of the sessions whose launch is known were started in auto mode"
+     },
+     {
+      "id": "sandboxed",
+      "label": "tool calls run sandboxed",
+      "tone": "ok",
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+     },
+     {
+      "id": "multi_agent",
+      "label": "uses more than one agent",
+      "tone": "",
+      "rule": "sessions of two agent types or more"
+     },
+     {
+      "id": "parallel",
+      "label": "keeps several sessions open at once",
+      "tone": "",
+      "rule": "3 sessions or more open at the same moment"
+     },
+     {
+      "id": "long",
+      "label": "long sessions",
+      "tone": "",
+      "rule": "the median session is open 2 h or longer"
+     },
+     {
+      "id": "short",
+      "label": "many short sessions",
+      "tone": "",
+      "rule": "10 sessions or more, and the median one is open 10 min or less"
+     },
+     {
+      "id": "explorer",
+      "label": "agents mostly read and search",
+      "tone": "",
+      "rule": "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"
+     },
+     {
+      "id": "tester",
+      "label": "agents test often",
+      "tone": "",
+      "rule": "15% or more of the calls run tests, of 20 calls or more"
+     },
+     {
+      "id": "builder",
+      "label": "agents build often",
+      "tone": "",
+      "rule": "15% or more of the calls build, compile or install, of 20 calls or more"
+     },
+     {
+      "id": "slurm",
+      "label": "agents drive Slurm",
+      "tone": "",
+      "rule": "an agent session submitted a job, or 10% or more of the calls are Slurm commands"
+     },
+     {
+      "id": "poller",
+      "label": "agents poll",
+      "tone": "warn",
+      "rule": "an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more"
+     },
+     {
+      "id": "committer",
+      "label": "agents commit their work",
+      "tone": "",
+      "rule": "an agent wrote a commit message or a pull request's title in a command"
+     },
+     {
+      "id": "overnight",
+      "label": "agents active overnight",
+      "tone": "",
+      "rule": "25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more"
+     }
+    ],
+    "rules": {
+     "interactive": 0.6,
+     "scripted": 0.5,
+     "app": 0.5,
+     "bypass": 0.5,
+     "auto": 0.5,
+     "sandboxed": 0.5,
+     "parallel": 3,
+     "long_s": 7200,
+     "short_n": 10,
+     "short_s": 600,
+     "explore": 0.6,
+     "test": 0.15,
+     "build": 0.15,
+     "slurm": 0.1,
+     "wait": 0.25,
+     "night": 0.25,
+     "night_min": 60,
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
+    },
+    "basis": {
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
+    },
+    "user": "dwei",
+    "found": true,
+    "fleet_of": "window",
+    "fleet": {
+     "users": 5,
+     "sessions": 17,
+     "sessions_per_user_p50": 1,
+     "wall_p50_s": 54600,
+     "calls_p50": 148,
+     "active_min_p50": 188,
+     "peak_open_p50": 1,
+     "running": 4,
+     "agent_types": {
+      "claude_code": 9,
+      "codex": 7,
+      "copilot": 1
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 4,
+      "desktop": 3,
+      "terminal": 4,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 9,
+      "bypassed": 8
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4,
+      "no_calls": 4
+     },
+     "cats": {
+      "test": 227,
+      "slurm": 33,
+      "run": 104,
+      "build": 64,
+      "edit": 164,
+      "git": 133,
+      "wait": 1485,
+      "explore": 739,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 3,
+      "log": 3,
+      "pr": 4
+     },
+     "traits": {
+      "long": 5,
+      "slurm": 5,
+      "overnight": 4,
+      "poller": 4,
+      "committer": 3,
+      "app": 2,
+      "bypass": 2,
+      "interactive": 2,
+      "multi_agent": 1,
+      "parallel": 1,
+      "scripted": 1,
+      "tester": 1
+     }
+    },
+    "row": {
+     "user": "dwei",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin03"
+     ],
+     "agent_types": {
+      "claude_code": 1
+     },
+     "surfaces": {
+      "desktop": 1
+     },
+     "approval": {
+      "supervised": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": 281,
+     "calls_sessions": 1,
+     "calls_p50": 281,
+     "cats": {
+      "slurm": 11,
+      "run": 8,
+      "build": 10,
+      "edit": 15,
+      "git": 8,
+      "wait": 166,
+      "explore": 63
+     },
+     "words": {
+      "pr": 1
+     },
+     "processes": 8889,
+     "cpu_s": 746.68,
+     "rd_mb": 130.7,
+     "wr_mb": 20.6,
+     "net_tx_mb": 1.94,
+     "net_rx_mb": 36.96,
+     "peak_rss_mb": 863.4,
+     "wall_s": 50200,
+     "wall_p50_s": 50200,
+     "wall_max_s": 50200,
+     "first": 1789346500,
+     "last": 1789396700,
+     "active_min": 281,
+     "hours": [
+      16,
+      30,
+      30,
+      30,
+      30,
+      30,
+      19,
+      5,
+      0,
+      4,
+      19,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      9,
+      29,
+      19,
+      11
+     ],
+     "peak_open": 1,
+     "projects": [
+      [
+       "proj",
+       1
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 5,
+      "queries_per_job": 5,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 0,
+      "polling_s": 0,
+      "longest_loop": null,
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "grid": [
+      [
+       16,
+       30,
+       30,
+       30,
+       30,
+       30,
+       19,
+       5,
+       0,
+       4,
+       19,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       9,
+       29,
+       19,
+       11
+      ]
+     ],
+     "traits": [
+      {
+       "id": "app",
+       "label": "drives agents from an app or an IDE",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 13.9 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "59% of 281 calls"
+      },
+      {
+       "id": "committer",
+       "label": "agents commit their work",
+       "tone": "",
+       "detail": "1 pull request"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "59% of 281 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "app",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 63,
+        "pct": 54.8
+       },
+       {
+        "id": "develop",
+        "n": 15,
+        "pct": 13
+       },
+       {
+        "id": "hpc",
+        "n": 11,
+        "pct": 9.6
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 8.7
+       },
+       {
+        "id": "run",
+        "n": 8,
+        "pct": 7
+       },
+       {
+        "id": "git",
+        "n": 8,
+        "pct": 7
+       }
+      ],
+      "actions": 115,
+      "mostly": 1,
+      "waiting": {
+       "n": 166,
+       "of": 281,
+       "pct": 59.1
+      },
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 1,
+       "minutes": 30,
+       "night_pct": 59.1
+      }
+     }
+    },
+    "phases": {
+     "time_s": {
+      "wait": 19894.145,
+      "explore": 7957.657,
+      "idle": 6023,
+      "run": 5968.243,
+      "edit": 3978.829,
+      "build": 3978.829,
+      "slurm": 1591.531,
+      "git": 795.766
+     },
+     "calls": {
+      "slurm": 11,
+      "run": 8,
+      "build": 10,
+      "edit": 15,
+      "git": 8,
+      "wait": 166,
+      "explore": 63
+     },
+     "sessions": 1,
+     "of": 1
+    },
+    "tasks": {
+     "n": 2,
+     "lone": 0,
+     "quoted": {
+      "pr": 1
+     },
+     "recent": [
+      {
+       "label": "Read train.log · out/",
+       "source": null,
+       "ref": "",
+       "names": [
+        "train.log",
+        "out/"
+       ],
+       "t0": 1789393914.82,
+       "t1": 1789396700,
+       "n": 23,
+       "open": false,
+       "sid": "period4-boslogin03-dwei-1407",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Train on Slurm with an 8-hour limit",
+       "source": "pr",
+       "ref": "#235",
+       "names": [
+        "jobs/train.sbatch",
+        "kernels"
+       ],
+       "t0": 1789346512,
+       "t1": 1789387891.82,
+       "n": 258,
+       "open": false,
+       "sid": "period4-boslogin03-dwei-1407",
+       "agent_type": "claude_code",
+       "project": "proj"
+      }
+     ],
+     "listed_of": 2
+    },
+    "sessions": [
+     {
+      "user": "dwei",
+      "host": "boslogin03",
+      "pid": 2102,
+      "agent_type": "claude_code",
+      "surface": "desktop",
+      "surface_detail": "Claude desktop app",
+      "approval": "supervised",
+      "sandbox": "no_calls",
+      "first": 1789346500,
+      "last": 1789396700,
+      "wall_s": 50200,
+      "calls": 281,
+      "processes": 8889,
+      "cpu_s": 746.68,
+      "rd_mb": 130.7,
+      "wr_mb": 20.6,
+      "net_tx_mb": 1.94,
+      "net_rx_mb": 36.96,
+      "peak_rss_mb": 863.4,
+      "running": false,
+      "sid": "period4-boslogin03-dwei-1407",
+      "sids": [
+       "period4-boslogin03-dwei-1407"
+      ],
+      "project": "proj",
+      "headline": "proj · train.log",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 7957.657,
+       "edit": 3978.829,
+       "build": 3978.829,
+       "slurm": 1591.531,
+       "wait": 19894.145,
+       "run": 5968.243,
+       "idle": 6023,
+       "git": 795.766
+      },
+      "cats": {
+       "slurm": 11,
+       "run": 8,
+       "build": 10,
+       "edit": 15,
+       "git": 8,
+       "wait": 166,
+       "explore": 63
+      }
+     }
+    ],
+    "sessions_total": 1,
+    "commands": [
+     [
+      "squeue -j 812 -h -o %T",
+      166
+     ],
+     [
+      "ls -la jobs/",
+      13
+     ],
+     [
+      "tail -n 20 train.log",
+      10
+     ],
+     [
+      "cat config/base.yaml",
+      8
+     ],
+     [
+      "git status --short",
+      8
+     ],
+     [
+      "make -j8 kernels",
+      8
+     ],
+     [
+      "make -n kernels",
+      8
+     ],
+     [
+      "sed -i 's/--time=1:00/--time=8:00/' jobs/train.sbatch",
+      8
+     ]
+    ],
+    "tz": "EDT"
+   },
+   "mmarthen": {
+    "_feed": "ebpfm",
+    "_status": "ok",
+    "_present": true,
+    "_paths": [
+     "/var/log/ebpfm/exit_2026-09-14.jsonl",
+     "/var/log/ebpfm/exit_2026-09-13.jsonl"
+    ],
+    "_notice": null,
+    "window": {
+     "minutes": 1440,
+     "from": "2026-09-13T15:33:20.000Z",
+     "to": "2026-09-14T15:33:20.000Z"
+    },
+    "traits": [
+     {
+      "id": "interactive",
+      "label": "works in the agent's own terminal",
+      "tone": "",
+      "rule": "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"
+     },
+     {
+      "id": "scripted",
+      "label": "runs agents from scripts",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal"
+     },
+     {
+      "id": "app",
+      "label": "drives agents from an app or an IDE",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from the desktop app, an IDE extension, or the web"
+     },
+     {
+      "id": "bypass",
+      "label": "launches with approval bypassed",
+      "tone": "crit",
+      "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
+     },
+     {
+      "id": "auto",
+      "label": "launches in auto mode",
+      "tone": "warn",
+      "rule": "50% or more of the sessions whose launch is known were started in auto mode"
+     },
+     {
+      "id": "sandboxed",
+      "label": "tool calls run sandboxed",
+      "tone": "ok",
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+     },
+     {
+      "id": "multi_agent",
+      "label": "uses more than one agent",
+      "tone": "",
+      "rule": "sessions of two agent types or more"
+     },
+     {
+      "id": "parallel",
+      "label": "keeps several sessions open at once",
+      "tone": "",
+      "rule": "3 sessions or more open at the same moment"
+     },
+     {
+      "id": "long",
+      "label": "long sessions",
+      "tone": "",
+      "rule": "the median session is open 2 h or longer"
+     },
+     {
+      "id": "short",
+      "label": "many short sessions",
+      "tone": "",
+      "rule": "10 sessions or more, and the median one is open 10 min or less"
+     },
+     {
+      "id": "explorer",
+      "label": "agents mostly read and search",
+      "tone": "",
+      "rule": "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"
+     },
+     {
+      "id": "tester",
+      "label": "agents test often",
+      "tone": "",
+      "rule": "15% or more of the calls run tests, of 20 calls or more"
+     },
+     {
+      "id": "builder",
+      "label": "agents build often",
+      "tone": "",
+      "rule": "15% or more of the calls build, compile or install, of 20 calls or more"
+     },
+     {
+      "id": "slurm",
+      "label": "agents drive Slurm",
+      "tone": "",
+      "rule": "an agent session submitted a job, or 10% or more of the calls are Slurm commands"
+     },
+     {
+      "id": "poller",
+      "label": "agents poll",
+      "tone": "warn",
+      "rule": "an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more"
+     },
+     {
+      "id": "committer",
+      "label": "agents commit their work",
+      "tone": "",
+      "rule": "an agent wrote a commit message or a pull request's title in a command"
+     },
+     {
+      "id": "overnight",
+      "label": "agents active overnight",
+      "tone": "",
+      "rule": "25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more"
+     }
+    ],
+    "rules": {
+     "interactive": 0.6,
+     "scripted": 0.5,
+     "app": 0.5,
+     "bypass": 0.5,
+     "auto": 0.5,
+     "sandboxed": 0.5,
+     "parallel": 3,
+     "long_s": 7200,
+     "short_n": 10,
+     "short_s": 600,
+     "explore": 0.6,
+     "test": 0.15,
+     "build": 0.15,
+     "slurm": 0.1,
+     "wait": 0.25,
+     "night": 0.25,
+     "night_min": 60,
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
+    },
+    "basis": {
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
+    },
+    "user": "mmarthen",
+    "found": true,
+    "fleet_of": "window",
+    "fleet": {
+     "users": 5,
+     "sessions": 17,
+     "sessions_per_user_p50": 1,
+     "wall_p50_s": 54600,
+     "calls_p50": 148,
+     "active_min_p50": 188,
+     "peak_open_p50": 1,
+     "running": 4,
+     "agent_types": {
+      "claude_code": 9,
+      "codex": 7,
+      "copilot": 1
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 4,
+      "desktop": 3,
+      "terminal": 4,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 9,
+      "bypassed": 8
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4,
+      "no_calls": 4
+     },
+     "cats": {
+      "test": 227,
+      "slurm": 33,
+      "run": 104,
+      "build": 64,
+      "edit": 164,
+      "git": 133,
+      "wait": 1485,
+      "explore": 739,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 3,
+      "log": 3,
+      "pr": 4
+     },
+     "traits": {
+      "long": 5,
+      "slurm": 5,
+      "overnight": 4,
+      "poller": 4,
+      "committer": 3,
+      "app": 2,
+      "bypass": 2,
+      "interactive": 2,
+      "multi_agent": 1,
+      "parallel": 1,
+      "scripted": 1,
+      "tester": 1
+     }
+    },
+    "row": {
+     "user": "mmarthen",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin01"
+     ],
+     "agent_types": {
+      "codex": 1
+     },
+     "surfaces": {
+      "terminal": 1
+     },
+     "approval": {
+      "bypassed": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": 167,
+     "calls_sessions": 1,
+     "calls_p50": 167,
+     "cats": {
+      "test": 50,
+      "run": 10,
+      "edit": 11,
+      "git": 21,
+      "explore": 75
+     },
+     "words": {
+      "commit": 1
+     },
+     "processes": 6857,
+     "cpu_s": 164.57,
+     "rd_mb": 104.5,
+     "wr_mb": 16.1,
+     "net_tx_mb": 1.48,
+     "net_rx_mb": 68.64,
+     "peak_rss_mb": 1109,
+     "wall_s": 67800,
+     "wall_p50_s": 67800,
+     "wall_max_s": 67800,
+     "first": 1789327700,
+     "last": 1789395500,
+     "active_min": 167,
+     "hours": [
+      5,
+      5,
+      6,
+      10,
+      14,
+      12,
+      3,
+      4,
+      6,
+      11,
+      4,
+      0,
+      0,
+      0,
+      0,
+      9,
+      16,
+      16,
+      15,
+      8,
+      8,
+      5,
+      5,
+      5
+     ],
+     "peak_open": 1,
+     "projects": [
+      [
+       "proj",
+       1
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 9,
+      "queries_per_job": 9,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 1,
+      "polling_s": 16950,
+      "longest_loop": {
+       "from": 1789328300,
+       "to": 1789345250,
+       "polls": 9,
+       "span_s": 16950,
+       "every_s": 1883.3,
+       "polling": true
+      },
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "grid": [
+      [
+       5,
+       5,
+       6,
+       10,
+       14,
+       12,
+       3,
+       4,
+       6,
+       11,
+       4,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       9,
+       16,
+       16,
+       15,
+       8,
+       8,
+       5,
+       5,
+       5
+      ]
+     ],
+     "traits": [
+      {
+       "id": "interactive",
+       "label": "works in the agent's own terminal",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "bypass",
+       "label": "launches with approval bypassed",
+       "tone": "crit",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 18.8 h"
+      },
+      {
+       "id": "tester",
+       "label": "agents test often",
+       "tone": "",
+       "detail": "30% of 167 calls"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "1 session polled the queue for 4.7 h"
+      },
+      {
+       "id": "committer",
+       "label": "agents commit their work",
+       "tone": "",
+       "detail": "1 commit message"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "31% of 167 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 75,
+        "pct": 44.9
+       },
+       {
+        "id": "develop",
+        "n": 61,
+        "pct": 36.5
+       },
+       {
+        "id": "git",
+        "n": 21,
+        "pct": 12.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 6
+       }
+      ],
+      "actions": 167,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 16,
+       "minutes": 16,
+       "night_pct": 31.1
+      }
+     }
+    },
+    "phases": {
+     "time_s": {
+      "loop": 24815.78,
+      "explore": 18611.835,
+      "run": 9305.917,
+      "test": 6203.945,
+      "edit": 4342.762,
+      "git": 4342.761,
+      "edit_guess": 165
+     },
+     "calls": {
+      "test": 50,
+      "run": 10,
+      "edit": 11,
+      "git": 21,
+      "explore": 75
+     },
+     "sessions": 1,
+     "of": 1
+    },
+    "tasks": {
+     "n": 2,
+     "lone": 0,
+     "quoted": {
+      "commit": 1
+     },
+     "recent": [
+      {
+       "label": "Run src/train.py · config/base.yaml",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/train.py",
+        "config/base.yaml"
+       ],
+       "t0": 1789373786.193,
+       "t1": 1789395500,
+       "n": 49,
+       "open": false,
+       "sid": "period4-boslogin01-mmarthen-1555",
+       "agent_type": "codex",
+       "project": "proj"
+      },
+      {
+       "label": "Read io chunks one at a time",
+       "source": "commit",
+       "ref": "",
+       "names": [
+        "src/io.py",
+        "tests/test_io.py"
+       ],
+       "t0": 1789327712,
+       "t1": 1789373786.193,
+       "n": 118,
+       "open": false,
+       "sid": "period4-boslogin01-mmarthen-1555",
+       "agent_type": "codex",
+       "project": "proj"
+      }
+     ],
+     "listed_of": 2
+    },
+    "sessions": [
+     {
+      "user": "mmarthen",
+      "host": "boslogin01",
+      "pid": 2153,
+      "agent_type": "codex",
+      "surface": "terminal",
+      "surface_detail": "interactive",
+      "approval": "bypassed",
+      "sandbox": "no_calls",
+      "first": 1789327700,
+      "last": 1789395500,
+      "wall_s": 67800,
+      "calls": 167,
+      "processes": 6857,
+      "cpu_s": 164.57,
+      "rd_mb": 104.5,
+      "wr_mb": 16.1,
+      "net_tx_mb": 1.48,
+      "net_rx_mb": 68.64,
+      "peak_rss_mb": 1109,
+      "running": false,
+      "sid": "period4-boslogin01-mmarthen-1555",
+      "sids": [
+       "period4-boslogin01-mmarthen-1555"
+      ],
+      "project": "proj",
+      "headline": "proj · src/io.py",
+      "tasks": 2,
+      "quoted": 1,
+      "phase_s": {
+       "explore": 18611.835,
+       "edit_guess": 165,
+       "test": 6203.945,
+       "loop": 24815.78,
+       "git": 4342.761,
+       "run": 9305.917,
+       "edit": 4342.762
+      },
+      "cats": {
+       "test": 50,
+       "run": 10,
+       "edit": 11,
+       "git": 21,
+       "explore": 75
+      }
+     }
+    ],
+    "sessions_total": 1,
+    "commands": [
+     [
+      "rg -n \"def run_step\" src/",
+      23
+     ],
+     [
+      "ls -la src/",
+      15
+     ],
+     [
+      "python -m pytest tests/test_io.py -x -q",
+      15
+     ],
+     [
+      "sed -n '1,80p' src/train.py",
+      13
+     ],
+     [
+      "git status --short",
+      10
+     ],
+     [
+      "python -m pytest tests -x -q",
+      10
+     ],
+     [
+      "cat src/io.py",
+      8
+     ],
+     [
+      "python train.py --epochs 1",
+      8
+     ]
+    ],
+    "tz": "EDT"
+   },
+   "rkoshy": {
+    "_feed": "ebpfm",
+    "_status": "ok",
+    "_present": true,
+    "_paths": [
+     "/var/log/ebpfm/exit_2026-09-14.jsonl",
+     "/var/log/ebpfm/exit_2026-09-13.jsonl"
+    ],
+    "_notice": null,
+    "window": {
+     "minutes": 1440,
+     "from": "2026-09-13T15:33:20.000Z",
+     "to": "2026-09-14T15:33:20.000Z"
+    },
+    "traits": [
+     {
+      "id": "interactive",
+      "label": "works in the agent's own terminal",
+      "tone": "",
+      "rule": "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"
+     },
+     {
+      "id": "scripted",
+      "label": "runs agents from scripts",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal"
+     },
+     {
+      "id": "app",
+      "label": "drives agents from an app or an IDE",
+      "tone": "",
+      "rule": "50% or more of the sessions are driven from the desktop app, an IDE extension, or the web"
+     },
+     {
+      "id": "bypass",
+      "label": "launches with approval bypassed",
+      "tone": "crit",
+      "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
+     },
+     {
+      "id": "auto",
+      "label": "launches in auto mode",
+      "tone": "warn",
+      "rule": "50% or more of the sessions whose launch is known were started in auto mode"
+     },
+     {
+      "id": "sandboxed",
+      "label": "tool calls run sandboxed",
+      "tone": "ok",
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+     },
+     {
+      "id": "multi_agent",
+      "label": "uses more than one agent",
+      "tone": "",
+      "rule": "sessions of two agent types or more"
+     },
+     {
+      "id": "parallel",
+      "label": "keeps several sessions open at once",
+      "tone": "",
+      "rule": "3 sessions or more open at the same moment"
+     },
+     {
+      "id": "long",
+      "label": "long sessions",
+      "tone": "",
+      "rule": "the median session is open 2 h or longer"
+     },
+     {
+      "id": "short",
+      "label": "many short sessions",
+      "tone": "",
+      "rule": "10 sessions or more, and the median one is open 10 min or less"
+     },
+     {
+      "id": "explorer",
+      "label": "agents mostly read and search",
+      "tone": "",
+      "rule": "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"
+     },
+     {
+      "id": "tester",
+      "label": "agents test often",
+      "tone": "",
+      "rule": "15% or more of the calls run tests, of 20 calls or more"
+     },
+     {
+      "id": "builder",
+      "label": "agents build often",
+      "tone": "",
+      "rule": "15% or more of the calls build, compile or install, of 20 calls or more"
+     },
+     {
+      "id": "slurm",
+      "label": "agents drive Slurm",
+      "tone": "",
+      "rule": "an agent session submitted a job, or 10% or more of the calls are Slurm commands"
+     },
+     {
+      "id": "poller",
+      "label": "agents poll",
+      "tone": "warn",
+      "rule": "an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more"
+     },
+     {
+      "id": "committer",
+      "label": "agents commit their work",
+      "tone": "",
+      "rule": "an agent wrote a commit message or a pull request's title in a command"
+     },
+     {
+      "id": "overnight",
+      "label": "agents active overnight",
+      "tone": "",
+      "rule": "25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more"
+     }
+    ],
+    "rules": {
+     "interactive": 0.6,
+     "scripted": 0.5,
+     "app": 0.5,
+     "bypass": 0.5,
+     "auto": 0.5,
+     "sandboxed": 0.5,
+     "parallel": 3,
+     "long_s": 7200,
+     "short_n": 10,
+     "short_s": 600,
+     "explore": 0.6,
+     "test": 0.15,
+     "build": 0.15,
+     "slurm": 0.1,
+     "wait": 0.25,
+     "night": 0.25,
+     "night_min": 60,
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
+    },
+    "basis": {
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
+    },
+    "user": "rkoshy",
+    "found": true,
+    "fleet_of": "window",
+    "fleet": {
+     "users": 5,
+     "sessions": 17,
+     "sessions_per_user_p50": 1,
+     "wall_p50_s": 54600,
+     "calls_p50": 148,
+     "active_min_p50": 188,
+     "peak_open_p50": 1,
+     "running": 4,
+     "agent_types": {
+      "claude_code": 9,
+      "codex": 7,
+      "copilot": 1
+     },
+     "surfaces": {
+      "extension": 3,
+      "script": 4,
+      "desktop": 3,
+      "terminal": 4,
+      "unknown": 2,
+      "web": 1
+     },
+     "approval": {
+      "supervised": 9,
+      "bypassed": 8
+     },
+     "sandbox": {
+      "sandboxed": 5,
+      "failed": 4,
+      "unsandboxed": 4,
+      "no_calls": 4
+     },
+     "cats": {
+      "test": 227,
+      "slurm": 33,
+      "run": 104,
+      "build": 64,
+      "edit": 164,
+      "git": 133,
+      "wait": 1485,
+      "explore": 739,
+      "unknown": 14
+     },
+     "words": {
+      "commit": 3,
+      "log": 3,
+      "pr": 4
+     },
+     "traits": {
+      "long": 5,
+      "slurm": 5,
+      "overnight": 4,
+      "poller": 4,
+      "committer": 3,
+      "app": 2,
+      "bypass": 2,
+      "interactive": 2,
+      "multi_agent": 1,
+      "parallel": 1,
+      "scripted": 1,
+      "tester": 1
+     }
+    },
+    "row": {
+     "user": "rkoshy",
+     "sessions": 1,
+     "running": 0,
+     "hosts": [
+      "boslogin03"
+     ],
+     "agent_types": {
+      "claude_code": 1
+     },
+     "surfaces": {
+      "script": 1
+     },
+     "approval": {
+      "supervised": 1
+     },
+     "sandbox": {
+      "no_calls": 1
+     },
+     "calls": 188,
+     "calls_sessions": 1,
+     "calls_p50": 188,
+     "cats": {
+      "test": 28,
+      "run": 10,
+      "build": 10,
+      "edit": 28,
+      "git": 16,
+      "wait": 10,
+      "explore": 86
+     },
+     "words": {},
+     "processes": 4706,
+     "cpu_s": 207.06,
+     "rd_mb": 74.7,
+     "wr_mb": 11.2,
+     "net_tx_mb": 1.01,
+     "net_rx_mb": 53.39,
+     "peak_rss_mb": 1600.2,
+     "wall_s": 103000,
+     "wall_p50_s": 103000,
+     "wall_max_s": 103000,
+     "first": 1789290100,
+     "last": 1789393100,
+     "active_min": 188,
+     "hours": [
+      7,
+      6,
+      5,
+      6,
+      5,
+      19,
+      16,
+      15,
+      8,
+      16,
+      7,
+      11,
+      12,
+      12,
+      2,
+      2,
+      2,
+      2,
+      3,
+      4,
+      3,
+      8,
+      10,
+      7
+     ],
+     "peak_open": 1,
+     "projects": [
+      [
+       "proj",
+       1
+      ]
+     ],
+     "projects_total": 1,
+     "slurm": {
+      "sessions": 1,
+      "jobs": 1,
+      "rejected": 0,
+      "asked": 1,
+      "queries": 8,
+      "queries_per_job": 8,
+      "cancels": 0,
+      "parsable": 1,
+      "parsable_pct": 100,
+      "polling_sessions": 1,
+      "polling_s": 25750,
+      "longest_loop": {
+       "from": 1789290700,
+       "to": 1789316450,
+       "polls": 8,
+       "span_s": 25750,
+       "every_s": 3218.8,
+       "polling": true
+      },
+      "gpu_h": null,
+      "gpu_h_known": 0
+     },
+     "grid": [
+      [
+       7,
+       6,
+       5,
+       6,
+       5,
+       3,
+       0,
+       0,
+       0,
+       8,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       16,
+       16,
+       15,
+       8,
+       8,
+       7,
+       11,
+       12,
+       12,
+       2,
+       2,
+       2,
+       2,
+       3,
+       4,
+       3,
+       8,
+       10,
+       7
+      ]
+     ],
+     "traits": [
+      {
+       "id": "scripted",
+       "label": "runs agents from scripts",
+       "tone": "",
+       "detail": "1 of 1 sessions"
+      },
+      {
+       "id": "long",
+       "label": "long sessions",
+       "tone": "",
+       "detail": "median 28.6 h"
+      },
+      {
+       "id": "slurm",
+       "label": "agents drive Slurm",
+       "tone": "",
+       "detail": "1 job submitted"
+      },
+      {
+       "id": "poller",
+       "label": "agents poll",
+       "tone": "warn",
+       "detail": "1 session polled the queue for 7.2 h"
+      },
+      {
+       "id": "overnight",
+       "label": "agents active overnight",
+       "tone": "",
+       "detail": "26% of 188 active minutes"
+      }
+     ],
+     "leverage": {
+      "mode": {
+       "id": "script",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 86,
+        "pct": 48.3
+       },
+       {
+        "id": "develop",
+        "n": 56,
+        "pct": 31.5
+       },
+       {
+        "id": "git",
+        "n": 16,
+        "pct": 9
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 5.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 5.6
+       }
+      ],
+      "actions": 178,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 5,
+       "minutes": 19,
+       "night_pct": 25.5
+      }
+     }
+    },
+    "phases": {
+     "time_s": {
+      "explore": 23298.677,
+      "test": 16641.911,
+      "run": 16641.911,
+      "edit": 13313.53,
+      "idle": 12359,
+      "wait": 9985.147,
+      "build": 6656.765,
+      "git": 3994.059,
+      "edit_guess": 97
+     },
+     "calls": {
+      "test": 28,
+      "run": 10,
+      "build": 10,
+      "edit": 28,
+      "git": 16,
+      "wait": 10,
+      "explore": 86
+     },
+     "sessions": 1,
+     "of": 1
+    },
+    "tasks": {
+     "n": 2,
+     "lone": 1,
+     "quoted": {},
+     "recent": [
+      {
+       "label": "Run src/app.py · logs/run.out",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/app.py",
+        "logs/run.out"
+       ],
+       "t0": 1789315407.706,
+       "t1": 1789378743.971,
+       "n": 99,
+       "open": false,
+       "sid": "period4-boslogin03-rkoshy-1851",
+       "agent_type": "claude_code",
+       "project": "proj"
+      },
+      {
+       "label": "Read src/app.py · README.md",
+       "source": null,
+       "ref": "",
+       "names": [
+        "src/app.py",
+        "README.md"
+       ],
+       "t0": 1789290112,
+       "t1": 1789315407.706,
+       "n": 81,
+       "open": false,
+       "sid": "period4-boslogin03-rkoshy-1851",
+       "agent_type": "claude_code",
+       "project": "proj"
+      }
+     ],
+     "listed_of": 2
+    },
+    "sessions": [
+     {
+      "user": "rkoshy",
+      "host": "boslogin03",
+      "pid": 2221,
+      "agent_type": "claude_code",
+      "surface": "script",
+      "surface_detail": "claude -p",
+      "approval": "supervised",
+      "sandbox": "no_calls",
+      "first": 1789290100,
+      "last": 1789393100,
+      "wall_s": 103000,
+      "calls": 188,
+      "processes": 4706,
+      "cpu_s": 207.06,
+      "rd_mb": 74.7,
+      "wr_mb": 11.2,
+      "net_tx_mb": 1.01,
+      "net_rx_mb": 53.39,
+      "peak_rss_mb": 1600.2,
+      "running": false,
+      "sid": "period4-boslogin03-rkoshy-1851",
+      "sids": [
+       "period4-boslogin03-rkoshy-1851"
+      ],
+      "project": "proj",
+      "headline": "proj · src/app.py",
+      "tasks": 2,
+      "quoted": 0,
+      "phase_s": {
+       "explore": 23298.677,
+       "edit": 13313.53,
+       "test": 16641.911,
+       "git": 3994.059,
+       "edit_guess": 97,
+       "run": 16641.911,
+       "wait": 9985.147,
+       "build": 6656.765,
+       "idle": 12359
+      },
+      "cats": {
+       "test": 28,
+       "run": 10,
+       "build": 10,
+       "edit": 28,
+       "git": 16,
+       "wait": 10,
+       "explore": 86
+      }
+     }
+    ],
+    "sessions_total": 1,
+    "commands": [
+     [
+      "python -m pytest -q",
+      28
+     ],
+     [
+      "rg -n \"check\" src/",
+      18
+     ],
+     [
+      "ls -la",
+      15
+     ],
+     [
+      "rg -n \"TODO\" .",
+      15
+     ],
+     [
+      "cat src/app.py",
+      13
+     ],
+     [
+      "git status --short",
+      13
+     ],
+     [
+      "sed -i 's/check/verify/' src/app.py",
+      13
+     ],
+     [
+      "ls tests/",
+      10
+     ]
+    ],
+    "tz": "EDT"
+   }
+  }
  }
 }

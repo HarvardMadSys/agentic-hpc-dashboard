@@ -36,15 +36,18 @@ import { AgentsTab } from './tabs/AgentsTab';
 import { SlurmTab } from './tabs/SlurmTab';
 import { FeedsTab } from './tabs/FeedsTab';
 import { ChatTab } from './tabs/ChatTab';
+import { UsersTab } from './tabs/UsersTab';
 import { EventsExplorer } from './components/EventsExplorer';
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
- * happening, who uses what, the agents, one session, then the detail. Old tab
- * keys still open (lib/filters.ts TAB_ALIAS): sessions and cascades -> agents,
- * io -> resources, sandbox -> internal. */
+ * happening, who uses what and how each user works with agents, the agents,
+ * one session, then the detail. Old tab keys still open (lib/filters.ts
+ * TAB_ALIAS): sessions and cascades -> agents, io -> resources, sandbox ->
+ * internal. */
 const TABS = [
   { k: 'live', lbl: 'Live', eyebrow: 'right now, and over the window' },
   { k: 'overview', lbl: 'Overview', eyebrow: 'who uses what' },
+  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents' },
   { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran' },
   { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O' },
@@ -259,6 +262,20 @@ export default function App() {
         );
       case 'overview':
         return <OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />;
+      case 'users':
+        return (
+          <UsersTab
+            win={url.win}
+            buildNonce={live.buildNonce}
+            who={who}
+            cls={url.cls}
+            open={url.portrait}
+            // Opening a portrait, or a session from it, is navigation: back returns.
+            setOpen={(u) => setUrl({ portrait: u }, true)}
+            openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
+            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+          />
+        );
       case 'resources':
         return <ResourcesTab P={P} cls={url.cls} />;
       case 'risk':
