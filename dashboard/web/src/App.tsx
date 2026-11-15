@@ -677,6 +677,12 @@ export default function App() {
       </aside>
 
       <main ref={mainRef}>
+        {synthetic.length > 0 && (
+          <p className="fake-note" role="note">
+            <b>Fake data.</b> This is a demo: every record on this page was made up for
+            fictional login nodes, users and sessions. Nothing here was measured.
+          </p>
+        )}
         <div className={`head${showControls ? ' with-bar' : ''}`}>
           <div className="head-title">
             <span className="head-icon" aria-hidden="true">
