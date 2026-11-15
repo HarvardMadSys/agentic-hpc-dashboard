@@ -36,6 +36,14 @@ export function timeTicks(x0: number, x1: number, target = 7): number[] {
   return out;
 }
 
+/** How many time ticks a chart `W` wide carries legibly: one per 64px of plot
+ * (W less the axis margins), never more than `max` -- the count the chart was
+ * drawn with at its natural width -- and never fewer than three. A wide chart
+ * keeps its ticks; a narrow one thins them rather than overprinting them. */
+export function tickTarget(W: number, max: number, margins = 60): number {
+  return Math.max(3, Math.min(max, Math.floor((W - margins) / 64)));
+}
+
 /** A tick label: the date at midnight, the clock otherwise. */
 export function clockLabel(epoch: number): string {
   const d = new Date(epoch * 1000);

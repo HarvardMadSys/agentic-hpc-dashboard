@@ -7,9 +7,9 @@
  * and memory at once. A zoom stops at three bins: finer than that, the chart
  * would imply a resolution the bins never had.
  */
-import { Lines } from './primitives';
+import { Fluid, Lines } from './primitives';
 import type { LineSeries } from './primitives';
-import { clockLabel, fullClock, timeTicks } from './scale';
+import { clockLabel, fullClock, tickTarget, timeTicks } from './scale';
 import { Legend } from '../components/Panel';
 
 /* Tools are not classes, so their lines skip the class hues (crimson is the
@@ -82,25 +82,30 @@ export function TimeChart({
   }));
   return (
     <>
-      <Lines
-        series={series}
-        W={520}
-        H={210}
-        ymin={0}
-        ymax={ymax}
-        yfmt={yfmt}
-        xmin={x0}
-        xmax={x1 > x0 ? x1 : x0 + s.bin_s}
-        xticks={(a, b) => timeTicks(a, b)}
-        xfmt={clockLabel}
-        xtip={fullClock}
-        ylabel={ylabel}
-        xname="at"
-        yname={yname}
-        view={view}
-        onView={onView}
-        minSpan={3 * s.bin_s}
-      />
+      {/* as wide as its column: half a panel in a pair, the whole of a panel alone */}
+      <Fluid natural={520}>
+        {(W) => (
+          <Lines
+            series={series}
+            W={W}
+            H={210}
+            ymin={0}
+            ymax={ymax}
+            yfmt={yfmt}
+            xmin={x0}
+            xmax={x1 > x0 ? x1 : x0 + s.bin_s}
+            xticks={(a, b) => timeTicks(a, b, tickTarget(W, 7))}
+            xfmt={clockLabel}
+            xtip={fullClock}
+            ylabel={ylabel}
+            xname="at"
+            yname={yname}
+            view={view}
+            onView={onView}
+            minSpan={3 * s.bin_s}
+          />
+        )}
+      </Fluid>
       <Legend items={legend ?? lines.map((l) => ({ k: l.lbl, c: l.c, dashed: l.dashed }))} />
     </>
   );
