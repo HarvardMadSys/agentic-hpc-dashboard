@@ -89,6 +89,15 @@ Assets are emitted with a **relative** `base` (`./`), so `dist/` works mounted a
 under a sub-path. The API is addressed absolutely at `/api` and the socket at `/ws`;
 override with `VITE_API_BASE` / `VITE_WS_URL` at build time if the backend is elsewhere.
 
+Every build stamps the bundle with where it came from, and the foot of the rail shows it:
+`commit 0d516df` (HEAD when it was built, with `+ edits` when anything under `web/`
+differed from it) and `built 2026-11-15 14:02` (local time; the full timestamp is on
+hover). The stamp is `virtual:build-info`, written by the plugin in `vite.config.ts` and
+re-read on each build rather than fixed in a `define`, so the one `vite build --watch`
+that `./run.sh build` keeps alive stamps every rebuild with its own time. The dev server
+builds nothing and says so (`built — (dev server)`); its commit is re-read on every page
+load. Built without git or outside a checkout, the commit reads `—`, not a guess.
+
 ## Dependencies
 
 Runtime: **`react`, `react-dom`.** That is all.
