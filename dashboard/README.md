@@ -144,13 +144,20 @@ clock), `live.retention_min` and `live.backfill_hours` (the history written), an
 | `--demo-fresh` | | | discard the feed and write it again |
 | `--demo-write-only` | | | write the history and exit |
 
+**Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) is the demo in one
+image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
+working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
+that image behind a Cloudflare Worker for a public URL: one shared instance that sleeps when
+nobody is looking and says it is starting while it wakes.
+
 **Restarts resume it.** The feed is a function of the seed, the host count and the clock:
 the same span cut into windows anywhere is the same bytes (`demo/world.py`;
 `tests/test_demo.py` checks it). `demo.json` stamps how far the feed was written, so a
 restart -- `run.sh` restarts on every save -- cuts whatever a stopped round left past that,
 then writes on from it; nothing is written twice and nothing is missed. A stamp from another
 seed or host count, or one older than the history asked for, starts the feed afresh. One
-demo writes a directory at a time (`.demo.lock`), as one collector writes a host.
+demo writes a directory at a time (`.demo.lock`), as one collector writes a host. Three days
+of two hosts is ~85 MB, written in about two seconds.
 
 ## A capture from another cluster
 

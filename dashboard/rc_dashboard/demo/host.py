@@ -65,28 +65,39 @@ class HostFeed:
         self.kernel, self.bcc, self.rejected = KERNELS[index % len(KERNELS)]
         self.ip = "10.31.%d.%d" % (4 + index, 17 + index * 3)
         self._cg_days, self._cg_done = {}, {}
+        self._restarts, self._prior, self._pids = {}, {}, {}
 
     # ------------------------------------------------------------- runs
     def restart_on(self, day):
         """When this host's collector restarts on local `day`, or None."""
-        y, m, d = (int(x) for x in day.split("-"))
-        h = _h(self.seed, self.host, day, "restart")
-        t = time.mktime((y, m, d, 4, 7 + h % 40, h % 60, 0, 0, -1))
-        return float(t) if t > self.world.start + 600 else None
+        r = self._restarts.get(day, False)
+        if r is False:
+            y, m, d = (int(x) for x in day.split("-"))
+            h = _h(self.seed, self.host, day, "restart")
+            t = time.mktime((y, m, d, 4, 7 + h % 40, h % 60, 0, 0, -1))
+            r = self._restarts[day] = float(t) if t > self.world.start + 600 else None
+        return r
 
     def run_start(self, t):
         """The start of the collector run in progress at `t`."""
         from .world import day_of, midnight
         day = day_of(t)
-        for back in range(0, 3):
-            dd = day_of(midnight(day) - 86400 * back + 43200)
+        days = self._prior.get(day)
+        if days is None:
+            days = self._prior[day] = [day_of(midnight(day) - 86400 * back + 43200)
+                                       for back in range(0, 3)]
+        for dd in days:
             r = self.restart_on(dd)
             if r is not None and r + 2.6 <= t:
                 return r + 2.6
         return self.world.start
 
     def collector_pid(self, t):
-        return 1200 + _h(self.seed, self.host, "pid", round(self.run_start(t), 1)) % 60000
+        start = round(self.run_start(t), 1)
+        pid = self._pids.get(start)
+        if pid is None:
+            pid = self._pids[start] = 1200 + _h(self.seed, self.host, "pid", start) % 60000
+        return pid
 
     def ticks(self, t0, t1):
         """The heartbeat times in [t0, t1): a minute after a run starts, then every minute."""

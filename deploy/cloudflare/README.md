@@ -1,0 +1,74 @@
+# The demo on Cloudflare
+
+A public URL for the dashboard's [demo mode](../../dashboard/README.md#demo-mode): this
+Worker fronts one [Cloudflare Container](https://developers.cloudflare.com/containers/)
+running `rc_dashboard demo`, built from [`docker/demo/Dockerfile`](../../docker/demo/Dockerfile).
+Every visitor watches the same live demo, and every page says *synthetic data*: the
+records are made up for fictional login nodes and users, and nothing in them was measured.
+
+## Deploy
+
+Needs a Cloudflare account on the Workers Paid plan (Containers run there), Docker
+running locally (`wrangler deploy` builds the image, `linux/amd64`), and Node 20 or later.
+
+```bash
+cd deploy/cloudflare
+npm ci
+npx wrangler login
+npx wrangler deploy      # builds docker/demo/Dockerfile, pushes it, deploys the Worker
+```
+
+The deploy prints the URL, `https://agent-dashboard-demo.<your-subdomain>.workers.dev`.
+After the first deploy the container takes a few minutes to provision; until then, and
+after every idle spell, the page says the demo is starting and reloads itself.
+
+## What runs
+
+| | |
+|---|---|
+| the Worker (`src/index.ts`) | sends every request, the page's websocket included, to one container instance named `demo` |
+| the container | `rc_dashboard demo` on port 8080: writes 2 days of history (`RC_DASH_DEMO_DAYS`), then serves and keeps appending in real time |
+| instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~130 MB |
+| at most | one instance (`max_instances: 1`) |
+| outbound internet | none (`enableInternet = false`); Ask LLM is off in the image |
+| time zone | `America/New_York` (`TZ` in the Dockerfile): whose working day the fictional people keep |
+
+**Cold start.** The container sleeps after 15 minutes with no request and no websocket
+message (`SLEEP_AFTER`), and the next request starts it. The service writes its history
+before it listens -- about 11 s on a `basic` instance, measured, plus the container's own
+start. A request waits up to 6 s (`READY_WAIT_MS`); past that, a page gets a small
+"starting the demo" page that reloads itself every 4 s, and an API call a 503 with
+`Retry-After`. Each request waits on its own and ends its wait before it answers: a wait
+shared between requests was dropped with the request that began it and left every request
+after it hanging (found under `wrangler dev`). The feed lives in the container, so each
+start writes it afresh, ending at the moment it starts.
+
+**Cost.** A container is billed while it is awake. An open page keeps it awake -- the
+dashboard streams over a websocket, and every message counts as activity -- so a tab left
+open overnight keeps one `basic` instance running overnight; `max_instances` stops it ever
+being more than one. See [Containers pricing](https://developers.cloudflare.com/containers/pricing/).
+
+## Operate
+
+```bash
+npx wrangler tail                    # the Worker's logs
+npx wrangler containers list         # the container's state
+npx wrangler deploy                  # after pulling: a new image and Worker
+npx wrangler delete                  # take the demo down
+npm run typecheck                    # wrangler types && tsc --noEmit
+```
+
+To change: the history and the time zone in `docker/demo/Dockerfile`; the instance size and
+the ceiling in `wrangler.jsonc` (`standard-1` halves a cold start, and costs more while
+awake); the idle time and the wait in `src/index.ts`.
+
+## Without Cloudflare
+
+The same image runs anywhere Docker does:
+
+```bash
+docker build -f docker/demo/Dockerfile -t rc-dashboard-demo .     # from the repo root
+docker run --rm -p 8080:8080 rc-dashboard-demo                    # http://127.0.0.1:8080
+```
+
+`npx wrangler dev` runs the Worker and the container together locally, also through Docker.
