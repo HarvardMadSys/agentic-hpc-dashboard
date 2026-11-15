@@ -73,6 +73,15 @@ For a remote instance: `ssh -L 8080:127.0.0.1:8080 <host>`.
 cd dashboard/web && npm install && npm run dev     # http://localhost:5173
 ```
 
+**Demo**, the whole stack with no cluster — the service runs unchanged over a synthetic
+collector feed it writes and keeps appending to, for fictional hosts and users; every
+record and every page says *synthetic data* ([`dashboard/README.md`](dashboard/README.md#demo-mode)):
+
+```bash
+cd dashboard && uv sync && (cd web && npm ci && npm run build)
+uv run python -m rc_dashboard demo                 # http://127.0.0.1:8080
+```
+
 ## Where to read further
 
 | document | covers |
