@@ -104,6 +104,79 @@ class SmallSpans(unittest.TestCase):
         self.check("truncated", part, cut, "without its trailer")
 
 
+class IndexCache(unittest.TestCase):
+    """The process keeps an index for each compressed file it reads, up to `_KEEP`
+    of them. It drops the index of a file that is gone, and of one no reader used for
+    `_IDLE_S`: a copy that drops a day of `.gz` files each night (fleet_stream with
+    keep_gz), and days that left the window, would otherwise keep theirs here."""
+
+    def setUp(self):
+        gz._indexes.clear()
+        self.saved = gz._SWEEP_S
+        gz._SWEEP_S = 0.0
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="rc_gz_")
+
+    def tearDown(self):
+        gz._SWEEP_S = self.saved
+        gz._indexes.clear()
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def gz_file(self, name, seed):
+        p = os.path.join(self.dir, name + ".jsonl.gz")
+        with open(p, "wb") as fh:
+            fh.write(gzip.compress(payload(50, seed)))
+        return p
+
+    def read(self, p):
+        with gz.open_feed(p) as fh:
+            return fh.read()
+
+    def test_a_deleted_file_keeps_no_index(self):
+        a, b = self.gz_file("a", 1), self.gz_file("b", 2)
+        self.read(a)
+        self.read(b)
+        self.assertEqual(sorted(gz._indexes), [a, b])
+        os.unlink(a)
+        self.read(b)
+        self.assertEqual(sorted(gz._indexes), [b])
+        self.assertEqual(gz.status()["files"], 1)
+
+    def test_an_index_no_reader_used_is_dropped(self):
+        a, b = self.gz_file("a", 1), self.gz_file("b", 2)
+        self.read(a)
+        gz._indexes[a].used -= gz._IDLE_S + 1
+        self.read(b)
+        self.assertEqual(sorted(gz._indexes), [b])
+
+    def test_opening_a_file_again_keeps_its_index(self):
+        a, b = self.gz_file("a", 1), self.gz_file("b", 2)
+        self.read(a)
+        idx = gz._indexes[a]
+        idx.used -= gz._IDLE_S + 1
+        self.read(a)
+        self.read(b)
+        self.assertIs(gz._indexes.get(a), idx)
+
+    def test_a_long_read_keeps_its_index(self):
+        """Every span a reader inflates counts as a use."""
+        a, b = self.gz_file("a", 1), self.gz_file("b", 2)
+        saved = gz.SPAN, gz._STEP, gz._CHUNK
+        gz.SPAN, gz._STEP, gz._CHUNK = 997, 311, 101     # many spans, as in SmallSpans
+        try:
+            gz._indexes.clear()
+            with gz.open_feed(a, buffering=64) as fh:   # a small buffer: each
+                fh.read(10)                             # read reaches the spans
+                gz._indexes[a].used -= gz._IDLE_S + 1
+                fh.seek(5000)
+                fh.read(10)
+                self.read(b)
+                self.assertIn(a, gz._indexes)
+        finally:
+            gz.SPAN, gz._STEP, gz._CHUNK = saved
+
+
 class CompressedFeed(FeedCase):
     """The same records, plain in one root and compressed in another."""
 

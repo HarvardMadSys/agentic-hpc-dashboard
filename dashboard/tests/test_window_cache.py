@@ -22,10 +22,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rc_dashboard import snapshots                 # noqa: E402
+from rc_dashboard import snapshots, windows        # noqa: E402
 from rc_dashboard.export import window_plan, window_scan   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
-from rc_dashboard.windows import EVENTS, WindowRegistry    # noqa: E402
+from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
 from test_ingest import FeedCase, exit_rec, line, stamp    # noqa: E402
 
 WIN = 1440
@@ -136,6 +136,72 @@ class PrewarmTest(CacheCase):
         reg.request(60)
         reg.prewarm([360])
         self.assertEqual(sorted(reg.views), [60, WIN])
+
+
+class CapTest(CacheCase):
+    """`panels.max_windows` holds at every build, not only when a window is asked for.
+
+    A request evicts only a ready view, so a window asked for while another one
+    builds leaves both held. On boslogin05 on 2026-11-12, with the cap at 1, a
+    12-hour view asked for during the 24-hour view's first build stayed beside it
+    all night, and each drift rebuild then built a third state beside the two."""
+
+    def asked_during_a_build(self, reg):
+        first = reg.request(WIN)
+        first.state = "building"                    # the worker is reducing it
+        second = reg.request(720)                   # nothing ready to evict yet
+        self.assertEqual(sorted(reg.views), [720, WIN])
+        first.state = "ready"                       # its build ends
+        return first, second
+
+    def test_a_window_asked_for_during_a_build_takes_its_place_at_its_own_build(self):
+        reg = self.registry()
+        reg.max_views = 1
+        _, second = self.asked_during_a_build(reg)
+        reg._build(second)                          # the worker takes the next one
+        self.assertEqual(list(reg.views), [720])
+        self.assertEqual(second.state, "ready")
+
+    def test_the_room_is_made_before_the_build_reads(self):
+        reg = self.registry()
+        reg.max_views = 1
+        _, second = self.asked_during_a_build(reg)
+        held = []
+        real = windows.window_plan
+
+        def plan(*a, **k):
+            held.append(sorted(reg.views))
+            return real(*a, **k)
+        with mock.patch.object(windows, "window_plan", plan):
+            reg._build(second)
+        self.assertEqual(held, [[720]])
+
+    def test_a_rebuild_drops_a_view_held_past_the_cap(self):
+        reg = self.registry()
+        reg.max_views = 1
+        first, second = self.asked_during_a_build(reg)
+        second.state = "ready"                      # both built: one past the cap
+        reg._build(first)                           # the 24-hour view's drift rebuild
+        self.assertEqual(list(reg.views), [WIN])
+        self.assertIs(reg.views[WIN], first)
+
+    def test_a_build_within_the_cap_evicts_nothing(self):
+        reg = self.registry()
+        reg.max_views = 2
+        day, half = reg.request(WIN), reg.request(720)
+        day.state = half.state = "ready"
+        reg._build(day)
+        self.assertEqual(sorted(reg.views), [720, WIN])
+
+    def test_a_filtered_build_never_evicts_the_default_window(self):
+        reg = self.registry()
+        reg.max_views = 1
+        default = self.cfg().get("live.window_min")
+        dflt = reg.request(default)
+        dflt.state = "ready"
+        flt = reg.request(default, ViewFilter(["glen"]))    # held beside it, by design
+        reg._build(flt)
+        self.assertIs(reg.views.get(default), dflt)
 
 
 class ResumeTest(CacheCase):

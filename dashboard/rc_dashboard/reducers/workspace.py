@@ -990,8 +990,9 @@ def _add_name(d, name, ops, cap=MAX_NAMES):
 class WorkspaceReducer:
     EVENTS = _EV
     KEY = "workspace"
-    # Derived from argv, and rebuilt on demand: not state worth saving.
-    SNAPSHOT_SKIP = ("_cache", "_admitted")
+    # Derived from argv, and rebuilt on demand: not state worth saving. Nor is
+    # `_oldest`: a restored copy walks its keys once and learns it again.
+    SNAPSHOT_SKIP = ("_cache", "_admitted", "_oldest")
 
     def __init__(self, cfg, classes=None, window_s=None, procs=None):
         r = cfg.get("reducers.workspace", {}) or {}
@@ -1004,6 +1005,8 @@ class WorkspaceReducer:
         self.window_s = window_s or int(cfg.get("live.window_min", 1440)) * 60
         self.procs = procs
         self.keys = {}              # (host, key pid) -> KeyStat
+        # No key held was last seen before this (`_evict`); None until a walk.
+        self._oldest = None
         self.entries = 0            # directory entries across every key
         self.homes = {}             # user -> home, read off the agent's own paths
         self.dropped = 0            # records whose key could not be admitted
@@ -1045,6 +1048,7 @@ class WorkspaceReducer:
             user = get("user")
             st = self.keys[key] = KeyStat(get("tree_root_pid"),
                                           sys.intern(user) if user else user)
+            self._held_since(get("_ts_epoch"))
         self.fed += 1
         st.procs += 1
         e = get("_ts_epoch")
@@ -1190,6 +1194,7 @@ class WorkspaceReducer:
                         self.dropped += st.procs
                         continue
                 cur = self.keys[key] = KeyStat(st.root, st.user)
+                self._held_since(st.last)
             self._merge_key(cur, st)
         self.dropped += o.dropped
         self.capped_tokens += o.capped_tokens
@@ -1244,10 +1249,36 @@ class WorkspaceReducer:
         return d
 
     def _evict(self):
+        """Drop the keys last seen before the window began.
+
+        Called for every new key at the cap. When every key held is inside
+        the window, nothing can go, and walking them all again for each new
+        key made a feed or a merge at the cap quadratic: a window merged from
+        its hours reaches the cap partway through, and each hour after that
+        took minutes, nearly all of them here. So a walk notes the oldest key
+        it kept, and the next walk waits until the window has passed that
+        one. A key's `last` only grows, and a key added since lowers the
+        mark to its own (`_held_since`), so a walk skipped would have
+        dropped nothing.
+        """
         cutoff = time.time() - self.window_s
-        dead = [k for k, s in self.keys.items() if (s.last or 0) < cutoff]
+        if self._oldest is not None and cutoff <= self._oldest:
+            return
+        dead, oldest = [], None
+        for k, s in self.keys.items():
+            t = s.last or 0
+            if t < cutoff:
+                dead.append(k)
+            elif oldest is None or t < oldest:
+                oldest = t
         for k in dead:
             self.entries -= len(self.keys.pop(k).dirs)
+        self._oldest = oldest
+
+    def _held_since(self, last):
+        """A key just added, last seen at `last`: `_evict`'s mark is no later."""
+        if self._oldest is not None:
+            self._oldest = min(self._oldest, last or 0)
 
     def home_of(self, user):
         """A user's home directory: read off their agent's own paths when one
