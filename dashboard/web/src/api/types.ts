@@ -1713,6 +1713,31 @@ export interface UserSlurm {
   gpu_h_known: number;
 }
 
+/** What a user's agents' actions are for (`portraits.USES`): their calls grouped as a reader names a use. */
+export type UseKind = 'explore' | 'develop' | 'build' | 'run' | 'hpc' | 'git';
+
+/** How a user leverages their agents (`portraits.leverage`): each part decided by the
+ *  service's rules, and null where the numbers do not say it. The page words it. */
+export interface Leverage {
+  /** the way most of their sessions are driven; `mixed` when none holds half, `unknown` with no launcher known */
+  mode: { id: 'terminal' | 'script' | 'extension' | 'app' | 'mixed' | 'unknown'; n: number; of: number };
+  /** the freedom the agents start with, of the launches that are known */
+  autonomy: { id: 'bypass' | 'auto' | 'no_flag'; bypassed: number; auto: number; of: number } | null;
+  /** the most sessions open at once, when that is several */
+  parallel: number | null;
+  /** what the agents' actions are for, the most first; empty when too few, or none read */
+  uses: { id: UseKind; n: number; pct: number }[];
+  /** calls that do something: waiting and calls whose command was not recorded left out */
+  actions: number;
+  /** how many uses from the top hold most of the actions: 1, 2, or 0 for a mix */
+  mostly: 0 | 1 | 2;
+  /** the calls that only wait, when they are a large share */
+  waiting: { n: number; of: number; pct: number } | null;
+  project: { name: string; n: number; of: number; mostly: boolean } | null;
+  /** the busiest local hour, and the share of active minutes between 00:00 and 06:00 */
+  when: { busiest: number; minutes: number; night_pct: number | null } | null;
+}
+
 /** One user's row: the roster's, and the head of their portrait. */
 export interface UserRow {
   user: string;
@@ -1760,6 +1785,8 @@ export interface UserRow {
   projects_total: number;
   slurm: UserSlurm | null;
   traits: Trait[];
+  /** how they leverage their agents: the summary's parts */
+  leverage: Leverage;
   /** a portrait's: active minutes by weekday (Monday first) and local hour */
   grid?: number[][];
 }

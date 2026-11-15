@@ -54994,7 +54994,10 @@
     "wait": 0.25,
     "night": 0.25,
     "night_min": 60,
-    "min_calls": 20
+    "min_calls": 20,
+    "mode": 0.5,
+    "mostly": 0.5,
+    "project": 0.5
    },
    "basis": {
     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
@@ -55171,7 +55174,71 @@
        "tone": "",
        "detail": "28% of 1,184 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "mixed",
+       "n": 3,
+       "of": 11
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 6,
+       "auto": 0,
+       "of": 13
+      },
+      "parallel": 11,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 515,
+        "pct": 51.3
+       },
+       {
+        "id": "develop",
+        "n": 259,
+        "pct": 25.8
+       },
+       {
+        "id": "git",
+        "n": 88,
+        "pct": 8.8
+       },
+       {
+        "id": "run",
+        "n": 76,
+        "pct": 7.6
+       },
+       {
+        "id": "build",
+        "n": 44,
+        "pct": 4.4
+       },
+       {
+        "id": "hpc",
+        "n": 22,
+        "pct": 2.2
+       }
+      ],
+      "actions": 1004,
+      "mostly": 1,
+      "waiting": {
+       "n": 1309,
+       "of": 2327,
+       "pct": 56.3
+      },
+      "project": {
+       "name": "proj",
+       "n": 10,
+       "of": 13,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 9,
+       "minutes": 76,
+       "night_pct": 27.7
+      }
+     }
     },
     {
      "user": "dwei",
@@ -55307,7 +55374,71 @@
        "tone": "",
        "detail": "59% of 281 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "app",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 63,
+        "pct": 54.8
+       },
+       {
+        "id": "develop",
+        "n": 15,
+        "pct": 13
+       },
+       {
+        "id": "hpc",
+        "n": 11,
+        "pct": 9.6
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 8.7
+       },
+       {
+        "id": "run",
+        "n": 8,
+        "pct": 7
+       },
+       {
+        "id": "git",
+        "n": 8,
+        "pct": 7
+       }
+      ],
+      "actions": 115,
+      "mostly": 1,
+      "waiting": {
+       "n": 166,
+       "of": 281,
+       "pct": 59.1
+      },
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 1,
+       "minutes": 30,
+       "night_pct": 59.1
+      }
+     }
     },
     {
      "user": "rkoshy",
@@ -55442,7 +55573,62 @@
        "tone": "",
        "detail": "26% of 188 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "script",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 86,
+        "pct": 48.3
+       },
+       {
+        "id": "develop",
+        "n": 56,
+        "pct": 31.5
+       },
+       {
+        "id": "git",
+        "n": 16,
+        "pct": 9
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 5.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 5.6
+       }
+      ],
+      "actions": 178,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 5,
+       "minutes": 19,
+       "night_pct": 25.5
+      }
+     }
     },
     {
      "user": "mmarthen",
@@ -55595,7 +55781,57 @@
        "tone": "",
        "detail": "31% of 167 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 75,
+        "pct": 44.9
+       },
+       {
+        "id": "develop",
+        "n": 61,
+        "pct": 36.5
+       },
+       {
+        "id": "git",
+        "n": 21,
+        "pct": 12.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 6
+       }
+      ],
+      "actions": 167,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 16,
+       "minutes": 16,
+       "night_pct": 31.1
+      }
+     }
     },
     {
      "user": "jsilva",
@@ -55704,7 +55940,27 @@
        "tone": "",
        "detail": "1 job submitted"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [],
+      "actions": 0,
+      "mostly": 0,
+      "waiting": null,
+      "project": null,
+      "when": null
+     }
     }
    ],
    "fleet": {
@@ -55908,7 +56164,10 @@
      "wait": 0.25,
      "night": 0.25,
      "night_min": 60,
-     "min_calls": 20
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
     },
     "basis": {
      "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
@@ -56334,7 +56593,71 @@
        "tone": "",
        "detail": "28% of 1,184 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "mixed",
+       "n": 3,
+       "of": 11
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 6,
+       "auto": 0,
+       "of": 13
+      },
+      "parallel": 11,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 515,
+        "pct": 51.3
+       },
+       {
+        "id": "develop",
+        "n": 259,
+        "pct": 25.8
+       },
+       {
+        "id": "git",
+        "n": 88,
+        "pct": 8.8
+       },
+       {
+        "id": "run",
+        "n": 76,
+        "pct": 7.6
+       },
+       {
+        "id": "build",
+        "n": 44,
+        "pct": 4.4
+       },
+       {
+        "id": "hpc",
+        "n": 22,
+        "pct": 2.2
+       }
+      ],
+      "actions": 1004,
+      "mostly": 1,
+      "waiting": {
+       "n": 1309,
+       "of": 2327,
+       "pct": 56.3
+      },
+      "project": {
+       "name": "proj",
+       "n": 10,
+       "of": 13,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 9,
+       "minutes": 76,
+       "night_pct": 27.7
+      }
+     }
     },
     "phases": {
      "time_s": {
@@ -57610,7 +57933,10 @@
      "wait": 0.25,
      "night": 0.25,
      "night_min": 60,
-     "min_calls": 20
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
     },
     "basis": {
      "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
@@ -57973,7 +58299,27 @@
        "tone": "",
        "detail": "1 job submitted"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [],
+      "actions": 0,
+      "mostly": 0,
+      "waiting": null,
+      "project": null,
+      "when": null
+     }
     },
     "phases": {
      "time_s": {},
@@ -58162,7 +58508,10 @@
      "wait": 0.25,
      "night": 0.25,
      "night_min": 60,
-     "min_calls": 20
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
     },
     "basis": {
      "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
@@ -58552,7 +58901,71 @@
        "tone": "",
        "detail": "59% of 281 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "app",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 63,
+        "pct": 54.8
+       },
+       {
+        "id": "develop",
+        "n": 15,
+        "pct": 13
+       },
+       {
+        "id": "hpc",
+        "n": 11,
+        "pct": 9.6
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 8.7
+       },
+       {
+        "id": "run",
+        "n": 8,
+        "pct": 7
+       },
+       {
+        "id": "git",
+        "n": 8,
+        "pct": 7
+       }
+      ],
+      "actions": 115,
+      "mostly": 1,
+      "waiting": {
+       "n": 166,
+       "of": 281,
+       "pct": 59.1
+      },
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 1,
+       "minutes": 30,
+       "night_pct": 59.1
+      }
+     }
     },
     "phases": {
      "time_s": {
@@ -58843,7 +59256,10 @@
      "wait": 0.25,
      "night": 0.25,
      "night_min": 60,
-     "min_calls": 20
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
     },
     "basis": {
      "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
@@ -59250,7 +59666,57 @@
        "tone": "",
        "detail": "31% of 167 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "terminal",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "bypass",
+       "bypassed": 1,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 75,
+        "pct": 44.9
+       },
+       {
+        "id": "develop",
+        "n": 61,
+        "pct": 36.5
+       },
+       {
+        "id": "git",
+        "n": 21,
+        "pct": 12.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 6
+       }
+      ],
+      "actions": 167,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 16,
+       "minutes": 16,
+       "night_pct": 31.1
+      }
+     }
     },
     "phases": {
      "time_s": {
@@ -59535,7 +60001,10 @@
      "wait": 0.25,
      "night": 0.25,
      "night_min": 60,
-     "min_calls": 20
+     "min_calls": 20,
+     "mode": 0.5,
+     "mostly": 0.5,
+     "project": 0.5
     },
     "basis": {
      "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
@@ -59924,7 +60393,62 @@
        "tone": "",
        "detail": "26% of 188 active minutes"
       }
-     ]
+     ],
+     "leverage": {
+      "mode": {
+       "id": "script",
+       "n": 1,
+       "of": 1
+      },
+      "autonomy": {
+       "id": "no_flag",
+       "bypassed": 0,
+       "auto": 0,
+       "of": 1
+      },
+      "parallel": null,
+      "uses": [
+       {
+        "id": "explore",
+        "n": 86,
+        "pct": 48.3
+       },
+       {
+        "id": "develop",
+        "n": 56,
+        "pct": 31.5
+       },
+       {
+        "id": "git",
+        "n": 16,
+        "pct": 9
+       },
+       {
+        "id": "build",
+        "n": 10,
+        "pct": 5.6
+       },
+       {
+        "id": "run",
+        "n": 10,
+        "pct": 5.6
+       }
+      ],
+      "actions": 178,
+      "mostly": 2,
+      "waiting": null,
+      "project": {
+       "name": "proj",
+       "n": 1,
+       "of": 1,
+       "mostly": true
+      },
+      "when": {
+       "busiest": 5,
+       "minutes": 19,
+       "night_pct": 25.5
+      }
+     }
     },
     "phases": {
      "time_s": {

@@ -121,6 +121,14 @@ class RosterTest(unittest.TestCase):
             for t in r["traits"]:
                 self.assertTrue(rules[t["id"]])
 
+    def test_each_row_says_how_its_user_leverages_agents(self):
+        a = self.rows["alice"]["leverage"]
+        self.assertEqual(a["mode"]["id"], "terminal")
+        self.assertEqual(a["autonomy"], {"id": "bypass", "bypassed": 1, "auto": 0, "of": 2})
+        self.assertEqual(a["uses"], [], "five calls are too few to say what for")
+        self.assertEqual(self.rows["bob"]["leverage"]["mode"]["id"], "script")
+        self.assertEqual(self.rows["alice"]["leverage"]["project"]["name"], "proj")
+
     def test_the_busiest_user_is_first(self):
         self.assertEqual(self.ros["users"][0]["user"], "alice")
 
@@ -277,6 +285,66 @@ class HeldTest(unittest.TestCase):
         json.dumps(portraits.portrait(ctx, "ann", ros["fleet"]))
         # and the inputs, handed in, read as the context would have read them itself
         self.assertEqual(ros, portraits.roster(portraits.Context(red, now=ctx.now)))
+
+
+class LeverageTest(unittest.TestCase):
+    """The summary of how a user leverages their agents, part by part, on rows made by hand."""
+
+    def row(self, **kw):
+        r = {"sessions": 4, "surfaces": {}, "approval": {}, "cats": {}, "calls": 0,
+             "peak_open": 1, "projects": [], "hours": [0] * 24, "active_min": 0}
+        r.update(kw)
+        return portraits.leverage(r)
+
+    def test_the_way_most_sessions_are_driven(self):
+        self.assertEqual(self.row(surfaces={"terminal": 3, "script": 1})["mode"],
+                         {"id": "terminal", "n": 3, "of": 4})
+        # the desktop app and the web are one way to a reader; an unknown launcher is not counted
+        self.assertEqual(self.row(surfaces={"desktop": 1, "web": 1, "terminal": 1, "unknown": 1})["mode"],
+                         {"id": "app", "n": 2, "of": 3})
+        self.assertEqual(self.row(surfaces={"terminal": 1, "script": 1, "extension": 1,
+                                            "desktop": 1})["mode"]["id"], "mixed")
+        self.assertEqual(self.row(surfaces={"unknown": 4})["mode"]["id"], "unknown")
+
+    def test_the_freedom_the_agents_start_with(self):
+        a = self.row(approval={"bypassed": 2, "supervised": 2, "unobservable": 3})["autonomy"]
+        self.assertEqual(a, {"id": "bypass", "bypassed": 2, "auto": 0, "of": 4})
+        self.assertEqual(self.row(approval={"auto": 3, "supervised": 1})["autonomy"]["id"], "auto")
+        self.assertEqual(self.row(approval={"bypassed": 1, "supervised": 3})["autonomy"]["id"], "no_flag")
+        self.assertIsNone(self.row(approval={"unknown": 4})["autonomy"])
+
+    def test_what_the_actions_are_for_with_waiting_said_apart(self):
+        got = self.row(calls=100, cats={"explore": 30, "edit": 10, "test": 20, "wait": 40})
+        self.assertEqual(got["actions"], 60)
+        # a tie keeps the order of USES
+        self.assertEqual([(u["id"], u["n"], u["pct"]) for u in got["uses"]],
+                         [("explore", 30, 50.0), ("develop", 30, 50.0)])
+        self.assertEqual(got["mostly"], 1)
+        self.assertEqual(got["waiting"], {"n": 40, "of": 100, "pct": 40.0})
+
+    def test_mostly_one_two_or_a_mix(self):
+        self.assertEqual(self.row(calls=90, cats={"explore": 30, "run": 30, "git": 30})["mostly"], 2)
+        mix = self.row(calls=100, cats={"explore": 20, "run": 20, "git": 20, "build": 20, "slurm": 20})
+        self.assertEqual(mix["mostly"], 0)
+        self.assertEqual(len(mix["uses"]), 5)
+
+    def test_too_few_actions_or_none_read_say_no_use(self):
+        self.assertEqual(self.row(calls=10, cats={"explore": 10})["uses"], [])
+        unread = self.row(calls=None)
+        self.assertEqual((unread["uses"], unread["mostly"], unread["waiting"]), ([], 0, None))
+
+    def test_what_they_work_on_and_when(self):
+        hours = [0] * 24
+        hours[10], hours[3] = 50, 20
+        got = self.row(projects=[["proj", 3], ["dash", 1]], hours=hours, active_min=70, peak_open=3)
+        self.assertEqual(got["project"], {"name": "proj", "n": 3, "of": 4, "mostly": True})
+        self.assertEqual(got["when"], {"busiest": 10, "minutes": 50, "night_pct": 28.6})
+        self.assertEqual(got["parallel"], 3)
+        few = self.row(projects=[["proj", 1], ["dash", 1]], hours=hours, active_min=30)
+        self.assertFalse(few["project"]["mostly"])
+        self.assertIsNone(few["when"]["night_pct"])          # under night_min active minutes
+        self.assertIsNone(few["parallel"])
+        self.assertIsNone(self.row()["when"])
 
 
 class TraitRulesTest(unittest.TestCase):

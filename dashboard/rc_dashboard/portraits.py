@@ -42,6 +42,13 @@ comes from one rule over the numbers above, and the rule is served beside it
 (`TRAITS`, `RULES`), so the page never shows a trait without saying why. None is
 a judgement, none is made by a model, and a user can hold none.
 
+The summary of how a user leverages their agents (`leverage`) puts the same
+numbers together: the way most of their sessions are driven, the freedom the
+agents start with, how many run at once, what the agents' actions are for
+(`USES`), how much of it is waiting, what they work on, and when. The service
+decides each part by RULES; the page words it (lib/portraits.ts), as a line
+under each user in the roster and as the head of their portrait.
+
 Like everything on the Trajectories tab, the work is read from commands: an edit
 an agent makes with its own Edit tool, a file it reads with Read, and its
 thinking leave no command. So the work mix counts what ran as a process, and an
@@ -81,7 +88,29 @@ RULES = {
     "night": 0.25,          # active minutes between 00:00 and 06:00, local time,
     "night_min": 60,        # once there are this many active minutes
     "min_calls": 20,        # calls a share of calls needs
+    # the summary of how a user leverages their agents (`leverage`)
+    "mode": 0.5,            # a way of driving agents names the summary at this share of the sessions
+    #                         whose launcher is known; under it, "several places"
+    "mostly": 0.5,          # a use, or the top two together, is "mostly" at this share of the actions
+    "project": 0.5,         # a project is "mostly" what they work on at this share of the sessions
 }
+
+# What a user's agents are used for, as the summary names a use: the call
+# categories grouped, in the order a tie is listed. Waiting (sleep, ps, pgrep,
+# a squeue loop) and calls whose command was not recorded are no use of their
+# own: they are left out of the actions, and waiting is said apart.
+USES = (
+    ("explore", ("explore",)),      # read and search code and files: ls, cat, rg, grep, sed -n
+    ("develop", ("edit", "test")),  # change files from the shell, and test them
+    ("build", ("build",)),          # compile, build and install software
+    ("run", ("run",)),              # run programs: a script, a training run
+    ("hpc", ("slurm",)),            # the scheduler: sbatch, srun, squeue, ...
+    ("git", ("git",)),              # git and gh
+)
+# The ways of driving agents the summary names, from the surfaces (`surface_of`):
+# an app is the desktop app or the web, one way to a reader.
+_MODES = (("terminal", ("terminal",)), ("script", ("script",)),
+          ("extension", ("extension",)), ("app", ("desktop", "web")))
 
 # The traits, in the order a portrait lists them: id, what it says, its tone
 # (how the page colours it: crit, warn, ok, or plain), and its rule in words.
@@ -175,6 +204,9 @@ BASIS = {
     "slurm": "the user's agent sessions as the Slurm tab folds them",
     "traits": "plain statements, each from one rule over these numbers; the rules are served "
               "beside them, and none is a judgement",
+    "leverage": "how a user leverages their agents, from the same numbers: the way most of their "
+                "sessions are driven, the freedom they start with, how many run at once, and what the "
+                "agents' actions are for -- their calls by use, waiting and unrecorded calls left out",
 }
 
 
@@ -421,6 +453,80 @@ def traits(row):
             for t in TRAITS if t[0] in got]
 
 
+def leverage(row):
+    """How a user leverages their agents, as data the page words into its summary
+    (lib/portraits.ts): every part from a row's own numbers, by RULES, and None
+    where the numbers do not say it.
+
+      mode       the way most of their sessions are driven (`_MODES`), at
+                 RULES["mode"] of those whose launcher is known; `mixed` under
+                 it, `unknown` with none known
+      autonomy   the freedom the agents start with: `bypass` or `auto` at
+                 RULES["bypass"] / RULES["auto"] of the known launches, else
+                 `no_flag` (no bypass flag at launch: settings files, and a
+                 switch made mid-session, are not seen), with the counts
+      parallel   the most open at once, at RULES["parallel"] or more
+      uses       what the agents' actions are for (`USES`), the most first,
+                 over `actions`, the calls that do something; none under
+                 RULES["min_calls"] actions, or where no call is read.
+                 `mostly` is how many uses from the top hold RULES["mostly"]
+                 of the actions: 1, 2, or 0 for a mix
+      waiting    the calls that only wait, at RULES["wait"] of the calls
+      project    what most of their sessions work on, `mostly` at
+                 RULES["project"] of the sessions
+      when       the busiest local hour, and the share of active minutes
+                 between 00:00 and 06:00 once there are RULES["night_min"]
+    """
+    n = row["sessions"]
+    surf = row["surfaces"]
+    known = n - surf.get("unknown", 0)
+    if known:
+        # the first of a tie, in _MODES' order
+        top, k = max(((m, sum(surf.get(x, 0) for x in xs)) for m, xs in _MODES),
+                     key=lambda mk: mk[1])
+        mode = {"id": top if k >= RULES["mode"] * known else "mixed", "n": k, "of": known}
+    else:
+        mode = {"id": "unknown", "n": 0, "of": n}
+    ap = row["approval"]
+    known = sum(ap.get(a, 0) for a in _APPROVAL_KNOWN)
+    autonomy = None
+    if known:
+        b, a = ap.get("bypassed", 0), ap.get("auto", 0)
+        kind = "bypass" if b >= RULES["bypass"] * known else \
+            "auto" if a >= RULES["auto"] * known else "no_flag"
+        autonomy = {"id": kind, "bypassed": b, "auto": a, "of": known}
+    cats = row["cats"]
+    actions = sum(cats.get(c, 0) for _u, cs in USES for c in cs)
+    uses, mostly = [], 0
+    if row["calls"] is not None and actions >= RULES["min_calls"]:
+        got = [(u, sum(cats.get(c, 0) for c in cs)) for u, cs in USES]
+        uses = [{"id": u, "n": k, "pct": round(100.0 * k / actions, 1)}
+                for u, k in sorted((x for x in got if x[1]), key=lambda x: -x[1])]
+        if uses[0]["n"] >= RULES["mostly"] * actions:
+            mostly = 1
+        elif len(uses) > 1 and uses[0]["n"] + uses[1]["n"] >= RULES["mostly"] * actions:
+            mostly = 2
+    logged = sum(cats.values())
+    waiting = None
+    if logged >= RULES["min_calls"] and cats.get("wait", 0) >= RULES["wait"] * logged:
+        waiting = {"n": cats["wait"], "of": logged, "pct": round(100.0 * cats["wait"] / logged, 1)}
+    project = None
+    if row["projects"]:
+        name, k = row["projects"][0]
+        project = {"name": name, "n": k, "of": n, "mostly": k >= RULES["project"] * n}
+    hours, act = row["hours"], row["active_min"]
+    when = None
+    if act:
+        h = max(range(24), key=lambda i: (hours[i], -i))    # the earliest of a tie
+        when = {"busiest": h, "minutes": hours[h],
+                "night_pct": round(100.0 * sum(hours[i] for i in _NIGHT) / act, 1)
+                if act >= RULES["night_min"] else None}
+    return {"mode": mode, "autonomy": autonomy,
+            "parallel": row["peak_open"] if row["peak_open"] >= RULES["parallel"] else None,
+            "uses": uses, "actions": actions, "mostly": mostly, "waiting": waiting,
+            "project": project, "when": when}
+
+
 def _pct_txt(p):
     return "%d" % round(p) if p >= 10 else "%.1f" % p
 
@@ -488,6 +594,7 @@ def _user_row(user, sessions, slurm, clock, grid=False):
     if cells is not None:
         row["grid"] = cells
     row["traits"] = traits(row)
+    row["leverage"] = leverage(row)
     return row
 
 

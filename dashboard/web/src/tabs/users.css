@@ -8,11 +8,34 @@
 table.ur-roster td {
   vertical-align: middle;
 }
-table.ur-roster tr.ur-row.open td {
+/* one body a user: their row and the line under it, hovered and opened as one */
+table.ur-roster tbody.ur-user {
+  cursor: pointer;
+}
+table.ur-roster tbody.ur-user:hover td {
+  background: var(--surface-2);
+}
+table.ur-roster tbody.ur-user.open td {
   background: var(--crimson-wash);
 }
-table.ur-roster tr.ur-row.open td:first-child {
+table.ur-roster tbody.ur-user.open td:first-child {
   box-shadow: inset 3px 0 0 var(--crimson);
+}
+table.ur-roster tbody.ur-user tr.ur-row td {
+  border-bottom: 0;
+  padding-bottom: 3px;
+}
+table.ur-roster tbody.ur-user tr.ur-sumrow td {
+  padding: 0 14px 10px 24px;
+  white-space: normal;
+  border-bottom: 1px solid var(--rule);
+}
+.ur-sumline {
+  display: block;
+  max-width: 120ch;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
 }
 .ur-traitcell {
   white-space: normal !important;
@@ -96,13 +119,6 @@ table.ur-roster tr.ur-row.open td:first-child {
   background: var(--crimson-wash);
   color: var(--crimson-ink);
   font: 600 16px/1 'IBM Plex Mono', monospace;
-}
-.ur-summary {
-  margin: 0;
-  max-width: 96ch;
-  color: var(--ink);
-  font-size: 13.5px;
-  line-height: 1.6;
 }
 .ur-traits {
   display: flex;
@@ -374,4 +390,51 @@ table.ur-roster th.num {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* how they leverage agents: one sentence, then point by point */
+.ur-lev {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--crimson);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.ur-lev-head {
+  margin: 0;
+  max-width: 96ch;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+}
+.ur-lev-points {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.ur-lev-points > div {
+  display: contents;
+}
+.ur-lev-points dt {
+  font: 10px/19px 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.ur-lev-points dt[data-tip] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.ur-lev-points dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }

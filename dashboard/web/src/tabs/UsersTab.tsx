@@ -61,7 +61,8 @@ import {
   ranked,
   ruleOf,
   share,
-  summaryLines,
+  leverageHeadline,
+  leveragePoints,
   surfaceShare,
 } from '../lib/portraits';
 import { AP_COL, AP_LABEL, AP_SHORT, APPROVAL_KNOWN, APPROVAL_ORDER, SB_COL, SESSION_KNOWN, SESSION_LABEL, SESSION_ORDER, legendCol } from '../lib/sandbox';
@@ -349,16 +350,13 @@ function Roster({
                 <th data-tip="plain statements about how this user's agents were used, each from one rule; hover one for its rule">traits</th>
               </tr>
             </thead>
-            <tbody>
-              {sorted.map((r) => {
-                const on = open === r.user;
-                return (
-                  <tr
-                    key={r.user}
-                    className={`u-row ur-row${on ? ' open' : ''}`}
-                    onClick={() => setOpen(on ? null : r.user)}
-                    aria-selected={on}
-                  >
+            {sorted.map((r) => {
+              const on = open === r.user;
+              const toggle = () => setOpen(on ? null : r.user);
+              return (
+                // one body a user: their row, and the line under it that says how they leverage agents
+                <tbody key={r.user} className={`ur-user${on ? ' open' : ''}`} aria-selected={on}>
+                  <tr className="ur-row" onClick={toggle}>
                     <td>
                       <span className="u-caret">{on ? '▾' : '▸'}</span>
                       <span className="mono u-name">{r.user}</span>
@@ -382,9 +380,16 @@ function Roster({
                     </td>
                     <td className="ur-traitcell"><TraitBadges traits={r.traits} catalogue={catalogue} max={2} /></td>
                   </tr>
-                );
-              })}
-            </tbody>
+                  <tr className="ur-sumrow" onClick={toggle}>
+                    <td colSpan={10}>
+                      <span className="ur-sumline" data-tip="how they leverage agents, from the numbers on this row; their portrait says it point by point">
+                        {leverageHeadline(r)}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              );
+            })}
           </table>
         </div>
       ) : (
@@ -399,9 +404,30 @@ function Roster({
 
 /* ------------------------------------------------------------ the portrait */
 
-/** One user's head: who, when, the summary in sentences, the traits, the numbers. */
-function Head({ p, row, catalogue, win }: { p: UserPortrait; row: UserRow; catalogue: TraitRule[]; win: string | null }) {
-  const lines = summaryLines(row, p.fleet, win);
+/** How a user leverages their agents: the summary in one sentence, then point by
+ *  point, each with the numbers it rests on and how they were counted on hover. */
+function Leveraging({ p, row }: { p: UserPortrait; row: UserRow }) {
+  const points = leveragePoints(row, p.fleet, p.tz);
+  return (
+    <section className="ur-lev" aria-label="how they leverage agents">
+      <div className="eyebrow" data-tip={p.basis?.leverage ?? 'how this user leverages their agents, from the numbers below'}>
+        how they leverage agents
+      </div>
+      <p className="ur-lev-head">{leverageHeadline(row)}</p>
+      <dl className="ur-lev-points">
+        {points.map((x) => (
+          <div key={x.k}>
+            <dt data-tip={x.tip}>{x.label}</dt>
+            <dd>{x.text}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+/** One user's head: who, when, how they leverage agents, the traits, the numbers. */
+function Head({ p, row, catalogue }: { p: UserPortrait; row: UserRow; catalogue: TraitRule[] }) {
   const nums: [string, string, string?][] = [
     ['sessions', fint(row.sessions), 'agent sessions in the window'],
     ['tool calls', row.calls == null ? 'not read' : fint(row.calls), GLOSS.toolcall],
@@ -427,7 +453,7 @@ function Head({ p, row, catalogue, win }: { p: UserPortrait; row: UserRow; catal
           </div>
         </div>
       </div>
-      <p className="ur-summary">{lines.join(' ')}</p>
+      <Leveraging p={p} row={row} />
       {row.traits.length > 0 && (
         <div className="ur-traits">
           {row.traits.map((t) => (
@@ -1080,7 +1106,7 @@ function Portrait({
       >
         {q.error && <div className="err">{q.error}</div>}
         {p?.found == null && !q.error && p && <div className="none">this window is still being read</div>}
-        {row && p && <Head p={p} row={row} catalogue={catalogue} win={winLbl} />}
+        {row && p && <Head p={p} row={row} catalogue={catalogue} />}
         {fleetNote && <div className="nm">{fleetNote}</div>}
       </Panel>
       {row && p && (

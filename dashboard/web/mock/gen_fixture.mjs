@@ -1407,8 +1407,11 @@ function cascades(nowEpoch) {
 const PORTRAIT_RULES = {
   interactive: 0.6, scripted: 0.5, app: 0.5, bypass: 0.5, auto: 0.5, sandboxed: 0.5, parallel: 3, long_s: 7200,
   short_n: 10, short_s: 600, explore: 0.6, test: 0.15, build: 0.15, slurm: 0.1, wait: 0.25, night: 0.25,
-  night_min: 60, min_calls: 20,
+  night_min: 60, min_calls: 20, mode: 0.5, mostly: 0.5, project: 0.5,
 };
+// what the agents' actions are for (`portraits.USES`), and the ways of driving them (`portraits._MODES`)
+const PORTRAIT_USES = [['explore', ['explore']], ['develop', ['edit', 'test']], ['build', ['build']], ['run', ['run']], ['hpc', ['slurm']], ['git', ['git']]];
+const PORTRAIT_MODES = [['terminal', ['terminal']], ['script', ['script']], ['extension', ['extension']], ['app', ['desktop', 'web']]];
 const PORTRAIT_TRAITS = [
   ['interactive', "works in the agent's own terminal", '', "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"],
   ['scripted', 'runs agents from scripts', '', '50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal'],
@@ -1593,6 +1596,64 @@ function portraitTraits(row) {
   return PORTRAIT_TRAITS.filter(([id]) => id in got).map(([id, label, tone]) => ({ id, label, tone, detail: got[id] }));
 }
 
+/* How a user leverages their agents, as `portraits.leverage` gives it: each part by PORTRAIT_RULES, null where the
+ * numbers do not say it. */
+function portraitLeverage(row) {
+  const R = PORTRAIT_RULES;
+  const n = row.sessions;
+  const surf = row.surfaces;
+  const knownS = n - (surf.unknown ?? 0);
+  let mode = { id: 'unknown', n: 0, of: n };
+  if (knownS) {
+    let top = null;
+    for (const [m, xs] of PORTRAIT_MODES) {
+      const k = xs.reduce((a, x) => a + (surf[x] ?? 0), 0);
+      if (!top || k > top[1]) top = [m, k]; // the first of a tie
+    }
+    mode = { id: top[1] >= R.mode * knownS ? top[0] : 'mixed', n: top[1], of: knownS };
+  }
+  const ap = row.approval;
+  const b = ap.bypassed ?? 0;
+  const au = ap.auto ?? 0;
+  const knownA = b + au + (ap.supervised ?? 0);
+  const autonomy = knownA
+    ? { id: b >= R.bypass * knownA ? 'bypass' : au >= R.auto * knownA ? 'auto' : 'no_flag', bypassed: b, auto: au, of: knownA }
+    : null;
+  const cats = row.cats;
+  const actions = PORTRAIT_USES.reduce((a, [, cs]) => a + cs.reduce((x, c) => x + (cats[c] ?? 0), 0), 0);
+  let uses = [];
+  let mostly = 0;
+  if (row.calls != null && actions >= R.min_calls) {
+    uses = PORTRAIT_USES.map(([u, cs]) => [u, cs.reduce((x, c) => x + (cats[c] ?? 0), 0)])
+      .filter(([, k]) => k > 0)
+      .map(([u, k], i) => [u, k, i])
+      .sort((x, y) => y[1] - x[1] || x[2] - y[2])
+      .map(([u, k]) => ({ id: u, n: k, pct: Number(((100 * k) / actions).toFixed(1)) }));
+    if (uses[0].n >= R.mostly * actions) mostly = 1;
+    else if (uses.length > 1 && uses[0].n + uses[1].n >= R.mostly * actions) mostly = 2;
+  }
+  const logged = Object.values(cats).reduce((a, x) => a + x, 0);
+  const waiting = logged >= R.min_calls && (cats.wait ?? 0) >= R.wait * logged
+    ? { n: cats.wait, of: logged, pct: Number(((100 * cats.wait) / logged).toFixed(1)) }
+    : null;
+  const project = row.projects.length
+    ? { name: row.projects[0][0], n: row.projects[0][1], of: n, mostly: row.projects[0][1] >= R.project * n }
+    : null;
+  let when = null;
+  if (row.active_min) {
+    let h = 0;
+    for (let i = 1; i < 24; i++) if (row.hours[i] > row.hours[h]) h = i; // the earliest of a tie
+    when = {
+      busiest: h,
+      minutes: row.hours[h],
+      night_pct: row.active_min >= R.night_min
+        ? Number(((100 * row.hours.slice(0, 6).reduce((a, x) => a + x, 0)) / row.active_min).toFixed(1))
+        : null,
+    };
+  }
+  return { mode, autonomy, parallel: row.peak_open >= R.parallel ? row.peak_open : null, uses, actions, mostly, waiting, project, when };
+}
+
 /* One user's row over their sessions, the roster's and the head of their portrait (`grid` adds weekday by hour). */
 function portraitRow(user, ss, grid = false) {
   const minutes = new Set(ss.flatMap((s) => [...s._minutes]));
@@ -1664,6 +1725,7 @@ function portraitRow(user, ss, grid = false) {
     ...(grid ? { grid: cells } : {}),
   };
   row.traits = portraitTraits(row);
+  row.leverage = portraitLeverage(row);
   return row;
 }
 

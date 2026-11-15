@@ -749,6 +749,14 @@ imports it, and changing it rebuilds nothing.
   Codex) has calls of null, shown as *not read*, never 0.
 - **A share is over the known values**, with the rest counted beside it: a Codex app server's approval is
   unobservable, and a session whose own record was not seen has no surface.
+- **How they leverage agents** puts the same numbers together (`portraits.leverage`): the way most of their
+  sessions are driven (a terminal, scripts, an IDE, the desktop app or the web, else several places), the
+  freedom the agents start with, how many run at once, what the agents' actions are for (`portraits.USES`:
+  their calls grouped into exploring, editing and testing, building, running programs, Slurm and git, with
+  waiting and unrecorded calls left out, and the uses that hold most of them named), how much is waiting, the
+  scheduler, what the agents leave behind in their own words, what they work on, and when. The service decides
+  each part by `RULES`, and the page words it: one sentence under each user in the roster, and that sentence,
+  point by point, at the head of their portrait.
 - **Traits** are plain statements ("launches with approval bypassed", "keeps several sessions open at once"),
   each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
   them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made
