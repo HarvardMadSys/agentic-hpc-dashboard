@@ -24,6 +24,10 @@ and a verdict an admin can act on --
             host is down -- a collector that exits cleanly always writes one
   unknown   files for the host, but no heartbeat in what was read
 
+A host whose records say `"synthetic": true` was written by the demo
+(rc_dashboard/demo), not by a collector: its verdict is judged the same way, and
+the report says `synthetic` so the page can say so beside it.
+
 A probe the kernel cannot load (a missing BTF member, an old kernel) is a
 LIMIT, listed beside the verdict but not degrading it: it is true of every run
 on that host until the kernel changes, and a verdict that is always amber is
@@ -77,7 +81,7 @@ class _Run:
 
 
 class _Host:
-    __slots__ = ("runs", "last_beat", "beats", "interval_s", "beat_pid")
+    __slots__ = ("runs", "last_beat", "beats", "interval_s", "beat_pid", "synthetic")
 
     def __init__(self):
         self.runs = {}            # collector_pid -> _Run
@@ -85,6 +89,7 @@ class _Host:
         self.beats = 0
         self.interval_s = None
         self.beat_pid = None
+        self.synthetic = False    # its records were written by the demo, not measured
 
 
 class CollectorHealth:
@@ -113,6 +118,8 @@ class CollectorHealth:
         if host is None or ev not in self.EVENTS:
             return
         h = self.hosts.setdefault(host, _Host())
+        if rec.get("synthetic") is True:
+            h.synthetic = True
         r = self._run(h, rec)
         if ev == "meta":
             if r.started is None or (ts is not None and ts < r.started):
@@ -204,6 +211,7 @@ class CollectorHealth:
             f = files_by_host.get(host) or {}
             out.append({
                 "host": host, "verdict": verdict, "reasons": reasons, "limits": limits,
+                "synthetic": h.synthetic,
                 "heartbeat": {"last": h.last_beat, "age_s": round(age, 1) if age is not None else None,
                               "interval_s": h.interval_s, "seen": h.beats, "max_age_s": max_age},
                 "running": (self._run_row(cur) if cur is not None and verdict in
@@ -219,6 +227,10 @@ class CollectorHealth:
         rank = {"silent": 0, "stopped": 1, "unknown": 2, "degraded": 3, "ok": 4}
         out.sort(key=lambda x: (rank.get(x["verdict"], 9), x["host"]))
         return out
+
+    def synthetic_hosts(self):
+        """Hosts whose records were written by the demo: the page says so."""
+        return sorted(h for h, x in self.hosts.items() if x.synthetic)
 
 
 def _age(s):

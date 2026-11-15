@@ -458,6 +458,12 @@ class Config:
     def origin(self, dotted):
         return self._o.get(dotted, "default")
 
+    def set(self, dotted, value, origin):
+        """Override one leaf after load, naming who did (`--print-config` shows
+        it). For a mode that must win over every source, as a demo's feed must."""
+        _set(self._t, dotted, value)
+        self._o[dotted] = origin
+
     @property
     def tree(self):
         return self._t
