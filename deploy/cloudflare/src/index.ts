@@ -194,9 +194,24 @@ function cookieOf(request: Request, name: string): string | null {
   return null;
 }
 
-/** Only a path on this site: never a redirect elsewhere. */
-function backTo(next: string | null): string {
-  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+/** Only a path on this site: never a redirect elsewhere. `next` is resolved as a
+ * browser would (which reads `/\evil.example` as `//evil.example`), and anything
+ * that lands on another origin, or contains a backslash at all, is "/". */
+function backTo(next: string | null, site: URL): string {
+  if (!next || !next.startsWith("/") || next.includes("\\")) return "/";
+  let to: URL;
+  try {
+    to = new URL(next, site);
+  } catch {
+    return "/";
+  }
+  return to.origin === site.origin ? to.pathname + to.search + to.hash : "/";
+}
+
+/** Plain http on the open internet: the password must never cross it. Loopback
+ * is left alone, for `wrangler dev`. */
+function insecure(url: URL): boolean {
+  return url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
 }
 
 const esc = (s: string) =>
@@ -259,12 +274,17 @@ function signInPage(next: string, wrong: boolean, status: number): Response {
 /** The gate: null to let the request through, or the answer to give instead. */
 async function gate(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
+  if (insecure(url)) {
+    // Before any form is shown or read, whatever the zone's Always Use HTTPS says.
+    url.protocol = "https:";
+    return Response.redirect(url.toString(), 308);
+  }
   const password = env.DEMO_PASSWORD ?? "";
   const want = password ? await token(password) : null;
 
   if (url.pathname === SIGN_IN_PATH && request.method === "POST") {
     const form = await request.formData().catch(() => null);
-    const next = backTo(form?.get("next")?.toString() ?? null);
+    const next = backTo(form?.get("next")?.toString() ?? null, url);
     const given = form?.get("password")?.toString() ?? "";
     if (!want || !same(await token(given), want)) {
       await new Promise((r) => setTimeout(r, 1000)); // a slower guess
@@ -287,7 +307,7 @@ async function gate(request: Request, env: Env): Promise<Response | null> {
     request.method === "GET" &&
     !request.headers.has("upgrade") &&
     (request.headers.get("accept") ?? "").includes("text/html");
-  if (page) return signInPage(backTo(url.pathname + url.search), false, 401);
+  if (page) return signInPage(backTo(url.pathname + url.search, url), false, 401);
   return Response.json(
     { error: "password", detail: `the demo takes a password; ask ${CONTACT}` },
     { status: 401, headers: { "cache-control": "no-store" } },

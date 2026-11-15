@@ -34,8 +34,8 @@ hostname is the Worker's [Custom Domain](https://developers.cloudflare.com/worke
 (`routes` in `wrangler.jsonc`): the first deploy creates its DNS record and certificate,
 which can take a few minutes to answer, and the container takes a few minutes to provision.
 Until then, and after every idle spell, the page says the demo is starting and reloads
-itself. Plain `http://` reaches it too, or is redirected to `https://` if the zone has
-*Always Use HTTPS* on.
+itself. Plain `http://` is redirected to `https://` by the Worker, so the password never
+crosses the network in the clear.
 
 ## What runs
 
