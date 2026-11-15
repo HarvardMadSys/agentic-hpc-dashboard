@@ -22,6 +22,7 @@ child inherits its parent's namespaces, prompts on a command line read
 `[REDACTED-PROMPT]` and credentials `[REDACTED]`.
 """
 import hashlib
+import heapq
 import shlex
 import time
 from collections import Counter
@@ -123,6 +124,24 @@ def programs(cmd):
 
 def _uuid(*parts):
     return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
+
+
+class Live:
+    """Which of `procs` -- (start, end, command, rss, threads) -- run at each of a
+    rising series of times: one sweep, not a scan of every process per tick."""
+
+    def __init__(self, procs):
+        self.procs = sorted(procs)
+        self.i = 0
+        self.heap = []
+
+    def at(self, t):
+        while self.i < len(self.procs) and self.procs[self.i][0] <= t:
+            heapq.heappush(self.heap, (self.procs[self.i][1], self.i))
+            self.i += 1
+        while self.heap and self.heap[0][0] <= t:
+            heapq.heappop(self.heap)
+        return [self.procs[j] for _end, j in sorted(self.heap, key=lambda x: x[1])]
 
 
 class Agent:
@@ -371,6 +390,10 @@ class Agent:
         first = root.start + rng.uniform(30, 75)
         prev = root.start
         sock_tx = sock_rx = 0
+        tree = list(self.procs)
+        for n in self.nested:
+            tree += n.procs + [(n.root.start, n.root.end, n.root.command, n.root.rss_mb, n.root.threads)]
+        running = Live(tree)
         for T in b.hf.ticks(first, root.end):
             calls = 0
             while bi < len(busy) and busy[bi][0] < T:
@@ -382,11 +405,7 @@ class Agent:
             sock_tx, sock_rx = sock_tx + tx, sock_rx + rx
             self.net_tx += tx
             self.net_rx += rx
-            live = [x for x in self.procs if x[0] <= T < x[1]]
-            for n in self.nested:
-                live += [x for x in n.procs if x[0] <= T < x[1]]
-                if n.root.start <= T < n.root.end:
-                    live.append((n.root.start, n.root.end, n.root.command, n.root.rss_mb, n.root.threads))
+            live = running.at(T)
             n_procs = 1 + len(live)
             threads = root.threads + sum(x[4] for x in live)
             rss = round(root.rss_mb + sum(x[3] for x in live), 1)
@@ -978,13 +997,14 @@ class _Tree:
 
     def ticks(self, cls, atype):
         b, root, rng = self.b, self.root, self.b.rng
+        tree_live = Live(self.procs)
+        others = []
+        for n in self.nested:
+            others += n.procs + [(n.root.start, n.root.end, n.root.command, n.root.rss_mb, n.root.threads)]
+        agents_live = Live(others)
         for T in b.hf.ticks(root.start + rng.uniform(30, 75), root.end):
-            live = [x for x in self.procs if x[0] <= T < x[1]]
-            nested = []
-            for n in self.nested:
-                nested += [x for x in n.procs if x[0] <= T < x[1]]
-                if n.root.start <= T < n.root.end:
-                    nested.append((n.root.start, n.root.end, n.root.command, n.root.rss_mb, n.root.threads))
+            live = tree_live.at(T)
+            nested = agents_live.at(T)
             n_all = 1 + len(live) + len(nested)
             thr = root.threads + sum(x[4] for x in live + nested)
             rss = round(root.rss_mb + sum(x[3] for x in live + nested), 1)
