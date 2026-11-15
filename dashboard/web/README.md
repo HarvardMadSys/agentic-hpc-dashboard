@@ -6,7 +6,7 @@ backend serves as static files.
 
 ```
 src/api/        the contract: types, fetch client, hooks, the live websocket
-src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the words and geometry of phases and tasks
+src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks
 src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
 src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure
 src/tabs/       one module per tab
@@ -80,6 +80,7 @@ This is done in `mock/plugin.ts`, so a change to it needs the dev server restart
 ```bash
 npm run build        # tsc -b && vite build  ->  dist/
 npm run typecheck    # tsc -b, no emit
+npm run check:charts # node --test: the chart tick and width rules in src/charts/scale.ts
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -126,7 +127,9 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 3. **Colour** — Harvard palette, light only, tokens copied from the archived template.
    Crimson `#A51C30` (`--s1`) is reserved for `agent`. Eight series slots plus one grey
    tail (`--sg`); the purpose table in `src/lib/purposes.ts` folds everything outside its
-   eight slots into `other` rather than inventing a ninth hue.
+   eight slots into `other` rather than inventing a ninth hue. A series that is not a
+   class — a tool, or a direction such as egress and ingress — takes its hue from
+   `TOOL_COL` (`src/charts/TimeChart.tsx`), never a class's.
 4. **Zero is not missing** — `_present === false` renders the shared `<EmptyState>`:
    the panel frame, the title, the feed name, and one line per `_paths` entry, verbatim
    (`no data from /var/log/ebpfm`). A feed that IS present but has no rows renders
@@ -146,7 +149,10 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
 8. **Responsive to ~900px** — below 900px the rail becomes a horizontal nav and the grid
    collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
-   never scrolls horizontally.
+   never scrolls horizontally. A time series is drawn at its container's width, at 1:1
+   (`<Fluid>`, `src/charts/primitives.tsx`), so it fills its panel and its 10px labels stay
+   10px at any width; on a narrow plot its ticks thin out (`tickTarget`) rather than
+   overprint.
 
 Two more that the payloads force:
 
@@ -162,9 +168,15 @@ Two more that the payloads force:
 
 ## The window control
 
-`src/components/WindowPicker.tsx`, directly above the class filter — both answer "what is on
-screen", and a reader checking one should not have to hunt for the other. It is URL-backed as
-`?win=<minutes>`, like every other view knob.
+`src/components/WindowPicker.tsx`, in one control bar with the class filter and the user and
+agent-type dropdowns — both answer "what is on screen", and a reader checking one should not
+have to hunt for the other. The bar sticks to the top of the page as a tab scrolls
+(`src/lib/sticky.ts`), so the answer is still in view at the foot of a long tab. It publishes
+its height as `--controls-h`, which is the page's `scroll-padding-top`, so nothing the browser
+scrolls to (a control reached with Tab, a panel picked in the section list, the trajectory
+inspector) lands under it, and which the Agents tab's sticky list and detail stick below. On a
+phone (640px and below) it scrolls with the page. It is URL-backed as `?win=<minutes>`, like
+every other view knob.
 
 Three rules it follows, all of them the same rule this page follows everywhere:
 
@@ -178,6 +190,15 @@ Three rules it follows, all of them the same rule this page follows everywhere:
 
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
+
+## Keyboard
+
+Every control is a tab stop with a visible focus ring (controls restyled from `all: unset`
+restate it at the foot of `src/styles.css`). A sortable header (`src/components/SortTh.tsx`)
+sorts with Enter or Space, and a control's `data-tip` shows under it when it is reached with
+Tab (`src/components/Tooltip.tsx`), since the caveat about how a number is counted lives there.
+The tip is visual only: its layer is `aria-hidden`, and no control points at it with
+`aria-describedby`, so a screen reader does not announce it.
 
 ## Tabs
 

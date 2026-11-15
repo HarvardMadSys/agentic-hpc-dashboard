@@ -560,14 +560,15 @@ table.trees .sub-chip {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* the list stays in view while a long blast radius scrolls past it */
+/* the list stays in view while a long blast radius scrolls past it, below the
+   page's sticky control bar (--controls-h, lib/sticky.ts) */
 .al-list {
   position: sticky;
-  top: 12px;
+  top: calc(var(--controls-h) + 12px);
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: calc(100vh - 24px);
+  max-height: calc(100vh - var(--controls-h) - 24px);
   overflow: auto;
   padding-right: 2px;
 }
@@ -701,8 +702,9 @@ table.trees .sub-chip {
  * when a row is picked below it (AgentsTab.tsx) */
 .al-detail {
   position: sticky;
-  top: 12px;
+  top: calc(var(--controls-h) + 12px);
   min-width: 0;
+  /* plus the page's scroll padding, which is the sticky bar's height */
   scroll-margin-top: 12px;
 }
 @media (max-width: 1100px) {
