@@ -548,7 +548,11 @@ function Shares({
 }) {
   const over = known ?? order;
   const total = over.reduce((a, k) => a + (counts[k] ?? 0), 0);
-  const ftotal = fleet ? over.reduce((a, k) => a + (fleet[k] ?? 0), 0) : 0;
+  // The window's share is over every state the window holds, not only those this
+  // user has: `order` may list just theirs (their agent types), and a Claude-only
+  // user's tick is then the window's Claude share, not 100%.
+  const fover = known ?? [...new Set([...order, ...Object.keys(fleet ?? {})])];
+  const ftotal = fleet ? fover.reduce((a, k) => a + (fleet[k] ?? 0), 0) : 0;
   const shown = order.filter((k) => over.includes(k) && (counts[k] ?? 0) > 0);
   const unknown = order.filter((k) => !over.includes(k) && (counts[k] ?? 0) > 0);
   return (
