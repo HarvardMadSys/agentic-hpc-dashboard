@@ -11,6 +11,8 @@ import type {
   TrajRank,
   Trajectories,
   TrajectoryDetail,
+  UserPortrait,
+  UsersResponse,
   WindowsResponse,
 } from './types';
 import {
@@ -20,6 +22,8 @@ import {
   getPanels,
   getTrajectories,
   getTrajectory,
+  getUser,
+  getUsers,
   getWindows,
 } from './client';
 import { whoQuery } from '../lib/filters';
@@ -131,6 +135,50 @@ export function useTrajectories(
     const t = window.setTimeout(reload, liveMs);
     return () => clearTimeout(t);
   }, [liveMs, visible, loading, reload, data, error]);
+  return a;
+}
+
+/** `reload` that long after each answer, while the page is on screen: timed
+ *  from the last answer, as `useTrajectories` times its re-reads. */
+function useRefresh<T>(a: Async<T>, everyMs: number | null): void {
+  const visible = useVisible();
+  const { reload, loading, data, error } = a;
+  useEffect(() => {
+    if (!everyMs || !visible || loading) return;
+    const t = window.setTimeout(reload, everyMs);
+    return () => clearTimeout(t);
+  }, [everyMs, visible, loading, reload, data, error]);
+}
+
+/** The Users tab's roster: every user with an agent session in the window,
+ *  narrowed by the page's filter as the panels are. Re-read every `everyMs`
+ *  while it is on screen, so "running now" and the counts follow the feed. */
+export function useUsers(
+  win: number | null,
+  buildNonce = 0,
+  who: Who | null = null,
+  everyMs: number | null = null,
+): Async<UsersResponse> {
+  const a = useFetched((s) => getUsers(win, s, who), [win, buildNonce, who ? whoQuery(who) : '']);
+  useRefresh(a, everyMs);
+  return a;
+}
+
+/** One user's portrait; `null` data, and no request, when no user is open. */
+export function useUserPortrait(
+  name: string | null,
+  win: number | null,
+  buildNonce = 0,
+  who: Who | null = null,
+  everyMs: number | null = null,
+): Async<UserPortrait | null> {
+  const a = useFetched((s) => (name ? getUser(name, win, s, who) : Promise.resolve(null)), [
+    name,
+    win,
+    buildNonce,
+    who ? whoQuery(who) : '',
+  ]);
+  useRefresh(a, name ? everyMs : null);
   return a;
 }
 
