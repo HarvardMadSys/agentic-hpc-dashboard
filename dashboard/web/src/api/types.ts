@@ -1668,6 +1668,252 @@ export interface LiveUserDetail {
   recent_held?: number;
 }
 
+/* ------------------------------------------------------------- portraits
+ * How each user works with coding agents (`rc_dashboard/portraits.py`), for the
+ * Users tab: `GET /api/users` (every user with an agent session in the window)
+ * and `GET /api/user?name=` (one user's portrait). Composed from the window's
+ * trajectories, sandbox and Slurm reducers when read, so it can never disagree
+ * with those tabs. A session is one agent run: an agent's rows on two days are
+ * one session here.
+ */
+
+/** A tool call's category (`phase_rules.CATS`), as the call log holds it. */
+export type CallCat = 'test' | 'slurm' | 'run' | 'build' | 'edit' | 'git' | 'wait' | 'explore' | 'unknown';
+
+/** A statement about how a user's agents were used, from one rule (`portraits.TRAITS`). */
+export interface Trait {
+  id: string;
+  label: string;
+  /** how the page colours it: crit, warn, ok, or '' for plain */
+  tone: '' | 'crit' | 'warn' | 'ok';
+  /** the numbers that met its rule: `9 of 12 sessions` */
+  detail: string;
+}
+/** One trait as the catalogue states it, with its rule in words. */
+export interface TraitRule {
+  id: string;
+  label: string;
+  tone: Trait['tone'];
+  rule: string;
+}
+
+/** What a user's agent sessions asked of the scheduler, folded as the Slurm tab folds them. */
+export interface UserSlurm {
+  sessions: number;
+  jobs: number;
+  rejected: number;
+  /** submissions that asked for a job: jobs, refusals, and ones with no id read */
+  asked: number;
+  queries: number;
+  queries_per_job: number | null;
+  cancels: number;
+  parsable: number;
+  parsable_pct: number | null;
+  polling_sessions: number;
+  polling_s: number;
+  longest_loop: SlurmLoop | null;
+  /** null: no GPU job had its GPUs and time limit on the command line */
+  gpu_h: number | null;
+  gpu_h_known: number;
+}
+
+/** What a user's agents' actions are for (`portraits.USES`): their calls grouped as a reader names a use. */
+export type UseKind = 'explore' | 'develop' | 'build' | 'run' | 'hpc' | 'git';
+
+/** How a user leverages their agents (`portraits.leverage`): each part decided by the
+ *  service's rules, and null where the numbers do not say it. The page words it. */
+export interface Leverage {
+  /** the way most of their sessions are driven; `mixed` when none holds half, `unknown` with no launcher known */
+  mode: { id: 'terminal' | 'script' | 'extension' | 'app' | 'mixed' | 'unknown'; n: number; of: number };
+  /** the freedom the agents start with, of the launches that are known */
+  autonomy: { id: 'bypass' | 'auto' | 'no_flag'; bypassed: number; auto: number; of: number } | null;
+  /** the most sessions open at once, when that is several */
+  parallel: number | null;
+  /** what the agents' actions are for, the most first; empty when too few, or none read */
+  uses: { id: UseKind; n: number; pct: number }[];
+  /** calls that do something: waiting and calls whose command was not recorded left out */
+  actions: number;
+  /** how many uses from the top hold most of the actions: 1, 2, or 0 for a mix */
+  mostly: 0 | 1 | 2;
+  /** the calls that only wait, when they are a large share */
+  waiting: { n: number; of: number; pct: number } | null;
+  project: { name: string; n: number; of: number; mostly: boolean } | null;
+  /** the busiest local hour, and the share of active minutes between 00:00 and 06:00 */
+  when: { busiest: number; minutes: number; night_pct: number | null } | null;
+}
+
+/** One user's row: the roster's, and the head of their portrait. */
+export interface UserRow {
+  user: string;
+  /** agent sessions (agent runs) in the window */
+  sessions: number;
+  /** of them, running now (the live tier) */
+  running: number;
+  hosts: string[];
+  /** sessions by agent type, the most first ('' = untagged) */
+  agent_types: Record<string, number>;
+  surfaces: Partial<Record<Surface, number>>;
+  approval: Partial<Record<ApprovalState, number>>;
+  /** sessions by the Sandbox tab's verdict on their tool calls */
+  sandbox: Partial<Record<SessionSandboxState, number>>;
+  /** tool calls; null where no session's calls are recognized, which is not none */
+  calls: number | null;
+  /** sessions whose calls are recognized (Claude Code, Codex) */
+  calls_sessions: number;
+  calls_p50: number | null;
+  /** the calls the logs hold, by category */
+  cats: Partial<Record<CallCat, number>>;
+  /** distinct commit messages, pull request titles and log entries the agents wrote */
+  words: Partial<Record<TaskSource, number>>;
+  processes: number;
+  cpu_s: number;
+  rd_mb: number;
+  wr_mb: number;
+  net_tx_mb: number;
+  net_rx_mb: number;
+  peak_rss_mb: number;
+  /** each session open from its first record to its last: summed, median, longest */
+  wall_s: number | null;
+  wall_p50_s: number | null;
+  wall_max_s: number | null;
+  first: number | null;
+  last: number | null;
+  /** minutes in which one of the user's agents began a call */
+  active_min: number;
+  /** those minutes by local hour, 0-23 */
+  hours: number[];
+  /** the most sessions open at one moment */
+  peak_open: number;
+  /** `[project, sessions]`, the most first */
+  projects: [string, number][];
+  projects_total: number;
+  slurm: UserSlurm | null;
+  traits: Trait[];
+  /** how they leverage their agents: the summary's parts */
+  leverage: Leverage;
+  /** a portrait's: active minutes by weekday (Monday first) and local hour */
+  grid?: number[][];
+}
+
+/** The window's agent users and sessions, for a portrait to be read against. */
+export interface UsersFleet {
+  users: number;
+  sessions: number;
+  sessions_per_user_p50: number | null;
+  wall_p50_s: number | null;
+  calls_p50: number | null;
+  active_min_p50: number | null;
+  peak_open_p50: number | null;
+  running: number;
+  agent_types: Record<string, number>;
+  surfaces: Partial<Record<Surface, number>>;
+  approval: Partial<Record<ApprovalState, number>>;
+  sandbox: Partial<Record<SessionSandboxState, number>>;
+  cats: Partial<Record<CallCat, number>>;
+  words: Partial<Record<TaskSource, number>>;
+  /** users holding each trait */
+  traits: Record<string, number>;
+}
+
+export interface UsersResponse extends PanelEnvelope {
+  window?: { minutes: number; from: string | null; to: string | null };
+  filter?: ViewFilterBlock;
+  users: UserRow[];
+  fleet: UsersFleet | null;
+  /** agent sessions whose records named no user and no uid: no one's row, so counted here instead */
+  unattributed?: number;
+  traits: TraitRule[];
+  rules: Record<string, number>;
+  basis?: Record<string, string>;
+}
+
+/** One session in a portrait. */
+export interface PortraitSession {
+  /** its newest day's row: what the Trajectories tab opens it by */
+  sid: string;
+  /** every day row it is */
+  sids: string[];
+  host: string;
+  pid: number;
+  agent_type: string | null;
+  surface: Surface | null;
+  surface_detail: string | null;
+  approval: ApprovalState | null;
+  sandbox: SessionSandboxState;
+  first: number | null;
+  last: number | null;
+  wall_s: number | null;
+  calls: number | null;
+  processes: number;
+  cpu_s: number;
+  rd_mb: number;
+  wr_mb: number;
+  net_tx_mb: number;
+  net_rx_mb: number;
+  peak_rss_mb: number;
+  running: boolean;
+  project: string | null;
+  /** its phase block's: null where no block was built for it */
+  headline: string | null;
+  tasks: number | null;
+  quoted: number | null;
+  /** seconds in each phase, from its block; null where none was built */
+  phase_s: Partial<Record<PhaseKind, number>> | null;
+  cats: Partial<Record<CallCat, number>>;
+}
+
+/** A task of one of the user's sessions, as its phase block names it (`Task`). */
+export interface PortraitTask {
+  label: string;
+  source: TaskSource | null;
+  ref: string;
+  names: string[];
+  t0: number | null;
+  t1: number | null;
+  n: number | null;
+  open: boolean;
+  /** the day row that holds it */
+  sid: string;
+  agent_type: string | null;
+  project: string | null;
+}
+
+export interface UserPortrait extends PanelEnvelope {
+  user: string;
+  /** null while the window is first being read; false: no agent session in it */
+  found: boolean | null;
+  window?: { minutes: number; from: string | null; to: string | null };
+  filter?: ViewFilterBlock;
+  /** what `fleet` is: the whole window's users, or (when that view is not held) the filtered selection's */
+  fleet_of?: 'window' | 'selection' | null;
+  fleet?: UsersFleet | null;
+  traits?: TraitRule[];
+  rules?: Record<string, number>;
+  basis?: Record<string, string>;
+  row?: UserRow;
+  phases?: {
+    /** seconds in each phase over the sessions whose block was built */
+    time_s: Partial<Record<PhaseKind, number>>;
+    calls: Partial<Record<PhaseKind, number>>;
+    sessions: number;
+    /** sessions whose calls are recognized: blocks are built for the newest of them */
+    of: number;
+  };
+  tasks?: {
+    n: number;
+    lone: number;
+    quoted: Partial<Record<TaskSource, number>>;
+    recent: PortraitTask[];
+    listed_of: number;
+  };
+  sessions?: PortraitSession[];
+  sessions_total?: number;
+  /** `[masked command, calls]`, the most first */
+  commands?: [string, number][];
+  /** the service's time zone, which the hours are in */
+  tz?: string;
+}
+
 /* ---------------------------------------------------------------- events */
 
 export interface EventsResponse {

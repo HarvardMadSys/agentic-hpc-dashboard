@@ -85,6 +85,22 @@ class PatternTest(unittest.TestCase):
         self.assertNotIn("bowen", out)
         self.assertRegex(out, r"/n/home08/user-[0-9a-f]{8}/notes\.txt")
 
+    def test_another_users_home_as_the_workspace_writes_it_is_masked_alike(self):
+        # The Agents tab's workspace shows `/n/home03/carol/data` as `~carol/data`:
+        # one person, one alias, in either spelling, whether or not they ran anything.
+        a = anon()
+        path, shown = a.text("/n/home03/carol/data"), a.text("~carol/data")
+        self.assertNotIn("carol", path + shown + a.text("~carol") + a.text("cd ~carol/x && ls"))
+        self.assertEqual(path.split("/")[3], shown[1:].split("/")[0])
+        # and with a site's own home patterns in place of the defaults
+        self.assertNotIn("carol", anon(home_patterns=[r"/u/(?P<name>\w+)"]).text("~carol/x"))
+
+    def test_a_tilde_that_is_no_home_is_left_alone(self):
+        a = anon("glen")
+        for s in ("~/proj/x.py", "git diff HEAD~3..HEAD", "~90 s", "about ~28% of calls",
+                  "~user-0f1c380a/data", "~data/x"):
+            self.assertEqual(a.text(s), s)
+
     def test_a_name_a_path_pattern_caught_is_not_learned_as_an_account(self):
         # `/home/logs` is a folder, not a person: masking it there is fine,
         # masking every `logs` on the page is not.

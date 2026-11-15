@@ -44,6 +44,8 @@
   --seq3: #c4707f;
   --seq4: #a51c30;
   --live: #4db848;
+  /* the sticky control bar's height, published by lib/sticky.ts while it sticks */
+  --controls-h: 0px;
 }
 
 * {
@@ -186,21 +188,55 @@ nav .n {
   color: var(--ink);
   border-left-color: var(--crimson);
 }
+/* a panel picked in the section list lands 14px below the sticky control bar
+   (the bar itself is kept clear by the page's scroll padding, below) */
 section.panel {
   scroll-margin-top: 14px;
 }
 
+/* the rail's foot: how the page gets its data, one fact to a line */
 .rail .foot {
+  margin: 10px 0 0;
   padding: 14px 18px 0;
-  margin-top: 10px;
   border-top: 1px solid var(--rule);
   font-size: 11px;
-  color: var(--muted);
   line-height: 1.6;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rail .foot > div {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+}
+/* a value moves to a line of its own, whole, rather than breaking inside
+   itself: `2026-09-` above `14T15:33:20Z` read as two values */
+.rail .foot dd {
+  margin: 0;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.rail .foot .held {
+  color: var(--muted);
+  white-space: normal;
+}
+.foot-warn {
+  margin: 10px 18px 0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--crimson-wash);
+  color: var(--crimson-ink);
+  font-size: 11px;
+  width: fit-content;
+  cursor: help;
 }
 
 main {
-  padding: 22px 26px 70px;
+  /* the side padding, named so the control bar can reach across it */
+  --gutter: 26px;
+  padding: 22px var(--gutter) 70px;
   max-width: 1560px;
   min-width: 0;
 }
@@ -251,8 +287,14 @@ main {
   background: var(--surface);
   color: var(--ink);
 }
+/* A class switched off says so with its outline and its swatch, not by fading
+ * the whole chip: at half opacity its name fell to about 2.4:1 on the page,
+ * the one word on it a reader has to read. */
 .chip[aria-pressed='false'] {
-  opacity: 0.5;
+  border-style: dashed;
+}
+.chip[aria-pressed='false'] .sw {
+  opacity: 0.3;
 }
 .chip[disabled] {
   cursor: not-allowed;
@@ -293,9 +335,57 @@ main {
   background: var(--surface-2);
 }
 
-/* ------------------------------------------------------------ window picker
- * Sits directly above the class filter: both answer "what is on screen", and a
- * reader checking one should not have to hunt for the other. */
+/* -------------------------------------------------------------- control bar
+ * The window picker and the class filter (with the user and agent-type
+ * dropdowns) share one strip, one row where it fits: both answer "what is on
+ * screen". It sticks to the top of the page as the tab scrolls, so the answer
+ * is still in view at the foot of a long tab (lib/sticky.ts). It runs edge to
+ * edge across main's gutter, so a panel scrolling beneath it is hidden whole. */
+.controls {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 26px;
+  margin: -6px calc(-1 * var(--gutter)) 16px;
+  padding: 8px var(--gutter);
+  background: var(--page);
+  border-bottom: 1px solid transparent;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.controls.stuck {
+  border-bottom-color: var(--rule);
+  box-shadow: 0 8px 14px -14px rgba(30, 30, 30, 0.45);
+}
+.controls .winpick,
+.controls .filters {
+  margin-bottom: 0;
+}
+/* Whatever the browser scrolls to keeps clear of the bar: a control reached
+ * with Tab, a panel picked in the section list, a scrollIntoView. The bar's
+ * height is the page's own scroll padding, so a control under the bar counts
+ * as out of view and is brought out from under it (focus not obscured). */
+html {
+  scroll-padding-top: var(--controls-h);
+}
+/* the line the bar sticks at: once it scrolls out of view, the bar is stuck */
+.controls-sentinel {
+  height: 1px;
+  margin-bottom: -1px;
+}
+/* on a phone the bar wraps to three rows; held at the top it would take a
+   seventh of the screen from the panels, so there it scrolls with the page */
+@media (max-width: 640px) {
+  .controls {
+    position: static;
+  }
+}
+
+/* ------------------------------------------------------------ window picker */
 .winpick {
   display: flex;
   flex-wrap: wrap;
@@ -436,6 +526,9 @@ main {
   letter-spacing: -0.02em;
   margin-top: 5px;
   line-height: 1.05;
+  /* a live count changes every few seconds: in proportional figures it
+     shifted sideways with each new value */
+  font-variant-numeric: tabular-nums;
 }
 .plate .v small {
   font-size: 14px;
@@ -512,6 +605,11 @@ svg {
   max-width: 100%;
   height: auto;
   overflow: hidden;
+}
+/* the box a chart measures to draw itself at its container's width (Fluid) */
+.fluid {
+  width: 100%;
+  min-width: 0;
 }
 .axis text,
 .tick {
@@ -1371,10 +1469,35 @@ details.basis .body b {
     border-right: none;
     border-bottom: 1px solid var(--rule);
     overflow: visible;
+    padding: 12px 0 10px;
+  }
+  /* above the page rather than beside it, the rail spends as few lines as it
+     can before the tab starts: the name and the site on one line, the facts
+     of its foot run together */
+  .brand {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 12px;
+    padding: 0 14px 10px;
+  }
+  .brand .sub {
+    margin-top: 0;
   }
   nav {
     flex-direction: row;
     flex-wrap: wrap;
+    padding: 8px 6px;
+  }
+  .rail .foot {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0 18px;
+    margin-top: 0;
+    padding: 8px 14px 0;
+  }
+  .foot-warn {
+    margin: 6px 14px 0;
   }
   nav button {
     flex: none;
@@ -1383,7 +1506,8 @@ details.basis .body b {
     display: none;
   }
   main {
-    padding: 18px 14px 60px;
+    --gutter: 14px;
+    padding: 18px var(--gutter) 60px;
   }
   .grid,
   .grid.wide {
@@ -1757,9 +1881,24 @@ th.sorted .sort-arrow {
   align-items: center;
   margin-bottom: 4px;
 }
+/* A segmented control that may wrap is drawn as separate keys with a gap:
+ * joined, its second row hung under the first with a ragged, half-bordered
+ * edge (the rank switcher in the Sessions column; Live's picker on a phone). */
 .seg.wrap {
   flex-wrap: wrap;
   max-width: 100%;
+  gap: 4px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.seg.wrap button,
+.seg.wrap button:last-child {
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+}
+.seg.wrap button[aria-pressed='true'] {
+  border-color: var(--ink-2);
 }
 .intro {
   color: var(--ink-2);
@@ -2076,4 +2215,25 @@ td.host-by {
   text-align: left;
   white-space: nowrap;
   padding-left: 4px;
+}
+
+/* ---------------------------------------------------------- keyboard focus
+ * These controls are restyled from `all: unset`, which unsets the page-wide
+ * focus ring too, and their rules come after it in this file, so the ring
+ * lost: a keyboard reader could not see which window, class or button was
+ * about to be pressed. One ring for all of them, restated where it wins. */
+.chip:focus-visible,
+.btn:focus-visible,
+.wininput:focus-visible,
+.u-pick:focus-visible,
+.linkbtn:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+/* inside a box that clips (a segmented control, a table that scrolls): drawn
+   inside the control, where the clip cannot cut it off */
+.seg button:focus-visible,
+th.sortable:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: -2px;
 }

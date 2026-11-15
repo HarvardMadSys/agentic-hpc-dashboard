@@ -23,14 +23,14 @@ export const TASKS_BASIS = 'tasks · read from the commands the agent ran and th
 /** Where a task's label came from, as the page names it: `commit`, `log`, `PR #235` (`PR` alone for a pull request
  *  with no number yet), or null for a label built from names. A source this page does not know is still the agent's
  *  words, and is named as it came. */
-export function taskSource(t: Task): string | null {
+export function taskSource(t: Pick<Task, 'source' | 'ref'>): string | null {
   if (t.source === 'pr') return t.ref ? `PR ${t.ref}` : 'PR';
   return t.source ?? null;
 }
 
 /** A task's label: `“Fix the loader”` for a quote, in the quotation marks that say these are the agent's words, and
  *  the label as it is for one built from names. A lone stretch is labelled by the same rules. */
-export function taskLabel(t: Task): string {
+export function taskLabel(t: Pick<Task, 'source' | 'ref' | 'label'>): string {
   return taskSource(t) === null ? t.label : `“${t.label}”`;
 }
 
