@@ -1,15 +1,17 @@
 # The demo on Cloudflare
 
-A public URL for the dashboard's [demo mode](../../dashboard/README.md#demo-mode): this
-Worker fronts one [Cloudflare Container](https://developers.cloudflare.com/containers/)
-running `rc_dashboard demo`, built from [`docker/demo/Dockerfile`](../../docker/demo/Dockerfile).
+The dashboard's [demo mode](../../dashboard/README.md#demo-mode) on a public URL,
+**<https://hpc-dashboard.agentic-system.org>**: this Worker fronts one
+[Cloudflare Container](https://developers.cloudflare.com/containers/) running
+`rc_dashboard demo`, built from [`docker/demo/Dockerfile`](../../docker/demo/Dockerfile).
 Every visitor watches the same live demo, and every page says *synthetic data*: the
 records are made up for fictional login nodes and users, and nothing in them was measured.
 
 ## Deploy
 
-Needs a Cloudflare account on the Workers Paid plan (Containers run there), Docker
-running locally (`wrangler deploy` builds the image, `linux/amd64`), and Node 20 or later.
+Needs the Cloudflare account that holds the `agentic-system.org` zone, on the Workers Paid
+plan (Containers run there); Docker running locally (`wrangler deploy` builds the image,
+`linux/amd64`); and Node 20 or later.
 
 ```bash
 cd deploy/cloudflare
@@ -18,14 +20,20 @@ npx wrangler login
 npx wrangler deploy      # builds docker/demo/Dockerfile, pushes it, deploys the Worker
 ```
 
-The deploy prints the URL, `https://agent-dashboard-demo.<your-subdomain>.workers.dev`.
-After the first deploy the container takes a few minutes to provision; until then, and
-after every idle spell, the page says the demo is starting and reloads itself.
+The demo is then at <https://hpc-dashboard.agentic-system.org>, and at the
+`https://agent-dashboard-demo.<your-subdomain>.workers.dev` URL the deploy prints. The
+hostname is the Worker's [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+(`routes` in `wrangler.jsonc`): the first deploy creates its DNS record and certificate,
+which can take a few minutes to answer, and the container takes a few minutes to provision.
+Until then, and after every idle spell, the page says the demo is starting and reloads
+itself. Plain `http://` reaches it too, or is redirected to `https://` if the zone has
+*Always Use HTTPS* on.
 
 ## What runs
 
 | | |
 |---|---|
+| the address | `hpc-dashboard.agentic-system.org` (a Custom Domain), and the `workers.dev` URL |
 | the Worker (`src/index.ts`) | sends every request, the page's websocket included, to one container instance named `demo` |
 | the container | `rc_dashboard demo` on port 8080: writes 2 days of history (`RC_DASH_DEMO_DAYS`), then serves and keeps appending in real time |
 | instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~130 MB |
@@ -58,9 +66,11 @@ npx wrangler delete                  # take the demo down
 npm run typecheck                    # wrangler types && tsc --noEmit
 ```
 
-To change: the history and the time zone in `docker/demo/Dockerfile`; the instance size and
-the ceiling in `wrangler.jsonc` (`standard-1` halves a cold start, and costs more while
-awake); the idle time and the wait in `src/index.ts`.
+To change: the history and the time zone in `docker/demo/Dockerfile`; the address, the
+instance size and the ceiling in `wrangler.jsonc` (`standard-1` halves a cold start, and
+costs more while awake; `"workers_dev": false` leaves only the Custom Domain); the idle
+time and the wait in `src/index.ts`. A hostname in a zone of another account cannot be a
+Custom Domain: deploy from that account, or delete `routes` for the `workers.dev` URL alone.
 
 ## Without Cloudflare
 

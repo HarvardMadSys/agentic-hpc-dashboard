@@ -147,8 +147,8 @@ clock), `live.retention_min` and `live.backfill_hours` (the history written), an
 **Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) is the demo in one
 image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
 working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
-that image behind a Cloudflare Worker for a public URL: one shared instance that sleeps when
-nobody is looking and says it is starting while it wakes.
+that image behind a Cloudflare Worker at <https://hpc-dashboard.agentic-system.org>: one
+shared instance that sleeps when nobody is looking and says it is starting while it wakes.
 
 **Restarts resume it.** The feed is a function of the seed, the host count and the clock:
 the same span cut into windows anywhere is the same bytes (`demo/world.py`;
