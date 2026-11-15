@@ -36,6 +36,7 @@ import { GroupBars } from '../charts/primitives';
 import type { BarGroup, BarSeries } from '../charts/primitives';
 import { Segmented } from '../components/ClassFilter';
 import { More, Panel, NoRows } from '../components/Panel';
+import { Icon } from '../components/Icon';
 import { TreeDiagram } from '../components/TreeDiagram';
 import type { TreeNode } from '../components/TreeDiagram';
 import { Term } from '../components/Term';
@@ -1222,7 +1223,12 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </div>
       );
     }
-    return <div className="al-empty">pick an agent on the left: its tree and blast radius open here</div>;
+    return (
+      <div className="al-empty">
+        <Icon name="pointLeft" size={20} />
+        <span>pick an agent on the left: its tree and blast radius open here</span>
+      </div>
+    );
   })();
 
   return (
