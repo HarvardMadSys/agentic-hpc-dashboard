@@ -34,6 +34,13 @@
   border-color: var(--ink);
   color: var(--ink);
 }
+/* `all: unset` above takes the page's focus ring with it: restate it here, so
+   it does not depend on which stylesheet the bundle happens to load last */
+.who-btn:focus-visible,
+.who-tag:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
 .who-btn b {
   font-weight: 600;
   min-width: 14px;

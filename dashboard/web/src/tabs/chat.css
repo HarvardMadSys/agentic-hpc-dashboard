@@ -82,9 +82,11 @@
   border-radius: 6px;
   padding: 8px 10px;
 }
+/* the box's own border is the focus mark, in the ink every other input uses:
+   --edge over --rule was a change of a few shades, hard to see at all */
 .chat-input textarea:focus {
   outline: none;
-  border-color: var(--edge);
+  border-color: var(--crimson-ink);
 }
 .chat-actions {
   display: flex;
