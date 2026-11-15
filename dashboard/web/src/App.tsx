@@ -537,10 +537,10 @@ export default function App() {
                 <Icon name={t.icon} />
                 <span className="navlbl">{t.lbl}</span>
                 {t.k === 'live' && (
-                  <i
-                    className={`navdot${live.transport === 'ws' ? '' : ' off'}`}
-                    aria-label={live.transport === 'ws' ? 'streaming' : 'not streaming'}
-                  />
+                  <>
+                    <i className={`navdot${live.transport === 'ws' ? '' : ' off'}`} aria-hidden="true" />
+                    <span className="vh">{live.transport === 'ws' ? ', streaming' : ', not streaming'}</span>
+                  </>
                 )}
               </button>
               {t.k === tab.k && !mini && <SectionList secs={secs} active={active} />}

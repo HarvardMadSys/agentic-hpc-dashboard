@@ -68,12 +68,25 @@ export function CommandPalette({
 
   const shown = useMemo(() => {
     const ql = q.trim().toLowerCase();
-    return items
+    const ranked = items
       .map((it, i) => ({ it, i, r: rank(it, ql) }))
       .filter((x) => x.r > 0)
       // ranked when searching; in the page's own order when not
       .sort((a, b) => (ql ? b.r - a.r || a.i - b.i : a.i - b.i))
       .map((x) => x.it);
+    // One order to draw and to walk: grouped as the groups first appear,
+    // ranked within each. Ranked across groups and drawn grouped, the arrow
+    // keys jumped over the rows on screen and back.
+    const order: string[] = [];
+    const by = new Map<string, PaletteItem[]>();
+    for (const it of ranked) {
+      if (!by.has(it.group)) {
+        by.set(it.group, []);
+        order.push(it.group);
+      }
+      by.get(it.group)!.push(it);
+    }
+    return order.flatMap((g) => by.get(g)!);
   }, [items, q]);
 
   useEffect(() => {

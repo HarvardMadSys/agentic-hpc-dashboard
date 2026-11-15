@@ -255,6 +255,18 @@ nav button[aria-selected='true']::before {
   border-radius: 0 3px 3px 0;
   background: var(--crimson);
 }
+/* words for a screen reader only: in the page, not on the screen */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 /* Live's transport, beside its name: streaming, or not */
 .navdot {
   width: 7px;
@@ -424,16 +436,29 @@ section.panel {
     display: grid;
     justify-items: center;
   }
+  /* Folded, the words leave the screen but not the page: each tab, "go to",
+     the fold button and the foot's facts keep their names for a screen
+     reader (the icons and the hover tip are aria-hidden). */
   .app.mini .mark-t,
   .app.mini .brand .sub,
   .app.mini .rail-search-t,
-  .app.mini .rail-search kbd,
   .app.mini .navlbl,
   .app.mini .foot dl,
   .app.mini .foot .build,
   .app.mini .foot-t,
   .app.mini .foot-warn-t,
   .app.mini .rail-toggle span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .app.mini .rail-search kbd {
     display: none;
   }
   .app.mini .rail-search {
