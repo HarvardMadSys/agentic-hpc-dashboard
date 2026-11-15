@@ -752,15 +752,19 @@ class Aggregator:
     PORTRAITS_MAX_AGE_S = 60
 
     def _running_fn(self, now):
-        """`running(host, pid)`: whether that agent is running now -- its own
-        records still arriving (`LiveReducer.LIVE_S`), as `_running_rows` reads
-        it. Under the lock."""
+        """`running(host, pid, user)`: whether that user's agent is running now --
+        its own records still arriving (`LiveReducer.LIVE_S`), as `_running_rows`
+        reads it. A pid is reused, and the root running now under it may be
+        another user's: then this session is not the one running
+        (`users_conflict`: a root with no user, or root's, is no other user's).
+        Under the lock."""
         fresh = now - self.live.LIVE_S
         roots = self.live.roots
 
-        def running(host, pid):
+        def running(host, pid, user=None):
             r = roots.get((host, pid))
-            return r is not None and (r.get("epoch") or 0) >= fresh
+            return r is not None and (r.get("epoch") or 0) >= fresh \
+                and not users_conflict(r.get("user"), user)
         return running
 
     def _held(self, view, what, build, max_age=None):

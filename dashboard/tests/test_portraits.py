@@ -191,11 +191,36 @@ class RhythmTest(unittest.TestCase):
     def test_running_now_is_the_live_tiers(self):
         t0 = time.time() - 600
         red = build(agent("ann", 1000, t0, ["ls"]) + agent("ann", 2000, t0, ["ls"]))
-        ctx = portraits.Context(red, running=lambda host, pid: pid == 2000)
+        ctx = portraits.Context(red, running=lambda host, pid, user: pid == 2000)
         row = rows_of(portraits.roster(ctx))["ann"]
         self.assertEqual(row["running"], 1)
         p = portraits.portrait(ctx, "ann")
         self.assertEqual({s["pid"]: s["running"] for s in p["sessions"]}, {1000: False, 2000: True})
+
+
+class PidReuseTest(unittest.TestCase):
+    """A pid is reused: the agent running now under one may be another user's."""
+
+    def test_only_the_user_whose_agent_runs_under_the_pid_reads_running(self):
+        lt = time.localtime()
+        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        if time.time() - midnight < 1800:
+            midnight -= 86400            # both sessions in the past, a day apart
+        # alice's agent had pid 1000 yesterday; bob's has it today, and runs now
+        red = build(agent("alice", 1000, midnight - 7200, ["ls"])
+                    + agent("bob", 1000, midnight + 600, ["ls"]), minutes=2880)
+        agg = Aggregator.__new__(Aggregator)
+
+        class Live:
+            LIVE_S = 600
+            roots = {("h1", 1000): {"epoch": time.time() - 30, "user": "bob"}}
+        agg.live = Live
+        rows = rows_of(portraits.roster(portraits.Context(red, running=agg._running_fn(time.time()))))
+        self.assertEqual((rows["alice"]["running"], rows["bob"]["running"]), (0, 1))
+        # a root whose user was not read is no other user's
+        Live.roots[("h1", 1000)]["user"] = None
+        rows = rows_of(portraits.roster(portraits.Context(red, running=agg._running_fn(time.time()))))
+        self.assertEqual((rows["alice"]["running"], rows["bob"]["running"]), (1, 1))
 
 
 class SlurmTest(unittest.TestCase):

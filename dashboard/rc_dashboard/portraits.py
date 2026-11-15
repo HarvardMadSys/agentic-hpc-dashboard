@@ -279,7 +279,7 @@ def _session(traj, key, rows, boxed, running):
         "rd_mb": sum(r.rd for r in rows), "wr_mb": sum(r.wr for r in rows),
         "net_tx_mb": sum(r.tx for r in rows), "net_rx_mb": sum(r.rx for r in rows),
         "peak_rss_mb": max((r.rss for r in rows), default=0.0),
-        "running": bool(running and running(host, pid)),
+        "running": bool(running and running(host, pid, user)),
         # the newest day's row: what the Trajectories tab opens it by
         "sid": rows[-1].sid,
         "project": traj.project_of(head, calls),
@@ -652,8 +652,8 @@ class Context:
     is worth keeping between reads is `inputs`, which it takes as `boxed` and
     `slurm`.
 
-    `running(host, pid)` says whether an agent is running now (the live tier);
-    None says nothing is."""
+    `running(host, pid, user)` says whether that user's agent is running now
+    (the live tier); None says nothing is."""
 
     def __init__(self, reducers, now=None, running=None, boxed=None, slurm=None):
         self.now = now or time.time()
