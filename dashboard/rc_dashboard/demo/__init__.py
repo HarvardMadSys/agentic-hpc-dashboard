@@ -43,7 +43,7 @@ import threading
 import time
 
 from .feed import Feed, day_of
-from .world import GENERATOR, World
+from .world import GENERATOR, World, midnight
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_DIR = os.path.join(HERE, ".cache", "demo")
@@ -150,6 +150,10 @@ class Demo:
             why = "the feed there was written by another generator, seed or host count"
         elif not isinstance(st.get("written_to"), (int, float)) or st["written_to"] < now - span:
             why = "the feed there ends more than %d days ago" % o["days"]
+        elif self.covers_from(st) > now - span + 3600:
+            # a longer history asked of a shorter feed: resuming would leave the
+            # wider windows mostly empty, and records cannot be put before a file's
+            why = "the feed there covers less than the %d days asked for" % o["days"]
         if why:
             _log("starting a new feed (%s)" % why)
             self.feed.wipe()
@@ -176,6 +180,11 @@ class Demo:
                 _log("writing synthetic history ... %d%%" % pct)
                 last_pct = pct
         return self
+
+    def covers_from(self, st):
+        """Where the feed on disk begins: its start, or later once old days are pruned."""
+        day = self.feed.oldest_day()
+        return max(st.get("start") or 0.0, midnight(day) if day else 0.0)
 
     def _write(self, t0, t1):
         with self._mu:

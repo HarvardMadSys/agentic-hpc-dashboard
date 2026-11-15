@@ -37,6 +37,18 @@ SUPERSEDED = {"argv_kernel": "superseded by argv_user", "pids_task": "superseded
               "dstate_task": "not needed: dstate_stat loaded"}
 
 
+# The cores a session keeps busy on average, by kind: what a user's cgroup
+# counter grows by while one runs.
+CORES = {"claude_terminal": 0.12, "claude_nested": 0.15, "claude_babysit": 0.03,
+         "claude_nightly": 0.12, "claude_desktop": 0.1, "claude_rc": 0.08, "claude_print": 0.2,
+         "codex_tui": 0.1, "codex_exec": 0.2, "codex_app": 0.08, "vscode": 0.06,
+         "vscode_claude": 0.12, "vscode_parked": 0.02, "human_shell": 0.04}
+
+
+def day_of_local(epoch):
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
 def _h(*parts):
     return int(hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12], 16)
 
@@ -52,6 +64,7 @@ class HostFeed:
         self.boot_id = "%s-%s-%s-%s-%s" % (b[:8], b[8:12], b[12:16], b[16:20], b[20:32])
         self.kernel, self.bcc, self.rejected = KERNELS[index % len(KERNELS)]
         self.ip = "10.31.%d.%d" % (4 + index, 17 + index * 3)
+        self._cg_days, self._cg_done = {}, {}
 
     # ------------------------------------------------------------- runs
     def restart_on(self, day):
@@ -221,6 +234,41 @@ class HostFeed:
         })
         return rec
 
+    def cgroup_cpu_usec(self, user, t):
+        """A user's cgroup CPU counter at `t`: CUMULATIVE, so it only ever grows, by
+        what their sessions ran. The node reducer takes the difference of two
+        snapshots as the CPU used between them, so the counter is an integral of
+        activity -- a background trickle since boot, plus each session's cores for
+        as long as it has run -- and a session starting or ending changes its slope,
+        never its value."""
+        from .world import MAX_SESSION_S, days_between
+        key = (user, day_of_local(t))
+        done = self._cg_done.get(key)
+        if done is None:
+            # every session planned before yesterday has ended by today (none runs
+            # past MAX_SESSION_S), so those days count whole, once
+            done = 0.0
+            for day in days_between(self.world.start, t - 2 * 86400):
+                if day < day_of_local(t - 86400):
+                    done += self._cg_day(user, day)
+            self._cg_done[key] = done
+        live = 0.0
+        for day in days_between(max(self.world.start, t - MAX_SESSION_S - 86400), t + 1):
+            if day >= day_of_local(t - 86400):
+                for s in self.world.plan(self.host, day):
+                    if s.person["user"] == user and s.start < t:
+                        live += CORES.get(s.kind, 0.1) * (min(t, s.end) - s.start)
+        return int(((t - self.boot) * 0.003 + done + live) * 1e6)
+
+    def _cg_day(self, user, day):
+        key = (user, day)
+        v = self._cg_days.get(key)
+        if v is None:
+            v = self._cg_days[key] = sum(CORES.get(s.kind, 0.1) * (s.end - s.start)
+                                         for s in self.world.plan(self.host, day)
+                                         if s.person["user"] == user)
+        return v
+
     def node(self, t):
         """The node tier's snapshot, as `node_snapshot.py` prints it."""
         cen = self.world.census(self.host, int(t // 60) * 60)
@@ -236,10 +284,9 @@ class HostFeed:
         for u in users:
             uid = next((p["uid"] for p in _people() if p["user"] == u), 20000)
             mine = [x for x in cen if x[2] == u]
-            rate = 0.15 + 0.4 * sum(1 for x in mine if x[0] == "agent")
             per_user.append({
                 "uid": uid, "user": u,
-                "cpu_usage_usec": int((t - self.boot) * 1e6 * 0.02 * (1 + uid % 7) + t * rate * 1e3),
+                "cpu_usage_usec": self.cgroup_cpu_usec(u, t),
                 "nr_periods": 0, "nr_throttled": 0, "throttled_usec": 0,
                 "cpu_max_quota_usec": None, "cpu_max_period_usec": 100000,
                 "mem_current_bytes": int(sum(x[5] for x in mine) * 1048576 + 64 * 1048576),

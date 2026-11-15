@@ -116,6 +116,13 @@ class Feed:
             cut += _cut_file(p, watermark)
         return cut
 
+    def oldest_day(self):
+        """The oldest day directory of the eBPF tier (YYYY-MM-DD), or None."""
+        if not os.path.isdir(self.ebpf):
+            return None
+        days = sorted(d for d in os.listdir(self.ebpf) if d.startswith("20"))
+        return days[0] if days else None
+
     def prune(self, before_day):
         """Remove whole day directories older than `before_day` (YYYY-MM-DD)."""
         self.close()

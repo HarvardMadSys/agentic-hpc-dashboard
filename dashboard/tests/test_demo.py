@@ -152,6 +152,44 @@ class FeedTest(unittest.TestCase):
         self.assertIn("starting a new feed", err.getvalue())
         self.assertFalse(any("demo-login02" in k for k in lines(d)))
 
+    def test_a_longer_history_than_the_feed_holds_is_written_afresh(self):
+        """Resuming a 1-day feed for 2 days would leave the wider windows half empty:
+        records cannot be put before a file's first line, so the feed starts again."""
+        d = os.path.join(self.tmp, "demo")
+        with redirect_stderr(io.StringIO()):
+            demomod.Demo(opts(d, days=1, hosts=1)).prepare().stop()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            longer = demomod.Demo(opts(d, days=2, hosts=1)).prepare()
+            longer.stop()
+        self.assertIn("covers less than the 2 days", err.getvalue())
+        self.assertLessEqual(longer.state["start"], time.time() - 2 * 86400 + 120)
+        # a shorter history than the feed holds is resumed, not rewritten
+        err = io.StringIO()
+        with redirect_stderr(err):
+            demomod.Demo(opts(d, days=1, hosts=1)).prepare().stop()
+        self.assertIn("resuming", err.getvalue())
+
+    def test_a_users_cgroup_cpu_counter_only_grows_and_at_a_believable_rate(self):
+        """The node reducer reads the difference of two snapshots as CPU used between
+        them: a counter that jumps or falls would show a spike or a false reset."""
+        now = time.time()
+        w = World("demo", 2, now - 1.5 * 86400)
+        prev, rates = {}, []
+        for x in w.records(w.start, now):
+            if x[1] != "node":
+                continue
+            r = json.loads(x[4])
+            for u in r["per_user_cgroup"]:
+                k = (r["hostname"], u["user"])
+                if k in prev:
+                    t0, c0 = prev[k]
+                    self.assertGreaterEqual(u["cpu_usage_usec"], c0, k)
+                    rates.append((u["cpu_usage_usec"] - c0) / 1e6 / (r["ts_epoch"] - t0))
+                prev[k] = (r["ts_epoch"], u["cpu_usage_usec"])
+        self.assertTrue(rates)
+        self.assertLess(max(rates), 4.0)
+
     def test_one_writer_per_feed(self):
         d = os.path.join(self.tmp, "demo")
         with redirect_stderr(io.StringIO()):
