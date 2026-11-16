@@ -15,7 +15,7 @@
  * narrow layout the other charts do the same in a box narrower than their
  * natural width (`useFit`), so their labels keep their size on a phone.
  */
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -871,6 +871,23 @@ export interface LineSeries {
   dashed?: boolean;
 }
 
+/** The x scale, axis value to SVG units: linear, or log10 on a log axis. The
+ *  parts that do not depend on `v` are worked out once, the same arithmetic. */
+function xScale(L: number, pw: number, x0: number, x1: number, xlog?: boolean) {
+  const lx = (v: number) => (xlog ? Math.log10(Math.max(v, x0 || 1e-9)) : v);
+  const a = lx(x0);
+  const den = lx(x1) - a || 1;
+  return (v: number) => L + (pw * (lx(v) - a)) / den;
+}
+
+/** The y scale, likewise, from the plot's top down. */
+function yScale(TOP: number, ph: number, y0: number, y1: number, ylog?: boolean) {
+  const ly = (v: number) => (ylog ? Math.log10(Math.max(v, y0 || 1e-9)) : v);
+  const b = ly(y0);
+  const den = ly(y1) - b || 1;
+  return (v: number) => TOP + ph - (ph * (ly(v) - b)) / den;
+}
+
 /** Multi-line chart on ONE value axis.
  *
  * A `null` y is a GAP. The path is emitted as separate subpaths around it, so a
@@ -941,9 +958,23 @@ export function Lines({
   const B = 34;
   const pw = W - L - R;
   const ph = H - TOP - B;
-  const xs = series.flatMap((s) => s.pts.map((p) => p.x));
-  const fx0 = xmin != null ? xmin : xs.length ? Math.min(...xs) : 0;
-  const fx1 = xmax != null ? xmax : xs.length ? Math.max(...xs) : 1;
+  // The x extent, by a loop: spread into Math.min, a week of minutes is 30,000
+  // arguments on every render (and past ~100k, a stack overflow). Math.min
+  // pairwise is Math.min of them all, NaN and -0 included.
+  let nx = 0;
+  let xlo = Infinity;
+  let xhi = -Infinity;
+  if (xmin == null || xmax == null) {
+    for (const s of series) {
+      for (const p of s.pts) {
+        xlo = Math.min(xlo, p.x);
+        xhi = Math.max(xhi, p.x);
+        nx++;
+      }
+    }
+  }
+  const fx0 = xmin != null ? xmin : nx ? xlo : 0;
+  const fx1 = xmax != null ? xmax : nx ? xhi : 1;
   const want = view !== undefined ? view : own;
   const setView = onView ?? setOwn;
   // A shared view can outlive the data it was taken on (a rebuilt window
@@ -951,7 +982,6 @@ export function Lines({
   const zoomed = zoom && want != null && want[1] > fx0 && want[0] < fx1;
   const x0 = zoomed ? Math.max(fx0, want![0]) : fx0;
   const x1 = zoomed ? Math.min(fx1, want![1]) : fx1;
-  const lx = (v: number) => (xlog ? Math.log10(Math.max(v, x0 || 1e-9)) : v);
 
   // Zoom and pan work in axis space -- log space on a log axis -- so the
   // point under the cursor stays under it either way.
@@ -1017,34 +1047,162 @@ export function Lines({
       setPanning(false);
     },
   };
-  if (!series.length) return null;
-
   const inView = (p: LinePt) => p.x >= x0 && p.x <= x1;
-  /** In view, plus one neighbour each side, so a line runs on to the edge. */
-  const drawn = (pts: LinePt[]): LinePt[] => {
-    if (!zoomed) return pts;
-    let a = 0;
-    while (a < pts.length && pts[a].x < x0) a++;
-    let b = pts.length - 1;
-    while (b >= 0 && pts[b].x > x1) b--;
-    return pts.slice(Math.max(0, a - 1), Math.min(pts.length, b + 2));
-  };
-  const ys = series.flatMap((s) => s.pts.filter((p) => p.y != null && inView(p)).map((p) => p.y as number));
-  const top = ys.length ? Math.max(...ys) : 1;
+  // The y range of what is in view, by a loop for the same reason as x's.
+  let ny = 0;
+  let ylo = Infinity;
+  let yhi = -Infinity;
+  for (const s of series) {
+    for (const p of s.pts) {
+      if (p.y == null || !inView(p)) continue;
+      ylo = Math.min(ylo, p.y);
+      yhi = Math.max(yhi, p.y);
+      ny++;
+    }
+  }
+  const top = ny ? yhi : 1;
   // Topped at the last round tick: at the bare data max, the tick just above
   // it would be drawn over the axis label.
-  const y1 = ymax != null ? ymax : ylog ? top : niceTicks(top, 4)[niceTicks(top, 4).length - 1];
-  const y0 = ymin != null ? ymin : ylog ? (ys.length ? Math.min(...ys) : 1e-3) : 0;
-  const ly = (v: number) => (ylog ? Math.log10(Math.max(v, y0 || 1e-9)) : v);
-  const X = (v: number) => L + (pw * (lx(v) - lx(x0))) / (lx(x1) - lx(x0) || 1);
-  const Y = (v: number) => TOP + ph - (ph * (ly(v) - ly(y0))) / (ly(y1) - ly(y0) || 1);
+  const topTicks = ymax != null || ylog ? null : niceTicks(top, 4);
+  const y1 = ymax != null ? ymax : ylog ? top : topTicks![topTicks!.length - 1];
+  const y0 = ymin != null ? ymin : ylog ? (ny ? ylo : 1e-3) : 0;
+  const X = xScale(L, pw, x0, x1, xlog);
+  const Y = yScale(TOP, ph, y0, y1, ylog);
+  const F = (v: number) => (yfmt ? yfmt(v) : fmt(v));
+  const XF = (v: number) => (xfmt ? xfmt(v) : fmt(v));
+  const XT = (v: number) => (xtip ? xtip(v) : XF(v));
+
+  // Every series' lines, area, hover targets and end mark. A week of minutes is
+  // 10,080 points a series: built once per change of what they depend on, each
+  // path's `d` in one pass, and only the hover circles that are drawn visited.
+  const marks = useMemo(() => {
+    const X = xScale(L, pw, x0, x1, xlog);
+    const Y = yScale(TOP, ph, y0, y1, ylog);
+    const F = (v: number) => (yfmt ? yfmt(v) : fmt(v));
+    const XF = (v: number) => (xfmt ? xfmt(v) : fmt(v));
+    const XT = (v: number) => (xtip ? xtip(v) : XF(v));
+    const inView = (p: LinePt) => p.x >= x0 && p.x <= x1;
+    /** In view, plus one neighbour each side, so a line runs on to the edge. */
+    const drawn = (pts: LinePt[]): LinePt[] => {
+      if (!zoomed) return pts;
+      let a = 0;
+      while (a < pts.length && pts[a].x < x0) a++;
+      let b = pts.length - 1;
+      while (b >= 0 && pts[b].x > x1) b--;
+      return pts.slice(Math.max(0, a - 1), Math.min(pts.length, b + 2));
+    };
+    return series.map((se) => {
+      const pts = drawn(se.pts);
+      const seen = pts.filter(inView);
+      // One subpath per run of consecutive present points: a null is a gap.
+      const runEls: ReactNode[] = [];
+      for (let i = 0, ri = 0; i < pts.length; ) {
+        if (pts[i].y == null) {
+          i++;
+          continue;
+        }
+        let d = '';
+        let j = i;
+        for (; j < pts.length && pts[j].y != null; j++) {
+          d += (j > i ? ' L' : 'M') + X(pts[j].x).toFixed(1) + ' ' + Y(pts[j].y as number).toFixed(1);
+        }
+        const first = pts[i];
+        const last = pts[j - 1];
+        const n = j - i;
+        runEls.push(
+          <g key={ri++}>
+            {se.area && n > 1 && (
+              <path
+                d={`${d} L ${X(last.x).toFixed(1)} ${Y(y0).toFixed(1)} L ${X(first.x).toFixed(1)} ${Y(y0).toFixed(1)} Z`}
+                fill={se.c}
+                opacity={0.1}
+              />
+            )}
+            {n > 1 ? (
+              <path
+                d={d}
+                fill="none"
+                stroke={se.c}
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={se.dashed ? '4 3' : undefined}
+              />
+            ) : (
+              /* an isolated sample between two gaps: a dot, not a line */
+              <circle cx={X(first.x)} cy={Y(first.y as number)} r={2} fill={se.c} />
+            )}
+          </g>,
+        );
+        i = j;
+      }
+      // a hover target every `every` points in view, about 26 across
+      const every = Math.max(1, Math.round(seen.length / 26));
+      const hover: ReactNode[] = [];
+      for (let i = 0; i < seen.length; i += every) {
+        const p = seen[i];
+        if (p.y == null) continue;
+        const y = p.y;
+        hover.push(
+          <circle
+            key={'h' + i}
+            cx={X(p.x).toFixed(1)}
+            cy={Y(y).toFixed(1)}
+            r={8}
+            fill="transparent"
+            className={se.onPick ? 'hpick' : undefined}
+            onClick={se.onPick ? () => se.onPick!(p.x) : undefined}
+            data-tip={`${se.lbl} · ${xname || 'x'} ${XT(p.x)} → ${yname || 'y'} ${F(y)}${
+              se.onPick ? '\nclick: every command behind it' : ''}`}
+          />,
+        );
+      }
+      return (
+        <g key={se.lbl}>
+          <g clipPath={zoomed ? `url(#${clip})` : undefined}>{runEls}</g>
+          {hover}
+          {se.mark &&
+            (() => {
+              let last: LinePt | undefined;
+              for (let i = seen.length - 1; i >= 0; i--) {
+                if (seen[i].y != null) {
+                  last = seen[i];
+                  break;
+                }
+              }
+              if (!last) return null;
+              return (
+                <g>
+                  <circle
+                    cx={X(last.x).toFixed(1)}
+                    cy={Y(last.y as number).toFixed(1)}
+                    r={3.5}
+                    fill={se.c}
+                    stroke="var(--surface)"
+                    strokeWidth={2}
+                  />
+                  <text
+                    className="vlbl"
+                    x={X(last.x) - 6}
+                    y={Y(last.y as number) - 9}
+                    textAnchor="end"
+                  >
+                    {se.mark}
+                  </text>
+                </g>
+              );
+            })()}
+        </g>
+      );
+    });
+  }, [series, zoomed, clip, L, pw, ph, TOP, x0, x1, y0, y1, xlog, ylog, xname, yname, xfmt, xtip, yfmt]);
+
+  if (!series.length) return null;
+
   const yt = niceTicks(y1, 4).filter((t) => t >= y0);
   const xt = (
     typeof xticks === 'function' ? xticks(x0, x1) : xticks || niceTicks(x1, 5).filter((t) => t >= x0)
   ).filter((t) => t >= x0 && t <= x1);
-  const F = (v: number) => (yfmt ? yfmt(v) : fmt(v));
-  const XF = (v: number) => (xfmt ? xfmt(v) : fmt(v));
-  const XT = (v: number) => (xtip ? xtip(v) : XF(v));
   // Ticks whose labels would run into each other -- a chart drawn narrow, on a
   // phone -- are thinned from the left, so every label printed is whole.
   const xtShown: number[] = [];
@@ -1114,90 +1272,7 @@ export function Lines({
               <title>{ZOOM_HINT}</title>
             </rect>
           )}
-          {series.map((se) => {
-            const pts = drawn(se.pts);
-            const seen = pts.filter(inView);
-            return (
-              <g key={se.lbl}>
-                <g clipPath={zoomed ? `url(#${clip})` : undefined}>
-                  {runs(pts).map((run, ri) => {
-                    const d = run
-                      .map((p, i) => (i ? 'L' : 'M') + X(p.x).toFixed(1) + ' ' + Y(p.y as number).toFixed(1))
-                      .join(' ');
-                    return (
-                      <g key={ri}>
-                        {se.area && run.length > 1 && (
-                          <path
-                            d={`${d} L ${X(run[run.length - 1].x).toFixed(1)} ${Y(y0).toFixed(1)} L ${X(
-                              run[0].x,
-                            ).toFixed(1)} ${Y(y0).toFixed(1)} Z`}
-                            fill={se.c}
-                            opacity={0.1}
-                          />
-                        )}
-                        {run.length > 1 ? (
-                          <path
-                            d={d}
-                            fill="none"
-                            stroke={se.c}
-                            strokeWidth={2}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeDasharray={se.dashed ? '4 3' : undefined}
-                          />
-                        ) : (
-                          /* an isolated sample between two gaps: a dot, not a line */
-                          <circle cx={X(run[0].x)} cy={Y(run[0].y as number)} r={2} fill={se.c} />
-                        )}
-                      </g>
-                    );
-                  })}
-                </g>
-                {seen.map((p, i) => {
-                  const every = Math.max(1, Math.round(seen.length / 26));
-                  if (i % every || p.y == null) return null;
-                  return (
-                    <circle
-                      key={'h' + i}
-                      cx={X(p.x).toFixed(1)}
-                      cy={Y(p.y).toFixed(1)}
-                      r={8}
-                      fill="transparent"
-                      className={se.onPick ? 'hpick' : undefined}
-                      onClick={se.onPick ? () => se.onPick!(p.x) : undefined}
-                      data-tip={`${se.lbl} · ${xname || 'x'} ${XT(p.x)} → ${yname || 'y'} ${F(p.y)}${
-                        se.onPick ? '\nclick: every command behind it' : ''}`}
-                    />
-                  );
-                })}
-                {se.mark &&
-                  (() => {
-                    const last = [...seen].reverse().find((p) => p.y != null);
-                    if (!last) return null;
-                    return (
-                      <g>
-                        <circle
-                          cx={X(last.x).toFixed(1)}
-                          cy={Y(last.y as number).toFixed(1)}
-                          r={3.5}
-                          fill={se.c}
-                          stroke="var(--surface)"
-                          strokeWidth={2}
-                        />
-                        <text
-                          className="vlbl"
-                          x={X(last.x) - 6}
-                          y={Y(last.y as number) - 9}
-                          textAnchor="end"
-                        >
-                          {se.mark}
-                        </text>
-                      </g>
-                    );
-                  })()}
-              </g>
-            );
-          })}
+          {marks}
         </g>
         <line className="base-line" x1={L} x2={W - R} y1={Y(y0)} y2={Y(y0)} />
         {ylabel && (
@@ -1226,9 +1301,19 @@ export function Lines({
           label={`the whole x range, ${XT(fx0)} to ${XT(fx1)}, with ${XT(x0)} to ${XT(x1)} in view`}
           draw={(MX, MH) => {
             // every line over the whole range, on a y scale of its own
-            const all = series.flatMap((se) => se.pts.filter((p) => p.y != null).map((p) => p.y as number));
-            const mtop = all.length ? Math.max(...all) : 1;
-            const mbot = ylog ? (all.length ? Math.min(...all) : 1e-3) : (ymin ?? 0);
+            let n = 0;
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (const se of series) {
+              for (const p of se.pts) {
+                if (p.y == null) continue;
+                lo = Math.min(lo, p.y);
+                hi = Math.max(hi, p.y);
+                n++;
+              }
+            }
+            const mtop = n ? hi : 1;
+            const mbot = ylog ? (n ? lo : 1e-3) : (ymin ?? 0);
             const my = (v: number) => (ylog ? Math.log10(Math.max(v, mbot || 1e-9)) : v);
             const MY = (v: number) => MH - 3 - ((MH - 6) * (my(v) - my(mbot))) / (my(mtop) - my(mbot) || 1);
             return series.map((se) =>
