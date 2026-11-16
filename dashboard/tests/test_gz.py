@@ -3,13 +3,15 @@
 A `.jsonl.gz` must read exactly as the `.jsonl` inside it does: the same bytes
 at the same offsets, so every byte-addressed reader -- the window plan's binary
 search, the backwards read-back, a saved window's resume, the tail -- gives the
-same answer for either.
+same answer for either. So must an `.ebr.gz` as its `.ebr`: each FeedCase here
+runs again on EBR day-files (`ebr_twins`).
 
     cd dashboard && .venv/bin/python -m unittest tests.test_gz -q
 """
 import gzip
 import os
 import random
+import shutil
 import sys
 import time
 import unittest
@@ -28,7 +30,7 @@ from rc_dashboard.feeds import host_of                  # noqa: E402
 from rc_dashboard.normalize import Normalizer           # noqa: E402
 from rc_dashboard.tail import FileTailSource, read_back  # noqa: E402
 from rc_dashboard.windows import EVENTS                 # noqa: E402
-from test_ingest import DAY, NONE, FeedCase, exit_rec, line   # noqa: E402
+from test_ingest import DAY, NONE, FeedCase, ebr_twins, exit_rec   # noqa: E402
 
 
 def payload(n, seed):
@@ -191,9 +193,7 @@ class CompressedFeed(FeedCase):
         self.append("h1.exits.jsonl", recs)
         self.zroot = os.path.join(self.tmp, "zipped")
         os.makedirs(os.path.join(self.zroot, DAY))
-        with open(self.path("h1.exits.jsonl"), "rb") as src, \
-                gzip.open(os.path.join(self.zroot, DAY, "h1.exits.jsonl.gz"), "wb") as dst:
-            dst.write(src.read())
+        self.write_gz("h1.exits.jsonl", os.path.join(self.zroot, DAY))
 
     def tearDown(self):
         gz.SPAN = self.saved
@@ -213,12 +213,12 @@ class CompressedFeed(FeedCase):
 
     def test_seek_and_resume_are_by_uncompressed_offset(self):
         plain = self.path("h1.exits.jsonl")
-        zp = os.path.join(self.zroot, DAY, "h1.exits.jsonl.gz")
+        zp = os.path.join(self.zroot, DAY, self.fname("h1.exits.jsonl.gz"))
         since = self.now - 1800
         offs = []
         for p in (plain, zp):
             with gz.open_feed(p) as fh:
-                offs.append(seek_to_epoch(fh, since, gz.fstat(fh).st_size))
+                offs.append(seek_to_epoch(fh, since, gz.fstat(fh).st_size, self.FORMAT))
         self.assertEqual(offs[0], offs[1])
         # what a saved build records, and resuming from it
         plan, _ = window_plan([self.zroot], since)
@@ -240,7 +240,7 @@ class CompressedFeed(FeedCase):
 
     def test_plain_file_wins_over_its_gz_twin(self):
         d = os.path.join(self.root, DAY)
-        with gzip.open(os.path.join(d, "h1.exits.jsonl.gz"), "wb") as fh:
+        with gzip.open(os.path.join(d, self.fname("h1.exits.jsonl.gz")), "wb") as fh:
             fh.write(b"")
         self.assertEqual(feed_files(d), [self.path("h1.exits.jsonl")])
 
@@ -288,14 +288,13 @@ class CompressedUnderTheTail(FeedCase):
 
     def test_lines_written_just_before_the_compression_arrive_once(self):
         # The day's last poll round lands after the tail's last read -- half
-        # of its first line was there already -- and the day is sealed and
-        # compressed before the tail looks again.
-        sixth = line(self.recs[5])
-        self.append("h1.exits.jsonl", self.recs[:5], raw=sixth[:20])
+        # of its first line (EBR: its frame) was there already -- and the day
+        # is sealed and compressed before the tail looks again.
+        five, sixth, rest = self.rounds([self.recs[:5], self.recs[5:6], self.recs[6:]])
+        self.write_raw("h1.exits.jsonl", five + sixth[:20])
         src = FileTailSource([self.root])
         self.assertEqual(self.pids(src.poll()), [0, 1, 2, 3, 4])
-        self.append("h1.exits.jsonl", [],
-                    raw=sixth[20:] + line(self.recs[6]) + line(self.recs[7]))
+        self.write_raw("h1.exits.jsonl", sixth[20:] + rest)
         self.compress("h1.exits.jsonl")
         self.assertEqual(self.pids(src.poll()), [5, 6, 7])
         self.assertEqual(self.pids(src.poll()), [])
@@ -365,11 +364,12 @@ class BoundedScan(CompressedFeed):
 
     def setUp(self):
         super().setUp()
-        old = os.path.join(self.zroot, "2000-01-01")
-        os.makedirs(old)
-        with gzip.open(os.path.join(old, "h1.exits.jsonl.gz"), "wb") as fh:
-            for i in range(3000):
-                fh.write(line(exit_rec(946700000 + i, pid=i)))
+        old = "2000-01-01"
+        self.append("h1.exits.jsonl", [exit_rec(946700000 + i, pid=i) for i in range(3000)],
+                    day=old)
+        os.makedirs(os.path.join(self.zroot, old))
+        self.write_gz("h1.exits.jsonl", os.path.join(self.zroot, old), day=old)
+        shutil.rmtree(os.path.join(self.root, old))
 
     def run_scan(self, newest_first):
         f = parse_filters({"from": [str(self.now - 3600)], "event": ["exit"]})
@@ -426,6 +426,9 @@ class PinnedClock(CompressedFeed):
                                                                 "%Y-%m-%d %H:%M:%S")))
         with self.assertRaises(SystemExit):
             clock.resolve(self.cfg_as_of("yesterday"), [self.zroot])
+
+
+ebr_twins(globals())
 
 
 if __name__ == "__main__":

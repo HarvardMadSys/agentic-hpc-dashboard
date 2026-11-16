@@ -30,6 +30,7 @@ import time
 from . import anonymize
 from . import ask
 from . import clock
+from . import ebr
 from . import endpoints
 from . import feeds as feedmod
 from . import gz
@@ -44,6 +45,7 @@ from .procindex import users_conflict
 from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
+from .feedfile import format_of, last_records, prefer_of
 
 # Records per lock hold during the backfill.  Between batches the tail and the
 # API take their turn, so the page stays live and watches the history fill in
@@ -115,7 +117,7 @@ class Aggregator:
         self.reports = feedmod.resolve(cfg)
         self.source = FileTailSource(
             self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
-            days=int(cfg.get("feeds.ebpf.days", 8)))
+            days=int(cfg.get("feeds.ebpf.days", 8)), prefer=prefer_of(cfg, "ebpf"))
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
@@ -247,6 +249,17 @@ class Aggregator:
         keep = int(self.cfg.get("feeds.ebpf_node.snapshots_per_host", 2) or 2)
         n = 0
         for f in rep.get("files", []):
+            if f.get("held"):
+                continue                # a twin with no record yet: none is read
+            if format_of(f["path"]) == "ebr":
+                try:
+                    recs = last_records(f["path"], keep)
+                except (OSError, ebr.Error):
+                    continue
+                for rec in recs:
+                    self.node.feed_snapshot(rec)
+                    n += 1
+                continue
             try:
                 lines = last_lines(f["path"], keep)
             except OSError:
@@ -425,6 +438,10 @@ class Aggregator:
                         "self_observation": self.norm.stats["dropped_self_observation"],
                     }
                     rep["backfill"] = dict(self.backfill)
+                    # what the tail met in the files it follows
+                    rep["tail"] = {k: self.source.stats.get(k, 0) for k in (
+                        "partial_holds", "corrupt_frames", "twin_switches", "parse_errors",
+                        "resets")}
                     # written by the demo (rc_dashboard/demo), not measured: the
                     # header says so whenever any host's records do
                     rep["synthetic_hosts"] = self.health.synthetic_hosts()

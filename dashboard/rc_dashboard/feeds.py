@@ -16,8 +16,8 @@ import os
 import time
 from datetime import datetime
 
-from . import gz
-from .feedfile import dated_dirs, feed_files, host_of
+from . import ebr, gz
+from .feedfile import dated_dirs, feed_files, format_of, host_of, newest, prefer_of
 from .feedfile import _STREAM_SUFFIXES  # noqa: F401  (moved with host_of; importable as before)
 
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"     # every collector stamps records this way
@@ -46,8 +46,11 @@ def newest_record_ts(path, ts_field="ts"):
 
     The window grows until it holds a complete line: some collectors write one
     large JSON object per line (a census record is ~200 KB), so a fixed small
-    tail would only ever see a mid-line fragment.
+    tail would only ever see a mid-line fragment. An EBR day-file's frames are
+    decoded from its end instead, as far back (`feedfile.newest`).
     """
+    if format_of(path) == "ebr":
+        return _newest_ebr_ts(path, ts_field)
     try:
         size = gz.stat(path).st_size
     except OSError:
@@ -83,6 +86,20 @@ def newest_record_ts(path, ts_field="ts"):
         window *= 4
 
 
+def _newest_ebr_ts(path, ts_field):
+    try:
+        ts = newest(path, lambda rec: rec.get(ts_field) or rec.get("timestamp") or None,
+                    256 << 20)
+    except (OSError, ebr.Error):
+        return None
+    if ts is None:
+        return None
+    try:
+        return datetime.strptime(ts, TS_FORMAT)
+    except (TypeError, ValueError):
+        return None
+
+
 def fmt_age(age):
     if age is None:
         return "-"
@@ -105,14 +122,25 @@ def _blank(name, cfg):
             "newest_file": None, "newest_mtime": None, "newest_record_ts": None,
             "lag_s": None, "lag": None, "max_age_s": cfg.get("feeds.%s.max_age_s" % name),
             "rows": 0, "schema_versions": {}, "degraded": [], "notice": None,
-            "backfill": None}
+            "backfill": None,
+            # the dated tiers' two formats (`resolve_dated`)
+            "prefer": None, "formats": {"read": {}, "unread": {}}, "twins": [],
+            "held": [], "format_notice": None}
 
 
 def resolve_dated(name, cfg):
-    """`<root>/<YYYY-MM-DD>/<host>[.<stream>].jsonl` -- the ebpf and node tiers."""
+    """`<root>/<YYYY-MM-DD>/<host>[.<stream>].<jsonl|ebr>` -- the ebpf and node tiers.
+
+    Where a stream is written in both formats, the report says which twin is
+    read and which not (`formats`, `twins`), why when it is not the preferred
+    one, the streams held until a twin has a record (`held`, listed in
+    `files` with `held` set), and `format_notice` when a stream is read from
+    its non-preferred twin or the twin read lags the other by more than
+    `max_age_s` -- which it reports, and never acts on (`feedfile.choose`)."""
     rep = _blank(name, cfg)
     roots = cfg.get("feeds.%s.roots" % name, []) or []
     days = int(cfg.get("feeds.%s.days" % name, 2) or 2)
+    prefer = rep["prefer"] = prefer_of(cfg, name)
     rep["configured"] = list(roots)
     rep["origin"] = cfg.origin("feeds.%s.roots" % name)
     rep["resolved"] = [r for r in roots if os.path.isdir(r)]
@@ -121,36 +149,43 @@ def resolve_dated(name, cfg):
         return rep
     rep["exists"] = True
 
-    files, dates = [], set()
+    files, dates, notes = [], set(), []
     for root in rep["resolved"]:
-        for d, found in dated_dirs(root, days):
+        for d, found in dated_dirs(root, days, prefer, report=notes):
             dates.add(d)
             files += found
         # a root may also hold flat <thing>_<date>.jsonl files
-        files += feed_files(root)[-days:]
+        files += feed_files(root, prefer, report=notes)[-days:]
     rep["days"] = sorted(dates)[-days:]
     files = sorted(set(files))
+    held = {p for n in notes if n["path"] is None for p in n["files"].values()}
+    _twins(rep, notes)
 
-    for p in files:
+    for p in files + sorted(held - set(files)):
         try:
             st = os.stat(p)
         except OSError:
             continue
         rep["files"].append({"path": p, "size": st.st_size, "mtime": st.st_mtime,
-                             "host": host_of(p), "compressed": gz.is_gz(p)})
+                             "host": host_of(p), "compressed": gz.is_gz(p),
+                             "format": format_of(p), "held": p in held})
         rep["bytes"] += st.st_size
     rep["n_files"] = len(rep["files"])
     rep["hosts"] = sorted({f["host"] for f in rep["files"]})
+    read = [f for f in rep["files"] if not f["held"]]
+    for f in read:
+        rep["formats"]["read"][f["format"]] = rep["formats"]["read"].get(f["format"], 0) + 1
     if any(f["compressed"] for f in rep["files"]):
         # `size`/`bytes` stay what is on disk; what it holds is here
         rep["compressed"] = gz.status()
-    if not rep["files"]:
+    if not read:
         rep["status"] = "empty"
         return rep
 
-    newest = max(rep["files"], key=lambda f: f["mtime"])
+    newest = max(read, key=lambda f: f["mtime"])
     rep["newest_file"] = newest["path"]
     rep["newest_mtime"] = datetime.fromtimestamp(newest["mtime"]).strftime(TS_FORMAT)
+    _lagging(rep, notes)
     ts = newest_record_ts(newest["path"])
     if ts is not None:
         rep["newest_record_ts"] = ts.strftime(TS_FORMAT)
@@ -161,6 +196,56 @@ def resolve_dated(name, cfg):
     rep["status"] = ("stale" if (max_age and rep["lag_s"] is not None
                                  and rep["lag_s"] > max_age) else "ok")
     return rep
+
+
+def _twins(rep, notes):
+    """`twins`, `held` and the unread counts from the listing's notes."""
+    unread = rep["formats"]["unread"]
+    for n in notes:
+        if n["path"] is None:
+            rep["held"].append({"day": n.get("day"), "stream": n["stream"],
+                                "files": sorted(n["files"].values()), "reason": n["reason"]})
+            continue
+        others = sorted(f for f in n["files"] if f != n["read"])
+        for f in others:
+            unread[f] = unread.get(f, 0) + 1
+        rep["twins"].append({"day": n.get("day"), "stream": n["stream"], "read": n["read"],
+                             "unread": others[0] if len(others) == 1 else others,
+                             "reason": n["reason"]})
+    off = [t for t in rep["twins"] if t["read"] != rep["prefer"]]
+    if off:
+        rep["format_notice"] = (
+            "%d stream(s) read from their %s twin, not the preferred %s: %s%s" % (
+                len(off), off[0]["read"], rep["prefer"],
+                "; ".join("%s%s: %s" % (t["stream"], " (%s)" % t["day"] if t["day"] else "",
+                                         t["reason"]) for t in off[:3]),
+                "; ..." if len(off) > 3 else ""))
+
+
+def _lagging(rep, notes):
+    """Add to `format_notice` the streams whose twin read was last written more
+    than `max_age_s` before the twin left unread: one format's writer stopped."""
+    max_age = rep["max_age_s"]
+    if not max_age:
+        return
+    lag = []
+    for n in notes:
+        if n["path"] is None or len(n["files"]) < 2:
+            continue
+        try:
+            mine = os.stat(n["path"]).st_mtime
+            theirs = max(os.stat(p).st_mtime for f, p in n["files"].items() if f != n["read"])
+        except OSError:
+            continue
+        if theirs - mine > max_age:
+            lag.append("%s%s (%s, %s behind its %s twin)" % (
+                n["stream"], " (%s)" % n["day"] if n.get("day") else "", n["read"],
+                fmt_age(theirs - mine), "/".join(f for f in n["files"] if f != n["read"])))
+    if lag:
+        msg = "the twin read lags the other: %s%s" % ("; ".join(lag[:3]),
+                                                      "; ..." if len(lag) > 3 else "")
+        rep["format_notice"] = msg if not rep["format_notice"] else (
+            rep["format_notice"] + ". " + msg[0].upper() + msg[1:])
 
 
 def resolve_globbed(name, cfg):
@@ -284,6 +369,16 @@ def print_table(reports):
                  r["newest_record_ts"] or r["newest_mtime"] or "-",
                  r["lag"] or "-", path))
     for r in reports.values():
+        if r.get("prefer") and r["exists"]:
+            fm = r["formats"]
+            print("  formats %-9s prefer %s; read %s; unread %s; %d held" % (
+                r["name"], r["prefer"],
+                ", ".join("%s %d" % kv for kv in sorted(fm["read"].items())) or "-",
+                ", ".join("%s %d" % kv for kv in sorted(fm["unread"].items())) or "-",
+                len(r["held"])))
+    for r in reports.values():
         if r["notice"]:
             print("  ! %s" % r["notice"])
+        if r.get("format_notice"):
+            print("  ! %s" % r["format_notice"])
     return 1 if bad else 0

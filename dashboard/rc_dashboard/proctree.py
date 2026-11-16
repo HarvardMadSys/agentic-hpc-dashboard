@@ -79,8 +79,8 @@ from array import array
 
 from . import feeds as feedmod, fastjson
 from . import gz
-from .export import event_filter, window_plan, window_scan
-from .feedfile import day_files, end_at_jsonl as _end_at
+from .export import _window_stream, event_filter, window_plan, window_scan
+from .feedfile import day_files, end_at_jsonl as _end_at, format_of, host_of, prefer_of
 from .normalize import Normalizer, epoch_of
 from .procindex import VIA
 from .redact import redact
@@ -1454,6 +1454,26 @@ def key_patterns(members):
     return tuple(pats)
 
 
+def key_where(members):
+    """`key_patterns` for an EBR day-file's decoder: an `ebr` filter (`where`)
+    that passes every record whose session key is one of these, or None
+    exactly when `_key_values` is None (a key not on a pid: no prefilter).
+
+    By the normaliser's rule (`session_key_of`): an apid key is `session_key`
+    after its first colon when there is one, else `agent_pid`. So a record is
+    the session's only if one of the two names one of its pids -- an OR of
+    the two tests. Like the patterns, it may pass a record of another session
+    (another host's same pid, an agent_pid beside some other session_key);
+    the `_sid` decides."""
+    kvs = _key_values(members)
+    if kvs is None:
+        return None
+    kvs = frozenset(kvs)
+    return [{"session_key": lambda v: isinstance(v, str) and bool(v)
+             and v.split(":", 1)[-1] in kvs},
+            {"agent_pid": kvs}]
+
+
 def key_matcher(members):
     """The same test on one line, or None when there is no byte check."""
     pats = key_patterns(members)
@@ -1540,8 +1560,15 @@ def _key_stream_gz(entry, norm, since, until, stats, pats, ev):
             pos += len(buf)
 
 
-def _key_stream(entry, norm, since, until, stats, pats, ev):
-    """One file's records on the keys, as `(ts, rec)`, ascending."""
+def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=None):
+    """One file's records on the keys, as `(ts, rec)`, ascending.
+
+    An EBR day-file is read as a window scan reads it (`export._window_stream`),
+    its decoder rejecting by `kinds` and the keys' `where` (`key_where`) before
+    a record is built: there are no lines to search."""
+    if format_of(entry["path"]) == "ebr":
+        yield from _window_stream(entry, norm, since, until, stats, kinds=kinds, where=where)
+        return
     if gz.is_gz(entry["path"]):
         yield from _key_stream_gz(entry, norm, since, until, stats, pats, ev)
         return
@@ -1593,7 +1620,7 @@ def _key_stream(entry, norm, since, until, stats, pats, ev):
             mm.close()
 
 
-def key_scan(plan, norm, since, until, pats, events=EVENTS):
+def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
     """Yield `(rec, stats)` for the records on these session keys, OLDEST FIRST.
 
     `window_scan` for one session: the same byte ranges, the same per-file
@@ -1606,11 +1633,17 @@ def key_scan(plan, norm, since, until, pats, events=EVENTS):
 
     `skipped` here counts the lines a key hit that are not one of `events`;
     the lines no key hit are never visited, so they are not counted at all.
+    An EBR day-file is decoded instead, rejecting by `events` and `where`
+    (`key_where`) before a record is built; `skipped` then counts what those
+    rejected, and `bytes` the frames read (`inspect_max_bytes` bounds the
+    bytes READ, in either format).
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan), "method": "key search"}
     ev = event_filter(events)
-    streams = [_key_stream(e, norm, since, until, stats, pats, ev) for e in plan]
+    kinds = frozenset(events) if events else None
+    streams = [_key_stream(e, norm, since, until, stats, pats, ev, kinds, where)
+               for e in plan]
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
         yield rec, stats
 
@@ -1799,23 +1832,25 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     if to:
         until = min(until, to) if until else to
     days = int(max(0, t0 - since) // 86400) + 2
+    prefer = prefer_of(cfg, "ebpf")
     # The sid names one host, and a day-file is named for its host: reading
     # the other hosts' files would only find other processes with the same pids.
     # Its files are planned alone, and every host's only when none of them
-    # holds the span -- as the full plan, cut to the host's, read before.
-    mine = [p for p in day_files(roots, days)
-            if host and p.rsplit("/", 1)[-1].startswith(host + ".")]
+    # holds the span -- as the full plan, cut to the host's, read before. The
+    # host is the file's exactly (`feedfile.host_of`): `login1.` is a prefix of
+    # `login1.rc.fas`'s files too.
+    mine = [p for p in day_files(roots, days, prefer) if host and host_of(p) == host]
     plan, total = window_plan(roots, since, days, paths=mine) if mine else ([], 0)
     if not plan:
-        plan, total = window_plan(roots, since, days)
+        plan, total = window_plan(roots, since, days, prefer=prefer)
 
     b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
     pats = key_patterns(members)
-    records = (key_scan(plan, norm, since, until, pats) if pats is not None else
-               window_scan(plan, norm, since, until, events=EVENTS))
+    records = (key_scan(plan, norm, since, until, pats, where=key_where(members))
+               if pats is not None else window_scan(plan, norm, since, until, events=EVENTS))
     if give_way is not None and give_way():
         raise _GiveWay
     for rec, stats in records:

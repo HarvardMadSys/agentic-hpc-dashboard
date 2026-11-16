@@ -22,6 +22,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _MISSING = object()
+# The day-file formats `feeds.<tier>.prefer` may name (feedfile.FORMATS).
+PREFER_FORMATS = ("jsonl", "ebr")
 
 
 def _env(name, default=None):
@@ -93,6 +95,10 @@ def defaults():
                 "days": 8,
                 "max_age_s": 300,       # residency_totals ticks every 60s -> 5x
                 "required": True,
+                # Which file of a stream the collector writes in both formats
+                # (EBPFM_FORMAT=both) is read: "jsonl" or "ebr" (feedfile.choose).
+                # A day whose preferred twin started mid-day is read from the other.
+                "prefer": "jsonl",
             },
             "ebpf_node": {
                 "roots": _node_candidates(),
@@ -100,6 +106,7 @@ def defaults():
                 "snapshots_per_host": 2,   # cpu_usage_usec is cumulative: need a delta
                 "max_age_s": 900,
                 "required": False,
+                "prefer": "jsonl",         # as feeds.ebpf.prefer, for the node tier
             },
             "sacct": {
                 "dir": REPO,
@@ -359,8 +366,10 @@ ENV_MAP = {
     "feeds.ebpf.roots": ("RC_DASH_EBPF_ROOTS", _pathsep),
     "feeds.ebpf.days": ("RC_DASH_EBPF_DAYS", int),
     "feeds.ebpf.max_age_s": ("RC_DASH_EBPF_MAX_AGE_S", int),
+    "feeds.ebpf.prefer": ("RC_DASH_EBPF_PREFER", str),
     "feeds.ebpf_node.roots": ("RC_DASH_NODE_ROOTS", _pathsep),
     "feeds.ebpf_node.days": ("RC_DASH_NODE_DAYS", int),
+    "feeds.ebpf_node.prefer": ("RC_DASH_NODE_PREFER", str),
     "feeds.sacct.dir": ("RC_DASH_SACCT_DIR", str),
     "feeds.sacct.pattern": ("RC_DASH_SACCT_PATTERN", str),
     "feeds.sacct.max_days": ("RC_DASH_SACCT_MAX_DAYS", int),
@@ -604,6 +613,17 @@ def load(args=None, config_path=None):
                 else:
                     origins[prefix + "." + k] = "profile:%s" % pth
         mark(ptree, "risk")
+
+    # Which twin a stream written in both formats is read from: one of the two,
+    # or the service refuses to start rather than guess (feedfile.choose).
+    for feed in ("ebpf", "ebpf_node"):
+        key = "feeds.%s.prefer" % feed
+        val = _get(tree, key, "jsonl")
+        norm = str(val if val is not None else "").strip().lower()
+        if norm not in PREFER_FORMATS:
+            raise SystemExit("%s: %r is not one of %s (set by %s)" % (
+                key, val, ", ".join(PREFER_FORMATS), origins.get(key, "default")))
+        _set(tree, key, norm)
 
     # candidate-probe annotation for the multi-root feeds
     for feed in ("ebpf", "ebpf_node"):

@@ -62,8 +62,9 @@ import threading
 import time
 
 from . import hours as hourmod, payloads, redact, snapshots
-from .export import (UNTAGGED, agent_type_token, agent_type_want, parse_filters,
-                     resume_plan, window_plan, window_scan)
+from .export import (UNTAGGED, agent_type_token, agent_type_want, agent_type_where,
+                     parse_filters, resume_plan, window_plan, window_scan)
+from .feedfile import prefer_of
 from .normalize import Normalizer
 from .procindex import ProcIndex
 from .reducers.cascades import CascadeReducer
@@ -203,7 +204,8 @@ class ViewFilter:
     empty series read as an idle person.
     """
 
-    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match", "line_find")
+    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match", "line_find",
+                 "where")
 
     NOT_NARROWED = (
         "resident memory and live processes over time: sampled from each host's "
@@ -239,6 +241,16 @@ class ViewFilter:
         # day-file to find the lines worth looking at (`export.window_scan`
         # `find`); `line_match` still decides each one it finds.
         self.line_find = checks[0].__self__ if checks else None
+        # The same narrowing for an EBR day-file's decoder (`ebr.match_where`),
+        # from the same inputs: it rejects a record before building it, and
+        # `match` still decides each one it lets through. `none` it can test:
+        # a null or empty agent type is `str(v)` "None" or "".
+        w = {}
+        if self.users:
+            w["user"] = frozenset(self.users)
+        if self.agent_types:
+            w["agent_type"] = agent_type_where(self.agent_types)
+        self.where = w or None
 
     @classmethod
     def from_params(cls, params):
@@ -594,6 +606,8 @@ class WindowRegistry:
         # window is merged from saved hour states rather than re-read. None
         # when off, and every window is scanned as before.
         ret = retention_min(cfg)
+        # which twin of a stream written in both formats is read (`feedfile.choose`)
+        self.prefer = prefer_of(cfg, "ebpf")
         self.hours = hourmod.HourStore.from_config(
             cfg, classes, lambda: PanelView(cfg, classes, ret).fresh_reducers(), EVENTS)
         self._queue = collections.deque()
@@ -681,7 +695,7 @@ class WindowRegistry:
             saved, reducers = None, view.fresh_reducers()
             since = t0 - view.window_s
             days = int(view.window_s // 86400) + 2
-            plan, total = window_plan(roots, since, days)
+            plan, total = window_plan(roots, since, days, prefer=self.prefer)
         view.progress = {"pct": 0, "records": 0, "bytes": 0,
                          "total_bytes": total, "files": len(plan),
                          "elapsed_s": 0.0, "mode": "resume" if saved else "scan"}
@@ -696,7 +710,8 @@ class WindowRegistry:
         keep = view.flt.match if view.flt else None
         every = 20000 if keep is None else 500
         for rec, stats in window_scan(plan, norm, since, events=EVENTS,
-                                      match=view.flt.line_match, find=view.flt.line_find):
+                                      match=view.flt.line_match, find=view.flt.line_find,
+                                      where=view.flt.where):
             if keep is not None and not keep(rec):
                 continue
             ts = rec.get("_ts_epoch")
@@ -870,7 +885,8 @@ class WindowRegistry:
                 view.cache["note"] = "scanned: %s" % why
                 return None
             days = int((t0 - meta["covers_from"]) // 86400) + 2
-            got = resume_plan(roots, meta["covers_from"], meta["files"], days)
+            got = resume_plan(roots, meta["covers_from"], meta["files"], days,
+                              prefer=self.prefer)
             if got is None:
                 view.cache["note"] = ("scanned: the day-files the saved build read "
                                       "have changed since")

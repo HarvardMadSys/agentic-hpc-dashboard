@@ -99,7 +99,11 @@
       "//4": "EBPFM_RESIDENCY_S (default 60s) whether or not anything was tracked,",
       "//5": "so freshness here means liveness, not activity. 300 = 5 ticks, the same",
       "//6": "threshold collect/healthcheck.py uses for 'ebpfm'.",
-      "required": true
+      "required": true,
+      "//prefer": "A collector writing both formats (EBPFM_FORMAT=both) leaves x.jsonl and x.ebr",
+      "//prefer1": "with the same records: one per stream is read, this one (jsonl|ebr) unless it",
+      "//prefer2": "started mid-day. RC_DASH_EBPF_PREFER. Changing it rebuilds saved windows and hours.",
+      "prefer": "jsonl"
     },
 
     "//7": "Node tier (unprivileged): node_snapshot.py is a vendored copy of",
@@ -113,7 +117,9 @@
       "//10": "2 snapshots: per_user_cgroup.cpu_usage_usec is CUMULATIVE, so a per-user",
       "//11": "CPU rate only exists as a delta between two consecutive snapshots.",
       "max_age_s": 900,
-      "required": false
+      "required": false,
+      "//prefer": "as feeds.ebpf.prefer, for the node tier's <host>.{jsonl,ebr}. RC_DASH_NODE_PREFER.",
+      "prefer": "jsonl"
     },
 
     "//12": "collect/slurm_query.bash writes ONE FILE PER DAY into DEST_DIR, named",

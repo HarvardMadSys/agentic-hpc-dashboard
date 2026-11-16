@@ -32,6 +32,7 @@ from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
 from .export import make_predicate, meta_header, parse_filters, scan
+from .feedfile import prefer_of
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
 from .reducers import phase_names, phase_rules
@@ -586,6 +587,8 @@ def create_app(cfg):
                        request=request)
 
     _roots = agg.roots
+    # which twin of a stream written in both formats the event views read
+    prefer = prefer_of(cfg, "ebpf")
     iocmds = IoCommands(cfg, _roots)
 
     # Every command behind an I/O number (iocmds.py): a lookup the page starts
@@ -673,7 +676,8 @@ def create_app(cfg):
             pred = search(pred, qv)
         rows, scanned, matched = [], 0, 0
         for rec, scanned, matched in scan(_roots(), norm, pred, limit=limit,
-                                          offset=cursor, newest_first=newest):
+                                          offset=cursor, newest_first=newest,
+                                          prefer=prefer):
             rows.append(redact.record(rec))
         rep = agg.reports["ebpf"]
         full = len(rows) >= limit
@@ -706,7 +710,7 @@ def create_app(cfg):
             matched = 0
             body = []
             for rec, _scanned, matched in scan(_roots(), norm, pred, limit=cap,
-                                               newest_first=order != "asc"):
+                                               newest_first=order != "asc", prefer=prefer):
                 # the download is the view, credentials and names masked like it
                 body.append(json.dumps(masked(redact.record(rec)), default=str))
                 if len(body) >= 500:

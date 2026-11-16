@@ -1,4 +1,4 @@
-"""Read a gzip-compressed day-file as if it were the plain JSONL inside it.
+"""Read a gzip-compressed day-file as if it were the plain file inside it.
 
 Every reader in this package addresses a day-file by byte offset: a window build
 binary-searches for its first in-window byte (`export.seek_to_epoch`), the
@@ -16,6 +16,10 @@ the checkpoint before it, and the reader keeps the span it last inflated, so a
 forward or a backward walk inflates each span once. Offsets everywhere are into
 the UNCOMPRESSED stream: a byte range planned against a compressed file means
 what it means for a plain one, and a saved window resumes the same way.
+
+Nothing here knows the format inside: a sealed EBR day-file (`x.ebr.gz`) is
+read through the same index, its frames at the same offsets as in its `x.ebr`
+(`feedfile.ebr_src`: `ebr` reads such a reader with seek and read alone).
 
 What it costs, measured on boslogin06's 2026-10-08 exits file (66 MB -> 1.49 GB):
 

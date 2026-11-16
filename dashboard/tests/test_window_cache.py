@@ -26,7 +26,7 @@ from rc_dashboard import snapshots, windows        # noqa: E402
 from rc_dashboard.export import window_plan, window_scan   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
-from test_ingest import FeedCase, exit_rec, line, stamp    # noqa: E402
+from test_ingest import FeedCase, ebr_twins, exit_rec, stamp    # noqa: E402
 
 WIN = 1440
 # Enough variety that every reducer holds state worth getting wrong: a shell
@@ -103,8 +103,8 @@ class ScanTest(CacheCase):
 
     def test_a_half_written_last_line_is_left_unread_and_unclaimed(self):
         recs = [varied_exit(self.now - 600 + i, i) for i in range(3)]
-        tail = line(varied_exit(self.now - 10, 9))
-        self.append("h1.exits.jsonl", recs, raw=tail[:25])
+        done, tail = self.rounds([recs, [varied_exit(self.now - 10, 9)]])
+        self.write_raw("h1.exits.jsonl", done + tail[:25])
         since = self.now - 3600
         plan, _ = window_plan([self.root], since)
         got = [r["pid"] for r, _ in window_scan(plan, Normalizer(self.cfg()), since)]
@@ -281,12 +281,7 @@ class RefusalTest(CacheCase):
         # and the same line endings, so only the content tells the files apart.
         # Deleted first, so the file system is free to hand the new file the old
         # inode number -- which is why the inode alone is not its identity.
-        p = self.path("h1.exits.jsonl")
-        with open(p, "rb") as fh:
-            data = fh.read()
-        os.unlink(p)
-        with open(p, "wb") as fh:
-            fh.write(data.replace(b'"alice"', b'"alicf"', 1))
+        self.replace_bytes("h1.exits.jsonl", b'"alice"', b'"alicf"')
         self.assertRescanned(self.build(self.registry()), "changed since")
 
     def test_a_snapshot_older_than_the_drift_budget_is_rescanned(self):
@@ -453,3 +448,6 @@ class FingerprintTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+ebr_twins(globals())

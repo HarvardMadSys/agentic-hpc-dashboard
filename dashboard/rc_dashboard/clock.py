@@ -42,25 +42,36 @@ it. Pin at or after the end of the capture.
 import os
 import time
 
-from . import gz
+from . import ebr, gz
 from .export import dated_dirs
+from .feedfile import format_of, newest, prefer_of
 from .normalize import epoch_of
 
 _wall = time.time
 _state = {"pinned": False, "as_of": None, "source": "wall clock"}
 
 
-def newest_record(roots):
+def newest_record(roots, prefer="jsonl"):
     """`(epoch, path)` of the newest record in the newest day of each root.
 
     Read from each file's end; a compressed file is indexed to get there, which
-    the tail would do moments later anyway.
+    the tail would do moments later anyway. An EBR day-file's last frames are
+    decoded newest first (`feedfile.newest`), as far back as a JSONL file's
+    last 4 MB would reach. `prefer`: which twin of a stream is read.
     """
     import json
     best = (None, None)
     for root in roots:
-        days = dated_dirs(root, 1)
+        days = dated_dirs(root, 1, prefer)
         for path in (days[-1][1] if days else []):
+            if format_of(path) == "ebr":
+                try:
+                    ts = newest(path, epoch_of, 4 << 20)
+                except (OSError, ebr.Error):
+                    continue
+                if ts is not None and (best[0] is None or ts > best[0]):
+                    best = (ts, path)
+                continue
             try:
                 with gz.open_feed(path) as fh:
                     size = gz.fstat(fh).st_size
@@ -88,7 +99,7 @@ def resolve(cfg, roots):
     if not raw:
         return None, "wall clock"
     if raw == "auto":
-        ts, path = newest_record(roots)
+        ts, path = newest_record(roots, prefer_of(cfg, "ebpf"))
         if ts is None:
             raise SystemExit("clock.as_of=auto: no record with a timestamp in the "
                              "newest day of %s" % (", ".join(roots) or "(no ebpf root)"))
