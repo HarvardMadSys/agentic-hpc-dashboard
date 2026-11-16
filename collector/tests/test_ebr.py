@@ -566,6 +566,35 @@ class WideningAndShapesTest(unittest.TestCase):
         self.assertEqual(len([s for s in shapes if 'pid' in s[0]]), 2)   # net_endpoints: list or null
 
 
+class BindingTest(unittest.TestCase):
+    """CPython 3.12 guards a specialized call by the callee's func_version alone. A
+    `def` takes its code object's version; a function made by types.FunctionType
+    takes one from a separate counter that starts at 1. Binding thousands of
+    decoders that way walked that counter onto the version of a def-made closure
+    with no defaults (mapd, wide, ... in _bind), and a call site specialized on the
+    decoder, handed the closure, read its NULL defaults: SIGSEGV, now and then, in
+    the dashboard's reader and in its live service (FAS feed, 2026-11-16). Every
+    decoder and encoder is made by a `def` inside a factory instead."""
+
+    def test_every_bound_decoder_is_made_by_a_def(self):
+        recs = [{'io': {'n': 1}, 'l': [{'n': 1}]}, {'a': 'x', 'b': None}] + \
+            [exit_rec(i) for i in range(5)]
+        data = write_bytes(recs)
+        dec = E.Decoder()
+        for f in E.frames(data):
+            for _ in dec.records(data, f):
+                pass
+        fns = [sh.fn for sh in dec._T.shapes if sh.fn is not None]
+        self.assertTrue(fns)
+        self.assertEqual({f.__qualname__ for f in fns}, {'make.<locals>.dec'})
+
+    def test_the_cached_templates_are_factories(self):
+        write_bytes([{'io': {'n': 1}, 'l': [{'n': 1}]}, exit_rec(1)])
+        self.assertTrue(E._ENC_CACHE and E._DEC_CACHE)
+        self.assertEqual({f.__name__ for f in E._ENC_CACHE.values()}, {'make'})
+        self.assertEqual({f.__name__ for f in E._DEC_CACHE.values()}, {'make'})
+
+
 class DynamicKeysTest(unittest.TestCase):
     def test_map_after_the_eighth_key_set(self):
         recs = [{'event': 'residency', 'by_command': {'cmd%d' % i: i}} for i in range(20)]

@@ -622,7 +622,6 @@ def _big(v):
 
 
 _ENC_CACHE = {}
-_FT = type(_uv)
 _SID_CODES = ("B", "H", "BH")
 
 
@@ -636,9 +635,10 @@ def _sid_args(sid):
 
 
 def _enc_tmpl(layout, sis, sidw):
-    """The packer of one layout: enc(v, d, ctx, I, K, obj, lst, big, SG,
-    s0, s1) -> the dict's body, shape id included (s0, s1: uv(sid) as struct
-    fields). `v` is the dict's values() view, unpacked in field order. A
+    """The packer factory of one layout: make(I, K, obj, lst, big, SG, s0, s1)
+    -> enc(v, d, ctx) -> the dict's body, shape id included (s0, s1: uv(sid)
+    as struct fields); enc is made by a `def`, never by types.FunctionType
+    (see _dec_fn). `v` is the dict's values() view, unpacked in field order. A
     nested dict looks its signature up in SG (the nested cache's get) and
     falls back to obj() on a miss, or on a struct.error so obj() can widen it.
 
@@ -692,10 +692,13 @@ def _enc_tmpl(layout, sis, sidw):
         expr = parts[0] if len(parts) == 1 else 'b"".join((%s,))' % ", ".join(parts)
         unpack = "    (%s,) = v\n" % ", ".join(names) if names else ""
         body = "%s%s    return %s\n" % (unpack, "".join(pre), expr)
-    src = "def enc(v, d, ctx, I, K, obj, lst, big, SG, s0, s1):\n" + body
+    src = ("def make(I, K, obj, lst, big, SG, s0, s1):\n"
+           "    def enc(v, d, ctx, I=I, K=K, obj=obj, lst=lst, big=big, SG=SG, s0=s0, s1=s1):\n"
+           + "".join("    " + x for x in body.splitlines(True))
+           + "    return enc\n")
     ns = {"P": st.pack, "SE": struct.error, "map": map, "type": type, "__builtins__": {}}
     exec(compile(src, "<ebr-encoder>", "exec"), ns)
-    fn = ns["enc"]
+    fn = ns["make"]
     if len(_ENC_CACHE) >= _CODE_CAP:
         _ENC_CACHE.clear()
     _ENC_CACHE[key] = fn
@@ -781,8 +784,7 @@ def _build_encoder(E):
             shape_ids[sk] = sid
         w, s0, s1 = _sid_args(sid)
         tmpl = _enc_tmpl(sig.layout, sis, w)
-        return _FT(tmpl.__code__, tmpl.__globals__, "enc",
-                   (I, sig.K, obj, lst, _big, sigs_get, s0, s1))
+        return tmpl(I, sig.K, obj, lst, _big, sigs_get, s0, s1)
 
     def prep(cache, slow, key, vw, ctx, is_top):
         sig = slow.get(key)
@@ -1053,8 +1055,9 @@ def _obj_lines(k, kid, target):
 
 
 def _dec_fn(layout, sis, kids=None):
-    """(struct, dec) for one layout. A bound copy of dec (see _compile_shape)
-    decodes one dict of the shape from its fixed part at `p` on:
+    """(struct, make) for one layout. make(*bindings) (see _compile_shape)
+    returns dec, which decodes one dict of the shape from its fixed part at
+    `p` on:
     dec(b, p) -> (dict, next offset). It unpacks the fixed part itself, unless
     the caller already has: dec(b, p, st.unpack_from(b, p)). The var parts
     follow in field order; a dict among them is decoded by what its shape id's
@@ -1062,7 +1065,16 @@ def _dec_fn(layout, sis, kids=None):
     or, for an OBJ slot `kids` gives the layout of (one per OBJ slot, None for
     none), inline when it is of that shape (_obj_lines). Wide shapes copy a
     template dict, which already holds the keys in order and None for NULL
-    slots, and fill it in bulk. The code is the layout's pattern's (_PAT)."""
+    slots, and fill it in bulk. The code is the layout's pattern's (_PAT).
+
+    dec is made by a `def` inside make, its bindings as defaults, never by
+    types.FunctionType(code, globals, name, defaults). CPython 3.12's call
+    specializer guards a call by the callee's func_version alone: a `def`
+    takes its code object's co_version, a FunctionType-made function one
+    from a separate counter that starts at 1. Binding thousands of decoders
+    that way walks that counter onto the co_version of a def-made closure
+    with no defaults (mapd, wide, ... in _bind), and a call site specialized
+    on the decoder then reads the closure's NULL defaults: SIGSEGV."""
     if len(layout) > MAX_FIELDS:
         raise FrameError("shape of %d fields" % len(layout))
     for t in layout:
@@ -1121,11 +1133,14 @@ def _dec_fn(layout, sis, kids=None):
                 lines += var(t, "x%d" % i)
                 items.append("K[%d]: x%d" % (i, i))
         lines.append("return {%s}, p" % ", ".join(items))
-    src = ("def dec(%s):\n" % ", ".join(params)
-           + "".join("    %s\n" % x for x in lines))
+    bound = params[2:]
+    src = ("def make(%s):\n" % ", ".join(bound)
+           + "    def dec(b, p, %s):\n" % ", ".join("%s=%s" % (x, x) for x in bound)
+           + "".join("        %s\n" % x for x in lines)
+           + "    return dec\n")
     ns = {"zip": zip, "map": map, "__builtins__": {}}
     exec(compile(src, "<ebr-decoder>", "exec"), ns)
-    fn = ns["dec"]
+    fn = ns["make"]
     if len(_DEC_CACHE) >= _CODE_CAP:
         _DEC_CACHE.clear()
     _DEC_CACHE[key] = fn
@@ -1163,7 +1178,7 @@ def _compile_shape(T, sh, b=None, p=None):
             if ch.fn is None:
                 _compile_shape(T, ch)
             args += [k[0], ch.unpack, 1 + ch.size, ch.K]
-    sh.fn = f = _FT(fn.__code__, fn.__globals__, "dec", tuple(args))
+    sh.fn = f = fn(*args)
     T.FS[sh.sid] = f
     if sh.sid < 0x80:
         T.F[sh.sid] = f
