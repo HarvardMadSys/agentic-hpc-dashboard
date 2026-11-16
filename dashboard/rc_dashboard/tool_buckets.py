@@ -5,10 +5,12 @@ only existed when the dashboard lived inside the research repo; standalone, the
 import failed and every tool fell back to the bucket `other` -- the tool mix
 read "100% other" for every class, and the login-node-compute panel, which
 selects by bucket, was empty. So the one file is copied here, verbatim except
-that `agent_lib` stays optional (no sys.path edit; `shellenv_sub` degrades to
-"shell (other)" without it), and that `bucket` is memoized (`lru_cache`: a pure
-function of its token, asked twice for every exit a window reduces). tests/test_tool_buckets.py checks it against the
-original whenever the original is on this machine, so the two cannot drift.
+that `agent_lib` stays optional (no sys.path edit), that `bucket` is memoized
+(`lru_cache`: a pure function of its token, asked twice for every exit a window
+reduces), and that the original's `shellenv_sub` is left out: its one caller,
+the tool mix's `shell_kinds`, is gone, and it read an `_INSTALL` this copy never
+defined. tests/test_tool_buckets.py checks it against the original whenever the
+original is on this machine, so the two cannot drift.
 """
 """Tool-call bucketing: an `effective_comm` token -> one of 13 buckets.
 
@@ -135,23 +137,3 @@ def bucket(ec: str) -> str:
     if t in RUNTIME_EXACT:
         return "runtime"
     return "other"
-
-
-def shellenv_sub(cm, ec, a):
-    """Sub-label an event that landed in the shell/env-init bucket."""
-    if cm in SHELLS and ec in SHELLS:          # an unresolved shell process
-        if L is None:                          # no agent_lib: the kind is unknowable
-            return "shell (other)"
-        kind, _ = L.shell_real(a)
-        return {"login": "login/interactive shell", "loop": "wait-loop",
-                "probe": "env-probe", "unresolved": "unresolved (truncated)",
-                "cmd": "shell", "other": "shell (other)"}.get(kind, "shell (other)")
-    # else it is an env/module command (conda/lmod/module/lua/pip/…)
-    low = a.lower()
-    if ("shell" in low or "printenv" in low or "activate" in low or "lmod" in low
-            or " load" in low or "modulecmd" in low or ec in ("lua", "lmod",
-            "modulecmd", "module", "ml")):
-        return "env activation / module load"
-    if _INSTALL.search(a):
-        return "package install/build"
-    return "env other"
