@@ -5,6 +5,7 @@ thread, so each test sees exactly the builds it asks for.
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import json
 import os
 import sys
 import threading
@@ -344,7 +345,14 @@ class FacetsTest(FilterCase):
 class RouteTest(FilterCase):
 
     def route(self, app, path):
-        return next(r.endpoint for r in app.routes if getattr(r, "path", None) == path)
+        """The route's endpoint, its answer read back as JSON: a route serializes its
+        own body (`respond`, jsonout), so what it returns is a ready Response."""
+        fn = next(r.endpoint for r in app.routes if getattr(r, "path", None) == path)
+
+        def call(**kw):
+            out = fn(**kw)
+            return json.loads(out.body) if hasattr(out, "body") else out
+        return call
 
     def test_the_panels_route_builds_the_view_its_params_name(self):
         with warnings.catch_warnings():
