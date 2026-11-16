@@ -46,11 +46,22 @@ def q(params):
     return urllib.parse.urlencode(params, doseq=True)
 
 
-def dump(feed, out, cache):
+# With --anon: names masked, under one fixed salt, so two runs alias alike.
+SALT_HEX = "00" * 31 + "2a"
+
+
+def dump(feed, out, cache, anon=False):
     if os.path.exists(cache):
         shutil.rmtree(cache)
+    env = {}
+    if anon:
+        os.makedirs(cache, mode=0o700)
+        fd = os.open(os.path.join(cache, "anonymize.salt"), os.O_WRONLY | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(SALT_HEX + "\n")
+        env["RC_DASH_ANONYMIZE"] = "1"
     got = {}
-    with Service(feed, cache, as_of="auto") as s:
+    with Service(feed, cache, as_of="auto", env=env) as s:
         s.wait(lambda: s.health()["backfill"].get("state") == "done", what="backfill")
         s.wait_ready(1440)
         panels = s.json("/api/panels?window_min=1440")
@@ -133,12 +144,13 @@ def main(argv=None):
     d.add_argument("feed")
     d.add_argument("out")
     d.add_argument("--cache", default=None)
+    d.add_argument("--anon", action="store_true", help="names masked (anonymize.enabled)")
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")
     a = ap.parse_args(argv)
     if a.cmd == "dump":
-        dump(a.feed, a.out, a.cache or os.path.join(a.feed, "cache-golden"))
+        dump(a.feed, a.out, a.cache or os.path.join(a.feed, "cache-golden"), anon=a.anon)
         return 0
     with open(a.a) as fa, open(a.b) as fb:
         # stripped again, so a key found volatile later applies to dumps already made
