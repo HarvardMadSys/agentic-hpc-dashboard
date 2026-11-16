@@ -6762,7 +6762,7 @@
       "n": 4118,
       "dstate_wait_s": 12.4,
       "dstate_coverage_pct": 100,
-      "reading": "under a sandbox wrapper, namespace-isolated"
+      "reading": "under a sandbox wrapper, sandboxed"
      },
      {
       "ancestry": "bwrap",
@@ -6789,7 +6789,7 @@
       "n": 16,
       "dstate_wait_s": 0,
       "dstate_coverage_pct": 100,
-      "reading": "isolated with no agent sandbox ancestor: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox"
+      "reading": "in its own namespaces with no agent sandbox wrapper above it: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox"
      },
      {
       "ancestry": "none",
@@ -6877,9 +6877,9 @@
      ]
     },
     "notes": {
-     "meaning": "sandbox = NAMESPACE ISOLATION; Landlock/seccomp-only sandboxes are invisible, containers count",
-     "denied": "'exited before read' (key: denied) is NOT 'not isolated'",
-     "failed": "'sandbox attempt failed': the wrapper exited non-zero and no payload ran under it"
+     "meaning": "sandboxed = ran in its own namespaces; Landlock/seccomp-only sandboxes are invisible, containers count",
+     "denied": "'exited before it was checked' (key: denied) is NOT 'not sandboxed'",
+     "failed": "'sandbox failed to start': the wrapper exited non-zero and no wrapped command ran under it"
     }
    },
    "trajectories": {
@@ -54893,7 +54893,7 @@
     },
     {
      "id": "bypass",
-     "label": "launches with approval bypassed",
+     "label": "launches with a bypass flag",
      "tone": "crit",
      "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
     },
@@ -54907,7 +54907,7 @@
      "id": "sandboxed",
      "label": "tool calls run sandboxed",
      "tone": "ok",
-     "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+     "rule": "50% or more of the sessions whose tool calls were judged had some or all of them sandboxed"
     },
     {
      "id": "multi_agent",
@@ -55000,7 +55000,7 @@
     "project": 0.5
    },
    "basis": {
-    "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+    "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
    },
    "users": [
@@ -55741,7 +55741,7 @@
       },
       {
        "id": "bypass",
-       "label": "launches with approval bypassed",
+       "label": "launches with a bypass flag",
        "tone": "crit",
        "detail": "1 of 1 sessions"
       },
@@ -55924,7 +55924,7 @@
       },
       {
        "id": "bypass",
-       "label": "launches with approval bypassed",
+       "label": "launches with a bypass flag",
        "tone": "crit",
        "detail": "1 of 1 sessions"
       },
@@ -56064,7 +56064,7 @@
      },
      {
       "id": "bypass",
-      "label": "launches with approval bypassed",
+      "label": "launches with a bypass flag",
       "tone": "crit",
       "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
      },
@@ -56078,7 +56078,7 @@
       "id": "sandboxed",
       "label": "tool calls run sandboxed",
       "tone": "ok",
-      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them sandboxed"
      },
      {
       "id": "multi_agent",
@@ -56171,7 +56171,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "thomwg11",
@@ -57833,7 +57833,7 @@
      },
      {
       "id": "bypass",
-      "label": "launches with approval bypassed",
+      "label": "launches with a bypass flag",
       "tone": "crit",
       "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
      },
@@ -57847,7 +57847,7 @@
       "id": "sandboxed",
       "label": "tool calls run sandboxed",
       "tone": "ok",
-      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them sandboxed"
      },
      {
       "id": "multi_agent",
@@ -57940,7 +57940,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "jsilva",
@@ -58284,7 +58284,7 @@
       },
       {
        "id": "bypass",
-       "label": "launches with approval bypassed",
+       "label": "launches with a bypass flag",
        "tone": "crit",
        "detail": "1 of 1 sessions"
       },
@@ -58408,7 +58408,7 @@
      },
      {
       "id": "bypass",
-      "label": "launches with approval bypassed",
+      "label": "launches with a bypass flag",
       "tone": "crit",
       "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
      },
@@ -58422,7 +58422,7 @@
       "id": "sandboxed",
       "label": "tool calls run sandboxed",
       "tone": "ok",
-      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them sandboxed"
      },
      {
       "id": "multi_agent",
@@ -58515,7 +58515,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "dwei",
@@ -59156,7 +59156,7 @@
      },
      {
       "id": "bypass",
-      "label": "launches with approval bypassed",
+      "label": "launches with a bypass flag",
       "tone": "crit",
       "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
      },
@@ -59170,7 +59170,7 @@
       "id": "sandboxed",
       "label": "tool calls run sandboxed",
       "tone": "ok",
-      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them sandboxed"
      },
      {
       "id": "multi_agent",
@@ -59263,7 +59263,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "mmarthen",
@@ -59627,7 +59627,7 @@
       },
       {
        "id": "bypass",
-       "label": "launches with approval bypassed",
+       "label": "launches with a bypass flag",
        "tone": "crit",
        "detail": "1 of 1 sessions"
       },
@@ -59901,7 +59901,7 @@
      },
      {
       "id": "bypass",
-      "label": "launches with approval bypassed",
+      "label": "launches with a bypass flag",
       "tone": "crit",
       "rule": "50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)"
      },
@@ -59915,7 +59915,7 @@
       "id": "sandboxed",
       "label": "tool calls run sandboxed",
       "tone": "ok",
-      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated"
+      "rule": "50% or more of the sessions whose tool calls were judged had some or all of them sandboxed"
      },
      {
       "id": "multi_agent",
@@ -60008,7 +60008,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "rkoshy",

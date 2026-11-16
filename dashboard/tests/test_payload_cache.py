@@ -152,13 +152,46 @@ class RestoreTest(PanelsCase):
         agg.panels_by_window._build(agg.panels_by_window.request(WIN))
         want = agg.panels(WIN)["panels"]["tool_mix"]
 
-        again = Aggregator(cfg)            # a restart
-        got = again.panels(WIN)
+        # A restart a minute and a half later. Not at the same instant: the feed's
+        # status, which every panel body carries, is read when the service starts
+        # (its `_notice` says how old the feed is), and a test that compared it
+        # across the two failed whenever a second ticked between them.
+        with mock.patch("time.time", return_value=time.time() + 90):
+            again = Aggregator(cfg)
+            got = again.panels(WIN)
         self.assertEqual(got["window_status"]["state"], "queued")
         body = got["panels"]["tool_mix"]
         self.assertTrue(body["_window"]["has_payload"])
-        self.assertEqual({k: v for k, v in body.items() if k != "_window"},
-                         {k: v for k, v in want.items() if k != "_window"})
+        # The panel's own numbers are the saved ones; what starts with `_` (the
+        # feed's status, the window's, the filter) is this service's, read now.
+        mine = {k: v for k, v in body.items() if not k.startswith("_")}
+        self.assertTrue(mine)
+        self.assertEqual(mine, {k: v for k, v in want.items() if not k.startswith("_")})
+
+
+    def test_what_is_built_from_reducers_reads_as_a_first_build_meanwhile(self):
+        # The Users tab's roster and portraits come from the view's reducers, which
+        # a view showing saved panels does not have yet: their status must say
+        # "first build" (the page shows "reading"), never "has panels" over an empty
+        # roster ("no user ran an agent session").
+        self.feed(150, 90)
+        cfg = self.cfg()
+        agg = Aggregator(cfg)
+        agg.panels_by_window._build(agg.panels_by_window.request(WIN))
+        self.assertTrue(agg.users(WIN)["_window"]["has_payload"])
+
+        again = Aggregator(cfg)            # a restart
+        self.assertTrue(again.panels(WIN)["window_status"]["has_payload"])
+        users = again.users(WIN)
+        self.assertEqual(users["users"], [])
+        self.assertFalse(users["_window"]["has_payload"])
+        one = again.user("alice", WIN)
+        self.assertIsNone(one["found"])
+        self.assertFalse(one["_window"]["has_payload"])
+
+        reg = again.panels_by_window
+        reg._build(reg.request(WIN))
+        self.assertTrue(again.users(WIN)["_window"]["has_payload"])
 
 
 class RefusalTest(PanelsCase):

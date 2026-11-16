@@ -260,7 +260,7 @@ const typesWords = (types: [string, number][]): string => types.map(([t, n]) => 
 function surfacesWords(m: Partial<Record<Surface, number>>): string {
   const r = ranked(m);
   return [...r.filter(([s]) => s !== 'unknown'), ...r.filter(([s]) => s === 'unknown')]
-    .map(([s, n]) => `${s === 'unknown' ? 'launcher unknown' : SURFACE_LBL[s] ?? s} ${fint(n)}`)
+    .map(([s, n]) => `${SURFACE_LBL[s] ?? s} ${fint(n)}`)
     .join(' · ');
 }
 
@@ -306,15 +306,15 @@ export function PortraitFigure({
   // the laptop and the person: where sessions are driven from
   const leaning = l.mode.id === 'script';
   const a = l.autonomy;
-  // `of` is the sessions whose launcher is known; under `mixed`, `n` is only the largest place's
+  // `of` is the sessions it is known for; under `mixed`, `n` is only the largest place's
   const m = l.mode;
-  const known = `the ${plural(m.of, 'session')} whose launcher is known`;
+  const known = `the ${plural(m.of, 'session')} where that is known`;
   const appWhere = (row.surfaces.desktop ?? 0) && !row.surfaces.web ? 'the desktop app' : (row.surfaces.web ?? 0) && !row.surfaces.desktop ? 'the web or a phone' : MODE_TIP.app;
   const laptopTip = [
     m.id === 'mixed'
       ? `the laptop: sessions driven from several places, none of them half of ${known}`
       : m.id === 'unknown'
-        ? 'the laptop: where the sessions are driven from is not known: no launcher was read'
+        ? 'the laptop: where the sessions are driven from is not known: no agent’s own command line was read'
         : `the laptop: most sessions driven from ${m.id === 'app' ? appWhere : MODE_TIP[m.id]} (${fint(m.n)} of ${known})`,
     surfacesWords(row.surfaces) || null,
     leaning ? 'leaning back: no one at a terminal while they run' : null,
@@ -343,8 +343,8 @@ export function PortraitFigure({
   const peakH = busiestHour(hours);
   const maxMin = Math.max(0, ...hours);
   const clockTip = peakH
-    ? `the clock: a day of 24 hours${tz ? ` (${tz})` : ''}, each spoke the minutes in which an agent began a call in that hour; the hand at the busiest, ${hourSpan(peakH[0])} (${plural(peakH[1], 'minute')}). ${plural(row.active_min, 'active minute')} in all`
-    : 'the clock: no call began in the window, so no hour is drawn';
+    ? `the clock: a day of 24 hours${tz ? ` (${tz})` : ''}, each spoke the minutes in which an agent began a tool call in that hour; the hand at the busiest, ${hourSpan(peakH[0])} (${plural(peakH[1], 'minute')}). ${plural(row.active_min, 'active minute')} in all`
+    : 'the clock: no tool call began in the window, so no hour is drawn';
 
   // the window: day or night
   const night = has('overnight');
@@ -654,14 +654,14 @@ export const FIGURE_KEY: [string, string][] = [
   ['robots', 'the most sessions open at once, coloured by agent; a lit antenna: running now'],
   ['laptop', 'where most sessions are driven from: >_ a terminal, a gear a script, { } an IDE, a window the desktop app, a globe the web, stacked windows several places, ? not known'],
   ['leaning back', 'most sessions are driven from a script, with no one at a terminal'],
-  ['padlock · shield', 'most launches bypassed approval · were in auto mode'],
-  ['capsules', 'most sessions had some or all of their tool calls isolated'],
+  ['padlock · shield', 'most launches had a bypass flag · were in auto mode'],
+  ['capsules', 'most sessions had some or all of their tool calls sandboxed'],
   ['shelf', 'what the agents’ actions are for, the top three, area by share: a magnifier explores, a pencil edits and tests, a hammer builds, play runs programs, a rack is Slurm, a branch is git; ? not read'],
   ['clock', 'active minutes over 24 hours, a spoke an hour; the hand at the busiest'],
   ['window', 'the moon: much of their agents’ work falls between 00:00 and 06:00; the sun: it does not; empty: not known'],
   ['papers', 'commit messages, pull request titles and log entries the agents wrote, a sheet each'],
   ['mug · stopwatch', 'long sessions · many short ones'],
-  ['hourglass', 'their agents poll the scheduler, or many of their calls only wait'],
+  ['hourglass', 'their agents poll the scheduler, or many of their tool calls only wait'],
   ['server', 'Slurm jobs submitted, a light each (shared out past ten); red: refused'],
 ];
 

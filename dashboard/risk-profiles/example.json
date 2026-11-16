@@ -88,6 +88,6 @@
       "rules": ["bulk_download", "hf_download", "rclone_sync_login"]
     },
     {"id": "commands", "kind": "commands", "title": "Other commands that should not run here", "rules": "rest"},
-    {"id": "credentials", "kind": "credentials", "title": "Credentials exposed in argv", "rules": "rest"}
+    {"id": "credentials", "kind": "credentials", "title": "Credentials on a command line", "rules": "rest"}
   ]
 }

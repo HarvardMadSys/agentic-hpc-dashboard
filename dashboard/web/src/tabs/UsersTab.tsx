@@ -8,10 +8,10 @@
  * sentences and read against the window's other users, their rhythm by hour
  * and over the window, their agents' calls (counted) and time (by phase), their
  * projects and tasks in the agents' own words, the scheduler, and their sessions,
- * each one a link to its process tree on the Trajectories tab.
+ * each one a link to its process tree on the Sessions tab.
  *
  * Everything is composed by the service from the reducers the other tabs read
- * (`rc_dashboard/portraits.py`), so a session here is the Trajectories tab's
+ * (`rc_dashboard/portraits.py`), so a session here is the Sessions tab's
  * session and a verdict is the Sandbox's. Two rules carry over: a share is over
  * the known values, with the unknown ones counted beside it, and a count the
  * service could not make (the calls of an agent whose commands it does not read)
@@ -83,10 +83,10 @@ const TONE_RANK: Record<Trait['tone'], number> = { crit: 0, warn: 1, ok: 2, '': 
 
 /** The sandbox verdicts, short enough for a share row; SESSION_LABEL is on hover. */
 const SESSION_SHORT: Record<string, string> = {
-  sandboxed: 'all isolated',
-  partial: 'some isolated',
-  failed: 'attempts failed',
-  unsandboxed: 'not isolated',
+  sandboxed: 'all sandboxed',
+  partial: 'some sandboxed',
+  failed: 'failed to start',
+  unsandboxed: 'not sandboxed',
   unknown: 'unreadable',
   no_calls: 'no tool calls',
 };
@@ -149,7 +149,7 @@ function CatBar({ row, w = 76 }: { row: Pick<UserRow, 'cats' | 'calls' | 'calls_
   const total = loggedCalls(row);
   if (row.calls == null) {
     return (
-      <span className="nm" data-tip="the service reads the commands of Claude Code and Codex; this user’s agents are neither, so their calls are not counted: unread, which is not none">
+      <span className="nm" data-tip="the service reads the commands of Claude Code and Codex; this user’s agents are neither, so their tool calls are not counted: unread, which is not none">
         not read
       </span>
     );
@@ -162,7 +162,7 @@ function CatBar({ row, w = 76 }: { row: Pick<UserRow, 'cats' | 'calls' | 'calls_
       data-tip={[
         `tool calls by what they do, ${fint(total)} in the logs`,
         ...parts.map(([c, n]) => `${catLbl(c)}: ${fint(n)} (${pctWords((100 * n) / total)})`),
-        row.calls_sessions < row.sessions ? `${row.sessions - row.calls_sessions} session(s) of an agent whose calls are not read` : '',
+        row.calls_sessions < row.sessions ? `${row.sessions - row.calls_sessions} session(s) of an agent whose tool calls are not read` : '',
       ].filter(Boolean).join('\n')}
     >
       <span className="u-bar" style={{ width: w }}>
@@ -183,7 +183,7 @@ function HourStrip({ hours, tz }: { hours: number[]; tz?: string | null }) {
   return (
     <span
       className="ur-strip"
-      data-tip={`minutes in which an agent began a call, by hour of day${tz ? ` (${tz})` : ''}${best ? `\nbusiest: ${hourSpan(best[0])}, ${plural(best[1], 'minute')}` : ''}`}
+      data-tip={`minutes in which an agent began a tool call, by hour of day${tz ? ` (${tz})` : ''}${best ? `\nbusiest: ${hourSpan(best[0])}, ${plural(best[1], 'minute')}` : ''}`}
     >
       {hours.map((n, h) => (
         <i key={h} style={{ height: `${n ? Math.max(12, (100 * n) / max) : 4}%`, opacity: n ? 1 : 0.35 }} />
@@ -235,14 +235,14 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
       <Plate
         k={`agent users · last ${win}`}
         total={f ? f.users : null}
-        tip="accounts with at least one agent session in the window: an agent process seen at the root of its tree, as the Trajectories plates count one"
+        tip="accounts with at least one agent session in the window: an agent process seen at the root of its tree, as the Sessions tab’s plates count one"
         note={f ? `${fint(running)} with an agent running now` : undefined}
       />
       <Plate
         k="agent sessions"
         total={f ? f.sessions : null}
         tip="one session is one agent run, its rows on two days together; a typical one is the median"
-        note={f ? `typically open ${dur(f.wall_p50_s)} · ${f.calls_p50 != null ? plural(f.calls_p50, 'call') : 'calls not read'}` : undefined}
+        note={f ? `typically open ${dur(f.wall_p50_s)} · ${f.calls_p50 != null ? plural(f.calls_p50, 'tool call') : 'tool calls not read'}` : undefined}
       />
       <Plate
         k="launched with a bypass flag"
@@ -256,7 +256,7 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
         k="driven from a script"
         total={sc?.pct ?? null}
         fmtFn={(n) => pc(n)}
-        tip="sessions with no one at a terminal: claude -p, codex exec, the Agent and Codex SDKs, an MCP server. A share of the sessions whose launcher is known"
+        tip="sessions with no one at a terminal: claude -p, codex exec, the Agent and Codex SDKs, an MCP server. A share of the sessions where that is known"
         note={sc?.known ? `${fint(sc.n)} of ${fint(sc.known)} sessions` : undefined}
       />
     </div>
@@ -391,7 +391,7 @@ function Roster({
                 <SortTh s={s} k="calls" num tip="tool calls, and what the agents' commands do: explore, edit, build, test, run, Slurm, wait, git. Read from commands: the agent's own Read and Edit tools leave none">tool calls</SortTh>
                 <SortTh s={s} k="wall" num tip="how long a typical session was open, first record to last: the median">typical</SortTh>
                 <SortTh s={s} k="open" num tip="the most sessions open at one moment">at once</SortTh>
-                <SortTh s={s} k="last" num tip="minutes in which an agent began a call, by hour of day, and when one last did; sorts by the latter">when</SortTh>
+                <SortTh s={s} k="last" num tip="minutes in which an agent began a tool call, by hour of day, and when one last did; sorts by the latter">when</SortTh>
                 <th data-tip="plain statements about how this user's agents were used, each from one rule; hover one for its rule">traits</th>
               </tr>
             </thead>
@@ -445,7 +445,7 @@ function Roster({
         {(U.unattributed ?? 0) > 0 && (
           <span
             className="nm"
-            data-tip="an agent session whose records named no user and no uid is no one’s row: there is no one to draw and no name to open it by. The Trajectories tab lists it with the rest"
+            data-tip="an agent session whose records named no user and no uid is no one’s row: there is no one to draw and no name to open it by. The Sessions tab lists it with the rest"
           >
             {plural(U.unattributed ?? 0, 'agent session')} whose user was not read {U.unattributed === 1 ? 'is' : 'are'} not listed
           </span>
@@ -484,12 +484,12 @@ function Head({ p, row, catalogue }: { p: UserPortrait; row: UserRow; catalogue:
   const nums: [string, string, string?][] = [
     ['sessions', fint(row.sessions), 'agent sessions in the window'],
     ['tool calls', row.calls == null ? 'not read' : fint(row.calls), GLOSS.toolcall],
-    ['active minutes', fint(row.active_min), 'minutes in which an agent began a call'],
+    ['active minutes', fint(row.active_min), 'minutes in which an agent began a tool call'],
     ['processes', fint(row.processes), GLOSS.exited],
     ['CPU time', dur(row.cpu_s), 'CPU used by every process their agents ran, each counted once'],
     ['disk read · written', `${mb(row.rd_mb)} · ${mb(row.wr_mb)}`, GLOSS.diskbytes + ', each process’s own'],
     ['network sent · received', `${mb(row.net_tx_mb)} · ${mb(row.net_rx_mb)}`],
-    ['peak memory', row.peak_rss_mb ? mb(row.peak_rss_mb) : 'not measured', 'the most resident memory any one process held'],
+    ['peak memory', row.peak_rss_mb ? mb(row.peak_rss_mb) : 'not measured', 'the most memory any one process held'],
   ];
   return (
     <div className="ur-head">
@@ -687,7 +687,7 @@ function Launch({ row, fleet }: { row: UserRow; fleet: UsersFleet | null | undef
       />
       <Shares
         title="tool calls sandboxed"
-        tip="the Sandbox tab's verdict on each session's tool calls: namespace isolation, read from /proc/<pid>/ns"
+        tip="whether each session's tool calls ran sandboxed, read from each process's namespaces (/proc/<pid>/ns), as the Internal tab counts them"
         order={SESSION_ORDER}
         known={SESSION_KNOWN}
         counts={row.sandbox}
@@ -817,7 +817,7 @@ function Timeline({ sessions, minutes, total }: { sessions: PortraitSession[]; m
               data-tip={[
                 `${agentLbl(s.agent_type)}${s.project ? ` · ${s.project}` : ''}`,
                 `${fullClock(s.first!)} → ${s.running ? 'running now' : fullClock(s.last!)}`,
-                `open ${dur(s.wall_s)} · ${s.calls == null ? 'calls not read' : plural(s.calls, 'call')}`,
+                `open ${dur(s.wall_s)} · ${s.calls == null ? 'tool calls not read' : plural(s.calls, 'tool call')}`,
               ].join('\n')}
             />
           );
@@ -847,7 +847,7 @@ function Rhythm({ p, row }: { p: UserPortrait; row: UserRow }) {
         {stat('typical session', dur(row.wall_p50_s), fleet ? dur(fleet.wall_p50_s) : null, 'the median session, open from its first record to its last; beside it the median of every session in the window')}
         {stat('longest', dur(row.wall_max_s))}
         {stat('open at once', row.peak_open ? fint(row.peak_open) : DASH, fleet?.peak_open_p50 != null ? fint(fleet.peak_open_p50) : null, 'the most sessions open at one moment; beside it the median user’s')}
-        {stat('active minutes', fint(row.active_min), fleet?.active_min_p50 != null ? fint(fleet.active_min_p50) : null, 'minutes in which an agent began a call; beside it the median user’s')}
+        {stat('active minutes', fint(row.active_min), fleet?.active_min_p50 != null ? fint(fleet.active_min_p50) : null, 'minutes in which an agent began a tool call; beside it the median user’s')}
       </dl>
       <div className="ur-pair">
         <HourBars hours={row.hours} tz={p.tz} />
@@ -888,11 +888,11 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
               }))}
             />
           ) : (
-            <div className="nm">no call in the logs</div>
+            <div className="nm">no tool call in the logs</div>
           )}
         </div>
         <div className="ur-shares">
-          <div className="eyebrow" data-tip={`${GLOSS.phases}. Time from the same phase blocks the Trajectories rows show`}>time · by phase</div>
+          <div className="eyebrow" data-tip={`${GLOSS.phases}. Time from the same phase blocks the Sessions tab’s rows show`}>time · by phase</div>
           {busy.length ? (
             <ShareRows
               items={busy.map(([k, v]) => ({
@@ -905,11 +905,11 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
               }))}
             />
           ) : (
-            <div className="nm">{ph?.of ? 'no phase with calls' : 'no session whose calls are read'}</div>
+            <div className="nm">{ph?.of ? 'no phase with tool calls' : 'no session whose tool calls are read'}</div>
           )}
           {ph && (
             <div className="nm ur-rest">
-              {idle > 0 && `${dur(idle)} idle between calls · `}
+              {idle > 0 && `${dur(idle)} idle between tool calls · `}
               from {ph.sessions < ph.of ? `the newest ${fint(ph.sessions)} of ${fint(ph.of)}` : plural(ph.sessions, 'session')}’s phase blocks
             </div>
           )}
@@ -917,7 +917,7 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
       </div>
       {(p.commands?.length ?? 0) > 0 && (
         <div className="ur-cmds">
-          <div className="eyebrow" data-tip="the commands their agents ran most, as calls; masked as every command is">commands run most</div>
+          <div className="eyebrow" data-tip="the commands their agents ran most, as tool calls; masked as every command is">commands run most</div>
           <ol>
             {p.commands!.map(([c, n], i) => (
               <li key={i} data-tip={c}>
@@ -979,10 +979,10 @@ function Tasks({ p, row, openTraj }: { p: UserPortrait; row: UserRow; openTraj: 
                       {x.open && <span className="ur-src open">running</span>}
                     </td>
                     <td className="nm">{x.project ?? DASH}</td>
-                    <td className="num">{x.n != null ? plural(x.n, 'call') : DASH}</td>
+                    <td className="num">{x.n != null ? plural(x.n, 'tool call') : DASH}</td>
                     <td>
-                      <button className="linkbtn" onClick={() => openTraj(x.sid)} data-tip="open this session's process tree on the Trajectories tab">
-                        trajectory →
+                      <button className="linkbtn" onClick={() => openTraj(x.sid)} data-tip="open this session's process tree on the Sessions tab">
+                        process tree →
                       </button>
                     </td>
                   </tr>
@@ -992,7 +992,7 @@ function Tasks({ p, row, openTraj }: { p: UserPortrait; row: UserRow; openTraj: 
           </table>
         </div>
       ) : (
-        <NoRows what={p.phases?.of ? 'no task in the phase blocks read' : 'no session whose calls are read'} />
+        <NoRows what={p.phases?.of ? 'no task in the phase blocks read' : 'no session whose tool calls are read'} />
       )}
       {t && t.listed_of > t.recent.length && <div className="nm">the newest {fint(t.recent.length)} of {fint(t.listed_of)} tasks</div>}
     </div>
@@ -1029,7 +1029,7 @@ function Scheduler({ row }: { row: UserRow }) {
 function PhaseBar({ s }: { s: PortraitSession }) {
   const parts = ranked(s.phase_s ?? {}).filter(([k]) => k !== 'idle');
   const tot = parts.reduce((a, [, v]) => a + v, 0);
-  if (!tot) return <span className="nm">{s.phase_s ? 'no calls' : DASH}</span>;
+  if (!tot) return <span className="nm">{s.phase_s ? 'no tool calls' : DASH}</span>;
   return (
     <span className="u-bar ur-pbar" data-tip={parts.map(([k, v]) => `${phaseLbl(k)}: ${dur(v)}`).join('\n')}>
       {parts.map(([k, v]) => (
@@ -1066,9 +1066,9 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
           <tr>
             <SortTh s={s} k="started">started</SortTh>
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
-            <SortTh s={s} k="project" first="asc" tip="its project, and the names that recur across its tasks, as its Trajectories row heads it">project</SortTh>
+            <SortTh s={s} k="project" first="asc" tip="its project, and the names that recur across its tasks, as its row on the Sessions tab heads it">project</SortTh>
             <SortTh s={s} k="open" num tip="open from its first record to its last">open for</SortTh>
-            <SortTh s={s} k="calls" num gloss="toolcall">calls</SortTh>
+            <SortTh s={s} k="calls" num gloss="toolcall">tool calls</SortTh>
             <SortTh s={s} k="tasks" num gloss="tasks">tasks</SortTh>
             <th data-tip={`${GLOSS.phases}. Its time in each, idle left out`}>phases</th>
             <SortTh s={s} k="cpu" num>CPU</SortTh>
@@ -1101,8 +1101,8 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
               <td><PhaseBar s={r} /></td>
               <td className="num">{dur(r.cpu_s)}</td>
               <td>
-                <button className="linkbtn" onClick={() => openTraj(r.sids[r.sids.length - 1] ?? r.sid)} data-tip="open this session's process tree on the Trajectories tab">
-                  trajectory →
+                <button className="linkbtn" onClick={() => openTraj(r.sids[r.sids.length - 1] ?? r.sid)} data-tip="open this session's process tree on the Sessions tab">
+                  process tree →
                 </button>
               </td>
             </tr>
@@ -1164,8 +1164,8 @@ function Portrait({
         span
         header={
           <>
-            <button className="linkbtn" onClick={() => openUserTraj(name)} data-tip="this user's sessions on the Trajectories tab">
-              their sessions on Trajectories →
+            <button className="linkbtn" onClick={() => openUserTraj(name)} data-tip="this user's sessions on the Sessions tab">
+              their sessions →
             </button>
             {closeBtn}
           </>
@@ -1208,7 +1208,7 @@ function Portrait({
             {(p.sessions_total ?? 0) > (p.sessions ?? []).length && (
               <p className="paths">
                 the newest {fint(p.sessions?.length ?? 0)} of {plural(p.sessions_total ?? 0, 'session')} ·{' '}
-                <button className="linkbtn" onClick={() => openUserTraj(name)}>every session on the Trajectories tab →</button>
+                <button className="linkbtn" onClick={() => openUserTraj(name)}>every session on the Sessions tab →</button>
               </p>
             )}
           </Panel>

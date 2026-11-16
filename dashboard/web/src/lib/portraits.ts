@@ -39,7 +39,7 @@ export const CAT_TIP: Record<CallCat, string> = {
   slurm: 'talk to the scheduler: sbatch, srun, squeue, sacct, scancel, …',
   wait: 'only wait: sleep, ps, pgrep, watch, …',
   git: 'git and gh',
-  unknown: 'a call whose command was not recorded',
+  unknown: 'a tool call whose command was not recorded',
 };
 export const catLbl = (c: string): string => CAT_LBL[c] ?? c;
 export const catCol = (c: string): string => phaseCol(c);
@@ -153,7 +153,7 @@ const SURFACE_WORDS: Partial<Record<Surface, string>> = {
 /** The way most of a user's sessions are driven, as the summary opens. */
 const MODE_WORDS: Record<Leverage['mode']['id'], string> = {
   terminal: 'Works with agents interactively in a terminal',
-  script: 'Runs agents headless from scripts',
+  script: 'Runs agents from scripts, with no one at a terminal',
   extension: 'Works with agents inside an IDE',
   app: 'Drives agents from the desktop app or the web',
   mixed: 'Drives agents from several places',
@@ -180,12 +180,12 @@ const USE_NOUN: Record<UseKind, string> = {
 };
 /** What each use counts, for a tooltip. */
 export const USE_TIP: Record<UseKind, string> = {
-  explore: 'calls that read and search: ls, cat, rg, grep, find, sed -n, …',
-  develop: 'calls that change files from the shell, and calls that run tests. The agent’s own Edit tool runs no command, so edits made with it are not here',
-  build: 'calls that build, compile or install: make, gcc, pip install, …',
-  run: 'calls that run a program: python train.py, a script, …',
-  hpc: 'calls to the scheduler: sbatch, srun, squeue, sacct, scancel, …',
-  git: 'calls to git and gh',
+  explore: 'tool calls that read and search: ls, cat, rg, grep, find, sed -n, …',
+  develop: 'tool calls that change files from the shell, and tool calls that run tests. The agent’s own Edit tool runs no command, so edits made with it are not here',
+  build: 'tool calls that build, compile or install: make, gcc, pip install, …',
+  run: 'tool calls that run a program: python train.py, a script, …',
+  hpc: 'tool calls to the scheduler: sbatch, srun, squeue, sacct, scancel, …',
+  git: 'tool calls to git and gh',
 };
 
 /** The one-sentence summary of how a user leverages their agents: the roster's line
@@ -201,7 +201,7 @@ export function leverageHeadline(row: UserRow): string {
   }
   const mods: string[] = [];
   if (l.parallel) mods.push(`up to ${fint(l.parallel)} at a time`);
-  if (l.autonomy?.id === 'bypass') mods.push('with approval bypassed');
+  if (l.autonomy?.id === 'bypass') mods.push('with a bypass flag');
   else if (l.autonomy?.id === 'auto') mods.push('in auto mode');
   if (mods.length) s += `, ${mods.join(' and ')}`;
   const u = l.uses;
@@ -230,10 +230,10 @@ export function leverageHeadline(row: UserRow): string {
 function wherePhrase(m: Partial<Record<Surface, number>>, n: number): string | null {
   const r = ranked(m).filter(([s]) => s !== 'unknown');
   const unknown = m.unknown ?? 0;
-  if (!r.length) return unknown ? `${fint(unknown)} of ${fint(n)}: launcher unknown` : null;
+  if (!r.length) return unknown ? `${fint(unknown)} of ${fint(n)} from an unknown place` : null;
   const words = (s: Surface) => SURFACE_WORDS[s] ?? SURFACE_LBL[s];
   const parts = r.map(([s, k], i) => `${fint(k)}${i === 0 ? ` of ${fint(n)}` : ''} from ${words(s)}`);
-  return parts.join(', ') + (unknown ? `; ${fint(unknown)} launcher unknown` : '');
+  return parts.join(', ') + (unknown ? `; ${fint(unknown)} from an unknown place` : '');
 }
 
 /** One point of the summary: a short label, what the numbers say, and how they were counted. */
@@ -292,14 +292,14 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
       k: 'uses',
       label: 'used for',
       text: `${shown.map((x) => `${USE_VERB[x.id]} ${pctWords(x.pct)}`).join(' · ')}${more > 0 ? ` · +${more} more` : ''}, of ${plural(l.actions, 'action')}`,
-      tip: 'an action is a tool call that does something, counted by what it does; waiting (sleep, ps, a polling loop) and calls whose command was not recorded are left out. Read from commands: the agent’s own Read and Edit tools leave none',
+      tip: 'an action is a tool call that does something, counted by what it does; waiting (sleep, ps, a polling loop) and tool calls whose command was not recorded are left out. Read from commands: the agent’s own Read and Edit tools leave none',
     });
   }
   if (l.waiting) {
     out.push({
       k: 'waiting',
       label: 'waiting',
-      text: `${pctWords(l.waiting.pct)} of their calls only wait: sleep, ps, pgrep, a loop on the queue`,
+      text: `${pctWords(l.waiting.pct)} of their tool calls only wait: sleep, ps, pgrep, a loop on the queue`,
     });
   }
   const sl = row.slurm;
@@ -335,7 +335,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
       label: 'when',
       text: `busiest ${hourSpan(l.when.busiest)}${tz ? ` ${tz}` : ''}${
         l.when.night_pct != null ? `; ${pctWords(l.when.night_pct)} of active minutes between 00:00 and 06:00` : ''}`,
-      tip: 'by the minutes in which one of their agents began a call, in the service’s time zone',
+      tip: 'by the minutes in which one of their agents began a tool call, in the service’s time zone',
     });
   }
   return out;

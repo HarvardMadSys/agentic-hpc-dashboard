@@ -66,7 +66,8 @@ import { SurfaceChip } from '../components/SurfaceChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { GLOSS } from '../lib/glossary';
 import { serverNow } from '../lib/clock';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
@@ -232,7 +233,7 @@ function Facts({
           <span className="dot" style={{ background: CLS_COL[cls] ?? 'var(--sg)', marginRight: 5 }} />
           {CLS_LBL[cls] ?? cls}
         </span>
-        {r.agent_type && <span className="mono">{r.agent_type}</span>}
+        {r.agent_type && <span>{AGENT_TYPE_LBL[r.agent_type] ?? r.agent_type}</span>}
         <SurfaceChip s={r.surface} detail={r.surface_detail} />
         <span className="mono">
           {r.user ?? DASH}@{r.host ?? DASH}
@@ -242,19 +243,19 @@ function Facts({
       </div>
       <div className="ins-facts">
         <span>
-          events <b>{fint(r.n_events)}</b>
+          processes <b>{fint(r.n_events)}</b>
         </span>
         <span>
-          cpu <b>{fmt(r.cpu_s)}</b> s
+          CPU <b>{fmt(r.cpu_s)}</b> s
         </span>
-        <span>
-          wall <b>{dur(r.wall_s)}</b>
+        <span data-tip={GLOSS.wall}>
+          length <b>{dur(r.wall_s)}</b>
         </span>
         <span>
           tools <b>{fint(r.distinct_tools)}</b>
         </span>
-        <span data-tip={r.owner_via ? `${r.owner_via}: ${VIA_TIP[r.owner_via]}` : undefined}>
-          keys <b>{fint(r.fragments ?? 1)}</b>
+        <span data-tip={`${GLOSS.keys}${r.owner_via ? `\n${r.owner_via}: ${VIA_TIP[r.owner_via]}` : ''}`}>
+          pieces <b>{fint(r.fragments ?? 1)}</b>
           {r.owner_via && r.owner_via !== 'self' && r.owner_via !== 'ancestor' ? ` ${r.owner_via}` : ''}
         </span>
         <span>
@@ -277,7 +278,7 @@ function Facts({
               W={640}
               H={12}
               zoom
-              note={calls < r.n_events ? `(the first ${fint(r.purpose_rle.length)} runs of ${fint(r.n_events)} calls)` : undefined}
+              note={calls < r.n_events ? `(the first ${fint(r.purpose_rle.length)} runs of ${fint(r.n_events)} processes)` : undefined}
               name="purpose runs"
               onPick={(i) => onRun('purpose', i)}
             />
@@ -839,6 +840,7 @@ export function TrajectoryInspector({
   return (
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
       <Panel
+        id="sec-session-inspector"
         title="Session inspector"
         ask={{ session: sid }}
         p={env}

@@ -949,8 +949,20 @@ class Aggregator:
         return self._held(view, "roster", build, self.PORTRAITS_MAX_AGE_S)
 
     def _envelope(self, out, view, flt):
+        """`out` stamped with its feed, its view's status and its filter. Under
+        the lock.
+
+        For what is built from the view's REDUCERS (the roster, a portrait), not
+        from its panels. A view showing panels saved by an earlier one
+        (`payloads`) has no reducers until its own build lands, so its status
+        says `has_payload` while there is no roster: here it says what this
+        body is, a first build, so the page shows "reading" and not "no user ran
+        an agent session"."""
         out.update(feedmod.panel_meta(self.reports["ebpf"]))
-        out["_window"] = view.status()
+        st = view.status()
+        if not view.reducers:
+            st["has_payload"] = False
+        out["_window"] = st
         out["filter"] = flt.block()
         return out
 

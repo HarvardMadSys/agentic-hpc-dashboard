@@ -506,10 +506,10 @@ function sandbox() {
     ancestry_matrix: [
       { ancestry: 'none', kind: 'process', sandbox: 'unsandboxed', n: 1_793_263, dstate_wait_s: 434.2, dstate_coverage_pct: 100, reading: null },
       { ancestry: 'none', kind: 'process', sandbox: 'unknown', n: 18_704, dstate_wait_s: 4.0, dstate_coverage_pct: 100, reading: null },
-      { ancestry: 'bwrap', kind: 'process', sandbox: 'sandboxed', n: 4_118, dstate_wait_s: 12.4, dstate_coverage_pct: 100, reading: 'under a sandbox wrapper, namespace-isolated' },
+      { ancestry: 'bwrap', kind: 'process', sandbox: 'sandboxed', n: 4_118, dstate_wait_s: 12.4, dstate_coverage_pct: 100, reading: 'under a sandbox wrapper, sandboxed' },
       { ancestry: 'bwrap', kind: 'wrapper', sandbox: 'unsandboxed', n: 125, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes' },
       { ancestry: 'codex-linux-sandbox', kind: 'wrapper', sandbox: 'unsandboxed', n: 51, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes' },
-      { ancestry: 'none', kind: 'process', sandbox: 'sandboxed', n: 16, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'isolated with no agent sandbox ancestor: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox' },
+      { ancestry: 'none', kind: 'process', sandbox: 'sandboxed', n: 16, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'in its own namespaces with no agent sandbox wrapper above it: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox' },
       { ancestry: 'none', kind: 'process', sandbox: 'denied', n: 417, dstate_wait_s: null, dstate_coverage_pct: 0, reading: null },
     ],
     sandbox_src: { inherit: 1_791_285, 'none:tick': 1_938, 'userns:exec': 41, 'none:exec': 161, denied: 417 },
@@ -527,9 +527,9 @@ function sandbox() {
       approval_known: ['bypassed', 'auto', 'supervised'],
     },
     notes: {
-      meaning: 'sandbox = NAMESPACE ISOLATION; Landlock/seccomp-only sandboxes are invisible, containers count',
-      denied: "'exited before read' (key: denied) is NOT 'not isolated'",
-      failed: "'sandbox attempt failed': the wrapper exited non-zero and no payload ran under it",
+      meaning: 'sandboxed = ran in its own namespaces; Landlock/seccomp-only sandboxes are invisible, containers count',
+      denied: "'exited before it was checked' (key: denied) is NOT 'not sandboxed'",
+      failed: "'sandbox failed to start': the wrapper exited non-zero and no wrapped command ran under it",
     },
   };
 }
@@ -1416,9 +1416,9 @@ const PORTRAIT_TRAITS = [
   ['interactive', "works in the agent's own terminal", '', "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"],
   ['scripted', 'runs agents from scripts', '', '50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal'],
   ['app', 'drives agents from an app or an IDE', '', '50% or more of the sessions are driven from the desktop app, an IDE extension, or the web'],
-  ['bypass', 'launches with approval bypassed', 'crit', '50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)'],
+  ['bypass', 'launches with a bypass flag', 'crit', '50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)'],
   ['auto', 'launches in auto mode', 'warn', '50% or more of the sessions whose launch is known were started in auto mode'],
-  ['sandboxed', 'tool calls run sandboxed', 'ok', '50% or more of the sessions whose tool calls were judged had some or all of them namespace-isolated'],
+  ['sandboxed', 'tool calls run sandboxed', 'ok', '50% or more of the sessions whose tool calls were judged had some or all of them sandboxed'],
   ['multi_agent', 'uses more than one agent', '', 'sessions of two agent types or more'],
   ['parallel', 'keeps several sessions open at once', '', '3 sessions or more open at the same moment'],
   ['long', 'long sessions', '', 'the median session is open 2 h or longer'],
@@ -1434,7 +1434,7 @@ const PORTRAIT_TRAITS = [
 const CALL_CATS = ['test', 'slurm', 'run', 'build', 'edit', 'git', 'wait', 'explore', 'unknown']; // `phase_rules.CATS`
 // a phase's calls, by the category of the same name; a loop's are tests, and a guess and an idle gap hold none
 const CAT_OF_PHASE = { explore: 'explore', edit: 'edit', build: 'build', test: 'test', loop: 'test', run: 'run', slurm: 'slurm', wait: 'wait', git: 'git', unknown: 'unknown' };
-// the Sandbox tab's verdict on a session's tool calls, from the row's own record verdict
+// whether a session's tool calls ran sandboxed (the Internal tab's count), from the row's own record
 const SESSION_SANDBOX = { sandboxed: 'sandboxed', unsandboxed: 'unsandboxed', denied: 'failed', unknown: 'no_calls' };
 const EDT = -4 * 3600;
 const localOf = (epoch) => new Date((epoch + EDT) * 1000);
@@ -1730,7 +1730,7 @@ function portraitRow(user, ss, grid = false) {
 }
 
 const PORTRAIT_BASIS = {
-  session: 'one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as Trajectories), and its rows on several days together',
+  session: 'one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together',
   traits: 'plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement',
 };
 

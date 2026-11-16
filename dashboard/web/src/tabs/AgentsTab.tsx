@@ -58,7 +58,7 @@ import './agents.css';
 
 const HOME_TIP: Record<HomeSrc, string> = {
   agent: "the agent process's own cwd: the directory it was started in",
-  first_call: 'it was started at `/` (IDE-hosted), so its first call’s directory off the root stands in',
+  first_call: 'it was started at `/` (IDE-hosted), so its first tool call’s directory off the root stands in',
 };
 
 /* Directory rows an opened agent shows before "show all". */
@@ -96,7 +96,7 @@ function nodeTip(n: CascadeNode): string {
     n.started ? `started ${n.started}` : null,
     n.last_seen ? `last seen ${n.last_seen}${n.exited ? ' (exited)' : ''}` : null,
     n.spawned_by != null ? `--spawned-by pid ${n.spawned_by}` : null,
-    n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a node launcher execs), which runs the session' : null,
+    n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a Node.js launcher execs), which runs the session' : null,
     n.implied ? 'implied: a tool-call shell named it as parent; it left no record itself' : null,
     n.role === 'agent' && n.surface ? `driven from: ${surfaceTip(n.surface, n.surface_detail).split('\n')[0]}` : null,
     ...(n.role === 'agent' ? launchTip(n) : []),
@@ -111,7 +111,7 @@ function launchTip(n: CascadeNode): string[] {
   const flags = n.approval_detail && n.approval_detail !== 'no launch flag' ? ` · ${n.approval_detail}` : '';
   const c = Object.entries(n.sandbox_calls ?? {}).filter(([, v]) => v);
   const all = c.reduce((a, [, v]) => a + (v ?? 0), 0);
-  const calls = c.length === 1 ? ` · ${fint(all)} call${all === 1 ? '' : 's'}`
+  const calls = c.length === 1 ? ` · ${fint(all)} tool call${all === 1 ? '' : 's'}`
     : c.length ? ' · ' + c.map(([k, v]) => `${fint(v ?? 0)} ${label(CALL_LABEL, k)}`).join(', ') : '';
   return [
     `launch: ${label(AP_LABEL, n.approval ?? 'unknown')}${flags}`,
@@ -121,10 +121,10 @@ function launchTip(n: CascadeNode): string[] {
 }
 
 function OutsideWrites({ n, tip }: { n: number | null | undefined; tip?: string }) {
-  if (n == null) return <span data-tip="no home to be outside of">{DASH}</span>;
+  if (n == null) return <span data-tip="no start folder to be outside of">{DASH}</span>;
   if (n === 0) return <span style={{ color: 'var(--muted)' }}>0</span>;
   return (
-    <span className="ws-flagmark" data-tip={tip ?? 'distinct paths written or deleted outside the home, as its commands mention them (guessed from the text)'}>
+    <span className="ws-flagmark" data-tip={tip ?? 'distinct paths written or deleted outside its start folder, as its commands mention them (guessed from the text)'}>
       {fint(n)} outside
     </span>
   );
@@ -186,7 +186,7 @@ function seen(first: number | null, last: number | null): string {
 function dirTip(d: WsDir): string {
   return [
     d.path,
-    d.kind === 'home' ? 'inside the home' : `outside the home · ${d.kind}${d.root ? ' · ' + d.root : ''}`,
+    d.kind === 'home' ? 'inside its start folder' : `outside its start folder · ${d.kind}${d.root ? ' · ' + d.root : ''}`,
     d.deeper > 0 ? `${fint(d.deeper)} deeper director${d.deeper === 1 ? 'y' : 'ies'} folded in` : null,
     d.examples.length
       ? 'named here (inferred):\n' + d.examples.map(([p, o]) => `  ${o.padEnd(3)} ${p}`).join('\n')
@@ -200,8 +200,8 @@ function dirTip(d: WsDir): string {
 function ioTip(d: WsDir): string | undefined {
   if (!d.io) return d.procs ? 'no io block measured for these processes' : 'no process ran here';
   return [
-    `syscall bytes: read ${mb(d.io.rchar_mb)}, written ${mb(d.io.wchar_mb)} (pipes and terminals included)`,
-    `disk bytes: read ${mb(d.io.rd_mb)}, written ${mb(d.io.wr_mb)}`,
+    `requested: read ${mb(d.io.rchar_mb)}, written ${mb(d.io.wchar_mb)} (pipes and terminals included)`,
+    `disk: read ${mb(d.io.rd_mb)}, written ${mb(d.io.wr_mb)}`,
     `measured on ${pc(d.io.coverage_pct)} of the ${fint(d.procs)} processes that ran here`,
     'credited to where the process ran, not to where the bytes went',
   ].join('\n');
@@ -227,8 +227,8 @@ function DirTable({ v, ioq }: { v: WsView; ioq?: (d: WsDir, sort: IoSort) => IoQ
                 ran in
               </SortTh>
               <th />
-              <SortTh s={s} k="rd" num tip="MEASURED per process: syscall bytes read by the processes that ran here">bytes read</SortTh>
-              <SortTh s={s} k="wr" num tip="MEASURED per process: syscall bytes written by the processes that ran here">bytes written</SortTh>
+              <SortTh s={s} k="rd" num tip="MEASURED per process: bytes the processes that ran here read through read() calls, cached or not">read requested</SortTh>
+              <SortTh s={s} k="wr" num tip="MEASURED per process: bytes the processes that ran here passed to write() calls">write requested</SortTh>
               <SortTh s={s} k="named" className="ws-inf" tip="GUESSED from the text of its commands, not measured: distinct files here that its commands mention, by what each command does with them">
                 files its commands mention
               </SortTh>
@@ -242,7 +242,7 @@ function DirTable({ v, ioq }: { v: WsView; ioq?: (d: WsDir, sort: IoSort) => IoQ
                 <tr key={d.path}>
                   <td style={{ minWidth: 260, maxWidth: 520 }} data-tip={dirTip(d)}>
                     {d.flag && (
-                      <span className={`ws-flagmark ${sev ?? ''}`} data-tip={`${d.flag === 'delete' ? 'a delete' : 'a write'} named outside the home`}>
+                      <span className={`ws-flagmark ${sev ?? ''}`} data-tip={`${d.flag === 'delete' ? 'a delete' : 'a write'} named outside its start folder`}>
                         {d.flag} outside
                       </span>
                     )}
@@ -297,7 +297,7 @@ function Flags({ v }: { v: WsView }) {
   return (
     <div className={`ws-flags${high ? ' high' : ''}`}>
       <h4>
-        Written or deleted outside its home
+        Written or deleted outside its start folder
       </h4>
       <ul>
         {shown.map((f) => (
@@ -398,7 +398,7 @@ function TypeStrip({ stats }: { stats: TypeStat[] }) {
           </div>
           <div className="n">
             <span className={`q-mark${s.outside ? ' warnword' : ''}`} data-tip={GLOSS.outsidehome}>
-              {fint(s.outside)} wrote outside home
+              {fint(s.outside)} wrote outside their start folder
             </span>
             {' · '}
             <span className={`q-mark${s.otherHome ? ' critword' : ''}`} data-tip={GLOSS.otherhome}>
@@ -441,13 +441,13 @@ function tagsOf(n: CascadeNode): { k: string; tip: string }[] {
   const iso = c.isolated ?? 0;
   const open = c.not_isolated ?? 0;
   const failed = c.failed ?? 0;
-  const also = open ? `; ${fint(open)} more ran without isolation` : '';
+  const also = open ? `; ${fint(open)} more ran without a sandbox` : '';
   if (n.sandbox === 'failed') {
     out.push({ k: 'F', tip: `sandbox failed to start: ${failed === 1 ? 'its one tool call' : `${fint(failed)} of its tool calls`} tried a sandbox, and the sandbox did not come up${also}` });
   } else if (n.sandbox === 'unsandboxed') {
-    out.push({ k: 'U', tip: `not sandboxed: ${calls(open)} ran without isolation` });
+    out.push({ k: 'U', tip: `not sandboxed: ${calls(open)} ran without a sandbox` });
   } else if (n.sandbox === 'partial') {
-    out.push({ k: 'U', tip: `partly sandboxed: ${fint(iso)} of its ${fint(iso + open + failed)} tool calls ran isolated${also}${failed ? `, and ${fint(failed)} tried a sandbox that did not come up` : ''}` });
+    out.push({ k: 'U', tip: `partly sandboxed: ${fint(iso)} of its ${fint(iso + open + failed)} tool calls ran sandboxed${also}${failed ? `, and ${fint(failed)} tried a sandbox that did not come up` : ''}` });
   }
   return out;
 }
@@ -483,11 +483,11 @@ function TagSum({ ns }: { ns: CascadeNode[] }) {
 /* ------------------------------------------------- what the list shows
  * Who and which type are the page's filter (WhoFilter). The list narrows
  * further by marks: an agent passes when it wears one of the picked marks, a
- * tag's letter or `O` for a write outside its home, and a tree passes when
+ * tag's letter or `O` for a write outside its start folder, and a tree passes when
  * any of its agents does. */
 
-/** the letters, then the write outside its home, as filter chips */
-const MARKS = [...TAGS, { k: 'O', cls: '', lbl: 'wrote outside home' }];
+/** the letters, then the write outside its start folder, as filter chips */
+const MARKS = [...TAGS, { k: 'O', cls: '', lbl: 'wrote outside its start folder' }];
 
 const marksOf = (n: CascadeNode): string[] => [
   ...tagsOf(n).map((t) => t.k),
@@ -619,7 +619,7 @@ function OutsideOf({ ns }: { ns: CascadeNode[] }) {
   const by = ns.map((n) => n.workspace?.outside_writes ?? 0).filter((v) => v > 0);
   const sum = by.reduce((a, v) => a + v, 0);
   return (
-    <Outside n={sum} tip={`${fint(sum)} distinct path${sum === 1 ? '' : 's'} written or deleted outside their home, as their commands mention them (guessed from the text): ${
+    <Outside n={sum} tip={`${fint(sum)} distinct path${sum === 1 ? '' : 's'} written or deleted outside their start folders, as their commands mention them (guessed from the text): ${
       fint(by.length)} of these ${fint(ns.length)} agents wrote them, and a path two of them named counts twice`} />
   );
 }
@@ -641,7 +641,7 @@ function LoneRow({ n, on, onPick, inFold, keys }: {
         <Ver n={n} />
         <SurfaceChip s={n.surface} detail={n.surface_detail} />
         <span className="al-flags">
-          <Outside n={w?.outside_writes ?? 0} tip="distinct paths written or deleted outside its home, as its commands mention them (guessed from the text)" />
+          <Outside n={w?.outside_writes ?? 0} tip="distinct paths written or deleted outside its start folder, as its commands mention them (guessed from the text)" />
           <Tags n={n} />
         </span>
       </span>
@@ -698,11 +698,11 @@ function FoldRow({ e, open, onOpen }: { e: Extract<Entry, { k: 'fold' }>; open: 
   return (
     <button className={`al-item fold${open ? ' open' : ''}`} style={{ borderLeftColor: typeCol(n0.agent_type) }}
       onClick={onOpen} aria-expanded={open} data-keys={e.ps.map((p) => keyOf(p.t.host, p.n.pid)).join(' ')}
-      data-tip={`${fint(ns.length)} ${typeLbl(n0.agent_type)} agents on their own, of one user, in one home: click to ${open ? 'fold them' : 'list them'}`}>
+      data-tip={`${fint(ns.length)} ${typeLbl(n0.agent_type)} sessions with no subagents, of one user, in one start folder: click to ${open ? 'fold them' : 'list them'}`}>
       <span className="al-h">
         <span className="al-caret">{open ? '▾' : '▸'}</span>
         <i className="tdot" style={{ background: typeCol(n0.agent_type) }} />
-        <b>{fint(ns.length)} {typeLbl(n0.agent_type)} runs</b>
+        <b>{fint(ns.length)} {typeLbl(n0.agent_type)} sessions</b>
         {/* where they are driven from, when that is one place for all of them */}
         {ns.every((n) => n.surface === n0.surface && n.surface_detail === n0.surface_detail) && (
           <SurfaceChip s={n0.surface} detail={n0.surface_detail} />
@@ -819,7 +819,7 @@ function MoreBox({ b }: { b: Extract<TreeBox, { k: 'more' }> }) {
   ];
   const lines = [
     ...groups.filter(([n]) => n > 0).sort((a, z) => z[0] - a[0]).map(([, l]) => l),
-    outside ? `${fint(outside)} wrote outside home` : null,
+    outside ? `${fint(outside)} wrote outside their start folder` : null,
     b.below ? `${fint(b.below)} more under them` : null,
   ].filter((l): l is string => !!l);
   const tip = b.rest.length
@@ -1029,19 +1029,19 @@ function AgentBlast({ a, from }: { a: WsAgent | undefined; from?: string | numbe
             onChange={setMode}
             options={[
               { k: 'self', lbl: 'this agent only', tip: 'only the processes folded into the agent itself' },
-              { k: 'tree', lbl: 'with its subagents', tip: 'adds every agent started beneath it, judged against THIS agent’s home' },
+              { k: 'tree', lbl: 'with its subagents', tip: 'adds every agent started beneath it, judged against THIS agent’s start folder' },
             ]}
           />
         )}
       </div>
       <div className="ablast-sum">
         <span data-tip={a.home ? `${a.home}\n${a.home_src ? HOME_TIP[a.home_src] : ''}` : 'no cwd recorded'}>
-          <Term k="home">home</Term> <b className="mono">{a.home_shown ?? DASH}</b>
+          <Term k="home">start folder</Term> <b className="mono">{a.home_shown ?? DASH}</b>
         </span>
-        <span>{fint(s.procs)} processes{inside != null ? `, ${pc(inside)} inside home` : ''}</span>
+        <span>{fint(s.procs)} processes{inside != null ? `, ${pc(inside)} inside it` : ''}</span>
         <span>{fint(s.dirs)} directories</span>
         <span className="ws-inf"><Term k="named">files its commands mention</Term> <Ops d={s.named} /></span>
-        <span><Term k="outsidehome">outside home</Term> <OutsideWrites n={s.outside_writes} /></span>
+        <span><Term k="outsidehome">outside it</Term> <OutsideWrites n={s.outside_writes} /></span>
         {s.roots.length > 0 && (
           <span className="ws-roots">
             {s.roots.slice(0, 6).map((g) => {
@@ -1061,7 +1061,7 @@ function AgentBlast({ a, from }: { a: WsAgent | undefined; from?: string | numbe
       <DirTable
         v={v}
         ioq={(d, sort) => ({
-          title: `${sort === 'rchar_mb' ? 'bytes read' : 'bytes written'} in ${d.shown} · ${typeLbl(a.agent_type)} pid ${a.pid}${mode === 'tree' && a.subagents.length ? ' with its subagents' : ''}`,
+          title: `${sort === 'rchar_mb' ? 'read requested' : 'write requested'} in ${d.shown} · ${typeLbl(a.agent_type)} pid ${a.pid}${mode === 'tree' && a.subagents.length ? ' with its subagents' : ''}`,
           sort,
           class: ['agent'],
           host: a.host,
@@ -1091,11 +1091,18 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const [opened, setOpened] = useState<string[]>([]);
   const [showIdle, setShowIdle] = useState(false);
   // a row picked while the page is scrolled past the top of the detail -- out
-  // of view, or under the sticky control bar -- brings the detail back into view
+  // of view, or under the sticky control bar -- brings the detail back into
+  // view; so does one picked while the detail is stacked under the list (a
+  // narrow screen) and starts low or below the fold, where the pick would
+  // otherwise seem to do nothing
   const pane = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = pane.current;
-    if (el && sel && el.getBoundingClientRect().top < stickyTop()) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (!el || !sel) return;
+    const top = el.getBoundingClientRect().top;
+    const list = el.previousElementSibling?.getBoundingClientRect();
+    const under = list != null && top >= list.bottom - 1;
+    if (top < stickyTop() || (under && top > window.innerHeight / 2)) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }, [sel?.entry]);
 
   // One list of every type: a Claude Code can start a Codex and a Codex a
@@ -1226,7 +1233,7 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
     return (
       <div className="al-empty">
         <Icon name="pointLeft" size={20} />
-        <span>pick an agent on the left: its tree and blast radius open here</span>
+        <span>pick an agent from the list: its tree and blast radius open here</span>
       </div>
     );
   })();

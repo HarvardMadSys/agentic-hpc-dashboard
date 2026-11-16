@@ -48,7 +48,7 @@ import {
 import { EdgeRow, PhaseRow } from './PhaseList';
 
 /** The button under a phase's commands: what it does is what a click on the phase does. */
-const SHOW_CALLS = 'show its calls in the tree';
+const SHOW_CALLS = 'show its tool calls in the tree';
 
 /** `set` with `k` taken out where it is in, and put in where it is not. */
 const flipped = (set: Set<number>, k: number): Set<number> => {

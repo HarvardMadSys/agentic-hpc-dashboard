@@ -135,6 +135,31 @@
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
+/* never wider than a narrow screen, less its margins (and `Drop` slides it
+   left from a button near the right edge) */
+@media (max-width: 900px) {
+  .who-pop {
+    width: min(280px, calc(100vw - 16px));
+  }
+}
+/* rows a fingertip can pick one at a time (styles.css, touch screens) */
+@media (pointer: coarse) {
+  .who-btn {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .who-pop {
+    max-height: min(420px, 60vh);
+  }
+  .who-opt {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  .who-tag {
+    padding: 6px 10px;
+  }
+}
+
 /* What is in force, each value one click from gone. */
 .who-sum {
   display: inline-flex;
