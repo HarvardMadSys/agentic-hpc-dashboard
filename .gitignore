@@ -1,2 +1,4 @@
 .DS_Store
 publish-yum.sh
+__pycache__/
+*.pyc
