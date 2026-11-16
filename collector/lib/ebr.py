@@ -162,6 +162,7 @@ FORMAT = "ebr"
 VERSION = 1
 SEGMENT = 1
 DATA = 2
+MARK = 3                    # advisory: a checkpoint a converter writes (`Writer.mark`)
 BAD = -1                    # pseudo-kind of a corrupt region; never in a header
 F_ZLIB = 1
 KINDS = ("meta", "exit", "truncated", "conn", "netio", "submit", "residency",
@@ -187,7 +188,8 @@ T_NULL, T_BOOL, T_I8, T_I16, T_I32, T_I64, T_F64, T_STR, T_OBJ, T_LIST, T_BIG = 
 SLOT_NAMES = ("NULL", "BOOL", "I8", "I16", "I32", "I64", "F64", "STR", "OBJ", "LIST", "BIG")
 
 WRITER_STATS = ("records", "frames", "segments", "bytes", "writes", "encode_errors",
-                "write_errors", "lost_records", "repaired_bytes", "zlib_frames")
+                "write_errors", "lost_records", "repaired_bytes", "zlib_frames",
+                "mark_frames")
 DECODER_STATS = ("frames", "records", "filtered", "bad_records", "bad_frames",
                  "lost_frames", "lost_records", "unsupported_frames")
 
@@ -284,6 +286,143 @@ def _ruv(b, p):
 
 
 _BYTE = [bytes((_i,)) for _i in range(256)]
+
+
+# ---------------------------------------------------------------------------
+# maps: the binary key/value grammar of MARK payloads
+# ---------------------------------------------------------------------------
+#   map  := n:uv (key:bstr val)*
+#   val  := 0 null | 1 false | 2 true | 3 zigzag:uv (int64) | 4 n:uv int bytes
+#           (little-endian, signed) | 5 f64 | 6 bstr | 7 map | 8 n:uv val*
+#   bstr := n:uv utf8(surrogatepass)
+# The tags are DATA's `tagged` ones, but a string is inline: a map carries no
+# string table. Keys are converted the way json.dumps converts them, and a
+# value of any other type is stored as its str(), as json.dumps(default=str).
+
+_MAP_DEPTH = 64
+
+
+def _bstr(s):
+    b = s.encode("utf-8", "surrogatepass")
+    return _uv(len(b)) + b
+
+
+def _enc_val(v, out, depth):
+    if depth > _MAP_DEPTH:
+        raise ValueError("Circular reference detected")
+    if v is None:
+        out.append(0)
+    elif v is True:
+        out.append(2)
+    elif v is False:
+        out.append(1)
+    elif isinstance(v, int):
+        v = int.__int__(v)
+        if -_I64 <= v < _I64:
+            out.append(3)
+            out += _uv((v << 1) ^ (v >> 63))
+        else:
+            b = v.to_bytes((v.bit_length() + 8) // 8, "little", signed=True)
+            out.append(4)
+            out += _uv(len(b))
+            out += b
+    elif isinstance(v, float):
+        out.append(5)
+        out += _F64.pack(float.__float__(v))
+    elif isinstance(v, str):
+        out.append(6)
+        out += _bstr(str.__str__(v))
+    elif isinstance(v, dict):
+        out.append(7)
+        _enc_map(v, out, depth + 1)
+    elif isinstance(v, (list, tuple)):
+        out.append(8)
+        out += _uv(len(v))
+        for x in v:
+            _enc_val(x, out, depth + 1)
+    else:
+        out.append(6)
+        out += _bstr(str(v))
+
+
+def _enc_map(d, out=None, depth=0):
+    """`d` (a dict) as a map; appended to `out` (a bytearray) when given."""
+    if out is None:
+        out = bytearray()
+    if depth > _MAP_DEPTH:
+        raise ValueError("Circular reference detected")
+    out += _uv(len(d))
+    for k, v in d.items():
+        k = _conv_key(k)
+        if k is None:
+            raise TypeError("keys must be str, int, float, bool or None, not %s"
+                            % type(k).__name__)
+        out += _bstr(k)
+        _enc_val(v, out, depth)
+    return out
+
+
+def _dec_str(b, p, n):
+    e = p + n
+    if e > len(b):
+        raise FrameError("a string runs past the end of the map")
+    return bytes(b[p:e]).decode("utf-8", "surrogatepass"), e
+
+
+def _dec_val(b, p, depth):
+    if depth > _MAP_DEPTH:
+        raise FrameError("a map nested too deep")
+    t = b[p]
+    p += 1
+    if t == 0:
+        return None, p
+    if t == 1:
+        return False, p
+    if t == 2:
+        return True, p
+    if t == 3:
+        z, p = _ruv(b, p)
+        return (z >> 1) ^ -(z & 1), p
+    if t == 4:
+        n, p = _ruv(b, p)
+        if p + n > len(b):
+            raise FrameError("an int runs past the end of the map")
+        return int.from_bytes(bytes(b[p:p + n]), "little", signed=True), p + n
+    if t == 5:
+        if p + 8 > len(b):
+            raise FrameError("a float runs past the end of the map")
+        return _F64.unpack_from(b, p)[0], p + 8
+    if t == 6:
+        n, p = _ruv(b, p)
+        return _dec_str(b, p, n)
+    if t == 7:
+        return _dec_map(b, p, depth + 1)
+    if t == 8:
+        n, p = _ruv(b, p)
+        if n > len(b) - p:
+            raise FrameError("a list longer than the map")
+        out = []
+        for _ in range(n):
+            v, p = _dec_val(b, p, depth + 1)
+            out.append(v)
+        return out, p
+    raise FrameError("unknown value tag %d in a map" % t)
+
+
+def _dec_map(b, p=0, depth=0):
+    """(dict, next offset) of the map at `p`. FrameError if malformed."""
+    try:
+        n, p = _ruv(b, p)
+        if n > len(b) - p:
+            raise FrameError("a map longer than its bytes")
+        out = {}
+        for _ in range(n):
+            k, p = _ruv(b, p)
+            k, p = _dec_str(b, p, k)
+            out[k], p = _dec_val(b, p, depth)
+        return out, p
+    except (IndexError, UnicodeDecodeError, struct.error) as e:
+        raise FrameError("malformed map: %s" % e)
 
 
 # ---------------------------------------------------------------------------
@@ -1681,6 +1820,51 @@ def complete_end(src, size=None):
             s.close()
 
 
+def mark_info(src, frame):
+    """The dict a MARK frame holds (FrameError if it is malformed)."""
+    if frame.kind != MARK:
+        raise ValueError("the frame at %d is not a MARK" % frame.off)
+    if frame.flags:
+        raise FrameError("a MARK at %d has flags %d" % (frame.off, frame.flags))
+    b = frame.payload
+    if b is None:
+        s, own = _open_src(src if src is not None else frame.src)
+        try:
+            b = s.read(frame.off + HDR_SIZE, frame.payload_len)
+        finally:
+            if own:
+                s.close()
+        if len(b) != frame.payload_len or (frame.crc is not None and _crc(b) != frame.crc):
+            raise FrameError("bad payload in the MARK at %d" % frame.off)
+    info, p = _dec_map(b)
+    if p != len(b):
+        raise FrameError("%d stray bytes after the MARK at %d" % (len(b) - p, frame.off))
+    return info
+
+
+def last_mark(src, end=None):
+    """`(info, mark_end, records_after)`: the newest MARK frame ending at or
+    before `end` (default: complete_end), where it ends, and how many records
+    the DATA frames after it hold. `(None, 0, records)` when there is no MARK.
+    The walk is backwards over complete frames; a corrupt region met before a
+    MARK raises FrameError, since what lies behind it is not known."""
+    s, own = _open_src(src)
+    try:
+        E = _complete_end(s, s.size(), True) if end is None else end
+        n = 0
+        for f in frames_reverse(s, E, verify=True):
+            if f.kind == BAD:
+                raise FrameError("a corrupt region [%d, %d) before any MARK" % (f.off, f.end))
+            if f.kind == MARK:
+                return mark_info(s, f), f.end, n
+            if f.kind == DATA:
+                n += f.n_records
+        return None, 0, n
+    finally:
+        if own:
+            s.close()
+
+
 def _complete_end(s, size, verify):
     if not size:
         return 0
@@ -2378,7 +2562,7 @@ class Writer(object):
             return
         fl = list(frames(src, so, size, True))
         if (not fl or fl[0].off != so or fl[0].kind != SEGMENT or fl[-1].end != size
-                or any(g.kind != DATA for g in fl[1:])):
+                or any(g.kind in (SEGMENT, BAD) for g in fl[1:])):
             return
         dec = Decoder()
         for g in fl:
@@ -2568,6 +2752,36 @@ class Writer(object):
         if self._seg_bytes >= self.reset_bytes:
             self._new_seg = True
 
+    def mark(self, info):
+        """Queue a MARK frame holding `info` (a dict, stored as a map) after
+        every record written so far. The next flush() writes it with them, in
+        the same os.write, so a reader that finds it knows every record before
+        it is in the file. Never compressed; it holds no records, so its time
+        bounds are NaN and its kinds 0, and readers skip it. A converter keeps
+        its place in its source this way (`last_mark`)."""
+        if not isinstance(info, dict):
+            raise TypeError("a MARK holds a dict, not %s" % type(info).__name__)
+        if self.closed:
+            raise ValueError("mark on a closed Writer")
+        payload = bytes(_enc_map(info))
+        if len(payload) > _FRAME_ROOM:
+            raise RecordTooLarge("a MARK of %d bytes does not fit a frame" % len(payload))
+        if self._new_seg:
+            self._reset_segment()
+        elif self._n:
+            self._close_frame()
+            if self._new_seg:
+                self._reset_segment()
+        if self._seg_hdr:
+            self._queue_segment()
+        off = self.end + self._pending_bytes
+        fb = _frame(MARK, 0, payload, 0, _NAN, _NAN, off - self._seg_off, 0)
+        self._pending.append((fb, MARK, 0, 0))
+        self._pending_bytes += len(fb)
+        self._seg_bytes += len(fb)
+        if self._seg_bytes >= self.reset_bytes:
+            self._new_seg = True
+
     def flush(self):
         """Write every pending frame in one os.write; returns the bytes
         written (0, and no syscall, when there is nothing to write)."""
@@ -2604,6 +2818,8 @@ class Writer(object):
             st["frames"] += 1
             if kind == SEGMENT:
                 st["segments"] += 1
+            elif kind == MARK:
+                st["mark_frames"] += 1
             if flags & F_ZLIB:
                 st["zlib_frames"] += 1
         self.end += done
