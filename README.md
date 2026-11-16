@@ -143,7 +143,7 @@ cd dashboard && uv run python -m rc_dashboard demo     # after the web build abo
 bash run-demo.sh                                       # or with hot reload, on :8087
 ```
 As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare Worker,
-<https://hpc-dashboard.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
+<https://dashboard-demo.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
 redeployed from `develop` by `.github/workflows/demo-deploy.yml` whenever a push changes it.
 
 The real service, live, on a host of your own: [`deploy/fleet`](deploy/fleet/README.md)

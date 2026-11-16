@@ -1,7 +1,7 @@
 # The demo on Cloudflare
 
 The dashboard's [demo mode](../../dashboard/README.md#demo-mode) on a public URL,
-**<https://hpc-dashboard.agentic-system.org>**: this Worker fronts one
+**<https://dashboard-demo.agentic-system.org>**: this Worker fronts one
 [Cloudflare Container](https://developers.cloudflare.com/containers/) running
 `rc_dashboard demo`, built from [`docker/demo/Dockerfile`](../../docker/demo/Dockerfile).
 Every visitor watches the same live demo, and every page says *fake data*: the
@@ -28,7 +28,7 @@ wakes the container. A wrong password is answered a second late. To change the p
 `npx wrangler secret put DEMO_PASSWORD` again: it takes effect at once, no deploy needed, and
 signs everyone out. With no secret set the demo stays closed.
 
-The demo is then at <https://hpc-dashboard.agentic-system.org>, and at the
+The demo is then at <https://dashboard-demo.agentic-system.org>, and at the
 `https://agent-dashboard-demo.<your-subdomain>.workers.dev` URL the deploy prints. The
 hostname is the Worker's [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 (`routes` in `wrangler.jsonc`): the first deploy creates its DNS record and certificate,
@@ -87,7 +87,7 @@ needs beyond the template: if a deploy fails at the domain, add **Zone · DNS ·
 
 | | |
 |---|---|
-| the address | `hpc-dashboard.agentic-system.org` (a Custom Domain), and the `workers.dev` URL |
+| the address | `dashboard-demo.agentic-system.org` (a Custom Domain), and the `workers.dev` URL |
 | the Worker (`src/index.ts`) | sends every request, the page's websocket included, to one container instance named `demo` |
 | the container | `rc_dashboard demo` on port 8080: writes 2 days of history (`RC_DASH_DEMO_DAYS`), then serves and keeps appending in real time |
 | instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~130 MB |

@@ -391,7 +391,7 @@ refused rather than ignored.
 **Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) is the demo in one
 image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
 working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
-that image behind a Cloudflare Worker at <https://hpc-dashboard.agentic-system.org>: one
+that image behind a Cloudflare Worker at <https://dashboard-demo.agentic-system.org>: one
 shared instance that sleeps when nobody is looking and says it is starting while it wakes.
 The real service over live collectors, behind a password, on a host of your own, is
 [`deploy/fleet`](../deploy/fleet/README.md).

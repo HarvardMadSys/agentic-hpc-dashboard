@@ -14,7 +14,7 @@
   // fails here (no such zone). Deleting this entry does not detach the domain
   // (a deploy with no Custom Domains leaves them be): the Worker's Settings,
   // Domains & Routes, in the Cloudflare dashboard does.
-  "routes": [{ "pattern": "hpc-dashboard.agentic-system.org", "custom_domain": true }],
+  "routes": [{ "pattern": "dashboard-demo.agentic-system.org", "custom_domain": true }],
   // Routes turn the workers.dev URL off unless it is asked for; it stays, as a
   // second way in that needs no DNS.
   "workers_dev": true,
