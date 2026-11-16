@@ -86,7 +86,7 @@ export function QuantCells({ q }: { q: Quant | null | undefined }) {
 
 export const QUANT_HEAD = (
   <>
-    <th className="num">p50</th>
+    <th className="num">median</th>
     <th className="num">p90</th>
     <th className="num">p99</th>
     <th className="num">max</th>
@@ -99,7 +99,7 @@ export const QUANT_HEAD = (
 export function QuantHead({ s }: { s: Sorter<string> }) {
   return (
     <>
-      <SortTh s={s} k="p50" num>p50</SortTh>
+      <SortTh s={s} k="p50" num>median</SortTh>
       <SortTh s={s} k="p90" num>p90</SortTh>
       <SortTh s={s} k="p99" num>p99</SortTh>
       <SortTh s={s} k="max" num>max</SortTh>

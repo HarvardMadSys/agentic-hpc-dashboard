@@ -2,15 +2,18 @@
  * one rule every share obeys.
  *
  * The keys are the payload's and the filters' (`/api/events?sandbox=...`), so a
- * key keeps its meaning and only its label says what is measured:
+ * key keeps its meaning and only its label says what is measured. The labels
+ * use the page's one word for each state (lib/glossary.ts), and the glossary's
+ * `sandbox` line says how it is read:
  *
- *   sandboxed   -> "namespace-isolated": /proc/<pid>/ns/* differs from pid 1's.
- *                  Landlock and seccomp-only sandboxes are invisible to it, and a
- *                  container or a systemd unit counts.
- *   supervised  -> "no bypass flag at launch": argv cannot see settings files,
- *                  config.toml or a mid-session mode switch.
- *   denied      -> "exited before read": the collector is root; the namespace
- *                  links were simply gone.
+ *   sandboxed   -> "sandboxed": /proc/<pid>/ns/* differs from pid 1's, i.e. the
+ *                  process ran in its own namespaces. Landlock and seccomp-only
+ *                  sandboxes are invisible to it, and a container or a systemd
+ *                  unit counts.
+ *   supervised  -> "no bypass flag": argv cannot see settings files, config.toml
+ *                  or a mid-session mode switch, so it is not "asks first".
+ *   denied      -> "exited before it was checked": the collector is root; the
+ *                  namespace links were simply gone.
  *
  * A share is ALWAYS a state over the KNOWN verdicts, with coverage (known/total)
  * beside it. Dividing by every state put 9,330 unknown trees under 40 known ones
@@ -20,36 +23,36 @@
 import { fint } from './format';
 
 export const SB_LABEL: Record<string, string> = {
-  sandboxed: 'namespace-isolated',
-  unsandboxed: 'not isolated',
-  denied: 'exited before read',
+  sandboxed: 'sandboxed',
+  unsandboxed: 'not sandboxed',
+  denied: 'exited before it was checked',
   unknown: 'unknown',
 };
 
 /** Session grain: the outcome of a session's tool calls, not its root's own verdict. */
 export const SESSION_LABEL: Record<string, string> = {
-  sandboxed: 'all tool calls isolated',
-  partial: 'some tool calls isolated',
-  failed: 'sandbox attempts failed',
-  unsandboxed: 'tool calls not isolated',
+  sandboxed: 'all tool calls sandboxed',
+  partial: 'some tool calls sandboxed',
+  failed: 'sandbox failed to start',
+  unsandboxed: 'tool calls not sandboxed',
   unknown: 'tool calls unreadable',
   no_calls: 'no tool calls seen',
 };
 
 export const CALL_LABEL: Record<string, string> = {
-  isolated: 'isolated',
-  not_isolated: 'not isolated',
-  failed: 'attempt failed (no payload ran)',
-  no_payload: 'wrapper ran nothing (probe)',
-  unknown: 'payload unreadable',
+  isolated: 'sandboxed',
+  not_isolated: 'not sandboxed',
+  failed: 'sandbox failed to start',
+  no_payload: 'wrapper ran nothing (a probe)',
+  unknown: 'wrapped command unreadable',
 };
 
 export const AP_LABEL: Record<string, string> = {
-  bypassed: 'bypass flag at launch',
-  auto: 'auto mode (classifier approves)',
-  supervised: 'no bypass flag at launch',
-  unobservable: 'not observable from argv',
-  na: 'n/a (not an agent session)',
+  bypassed: 'bypass flag',
+  auto: 'auto mode (a classifier approves)',
+  supervised: 'no bypass flag',
+  unobservable: 'can’t tell from its command line',
+  na: 'not an agent session',
   unknown: 'unknown',
 };
 
@@ -58,7 +61,7 @@ export const AP_SHORT: Record<string, string> = {
   bypassed: 'bypass flag',
   auto: 'auto mode',
   supervised: 'no bypass flag',
-  unobservable: 'not observable',
+  unobservable: 'can’t tell',
   na: 'n/a',
   unknown: 'unknown',
 };
@@ -75,7 +78,7 @@ export function riskLine(
   return [
     `${fint(launch.bypassed ?? 0)} with a bypass flag`,
     `${fint(launch.auto ?? 0)} in auto mode`,
-    unsandboxed != null ? `${fint(unsandboxed)} unsandboxed` : null,
+    unsandboxed != null ? `${fint(unsandboxed)} not sandboxed` : null,
   ]
     .filter(Boolean)
     .join(' · ');

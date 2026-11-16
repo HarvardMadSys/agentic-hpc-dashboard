@@ -245,7 +245,7 @@ function Preview({ at, popRef, n, t, cite, quoted, asked, what, onEnter, onLeave
       <Seen data={cite.data} quoted={quoted} />
       <div className="cite-pop-f">
         {t.arrival
-          ? `click to ${t.also ? 'open its trajectory' : 'go there'}${
+          ? `click to ${t.also ? 'open its session' : 'go there'}${
               t.narrows ? `, the page filtered to ${t.narrows}` : ''
             } · Ctrl/⌘-click or middle-click for a new tab`
           : 'the page does not show this on its own: it is the question’s own view'}

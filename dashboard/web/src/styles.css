@@ -51,6 +51,11 @@
 * {
   box-sizing: border-box;
 }
+/* a phone turned sideways keeps the type at the size it was set, not enlarged */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
   margin: 0;
   background: var(--page);
@@ -237,15 +242,15 @@ kbd {
 .rail nav button:hover .icon {
   color: var(--ink-2);
 }
-.rail nav button[aria-selected='true'] {
+.rail nav button[aria-current='page'] {
   background: var(--crimson-wash);
   color: var(--crimson-ink);
   font-weight: 600;
 }
-.rail nav button[aria-selected='true'] .icon {
+.rail nav button[aria-current='page'] .icon {
   color: var(--crimson);
 }
-.rail nav button[aria-selected='true']::before {
+.rail nav button[aria-current='page']::before {
   content: '';
   position: absolute;
   left: -10px;
@@ -504,7 +509,7 @@ section.panel {
     justify-content: center;
     padding: 9px 0;
   }
-  .app.mini .rail nav button[aria-selected='true']::before {
+  .app.mini .rail nav button[aria-current='page']::before {
     left: -8px;
   }
   .app.mini .navdot {
@@ -603,7 +608,7 @@ main {
 .head-sub::first-letter {
   text-transform: uppercase;
 }
-/* A parent entry's sub-tabs (the login nodes: Resources, Risk & Warning,
+/* A parent entry's sub-tabs (the login nodes: Resources, Risks,
  * Slurm), along the foot of the head. The open one is underlined, and the
  * underline sits on the toolbar band's top rule. */
 .subtabs {
@@ -799,6 +804,29 @@ html {
 @media (max-width: 640px) {
   .controls {
     position: static;
+  }
+  /* A panel's controls go under its title rather than squeezing it to a word
+     a line (Tool mix: two switches beside two words), and a switch that still
+     does not fit wraps, drawn as separate keys like `.seg.wrap`. */
+  .panel > header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .panel > header .seg {
+    flex-wrap: wrap;
+    max-width: 100%;
+    gap: 4px;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+  }
+  .panel > header .seg button,
+  .panel > header .seg button:last-child {
+    border: 1px solid var(--edge);
+    border-radius: 5px;
+  }
+  .panel > header .seg button[aria-pressed='true'] {
+    border-color: var(--ink-2);
   }
 }
 
@@ -1334,6 +1362,20 @@ table.faults tr.section td {
   overflow-x: auto;
   max-width: 100%;
 }
+/* A table wider than its panel scrolls sideways inside it. Its edge fades
+ * where there is more to scroll to, so a column cut off at the edge reads as
+ * "scroll for more", not as the table's last column (Users at 900px, most
+ * tables on a phone). lib/scrollEdges.ts keeps `data-more` true to the scroll
+ * position; a table that fits has none, and no fade. */
+.scroller[data-more='right'] {
+  mask-image: linear-gradient(to left, transparent, #000 36px);
+}
+.scroller[data-more='left'] {
+  mask-image: linear-gradient(to right, transparent, #000 36px);
+}
+.scroller[data-more='both'] {
+  mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}
 /* A long table that scrolls inside its panel with its header held in view: a
  * roster of hundreds is read by scrolling, not by "show 15 more". */
 .scroller.vscroll {
@@ -1700,6 +1742,29 @@ td.cmd-cut {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+/* The service sent nothing for the panel (Panel.tsx <NotReturned>): the dashed
+ * frame of the missing family, one line high, a neutral pill, and no feed
+ * status, because no feed reported anything. */
+.notreturned {
+  border: 1px dashed var(--edge);
+  border-radius: 5px;
+  background: var(--surface-2);
+  padding: 9px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.notreturned .pill {
+  border-color: var(--edge);
+  color: var(--ink-2);
+}
+.notreturned .feed {
+  color: var(--ink-2);
 }
 /* Feed present, rows exist, the reduction is not finished. A THIRD state, and
  * it must look like neither `nofeed` (dashed, blames the path) nor `none`
@@ -2284,6 +2349,15 @@ table.wrap-head th {
 table.wrap-head th:first-child {
   max-width: none;
 }
+/* A number column's header wraps to keep the column as narrow as its numbers.
+   Its sort arrow, tied to the label's last word (SortTh), hangs in the cell's
+   right padding: the label ends where the numbers under it end, and the arrow
+   adds nothing to the column, so a one-word header ("sessions") neither
+   widens it nor loses its arrow under the next header. Both wrap-head tables
+   are .roomy: 14px of right padding. */
+table.wrap-head th.num .sort-arrow {
+  margin-right: -10px;
+}
 
 /* tables grouped by user (ByUser.tsx) */
 table.byuser-t tr.byuser-row {
@@ -2516,8 +2590,9 @@ td.lbl[data-tip] {
 .u-badge.nm {
   color: var(--muted);
 }
-/* Where an agent session is driven from (components/SurfaceChip.tsx): a CLI
- * outlined, an app filled, and an unknown one dashed, as everything unread is. */
+/* Where an agent session is driven from (components/SurfaceChip.tsx): a terminal
+ * or a script outlined, an app filled, and an unknown one dashed, as everything
+ * unread is. */
 .surf {
   display: inline-flex;
   align-items: baseline;
@@ -2530,9 +2605,6 @@ td.lbl[data-tip] {
   color: var(--ink-2);
   white-space: nowrap;
   cursor: help;
-}
-.surf-g {
-  font-weight: 600;
 }
 .surf-app {
   background: var(--sunken);
@@ -2906,4 +2978,168 @@ td.ep-name {
 th.sortable:focus-visible {
   outline: 2px solid var(--crimson);
   outline-offset: -2px;
+}
+
+/* --------------------------------------------- the narrow layout: panels
+ * At 900px and under (lib/useNarrow.ts) the rail is a drawer and every grid is
+ * one column, so a panel is the screen's width. These keep what is in a panel
+ * readable at that width without changing what it says. Here, at the end, so
+ * they win over the rules they adjust. */
+@media (max-width: 900px) {
+  /* a panel's controls go under its title rather than squeezing it to a word a line */
+  .panel > header {
+    flex-wrap: wrap;
+  }
+  /* every segmented control wraps, as `.seg.wrap` does, rather than run past the screen */
+  .seg {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  /* a number is never broken from its unit: a table scrolls in its box instead */
+  td.num {
+    white-space: nowrap;
+  }
+  /* a feed's paths break anywhere, so given no width they stand a letter a line */
+  .feed-where {
+    min-width: 200px;
+  }
+  /* A wide table's row names stay in view while its numbers scroll beside
+   * them (`pin` on that column's cells), so no row is read without its name.
+   * Layered under the table's own sticky header, the corner cell over both. */
+  .scroller td.pin,
+  .scroller th.pin {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    box-shadow: 1px 0 0 var(--rule);
+  }
+  .scroller.vscroll thead th {
+    z-index: 2;
+  }
+  .scroller thead th.pin,
+  .scroller.vscroll thead th.pin {
+    z-index: 3;
+  }
+  .scroller.vscroll thead th.pin {
+    box-shadow:
+      1px 0 0 var(--rule),
+      inset 0 -1px 0 var(--rule);
+  }
+  /* no weight of its own, so a row's hover or open shade still reaches it */
+  :where(.scroller td.pin, .scroller th.pin) {
+    background: var(--surface);
+  }
+  /* With its names pinned, a table hides nothing at its left edge, so only its
+   * right edge fades (the `data-more` marks above): a left fade would wash out
+   * the names it keeps in view. */
+  .scroller:has(td.pin)[data-more='left'] {
+    mask-image: none;
+  }
+  .scroller:has(td.pin)[data-more='both'] {
+    mask-image: linear-gradient(to left, transparent, #000 36px);
+  }
+  /* The faults table keeps its set columns, as shares of its box rather than
+   * pixels: the measures a third, the classes the rest, so every class and
+   * each section's name is in view without scrolling sideways. */
+  table.faults {
+    --measure-w: 32%;
+    --cls-w: calc((100% - var(--measure-w)) / var(--cols, 3));
+  }
+  table.faults td,
+  table.faults th {
+    white-space: normal;
+  }
+  table.faults td.num,
+  table.faults th.num {
+    padding-left: 10px;
+  }
+}
+@media (max-width: 600px) {
+  .panel {
+    padding: 12px 12px 13px;
+  }
+  /* A share's number, its track and its count stack in the cell rather than
+   * sit side by side, so every class's column fits beside the labels. */
+  table.shares th,
+  table.shares td {
+    white-space: normal;
+  }
+  table.shares th:first-child,
+  table.shares td:first-child {
+    width: auto;
+    min-width: 96px;
+  }
+  table.shares.roomy th,
+  table.shares.roomy td {
+    padding-right: 10px;
+  }
+  .share-cell {
+    grid-template-columns: minmax(48px, 1fr);
+    row-gap: 3px;
+  }
+  .share-cell b {
+    order: -1;
+    text-align: left;
+  }
+  /* the measure's name wraps, at a width that holds a word or two a line */
+  table.dist td.pin {
+    white-space: normal;
+    width: 112px;
+  }
+  table.dist th.grp,
+  table.dist td.num.g0,
+  table.dist th.num.g0 {
+    padding-left: 14px;
+  }
+}
+
+/* --------------------------------------------------------- touch screens
+ * A fingertip needs more room than a mouse pointer: controls get about 32 px
+ * each way where a mouse is served by 22. And a form field is set at 16 px,
+ * under which iOS zooms the whole page into it on focus and leaves it zoomed.
+ * Keyed to the pointer, not the width: a narrow desktop window keeps its
+ * compact controls, and a tablet held sideways gets the touch ones. */
+@media (pointer: coarse) {
+  .chip,
+  .seg button {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .btn {
+    padding: 8px 12px;
+    font-size: 11.5px;
+  }
+  .u-pick {
+    padding: 7px 12px;
+  }
+  /* inline, so the room is added to what a tap hits and not to the line */
+  .linkbtn {
+    padding: 6px 0;
+  }
+  details.more > summary,
+  details.basis > summary {
+    padding: 6px 0;
+  }
+  .wininput {
+    padding: 7px 10px;
+    width: 84px;
+  }
+  .u-host {
+    padding: 6px 8px;
+  }
+  /* the drawer's tabs, its sections and its go-to field */
+  .rail nav button {
+    padding: 10px 12px;
+  }
+  .secnav a {
+    padding: 8px 8px 8px 12px;
+  }
+  .rail-search {
+    padding: 10px 12px;
+  }
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
 }

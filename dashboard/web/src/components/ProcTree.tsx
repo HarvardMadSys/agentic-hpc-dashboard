@@ -23,7 +23,7 @@ import { memo, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode, TrajOrder } from '../api/types';
 import { ioTip, ioTotal } from '../lib/procio';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
 import { hiders, isHidden, typoLabel, typoTip } from './ProcDiagram';
 import type { Hide } from './ProcDiagram';
@@ -457,7 +457,7 @@ const RowView = memo(function RowView({
         {isAgent && e.actor3 && (
           <span className="dot" style={{ background: CLS_COL[e.actor3] ?? 'var(--sg)' }} data-tip={CLS_LBL[e.actor3] ?? e.actor3} />
         )}
-        {isAgent && e.agent_type && <span className="pt-tag type">{e.agent_type}</span>}
+        {isAgent && e.agent_type && <span className="pt-tag type">{AGENT_TYPE_LBL[e.agent_type] ?? e.agent_type}</span>}
         {e.role && ROLE_TAG[e.role] && <span className="pt-tag">{ROLE_TAG[e.role]}</span>}
         <span className={`pt-cmd${e.cmd ? '' : ' anon'}`}>{e.cmd ?? `pid ${e.pid ?? '?'}`}</span>
         {e.eff && <span className="pt-arg">{`→ ${e.eff}`}</span>}
@@ -710,9 +710,9 @@ export function ProcTree({
             cpu s
           </div>
           <div className="num" data-tip="own cpu_s plus everything below it; child_cpu_s is never added">
-            Σ cpu s
+            Σ CPU s
           </div>
-          <div className="num" data-tip="bytes read and written through system calls -- pipes and terminals included -- by it and everything below it; hover a cell for disk and network">
+          <div className="num" data-tip="bytes requested through read() and write() calls -- pipes and terminals included -- by it and everything below it; hover a cell for disk and network">
             Σ I/O
           </div>
           <div className="num" data-tip="processes in the subtree, itself included">

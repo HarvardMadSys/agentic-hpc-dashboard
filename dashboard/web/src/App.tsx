@@ -19,6 +19,7 @@ import { WhoFilter } from './components/WhoFilter';
 import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
 import { SectionList, useSections } from './components/SectionNav';
+import { useScrollEdges } from './lib/scrollEdges';
 import { WindowPicker } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
@@ -44,6 +45,8 @@ import { FeedsTab } from './tabs/FeedsTab';
 import { ChatTab } from './tabs/ChatTab';
 import { UsersTab } from './tabs/UsersTab';
 import { EventsExplorer } from './components/EventsExplorer';
+import { NodeNounCtx, nodeWords } from './lib/nodes';
+import { feedLabel } from './lib/feeds';
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
  * happening and who uses what, how each user works with agents, the agents,
@@ -52,22 +55,23 @@ import { EventsExplorer } from './components/EventsExplorer';
  * internal, and overview -> live, where its table now is.
  *
  * Fewer stops in the rail: Overview's last table is a section of Live, and
- * Resources, Risk & Warning and Slurm are one entry, the login nodes, with a
+ * Resources, Risks and Slurm are one entry, the login nodes, with a
  * sub-tab each. A sub-tab keeps its own key, so `?tab=resources`, a citation
  * and every link into it land where they always did. */
-type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes' };
+/* `also`: the names a tab had before, which "go to" still finds it by. */
+type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
 const TABS: Tab[] = [
-  { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor' },
+  { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
   { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Monitor' },
   { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Monitor' },
-  { k: 'trajectories', lbl: 'Trajectories', eyebrow: 'one session at a time', icon: 'trajectories', group: 'Monitor' },
+  { k: 'trajectories', lbl: 'Sessions', eyebrow: 'one session at a time: what it ran, and when', icon: 'trajectories', group: 'Monitor', also: 'trajectories trajectory' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
-  { k: 'risk', lbl: 'Risk & Warning', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes' },
+  { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
   { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'queue', group: 'Monitor', parent: 'nodes' },
-  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask an agent about this window', icon: 'chat', group: 'More' },
+  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
   { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
-  { k: 'feeds', lbl: 'Feeds', eyebrow: 'provenance', icon: 'feeds', group: 'More' },
+  { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', also: 'provenance data sources' },
 ];
 /** The one entry the three node tabs share. It is named in the site's own
  *  word for its hosts (`ui.node_noun`, "login nodes"): their figures are
@@ -217,14 +221,14 @@ export default function App() {
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
   const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
   const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
-  // What the site calls its hosts (`ui.node_noun`): the node tabs' entry and
-  // Live's per-host panel both say it.
+  // What the site calls its hosts (`ui.node_noun`): every place the page names
+  // them says it, through NodeNounCtx (lib/nodes.ts).
   const nodeNoun =
     ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.node_noun?._value as
       | string
       | undefined) ?? null;
-  const nodesWord = nodeNoun?.trim() || 'login nodes';
-  const nodesLbl = nodesWord.charAt(0).toUpperCase() + nodesWord.slice(1);
+  const nodes = nodeWords(nodeNoun);
+  const nodesLbl = nodes.Many;
 
   // The rail's entries: a tab, or the one entry its sub-tabs share.
   type RailItem = { key: string; lbl: string; icon: IconName; group: string; tabs: Tab[] };
@@ -250,31 +254,13 @@ export default function App() {
     if (p) setLastSub((m) => (m[p] === tab.k ? m : { ...m, [p]: tab.k }));
   }, [tab.k, tab.parent]);
 
-  // A link to a tab that folded into another (`?tab=overview`) lands on the
-  // part it became, once that part is on the page; the link is rewritten to
-  // the tab it is now.
-  useEffect(() => {
-    const sec = LANDS_ON[OPENED_ON];
-    if (!sec) return;
-    setUrl({ tab: url.tab });
-    let tries = 0;
-    const t = window.setInterval(() => {
-      const el = document.getElementById(sec);
-      if (el || ++tries > 50) {
-        window.clearInterval(t);
-        el?.scrollIntoView({ block: 'start' });
-      }
-    }, 120);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Which deployment: the sidebar and the browser tab both say, so a frozen
   // capture and a live feed open side by side are never confused.
   const siteName = String(
     (config.data?.site as Record<string, { _value?: unknown }> | undefined)?.name?._value ?? '',
   );
   useEffect(() => {
-    document.title = siteName ? `${siteName} · Agent Behaviour` : 'Agent Behaviour Console';
+    document.title = siteName ? `${siteName} · Agent Behaviour` : 'Agent Behaviour';
   }, [siteName]);
   // Names are aliased on the way out (rc_dashboard/anonymize.py): the header
   // says so, or a reader takes `user-7f3a9c1e` for a real account.
@@ -294,7 +280,26 @@ export default function App() {
     )?.password_hash?._value,
   );
   const mainRef = useRef<HTMLElement>(null);
-  const { secs, active } = useSections(mainRef, tab.k);
+  const { secs, active, go: goSec } = useSections(mainRef, tab.k);
+  useScrollEdges(mainRef);
+  // A link to a tab that folded into another (`?tab=overview`) lands on the
+  // part it became, once that part is on the page; the link is rewritten to
+  // the tab it is now.
+  useEffect(() => {
+    const sec = LANDS_ON[OPENED_ON];
+    if (!sec) return;
+    setUrl({ tab: url.tab });
+    let tries = 0;
+    const t = window.setInterval(() => {
+      const el = document.getElementById(sec);
+      if (el || ++tries > 50) {
+        window.clearInterval(t);
+        if (el) goSec(sec, 'auto');
+      }
+    }, 120);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // The window and the filters, one strip held at the top while the tab scrolls
   // (lib/sticky.ts). Feeds is about the service, not a window of data: none.
   const showControls = tab.k !== 'feeds';
@@ -399,7 +404,6 @@ export default function App() {
             // Opening a session or a user's sessions is navigation: back returns.
             openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
             openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
-            nodeNoun={nodeNoun}
             userCols={
               ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.user_columns?._value as
                 | string[]
@@ -499,7 +503,7 @@ export default function App() {
       hint: t.eyebrow,
       icon: t.icon,
       // the old tab names still find where their panels went
-      keywords: `${t.group}${t.k === 'live' ? ' overview who uses what' : ''}${t.parent ? ' nodes host' : ''}`,
+      keywords: `${t.group}${t.also ? ` ${t.also}` : ''}${t.parent ? ' nodes host' : ''}`,
       run: () => goTab(t.k),
     })),
     ...secs.map((s) => ({
@@ -508,7 +512,7 @@ export default function App() {
       label: s.title,
       icon: 'section' as IconName,
       keywords: 'section panel',
-      run: () => document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      run: () => goSec(s.id),
     })),
     ...(showControls
       ? (windows?.presets ?? []).map((p) => ({
@@ -550,7 +554,8 @@ export default function App() {
     },
   ];
 
-  return (
+  // What the site calls its hosts reaches every panel through NodeNounCtx.
+  const page = (
     <div className={`app${mini ? ' mini' : ''}`}>
       {/* Below 900px the rail is a drawer, and this bar opens it. */}
       <div className="topbar">
@@ -605,7 +610,6 @@ export default function App() {
             <Fragment key={r.key}>
               {(i === 0 || railItems[i - 1].group !== r.group) && <div className="navgroup">{r.group}</div>}
               <button
-                aria-selected={r === railOn}
                 aria-current={r === railOn ? 'page' : undefined}
                 data-tip={mini ? r.lbl : undefined}
                 onClick={() => goRail(r)}
@@ -619,7 +623,7 @@ export default function App() {
                   </>
                 )}
               </button>
-              {r === railOn && !mini && <SectionList secs={secs} active={active} />}
+              {r === railOn && !mini && <SectionList secs={secs} active={active} go={goSec} />}
             </Fragment>
           ))}
         </nav>
@@ -744,11 +748,11 @@ export default function App() {
               <span
                 className="pill synthetic"
                 data-tip={
-                  'a demo: every record here was made up by rc_dashboard/demo -- fictional hosts, ' +
+                  `a demo: every record here was made up by rc_dashboard/demo -- fictional ${nodes.many}, ` +
                   `users and sessions; nothing was measured\n${synthetic.join(', ')}`
                 }
               >
-                synthetic data
+                fake data
               </span>
             )}
             {hl.lag && !live.live?.clock?.pinned && (
@@ -760,22 +764,21 @@ export default function App() {
               <span
                 className="stat warn"
                 data-tip={hl.stale
-                  .map((f) => `${f.name}: lag ${lagStr(f.lag_s)} > max ${lagStr(f.max_age_s)}`)
+                  .map((f) => `${feedLabel(f.name)}: newest record ${lagStr(f.lag_s)} old, past its limit of ${lagStr(f.max_age_s)}`)
                   .join('\n')}
               >
-                {hl.stale.length} feed{hl.stale.length > 1 ? 's' : ''} past max_age
+                {hl.stale.length} feed{hl.stale.length > 1 ? 's' : ''} delayed
               </span>
             )}
             <span
               className="stat"
               data-tip={
                 (live.live?.hosts ?? []).map((h) => h.host).join(', ') ||
-                'no host has reported yet'
+                `no ${nodes.one} has reported yet`
               }
             >
               <Icon name="hosts" size={14} />
-              <b>{fint(live.live?.hosts?.length ?? null)}</b> host
-              {(live.live?.hosts?.length ?? 0) === 1 ? '' : 's'}
+              <b>{fint(live.live?.hosts?.length ?? null)}</b> {(live.live?.hosts?.length ?? 0) === 1 ? nodes.one : nodes.many}
             </span>
             <button className="btn" onClick={live.refresh} data-tip="ask the service for everything on this page again">
               <Icon name="refresh" size={14} />
@@ -850,4 +853,5 @@ export default function App() {
       <TooltipLayer />
     </div>
   );
+  return <NodeNounCtx.Provider value={nodeNoun}>{page}</NodeNounCtx.Provider>;
 }

@@ -128,7 +128,7 @@ The default is the three the tab always had:
 "sections": [
   {"id": "login_compute", "kind": "login_compute", "title": "Compute on a login node"},
   {"id": "commands", "kind": "commands", "rules": "rest", "title": "Commands that should not run here"},
-  {"id": "credentials", "kind": "credentials", "rules": "rest", "title": "Credentials exposed in argv"}
+  {"id": "credentials", "kind": "credentials", "rules": "rest", "title": "Credentials on a command line"}
 ]
 ```
 

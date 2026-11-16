@@ -379,9 +379,12 @@ table.ur-roster td.ur-wrapcell {
 table.ur-roster td.ur-traitcell {
   max-width: 220px;
 }
-/* a number column is as wide as its numbers: its header wraps instead */
+/* a number column is as narrow as its numbers and its header's longest word
+   allow: the header wraps between words instead. A width rather than a max:
+   a max below the longest word clipped it, sort arrow and all, under the
+   next column's header. */
 table.ur-roster th.num {
-  max-width: 72px;
+  width: 1px;
 }
 .ur-ago {
   margin-top: 2px;

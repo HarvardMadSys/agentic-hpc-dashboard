@@ -57,14 +57,15 @@ interface Place {
 const TAB_LBL: Record<string, string> = {
   live: 'Live',
   agents: 'Agents',
-  trajectories: 'Trajectories',
+  trajectories: 'Sessions',
   resources: 'Resources',
-  risk: 'Risk & Warning',
+  risk: 'Risks',
   slurm: 'Slurm',
   internal: 'Internal',
 };
 
-const INSPECTOR = 'Session inspector — process tree';
+/** The inspector's title, which is also its anchor (TrajectoryInspector.tsx). */
+const INSPECTOR = 'Session inspector';
 
 /** Where each part of a snapshot is drawn: the longest matching prefix of a
  *  ref's path wins. The risk sections are the site's own (titled by its rules),
@@ -75,7 +76,7 @@ const PLACES: [string, Place][] = [
   ['panels.tool_mix.n_tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix', { tab: 'agents', panel: 'Tool mix', anchor: 'sec-tool-mix' }],
   ['panels.io_process.by_user', { tab: 'resources', panel: 'I/O by user' }],
-  ['panels.io_process.by_tool', { tab: 'resources', panel: 'Reads by tool' }],
+  ['panels.io_process.by_tool', { tab: 'resources', panel: 'Disk read by tool', anchor: 'sec-reads-by-tool' }],
   ['panels.io_process', { tab: 'resources', panel: 'I/O distributions' }],
   ['panels.risk.rules', { tab: 'risk', panel: 'Rules in effect' }],
   ['panels.risk.sections', { tab: 'risk', panel: 'Rules in effect' }],
@@ -89,14 +90,14 @@ const PLACES: [string, Place][] = [
   ['panels.resources.impossible_waits', { tab: 'resources', panel: 'Faults, delays, and D-state' }],
   ['panels.resources', { tab: 'resources', panel: 'Per-process distributions', anchor: 'sec-per-event-distributions' }],
   ['panels.sandbox.attempts', { tab: 'internal', panel: 'Sandbox wrapper calls, by outcome' }],
-  ['panels.sandbox.tool_calls', { tab: 'internal', panel: 'Tool calls — did they run namespace-isolated?' }],
+  ['panels.sandbox.tool_calls', { tab: 'internal', panel: 'Tool calls — did they run sandboxed?', anchor: 'sec-tool-calls-did-they-run-namespace-isolated' }],
   ['panels.sandbox.launch_modes', { tab: 'internal', panel: 'Approval at launch — an independent axis' }],
   ['panels.sandbox.approval_by_class_events', { tab: 'internal', panel: 'Approval at launch — an independent axis' }],
   ['panels.sandbox.approval_by_class_sessions', { tab: 'internal', panel: 'Approval at launch — an independent axis' }],
-  ['panels.sandbox.ancestry_matrix', { tab: 'internal', panel: 'Ancestry × kind × verdict' }],
-  ['panels.sandbox.sandbox_src', { tab: 'internal', panel: 'Where the per-process verdict came from' }],
-  ['panels.sandbox.sandbox_detail', { tab: 'internal', panel: 'Where the per-process verdict came from' }],
-  ['panels.sandbox', { tab: 'internal', panel: 'Namespace isolation — per process and per session' }],
+  ['panels.sandbox.ancestry_matrix', { tab: 'internal', panel: 'Processes by sandbox wrapper, kind and sandbox state', anchor: 'sec-ancestry-kind-verdict' }],
+  ['panels.sandbox.sandbox_src', { tab: 'internal', panel: 'When each process was checked', anchor: 'sec-where-the-per-process-verdict-came-from' }],
+  ['panels.sandbox.sandbox_detail', { tab: 'internal', panel: 'When each process was checked', anchor: 'sec-where-the-per-process-verdict-came-from' }],
+  ['panels.sandbox', { tab: 'internal', panel: 'Sandboxed — per process and per session', anchor: 'sec-namespace-isolation-per-process-and-per-session' }],
   ['panels.slurm.sessions', { tab: 'slurm', panel: 'Sessions at the scheduler' }],
   ['panels.slurm.rejections', { tab: 'slurm', panel: 'Submissions the scheduler refused' }],
   ['panels.slurm', { tab: 'slurm', panel: 'How each class uses the scheduler' }],
@@ -153,7 +154,7 @@ export interface Arrival {
 }
 
 export interface Target {
-  /** the tab and the panel: "Risk & Warning › Rules in effect" */
+  /** the tab and the panel: "Risks › Rules in effect" */
   where: string;
   /** what it is: "rm -rf against a shared path" */
   label: string;
@@ -161,7 +162,7 @@ export interface Target {
   narrows: string | null;
   /** null: the page draws it nowhere (the question's own view) */
   arrival: Arrival | null;
-  /** an agent's part opens its trajectory; the panel it was read from is this */
+  /** an agent's part opens its session; the panel it was read from is this */
   also?: { where: string; arrival: Arrival; narrows: string | null };
 }
 

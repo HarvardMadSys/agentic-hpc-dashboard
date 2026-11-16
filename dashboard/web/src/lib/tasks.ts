@@ -50,7 +50,7 @@ export function taskPhases(t: Task, b: PhaseBlock): Phase[] {
 
 /** What a task's row says after its label: `6 phases · 208 calls`, and `1 phase · 1 call`. */
 export function taskWhat(t: Task, b: PhaseBlock): string {
-  return `${plural(taskPhases(t, b).length, 'phase', 'phases')} · ${plural(t.n, 'call', 'calls')}`;
+  return `${plural(taskPhases(t, b).length, 'phase', 'phases')} · ${plural(t.n, 'tool call', 'tool calls')}`;
 }
 
 /** The number each of the tasks has, which the lane and the list both show: its place among the tasks, from 1. A lone stretch
@@ -97,7 +97,7 @@ export function taskState(t: Task, b: Pick<PhaseBlock, 'cut_at'>): string[] {
  *  `2.1 h with no new calls · linktest.sh still running since 13:05:44`, or `· a call still running since …` for one
  *  with neither (`aliveClause`). */
 export function gapLine(g: TaskGap): string {
-  const head = `${dur(g.s)} with no new calls`;
+  const head = `${dur(g.s)} with no new tool calls`;
   return g.alive.length ? `${head} · ${aliveClause(g.alive[0])}` : head;
 }
 
@@ -105,7 +105,7 @@ export function gapLine(g: TaskGap): string {
  *  capital, inside its quotation marks, as it was written. The list draws it as a row to click, in `--ink-2`, and not
  *  muted as the gap line is. */
 export function loneLine(t: Task): string {
-  return `${plural(t.n, 'call', 'calls')} at ${clock(t.t0)} · ${lowerFirst(taskLabel(t))}`;
+  return `${plural(t.n, 'tool call', 'tool calls')} at ${clock(t.t0)} · ${lowerFirst(taskLabel(t))}`;
 }
 
 /* ------------------------------------------------------- the row line */

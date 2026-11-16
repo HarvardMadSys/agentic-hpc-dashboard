@@ -101,7 +101,7 @@ const STARTING_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="4">
-<title>demo · synthetic data · Agent Behaviour</title>
+<title>demo · fake data · Agent Behaviour</title>
 <style>
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f4f1;
          color: #1e1e1e; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -118,7 +118,7 @@ const STARTING_PAGE = `<!doctype html>
 <body>
 <main>
   <h1>Agent Behaviour</h1>
-  <div class="sub">demo · synthetic data</div>
+  <div class="sub">demo · fake data</div>
   <p><span class="dot"></span>Starting the demo. It writes two days of made-up records for
   fictional login nodes and their users, then serves the dashboard over them. Nothing in it
   was measured.</p>
@@ -227,7 +227,7 @@ function signInPage(next: string, wrong: boolean, status: number): Response {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>demo · synthetic data · Agent Behaviour</title>
+<title>demo · fake data · Agent Behaviour</title>
 <style>
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f4f1;
          color: #1e1e1e; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -248,7 +248,7 @@ function signInPage(next: string, wrong: boolean, status: number): Response {
 <body>
 <main>
   <h1>Agent Behaviour</h1>
-  <div class="sub">demo · synthetic data</div>
+  <div class="sub">demo · fake data</div>
   <p>This demo of the dashboard runs on made-up records for fictional login nodes and their
   users. It takes a password.</p>
   <form method="post" action="${SIGN_IN_PATH}">

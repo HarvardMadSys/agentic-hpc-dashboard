@@ -4,7 +4,7 @@ The dashboard's [demo mode](../../dashboard/README.md#demo-mode) on a public URL
 **<https://hpc-dashboard.agentic-system.org>**: this Worker fronts one
 [Cloudflare Container](https://developers.cloudflare.com/containers/) running
 `rc_dashboard demo`, built from [`docker/demo/Dockerfile`](../../docker/demo/Dockerfile).
-Every visitor watches the same live demo, and every page says *synthetic data*: the
+Every visitor watches the same live demo, and every page says *fake data*: the
 records are made up for fictional login nodes and users, and nothing in them was measured.
 
 ## Deploy
