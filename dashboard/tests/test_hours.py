@@ -202,6 +202,52 @@ class LateRecordTest(HourCase):
                 self.assertEqual(TM.diff(want[key], got[key]), [])
 
 
+class SeekOvershootTest(HourCase):
+    """`seek_to_epoch` is a binary search that probes one line a step. A probe that lands on a
+    record far older than its neighbours (a late one, written in time order with newer ones)
+    sends it right, and it can answer an offset past records the hour before deferred to this
+    one (`hi <= ts <= hi + SCAN_SLACK_S`). Those sit before where that hour stopped, so they are
+    not stragglers either: the next hour's read starts no later than the first of them."""
+
+    def test_records_deferred_to_an_hour_are_read_though_its_seek_lands_past_them(self):
+        self.write(gen(SINCE + 1, NOW - 30))
+        cfg = self.cfg()
+        h = self.registry(cfg).hours.closed_end(NOW, [self.root]) - 1     # the newest closed hour
+        lo = h * HOUR
+        # A poll round written out of time order, as the collector writes one: frank's two
+        # records of hour h, which the hour before defers to it, interleaved with grace's two of
+        # the hour before, which both hours' reads meet and only the one before takes. None is
+        # late. Each one's records are of one hour: a trajectory chains them as they are read,
+        # and a merge reads the hour before first.
+        self.write([TM.plain("exit", lo + dt, 880000 + i, 1, "git", "git status", host="h3",
+                             user="frank" if dt > 0 else "grace")
+                    for i, dt in enumerate((30, -20, 5, -3))])
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        real, asked = hours.seek_to_epoch, []
+
+        def overshoot(fh, since, size, *a, **kw):
+            # Hour h's seek answers as if it were asked ten minutes later.
+            if since == lo - hours.SCAN_SLACK_S:
+                asked.append(since)
+                since += 600
+            return real(fh, since, size, *a, **kw)
+
+        reg = self.registry(cfg)
+        with mock.patch.object(hours, "seek_to_epoch", overshoot):
+            view = self.build(reg)
+        self.assertEqual(len(asked), 3)                 # once per file: h1, h2 and h3
+        self.assertEqual(view.cache["source"], "hours")
+        got = self.payload(view)
+        for key in sorted(want):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(want[key], got[key]), [])
+        # What the hour before took is read again from where hour h's read now starts, and is
+        # not taken twice: nothing is late, so nothing is a straggler.
+        store = reg.hours
+        self.assertEqual((store.stats["stragglers"], store.stats["stragglers_lost"]), (0, 0))
+        self.assertEqual({store.meta(x)["stragglers"] for x in store.have}, {0})
+
+
 class CompressedDayTest(HourCase):
     """At the rollover the collector compresses the day that closed in place
     (`FeedCase.compress`): the same bytes under a new name and a new inode. An
