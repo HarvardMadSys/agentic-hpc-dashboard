@@ -167,6 +167,70 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual((node(t, 320)["parent"], node(t, 320)["via"]), (310, "ancestor"))
         self.assertEqual(t["agent_depth"], 2)            # 100, then 320
 
+    def daemon_with_spares(self, claimed_calls=0):
+        """A session that started `claude daemon`, which keeps three spares --
+        one that waited and exited, two still waiting, one of them claimed if
+        `claimed_calls` -- and runs one background session that did the work."""
+        t0 = self.t0
+        native = HOME + "/.local/share/claude/versions/2.1.325"
+        spare = "claude bg-spare --bg-spare /tmp/cc-daemon-1000/8fb1/spare/%d.claim.sock"
+        recs = claude_session(t0)[:1] + [
+            rec("residency", t0 + 1, 300, 1, "claude",
+                HOME + "/.local/bin/claude daemon run --origin transient --spawned-by "
+                '{"label":"claude","cwd":"%s","pid":100}' % PROJ,
+                agent_pid=300, tree_root=300, is_agent=True, cwd=HOME),
+            rec("exit", t0 + 60, 401, 300, "2.1.325", spare % 401, agent_pid=401,
+                tree_root=300, is_agent=True, cwd="/tmp/cc-daemon-1000/8fb1",
+                cpu_s=0.9, duration_s=58),
+            rec("residency", t0 + 2, 402, 300, "2.1.325", spare % 402, agent_pid=402,
+                tree_root=300, is_agent=True, cwd=HOME),
+            rec("residency", t0 + 3, 403, 300, "2.1.325", spare % 403, agent_pid=403,
+                tree_root=300, is_agent=True, cwd=HOME),
+            rec("residency", t0 + 4, 310, 1, "2.1.325",
+                "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-1000/8fb1/pty/x.sock 200 50 "
+                "-- " + native + " --session-id x", agent_pid=310, tree_root=310,
+                is_agent=True, cwd=HOME),
+            rec("residency", t0 + 5, 320, 310, "2.1.325", native + " --session-id x",
+                agent_pid=320, tree_root=310, is_agent=True, cwd=PROJ),
+        ]
+        for i, (owner, k) in enumerate([(320, 4)] + [(403, claimed_calls)]):
+            for j in range(k):
+                pid = 500 + 10 * i + 2 * j
+                recs += [
+                    rec("exit", t0 + 10 + j, pid + 1, pid, "git", "git status",
+                        agent_pid=pid, tree_root=310 if owner == 320 else 300),
+                    rec("exit", t0 + 11 + j, pid, owner, "zsh", SNAP + "'git status'",
+                        agent_pid=pid, tree_root=310 if owner == 320 else 300, is_agent=True),
+                ]
+        return recs
+
+    def test_a_spare_nobody_claimed_is_the_daemons_not_a_subagent(self):
+        """`claude daemon` starts sessions ahead of need (`claude bg-spare`); one
+        that waits is no agent, so the session that started the daemon does not
+        wear it as a subagent that ran nothing."""
+        p = reduce(self.daemon_with_spares())
+        c = p["cascades"]
+        t = tree_of(p, 100)
+        agents = sorted(n["pid"] for n in t["nodes"] if n["role"] == "agent")
+        self.assertEqual(agents, [100, 320])
+        for pid in (401, 402, 403):                        # waited, or waited and exited
+            self.assertNotIn(pid, [n["pid"] for n in t["nodes"]])
+        self.assertEqual((t["n_agents"], t["agents_nested"], t["idle_spares"]), (2, 1, 3))
+        self.assertGreaterEqual(t["hidden_nodes"], 3)
+        self.assertEqual((c["summary"]["agents"], c["summary"]["agents_nested"]), (2, 1))
+        self.assertEqual(c["summary"]["idle_spares"], 3)
+        self.assertEqual(t["max_fanout"], 1)
+        # the session is still the daemon's, through its pty host: four calls, a
+        # shell and a `git` each
+        self.assertEqual(node(t, 320)["tool_calls"], 8)
+
+    def test_a_spare_that_ran_something_was_claimed_and_is_an_agent(self):
+        t = tree_of(reduce(self.daemon_with_spares(claimed_calls=2)), 100)
+        n = node(t, 403)
+        self.assertEqual((n["role"], n["spare"], n["agent_level"]), ("agent", True, 2))
+        self.assertEqual(n["tool_calls"], 4)                 # two calls, two processes each
+        self.assertEqual((t["n_agents"], t["idle_spares"]), (3, 2))
+
     def test_sessions_hosted_by_infrastructure_are_not_a_cascade(self):
         # Claude Desktop's remote server runs one ccd-cli per chat: hosted, not nested
         t0 = self.t0
@@ -348,6 +412,57 @@ class DriftTest(unittest.TestCase):
         self.assertEqual(n["workspace"]["dirs"], 2)
         self.assertEqual(n["workspace"]["inside_pct"], 50.0)
 
+
+
+class TreesSentTest(unittest.TestCase):
+    """Which trees the panel sends: every one the window holds, up to a cap the
+    page can see, the deepest first. With 25, a window with 25 trees of
+    subagents sent no session that started no other."""
+
+    def setUp(self):
+        self.t0 = time.time() - 3600
+
+    def recs(self, nested=30):
+        recs = []
+        for i in range(nested):
+            root, shell, sub = 1000 + 10 * i, 1001 + 10 * i, 1002 + 10 * i
+            recs += [
+                rec("residency", self.t0 + i, root, 50, "claude", "claude",
+                    agent_pid=root, tree_root=root, is_agent=True),
+                rec("exit", self.t0 + i + 5, sub, shell, "claude", "claude -p summarise",
+                    agent_pid=sub, tree_root=root, is_agent=True),
+                rec("exit", self.t0 + i + 6, shell, root, "zsh", SNAP + "'claude -p summarise'",
+                    agent_pid=shell, tree_root=root, is_agent=True),
+            ]
+        return recs + claude_session(self.t0, root=100)       # one session on its own
+
+    def test_a_session_on_its_own_is_sent_beside_many_trees_of_subagents(self):
+        c = reduce(self.recs())["cascades"]
+        roots = [t["root"]["pid"] for t in c["trees"]]
+        self.assertEqual(len(roots), 31)
+        self.assertIn(100, roots)
+        self.assertEqual((c["summary"]["trees"], c["summary"]["trees_sent"]), (31, 31))
+
+    def test_past_the_cap_the_deepest_are_sent_and_the_rest_counted(self):
+        from rc_dashboard.normalize import Normalizer
+        from rc_dashboard.windows import PanelView
+        import test_sessions
+        cfg = test_sessions.cfg()
+        view = PanelView(cfg, list(cfg.get("filters.classes")) + [cfg.get("filters.unlabeled_class")], 1440)
+        reducers = view.fresh_reducers()
+        reducers["cascades"].top_n = 5
+        dispatch = PanelView.build_dispatch(reducers)
+        norm = Normalizer(cfg)
+        for raw in self.recs():
+            r = norm.normalize(raw)
+            if r is not None:
+                for red in dispatch.get(r.get("event"), ()):
+                    red.feed(r)
+        view.reducers = reducers
+        c = view.materialize()["cascades"]
+        self.assertEqual(len(c["trees"]), 5)
+        self.assertTrue(all(t["agent_depth"] == 2 for t in c["trees"]))
+        self.assertEqual((c["summary"]["trees"], c["summary"]["trees_sent"]), (31, 5))
 
 
 class PickTest(unittest.TestCase):

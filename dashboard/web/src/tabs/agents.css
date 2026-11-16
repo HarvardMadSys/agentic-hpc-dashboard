@@ -704,6 +704,13 @@ table.trees .sub-chip {
   align-self: flex-start;
   margin: 6px 0 2px;
 }
+/* what the list does not hold, said in it: the trees past the service's cap,
+   the daemon's idle spares (AgentsTab.tsx) */
+.al-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 2px 0;
+}
 /* the detail stays in view beside a long list, and comes back into view
  * when a row is picked below it (AgentsTab.tsx) */
 .al-detail {
