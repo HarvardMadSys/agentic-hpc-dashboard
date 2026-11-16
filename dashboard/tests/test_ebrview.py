@@ -416,20 +416,44 @@ class ResumeTest(ViewCase):
         self.assertEqual(view_records(p)[-1]["pid"], 2199)
         self.assertConverted("h1.exits.jsonl")
 
-    def test_a_copy_of_the_source_is_read_on_not_converted_again(self):
-        self.append("h1.exits.jsonl", [rec(T0 + i, i) for i in range(30)])
+    def test_a_source_replaced_under_its_name_is_converted_afresh(self):
+        # Another file under the source's name (os.replace, a copy renamed into
+        # place): its first bytes prove nothing about the rest, so it is converted
+        # afresh, as the JSONL tail reads a new inode from its start. First the
+        # same length and first 4 KB with only the last record changed, then a
+        # longer copy, then a replacement while the service was down.
+        recs = [rec(T0 + i, 1000 + i) for i in range(200)]
+        s = self.append("h1.exits.jsonl", recs)
+        self.assertGreater(os.path.getsize(s), ebrview.HEAD_BYTES)
         v = self.view()
         p = self.vpath("h1.exits.ebr")
-        ino, head = os.stat(p).st_ino, Path(p).read_bytes()
-        # the same bytes and more under a new inode (a copy renamed into place)
-        s = self.src("h1.exits.jsonl")
-        with open(s, "rb") as fh:
-            data = fh.read()
-        os.unlink(s)
-        self.append("h1.exits.jsonl", data + line(rec(T0 + 99, 99)))
+
+        def replace_with(rs):
+            tmp = s + ".new"
+            with open(tmp, "wb") as fh:
+                fh.write(b"".join(line(r) for r in rs))
+            os.replace(tmp, s)
+
+        ino = os.stat(p).st_ino
+        changed = recs[:-1] + [rec(T0 + 199, 2199)]
+        self.assertEqual(len(b"".join(line(r) for r in changed)), os.path.getsize(s))
+        replace_with(changed)
         self.settle(v)
-        self.assertEqual(os.stat(p).st_ino, ino)
-        self.assertTrue(Path(p).read_bytes().startswith(head))
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual(view_records(p)[-1]["pid"], 2199)
+        self.assertConverted("h1.exits.jsonl")
+        ino = os.stat(p).st_ino
+        replace_with(changed + [rec(T0 + 300, 3000)])
+        self.settle(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertConverted("h1.exits.jsonl")
+        ino = os.stat(p).st_ino
+        v.close()
+        replace_with(recs)
+        v = self.restart(v)
+        self.settle(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual(view_records(p)[-1]["pid"], 1199)
         self.assertConverted("h1.exits.jsonl")
 
     def test_a_sealed_day_is_finished_from_its_gz_then_left_alone(self):

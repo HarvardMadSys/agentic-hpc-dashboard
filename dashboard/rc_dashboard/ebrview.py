@@ -577,16 +577,19 @@ def _resume(view, src, stem, zkw, task):
                 raise _Rebuild("its last checkpoint is not one this version wrote")
             if split_name(info["src"])[0] != stem:
                 raise _Rebuild("its checkpoint names another stream (%s)" % info["src"])
-            if not src.endswith(_GZ) and not k:
-                # The file the checkpoint describes, the same size, written since:
-                # rewritten in place (an append grows it), maybe with the same head.
+            if not src.endswith(_GZ) and info.get("src") == os.path.basename(src):
                 try:
                     st0 = os.stat(src)
                 except OSError:
                     st0 = None
-                if (st0 is not None and st0.st_ino == info.get("src_ino")
-                        and st0.st_size == info.get("src_size")
+                if st0 is not None and st0.st_ino != info.get("src_ino"):
+                    # another file under its name: its head proves nothing past it
+                    raise _Rebuild("%s is another file than its checkpoint read"
+                                   % os.path.basename(src))
+                if (st0 is not None and not k and st0.st_size == info.get("src_size")
                         and st0.st_mtime_ns != info.get("src_mtime_ns")):
+                    # the same size, written since: rewritten in place (an append
+                    # grows it), maybe with the same head
                     raise _Rebuild("%s was written in place since its checkpoint"
                                    % os.path.basename(src))
         off = info["off"]
@@ -1393,8 +1396,14 @@ class EbrView(object):
                 self._idle(e, now)
             return 0
         e.src = plain
-        if e.sealed or st.st_ino != e.src_id[2] or st.st_size < e.off:
-            self._submit(e)             # back from its .gz, replaced, or cut short
+        if not e.sealed and st.st_ino != e.src_id[2]:
+            # Another file under the source's name (replaced, or a copy renamed
+            # into place): its first bytes prove nothing past them, so it is
+            # converted afresh, as the JSONL tail reads a new inode from its start.
+            self._submit(e, fresh=True)
+            return 0
+        if e.sealed or st.st_size < e.off:
+            self._submit(e)             # back from its .gz, or cut short
             return 0
         behind = st.st_size - e.off
         if behind <= 0:

@@ -286,7 +286,8 @@ read in the poll it is converted in: one batch and one flush a poll, at most 64 
 poll looks at the newest two days and the flat files (a host rolls over late, so yesterday may
 still grow); older days, and a listing of every day, come every 30 s. A day the collector
 seals (`x.jsonl` to `x.jsonl.gz`) is finished from its `.gz` once, past what was converted, and
-the view's file stays plain; a source cut short, or replaced by another file (other first bytes),
+the view's file stays plain; a source cut short, replaced by another file under its name (a new inode, whatever its first
+bytes), or written in place (the same size, a new mtime),
 is converted afresh into a new file, which the readers take as a replaced file (they read it
 again, as they would the source). That and a stream far behind are converted apart from the polls,
 which stay bounded. A file that fails is reported (`convert.errors`, its `files[].error`) and tried
