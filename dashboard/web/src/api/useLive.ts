@@ -8,6 +8,11 @@
  * Nothing here interpolates. Between frames the series simply does not move --
  * the retired viewer manufactured events between polls and that is the specific
  * behaviour this replaces.
+ *
+ * A hidden page draws nothing, so it renders nothing: while the tab is in the
+ * background each kind of frame is kept, the newest only, and applied when the
+ * page is shown again -- one render, not one a second for as long as it was
+ * away. The service's clock is still taken from every live frame as it comes.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
@@ -62,26 +67,99 @@ export function useLive(windowMin: number | null): LiveState {
   /* The set of ready windows and their build stamps, as last seen. Panels are
    * re-fetched only when this changes -- progress frames must not trigger one. */
   const builtKey = useRef<string>('');
+  /* Frames that came while the page was hidden: the newest of each kind, with
+   * when it came, in the order the newest ones came. */
+  const held = useRef(new Map<WsFrame['type'], { f: WsFrame; at: number }>());
+  /* The REST read that seeds the page is made once per mount (StrictMode runs
+   * the effect twice and keeps refs), and once more on each reconnect: a
+   * socket that dropped may have missed frames. */
+  const seeded = useRef(false);
+  const reseed = useRef(false);
 
-  const accept = useCallback((l: LiveResponse) => {
-    syncServerClock(l.clock?.now);
-    // Every frame says whether the clock is pinned; one that does not (an older
-    // service) is the wall clock, which does grow.
-    setClockPinned(l.clock?.pinned === true);
-    setLive(l);
-    setReceivedAt(Date.now());
-    setError(null);
+  /** A frame's effect on the page's state. */
+  const apply = useCallback((frame: WsFrame, at: number) => {
+    switch (frame.type) {
+      case 'live': {
+        const l = frame.payload;
+        // Every frame says whether the clock is pinned; one that does not (an older
+        // service) is the wall clock, which does grow.
+        setClockPinned(l.clock?.pinned === true);
+        setLive(l);
+        setReceivedAt(at);
+        setError(null);
+        break;
+      }
+      case 'feeds':
+        setFeeds(frame.payload);
+        break;
+      case 'rebuilt':
+        setRebuildNonce((n) => n + 1);
+        break;
+      case 'backfill':
+        setBackfill(frame.payload);
+        break;
+      case 'windows': {
+        setWindows(frame.payload);
+        // Re-fetch panels when a READY window's reducers are swapped in. Keyed on
+        // the whole ready set rather than on this page's own window, because
+        // `win` is null whenever the page is on the service default and
+        // would never match a held window's minutes -- the first build to
+        // finish would then never reach the page. Progress frames arrive
+        // every couple of seconds and must NOT trigger a fetch, which is
+        // why only `state === 'ready'` rows are in the key. `installed_at`,
+        // not just `built_at`: a window resumed from a saved build keeps that
+        // build's stamp, so across a service restart `built_at` alone would
+        // match the key from before it and the page would never re-fetch.
+        const key = (frame.payload.held ?? [])
+          .filter((w) => w.state === 'ready')
+          .map((w) => `${w.minutes}:${w.built_at}:${w.installed_at ?? ''}`)
+          .join('|');
+        if (key && key !== builtKey.current) {
+          builtKey.current = key;
+          setBuildNonce((n) => n + 1);
+        }
+        break;
+      }
+    }
   }, []);
+
+  /** A frame as it arrives: applied now, or kept for when the page is shown. */
+  const take = useCallback(
+    (frame: WsFrame) => {
+      // the offset to the service's clock is right only when taken as the frame comes
+      if (frame.type === 'live') syncServerClock(frame.payload.clock?.now);
+      const at = Date.now();
+      if (document.visibilityState === 'hidden') {
+        held.current.delete(frame.type);
+        held.current.set(frame.type, { f: frame, at });
+        return;
+      }
+      apply(frame, at);
+    },
+    [apply],
+  );
+
+  // Shown again: what came while hidden, in one render.
+  useEffect(() => {
+    const shown = () => {
+      if (document.visibilityState === 'hidden' || !held.current.size) return;
+      const frames = [...held.current.values()];
+      held.current.clear();
+      for (const { f, at } of frames) apply(f, at);
+    };
+    document.addEventListener('visibilitychange', shown);
+    return () => document.removeEventListener('visibilitychange', shown);
+  }, [apply]);
 
   const poll = useCallback(async () => {
     try {
-      accept(await getLive(win.current));
+      take({ type: 'live', payload: await getLive(win.current) });
       setTransport((t) => (t === 'ws' ? t : 'polling'));
     } catch (e) {
       setTransport('down');
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [accept]);
+  }, [take]);
 
   /* one-shot manual refresh, used by the header button */
   const refresh = useCallback(() => {
@@ -134,9 +212,13 @@ export function useLive(windowMin: number | null): LiveState {
             /* the frame is re-sent by the window effect once the socket settles */
           }
         }
-        // The socket may only push deltas; seed the view once from the REST
-        // snapshot so a quiet cluster is not an empty dashboard.
-        void poll();
+        // The socket may only push deltas; the view was seeded from the REST
+        // snapshot as the page mounted, so a quiet cluster is not an empty
+        // dashboard. A socket that came back after dropping seeds it again.
+        if (reseed.current) {
+          reseed.current = false;
+          void poll();
+        }
       };
 
       ws.onmessage = (ev) => {
@@ -148,45 +230,19 @@ export function useLive(windowMin: number | null): LiveState {
         }
         switch (frame.type) {
           case 'live':
-            accept(frame.payload);
-            break;
           case 'feeds':
-            setFeeds(frame.payload);
-            break;
           case 'rebuilt':
-            setRebuildNonce((n) => n + 1);
-            break;
           case 'backfill':
-            setBackfill(frame.payload);
+          case 'windows':
+            take(frame);
             break;
-          case 'windows': {
-            setWindows(frame.payload);
-            // Re-fetch panels when a READY window's reducers are swapped in. Keyed on
-            // the whole ready set rather than on this page's own window, because
-            // `win` is null whenever the page is on the service default and
-            // would never match a held window's minutes -- the first build to
-            // finish would then never reach the page. Progress frames arrive
-            // every couple of seconds and must NOT trigger a fetch, which is
-            // why only `state === 'ready'` rows are in the key. `installed_at`,
-            // not just `built_at`: a window resumed from a saved build keeps that
-            // build's stamp, so across a service restart `built_at` alone would
-            // match the key from before it and the page would never re-fetch.
-            const key = (frame.payload.held ?? [])
-              .filter((w) => w.state === 'ready')
-              .map((w) => `${w.minutes}:${w.built_at}:${w.installed_at ?? ''}`)
-              .join('|');
-            if (key && key !== builtKey.current) {
-              builtKey.current = key;
-              setBuildNonce((n) => n + 1);
-            }
-            break;
-          }
         }
       };
 
       ws.onclose = () => {
         sock.current = null;
         if (dead.current) return;
+        reseed.current = true;
         attempts.current += 1;
         if (attempts.current > WS_GIVE_UP) {
           startPolling();
@@ -204,8 +260,12 @@ export function useLive(windowMin: number | null): LiveState {
 
     connect();
     // Seed immediately so the first paint is data, not a spinner, even if the
-    // socket handshake is slow.
-    void poll();
+    // socket handshake is slow. Once: the socket's opening and the window
+    // effect below used to read /api/live again, three reads at every start.
+    if (!seeded.current) {
+      seeded.current = true;
+      void poll();
+    }
 
     return () => {
       dead.current = true;
@@ -217,12 +277,17 @@ export function useLive(windowMin: number | null): LiveState {
         s.close();
       }
     };
-  }, [accept, poll]);
+  }, [poll]);
 
   /* A window change re-uses the open socket. The server answers with a frame
    * for the new window immediately, so the chart never keeps showing the old
-   * span while the picker already reads the new one. */
+   * span while the picker already reads the new one. Not on mount: the seed
+   * above reads the window the page opened on, and the socket names it to the
+   * server as it opens. */
+  const shownWin = useRef(windowMin);
   useEffect(() => {
+    if (shownWin.current === windowMin) return;
+    shownWin.current = windowMin;
     const s = sock.current;
     if (s && s.readyState === WebSocket.OPEN) {
       try {
