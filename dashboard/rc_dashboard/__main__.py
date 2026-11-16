@@ -105,7 +105,13 @@ def main(argv=None):
         print(json.dumps(cfg.as_dict(with_origins=True), indent=1, default=str))
         return 0
     if args.check_feeds or args.command == "check-feeds":
-        return feedmod.print_table(feedmod.resolve(cfg))
+        # The collector's roots as they are (nothing is converted here), and
+        # what the service's startup conversion would make of them (ebrview.py).
+        code = feedmod.print_table(feedmod.resolve(cfg))
+        from . import ebrview
+        for line in ebrview.describe(cfg):
+            print(line)
+        return code
 
     import uvicorn
     from . import clock

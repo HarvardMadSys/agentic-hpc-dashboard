@@ -57,8 +57,31 @@ export interface FeedReport {
   backfill: unknown;
   /** hosts whose records were written by the demo (rc_dashboard/demo), not measured */
   synthetic_hosts?: string[];
+  /** the dated tiers read through the EBR view: the collector's own roots */
+  source_roots?: string[];
+  /** the dated tiers: the startup conversion to EBR (rc_dashboard/ebrview.py) */
+  convert?: ConvertStatus;
 }
 export type FeedsResponse = Record<string, FeedReport>;
+
+/** How a dated tier is read: through the EBR view the service converts its
+ *  JSONL into (and links its EBR into) at startup, or as the files are. */
+export interface ConvertStatus {
+  enabled: boolean;
+  state: 'off' | 'catching_up' | 'live' | 'stopped' | 'error';
+  reason?: string;
+  pct?: number;
+  dir?: string;
+  source_roots?: string[];
+  view_roots?: string[];
+  counts?: { converted: number; linked: number; held: number };
+  records?: number;
+  bad_lines?: number;
+  bytes_in?: number;
+  bytes_out?: number;
+  lag_bytes?: number;
+  errors?: { at: number; file: string | null; error: string }[];
+}
 
 /* ------------------------------------------------------------- collectors */
 
@@ -1495,7 +1518,7 @@ export interface LiveSubmit {
  *  have not been read yet: a gap, not a quiet fleet. `retained_from` here is
  *  set once it is `done`. */
 export interface BackfillStatus {
-  state: 'idle' | 'running' | 'done' | 'skipped' | 'error';
+  state: 'idle' | 'converting' | 'positioning' | 'running' | 'done' | 'skipped' | 'error';
   pct: number;
   records: number;
   hours: number;

@@ -20,6 +20,7 @@ import type {
   CollectorVerdict,
   ConfigNode,
   ConfigTree,
+  ConvertStatus,
   FeedReport,
   FeedsResponse,
   FeedStatus,
@@ -264,6 +265,28 @@ function Where({ f }: { f: FeedReport }) {
   );
 }
 
+/** How a dated tier is read: through its EBR view, and how far that is. */
+function Converted({ c }: { c: ConvertStatus | undefined }) {
+  if (!c || !c.enabled || c.state === 'off') return null;
+  const n = c.counts ?? { converted: 0, linked: 0, held: 0 };
+  const streams = [`${fint(n.converted)} converted`, `${fint(n.linked)} linked`]
+    .concat(n.held ? [`${fint(n.held)} held`] : [])
+    .join(', ');
+  const text =
+    c.state === 'catching_up'
+      ? `converting to EBR before reading: ${fint(c.pct ?? 0)}%`
+      : c.state === 'error'
+        ? `read as the files are: the EBR view failed (${c.reason ?? (c.errors?.[0]?.error ?? 'unknown error')})`
+        : `read as EBR, through its view: ${streams}${c.lag_bytes ? ` · ${bytes(c.lag_bytes)} behind` : ''}${
+            c.errors?.length ? ` · ${fint(c.errors.length)} error${c.errors.length === 1 ? '' : 's'}` : ''}`;
+  return (
+    <div className="nm" style={{ fontSize: '10.5px', color: c.state === 'error' || c.errors?.length ? '#8a6410' : undefined }}
+      data-tip={[c.dir ? `view: ${c.dir}` : null, ...(c.errors ?? []).slice(-3).map((e) => e.error)].filter(Boolean).join('\n') || undefined}>
+      {text}
+    </div>
+  );
+}
+
 function Sources({ list }: { list: FeedReport[] }) {
   const nodes = useNodeWords();
   const s = useSort<string>();
@@ -315,7 +338,9 @@ function Sources({ list }: { list: FeedReport[] }) {
                   )}
                 </td>
                 <td style={{ maxWidth: 520, whiteSpace: 'normal' }}>
-                  <Where f={f} />
+                  {/* the collector's roots, not the view the service reads them through */}
+                  <Where f={f.source_roots?.length ? { ...f, resolved: f.source_roots, configured: f.source_roots } : f} />
+                  <Converted c={f.convert} />
                   {note && <div style={{ color: '#8a6410', fontSize: '11px', marginTop: 3 }}>{note}</div>}
                 </td>
                 <td className="num">
@@ -343,7 +368,10 @@ function Backfill({ b }: { b: Record<string, unknown> | null | undefined }) {
   const n = (k: string) => (typeof b[k] === 'number' ? (b[k] as number) : null);
   const s = String(b.state ?? '');
   const text =
-    s === 'positioning'
+    s === 'converting'
+      ? // the startup conversion to EBR (ebrview.py): nothing reads the day-files before it ends
+        `converting the JSONL day-files to EBR before reading them: ${fint(n('pct'))}%${n('files') ? ` of ${fint(n('files'))} files` : ''}`
+      : s === 'positioning'
       ? // each file opened, each sealed .gz indexed: minutes for a week of 8 nodes
         'finding where the history starts in each file; reading begins next'
       : s === 'running'

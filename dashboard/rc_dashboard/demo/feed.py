@@ -44,7 +44,8 @@ FORMATS = ("jsonl", "ebr", "both")
 SUFFIXES = (".jsonl", ".ebr")
 WRITER = "rc_dashboard.demo"        # an EBR segment's `writer`
 FRAME_S = 60                        # an EBR frame holds one cell of this epoch grid, of one round
-# What a SEGMENT says of itself, beside its writer's meta (ebr.Writer).
+# What a SEGMENT says of itself, beside its writer's meta (ebr.Writer), in either
+# format version: v1's (JSON) also says "zlib", v2's (binary) does not.
 _SEGMENT_OWN = frozenset(("format", "version", "str_id_size", "kinds", "reset_bytes",
                           "zlib", "created"))
 

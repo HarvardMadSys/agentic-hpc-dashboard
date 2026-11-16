@@ -30,7 +30,7 @@ class EbrSyncTest(unittest.TestCase):
     def test_it_is_the_module_the_package_imports(self):
         from rc_dashboard import ebr
         self.assertEqual(Path(ebr.__file__).resolve(), DASH)
-        self.assertEqual(ebr.VERSION, 1)
+        self.assertEqual(ebr.VERSION, 2)
 
 
 if __name__ == "__main__":

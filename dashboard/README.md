@@ -50,7 +50,10 @@ never outranks the file.
 - `feeds.ebpf.prefer` (`RC_DASH_EBPF_PREFER`) and `feeds.ebpf_node.prefer`
   (`RC_DASH_NODE_PREFER`) say which twin of a stream written in both formats is read:
   `jsonl` (the default) or `ebr` ([Two formats](#two-formats)). Any other value stops the
-  service at startup rather than guess.
+  service at startup rather than guess. With the startup conversion on (the default), the
+  service reads EBR whatever they say, through a view of the collector's roots it converts at
+  startup ([Reading EBR only](#reading-ebr-only-the-startup-conversion)); `RC_DASH_CONVERT=0`
+  reads the day-files as they are, and `prefer` decides.
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's records
 are JSON, whether written as JSONL or as EBR; the retired builder's contract was `data.json`) and
@@ -86,6 +89,10 @@ sees the same record either way. It is 4-8x smaller, and it is framed: CRC-check
 normally one per poll round, each with its records' time bounds and event kinds in its header,
 so a reader can pass a frame without building its records. The format, its numbers and the
 collector's side are in the [collector README](../collector/README.md#binary-records-ebr).
+
+The service reads them through an EBR view it makes at startup, unless that is turned off
+([Reading EBR only](#reading-ebr-only-the-startup-conversion)): what follows is how the day-files
+are read when it is, and how the view decides which file of a stream it links or converts.
 
 **One file per stream.** With `both`, every stream has twins, `x.jsonl` and `x.ebr`, holding the
 same records in the same order, and the service reads exactly one of them (`feedfile.choose`), so
@@ -151,31 +158,164 @@ feed gives the same API output, value for value: `tests/e2e_formats.py` writes a
 both formats, serves it twice at a pinned clock, and diffs 41 requests. Its variants cover a
 plain scan, a restart from saved builds, gzipped days, a feed that grows between runs, and
 legacy records with no `ts_epoch`. The page is not faster for it on every read. On the demo
-feed (3 days of 4 hosts, `tests/bench_formats.py`, the median of three runs; on a shared VM a
+feed (3 days of 4 hosts, `tests/bench_formats.py`, the median of ten runs; on a shared VM a
 read's ratio moves by 0.05-0.15 from one run to the next):
 
-- A read that filters goes about 2x faster from EBR (one user's last 500 exits: 0.12 s
-  against 0.28 s), because it rejects records by interned string before building them.
-- From gzipped days EBR is ahead on seeks (1.7x), the startup backfill (1.0x), an hour's
-  read (1.4x) and key scans (1.2x), and behind on a 24 h window build (0.7-0.9x): a `.gz` is
-  inflated to be read, and an EBR day has 5.8x less to inflate.
-- From plain files a read that builds every record is slower: the startup backfill at 0.79x
-  JSONL's speed (0.60 s against 0.50 s), an hour's read at 0.71x (0.068 s against 0.049 s),
-  a 24 h window build at 0.61x (0.46 s against 0.27 s), and key scans at 0.81x. Its seeks
-  no longer cost much (positioning the backfill: 0.78x, from 0.38x); its records do:
+- A read that filters goes about 2x faster from EBR (one user's last 500 exits: 0.13 s
+  against 0.29 s), because it rejects records by interned string before building them.
+- A read that builds every record goes slower: the startup backfill at 0.83x JSONL's speed
+  (0.59 s against 0.48 s), an hour's read at 0.68x (0.071 s against 0.048 s), a 24 h window
+  build at 0.73x (0.38 s against 0.28 s), and key scans at 0.79x. Its seeks no longer cost
+  much (positioning the backfill: 0.95x, from 0.38x); its records do:
   - building a record costs about what orjson's C parse of its line does: most of either is
     filling the same dicts;
-  - EBR also applies each frame's new strings and checks its two CRCs, and a collector's
-    frame holds a poll round, about three records;
+  - EBR also applies each frame's new strings and checks its two CRCs, so a frame of few
+    records costs more a record. The demo's twins hold a minute of records a frame, about 2.5
+    here; a collector's frame holds a poll round, and the same records cut on its 100 ms grid
+    (1.4 a frame) run the backfill at 0.75x JSONL's speed (`bench_formats.py`, its `rounds`
+    column, against `converted` at 0.87x);
   - a read that starts inside a segment (a window's, an hour's) first applies the segment's
     definitions from its SEGMENT up to there: about 4,000 frames before an hour of the demo
     feed, where a JSONL seek lands on its line.
+- From gzipped days (`--gzip`, three runs) EBR is ahead on seeks (1.5x), an hour's read
+  (1.3x), key scans (1.2x) and filtered scans (1.7-2.0x), and behind on full reads (the
+  backfill and a 24 h window, 0.9x): a `.gz` is inflated to be read, and an EBR day has 5.8x
+  less to inflate.
 
 On disk, EBR is 5.8x smaller live, and about the same once gzipped. Flip `prefer` when
 `bench_formats.py` on your own feed says the reads you serve are faster.
 
 A dashboard fed through [`deploy/fleet`](../deploy/fleet/README.md) gets both formats:
 `fleet/fleet_stream.py` carries `.ebr` and `.ebr.gz` files as it carries `.jsonl` and `.jsonl.gz`.
+
+### Reading EBR only: the startup conversion
+
+**The service reads nothing but EBR** (`ingest.convert`, on by default; `rc_dashboard/ebrview.py`).
+Before it reads anything, every stream the collector wrote only as JSONL is converted into an EBR
+copy, and every stream it wrote as EBR is linked; the readers -- the tail and its backfill, window
+builds, hours, the inspector, the I/O lookups, `/api/events` and `/api/export`, the feed report
+-- are then pointed at those copies, the **view**, instead of the collector's roots. A collector
+on `EBPFM_FORMAT=jsonl`, a JSONL capture copied in from another cluster, and the days before a
+collector was moved to `both` are all read as EBR, with nothing to change on the collector. The
+view's answers are the JSONL's, value for value (`tests/e2e_formats.py --convert`). What it buys:
+EBR's frames, which a filtered read passes by their headers, and files about a sixth of the
+JSONL's size; and the converted frames are a minute of records each, where a collector's are a
+poll round, so a full read pays the per-frame cost less often. On the bench feed (3 days of 4
+hosts, `tests/bench_formats.py`, its `converted` and `rounds` columns), the converted files read
+faster than the same records framed a poll round at a time as the collector writes them -- the
+backfill 1.15x (0.54 s against 0.64 s), an hour's read 1.2x, a filtered scan 1.3x -- and a
+filtered scan 2.1-2.4x faster than JSONL; a read that builds every record is still slower than
+JSONL's (the backfill 0.87x, an hour 0.76x, a 24 h window 0.74x: building a record costs about
+what orjson's C parse of its line does, and EBR adds its per-frame work, above).
+
+**Where.** `ingest.convert.dir` (`RC_DASH_CONVERT_DIR`), `<cache.dir>/ebr-view` unless set, holds
+one view root per tier and source root, `<dir>/<tier>/<basename>-<sha1 of its real path, 10 hex>/`,
+with a `SOURCE.json` naming the source it mirrors (a view root of another source is refused). Like
+the source it holds the newest `feeds.<tier>.days` dated dirs and as many flat files (every one of
+them for 0, as the readers take it). The view is the service's own, 0700 dirs and 0600 files, as
+its other caches are: its records hold every user's command lines, which the collector keeps 0640.
+Modes a view was left with before are narrowed at startup; a link's target keeps the collector's. The config
+the readers see names the view (`feeds.<tier>.roots`, origin `convert: the EBR view of ...`, and
+`prefer` `ebr`), and the collector's own roots stay in `feeds.<tier>.source_roots`: `/api/config`
+says both. A view dir inside a source root stops the service at startup, as a bad setting does. A
+tier with no source root that exists is read as configured, and says why in `/api/feeds`.
+`--check-feeds` still reads the collector's roots, converts nothing, and adds a line per tier on
+what the conversion would do:
+
+```
+  convert ebpf      on: 12 jsonl stream(s) read as EBR (0 up to date, 57.0 MB to convert), 0 ebr stream(s) linked, 0 held; view .../cache/ebr-view/ebpf
+```
+
+**Link or convert**, per stream, by the twin rule with `prefer=ebr` ([above](#two-formats)):
+
+| the stream has | in the view |
+|---|---|
+| nothing read yet (held) | nothing, until it has |
+| its EBR file read (a collector's `x.ebr` or `x.ebr.gz`, alone or as the twin read) | a symlink of the same name to it. Once the collector seals the day, the `x.ebr.gz` link is made first and the `x.ebr` one removed after: the order of the collector's own gzip, which the readers already follow |
+| its JSONL file read (`x.jsonl[.gz]` alone, or the twin read because the EBR one started mid-day) | `x.ebr`, converted: always a plain file, a sealed day's too, and kept current as the collector appends |
+
+**Decisions are kept.** A stream with an entry in the view keeps it: a link stays a link, a
+converted file stays converted, whatever twin appears later, so no restart moves a live day from
+one file to another. Only a stream with no entry is decided by the twin rule. A stream whose
+source files are all gone leaves the view too; one whose JSONL is deleted while its EBR twin
+remains keeps what was converted (and says so in `convert.files[].note`); one whose linked EBR file
+is deleted while its JSONL remains is decided again (converted). A day leaves the view once it is
+older than the oldest day kept, or once its source day is gone.
+
+**Exactly the JSONL tail's records.** A conversion takes what the JSONL tail would read: complete
+lines only (a partial last line waits), blank lines passed, every other line parsed by
+`fastjson.loads`; one that does not parse, or is not a JSON object, is a bad line, counted
+(`convert.bad_lines`). A converted file's mtime is its source's, so `last_write` and the feed's
+`newest_mtime` read as the collector wrote.
+
+**Startup.** The service starts, and before anything reads, the conversion catches up: every
+converted file brought to its source's last complete line, in `ingest.convert.workers` processes
+(`RC_DASH_CONVERT_WORKERS`; 0, the default, is `min(4, cores)`, 1 converts in the service's own
+process), one file each, the biggest first; frames are cut on the minute. Meanwhile the page
+answers, says how far it is (`backfill.state` `converting` with `pct`, and the tiers'
+`convert` in `/api/feeds`), and what reads the day-files -- `/api/events`, `/api/export`,
+`/api/trajectory`, `/api/io/commands`, and a question about one session -- answers **503**
+`{"error": "converting", "detail": ..., "convert": {"pct": ...}}` with a `Retry-After`, rather than
+read a half-built view. Then the window builds, the backfill and the polls start, as without a view.
+
+What a first start costs: 25-30 µs of CPU a record, spread over the workers a file at a time. A
+week of 6 demo hosts (192 000 records, 264 MB of JSONL, 105 files) converts in 4.7 s in one
+process, 2.5 s with two workers and 1.5 s with four (131 000 records a second, 33 000 a worker) on
+this repository's 4-core test container; a week of one busy login node (2.4 M records, about 4 GB)
+would be about a minute in one process, a quarter of that with four. A restart costs only what
+the collector wrote while the service was down. On disk the view is plain EBR, about a sixth of
+the JSONL's plain size (98 MB of JSONL to 17 MB, 0.174); `ingest.convert.zstd`
+(`RC_DASH_CONVERT_ZSTD`, a zstd level 1..22) compresses its frames further, at some cost to every
+read, and is off (0) by default. A linked stream costs a symlink.
+
+**Live.** Before every poll the view converts what the collector appended since, so a record is
+read in the poll it is converted in: one batch and one flush a poll, at most 64 MB a file. The
+newest day is listed again every poll, every day and flat file every 30 s. A day the collector
+seals (`x.jsonl` to `x.jsonl.gz`) is finished from its `.gz` once, past what was converted, and
+the view's file stays plain; a source cut short, or replaced by another file (other first bytes),
+is converted afresh into a new file, which the readers take as a replaced file (they read it
+again, as they would the source). That and a stream far behind are converted apart from the polls,
+which stay bounded. A file that fails is reported (`convert.errors`, its `files[].error`) and tried
+again later; it stops nothing else.
+
+**Restarts.** A converted file carries advisory checkpoints, EBR MARK frames (`ebr.MARK`): where
+in its source the records before it end, with their counts and a digest of the source's first
+bytes, at most a minute apart while live, at the end of every bulk conversion and when a day is
+sealed. A restart resumes each file at its last one, after checking the source still starts with
+the same bytes and holds at least as many, passes the records written after it, and converts the
+rest; a sealed day whose `.gz` is the same file on disk is not opened at all. So a restart
+converts only what is new, and the saved window builds and hours over the view resume as over any
+EBR files. Every reader passes MARK frames as it passes a SEGMENT (`tests/test_marks.py`).
+
+**Turning it off.** `RC_DASH_CONVERT=0` (or `false`, `no`, `off`; in the config file,
+`"ingest": {"convert": {"enabled": false}}`) reads the day-files as they are, the twins by
+`prefer`, as before; the view is left on disk. Switching it either way, or moving the view
+(`dir`), builds the saved windows and hours afresh, since they are keyed on the roots read;
+changing `zstd` or `workers` builds the saved windows alone afresh (the whole config is in their
+fingerprint).
+
+| setting | env | default | |
+|---|---|---|---|
+| `ingest.convert.enabled` | `RC_DASH_CONVERT` | `true` | read through the EBR view; `0`/`false`/`no`/`off` reads the day-files as they are |
+| `ingest.convert.dir` | `RC_DASH_CONVERT_DIR` | `<cache.dir>/ebr-view` | where the view lives; never inside a source root |
+| `ingest.convert.zstd` | `RC_DASH_CONVERT_ZSTD` | `0` | the zstd level of the view's frames, 1..22; 0 writes them uncompressed |
+| `ingest.convert.workers` | `RC_DASH_CONVERT_WORKERS` | `0` | processes converting at startup: 0 is `min(4, cores)`, 1 is the service's own |
+
+Each dated tier's entry in `/api/feeds` carries `source_roots` (the collector's roots, when read
+through the view) and `convert`:
+
+| field | |
+|---|---|
+| `enabled`, `state` | on or off; `off`, `catching_up`, `live` or `error` (a `reason` says why when off) |
+| `pct`, `catch_up` | the startup conversion's progress by source bytes (a `.gz`'s compressed ones): `files`, `work`, `done`, `records`, `elapsed_s`, `workers`, `records_per_s` |
+| `dir`, `source_roots`, `view_roots` | where the view is, what it mirrors, and what the readers read |
+| `counts` | streams `converted`, `linked`, and `held` (nothing read yet) |
+| `records`, `bad_lines` | records in the converted files, and lines that were not one |
+| `bytes_in`, `bytes_out` | JSONL converted (uncompressed bytes), and the converted files' size |
+| `lag_bytes` | complete JSONL lines not converted yet |
+| `zstd`, `zstd_note`, `workers` | the settings in force, and why zstd is not, when asked for and not available |
+| `errors` | the latest failures, each with its file |
+| `files[]` | per stream: `source`, `view`, `mode` (`convert` or `link`); a converted one's `records`, `bad`, `lag`, `sealed` and `state` |
 
 ## Two deployments on this host
 
@@ -507,7 +647,7 @@ disk. A view filtered to users or agent types is still scanned.
 | endpoint | purpose |
 |---|---|
 | `GET /api/config` | resolved config, `_origin` per key |
-| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill; for the eBPF and node tiers, which format each stream is read in: `prefer`, `formats`, each file's `format` and `held`, `twins`, `held`, `format_notice` ([Two formats](#two-formats)) |
+| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill; for the eBPF and node tiers, which format each stream is read in: `prefer`, `formats`, each file's `format` and `held`, `twins`, `held`, `format_notice` ([Two formats](#two-formats)), and `convert`, the EBR view they are read through, with `source_roots` ([Reading EBR only](#reading-ebr-only-the-startup-conversion)) |
 | `GET /api/collectors` | per host: is its collector OK -- verdict and reasons, heartbeat age, the run in progress, every run and how it ended (events lost), probes that could not load (`health.py`) |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |

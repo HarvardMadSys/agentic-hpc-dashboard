@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The dashboard's read paths timed on each twin of one feed: JSONL against EBR.
+"""The dashboard's read paths timed on each twin of one feed: JSONL against EBR,
+and against the EBR the service converts the JSONL into at startup.
 
     cd dashboard && uv run python tests/bench_formats.py [--days 3] [--hosts 4]
                         [--reps 3] [--gzip] [--json] [--keep] [--dir DEMO_DIR]
@@ -20,12 +21,19 @@ service makes, in this process and on a warm page cache:
   key_scan        `proctree.key_scan` of the busiest agent session's records in
                   the last 24 h, on its host's files (the inspector's read)
 
+Each read is timed on four copies of the feed: the JSONL twins; the EBR twins as
+the demo writes them (a frame per minute of each round); `converted`, the JSONL
+twins converted as the service does at startup (`ebrview.convert`: frames cut on
+the minute, MARK checkpoints), the files a service with `ingest.convert` reads;
+and `rounds`, the same conversion cut on a 100 ms grid, as the collector writes
+EBR (a frame per poll round, EBPFM_POLL_MS): the cost of small frames.
 Each is the best of `--reps` runs, with the day-file layer's memos (probes, heads,
 twin choices, `.gz` indexes) cleared before every run, so a run pays for its
-seeks as a first read does. Both formats must yield the same records (counted,
-and their times summed); a row that does not says MISMATCH. Then the feed's
-size on disk, per stream, plain and gzipped (level 6, as `gzip` seals a day),
-and in bytes per record.
+seeks as a first read does. All four must yield the same records (counted,
+and their times summed); a row that does not says MISMATCH. Then the conversion
+itself (one process, records a second and microseconds a record), and the
+feed's size on disk, per stream, plain and gzipped (level 6, as `gzip` seals a
+day), and in bytes per record.
 
 `--gzip` seals every day before the newest first (`x.jsonl` -> `x.jsonl.gz`,
 `x.ebr` -> `x.ebr.gz`, as the collector does at rollover), so the reads of those
@@ -51,6 +59,11 @@ sys.path.insert(0, HERE)
 from e2e_formats import Fatal, seal_days, write_feed   # noqa: E402
 
 FORMATS = ("jsonl", "ebr")
+# What is timed: (name, the twin it reads, the root it reads from)
+VARIANTS = (("jsonl", "jsonl", "feed"), ("ebr", "ebr", "feed"), ("converted", "ebr", "converted"),
+            ("rounds", "ebr", "rounds"))
+ROUND_S = 0.1           # the collector's poll round (EBPFM_POLL_MS): `rounds`' frame grid
+NAMES = tuple(v[0] for v in VARIANTS)
 
 
 def config(tmp):
@@ -185,6 +198,40 @@ def timed(fn, env, fmt, reps):
     return best
 
 
+def timed_variant(fn, env, variant, reps):
+    """`timed` of one VARIANTS entry: its twin, over its root."""
+    _name, fmt, root = variant
+    return timed(fn, dict(env, roots=env["roots_of"][root]), fmt, reps)
+
+
+def convert_feed(feed, out, grid=None):
+    """Every JSONL twin of `feed` converted into the same layout under `out`,
+    as the service's startup conversion does it, in this process; `grid`, a
+    frame grid other than the minute (seconds). Returns `(records, seconds,
+    JSONL bytes, EBR bytes)`."""
+    from unittest import mock
+    from rc_dashboard import ebrview
+    if grid is not None:
+        with mock.patch.object(ebrview, "FRAME_S", grid):
+            return convert_feed(feed, out)
+    recs = secs = jbytes = ebytes = 0
+    for tier in ("ebpf", "node"):
+        for dp, _dirs, files in os.walk(os.path.join(feed, tier)):
+            for name in sorted(files):
+                if not name.endswith(".jsonl"):
+                    continue
+                rel = os.path.relpath(dp, feed)
+                os.makedirs(os.path.join(out, rel), exist_ok=True)
+                dst = os.path.join(out, rel, name[:-len(".jsonl")] + ".ebr")
+                t = time.perf_counter()
+                got = ebrview.convert(dst, os.path.join(dp, name))
+                secs += time.perf_counter() - t
+                recs += got["records"]
+                jbytes += got["off"]
+                ebytes += got["vsize"]
+    return recs, secs, jbytes, ebytes
+
+
 # ------------------------------------------------------------------ the feed
 def survey(feed, as_of):
     """From the EBR exits (untimed): the busiest user over the feed, the busiest
@@ -218,18 +265,21 @@ def kind_of(name):
     return "node"
 
 
-def sizes(feed):
-    """Per stream kind and format: files, records, bytes plain and gzipped."""
+def sizes(feed, conv, rounds):
+    """Per stream kind and format (and the converted copies): files, records,
+    bytes plain and gzipped."""
     out = {}
-    for tier in ("ebpf", "node"):
-        for dp, _dirs, files in os.walk(os.path.join(feed, tier)):
+    for tier, top in [(t, r) for r in (feed, conv, rounds) for t in ("ebpf", "node")]:
+        for dp, _dirs, files in os.walk(os.path.join(top, tier)):
             for name in sorted(files):
                 fmt = "ebr" if ".ebr" in name else "jsonl" if ".jsonl" in name else None
                 if fmt is None:
                     continue
+                if top != feed:
+                    fmt = "converted" if top == conv else "rounds"
                 path = os.path.join(dp, name)
                 k = out.setdefault(kind_of(name), {f: {"files": 0, "bytes": 0, "gzip_bytes": 0}
-                                                   for f in FORMATS})[fmt]
+                                                   for f in NAMES})[fmt]
                 k["files"] += 1
                 if name.endswith(".gz"):
                     raise Fatal("sizes are taken before any day is sealed")
@@ -247,7 +297,8 @@ def sizes(feed):
                         k["records"] = k.get("records", 0) + sum(
                             1 for line in fh if line.strip())
     for k in out.values():
-        k["ebr"]["records"] = k["jsonl"].get("records", 0)
+        for f in NAMES[1:]:
+            k[f]["records"] = k["jsonl"].get("records", 0)
     return out
 
 
@@ -256,26 +307,44 @@ def table(res):
     w = sys.stdout.write
     m = res["meta"]
     w("bench formats: %d day(s), %d host(s), %s record(s)%s; best of %d, memos cleared; "
-      "Python %s\n\n" % (m["days"], m["hosts"], "{:,}".format(m["records"]),
-                         ", days before the newest sealed as .gz" if m["gzip"] else "",
-                         m["reps"], m["python"]))
-    w("%-46s %9s %9s %8s %10s %13s %s\n" % ("read", "jsonl s", "ebr s", "speedup",
-                                           "records", "MB read j/e", ""))
+      "Python %s\n" % (m["days"], m["hosts"], "{:,}".format(m["records"]),
+                       ", days before the newest sealed as .gz" if m["gzip"] else "",
+                       m["reps"], m["python"]))
+    w("  ebr: the demo's EBR twins (a frame a minute); converted: the service's startup "
+      "conversion (a frame a minute, MARKs); rounds: the same cut on a %g s grid, as the "
+      "collector frames a poll round\n\n" % ROUND_S)
+
+    def x(a, b):
+        return a / b if b else float("inf")
+    w("%-44s %8s %8s %8s %8s %7s %7s %7s %10s %22s %s\n" % (
+        "read", "jsonl s", "ebr s", "conv s", "rounds s", "ebr x", "conv x", "rnds x",
+        "records", "MB read j/e/c/r", ""))
     for key, label, _fn in OPS:
         r = res["reads"][key]
-        j, e = r["jsonl"], r["ebr"]
-        mb = ("%5.1f/%-5.1f" % (j["bytes"] / 1e6, e["bytes"] / 1e6)) if "bytes" in j else ""
-        w("%-46s %9.3f %9.3f %7.2fx %10s %13s %s\n" % (
-            label, j["s"], e["s"], j["s"] / e["s"] if e["s"] else float("inf"),
-            "{:,}".format(j["records"]), mb, "" if r["same"] else "MISMATCH"))
+        j, e, c, o = (r[n] for n in NAMES)
+        mb = ("/".join("%.1f" % (v["bytes"] / 1e6) for v in (j, e, c, o))
+              if "bytes" in j else "")
+        w("%-44s %8.3f %8.3f %8.3f %8.3f %6.2fx %6.2fx %6.2fx %10s %22s %s\n" % (
+            label, j["s"], e["s"], c["s"], o["s"], x(j["s"], e["s"]), x(j["s"], c["s"]),
+            x(j["s"], o["s"]), "{:,}".format(j["records"]), mb,
+            "" if r["same"] else "MISMATCH"))
         if key == "backfill":
-            w("%-46s %9.3f %9.3f %7.2fx\n" % ("  of which position", j["position_s"],
-                                             e["position_s"], j["position_s"] / e["position_s"]
-                                             if e["position_s"] else float("inf")))
-    w("\n%-9s %8s %10s %10s %10s %10s %8s %8s %8s %8s\n" % (
-        "on disk", "records", "jsonl MB", ".gz MB", "ebr MB", ".gz MB", "ebr/jsonl",
-        "gz e/j", "B/rec j", "B/rec e"))
-    tot = {f: {"bytes": 0, "gzip_bytes": 0} for f in FORMATS}
+            w("%-44s %8.3f %8.3f %8.3f %8.3f %6.2fx %6.2fx %6.2fx\n" % (
+                "  of which position", j["position_s"], e["position_s"], c["position_s"],
+                o["position_s"], x(j["position_s"], e["position_s"]),
+                x(j["position_s"], c["position_s"]), x(j["position_s"], o["position_s"])))
+    w("  (x: the speed against JSONL's, above 1 faster)\n")
+    cv = res["convert"]
+    w("\nconverting the JSONL as the service does at startup, in one process: %s records "
+      "in %.2f s, %s records/s, %.1f us a record; %.1f MB of JSONL to %.1f MB of EBR "
+      "(%.3f)\n" % ("{:,}".format(cv["records"]), cv["s"],
+                    "{:,.0f}".format(cv["records"] / cv["s"] if cv["s"] else 0),
+                    1e6 * cv["s"] / max(1, cv["records"]), cv["jsonl_bytes"] / 1e6,
+                    cv["ebr_bytes"] / 1e6, cv["ebr_bytes"] / max(1, cv["jsonl_bytes"])))
+    w("\n%-9s %8s %9s %8s %8s %8s %8s %8s %8s %8s %7s %7s %7s %7s\n" % (
+        "on disk", "records", "jsonl MB", ".gz MB", "ebr MB", ".gz MB", "conv MB", ".gz MB",
+        "rnds MB", ".gz MB", "conv/j", "rnds/j", "B/rec j", "B/rec c"))
+    tot = {f: {"bytes": 0, "gzip_bytes": 0} for f in NAMES}
     nrec = 0
     for kind in ("exits", "snapshot", "node", "total"):
         if kind == "total":
@@ -286,14 +355,15 @@ def table(res):
                 continue
             n = s["jsonl"].get("records", 0)
             nrec += n
-            for f in FORMATS:
+            for f in NAMES:
                 for k in ("bytes", "gzip_bytes"):
                     tot[f][k] += s[f][k]
-        j, e = s["jsonl"], s["ebr"]
-        w("%-9s %8s %10.1f %10.1f %10.1f %10.1f %8.3f %8.3f %8.0f %8.0f\n" % (
-            kind, "{:,}".format(n), j["bytes"] / 1e6, j["gzip_bytes"] / 1e6, e["bytes"] / 1e6,
-            e["gzip_bytes"] / 1e6, e["bytes"] / j["bytes"], e["gzip_bytes"] / j["gzip_bytes"],
-            j["bytes"] / max(1, n), e["bytes"] / max(1, n)))
+        j, e, c, o = (s[f] for f in NAMES)
+        w("%-9s %8s %9.1f %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f %7.3f %7.3f %7.0f %7.0f\n"
+          % (kind, "{:,}".format(n), j["bytes"] / 1e6, j["gzip_bytes"] / 1e6, e["bytes"] / 1e6,
+             e["gzip_bytes"] / 1e6, c["bytes"] / 1e6, c["gzip_bytes"] / 1e6, o["bytes"] / 1e6,
+             o["gzip_bytes"] / 1e6, c["bytes"] / j["bytes"], o["bytes"] / j["bytes"],
+             j["bytes"] / max(1, n), c["bytes"] / max(1, n)))
 
 
 def main(argv=None):
@@ -346,26 +416,39 @@ def run(a, tmp, days, hosts):
         say("written in %.1f s" % took)
     feed = os.path.join(base, "feed")
     as_of = stamp["written_to"]
+    say("converting the JSONL twins as the service does at startup ...")
+    conv = os.path.join(tmp, "converted")
+    rounds = os.path.join(tmp, "rounds")
+    for d in (conv, rounds):
+        shutil.rmtree(d, ignore_errors=True)
+    recs, secs, jbytes, ebytes = convert_feed(feed, conv)
+    say("... and on a %g s frame grid, as the collector frames its poll rounds ..." % ROUND_S)
+    convert_feed(feed, rounds, grid=ROUND_S)
     say("measuring sizes ...")
-    sz = sizes(feed)
+    sz = sizes(feed, conv, rounds)
     user, session, hour = survey(feed, as_of)
     if a.gzip:
         say("sealed %d day-file(s) before the newest day as .gz" % seal_days(feed))
     cfg = config(tmp)
-    env = {"cfg": cfg, "roots": [os.path.join(feed, "ebpf")], "days": days, "as_of": as_of,
+    env = {"cfg": cfg, "roots_of": {"feed": [os.path.join(feed, "ebpf")],
+                                    "converted": [os.path.join(conv, "ebpf")],
+                                    "rounds": [os.path.join(rounds, "ebpf")]},
+           "days": days, "as_of": as_of,
            "start": stamp["start"], "user": user, "session": session, "hour": hour}
     res = {"meta": {"days": days, "hosts": hosts, "reps": a.reps, "gzip": a.gzip,
                     "records": sum(k["jsonl"].get("records", 0) for k in sz.values()),
                     "python": sys.version.split()[0], "user": user,
                     "session": "%s apid:%s" % session,
                     "hour": time.strftime("%Y-%m-%d %H:00", time.localtime(hour * 3600))},
-           "reads": {}, "sizes": sz}
+           "reads": {}, "sizes": sz,
+           "convert": {"records": recs, "s": secs, "jsonl_bytes": jbytes, "ebr_bytes": ebytes}}
     for key, label, fn in OPS:
         say("timing %s ..." % label)
-        r = res["reads"][key] = {f: timed(fn, env, f, max(1, a.reps)) for f in FORMATS}
-        j, e = r["jsonl"], r["ebr"]
-        r["same"] = j["records"] == e["records"] and math.isclose(
-            j["check"], e["check"], rel_tol=0, abs_tol=1e-3)
+        r = res["reads"][key] = {v[0]: timed_variant(fn, env, v, max(1, a.reps))
+                                 for v in VARIANTS}
+        j = r["jsonl"]
+        r["same"] = all(r[v[0]]["records"] == j["records"] and math.isclose(
+            r[v[0]]["check"], j["check"], rel_tol=0, abs_tol=1e-3) for v in VARIANTS)
     if a.json:
         json.dump(res, sys.stdout, indent=1, default=str)
         sys.stdout.write("\n")

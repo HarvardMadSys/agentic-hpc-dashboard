@@ -143,6 +143,11 @@ def resolve_dated(name, cfg):
     prefer = rep["prefer"] = prefer_of(cfg, name)
     rep["configured"] = list(roots)
     rep["origin"] = cfg.origin("feeds.%s.roots" % name)
+    # Read through the EBR view of the collector's roots (ebrview.py): these
+    # are the collector's own, the roots above the view's.
+    src = cfg.get("feeds.%s.source_roots" % name)
+    if src:
+        rep["source_roots"] = list(src)
     rep["resolved"] = [r for r in roots if os.path.isdir(r)]
     rep["missing"] = [r for r in roots if not os.path.isdir(r)]
     if not rep["resolved"]:
@@ -182,7 +187,10 @@ def resolve_dated(name, cfg):
         rep["status"] = "empty"
         return rep
 
-    newest = max(read, key=lambda f: f["mtime"])
+    # On a tie the later path: two hosts' files written in one round often
+    # share an mtime tick, and the first of them would be an accident of
+    # iteration -- one twin's report naming one host, the other twin's another.
+    newest = max(read, key=lambda f: (f["mtime"], f["path"]))
     rep["newest_file"] = newest["path"]
     rep["newest_mtime"] = datetime.fromtimestamp(newest["mtime"]).strftime(TS_FORMAT)
     _lagging(rep, notes)
@@ -314,6 +322,9 @@ def _notice(rep):
                                      rep["env"] or "the config file",
                                      rep["cli"] or "feeds.%s" % rep["name"])
     if rep["status"] == "empty":
+        if rep.get("source_roots"):
+            return _NOTICE["empty"] % (rep["name"], "%s (read through its EBR view)" % (
+                ", ".join(rep["source_roots"])))
         return _NOTICE["empty"] % (rep["name"], ", ".join(rep["resolved"]))
     if rep["status"] == "stale":
         return _NOTICE["stale"] % (rep["name"], rep["lag"], fmt_age(rep["max_age_s"]))

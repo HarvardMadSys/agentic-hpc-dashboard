@@ -61,9 +61,13 @@ EBPFM_MIN_UID=0
 # environment from whoever starts it (`ebpfm start`, by hand or from the
 # keepalive), so set EBPFM_FORMAT there too, or it stays on `both`.
 #EBPFM_FORMAT=both
-# Deflate each EBR frame inside the live file at this zlib level, 1-9 (0 = off).
-# Sealed days are gzipped whole either way.
-#EBPFM_EBR_ZLIB=0
+# Compress each EBR frame inside the live file at this zstd level, 1-22 (0 = off,
+# the default). It needs a zstd module in python3 (Python 3.14+, or the
+# zstandard or pyzstd package); without one EBR is written uncompressed and the
+# run says so. Readers need one too. Sealed days are gzipped whole either way.
+# The node tier takes it from its own environment, as EBPFM_FORMAT.
+# (EBPFM_EBR_ZLIB, format v1's deflate, is gone and ignored.)
+#EBPFM_EBR_ZSTD=0
 # Start a new EBR segment (a fresh dictionary a reader can start from) after
 # this many bytes; it also bounds what one corrupt frame can cost.
 #EBPFM_EBR_RESET_BYTES=2097152
