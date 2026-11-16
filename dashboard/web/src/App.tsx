@@ -5,7 +5,7 @@
  * page should have heard something. A feed with a 24 h cadence is not stale at
  * 10 minutes, and the pill must not say so.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig, useFeeds, usePanels, useTrajectories, useWindows } from './api/hooks';
 import { useLive } from './api/useLive';
 import type { Transport } from './api/useLive';
@@ -37,18 +37,31 @@ import type { PaletteItem } from './components/CommandPalette';
 import { arriveFromHash } from './lib/cites';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
-import { ResourcesTab } from './tabs/ResourcesTab';
-import { RiskIoTab } from './tabs/RiskIoTab';
-import { InternalTab } from './tabs/InternalTab';
 import { TrajectoriesTab } from './tabs/TrajectoriesTab';
-import { AgentsTab } from './tabs/AgentsTab';
-import { SlurmTab } from './tabs/SlurmTab';
-import { FeedsTab } from './tabs/FeedsTab';
-import { ChatTab } from './tabs/ChatTab';
-import { UsersTab } from './tabs/UsersTab';
-import { EventsExplorer } from './components/EventsExplorer';
+// The other tabs are chunks of their own (lib/lazyTab.tsx). Their stylesheets
+// are not: imported here, where the tabs were, each keeps its place in the
+// page's one stylesheet.
+import './tabs/agents.css';
+import './tabs/users.css';
+import { TabBoundary, lazyTab, preloadTabs } from './lib/lazyTab';
 import { NodeNounCtx, nodeWords } from './lib/nodes';
 import { feedLabel } from './lib/feeds';
+
+/* Live is the first paint, with the shell; every other tab loads its code
+ * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). Search &
+ * export is hidden, and its code is fetched like the rest. Sessions is not
+ * split off: its inspector scrolls itself into view as it mounts, and on a page
+ * opened on a session that has always happened in the first render, before the
+ * list fills the page; mounted later, it would scroll the page down. */
+const ResourcesTab = lazyTab(() => import('./tabs/ResourcesTab').then((m) => m.ResourcesTab));
+const RiskIoTab = lazyTab(() => import('./tabs/RiskIoTab').then((m) => m.RiskIoTab));
+const InternalTab = lazyTab(() => import('./tabs/InternalTab').then((m) => m.InternalTab));
+const AgentsTab = lazyTab(() => import('./tabs/AgentsTab').then((m) => m.AgentsTab));
+const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab));
+const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
+const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
+const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
+const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then((m) => m.EventsExplorer));
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
  * happening and who uses what, how each user works with agents, the agents,
@@ -190,6 +203,16 @@ export default function App() {
   const clearUser = useCallback(() => setUrl({ tuser: null }), [setUrl]);
   // a page opened from an answer's citation goes to what it cites, once
   useEffect(() => arriveFromHash(), []);
+  // The other tabs' code, fetched once the page is idle after its first
+  // paint: a tab opened later is drawn at once, with no wait.
+  useEffect(() => {
+    if (typeof window.requestIdleCallback === 'function') {
+      const h = window.requestIdleCallback(preloadTabs, { timeout: 3000 });
+      return () => window.cancelIdleCallback(h);
+    }
+    const t = window.setTimeout(preloadTabs, 1000);
+    return () => window.clearTimeout(t);
+  }, []);
   const feeds = useFeeds();
   const config = useConfig();
   const live = useLive(url.win);
@@ -872,7 +895,12 @@ export default function App() {
           </>
         )}
 
-        <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
+        <AskScopeCtx.Provider value={askScope}>
+          {/* a tab whose code has not come yet draws nothing under the controls until it has */}
+          <TabBoundary key={tab.k}>
+            <Suspense fallback={null}>{body}</Suspense>
+          </TabBoundary>
+        </AskScopeCtx.Provider>
       </main>
       <IoCmdsDrawer win={url.win} who={who} cls={cls} />
       <CommandPalette open={paletteOpen} onClose={closePalette} items={paletteItems} />
