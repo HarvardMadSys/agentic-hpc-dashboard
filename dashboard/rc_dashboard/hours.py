@@ -278,6 +278,14 @@ def plan_span(files, lo, prev=None):
     of the same file stopped (`prev`), so every byte of a file is read by some
     hour -- the records a host wrote late are found, not skipped over.
 
+    Nor later than the first record that read left for this hour (its
+    `resume`). The seek probes one line a step: one that lands on a late
+    record, far older than the lines around it, can send it on past the
+    records left for this hour, which sit before where that read stopped --
+    read by no hour, and not stragglers either. Where it stopped stays where
+    the stragglers begin: a record from before `lo` short of there is one that
+    read took.
+
     A day the collector compressed since that read (`x.jsonl` is now
     `x.jsonl.gz`) is the same bytes under a new name and inode, at the same
     uncompressed offsets: it is matched to the read of its plain name by its
@@ -302,7 +310,10 @@ def plan_span(files, lo, prev=None):
         if pv and all(pv[k] == e[k] for k in same) and pv["stop"] <= size:
             e["prev_stop"] = pv["stop"]
             start = min(start, pv["stop"])
+            if pv.get("resume") is not None:
+                start = min(start, pv["resume"])
         e["start"] = e["stop"] = start
+        e["resume"] = None
         out.append(e)
     return out
 
@@ -311,9 +322,12 @@ def _stream(e, norm, lo, hi, wanted, stats, strays):
     """One file's records with `lo <= ts < hi`, as `(ts, rec)`, in file order.
 
     Stops at the first record more than SCAN_SLACK_S past `hi` and records in
-    `e["stop"]` where: the next hour's read starts there at the latest. A record
-    from before `lo` that the previous hour's read never reached is a
-    straggler, and goes to `strays` when given.
+    `e["stop"]` where: the next hour's read starts there at the latest. One
+    from `hi` to SCAN_SLACK_S past it is the next hour's, and is left for it;
+    the first such one's offset is `e["resume"]`, and the next hour's read
+    starts there at the latest too (`plan_span`). A record from before `lo`
+    that the previous hour's read never reached is a straggler, and goes to
+    `strays` when given.
     """
     if e["start"] >= e["size"]:
         return
@@ -349,6 +363,8 @@ def _stream(e, norm, lo, hi, wanted, stats, strays):
                 if ts > hi + SCAN_SLACK_S:
                     e["stop"] = off
                     return
+                if e["resume"] is None:
+                    e["resume"] = off
                 continue
             if ts >= lo:
                 stats["records"] += 1
@@ -751,7 +767,8 @@ class HourStore:
             n, newest = feed_all(red, stream)
             carry = take_carry(red)
             strip(red)
-            files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop")}
+            files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop",
+                                             "resume")}
                           for e in plan]
             # Aged before it is saved: the chain is what the next hour starts from. Handed on
             # as it is, since it is saved: the next hour may change it in place, and a window
