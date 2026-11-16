@@ -244,6 +244,35 @@ class WindowTest(Roots):
         self.assertIsNone(export.resume_plan([self.roots["ebr"]], since, bad, prefer="ebr"))
 
 
+class LegacyTimeTest(WindowTest):
+    """A capture older than `ts_epoch`, converted to EBR: every record's time is
+    its local `ts` string, so every frame header's times are infinite. A seek
+    must place the frames by their records, as a JSONL probe places lines with
+    `epoch_of`, not pass the whole file over."""
+
+    def setUp(self):
+        Roots.setUp(self)
+        self.t0 = self.now - 3 * 3600
+
+        def legacy(recs):
+            for r in recs:
+                del r["ts_epoch"]
+            return recs
+        self.write("h1.exits.jsonl", legacy(varied(self.t0, 400, seed=4, host="h1")))
+        self.write("h2.snapshot.jsonl", legacy(varied(self.t0 + 3, 200, seed=5, host="h2",
+                                                      step=50.0)))
+
+    def test_a_seek_places_frames_by_their_records(self):
+        for fmt in ("ebr", "wide"):
+            plan, _total = window_plan([self.roots[fmt]], self.t0 + 4000, prefer="ebr")
+            self.assertTrue(plan, fmt)
+            for e in plan:
+                self.assertLess(e["start"], e["size"], (fmt, e))
+        mid, _ = window_plan([self.roots["ebr"]], self.t0 + 4000, prefer="ebr")
+        whole, _ = window_plan([self.roots["ebr"]], self.t0 - 10, prefer="ebr")
+        self.assertGreater(sum(e["start"] for e in mid), sum(e["start"] for e in whole))
+
+
 class TwinCase(FeedCase):
     """A collector writing both formats into one directory: each append goes to
     the JSONL twin and then, a frame per round, to the EBR twin."""

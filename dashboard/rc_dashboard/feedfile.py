@@ -677,13 +677,17 @@ def _placed(f):
 
 def _probe_ebr(fh, pos, size):
     """`(off, foff, ts_min, ts_max)` for a probe at `pos`: `off` the first frame
-    header at or after it, and from there the first DATA frame its header
-    places in time (SEGMENTs, corrupt regions and frames with a record that
-    has no `ts_epoch` are walked past, PROBE_FRAMES at most, as `_probe` walks
-    past lines with no time): its offset and its times. The times are None
-    when there is none by `size` -- the frame is still being written -- and
-    `off` is `size` when no header is. Remembered by the file's identity, as
-    `_probe`'s answers are."""
+    header at or after it, and from there the first DATA frame placed in time
+    (SEGMENTs, corrupt regions and frames with no time at all are walked past,
+    PROBE_FRAMES at most, as `_probe` walks past lines with no time): its
+    offset and its times. A frame is placed by its header, or -- when a record
+    in it has no `ts_epoch`, which leaves the header's times infinite -- by its
+    records' own times as `epoch_of` reads them, a legacy record's `ts` string
+    included, as `_probe` reads a line's. A capture converted from JSONL older
+    than `ts_epoch` is all such frames, and a seek by the headers alone would
+    skip all of it. The times are None when there is none by `size` -- the
+    frame is still being written -- and `off` is `size` when no header is.
+    Remembered by the file's identity, as `_probe`'s answers are."""
     ident = _identity(fh)
     m = _memo_of(ident) if ident is not None else None
     key = ("ebr", pos, size)
@@ -697,12 +701,33 @@ def _probe_ebr(fh, pos, size):
     if off is not None and off < size:
         out = (off, size, None, None)
         for n, f in enumerate(ebr.frames(src, off, size, verify=False)):
-            if f.kind == ebr.DATA and f.n_records and _placed(f):
-                out = (off, f.off, f.ts_min, f.ts_max)
-                break
+            if f.kind == ebr.DATA and f.n_records:
+                times = (f.ts_min, f.ts_max) if _placed(f) else _record_times(src, f)
+                if times is not None:
+                    out = (off, f.off) + times
+                    break
             if n + 1 >= PROBE_FRAMES:
                 break
     return _remember(m, key, out) if m is not None else out
+
+
+def _record_times(src, f):
+    """`(ts_min, ts_max)` of a DATA frame its header cannot place, from its
+    records' times as `epoch_of` reads them; None when no record has one."""
+    lo = hi = None
+    try:
+        dec = decoder_at(src, f.off)
+        for _pos, rec in dec.records(src, f):
+            t = epoch_of(rec)
+            if t is None:
+                continue
+            if lo is None or t < lo:
+                lo = t
+            if hi is None or t > hi:
+                hi = t
+    except (ebr.Error, ValueError, OSError):
+        return None
+    return None if lo is None else (lo, hi)
 
 
 def _seek_ebr(fh, since, size):
