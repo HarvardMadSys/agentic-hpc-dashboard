@@ -24,7 +24,9 @@
  * chart zoomed to its own span. The phases and the tasks are the row's own, the same block the
  * sessions list draws, and the ranking's row is the fresher of the two this component has, so
  * it is read first. Above the navigator is the session's headline, the project and the names its
- * tasks recur on, where the block has one. Under it is the list: a task opens into its phases
+ * tasks recur on, where the block has one, and under that what kind of session it was and its
+ * summary, the session in a few sentences (components/CategoryChip.tsx). Under the navigator is
+ * the list: a task opens into its phases
  * and a phase into its commands where the block has tasks (TaskList.tsx), and it is the list of
  * phases alone where it has none (PhaseList.tsx). Either list picks as the chart does, and the
  * task that holds the chart's zoom is open in the three-level list.
@@ -63,6 +65,7 @@ import type { Found, JumpReq } from '../components/ProcTree';
 import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount, unhidNote } from '../components/ProcDiagram';
 import type { Hide } from '../components/ProcDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
+import { CategoryChip } from '../components/CategoryChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
@@ -944,6 +947,14 @@ export function TrajectoryInspector({
           <div className="ins-headline" data-tip="the project the agent worked in, and the names that recur across its tasks">
             {block.headline}
           </div>
+        )}
+        {d?.found && axis && block?.summary && (
+          <p className="ins-gist">
+            <CategoryChip of={block} />
+            <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
+              {block.summary}
+            </span>
+          </p>
         )}
         {d?.found && axis && (
           <TrajectoryNav

@@ -95,7 +95,9 @@ function nodeTip(n: CascadeNode): string {
     n.cwd ? `cwd ${n.cwd}` : null,
     n.started ? `started ${n.started}` : null,
     n.last_seen ? `last seen ${n.last_seen}${n.exited ? ' (exited)' : ''}` : null,
-    n.spawned_by != null ? `--spawned-by pid ${n.spawned_by}` : null,
+    // `claude daemon` names who started it; it is its user's, and hosts every
+    // background session they start, so that is not those sessions' parent
+    n.spawned_by != null ? `started by pid ${n.spawned_by} (its --spawned-by); it hosts its user's background sessions, whoever asked for them` : null,
     n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a Node.js launcher execs), which runs the session' : null,
     n.implied ? 'implied: a tool-call shell named it as parent; it left no record itself' : null,
     n.role === 'agent' && n.surface ? `driven from: ${surfaceTip(n.surface, n.surface_detail).split('\n')[0]}` : null,
@@ -725,7 +727,7 @@ function FoldRow({ e, open, onOpen }: { e: Extract<Entry, { k: 'fold' }>; open: 
 }
 
 /** The picked agent on its own: what its row said, at the head of its blast radius. */
-function LoneHead({ n }: { n: CascadeNode }) {
+function LoneHead({ n, t }: { n: CascadeNode; t: CascadeTree }) {
   return (
     <div className="atree-t">
       <span className="atree-what">
@@ -733,6 +735,7 @@ function LoneHead({ n }: { n: CascadeNode }) {
         <span className="nm"> · {n.user ?? DASH}</span>
         <span className="nm mono"> · {tildeOf(n.home, n.user)}</span>
         <span className="nm"> · {n.exited ? span(n.started, n.last_seen) : `running since ${hm(n.started)}`}</span>
+        <Spares t={t} />
       </span>
       <span className="atree-sum nm">
         <Tags n={n} /> {procs(n.tool_calls)}{n.cpu_s ? ` · ${dur(n.cpu_s)} CPU` : ''}
@@ -853,6 +856,18 @@ function composition(t: CascadeTree, agents: CascadeNode[]): string {
   return `${leadTxt} with ${fint(nSubs)} ${same ? '' : subKinds + ' '}subagent${nSubs === 1 ? '' : 's'}`;
 }
 
+const SPARE_TIP =
+  '`claude bg-spare`: sessions that `claude daemon` starts ahead of need, so that the next ' +
+  'background session starts at once. Nobody claimed these: they ran nothing, so they are the ' +
+  'daemon’s, not agents, and are neither drawn nor counted as subagents. A spare that was ' +
+  'claimed is drawn as the session it became.';
+
+/** The spares a tree's daemon started that nobody claimed, which are not drawn. */
+function Spares({ t }: { t: CascadeTree }) {
+  const k = t.idle_spares ?? 0;
+  return k ? <span className="nm q-mark" data-tip={SPARE_TIP}> · {fint(k)} idle spare{k === 1 ? '' : 's'} not drawn</span> : null;
+}
+
 /** A tree's title row: what it is made of, whose, where, and what it ran. */
 function TreeTitle({ t, agents }: { t: CascadeTree; agents: CascadeNode[] }) {
   const lead = [...agents].filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0];
@@ -863,6 +878,7 @@ function TreeTitle({ t, agents }: { t: CascadeTree; agents: CascadeNode[] }) {
         <b>{composition(t, agents)}</b>
         {t.users.length ? <span className="nm"> · {t.users.join(', ')}</span> : null}
         {lead?.home ? <span className="nm mono"> · {tildeOf(lead.home, user)}</span> : null}
+        <Spares t={t} />
       </span>
       <span className="atree-sum nm">
         {fint(t.tool_calls)} processes · {dur(t.cpu_s)} CPU
@@ -1006,12 +1022,32 @@ function TreeView({ t, sel, onSel, match }: {
   );
 }
 
-/** One agent's blast radius, opened from its card (roadmap note 35.3). */
-function AgentBlast({ a, from }: { a: WsAgent | undefined; from?: string | number | null }) {
-  const [mode, setMode] = useState<Mode>('self');
-  if (!a) {
-    return <NoRows what="no blast radius was served for this agent: the service sends the busiest agents' only" />;
+/** Why an agent has no blast radius served: it ran nothing, what it ran left
+ * no directory, or it is past the service's cap. Only the last is the cap's
+ * doing: the first used to say it was, of a box that ran nothing. */
+function unserved(n: CascadeNode | undefined, cap: number | null | undefined): string {
+  if (n && !n.workspace) {
+    if (!n.tool_calls) {
+      return n.fanout
+        ? 'it ran nothing itself in the window: pick one of its subagents for where they worked'
+        : 'it ran nothing in the window, so there is no directory to show';
+    }
+    return 'no directory was recorded for what it ran';
   }
+  return `no blast radius was served for this agent: the service sends the ${cap ? fint(cap) + ' ' : ''}busiest ` +
+    'agents’ (reducers.workspace.max_agents), and every one that wrote outside its start folder';
+}
+
+/** One agent's blast radius, opened from its card (roadmap note 35.3). */
+function AgentBlast({ a, n, cap, from }: {
+  a: WsAgent | undefined;
+  /** the agent's box, to say why it has none */
+  n?: CascadeNode;
+  cap?: number | null;
+  from?: string | number | null;
+}) {
+  const [mode, setMode] = useState<Mode>('self');
+  if (!a) return <NoRows what={unserved(n, cap)} />;
   const v = viewOf(a, mode);
   if (!v) return <NoRows what="it ran nothing itself; its subagents did" />;
   const s = v.summary;
@@ -1078,14 +1114,20 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
   const c = pick<Cascades>(P, 'cascades', 'ebpfm');
   const win = winLabel(c);
   const trees = c.trees ?? [];
+  // The service sends every tree up to reducers.cascades.top_trees, the
+  // deepest first; past it, the list and the strip are of the trees sent.
+  const allTrees = Math.max(c.summary?.trees ?? 0, trees.length);
+  const capped = allTrees > trees.length;
+  const spares = c.summary?.idle_spares ?? 0;
   const ws = new Map((c.workspace?.agents ?? []).map((a) => [keyOf(a.host, a.pid), a]));
+  const blastCap = c.workspace?.summary?.agents_cap ?? null;
   const pts: AgentPt[] = cls.includes('agent')
     ? trees.flatMap((t) =>
         t.nodes.filter((n) => n.role === 'agent').map((n) => ({ n, t, ws: ws.get(keyOf(t.host, n.pid)) })))
     : [];
   const stats = typeStats(pts);
   const [marks, setMarks] = useState<string[]>([]);
-  const [by, setBy] = useState<By>('list');
+  const [by, setBy] = useState<By>('user');
   // the row picked, and the agent picked in it: a lone agent is both
   const [sel, setSel] = useState<{ entry: string; agent: string | null } | null>(null);
   const [opened, setOpened] = useState<string[]>([]);
@@ -1216,7 +1258,10 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
           <TreeTitle t={t} agents={agents} />
           <TreeView key={picked.key} t={t} sel={a} match={match}
             onSel={(k) => setSel({ entry: picked.key, agent: a === k ? null : k })} />
-          {a ? <AgentBlast key={a} a={ws.get(a)} from={coveredBy(c).from} /> : <div className="al-hint">click an agent’s box for its blast radius</div>}
+          {a ? (
+            <AgentBlast key={a} a={ws.get(a)} n={agents.find((x) => keyOf(t.host, x.pid) === a)}
+              cap={blastCap} from={coveredBy(c).from} />
+          ) : <div className="al-hint">click an agent’s box for its blast radius</div>}
         </div>
       );
     }
@@ -1225,8 +1270,8 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
       const k = keyOf(p.t.host, p.n.pid);
       return (
         <div className="al-pane">
-          <LoneHead n={p.n} />
-          <AgentBlast key={k} a={p.ws} from={coveredBy(c).from} />
+          <LoneHead n={p.n} t={p.t} />
+          <AgentBlast key={k} a={p.ws} n={p.n} cap={blastCap} from={coveredBy(c).from} />
         </div>
       );
     }
@@ -1240,7 +1285,14 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
 
   return (
     <>
-      <div className="rowlabel">agents by type · {win}</div>
+      <div className="rowlabel">
+        agents by type · {win}
+        {capped && (
+          <span className="q-mark" data-tip={`counted over the ${fint(trees.length)} trees the service sent, of ${fint(allTrees)} in the window (reducers.cascades.top_trees)`}>
+            {' '}· in the {fint(trees.length)} trees sent
+          </span>
+        )}
+      </div>
       {stats.length ? (
         <TypeStrip stats={stats} />
       ) : (
@@ -1261,6 +1313,12 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
             <AgentFilter pts={pts} marks={marks} setMarks={setMarks} by={by} setBy={setBy} shown={shownAgents} />
             <div className="amd">
               <div className="al-list" onKeyDown={walk}>
+                {capped && (
+                  <div className="al-note" data-tip={'reducers.cascades.top_trees: the trees with the most levels of agents go first, ' +
+                    'then those with the most agents, then the most processes. The rest are counted, not sent.'}>
+                    {fint(trees.length)} of {fint(allTrees)} trees: the service sends the deepest {fint(trees.length)}
+                  </div>
+                )}
                 {!entries.length && !idle.length && <NoRows what="no agent passes the filters" />}
                 {groups.map(([u, es]) => (
                   <div key={u} className="al-group">
@@ -1286,6 +1344,11 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
                     </button>
                     {showIdle && idle.map((p) => loneRow(p))}
                   </>
+                )}
+                {spares > 0 && (
+                  <div className="al-note" data-tip={SPARE_TIP}>
+                    not counted as agents: {fint(spares)} idle spare{spares === 1 ? '' : 's'} of <span className="mono">claude daemon</span>
+                  </div>
                 )}
               </div>
               <div className="al-detail" ref={pane}>{detail}</div>

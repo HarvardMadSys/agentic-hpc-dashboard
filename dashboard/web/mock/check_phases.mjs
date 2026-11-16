@@ -2329,3 +2329,64 @@ test("the table's timeline header: the axis's start and end, and zoomed, the tip
     await ui.close();
   }
 });
+
+test('the fixture: every block says what kind of session it was, and the chip says why', () => {
+  const unread = /undefined|null|NaN|\[object|—/;
+  const CATEGORIES = ['explore', 'develop', 'build', 'run', 'hpc', 'git', 'mixed', 'wait', 'unknown', 'none'];
+  assert.deepEqual(Object.keys(P.CATEGORIES).sort(), [...CATEGORIES].sort());
+  for (const r of blocks) {
+    const b = r.phases;
+    assert.ok(CATEGORIES.includes(b.category), `${r.sid}: category ${b.category}`);
+    assert.ok(Array.isArray(b.uses), `${r.sid}: uses ${b.uses}`);
+    // the shares of the work, the most first, are all of it
+    const shares = b.uses.map(([, pct]) => pct);
+    assert.deepEqual(shares, [...shares].sort((x, y) => y - x), `${r.sid}: uses in order`);
+    if (shares.length) assert.ok(Math.abs(shares.reduce((a, x) => a + x, 0) - 100) < 0.5, `${r.sid}: shares ${shares}`);
+    // a use that holds half of the work is the category, and with none the session is a mix
+    if (b.uses.length && b.category !== 'unknown') {
+      assert.equal(b.category, b.uses[0][1] >= 50 ? b.uses[0][0] : 'mixed', r.sid);
+    }
+    assert.equal(typeof b.summary, 'string', r.sid);
+    assert.doesNotMatch(b.summary, unread, r.sid);
+    assert.ok(b.summary.includes(`${F.fint(b.n_calls)} tool call`), `${r.sid}: ${b.summary}`);
+  }
+  // a session across midnight is one block, so its day rows say one category and one summary
+  const pair = blocks.filter((r) => r.phases.days);
+  assert.ok(pair.length >= 2);
+  assert.ok(pair.every((r) => r.phases.category === pair[0].phases.category && r.phases.summary === pair[0].phases.summary));
+  // the chip's hover: what the category is and how it is decided, the shares of the work, and the summary last
+  const b = blocks[0].phases;
+  const tip = P.categoryTip(b).split('\n');
+  assert.ok(tip[0].startsWith(`${P.CATEGORIES[b.category][1]}: `), tip[0]);
+  assert.match(tip[1], /^its work: \S/);
+  assert.equal(tip[tip.length - 1], b.summary);
+  assert.equal(P.categoryTip({ ...b, category: undefined }), '');
+  // a category this page does not know is itself, in the grey of what is not read
+  assert.deepEqual(P.categoryOf('later'), ['later', 'later', 'var(--sg)']);
+  assert.deepEqual(P.categoryOf('toString'), ['toString', 'toString', 'var(--sg)']);
+});
+
+test('the category chip: its short name with the dot of its use, the summary on hover, and nothing with no category', async () => {
+  const ui = await renderer();
+  try {
+    const chip = (of) => ui.render('components/CategoryChip.tsx', 'CategoryChip', { of });
+    const summary = 'Mostly ran jobs on Slurm (94% of 5.1 h of work). 564 tool calls in 7 tasks.';
+    const hpc = await chip({ category: 'hpc', uses: [['hpc', 94], ['explore', 6]], summary });
+    assert.match(hpc, /^<span class="sess-cat sess-cat-hpc" data-tip="[^"]*"[^>]*><i style="background:var\(--s4\)"><\/i>Slurm<\/span>$/);
+    const tip = textOf(/data-tip="([^"]*)"/.exec(hpc)[1]).split('\n');
+    assert.deepEqual(tip, [
+      'Slurm jobs: Slurm, its jobs waited on included, holds half its work or more',
+      'its work: Slurm 94% · explore 6%',
+      summary,
+    ]);
+    // what was not read has no fill, and is dashed as everything unread is
+    const none = await chip({ category: 'none', uses: [], summary: 'No tool calls.' });
+    assert.match(none, /^<span class="sess-cat sess-cat-none"[^>]*>no tool calls<\/span>$/);
+    assert.match(source('styles.css'), /\n\.sess-cat-none,\n\.sess-cat-unknown \{\n {2}border-style: dashed;/);
+    // a portrait's session carries the same three fields, and one with no block has no chip
+    assert.equal(await chip(null), '');
+    assert.equal(await chip({ category: null, uses: null, summary: null }), '');
+  } finally {
+    await ui.close();
+  }
+});

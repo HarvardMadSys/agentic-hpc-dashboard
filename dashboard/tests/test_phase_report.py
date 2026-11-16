@@ -310,6 +310,49 @@ class TaskLinesTest(unittest.TestCase):
         self.assertEqual(pr.task_lines([], DAY), [])
 
 
+class CategoryLinesTest(unittest.TestCase):
+    """A row's category, the uses it rests on, and its summary (`phase_summary`), and the sessions
+    of a day by category."""
+
+    def test_a_block_prints_its_category_its_uses_and_its_summary(self):
+        block = {"category": "run", "uses": [["run", 62.0], ["hpc", 33.5], ["explore", 4.5]],
+                 "summary": "Mostly ran programs (62% of 2.1 h of work)."}
+        self.assertEqual(pr.kind_lines(block), [
+            "   category run (run 62%, hpc 33.5%, explore 4.5%)",
+            '   summary "Mostly ran programs (62% of 2.1 h of work)."'])
+        self.assertEqual(pr.kind_lines({"category": "none", "uses": [],
+                                        "summary": "No tool calls."}),
+                         ["   category none", '   summary "No tool calls."'])
+        self.assertEqual(pr.kind_lines({"list": []}), [])
+
+    def test_a_session_is_counted_once_whichever_of_its_day_rows_is_read(self):
+        days = [{"sid": "h|2026-10-28|agent|apid:1"}, {"sid": "h|2026-10-29|agent|apid:1"}]
+        shared = {"category": "hpc", "days": days}
+        rows = [{"sid": days[0]["sid"], "phases": shared},
+                {"sid": days[1]["sid"], "phases": shared},
+                {"sid": "h|2026-10-28|agent|apid:2", "phases": {"category": "explore"}},
+                {"sid": "h|2026-10-28|agent|apid:3", "phases": {"unavailable": "x"}}]
+        self.assertEqual(pr.session_categories(rows), {"hpc": 1, "explore": 1})
+
+    def test_a_report_prints_a_rows_category_and_counts_the_sessions_by_category(self):
+        recs = [root8(NOON - 30)] + [bash8(NOON + 30 * i, 201 + i, "cat src/f%d.py" % i)
+                                     for i in range(8)]
+        recs += [root8(NOON - 30, root=300), bash8(NOON + 40, 301, "python train.py", root=300,
+                                                    duration_s=600)]
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, DAY))
+            with open(os.path.join(d, DAY, "h1.exits.jsonl"), "w") as fh:
+                for r in sorted(recs, key=lambda r: r["ts_epoch"]):
+                    fh.write(json.dumps(r) + "\n")
+            out = io.StringIO()
+            self.assertEqual(pr.main(["--roots", d, "--day", DAY, "--apid", "100"], out=out), 0)
+        text = out.getvalue()
+        self.assertIn("\n   category explore (explore 100%)\n", text)
+        self.assertIn('\n   summary "Only explored code and files (', text)
+        self.assertIn("sessions by category (phase_summary), each once: explore 1 (50%), run 1 "
+                      "(50%)", text)
+
+
 class JoinedCallsTest(unittest.TestCase):
     """A row of an agent that worked on two days is handed the calls its block is cut from."""
 

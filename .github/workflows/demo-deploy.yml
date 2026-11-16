@@ -64,7 +64,7 @@ jobs:
       contents: read
     environment:
       name: demo
-      url: https://hpc-dashboard.agentic-system.org
+      url: https://dashboard-demo.agentic-system.org
     defaults:
       run:
         working-directory: deploy/cloudflare
@@ -121,6 +121,6 @@ jobs:
           {
             echo "### Demo deployed"
             echo
-            echo "\`${GITHUB_SHA::7}\` from \`${GITHUB_REF_NAME}\` is deploying to <https://hpc-dashboard.agentic-system.org>."
+            echo "\`${GITHUB_SHA::7}\` from \`${GITHUB_REF_NAME}\` is deploying to <https://dashboard-demo.agentic-system.org>."
             echo "The container rolls out over the next few minutes; until it is up the page says the demo is starting."
           } >> "$GITHUB_STEP_SUMMARY"

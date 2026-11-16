@@ -50,7 +50,10 @@ never outranks the file.
 - `feeds.ebpf.prefer` (`RC_DASH_EBPF_PREFER`) and `feeds.ebpf_node.prefer`
   (`RC_DASH_NODE_PREFER`) say which twin of a stream written in both formats is read:
   `jsonl` (the default) or `ebr` ([Two formats](#two-formats)). Any other value stops the
-  service at startup rather than guess.
+  service at startup rather than guess. With the startup conversion on (the default), the
+  service reads EBR whatever they say, through a view of the collector's roots it converts at
+  startup ([Reading EBR only](#reading-ebr-only-the-startup-conversion)); `RC_DASH_CONVERT=0`
+  reads the day-files as they are, and `prefer` decides.
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's records
 are JSON, whether written as JSONL or as EBR; the retired builder's contract was `data.json`) and
@@ -84,8 +87,14 @@ byte-identical copy of the collector's `lib/ebr.py`), holds the same records: de
 back what `json.loads` gives for its JSONL line, types and key order included, so every reducer
 sees the same record either way. It is 4-8x smaller, and it is framed: CRC-checked frames,
 normally one per poll round, each with its records' time bounds and event kinds in its header,
-so a reader can pass a frame without building its records. The format, its numbers and the
+so a reader can pass a frame without building its records. Since format v2 nothing in a file is
+JSON (the segment header is binary too; a v1 file still reads), and a frame may be
+zstd-compressed (`EBPFM_EBR_ZSTD`, off by default). The format, its numbers and the
 collector's side are in the [collector README](../collector/README.md#binary-records-ebr).
+
+The service reads them through an EBR view it makes at startup, unless that is turned off
+([Reading EBR only](#reading-ebr-only-the-startup-conversion)): what follows is how the day-files
+are read when it is, and how the view decides which file of a stream it links or converts.
 
 **One file per stream.** With `both`, every stream has twins, `x.jsonl` and `x.ebr`, holding the
 same records in the same order, and the service reads exactly one of them (`feedfile.choose`), so
@@ -150,25 +159,179 @@ stream's EBR twin was started mid-day:
 feed gives the same API output, value for value: `tests/e2e_formats.py` writes a demo feed in
 both formats, serves it twice at a pinned clock, and diffs 41 requests. Its variants cover a
 plain scan, a restart from saved builds, gzipped days, a feed that grows between runs, and
-legacy records with no `ts_epoch`. The page is no faster for it yet. On the demo feed (3 days
-of 4 hosts, `tests/bench_formats.py`):
+legacy records with no `ts_epoch`. The page is not faster for it on every read. On the demo
+feed (3 days of 4 hosts, `tests/bench_formats.py`, the median of ten runs; on a shared VM a
+read's ratio moves by 0.05-0.15 from one run to the next):
 
-- A read that filters goes about 2x faster from EBR (one user's exits: 0.12 s against 0.26 s),
-  because it rejects records by interned string before building them.
-- A read that builds every record goes slower:
-  - the startup backfill runs at 0.64x JSONL's speed (0.70 s against 0.45 s), and a 24 h
-    window build at 0.71x (0.44 s against 0.31 s);
-  - orjson parses a JSONL line in C, while EBR builds its dicts in Python;
-  - a collector's frame holds a poll round, about three records, so the per-frame cost is
-    paid often.
-- From gzipped days EBR is ahead on seeks, an hour's read and key scans (1.2-1.4x), and
-  0.85x on full reads.
+- A read that filters goes about 2x faster from EBR (one user's last 500 exits: 0.13 s
+  against 0.29 s), because it rejects records by interned string before building them.
+- A read that builds every record goes slower: the startup backfill at 0.83x JSONL's speed
+  (0.59 s against 0.48 s), an hour's read at 0.68x (0.071 s against 0.048 s), a 24 h window
+  build at 0.73x (0.38 s against 0.28 s), and key scans at 0.79x. Its seeks no longer cost
+  much (positioning the backfill: 0.95x, from 0.38x); its records do:
+  - building a record costs about what orjson's C parse of its line does: most of either is
+    filling the same dicts;
+  - EBR also applies each frame's new strings and checks its two CRCs, so a frame of few
+    records costs more a record. The demo's twins hold a minute of records a frame, about 2.5
+    here; a collector's frame holds a poll round, and the same records cut on its 100 ms grid
+    (1.4 a frame) run the backfill at 0.75x JSONL's speed (`bench_formats.py`, its `rounds`
+    column, against `converted` at 0.87x);
+  - a read that starts inside a segment (a window's, an hour's) first applies the segment's
+    definitions from its SEGMENT up to there: about 4,000 frames before an hour of the demo
+    feed, where a JSONL seek lands on its line.
+- From gzipped days (`--gzip`, three runs) EBR is ahead on seeks (1.5x), an hour's read
+  (1.3x), key scans (1.2x) and filtered scans (1.7-2.0x), and behind on full reads (the
+  backfill and a 24 h window, 0.9x): a `.gz` is inflated to be read, and an EBR day has 5.8x
+  less to inflate.
 
 On disk, EBR is 5.8x smaller live, and about the same once gzipped. Flip `prefer` when
 `bench_formats.py` on your own feed says the reads you serve are faster.
 
 A dashboard fed through [`deploy/fleet`](../deploy/fleet/README.md) gets both formats:
 `fleet/fleet_stream.py` carries `.ebr` and `.ebr.gz` files as it carries `.jsonl` and `.jsonl.gz`.
+
+### Reading EBR only: the startup conversion
+
+**The service reads nothing but EBR** (`ingest.convert`, on by default; `rc_dashboard/ebrview.py`).
+Before it reads anything, every stream the collector wrote only as JSONL is converted into an EBR
+copy, and every stream it wrote as EBR is linked; the readers -- the tail and its backfill, window
+builds, hours, the inspector, the I/O lookups, `/api/events` and `/api/export`, the feed report
+-- are then pointed at those copies, the **view**, instead of the collector's roots. A collector
+on `EBPFM_FORMAT=jsonl`, a JSONL capture copied in from another cluster, and the days before a
+collector was moved to `both` are all read as EBR, with nothing to change on the collector. The
+view's answers are the JSONL's, value for value (`tests/e2e_formats.py --convert`). What it buys:
+EBR's frames, which a filtered read passes by their headers, and files about a sixth of the
+JSONL's size; and the converted frames are a minute of records each, where a collector's are a
+poll round, so a full read pays the per-frame cost less often. On the bench feed (3 days of 4
+hosts, `tests/bench_formats.py`, its `converted` and `rounds` columns), the converted files read
+faster than the same records framed a poll round at a time as the collector writes them -- the
+backfill 1.15x (0.54 s against 0.64 s), an hour's read 1.2x, a filtered scan 1.3x -- and a
+filtered scan 2.1-2.4x faster than JSONL; a read that builds every record is still slower than
+JSONL's (the backfill 0.87x, an hour 0.76x, a 24 h window 0.74x: building a record costs about
+what orjson's C parse of its line does, and EBR adds its per-frame work, above).
+
+**Where.** `ingest.convert.dir` (`RC_DASH_CONVERT_DIR`), `<cache.dir>/ebr-view` unless set, holds
+one view root per tier and source root, `<dir>/<tier>/<basename>-<sha1 of its real path, 10 hex>/`,
+with a `SOURCE.json` naming the source it mirrors (a view root of another source is refused). It
+mirrors every dated dir and flat file the source holds, because the scans with no horizon --
+`/api/events`, `/api/export`, a window's plan -- read every one of them (`feedfile.day_files`).
+Each reader keeps its own limits on the view: the tail and the feed report still take their
+newest `feeds.<tier>.days`. `ingest.convert.days` (`RC_DASH_CONVERT_DAYS`) bounds a long history
+to its newest dated dirs, never fewer than the tail's `days` or the widest window's days plus two;
+with a bound, the scans no longer reach the days past it. The view is the service's own, 0700 dirs and 0600 files, as
+its other caches are: its records hold every user's command lines, which the collector keeps 0640.
+Modes a view was left with before are narrowed at startup; a link's target keeps the collector's. The config
+the readers see names the view (`feeds.<tier>.roots`, origin `convert: the EBR view of ...`, and
+`prefer` `ebr`), and the collector's own roots stay in `feeds.<tier>.source_roots`: `/api/config`
+says both. A view dir inside a source root stops the service at startup, as a bad setting does. A
+tier with no source root that exists is read as configured, and says why in `/api/feeds`; once
+one does, every configured root is planned, and one still missing (a mount coming up late) is
+mirrored when it appears.
+`--check-feeds` still reads the collector's roots, converts nothing, and adds a line per tier on
+what the conversion would do:
+
+```
+  convert ebpf      on: 12 jsonl stream(s) read as EBR (0 up to date, 57.0 MB to convert), 0 ebr stream(s) linked, 0 held; view .../cache/ebr-view/ebpf
+```
+
+**Link or convert**, per stream, by the twin rule with `prefer=ebr` ([above](#two-formats)):
+
+| the stream has | in the view |
+|---|---|
+| nothing read yet (held) | nothing, until it has |
+| its EBR file read (a collector's `x.ebr` or `x.ebr.gz`, alone or as the twin read) | a symlink of the same name to it. Once the collector seals the day, the `x.ebr.gz` link is made first and the `x.ebr` one removed after: the order of the collector's own gzip, which the readers already follow |
+| its JSONL file read (`x.jsonl[.gz]` alone, or the twin read because the EBR one started mid-day) | `x.ebr`, converted: always a plain file, a sealed day's too, and kept current as the collector appends |
+
+**Decisions are kept.** A stream with an entry in the view keeps it: a link stays a link, a
+converted file stays converted, whatever twin appears later, so no restart moves a live day from
+one file to another. Only a stream with no entry is decided by the twin rule. A stream whose
+source files are all gone leaves the view too; one whose JSONL is deleted while its EBR twin
+remains keeps what was converted (and says so in `convert.files[].note`); one whose linked EBR file
+is deleted while its JSONL remains is decided again (converted). A day leaves the view once its
+source day is gone, or once it falls past `ingest.convert.days` when that is set.
+
+**Exactly the JSONL tail's records.** A conversion takes what the JSONL tail would read: complete
+lines only (a partial last line waits), blank lines passed, every other line parsed by
+`fastjson.loads`; one that does not parse, or is not a JSON object, is a bad line, counted
+(`convert.bad_lines`). A converted file's mtime is its source's, so `last_write` and the feed's
+`newest_mtime` read as the collector wrote.
+
+**Startup.** The service starts, and before anything reads, the conversion catches up: every
+converted file brought to its source's last complete line, in `ingest.convert.workers` processes
+(`RC_DASH_CONVERT_WORKERS`; 0, the default, is every CPU the service may run on -- its affinity,
+so a Slurm allocation or a cpuset is the limit -- and 1 converts in the service's own
+process), one file each, the biggest first; frames are cut on the minute. Meanwhile the page
+answers, says how far it is (`backfill.state` `converting` with `pct`, and the tiers'
+`convert` in `/api/feeds`), and what reads the day-files -- `/api/events`, `/api/export`,
+`/api/trajectory`, `/api/io/commands`, and a question about one session -- answers **503**
+`{"error": "converting", "detail": ..., "convert": {"pct": ...}}` with a `Retry-After`, rather than
+read a half-built view. Then the window builds, the backfill and the polls start, as without a view.
+
+What a first start costs: 25-30 µs of CPU a record, spread over the workers (by default one per
+CPU the service may run on) a file at a time. A
+week of 6 demo hosts (192 000 records, 264 MB of JSONL, 105 files) converts in 4.7 s in one
+process, 2.5 s with two workers and 1.5 s with four (131 000 records a second, 33 000 a worker) on
+this repository's 4-core test container; a week of one busy login node (2.4 M records, about 4 GB)
+would be about a minute in one process, a quarter of that with four. A restart costs only what
+the collector wrote while the service was down. The first start converts all the history the
+source holds, so a source that keeps months of sealed days costs that once. Set
+`ingest.convert.days` to bound it, or `ingest.convert.zstd` to keep the view about the size of
+the gzipped JSONL. On disk the view is plain EBR, about a sixth of
+the JSONL's plain size (98 MB of JSONL to 17 MB, 0.174); `ingest.convert.zstd`
+(`RC_DASH_CONVERT_ZSTD`, a zstd level 1..22) compresses its frames further, at some cost to every
+read, and is off (0) by default. A linked stream costs a symlink.
+
+**Live.** Before every poll the view converts what the collector appended since, so a record is
+read in the poll it is converted in: one batch and one flush a poll, at most 64 MB a file. Every
+poll looks at the newest two days and the flat files (a host rolls over late, so yesterday may
+still grow); older days, and a listing of every day, come every 30 s. A day the collector
+seals (`x.jsonl` to `x.jsonl.gz`) is finished from its `.gz` once, past what was converted, and
+the view's file stays plain; a source cut short, replaced by another file under its name (a new inode, whatever its first
+bytes), or written in place (the same size, a new mtime),
+is converted afresh into a new file, which the readers take as a replaced file (they read it
+again, as they would the source). That and a stream far behind are converted apart from the polls,
+which stay bounded. A file that fails is reported (`convert.errors`, its `files[].error`) and tried
+again later; it stops nothing else.
+
+**Restarts.** A converted file carries advisory checkpoints, EBR MARK frames (`ebr.MARK`): where
+in its source the records before it end, with their counts and a digest of the source's first
+bytes, at most a minute apart while live, at the end of every bulk conversion and when a day is
+sealed. A restart resumes each file at its last one, after checking the source still starts with
+the same bytes and holds at least as many, passes the records written after it, and converts the
+rest; a sealed day whose `.gz` is the same file on disk is not opened at all. So a restart
+converts only what is new, and the saved window builds and hours over the view resume as over any
+EBR files. Every reader passes MARK frames as it passes a SEGMENT (`tests/test_marks.py`).
+
+**Turning it off.** `RC_DASH_CONVERT=0` (or `false`, `no`, `off`; in the config file,
+`"ingest": {"convert": {"enabled": false}}`) reads the day-files as they are, the twins by
+`prefer`, as before; the view is left on disk. Switching it either way, or moving the view
+(`dir`), builds the saved windows and hours afresh, since they are keyed on the roots read;
+changing `zstd` or `workers` builds the saved windows alone afresh (the whole config is in their
+fingerprint).
+
+| setting | env | default | |
+|---|---|---|---|
+| `ingest.convert.enabled` | `RC_DASH_CONVERT` | `true` | read through the EBR view; `0`/`false`/`no`/`off` reads the day-files as they are |
+| `ingest.convert.dir` | `RC_DASH_CONVERT_DIR` | `<cache.dir>/ebr-view` | where the view lives; never inside a source root |
+| `ingest.convert.zstd` | `RC_DASH_CONVERT_ZSTD` | `0` | the zstd level of the view's frames, 1..22; 0 writes them uncompressed |
+| `ingest.convert.workers` | `RC_DASH_CONVERT_WORKERS` | `0` | processes converting at startup: 0 is every CPU the service may run on, 1 is the service's own |
+| `ingest.convert.days` | `RC_DASH_CONVERT_DAYS` | `0` | dated dirs mirrored: 0 is every one the source holds; a bound (never below what the tail and the widest window read) saves a first start on a long history, and leaves the scans short of the days past it |
+
+Each dated tier's entry in `/api/feeds` carries `source_roots` (the collector's roots, when read
+through the view) and `convert`:
+
+| field | |
+|---|---|
+| `enabled`, `state` | on or off; `off`, `catching_up`, `live` or `error` (a `reason` says why when off) |
+| `pct`, `catch_up` | the startup conversion's progress by source bytes (a `.gz`'s compressed ones): `files`, `work`, `done`, `records`, `elapsed_s`, `workers`, `records_per_s` |
+| `dir`, `source_roots`, `view_roots` | where the view is, what it mirrors, and what the readers read |
+| `counts` | streams `converted`, `linked`, and `held` (nothing read yet) |
+| `records`, `bad_lines` | records in the converted files, and lines that were not one |
+| `bytes_in`, `bytes_out` | JSONL converted (uncompressed bytes), and the converted files' size |
+| `lag_bytes` | complete JSONL lines not converted yet |
+| `zstd`, `zstd_note`, `workers` | the settings in force, and why zstd is not, when asked for and not available |
+| `errors` | the latest failures, each with its file |
+| `files[]` | per stream: `source`, `view`, `mode` (`convert` or `link`); a converted one's `records`, `bad`, `lag`, `sealed` and `state` |
 
 ## Two deployments on this host
 
@@ -253,7 +416,7 @@ refused rather than ignored.
 **Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) is the demo in one
 image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
 working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
-that image behind a Cloudflare Worker at <https://hpc-dashboard.agentic-system.org>: one
+that image behind a Cloudflare Worker at <https://dashboard-demo.agentic-system.org>: one
 shared instance that sleeps when nobody is looking and says it is starting while it wakes.
 The real service over live collectors, behind a password, on a host of your own, is
 [`deploy/fleet`](../deploy/fleet/README.md).
@@ -500,7 +663,7 @@ disk. A view filtered to users or agent types is still scanned.
 | endpoint | purpose |
 |---|---|
 | `GET /api/config` | resolved config, `_origin` per key |
-| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill; for the eBPF and node tiers, which format each stream is read in: `prefer`, `formats`, each file's `format` and `held`, `twins`, `held`, `format_notice` ([Two formats](#two-formats)) |
+| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill; for the eBPF and node tiers, which format each stream is read in: `prefer`, `formats`, each file's `format` and `held`, `twins`, `held`, `format_notice` ([Two formats](#two-formats)), and `convert`, the EBR view they are read through, with `source_roots` ([Reading EBR only](#reading-ebr-only-the-startup-conversion)) |
 | `GET /api/collectors` | per host: is its collector OK -- verdict and reasons, heartbeat age, the run in progress, every run and how it ended (events lost), probes that could not load (`health.py`) |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
@@ -820,7 +983,9 @@ An agent session's row says what the agent was doing at three levels, which the 
 
 A row of Claude Code or Codex carries the first two as `phases`: the `list` of phases, the `tasks` above
 them (each phase says which one it belongs to), a `headline` (the project, then the names that recur
-across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`. A row of any other
+across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`; and what kind of session
+it was, a `category` with the `uses` of its work it rests on and a `summary` (*What kind of session it
+was*, below). A row of any other
 agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`: not recognized is not none.
 How the page draws the levels is in [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
 
@@ -941,14 +1106,59 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   whose span, first record to last, holds its start, else the nearest. A row's own `n_calls` stays its day's,
   and the block's counts the session's.
 
+**What kind of session it was.** Each block says it in a word and in a few sentences
+(`reducers/phase_summary.py`), so a list of sessions can be read, and counted, by what they were for. The
+`category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
+files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
+programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
+wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
+apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
+the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
+whose phases have no length at all (a call or two that began and ended in one second) is weighed by its
+calls. A session that only waited is `wait`; one whose commands not recorded hold half of its work and
+themselves, or that did nothing else, is `unknown`; and one that made no tool call is `none`. `uses` gives
+each use's share of the work, the most first.
+
+The `summary` is one to three sentences, each built from the block's own numbers and none from a model: what
+the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then explored code and files
+(12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
+the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
+that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+
+On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
+2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
+lasted under a second and ran only the agent's own commands (`rg`, `git`), and an agent that only reads and
+edits with its own tools leaves no command either. Of the 4,096 that made one, 33% were `explore`, 29% `run`, 20%
+`hpc`, 6% `mixed`, 5% `develop`, 4% `unknown`, 1% `wait`, and under 1% each `build` and `git`. One use held
+half of the work in 94% of the sessions that did any, and a count of calls would have named a different
+category for about a third of them, most of them Slurm sessions and long runs. A fifth of the summaries say
+the agent waited. Claude Code's sessions were 27% `hpc` and Codex's 4%; Codex's were 42% `run`. One
+misreading is known: 114 sessions of one user's Codex desktop app on 2026-11-15 ran two calls each, a
+`mkdir -p` and a `chmod 700` of a folder of its own under `/var/tmp`, and read as `develop` (`Only changed
+files from the shell. 2 tool calls.`), as their tasks read `Edit`. The folder is that user's setup, not
+Codex's, so it is not read as housekeeping. `rc_dashboard/phase_report.py` prints each row's category and summary, and counts a day's
+sessions by category, each once.
+
+The page shows the category as a chip on the row and in the Users tab's list of a user's sessions, and the
+summary under the headline in the inspector (`web/README.md`). The plates over every session in the window
+do not count categories: a category needs a session's block, and building a block for every session of a
+week on eight login nodes takes minutes, where the plates are read again every few seconds.
+
 **Config.** `reducers.trajectories.tasks` sets the thresholds. It equals `phase_tasks.DEFAULTS`, where each
 one is documented, and a test holds the two equal. `reducers.trajectories.phases`, beside it, does the same
-for the fine phases (`reducers/phase_segment.py`). Like the rest of `reducers`, both are part of the config a
+for the fine phases (`reducers/phase_segment.py`), and `reducers.trajectories.summary` for a block's
+category and summary (`reducers/phase_summary.py`): `mostly` (0.5), the share of the work a use must hold
+for the session to be put under it, and `also` (0.1), the share a second use, or waiting, needs before the
+summary names it. Like the rest of `reducers`, all three are part of the config a
 saved window or hour is fingerprinted by, so a changed value builds them again rather than resuming them
 (*The time window*). A saved state needs that only for the phase thresholds read as records arrive, which
 bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max`, and `idle_s`).
-The rest, every task threshold among them, are read when a row is built: the reducer cuts and names a row
-each time it serves it, with the thresholds it runs with, and no saved state holds a task.
+The rest, every task and summary threshold among them, are read when a row is built: the reducer cuts and
+names a row each time it serves it, with the thresholds it runs with, and no saved state holds a task or a
+category.
 
 | key | default | meaning |
 |---|---|---|
@@ -970,13 +1180,33 @@ The **Agents** tab (`?tab=agents`; the old `?tab=cascades` still opens it) answe
 agents started which other agents, and where did each one work". A node is a process whose
 role (`roles.py`) is `agent`, `infra` or `client`; tool-call shells, sandboxes, probes and
 helpers are steps between nodes. A node's parent is the nearest node above it in the process
-tree, else the daemon's own `--spawned-by {"pid": N}`, else (for a `bg-pty-host` orphaned to
-init) its user's only daemon, labelled as inferred, else the tree root. An agent started,
-through any number of steps, beneath another agent is that agent's **subagent**. Two outcomes
-are kept apart: **nested**, an agent with subagents, and **hosted**, a daemon, Claude
-Desktop's remote server or `claude rc` running sessions side by side. A Codex TUI whose
-direct child is `codex app-server` is shown as that session's front-end, not as a second
-agent.
+tree, else (for a `bg-pty-host` orphaned to init) its user's only daemon, labelled as
+inferred, else the tree root. An agent started, through any number of steps, beneath another
+agent is that agent's **subagent**. Two outcomes are kept apart: **nested**, an agent with
+subagents, and **hosted**, a daemon, Claude Desktop's remote server or `claude rc` running
+sessions side by side. A Codex TUI whose direct child is `codex app-server` is shown as that
+session's front-end, not as a second agent.
+
+`claude daemon` roots a tree of its own, hosting its background sessions side by side. It is
+started, detached, by whichever `claude` first needs it, and its `--spawned-by {"pid": N}`
+names that process -- but it is its user's, and every background session the user starts
+later, from any terminal, goes through it. Hung under the process that started it, as it
+was, each of those sessions was drawn as that one session's subagent. Who started it is kept
+on its node (`spawned_by`, in its box's tooltip), and is never its parent, nor is the ppid a
+detached daemon keeps until its starter exits. A session its `bg-pty-host` runs shows as a
+`terminal` **background session**. The daemon also keeps sessions started ahead of need, each
+a `claude bg-spare` waiting to be claimed, so the next background session starts at once:
+one nobody claimed ran no process but its own, and is the daemon's (`infra`), not an agent
+-- drawn as one, each was an agent that ran nothing. Idle spares are counted per tree and in
+the summary (`idle_spares`); a spare that ran anything was claimed, and is the agent it
+became.
+
+Every tree is sent, up to `reducers.cascades.top_trees` (1000), the deepest first. It was 25,
+and with 25 trees of subagents in a window no session that started no other was sent at all;
+past the cap the list says how many trees were not, and the type strip that it counts the
+trees sent. A blast radius is served for the `reducers.workspace.max_agents` (300; was 30)
+busiest agents, and for every agent that wrote outside its start folder; one past that says
+so when picked, and an agent that ran nothing says that instead.
 
 What it cannot see: Claude Code's Task-tool subagents and workflow agents run inside their
 parent's process. Only agents that are processes of their own appear; an in-process
@@ -1155,6 +1385,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/feedfile.py` | the collector's day-files in either format: listing them, the twin rule (`choose`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line or frame ends, EBR's frames and records |
 | `rc_dashboard/ebr.py` | the EBR codec, a byte-identical copy of `collector/lib/ebr.py` (`tests/test_ebr_sync.py` keeps it so) |
+| `rc_dashboard/ebrview.py` | the EBR view the service reads: collector EBR linked, JSONL-only streams converted at startup and before every poll, resumed from MARK checkpoints ([Reading EBR only](#reading-ebr-only-the-startup-conversion)) |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
 | `rc_dashboard/gz.py` | a `.jsonl.gz` or `.ebr.gz` day-file read in place, seekable by uncompressed offset through a per-process inflater index |
 | `rc_dashboard/health.py` | each collector's verdict, from its own meta / heartbeat / stop records |

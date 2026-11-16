@@ -3,6 +3,7 @@
 
     cd dashboard && uv run python tests/e2e_formats.py [--days 2] [--hosts 2]
                         [--scan] [--gzip] [--legacy] [--restart [--grow SECONDS]]
+                        [--convert [--convert-feed jsonl|both]]
                         [--keep] [--max-diffs 20] [--timeout 900]
 
 A collector on EBPFM_FORMAT=both writes each stream twice, as twins
@@ -58,6 +59,21 @@ makes the feed a capture from before `ts_epoch` (times from the `ts` strings),
 its EBR twins converted by `ebr.py convert`: frames cut by size, spanning
 hours, that no header places in time. `--keep` keeps the temp dir: the feed,
 both caches and both services' logs.
+
+Every variant above serves the twins as they are, with the startup conversion
+off (RC_DASH_CONVERT=0): it is the JSONL reader against the EBR one.
+
+`--convert` checks the startup conversion instead (`ingest.convert`,
+rc_dashboard/ebrview.py): the demo writes a JSONL-only feed (`--demo-format
+jsonl`), and it is served once with the conversion off, reading the JSONL, and
+once with it on, reading nothing but the EBR view it converts at startup -- every
+API diffed as above, a view file's path compared as its source's. `--restart`
+then starts both again: the conversion resumes from the MARKs it wrote and must
+leave every view file as it was, and change no answer; `--gzip` seals the days
+before the newest (before the first start, or between the runs: the view finishes
+each from its .gz). `--convert-feed both` serves a feed in both formats instead,
+the conversion on (its streams linked, not converted) against `prefer=ebr` with it
+off.
 
 Exit status: 0 when every response is identical, 1 on any difference, 2 when
 the run itself could not be made (a service that would not start, a timeout).
@@ -151,6 +167,18 @@ IGNORE = (
 )
 
 
+# With `--convert`, also: what says HOW the feed is read -- the EBR view or the
+# day-files as they are -- and nothing about the records read.
+CONVERT_IGNORE = tuple(
+    (pat % tier, "feeds", why) for tier in ("ebpf", "ebpf_node") for pat, why in (
+        ("%s/convert", "the startup conversion's own account: on in one service only"),
+        ("%s/source_roots", "the collector's roots, beside the view's: one service only"),
+        ("%s/origin", "who set the roots read: the conversion, or the environment"),
+        ("%s/compressed", "a .gz is read as it is, or through its plain EBR copy"),
+        ("%s/files/#/compressed", "a .gz is read as it is, or through its plain EBR copy"),
+    ))
+
+
 class Fatal(Exception):
     """The run could not be made: exit 2, not a difference."""
 
@@ -173,13 +201,13 @@ def clean_env():
 
 
 # ------------------------------------------------------------------ the feed
-def write_feed(base, days, hosts, conf):
-    """`demo --demo-format both --demo-write-only` into `base`; the stamp."""
+def write_feed(base, days, hosts, conf, fmt="both"):
+    """`demo --demo-format <fmt> --demo-write-only` into `base`; the stamp."""
     env = clean_env()
     env["RC_DASH_CONFIG"] = conf
     cmd = [sys.executable, "-m", "rc_dashboard", "demo", "--demo-dir", base,
            "--demo-days", str(days), "--demo-hosts", str(hosts),
-           "--demo-format", "both", "--demo-write-only"]
+           "--demo-format", fmt, "--demo-write-only"]
     t = time.monotonic()
     got = subprocess.run(cmd, cwd=DASH, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT)
@@ -188,12 +216,13 @@ def write_feed(base, days, hosts, conf):
                     % got.stdout.decode("utf-8", "replace")[-4000:])
     with open(os.path.join(base, "demo.json")) as fh:
         stamp = json.load(fh)
-    if stamp.get("format") != "both" or not isinstance(stamp.get("written_to"), (int, float)):
-        raise Fatal("the demo's stamp is not a both-format feed's: %r" % stamp)
+    if stamp.get("format", "jsonl") != fmt or not isinstance(stamp.get("written_to"),
+                                                              (int, float)):
+        raise Fatal("the demo's stamp is not a %s feed's: %r" % (fmt, stamp))
     return stamp, time.monotonic() - t
 
 
-def grow_feed(base, days, hosts, until):
+def grow_feed(base, days, hosts, until, fmt="both"):
     """Have the demo write the feed on to `until`, as it resumes after a restart:
     the files are appended to (an EBR file's last segment continued,
     `ebr.Writer.open_append`), nothing is rewritten. Returns the new stamp."""
@@ -201,7 +230,7 @@ def grow_feed(base, days, hosts, until):
     import io
     from rc_dashboard import demo as demomod
     ns = argparse.Namespace(demo_dir=base, demo_days=days, demo_hosts=hosts,
-                            demo_seed=demomod.DEFAULTS["seed"], demo_format="both",
+                            demo_seed=demomod.DEFAULTS["seed"], demo_format=fmt,
                             demo_fresh=False)
     said = io.StringIO()
     with contextlib.redirect_stderr(said):
@@ -308,6 +337,16 @@ def seal_days(feed):
             os.unlink(src)
             n += 1
     return n
+
+
+def jsonl_feed_records(feed):
+    """Every record of a JSONL-only feed, both tiers."""
+    for tier in ("ebpf", "node"):
+        for dp, _dirs, names in sorted(os.walk(os.path.join(feed, tier))):
+            for name in sorted(names):
+                if name.endswith((".jsonl", ".jsonl.gz")):
+                    for r in jsonl_records(os.path.join(dp, name)):
+                        yield r
 
 
 def jsonl_records(path):
@@ -522,12 +561,21 @@ class Norm:
 
     SUFFIX = re.compile(r"(?<=[\w-])\.(?:jsonl|ebr)(?=(?:\.gz)?(?![\w.]))")
 
+    SEALED = re.compile(r"\.<fmt>\.gz(?![\w.])")
+
     def __init__(self, caches):
         self.caches = sorted(caches, key=len, reverse=True)
+        self.views = []         # (view root, its source root): `--convert`
+        self.sealed = False     # `--convert`: a sealed x.jsonl.gz is converted to a plain x.ebr
 
     def text(self, s):
         if ".jsonl" in s or ".ebr" in s:
             s = self.SUFFIX.sub(".<fmt>", s)
+            if self.sealed:
+                s = self.SEALED.sub(".<fmt>", s)
+        for v, src in self.views:
+            if v in s:
+                s = s.replace(v, src)
         for c in self.caches:
             if c in s:
                 s = s.replace(c, "<cache>")
@@ -539,9 +587,13 @@ class Norm:
 SUPPRESSED = {}
 
 
+# The entries this run applies: IGNORE, and with --convert CONVERT_IGNORE too.
+RULES = list(IGNORE)
+
+
 def ignored(kind, path):
     """The IGNORE entry that covers `path` of a `kind` response, or None."""
-    for rule in IGNORE:
+    for rule in RULES:
         pat, where, _why = rule
         if (where == "*" or where == kind) and fnmatch.fnmatchcase(path, pat):
             return rule
@@ -606,7 +658,8 @@ def short(v, n=110):
 
 
 class Report:
-    def __init__(self, max_diffs):
+    def __init__(self, max_diffs, labels=FORMATS):
+        self.labels = labels
         self.max = max_diffs
         self.first = []
         self.total = 0
@@ -632,8 +685,8 @@ class Report:
             phase, len(self.differing), self.requests, self.total, len(self.first)))
         for name, p, a, b in self.first:
             log("  %s  %s" % (name, p))
-            log("      jsonl: %s" % short(a))
-            log("      ebr:   %s" % short(b))
+            log("      %-6s %s" % (self.labels[0] + ":", short(a)))
+            log("      %-6s %s" % (self.labels[1] + ":", short(b)))
 
 
 def kind_of(path):
@@ -778,6 +831,54 @@ def twins_read(services):
     return said, bad
 
 
+def converted_read(services, linked):
+    """The service with the conversion off read the day-files as they are; the
+    one with it on read only its EBR view, the same number of them, and every
+    stream of its sources converted (a JSONL feed) or linked (`linked`: a feed
+    in both formats), the conversion live and clean. Returns `(said, problems)`."""
+    bad, said = [], []
+    off, on = services
+    for tier in ("ebpf", "ebpf_node"):
+        a = off.json("/api/feeds").get(tier) or {}
+        b = on.json("/api/feeds").get(tier) or {}
+        c = b.get("convert") or {}
+        n = sum((a.get("formats") or {}).get("read", {}).values())
+        read = (b.get("formats") or {}).get("read") or {}
+        counts = c.get("counts") or {}
+        # The view mirrors every stream its sources hold, every day of them
+        # (`feedfile.day_files`), not only the newest days the feed report reads.
+        from rc_dashboard import feedfile
+        every = len(feedfile.day_files(b.get("source_roots") or [], 0, "jsonl"))
+        want = {"converted": 0, "linked": every, "held": 0} if linked else \
+            {"converted": every, "linked": 0, "held": 0}
+        files = [f for f in b.get("files") or () if not f.get("held")]
+        if (a.get("convert") or {}).get("state") != "off" or c.get("state") != "live" \
+                or read != {"ebr": n} or counts != want or c.get("errors") \
+                or c.get("lag_bytes") or not n \
+                or any(not f["path"].startswith(tuple(c.get("view_roots") or ["?"]))
+                       for f in files):
+            bad.append("%s: off read %r; on read %r through the view, convert %r" % (
+                tier, (a.get("formats") or {}).get("read"), read,
+                {k: c.get(k) for k in ("state", "counts", "errors", "lag_bytes")}))
+        else:
+            said.append("%s %d %s" % (tier, n, "linked" if linked else "converted"))
+    return said, bad
+
+
+def view_files(service):
+    """`{path: (inode, size)}` of every file of the service's EBR view."""
+    out = {}
+    for tier in ("ebpf", "ebpf_node"):
+        c = service.json("/api/feeds").get(tier, {}).get("convert") or {}
+        for root in c.get("view_roots") or ():
+            for dp, _dirs, names in os.walk(root):
+                for n in names:
+                    p = os.path.join(dp, n)
+                    st = os.lstat(p)
+                    out[p] = (st.st_ino, st.st_size, os.path.islink(p))
+    return out
+
+
 # ------------------------------------------------------------ saved states
 def _plain(o):
     """A saved state as plain comparable data: an object as its class and
@@ -829,14 +930,14 @@ def code_digest():
     return h.hexdigest()
 
 
-def compare_caches(caches, report, norm):
+def compare_caches(caches, report, norm, labels=FORMATS):
     """The two services' saved states -- every window build, hour and day state
     and saved panels -- are equal by value. Each names the day-files it read and
     where it stopped (`files`), and is named by a fingerprint of a config that
     differs in `prefer`; nothing else may differ. A state the API does not show
     yet would show the next time it is merged or resumed."""
     by = []
-    for f in FORMATS:
+    for f in labels:
         got, fps = {}, set()
         for sub in ("windows", "hours", "payloads"):
             d = os.path.join(caches[f], sub)
@@ -923,6 +1024,12 @@ def main(argv=None):
                     help="drop ts_epoch from every record (times from the `ts` strings) "
                          "and convert each JSONL twin to its EBR twin with ebr.py convert: "
                          "frames cut by size, with no times in their headers")
+    ap.add_argument("--convert", action="store_true",
+                    help="the startup conversion instead: a JSONL-only feed served with "
+                         "it off and with it on (RC_DASH_CONVERT), every API diffed")
+    ap.add_argument("--convert-feed", choices=("jsonl", "both"), default="jsonl",
+                    help="with --convert: the feed's format (jsonl); both: the conversion "
+                         "on (linking) against prefer=ebr with it off")
     ap.add_argument("--keep", action="store_true", help="keep the temp dir")
     ap.add_argument("--max-diffs", type=int, default=20,
                     help="differing paths printed (20)")
@@ -936,6 +1043,8 @@ def main(argv=None):
     if a.grow and a.legacy:
         ap.error("--grow continues the feed as the demo writes it, with ts_epoch: "
                  "not with --legacy")
+    if a.convert and a.legacy:
+        ap.error("--legacy makes the EBR twins of a both-format feed: not with --convert")
 
     tmp = tempfile.mkdtemp(prefix="rc-e2e-formats-")
     services = []
@@ -960,7 +1069,8 @@ def main(argv=None):
         return 2
 
 
-def change_feed(a, base, feed, days, hosts, stamp, records, seal=False, grow=0):
+def change_feed(a, base, feed, days, hosts, stamp, records, seal=False, grow=0,
+                fmt="both"):
     """Seal the days before the newest (`seal_days`) and/or have the demo write
     `grow` seconds more (`grow_feed`), then check every twin pair again.
     Returns `(stamp, records)`, or None when a pair no longer decodes alike."""
@@ -968,9 +1078,14 @@ def change_feed(a, base, feed, days, hosts, stamp, records, seal=False, grow=0):
     if seal:
         said.append("sealed %d day-file(s) before the newest day as .gz" % seal_days(feed))
     if grow:
-        stamp = grow_feed(base, days, hosts, stamp["written_to"] + grow)
+        stamp = grow_feed(base, days, hosts, stamp["written_to"] + grow, fmt)
         said.append("grown by %d s to %s" % (grow, time.strftime(
             "%Y-%m-%d %H:%M:%S", time.localtime(stamp["written_to"]))))
+    if fmt != "both":
+        n = sum(1 for _r in jsonl_feed_records(feed))
+        log("feed %s: %d record(s)%s" % ("; ".join(said), n,
+                                          " (%+d)" % (n - records) if grow else ""))
+        return stamp, n
     pairs, n, bad = check_twins(feed)
     if bad:
         log("twins: %d of %d pair(s) do not decode alike once %s:" % (
@@ -986,6 +1101,11 @@ def change_feed(a, base, feed, days, hosts, stamp, records, seal=False, grow=0):
 def run(a, tmp, days, hosts, services):
     t0 = time.monotonic()
     code = code_digest()
+    # --convert: the feed the demo writes, and the two services' names
+    fmt = a.convert_feed if a.convert else "both"
+    labels = ("off", "on") if a.convert else FORMATS
+    if a.convert:
+        RULES.extend(CONVERT_IGNORE)
 
     def same_code():
         if code_digest() != code:
@@ -995,11 +1115,13 @@ def run(a, tmp, days, hosts, services):
     conf = os.path.join(tmp, "config.json")
     with open(conf, "w") as fh:
         fh.write("{}\n")            # no dashboard.config.json of this checkout's
-    log("e2e formats: %d day(s), %d host(s), %s, in %s" % (
+    log("e2e formats: %d day(s), %d host(s), %s, %s, in %s" % (
         days, hosts, "one scan per window (merge-reduce off)" if a.scan
-        else "hourly merge-reduce", tmp))
+        else "hourly merge-reduce",
+        ("the startup conversion off and on, over a %s feed" % fmt) if a.convert
+        else "the JSONL twins against the EBR ones, no conversion", tmp))
 
-    stamp, took = write_feed(base, days, hosts, conf)
+    stamp, took = write_feed(base, days, hosts, conf, fmt)
     feed = os.path.join(base, "feed")
     as_of = stamp["written_to"]
     span_min = int(math.ceil((as_of - stamp["start"]) / 60.0))
@@ -1015,16 +1137,20 @@ def run(a, tmp, days, hosts, services):
         log("feed made a legacy capture: ts_epoch dropped from every record, %d EBR "
             "twin(s) converted by ebr.py convert into %d frame(s) (%.0f records each) "
             "no header places in time" % (n, frames, recs / max(1, frames)))
-    pairs, records, bad = check_twins(feed)
-    if bad:
-        log("twins: %d of %d pair(s) do not decode alike:" % (len(bad), pairs))
-        for line in bad[:a.max_diffs]:
-            log("  " + line)
-        return 1
-    log("twins: %d pair(s), %d record(s), each EBR twin decodes to its JSONL twin exactly"
-        % (pairs, records))
+    if fmt == "both":
+        pairs, records, bad = check_twins(feed)
+        if bad:
+            log("twins: %d of %d pair(s) do not decode alike:" % (len(bad), pairs))
+            for line in bad[:a.max_diffs]:
+                log("  " + line)
+            return 1
+        log("twins: %d pair(s), %d record(s), each EBR twin decodes to its JSONL twin "
+            "exactly" % (pairs, records))
+    else:
+        records = sum(1 for _r in jsonl_feed_records(feed))
+        log("feed: %d record(s), JSONL only" % records)
     if a.gzip and not a.restart:
-        got = change_feed(a, base, feed, days, hosts, stamp, records, seal=True)
+        got = change_feed(a, base, feed, days, hosts, stamp, records, seal=True, fmt=fmt)
         if got is None:
             return 1
         stamp, records = got
@@ -1058,20 +1184,33 @@ def run(a, tmp, days, hosts, services):
         # set iteration order is drawn per process; fixed, two services that
         # build the same state serve it in the same order
         "PYTHONHASHSEED": "0",
+        # the day-files read as they are, unless the conversion is what is checked
+        "RC_DASH_CONVERT": "0",
     })
-    caches = {f: os.path.join(tmp, "cache-%s" % f) for f in FORMATS}
-    for f in FORMATS:
-        services.append(Service(f, dict(env, RC_DASH_EBPF_PREFER=f, RC_DASH_NODE_PREFER=f),
-                                caches[f], tmp))
+    caches = {f: os.path.join(tmp, "cache-%s" % f) for f in labels}
+    if a.convert:
+        # off: the day-files as they are (JSONL, or prefer=ebr over twins); on:
+        # only the EBR view, converted (or linked) at startup into its cache
+        off = "ebr" if fmt == "both" else "jsonl"
+        services.append(Service("off", dict(env, RC_DASH_EBPF_PREFER=off,
+                                            RC_DASH_NODE_PREFER=off), caches["off"], tmp))
+        services.append(Service("on", dict(env, RC_DASH_CONVERT="1"), caches["on"], tmp))
+    else:
+        for f in FORMATS:
+            services.append(Service(f, dict(env, RC_DASH_EBPF_PREFER=f, RC_DASH_NODE_PREFER=f),
+                                    caches[f], tmp))
     norm = Norm(caches.values())
+    # the view's copy of a sealed day is a plain file: one stream, either way
+    norm.sealed = a.convert and fmt == "jsonl"
 
     failed = False
+    before = None
     for phase in (("first start", "restart") if a.restart else ("first start",)):
         log("")
         log("== %s ==" % phase)
         if phase == "restart" and (a.grow or a.gzip):
             got = change_feed(a, base, feed, days, hosts, stamp, records, seal=a.gzip,
-                              grow=a.grow)
+                              grow=a.grow, fmt=fmt)
             if got is None:
                 return 1
             stamp, records = got
@@ -1085,35 +1224,96 @@ def run(a, tmp, days, hosts, services):
         wait_ready(services, views, a.timeout)
         log("ready in %.1f s: backfill done, views %s" % (
             time.monotonic() - t, ", ".join(label(m, p) for m, p in views)))
-        said, bad = twins_read(services)
-        if bad:
-            failed = True
-            log("NOT each service its own twin: " + "; ".join(bad))
+        if a.convert:
+            failed = check_converted(services, fmt, phase, a, before, norm) or failed
         else:
-            log("twins read: each service only its own, of every stream (%s)" % ", ".join(said))
+            said, bad = twins_read(services)
+            if bad:
+                failed = True
+                log("NOT each service its own twin: " + "; ".join(bad))
+            else:
+                log("twins read: each service only its own, of every stream (%s)"
+                    % ", ".join(said))
         if phase == "restart":
             bad = resumed(services, views, a.scan, a.grow)
             if bad:
                 failed = True
                 log("not resumed: " + "; ".join(bad))
-        report = Report(a.max_diffs)
+        report = Report(a.max_diffs, labels)
         compare_all(services, user, full, report, norm, a.timeout)
+        if a.convert:
+            before = view_files(services[1])
         stop_all(services)
         same_code()
-        compare_caches(caches, report, norm)
+        compare_caches(caches, report, norm, labels)
         report.print(phase)
         failed = failed or bool(report.total)
     log("")
     log("ignored as format-dependent by construction (IGNORE), values that differed:")
-    for rule in IGNORE:
+    for rule in RULES:
         if SUPPRESSED.get(rule):
             log("  %6d  %-28s %-16s %s" % (SUPPRESSED[rule], rule[0], rule[1], rule[2]))
     log("  (%d other entr%s stood in for no difference this run)" % (
-        sum(1 for r in IGNORE if not SUPPRESSED.get(r)),
-        "y" if sum(1 for r in IGNORE if not SUPPRESSED.get(r)) == 1 else "ies"))
+        sum(1 for r in RULES if not SUPPRESSED.get(r)),
+        "y" if sum(1 for r in RULES if not SUPPRESSED.get(r)) == 1 else "ies"))
     log("")
     log("%s in %.0f s" % ("DIFFERENT" if failed else "IDENTICAL", time.monotonic() - t0))
     return 1 if failed else 0
+
+
+def check_converted(services, fmt, phase, a, before, norm):
+    """--convert: what each service read (`converted_read`), the view's paths
+    made comparable as their sources' (`Norm.views`), and after a restart, that
+    the conversion resumed from its MARKs: nothing converted again, and every
+    view file the same file it was -- appended to only when a day was sealed
+    between the runs (`--gzip`). Returns whether anything is wrong."""
+    wrong = False
+    said, bad = converted_read(services, linked=fmt == "both")
+    if bad:
+        wrong = True
+        log("NOT read as it should be: " + "; ".join(bad))
+    else:
+        log("read: the service with the conversion off reads the day-files as they are; "
+            "with it on, only its EBR view (%s)" % ", ".join(said))
+    feeds = services[1].json("/api/feeds")
+    norm.views = []
+    for tier in ("ebpf", "ebpf_node"):
+        c = feeds.get(tier, {}).get("convert") or {}
+        norm.views += list(zip(c.get("view_roots") or (), c.get("source_roots") or ()))
+        cu = c.get("catch_up") or {}
+        if tier == "ebpf":
+            log("conversion: %d file(s) converted at startup, %s record(s) in %.2f s with "
+                "%d worker(s)%s; view %.1f MB of %.1f MB of JSONL" % (
+                    cu.get("files") or 0, cu.get("records") or 0, cu.get("elapsed_s") or 0,
+                    cu.get("workers") or 0,
+                    (", %d records/s" % cu["records_per_s"]) if cu.get("records_per_s")
+                    else "", sum((feeds[t].get("convert") or {}).get("bytes_out") or 0
+                                 for t in ("ebpf", "ebpf_node")) / 1e6,
+                    sum((feeds[t].get("convert") or {}).get("bytes_in") or 0
+                        for t in ("ebpf", "ebpf_node")) / 1e6))
+    norm.views.sort(key=lambda vs: len(vs[0]), reverse=True)
+    if phase == "restart" and before is not None:
+        now = view_files(services[1])
+        cu = (feeds.get("ebpf", {}).get("convert") or {}).get("catch_up") or {}
+        moved = sorted(p for p in set(before) | set(now)
+                       if before.get(p, (None,))[0] != now.get(p, (None,))[0]
+                       or now.get(p, (0, 0))[1] < before.get(p, (0, 0))[1])
+        grown = sorted(p for p in now if p in before and now[p][1] > before[p][1])
+        # Sealed days are finished from their .gz, and a feed grown between the runs
+        # (--grow) has new lines: then a view file is appended to, never replaced.
+        expect_new = a.gzip or bool(getattr(a, "grow", 0))
+        if moved or (not expect_new and (grown or cu.get("records"))):
+            wrong = True
+            log("NOT resumed from the MARKs: %d view file(s) replaced or gone (%s), %d "
+                "appended to, %s record(s) converted again" % (
+                    len(moved), ", ".join(os.path.basename(p) for p in moved[:4]),
+                    len(grown), cu.get("records")))
+        else:
+            log("resumed from the MARKs: every view file the same file%s; %s record(s) "
+                "converted at the restart" % (
+                    (", %d appended to" % len(grown)) if grown else
+                    ", untouched", cu.get("records") or 0))
+    return wrong
 
 
 if __name__ == "__main__":

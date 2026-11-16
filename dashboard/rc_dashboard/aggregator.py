@@ -31,6 +31,7 @@ from . import anonymize
 from . import ask
 from . import clock
 from . import ebr
+from . import ebrview
 from . import endpoints
 from . import feeds as feedmod
 from . import gz
@@ -115,6 +116,10 @@ class Aggregator:
         risk_ruleset(cfg)
         self.lock = threading.RLock()
         self.reports = feedmod.resolve(cfg)
+        # The EBR view the feeds are read through (ebrview.py), set by the app
+        # once this is made, or None: the day-files are read as they are.
+        self.convert = None
+        self.convert_error = None
         self.source = FileTailSource(
             self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
             days=int(cfg.get("feeds.ebpf.days", 8)), prefer=prefer_of(cfg, "ebpf"))
@@ -445,7 +450,16 @@ class Aggregator:
                     # written by the demo (rc_dashboard/demo), not measured: the
                     # header says so whenever any host's records do
                     rep["synthetic_hosts"] = self.health.synthetic_hosts()
+                if name in ebrview.TIERS:
+                    # read through the EBR view, or as they are, and why
+                    rep["convert"] = self.convert_status(name)
             return self.reports
+
+    def convert_status(self, tier):
+        """The tier's `convert` block (ebrview.EbrView.status)."""
+        if self.convert is not None:
+            return self.convert.status(tier)
+        return ebrview.status_off(self.cfg, tier, self.convert_error)
 
     def collectors(self):
         """Is each collector OK: its own records (`health`) and its files on disk.

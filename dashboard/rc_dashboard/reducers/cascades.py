@@ -13,17 +13,27 @@ What this can see is PROCESSES. Claude Code's Task-tool subagents and workflow
 agents run inside their parent's process and are invisible here; only agents
 that are processes of their own appear. On madsys-gpu1 those are Remote Control
 workers under `claude rc`, Claude Desktop `ccd-cli` sessions under the remote
-`server`, and background agents a session starts through `claude daemon run`.
+`server`, and background sessions `claude daemon run` hosts. The daemon also
+keeps sessions started ahead of need, each a `claude bg-spare` waiting to be
+claimed; one nobody claimed ran nothing, and is the daemon's infrastructure
+here, not an agent (`idle_spares`).
 
 A node's parent is found, in order:
 
   ancestor          the nearest node above it in the process tree, walking the
                     window's ProcIndex; `path` lists what it passed through
-  spawned_by        the daemon's own `--spawned-by {"pid": N}`: it is started
-                    detached, so the process tree does not say who asked for it
   same_user_daemon  a `bg-pty-host` orphaned to init, attached to its user's only
                     daemon on that host. Inferred, and labelled so
   tree_root         the top-most agent the collector recorded for the tree
+
+`claude daemon` is not a parent's child. Whichever `claude` first needs it
+starts it, detached, and its `--spawned-by {"pid": N}` names that process; but
+the daemon is its user's, and every background session the user starts later,
+from any terminal, goes through it. Hung under the process that started it --
+as it was -- each of those sessions was drawn as that one session's subagent.
+So the daemon is the root of its own tree, hosting its sessions side by side
+as `claude rc` does, and who started it is kept on its node (`spawned_by`), not
+drawn as its parent.
 
 An agent started beneath another agent is that agent's SUBAGENT. An agent's
 numbers -- tool calls, CPU -- are its folded trajectory session's
@@ -40,7 +50,7 @@ import time
 from ..procindex import MAX_HOPS, users_conflict
 from . import add_counts, max_of, min_of, pct
 from ..redact import redact
-from ..roles import agent_version
+from ..roles import agent_version, subcommand
 from .sandbox import session_state
 from .workspace import tilde
 
@@ -94,7 +104,6 @@ WORKSPACE_BASIS = {
 }
 VIA_MEANING = {
     "ancestor": "nearest node above it in the process tree",
-    "spawned_by": "named by the daemon's own --spawned-by argument",
     "same_user_daemon": "a bg-pty-host orphaned to init, attached to its user's only "
                         "daemon on the host (inferred)",
     "tree_root": "the top-most agent the collector recorded for the tree",
@@ -121,7 +130,12 @@ class CascadeReducer:
         self.cfg = cfg
         r = cfg.get("reducers.cascades", {}) or {}
         self.max_nodes = int(r.get("max_nodes", 20000))
-        self.top_n = int(r.get("top_trees", 25))
+        # Every tree the window holds, in practice: the page lists each session.
+        # This was 25, and the deepest are sent first, so a window with 25 trees
+        # of subagents sent no session that started no other -- the commonest
+        # kind. A tree of one agent is ~160 bytes gzipped; past the cap the page
+        # says how many trees were not sent.
+        self.top_n = int(r.get("top_trees", 1000))
         self.max_shown = int(r.get("max_nodes_shown", 60))
         self.window_s = window_s or int(cfg.get("live.window_min", 1440)) * 60
         self.procs = procs
@@ -162,6 +176,9 @@ class CascadeReducer:
                 "spawned_by": spawned_by_pid(args) if role == "infra" else None,
                 "daemon": bool(role == "infra" and _DAEMON.search(args)),
                 "pty_host": bool(role == "infra" and _PTY_HOST.search(args)),
+                # a session the daemon starts before it is asked for one: the
+                # session it becomes once claimed, the daemon's until then (`_idle`)
+                "spare": role == "agent" and subcommand(rec.get("_command"), args) == "bg-spare",
                 "first": e, "last": e, "start": None, "exited": False,
                 "duration_s": None, "implied": False, "frontend": False,
                 "approval": None, "approval_detail": None, "version": None,
@@ -225,6 +242,12 @@ class CascadeReducer:
 
     # ------------------------------------------------------------- resolve
     def _parent(self, n, live, daemons):
+        if n["daemon"]:
+            # The daemon hosts its user's sessions, whoever asked for them, so
+            # it roots its own tree (the module's docstring) -- by any link: a
+            # detached child keeps its starter's pid as its ppid until the
+            # starter exits, and the collector may name the starter's tree root.
+            return None, None, []
         host = n["host"]
         p, path, seen = n["ppid"], [], {n["pid"]}
         for _ in range(MAX_HOPS):
@@ -240,9 +263,6 @@ class CascadeReducer:
                 break
             path.append(e[2] or "?")
             p = e[0]
-        sb = n["spawned_by"]
-        if sb is not None and (host, sb) in live:
-            return sb, "spawned_by", []
         if n["pty_host"] and n["ppid"] in _NO_PARENT:
             mine = daemons.get((host, n["user"]), [])
             if len(mine) == 1:
@@ -274,11 +294,25 @@ class CascadeReducer:
                     "host": host, "pid": pid, "ppid": None, "role": "agent",
                     "agent_type": s.agent_type, "user": s.user, "command": None,
                     "args": None, "cwd": None, "tree_root": s.tree_root,
-                    "spawned_by": None, "daemon": False, "pty_host": False,
+                    "spawned_by": None, "daemon": False, "pty_host": False, "spare": False,
                     "first": s.first, "last": s.last, "start": None, "exited": False,
                     "duration_s": None, "implied": True, "frontend": False,
                     "approval": None, "approval_detail": None, "version": None,
                     "surface": None, "surface_detail": None}
+
+        # `claude daemon` keeps sessions started ahead of need, each a `claude
+        # bg-spare` waiting on its claim socket, so that the next background
+        # session starts at once. Until one is claimed it runs no command: it is
+        # the daemon's, not an agent. Drawn as one, each was an agent that ran
+        # nothing -- and, while the daemon hung under whoever started it, that
+        # session's subagent. A spare that ran anything was claimed, and is the
+        # session it became; an idle one is infrastructure, counted
+        # (`idle_spares`) and, with no agent below it, not drawn.
+        idle_spares = 0
+        for key, n in live.items():
+            if n.get("spare") and n["role"] == "agent" and _idle(n, by_pid.get(key)):
+                n["role"] = "infra"
+                idle_spares += 1
 
         daemons = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -310,6 +344,17 @@ class CascadeReducer:
                 # and so is its surface: a daemon names no client of its own
                 if n["surface"] in (None, "unknown") and p["surface"] is not None:
                     n["surface"], n["surface_detail"] = p["surface"], p["surface_detail"]
+        # A session a `bg-pty-host` runs is one of the daemon's background
+        # sessions, though its own argv (`--session-id x`, in a pty) reads as an
+        # interactive one: it is driven from where its host says. With the
+        # daemon no longer under whoever started it, this is what says why it
+        # roots a tree of its own.
+        for n in live.values():
+            if n["role"] != "agent" or n["via"] != "ancestor" or n["path"]:
+                continue
+            p = live[(n["host"], n["parent"])]
+            if p["pty_host"] and p["surface"] is not None:
+                n["surface"], n["surface_detail"] = p["surface"], p["surface_detail"]
 
         kids = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -358,6 +403,8 @@ class CascadeReducer:
                        "from": _ts(cutoff), "to": _ts(now)},
             "summary": {
                 "trees": len(with_agents),
+                # the deepest first, up to `reducers.cascades.top_trees`
+                "trees_sent": min(len(with_agents), self.top_n),
                 "nested": len(nested),
                 # sessions started by infrastructure (a daemon, a remote server,
                 # `claude rc`): many agents, none of them inside another
@@ -368,6 +415,9 @@ class CascadeReducer:
                 "max_agent_depth": max((t["agent_depth"] for t in with_agents), default=None),
                 "max_fanout": max((t["max_fanout"] for t in with_agents), default=None),
                 "trees_without_agents": len(trees) - len(with_agents),
+                # `claude bg-spare` sessions the daemon started and nobody claimed:
+                # not agents, so in none of the counts above
+                "idle_spares": idle_spares,
             },
             "depth_hist": dict(depth_hist),
             "fanout_hist": dict(fan_hist),
@@ -398,6 +448,11 @@ class CascadeReducer:
                             "as an agent with a subagent",
                 "hidden_nodes": "infra and clients with no agent beneath them are "
                                 "counted per tree, not listed",
+                "idle_spare": "a `claude bg-spare` that ran no process but its own: a "
+                              "session `claude daemon` started ahead of need, which nobody "
+                              "claimed. Infrastructure, not an agent, so never a subagent; "
+                              "counted per tree and in the summary. One that ran anything "
+                              "was claimed, and is the agent it became",
                 "subagent": "an agent started, through any number of steps, beneath "
                             "another agent",
                 "invisible": "in-process subagents (Claude Code's Task tool, workflow "
@@ -486,6 +541,8 @@ class CascadeReducer:
             "agents": served,
             "summary": {
                 "agents": len(rows), "shown": len(served),
+                # the busiest this many, and past it only those that wrote outside
+                "agents_cap": ws.max_agents,
                 "with_subagents": sum(1 for r in rows if r["subagents"]),
                 "with_outside_writes": flagged,
                 "other_homes": sum(1 for r in rows if reached(r, "other user's home")),
@@ -500,7 +557,7 @@ class CascadeReducer:
 
     @staticmethod
     def _break_cycles(live):
-        """A spawned_by or tree_root link can close a loop; cut it where it closes."""
+        """A tree_root or same_user_daemon link can close a loop; cut it where it closes."""
         for key, n in live.items():
             seen, cur = {key}, n
             while cur["parent"] is not None:
@@ -519,10 +576,7 @@ class CascadeReducer:
             n = live[key]
             is_agent = n["role"] == "agent"
             level = level + 1 if is_agent else level
-            held = by_pid.get(key)
-            # the session of the pid that is the node's user's, else the first listed: the
-            # node's user is read from the agent's own records, a session's from its first call
-            s = (held.get(n["user"]) or next(iter(held.values()))) if held else None
+            s = _held(n, by_pid.get(key))
             sess = s[0] if s else None
             home, home_src = homes.get(key, (None, None))
             # a node that is not an agent has no home of its own; its cwd, off `/`,
@@ -562,8 +616,10 @@ class CascadeReducer:
 
         visit(root_key, 0, 0, None)
         # Infrastructure and clients with no agent beneath them -- the Codex
-        # daemon's update loop, an idle `claude attach` -- are counted, not listed.
+        # daemon's update loop, an idle `claude attach`, a spare nobody claimed
+        # -- are counted, not listed.
         hidden = sum(1 for x in nodes[1:] if x["role"] != "agent" and not x["fanout"])
+        spares = sum(1 for x in nodes if x["spare"] and x["role"] != "agent")
         nodes = [nodes[0]] + [x for x in nodes[1:] if x["role"] == "agent" or x["fanout"]]
         agents = [x for x in nodes if x["role"] == "agent"]
         root = nodes[0]
@@ -578,9 +634,31 @@ class CascadeReducer:
             "tool_calls": totals["tool_calls"], "cpu_s": round(totals["cpu_s"], 3),
             "nodes": _pick(nodes, self.max_shown) if len(nodes) > self.max_shown else nodes,
             "hidden_nodes": hidden,
+            # of the hidden: `claude bg-spare` sessions its daemon started and nobody claimed
+            "idle_spares": spares,
             "nodes_truncated": len(nodes) > self.max_shown,
             "_fanouts": fanouts,
         }
+
+
+def _held(n, held):
+    """The (session, owner_via, n_keys) a node is paired with, or None: of the
+    sessions held for its pid, its own user's, else the first listed -- the
+    node's user is read from its own records, a session's from its first call."""
+    if not held:
+        return None
+    return held.get(n["user"]) or next(iter(held.values()))
+
+
+def _idle(n, held):
+    """True when the session a node is paired with holds no process but the
+    node's own: its exit is one of its session's records, so a spare that only
+    waited and then exited reads as one process."""
+    s = _held(n, held)
+    if s is None:
+        return True
+    sess = s[0]
+    return sess.n <= 1 and all(p == n["pid"] for p in sess.pids)
 
 
 def _busiest(x):
@@ -690,6 +768,8 @@ def _node_out(n):
         "agent_type": n["agent_type"], "user": n["user"], "command": n["command"],
         "args": n["args"], "cwd": n["cwd"], "implied": n["implied"],
         "frontend": n["frontend"],
+        # a `claude bg-spare`: an agent if it was claimed, else an idle spare (infra)
+        "spare": bool(n.get("spare")),
         "parent": n["parent"], "via": n["via"], "path": n["path"],
         "spawned_by": n["spawned_by"],
         "started": _ts(n["start"]), "first_seen": _ts(n["first"]),

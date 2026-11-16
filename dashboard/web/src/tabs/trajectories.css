@@ -121,6 +121,18 @@ table.tj-table td .sub {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
+/* under it, what kind of session it was and the session in a few sentences */
+.ins-gist {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.ins-gist .sess-cat {
+  margin-right: 6px;
+  vertical-align: 1px;
+}
 /* A bound the read hit. It changes what the tree means, so it is not a tooltip. */
 .ins-bound {
   border: 1px solid var(--warn);

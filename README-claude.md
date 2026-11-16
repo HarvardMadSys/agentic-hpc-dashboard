@@ -21,8 +21,10 @@ records, whose rate is the node's fork rate and which dominate the volume, and
 `<host>.snapshot.jsonl` for the residency census, connections, per-tick network bytes by
 endpoint, submits and the run's own meta/stop bookends. With `EBPFM_FORMAT=both`, the default
 while EBR is on trial, each has an `.ebr` twin holding the same records in the same order
-(with `ebr`, the `.ebr` file alone), and the dashboard reads one file of each pair. Records are
-unchanged either way — each carries its own `host`, and the dashboard lists the day
+(with `ebr`, the `.ebr` file alone), and the dashboard reads one file of each pair. The
+dashboard reads EBR only: at startup it converts every stream written only as JSONL into an
+EBR view in its cache and links the `.ebr` files it finds (`dashboard/rc_dashboard/ebrview.py`,
+`RC_DASH_CONVERT=0` to read the day-files as they are). Records are unchanged either way — each carries its own `host`, and the dashboard lists the day
 directory — so this is a filing decision, not a schema one.
 
 ```
@@ -93,7 +95,7 @@ uv run python -m rc_dashboard demo                 # http://127.0.0.1:8080
 | [`collector/README.md`](collector/README.md) | the two tiers, why eBPF (and why `sudo` does not escape the cgroup cap — `systemd-run` does), the concurrency model, **measured overhead**, the binary record format (EBR) and its rollout, the full event/field schema, `ebpfm.sh` verbs, kernel support |
 | [`collector/COVERAGE.md`](collector/COVERAGE.md) | the field-by-field crosswalk: for each of the 40 observable login-node signals, which tier reads it after the cutover |
 | [`collector/VENDORED.md`](collector/VENDORED.md) | the five copied modules, why copies rather than symlinks, and the sync rule `ebpfm.sh check` enforces |
-| [`dashboard/README.md`](dashboard/README.md) | feed resolution and config precedence, reading JSONL and EBR twins, the 24 h window, the REST/WS API, the panel conventions, known collector limitations the page surfaces |
+| [`dashboard/README.md`](dashboard/README.md) | feed resolution and config precedence, reading JSONL and EBR twins, the startup conversion to EBR, the 24 h window, the REST/WS API, the panel conventions, known collector limitations the page surfaces |
 | [`dashboard/web/README.md`](dashboard/web/README.md) | the SPA: tabs, charts, filter/URL state, the dev fixture, and the integrity rules the code enforces |
 | [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live service on a host of your own: the fleet stream from each node, the settings file, the first deploy, memory and disk, and the hourly check |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the demo, over a synthetic feed, on a public URL |

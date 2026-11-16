@@ -57,8 +57,31 @@ export interface FeedReport {
   backfill: unknown;
   /** hosts whose records were written by the demo (rc_dashboard/demo), not measured */
   synthetic_hosts?: string[];
+  /** the dated tiers read through the EBR view: the collector's own roots */
+  source_roots?: string[];
+  /** the dated tiers: the startup conversion to EBR (rc_dashboard/ebrview.py) */
+  convert?: ConvertStatus;
 }
 export type FeedsResponse = Record<string, FeedReport>;
+
+/** How a dated tier is read: through the EBR view the service converts its
+ *  JSONL into (and links its EBR into) at startup, or as the files are. */
+export interface ConvertStatus {
+  enabled: boolean;
+  state: 'off' | 'catching_up' | 'live' | 'stopped' | 'error';
+  reason?: string;
+  pct?: number;
+  dir?: string;
+  source_roots?: string[];
+  view_roots?: string[];
+  counts?: { converted: number; linked: number; held: number };
+  records?: number;
+  bad_lines?: number;
+  bytes_in?: number;
+  bytes_out?: number;
+  lag_bytes?: number;
+  errors?: { at: number; file: string | null; error: string }[];
+}
 
 /* ------------------------------------------------------------- collectors */
 
@@ -803,6 +826,28 @@ export interface PhaseBlock {
    *  session, so that midnight cuts no task or phase; a `sid` on a task or a phase says which row holds it. Absent
    *  for an agent of one day */
   days?: PhaseDay[];
+  /** what kind of session it was (`rc_dashboard/reducers/phase_summary.py`). Absent from a service that predates it */
+  category?: SessionCategory;
+  /** `[use, percent]`: each use's share of the session's work, the most first. The work is its phases' time but idle
+   *  gaps, waiting (a wait on Slurm is Slurm work), and commands not recorded; where none of it had a length, its
+   *  calls. Empty for a session that did no work */
+  uses?: [UseKind, number][];
+  /** the session in a few sentences, from the block's own numbers: what the work was and its mix, the tool calls and
+   *  tasks with the names they held, and how long the agent waited. No model writes it */
+  summary?: string;
+}
+
+/** What kind of session a block was: the use that holds half its work or more, as the Users tab counts a user's calls
+ *  (`UseKind`); `mixed` when none does; `wait` for a session that only waited; `unknown` for one whose commands were
+ *  mostly not recorded; `none` for one that made no tool call. */
+export type SessionCategory = UseKind | 'mixed' | 'wait' | 'unknown' | 'none';
+
+/** A block's category, the uses it rests on, and its summary, as a portrait's session carries them too: null where no
+ *  block was built for it. */
+export interface SessionKind {
+  category?: SessionCategory | null;
+  uses?: [UseKind, number][] | null;
+  summary?: string | null;
 }
 
 /** A row whose calls are not recognized: an agent type outside Claude Code and Codex, a person, an IDE. */
@@ -1191,6 +1236,9 @@ export interface CascadeNode {
   cwd: string | null;
   implied: boolean;
   frontend: boolean;
+  /** a `claude bg-spare`, a session `claude daemon` started ahead of need: an
+   *  agent once claimed; one nobody claimed is infra, and not drawn (`idle_spares`) */
+  spare?: boolean;
   parent: number | null;
   via: CascadeVia | null;
   /** commands passed through between the parent node and this one */
@@ -1246,6 +1294,8 @@ export interface CascadeTree {
   nodes: CascadeNode[];
   nodes_truncated: boolean;
   hidden_nodes: number;
+  /** of the hidden: `claude bg-spare` sessions its daemon started and nobody claimed */
+  idle_spares?: number;
 }
 
 /** Where a directory sits relative to the agent's home. */
@@ -1380,6 +1430,8 @@ export interface Workspace {
   summary: {
     agents: number;
     shown: number;
+    /** the busiest this many are served, and past it only those that wrote outside */
+    agents_cap?: number;
     with_subagents: number;
     with_outside_writes: number;
     /** agents that ran in, or named a path in, another user's home / shared storage */
@@ -1398,6 +1450,8 @@ export interface Cascades extends PanelEnvelope {
   window?: { minutes: number; from: string | null; to: string | null };
   summary?: {
     trees: number;
+    /** sent in `trees`, the deepest first, up to reducers.cascades.top_trees */
+    trees_sent?: number;
     nested: number;
     hosted: number;
     agents: number;
@@ -1406,6 +1460,8 @@ export interface Cascades extends PanelEnvelope {
     max_agent_depth: number | null;
     max_fanout: number | null;
     trees_without_agents: number;
+    /** `claude bg-spare` sessions the daemon started and nobody claimed: not agents */
+    idle_spares?: number;
   };
   depth_hist?: Record<string, number>;
   fanout_hist?: Record<string, number>;
@@ -1495,7 +1551,7 @@ export interface LiveSubmit {
  *  have not been read yet: a gap, not a quiet fleet. `retained_from` here is
  *  set once it is `done`. */
 export interface BackfillStatus {
-  state: 'idle' | 'running' | 'done' | 'skipped' | 'error';
+  state: 'idle' | 'converting' | 'positioning' | 'running' | 'done' | 'skipped' | 'error';
   pct: number;
   records: number;
   hours: number;
@@ -1901,7 +1957,9 @@ export interface UsersResponse extends PanelEnvelope {
 }
 
 /** One session in a portrait. */
-export interface PortraitSession {
+/** One of a user's sessions. Its `category`, `uses`, and `summary` are its phase block's (`SessionKind`), null where no
+ *  block was built for it. */
+export interface PortraitSession extends SessionKind {
   /** its newest day's row: what the Sessions tab opens it by */
   sid: string;
   /** every day row it is */

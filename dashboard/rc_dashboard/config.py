@@ -24,6 +24,8 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MISSING = object()
 # The day-file formats `feeds.<tier>.prefer` may name (feedfile.FORMATS).
 PREFER_FORMATS = ("jsonl", "ebr")
+# `ingest.convert` (ebrview.py) unless set.
+CONVERT = {"enabled": True, "dir": "", "zstd": 0, "workers": 0, "days": 0}
 
 
 def _env(name, default=None):
@@ -143,7 +145,19 @@ def defaults():
             "backfill_hours": 168,
             "clock_skew_s": 120,
         },
-        "ingest": {"poll_ms": 1000},
+        "ingest": {
+            "poll_ms": 1000,
+            # The service reads EBR only (ebrview.py): at startup, every stream
+            # the collector wrote only as JSONL is converted into an EBR view
+            # under `dir` (<cache.dir>/ebr-view unless set), and the readers are
+            # pointed at the view; a stream written as EBR is linked into it.
+            # The copies are kept current as the collector appends. `zstd`: the
+            # level of the view's zstd frames, 0 for none. `workers`: processes
+            # converting at startup, 0 for every CPU it may use, 1 for this one.
+            # `days`: dated dirs mirrored, 0 for every one the source holds (what
+            # event scans and exports read), or a bound for a long history.
+            "convert": dict(CONVERT),
+        },
         # The service's present. "" is the wall clock; "auto" or a local time
         # pins (and freezes) it, for a feed captured elsewhere and copied here.
         # See clock.py.
@@ -270,7 +284,12 @@ def defaults():
                                        "new_steps": 5, "new_window_s": 1800,
                                        "close_overlap": 0.5, "close_series_s": 300,
                                        "min_s": 600, "min_calls": 5, "cap": 10,
-                                       "headline_names": 3}},
+                                       "headline_names": 3},
+                             # What kind of session a block was, and its summary:
+                             # reducers/phase_summary.py documents each threshold. Its
+                             # DEFAULTS, read against eight FAS RC login nodes
+                             # (rc_dashboard/phase_report.py); a test holds the two equal.
+                             "summary": {"mostly": 0.5, "also": 0.1}},
         },
         # What counts as risky differs by cluster. The rules are built in
         # (reducers/risk.py, which documents every key); this switches them
@@ -392,6 +411,12 @@ ENV_MAP = {
     "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE",
                             lambda v: v not in ("0", "false", "no")),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
+    "ingest.convert.enabled": ("RC_DASH_CONVERT",
+                               lambda v: v.strip().lower() not in ("0", "false", "no", "off")),
+    "ingest.convert.dir": ("RC_DASH_CONVERT_DIR", str),
+    "ingest.convert.zstd": ("RC_DASH_CONVERT_ZSTD", int),
+    "ingest.convert.workers": ("RC_DASH_CONVERT_WORKERS", int),
+    "ingest.convert.days": ("RC_DASH_CONVERT_DAYS", int),
     "clock.as_of": ("RC_DASH_AS_OF", str),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
@@ -624,6 +649,27 @@ def load(args=None, config_path=None):
             raise SystemExit("%s: %r is not one of %s (set by %s)" % (
                 key, val, ", ".join(PREFER_FORMATS), origins.get(key, "default")))
         _set(tree, key, norm)
+
+    # The startup conversion (ebrview.py): a switch, a directory, a zstd level
+    # and a worker count, or the service refuses to start rather than guess.
+    conv = _get(tree, "ingest.convert", None)
+    if not isinstance(conv, dict):
+        raise SystemExit("ingest.convert: %r is not an object (set by %s)" % (
+            conv, origins.get("ingest.convert", "default")))
+    for key, ok, what in (
+            ("enabled", lambda v: isinstance(v, bool), "true or false"),
+            ("dir", lambda v: v is None or isinstance(v, str), "a path, or empty"),
+            ("zstd", lambda v: type(v) is int and 0 <= v <= 22, "a zstd level 0..22 (0: off)"),
+            ("days", lambda v: type(v) is int and 0 <= v <= 100000,
+             "a count of dated dirs 0..100000 (0: every one the source holds)"),
+            ("workers", lambda v: type(v) is int and 0 <= v <= 256,
+             "a process count 0..256 (0: every CPU this process may use)")):
+        dotted = "ingest.convert." + key
+        val = conv.get(key, CONVERT[key])
+        if not ok(val):
+            raise SystemExit("%s: %r is not %s (set by %s)" % (
+                dotted, val, what, origins.get(dotted, "default")))
+        conv[key] = "" if (key == "dir" and val is None) else val
 
     # candidate-probe annotation for the multi-root feeds
     for feed in ("ebpf", "ebpf_node"):

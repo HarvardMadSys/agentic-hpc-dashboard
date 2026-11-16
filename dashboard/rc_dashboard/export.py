@@ -620,19 +620,22 @@ def _window_stream_ebr(entry, norm, since, until, stats, kinds=None, where=None)
     is counted in `parse_errors` with the records it took with it (the decoder
     is broken until the next SEGMENT), and one near the end of a plain file is
     left as still being written (`feedfile.SETTLE`).
+
+    One source serves the decoder's placement and the frames after it, and a
+    frame whose oldest record is from `since` on (its header says so) has
+    none to pass over.
     """
     path = entry["path"]
     try:
         fh = gz.open_feed(path)
     except OSError:
         return
-    with fh:
+    with fh, ebr.source(ebr_src(fh)) as src:
         st = gz.fstat(fh)
         entry["dev"], entry["ino"] = st.st_dev, st.st_ino
         entry["head_n"] = min(HEAD_BYTES, st.st_size)
         entry["head"] = head_digest(fh, entry["head_n"])
         entry["end"] = entry["start"]
-        src = ebr_src(fh)
         dec = decoder_at(src, entry["start"])
         dst = dec.stats
         err0, filt0 = errors(dst), dst["filtered"]
@@ -648,10 +651,12 @@ def _window_stream_ebr(entry, norm, since, until, stats, kinds=None, where=None)
                 else:
                     entry["end"] = f.end
                     stats["bytes"] += f.end - f.off
+                    early = not f.ts_min >= since
                     for _pos, raw in dec.records(src, f, kinds, where):
-                        t = epoch_of(raw)
-                        if t is not None and t < since:
-                            continue          # before the window: a line seek starts past it
+                        if early:
+                            t = epoch_of(raw)
+                            if t is not None and t < since:
+                                continue      # before the window: a line seek starts past it
                         stats["scanned"] += 1
                         rec = norm.normalize(raw)
                         if rec is None:

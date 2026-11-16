@@ -1,14 +1,17 @@
-"""EBR v1: ebpfm binary records.
+"""EBR v2: ebpfm binary records.
 
 A framed, append-only, self-describing container for the collector's JSON
 records. It is 4-8x smaller than JSONL, costs about what json.dumps costs to
 write, less than json.loads to read, and a reader can skip a frame by its header
-(time bounds, event kinds) without decoding a record.
+(time bounds, event kinds) without decoding a record. Every payload is binary:
+a reader needs no JSON parser. v1 files, whose SEGMENT payloads are JSON, are
+still read, and a v1 file appended to by a v2 writer holds both.
 
 `collector/lib/ebr.py` is canonical. `dashboard/rc_dashboard/ebr.py` is a
 byte-identical copy, with sync tests on both sides. Stdlib only, Python 3.6+,
 no import-time side effects; it works as `import ebr` and as `rc_dashboard.ebr`.
-`python3 ebr.py --help` lists the command-line verbs.
+zstd is optional: compression.zstd (Python 3.14+), else zstandard, else pyzstd,
+imported on first use. `python3 ebr.py --help` lists the command-line verbs.
 
 CONTRACT (normative)
   For every record the collector can write,
@@ -30,8 +33,10 @@ FRAME (integers little-endian; HDR = Struct('<4sBBHIIddIII'), 44 bytes;
        trailer Struct('<II'), 8 bytes)
   off size field
     0   4  magic b"\\x89EBR", also the resync marker (JSONL never starts with it)
-    4   1  kind: 1 SEGMENT, 2 DATA; any other kind is advisory and skipped
-    5   1  flags: bit0 = payload is zlib; any other bit -> segment unsupported
+    4   1  kind: 1 SEGMENT, 2 DATA, 3 MARK; any other kind is advisory and skipped
+    5   1  flags, how the payload is stored: 0 as is; 2 (bit1) F_ZSTD; 1 (bit0)
+           F_ZLIB, v1 only (read, never written). Any other value, both bits
+           included, makes the segment unsupported
     6   2  reserved, written 0, ignored by readers
     8   4  payload_len L (readers reject L > 64 MiB)
    12   4  n_records
@@ -41,21 +46,60 @@ FRAME (integers little-endian; HDR = Struct('<4sBBHIIddIII'), 44 bytes;
    36   4  kinds bitmask: bit i = KINDS[i]; bit 30 NOEVENT (event missing or
            null); bit 31 OTHER (an event not in the registry, or not a str)
    40   4  crc32 of bytes 0..39
-   44   L  payload, as stored (compressed when bit0 is set)
+   44   L  payload, as stored
  44+L   4  crc32 of the stored payload
  48+L   4  frame_len = 52 + L, so readers can walk backwards from EOF
 
   A frame is complete when its header CRC holds, it ends within the file, its
   trailer says 52 + L and (when verifying) its payload CRC holds. A record's
   position is frame.off + i, i its index in the frame: unique, increasing and
-  below frame.end. Every resumable offset is a frame boundary.
+  below frame.end. Every resumable offset is a frame boundary. The header is
+  never compressed: time bounds, kinds masks and record counts read without
+  decompressing anything.
 
-SEGMENT payload: compact ASCII JSON
-  {"format":"ebr","version":1,"str_id_size":2,"kinds":[registry],
-   "reset_bytes":N,"zlib":L,"created":epoch, ...writer meta (host, stream, ...)}
-  A SEGMENT starts a dictionary epoch: empty string and shape tables.
+STORED PAYLOADS
+  F_ZSTD   raw_len:uv, then exactly one zstd frame (RFC 8878) of the raw_len
+           bytes of the payload. Readers accept raw_len 1..64 MiB, let the frame
+           produce at most raw_len + 1 bytes, and require exactly raw_len and
+           nothing after the frame: anything else is a BAD frame. Writers
+           compress DATA frames only (Writer zstd=1..22, off by default) and
+           keep a frame as is when zstd would not make it smaller. A reader
+           without a zstd module meets an F_ZSTD frame as an unknown flag: the
+           segment is unsupported until the next SEGMENT (the frame holds
+           definitions later frames use), and the frame is counted in
+           unsupported_frames and zstd_unavailable; it is never BAD.
+  F_ZLIB   one zlib stream of the payload, at most 64 MiB inflated (v1
+           writers' zlib=1..9).
 
-DATA payload (after inflating when bit0 is set)
+SEGMENT payload (v2: binary)
+  segment := version:u8(=2) str_id_size:u8(2|4) created:f64 reset_bytes:uv
+             n_kinds:uv bstr*                 (the KINDS registry of the writer)
+             meta:map                         (writer meta: host, stream, pid, ...)
+             [bytes after meta are ignored: room for additive fields]
+  bstr and map are MAP's below; the magic implies the format. A SEGMENT starts
+  a dictionary epoch: empty string and shape tables.
+
+  A reader picks the parser by the payload's first byte. '{' (0x7B) is a v1
+  SEGMENT, compact ASCII JSON read by v1's rules:
+      {"format":"ebr","version":1,"str_id_size":2,"kinds":[registry],
+       "reset_bytes":N,"zlib":L,"created":epoch, ...writer meta}
+  (another format or version, or a str_id_size other than 2 or 4, makes the
+  segment unsupported). 0x02 is v2. Any other byte is a version this reader
+  does not know: unsupported. A malformed payload (bad JSON; a v2 payload that
+  is truncated, holds a bad tag, or a str_id_size other than 2 or 4) is a bad
+  SEGMENT. Decoder.segment is a dict either way: format, version, str_id_size,
+  kinds, reset_bytes, (v1: zlib,) created, then the meta keys, none of which
+  replaces one of those.
+
+MARK payload: a map, never compressed
+  An advisory checkpoint (Writer.mark): whatever map its writer chooses, say a
+  converter's place in its source. Its header: 0 records, NaN time bounds,
+  kinds 0, seg_back as for DATA. A flush writes a MARK in the same os.write as
+  the frames queued before it, so a MARK in the file vouches for every record
+  before it, and last_mark() gives the newest one and the records after it.
+  Readers skip it like any advisory kind; a MARK with flags is malformed.
+
+DATA payload (as decompressed)
   payload := str_base:uv shape_base:uv defs_len:uv defs record{n_records}
   def     := 0x01 n:uv utf8(surrogatepass)               STR   -> next string id
            | 0x02 nfields:uv (key_str_id:uv type:u8)*    SHAPE -> next shape id
@@ -85,6 +129,16 @@ DATA payload (after inflating when bit0 is set)
   values, (context, '*')) has produced 8 distinct key sets, and any dict above
   4096 fields is MAP; the top-level record is never MAP below that.
 
+MAP (SEGMENT meta, MARK payloads)
+  map  := n:uv (key:bstr val)*
+  val  := 0 null | 1 false | 2 true | 3 zigzag:uv (int64) | 4 n:uv int bytes
+          (little-endian, signed) | 5 f64 | 6 bstr | 7 map | 8 n:uv val*
+  bstr := n:uv utf8(surrogatepass)
+  DATA's tags with the strings inline (a map has no string table), nested at
+  most 64 deep. Keys are converted as json.dumps converts them; a value of any
+  other type is stored as its str(), as json.dumps(default=str) stores it.
+  An unknown tag, or a map that runs past its bytes, is malformed.
+
 KINDS registry (append-only; each SEGMENT records its writer's)
   bits 0-10: meta exit truncated conn netio submit residency residency_totals
   stop tcp accept (the last two retired); 30 NOEVENT; 31 OTHER. A reader skips
@@ -93,20 +147,24 @@ KINDS registry (append-only; each SEGMENT records its writer's)
 
 SEGMENTS AND CAPS
   A new segment starts on every Writer open (unless it resumes the last one),
-  after the frame that takes the segment past reset_bytes (2 MiB), before the
-  65535-entry string or shape table would overflow, and after a write error
-  that could not be undone. Soft frame caps: 1 MiB or 8192 records. Hard
-  limits: 64 MiB payload, 4096 fields per shape. The SEGMENT frame is written
-  lazily, in the same os.write as the first DATA frame, so a file opened and
-  closed with no records stays 0 bytes.
+  after the frame that takes the segment past reset_bytes (2 MiB of stored
+  bytes), before the 65535-entry string or shape table would overflow, and
+  after a write error that could not be undone. Soft frame caps: 1 MiB or 8192
+  records, before compression. Hard limits: 64 MiB payload, 4096 fields per
+  shape. The SEGMENT frame is written lazily, in the same os.write as the first
+  DATA or MARK frame, so a file opened and closed with nothing written stays 0
+  bytes.
 
 COMPATIBILITY
-  The header, magic and CRCs are frozen. A SEGMENT with another format or
-  version, or a str_id_size other than 2 or 4, or a frame with an unknown flag
-  bit, makes that segment unsupported: skipped and counted until the next
-  SEGMENT. Unknown frame kinds are skipped. An unknown opcode, slot type or tag
-  is a BAD frame. Readers accept str_id_size 2 and 4. The container version is
-  separate from the records' schema_version.
+  The header, magic and CRCs are frozen. A SEGMENT this reader does not know
+  (above), or a frame whose flags it cannot read (an unknown bit, both F_ZLIB
+  and F_ZSTD, F_ZSTD without a zstd module), makes that segment unsupported:
+  skipped and counted until the next SEGMENT. Unknown frame kinds are skipped.
+  An unknown opcode, slot type or tag is a BAD frame. Readers accept
+  str_id_size 2 and 4. v2 writers write v2 SEGMENTs only and never continue a
+  v1 segment. A v1 reader parses every SEGMENT as JSON, so it takes a v2 one
+  for a bad SEGMENT and loses that segment's records: update readers before
+  writers. The container version is separate from the records' schema_version.
 
 CRASHES AND CONCURRENCY
   One writer per file (flock, plus the collector's own lock). Readers never
@@ -123,15 +181,21 @@ CRASHES AND CONCURRENCY
 API
   sniff(head) -> 'ebr' | 'jsonl' | None      kind_mask(names, registry=None)
   Prefix(str), match_where(where, rec)       (the reference filter semantics)
-  Writer(target, meta=None, reset_bytes=, zlib=0, max_frame_records=,
+  zstd_available() -> bool                   zstd_backend() -> str | None
+  Writer(target, meta=None, reset_bytes=, zstd=0, max_frame_records=,
          max_frame_bytes=, mode=0o666, lock=True, resume=False, lock_wait=0)
-    .write(rec) .flush() -> bytes .close() .end .stats (a copy)
+    zstd: a level 1-22 (True: 3; 0, False, None: off); Error if no module
+    .write(rec) .mark(info) .flush() -> bytes .close() .end .stats (a copy)
   Writer.open_append(path, **kw): resume=True, lock_wait=30; it continues the
-    last segment when that is clean, of this version and registry, under
-    reset_bytes, and the open repaired nothing
+    last segment when that is clean, v2, of this registry, under reset_bytes,
+    and the open repaired nothing
   frames(src, start=0, end=None, verify=True, settle=0) -> Frame...
   frames_reverse(src, end, verify=False)  peek(src, off)
   resync(src, pos, end=None)  complete_end(src, size=None)  is_boundary(src, off)
+  verify_back(src, end, stop=0): the frames back from boundary `end` to the
+    first at or before `stop` all whole, CRCs good (no BAD region there)
+  mark_info(src, frame) -> dict
+  last_mark(src, end=None) -> (info, mark_end, records_after)
   Decoder(strict=False); Decoder.at(src, off, strict=False)
     .records(src, frame, kinds=None, where=None) -> (pos, rec)...
     .skip(frame, src=None)  .segment .broken .unsupported .stats
@@ -139,7 +203,9 @@ API
   iter_records(path_or_fh, kinds=None, where=None, stats=None)
   open_feed(path) -> (binary file, 'ebr'|'jsonl')  main(argv=None)
   `src` is a path (read with os.pread), a bytes-like object, or any other
-  object with seek/read (never its fileno()).
+  object with seek/read (never its fileno()); source(src) opens one for a
+  run of calls (`with source(path) as s:`), each of which would otherwise
+  open its own.
 """
 import errno
 import gzip
@@ -159,11 +225,13 @@ except ImportError:  # pragma: no cover - not POSIX: write unlocked
 
 MAGIC = b"\x89EBR"
 FORMAT = "ebr"
-VERSION = 1
+VERSION = 2
 SEGMENT = 1
 DATA = 2
+MARK = 3                    # advisory: a checkpoint a converter writes (`Writer.mark`)
 BAD = -1                    # pseudo-kind of a corrupt region; never in a header
-F_ZLIB = 1
+F_ZLIB = 1                  # v1 files only: read, never written
+F_ZSTD = 2
 KINDS = ("meta", "exit", "truncated", "conn", "netio", "submit", "residency",
          "residency_totals", "stop", "tcp", "accept")
 BIT_NOEVENT = 1 << 30
@@ -187,9 +255,10 @@ T_NULL, T_BOOL, T_I8, T_I16, T_I32, T_I64, T_F64, T_STR, T_OBJ, T_LIST, T_BIG = 
 SLOT_NAMES = ("NULL", "BOOL", "I8", "I16", "I32", "I64", "F64", "STR", "OBJ", "LIST", "BIG")
 
 WRITER_STATS = ("records", "frames", "segments", "bytes", "writes", "encode_errors",
-                "write_errors", "lost_records", "repaired_bytes", "zlib_frames")
+                "write_errors", "lost_records", "repaired_bytes", "zstd_frames",
+                "mark_frames")
 DECODER_STATS = ("frames", "records", "filtered", "bad_records", "bad_frames",
-                 "lost_frames", "lost_records", "unsupported_frames")
+                 "lost_frames", "lost_records", "unsupported_frames", "zstd_unavailable")
 
 _INF = float("inf")
 _NAN = float("nan")
@@ -197,15 +266,21 @@ _I64 = 1 << 63
 _HDR40 = struct.Struct("<4sBBHIIddII")
 _U32 = struct.Struct("<I")
 _F64 = struct.Struct("<d")
+_SEG2 = struct.Struct("<BBd")   # a v2 SEGMENT's version, str_id_size, created
+_SEG_KEYS = ("format", "version", "str_id_size", "kinds", "reset_bytes", "created")
 _FIXED = ("", "?", "b", "h", "i", "q", "d")
 _SIG_CAP = 16384            # cached encoder signatures
 _CODE_CAP = 4096            # compiled layouts per cache
-_WIN = 1 << 20              # read-ahead window
+_WIN = 1 << 20              # read-ahead window, at most
+_WIN0 = 16 << 10            # ... after a jump; it grows 4x a read while the reads move on
 _PENDING_MAX = 16 << 20     # unwritten bytes kept for a retry
 _FRAME_ROOM = MAX_PAYLOAD - 64
 _KIND_BIT = dict((k, 1 << i) for i, k in enumerate(KINDS) if i < 30)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _crc = _zlib.crc32
+# crc32(data + its own crc32, little-endian) for any data: a stored CRC and the
+# bytes it covers, checked in one call
+_RESIDUE = 0x2144DF1C
 
 
 class Error(ValueError):
@@ -284,6 +359,144 @@ def _ruv(b, p):
 
 
 _BYTE = [bytes((_i,)) for _i in range(256)]
+
+
+# ---------------------------------------------------------------------------
+# maps: the binary key/value grammar of SEGMENT meta and MARK payloads
+# ---------------------------------------------------------------------------
+#   map  := n:uv (key:bstr val)*
+#   val  := 0 null | 1 false | 2 true | 3 zigzag:uv (int64) | 4 n:uv int bytes
+#           (little-endian, signed) | 5 f64 | 6 bstr | 7 map | 8 n:uv val*
+#   bstr := n:uv utf8(surrogatepass)
+# The tags are DATA's `tagged` ones, but a string is inline: a map carries no
+# string table. Keys are converted the way json.dumps converts them, and a
+# value of any other type is stored as its str(), as json.dumps(default=str).
+# Strings are kept as given: unlike JSON, a split surrogate pair stays split.
+
+_MAP_DEPTH = 64
+
+
+def _bstr(s):
+    b = s.encode("utf-8", "surrogatepass")
+    return _uv(len(b)) + b
+
+
+def _enc_val(v, out, depth):
+    if depth > _MAP_DEPTH:
+        raise ValueError("Circular reference detected")
+    if v is None:
+        out.append(0)
+    elif v is True:
+        out.append(2)
+    elif v is False:
+        out.append(1)
+    elif isinstance(v, int):
+        v = int.__int__(v)
+        if -_I64 <= v < _I64:
+            out.append(3)
+            out += _uv((v << 1) ^ (v >> 63))
+        else:
+            b = v.to_bytes((v.bit_length() + 8) // 8, "little", signed=True)
+            out.append(4)
+            out += _uv(len(b))
+            out += b
+    elif isinstance(v, float):
+        out.append(5)
+        out += _F64.pack(float.__float__(v))
+    elif isinstance(v, str):
+        out.append(6)
+        out += _bstr(str.__str__(v))
+    elif isinstance(v, dict):
+        out.append(7)
+        _enc_map(v, out, depth + 1)
+    elif isinstance(v, (list, tuple)):
+        out.append(8)
+        out += _uv(len(v))
+        for x in v:
+            _enc_val(x, out, depth + 1)
+    else:
+        out.append(6)
+        out += _bstr(str(v))
+
+
+def _enc_map(d, out=None, depth=0):
+    """`d` (a dict) as a map; appended to `out` (a bytearray) when given."""
+    if out is None:
+        out = bytearray()
+    if depth > _MAP_DEPTH:
+        raise ValueError("Circular reference detected")
+    out += _uv(len(d))
+    for k, v in d.items():
+        k = _conv_key(k)
+        if k is None:
+            raise TypeError("keys must be str, int, float, bool or None, not %s"
+                            % type(k).__name__)
+        out += _bstr(k)
+        _enc_val(v, out, depth)
+    return out
+
+
+def _dec_str(b, p, n):
+    e = p + n
+    if e > len(b):
+        raise FrameError("a string runs past the end of the map")
+    return bytes(b[p:e]).decode("utf-8", "surrogatepass"), e
+
+
+def _dec_val(b, p, depth):
+    if depth > _MAP_DEPTH:
+        raise FrameError("a map nested too deep")
+    t = b[p]
+    p += 1
+    if t == 0:
+        return None, p
+    if t == 1:
+        return False, p
+    if t == 2:
+        return True, p
+    if t == 3:
+        z, p = _ruv(b, p)
+        return (z >> 1) ^ -(z & 1), p
+    if t == 4:
+        n, p = _ruv(b, p)
+        if p + n > len(b):
+            raise FrameError("an int runs past the end of the map")
+        return int.from_bytes(bytes(b[p:p + n]), "little", signed=True), p + n
+    if t == 5:
+        if p + 8 > len(b):
+            raise FrameError("a float runs past the end of the map")
+        return _F64.unpack_from(b, p)[0], p + 8
+    if t == 6:
+        n, p = _ruv(b, p)
+        return _dec_str(b, p, n)
+    if t == 7:
+        return _dec_map(b, p, depth + 1)
+    if t == 8:
+        n, p = _ruv(b, p)
+        if n > len(b) - p:
+            raise FrameError("a list longer than the map")
+        out = []
+        for _ in range(n):
+            v, p = _dec_val(b, p, depth + 1)
+            out.append(v)
+        return out, p
+    raise FrameError("unknown value tag %d in a map" % t)
+
+
+def _dec_map(b, p=0, depth=0):
+    """(dict, next offset) of the map at `p`. FrameError if malformed."""
+    try:
+        n, p = _ruv(b, p)
+        if n > len(b) - p:
+            raise FrameError("a map longer than its bytes")
+        out = {}
+        for _ in range(n):
+            k, p = _ruv(b, p)
+            k, p = _dec_str(b, p, k)
+            out[k], p = _dec_val(b, p, depth)
+        return out, p
+    except (IndexError, UnicodeDecodeError, struct.error) as e:
+        raise FrameError("malformed map: %s" % e)
 
 
 # ---------------------------------------------------------------------------
@@ -792,81 +1005,208 @@ def _fixed_index(layout):
     return out
 
 
-def _dec_fn(layout, sis):
-    """(struct, dec) for one layout. The caller unpacks the fixed part,
-    a = st.unpack_from(b, p0); a bound copy of dec (see _compile_shape) then
-    decodes the var parts in field order: dec(a, b, p0 + st.size) ->
-    (dict, next offset). Wide shapes copy a template dict, which already holds
-    the keys in order and None for NULL slots, and fill it in bulk."""
+_KIDS_MAX = 48              # OBJ slots of one shape decoded inline, at most
+# The slot type a layout's decoder is generated for: a number of any width is
+# an F64 to it (the widths are the struct's, bound per shape), so shapes that
+# differ only as an int slot widens share one code object
+_PAT = (T_NULL, T_F64, T_F64, T_F64, T_F64, T_F64, T_F64, T_STR, T_OBJ, T_LIST, T_BIG)
+_STRUCTS = {}
+
+
+def _fixed_struct(layout, sis):
+    """The struct of a layout's fixed part: its numeric slots in field order,
+    then its STR slots."""
     key = (layout, sis)
-    r = _DEC_CACHE.get(key)
-    if r is not None:
-        return r
+    st = _STRUCTS.get(key)
+    if st is None:
+        num = [_FIXED[t] for t in layout if T_BOOL <= t <= T_F64]
+        nstr = sum(1 for t in layout if t == T_STR)
+        st = struct.Struct("<" + "".join(num) + ("H" if sis == 2 else "I") * nstr)
+        if len(_STRUCTS) >= _CODE_CAP:
+            _STRUCTS.clear()
+        _STRUCTS[key] = st
+    return st
+
+
+def _obj_lines(k, kid, target):
+    """The lines that decode an OBJ slot into `target`. `kid` is None, or the
+    pattern of the flat shape the slot is taken to hold (its id, struct,
+    1 + size and keys bound as C<k>, U<k>, Z<k>, K<k>): a dict of that shape
+    is then decoded right here, and any other through F as ever."""
+    gen = "%s, p = F[b[p]](b, p + 1)" % target
+    if kid is None:
+        return [gen]
+    cidx = _fixed_index(kid)
+    items = []
+    for i, t in enumerate(kid):
+        if t == T_NULL:
+            items.append("K%d[%d]: None" % (k, i))
+        elif t == T_STR:
+            items.append("K%d[%d]: S[c[%d]]" % (k, i, cidx[i]))
+        else:
+            items.append("K%d[%d]: c[%d]" % (k, i, cidx[i]))
+    out = ["if b[p] == C%d:" % k]
+    if any(t != T_NULL for t in kid):
+        out.append("    c = U%d(b, p + 1)" % k)
+    return out + ["    %s = {%s}" % (target, ", ".join(items)),
+                  "    p = p + Z%d" % k, "else:", "    " + gen]
+
+
+def _dec_fn(layout, sis, kids=None):
+    """(struct, dec) for one layout. A bound copy of dec (see _compile_shape)
+    decodes one dict of the shape from its fixed part at `p` on:
+    dec(b, p) -> (dict, next offset). It unpacks the fixed part itself, unless
+    the caller already has: dec(b, p, st.unpack_from(b, p)). The var parts
+    follow in field order; a dict among them is decoded by what its shape id's
+    first byte names in the segment's table (F, see _bind), one call deep --
+    or, for an OBJ slot `kids` gives the layout of (one per OBJ slot, None for
+    none), inline when it is of that shape (_obj_lines). Wide shapes copy a
+    template dict, which already holds the keys in order and None for NULL
+    slots, and fill it in bulk. The code is the layout's pattern's (_PAT)."""
     if len(layout) > MAX_FIELDS:
         raise FrameError("shape of %d fields" % len(layout))
     for t in layout:
         if type(t) is not int or not T_NULL <= t <= T_BIG:
             raise FrameError("bad slot type %r" % (t,))
-    sc = "H" if sis == 2 else "I"
-    num = [_FIXED[t] for t in layout if T_BOOL <= t <= T_F64]
-    nstr = sum(1 for t in layout if t == T_STR)
-    st = struct.Struct("<" + "".join(num) + sc * nstr)
-    idx = _fixed_index(layout)
+    st = _fixed_struct(layout, sis)
+    pat = tuple([_PAT[t] for t in layout])
+    kp = None if kids is None else tuple(
+        None if c is None else tuple([_PAT[t] for t in c]) for c in kids)
+    key = (pat, kp)
+    fn = _DEC_CACHE.get(key)
+    if fn is not None:
+        return st, fn
+    num = sum(1 for t in pat if t == T_F64)
+    nstr = sum(1 for t in pat if t == T_STR)
+    idx = _fixed_index(pat)
+    params = ["b", "p", "a", "U", "SZ", "S", "K", "F", "lst", "big", "TM", "KN", "KS"]
+    kp = kp or ()
+    nobj = [0]
+
+    def var(t, target):
+        if t == T_LIST:
+            return ["%s, p = lst(b, p)" % target]
+        if t == T_BIG:
+            return ["%s, p = big(b, p)" % target]
+        k = nobj[0]
+        nobj[0] = k + 1
+        kid = kp[k] if k < len(kp) else None
+        if kid is not None:
+            params.extend(("C%d" % k, "U%d" % k, "Z%d" % k, "K%d" % k))
+        return _obj_lines(k, kid, target)
     lines = []
-    if len(layout) >= _TEMPLATE_AT:
+    if num or nstr:
+        lines += ["if a is None:", "    a = U(b, p)", "p = p + SZ"]
+    if len(pat) >= _TEMPLATE_AT:
         lines.append("d = TM.copy()")
         if num:
             lines.append("d.update(zip(KN, a))")
         if nstr:
-            lines.append("d.update(zip(KS, map(S.__getitem__, a[%d:])))" % len(num))
-        for i, t in enumerate(layout):
+            lines.append("d.update(zip(KS, map(S.__getitem__, a[%d:])))" % num)
+        for i, t in enumerate(pat):
             if t >= T_OBJ:
-                lines.append("x, p = %s(b, p)" % ("obj", "lst", "big")[t - T_OBJ])
+                lines += var(t, "x")
                 lines.append("d[K[%d]] = x" % i)
         lines.append("return d, p")
     else:
         items = []
-        for i, t in enumerate(layout):
+        for i, t in enumerate(pat):
             if t == T_NULL:
                 items.append("K[%d]: None" % i)
             elif t == T_STR:
                 items.append("K[%d]: S[a[%d]]" % (i, idx[i]))
-            elif t <= T_F64:
+            elif t == T_F64:
                 items.append("K[%d]: a[%d]" % (i, idx[i]))
             else:
-                lines.append("x%d, p = %s(b, p)" % (i, ("obj", "lst", "big")[t - T_OBJ]))
+                lines += var(t, "x%d" % i)
                 items.append("K[%d]: x%d" % (i, i))
         lines.append("return {%s}, p" % ", ".join(items))
-    src = ("def dec(a, b, p, S, K, obj, lst, big, TM, KN, KS):\n"
+    src = ("def dec(%s):\n" % ", ".join(params)
            + "".join("    %s\n" % x for x in lines))
     ns = {"zip": zip, "map": map, "__builtins__": {}}
     exec(compile(src, "<ebr-decoder>", "exec"), ns)
-    r = (st, ns["dec"])
+    fn = ns["dec"]
     if len(_DEC_CACHE) >= _CODE_CAP:
         _DEC_CACHE.clear()
-    _DEC_CACHE[key] = r
-    return r
+    _DEC_CACHE[key] = fn
+    return st, fn
 
 
 class _Shape(object):
-    __slots__ = ("ids", "layout", "K", "unpack", "size", "fn")
+    __slots__ = ("ids", "layout", "sid", "K", "unpack", "size", "fn")
 
 
-def _compile_shape(T, sh):
-    """Bind the shape's decoder to its keys and to this segment's tables."""
-    st, fn = _dec_fn(sh.layout, T.sis)
+def _compile_shape(T, sh, b=None, p=None):
+    """Bind the shape's decoder to its keys and to this segment's tables, and
+    put it where its shape id is looked up (T.F, T.FS). `b`, `p`: a record of
+    the shape, its fixed part at `p` -- the first one decoded -- whose OBJ
+    slots holding a flat shape have the decoder take each to hold that shape
+    (_kids): a writer gives a key's dicts one shape while its key set holds."""
+    lay = sh.layout
+    kids = None
+    if b is not None and T_OBJ in lay:
+        kids = _kids(T, lay, _fixed_struct(lay, T.sis).size, b, p)
+    st, fn = _dec_fn(lay, T.sis, None if kids is None else tuple(
+        None if k is None else k[1].layout for k in kids))
     S = T.S
     K = tuple([S[i] for i in sh.ids])
-    lay = sh.layout
     TM = dict.fromkeys(K)
     KN = tuple([k for k, t in zip(K, lay) if T_BOOL <= t <= T_F64])
     KS = tuple([k for k, t in zip(K, lay) if t == T_STR])
     sh.K = K
     sh.unpack = st.unpack_from
     sh.size = st.size
-    sh.fn = f = _FT(fn.__code__, fn.__globals__, "dec",
-                    (S, K, T.obj, T.lst, T.big, TM, KN, KS))
+    args = [None, sh.unpack, st.size, S, K, T.F, T.lst, T.big, TM, KN, KS]
+    for k in kids or ():
+        if k is not None:
+            ch = k[1]
+            if ch.fn is None:
+                _compile_shape(T, ch)
+            args += [k[0], ch.unpack, 1 + ch.size, ch.K]
+    sh.fn = f = _FT(fn.__code__, fn.__globals__, "dec", tuple(args))
+    T.FS[sh.sid] = f
+    if sh.sid < 0x80:
+        T.F[sh.sid] = f
     return f
+
+
+def _kids(T, lay, size, b, p):
+    """For each OBJ slot of the record of layout `lay` whose fixed part
+    (`size` bytes) is at `p`: (id, shape) of the dict it holds, when that
+    shape is flat (no var slot) and narrow (below _TEMPLATE_AT fields), else
+    None. None when no slot's is, or the record does not decode."""
+    out = []
+    q = p + size
+    F = T.F
+    shapes = T.shapes
+    try:
+        for t in lay:
+            if t == T_OBJ:
+                c = b[q]
+                kid = None
+                if 0 < c < 0x80 and c <= len(shapes) and len(out) < _KIDS_MAX:
+                    ch = shapes[c - 1]
+                    if len(ch.layout) < _TEMPLATE_AT and max(ch.layout or (0,)) < T_OBJ:
+                        kid = (c, ch)
+                out.append(kid)
+                _x, q = F[c](b, q + 1)
+            elif t == T_LIST:
+                _x, q = T.lst(b, q)
+            elif t == T_BIG:
+                _x, q = T.big(b, q)
+    except Exception:
+        return None
+    return out if any(k is not None for k in out) else None
+
+
+def _stub(T, sh):
+    """A defined shape's decoder until its first use compiles it."""
+    def dec(b, p, a=None):
+        f = sh.fn
+        if f is None:
+            f = _compile_shape(T, sh, b, p)
+        return f(b, p, a)
+    return dec
 
 
 class _Tables(object):
@@ -882,19 +1222,24 @@ class _Tables(object):
         _bind(self)
 
     def mask(self, kinds):
-        """The frame mask of `kinds` under this segment's registry (exact)."""
+        """(mask, rest) of `kinds` under this segment's registry (exact): the
+        frame bits a record of one of them sets, and those only a record of
+        none of them sets. A frame with no bit of `mask` holds none of them;
+        one with no bit of `rest` holds nothing else. A registry that is not
+        a list of names masks every frame in, and none as holding only them."""
         hit = self.masks.get(id(kinds))
         if hit is not None and hit[0] is kinds:
             return hit[1]
         reg = self.reg
         if not isinstance(reg, list) or not all(isinstance(k, str) for k in reg):
-            m = 0xffffffff
+            r = (0xffffffff, 0xffffffff)
         else:
             m = kind_mask(kinds, reg)[0]
+            r = (m, (~m & 0xffffffff) | BIT_OTHER)
         if len(self.masks) >= 64:
             self.masks.clear()
-        self.masks[id(kinds)] = (kinds, m)
-        return m
+        self.masks[id(kinds)] = (kinds, r)
+        return r
 
     def plan(self, kinds, where):
         key = (id(kinds), id(where))
@@ -909,12 +1254,17 @@ class _Tables(object):
 
 
 def _bind(T):
-    """The var-part decoders of one segment, closed over its tables."""
+    """The var-part decoders of one segment, closed over its tables, and the
+    tables a dict is decoded through by its shape id: T.FS by the id, and T.F
+    by the id's first byte -- a decoder of the dict that follows it, for an id
+    below 0x80 (the dict's own shape, or MAP for 0), else one that reads the
+    rest of the id and looks it up in T.FS. A dict is one call deep from F."""
     S = T.S
-    shapes = T.shapes
     ruv = _ruv
     unpack_d = _F64.unpack_from
     from_bytes = int.from_bytes
+    F = T.F = [None] * 0x100
+    FS = T.FS = [None]
 
     def big(b, p):
         n = b[p]
@@ -1002,19 +1352,20 @@ def _bind(T):
         return d, p
 
     def obj(b, p):
-        c = b[p]
-        if c < 0x80:
-            p += 1
-        else:
-            c, p = ruv(b, p)
-        if c:
-            sh = shapes[c - 1]
-            f = sh.fn
-            if f is None:
-                f = _compile_shape(T, sh)
-            return f(sh.unpack(b, p), b, p + sh.size)
-        return mapd(b, p)
+        return F[b[p]](b, p + 1)
 
+    def wide(b, p):
+        c, p = ruv(b, p - 1)
+        return FS[c](b, p)
+
+    def undefined(b, p):
+        raise FrameError("shape %d is not defined" % b[p - 1])
+
+    F[0] = FS[0] = mapd
+    for c in range(1, 0x80):
+        F[c] = undefined
+    for c in range(0x80, 0x100):
+        F[c] = wide
     T.obj, T.lst, T.big, T.tag = obj, lst, big, tag
 
 
@@ -1024,6 +1375,13 @@ def _apply_defs(T, b, p, end):
     shapes = T.shapes
     append = S.append
     decode = bytes.decode
+    # A frame's new strings are mostly ASCII: decoded together, each is a
+    # slice of that (a definitions run with a byte >= 0x80 is decoded apart)
+    p0 = p
+    try:
+        txt = decode(b[p:end], "ascii")
+    except UnicodeDecodeError:
+        txt = None
     while p < end:
         op = b[p]
         if op == 1:
@@ -1035,7 +1393,10 @@ def _apply_defs(T, b, p, end):
             q = p + n
             if q > end:
                 raise FrameError("string past the definitions")
-            append(decode(b[p:q], "utf-8", "surrogatepass"))
+            if txt is None:
+                append(decode(b[p:q], "utf-8", "surrogatepass"))
+            else:
+                append(txt[p - p0:q - p0])
             p = q
         elif op == 2:
             nf, p = _ruv(b, p + 1)
@@ -1062,6 +1423,11 @@ def _apply_defs(T, b, p, end):
             sh.layout = tuple(lay)
             sh.fn = None
             shapes.append(sh)
+            sh.sid = sid = len(shapes)
+            dec = _stub(T, sh)
+            T.FS.append(dec)
+            if sid < 0x80:
+                T.F[sid] = dec
         else:
             raise FrameError("bad definition opcode %d" % op)
     if p != end:
@@ -1229,7 +1595,11 @@ class _Src(object):
     """A byte source. A path is opened privately and read with os.pread; a
     bytes-like object is used directly; any other object is read only with
     seek/read (never its fileno(): the dashboard's gzip readers expose the
-    compressed file's). `stream=True` reads such an object forward only."""
+    compressed file's). `stream=True` reads such an object forward only.
+
+    Reads go through one window of read-ahead. It starts small after a jump
+    (_WIN0: a seek's probe reads a few headers, not a megabyte) and grows 4x
+    with each read that moves on from it, up to _WIN."""
 
     def __init__(self, obj, stream=False):
         self.fd = None
@@ -1239,6 +1609,7 @@ class _Src(object):
         self.stream = False
         self.w0 = 0
         self.w = b""
+        self.win = _WIN0
         if isinstance(obj, (bytes, bytearray, memoryview)):
             self.buf = self.w = bytes(obj)
         elif isinstance(obj, str) or hasattr(obj, "__fspath__"):
@@ -1254,6 +1625,7 @@ class _Src(object):
     def from_fd(cls, fd):
         s = cls.__new__(cls)
         s.fd, s.fh, s.buf, s.own, s.stream, s.w0, s.w = fd, None, None, False, False, 0, b""
+        s.win = _WIN0
         return s
 
     def close(self):
@@ -1261,6 +1633,12 @@ class _Src(object):
             os.close(self.fd)
         self.fd = None
         self.w = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def size(self):
         """Current size, or None for a forward-only stream."""
@@ -1309,7 +1687,9 @@ class _Src(object):
             return self._sread(off, n)
         if n >= _WIN:
             return self._raw(off, n)
-        w = self._raw(off, _WIN)
+        win = min(self.win << 2, _WIN) if w0 <= off <= w0 + len(w) else _WIN0
+        self.win = win
+        w = self._raw(off, max(n, win))
         self.w0 = off
         self.w = w
         return w[:n]
@@ -1330,7 +1710,11 @@ class _Src(object):
             raise Error("a stream cannot be read backwards")
         if n >= _WIN:
             return self._raw(off, n)
-        w0 = max(0, end - _WIN)
+        # moving back from the window -- or from just before it: the header
+        # of a frame across the window's start -- is a walk backwards
+        win = min(self.win << 2, _WIN) if w0 - _WIN0 <= end <= w0 + len(w) else _WIN0
+        self.win = win
+        w0 = max(0, end - max(n, win))
         w = self._raw(w0, end - w0)
         self.w0 = w0
         self.w = w
@@ -1407,7 +1791,11 @@ def _hdr_at(s, off):
     """The header tuple at `off` if a valid header is there, else None."""
     if off < 0:
         return None
-    h = s.read(off, HDR_SIZE)
+    return _hdr_of(s.read(off, HDR_SIZE))
+
+
+def _hdr_of(h):
+    """The header tuple of bytes `h` if they are a valid header, else None."""
     if len(h) != HDR_SIZE or h[:4] != MAGIC:
         return None
     t = HDR.unpack(h)
@@ -1449,6 +1837,7 @@ def _bad(off, end, s):
 
 _HDR_UNPACK = HDR.unpack_from
 _TRL_UNPACK = TRL.unpack_from
+_KFLN = struct.Struct("<4xBB2xII")          # a header's kind, flags, payload_len, n_records
 
 
 def _frame_at(s, off, limit, verify):
@@ -1505,7 +1894,9 @@ def _frame_at(s, off, limit, verify):
 
 
 def _frame_ending_at(s, end, verify):
-    """The complete frame whose trailer ends at `end`, or None."""
+    """The complete frame whose trailer ends at `end`, or None. It is read
+    back from `end`, so a walk backwards keeps its window over what it reads
+    next -- a frame across the window's start included."""
     if end < OVERHEAD:
         return None
     tr = s.read_back(end, TRL_SIZE)
@@ -1515,13 +1906,18 @@ def _frame_ending_at(s, end, verify):
     if flen < OVERHEAD or flen > end or flen - OVERHEAD > MAX_PAYLOAD:
         return None
     off = end - flen
-    t = _hdr_at(s, off)
-    if t is None or t[4] != flen - OVERHEAD:
-        return None
     payload = None
     if verify:
-        payload = s.read(off + HDR_SIZE, t[4])
-        if len(payload) != t[4] or _crc(payload) != pcrc:
+        fr = s.read_back(end, flen)
+        t = _hdr_of(fr[:HDR_SIZE])
+        if t is None or t[4] != flen - OVERHEAD or len(fr) != flen:
+            return None
+        payload = fr[HDR_SIZE:flen - TRL_SIZE]
+        if _crc(payload) != pcrc:
+            return None
+    else:
+        t = _hdr_of(s.read_back(off + HDR_SIZE, HDR_SIZE))
+        if t is None or t[4] != flen - OVERHEAD:
             return None
     f = _mk(t, off, s)
     f.crc = pcrc
@@ -1530,9 +1926,12 @@ def _frame_ending_at(s, end, verify):
 
 
 def _resync(s, pos, limit):
-    """The first offset in [pos, limit] holding a valid header, or None."""
+    """The first offset in [pos, limit] holding a valid header, or None. It
+    looks in chunks that grow from _WIN0: a header is seldom far."""
+    want = _WIN0
     while limit is None or pos <= limit:
-        n = _WIN if limit is None else min(_WIN, limit - pos + 4)
+        n = want if limit is None else min(want, limit - pos + 4)
+        want = min(want << 2, _WIN)
         chunk = s.read(pos, n)
         if len(chunk) < 4:
             return None
@@ -1577,7 +1976,40 @@ def frames(src, start=0, end=None, verify=True, settle=0):
         size = s.size()
         limit = size if end is None else (end if size is None else min(end, size))
         pos = start
+        unpack, trailer, crc, new = _HDR_UNPACK, _TRL_UNPACK, _crc, _new_frame
         while limit is None or pos < limit:
+            # _frame_at's checks, inline, for a frame whole in the window: a
+            # collector's frame holds a poll round, so there are many of them
+            w = s.w
+            i = pos - s.w0
+            if i >= 0 and w.startswith(MAGIC, i) and i + HDR_SIZE <= len(w):
+                t = unpack(w, i)
+                L = t[4]
+                j = i + HDR_SIZE
+                k = j + L
+                e = pos + OVERHEAD + L
+                if (k + TRL_SIZE <= len(w) and L <= MAX_PAYLOAD
+                        and (limit is None or e <= limit) and crc(w[i:i + 40]) == t[10]):
+                    pcrc, flen = trailer(w, k)
+                    payload = w[j:k] if verify else None
+                    if flen == OVERHEAD + L and (payload is None or crc(payload) == pcrc):
+                        f = new(Frame)
+                        f.off = pos
+                        f.end = e
+                        f.kind = t[1]
+                        f.flags = t[2]
+                        f.payload_len = L
+                        f.n_records = t[5]
+                        f.ts_min = t[6]
+                        f.ts_max = t[7]
+                        f.seg_back = t[8]
+                        f.kinds = t[9]
+                        f.crc = pcrc
+                        f.src = s
+                        f.payload = payload
+                        yield f
+                        pos = e
+                        continue
             f = _frame_at(s, pos, limit, verify)
             if f is not None:
                 yield f
@@ -1681,6 +2113,130 @@ def complete_end(src, size=None):
             s.close()
 
 
+def verify_back(src, end, stop=0):
+    """True when the frames that end at boundary `end` chain back, each one
+    complete with both its CRCs good, to the first that starts at or before
+    `stop` (or to the start): frames_reverse(src, end, verify=True) then
+    yields no BAD region down to there. False at the first frame that is not
+    so. One read and one loop: no Frame is built."""
+    s, own = _open_src(src)
+    try:
+        return _verify_back(s, end, stop)
+    finally:
+        if own:
+            s.close()
+
+
+def mark_info(src, frame):
+    """The dict a MARK frame holds (FrameError if it is malformed)."""
+    if frame.kind != MARK:
+        raise ValueError("the frame at %d is not a MARK" % frame.off)
+    if frame.flags:
+        raise FrameError("a MARK at %d has flags %d" % (frame.off, frame.flags))
+    b = frame.payload
+    if b is None:
+        s, own = _open_src(src if src is not None else frame.src)
+        try:
+            b = s.read(frame.off + HDR_SIZE, frame.payload_len)
+        finally:
+            if own:
+                s.close()
+        if len(b) != frame.payload_len or (frame.crc is not None and _crc(b) != frame.crc):
+            raise FrameError("bad payload in the MARK at %d" % frame.off)
+    info, p = _dec_map(b)
+    if p != len(b):
+        raise FrameError("%d stray bytes after the MARK at %d" % (len(b) - p, frame.off))
+    return info
+
+
+def last_mark(src, end=None):
+    """`(info, mark_end, records_after)`: the newest MARK frame ending at or
+    before `end` (default: complete_end), where it ends, and how many records
+    the DATA frames after it hold. `(None, 0, records)` when there is no MARK.
+    The walk is backwards over complete frames; a corrupt region met before a
+    MARK raises FrameError, since what lies behind it is not known."""
+    s, own = _open_src(src)
+    try:
+        E = _complete_end(s, s.size(), True) if end is None else end
+        n = 0
+        for f in frames_reverse(s, E, verify=True):
+            if f.kind == BAD:
+                raise FrameError("a corrupt region [%d, %d) before any MARK" % (f.off, f.end))
+            if f.kind == MARK:
+                return mark_info(s, f), f.end, n
+            if f.kind == DATA:
+                n += f.n_records
+        return None, 0, n
+    finally:
+        if own:
+            s.close()
+
+
+def _verify_back(s, end, stop):
+    E = end
+    b0 = max(0, min(end, stop) - _WIN0)
+    buf = s.read(b0, end - b0)
+    if len(buf) != end - b0:
+        return False
+    crc = _crc
+    u32 = _U32.unpack_from
+    while E > 0:
+        if E - b0 < OVERHEAD and b0:
+            nb = max(0, E - OVERHEAD - _WIN0)
+            more = s.read(nb, b0 - nb)
+            if len(more) != b0 - nb:
+                return False
+            buf, b0 = more + buf, nb
+        i = E - b0
+        if i < OVERHEAD:
+            return False
+        flen = u32(buf, i - 4)[0]
+        L = flen - OVERHEAD
+        if L < 0 or flen > E or L > MAX_PAYLOAD:
+            return False
+        off = E - flen
+        if off < b0:
+            nb = max(0, off - _WIN0)
+            more = s.read(nb, b0 - nb)
+            if len(more) != b0 - nb:
+                return False
+            buf, b0 = more + buf, nb
+            i = E - b0
+        j = off - b0
+        # _frame_ending_at(verify=True)'s checks: the header, its length and
+        # CRC, and the payload's CRC (each stored CRC checked with its bytes)
+        if (not buf.startswith(MAGIC, j) or u32(buf, j + 8)[0] != L
+                or crc(buf[j:j + HDR_SIZE]) != _RESIDUE
+                or crc(buf[j + HDR_SIZE:i - 4]) != _RESIDUE):
+            return False
+        if off <= stop:
+            return True
+        E = off
+    return True
+
+
+class _Opened(object):
+    __slots__ = ("s", "own")
+
+    def __init__(self, src):
+        self.s, self.own = _open_src(src)
+
+    def __enter__(self):
+        return self.s
+
+    def __exit__(self, *exc):
+        if self.own:
+            self.s.close()
+
+
+def source(src):
+    """`src` opened once for several calls in a row (`with source(p) as s:`):
+    a call given a path or a file object opens its own, and fills its own
+    read-ahead. What this opened is closed at the end; a source it was given
+    is left open."""
+    return _Opened(src)
+
+
 def _complete_end(s, size, verify):
     if not size:
         return 0
@@ -1701,6 +2257,7 @@ def _complete_end(s, size, verify):
 
 
 def _inflate(b):
+    """An F_ZLIB payload (v1 writers only), inflated."""
     d = _zlib.decompressobj()
     try:
         out = d.decompress(b, MAX_PAYLOAD + 1)
@@ -1709,6 +2266,193 @@ def _inflate(b):
     if len(out) > MAX_PAYLOAD or d.unconsumed_tail or not d.eof or d.unused_data:
         raise FrameError("zlib payload is not one stream of at most 64 MiB")
     return out
+
+
+# ---------------------------------------------------------------------------
+# zstd: optional, imported on first use
+# ---------------------------------------------------------------------------
+
+_ZSTD_ORDER = ("compression.zstd", "zstandard", "pyzstd")
+_ZSTD_HINT = ("this Python has no zstd module: use Python 3.14+ (compression.zstd), "
+              "or pip install zstandard (or pyzstd)")
+_ZSTD_DEFAULT = 3               # Writer(zstd=True), zstd's own default level
+_ZSTD_MAX = 22
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+_ZSTD = None                    # the module in use: None until first asked, then _Zstd or False
+
+
+class _Zstd(object):
+    """One zstd module behind two calls. compressor(level) -> fn(bytes) ->
+    one zstd frame (a Writer keeps one). decompressor() -> fn(frame, n) ->
+    the frame's n bytes, with at most n + 1 ever produced, and FrameError
+    unless the frame is whole, alone and exactly n bytes (a Decoder keeps
+    one: zstandard's context is reused, it is not thread-safe)."""
+    __slots__ = ("name", "compressor", "decompressor")
+
+
+def _zstd_std(m, name):
+    """compression.zstd (3.14+) and pyzstd: the content size its header
+    declares checked against n before decompressing, then a ZstdDecompressor
+    reads one frame, bounded by max_length, and says whether it ended (eof)
+    and what came after it (unused_data)."""
+    C, D, err = m.ZstdCompressor, m.ZstdDecompressor, m.ZstdError
+    info = getattr(m, "get_frame_info", None)
+    end = C.FLUSH_FRAME
+
+    def compressor(level):
+        c = C(level)
+        return lambda data: c.compress(data, end)
+
+    def decompress(b, n):
+        try:
+            cs = None if info is None else info(b).decompressed_size     # None: unknown
+        except (err, ValueError) as e:
+            raise FrameError("bad zstd frame header: %s" % e)
+        if cs is not None and cs != n:
+            raise FrameError("a zstd frame of %d bytes, not %d" % (cs, n))
+        d = D()
+        try:
+            out = d.decompress(b, n + 1)
+        except (err, EOFError, ValueError) as e:
+            raise FrameError("bad zstd frame: %s" % e)
+        if len(out) > n or not d.eof:
+            raise FrameError("a zstd frame truncated or of more than %d bytes" % n)
+        if d.unused_data:
+            raise FrameError("%d bytes after the zstd frame" % len(d.unused_data))
+        if len(out) != n:
+            raise FrameError("a zstd frame of %d bytes, not %d" % (len(out), n))
+        return out
+
+    z = _Zstd()
+    z.name = name
+    z.compressor = compressor
+    z.decompressor = lambda: decompress
+    return z
+
+
+def _zstd_zstandard(m, name):
+    """zstandard: its content size checked against n before anything is
+    allocated, the frame's end found by walking it (_zstd_frame_end), then
+    decompressed into at most n + 1 bytes."""
+    C, D, err = m.ZstdCompressor, m.ZstdDecompressor, m.ZstdError
+    content_size = m.frame_content_size
+
+    def compressor(level):
+        return C(level=level).compress
+
+    def decompressor():
+        dctx = D()
+
+        def decompress(b, n):
+            try:
+                cs = content_size(b)            # -1: not in the header
+                if cs >= 0 and cs != n:
+                    raise FrameError("a zstd frame of %d bytes, not %d" % (cs, n))
+                fe = _zstd_frame_end(b)
+                if fe != len(b):
+                    raise FrameError("%d bytes after the zstd frame" % (len(b) - fe))
+                out = dctx.decompress(b, max_output_size=n + 1)
+            except err as e:
+                raise FrameError("bad zstd frame: %s" % e)
+            if len(out) != n:
+                raise FrameError("a zstd frame of %d bytes, not %d" % (len(out), n))
+            return out
+        return decompress
+
+    z = _Zstd()
+    z.name = name
+    z.compressor = compressor
+    z.decompressor = decompressor
+    return z
+
+
+def _zstd_frame_end(b, p=0):
+    """Where the zstd frame at b[p:] ends, read from its frame and block
+    headers (RFC 8878 3.1.1); nothing is decompressed. FrameError when no
+    whole frame is there."""
+    n = len(b)
+    if p + 5 > n or b[p:p + 4] != _ZSTD_MAGIC:
+        raise FrameError("no zstd frame header")
+    d = b[p + 4]
+    if d & 0x08:
+        raise FrameError("a zstd frame header with its reserved bit set")
+    one = 1 if d & 0x20 else 0              # Single_Segment: no window byte, FCS >= 1 byte
+    q = p + 6 - one + (0, 1, 2, 4)[d & 3] + (one, 2, 4, 8)[d >> 6]
+    while True:
+        if q + 3 > n:
+            raise FrameError("a truncated zstd frame")
+        h = b[q] | b[q + 1] << 8 | b[q + 2] << 16
+        t = h >> 1 & 3
+        if t == 3:
+            raise FrameError("a zstd block of the reserved type")
+        q += 4 if t == 1 else 3 + (h >> 3)  # RLE: one byte; raw, compressed: Block_Size
+        if h & 1:
+            break
+    if d & 0x04:
+        q += 4                              # Content_Checksum
+    if q > n:
+        raise FrameError("a truncated zstd frame")
+    return q
+
+
+def _zstd_load(names=_ZSTD_ORDER):
+    """The first of `names` that imports and round-trips a frame, else False."""
+    for name in names:
+        try:
+            if name == "compression.zstd":
+                from compression import zstd as m
+                z = _zstd_std(m, "compression.zstd (zstd %s)" % m.zstd_version)
+            elif name == "zstandard":
+                import zstandard as m
+                z = _zstd_zstandard(m, "zstandard %s" % m.__version__)
+            elif name == "pyzstd":
+                import pyzstd as m
+                z = _zstd_std(m, "pyzstd %s" % m.__version__)
+            else:
+                continue
+            probe = b"ebr " * 64
+            if z.decompressor()(z.compressor(1)(probe), len(probe)) != probe:
+                continue
+        except Exception:               # absent, or not the API spoken here
+            continue
+        return z
+    return False
+
+
+def _zstd():
+    """The zstd module in use, imported on first use; False if there is none."""
+    global _ZSTD
+    z = _ZSTD
+    if z is None:
+        z = _ZSTD = _zstd_load()
+    return z
+
+
+def zstd_available():
+    """True if this Python can read and write zstd frames."""
+    return bool(_zstd())
+
+
+def zstd_backend():
+    """The zstd module in use ('zstandard 0.25.0', ...), or None."""
+    z = _zstd()
+    return z.name if z else None
+
+
+def _unzstd(unz, b):
+    """An F_ZSTD payload (raw_len:uv, one zstd frame), decompressed by `unz`."""
+    try:
+        n, p = _ruv(b, 0)
+    except IndexError:
+        raise FrameError("an empty zstd payload")
+    if not 0 < n <= MAX_PAYLOAD:             # (no writer compresses an empty payload)
+        raise FrameError("a zstd payload of %d bytes: not in 1..64 MiB" % n)
+    return unz(memoryview(b)[p:], n)
+
+
+def _readable(flags):
+    """Whether this reader can read a payload stored with `flags` (not 0)."""
+    return flags == F_ZLIB or (flags == F_ZSTD and bool(_zstd()))
 
 
 def _frame(kind, flags, payload, n, tmin, tmax, seg_back, kinds):
@@ -1748,6 +2492,51 @@ def kind_mask(names, registry=None):
 _EMPTY = ()
 
 
+def _segment_of(b):
+    """(Decoder.segment, supported) for a SEGMENT payload, by its first byte:
+    '{' v1 (JSON, v1's rules), 2 v2; (None, False) for another version.
+    FrameError (or ValueError, for bad JSON) when it is malformed."""
+    if not len(b):
+        raise FrameError("an empty SEGMENT payload")
+    c = b[0]
+    if c == 0x7b:
+        try:
+            seg = json.loads(bytes(b).decode("utf-8"))
+        except RecursionError:
+            raise FrameError("SEGMENT JSON nested too deep")
+        if not isinstance(seg, dict):
+            raise FrameError("SEGMENT payload is not an object")
+        v = seg.get("version")
+        sis = seg.get("str_id_size")
+        return seg, (seg.get("format") == FORMAT and type(v) is int and v == 1
+                     and type(sis) is int and sis in (2, 4))
+    if c != VERSION:
+        return None, False
+    try:
+        _v, sis, created = _SEG2.unpack_from(b, 0)
+        if sis not in (2, 4):
+            raise FrameError("str_id_size %d" % sis)
+        p = _SEG2.size
+        rb, p = _ruv(b, p)
+        n, p = _ruv(b, p)
+        if n > len(b) - p:
+            raise FrameError("%d kinds in %d bytes" % (n, len(b) - p))
+        kinds = []
+        for _ in range(n):
+            k, p = _ruv(b, p)
+            k, p = _dec_str(b, p, k)
+            kinds.append(k)
+        meta = _dec_map(b, p)[0]
+    except (IndexError, UnicodeDecodeError, struct.error) as e:
+        raise FrameError("a malformed v2 SEGMENT: %s" % e)
+    seg = {"format": FORMAT, "version": VERSION, "str_id_size": sis, "kinds": kinds,
+           "reset_bytes": rb, "created": created}
+    for k, v in meta.items():
+        if k not in seg:
+            seg[k] = v
+    return seg, True
+
+
 class Decoder(object):
     """Applies frames in order and yields their records.
 
@@ -1757,8 +2546,9 @@ class Decoder(object):
     abandoned never desyncs the tables. A frame that does not start where the
     last one ended, a BAD region or a definition that does not validate makes
     the decoder `broken` until the next SEGMENT (strict: an exception). A
-    SEGMENT this reader does not support makes it `unsupported` until the
-    next one; its frames are skipped and counted."""
+    SEGMENT this reader does not support, or a frame stored in a way it cannot
+    read (an unknown flag; zstd without a zstd module), makes it `unsupported`
+    until the next SEGMENT; its frames are skipped and counted."""
 
     def __init__(self, strict=False):
         self.strict = bool(strict)
@@ -1769,6 +2559,7 @@ class Decoder(object):
         self.stats = dict.fromkeys(DECODER_STATS, 0)
         self._T = None
         self._ok = False            # tables usable: a supported segment, not broken
+        self._unz = None            # zstd's decompressor, made at the first zstd frame
 
     @classmethod
     def at(cls, src, off, strict=False):
@@ -1791,8 +2582,7 @@ class Decoder(object):
                 d._set_broken()
                 d.next_off = off
                 return d
-            for fr in frames(s, so, off, True):
-                d.skip(fr, s)
+            _walk(d, s, so, off)
             if d.next_off != off:
                 if strict:
                     raise StateError("cannot replay the segment at %d up to %d" % (so, off))
@@ -1817,9 +2607,13 @@ class Decoder(object):
             return iter(_EMPTY)
         T, b, p = r
         n = frame.n_records
-        if kinds is not None and not frame.kinds & T.mask(kinds):
-            self.stats["filtered"] += n
-            return iter(_EMPTY)
+        if kinds is not None:
+            mask, rest = T.mask(kinds)
+            if not frame.kinds & mask:
+                self.stats["filtered"] += n
+                return iter(_EMPTY)
+            if where is None and not frame.kinds & rest:
+                kinds = None            # its header says every record is of `kinds`
         if kinds is None and where is None:
             if n == 1:
                 return self._one(T, b, p, frame.off)
@@ -1849,19 +2643,31 @@ class Decoder(object):
                     s.close()
             if len(b) != frame.payload_len or (frame.crc is not None and _crc(b) != frame.crc):
                 raise FrameError("bad payload in the frame at %d" % frame.off)
-        if frame.flags & F_ZLIB:
+        fl = frame.flags
+        if fl == F_ZSTD:
+            u = self._unz
+            if u is None:
+                z = _zstd()
+                if not z:
+                    raise StateError("no zstd module for the frame at %d" % frame.off)
+                u = self._unz = z.decompressor()
+            b = _unzstd(u, b)
+        elif fl == F_ZLIB:
             b = _inflate(b)
+        elif fl:
+            raise FrameError("flags %d in the frame at %d" % (fl, frame.off))
         return b
 
     def _segment(self, src, frame):
         self.segment = self._T = None
         self._ok = False
+        fl = frame.flags
         try:
-            if frame.flags & ~F_ZLIB:
+            if fl and not _readable(fl):
+                if fl == F_ZSTD:
+                    self.stats["zstd_unavailable"] += 1
                 raise _Full()
-            seg = json.loads(self._payload(src, frame).decode("utf-8"))
-            if not isinstance(seg, dict):
-                raise FrameError("SEGMENT payload is not an object")
+            seg, ok = _segment_of(self._payload(src, frame))
         except _Full:
             self.unsupported, self.broken = True, False
             return
@@ -1872,14 +2678,11 @@ class Decoder(object):
             return
         self.segment = seg
         self.broken = False
-        v = seg.get("version")
-        sis = seg.get("str_id_size")
-        if (seg.get("format") != FORMAT or type(v) is not int or v != VERSION
-                or type(sis) is not int or sis not in (2, 4)):
+        if not ok:
             self.unsupported = True
             return
         self.unsupported = False
-        self._T = _Tables(sis, seg.get("kinds"))
+        self._T = _Tables(seg["str_id_size"], seg.get("kinds"))
         self._ok = True
 
     def _apply(self, src, frame):
@@ -1887,18 +2690,31 @@ class Decoder(object):
         (tables, payload, offset of its first record); else None."""
         st = self.stats
         st["frames"] += 1
+        fl = frame.flags
         if not (frame.kind == DATA and self._ok and frame.off == self.next_off
-                and not frame.flags & ~F_ZLIB):
+                and (not fl or _readable(fl))):
             return self._apply_other(src, frame)
         self.next_off = frame.end
+        b = frame.payload
+        if b is None or fl:
+            try:
+                b = self._payload(src, frame)
+            except (Error, IndexError, UnicodeDecodeError, struct.error) as e:
+                return self._bad_defs(e, frame.n_records, frame.off)
+        return self._data(b, frame.n_records, frame.off)
+
+    def _data(self, b, n, off):
+        """_apply's own part for a DATA frame in step (`frames` counted,
+        `next_off` moved past it): its definitions from payload `b`, inflated.
+        `n` is its record count, `off` its offset."""
+        st = self.stats
         T = self._T
         try:
-            b = frame.payload
-            if b is None or frame.flags:
-                b = self._payload(src, frame)
             c = b[0]
             if c < 0x80:
                 sb, p = c, 1
+            elif b[1] < 0x80:
+                sb, p = (c & 0x7f) | (b[1] << 7), 2
             else:
                 sb, p = _ruv(b, 0)
             c = b[p]
@@ -1916,23 +2732,32 @@ class Decoder(object):
             de = p + dl
             if de > len(b):
                 raise FrameError("definitions past the payload")
-            same = sb == len(T.S) and hb == len(T.shapes)
+            S = T.S
+            same = sb == len(S) and hb == len(T.shapes)
             if same and dl:
-                _apply_defs(T, b, p, de)
+                if b[p] == 1 and b[p + 1] < 0x80 and p + 2 + b[p + 1] == de:
+                    # one short string, as a poll round's frame defines: its time
+                    S.append(b[p + 2:de].decode("utf-8", "surrogatepass"))
+                else:
+                    _apply_defs(T, b, p, de)
         except (Error, IndexError, UnicodeDecodeError, struct.error) as e:
-            st["bad_frames"] += 1
-            st["lost_records"] += frame.n_records
-            self._T = None
-            self._break(e if isinstance(e, Error) else
-                        FrameError("bad definitions in the frame at %d: %s" % (frame.off, e)))
-            return None
+            return self._bad_defs(e, n, off)
         if not same:
             st["lost_frames"] += 1
-            st["lost_records"] += frame.n_records
+            st["lost_records"] += n
             self._break(StateError("frame at %d starts at tables (%d, %d), decoder has (%d, %d)"
-                                   % (frame.off, sb, hb, len(T.S), len(T.shapes))))
+                                   % (off, sb, hb, len(T.S), len(T.shapes))))
             return None
         return T, b, de
+
+    def _bad_defs(self, e, n, off):
+        st = self.stats
+        st["bad_frames"] += 1
+        st["lost_records"] += n
+        self._T = None
+        self._break(e if isinstance(e, Error) else
+                    FrameError("bad definitions in the frame at %d: %s" % (off, e)))
+        return None
 
     def _apply_other(self, src, frame):
         """Everything but a decodable DATA frame."""
@@ -1957,16 +2782,22 @@ class Decoder(object):
             return None
         if self.unsupported:
             st["unsupported_frames"] += 1
+            if frame.flags == F_ZSTD and not _zstd():
+                st["zstd_unavailable"] += 1
             return None
         if self.broken or self._T is None:
             self._set_broken()
             st["lost_frames"] += 1
             st["lost_records"] += frame.n_records
             return None
-        # a supported segment, but a flag this reader does not know
+        # a supported segment, but flags this reader cannot read: an unknown
+        # bit, or zstd and no zstd module. The frame may define strings and
+        # shapes the rest of the segment uses, so the rest goes unread too.
         self.unsupported = True
         self._ok = False
         st["unsupported_frames"] += 1
+        if frame.flags == F_ZSTD:
+            st["zstd_unavailable"] += 1
         return None
 
     def _one(self, T, b, p, off):
@@ -1980,16 +2811,7 @@ class Decoder(object):
             end = p + c
             if end > len(b):
                 raise FrameError("record past the payload")
-            c = b[p]
-            if 0 < c < 0x80:
-                sh = T.shapes[c - 1]
-                f = sh.fn
-                if f is None:
-                    f = _compile_shape(T, sh)
-                p += 1
-                rec, q = f(sh.unpack(b, p), b, p + sh.size)
-            else:
-                rec, q = T.obj(b, p)
+            rec, q = T.F[b[p]](b, p + 1)
             if q != end:
                 raise FrameError("record length mismatch")
         except Exception as e:
@@ -2003,11 +2825,46 @@ class Decoder(object):
             raise FrameError("bad record at %d: %s" % (pos, e))
         self.stats["bad_records"] += 1
 
+    def _list(self, T, b, p, off, n):
+        """list(self._all(...)), decoded in one loop."""
+        st = self.stats
+        F = T.F
+        ruv = _ruv
+        size = len(b)
+        out = []
+        ap = out.append
+        try:
+            for i in range(n):
+                try:
+                    c = b[p]
+                    if c < 0x80:
+                        p += 1
+                    else:
+                        c, p = ruv(b, p)
+                    end = p + c
+                    if end > size:
+                        raise FrameError("record past the payload")
+                except (IndexError, FrameError) as e:
+                    self._bad_record(off + i, e)
+                    st["bad_records"] += n - i - 1
+                    break
+                try:
+                    rec, q = F[b[p]](b, p + 1)
+                    if q != end:
+                        raise FrameError("record length mismatch")
+                except Exception as e:
+                    self._bad_record(off + i, e)
+                    p = end
+                    continue
+                p = end
+                ap((off + i, rec))
+        finally:
+            st["records"] += len(out)
+        return out
+
     def _all(self, T, b, p, off, n):
         st = self.stats
-        S = T.S
-        shapes = T.shapes
-        obj, lst, big = T.obj, T.lst, T.big
+        F = T.F
         ruv = _ruv
         size = len(b)
         for i in range(n):
@@ -2025,16 +2882,7 @@ class Decoder(object):
                 st["bad_records"] += n - i - 1
                 return
             try:
-                c = b[p]
-                if 0 < c < 0x80:
-                    sh = shapes[c - 1]
-                    f = sh.fn
-                    if f is None:
-                        f = _compile_shape(T, sh)
-                    q = p + 1
-                    rec, q = f(sh.unpack(b, q), b, q + sh.size)
-                else:
-                    rec, q = obj(b, p)
+                rec, q = F[b[p]](b, p + 1)
                 if q != end:
                     raise FrameError("record length mismatch")
             except Exception as e:
@@ -2052,7 +2900,7 @@ class Decoder(object):
         kcache = plan.kcache
         S = T.S
         shapes = T.shapes
-        obj, lst, big = T.obj, T.lst, T.big
+        F = T.F
         ruv = _ruv
         size = len(b)
         for i in range(n):
@@ -2075,7 +2923,7 @@ class Decoder(object):
                     sh = shapes[c - 1]
                     f = sh.fn
                     if f is None:
-                        f = _compile_shape(T, sh)
+                        f = _compile_shape(T, sh, b, p + 1)
                     pr = probe(sh)
                     if pr.reject:
                         st["filtered"] += 1
@@ -2116,11 +2964,11 @@ class Decoder(object):
                             st["filtered"] += 1
                             p = end
                             continue
-                    rec, q = f(a, b, q + sh.size)
+                    rec, q = f(b, q, a)
                     if pr.full:
                         ok = _post(rec, kinds, where)
                 else:
-                    rec, q = obj(b, p)
+                    rec, q = F[c](b, p + 1)
                     ok = _post(rec, kinds, where)
                 if q != end:
                     raise FrameError("record length mismatch")
@@ -2134,6 +2982,71 @@ class Decoder(object):
                 continue
             st["records"] += 1
             yield off + i, rec
+
+
+def _walk(d, s, pos, end, keep=None):
+    """`for f in frames(s, pos, end, True): d.skip(f, s)`: what places a
+    decoder (Decoder.at) and what applies a segment before it is read
+    backwards (records_reverse). A frame in step, whole in the window, as
+    nearly all are, has its definitions applied from there: no Frame, no
+    generator, no call but the decoder's. `keep`, seven lists, receives the
+    tables, payload, first record's offset, offset, end, record count and
+    kinds of each DATA frame left decodable."""
+    size = s.size()
+    if size is not None and size < end:
+        end = size
+    st = d.stats
+    crc = _crc
+    kfln = _KFLN.unpack_from
+    trl = _TRL_UNPACK
+    u32 = _U32.unpack_from
+    while pos < end:
+        w = s.w
+        i = pos - s.w0
+        if (d._ok and pos == d.next_off and i >= 0 and w.startswith(MAGIC, i)
+                and i + HDR_SIZE <= len(w)):
+            kind, flags, L, n = kfln(w, i)
+            j = i + HDR_SIZE
+            k = j + L
+            e = pos + OVERHEAD + L
+            # _frame_at's checks, then _apply's for a DATA frame in step
+            if (kind == DATA and not flags and k + TRL_SIZE <= len(w) and e <= end
+                    and L <= MAX_PAYLOAD and crc(w[i:j]) == _RESIDUE):
+                pcrc, flen = trl(w, k)
+                b = w[j:k]
+                if flen == OVERHEAD + L and crc(b) == pcrc:
+                    st["frames"] += 1
+                    d.next_off = e
+                    r = d._data(b, n, pos)
+                    if r is not None and keep is not None:
+                        Ts, bufs, ps, offs, ends, ns, ks = keep
+                        Ts.append(r[0])
+                        bufs.append(b)
+                        ps.append(r[2])
+                        offs.append(pos)
+                        ends.append(e)
+                        ns.append(n)
+                        ks.append(u32(w, i + 36)[0])
+                    pos = e
+                    continue
+        # anything else: one frame, or one corrupt region, as frames() gives it
+        f = _frame_at(s, pos, end, True)
+        if f is None:
+            nxt = _resync(s, pos + 1, end)
+            if nxt is None:
+                return
+            f = _bad(pos, nxt, s)
+        r = d._apply(s, f)
+        if r is not None and keep is not None:
+            Ts, bufs, ps, offs, ends, ns, ks = keep
+            Ts.append(r[0])
+            bufs.append(r[1])
+            ps.append(r[2])
+            offs.append(f.off)
+            ends.append(f.end)
+            ns.append(f.n_records)
+            ks.append(f.kinds)
+        pos = f.end
 
 
 def records_reverse(src, end, start=0, kinds=None, where=None, stats=None):
@@ -2150,7 +3063,7 @@ def records_reverse(src, end, start=0, kinds=None, where=None, stats=None):
             st.setdefault(k, 0)
         E = end
         while E > start:
-            nxt = None
+            so = None
             for f in frames_reverse(s, E):
                 if f.end <= start:
                     return
@@ -2162,42 +3075,44 @@ def records_reverse(src, end, start=0, kinds=None, where=None, stats=None):
                 so = f.off - f.seg_back
                 t = _hdr_at(s, so)
                 if t is None or t[1] != SEGMENT:
+                    so = None
                     st["lost_frames"] += 1
                     st["lost_records"] += f.n_records
                     continue
-                for pr in _segment_reverse(s, so, f.end, start, kinds, where, st):
-                    yield pr
-                nxt = so
+                fend = f.end
                 break
-            if nxt is None:
+            if so is None:
                 return
-            E = nxt
+            # The segment, applied forward to fend: what decoding each of its
+            # frames takes is kept flat -- not its Frame: it holds thousands
+            dec = Decoder()
+            dec.stats = st
+            keep = Ts, bufs, ps, offs, ends, ns, ks = [], [], [], [], [], [], []
+            _walk(dec, s, so, fend, keep)
+            for i in range(len(offs) - 1, -1, -1):
+                if ends[i] <= start:
+                    return
+                T = Ts[i]
+                n = ns[i]
+                kk = kinds
+                if kinds is not None:
+                    mask, rest = T.mask(kinds)
+                    if not ks[i] & mask:
+                        st["filtered"] += n
+                        continue
+                    if where is None and not ks[i] & rest:
+                        kk = None       # every record is of `kinds`
+                if kk is None and where is None:
+                    got = dec._list(T, bufs[i], ps[i], offs[i], n)
+                else:
+                    got = list(dec._some(T, bufs[i], ps[i], offs[i], n, kk, where))
+                got.reverse()
+                for pr in got:
+                    yield pr
+            E = so
     finally:
         if own:
             s.close()
-
-
-def _segment_reverse(s, so, fend, start, kinds, where, st):
-    dec = Decoder()
-    dec.stats = st
-    items = []
-    for g in frames(s, so, fend, True):
-        r = dec._apply(s, g)
-        if r is not None:
-            items.append((g, r))
-    for g, (T, b, p) in reversed(items):
-        if g.end <= start:
-            break
-        n = g.n_records
-        if kinds is not None and not g.kinds & T.mask(kinds):
-            st["filtered"] += n
-            continue
-        if kinds is None and where is None:
-            got = list(dec._all(T, b, p, g.off, n))
-        else:
-            got = list(dec._some(T, b, p, g.off, n, kinds, where))
-        for pr in reversed(got):
-            yield pr
 
 
 # ---------------------------------------------------------------------------
@@ -2221,14 +3136,14 @@ def _count_defs(b):
     return ns, nh
 
 
-def _zlevel(z):
+def _zstd_level(z):
     if z is True:
-        return 1
+        return _ZSTD_DEFAULT
     if z is False or z is None:
         return 0
-    if type(z) is int and 0 <= z <= 9:
+    if type(z) is int and 0 <= z <= _ZSTD_MAX:
         return z
-    raise ValueError("zlib is a bool or a level 0-9, not %r" % (z,))
+    raise ValueError("zstd is a bool or a level 1-22 (0: off), not %r" % (z,))
 
 
 class Writer(object):
@@ -2240,23 +3155,34 @@ class Writer(object):
     O_APPEND and flock'ed (lock_wait seconds, then Busy); a torn tail is
     truncated (stats['repaired_bytes']), a non-EBR file refused. With
     `resume`, the file's last segment is continued when it is clean, under
-    reset_bytes and of this version; otherwise every open starts a segment."""
-    __slots__ = ("_st", "meta", "reset_bytes", "zlib", "max_frame_records", "max_frame_bytes",
+    reset_bytes and of this version; otherwise every open starts a segment.
+
+    `zstd` (a level 1-22; 0 off, the default) compresses each DATA frame,
+    kept only when it is smaller; without a zstd module it raises Error.
+    `meta` is stored in every SEGMENT (a value of a type the map grammar does
+    not have as its str(), as json.dumps(default=str) would)."""
+    __slots__ = ("_st", "meta", "reset_bytes", "zstd", "max_frame_records", "max_frame_bytes",
                  "path", "closed", "end", "_fd", "_fh", "_owned", "_locked", "_enc", "_record",
                  "_defs", "_pending", "_pending_bytes", "_seg_off", "_seg_bytes", "_seg_hdr",
                  "_new_seg", "_str_base", "_shape_base", "_recs", "_n", "_mask", "_tmin",
-                 "_tmax", "_unpl")
+                 "_tmax", "_unpl", "_zc")
 
-    def __init__(self, target, meta=None, reset_bytes=DEFAULT_RESET_BYTES, zlib=0,
+    def __init__(self, target, meta=None, reset_bytes=DEFAULT_RESET_BYTES, zstd=0,
                  max_frame_records=8192, max_frame_bytes=1 << 20, mode=0o666,
                  lock=True, resume=False, lock_wait=0):
         self._st = dict.fromkeys(WRITER_STATS, 0)
         self.meta = dict(meta or {})
-        json.dumps(self.meta, default=str)          # fail now, not at the first frame
+        _enc_map(self.meta)                         # fail now, not at the first frame
         self.reset_bytes = int(reset_bytes)
         if not 0 < self.reset_bytes <= 1 << 31:
             raise ValueError("reset_bytes must be in (0, 2 GiB]")
-        self.zlib = _zlevel(zlib)
+        self.zstd = _zstd_level(zstd)
+        self._zc = None
+        if self.zstd:
+            z = _zstd()
+            if not z:
+                raise Error("zstd level %d asked for, but %s" % (self.zstd, _ZSTD_HINT))
+            self._zc = z.compressor(self.zstd)
         self.max_frame_records = max(1, min(int(max_frame_records), 1 << 24))
         self.max_frame_bytes = max(1, min(int(max_frame_bytes), MAX_PAYLOAD))
         self.path = None
@@ -2298,7 +3224,7 @@ class Writer(object):
     @property
     def stats(self):
         """records frames segments bytes writes encode_errors write_errors
-        lost_records repaired_bytes zlib_frames (a copy)."""
+        lost_records repaired_bytes zstd_frames mark_frames (a copy)."""
         d = dict(self._st)
         d["records"] += self._n
         return d
@@ -2378,7 +3304,7 @@ class Writer(object):
             return
         fl = list(frames(src, so, size, True))
         if (not fl or fl[0].off != so or fl[0].kind != SEGMENT or fl[-1].end != size
-                or any(g.kind != DATA for g in fl[1:])):
+                or any(g.kind in (SEGMENT, BAD) for g in fl[1:])):
             return
         dec = Decoder()
         for g in fl:
@@ -2386,9 +3312,9 @@ class Writer(object):
             if dec.broken or dec.unsupported:
                 return
         seg = dec.segment
-        if (dec._T is None or seg.get("str_id_size") != STR_ID_SIZE
-                or seg.get("kinds") != list(KINDS)):
-            return
+        if (dec._T is None or seg.get("version") != VERSION
+                or seg.get("str_id_size") != STR_ID_SIZE or seg.get("kinds") != list(KINDS)):
+            return                          # (a v1 segment is never continued)
         T = dec._T
         S = T.S
         self._enc.load(S, [(tuple([S[i] for i in sh.ids]), sh.layout) for sh in T.shapes])
@@ -2502,14 +3428,18 @@ class Writer(object):
         self._new_seg = False
 
     def _queue_segment(self):
-        seg = {"format": FORMAT, "version": VERSION, "str_id_size": self._enc.sis,
-               "kinds": list(KINDS), "reset_bytes": self.reset_bytes, "zlib": self.zlib,
-               "created": time.time()}
+        out = bytearray(_SEG2.pack(VERSION, self._enc.sis, time.time()))
+        out += _uv(self.reset_bytes)
+        out += _uv(len(KINDS))
+        for k in KINDS:
+            out += _bstr(k)
+        meta = {}
         for k, v in self.meta.items():
-            if k not in seg:
-                seg[k] = v
-        payload = json.dumps(seg, separators=(",", ":"), default=str).encode("ascii")
-        fb = _frame(SEGMENT, 0, payload, 0, _NAN, _NAN, 0, 0)
+            k = _conv_key(k)
+            if k not in _SEG_KEYS:          # the segment's own keys win, as in v1
+                meta[k] = v
+        _enc_map(meta, out)
+        fb = _frame(SEGMENT, 0, bytes(out), 0, _NAN, _NAN, 0, 0)
         self._seg_off = self.end + self._pending_bytes
         self._pending.append((fb, SEGMENT, 0, 0))
         self._pending_bytes += len(fb)
@@ -2536,11 +3466,16 @@ class Writer(object):
         else:
             payload = head + self._recs
         flags = 0
-        if self.zlib:
-            z = _zlib.compress(payload, self.zlib)
-            if len(z) < len(payload):
+        zc = self._zc
+        if zc is not None:
+            L = len(payload)
+            try:
+                z = (_UV[L] if L < 16384 else _uv_slow(L)) + zc(payload)
+            except Exception:           # never a reason to lose a frame: store it as is
+                z = payload
+            if len(z) < L:
                 payload = z
-                flags = F_ZLIB
+                flags = F_ZSTD
         L = len(payload)
         off = self.end + self._pending_bytes
         if self._unpl:
@@ -2565,6 +3500,36 @@ class Writer(object):
             self._shape_base = self._enc.nshapes
         else:
             self._str_base, self._shape_base = bases
+        if self._seg_bytes >= self.reset_bytes:
+            self._new_seg = True
+
+    def mark(self, info):
+        """Queue a MARK frame holding `info` (a dict, stored as a map) after
+        every record written so far. The next flush() writes it with them, in
+        the same os.write, so a reader that finds it knows every record before
+        it is in the file. Never compressed; it holds no records, so its time
+        bounds are NaN and its kinds 0, and readers skip it. A converter keeps
+        its place in its source this way (`last_mark`)."""
+        if not isinstance(info, dict):
+            raise TypeError("a MARK holds a dict, not %s" % type(info).__name__)
+        if self.closed:
+            raise ValueError("mark on a closed Writer")
+        payload = bytes(_enc_map(info))
+        if len(payload) > _FRAME_ROOM:
+            raise RecordTooLarge("a MARK of %d bytes does not fit a frame" % len(payload))
+        if self._new_seg:
+            self._reset_segment()
+        elif self._n:
+            self._close_frame()
+            if self._new_seg:
+                self._reset_segment()
+        if self._seg_hdr:
+            self._queue_segment()
+        off = self.end + self._pending_bytes
+        fb = _frame(MARK, 0, payload, 0, _NAN, _NAN, off - self._seg_off, 0)
+        self._pending.append((fb, MARK, 0, 0))
+        self._pending_bytes += len(fb)
+        self._seg_bytes += len(fb)
         if self._seg_bytes >= self.reset_bytes:
             self._new_seg = True
 
@@ -2604,8 +3569,10 @@ class Writer(object):
             st["frames"] += 1
             if kind == SEGMENT:
                 st["segments"] += 1
-            if flags & F_ZLIB:
-                st["zlib_frames"] += 1
+            elif kind == MARK:
+                st["mark_frames"] += 1
+            if flags == F_ZSTD:
+                st["zstd_frames"] += 1
         self.end += done
         self._pending = []
         self._pending_bytes = 0
@@ -2929,6 +3896,17 @@ def _time_arg(s):
     raise argparse.ArgumentTypeError("not an epoch or a local 'YYYY-MM-DD[ HH:MM[:SS]]': %r" % s)
 
 
+def _zstd_arg(s):
+    try:
+        v = int(s)
+    except ValueError:
+        v = -1
+    if not 0 <= v <= _ZSTD_MAX:
+        import argparse
+        raise argparse.ArgumentTypeError("a zstd level is 0-22 (0: off), not %r" % s)
+    return v
+
+
 def _kinds_arg(vals):
     if not vals:
         return None
@@ -3116,13 +4094,16 @@ def _window_flush(w, rec, win, cur):
 
 
 def _cmd_convert(a):
+    if a.zstd and not zstd_available():
+        _err("--zstd %d: %s" % (a.zstd, _ZSTD_HINT))
+        return 2
     fh, fmt = open_feed(a.input)
     out = gzip.open(a.output, "wb") if a.output.endswith(".gz") else open(a.output, "wb")
     bad = n = 0
     try:
         w = Writer(out, meta={"writer": "ebr.py convert",
                               "source": os.path.basename(a.input)},
-                   reset_bytes=a.reset_bytes, zlib=a.zlib)
+                   reset_bytes=a.reset_bytes, zstd=a.zstd)
         cur = None
         if fmt == "ebr":
             st = {}
@@ -3155,9 +4136,11 @@ def _cmd_convert(a):
     finally:
         out.close()
         fh.close()
-    sys.stderr.write("ebr: %d records -> %s (%d frames, %d segments, %d bytes)%s\n"
-                     % (n, a.output, w.stats["frames"], w.stats["segments"], w.stats["bytes"],
-                        ", %d bad lines" % bad if bad else ""))
+    st = w.stats
+    sys.stderr.write("ebr: %d records -> %s (%d frames%s, %d segments, %d bytes)%s\n"
+                     % (n, a.output, st["frames"],
+                        " (%d zstd)" % st["zstd_frames"] if a.zstd else "", st["segments"],
+                        st["bytes"], ", %d bad lines" % bad if bad else ""))
     return 1 if bad else 0
 
 
@@ -3182,7 +4165,7 @@ def _verify_one(path, quick, strict):
     else:
         s = _Src(fh, stream=True)
     dec = Decoder()
-    nframes = nseg = ndata = nadv = header_records = mism = 0
+    nframes = nseg = ndata = nadv = nmark = nzstd = nzlib = bad_marks = header_records = mism = 0
     bad = []
     pos = 0
     try:
@@ -3198,8 +4181,19 @@ def _verify_one(path, quick, strict):
             elif f.kind == DATA:
                 ndata += 1
                 header_records += f.n_records
+                if f.flags == F_ZSTD:
+                    nzstd += 1
+                elif f.flags == F_ZLIB:
+                    nzlib += 1
             else:
                 nadv += 1
+                if f.kind == MARK:
+                    nmark += 1
+                    if not quick:
+                        try:
+                            mark_info(s, f)
+                        except Error:
+                            bad_marks += 1
             if quick or f.kind != DATA:
                 dec.skip(f, s)
                 continue
@@ -3238,13 +4232,17 @@ def _verify_one(path, quick, strict):
         s.close()
     st = dec.stats
     r.update(frames=nframes, segments=nseg, data_frames=ndata, advisory_frames=nadv,
+             mark_frames=nmark, zstd_frames=nzstd, zlib_frames=nzlib,
              records=header_records, decoded=None if quick else st["records"],
              bytes=size, bad_regions=bad, bad_frames=st["bad_frames"],
              bad_records=st["bad_records"], lost_records=st["lost_records"],
-             unsupported_frames=st["unsupported_frames"], header_mismatches=mism,
-             pending=size - pos)
+             unsupported_frames=st["unsupported_frames"],
+             zstd_unavailable=st["zstd_unavailable"], bad_marks=bad_marks,
+             header_mismatches=mism, pending=size - pos)
+    # (zstd_unavailable frames are unsupported_frames too: this reader could
+    # not check them, which is a problem here, but not corruption)
     r["problems"] = (len(bad) + st["bad_frames"] + st["bad_records"] + st["lost_records"]
-                     + st["lost_frames"] + st["unsupported_frames"] + mism
+                     + st["lost_frames"] + st["unsupported_frames"] + bad_marks + mism
                      + (1 if strict and size > pos else 0))
     return r
 
@@ -3266,15 +4264,20 @@ def _cmd_verify(a):
                 r["file"], r["records"], r["bad_lines"], r["pending"],
                 "" if r["problems"] else ", OK"))
             continue
-        sys.stdout.write("%s: ebr, %d frames (%d segments), %d records, %d bytes%s\n" % (
-            r["file"], r["frames"], r["segments"], r["records"], r["bytes"],
+        more = "".join(", %d %s" % (r[k], name) for k, name in (
+            ("mark_frames", "marks"), ("zstd_frames", "zstd"), ("zlib_frames", "zlib")) if r[k])
+        sys.stdout.write("%s: ebr, %d frames (%d segments%s), %d records, %d bytes%s\n" % (
+            r["file"], r["frames"], r["segments"], more, r["records"], r["bytes"],
             "" if r["problems"] else ", OK"))
         for off, end in r["bad_regions"]:
             sys.stdout.write("  BAD region [%d, %d) %d bytes\n" % (off, end, end - off))
         for k in ("bad_frames", "bad_records", "lost_records", "unsupported_frames",
-                  "header_mismatches"):
+                  "bad_marks", "header_mismatches"):
             if r[k]:
                 sys.stdout.write("  %s: %d\n" % (k, r[k]))
+        if r["zstd_unavailable"]:
+            sys.stdout.write("  zstd_unavailable: %d zstd frames not read, not corrupt: %s\n"
+                             % (r["zstd_unavailable"], _ZSTD_HINT))
         if r["pending"]:
             sys.stdout.write("  pending tail: %d bytes%s\n" % (
                 r["pending"], " (a problem under --strict)" if a.strict else ""))
@@ -3398,8 +4401,13 @@ def _cmd_append(a):
         if v:
             meta[k] = v
     meta["pid"] = os.getpid()
+    level = a.zstd
+    if level and not zstd_available():
+        # the node tier pipes every snapshot through here: never lose one to this
+        _err("--zstd %d: %s; appending uncompressed" % (level, _ZSTD_HINT))
+        level = 0
     try:
-        w = Writer.open_append(a.file, meta=meta, zlib=a.zlib, reset_bytes=a.reset_bytes,
+        w = Writer.open_append(a.file, meta=meta, zstd=level, reset_bytes=a.reset_bytes,
                                lock_wait=a.lock_wait)
     except Busy as e:
         _err(str(e))
@@ -3441,20 +4449,21 @@ def _cmd_frames(a):
         s = _Src(a.file)
     else:
         s = _Src(fh, stream=True)
-    names = {SEGMENT: "SEGMENT", DATA: "DATA", BAD: "BAD"}
+    names = {SEGMENT: "SEGMENT", DATA: "DATA", MARK: "MARK", BAD: "BAD"}
     rc = 0
     pos = 0
-    sys.stdout.write("%12s %12s %-8s %5s %9s %7s %19s %19s %9s %10s\n" % (
+    sys.stdout.write("%12s %12s %-8s %5s %9s %7s %19s %19s %9s %10s  %s\n" % (
         "off", "end", "kind", "flags", "payload", "records", "ts_min", "ts_max",
-        "seg_back", "kinds"))
+        "seg_back", "kinds", "info"))
     try:
         for f in frames(s, verify=True):
             pos = f.end
             if f.kind == BAD:
                 rc = 1
-            sys.stdout.write("%12d %12d %-8s %5d %9d %7d %19.6f %19.6f %9d 0x%08x\n" % (
-                f.off, f.end, names.get(f.kind, "kind%d" % f.kind), f.flags, f.payload_len,
-                f.n_records, f.ts_min, f.ts_max, f.seg_back, f.kinds))
+            sys.stdout.write(("%12d %12d %-8s %5d %9d %7d %19.6f %19.6f %9d 0x%08x  %s"
+                              % (f.off, f.end, names.get(f.kind, "kind%d" % f.kind), f.flags,
+                                 f.payload_len, f.n_records, f.ts_min, f.ts_max, f.seg_back,
+                                 f.kinds, _frame_info(f))).rstrip() + "\n")
         size = s.drain(pos)
     finally:
         s.close()
@@ -3463,6 +4472,29 @@ def _cmd_frames(a):
     if size > pos:
         sys.stdout.write("pending tail: %d bytes at %d\n" % (size - pos, pos))
     return rc
+
+
+def _frame_info(f):
+    """`frames`' last column: a SEGMENT's version, a MARK's map, how a DATA
+    frame's payload is stored."""
+    b = f.payload
+    try:
+        if f.kind == SEGMENT:
+            if f.flags:
+                return "flags %d" % f.flags
+            seg, ok = _segment_of(b)
+            if seg is None:
+                return "v%d: a version this reader does not know" % b[0]
+            return "v%s%s" % (seg.get("version"), "" if ok else ", unsupported")
+        if f.kind == MARK:
+            return json.dumps(mark_info(None, f))
+        if f.kind == DATA and f.flags == F_ZSTD:
+            return "zstd, %d bytes raw" % _ruv(b, 0)[0]
+        if f.kind == DATA and f.flags == F_ZLIB:
+            return "zlib"
+    except (Error, ValueError, IndexError) as e:
+        return "malformed: %s" % e
+    return ""
 
 
 def _groups(recs, win, cap):
@@ -3510,6 +4542,12 @@ def _best(fn, reps):
 
 
 def _cmd_bench(a):
+    level = a.zstd
+    if level is None:                   # not asked for: zstd's default where there is zstd
+        level = _ZSTD_DEFAULT if zstd_available() else 0
+    elif level and not zstd_available():
+        _err("--zstd %d: %s" % (level, _ZSTD_HINT))
+        return 2
     recs = _bench_records(a.file, a.limit)
     if not recs:
         _err("%s holds no records" % a.file)
@@ -3519,12 +4557,13 @@ def _cmd_bench(a):
     jsonl = ("\n".join(lines) + "\n").encode("utf-8")
     win = 0.0 if a.frame_records else a.window
     cap = a.frame_records or 8192
+    zname = "ebr+zstd%d" % level
 
     groups = _groups(recs, win, cap)
 
-    def build(level):
+    def build(z):
         bio = io.BytesIO()
-        w = Writer(bio, meta={"writer": "ebr.py bench"}, zlib=level, max_frame_records=cap)
+        w = Writer(bio, meta={"writer": "ebr.py bench"}, zstd=z, max_frame_records=cap)
         wr = w.write
         fl = w.flush
         for g in groups:
@@ -3545,13 +4584,13 @@ def _cmd_bench(a):
                 rec(r)
 
     ebr, wst = build(0)
-    ebrz, zst = build(a.zlib)
+    ebrz, zst = build(level) if level else (None, None)
     gz_j = gzip.compress(jsonl, 6)
     gz_e = gzip.compress(ebr, 6)
 
-    def decode_all(where=None, kinds=None):
+    def decode_all(where=None, kinds=None, data=ebr):
         dec = Decoder()
-        s = _Src(ebr)
+        s = _Src(data)
         k = 0
         for f in frames(s):
             for _ in dec.records(s, f, kinds, where):
@@ -3582,16 +4621,19 @@ def _cmd_bench(a):
     timing["ebr decode"] = _best(decode_all, a.reps)
     timing["ebr reject (where)"] = _best(lambda: decode_all(where=reject), a.reps)
     timing["ebr skip (kinds)"] = _best(lambda: decode_all(kinds={"\x00never"}), a.reps)
+    timing["ebr+zstd encode"] = _best(lambda: build(level), a.reps) if level else None
+    timing["ebr+zstd decode"] = _best(lambda: decode_all(data=ebrz), a.reps) if level else None
     us = dict((k, None if v is None else v / n * 1e6) for k, v in timing.items())
 
-    # round trip, and per-kind body sizes
-    got = [rec for _p, rec in iter_records(io.BytesIO(ebr))]
+    # round trip (zstd's too), and per-kind body sizes
     mism = 0
-    if len(got) != n:
-        mism = abs(len(got) - n)
-    for x, line in zip(got, lines):
-        if not _same(x, json.loads(line)):
-            mism += 1
+    for data in (ebr, ebrz) if level else (ebr,):
+        got = [rec for _p, rec in iter_records(io.BytesIO(data))]
+        if len(got) != n:
+            mism += abs(len(got) - n)
+        for x, line in zip(got, lines):
+            if not _same(x, json.loads(line)):
+                mism += 1
     enc = _Encoder()
     kinds = {}
     for r, line in zip(recs, lines):
@@ -3606,10 +4648,15 @@ def _cmd_bench(a):
         e[0] += 1
         e[1] += len(line) + 1
         e[2] += len(body) + len(_uv(len(body)))
+    sizes = {"jsonl": len(jsonl), "ebr": len(ebr)}
+    if level:
+        sizes[zname] = len(ebrz)
+    sizes.update((("jsonl.gz-6", len(gz_j)), ("ebr.gz-6", len(gz_e))))
     res = {
         "file": a.file, "records": n, "python": sys.version.split()[0],
-        "sizes": {"jsonl": len(jsonl), "ebr": len(ebr), "ebr+zlib%d" % a.zlib: len(ebrz),
-                  "jsonl.gz-6": len(gz_j), "ebr.gz-6": len(gz_e)},
+        "sizes": sizes,
+        "zstd": ({"level": level, "module": zstd_backend(), "frames": zst["zstd_frames"]}
+                 if level else None),
         "frames": wst["frames"], "segments": wst["segments"],
         "us_per_record": us,
         "kinds": dict((k, {"records": v[0], "jsonl_b": v[1] / float(v[0]),
@@ -3625,13 +4672,20 @@ def _cmd_bench(a):
         ("frames of %d records" % a.frame_records) if a.frame_records
         else ("frames per %gs of ts_epoch" % win)))
     w("  %-14s %12s %9s %7s\n" % ("size", "bytes", "B/rec", "ratio"))
-    for k in ("jsonl", "ebr", "ebr+zlib%d" % a.zlib, "jsonl.gz-6", "ebr.gz-6"):
-        v = res["sizes"][k]
+    for k, v in sizes.items():
         w("  %-14s %12d %9.1f %6.2fx\n" % (k, v, v / float(n), len(jsonl) / float(v)))
-    w("  (%d frames, %d segments)\n" % (wst["frames"], wst["segments"]))
+    if level:
+        w("  (%d frames, %d segments; %s: %d of %d frames compressed)\n" % (
+            wst["frames"], wst["segments"], zstd_backend(), zst["zstd_frames"],
+            zst["frames"] - zst["segments"]))
+    else:
+        w("  (%d frames, %d segments; ebr+zstd: %s)\n" % (
+            wst["frames"], wst["segments"],
+            "--zstd 0" if a.zstd == 0 else "unavailable, " + _ZSTD_HINT))
     w("  %-20s %8s  (best of %d)\n" % ("us/record", "", a.reps))
     for k in ("json.dumps", "ebr encode", "ebr body encode", "json.loads", "orjson.loads",
-              "ebr decode", "ebr reject (where)", "ebr skip (kinds)"):
+              "ebr decode", "ebr reject (where)", "ebr skip (kinds)", "ebr+zstd encode",
+              "ebr+zstd decode"):
         v = us[k]
         w("  %-20s %8s\n" % (k, "n/a" if v is None else "%.2f" % v))
     w("  %-18s %8s %10s %10s %7s\n" % ("event", "records", "jsonl B", "ebr B", "ratio"))
@@ -3652,10 +4706,23 @@ def main(argv=None):
     if hasattr(sys, "set_int_max_str_digits"):
         sys.set_int_max_str_digits(0)
 
+    class Version(argparse.Action):
+        """--version, its zstd module looked up only when it is asked for."""
+
+        def __init__(self, option_strings, dest=argparse.SUPPRESS,
+                     default=argparse.SUPPRESS, help=None):
+            argparse.Action.__init__(self, option_strings=option_strings, dest=dest,
+                                     default=default, nargs=0, help=help)
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            sys.stdout.write("ebr %d (zstd: %s)\n" % (VERSION, zstd_backend() or "unavailable"))
+            parser.exit()
+
     p = argparse.ArgumentParser(
         prog="ebr.py", description="EBR (ebpfm binary records) tools. Exit status: "
         "0 ok, 1 a data problem, 2 a usage or I/O error.")
-    p.add_argument("--version", action="version", version="ebr %d" % VERSION)
+    p.add_argument("--version", action=Version,
+                   help="the format version and the zstd module, then exit")
     sub = p.add_subparsers(dest="verb", metavar="VERB")
     sub.required = True
 
@@ -3675,7 +4742,8 @@ def main(argv=None):
     c.set_defaults(fn=_cmd_cat)
 
     c = sub.add_parser("convert", help="JSONL (or EBR) to EBR; OUT ending .gz is gzipped")
-    c.add_argument("--zlib", type=int, default=0, metavar="L")
+    c.add_argument("--zstd", type=_zstd_arg, default=0, metavar="L",
+                   help="compress each frame at zstd level L, 1-22 (0, the default: off)")
     c.add_argument("--reset-bytes", type=int, default=DEFAULT_RESET_BYTES, metavar="B")
     c.add_argument("--window", type=float, default=1.0, metavar="S",
                    help="one frame per S seconds of ts_epoch (0: by size only)")
@@ -3707,7 +4775,9 @@ def main(argv=None):
     c.add_argument("--host")
     c.add_argument("--stream")
     c.add_argument("--writer")
-    c.add_argument("--zlib", type=int, default=0, metavar="L")
+    c.add_argument("--zstd", type=_zstd_arg, default=0, metavar="L",
+                   help="zstd level 1-22 (0, the default: off); without a zstd module "
+                   "it warns and appends uncompressed")
     c.add_argument("--reset-bytes", type=int, default=DEFAULT_RESET_BYTES, metavar="B")
     c.add_argument("--lock-wait", type=float, default=30.0, metavar="S")
     c.add_argument("file", metavar="FILE")
@@ -3718,7 +4788,9 @@ def main(argv=None):
     g = c.add_mutually_exclusive_group()
     g.add_argument("--window", type=float, default=0.1, metavar="S")
     g.add_argument("--frame-records", type=int, default=0, metavar="K")
-    c.add_argument("--zlib", type=int, default=1, metavar="L")
+    c.add_argument("--zstd", type=_zstd_arg, default=None, metavar="L",
+                   help="the ebr+zstd level (default %d where there is a zstd module; "
+                   "0: none)" % _ZSTD_DEFAULT)
     c.add_argument("--reps", type=int, default=3, metavar="R")
     c.add_argument("--json", action="store_true")
     c.add_argument("file", metavar="FILE")

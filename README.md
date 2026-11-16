@@ -143,7 +143,7 @@ cd dashboard && uv run python -m rc_dashboard demo     # after the web build abo
 bash run-demo.sh                                       # or with hot reload, on :8087
 ```
 As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare Worker,
-<https://hpc-dashboard.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
+<https://dashboard-demo.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
 redeployed from `develop` by `.github/workflows/demo-deploy.yml` whenever a push changes it.
 
 The real service, live, on a host of your own: [`deploy/fleet`](deploy/fleet/README.md)
@@ -156,6 +156,8 @@ RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # Where the ebpf collected data reside
 RC_DASH_NODE_ROOTS=/var/log/ebpfm-login  # Where the other data reside (node-level)
 RC_DASH_EBPF_PREFER=jsonl                # jsonl (default) or ebr: which twin to read
 RC_DASH_NODE_PREFER=jsonl                # the same, for the node tier
+RC_DASH_CONVERT=1                        # read EBR only: JSONL converted at startup into an EBR view (0: off)
+RC_DASH_CONVERT_WORKERS=0                # processes converting at startup: 0 (default) = every CPU it may use
 ```
 See [Two formats](dashboard/README.md#two-formats) for how the dashboard reads a collector
 writing both, and the order to move to EBR in.

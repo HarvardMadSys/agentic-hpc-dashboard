@@ -418,12 +418,15 @@ def _read_back_ebr(path, entry, stats):
     held = []                       # the first frame's records, newest first
     try:
         for pos, raw in records_reverse(path, entry["end"], entry["start"], stats=st):
-            stats["bytes"] += max(0, prev - pos)
+            if prev > pos:
+                stats["bytes"] += prev - pos
             prev = pos
             if first is not None and pos < first:
                 held.append(raw)
                 continue
-            ts = epoch_of(raw)
+            ts = raw.get("ts_epoch")
+            if type(ts) is not float:
+                ts = epoch_of(raw)  # what it gives a float, read here without the call
             if ts is not None:
                 last = ts
             yield last, raw
