@@ -1,8 +1,8 @@
 #!/bin/bash
 # pull-gz.sh PULL: copy every source node's sealed days, as the collector's own
-# `.jsonl.gz`, into PULL/<host>/<day>/, the layout seed_mirror.py reads. Only
-# `.jsonl.gz` files cross: the live day's plain files are left for the stream. Run it
-# again to fetch only what is new; rsync skips the rest.
+# `.jsonl.gz` and `.ebr.gz`, into PULL/<host>/<day>/, the layout seed_mirror.py reads.
+# Only those `.gz` files cross: the live day's plain files are left for the stream. Run
+# it again to fetch only what is new; rsync skips the rest.
 #
 #   SOURCE_USER=<account> SOURCE_NODES="<node> ..." fleet/pull-gz.sh PULL
 #   python3 fleet/seed_mirror.py PULL BASE     # then build the receiver's copy in BASE
@@ -36,8 +36,8 @@ mkdir -p "$DEST" && chmod 700 "$DEST" || exit 2
 failed=0
 for host in "${HOSTS[@]}"; do
   echo "== $host"
-  rsync -rlt --prune-empty-dirs --include='*/' --include='*.jsonl.gz' --exclude='*' \
-        --timeout=600 --out-format='  %n (%l bytes)' -e "$RSH" \
+  rsync -rlt --prune-empty-dirs --include='*/' --include='*.jsonl.gz' --include='*.ebr.gz' \
+        --exclude='*' --timeout=600 --out-format='  %n (%l bytes)' -e "$RSH" \
         "$SOURCE_USER@$host${DOMAIN:+.$DOMAIN}:$REMOTE_DIR/" "$DEST/$host/"
   rc=$?
   if [ "$rc" -eq 0 ] || [ "$rc" -eq 24 ]; then   # 24: a file vanished mid-transfer

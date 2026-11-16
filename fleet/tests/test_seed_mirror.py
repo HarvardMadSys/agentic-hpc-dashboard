@@ -1,8 +1,10 @@
 """seed_mirror.py and pull-gz.sh: a copy built ahead of time from pulled `.gz` days,
 which a real sender then leaves alone, sending only the live day's plain bytes."""
+import fnmatch
 import gzip
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -18,7 +20,7 @@ sys.path.insert(0, HERE)
 
 import fleet_stream as fs                                         # noqa: E402
 import seed_mirror as sm                                          # noqa: E402
-from fakecollector import FakeCollector                           # noqa: E402
+from fakecollector import STREAMS, FakeCollector, ebr, records    # noqa: E402
 from test_receiver import HOST, Rig, mirror_tree, read, source_tree   # noqa: E402
 
 SEED = os.path.join(FLEET, "seed_mirror.py")
@@ -27,12 +29,20 @@ EXITS = "nodeA.cluster.example.org.exits.jsonl"
 SNAP = "nodeA.cluster.example.org.snapshot.jsonl"
 
 
+def pull_patterns():
+    """The file patterns pull-gz.sh's rsync takes: its `--include='<pattern>'`s but the
+    one for folders, `*/`."""
+    with open(PULL) as fh:
+        return [p for p in re.findall(r"--include='([^']*)'", fh.read()) if p != "*/"]
+
+
 def pull_like_pull_gz(src, pull, host=HOST):
-    """What `rsync -rlt --include='*/' --include='*.jsonl.gz' --exclude='*'` brings
+    """What pull-gz.sh's `rsync -rlt --include='*/' <its patterns> --exclude='*'` brings
     from a node's /scratch/ebpfm: its sealed days only, under `<pull>/<host>/`."""
+    pats = pull_patterns()
     for day in sorted(os.listdir(src)):
         for name in sorted(os.listdir(os.path.join(src, day))):
-            if name.endswith(".jsonl.gz"):
+            if any(fnmatch.fnmatchcase(name, p) for p in pats):
                 os.makedirs(os.path.join(pull, host, day), exist_ok=True)
                 shutil.copy2(os.path.join(src, day, name), os.path.join(pull, host, day, name))
 
@@ -223,6 +233,59 @@ class TestSeed(Seeded):
         self.assertEqual(len(self.ledger()), 4)
 
 
+@unittest.skipIf(ebr is None, "no collector/lib/ebr.py alongside fleet/")
+class TestSeedEbr(Seeded):
+    """Days the collector wrote as EBR beside JSONL (EBPFM_FORMAT=both), pulled as
+    pull-gz.sh pulls them: each `.ebr.gz` is seeded as a `.jsonl.gz` is. Seeded here in
+    this process, on a disk said to have room to spare."""
+
+    def setUp(self):
+        self.rig = Rig(days=3)
+        self.pull = tempfile.mkdtemp(prefix="fleet-pull-")
+        c = FakeCollector(self.rig.src, day="2026-11-09", formats=("jsonl", "ebr"))
+        for n, next_day in ((3000, "2026-11-10"), (2000, "2026-11-11")):
+            c.write_twins("exits", records(n))
+            c.write_twins("snapshot", records(30, event="residency"))
+            c.roll(next_day)
+        c.write_twins("exits", records(100))
+        self.c = c
+        pull_like_pull_gz(self.rig.src, self.pull)
+
+    def seed_here(self, inflate=False):
+        out = []
+        rc = sm.seed(self.pull, self.rig.basedir, statvfs=lambda: (10 ** 13, 10 ** 13),
+                     say=out.append, inflate=inflate)
+        return rc, out
+
+    def test_both_formats_go_into_the_copy_as_pulled(self):
+        rc, out = self.seed_here()
+        self.assertEqual(rc, 0, out)
+        sealed = self.sealed()
+        self.assertEqual(len(sealed), 8)                   # 2 days x 2 streams x 2 formats
+        self.assertEqual(len([k for k in sealed if k.endswith(".ebr")]), 4)
+        self.assertEqual(source_tree(self.rig.mdir), sealed)
+        self.assertEqual(self.ledger(), sorted(sealed))
+        for key in sealed:
+            self.assertEqual(read(os.path.join(self.rig.mdir, key + ".gz")),
+                             read(os.path.join(self.pull, HOST, key + ".gz")))
+        self.private_files()
+
+    def test_then_only_the_live_day_streams(self):
+        rc, out = self.seed_here()
+        self.assertEqual(rc, 0, out)
+        self.rig.start()
+        self.wait_same()
+        self.assertEqual(self.rig.counters.total(HOST, "gz"), 0)
+        live = sum(len(self.c.read(s, fmt=f)) for s in STREAMS for f in ("jsonl", "ebr"))
+        self.assertEqual(self.rig.counters.total(HOST, "plain"), live)
+
+    def test_inflate_writes_plain_ebr_files(self):
+        rc, out = self.seed_here(inflate=True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(mirror_tree(self.rig.mdir), self.sealed())
+        self.assertEqual(self.ledger(), sorted(self.sealed()))
+
+
 class TestPull(unittest.TestCase):
     """pull-gz.sh with rsync replaced by a stand-in that logs its arguments."""
 
@@ -259,7 +322,7 @@ class TestPull(unittest.TestCase):
         calls = self.calls()
         self.assertEqual(len(calls), 2)
         for host, call in zip(("nodeA", "nodeB"), calls):
-            self.assertIn("--include=*/ --include=*.jsonl.gz --exclude=*", call)
+            self.assertIn("--include=*/ --include=*.jsonl.gz --include=*.ebr.gz --exclude=*", call)
             self.assertIn("--prune-empty-dirs", call)
             self.assertTrue(call.endswith("alice@%s.cluster.example.org:/scratch/ebpfm/ %s/%s/"
                                           % (host, dest, host)), call)
