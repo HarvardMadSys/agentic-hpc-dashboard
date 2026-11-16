@@ -95,7 +95,9 @@ function nodeTip(n: CascadeNode): string {
     n.cwd ? `cwd ${n.cwd}` : null,
     n.started ? `started ${n.started}` : null,
     n.last_seen ? `last seen ${n.last_seen}${n.exited ? ' (exited)' : ''}` : null,
-    n.spawned_by != null ? `--spawned-by pid ${n.spawned_by}` : null,
+    // `claude daemon` names who started it; it is its user's, and hosts every
+    // background session they start, so that is not those sessions' parent
+    n.spawned_by != null ? `started by pid ${n.spawned_by} (its --spawned-by); it hosts its user's background sessions, whoever asked for them` : null,
     n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a Node.js launcher execs), which runs the session' : null,
     n.implied ? 'implied: a tool-call shell named it as parent; it left no record itself' : null,
     n.role === 'agent' && n.surface ? `driven from: ${surfaceTip(n.surface, n.surface_detail).split('\n')[0]}` : null,

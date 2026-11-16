@@ -3,9 +3,9 @@
 The shapes are the ones madsys-gpu1 actually shows (2026-09-20 .. 10-07): no
 `claude -p` or `codex exec` from a tool call in two weeks, but Remote Control
 workers under `claude rc`, Claude Desktop `ccd-cli` sessions under the remote
-`server`, and background agents started by `claude daemon run --spawned-by`
-through a `bg-pty-host`. The tool-call spawn is tested too, because that is the
-case the view exists to catch when it happens.
+`server`, and background sessions `claude daemon run` hosts through a
+`bg-pty-host`. The tool-call spawn is tested too, because that is the case the
+view exists to catch when it happens.
 
     cd dashboard && uv run python -m unittest discover -s tests -q
 """
@@ -144,13 +144,17 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual((n["parent"], n["via"]), (100, "ancestor"))
         self.assertEqual(n["path"], ["zsh"])           # what it was started through
 
-    def test_background_agents_link_back_to_the_session_that_started_the_daemon(self):
+    def daemon(self, starter_is_parent=False):
+        """A session (100) that started `claude daemon` (300), whose pty host
+        (310) runs a background session (320). Detached, the daemon keeps its
+        starter as its ppid until the starter exits (`starter_is_parent`), and
+        the collector may then record the starter's tree as its own."""
         t0 = self.t0
-        recs = claude_session(t0)[:1] + [
-            rec("residency", t0 + 1, 300, 1, "claude",
+        return claude_session(t0)[:1] + [
+            rec("residency", t0 + 1, 300, 100 if starter_is_parent else 1, "claude",
                 HOME + "/.local/bin/claude daemon run --origin transient --spawned-by "
                 '{"label":"claude","cwd":"%s","pid":100}' % PROJ,
-                agent_pid=300, tree_root=300, is_agent=True),
+                agent_pid=300, tree_root=100 if starter_is_parent else 300, is_agent=True),
             rec("residency", t0 + 2, 310, 1, "2.1.282",
                 "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-1000/ab/pty/x.sock 200 50 "
                 "-- " + HOME + "/.local/share/claude/versions/2.1.282 --session-id x",
@@ -160,12 +164,35 @@ class CascadeTest(unittest.TestCase):
                 "08749fc1-dedd-48d3-add6-8890798cd937 --agent claude",
                 agent_pid=320, tree_root=310, is_agent=True),
         ]
-        t = tree_of(reduce(recs), 100)
-        self.assertEqual((node(t, 300)["parent"], node(t, 300)["via"]), (100, "spawned_by"))
+
+    def test_the_daemon_hosts_its_sessions_and_is_no_ones_subagent(self):
+        """`claude daemon` is its user's: every background session goes through
+        it, whoever asked for it, so the session that happened to start it does
+        not wear them all as subagents. Who started it stays on its node."""
+        p = reduce(self.daemon())
+        t = tree_of(p, 300)
+        d = node(t, 300)
+        self.assertEqual((d["role"], d["parent"], d["via"]), ("infra", None, None))
+        self.assertEqual(d["spawned_by"], 100)
         self.assertEqual((node(t, 310)["parent"], node(t, 310)["via"]),
                          (300, "same_user_daemon"))
         self.assertEqual((node(t, 320)["parent"], node(t, 320)["via"]), (310, "ancestor"))
-        self.assertEqual(t["agent_depth"], 2)            # 100, then 320
+        self.assertEqual((t["agent_depth"], t["agents_nested"]), (1, 0))
+        # the session that started the daemon is a tree of its own
+        self.assertEqual([n["pid"] for n in tree_of(p, 100)["nodes"]], [100])
+        s = p["cascades"]["summary"]
+        self.assertEqual((s["nested"], s["hosted"], s["agents_nested"]), (0, 1, 0))
+
+    def test_the_daemon_roots_its_tree_while_its_starter_is_its_parent(self):
+        p = reduce(self.daemon(starter_is_parent=True))
+        d = node(tree_of(p, 300), 300)
+        self.assertEqual((d["ppid"], d["parent"], d["via"]), (100, None, None))
+        self.assertEqual([n["pid"] for n in tree_of(p, 100)["nodes"]], [100])
+
+    def test_a_background_session_is_driven_from_where_its_pty_host_says(self):
+        # its own argv, `--session-id x` in a pty, reads as an interactive session
+        n = node(tree_of(reduce(self.daemon()), 300), 320)
+        self.assertEqual((n["surface"], n["surface_detail"]), ("terminal", "background session"))
 
     def daemon_with_spares(self, claimed_calls=0):
         """A session that started `claude daemon`, which keeps three spares --
@@ -204,32 +231,32 @@ class CascadeTest(unittest.TestCase):
                 ]
         return recs
 
-    def test_a_spare_nobody_claimed_is_the_daemons_not_a_subagent(self):
+    def test_a_spare_nobody_claimed_is_the_daemons_not_an_agent(self):
         """`claude daemon` starts sessions ahead of need (`claude bg-spare`); one
-        that waits is no agent, so the session that started the daemon does not
-        wear it as a subagent that ran nothing."""
+        that waits is no agent, so the daemon's tree holds only the session it
+        ran, not three more that ran nothing."""
         p = reduce(self.daemon_with_spares())
         c = p["cascades"]
-        t = tree_of(p, 100)
+        t = tree_of(p, 300)
         agents = sorted(n["pid"] for n in t["nodes"] if n["role"] == "agent")
-        self.assertEqual(agents, [100, 320])
+        self.assertEqual(agents, [320])
         for pid in (401, 402, 403):                        # waited, or waited and exited
             self.assertNotIn(pid, [n["pid"] for n in t["nodes"]])
-        self.assertEqual((t["n_agents"], t["agents_nested"], t["idle_spares"]), (2, 1, 3))
+        self.assertEqual((t["n_agents"], t["agents_nested"], t["idle_spares"]), (1, 0, 3))
         self.assertGreaterEqual(t["hidden_nodes"], 3)
-        self.assertEqual((c["summary"]["agents"], c["summary"]["agents_nested"]), (2, 1))
+        self.assertEqual((c["summary"]["agents"], c["summary"]["agents_nested"]), (2, 0))
         self.assertEqual(c["summary"]["idle_spares"], 3)
         self.assertEqual(t["max_fanout"], 1)
-        # the session is still the daemon's, through its pty host: four calls, a
-        # shell and a `git` each
+        # the session is the daemon's, through its pty host: four calls, a shell
+        # and a `git` each
         self.assertEqual(node(t, 320)["tool_calls"], 8)
 
     def test_a_spare_that_ran_something_was_claimed_and_is_an_agent(self):
-        t = tree_of(reduce(self.daemon_with_spares(claimed_calls=2)), 100)
+        t = tree_of(reduce(self.daemon_with_spares(claimed_calls=2)), 300)
         n = node(t, 403)
-        self.assertEqual((n["role"], n["spare"], n["agent_level"]), ("agent", True, 2))
+        self.assertEqual((n["role"], n["spare"], n["agent_level"]), ("agent", True, 1))
         self.assertEqual(n["tool_calls"], 4)                 # two calls, two processes each
-        self.assertEqual((t["n_agents"], t["idle_spares"]), (3, 2))
+        self.assertEqual((t["n_agents"], t["idle_spares"]), (2, 2))
 
     def test_sessions_hosted_by_infrastructure_are_not_a_cascade(self):
         # Claude Desktop's remote server runs one ccd-cli per chat: hosted, not nested

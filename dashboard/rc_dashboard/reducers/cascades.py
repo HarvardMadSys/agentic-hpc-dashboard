@@ -13,20 +13,27 @@ What this can see is PROCESSES. Claude Code's Task-tool subagents and workflow
 agents run inside their parent's process and are invisible here; only agents
 that are processes of their own appear. On madsys-gpu1 those are Remote Control
 workers under `claude rc`, Claude Desktop `ccd-cli` sessions under the remote
-`server`, and background agents a session starts through `claude daemon run`.
-The daemon also keeps sessions started ahead of need, each a `claude bg-spare`
-waiting to be claimed; one nobody claimed ran nothing, and is the daemon's
-infrastructure here, not an agent (`idle_spares`).
+`server`, and background sessions `claude daemon run` hosts. The daemon also
+keeps sessions started ahead of need, each a `claude bg-spare` waiting to be
+claimed; one nobody claimed ran nothing, and is the daemon's infrastructure
+here, not an agent (`idle_spares`).
 
 A node's parent is found, in order:
 
   ancestor          the nearest node above it in the process tree, walking the
                     window's ProcIndex; `path` lists what it passed through
-  spawned_by        the daemon's own `--spawned-by {"pid": N}`: it is started
-                    detached, so the process tree does not say who asked for it
   same_user_daemon  a `bg-pty-host` orphaned to init, attached to its user's only
                     daemon on that host. Inferred, and labelled so
   tree_root         the top-most agent the collector recorded for the tree
+
+`claude daemon` is not a parent's child. Whichever `claude` first needs it
+starts it, detached, and its `--spawned-by {"pid": N}` names that process; but
+the daemon is its user's, and every background session the user starts later,
+from any terminal, goes through it. Hung under the process that started it --
+as it was -- each of those sessions was drawn as that one session's subagent.
+So the daemon is the root of its own tree, hosting its sessions side by side
+as `claude rc` does, and who started it is kept on its node (`spawned_by`), not
+drawn as its parent.
 
 An agent started beneath another agent is that agent's SUBAGENT. An agent's
 numbers -- tool calls, CPU -- are its folded trajectory session's
@@ -97,7 +104,6 @@ WORKSPACE_BASIS = {
 }
 VIA_MEANING = {
     "ancestor": "nearest node above it in the process tree",
-    "spawned_by": "named by the daemon's own --spawned-by argument",
     "same_user_daemon": "a bg-pty-host orphaned to init, attached to its user's only "
                         "daemon on the host (inferred)",
     "tree_root": "the top-most agent the collector recorded for the tree",
@@ -236,6 +242,12 @@ class CascadeReducer:
 
     # ------------------------------------------------------------- resolve
     def _parent(self, n, live, daemons):
+        if n["daemon"]:
+            # The daemon hosts its user's sessions, whoever asked for them, so
+            # it roots its own tree (the module's docstring) -- by any link: a
+            # detached child keeps its starter's pid as its ppid until the
+            # starter exits, and the collector may name the starter's tree root.
+            return None, None, []
         host = n["host"]
         p, path, seen = n["ppid"], [], {n["pid"]}
         for _ in range(MAX_HOPS):
@@ -251,9 +263,6 @@ class CascadeReducer:
                 break
             path.append(e[2] or "?")
             p = e[0]
-        sb = n["spawned_by"]
-        if sb is not None and (host, sb) in live:
-            return sb, "spawned_by", []
         if n["pty_host"] and n["ppid"] in _NO_PARENT:
             mine = daemons.get((host, n["user"]), [])
             if len(mine) == 1:
@@ -294,11 +303,11 @@ class CascadeReducer:
         # `claude daemon` keeps sessions started ahead of need, each a `claude
         # bg-spare` waiting on its claim socket, so that the next background
         # session starts at once. Until one is claimed it runs no command: it is
-        # the daemon's, not an agent. Drawn as one, each hung under the session
-        # that started the daemon (`--spawned-by`) as a subagent that ran
-        # nothing, and was counted as one. A spare that ran anything was
-        # claimed, and is the session it became; an idle one is infrastructure,
-        # counted (`idle_spares`) and, with no agent below it, not drawn.
+        # the daemon's, not an agent. Drawn as one, each was an agent that ran
+        # nothing -- and, while the daemon hung under whoever started it, that
+        # session's subagent. A spare that ran anything was claimed, and is the
+        # session it became; an idle one is infrastructure, counted
+        # (`idle_spares`) and, with no agent below it, not drawn.
         idle_spares = 0
         for key, n in live.items():
             if n.get("spare") and n["role"] == "agent" and _idle(n, by_pid.get(key)):
@@ -335,6 +344,17 @@ class CascadeReducer:
                 # and so is its surface: a daemon names no client of its own
                 if n["surface"] in (None, "unknown") and p["surface"] is not None:
                     n["surface"], n["surface_detail"] = p["surface"], p["surface_detail"]
+        # A session a `bg-pty-host` runs is one of the daemon's background
+        # sessions, though its own argv (`--session-id x`, in a pty) reads as an
+        # interactive one: it is driven from where its host says. With the
+        # daemon no longer under whoever started it, this is what says why it
+        # roots a tree of its own.
+        for n in live.values():
+            if n["role"] != "agent" or n["via"] != "ancestor" or n["path"]:
+                continue
+            p = live[(n["host"], n["parent"])]
+            if p["pty_host"] and p["surface"] is not None:
+                n["surface"], n["surface_detail"] = p["surface"], p["surface_detail"]
 
         kids = collections.defaultdict(list)
         for (host, pid), n in live.items():
@@ -537,7 +557,7 @@ class CascadeReducer:
 
     @staticmethod
     def _break_cycles(live):
-        """A spawned_by or tree_root link can close a loop; cut it where it closes."""
+        """A tree_root or same_user_daemon link can close a loop; cut it where it closes."""
         for key, n in live.items():
             seen, cur = {key}, n
             while cur["parent"] is not None:

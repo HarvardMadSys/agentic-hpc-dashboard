@@ -1180,18 +1180,26 @@ The **Agents** tab (`?tab=agents`; the old `?tab=cascades` still opens it) answe
 agents started which other agents, and where did each one work". A node is a process whose
 role (`roles.py`) is `agent`, `infra` or `client`; tool-call shells, sandboxes, probes and
 helpers are steps between nodes. A node's parent is the nearest node above it in the process
-tree, else the daemon's own `--spawned-by {"pid": N}`, else (for a `bg-pty-host` orphaned to
-init) its user's only daemon, labelled as inferred, else the tree root. An agent started,
-through any number of steps, beneath another agent is that agent's **subagent**. Two outcomes
-are kept apart: **nested**, an agent with subagents, and **hosted**, a daemon, Claude
-Desktop's remote server or `claude rc` running sessions side by side. A Codex TUI whose
-direct child is `codex app-server` is shown as that session's front-end, not as a second
-agent. `claude daemon` keeps sessions started ahead of need, each a `claude bg-spare`
-waiting to be claimed, so the next background session starts at once: one nobody claimed
-ran no process but its own, and is the daemon's (`infra`), not an agent. Drawn as an
-agent, each hung under the session that started the daemon as a subagent that ran
-nothing. Idle spares are counted per tree and in the summary (`idle_spares`); a spare
-that ran anything was claimed, and is the agent it became.
+tree, else (for a `bg-pty-host` orphaned to init) its user's only daemon, labelled as
+inferred, else the tree root. An agent started, through any number of steps, beneath another
+agent is that agent's **subagent**. Two outcomes are kept apart: **nested**, an agent with
+subagents, and **hosted**, a daemon, Claude Desktop's remote server or `claude rc` running
+sessions side by side. A Codex TUI whose direct child is `codex app-server` is shown as that
+session's front-end, not as a second agent.
+
+`claude daemon` roots a tree of its own, hosting its background sessions side by side. It is
+started, detached, by whichever `claude` first needs it, and its `--spawned-by {"pid": N}`
+names that process -- but it is its user's, and every background session the user starts
+later, from any terminal, goes through it. Hung under the process that started it, as it
+was, each of those sessions was drawn as that one session's subagent. Who started it is kept
+on its node (`spawned_by`, in its box's tooltip), and is never its parent, nor is the ppid a
+detached daemon keeps until its starter exits. A session its `bg-pty-host` runs shows as a
+`terminal` **background session**. The daemon also keeps sessions started ahead of need, each
+a `claude bg-spare` waiting to be claimed, so the next background session starts at once:
+one nobody claimed ran no process but its own, and is the daemon's (`infra`), not an agent
+-- drawn as one, each was an agent that ran nothing. Idle spares are counted per tree and in
+the summary (`idle_spares`); a spare that ran anything was claimed, and is the agent it
+became.
 
 Every tree is sent, up to `reducers.cascades.top_trees` (1000), the deepest first. It was 25,
 and with 25 trees of subagents in a window no session that started no other was sent at all;
