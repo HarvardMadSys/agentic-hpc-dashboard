@@ -690,5 +690,14 @@ class PreprocessTest(HourCase):
         self.assertTrue(all(h["state"] == "ready" for h in held))
         self.assertEqual(reg.status()["queued"], [])
 
+    def test_the_wait_ends_at_its_deadline_on_a_pinned_clock(self):
+        # `clock.as_of` freezes time.time (HourCase pins it too): the deadline
+        # must run on a clock that still moves.
+        reg = self.registry(self.cfg(preprocess=True))
+        reg._busy = True
+        t0 = time.monotonic()
+        self.assertFalse(reg.wait_idle(0.2))
+        self.assertLess(time.monotonic() - t0, 5)
+
 
 ebr_twins(globals())

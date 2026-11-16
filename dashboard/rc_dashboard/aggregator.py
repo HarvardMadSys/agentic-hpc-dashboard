@@ -197,10 +197,10 @@ class Aggregator:
         """Block until the builds `start` queued are done, or `timeout` seconds
         pass -- `start` itself included, which waits on a conversion when there
         is one. Returns whether they finished."""
-        deadline = time.time() + max(0.0, float(timeout))
+        deadline = time.monotonic() + max(0.0, float(timeout))
         if not self.started.wait(timeout):
             return False
-        return self.panels_by_window.wait_idle(max(0.0, deadline - time.time()))
+        return self.panels_by_window.wait_idle(max(0.0, deadline - time.monotonic()))
 
     def stop(self):
         self.stopping = True

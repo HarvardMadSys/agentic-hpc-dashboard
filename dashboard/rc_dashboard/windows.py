@@ -696,10 +696,10 @@ class WindowRegistry:
     def wait_idle(self, timeout):
         """Block until nothing is queued or building, or `timeout` seconds
         pass. Returns whether it got there."""
-        deadline = time.time() + max(0.0, float(timeout))
+        deadline = time.monotonic() + max(0.0, float(timeout))
         with self._cv:
             while self._queue or self._busy:
-                left = deadline - time.time()
+                left = deadline - time.monotonic()
                 if left <= 0:
                     return False
                 self._cv.wait(timeout=min(left, 1.0))
