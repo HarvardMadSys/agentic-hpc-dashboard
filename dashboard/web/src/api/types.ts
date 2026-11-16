@@ -1236,6 +1236,9 @@ export interface CascadeNode {
   cwd: string | null;
   implied: boolean;
   frontend: boolean;
+  /** a `claude bg-spare`, a session `claude daemon` started ahead of need: an
+   *  agent once claimed; one nobody claimed is infra, and not drawn (`idle_spares`) */
+  spare?: boolean;
   parent: number | null;
   via: CascadeVia | null;
   /** commands passed through between the parent node and this one */
@@ -1291,6 +1294,8 @@ export interface CascadeTree {
   nodes: CascadeNode[];
   nodes_truncated: boolean;
   hidden_nodes: number;
+  /** of the hidden: `claude bg-spare` sessions its daemon started and nobody claimed */
+  idle_spares?: number;
 }
 
 /** Where a directory sits relative to the agent's home. */
@@ -1425,6 +1430,8 @@ export interface Workspace {
   summary: {
     agents: number;
     shown: number;
+    /** the busiest this many are served, and past it only those that wrote outside */
+    agents_cap?: number;
     with_subagents: number;
     with_outside_writes: number;
     /** agents that ran in, or named a path in, another user's home / shared storage */
@@ -1443,6 +1450,8 @@ export interface Cascades extends PanelEnvelope {
   window?: { minutes: number; from: string | null; to: string | null };
   summary?: {
     trees: number;
+    /** sent in `trees`, the deepest first, up to reducers.cascades.top_trees */
+    trees_sent?: number;
     nested: number;
     hosted: number;
     agents: number;
@@ -1451,6 +1460,8 @@ export interface Cascades extends PanelEnvelope {
     max_agent_depth: number | null;
     max_fanout: number | null;
     trees_without_agents: number;
+    /** `claude bg-spare` sessions the daemon started and nobody claimed: not agents */
+    idle_spares?: number;
   };
   depth_hist?: Record<string, number>;
   fanout_hist?: Record<string, number>;

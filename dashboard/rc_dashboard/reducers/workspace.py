@@ -1000,7 +1000,11 @@ class WorkspaceReducer:
         self.max_dirs = int(r.get("max_dirs", 300))
         self.max_entries = int(r.get("max_dir_entries", 400000))
         self.depth = int(r.get("collapse_depth", 4))
-        self.max_agents = int(r.get("max_agents", 30))
+        # Blast radii served, the busiest first (and every agent that wrote
+        # outside its start folder, past the cap too). It was 30, when the page
+        # listed 25 trees; it lists every session now, and a click on one past
+        # the cap opens nothing. A quiet agent's is a few hundred bytes gzipped.
+        self.max_agents = int(r.get("max_agents", 300))
         self.max_rows = int(r.get("max_dirs_shown", 40))
         self.window_s = window_s or int(cfg.get("live.window_min", 1440)) * 60
         self.procs = procs

@@ -1186,7 +1186,19 @@ through any number of steps, beneath another agent is that agent's **subagent**.
 are kept apart: **nested**, an agent with subagents, and **hosted**, a daemon, Claude
 Desktop's remote server or `claude rc` running sessions side by side. A Codex TUI whose
 direct child is `codex app-server` is shown as that session's front-end, not as a second
-agent.
+agent. `claude daemon` keeps sessions started ahead of need, each a `claude bg-spare`
+waiting to be claimed, so the next background session starts at once: one nobody claimed
+ran no process but its own, and is the daemon's (`infra`), not an agent. Drawn as an
+agent, each hung under the session that started the daemon as a subagent that ran
+nothing. Idle spares are counted per tree and in the summary (`idle_spares`); a spare
+that ran anything was claimed, and is the agent it became.
+
+Every tree is sent, up to `reducers.cascades.top_trees` (1000), the deepest first. It was 25,
+and with 25 trees of subagents in a window no session that started no other was sent at all;
+past the cap the list says how many trees were not, and the type strip that it counts the
+trees sent. A blast radius is served for the `reducers.workspace.max_agents` (300; was 30)
+busiest agents, and for every agent that wrote outside its start folder; one past that says
+so when picked, and an agent that ran nothing says that instead.
 
 What it cannot see: Claude Code's Task-tool subagents and workflow agents run inside their
 parent's process. Only agents that are processes of their own appear; an in-process
