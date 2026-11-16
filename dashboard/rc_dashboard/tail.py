@@ -44,7 +44,7 @@ import os
 from operator import itemgetter
 
 from . import gz, fastjson
-from .export import dated_dirs, feed_files, iter_lines_reverse, seek_to_epoch
+from .feedfile import complete_end, dated_dirs, feed_files, iter_lines_reverse, seek_to_epoch
 from .normalize import epoch_of
 
 # The most one poll reads from one file.  A tail that has fallen behind -- or a
@@ -73,19 +73,6 @@ class IngestSource:
 
     def close(self):
         pass
-
-
-def complete_end(fh, size, block=65536):
-    """Offset just past the last newline in the first `size` bytes, else 0."""
-    pos = size
-    while pos > 0:
-        n = min(block, pos)
-        pos -= n
-        fh.seek(pos)
-        cut = fh.read(n).rfind(b"\n")
-        if cut != -1:
-            return pos + cut + 1
-    return 0
 
 
 class FileTailSource(IngestSource):

@@ -17,7 +17,8 @@ import time
 from datetime import datetime
 
 from . import gz
-from .export import dated_dirs, feed_files
+from .feedfile import dated_dirs, feed_files, host_of
+from .feedfile import _STREAM_SUFFIXES  # noqa: F401  (moved with host_of; importable as before)
 
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"     # every collector stamps records this way
 
@@ -105,29 +106,6 @@ def _blank(name, cfg):
             "lag_s": None, "lag": None, "max_age_s": cfg.get("feeds.%s.max_age_s" % name),
             "rows": 0, "schema_versions": {}, "degraded": [], "notice": None,
             "backfill": None}
-
-
-# The ebpf tier splits each day into two files per host (ebpf_trace.stream_of):
-# `<host>.exits.jsonl` and `<host>.snapshot.jsonl`. The node tier still writes a
-# single `<host>.jsonl`, and feeds captured before the split are single-file too,
-# so all three spellings have to resolve to the same host.
-_STREAM_SUFFIXES = (".snapshot", ".exits")
-
-
-def host_of(path):
-    """`<host>[.<stream>].jsonl` -> `<host>`.
-
-    Only a RECOGNISED stream suffix is stripped. That is the whole point: a
-    hostname may legitimately contain dots, and blindly cutting at the last one
-    would turn `login.rc.fas` into `login.rc` -- inventing a host that does not
-    exist and splitting one node's records across two of them in the report."""
-    stem = gz.plain_name(os.path.basename(path))
-    if stem.endswith(".jsonl"):
-        stem = stem[:-len(".jsonl")]
-    for suf in _STREAM_SUFFIXES:
-        if stem.endswith(suf):
-            return stem[:-len(suf)]
-    return stem
 
 
 def resolve_dated(name, cfg):

@@ -110,7 +110,7 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 # one or the other.
 CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.py",
               "tool_buckets.py", "proctree.py", "fastjson.py", "snapshots.py", "hours.py",
-              "gz.py")
+              "gz.py", "feedfile.py")
 # Config that changes nothing a reduction holds: the server, the window
 # registry's own knobs, the live tier's views and backfill, the clock, the
 # masking of names on the way out (anonymize.py), the questions asked of a

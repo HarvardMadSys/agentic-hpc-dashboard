@@ -12,17 +12,18 @@ what they actually got.
 Scanning re-reads the day-files rather than serving from memory: a 24-hour window
 of raw events is on the order of 10-20 GB, so it is never buffered.
 """
-import collections
-import glob
-import hashlib
 import heapq
 import json
-import os
 import re
-import threading
 import time
 
 from . import gz, fastjson
+# The day-file layer that was defined here lives in feedfile.py; every name of
+# it is imported back, so `export.<name>` still works for its callers.
+from .feedfile import (HEAD_BYTES, day_files, head_digest, iter_lines_forward,
+                       iter_lines_reverse, seek_to_epoch)
+from .feedfile import (_MEMO_FILES, _MEMO_PROBES, _identity, _memo, _memo_lock,  # noqa: F401
+                       _memo_of, _probe, _probe_read, _remember, dated_dirs, feed_files)
 from .normalize import canonical_class, epoch_of
 from .redact import redact
 
@@ -173,102 +174,6 @@ def make_predicate(f):
     return ok
 
 
-def iter_lines_reverse(path, block=1 << 20, start=0, end=None):
-    """Yield complete lines from the END of a file backwards, bounded memory.
-
-    A day-file is gigabytes, so it cannot be read into memory and reversed. This
-    walks backwards one block at a time and reverses within the block, holding at
-    most `block` bytes plus one straddling line.
-
-    The first element of a split block is the fragment whose start lies in the
-    PREVIOUS (earlier) block, so it is carried rather than yielded -- except at
-    `start`, where it is a complete line and is yielded last.
-
-    `[start, end)` narrows the walk to a byte range whose bounds are line
-    boundaries; the default is the whole file as it stands when opened.
-    """
-    try:
-        fh = gz.open_feed(path)
-    except OSError:
-        return
-    with fh:
-        if end is None:
-            fh.seek(0, os.SEEK_END)
-            end = fh.tell()
-        pos = end
-        carry = b""
-        while pos > start:
-            size = min(block, pos - start)
-            pos -= size
-            fh.seek(pos)
-            buf = fh.read(size) + carry
-            parts = buf.split(b"\n")
-            carry = parts.pop(0)
-            for line in reversed(parts):
-                if line.strip():
-                    yield line
-        if carry.strip():
-            yield carry
-
-
-def iter_lines_forward(path, start=0):
-    """Yield complete lines from byte `start` on, as bytes."""
-    try:
-        fh = gz.open_feed(path)
-    except OSError:
-        return
-    with fh:
-        fh.seek(start)
-        for line in fh:
-            if line.strip():
-                yield line
-
-
-def feed_files(d):
-    """A directory's day-files, plain or gzip-compressed (`gz`).
-
-    A plain file wins over its `.gz` twin: both exist while one is being
-    compressed into the other, and the plain one is the complete copy.
-    """
-    found = set(glob.glob(os.path.join(d, "*.jsonl")))
-    found.update(p for p in glob.glob(os.path.join(d, "*.jsonl" + gz.SUFFIX))
-                 if gz.plain_name(p) not in found)
-    return sorted(found)
-
-
-def dated_dirs(root, days=0):
-    """`[(date, files)]` for the newest `days` date dirs under `root` that hold
-    a day-file, oldest first; every one of them for 0.
-
-    An empty date dir is passed over, not counted. A capture copied in from
-    another cluster has dated dirs made ahead of the files that fill them, and
-    counting those pushed the days that do hold records out of every window:
-    the 1 h view of such a capture read nothing at all.
-    """
-    if not os.path.isdir(root):
-        return []
-    dates = sorted((d for d in os.listdir(root)
-                    if d.startswith("20") and os.path.isdir(os.path.join(root, d))),
-                   reverse=True)
-    out = []
-    for d in dates:
-        files = feed_files(os.path.join(root, d))
-        if files:
-            out.append((d, files))
-            if days and len(out) >= days:
-                break
-    return out[::-1]
-
-
-def day_files(roots, days=0):
-    out = []
-    for root in roots:
-        for _d, files in dated_dirs(root, days):
-            out += files
-        out += feed_files(root)
-    return sorted(set(out))
-
-
 NO_TS = float("-inf")
 # How far out of time order a day-file's lines can be: the collector writes a
 # poll round at a time. A scan reads this far past a bound before it stops.
@@ -378,104 +283,6 @@ def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True):
 # of a 15 GB day-file then reads ~20 probes and one hour of rows.
 
 
-def seek_to_epoch(fh, since, size, probe_lines=64):
-    """Offset of the first line in `fh` whose timestamp is >= `since`.
-
-    `size` bytes is the search space; the return is `size` when the file holds
-    nothing in range, which lets the caller skip it without opening a stream.
-
-    A probe that lands on lines carrying no resolvable timestamp searches
-    EARLIER rather than guessing.  That reads more than strictly necessary,
-    which is the right way to be wrong here: the alternative is starting the
-    rebuild after rows that belonged in the window.
-    """
-    lo, hi, best = 0, size, size
-    while lo < hi:
-        mid = (lo + hi) // 2
-        off, ts = _probe(fh, mid, probe_lines)
-        if ts is None:
-            hi = mid                      # unplaceable: widen backwards
-        elif ts >= since:
-            best = min(best, off)
-            hi = mid
-        else:
-            lo = max(off, mid) + 1        # off >= mid, so this always advances
-    return best
-
-
-# What `_probe` and `head_digest` found, by the file's identity on disk. A
-# probe's answer is a function of the bytes, and the bytes of a file whose
-# device, inode, size and mtime are unchanged are the bytes it read: a sealed
-# day-file is asked the same questions over and over -- the hourly reduction
-# plans every file it reads every hour, and the first levels of each binary
-# search are the same -- and on a `.gz` each answer inflated an 8 MB span. A
-# file that grows has a new identity, so nothing is answered for it from before.
-_MEMO_FILES = 1024
-_MEMO_PROBES = 8192
-_memo = collections.OrderedDict()       # identity -> {key: answer}
-_memo_lock = threading.Lock()
-
-
-def _identity(fh):
-    try:
-        st = os.fstat(fh.fileno())
-    except (OSError, AttributeError, ValueError):
-        return None
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
-
-
-def _memo_of(ident):
-    with _memo_lock:
-        m = _memo.get(ident)
-        if m is None:
-            m = _memo[ident] = {}
-            while len(_memo) > _MEMO_FILES:
-                _memo.popitem(last=False)
-        else:
-            _memo.move_to_end(ident)
-        return m
-
-
-def _remember(m, key, answer):
-    if len(m) >= _MEMO_PROBES:
-        m.clear()
-    m[key] = answer
-    return answer
-
-
-def _probe(fh, pos, limit):
-    """Align to the next whole line at/after `pos`; return (offset, ts|None).
-    Answered from the memo for a file unchanged since it was asked (`_memo`)."""
-    ident = _identity(fh)
-    if ident is None:
-        return _probe_read(fh, pos, limit)
-    m = _memo_of(ident)
-    hit = m.get(("probe", pos, limit))
-    if hit is not None:
-        return hit
-    return _remember(m, ("probe", pos, limit), _probe_read(fh, pos, limit))
-
-
-def _probe_read(fh, pos, limit):
-    fh.seek(pos)
-    if pos:
-        fh.readline()                     # drop the line we landed inside
-    off = fh.tell()
-    for _ in range(limit):
-        line = fh.readline()
-        if not line:
-            return off, None
-        if not line.strip():
-            continue
-        try:
-            ts = epoch_of(fastjson.loads(line))
-        except ValueError:
-            continue
-        if ts is not None:
-            return off, ts
-    return off, None
-
-
 def window_plan(roots, since, days=0, paths=None):
     """Per-file byte range a window touches, plus the total bytes to read.
 
@@ -542,23 +349,6 @@ def resume_plan(roots, since, files, days=0):
             plan.append({"path": p, "start": start, "size": size})
     plan.sort(key=lambda e: e["path"])
     return plan, sum(max(0, e["size"] - e["start"]) for e in plan)
-
-
-HEAD_BYTES = 4096
-
-
-def head_digest(fh, n):
-    """Digest of a file's first `n` bytes: its identity beyond the inode number.
-    Read once per file identity (`_memo`): on a `.gz` it inflates the first span."""
-    ident = _identity(fh)
-    m = _memo_of(ident) if ident is not None else None
-    if m is not None:
-        hit = m.get(("head", n))
-        if hit is not None:
-            return hit
-    fh.seek(0)
-    out = hashlib.sha1(fh.read(n)).hexdigest()
-    return _remember(m, ("head", n), out) if m is not None else out
 
 
 def event_filter(events):

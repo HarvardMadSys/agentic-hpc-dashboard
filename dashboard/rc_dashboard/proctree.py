@@ -79,7 +79,8 @@ from array import array
 
 from . import feeds as feedmod, fastjson
 from . import gz
-from .export import _probe, day_files, event_filter, window_plan, window_scan
+from .export import event_filter, window_plan, window_scan
+from .feedfile import day_files, end_at_jsonl as _end_at
 from .normalize import Normalizer, epoch_of
 from .procindex import VIA
 from .redact import redact
@@ -1459,26 +1460,6 @@ def key_matcher(members):
     if pats is None:
         return None
     return lambda line: any(p.search(line) for p in pats)
-
-
-def _end_at(fh, t, size, probe_lines=64):
-    """An offset past which every line is later than `t`, or `size`.
-
-    `export.seek_to_epoch`'s binary search with the opposite caution: a probe
-    that cannot be placed in time searches LATER, because an end bound read too
-    far only costs a search, and one cut too early would lose records.
-    """
-    lo, hi, best = 0, size, size
-    while lo < hi:
-        mid = (lo + hi) // 2
-        # the probe `seek_to_epoch` makes, and remembers for a file unchanged
-        off, ts = _probe(fh, mid, probe_lines)
-        if ts is not None and ts > t:
-            best = min(best, off)
-            hi = mid
-        else:
-            lo = max(off, mid) + 1
-    return best
 
 
 def _hits(mm, pats, pos, stop):
