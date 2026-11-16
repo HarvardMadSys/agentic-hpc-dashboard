@@ -121,15 +121,15 @@ on exit order.
 - `cpu_pct` is `cpu_s / duration_s`.
 - `cpu_scope` and `io.scope` restate `meta.cpu_scope` and `meta.counters_scope`.
 - `samples` and `state_last` are always null (`normalize.py`, `ALWAYS_NULL`).
+- `net_endpoints.n` is the length of its list plus `overflow.n`, the endpoints cut
+  past the cap.
+
+Together these are 7.7 % of an exit's bytes.
 
 A `truncated` record, written for each live process at stop (`flush_live`), is built
 differently. It has no `cpu_pct`, its `state_last` is the process's last `/proc` state,
 and its counters come from `/proc` (`io.scope` is `proc`). So these fields can be dropped
 only where they hold what the rule says, not by name.
-- `net_endpoints.n` is the length of its list plus `overflow.n`, the endpoints cut
-  past the cap.
-
-Together these are 7.7 % of an exit's bytes.
 
 **F5. Network bytes are written up to three times on an exit.** They appear in
 `net_tx_bytes`/`net_rx_bytes`, in `conns.peers[]` (addr, port, provider, bytes) and in
@@ -229,7 +229,7 @@ identity. Changes from schema 8:
 
 | change | fields |
 |---|---|
-| added | `pk`, `ppk`, `sess`, `start_epoch` (replaces `start`) |
+| added | `pk`, `ppk`, `sess`, `start_epoch` (replaces `start`, and is null wherever `start` was) |
 | moved to `session` | `agent_type`, `agent_pid` (as `root_pk`), `tree_root_pid` (as `tree_root_pk`), `session_uuid` (as `sess`), `autonomous` |
 | dropped, derivable | `ts`, `session_key`, `cpu_pct` (on an `exit`), `net_endpoints.n` |
 | dropped where it is the capture's | `collector_pid`; `cpu_scope` and `io.scope` when they equal `meta`'s, kept otherwise (a `truncated` record's `/proc` counters keep `io.scope: proc`) |
@@ -458,6 +458,18 @@ python3 docs/feed-format-v9/prototype.py demo /tmp/feed --hours 72 --hosts 4
 # convert, verify, measure (stdlib only; orjson, zstandard and pyarrow add the
 # orjson timing, the zstd column and the Parquet size)
 python3 docs/feed-format-v9/prototype.py run /tmp/feed/feed/ebpf /tmp/v9 --node /tmp/feed/feed/node
+```
+
+The numbers above come from that feed. The demo never stops its collector, so it writes
+no `truncated` record, and its exits' scopes always match its `meta`. Without those, a
+run does not exercise the rules for either. `demo --truncated` adds both: each host-day
+ends with a collector stop, written as `flush_live` writes one, and the first host's
+capture is `leader`-scoped. Run it after any change to the prototype; it must still
+report 0 undeclared differences:
+
+```bash
+python3 docs/feed-format-v9/prototype.py demo /tmp/feed-t --hours 30 --hosts 2 --truncated
+python3 docs/feed-format-v9/prototype.py run /tmp/feed-t/feed/ebpf /tmp/v9-t --node /tmp/feed-t/feed/node
 ```
 
 On a real capture, point `run` at the collector's root and give it the collector's time
