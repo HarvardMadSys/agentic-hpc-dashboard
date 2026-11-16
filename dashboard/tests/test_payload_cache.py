@@ -152,13 +152,21 @@ class RestoreTest(PanelsCase):
         agg.panels_by_window._build(agg.panels_by_window.request(WIN))
         want = agg.panels(WIN)["panels"]["tool_mix"]
 
-        again = Aggregator(cfg)            # a restart
-        got = again.panels(WIN)
+        # A restart a minute and a half later. Not at the same instant: the feed's
+        # status, which every panel body carries, is read when the service starts
+        # (its `_notice` says how old the feed is), and a test that compared it
+        # across the two failed whenever a second ticked between them.
+        with mock.patch("time.time", return_value=time.time() + 90):
+            again = Aggregator(cfg)
+            got = again.panels(WIN)
         self.assertEqual(got["window_status"]["state"], "queued")
         body = got["panels"]["tool_mix"]
         self.assertTrue(body["_window"]["has_payload"])
-        self.assertEqual({k: v for k, v in body.items() if k != "_window"},
-                         {k: v for k, v in want.items() if k != "_window"})
+        # The panel's own numbers are the saved ones; what starts with `_` (the
+        # feed's status, the window's, the filter) is this service's, read now.
+        mine = {k: v for k, v in body.items() if not k.startswith("_")}
+        self.assertTrue(mine)
+        self.assertEqual(mine, {k: v for k, v in want.items() if not k.startswith("_")})
 
 
     def test_what_is_built_from_reducers_reads_as_a_first_build_meanwhile(self):
