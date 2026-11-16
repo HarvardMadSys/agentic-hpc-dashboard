@@ -805,8 +805,13 @@ html {
   .controls {
     position: static;
   }
-  /* A switch in a panel's header that still does not fit wraps as separate
-     keys, like `.seg.wrap` (the header itself wraps from 900px, below). */
+  /* A panel's controls go under its title rather than squeezing it to a word
+     a line (Tool mix: two switches beside two words), and a switch that still
+     does not fit wraps, drawn as separate keys like `.seg.wrap`. */
+  .panel > header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
   .panel > header .seg {
     flex-wrap: wrap;
     max-width: 100%;
@@ -2973,8 +2978,6 @@ td.ep-name {
 th.sortable:focus-visible {
   outline: 2px solid var(--crimson);
   outline-offset: -2px;
-}
-
 /* --------------------------------------------- the narrow layout: panels
  * At 900px and under (lib/useNarrow.ts) the rail is a drawer and every grid is
  * one column, so a panel is the screen's width. These keep what is in a panel
@@ -2984,9 +2987,8 @@ th.sortable:focus-visible {
   /* a panel's controls go under its title rather than squeezing it to a word a line */
   .panel > header {
     flex-wrap: wrap;
-    row-gap: 8px;
   }
-  /* a segmented control wraps rather than run past the screen */
+  /* every segmented control wraps, as `.seg.wrap` does, rather than run past the screen */
   .seg {
     flex-wrap: wrap;
     max-width: 100%;
@@ -3001,8 +3003,7 @@ th.sortable:focus-visible {
   }
   /* A wide table's row names stay in view while its numbers scroll beside
    * them (`pin` on that column's cells), so no row is read without its name.
-   * Layered under the table's own sticky header, the corner cell over both.
-   * Its edge fade (lib/scrollEdges.ts) is then on the right alone. */
+   * Layered under the table's own sticky header, the corner cell over both. */
   .scroller td.pin,
   .scroller th.pin {
     position: sticky;
@@ -3025,6 +3026,15 @@ th.sortable:focus-visible {
   /* no weight of its own, so a row's hover or open shade still reaches it */
   :where(.scroller td.pin, .scroller th.pin) {
     background: var(--surface);
+  }
+  /* With its names pinned, a table hides nothing at its left edge, so only its
+   * right edge fades (the `data-more` marks above): a left fade would wash out
+   * the names it keeps in view. */
+  .scroller:has(td.pin)[data-more='left'] {
+    mask-image: none;
+  }
+  .scroller:has(td.pin)[data-more='both'] {
+    mask-image: linear-gradient(to left, transparent, #000 36px);
   }
   /* The faults table keeps its set columns, as shares of its box rather than
    * pixels: the measures a third, the classes the rest, so every class and
@@ -3114,16 +3124,6 @@ th.sortable:focus-visible {
   }
   .u-host {
     padding: 6px 8px;
-  }
-  /* the drawer's tabs, its sections and its go-to field */
-  .rail nav button {
-    padding: 10px 12px;
-  }
-  .secnav a {
-    padding: 8px 8px 8px 12px;
-  }
-  .rail-search {
-    padding: 10px 12px;
   }
   input:not([type='checkbox']):not([type='radio']):not([type='range']),
   select,

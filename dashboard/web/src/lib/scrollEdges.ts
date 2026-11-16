@@ -13,15 +13,10 @@
 import { useEffect } from 'react';
 import type { RefObject } from 'react';
 
-/** Which edges have more beyond them: '' | 'left' | 'right' | 'both'. A table
- *  whose row names are pinned to its left edge as it scrolls (`.pin`, sticky
- *  in the narrow layout) fades on the right alone: faded, the names would be
- *  what the reader loses. */
+/** Which edges have more beyond them: '' | 'left' | 'right' | 'both'. */
 function mark(s: HTMLElement) {
   const max = s.scrollWidth - s.clientWidth;
-  const pin = s.querySelector('.pin');
-  const pinned = pin != null && getComputedStyle(pin).position === 'sticky';
-  const left = !pinned && max > 1 && s.scrollLeft > 1;
+  const left = max > 1 && s.scrollLeft > 1;
   const right = max > 1 && s.scrollLeft < max - 1;
   const v = left && right ? 'both' : left ? 'left' : right ? 'right' : '';
   if ((s.dataset.more ?? '') === v) return;

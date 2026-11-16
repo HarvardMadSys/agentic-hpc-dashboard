@@ -1092,8 +1092,8 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const [showIdle, setShowIdle] = useState(false);
   // a row picked while the page is scrolled past the top of the detail -- out
   // of view, or under the sticky control bar -- brings the detail back into
-  // view; so does one picked while the detail is stacked under the list (1100px
-  // and under) and starts low or below the fold, where the pick would
+  // view; so does one picked while the detail is stacked under the list (a
+  // narrow screen) and starts low or below the fold, where the pick would
   // otherwise seem to do nothing
   const pane = useRef<HTMLDivElement>(null);
   useEffect(() => {

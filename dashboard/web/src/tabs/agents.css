@@ -261,9 +261,8 @@ table.trees .sub-chip {
  * A strip compares the types; one is open at a time. */
 .atype-strip {
   display: grid;
-  /* wide enough that a card's lines do not wrap, and never wider than the
-     column: on a 320px phone a 320px card ran past the screen */
-  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  /* wide enough that a card's lines do not wrap */
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -755,7 +754,8 @@ table.trees .sub-chip {
   background: var(--surface-2);
   color: var(--ink-2);
 }
-/* stacked under the list (1100px and under), the hint points up at it */
+/* once the list and the detail stack (1100px and under), the list is above:
+   the arrow points up at it */
 @media (max-width: 1100px) {
   .al-empty .icon {
     transform: rotate(90deg);

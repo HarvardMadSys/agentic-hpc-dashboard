@@ -1,6 +1,6 @@
-/* The narrow layout: at or below this width the rail is a drawer behind a top
- * bar and every panel grid is one column (styles.css, its `max-width: 900px`
- * blocks). What is drawn differently there that CSS alone cannot say --
+/* The narrow layout: at or below this width the rail is a strip of tabs across
+ * the top and every panel grid is one column (styles.css, its `max-width:
+ * 900px` block). What is drawn differently there that CSS alone cannot say --
  * a chart drawn at the width it is shown at (charts/primitives.tsx `useFit`) --
  * reads it from here, so the two never disagree. */
 import { useSyncExternalStore } from 'react';

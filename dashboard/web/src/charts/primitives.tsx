@@ -12,9 +12,8 @@
  * attributes plus a viewBox, scaled by CSS (`max-width:100%; height:auto`).
  * CSS only ever shrinks a chart, so a time series sits in a <Fluid> box, which
  * measures its container and draws the chart at that width, at 1:1. In the
- * narrow layout any other chart in a box narrower than its natural width is
- * drawn at the box's width too (`useFit`), so its labels keep their size on a
- * phone.
+ * narrow layout the other charts do the same in a box narrower than their
+ * natural width (`useFit`), so their labels keep their size on a phone.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type {

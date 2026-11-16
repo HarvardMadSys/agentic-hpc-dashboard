@@ -1315,7 +1315,8 @@ svg:has(> g.pickable:focus-visible) {
   background: var(--surface-2);
   color: var(--ink-2);
 }
-/* stacked under the list (1100px and under), the hint points up at it */
+/* once the list and the detail stack (1100px and under), the list is above:
+   the arrow points up at it */
 @media (max-width: 1100px) {
   .tj-empty .icon {
     transform: rotate(90deg);
