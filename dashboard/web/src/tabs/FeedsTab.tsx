@@ -116,7 +116,7 @@ function HostDetail({ h, now }: { h: CollectorHost; now: number }) {
                 <div key={u.feature}>
                   <span className="mono">{u.feature}</span>
                   {u.impact ? ` — ${u.impact}` : ''}
-                  <div className="nm mono" style={{ fontSize: '10.5px' }}>{u.why}</div>
+                  <div className="nm mono" style={{ fontSize: '12px' }}>{u.why}</div>
                 </div>
               ))
             : 'none'}
@@ -186,7 +186,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                   {h.running ? (
                     <>
                       {when(h.running.started)}
-                      <div className="nm" style={{ fontSize: '10.5px' }}>
+                      <div className="nm" style={{ fontSize: '12px' }}>
                         {h.running.started != null ? `up ${dur(now - h.running.started)}` : ''}
                         {h.running.pid != null ? ` · pid ${h.running.pid}` : ''}
                       </div>
@@ -250,7 +250,7 @@ function Where({ f }: { f: FeedReport }) {
   // this page when a panel is empty, so it stays, marked, beside the one that did.
   const missing = (f.configured ?? []).filter((p) => !resolved.includes(p));
   return (
-    <div className="mono feed-where" style={{ fontSize: '10.5px', wordBreak: 'break-all' }} data-tip={tip || undefined}>
+    <div className="mono feed-where" style={{ fontSize: '12px', wordBreak: 'break-all' }} data-tip={tip || undefined}>
       {resolved.map((p) => (
         <div key={p}>{p}</div>
       ))}
@@ -280,7 +280,7 @@ function Converted({ c }: { c: ConvertStatus | undefined }) {
         : `read as EBR, through its view: ${streams}${c.lag_bytes ? ` · ${bytes(c.lag_bytes)} behind` : ''}${
             c.errors?.length ? ` · ${fint(c.errors.length)} error${c.errors.length === 1 ? '' : 's'}` : ''}`;
   return (
-    <div className="nm" style={{ fontSize: '10.5px', color: c.state === 'error' || c.errors?.length ? '#8a6410' : undefined }}
+    <div className="nm" style={{ fontSize: '12px', color: c.state === 'error' || c.errors?.length ? '#8a6410' : undefined }}
       data-tip={[c.dir ? `view: ${c.dir}` : null, ...(c.errors ?? []).slice(-3).map((e) => e.error)].filter(Boolean).join('\n') || undefined}>
       {text}
     </div>
@@ -319,8 +319,8 @@ function Sources({ list }: { list: FeedReport[] }) {
                 <td>
                   <b>{feedLabel(f.name)}</b>
                   {feedLabel(f.name) !== f.name && <span className="mono nm"> {f.name}</span>}
-                  {f.required && <span style={{ color: 'var(--crimson-ink)', fontSize: '10px' }}> · required</span>}
-                  <div className="nm" style={{ fontSize: '10.5px' }}>{f.label}</div>
+                  {f.required && <span style={{ color: 'var(--crimson-ink)', fontSize: '11.5px' }}> · required</span>}
+                  <div className="nm" style={{ fontSize: '12px' }}>{f.label}</div>
                 </td>
                 <td>
                   {unset ? (
@@ -332,7 +332,7 @@ function Sources({ list }: { list: FeedReport[] }) {
                 <td className="num" style={past ? { color: 'var(--crit)' } : undefined}>
                   {f.newest_record_ts ?? DASH}
                   {f.lag_s != null && (
-                    <div className="nm" style={{ fontSize: '10px' }}>
+                    <div className="nm" style={{ fontSize: '11.5px' }}>
                       {`${lagStr(f.lag_s)} old${f.max_age_s != null ? ` · limit ${lagStr(f.max_age_s)}` : ''}`}
                     </div>
                   )}
@@ -341,12 +341,12 @@ function Sources({ list }: { list: FeedReport[] }) {
                   {/* the collector's roots, not the view the service reads them through */}
                   <Where f={f.source_roots?.length ? { ...f, resolved: f.source_roots, configured: f.source_roots } : f} />
                   <Converted c={f.convert} />
-                  {note && <div style={{ color: '#8a6410', fontSize: '11px', marginTop: 3 }}>{note}</div>}
+                  {note && <div style={{ color: '#8a6410', fontSize: '12.5px', marginTop: 3 }}>{note}</div>}
                 </td>
                 <td className="num">
                   {f.n_files ? fint(f.n_files) : DASH}
                   {f.n_files ? (
-                    <div className="nm" style={{ fontSize: '10px' }}>
+                    <div className="nm" style={{ fontSize: '11.5px' }}>
                       {[bytes(f.bytes), f.days?.length ? `${f.days.length} day${f.days.length === 1 ? '' : 's'}` : null,
                         f.hosts?.length ? nodes.count(f.hosts.length) : null]
                         .filter(Boolean)
@@ -479,7 +479,7 @@ export const FeedsTab = memo(function FeedsTab({
                   <tr key={k}>
                     <td className="mono">{k}</td>
                     <td className="mono" style={{ wordBreak: 'break-all', color: 'var(--ink)' }}>{v}</td>
-                    <td className="mono nm" style={{ fontSize: '10.5px' }}>{o}</td>
+                    <td className="mono nm" style={{ fontSize: '12px' }}>{o}</td>
                   </tr>
                 ))}
               </tbody>

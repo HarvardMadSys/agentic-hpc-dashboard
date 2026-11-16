@@ -404,9 +404,9 @@ export function chartLevels(hasTasks: boolean, hasPhases: boolean): Level[] {
   return hasTasks ? ['tasks', 'phases', 'processes'] : ['phases', 'processes'];
 }
 
-/** A letter of a level's caption is this wide, in px: the caption style (`.tn-cap .eyebrow`) is IBM Plex Mono at 9.5 px, a
- *  letter of 0.6 em, with its letters spaced by 0.08 em, which is 6.46 px, rounded up. */
-export const CAP_CHAR_W = 6.5;
+/** A letter of a level's caption is this wide, in px: the caption style (`.tn-cap .eyebrow`) is IBM Plex Mono at 11 px, a
+ *  letter of 0.6 em, with its letters spaced by 0.05 em, which is 7.15 px, rounded up. */
+export const CAP_CHAR_W = 7.2;
 /** The room between the widest caption and the tracks that start after it, in px. */
 export const GUTTER_PAD = 10;
 /** The left gutter that stands beside the inspector's session track, chart, and zoom map, and that they all start after, in
@@ -416,9 +416,9 @@ export const GUTTER = Math.ceil(Math.max(...Object.values(LEVELS).map((name) => 
  *  so a box narrower than the gutter does not give the drawing a negative width. */
 export const plotW = (boxW: number): number => Math.max(boxW - GUTTER, 1);
 
-/** A band's label is left out where it does not fit, never cut: IBM Plex Mono at 10 px is about 6 px a
+/** A band's label is left out where it does not fit, never cut: IBM Plex Mono at 11.5 px is about 7 px a
  *  character (`.ph-lbl`), with a little room either side. */
-export const LABEL_CHAR_W = 6.1;
+export const LABEL_CHAR_W = 7;
 export const LABEL_PAD = 8;
 export const labelFits = (label: string, w: number): boolean =>
   label.length > 0 && w >= label.length * LABEL_CHAR_W + LABEL_PAD;

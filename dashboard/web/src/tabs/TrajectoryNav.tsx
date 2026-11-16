@@ -123,7 +123,7 @@ export const SPAN_MIN = 1; // seconds: the narrowest zoom, whatever the bin widt
 
 /** The width the bars are binned for, and the width the session track and a chart with no phases are drawn at.
  *  The bins are the same at every width the chart is shown at: a chart with phases is drawn at its box's own
- *  pixel width, so that its names are 10 px, but its bars are regrouped as for this. */
+ *  pixel width, so that its names are 11.5 px, but its bars are regrouped as for this. */
 const BIN_W = 1120;
 
 /** Served bins regrouped into display bins at least ~3 px wide across `w` px,
@@ -1013,7 +1013,7 @@ export function TrajectoryNav({
   const at = useNow(live);
   const nowS = live ? at / 1000 : null;
   const S = sessionAxis(d, axis, list.length ? [list[0].t0, Math.max(list[list.length - 1].t1, nowS ?? -Infinity)] : null);
-  // A chart with phases is drawn at its box's own pixel width, so that its names are 10 px whatever the box, less the gutter
+  // A chart with phases is drawn at its box's own pixel width, so that its names are 11.5 px whatever the box, less the gutter
   // that its captions stand in, which the three tracks start after (the stylesheet reads it from `--tn-gut`).
   const [box, boxW] = useWidth(!!phases && !!nav, W);
   return (

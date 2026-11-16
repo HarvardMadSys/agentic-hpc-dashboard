@@ -264,11 +264,11 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
           </table>
         )}
         {idle.length > 0 && (
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+          <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--muted)' }}>
             none in the window: {idle.join(', ')}
           </div>
         )}
-        {scope.note && <div className="nm" style={{ marginTop: 6, fontSize: 11 }}>{scope.note}</div>}
+        {scope.note && <div className="nm" style={{ marginTop: 6, fontSize: 12.5 }}>{scope.note}</div>}
       </div>
     </Panel>
   );
@@ -342,9 +342,9 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
                           })
                         : undefined,
                     }))}
-                    W={380}
+                    W={400}
                     labelW={100}
-                    valW={170}
+                    valW={190}
                   />
                 ) : <div className="none">none</div>
               ) : (
@@ -353,9 +353,9 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
                     k: r.tool, v: r.calls_pct ?? 0, c: CLS_COL[c],
                     lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
                   }))}
-                  W={380}
+                  W={400}
                   labelW={100}
-                  valW={170}
+                  valW={190}
                 />
               )}
             </div>

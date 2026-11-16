@@ -20,7 +20,7 @@
   padding: 5px 10px;
   border: 1px solid var(--edge);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 12.5px;
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
   color: var(--ink-2);
   background: var(--surface);
@@ -51,7 +51,7 @@
 }
 .who-caret {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 .who-pop {
@@ -74,7 +74,7 @@
   padding: 4px 8px;
   border: 1px solid var(--edge);
   border-radius: 5px;
-  font-size: 11px;
+  font-size: 12.5px;
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
   color: var(--ink);
   background: var(--page);
@@ -92,7 +92,7 @@
   align-items: center;
   gap: 8px;
   padding: 3px 10px;
-  font-size: 11.5px;
+  font-size: 13px;
   cursor: pointer;
   color: var(--ink);
 }
@@ -109,12 +109,12 @@
   white-space: nowrap;
 }
 .who-name.mono {
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .who-n {
   text-align: right;
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 .who-mix {
@@ -130,7 +130,7 @@
 }
 .who-more {
   padding: 4px 10px 8px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
 }
@@ -146,14 +146,14 @@
 @media (pointer: coarse) {
   .who-btn {
     padding: 8px 12px;
-    font-size: 12px;
+    font-size: 13.5px;
   }
   .who-pop {
     max-height: min(420px, 60vh);
   }
   .who-opt {
     padding: 8px 12px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .who-tag {
     padding: 6px 10px;
@@ -176,7 +176,7 @@
   padding: 2px 8px;
   border-radius: 99px;
   background: var(--sunken);
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--ink);
 }
 .who-tag:hover {

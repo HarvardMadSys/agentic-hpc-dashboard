@@ -51,17 +51,17 @@
 }
 .iocmd-title h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
 }
 .iocmd-sub {
-  font-size: 11.5px;
+  font-size: 13px;
 }
 .iocmd-prog {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .iocmd-bar {
   height: 5px;
@@ -77,13 +77,13 @@
 }
 .iocmd-err {
   color: var(--crit);
-  font-size: 11.5px;
+  font-size: 13px;
 }
 .iocmd-tot {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .iocmd-tot b {
@@ -102,7 +102,7 @@
 .iocmd-t {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11.5px;
+  font-size: 13px;
 }
 .iocmd-t thead th {
   position: sticky;
@@ -132,14 +132,14 @@
 }
 .iocmd-when {
   white-space: nowrap;
-  font-size: 10.5px;
+  font-size: 12px;
 }
 .iocmd-more {
   display: flex;
   gap: 12px;
   align-items: center;
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .iocmd-none {
   padding: 24px 0;

@@ -1530,7 +1530,7 @@ test('the chart captions its lanes with the names of the three levels, and has n
 test('the gutter the level captions stand in is as wide as the widest of them in the caption style, and its room', () => {
   const widest = Math.max(...Object.values(P.LEVELS).map((name) => name.length));
   assert.equal(widest, 'Processes'.length);
-  // the caption style is `.tn-cap .eyebrow`: a letter is 0.6 em of IBM Plex Mono, and the letters are spaced by 0.08 em
+  // the caption style is `.tn-cap .eyebrow`: a letter is 0.6 em of IBM Plex Mono, and the letters are spaced by 0.05 em
   const rule = /\.tn-cap \.eyebrow \{([^}]*)\}/.exec(readFileSync(new URL('tabs/trajectories.css', SRC), 'utf8'))?.[1] ?? '';
   const size = Number(/font-size:\s*([\d.]+)px/.exec(rule)?.[1]);
   const spacing = Number(/letter-spacing:\s*([\d.]+)em/.exec(rule)?.[1]);
@@ -1879,10 +1879,10 @@ test("a lone stretch's line, and the words under a task's label, are text in a r
   const contrast = (fg, bg) => { const [hi, lo] = [lum(token(fg)), lum(token(bg))].sort((a, b) => b - a); return (hi + 0.05) / (lo + 0.05); };
 
   // A lone stretch's line is a row to click, so its text is interactive and needs 4.5 to 1 on the page's surface and on the shade the
-  // row takes under the pointer; `--muted` is 3.82 to 1 on the surface at this size, and `--ink-2` 8.98
+  // row takes under the pointer; `--muted` is 5.64 to 1 on the surface, and `--ink-2` 8.98
   assert.equal(colour('.tl-line'), 'ink-2');
   for (const bg of ['surface', 'surface-2']) assert.ok(contrast(colour('.tl-line'), bg) >= 4.5, `the lone line on ${bg}: ${contrast(colour('.tl-line'), bg)}`);
-  assert.equal(contrast('muted', 'surface').toFixed(2), '3.82', 'the number the stylesheet says');
+  assert.equal(contrast('muted', 'surface').toFixed(2), '5.64', 'the number the stylesheet says');
   assert.equal(contrast('ink-2', 'surface').toFixed(2), '8.98', 'and the other');
   // The words of a task's row beside and under its label, where its words came from and what it says of a call still running or a cut log,
   // are inside the row's button as the label is, so they are interactive text too, and are `--ink-2` on both

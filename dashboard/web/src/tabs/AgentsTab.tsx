@@ -269,7 +269,7 @@ function DirTable({ v, ioq }: { v: WsView; ioq?: (d: WsDir, sort: IoSort) => IoQ
                   <td className="ws-inf">
                     <Ops d={d} />
                   </td>
-                  <td className="mono" style={{ fontSize: '10.5px', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
+                  <td className="mono" style={{ fontSize: '12px', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
                     {seen(d.first, d.last)}
                   </td>
                 </tr>
