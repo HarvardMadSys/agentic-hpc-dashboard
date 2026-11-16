@@ -25,7 +25,7 @@ _MISSING = object()
 # The day-file formats `feeds.<tier>.prefer` may name (feedfile.FORMATS).
 PREFER_FORMATS = ("jsonl", "ebr")
 # `ingest.convert` (ebrview.py) unless set.
-CONVERT = {"enabled": True, "dir": "", "zstd": 0, "workers": 0}
+CONVERT = {"enabled": True, "dir": "", "zstd": 0, "workers": 0, "days": 0}
 
 
 def _env(name, default=None):
@@ -154,6 +154,8 @@ def defaults():
             # The copies are kept current as the collector appends. `zstd`: the
             # level of the view's zstd frames, 0 for none. `workers`: processes
             # converting at startup, 0 for every CPU it may use, 1 for this one.
+            # `days`: dated dirs mirrored, 0 for every one the source holds (what
+            # event scans and exports read), or a bound for a long history.
             "convert": dict(CONVERT),
         },
         # The service's present. "" is the wall clock; "auto" or a local time
@@ -409,6 +411,7 @@ ENV_MAP = {
     "ingest.convert.dir": ("RC_DASH_CONVERT_DIR", str),
     "ingest.convert.zstd": ("RC_DASH_CONVERT_ZSTD", int),
     "ingest.convert.workers": ("RC_DASH_CONVERT_WORKERS", int),
+    "ingest.convert.days": ("RC_DASH_CONVERT_DAYS", int),
     "clock.as_of": ("RC_DASH_AS_OF", str),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
@@ -652,6 +655,8 @@ def load(args=None, config_path=None):
             ("enabled", lambda v: isinstance(v, bool), "true or false"),
             ("dir", lambda v: v is None or isinstance(v, str), "a path, or empty"),
             ("zstd", lambda v: type(v) is int and 0 <= v <= 22, "a zstd level 0..22 (0: off)"),
+            ("days", lambda v: type(v) is int and 0 <= v <= 100000,
+             "a count of dated dirs 0..100000 (0: every one the source holds)"),
             ("workers", lambda v: type(v) is int and 0 <= v <= 256,
              "a process count 0..256 (0: every CPU this process may use)")):
         dotted = "ingest.convert." + key

@@ -833,9 +833,9 @@ def twins_read(services):
 
 def converted_read(services, linked):
     """The service with the conversion off read the day-files as they are; the
-    one with it on read only its EBR view, every stream converted (a JSONL feed)
-    or linked (`linked`: a feed in both formats), the conversion live and
-    clean. Returns `(said, problems)`."""
+    one with it on read only its EBR view, the same number of them, and every
+    stream of its sources converted (a JSONL feed) or linked (`linked`: a feed
+    in both formats), the conversion live and clean. Returns `(said, problems)`."""
     bad, said = [], []
     off, on = services
     for tier in ("ebpf", "ebpf_node"):
@@ -845,8 +845,12 @@ def converted_read(services, linked):
         n = sum((a.get("formats") or {}).get("read", {}).values())
         read = (b.get("formats") or {}).get("read") or {}
         counts = c.get("counts") or {}
-        want = {"converted": 0, "linked": n, "held": 0} if linked else \
-            {"converted": n, "linked": 0, "held": 0}
+        # The view mirrors every stream its sources hold, every day of them
+        # (`feedfile.day_files`), not only the newest days the feed report reads.
+        from rc_dashboard import feedfile
+        every = len(feedfile.day_files(b.get("source_roots") or [], 0, "jsonl"))
+        want = {"converted": 0, "linked": every, "held": 0} if linked else \
+            {"converted": every, "linked": 0, "held": 0}
         files = [f for f in b.get("files") or () if not f.get("held")]
         if (a.get("convert") or {}).get("state") != "off" or c.get("state") != "live" \
                 or read != {"ebr": n} or counts != want or c.get("errors") \

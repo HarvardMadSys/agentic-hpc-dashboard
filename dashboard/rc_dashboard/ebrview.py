@@ -13,9 +13,10 @@ the I/O lookups, the event scans, the feed report -- then sees EBR alone.
 WHERE. `ingest.convert.dir`, `<cache.dir>/ebr-view` unless set, holds one view
 root per tier and source root: `<dir>/<tier>/<basename>-<sha1(realpath)[:10]>`,
 with `SOURCE.json` naming the source (a guard against a hash collision, and a
-note for whoever lists the directory). A view root mirrors exactly what a reader
-reads from its source root: its newest `feeds.<tier>.days` dated dirs
-(`feedfile.dated_dirs`) and as many flat files (`feedfile.feed_files`).
+note for whoever lists the directory). A view root mirrors every dated dir and
+flat file of its source root, as the scans without a horizon read them
+(`feedfile.day_files`), and each reader keeps its own limits on the view
+(`ingest.convert.days` can bound the dated dirs; see `mirror_days`).
 
 PER STREAM, by the twin rule with prefer=ebr (`feedfile._listing`):
 
@@ -60,6 +61,7 @@ import concurrent.futures
 import gzip
 import hashlib
 import json
+import math
 import multiprocessing
 import os
 import re
@@ -152,8 +154,12 @@ def settings(cfg):
         level = int(c.get("zstd") or 0)
     except (TypeError, ValueError):
         level = 0
+    try:
+        days = max(0, int(c.get("days") or 0))
+    except (TypeError, ValueError):
+        days = 0
     return {"enabled": truthy(c.get("enabled", True)), "dir": os.path.abspath(d),
-            "zstd": max(0, level), "workers": workers}
+            "zstd": max(0, level), "workers": workers, "days": days}
 
 
 def zstd_kw(level):
@@ -277,6 +283,24 @@ def tier_days(cfg, tier):
         return max(0, int(v))
     except (TypeError, ValueError):
         return 8 if tier == "ebpf" else 2
+
+
+def mirror_days(cfg, tier):
+    """How many of a source root's newest dated dirs the view mirrors: every one
+    of them (0), as the readers that scan without a horizon (`/api/events`,
+    `/api/export`, a window's plan) take every one the source holds. Bounded
+    by `ingest.convert.days`, and then never below what a bounded reader
+    takes: the tail's `feeds.<tier>.days` and the widest window's days plus
+    two (`windows.py`)."""
+    n = settings(cfg)["days"]
+    t = tier_days(cfg, tier)
+    if not n or not t:
+        return 0
+    try:
+        widest = int(math.ceil(float(cfg.get("live.retention_min", 10080)) / 1440.0)) + 2
+    except (TypeError, ValueError):
+        widest = 9
+    return max(n, t, widest)
 
 
 def narrow(path, mode):
@@ -667,6 +691,7 @@ class _Root(object):
         self.view = view
         self.days = days
         self.newest = None              # the newest dated dir seen in the source
+        self.recent = frozenset()       # its newest two: every poll looks at them
         self.held = 0                   # streams held at the last full listing
 
 
@@ -753,7 +778,7 @@ class EbrView(object):
                     srcs.append(os.path.abspath(r))
             if not srcs:
                 continue
-            days = tier_days(self.cfg, tier)
+            days = mirror_days(self.cfg, tier)
             base = os.path.join(self.dir, tier)
             views = []
             for src in srcs:
@@ -879,6 +904,7 @@ class EbrView(object):
         except OSError:
             dates = []
         newest = dates[-1] if dates else None
+        root.recent = frozenset(dates[-2:])
         if not full and newest == root.newest:
             if newest is not None:
                 files, notes = _listing(os.path.join(root.src, newest), "ebr", now)
@@ -896,10 +922,10 @@ class EbrView(object):
             streams = self._streams(files, by_day.get(day, ()))
             held += sum(1 for p, _c in streams.values() if p is None)
             self._reconcile(root, day, streams, create=True)
+        # Every flat file: `feedfile.day_files` gives the scans every one, and
+        # the tail and the report take their own newest few.
         flat, fnotes = _listing(root.src, "ebr", now)
-        want = {split_name(p)[0] for p in flat[-root.days:]}
-        streams = {k: v for k, v in self._streams(flat, fnotes).items()
-                   if k in want or v[0] is None}
+        streams = self._streams(flat, fnotes)
         held += sum(1 for p, _c in streams.values() if p is None)
         root.held = held
         self._reconcile(root, "", streams, create=True)
@@ -1144,6 +1170,10 @@ class EbrView(object):
                     os.close(fd)
             except OSError:
                 return sst.st_size
+            if not _same_src(info, sst):
+                # Not the file the checkpoint saw: a copy, or one written in place
+                # since. The conversion's resume tells which (`_resume`).
+                return max(1, sst.st_size - info["off"])
         self._install(e, {"src": e.src, "off": info["off"], "records": info["records"],
                           "bad": info["bad"], "head": info["head"],
                           "head_len": info["head_len"], "sealed": info["sealed"],
@@ -1302,6 +1332,8 @@ class EbrView(object):
         for e in entries:
             if self._stop.is_set():
                 break
+            if not full and e.day and e.day not in e.root.recent:
+                continue                # an older day: looked at on the full pass
             try:
                 if e.mode == "link":
                     self._sync_link(e)
@@ -1601,7 +1633,7 @@ def describe(cfg, now=None):
                 if r and os.path.isdir(r)]
         if not srcs:
             continue
-        days = tier_days(cfg, tier)
+        days = mirror_days(cfg, tier)
         n = {"convert": 0, "link": 0, "held": 0, "done": 0}
         todo = 0
         bad = []
@@ -1613,8 +1645,6 @@ def describe(cfg, now=None):
             dirs = [(d, os.path.join(src, d)) for d, _f in dated_dirs(src, days, "ebr", now)]
             for day, d in dirs + [("", src)]:
                 files, notes = _listing(d, "ebr", now)
-                if not day:
-                    files = files[-days:]
                 n["held"] += sum(1 for x in notes if x["path"] is None)
                 vdir = os.path.join(view, day) if day else view
                 have = EbrView._view_entries(vdir)

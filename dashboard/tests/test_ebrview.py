@@ -124,6 +124,8 @@ class ViewCase(unittest.TestCase):
         tree["feeds"]["ebpf_node"]["roots"] = [self.node] if node else \
             [os.path.join(self.tmp, "no-node")]
         tree["cache"]["dir"] = os.path.join(self.tmp, "cache")
+        if getattr(self, "RETENTION", None):
+            tree["live"]["retention_min"] = self.RETENTION
         tree["ingest"]["convert"].update(convert)
         return configmod.Config(tree, {}, None)
 
@@ -391,6 +393,29 @@ class ResumeTest(ViewCase):
         self.assertEqual([r["pid"] for r in view_records(p)], [1])
         self.assertConverted("h1.exits.jsonl")
 
+    def test_a_source_rewritten_while_stopped_past_its_head_is_converted_afresh(self):
+        # The same length and the same first 4 KB, a later record changed while
+        # the service was down: the startup's fast path must not keep the old copy.
+        recs = [rec(T0 + i, 1000 + i) for i in range(200)]
+        s = self.append("h1.exits.jsonl", recs)
+        self.assertGreater(os.path.getsize(s), ebrview.HEAD_BYTES)
+        v = self.view()
+        p = self.vpath("h1.exits.ebr")
+        ino = os.stat(p).st_ino
+        v.close()
+        last = rec(T0 + 199, 2199)
+        self.assertEqual(len(line(last)), len(line(recs[-1])))
+        st = os.stat(s)
+        with open(s, "r+b") as fh:
+            fh.seek(st.st_size - len(line(last)))
+            fh.write(line(last))
+        os.utime(s, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+        v = self.restart(v)
+        self.settle(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual(view_records(p)[-1]["pid"], 2199)
+        self.assertConverted("h1.exits.jsonl")
+
     def test_a_copy_of_the_source_is_read_on_not_converted_again(self):
         self.append("h1.exits.jsonl", [rec(T0 + i, i) for i in range(30)])
         v = self.view()
@@ -569,11 +594,14 @@ class DecisionTest(ViewCase):
         self.assertEqual(sorted(os.listdir(os.path.join(self.vroot, DAY))), [])
         self.assertEqual(v.status("ebpf")["counts"], {"converted": 0, "linked": 0, "held": 0})
 
-    def test_days_out_of_retention_are_pruned(self):
+    def test_a_bounded_view_drops_the_days_past_its_bound(self):
+        # ingest.convert.days 3, the tail's 3 and windows of a day (1 + 2): 3 kept.
+        # Unbounded (the default), every day stays (test_every_day_and_flat_file...).
         days = ["2026-11-%02d" % d for d in range(10, 16)]      # 6 days, 3 kept
         for d in days:
             self.append("h1.exits.jsonl", [rec(T0, 1)], day=d)
-        v = self.view()
+        self.RETENTION = 1440
+        v = self.view(days=3)
         self.assertEqual(sorted(x for x in os.listdir(self.vroot) if x.startswith("20")),
                          days[-3:])
         # a new day: the oldest kept falls out
@@ -596,14 +624,17 @@ class DecisionTest(ViewCase):
         for d in range(10, 15):
             self.append("thing_2026-11-%02d.jsonl" % d, [rec(T0 + d, d)], day="")
         v = self.view()
+        # every one: the scans read every flat file (feedfile.day_files), and the
+        # tail its newest feeds.<tier>.days of the view's
         flat = sorted(n for n in os.listdir(self.vroot) if n.endswith(".ebr"))
-        self.assertEqual(flat, ["thing_2026-11-%02d.ebr" % d for d in (12, 13, 14)])
+        self.assertEqual(flat, ["thing_2026-11-%02d.ebr" % d for d in range(10, 15)])
         self.assertConverted("thing_2026-11-14.jsonl", day="")
+        self.assertConverted("thing_2026-11-10.jsonl", day="")
         self.append("thing_2026-11-15.jsonl", [rec(T0 + 15, 15)], day="")
         v._full_at = None
         v.sync()
         flat = sorted(n for n in os.listdir(self.vroot) if n.endswith(".ebr"))
-        self.assertEqual(flat, ["thing_2026-11-%02d.ebr" % d for d in (13, 14, 15)])
+        self.assertEqual(flat, ["thing_2026-11-%02d.ebr" % d for d in range(10, 16)])
 
     def test_the_node_tier(self):
         p = os.path.join(self.node, DAY, "h1.jsonl")
@@ -755,22 +786,61 @@ class SetupTest(ViewCase):
         finally:
             os.umask(old)
 
-    def test_days_zero_mirrors_every_day(self):
-        # feeds.<tier>.days 0 is every dated dir to the readers (dated_dirs):
-        # the view must not hold fewer days than they would read without it.
-        days = ("2026-11-12", "2026-11-13", DAY)
+    def test_every_day_and_flat_file_is_mirrored(self):
+        # The scans without a horizon (/api/events, /api/export, a window's plan)
+        # read every dated dir and flat file a source holds (feedfile.day_files):
+        # the view mirrors all of them, whatever feeds.<tier>.days says, and each
+        # reader keeps its own limits on the view.
+        from rc_dashboard import feedfile
+        days = ("2026-11-11", "2026-11-12", "2026-11-13", DAY)
         for i, d in enumerate(days):
-            self.append("h1.exits.jsonl", [rec(T0 - 86400 * (2 - i), i)], day=d)
-        self.DAYS = 0
+            self.append("h1.exits.jsonl", [rec(T0 - 86400 * (3 - i), i)], day=d)
+        flats = ("cap_2026-11-11.jsonl", "cap_2026-11-12.jsonl", "cap_2026-11-13.jsonl")
+        for i, f in enumerate(flats):
+            self.append(f, [rec(T0 + i, 100 + i)], day="")
+        self.DAYS = 1
         self.view()
         self.assertEqual(sorted(d for d in os.listdir(self.vroot) if d.startswith("20")),
                          list(days))
         for d in days:
             self.assertConverted("h1.exits.jsonl", day=d)
-        self.DAYS = 2
-        self.view(dir=os.path.join(self.tmp, "two"))
+        for f in flats:
+            self.assertConverted(f, day="")
+
+        def streams(root, prefer):
+            return sorted((os.path.relpath(os.path.dirname(p), root), ebrview.split_name(p)[0])
+                          for p in feedfile.day_files([root], 0, prefer))
+        self.assertEqual(streams(self.vroot, "ebr"), streams(self.root, "jsonl"))
+
+    def test_a_bounded_view_keeps_what_the_bounded_readers_take(self):
+        # ingest.convert.days bounds a long history, never below the tail's
+        # feeds.<tier>.days or the widest window's days plus two.
+        days = ("2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", DAY)
+        for i, d in enumerate(days):
+            self.append("h1.exits.jsonl", [rec(T0 - 86400 * (4 - i), i)], day=d)
+        self.DAYS, self.RETENTION = 1, 60       # windows of an hour: 1 day + 2
+        self.view(days=2)
         self.assertEqual(sorted(d for d in os.listdir(self.vroot) if d.startswith("20")),
-                         list(days[1:]))
+                         list(days[-3:]))
+        self.DAYS = 4
+        self.view(dir=os.path.join(self.tmp, "four"), days=2)
+        self.assertEqual(sorted(d for d in os.listdir(self.vroot) if d.startswith("20")),
+                         list(days[-4:]))
+
+    def test_an_older_days_source_is_read_on_the_full_pass(self):
+        # Every poll looks at the newest two days; older ones, which a straggler
+        # may still write to, at the full listing every DISCOVER_S.
+        days = ("2026-11-12", "2026-11-13", DAY)
+        for i, d in enumerate(days):
+            self.append("h1.exits.jsonl", [rec(T0 - 86400 * (2 - i), i)], day=d)
+        v = self.view()
+        self.append("h1.exits.jsonl", [rec(T0 - 2 * 86400 + 5, 50)], day=days[0])
+        v._full_at = time.monotonic()           # the next poll is not a full one
+        v.sync()
+        self.assertEqual(len(view_records(self.vpath("h1.exits.ebr", day=days[0]))), 1)
+        v._full_at = None                       # and the next one is
+        self.settle(v)
+        self.assertConverted("h1.exits.jsonl", day=days[0])
 
     def test_a_view_inside_a_source_root_is_refused(self):
         cfg = self.cfg(dir=os.path.join(self.root, "view"))
@@ -800,7 +870,8 @@ class SetupTest(ViewCase):
                 del os.environ[k]
             cfg = configmod.load(None, None)
             self.assertEqual(cfg.get("ingest.convert"),
-                             {"enabled": True, "dir": "", "zstd": 0, "workers": 0})
+                             {"enabled": True, "dir": "", "zstd": 0, "workers": 0,
+                              "days": 0})
             s = ebrview.settings(cfg)
             # every CPU this process may run on: its affinity, not the machine's count
             self.assertEqual(s["workers"], len(os.sched_getaffinity(0)))
@@ -815,11 +886,14 @@ class SetupTest(ViewCase):
             os.environ["RC_DASH_CONVERT_DIR"] = "/x/views"
             os.environ["RC_DASH_CONVERT_ZSTD"] = "3"
             os.environ["RC_DASH_CONVERT_WORKERS"] = "2"
+            os.environ["RC_DASH_CONVERT_DAYS"] = "5"
             cfg = configmod.load(None, None)
             self.assertEqual(cfg.get("ingest.convert"),
-                             {"enabled": True, "dir": "/x/views", "zstd": 3, "workers": 2})
+                             {"enabled": True, "dir": "/x/views", "zstd": 3, "workers": 2,
+                              "days": 5})
             self.assertEqual(cfg.origin("ingest.convert.zstd"), "env:RC_DASH_CONVERT_ZSTD")
-            for var, bad in (("RC_DASH_CONVERT_ZSTD", "99"), ("RC_DASH_CONVERT_WORKERS", "-1")):
+            for var, bad in (("RC_DASH_CONVERT_ZSTD", "99"), ("RC_DASH_CONVERT_WORKERS", "-1"),
+                             ("RC_DASH_CONVERT_DAYS", "-1")):
                 os.environ[var] = bad
                 with self.assertRaises(SystemExit):
                     configmod.load(None, None)

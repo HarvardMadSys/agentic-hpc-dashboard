@@ -212,9 +212,13 @@ what orjson's C parse of its line does, and EBR adds its per-frame work, above).
 
 **Where.** `ingest.convert.dir` (`RC_DASH_CONVERT_DIR`), `<cache.dir>/ebr-view` unless set, holds
 one view root per tier and source root, `<dir>/<tier>/<basename>-<sha1 of its real path, 10 hex>/`,
-with a `SOURCE.json` naming the source it mirrors (a view root of another source is refused). Like
-the source it holds the newest `feeds.<tier>.days` dated dirs and as many flat files (every one of
-them for 0, as the readers take it). The view is the service's own, 0700 dirs and 0600 files, as
+with a `SOURCE.json` naming the source it mirrors (a view root of another source is refused). It
+mirrors every dated dir and flat file the source holds, because the scans with no horizon --
+`/api/events`, `/api/export`, a window's plan -- read every one of them (`feedfile.day_files`).
+Each reader keeps its own limits on the view: the tail and the feed report still take their
+newest `feeds.<tier>.days`. `ingest.convert.days` (`RC_DASH_CONVERT_DAYS`) bounds a long history
+to its newest dated dirs, never fewer than the tail's `days` or the widest window's days plus two;
+with a bound, the scans no longer reach the days past it. The view is the service's own, 0700 dirs and 0600 files, as
 its other caches are: its records hold every user's command lines, which the collector keeps 0640.
 Modes a view was left with before are narrowed at startup; a link's target keeps the collector's. The config
 the readers see names the view (`feeds.<tier>.roots`, origin `convert: the EBR view of ...`, and
@@ -241,8 +245,8 @@ converted file stays converted, whatever twin appears later, so no restart moves
 one file to another. Only a stream with no entry is decided by the twin rule. A stream whose
 source files are all gone leaves the view too; one whose JSONL is deleted while its EBR twin
 remains keeps what was converted (and says so in `convert.files[].note`); one whose linked EBR file
-is deleted while its JSONL remains is decided again (converted). A day leaves the view once it is
-older than the oldest day kept, or once its source day is gone.
+is deleted while its JSONL remains is decided again (converted). A day leaves the view once its
+source day is gone, or once it falls past `ingest.convert.days` when that is set.
 
 **Exactly the JSONL tail's records.** A conversion takes what the JSONL tail would read: complete
 lines only (a partial last line waits), blank lines passed, every other line parsed by
@@ -267,14 +271,18 @@ week of 6 demo hosts (192 000 records, 264 MB of JSONL, 105 files) converts in 4
 process, 2.5 s with two workers and 1.5 s with four (131 000 records a second, 33 000 a worker) on
 this repository's 4-core test container; a week of one busy login node (2.4 M records, about 4 GB)
 would be about a minute in one process, a quarter of that with four. A restart costs only what
-the collector wrote while the service was down. On disk the view is plain EBR, about a sixth of
+the collector wrote while the service was down. The first start converts all the history the
+source holds, so a source that keeps months of sealed days costs that once. Set
+`ingest.convert.days` to bound it, or `ingest.convert.zstd` to keep the view about the size of
+the gzipped JSONL. On disk the view is plain EBR, about a sixth of
 the JSONL's plain size (98 MB of JSONL to 17 MB, 0.174); `ingest.convert.zstd`
 (`RC_DASH_CONVERT_ZSTD`, a zstd level 1..22) compresses its frames further, at some cost to every
 read, and is off (0) by default. A linked stream costs a symlink.
 
 **Live.** Before every poll the view converts what the collector appended since, so a record is
-read in the poll it is converted in: one batch and one flush a poll, at most 64 MB a file. The
-newest day is listed again every poll, every day and flat file every 30 s. A day the collector
+read in the poll it is converted in: one batch and one flush a poll, at most 64 MB a file. Every
+poll looks at the newest two days and the flat files (a host rolls over late, so yesterday may
+still grow); older days, and a listing of every day, come every 30 s. A day the collector
 seals (`x.jsonl` to `x.jsonl.gz`) is finished from its `.gz` once, past what was converted, and
 the view's file stays plain; a source cut short, or replaced by another file (other first bytes),
 is converted afresh into a new file, which the readers take as a replaced file (they read it
@@ -304,6 +312,7 @@ fingerprint).
 | `ingest.convert.dir` | `RC_DASH_CONVERT_DIR` | `<cache.dir>/ebr-view` | where the view lives; never inside a source root |
 | `ingest.convert.zstd` | `RC_DASH_CONVERT_ZSTD` | `0` | the zstd level of the view's frames, 1..22; 0 writes them uncompressed |
 | `ingest.convert.workers` | `RC_DASH_CONVERT_WORKERS` | `0` | processes converting at startup: 0 is every CPU the service may run on, 1 is the service's own |
+| `ingest.convert.days` | `RC_DASH_CONVERT_DAYS` | `0` | dated dirs mirrored: 0 is every one the source holds; a bound (never below what the tail and the widest window read) saves a first start on a long history, and leaves the scans short of the days past it |
 
 Each dated tier's entry in `/api/feeds` carries `source_roots` (the collector's roots, when read
 through the view) and `convert`:

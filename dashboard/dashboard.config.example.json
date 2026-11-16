@@ -207,8 +207,9 @@
   "//convert3": "are kept current as the collector appends. `zstd`: the level of the view's zstd",
   "//convert4": "frames, 0 for none. `workers`: processes converting at startup, 0 for every CPU it may use.",
   "//convert5": "enabled: false (RC_DASH_CONVERT=0) reads the day-files as they are.",
+  "//convert6": "`days`: dated dirs mirrored, 0 for every one the source holds; a bound saves a first start on a long history.",
   "ingest":  { "poll_ms": 1000,
-               "convert": { "enabled": true, "dir": "", "zstd": 0, "workers": 0 } },
+               "convert": { "enabled": true, "dir": "", "zstd": 0, "workers": 0, "days": 0 } },
   "rebuild": { "interval_s": 900 },
 
   "//21": "Standard repo exclusions -- see analyze/tool_calls_distribution.py:53.",
