@@ -199,6 +199,34 @@ class RoleTest(unittest.TestCase):
          "out/bootstrap-fork --type=extensionHost", "ide"),
         ("vscode", "cpuUsage.sh", "/bin/bash " + HOME + "/.vscode-server/cli/servers/Stable-a44/"
          "server/out/vs/base/node/cpuUsage.sh 123", "helper"),
+        # A script the kernel ran through its #! line: comm is the script's name and argv
+        # starts with its interpreter (FAS login nodes, 2026-11-09 .. 16). A JS host runs
+        # the agent's own launcher, read past the script; a shell or Python runs a wrapper
+        # or a test double named after the agent, never the session itself.
+        ("codex", "codex", "/usr/bin/env node " + HOME + "/.nvm/versions/node/v22.20.0/bin/codex "
+         '-c sqlite_home="/scratch/x/codex-slots/slot-01/sqlite" exec -s read-only', "agent"),
+        ("codex", "codex", "/usr/bin/env node " + HOME + "/.nvm/versions/node/v22.20.0/bin/codex "
+         '-c sqlite_home="/scratch/x/codex-slots/slot-01/sqlite" features list', "probe"),
+        ("claude_code", "claude", "/bin/bash " + HOME + "/design/rehearsal_v3/stub/claude -p "
+         "--model claude-sonnet-5-5 --effort high", "helper"),
+        ("claude_code", "claude", HOME + "/proj/.venv/bin/python -I /tmp/tmp8vrbdxsm/bin/claude "
+         "-p --output-format stream-json --verbose", "helper"),
+        ("claude_code", "claude", "/usr/bin/env python3 /tmp/tmpbl38weun/claude -p You are the "
+         "TOOL agent", "helper"),
+        ("claude_code", "claude", "/bin/sh /tmp/pytest-of-alice/pytest-366/t0/bin/claude -p "
+         "--model claude-opus-5-5", "helper"),
+        # Codex subcommands that run no session (FAS login nodes, 2026-11-09 .. 16): a
+        # message posted into a thread the app-server holds, a command run under Codex's
+        # sandbox, maintenance
+        ("codex", "codex", HOME + "/.local/bin/codex queue --thread 01a10fd6 --message check the "
+         "Slurm jobs", "client"),
+        ("codex", "codex", HOME + "/.local/bin/codex sandbox -C " + HOME + "/w -P agent -- "
+         "/bin/true", "sandbox"),
+        ("codex", "codex", HOME + "/.vscode-server/extensions/openai.chatgpt-26.1106.51428-linux-x64"
+         "/bin/linux-x86_64/codex migrate-nfs-db --staging-dir /scratch/x", "probe"),
+        ("codex", "codex", HOME + "/.local/bin/codex migrate-rollouts --apply --thread 01a1c190 "
+         "--json", "probe"),
+        ("codex", "codex", HOME + "/.local/bin/codex debug models -c model_providers.x=y", "probe"),
     ]
 
     def test_each_observed_shape_gets_its_role(self):
