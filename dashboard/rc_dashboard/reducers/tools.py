@@ -19,6 +19,7 @@ conservative rule.
 import collections
 
 from . import Reducer, add_counts, pct
+from ..procindex import pop_oldest
 from ..tool_buckets import BUCKETS, bucket
 
 # The key prefix of an agent type's own counters, beside its class's.
@@ -59,7 +60,7 @@ class ToolMixReducer(Reducer):
         # came from. Flat Counters, so a saved window pickles them as they are.
         self.at_calls = collections.Counter()
         self.at_cpu = collections.Counter()
-        self.child_tok = {}            # (sid, ppid) -> {child effective_comm}
+        self.child_tok = collections.OrderedDict()   # (sid, ppid) -> {child effective_comm}
         self.dropped = 0
         self.total = 0
         self.evicted = 0
@@ -78,7 +79,7 @@ class ToolMixReducer(Reducer):
             s = self.child_tok.get(key)
             if s is None:
                 if len(self.child_tok) >= self.dedup_max:
-                    self.child_tok.pop(next(iter(self.child_tok)), None)
+                    pop_oldest(self.child_tok)
                     self.evicted += 1
                 s = self.child_tok[key] = set()
             s.add(ec)
@@ -134,7 +135,7 @@ class ToolMixReducer(Reducer):
         self.child_tok = c["child_tok"]
 
     def strip(self):
-        self.child_tok = {}
+        self.child_tok = collections.OrderedDict()
 
     def merge(self, o):
         """Fold a LATER state's counts into this one. `o` is consumed."""

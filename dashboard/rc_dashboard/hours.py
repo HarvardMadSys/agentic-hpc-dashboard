@@ -1105,8 +1105,11 @@ def build(reg, view):
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
+        # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
+        # with no collection running; ready once they are in.
+        view.materialize_stepwise(reg.lock)
+        with reg.lock:
             view.state = "ready"
             view.installed_at = time.time()
             prog.update(pct=100, elapsed_s=round(time.time() - t0, 1))
-            view.materialize()
         return True

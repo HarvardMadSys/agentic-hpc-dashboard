@@ -179,11 +179,11 @@ def presets(cfg):
 
 
 def _byte_check(field, values):
-    """A pre-parse search for `"field": "<one of values>"`, or None when unsafe."""
+    """A pre-parse pattern for `"field": "<one of values>"`, or None when unsafe."""
     if not values or not all(_PLAIN.match(v) for v in values):
         return None
     names = b"|".join(re.escape(v.encode()) for v in sorted(values))
-    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"').search
+    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"')
 
 
 class ViewFilter:
@@ -203,7 +203,7 @@ class ViewFilter:
     empty series read as an idle person.
     """
 
-    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match")
+    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match", "line_find")
 
     NOT_NARROWED = (
         "resident memory and live processes over time: sampled from each host's "
@@ -226,15 +226,19 @@ class ViewFilter:
         # through. A narrow filter on a busy feed parses a few percent of the
         # lines a full build does. `none` cannot be searched for -- an untagged
         # record may carry `null` or no key at all -- so it only narrows by user.
-        checks = [c for c in (_byte_check("user", self.users),
-                              None if UNTAGGED in self._t
-                              else _byte_check("agent_type", self.agent_types))
+        checks = [c.search for c in (_byte_check("user", self.users),
+                                     None if UNTAGGED in self._t
+                                     else _byte_check("agent_type", self.agent_types))
                   if c is not None]
         if len(checks) == 2:
             a, b = checks
             self.line_match = lambda line: a(line) and b(line)
         else:
             self.line_match = checks[0] if checks else None
+        # The first check's pattern, which the scan runs over whole blocks of a
+        # day-file to find the lines worth looking at (`export.window_scan`
+        # `find`); `line_match` still decides each one it finds.
+        self.line_find = checks[0].__self__ if checks else None
 
     @classmethod
     def from_params(cls, params):
@@ -407,6 +411,49 @@ class PanelView:
         self._fresh = {k: (self.materialized_at, self.live_records) for k in out}
         # These panels are the view's own: any it showed from a saved copy are gone.
         self.cache["restored"] = None
+        return self.payload
+
+    def materialize_stepwise(self, lock):
+        """`materialize()`, taking `lock` one reducer at a time.
+
+        Each reducer's `result()` is read, and masked, under the lock: the live
+        feed changes reducer state under the same lock. The payload is swapped in
+        whole once every reducer is done, so a reader meanwhile sees the previous
+        one entire, and only if the reducers it was read from are still the
+        view's: a build that installed new ones meanwhile materializes its own.
+        One hold is then the slowest reducer's, not all of them together -- and
+        every reader of the views and of the live tier, the tail included,
+        waited out the whole of it after each build and refresh.
+
+        What that gives up is one instant for the whole payload. A live record
+        can land between two reducers' turns, so one panel may count a few
+        records another does not yet -- a total ahead of a breakdown by what
+        arrived in those milliseconds. `_fresh` stamps each key with its own time
+        and count, the next refresh brings them level, and `_save_panels` saves
+        the payload as it was read. `materialize()`, one hold for all, is still
+        here for a caller that needs a single instant."""
+        reds = self.reducers
+        out, fresh = {}, {}
+        for key in list(reds):
+            with lock:
+                r = reds.get(key)
+                if r is None:
+                    continue
+                try:
+                    res = r.result()
+                except Exception as e:
+                    res = {"_error": str(e)}
+                out[key] = redact.payload(res)
+                fresh[key] = (time.time(), self.live_records)
+            time.sleep(0)               # a waiter's turn at the lock
+        with lock:
+            if self.reducers is not reds:
+                return self.payload
+            self.payload = out
+            self.materialized_at = time.time()
+            self._fresh = fresh
+            # These panels are the view's own: any it showed from a saved copy are gone.
+            self.cache["restored"] = None
         return self.payload
 
     def materialize_key(self, key, max_age_s):
@@ -649,7 +696,7 @@ class WindowRegistry:
         keep = view.flt.match if view.flt else None
         every = 20000 if keep is None else 500
         for rec, stats in window_scan(plan, norm, since, events=EVENTS,
-                                      match=view.flt.line_match):
+                                      match=view.flt.line_match, find=view.flt.line_find):
             if keep is not None and not keep(rec):
                 continue
             ts = rec.get("_ts_epoch")
@@ -721,11 +768,14 @@ class WindowRegistry:
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
+        # The panels, a reducer per hold; the view says it is ready once they are in,
+        # and until then shows what it showed while it was building.
+        view.materialize_stepwise(self.lock)
+        with self.lock:
             view.state = "ready"
             view.installed_at = time.time()
             view.progress.update(records=n, pct=100,
                                  elapsed_s=round(time.time() - t0, 1))
-            view.materialize()
 
         if blob is not None:
             try:
@@ -946,8 +996,7 @@ class WindowRegistry:
             if drift > view.window_s * budget_pct:
                 self._enqueue(key)
             else:
-                with self.lock:
-                    view.materialize()
+                view.materialize_stepwise(self.lock)
                 self._save_panels(view)
 
     def status(self, now=None):

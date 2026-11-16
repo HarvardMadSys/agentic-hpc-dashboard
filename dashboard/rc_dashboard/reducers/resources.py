@@ -110,6 +110,11 @@ class ResourceReducer:
         self.worst_stall = []      # by dstate_wait_s
         self.worst_fault = []      # by maj_flt (the ones that actually hit disk)
         self.worst_wait = []       # by sched_wait_s (runqueue starvation)
+        # Per list, the smallest value its last trim kept. Below it, 2 x INSTANCE_CAP
+        # kept entries outrank a process for good -- the served top is the first
+        # INSTANCE_CAP by value, ties in arrival order, whenever the trims ran -- so
+        # its row is not made at all: nearly every exit waited for a CPU a little.
+        self.floor = {"worst_stall": 0, "worst_fault": 0, "worst_wait": 0}
 
     def _bin(self, rec):
         """The bin a record lands in, or None when it has no usable time."""
@@ -202,19 +207,17 @@ class ResourceReducer:
         for k in FAULT_FIELDS:
             c["faults"][k].add(rec.get(k))
         mf = rec.get("maj_flt")
-        if mf:
+        if mf and mf >= self.floor["worst_fault"]:
             w = who(rec)
             for k in FAULT_FIELDS:
                 w[k] = rec.get(k)
-            self.worst_fault.append(w)
-            top_by(self.worst_fault, lambda x: -(x.get("maj_flt") or 0))
+            self._keep_worst("worst_fault", "maj_flt", w)
         sw = rec.get("sched_wait_s")
-        if sw:
+        if sw and sw >= self.floor["worst_wait"]:
             w = who(rec)
             w["sched_wait_s"] = sw
             w["sched_run_s"] = rec.get("sched_run_s")
-            self.worst_wait.append(w)
-            top_by(self.worst_wait, lambda x: -(x.get("sched_wait_s") or 0))
+            self._keep_worst("worst_wait", "sched_wait_s", w)
         for k in DELAY_FIELDS:
             c["delays"][k].add(rec.get(k))
 
@@ -232,17 +235,25 @@ class ResourceReducer:
                 s["wait_s"] += dw
                 s["episodes"] += rec.get("dstate_episodes") or 0
                 s["max_s"] = max(s["max_s"], rec.get("dstate_max_s") or 0.0)
-                w = who(rec)
-                w["dstate_wait_s"] = dw
-                w["dstate_episodes"] = rec.get("dstate_episodes")
-                w["dstate_max_s"] = rec.get("dstate_max_s")
-                w["dstate_src"] = rec.get("dstate_src")
-                self.worst_stall.append(w)
-                top_by(self.worst_stall, lambda x: -(x.get("dstate_wait_s") or 0))
+                if dw >= self.floor["worst_stall"]:
+                    w = who(rec)
+                    w["dstate_wait_s"] = dw
+                    w["dstate_episodes"] = rec.get("dstate_episodes")
+                    w["dstate_max_s"] = rec.get("dstate_max_s")
+                    w["dstate_src"] = rec.get("dstate_src")
+                    self._keep_worst("worst_stall", "dstate_wait_s", w)
         if rec.get("dstate_max_s") is not None:
             d["max_s"] = max(d["max_s"], rec["dstate_max_s"])
         if rec.get("dstate_src"):
             d["src"][rec["dstate_src"]] += 1
+
+    def _keep_worst(self, attr, field, w):
+        """`top_by` on list `attr`, and when it trims, the smallest value it kept."""
+        lst = getattr(self, attr)
+        lst.append(w)
+        if len(lst) > INSTANCE_CAP * 20:            # `top_by`'s own trim point
+            top_by(lst, lambda x: -(x.get(field) or 0))
+            self.floor[attr] = lst[-1].get(field) or 0
 
     # ----------------------------------------------------------------- merge
     def merge(self, o):
