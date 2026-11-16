@@ -611,12 +611,13 @@ const RowView = memo(function RowView({
           {body}
         </div>
       </div>
-      {cells.slice(0, 6).map((c, i) => (
-        <div key={i} className={`num${i === 0 || i === 4 ? ' dim' : ''}`}>
+      {/* in the header's order: started, took, cpu s, Σ CPU s, Σ I/O, procs, exit; then the timeline */}
+      {cells.slice(0, 7).map((c, i) => (
+        <div key={i} className={`num${i === 0 || i === 5 ? ' dim' : ''}`}>
           {c}
         </div>
       ))}
-      <div className="pt-tl">{cells[6]}</div>
+      <div className="pt-tl">{cells[7]}</div>
     </div>
   );
 });
