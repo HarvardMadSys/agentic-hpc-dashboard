@@ -2978,6 +2978,8 @@ td.ep-name {
 th.sortable:focus-visible {
   outline: 2px solid var(--crimson);
   outline-offset: -2px;
+}
+
 /* --------------------------------------------- the narrow layout: panels
  * At 900px and under (lib/useNarrow.ts) the rail is a drawer and every grid is
  * one column, so a panel is the screen's width. These keep what is in a panel
@@ -3124,6 +3126,16 @@ th.sortable:focus-visible {
   }
   .u-host {
     padding: 6px 8px;
+  }
+  /* the drawer's tabs, its sections and its go-to field */
+  .rail nav button {
+    padding: 10px 12px;
+  }
+  .secnav a {
+    padding: 8px 8px 8px 12px;
+  }
+  .rail-search {
+    padding: 10px 12px;
   }
   input:not([type='checkbox']):not([type='radio']):not([type='range']),
   select,
