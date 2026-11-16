@@ -259,12 +259,13 @@ const SessionItem = memo(function SessionItem({
 const reducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-/** Slide each `[data-sid]` row of `box` from where it was at the last render
- *  to where it is now, and flash one that climbed or arrived. Positions are
- *  layout offsets, which a transform does not change and a scroll does not
- *  move. A new `reset` (another ranking, filter, or window) is a new list:
- *  nothing slides. */
-function useFlip(box: RefObject<HTMLElement | null>, reset: string) {
+/** Slide each `[data-sid]` row of `box` from where it was to where it is now,
+ *  and flash one that climbed or arrived. Positions are layout offsets, which a
+ *  transform does not change and a scroll does not move. A new `reset`
+ *  (another ranking, filter, or window) is a new list: nothing slides. Read
+ *  when the rows' `order` changes, or `reset` does -- not after every render:
+ *  each read is a layout of the whole list. */
+function useFlip(box: RefObject<HTMLElement | null>, reset: string, order: string) {
   const pos = useRef<Map<string, number>>(new Map());
   const was = useRef(reset);
   useLayoutEffect(() => {
@@ -296,7 +297,7 @@ function useFlip(box: RefObject<HTMLElement | null>, reset: string) {
         it.classList.add('tj-up');
       }
     }
-  });
+  }, [box, reset, order]);
 }
 
 /** `host|2026-10-11|agent|apid:561705` as `10-11` and `apid:561705`. */
@@ -361,8 +362,8 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
     if (pending && pending.sid !== sel) setPending(null);
   }, [pending, sel]);
   const listRef = useRef<HTMLDivElement>(null);
-  useFlip(listRef, `${rank}|${win}|${tuser ?? ''}|${cls.join(',')}`);
-  // Stable, as the list's rows and the inspector (memoized) are handed them.
+  // Opening a session drops a jump made for another. The rows (memoized) are
+  // handed it through `openRow`, which keeps one identity.
   const open = (sid: string | null) => {
     setJump(null);
     setPending(null);
@@ -388,6 +389,9 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
     return true;
   };
   const shownList = tuser ? listed.filter((r) => (r.user ?? (r.users ?? [])[0]) === tuser) : listed;
+  // the rows drawn, in their order: a row that moves slides there (`useFlip`)
+  const drawn = tuser && shownList.length ? shownList : listed;
+  useFlip(listRef, `${rank}|${win}|${tuser ?? ''}|${cls.join(',')}`, drawn.map((r) => r.sid).join('\n'));
   const sum = t?.summary ?? {};
   const agent = cls.includes('agent') ? sum.agent : undefined;
   const split = surfaceSplit(agent?.by_surface);
@@ -508,7 +512,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
             </div>
           )}
           <div className="tj-list" ref={listRef}>
-            {(tuser && shownList.length ? shownList : listed).map((r) => (
+            {drawn.map((r) => (
               <SessionItem key={r.sid} r={r} rank={rank} on={sel === r.sid} onOpen={openRow} />
             ))}
           </div>
