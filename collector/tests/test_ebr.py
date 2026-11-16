@@ -1629,6 +1629,18 @@ class CliTest(_TmpCase):
         rc, out, err = run_cli('cat', '--tail', 2, '-', input=self.lines)
         self.assertEqual((rc, out), (0, b''.join(self.lines.splitlines(True)[-2:])), err)
 
+    def test_count_kinds_reads_stdin_once(self):
+        # --kinds decodes every record; from stdin it must read on from the
+        # reader that told the format, not open stdin again
+        ebr = self.convert()
+        want = len(self.recs)
+        for data in (self.lines, read_file(ebr), gzip.compress(read_file(ebr)),
+                     gzip.compress(self.lines)):
+            for opts in ((), ('--kinds',)):
+                rc, out, err = run_cli('count', '--json', *(opts + ('-',)), input=data)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(json.loads(out)['total'], want, (opts, out))
+
     def test_verify_strict_passes_a_sealed_day_and_stdin(self):
         # a stream source (a .gz, stdin) is sized by what it held: no phantom
         # pending tail past its last frame

@@ -3322,7 +3322,9 @@ def _count_one(path, kinds):
             by = {}
             st = {}
             n = 0
-            for _p, rec in _feed_iter(path, None, None, None, None, st):
+            # read on from the reader open_feed() returned: it replays what it
+            # read to tell the format, and '-' (stdin) cannot be opened twice
+            for _p, rec in _feed_iter(path, None, None, None, None, st, opened=(fh, fmt)):
                 ev = rec.get("event")
                 k = ev if isinstance(ev, str) or ev is None else repr(ev)
                 k = "null" if k is None else k
