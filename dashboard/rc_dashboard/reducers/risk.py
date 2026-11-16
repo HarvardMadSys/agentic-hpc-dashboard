@@ -216,7 +216,7 @@ _RULESETS = {}
 # not depend on any of this: it is always on.
 KINDS = {"login_compute": "Compute on a login node",
          "commands": "Commands that should not run here",
-         "credentials": "Credentials exposed in argv"}
+         "credentials": "Credentials on a command line"}
 DEFAULT_SECTIONS = [
     {"id": "login_compute", "kind": "login_compute"},
     {"id": "commands", "kind": "commands", "rules": "rest"},

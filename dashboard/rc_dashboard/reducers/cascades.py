@@ -75,20 +75,20 @@ WORKSPACE_BASIS = {
                 "Read, Edit and Write tools and Codex's apply_patch run inside the "
                 "agent's own process and leave no command line, so their file "
                 "access is not here",
-    "home": "the agent process's own cwd; an agent started at `/` (IDE-hosted) is "
-            "anchored on its first call's directory off the root, labelled so",
-    "outside": "a write or delete NAMED outside the home is flagged: the agent "
+    "home": "the agent's start folder: its own cwd; an agent started at `/` (IDE-hosted) is "
+            "anchored on its first tool call's directory off the root, labelled so",
+    "outside": "a write or delete NAMED outside the start folder is flagged: the agent "
                "changed, or tried to change, something beyond the directory it was "
                "started in. /tmp, caches and the agent's own state directory are "
                "flagged too, and labelled by kind",
-    "collapse": "directories deeper than collapse_depth levels below the home, or "
+    "collapse": "directories deeper than collapse_depth levels below the start folder, or "
                 "below a top-level root (/tmp, /scratch, ~/.cache, another user's "
                 "home), are folded into that ancestor and counted as `deeper`",
     "subagents": "with subagents adds every agent started beneath this one (see "
-                 "Agent trees), judged against THIS agent's home",
+                 "Agent trees), judged against THIS agent's start folder",
     "scope": "exit and truncated records of agent-class processes that carry a "
              "session key, folded into their agent through the process index as "
-             "trajectory rows are; a fork that never exec'd inherits its parent's "
+             "session rows are; a fork that never exec'd inherits its parent's "
              "argv and is not read twice; ~ is the user's home as their agent's own "
              "paths name it, else /home/<user>",
 }
@@ -393,7 +393,7 @@ class CascadeReducer:
                           "other agent between",
                 "via": VIA_MEANING,
                 "frontend": "a codex TUI whose direct child is `codex app-server`, or a "
-                            "node launcher whose direct child is the same agent's native "
+                            "Node.js launcher whose direct child is the same agent's native "
                             "binary, is that session's front-end: shown as a client, not "
                             "as an agent with a subagent",
                 "hidden_nodes": "infra and clients with no agent beneath them are "
@@ -403,10 +403,10 @@ class CascadeReducer:
                 "invisible": "in-process subagents (Claude Code's Task tool, workflow "
                              "agents) share their parent's process and do not appear; "
                              "their commands are counted in their parent's",
-                "home": "an agent's own cwd, the directory it was started in; one "
-                        "started at `/` (IDE-hosted) is anchored on its first call's "
+                "home": "an agent's start folder: its own cwd, the directory it was started in; one "
+                        "started at `/` (IDE-hosted) is anchored on its first tool call's "
                         "directory off the root instead",
-                "dir_vs_parent": "where an agent's home sits relative to the home of "
+                "dir_vs_parent": "where an agent's start folder sits relative to the start folder of "
                                  "the agent above it: same, inside, above or outside",
             },
         }

@@ -75,7 +75,7 @@ cd dashboard/web && npm install && npm run dev     # http://localhost:5173
 
 **Demo**, the whole stack with no cluster — the service runs unchanged over a synthetic
 collector feed it writes and keeps appending to, for fictional hosts and users; every
-record and every page says *synthetic data* ([`dashboard/README.md`](dashboard/README.md#demo-mode)):
+record and every page says *fake data* ([`dashboard/README.md`](dashboard/README.md#demo-mode)):
 
 ```bash
 cd dashboard && uv sync && (cd web && npm ci && npm run build)

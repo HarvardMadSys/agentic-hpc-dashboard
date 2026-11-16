@@ -15,7 +15,7 @@ export function InternalTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         Panels whose takeaway we have not settled yet. They are here for us to discuss, and may
         change, move to a main tab, or go.
       </p>
-      <div className="rowlabel">sandbox · did agents' commands run isolated?</div>
+      <div className="rowlabel">sandbox · did agents' tool calls run sandboxed?</div>
       <SandboxTab P={P} cls={cls} />
     </>
   );

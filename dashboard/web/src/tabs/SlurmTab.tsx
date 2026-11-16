@@ -37,6 +37,7 @@ import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, pc } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
+import { useNodeWords } from '../lib/nodes';
 import type { Panels } from '../lib/panels';
 
 type Flag = 'parsable' | 'dependency' | 'array' | 'wrap';
@@ -60,7 +61,7 @@ function span(a: number, b: number): string {
 function sessionTip(r: SlurmSession): string {
   const lines = [
     r.session ? `session ${r.session}` : `everything ${r.user ?? 'this user'} ran outside an agent`,
-    r.keys > 1 ? `${fint(r.keys)} collector keys folded into it${r.fold ? ` (${Object.entries(r.fold).map(([k, n]) => `${k} ${n}`).join(', ')})` : ''}` : '',
+    r.keys > 1 ? `joined from ${fint(r.keys)} pieces the collector recorded${r.fold ? ` (${Object.entries(r.fold).map(([k, n]) => `${k} ${n}`).join(', ')})` : ''}` : '',
     r.first != null && r.last != null ? `${fullClock(r.first)} → ${fullClock(r.last)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
@@ -228,6 +229,7 @@ function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
 /* One row per measure, one column per class: the classes differ in size by
  * orders of magnitude, so the rows that compare them are rates and shares. */
 function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: string[]; tm: ToolMix }) {
+  const nodes = useNodeWords();
   // one row per measure, in different units: the measures sort by name, and
   // the class columns, whose cells are not alike, do not
   const s = useSort<string>();
@@ -255,7 +257,7 @@ function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: strin
     ['dry runs (--test-only)', 'asks when a job would start, makes none', (c) => fint(by[c].dry_runs)],
     ['refused by the scheduler', undefined, (c) => (by[c].asked ? `${fint(by[c].rejected)} (${pc(by[c].rejected_pct)})` : DASH)],
     ['busiest minute (one session)', 'the most jobs one session submitted in a single minute', (c) => fint(by[c].peak_per_min)],
-    ['srun / salloc from these hosts', 'interactive steps and allocations, and how many exited non-zero', (c) => (by[c].runs ? `${fint(by[c].runs)} (${fint(by[c].runs_failed)} failed)` : DASH)],
+    [`srun / salloc from these ${nodes.many}`, 'interactive steps and allocations, and how many exited non-zero', (c) => (by[c].runs ? `${fint(by[c].runs)} (${fint(by[c].runs_failed)} failed)` : DASH)],
     ['cancels', undefined, (c) => fint(by[c].cancels)],
     ['GPU·h asked', 'GPUs × time limit, where both were on the command line', (c) => (by[c].gpu_h == null ? DASH : fint(by[c].gpu_h))],
     ['time limit asked, median / p90', 'where it was on the command line', (c) => (tl(c, 'p50') == null ? DASH : `${dur(tl(c, 'p50'))} / ${dur(tl(c, 'p90'))}`)],

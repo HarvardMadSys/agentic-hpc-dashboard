@@ -31,7 +31,7 @@ import type { IoQuery } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
 import { SurfaceChip } from '../components/SurfaceChip';
 import { pcol } from '../lib/purposes';
-import { AP_LABEL } from '../lib/sandbox';
+import { useNodeWords } from '../lib/nodes';
 import { useSort } from '../lib/useSort';
 
 const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
@@ -44,7 +44,7 @@ const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
 type ColKey = 'agents' | 'ides' | 'running' | 'exited' | 'cpu' | 'read' | 'written' | 'sent' | 'received' | 'gpu' | 'last';
 const COLS: { k: ColKey; lbl: string; tip?: string; num?: boolean }[] = [
   { k: 'agents', lbl: 'agents running', tip: 'agent sessions running now, by agent' },
-  { k: 'ides', lbl: 'IDEs running', tip: 'editor sessions running now' },
+  { k: 'ides', lbl: 'IDEs running', tip: 'IDE sessions running now' },
   { k: 'running', lbl: 'running', tip: GLOSS.running, num: true },
   { k: 'exited', lbl: 'exited', tip: GLOSS.exited + ' in the window, split by class', num: true },
   { k: 'cpu', lbl: 'CPU time', tip: 'CPU used by the processes that exited in the window', num: true },
@@ -207,13 +207,13 @@ function nestedAgents(c: Cascades | undefined, user: string): Record<string, Rec
 function Badges({ s }: { s: Pick<LiveUserSession, 'actor3' | 'approval' | 'sandbox' | 'headless'> }) {
   const out: [string, string, string][] = [];
   if (s.actor3 === 'agent') {
-    if (s.approval === 'bypassed') out.push(['bypass', 'crit', AP_LABEL.bypassed + ': ' + GLOSS.bypass]);
+    if (s.approval === 'bypassed') out.push(['bypass flag', 'crit', GLOSS.bypass]);
     else if (s.approval === 'auto') out.push(['auto mode', 'warn', GLOSS.automode]);
   }
   // Only the states worth noticing: on a host where no sandbox works, a "not
   // sandboxed" on every session is noise, and "asks first" is the default.
   if (s.sandbox === 'sandboxed') out.push(['sandboxed', 'ok', GLOSS.sandbox]);
-  if (s.headless) out.push(['headless', 'nm', GLOSS.headless]);
+  if (s.headless) out.push(['script', 'nm', GLOSS.headless]);
   if (!out.length) return null;
   return (
     <span className="u-badges">
@@ -251,6 +251,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
   /** every host the service watches, the login nodes table's */
   watched: string[];
 }) {
+  const nodes = useNodeWords();
   const [n, setN] = useState(25);
   const [host, setHost] = useState<string>('');
   const [d, setD] = useState<LiveUserDetail | null>(null);
@@ -297,10 +298,10 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
               <thead>
                 <tr>
                   <SortTh s={sessSort} k="session" first="asc">session</SortTh>
-                  {multiHost && <SortTh s={sessSort} k="host" first="asc">host</SortTh>}
+                  {multiHost && <SortTh s={sessSort} k="host" first="asc">{nodes.one}</SortTh>}
                   <SortTh s={sessSort} k="age" num>running for</SortTh>
                   <SortTh s={sessSort} k="procs" num tip={GLOSS.running}>running</SortTh>
-                  <SortTh s={sessSort} k="mem" num tip="resident memory now, and the most and the average over every 60-second census of this session">memory now · peak · avg</SortTh>
+                  <SortTh s={sessSort} k="mem" num tip="memory now, and the most and the average over every 60-second census of this session">memory now · peak · avg</SortTh>
                   <SortTh s={sessSort} k="cpu" num>CPU time</SortTh>
                   <th />
                 </tr>
@@ -338,8 +339,8 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                     <td>
                       {s.sid && (
                         <button className="linkbtn" onClick={() => openTraj(s.sid!)}
-                          data-tip="open this session's process tree on the Trajectories tab">
-                          trajectory →
+                          data-tip="open this session's process tree on the Sessions tab">
+                          process tree →
                         </button>
                       )}
                     </td>
@@ -384,13 +385,13 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
             <table className="roomy">
               <thead>
                 <tr>
-                  <SortTh s={winSort} k="who" first="asc">who ran it</SortTh>
+                  <SortTh s={winSort} k="who" first="asc">class / agent type</SortTh>
                   <SortTh s={winSort} k="n" num tip={GLOSS.exited}>exited</SortTh>
                   <SortTh s={winSort} k="cpu_s" num>CPU time</SortTh>
-                  <SortTh s={winSort} k="rd_mb" num tip={GLOSS.diskbytes}>disk read</SortTh>
-                  <SortTh s={winSort} k="wr_mb" num tip={GLOSS.diskbytes}>disk written</SortTh>
-                  <SortTh s={winSort} k="net_tx_mb" num tip="bytes sent over the network">network sent</SortTh>
-                  <SortTh s={winSort} k="net_rx_mb" num tip="bytes received over the network">network received</SortTh>
+                  <SortTh s={winSort} k="rd_mb" num tip={GLOSS.rd}>disk read</SortTh>
+                  <SortTh s={winSort} k="wr_mb" num tip={GLOSS.wr}>disk written</SortTh>
+                  <SortTh s={winSort} k="net_tx_mb" num tip={GLOSS.tx}>network sent</SortTh>
+                  <SortTh s={winSort} k="net_rx_mb" num tip={GLOSS.rx}>network received</SortTh>
                 </tr>
               </thead>
               <tbody>
@@ -479,9 +480,10 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
 /** The picker every exit stream has, shown even when one host is watched, so
  *  which host a list covers is always on screen. */
 function HostPicker({ hosts, host, setHost }: { hosts: string[]; host: string; setHost: (h: string) => void }) {
+  const nodes = useNodeWords();
   return (
-    <select className="u-host" value={host} onChange={(e) => setHost(e.target.value)} aria-label="host">
-      <option value="">every host</option>
+    <select className="u-host" value={host} onChange={(e) => setHost(e.target.value)} aria-label={nodes.one}>
+      <option value="">every {nodes.one}</option>
       {hosts.map((h) => <option key={h} value={h}>{h}</option>)}
     </select>
   );
@@ -499,6 +501,7 @@ function RecentTable({ rows, multiHost, now, withUser }: {
   /** every user's processes at once: who ran each */
   withUser?: boolean;
 }) {
+  const nodes = useNodeWords();
   const s = useSort<string>('at');
   const val = (e: LiveEvent, k: string) =>
     k === 'at' ? e.epoch : k === 'user' ? e.user : k === 'host' ? e.host : k === 'agent' ? e.agent_type ?? e.actor3
@@ -524,15 +527,15 @@ function RecentTable({ rows, multiHost, now, withUser }: {
           <tr>
             <SortTh s={s} k="at">at</SortTh>
             {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
-            {multiHost && <SortTh s={s} k="host" first="asc">host</SortTh>}
+            {multiHost && <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>}
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
             <SortTh s={s} k="cmd" first="asc">command</SortTh>
             <SortTh s={s} k="ran" num tip={GLOSS.lifetime}>ran</SortTh>
             <SortTh s={s} k="cpu" num>CPU</SortTh>
-            <SortTh s={s} k="rd" num tip={GLOSS.diskbytes}>read</SortTh>
-            <SortTh s={s} k="wr" num tip={GLOSS.diskbytes}>written</SortTh>
-            <SortTh s={s} k="tx" num tip="bytes sent over the network">sent</SortTh>
-            <SortTh s={s} k="rx" num tip="bytes received over the network">received</SortTh>
+            <SortTh s={s} k="rd" num tip={GLOSS.rd}>disk read</SortTh>
+            <SortTh s={s} k="wr" num tip={GLOSS.wr}>disk written</SortTh>
+            <SortTh s={s} k="tx" num tip={GLOSS.tx}>sent</SortTh>
+            <SortTh s={s} k="rx" num tip={GLOSS.rx}>received</SortTh>
             <SortTh s={s} k="exit" num tip={GLOSS.exitcode}>exit code</SortTh>
           </tr>
         </thead>
@@ -586,6 +589,7 @@ function Stream({ events, depth, watched, cls, q, who, keep }: {
   /** a "running now" pick: only these accounts */
   keep: Set<string> | null;
 }) {
+  const nodes = useNodeWords();
   const [n, setN] = useState(25);
   const [host, setHost] = useState('');
   const ql = q.toLowerCase();
@@ -610,8 +614,8 @@ function Stream({ events, depth, watched, cls, q, who, keep }: {
         </span>
         <HostPicker hosts={hosts} host={host} setHost={setHost} />
         {depth != null && (
-          <span className="nm" data-tip="the live frame holds the newest exits across every host and user; a filter picks among them, so a quiet host or user can show fewer than asked">
-            {narrowed ? `${fint(on.length)} of ` : ''}the newest {fint(events.length)} exits held
+          <span className="nm" data-tip={`the live frame holds the newest processes exited across every ${nodes.one} and user; a filter picks among them, so a quiet ${nodes.one} or user can show fewer than asked`}>
+            {narrowed ? `${fint(on.length)} of ` : ''}the newest {fint(events.length)} exited processes held
             {events.length < depth ? ` (at most ${fint(depth)})` : ''}
           </span>
         )}
@@ -654,7 +658,7 @@ interface UsersProps {
   defaultCols?: string[] | null;
   pageUsers?: string[];
   pageTypes?: string[];
-  /** open a session's trajectory, or a user's sessions, on the Trajectories tab */
+  /** open a session, or a user's sessions, on the Sessions tab */
   openTraj: (sid: string) => void;
   openUserTraj: (user: string) => void;
   /** the live frame's tail of exits, every user's, newest first */
@@ -837,9 +841,9 @@ export function UsersPanel({
                           e.stopPropagation();
                           openUserTraj(r.user);
                         }}
-                        data-tip="this user's sessions on the Trajectories tab"
+                        data-tip="this user's sessions on the Sessions tab"
                       >
-                        trajectories →
+                        sessions →
                       </button>
                     </td>
                     {shownCols.map((c) => cell(r, c.k))}

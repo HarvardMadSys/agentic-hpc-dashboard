@@ -76,7 +76,7 @@ export interface UrlState extends Filters {
   /** Where the inspector's read starts, epoch seconds: set by "continue" after
    *  a read stopped at its budget, so the continued view is linkable too. */
   tfrom: number | null;
-  /** A user whose sessions the Trajectories tab opens on, from Active users'
+  /** A user whose sessions the Sessions tab opens on, from Active users'
    *  "trajectories →" (roadmap note 7): a view, not a filter, so nothing is
    *  rebuilt for it. */
   tuser: string | null;

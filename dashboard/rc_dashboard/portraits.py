@@ -124,7 +124,7 @@ TRAITS = (
     ("app", "drives agents from an app or an IDE", "",
      "%d%% or more of the sessions are driven from the desktop app, an IDE extension, or the "
      "web" % (100 * RULES["app"])),
-    ("bypass", "launches with approval bypassed", "crit",
+    ("bypass", "launches with a bypass flag", "crit",
      "%d%% or more of the sessions whose launch is known were started with a bypass flag "
      "(--dangerously-skip-permissions, --yolo, ...)" % (100 * RULES["bypass"])),
     ("auto", "launches in auto mode", "warn",
@@ -132,7 +132,7 @@ TRAITS = (
      % (100 * RULES["auto"])),
     ("sandboxed", "tool calls run sandboxed", "ok",
      "%d%% or more of the sessions whose tool calls were judged had some or all of them "
-     "namespace-isolated" % (100 * RULES["sandboxed"])),
+     "sandboxed" % (100 * RULES["sandboxed"])),
     ("multi_agent", "uses more than one agent", "",
      "sessions of two agent types or more"),
     ("parallel", "keeps several sessions open at once", "",
@@ -186,7 +186,7 @@ _NIGHT = range(0, 6)
 
 BASIS = {
     "session": "one agent run: an agent process seen at the root of its tree, with every collector "
-               "key folded into it (as Trajectories), and its rows on several days together. It "
+               "key folded into it (as on the Sessions tab), and its rows on several days together. It "
                "belongs to the account its records name first",
     "open": "a session is open from its first record to its last; 'open at once' counts the "
             "sessions open at the same moment",
@@ -196,11 +196,11 @@ BASIS = {
              "only: another agent's calls are not recognized, which is not none",
     "words": "the agent's own words in a command: a commit message (git commit -m), a pull request's "
              "title (gh pr create/edit --title), or an entry written to a log or plan file",
-    "phases": "time in each phase, from the same phase blocks the Trajectories rows show, for the "
+    "phases": "time in each phase, from the same phase blocks the Sessions tab's rows show, for the "
               "newest %d sessions" % PHASE_SESSIONS,
     "project": "the folder the agent was started in, or when that is a home folder or named for a "
                "person, the folder its commands change into most (as a task's headline)",
-    "sandbox": "the Sandbox tab's verdict on each session's tool calls",
+    "sandbox": "whether each session's tool calls ran sandboxed, as the Internal tab counts them",
     "slurm": "the user's agent sessions as the Slurm tab folds them",
     "traits": "plain statements, each from one rule over these numbers; the rules are served "
               "beside them, and none is a judgement",

@@ -25,6 +25,7 @@ import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcNode } from '../api/t
 import { ioBrief, ioTip } from '../lib/procio';
 import { DASH, clock, dur, fint } from '../lib/format';
 import { pcol } from '../lib/purposes';
+import { AGENT_TYPE_LBL } from '../lib/classes';
 import { TreeDiagram } from './TreeDiagram';
 import type { TreeNode } from './TreeDiagram';
 
@@ -276,7 +277,7 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean): Bo
     const bad = failed(e);
     // an agent's own process can be named for its runtime (`server`, `node`):
     // say which agent it is, as the table view does
-    const type = (e.role === 'agent' || root) && e.agent_type ? e.agent_type : null;
+    const type = (e.role === 'agent' || root) && e.agent_type ? (AGENT_TYPE_LBL[e.agent_type] ?? e.agent_type) : null;
     return {
       kind: 'p',
       title: e.label ?? e.cmd ?? '(no record)',
