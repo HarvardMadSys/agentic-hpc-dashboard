@@ -179,11 +179,11 @@ def presets(cfg):
 
 
 def _byte_check(field, values):
-    """A pre-parse search for `"field": "<one of values>"`, or None when unsafe."""
+    """A pre-parse pattern for `"field": "<one of values>"`, or None when unsafe."""
     if not values or not all(_PLAIN.match(v) for v in values):
         return None
     names = b"|".join(re.escape(v.encode()) for v in sorted(values))
-    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"').search
+    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"')
 
 
 class ViewFilter:
@@ -203,7 +203,7 @@ class ViewFilter:
     empty series read as an idle person.
     """
 
-    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match")
+    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match", "line_find")
 
     NOT_NARROWED = (
         "resident memory and live processes over time: sampled from each host's "
@@ -226,15 +226,19 @@ class ViewFilter:
         # through. A narrow filter on a busy feed parses a few percent of the
         # lines a full build does. `none` cannot be searched for -- an untagged
         # record may carry `null` or no key at all -- so it only narrows by user.
-        checks = [c for c in (_byte_check("user", self.users),
-                              None if UNTAGGED in self._t
-                              else _byte_check("agent_type", self.agent_types))
+        checks = [c.search for c in (_byte_check("user", self.users),
+                                     None if UNTAGGED in self._t
+                                     else _byte_check("agent_type", self.agent_types))
                   if c is not None]
         if len(checks) == 2:
             a, b = checks
             self.line_match = lambda line: a(line) and b(line)
         else:
             self.line_match = checks[0] if checks else None
+        # The first check's pattern, which the scan runs over whole blocks of a
+        # day-file to find the lines worth looking at (`export.window_scan`
+        # `find`); `line_match` still decides each one it finds.
+        self.line_find = checks[0].__self__ if checks else None
 
     @classmethod
     def from_params(cls, params):
@@ -684,7 +688,7 @@ class WindowRegistry:
         keep = view.flt.match if view.flt else None
         every = 20000 if keep is None else 500
         for rec, stats in window_scan(plan, norm, since, events=EVENTS,
-                                      match=view.flt.line_match):
+                                      match=view.flt.line_match, find=view.flt.line_find):
             if keep is not None and not keep(rec):
                 continue
             ts = rec.get("_ts_epoch")
