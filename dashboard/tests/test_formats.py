@@ -273,6 +273,49 @@ class LegacyTimeTest(WindowTest):
         self.assertGreater(sum(e["start"] for e in mid), sum(e["start"] for e in whole))
 
 
+class LegacyTimeBoundsTest(LegacyTimeTest):
+    """The end bound and a sealed (.gz) copy, over the same legacy-time records."""
+
+    def path(self, fmt, name="h1.exits.jsonl"):
+        p = os.path.join(self.roots[fmt], DAY, name)
+        return p if fmt == "jsonl" else ebr_name(p)
+
+    def test_an_end_bound_places_frames_by_their_records(self):
+        from rc_dashboard.normalize import epoch_of
+        t = self.t0 + 4000
+        with open(self.path("jsonl"), "rb") as fh:
+            jrecs = [json.loads(ln) for ln in fh if ln.strip()]
+        # well inside the bound: records sit a few seconds out of order
+        want = {(r["host"], r["pid"]) for r in jrecs if epoch_of(r) <= t - 120}
+        self.assertTrue(want)
+        for fmt in ("ebr", "wide"):
+            p = self.path(fmt)
+            size = os.path.getsize(p)
+            with gz.open_feed(p) as fh:
+                end = feedfile.end_at(fh, t, size, fmt="ebr")
+            got = {(r["host"], r["pid"]) for _pos, r in feedfile.records_forward(p, 0, end)}
+            self.assertLessEqual(want, got, fmt)
+            if fmt == "ebr":               # frames a round wide: the bound is inside
+                self.assertLess(end, size)
+
+    def test_a_sealed_copy_seeks_as_the_plain_file(self):
+        since = self.t0 + 4000
+        for fmt in ("ebr", "wide"):
+            p = self.path(fmt)
+            size = os.path.getsize(p)
+            with gz.open_feed(p) as fh:
+                plain = (feedfile.seek_to_epoch(fh, since, size, fmt="ebr"),
+                         feedfile.end_at(fh, since, size, fmt="ebr"))
+            zp = gzip_in_place(p)
+            with gz.open_feed(zp) as fh:
+                zsize = gz.fstat(fh).st_size
+                zipped = (feedfile.seek_to_epoch(fh, since, zsize, fmt="ebr"),
+                          feedfile.end_at(fh, since, zsize, fmt="ebr"))
+            self.assertEqual(zsize, size, fmt)
+            self.assertEqual(plain, zipped, fmt)
+            self.assertLess(zipped[0], size, fmt)
+
+
 class TwinCase(FeedCase):
     """A collector writing both formats into one directory: each append goes to
     the JSONL twin and then, a frame per round, to the EBR twin."""

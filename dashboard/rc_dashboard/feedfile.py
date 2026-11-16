@@ -468,9 +468,11 @@ def seek_to_epoch(fh, since, size, fmt="jsonl", probe_lines=64):
     rebuild after rows that belonged in the window.
 
     EBR (`fmt`): the first frame whose newest record (`ts_max`, its header's)
-    is >= `since`, by the same search over frames; a probe that lands on a
-    frame still being written, or one whose records cannot all be placed in
-    time, searches earlier too.
+    is >= `since`, by the same search over frames. A probe that lands on a
+    frame still being written searches earlier too. A frame its header cannot
+    place (a record in it has no `ts_epoch`) is placed by its records' own
+    times instead (`_probe_ebr`), and only a frame with no time at all is
+    walked past, as a line with none is.
     """
     if fmt == "ebr":
         return _seek_ebr(fh, since, size)
@@ -687,7 +689,15 @@ def _probe_ebr(fh, pos, size):
     than `ts_epoch` is all such frames, and a seek by the headers alone would
     skip all of it. The times are None when there is none by `size` -- the
     frame is still being written -- and `off` is `size` when no header is.
-    Remembered by the file's identity, as `_probe`'s answers are."""
+    Remembered by the file's identity, as `_probe`'s answers are.
+
+    Placing a frame by its records costs a replay of its segment (up to the
+    writer's reset_bytes, 2 MiB) plus the frame: once per probe, since one
+    decoder serves the walk's consecutive frames. Only a converted legacy
+    capture pays it -- the collector stamps `ts_epoch` on every record, so its
+    frames are placed by their headers -- and a sealed capture pays it once,
+    the answer being remembered. A growing file is remembered by its size, so
+    one whose records lacked `ts_epoch` would pay it at each new size."""
     ident = _identity(fh)
     m = _memo_of(ident) if ident is not None else None
     key = ("ebr", pos, size)
@@ -700,23 +710,31 @@ def _probe_ebr(fh, pos, size):
     off = ebr.resync(src, pos, size)
     if off is not None and off < size:
         out = (off, size, None, None)
+        dec = None
         for n, f in enumerate(ebr.frames(src, off, size, verify=False)):
+            if f.kind == ebr.DATA and f.n_records and _placed(f):
+                out = (off, f.off, f.ts_min, f.ts_max)
+                break
             if f.kind == ebr.DATA and f.n_records:
-                times = (f.ts_min, f.ts_max) if _placed(f) else _record_times(src, f)
+                if dec is None:
+                    dec = decoder_at(src, f.off)
+                times = _record_times(dec, src, f)
                 if times is not None:
                     out = (off, f.off) + times
                     break
+            elif dec is not None:
+                dec.skip(f, src)          # the walk's next frame decodes in step
             if n + 1 >= PROBE_FRAMES:
                 break
     return _remember(m, key, out) if m is not None else out
 
 
-def _record_times(src, f):
+def _record_times(dec, src, f):
     """`(ts_min, ts_max)` of a DATA frame its header cannot place, from its
-    records' times as `epoch_of` reads them; None when no record has one."""
+    records' times as `epoch_of` reads them; None when no record has one.
+    `dec` is a decoder positioned at the frame."""
     lo = hi = None
     try:
-        dec = decoder_at(src, f.off)
         for _pos, rec in dec.records(src, f):
             t = epoch_of(rec)
             if t is None:
