@@ -1295,7 +1295,10 @@ def check_converted(services, fmt, phase, a, before, norm):
                        if before.get(p, (None,))[0] != now.get(p, (None,))[0]
                        or now.get(p, (0, 0))[1] < before.get(p, (0, 0))[1])
         grown = sorted(p for p in now if p in before and now[p][1] > before[p][1])
-        if moved or (grown and not a.gzip) or (cu.get("records") and not a.gzip):
+        # Sealed days are finished from their .gz, and a feed grown between the runs
+        # (--grow) has new lines: then a view file is appended to, never replaced.
+        expect_new = a.gzip or bool(getattr(a, "grow", 0))
+        if moved or (not expect_new and (grown or cu.get("records"))):
             wrong = True
             log("NOT resumed from the MARKs: %d view file(s) replaced or gone (%s), %d "
                 "appended to, %s record(s) converted again" % (
@@ -1304,7 +1307,7 @@ def check_converted(services, fmt, phase, a, before, norm):
         else:
             log("resumed from the MARKs: every view file the same file%s; %s record(s) "
                 "converted at the restart" % (
-                    (", %d sealed and appended to" % len(grown)) if grown else
+                    (", %d appended to" % len(grown)) if grown else
                     ", untouched", cu.get("records") or 0))
     return wrong
 

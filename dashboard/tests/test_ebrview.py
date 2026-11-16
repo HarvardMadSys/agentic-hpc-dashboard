@@ -356,6 +356,41 @@ class ResumeTest(ViewCase):
         self.assertNotEqual(os.stat(p).st_ino, ino)
         self.assertConverted("h1.exits.jsonl")
 
+    def test_a_source_rewritten_in_place_to_its_length_is_converted_afresh(self):
+        # An append always grows a source, so the same length with a new mtime is
+        # a rewrite in place, whose first bytes may even match: converted afresh,
+        # live and on a restart (against the last MARK's record of the source).
+        a, b = rec(T0, 1), rec(T0, 2)
+        self.assertEqual(len(line(a)), len(line(b)))
+        s = self.append("h1.exits.jsonl", [a])
+        v = self.view()
+        p = self.vpath("h1.exits.ebr")
+
+        def rewrite(r, later_s):
+            st = os.stat(s)
+            with open(s, "r+b") as fh:
+                fh.write(line(r))
+            os.utime(s, ns=(st.st_atime_ns, st.st_mtime_ns + int(later_s * 1e9)))
+            self.assertEqual((os.stat(s).st_ino, os.stat(s).st_size), (st.st_ino, st.st_size))
+
+        ino = os.stat(p).st_ino
+        rewrite(b, 1)
+        self.settle(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual([r["pid"] for r in view_records(p)], [2])
+        self.assertConverted("h1.exits.jsonl")
+        # untouched since, a poll leaves it be
+        ino = os.stat(p).st_ino
+        self.settle(v)
+        self.assertEqual(os.stat(p).st_ino, ino)
+        # and on a restart
+        v.close()
+        rewrite(a, 2)
+        self.restart(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual([r["pid"] for r in view_records(p)], [1])
+        self.assertConverted("h1.exits.jsonl")
+
     def test_a_copy_of_the_source_is_read_on_not_converted_again(self):
         self.append("h1.exits.jsonl", [rec(T0 + i, i) for i in range(30)])
         v = self.view()

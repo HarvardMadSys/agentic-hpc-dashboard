@@ -553,6 +553,18 @@ def _resume(view, src, stem, zkw, task):
                 raise _Rebuild("its last checkpoint is not one this version wrote")
             if split_name(info["src"])[0] != stem:
                 raise _Rebuild("its checkpoint names another stream (%s)" % info["src"])
+            if not src.endswith(_GZ) and not k:
+                # The file the checkpoint describes, the same size, written since:
+                # rewritten in place (an append grows it), maybe with the same head.
+                try:
+                    st0 = os.stat(src)
+                except OSError:
+                    st0 = None
+                if (st0 is not None and st0.st_ino == info.get("src_ino")
+                        and st0.st_size == info.get("src_size")
+                        and st0.st_mtime_ns != info.get("src_mtime_ns")):
+                    raise _Rebuild("%s was written in place since its checkpoint"
+                                   % os.path.basename(src))
         off = info["off"]
         base = (info["records"] + k, info["bad"])
         c = _Counts(records=base[0], bad=base[1], skip=k, cut=True)
@@ -1336,6 +1348,12 @@ class EbrView(object):
             return 0
         behind = st.st_size - e.off
         if behind <= 0:
+            if (st.st_size, st.st_mtime_ns) != tuple(e.src_id[:2]):
+                # Written since, and grown past nothing it held: rewritten in
+                # place, since an append always grows it. Its first bytes may
+                # match the old ones, so it is converted afresh, into a new file.
+                self._submit(e, fresh=True)
+                return 0
             e.lag = 0
             self._idle(e, now)
             return 0
@@ -1464,9 +1482,10 @@ class EbrView(object):
         finally:
             e.writer = None
 
-    def _submit(self, e):
+    def _submit(self, e, fresh=False):
         """Convert `e` in bulk, apart from the polls: its writer closed (a MARK
-        first), the conversion resumed from the file itself."""
+        first), the conversion resumed from the file itself, or from the start
+        into a new file (`fresh`)."""
         if e.job is not None or self._stop.is_set():
             return
         self._close(e, mark=True)
@@ -1474,7 +1493,8 @@ class EbrView(object):
             self._jobs = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="ebrview-job")
         e.loaded = False
-        e.job = self._jobs.submit(guarded, self._task(e), Task(None, self._stop.is_set))
+        e.job = self._jobs.submit(guarded, self._task(e, fresh=fresh),
+                                   Task(None, self._stop.is_set))
 
     def _reap(self):
         """Every bulk conversion that has finished, into its entry."""
