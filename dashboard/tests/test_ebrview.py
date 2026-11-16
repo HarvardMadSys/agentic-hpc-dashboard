@@ -767,7 +767,11 @@ class SetupTest(ViewCase):
             self.assertEqual(cfg.get("ingest.convert"),
                              {"enabled": True, "dir": "", "zstd": 0, "workers": 0})
             s = ebrview.settings(cfg)
-            self.assertEqual(s["workers"], max(1, min(4, os.cpu_count() or 1)))
+            # every CPU this process may run on: its affinity, not the machine's count
+            self.assertEqual(s["workers"], len(os.sched_getaffinity(0)))
+            self.assertEqual(s["workers"], ebrview.usable_cpus())
+            with mock.patch.object(os, "process_cpu_count", lambda: 3, create=True):
+                self.assertEqual(ebrview.settings(cfg)["workers"], 3)
             self.assertEqual(s["dir"], os.path.join(cfg.get("cache.dir"), "ebr-view"))
             for off in ("0", "false", "no", "off", "OFF"):
                 os.environ["RC_DASH_CONVERT"] = off

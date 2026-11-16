@@ -87,7 +87,9 @@ byte-identical copy of the collector's `lib/ebr.py`), holds the same records: de
 back what `json.loads` gives for its JSONL line, types and key order included, so every reducer
 sees the same record either way. It is 4-8x smaller, and it is framed: CRC-checked frames,
 normally one per poll round, each with its records' time bounds and event kinds in its header,
-so a reader can pass a frame without building its records. The format, its numbers and the
+so a reader can pass a frame without building its records. Since format v2 nothing in a file is
+JSON (the segment header is binary too; a v1 file still reads), and a frame may be
+zstd-compressed (`EBPFM_EBR_ZSTD`, off by default). The format, its numbers and the
 collector's side are in the [collector README](../collector/README.md#binary-records-ebr).
 
 The service reads them through an EBR view it makes at startup, unless that is turned off
@@ -241,7 +243,8 @@ lines only (a partial last line waits), blank lines passed, every other line par
 
 **Startup.** The service starts, and before anything reads, the conversion catches up: every
 converted file brought to its source's last complete line, in `ingest.convert.workers` processes
-(`RC_DASH_CONVERT_WORKERS`; 0, the default, is `min(4, cores)`, 1 converts in the service's own
+(`RC_DASH_CONVERT_WORKERS`; 0, the default, is every CPU the service may run on -- its affinity,
+so a Slurm allocation or a cpuset is the limit -- and 1 converts in the service's own
 process), one file each, the biggest first; frames are cut on the minute. Meanwhile the page
 answers, says how far it is (`backfill.state` `converting` with `pct`, and the tiers'
 `convert` in `/api/feeds`), and what reads the day-files -- `/api/events`, `/api/export`,
@@ -249,7 +252,8 @@ answers, says how far it is (`backfill.state` `converting` with `pct`, and the t
 `{"error": "converting", "detail": ..., "convert": {"pct": ...}}` with a `Retry-After`, rather than
 read a half-built view. Then the window builds, the backfill and the polls start, as without a view.
 
-What a first start costs: 25-30 µs of CPU a record, spread over the workers a file at a time. A
+What a first start costs: 25-30 µs of CPU a record, spread over the workers (by default one per
+CPU the service may run on) a file at a time. A
 week of 6 demo hosts (192 000 records, 264 MB of JSONL, 105 files) converts in 4.7 s in one
 process, 2.5 s with two workers and 1.5 s with four (131 000 records a second, 33 000 a worker) on
 this repository's 4-core test container; a week of one busy login node (2.4 M records, about 4 GB)
@@ -290,7 +294,7 @@ fingerprint).
 | `ingest.convert.enabled` | `RC_DASH_CONVERT` | `true` | read through the EBR view; `0`/`false`/`no`/`off` reads the day-files as they are |
 | `ingest.convert.dir` | `RC_DASH_CONVERT_DIR` | `<cache.dir>/ebr-view` | where the view lives; never inside a source root |
 | `ingest.convert.zstd` | `RC_DASH_CONVERT_ZSTD` | `0` | the zstd level of the view's frames, 1..22; 0 writes them uncompressed |
-| `ingest.convert.workers` | `RC_DASH_CONVERT_WORKERS` | `0` | processes converting at startup: 0 is `min(4, cores)`, 1 is the service's own |
+| `ingest.convert.workers` | `RC_DASH_CONVERT_WORKERS` | `0` | processes converting at startup: 0 is every CPU the service may run on, 1 is the service's own |
 
 Each dated tier's entry in `/api/feeds` carries `source_roots` (the collector's roots, when read
 through the view) and `convert`:
@@ -1293,6 +1297,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/feedfile.py` | the collector's day-files in either format: listing them, the twin rule (`choose`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line or frame ends, EBR's frames and records |
 | `rc_dashboard/ebr.py` | the EBR codec, a byte-identical copy of `collector/lib/ebr.py` (`tests/test_ebr_sync.py` keeps it so) |
+| `rc_dashboard/ebrview.py` | the EBR view the service reads: collector EBR linked, JSONL-only streams converted at startup and before every poll, resumed from MARK checkpoints ([Reading EBR only](#reading-ebr-only-the-startup-conversion)) |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
 | `rc_dashboard/gz.py` | a `.jsonl.gz` or `.ebr.gz` day-file read in place, seekable by uncompressed offset through a per-process inflater index |
 | `rc_dashboard/health.py` | each collector's verdict, from its own meta / heartbeat / stop records |

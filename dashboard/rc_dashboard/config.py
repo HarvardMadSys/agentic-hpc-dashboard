@@ -153,7 +153,7 @@ def defaults():
             # pointed at the view; a stream written as EBR is linked into it.
             # The copies are kept current as the collector appends. `zstd`: the
             # level of the view's zstd frames, 0 for none. `workers`: processes
-            # converting at startup, 0 for min(4, cores), 1 for this one.
+            # converting at startup, 0 for every CPU it may use, 1 for this one.
             "convert": dict(CONVERT),
         },
         # The service's present. "" is the wall clock; "auto" or a local time
@@ -653,7 +653,7 @@ def load(args=None, config_path=None):
             ("dir", lambda v: v is None or isinstance(v, str), "a path, or empty"),
             ("zstd", lambda v: type(v) is int and 0 <= v <= 22, "a zstd level 0..22 (0: off)"),
             ("workers", lambda v: type(v) is int and 0 <= v <= 256,
-             "a process count 0..256 (0: min(4, cores))")):
+             "a process count 0..256 (0: every CPU this process may use)")):
         dotted = "ingest.convert." + key
         val = conv.get(key, CONVERT[key])
         if not ok(val):

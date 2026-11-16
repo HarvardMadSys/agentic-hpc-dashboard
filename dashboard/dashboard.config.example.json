@@ -205,7 +205,7 @@
   "//convert1": "JSONL is converted into an EBR view under `dir` (empty: <cache.dir>/ebr-view), an",
   "//convert2": "EBR one is linked into it, and the readers are pointed at the view; the copies",
   "//convert3": "are kept current as the collector appends. `zstd`: the level of the view's zstd",
-  "//convert4": "frames, 0 for none. `workers`: processes converting at startup, 0 for min(4, cores).",
+  "//convert4": "frames, 0 for none. `workers`: processes converting at startup, 0 for every CPU it may use.",
   "//convert5": "enabled: false (RC_DASH_CONVERT=0) reads the day-files as they are.",
   "ingest":  { "poll_ms": 1000,
                "convert": { "enabled": true, "dir": "", "zstd": 0, "workers": 0 } },
