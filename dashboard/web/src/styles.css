@@ -51,6 +51,11 @@
 * {
   box-sizing: border-box;
 }
+/* a phone turned sideways keeps the type at the size it was set, not enlarged */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
   margin: 0;
   background: var(--page);
@@ -800,13 +805,8 @@ html {
   .controls {
     position: static;
   }
-  /* A panel's controls go under its title rather than squeezing it to a word
-     a line (Tool mix: two switches beside two words), and a switch that still
-     does not fit wraps, drawn as separate keys like `.seg.wrap`. */
-  .panel > header {
-    flex-wrap: wrap;
-    row-gap: 8px;
-  }
+  /* A switch in a panel's header that still does not fit wraps as separate
+     keys, like `.seg.wrap` (the header itself wraps from 900px, below). */
   .panel > header .seg {
     flex-wrap: wrap;
     max-width: 100%;
@@ -2973,4 +2973,161 @@ td.ep-name {
 th.sortable:focus-visible {
   outline: 2px solid var(--crimson);
   outline-offset: -2px;
+}
+
+/* --------------------------------------------- the narrow layout: panels
+ * At 900px and under (lib/useNarrow.ts) the rail is a drawer and every grid is
+ * one column, so a panel is the screen's width. These keep what is in a panel
+ * readable at that width without changing what it says. Here, at the end, so
+ * they win over the rules they adjust. */
+@media (max-width: 900px) {
+  /* a panel's controls go under its title rather than squeezing it to a word a line */
+  .panel > header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  /* a segmented control wraps rather than run past the screen */
+  .seg {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  /* a number is never broken from its unit: a table scrolls in its box instead */
+  td.num {
+    white-space: nowrap;
+  }
+  /* a feed's paths break anywhere, so given no width they stand a letter a line */
+  .feed-where {
+    min-width: 200px;
+  }
+  /* A wide table's row names stay in view while its numbers scroll beside
+   * them (`pin` on that column's cells), so no row is read without its name.
+   * Layered under the table's own sticky header, the corner cell over both.
+   * Its edge fade (lib/scrollEdges.ts) is then on the right alone. */
+  .scroller td.pin,
+  .scroller th.pin {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    box-shadow: 1px 0 0 var(--rule);
+  }
+  .scroller.vscroll thead th {
+    z-index: 2;
+  }
+  .scroller thead th.pin,
+  .scroller.vscroll thead th.pin {
+    z-index: 3;
+  }
+  .scroller.vscroll thead th.pin {
+    box-shadow:
+      1px 0 0 var(--rule),
+      inset 0 -1px 0 var(--rule);
+  }
+  /* no weight of its own, so a row's hover or open shade still reaches it */
+  :where(.scroller td.pin, .scroller th.pin) {
+    background: var(--surface);
+  }
+  /* The faults table keeps its set columns, as shares of its box rather than
+   * pixels: the measures a third, the classes the rest, so every class and
+   * each section's name is in view without scrolling sideways. */
+  table.faults {
+    --measure-w: 32%;
+    --cls-w: calc((100% - var(--measure-w)) / var(--cols, 3));
+  }
+  table.faults td,
+  table.faults th {
+    white-space: normal;
+  }
+  table.faults td.num,
+  table.faults th.num {
+    padding-left: 10px;
+  }
+}
+@media (max-width: 600px) {
+  .panel {
+    padding: 12px 12px 13px;
+  }
+  /* A share's number, its track and its count stack in the cell rather than
+   * sit side by side, so every class's column fits beside the labels. */
+  table.shares th,
+  table.shares td {
+    white-space: normal;
+  }
+  table.shares th:first-child,
+  table.shares td:first-child {
+    width: auto;
+    min-width: 96px;
+  }
+  table.shares.roomy th,
+  table.shares.roomy td {
+    padding-right: 10px;
+  }
+  .share-cell {
+    grid-template-columns: minmax(48px, 1fr);
+    row-gap: 3px;
+  }
+  .share-cell b {
+    order: -1;
+    text-align: left;
+  }
+  /* the measure's name wraps, at a width that holds a word or two a line */
+  table.dist td.pin {
+    white-space: normal;
+    width: 112px;
+  }
+  table.dist th.grp,
+  table.dist td.num.g0,
+  table.dist th.num.g0 {
+    padding-left: 14px;
+  }
+}
+
+/* --------------------------------------------------------- touch screens
+ * A fingertip needs more room than a mouse pointer: controls get about 32 px
+ * each way where a mouse is served by 22. And a form field is set at 16 px,
+ * under which iOS zooms the whole page into it on focus and leaves it zoomed.
+ * Keyed to the pointer, not the width: a narrow desktop window keeps its
+ * compact controls, and a tablet held sideways gets the touch ones. */
+@media (pointer: coarse) {
+  .chip,
+  .seg button {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .btn {
+    padding: 8px 12px;
+    font-size: 11.5px;
+  }
+  .u-pick {
+    padding: 7px 12px;
+  }
+  /* inline, so the room is added to what a tap hits and not to the line */
+  .linkbtn {
+    padding: 6px 0;
+  }
+  details.more > summary,
+  details.basis > summary {
+    padding: 6px 0;
+  }
+  .wininput {
+    padding: 7px 10px;
+    width: 84px;
+  }
+  .u-host {
+    padding: 6px 8px;
+  }
+  /* the drawer's tabs, its sections and its go-to field */
+  .rail nav button {
+    padding: 10px 12px;
+  }
+  .secnav a {
+    padding: 8px 8px 8px 12px;
+  }
+  .rail-search {
+    padding: 10px 12px;
+  }
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
 }
