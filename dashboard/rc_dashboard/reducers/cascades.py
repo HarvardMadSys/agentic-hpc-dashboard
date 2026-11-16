@@ -47,7 +47,7 @@ import json
 import re
 import time
 
-from ..procindex import MAX_HOPS, users_conflict
+from ..procindex import MAX_HOPS, _start, users_conflict
 from . import add_counts, max_of, min_of, pct
 from ..redact import redact
 from ..roles import agent_version, subcommand
@@ -200,11 +200,11 @@ class CascadeReducer:
                      ("tree_root", rec.get("tree_root_pid"))):
             if n[f] is None and v is not None:
                 n[f] = v
-        # when it started: an exit knows its duration, a tick its age
-        age = rec.get("duration_s") if rec.get("event") in ("exit", "truncated") \
-            else rec.get("age_s")
-        if e is not None and isinstance(age, (int, float)):
-            st = e - age
+        # when it started: an exit knows its duration, a tick its age -- never a
+        # `conn` record's age_s, the socket's age, which the FAS schema-7 collectors
+        # stamp off the wall clock against BPF ktime (~56 years: a 1970 start)
+        st = _start(rec)
+        if st is not None:
             n["start"] = st if n["start"] is None else min(n["start"], st)
         if rec.get("event") in ("exit", "truncated"):
             n["exited"] = rec.get("event") == "exit"
