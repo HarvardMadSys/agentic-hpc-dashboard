@@ -124,7 +124,7 @@ GUIDE = """Where to look in the snapshot:
   endpoints: the remote ends of the network bytes, the busiest by send and
   receive calls and by bytes, each split by class.
 - panels.resources: CPU, memory, and waits per class.
-- panels.sandbox: whether agents' tool calls ran isolated, and how sessions
+- panels.sandbox: whether agents' tool calls ran sandboxed, and how sessions
   were launched (approval).
 - panels.cascades: agent trees and subagents; its workspace block is where
   agents worked and what they wrote outside their home.
@@ -165,7 +165,7 @@ Answer with one JSON object and nothing else -- no prose, no code fence:
    "evidence": "<the numbers behind it, from the snapshot>",
    "users": ["<alias the suggestion concerns>", ...],
    "panel": "<where on the dashboard: Live, Active users, Login nodes right now,
-             Overview, Agents, Trajectories, Resources, Risk & Warning, Slurm,
+             Who uses what, Agents, Sessions, Resources, Risks, Slurm,
              or Internal>"}]}
 At most 8 suggestions. `risk_who` names who ran each flagged command and
 pattern, counted over the first runs the dashboard lists for it ("listed" of
@@ -187,13 +187,15 @@ PANEL_TABS = {
     "live_now.users": ("live", "Active users"), "active users": ("live", "Active users"),
     "live_now.hosts": ("live", "Login nodes right now"), "node": ("live", "Login nodes right now"),
     "login nodes right now": ("live", "Login nodes right now"), "login nodes": ("live", "Login nodes right now"),
-    "overview": ("overview", "Overview"),
+    # Overview is a section of Live now, and Trajectories and Risk & Warning are
+    # Sessions and Risks: the old names still place a suggestion, under the new ones
+    "overview": ("overview", "Who uses what"), "who uses what": ("overview", "Who uses what"),
     "agents": ("agents", "Agents"), "cascades": ("agents", "Agents"), "workspace": ("agents", "Agents"),
     "tool_mix": ("agents", "Agents · tool mix"),
-    "trajectories": ("trajectories", "Trajectories"), "sessions": ("trajectories", "Trajectories"),
+    "trajectories": ("trajectories", "Sessions"), "sessions": ("trajectories", "Sessions"),
     "resources": ("resources", "Resources"), "io_process": ("resources", "Resources · I/O"),
-    "risk": ("risk", "Risk & Warning"), "risk & warning": ("risk", "Risk & Warning"),
-    "risk_who": ("risk", "Risk & Warning"),
+    "risk": ("risk", "Risks"), "risks": ("risk", "Risks"), "risk & warning": ("risk", "Risks"),
+    "risk_who": ("risk", "Risks"),
     "slurm": ("slurm", "Slurm"),
     "sandbox": ("internal", "Internal · Sandbox"), "internal": ("internal", "Internal"),
 }
@@ -324,7 +326,7 @@ window, filter, and classes the reader has on screen. Lists cut short end with
 "... N more".""" % (where, ", ".join(parts) or "its data"))
 
 
-SESSION_GUIDE = """The snapshot is ONE session the reader opened on the Trajectories tab -- an
+SESSION_GUIDE = """The snapshot is ONE session the reader opened on the Sessions tab -- an
 agent (or a person's terminal, or an IDE) and every process it ran, re-read from
 the collector's records -- and nothing else from the dashboard.
 - session: whose, where, when (the host's local time), and its totals.

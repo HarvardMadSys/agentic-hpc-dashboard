@@ -50,8 +50,8 @@ from .world import GENERATOR, World, midnight
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_DIR = os.path.join(HERE, ".cache", "demo")
-SITE_NAME = "demo · synthetic data"
-SITE_DESC = ("a demo: synthetic records for fictional login nodes, users and sessions, "
+SITE_NAME = "demo · fake data"
+SITE_DESC = ("a demo: fake records for fictional login nodes, users and sessions, "
              "written by rc_dashboard/demo; nothing here was measured")
 DEFAULTS = {"dir": DEFAULT_DIR, "days": 3, "hosts": 2, "seed": "demo"}
 ENV = {"dir": "RC_DASH_DEMO_DIR", "days": "RC_DASH_DEMO_DAYS",

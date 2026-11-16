@@ -603,7 +603,7 @@ main {
 .head-sub::first-letter {
   text-transform: uppercase;
 }
-/* A parent entry's sub-tabs (the login nodes: Resources, Risk & Warning,
+/* A parent entry's sub-tabs (the login nodes: Resources, Risks,
  * Slurm), along the foot of the head. The open one is underlined, and the
  * underline sits on the toolbar band's top rule. */
 .subtabs {
@@ -2516,8 +2516,9 @@ td.lbl[data-tip] {
 .u-badge.nm {
   color: var(--muted);
 }
-/* Where an agent session is driven from (components/SurfaceChip.tsx): a CLI
- * outlined, an app filled, and an unknown one dashed, as everything unread is. */
+/* Where an agent session is driven from (components/SurfaceChip.tsx): a terminal
+ * or a script outlined, an app filled, and an unknown one dashed, as everything
+ * unread is. */
 .surf {
   display: inline-flex;
   align-items: baseline;
@@ -2530,9 +2531,6 @@ td.lbl[data-tip] {
   color: var(--ink-2);
   white-space: nowrap;
   cursor: help;
-}
-.surf-g {
-  font-weight: 600;
 }
 .surf-app {
   background: var(--sunken);

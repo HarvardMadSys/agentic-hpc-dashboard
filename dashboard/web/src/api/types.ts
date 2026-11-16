@@ -1219,7 +1219,7 @@ export interface CascadeNode {
    *  front-end's); null for a node that is not an agent */
   surface?: Surface | null;
   surface_detail?: string | null;
-  /** its tool calls' verdict, the Sandbox tab's for its session; null: it made none */
+  /** whether its tool calls ran sandboxed, as the Internal tab counts its session; null: it made none */
   sandbox?: SessionSandboxState | null;
   sandbox_calls?: Partial<Record<ToolCallOutcome, number>> | null;
   /** a tree bigger than the service sends: what this node's agents that were
@@ -1823,7 +1823,7 @@ export interface UserRow {
   agent_types: Record<string, number>;
   surfaces: Partial<Record<Surface, number>>;
   approval: Partial<Record<ApprovalState, number>>;
-  /** sessions by the Sandbox tab's verdict on their tool calls */
+  /** sessions by whether their tool calls ran sandboxed, as the Internal tab counts them */
   sandbox: Partial<Record<SessionSandboxState, number>>;
   /** tool calls; null where no session's calls are recognized, which is not none */
   calls: number | null;
@@ -1898,7 +1898,7 @@ export interface UsersResponse extends PanelEnvelope {
 
 /** One session in a portrait. */
 export interface PortraitSession {
-  /** its newest day's row: what the Trajectories tab opens it by */
+  /** its newest day's row: what the Sessions tab opens it by */
   sid: string;
   /** every day row it is */
   sids: string[];
@@ -2090,7 +2090,7 @@ export interface RiskRule {
   source: 'built-in' | 'changed' | 'added';
   section?: string | null;
 }
-/** One section of the Risk tab, in the cluster's order (`risk.sections`). */
+/** One section of the Risks tab, in the cluster's order (`risk.sections`). */
 export interface RiskSection {
   id: string;
   kind: 'login_compute' | 'commands' | 'credentials';

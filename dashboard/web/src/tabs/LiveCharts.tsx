@@ -105,7 +105,7 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
       { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[disk],
         onPick: binPick(c, disk, disk === 'rd_mb' ? 'disk read' : 'disk written') },
       { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[sys], dashed: true,
-        onPick: binPick(c, sys, sys === 'rchar_mb' ? 'syscall read' : 'syscall written') },
+        onPick: binPick(c, sys, sys === 'rchar_mb' ? 'read requested' : 'write requested') },
     ]);
   const ioLegend = (sysWord: string) => [
     ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
@@ -242,17 +242,17 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
       case 'read':
         return (
           <>
-            <div className="eyebrow">solid: read from the disk · dashed: passed through read(), the gap is the <Term k="pagecache">page cache</Term></div>
-            <TimeChart {...z} s={s} lines={ioLines('rd_mb', 'rchar_mb', 'read()')} ylabel="MB / min"
-              yname="read" perMin legend={ioLegend('read() calls')} />
+            <div className="eyebrow">solid: disk read · dashed: read requested, through read() calls; the gap is the <Term k="pagecache">page cache</Term></div>
+            <TimeChart {...z} s={s} lines={ioLines('rd_mb', 'rchar_mb', 'requested')} ylabel="MB / min"
+              yname="read" perMin legend={ioLegend('requested')} />
           </>
         );
       case 'write':
         return (
           <>
-            <div className="eyebrow">solid: written to the disk · dashed: passed through write()</div>
-            <TimeChart {...z} s={s} lines={ioLines('wr_mb', 'wchar_mb', 'write()')} ylabel="MB / min"
-              yname="written" perMin legend={ioLegend('write() calls')} />
+            <div className="eyebrow">solid: disk written · dashed: write requested, through write() calls</div>
+            <TimeChart {...z} s={s} lines={ioLines('wr_mb', 'wchar_mb', 'requested')} ylabel="MB / min"
+              yname="written" perMin legend={ioLegend('requested')} />
           </>
         );
       case 'net':
@@ -295,11 +295,11 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
             {s && <TimeChart {...z} s={s} lines={byCls('cpu_s')} perMin ylabel="CPU s / min" yname="CPU s/min" />}
           </div>
           <div>
-            <div className="eyebrow"><Term k="rss">memory in use</Term> · sampled while processes ran</div>
+            <div className="eyebrow"><Term k="rss">memory</Term> · sampled while processes ran</div>
             {s && anyValue(memLines) ? (
-              <TimeChart {...z} s={s} lines={memLines} scale={1 / 1024} ylabel="GB resident" yname="GB" />
+              <TimeChart {...z} s={s} lines={memLines} scale={1 / 1024} ylabel="GB" yname="GB" />
             ) : (
-              <NoRows what="no residency tick was read in the window for the selection" />
+              <NoRows what="no memory sample was read in the window for the selection" />
             )}
             <More label="memory per class: peak and average">
               <div className="scroller">

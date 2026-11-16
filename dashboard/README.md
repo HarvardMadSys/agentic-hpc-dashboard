@@ -104,8 +104,8 @@ is what the service makes of the records, and the Live tab moves.
 **Nothing in it was measured, and it says so everywhere.** Every record carries
 `"synthetic": true`, a key no collector writes. `health.py` notes each host whose records
 carry it, the feeds report lists them (`synthetic_hosts`), and the header shows
-*synthetic data* beside the live pill whenever any host's do; the Feeds tab marks each such
-host. The site is named *demo · synthetic data*, and its description, which the Ask LLM
+*fake data* beside the live pill whenever any host's do; the Feeds tab marks each such
+host. The site is named *demo · fake data*, and its description, which the Ask LLM
 agent is given, says no record was measured. Because the mark travels with the records, a
 service pointed at a demo feed by hand, or an export of one, still says it. Use a demo to
 show the dashboard, never to report on one.
@@ -116,10 +116,10 @@ schema-8 rules the collector and the reducers document, so each tab has what it 
 
 | tab | what the demo puts there |
 |---|---|
-| Live, Overview, Resources | a working day and a quieter night: VS Code left connected, agents run from cron, an agent watching a job overnight |
-| Agents | Claude Code in a terminal, `claude -p` and `codex exec` from scripts and from other agents' tool calls (nested), the desktop app's server and Remote Control hosting sessions, VS Code's Claude extension, the Codex app; writes outside the home for the blast radius |
-| Trajectories | sessions cut into tasks labeled in the agent's own words (commit subjects, a pull request's title, a `PROGRESS.md` entry), phases from explore to an edit-test loop, a Slurm job polled to its end |
-| Risk & Warning | a year regridded on the login node, `pip`/`conda` installs, builds, `ssh` to compute nodes, `nvidia-smi`, `rm -rf` on shared scratch, credentials on command lines (masked, as schema 8 writes them) |
+| Live, Resources | a working day and a quieter night: VS Code left connected, agents run from cron, an agent watching a job overnight |
+| Agents | Claude Code in a terminal, `claude -p` and `codex exec` from scripts and from other agents' tool calls (nested), the desktop app's server and Remote Control hosting sessions, VS Code's Claude extension, the Codex app; writes outside the start folder for the blast radius |
+| Sessions | sessions cut into tasks labeled in the agent's own words (commit subjects, a pull request's title, a `PROGRESS.md` entry), phases from explore to an edit-test loop, a Slurm job polled to its end |
+| Risks | a year regridded on the login node, `pip`/`conda` installs, builds, `ssh` to compute nodes, `nvidia-smi`, `rm -rf` on shared scratch, credentials on command lines (masked, as schema 8 writes them) |
 | Slurm | agents submitting with `--parsable` and polling the queue; people submitting arrays and checking now and then; refusals with the scheduler's own words |
 | Internal (Sandbox) | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap` |
 | Feeds | per host: a heartbeat a minute, a nightly collector restart with its lost-event count, a kernel limit on one host |
@@ -382,7 +382,7 @@ scanned.
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
-| `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#trajectories-tasks-phases-and-processes)) |
+| `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
@@ -464,9 +464,10 @@ already made once.
   disables both.
 - **`sandbox` is namespace isolation, and it is labelled so.** The collector compares
   `/proc/<pid>/ns/*` with pid 1's: Landlock and seccomp-only sandboxes are invisible to it,
-  and a container, an apptainer user namespace or a `PrivateTmp=` unit counts as isolated.
-  The key `sandboxed` is shown as "namespace-isolated". It has **four** states — `denied`,
-  shown as "exited before read", is the namespace links being gone when read (the ebpf tier
+  and a container, an apptainer user namespace or a `PrivateTmp=` unit counts as sandboxed.
+  The key `sandboxed` is shown as "sandboxed", and the glossary's line for it says how it is
+  read. It has **four** states — `denied`,
+  shown as "exited before it was checked", is the namespace links being gone when read (the ebpf tier
   is root; every such record on rtx6000a lived under 6 ms) and is never folded into
   `unsandboxed`. Every share is taken over the KNOWN verdicts, with coverage beside it.
 - **A session is judged by its tool calls.** Claude Code and Codex wrap each tool call and
@@ -501,8 +502,8 @@ already made once.
   started it, as it takes its approval (`cascades.py`), and is otherwise `unknown`. A host
   (the desktop app's `~/.claude/remote/srv/` server, `claude rc`, `claude daemon`) is never a
   session, but a row or a box keyed on one says where its sessions are driven from. Shown as
-  a chip on agent boxes, session rows and live sessions, and as the CLI/app split on the
-  Trajectories sessions plate; there is no filter on it yet.
+  a chip on agent boxes, session rows and live sessions, and as the terminal-or-script / app
+  split on the Sessions tab's plate; there is no filter on it yet.
 - **CPU is `sum(cpu_s)`, self, once per process.** `child_cpu_s` is never added:
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
@@ -680,7 +681,7 @@ made-up endpoints keep the host names its records give.
 `tests/test_endpoints.py` covers the names, the lookups, the grouping, the ranking, and the
 served payload, and `tests/test_io.py` covers the reducer.
 
-## Trajectories: tasks, phases, and processes
+## Sessions: tasks, phases, and processes
 
 An agent session's row says what the agent was doing at three levels, which the page calls **Tasks**,
 **Phases**, and **Processes**.
@@ -695,7 +696,7 @@ A row of Claude Code or Codex carries the first two as `phases`: the `list` of p
 them (each phase says which one it belongs to), a `headline` (the project, then the names that recur
 across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`. A row of any other
 agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`: not recognized is not none.
-How the page draws the levels is in [`web/README.md`](web/README.md#trajectories-tasks-phases-and-processes).
+How the page draws the levels is in [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
 
 All of it is read from the commands the agent ran and the words it wrote in them, and from nothing else,
 as the basis line over the inspector's chart says. Reading and editing inside the agent, its thinking, and
@@ -899,8 +900,8 @@ for that only once the oldest key the previous walk kept has left the window, so
 keys inside the window costs one walk, not one per record. Served paths are masked
 (`redact`) and no raw argv is served.
 
-The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the trajectory rows' reading and stay
-on the Trajectories tab; the Agents page no longer carries them.
+The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the session rows' reading and stay
+on the Sessions tab; the Agents page no longer carries them.
 
 ## Users: a portrait of each user
 
@@ -916,18 +917,18 @@ imports it, and changing it rebuilds nothing.
 
 | part | from | what it says |
 |---|---|---|
-| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; the Sandbox tab's verdict on its tool calls |
+| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Internal tab counts them |
 | rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
 | work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
-| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Trajectories row sums them |
+| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Sessions row sums them |
 | scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the Slurm tab folds them |
 
-- **A session is one agent run.** The rows Trajectories lists for one agent on two days are one session
-  here, as the agent's phase block already is. Only rooted sessions count, as the Trajectories plates count
+- **A session is one agent run.** The rows the Sessions tab lists for one agent on two days are one session
+  here, as the agent's phase block already is. Only rooted sessions count, as the Sessions tab's plates count
   them, so a status bar probing `codex --version` every minute is none. A session belongs to the account its
   records name first. One whose records name no user and no uid (the trajectories reducer falls back to
   `uid:N` where there is one) is no one's row: the roster counts it apart (`unattributed`) and says so under
-  the table, and the Trajectories tab lists it with the rest.
+  the table, and the Sessions tab lists it with the rest.
 - **Unread is not none.** An agent whose commands the service does not read (anything but Claude Code and
   Codex) has calls of null, shown as *not read*, never 0.
 - **A share is over the known values**, with the rest counted beside it: a Codex app server's approval is
@@ -952,14 +953,14 @@ imports it, and changing it rebuilds nothing.
   robots, five sheets, ten lights), each said where it applies; a calls count the service could not make is
   drawn as unread, never as an empty shelf. It leads the portrait, and the roster shows everyone's side by side
   (*figures*). `npm run check:figures` renders every fixture user's figure and checks it against their row.
-- **Traits** are plain statements ("launches with approval bypassed", "keeps several sessions open at once"),
+- **Traits** are plain statements ("launches with a bypass flag", "keeps several sessions open at once"),
   each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
   them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made
   by a model, and a user can hold none.
-- **The work is read from commands**, as everything on the Trajectories tab is: an agent's own Read and Edit
+- **The work is read from commands**, as everything on the Sessions tab is: an agent's own Read and Edit
   tools, and its thinking, leave no command. An agent that edits only through its own tools shows no editing.
 - **One user's portrait reads the phase blocks** of their newest `PHASE_SESSIONS` (80) sessions, the same
-  blocks the Trajectories rows show and cache, and lists at most 60 sessions and 40 tasks; the rest are counted.
+  blocks the Sessions tab's rows show and cache, and lists at most 60 sessions and 40 tasks; the rest are counted.
   Under a user filter it is read against the whole window's users when that view is held (`fleet_of`).
 
 Cost: the roster walks every folded session and its call log once; the sandbox's verdicts walk every tool call
@@ -978,7 +979,7 @@ minute, and 79% of agent submissions used `--parsable` (people: 0.2%) -- a progr
 the job id. The **Slurm** tab (`?tab=slurm`, hidden by `slurm.enabled: false`) is built on
 that, from the window's `slurm` reducer (`reducers/slurm.py`):
 
-- **per session** -- an agent's collector keys folded into the agent, as Trajectories fold
+- **per session** -- an agent's collector keys folded into the agent, as the Sessions tab folds
   them; people and IDEs one row per user: jobs, refusals, the busiest minute, distinct
   command lines (numbers masked: one script resubmitted is one), the flags it submits with,
   queries, its longest **polling loop** (queries within 2 s are one poll, polls within 3 min

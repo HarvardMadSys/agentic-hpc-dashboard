@@ -2149,6 +2149,6 @@ class TrajectoryReducer:
                          "incomplete, as is any that ends after the first call dropped.",
                 "excluded_key_types": ["usr"],
                 "excluded_why": "a usr-keyed group is 'everything that user did', not a "
-                                "trajectory; counted in by_key_type, never ranked",
+                                "session; counted in by_key_type, never ranked",
             },
         }
