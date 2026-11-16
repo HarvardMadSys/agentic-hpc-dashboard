@@ -663,10 +663,16 @@ def errors(st):
 def settled_end(src, size, settle=SETTLE):
     """`ebr.complete_end`, moved back before the first corrupt region in its
     last `settle` bytes: there a live file's bytes may still be arriving, and a
-    reader that took up after them would never read what they hold."""
-    end = ebr.complete_end(src, size)
-    if not settle or not end:
-        return end
+    reader that took up after them would never read what they hold.
+
+    The frames back to there are checked in one read and one loop first
+    (`ebr.verify_back`): when every one is whole and its CRCs good, as on any
+    file but a damaged one or one still arriving over NFS, there is no corrupt
+    region, and nothing is walked frame by frame."""
+    with ebr.source(src) as s:
+        end = ebr.complete_end(s, size)
+        if not settle or not end or ebr.verify_back(s, end, end - settle):
+            return end
     cut = end
     for f in ebr.frames_reverse(src, end, verify=True):
         if f.kind == ebr.BAD:
@@ -680,7 +686,7 @@ def _placed(f):
     return f.ts_min - f.ts_min == 0.0 and f.ts_max - f.ts_max == 0.0
 
 
-def _probe_ebr(fh, pos, size):
+def _probe_ebr(fh, pos, size, src=None):
     """`(off, foff, ts_min, ts_max)` for a probe at `pos`: `off` the first frame
     header at or after it, and from there the first DATA frame placed in time
     (corrupt regions and frames with no time at all are walked past,
@@ -703,7 +709,11 @@ def _probe_ebr(fh, pos, size):
     capture pays it -- the collector stamps `ts_epoch` on every record, so its
     frames are placed by their headers -- and a sealed capture pays it once,
     the answer being remembered. A growing file is remembered by its size, so
-    one whose records lacked `ts_epoch` would pay it at each new size."""
+    one whose records lacked `ts_epoch` would pay it at each new size.
+
+    `src`, an `ebr.source` of `fh`, is what a search's probes share: each
+    reads a few headers, and would otherwise open the file and fill a window
+    of its own, twice."""
     ident = _identity(fh)
     m = _memo_of(ident) if ident is not None else None
     key = ("ebr", pos, size)
@@ -711,7 +721,8 @@ def _probe_ebr(fh, pos, size):
         hit = m.get(key)
         if hit is not None:
             return hit
-    src = ebr_src(fh)
+    if src is None:
+        src = ebr_src(fh)
     out = (size, size, None, None)
     off = ebr.resync(src, pos, size)
     if off is not None and off < size:
@@ -770,18 +781,19 @@ def _seek_ebr(fh, since, size):
     holds no record); one whose walk was cut short with frames still ahead is
     read from as well, so what lies past it is never skipped."""
     lo, hi, best = 0, size, size
-    while lo < hi:
-        mid = (lo + hi) // 2
-        off, foff, _tmin, tmax = _probe_ebr(fh, mid, size)
-        if tmax is None:
-            if foff is None:
-                best = min(best, off)     # not known past its walk: read from here
-            hi = mid                      # and widen backwards
-        elif tmax >= since:
-            best = min(best, off)
-            hi = mid
-        else:
-            lo = max(off, mid) + 1        # off >= mid, so this always advances
+    with ebr.source(ebr_src(fh)) as src:
+        while lo < hi:
+            mid = (lo + hi) // 2
+            off, foff, _tmin, tmax = _probe_ebr(fh, mid, size, src)
+            if tmax is None:
+                if foff is None:
+                    best = min(best, off)     # not known past its walk: read from here
+                hi = mid                      # and widen backwards
+            elif tmax >= since:
+                best = min(best, off)
+                hi = mid
+            else:
+                lo = max(off, mid) + 1    # off >= mid, so this always advances
     return best
 
 
@@ -789,14 +801,15 @@ def _end_at_ebr(fh, t, size):
     """The first frame entirely after `t`: the frame a probe places, not the
     offset it landed on, so what it walked past is read too."""
     lo, hi, best = 0, size, size
-    while lo < hi:
-        mid = (lo + hi) // 2
-        off, foff, tmin, _tmax = _probe_ebr(fh, mid, size)
-        if tmin is not None and tmin > t:
-            best = min(best, foff)
-            hi = mid
-        else:
-            lo = max(off, mid) + 1        # unplaceable: an end read too far costs a search
+    with ebr.source(ebr_src(fh)) as src:
+        while lo < hi:
+            mid = (lo + hi) // 2
+            off, foff, tmin, _tmax = _probe_ebr(fh, mid, size, src)
+            if tmin is not None and tmin > t:
+                best = min(best, foff)
+                hi = mid
+            else:
+                lo = max(off, mid) + 1    # unplaceable: an end read too far costs a search
     return best
 
 
@@ -824,7 +837,18 @@ def records_forward(path, start=0, end=None, kinds=None, where=None, stats=None)
 
 def records_reverse(path, end, start=0, kinds=None, where=None, stats=None):
     """`(position, record)` of the frames of an EBR day-file in `[start, end)`,
-    NEWEST first (`ebr.records_reverse`)."""
+    NEWEST first (`ebr.records_reverse`). A plain file's is `ebr`'s own
+    iterator, which opens the file itself: no generator stands between."""
+    if not gz.is_gz(path):
+        try:
+            os.stat(path)
+        except OSError:
+            return iter(())
+        return ebr.records_reverse(path, end, start, kinds, where, stats)
+    return _records_reverse_gz(path, end, start, kinds, where, stats)
+
+
+def _records_reverse_gz(path, end, start, kinds, where, stats):
     try:
         cm = ebr_source(path)
         src = cm.__enter__()

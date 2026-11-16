@@ -192,6 +192,8 @@ API
   frames(src, start=0, end=None, verify=True, settle=0) -> Frame...
   frames_reverse(src, end, verify=False)  peek(src, off)
   resync(src, pos, end=None)  complete_end(src, size=None)  is_boundary(src, off)
+  verify_back(src, end, stop=0): the frames back from boundary `end` to the
+    first at or before `stop` all whole, CRCs good (no BAD region there)
   mark_info(src, frame) -> dict
   last_mark(src, end=None) -> (info, mark_end, records_after)
   Decoder(strict=False); Decoder.at(src, off, strict=False)
@@ -201,7 +203,9 @@ API
   iter_records(path_or_fh, kinds=None, where=None, stats=None)
   open_feed(path) -> (binary file, 'ebr'|'jsonl')  main(argv=None)
   `src` is a path (read with os.pread), a bytes-like object, or any other
-  object with seek/read (never its fileno()).
+  object with seek/read (never its fileno()); source(src) opens one for a
+  run of calls (`with source(path) as s:`), each of which would otherwise
+  open its own.
 """
 import errno
 import gzip
@@ -267,12 +271,16 @@ _SEG_KEYS = ("format", "version", "str_id_size", "kinds", "reset_bytes", "create
 _FIXED = ("", "?", "b", "h", "i", "q", "d")
 _SIG_CAP = 16384            # cached encoder signatures
 _CODE_CAP = 4096            # compiled layouts per cache
-_WIN = 1 << 20              # read-ahead window
+_WIN = 1 << 20              # read-ahead window, at most
+_WIN0 = 16 << 10            # ... after a jump; it grows 4x a read while the reads move on
 _PENDING_MAX = 16 << 20     # unwritten bytes kept for a retry
 _FRAME_ROOM = MAX_PAYLOAD - 64
 _KIND_BIT = dict((k, 1 << i) for i, k in enumerate(KINDS) if i < 30)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _crc = _zlib.crc32
+# crc32(data + its own crc32, little-endian) for any data: a stored CRC and the
+# bytes it covers, checked in one call
+_RESIDUE = 0x2144DF1C
 
 
 class Error(ValueError):
@@ -997,81 +1005,208 @@ def _fixed_index(layout):
     return out
 
 
-def _dec_fn(layout, sis):
-    """(struct, dec) for one layout. The caller unpacks the fixed part,
-    a = st.unpack_from(b, p0); a bound copy of dec (see _compile_shape) then
-    decodes the var parts in field order: dec(a, b, p0 + st.size) ->
-    (dict, next offset). Wide shapes copy a template dict, which already holds
-    the keys in order and None for NULL slots, and fill it in bulk."""
+_KIDS_MAX = 48              # OBJ slots of one shape decoded inline, at most
+# The slot type a layout's decoder is generated for: a number of any width is
+# an F64 to it (the widths are the struct's, bound per shape), so shapes that
+# differ only as an int slot widens share one code object
+_PAT = (T_NULL, T_F64, T_F64, T_F64, T_F64, T_F64, T_F64, T_STR, T_OBJ, T_LIST, T_BIG)
+_STRUCTS = {}
+
+
+def _fixed_struct(layout, sis):
+    """The struct of a layout's fixed part: its numeric slots in field order,
+    then its STR slots."""
     key = (layout, sis)
-    r = _DEC_CACHE.get(key)
-    if r is not None:
-        return r
+    st = _STRUCTS.get(key)
+    if st is None:
+        num = [_FIXED[t] for t in layout if T_BOOL <= t <= T_F64]
+        nstr = sum(1 for t in layout if t == T_STR)
+        st = struct.Struct("<" + "".join(num) + ("H" if sis == 2 else "I") * nstr)
+        if len(_STRUCTS) >= _CODE_CAP:
+            _STRUCTS.clear()
+        _STRUCTS[key] = st
+    return st
+
+
+def _obj_lines(k, kid, target):
+    """The lines that decode an OBJ slot into `target`. `kid` is None, or the
+    pattern of the flat shape the slot is taken to hold (its id, struct,
+    1 + size and keys bound as C<k>, U<k>, Z<k>, K<k>): a dict of that shape
+    is then decoded right here, and any other through F as ever."""
+    gen = "%s, p = F[b[p]](b, p + 1)" % target
+    if kid is None:
+        return [gen]
+    cidx = _fixed_index(kid)
+    items = []
+    for i, t in enumerate(kid):
+        if t == T_NULL:
+            items.append("K%d[%d]: None" % (k, i))
+        elif t == T_STR:
+            items.append("K%d[%d]: S[c[%d]]" % (k, i, cidx[i]))
+        else:
+            items.append("K%d[%d]: c[%d]" % (k, i, cidx[i]))
+    out = ["if b[p] == C%d:" % k]
+    if any(t != T_NULL for t in kid):
+        out.append("    c = U%d(b, p + 1)" % k)
+    return out + ["    %s = {%s}" % (target, ", ".join(items)),
+                  "    p = p + Z%d" % k, "else:", "    " + gen]
+
+
+def _dec_fn(layout, sis, kids=None):
+    """(struct, dec) for one layout. A bound copy of dec (see _compile_shape)
+    decodes one dict of the shape from its fixed part at `p` on:
+    dec(b, p) -> (dict, next offset). It unpacks the fixed part itself, unless
+    the caller already has: dec(b, p, st.unpack_from(b, p)). The var parts
+    follow in field order; a dict among them is decoded by what its shape id's
+    first byte names in the segment's table (F, see _bind), one call deep --
+    or, for an OBJ slot `kids` gives the layout of (one per OBJ slot, None for
+    none), inline when it is of that shape (_obj_lines). Wide shapes copy a
+    template dict, which already holds the keys in order and None for NULL
+    slots, and fill it in bulk. The code is the layout's pattern's (_PAT)."""
     if len(layout) > MAX_FIELDS:
         raise FrameError("shape of %d fields" % len(layout))
     for t in layout:
         if type(t) is not int or not T_NULL <= t <= T_BIG:
             raise FrameError("bad slot type %r" % (t,))
-    sc = "H" if sis == 2 else "I"
-    num = [_FIXED[t] for t in layout if T_BOOL <= t <= T_F64]
-    nstr = sum(1 for t in layout if t == T_STR)
-    st = struct.Struct("<" + "".join(num) + sc * nstr)
-    idx = _fixed_index(layout)
+    st = _fixed_struct(layout, sis)
+    pat = tuple([_PAT[t] for t in layout])
+    kp = None if kids is None else tuple(
+        None if c is None else tuple([_PAT[t] for t in c]) for c in kids)
+    key = (pat, kp)
+    fn = _DEC_CACHE.get(key)
+    if fn is not None:
+        return st, fn
+    num = sum(1 for t in pat if t == T_F64)
+    nstr = sum(1 for t in pat if t == T_STR)
+    idx = _fixed_index(pat)
+    params = ["b", "p", "a", "U", "SZ", "S", "K", "F", "lst", "big", "TM", "KN", "KS"]
+    kp = kp or ()
+    nobj = [0]
+
+    def var(t, target):
+        if t == T_LIST:
+            return ["%s, p = lst(b, p)" % target]
+        if t == T_BIG:
+            return ["%s, p = big(b, p)" % target]
+        k = nobj[0]
+        nobj[0] = k + 1
+        kid = kp[k] if k < len(kp) else None
+        if kid is not None:
+            params.extend(("C%d" % k, "U%d" % k, "Z%d" % k, "K%d" % k))
+        return _obj_lines(k, kid, target)
     lines = []
-    if len(layout) >= _TEMPLATE_AT:
+    if num or nstr:
+        lines += ["if a is None:", "    a = U(b, p)", "p = p + SZ"]
+    if len(pat) >= _TEMPLATE_AT:
         lines.append("d = TM.copy()")
         if num:
             lines.append("d.update(zip(KN, a))")
         if nstr:
-            lines.append("d.update(zip(KS, map(S.__getitem__, a[%d:])))" % len(num))
-        for i, t in enumerate(layout):
+            lines.append("d.update(zip(KS, map(S.__getitem__, a[%d:])))" % num)
+        for i, t in enumerate(pat):
             if t >= T_OBJ:
-                lines.append("x, p = %s(b, p)" % ("obj", "lst", "big")[t - T_OBJ])
+                lines += var(t, "x")
                 lines.append("d[K[%d]] = x" % i)
         lines.append("return d, p")
     else:
         items = []
-        for i, t in enumerate(layout):
+        for i, t in enumerate(pat):
             if t == T_NULL:
                 items.append("K[%d]: None" % i)
             elif t == T_STR:
                 items.append("K[%d]: S[a[%d]]" % (i, idx[i]))
-            elif t <= T_F64:
+            elif t == T_F64:
                 items.append("K[%d]: a[%d]" % (i, idx[i]))
             else:
-                lines.append("x%d, p = %s(b, p)" % (i, ("obj", "lst", "big")[t - T_OBJ]))
+                lines += var(t, "x%d" % i)
                 items.append("K[%d]: x%d" % (i, i))
         lines.append("return {%s}, p" % ", ".join(items))
-    src = ("def dec(a, b, p, S, K, obj, lst, big, TM, KN, KS):\n"
+    src = ("def dec(%s):\n" % ", ".join(params)
            + "".join("    %s\n" % x for x in lines))
     ns = {"zip": zip, "map": map, "__builtins__": {}}
     exec(compile(src, "<ebr-decoder>", "exec"), ns)
-    r = (st, ns["dec"])
+    fn = ns["dec"]
     if len(_DEC_CACHE) >= _CODE_CAP:
         _DEC_CACHE.clear()
-    _DEC_CACHE[key] = r
-    return r
+    _DEC_CACHE[key] = fn
+    return st, fn
 
 
 class _Shape(object):
-    __slots__ = ("ids", "layout", "K", "unpack", "size", "fn")
+    __slots__ = ("ids", "layout", "sid", "K", "unpack", "size", "fn")
 
 
-def _compile_shape(T, sh):
-    """Bind the shape's decoder to its keys and to this segment's tables."""
-    st, fn = _dec_fn(sh.layout, T.sis)
+def _compile_shape(T, sh, b=None, p=None):
+    """Bind the shape's decoder to its keys and to this segment's tables, and
+    put it where its shape id is looked up (T.F, T.FS). `b`, `p`: a record of
+    the shape, its fixed part at `p` -- the first one decoded -- whose OBJ
+    slots holding a flat shape have the decoder take each to hold that shape
+    (_kids): a writer gives a key's dicts one shape while its key set holds."""
+    lay = sh.layout
+    kids = None
+    if b is not None and T_OBJ in lay:
+        kids = _kids(T, lay, _fixed_struct(lay, T.sis).size, b, p)
+    st, fn = _dec_fn(lay, T.sis, None if kids is None else tuple(
+        None if k is None else k[1].layout for k in kids))
     S = T.S
     K = tuple([S[i] for i in sh.ids])
-    lay = sh.layout
     TM = dict.fromkeys(K)
     KN = tuple([k for k, t in zip(K, lay) if T_BOOL <= t <= T_F64])
     KS = tuple([k for k, t in zip(K, lay) if t == T_STR])
     sh.K = K
     sh.unpack = st.unpack_from
     sh.size = st.size
-    sh.fn = f = _FT(fn.__code__, fn.__globals__, "dec",
-                    (S, K, T.obj, T.lst, T.big, TM, KN, KS))
+    args = [None, sh.unpack, st.size, S, K, T.F, T.lst, T.big, TM, KN, KS]
+    for k in kids or ():
+        if k is not None:
+            ch = k[1]
+            if ch.fn is None:
+                _compile_shape(T, ch)
+            args += [k[0], ch.unpack, 1 + ch.size, ch.K]
+    sh.fn = f = _FT(fn.__code__, fn.__globals__, "dec", tuple(args))
+    T.FS[sh.sid] = f
+    if sh.sid < 0x80:
+        T.F[sh.sid] = f
     return f
+
+
+def _kids(T, lay, size, b, p):
+    """For each OBJ slot of the record of layout `lay` whose fixed part
+    (`size` bytes) is at `p`: (id, shape) of the dict it holds, when that
+    shape is flat (no var slot) and narrow (below _TEMPLATE_AT fields), else
+    None. None when no slot's is, or the record does not decode."""
+    out = []
+    q = p + size
+    F = T.F
+    shapes = T.shapes
+    try:
+        for t in lay:
+            if t == T_OBJ:
+                c = b[q]
+                kid = None
+                if 0 < c < 0x80 and c <= len(shapes) and len(out) < _KIDS_MAX:
+                    ch = shapes[c - 1]
+                    if len(ch.layout) < _TEMPLATE_AT and max(ch.layout or (0,)) < T_OBJ:
+                        kid = (c, ch)
+                out.append(kid)
+                _x, q = F[c](b, q + 1)
+            elif t == T_LIST:
+                _x, q = T.lst(b, q)
+            elif t == T_BIG:
+                _x, q = T.big(b, q)
+    except Exception:
+        return None
+    return out if any(k is not None for k in out) else None
+
+
+def _stub(T, sh):
+    """A defined shape's decoder until its first use compiles it."""
+    def dec(b, p, a=None):
+        f = sh.fn
+        if f is None:
+            f = _compile_shape(T, sh, b, p)
+        return f(b, p, a)
+    return dec
 
 
 class _Tables(object):
@@ -1087,19 +1222,24 @@ class _Tables(object):
         _bind(self)
 
     def mask(self, kinds):
-        """The frame mask of `kinds` under this segment's registry (exact)."""
+        """(mask, rest) of `kinds` under this segment's registry (exact): the
+        frame bits a record of one of them sets, and those only a record of
+        none of them sets. A frame with no bit of `mask` holds none of them;
+        one with no bit of `rest` holds nothing else. A registry that is not
+        a list of names masks every frame in, and none as holding only them."""
         hit = self.masks.get(id(kinds))
         if hit is not None and hit[0] is kinds:
             return hit[1]
         reg = self.reg
         if not isinstance(reg, list) or not all(isinstance(k, str) for k in reg):
-            m = 0xffffffff
+            r = (0xffffffff, 0xffffffff)
         else:
             m = kind_mask(kinds, reg)[0]
+            r = (m, (~m & 0xffffffff) | BIT_OTHER)
         if len(self.masks) >= 64:
             self.masks.clear()
-        self.masks[id(kinds)] = (kinds, m)
-        return m
+        self.masks[id(kinds)] = (kinds, r)
+        return r
 
     def plan(self, kinds, where):
         key = (id(kinds), id(where))
@@ -1114,12 +1254,17 @@ class _Tables(object):
 
 
 def _bind(T):
-    """The var-part decoders of one segment, closed over its tables."""
+    """The var-part decoders of one segment, closed over its tables, and the
+    tables a dict is decoded through by its shape id: T.FS by the id, and T.F
+    by the id's first byte -- a decoder of the dict that follows it, for an id
+    below 0x80 (the dict's own shape, or MAP for 0), else one that reads the
+    rest of the id and looks it up in T.FS. A dict is one call deep from F."""
     S = T.S
-    shapes = T.shapes
     ruv = _ruv
     unpack_d = _F64.unpack_from
     from_bytes = int.from_bytes
+    F = T.F = [None] * 0x100
+    FS = T.FS = [None]
 
     def big(b, p):
         n = b[p]
@@ -1207,19 +1352,20 @@ def _bind(T):
         return d, p
 
     def obj(b, p):
-        c = b[p]
-        if c < 0x80:
-            p += 1
-        else:
-            c, p = ruv(b, p)
-        if c:
-            sh = shapes[c - 1]
-            f = sh.fn
-            if f is None:
-                f = _compile_shape(T, sh)
-            return f(sh.unpack(b, p), b, p + sh.size)
-        return mapd(b, p)
+        return F[b[p]](b, p + 1)
 
+    def wide(b, p):
+        c, p = ruv(b, p - 1)
+        return FS[c](b, p)
+
+    def undefined(b, p):
+        raise FrameError("shape %d is not defined" % b[p - 1])
+
+    F[0] = FS[0] = mapd
+    for c in range(1, 0x80):
+        F[c] = undefined
+    for c in range(0x80, 0x100):
+        F[c] = wide
     T.obj, T.lst, T.big, T.tag = obj, lst, big, tag
 
 
@@ -1229,6 +1375,13 @@ def _apply_defs(T, b, p, end):
     shapes = T.shapes
     append = S.append
     decode = bytes.decode
+    # A frame's new strings are mostly ASCII: decoded together, each is a
+    # slice of that (a definitions run with a byte >= 0x80 is decoded apart)
+    p0 = p
+    try:
+        txt = decode(b[p:end], "ascii")
+    except UnicodeDecodeError:
+        txt = None
     while p < end:
         op = b[p]
         if op == 1:
@@ -1240,7 +1393,10 @@ def _apply_defs(T, b, p, end):
             q = p + n
             if q > end:
                 raise FrameError("string past the definitions")
-            append(decode(b[p:q], "utf-8", "surrogatepass"))
+            if txt is None:
+                append(decode(b[p:q], "utf-8", "surrogatepass"))
+            else:
+                append(txt[p - p0:q - p0])
             p = q
         elif op == 2:
             nf, p = _ruv(b, p + 1)
@@ -1267,6 +1423,11 @@ def _apply_defs(T, b, p, end):
             sh.layout = tuple(lay)
             sh.fn = None
             shapes.append(sh)
+            sh.sid = sid = len(shapes)
+            dec = _stub(T, sh)
+            T.FS.append(dec)
+            if sid < 0x80:
+                T.F[sid] = dec
         else:
             raise FrameError("bad definition opcode %d" % op)
     if p != end:
@@ -1434,7 +1595,11 @@ class _Src(object):
     """A byte source. A path is opened privately and read with os.pread; a
     bytes-like object is used directly; any other object is read only with
     seek/read (never its fileno(): the dashboard's gzip readers expose the
-    compressed file's). `stream=True` reads such an object forward only."""
+    compressed file's). `stream=True` reads such an object forward only.
+
+    Reads go through one window of read-ahead. It starts small after a jump
+    (_WIN0: a seek's probe reads a few headers, not a megabyte) and grows 4x
+    with each read that moves on from it, up to _WIN."""
 
     def __init__(self, obj, stream=False):
         self.fd = None
@@ -1444,6 +1609,7 @@ class _Src(object):
         self.stream = False
         self.w0 = 0
         self.w = b""
+        self.win = _WIN0
         if isinstance(obj, (bytes, bytearray, memoryview)):
             self.buf = self.w = bytes(obj)
         elif isinstance(obj, str) or hasattr(obj, "__fspath__"):
@@ -1459,6 +1625,7 @@ class _Src(object):
     def from_fd(cls, fd):
         s = cls.__new__(cls)
         s.fd, s.fh, s.buf, s.own, s.stream, s.w0, s.w = fd, None, None, False, False, 0, b""
+        s.win = _WIN0
         return s
 
     def close(self):
@@ -1466,6 +1633,12 @@ class _Src(object):
             os.close(self.fd)
         self.fd = None
         self.w = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def size(self):
         """Current size, or None for a forward-only stream."""
@@ -1514,7 +1687,9 @@ class _Src(object):
             return self._sread(off, n)
         if n >= _WIN:
             return self._raw(off, n)
-        w = self._raw(off, _WIN)
+        win = min(self.win << 2, _WIN) if w0 <= off <= w0 + len(w) else _WIN0
+        self.win = win
+        w = self._raw(off, max(n, win))
         self.w0 = off
         self.w = w
         return w[:n]
@@ -1535,7 +1710,11 @@ class _Src(object):
             raise Error("a stream cannot be read backwards")
         if n >= _WIN:
             return self._raw(off, n)
-        w0 = max(0, end - _WIN)
+        # moving back from the window -- or from just before it: the header
+        # of a frame across the window's start -- is a walk backwards
+        win = min(self.win << 2, _WIN) if w0 - _WIN0 <= end <= w0 + len(w) else _WIN0
+        self.win = win
+        w0 = max(0, end - max(n, win))
         w = self._raw(w0, end - w0)
         self.w0 = w0
         self.w = w
@@ -1612,7 +1791,11 @@ def _hdr_at(s, off):
     """The header tuple at `off` if a valid header is there, else None."""
     if off < 0:
         return None
-    h = s.read(off, HDR_SIZE)
+    return _hdr_of(s.read(off, HDR_SIZE))
+
+
+def _hdr_of(h):
+    """The header tuple of bytes `h` if they are a valid header, else None."""
     if len(h) != HDR_SIZE or h[:4] != MAGIC:
         return None
     t = HDR.unpack(h)
@@ -1654,6 +1837,7 @@ def _bad(off, end, s):
 
 _HDR_UNPACK = HDR.unpack_from
 _TRL_UNPACK = TRL.unpack_from
+_KFLN = struct.Struct("<4xBB2xII")          # a header's kind, flags, payload_len, n_records
 
 
 def _frame_at(s, off, limit, verify):
@@ -1710,7 +1894,9 @@ def _frame_at(s, off, limit, verify):
 
 
 def _frame_ending_at(s, end, verify):
-    """The complete frame whose trailer ends at `end`, or None."""
+    """The complete frame whose trailer ends at `end`, or None. It is read
+    back from `end`, so a walk backwards keeps its window over what it reads
+    next -- a frame across the window's start included."""
     if end < OVERHEAD:
         return None
     tr = s.read_back(end, TRL_SIZE)
@@ -1720,13 +1906,18 @@ def _frame_ending_at(s, end, verify):
     if flen < OVERHEAD or flen > end or flen - OVERHEAD > MAX_PAYLOAD:
         return None
     off = end - flen
-    t = _hdr_at(s, off)
-    if t is None or t[4] != flen - OVERHEAD:
-        return None
     payload = None
     if verify:
-        payload = s.read(off + HDR_SIZE, t[4])
-        if len(payload) != t[4] or _crc(payload) != pcrc:
+        fr = s.read_back(end, flen)
+        t = _hdr_of(fr[:HDR_SIZE])
+        if t is None or t[4] != flen - OVERHEAD or len(fr) != flen:
+            return None
+        payload = fr[HDR_SIZE:flen - TRL_SIZE]
+        if _crc(payload) != pcrc:
+            return None
+    else:
+        t = _hdr_of(s.read_back(off + HDR_SIZE, HDR_SIZE))
+        if t is None or t[4] != flen - OVERHEAD:
             return None
     f = _mk(t, off, s)
     f.crc = pcrc
@@ -1735,9 +1926,12 @@ def _frame_ending_at(s, end, verify):
 
 
 def _resync(s, pos, limit):
-    """The first offset in [pos, limit] holding a valid header, or None."""
+    """The first offset in [pos, limit] holding a valid header, or None. It
+    looks in chunks that grow from _WIN0: a header is seldom far."""
+    want = _WIN0
     while limit is None or pos <= limit:
-        n = _WIN if limit is None else min(_WIN, limit - pos + 4)
+        n = want if limit is None else min(want, limit - pos + 4)
+        want = min(want << 2, _WIN)
         chunk = s.read(pos, n)
         if len(chunk) < 4:
             return None
@@ -1782,7 +1976,40 @@ def frames(src, start=0, end=None, verify=True, settle=0):
         size = s.size()
         limit = size if end is None else (end if size is None else min(end, size))
         pos = start
+        unpack, trailer, crc, new = _HDR_UNPACK, _TRL_UNPACK, _crc, _new_frame
         while limit is None or pos < limit:
+            # _frame_at's checks, inline, for a frame whole in the window: a
+            # collector's frame holds a poll round, so there are many of them
+            w = s.w
+            i = pos - s.w0
+            if i >= 0 and w.startswith(MAGIC, i) and i + HDR_SIZE <= len(w):
+                t = unpack(w, i)
+                L = t[4]
+                j = i + HDR_SIZE
+                k = j + L
+                e = pos + OVERHEAD + L
+                if (k + TRL_SIZE <= len(w) and L <= MAX_PAYLOAD
+                        and (limit is None or e <= limit) and crc(w[i:i + 40]) == t[10]):
+                    pcrc, flen = trailer(w, k)
+                    payload = w[j:k] if verify else None
+                    if flen == OVERHEAD + L and (payload is None or crc(payload) == pcrc):
+                        f = new(Frame)
+                        f.off = pos
+                        f.end = e
+                        f.kind = t[1]
+                        f.flags = t[2]
+                        f.payload_len = L
+                        f.n_records = t[5]
+                        f.ts_min = t[6]
+                        f.ts_max = t[7]
+                        f.seg_back = t[8]
+                        f.kinds = t[9]
+                        f.crc = pcrc
+                        f.src = s
+                        f.payload = payload
+                        yield f
+                        pos = e
+                        continue
             f = _frame_at(s, pos, limit, verify)
             if f is not None:
                 yield f
@@ -1886,6 +2113,20 @@ def complete_end(src, size=None):
             s.close()
 
 
+def verify_back(src, end, stop=0):
+    """True when the frames that end at boundary `end` chain back, each one
+    complete with both its CRCs good, to the first that starts at or before
+    `stop` (or to the start): frames_reverse(src, end, verify=True) then
+    yields no BAD region down to there. False at the first frame that is not
+    so. One read and one loop: no Frame is built."""
+    s, own = _open_src(src)
+    try:
+        return _verify_back(s, end, stop)
+    finally:
+        if own:
+            s.close()
+
+
 def mark_info(src, frame):
     """The dict a MARK frame holds (FrameError if it is malformed)."""
     if frame.kind != MARK:
@@ -1929,6 +2170,71 @@ def last_mark(src, end=None):
     finally:
         if own:
             s.close()
+
+
+def _verify_back(s, end, stop):
+    E = end
+    b0 = max(0, min(end, stop) - _WIN0)
+    buf = s.read(b0, end - b0)
+    if len(buf) != end - b0:
+        return False
+    crc = _crc
+    u32 = _U32.unpack_from
+    while E > 0:
+        if E - b0 < OVERHEAD and b0:
+            nb = max(0, E - OVERHEAD - _WIN0)
+            more = s.read(nb, b0 - nb)
+            if len(more) != b0 - nb:
+                return False
+            buf, b0 = more + buf, nb
+        i = E - b0
+        if i < OVERHEAD:
+            return False
+        flen = u32(buf, i - 4)[0]
+        L = flen - OVERHEAD
+        if L < 0 or flen > E or L > MAX_PAYLOAD:
+            return False
+        off = E - flen
+        if off < b0:
+            nb = max(0, off - _WIN0)
+            more = s.read(nb, b0 - nb)
+            if len(more) != b0 - nb:
+                return False
+            buf, b0 = more + buf, nb
+            i = E - b0
+        j = off - b0
+        # _frame_ending_at(verify=True)'s checks: the header, its length and
+        # CRC, and the payload's CRC (each stored CRC checked with its bytes)
+        if (not buf.startswith(MAGIC, j) or u32(buf, j + 8)[0] != L
+                or crc(buf[j:j + HDR_SIZE]) != _RESIDUE
+                or crc(buf[j + HDR_SIZE:i - 4]) != _RESIDUE):
+            return False
+        if off <= stop:
+            return True
+        E = off
+    return True
+
+
+class _Opened(object):
+    __slots__ = ("s", "own")
+
+    def __init__(self, src):
+        self.s, self.own = _open_src(src)
+
+    def __enter__(self):
+        return self.s
+
+    def __exit__(self, *exc):
+        if self.own:
+            self.s.close()
+
+
+def source(src):
+    """`src` opened once for several calls in a row (`with source(p) as s:`):
+    a call given a path or a file object opens its own, and fills its own
+    read-ahead. What this opened is closed at the end; a source it was given
+    is left open."""
+    return _Opened(src)
 
 
 def _complete_end(s, size, verify):
@@ -2276,8 +2582,7 @@ class Decoder(object):
                 d._set_broken()
                 d.next_off = off
                 return d
-            for fr in frames(s, so, off, True):
-                d.skip(fr, s)
+            _walk(d, s, so, off)
             if d.next_off != off:
                 if strict:
                     raise StateError("cannot replay the segment at %d up to %d" % (so, off))
@@ -2302,9 +2607,13 @@ class Decoder(object):
             return iter(_EMPTY)
         T, b, p = r
         n = frame.n_records
-        if kinds is not None and not frame.kinds & T.mask(kinds):
-            self.stats["filtered"] += n
-            return iter(_EMPTY)
+        if kinds is not None:
+            mask, rest = T.mask(kinds)
+            if not frame.kinds & mask:
+                self.stats["filtered"] += n
+                return iter(_EMPTY)
+            if where is None and not frame.kinds & rest:
+                kinds = None            # its header says every record is of `kinds`
         if kinds is None and where is None:
             if n == 1:
                 return self._one(T, b, p, frame.off)
@@ -2386,14 +2695,26 @@ class Decoder(object):
                 and (not fl or _readable(fl))):
             return self._apply_other(src, frame)
         self.next_off = frame.end
+        b = frame.payload
+        if b is None or fl:
+            try:
+                b = self._payload(src, frame)
+            except (Error, IndexError, UnicodeDecodeError, struct.error) as e:
+                return self._bad_defs(e, frame.n_records, frame.off)
+        return self._data(b, frame.n_records, frame.off)
+
+    def _data(self, b, n, off):
+        """_apply's own part for a DATA frame in step (`frames` counted,
+        `next_off` moved past it): its definitions from payload `b`, inflated.
+        `n` is its record count, `off` its offset."""
+        st = self.stats
         T = self._T
         try:
-            b = frame.payload
-            if b is None or fl:
-                b = self._payload(src, frame)
             c = b[0]
             if c < 0x80:
                 sb, p = c, 1
+            elif b[1] < 0x80:
+                sb, p = (c & 0x7f) | (b[1] << 7), 2
             else:
                 sb, p = _ruv(b, 0)
             c = b[p]
@@ -2411,23 +2732,32 @@ class Decoder(object):
             de = p + dl
             if de > len(b):
                 raise FrameError("definitions past the payload")
-            same = sb == len(T.S) and hb == len(T.shapes)
+            S = T.S
+            same = sb == len(S) and hb == len(T.shapes)
             if same and dl:
-                _apply_defs(T, b, p, de)
+                if b[p] == 1 and b[p + 1] < 0x80 and p + 2 + b[p + 1] == de:
+                    # one short string, as a poll round's frame defines: its time
+                    S.append(b[p + 2:de].decode("utf-8", "surrogatepass"))
+                else:
+                    _apply_defs(T, b, p, de)
         except (Error, IndexError, UnicodeDecodeError, struct.error) as e:
-            st["bad_frames"] += 1
-            st["lost_records"] += frame.n_records
-            self._T = None
-            self._break(e if isinstance(e, Error) else
-                        FrameError("bad definitions in the frame at %d: %s" % (frame.off, e)))
-            return None
+            return self._bad_defs(e, n, off)
         if not same:
             st["lost_frames"] += 1
-            st["lost_records"] += frame.n_records
+            st["lost_records"] += n
             self._break(StateError("frame at %d starts at tables (%d, %d), decoder has (%d, %d)"
-                                   % (frame.off, sb, hb, len(T.S), len(T.shapes))))
+                                   % (off, sb, hb, len(T.S), len(T.shapes))))
             return None
         return T, b, de
+
+    def _bad_defs(self, e, n, off):
+        st = self.stats
+        st["bad_frames"] += 1
+        st["lost_records"] += n
+        self._T = None
+        self._break(e if isinstance(e, Error) else
+                    FrameError("bad definitions in the frame at %d: %s" % (off, e)))
+        return None
 
     def _apply_other(self, src, frame):
         """Everything but a decodable DATA frame."""
@@ -2481,16 +2811,7 @@ class Decoder(object):
             end = p + c
             if end > len(b):
                 raise FrameError("record past the payload")
-            c = b[p]
-            if 0 < c < 0x80:
-                sh = T.shapes[c - 1]
-                f = sh.fn
-                if f is None:
-                    f = _compile_shape(T, sh)
-                p += 1
-                rec, q = f(sh.unpack(b, p), b, p + sh.size)
-            else:
-                rec, q = T.obj(b, p)
+            rec, q = T.F[b[p]](b, p + 1)
             if q != end:
                 raise FrameError("record length mismatch")
         except Exception as e:
@@ -2504,11 +2825,46 @@ class Decoder(object):
             raise FrameError("bad record at %d: %s" % (pos, e))
         self.stats["bad_records"] += 1
 
+    def _list(self, T, b, p, off, n):
+        """list(self._all(...)), decoded in one loop."""
+        st = self.stats
+        F = T.F
+        ruv = _ruv
+        size = len(b)
+        out = []
+        ap = out.append
+        try:
+            for i in range(n):
+                try:
+                    c = b[p]
+                    if c < 0x80:
+                        p += 1
+                    else:
+                        c, p = ruv(b, p)
+                    end = p + c
+                    if end > size:
+                        raise FrameError("record past the payload")
+                except (IndexError, FrameError) as e:
+                    self._bad_record(off + i, e)
+                    st["bad_records"] += n - i - 1
+                    break
+                try:
+                    rec, q = F[b[p]](b, p + 1)
+                    if q != end:
+                        raise FrameError("record length mismatch")
+                except Exception as e:
+                    self._bad_record(off + i, e)
+                    p = end
+                    continue
+                p = end
+                ap((off + i, rec))
+        finally:
+            st["records"] += len(out)
+        return out
+
     def _all(self, T, b, p, off, n):
         st = self.stats
-        S = T.S
-        shapes = T.shapes
-        obj, lst, big = T.obj, T.lst, T.big
+        F = T.F
         ruv = _ruv
         size = len(b)
         for i in range(n):
@@ -2526,16 +2882,7 @@ class Decoder(object):
                 st["bad_records"] += n - i - 1
                 return
             try:
-                c = b[p]
-                if 0 < c < 0x80:
-                    sh = shapes[c - 1]
-                    f = sh.fn
-                    if f is None:
-                        f = _compile_shape(T, sh)
-                    q = p + 1
-                    rec, q = f(sh.unpack(b, q), b, q + sh.size)
-                else:
-                    rec, q = obj(b, p)
+                rec, q = F[b[p]](b, p + 1)
                 if q != end:
                     raise FrameError("record length mismatch")
             except Exception as e:
@@ -2553,7 +2900,7 @@ class Decoder(object):
         kcache = plan.kcache
         S = T.S
         shapes = T.shapes
-        obj, lst, big = T.obj, T.lst, T.big
+        F = T.F
         ruv = _ruv
         size = len(b)
         for i in range(n):
@@ -2576,7 +2923,7 @@ class Decoder(object):
                     sh = shapes[c - 1]
                     f = sh.fn
                     if f is None:
-                        f = _compile_shape(T, sh)
+                        f = _compile_shape(T, sh, b, p + 1)
                     pr = probe(sh)
                     if pr.reject:
                         st["filtered"] += 1
@@ -2617,11 +2964,11 @@ class Decoder(object):
                             st["filtered"] += 1
                             p = end
                             continue
-                    rec, q = f(a, b, q + sh.size)
+                    rec, q = f(b, q, a)
                     if pr.full:
                         ok = _post(rec, kinds, where)
                 else:
-                    rec, q = obj(b, p)
+                    rec, q = F[c](b, p + 1)
                     ok = _post(rec, kinds, where)
                 if q != end:
                     raise FrameError("record length mismatch")
@@ -2635,6 +2982,71 @@ class Decoder(object):
                 continue
             st["records"] += 1
             yield off + i, rec
+
+
+def _walk(d, s, pos, end, keep=None):
+    """`for f in frames(s, pos, end, True): d.skip(f, s)`: what places a
+    decoder (Decoder.at) and what applies a segment before it is read
+    backwards (records_reverse). A frame in step, whole in the window, as
+    nearly all are, has its definitions applied from there: no Frame, no
+    generator, no call but the decoder's. `keep`, seven lists, receives the
+    tables, payload, first record's offset, offset, end, record count and
+    kinds of each DATA frame left decodable."""
+    size = s.size()
+    if size is not None and size < end:
+        end = size
+    st = d.stats
+    crc = _crc
+    kfln = _KFLN.unpack_from
+    trl = _TRL_UNPACK
+    u32 = _U32.unpack_from
+    while pos < end:
+        w = s.w
+        i = pos - s.w0
+        if (d._ok and pos == d.next_off and i >= 0 and w.startswith(MAGIC, i)
+                and i + HDR_SIZE <= len(w)):
+            kind, flags, L, n = kfln(w, i)
+            j = i + HDR_SIZE
+            k = j + L
+            e = pos + OVERHEAD + L
+            # _frame_at's checks, then _apply's for a DATA frame in step
+            if (kind == DATA and not flags and k + TRL_SIZE <= len(w) and e <= end
+                    and L <= MAX_PAYLOAD and crc(w[i:j]) == _RESIDUE):
+                pcrc, flen = trl(w, k)
+                b = w[j:k]
+                if flen == OVERHEAD + L and crc(b) == pcrc:
+                    st["frames"] += 1
+                    d.next_off = e
+                    r = d._data(b, n, pos)
+                    if r is not None and keep is not None:
+                        Ts, bufs, ps, offs, ends, ns, ks = keep
+                        Ts.append(r[0])
+                        bufs.append(b)
+                        ps.append(r[2])
+                        offs.append(pos)
+                        ends.append(e)
+                        ns.append(n)
+                        ks.append(u32(w, i + 36)[0])
+                    pos = e
+                    continue
+        # anything else: one frame, or one corrupt region, as frames() gives it
+        f = _frame_at(s, pos, end, True)
+        if f is None:
+            nxt = _resync(s, pos + 1, end)
+            if nxt is None:
+                return
+            f = _bad(pos, nxt, s)
+        r = d._apply(s, f)
+        if r is not None and keep is not None:
+            Ts, bufs, ps, offs, ends, ns, ks = keep
+            Ts.append(r[0])
+            bufs.append(r[1])
+            ps.append(r[2])
+            offs.append(f.off)
+            ends.append(f.end)
+            ns.append(f.n_records)
+            ks.append(f.kinds)
+        pos = f.end
 
 
 def records_reverse(src, end, start=0, kinds=None, where=None, stats=None):
@@ -2651,7 +3063,7 @@ def records_reverse(src, end, start=0, kinds=None, where=None, stats=None):
             st.setdefault(k, 0)
         E = end
         while E > start:
-            nxt = None
+            so = None
             for f in frames_reverse(s, E):
                 if f.end <= start:
                     return
@@ -2663,42 +3075,44 @@ def records_reverse(src, end, start=0, kinds=None, where=None, stats=None):
                 so = f.off - f.seg_back
                 t = _hdr_at(s, so)
                 if t is None or t[1] != SEGMENT:
+                    so = None
                     st["lost_frames"] += 1
                     st["lost_records"] += f.n_records
                     continue
-                for pr in _segment_reverse(s, so, f.end, start, kinds, where, st):
-                    yield pr
-                nxt = so
+                fend = f.end
                 break
-            if nxt is None:
+            if so is None:
                 return
-            E = nxt
+            # The segment, applied forward to fend: what decoding each of its
+            # frames takes is kept flat -- not its Frame: it holds thousands
+            dec = Decoder()
+            dec.stats = st
+            keep = Ts, bufs, ps, offs, ends, ns, ks = [], [], [], [], [], [], []
+            _walk(dec, s, so, fend, keep)
+            for i in range(len(offs) - 1, -1, -1):
+                if ends[i] <= start:
+                    return
+                T = Ts[i]
+                n = ns[i]
+                kk = kinds
+                if kinds is not None:
+                    mask, rest = T.mask(kinds)
+                    if not ks[i] & mask:
+                        st["filtered"] += n
+                        continue
+                    if where is None and not ks[i] & rest:
+                        kk = None       # every record is of `kinds`
+                if kk is None and where is None:
+                    got = dec._list(T, bufs[i], ps[i], offs[i], n)
+                else:
+                    got = list(dec._some(T, bufs[i], ps[i], offs[i], n, kk, where))
+                got.reverse()
+                for pr in got:
+                    yield pr
+            E = so
     finally:
         if own:
             s.close()
-
-
-def _segment_reverse(s, so, fend, start, kinds, where, st):
-    dec = Decoder()
-    dec.stats = st
-    items = []
-    for g in frames(s, so, fend, True):
-        r = dec._apply(s, g)
-        if r is not None:
-            items.append((g, r))
-    for g, (T, b, p) in reversed(items):
-        if g.end <= start:
-            break
-        n = g.n_records
-        if kinds is not None and not g.kinds & T.mask(kinds):
-            st["filtered"] += n
-            continue
-        if kinds is None and where is None:
-            got = list(dec._all(T, b, p, g.off, n))
-        else:
-            got = list(dec._some(T, b, p, g.off, n, kinds, where))
-        for pr in reversed(got):
-            yield pr
 
 
 # ---------------------------------------------------------------------------

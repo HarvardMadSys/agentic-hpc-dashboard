@@ -425,8 +425,7 @@ def _stream_ebr(e, norm, lo, hi, kinds, stats, strays):
     except OSError:
         return
     prev_stop = e.get("prev_stop")
-    with fh:
-        src = ebr_src(fh)
+    with fh, ebr.source(ebr_src(fh)) as src:
         dec = decoder_at(src, e["start"])
         err0 = errors(dec.stats)
         mask, exact = ebr.kind_mask(kinds) if kinds is not None else (None, False)
@@ -459,11 +458,13 @@ def _stream_ebr(e, norm, lo, hi, kinds, stats, strays):
                     e["stop"] = f.end
                     continue
                 past = deferred = False
+                # every record of a frame placed in [lo, hi) is this hour's
+                inside = placed and tmin >= lo and (hi is None or tmax < hi)
                 for pos, raw in dec.records(src, f, kinds):
                     # A frame spans a round, or more: what its time says can
                     # change nothing here is not normalised (the read's own
                     # Normalizer, whose counters nothing reads).
-                    t = epoch_of(raw)
+                    t = None if inside else epoch_of(raw)
                     if t is not None:
                         if hi is not None and t >= hi:
                             if deferred and (past or t <= far):
