@@ -3,13 +3,18 @@
     uv run python -m rc_dashboard demo            # http://127.0.0.1:8080
     ./run-demo.sh                                 # the same, with hot reload, on :8087
 
-The dashboard has one source of truth, the collector's JSONL, and the collector
-needs root, eBPF and a login node. So a demo writes that JSONL itself -- a few
-fictional login nodes, their users, and the Claude Code, Codex, IDE and shell
-sessions they run -- and then starts the service, unchanged, over it. Every
-reducer, the tail, the backfill, the saved builds and the websocket run exactly
-as they do on a cluster; nothing on the page is drawn from a fixture. The feed
-keeps growing in real time, so the Live tab moves.
+The dashboard has one source of truth, the collector's day-files, and the
+collector needs root, eBPF and a login node. So a demo writes those files itself
+-- a few fictional login nodes, their users, and the Claude Code, Codex, IDE and
+shell sessions they run -- and then starts the service, unchanged, over them.
+Every reducer, the tail, the backfill, the saved builds and the websocket run
+exactly as they do on a cluster; nothing on the page is drawn from a fixture.
+The feed keeps growing in real time, so the Live tab moves.
+
+The files are EBR, the collector's binary format (rc_dashboard/ebr.py), unless
+`--demo-format` (RC_DASH_DEMO_FORMAT) says `jsonl`, the JSONL a collector has
+always written, or `both`: the two as twins, as a collector on EBPFM_FORMAT=both
+writes them, with the service reading the EBR one.
 
 Nothing in it was measured, and the page cannot be mistaken for a measurement:
 
@@ -25,6 +30,8 @@ What a demo overrides, whatever the shell or the config file says (run.sh
 exports the cluster's feed roots, and a demo must never read them):
 
     feeds.ebpf.roots, feeds.ebpf_node.roots   the demo's own feed
+    feeds.ebpf.prefer, feeds.ebpf_node.prefer the twin the service reads: jsonl
+                                              for a JSONL feed, else ebr
     feeds.sacct/sacctmgr/domains/user_actor   a path in the demo dir that does not exist
     cache.dir                                 the demo's own, so no real saved build is evicted
     clock.as_of                               "" -- the wall clock: the feed is live
@@ -35,9 +42,10 @@ exports the cluster's feed roots, and a demo must never read them):
                                               and a demo asks no DNS server about them
 
 The feed is a pure function of the seed, the host count and the clock
-(`world.World`): the same window over the same seed is the same bytes, and a
-restart (run.sh restarts on every save) resumes it where it stopped rather than
-writing anything twice (`feed.Feed`). `--demo-fresh` starts it again.
+(`world.World`): the same window over the same seed is the same records --
+JSONL: same bytes; EBR: same decoded records -- and a restart (run.sh restarts on
+every save) resumes it where it stopped rather than writing anything twice
+(`feed.Feed`). `--demo-fresh` starts it again, as does another format.
 """
 import fcntl
 import os
@@ -45,7 +53,7 @@ import sys
 import threading
 import time
 
-from .feed import Feed, day_of
+from .feed import FORMATS, Feed, day_of
 from .world import GENERATOR, World, midnight
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,9 +61,10 @@ DEFAULT_DIR = os.path.join(HERE, ".cache", "demo")
 SITE_NAME = "demo · fake data"
 SITE_DESC = ("a demo: fake records for fictional login nodes, users and sessions, "
              "written by rc_dashboard/demo; nothing here was measured")
-DEFAULTS = {"dir": DEFAULT_DIR, "days": 3, "hosts": 2, "seed": "demo"}
+DEFAULTS = {"dir": DEFAULT_DIR, "days": 3, "hosts": 2, "seed": "demo", "format": "ebr"}
 ENV = {"dir": "RC_DASH_DEMO_DIR", "days": "RC_DASH_DEMO_DAYS",
-       "hosts": "RC_DASH_DEMO_HOSTS", "seed": "RC_DASH_DEMO_SEED"}
+       "hosts": "RC_DASH_DEMO_HOSTS", "seed": "RC_DASH_DEMO_SEED",
+       "format": "RC_DASH_DEMO_FORMAT"}
 TICK_S = 2.0           # how often the live feed is appended to
 CHUNK_S = 3600         # the history is written an hour at a time
 
@@ -71,20 +80,35 @@ def options(args):
     out["days"] = max(1, min(14, int(out["days"])))
     out["hosts"] = max(1, min(6, int(out["hosts"])))
     out["seed"] = str(out["seed"])
+    fmt = str(out["format"]).strip().lower()
+    if fmt not in FORMATS:
+        raise SystemExit("demo: the feed's format is one of %s, not %r (--demo-format, %s)"
+                         % (", ".join(FORMATS), out["format"], ENV["format"]))
+    out["format"] = fmt
     out["dir"] = os.path.abspath(os.path.expanduser(str(out["dir"])))
     out["fresh"] = bool(getattr(args, "demo_fresh", False))
     return out
 
 
+def _fmt(opts):
+    """The format the demo writes (FORMATS): ebr when `opts` does not say."""
+    return opts.get("format") or DEFAULTS["format"]
+
+
 def configure(cfg, opts):
     """Point the service at the demo's feed and nothing else (see the module doc)."""
-    feed = Feed(opts["dir"])
+    fmt = _fmt(opts)
+    feed = Feed(opts["dir"], fmt)
     missing = os.path.join(feed.base, "not-in-a-demo")
     days, mins = opts["days"], opts["days"] * 1440
+    # the service reads the twin the demo writes: the EBR one whenever there is one
+    prefer = "jsonl" if fmt == "jsonl" else "ebr"
     for key, val in (
             ("feeds.ebpf.roots", [feed.ebpf]),
             ("feeds.ebpf.days", days + 1),
+            ("feeds.ebpf.prefer", prefer),
             ("feeds.ebpf_node.roots", [feed.node]),
+            ("feeds.ebpf_node.prefer", prefer),
             ("feeds.sacct.dir", missing),
             ("feeds.sacct.jobs_csv", None),
             ("feeds.sacctmgr.dir", missing),
@@ -107,12 +131,19 @@ def _log(msg):
     sys.stderr.flush()
 
 
+def _another(key, had, want):
+    """The log's words for what the stamp on disk says otherwise."""
+    if key == "format":                 # a stamp without one is a JSONL-only demo's
+        return "format (%s, not %s)" % (had or "jsonl", want)
+    return {"hosts": "host count"}.get(key, key)
+
+
 class Demo:
     """The feed, its generator, and the thread that keeps it current."""
 
     def __init__(self, opts):
         self.opts = opts
-        self.feed = Feed(opts["dir"])
+        self.feed = Feed(opts["dir"], _fmt(opts))
         self.state = None
         self.world = None
         self._stop = threading.Event()
@@ -144,14 +175,16 @@ class Demo:
         self.claim()
         span = o["days"] * 86400
         st = self.feed.load_state()
-        want = {"generator": GENERATOR, "seed": o["seed"], "hosts": o["hosts"]}
+        want = {"generator": GENERATOR, "seed": o["seed"], "hosts": o["hosts"],
+                "format": self.feed.fmt}
         why = None
         if o["fresh"]:
             why = "--demo-fresh"
         elif st is None:
             why = "no demo feed in %s yet" % self.feed.base
         elif any(st.get(k) != v for k, v in want.items()):
-            why = "the feed there was written by another generator, seed or host count"
+            why = "the feed there has another %s" % " and ".join(
+                _another(k, st.get(k), v) for k, v in want.items() if st.get(k) != v)
         elif not isinstance(st.get("written_to"), (int, float)) or st["written_to"] < now - span:
             why = "the feed there ends more than %d days ago" % o["days"]
         elif self.covers_from(st) > now - span + 3600:
@@ -166,9 +199,9 @@ class Demo:
             st = dict(want, start=start, written_to=start)
         else:
             cut = self.feed.cut_after(st["written_to"])
-            _log("resuming the feed in %s from %s%s" % (
-                self.feed.base, time.strftime("%Y-%m-%d %H:%M:%S",
-                                              time.localtime(st["written_to"])),
+            _log("resuming the %s feed in %s from %s%s" % (
+                self.feed.fmt, self.feed.base,
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st["written_to"])),
                 " (cut %d file(s) back to it)" % cut if cut else ""))
         self.state = st
         self.world = World(o["seed"], o["hosts"], st["start"])
