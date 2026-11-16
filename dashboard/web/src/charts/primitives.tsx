@@ -432,6 +432,8 @@ export interface HBarItem {
 const VLBL_CH = 6.3;
 /** Advance width of `.tick` (IBM Plex Mono at 10px). */
 const TICK_CH = 6;
+/** The room a fitted HBars keeps for its bars, at most its natural room. */
+const HBAR_MIN = 72;
 
 export function HBars({
   items,
@@ -456,7 +458,7 @@ export function HBars({
   zoom?: boolean;
 }) {
   const [ceil, setCeil] = useState<number | null>(null);
-  const [fitRef, W] = useFit(natW);
+  const [fitRef, fitW] = useFit(natW);
   const gap = 5;
   const h = items.length * rowH + 6;
   const full = max || Math.max(...items.map((d) => d.v ?? 0), 1);
@@ -467,11 +469,18 @@ export function HBars({
   // Drawn narrower than asked (`useFit`), the label and value columns give up
   // the room they had beyond their own words before the bars give up any.
   const words = (ss: string[]) => Math.ceil(Math.max(...ss.map((s) => s.length)) * VLBL_CH);
-  const fitted = W < natW;
+  const fitted = fitW < natW;
   const labelW = fitted ? Math.min(natLabelW, words(items.map((d) => d.k)) + 12) : natLabelW;
   const valW = fitted
     ? Math.min(natValW, words(items.map((d) => (d.lbl != null ? d.lbl : fmt(d.v)))) + 13)
     : natValW;
+  // Where the words still leave the bars too little room to differ -- long
+  // tool names on a small phone -- the chart is drawn as wide as the bars need,
+  // up to `natW`, and scaled into its box a little: smaller words, rather than
+  // every bar the same 2 px.
+  const W = fitted
+    ? Math.min(natW, Math.max(fitW, labelW + valW + Math.max(0, Math.min(natW - natLabelW - natValW, HBAR_MIN))))
+    : natW;
   const bw = W - labelW - valW;
   return (
     <>
