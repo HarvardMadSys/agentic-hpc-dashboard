@@ -488,6 +488,20 @@ class SessionDigestTest(unittest.TestCase):
         self.assertEqual(d["landmarks"]["failures"]["by_command"][0], "ls exit 2 x14")
         self.assertEqual(d["landmarks"]["longest_process"]["dur"], "15.0 min")
         self.assertEqual(d["read"]["counted"], 5000)
+        # a row with no phase block says nothing of its kind
+        self.assertFalse({"category", "headline", "summary"} & set(d["session"]))
+
+    def test_a_session_says_what_kind_it_was_as_its_block_does(self):
+        body = session_body()
+        body["row"]["phases"] = {"list": [], "category": "hpc", "headline": "proj · train.sbatch",
+                                 "summary": "Mostly ran jobs on Slurm (94% of 5.1 h of work).",
+                                 "uses": [["hpc", 94.0], ["explore", 6.0]]}
+        s = ask.session_digest(body)["session"]
+        self.assertEqual((s["category"], s["headline"], s["summary"]),
+                         ("hpc", "proj · train.sbatch",
+                          "Mostly ran jobs on Slurm (94% of 5.1 h of work)."))
+        body["row"]["phases"] = {"unavailable": "phases not available for this agent type"}
+        self.assertNotIn("category", ask.session_digest(body)["session"])
 
     def test_the_outline_counts_children_then_opens_a_varied_few(self):
         lines = ask.session_digest(session_body())["tree"]
