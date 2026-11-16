@@ -2304,3 +2304,28 @@ test("the inspector's table, all open: a row has a column under each header, its
     await ui.close();
   }
 });
+
+test("the table's timeline header: the axis's start and end, and zoomed, the tip and its \"?\" on the end clock, which stays where a full-width bar ends", async () => {
+  const ui = await renderer();
+  try {
+    const { tree, timeline } = api.trajectory_detail;
+    const span = timeline.hi - timeline.lo;
+    for (const view of [null, [timeline.lo + span / 4, timeline.lo + span / 2]]) {
+      const [lo, hi] = view ?? [timeline.lo, timeline.hi];
+      const what = view ? 'zoomed' : "on the read's span";
+      const html = await ui.render('components/ProcTree.tsx', 'ProcTree', { root: tree, open: new Set(), setOpen() {}, timeline, view });
+      const [, attrs, inner] = /<div class="pt-tlhead[^"]*"([^>]*)>(.*?)<\/div>/.exec(html) ?? [];
+      // The "?" a header that explains itself gets is an ::after (styles.css). On the header, a flex row, it would be a third item, and
+      // space-between would pull the end clock in to about 3/4 of the column.
+      assert.doesNotMatch(attrs, /\bdata-tip=/, `${what}: the header's flex row has no tip of its own`);
+      const clocks = [...inner.matchAll(/<span([^>]*)>([^<]*)<\/span>/g)];
+      assert.deepEqual(clocks.map((m) => m[2]), [F.clock(lo), F.clock(hi)], `${what}: the axis's start and end`);
+      assert.doesNotMatch(clocks[0][1], /\bdata-tip=/, `${what}: the start clock has no tip`);
+      assert.equal(/\bdata-tip="zoomed: /.test(clocks[1][1]), !!view, `${what}: the end clock has the zoom's tip`);
+    }
+    // and its "?" takes no room, but hangs past the clock: the clock ends at the header's content box, where a bar at 100% ends
+    assert.match(source('tabs/trajectories.css'), /\n\.pt-tlhead > \[data-tip\]::after \{\s*margin-right: calc\(-1ch - 2px\);\s*\}/);
+  } finally {
+    await ui.close();
+  }
+});
