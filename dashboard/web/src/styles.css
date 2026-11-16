@@ -203,6 +203,11 @@ section.panel {
   color: var(--muted);
   line-height: 1.6;
 }
+/* which code the page is, set apart from the lines about the data above it */
+.rail .foot .build,
+.mfoot .build {
+  margin-top: 10px;
+}
 
 main {
   padding: 22px 26px 70px;
