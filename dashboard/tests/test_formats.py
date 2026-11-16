@@ -520,6 +520,37 @@ class DeletedTwinTest(TwinCase):
                 self.assertEqual(list(src.state), [theirs])
 
 
+class AppearingTwinTest(TwinCase):
+    """A twin that arrives after the other was read: a fleet copy's first fill
+    fetches a day's files one at a time, so a stream's other twin can land
+    holding records the tail already read from the first. Nothing is read
+    twice, and what both go on to hold is read once."""
+
+    def test_a_twin_that_arrives_late_reads_nothing_twice(self):
+        for prefer, first in (("jsonl", "ebr"), ("ebr", "jsonl")):
+            with self.subTest(prefer=prefer):
+                feedfile._choices.clear()
+                shutil.rmtree(os.path.join(self.root, DAY), ignore_errors=True)
+                os.makedirs(os.path.join(self.root, DAY))
+                recs = [exit_rec(self.now - 600 + 10 * i, pid=i) for i in range(9)]
+                p = os.path.join(self.root, DAY, "h1.exits.jsonl")
+                paths = {"jsonl": p, "ebr": ebr_name(p)}
+                write = {"jsonl": write_jsonl, "ebr": write_ebr}
+                late = "jsonl" if first == "ebr" else "ebr"
+                write[first](paths[first], recs[:6])
+                src = FileTailSource([self.root], prefer=prefer)
+                self.assertEqual([r["pid"] for r in src.poll()], [0, 1, 2, 3, 4, 5])
+                write[late](paths[late], recs[:6])     # the same records, arriving late
+                src.prune_state()
+                self.assertEqual(list(src.poll()), [])
+                # the late twin is the preferred one: the stream moves to it, at its end
+                self.assertEqual(src.stats["twin_switches"], 1)
+                for f in ("jsonl", "ebr"):
+                    write[f](paths[f], recs[6:])
+                src.prune_state()
+                self.assertEqual([r["pid"] for r in src.poll()], [6, 7, 8])
+
+
 class ResumeAfterGzipTest(FeedCase):
     """A saved window over a plain day-file the collector has compressed since
     resumes from its `.gz`, in either format: the same bytes at the same offsets."""

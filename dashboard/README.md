@@ -146,9 +146,29 @@ stream's EBR twin was started mid-day:
 4. **JSONL deleted last**, keeping the JSONL of every day listed in step 2: that day's EBR twin
    lacks the day's start, and once it is the stream's only file it is the one read.
 
-A dashboard fed through [`deploy/fleet`](../deploy/fleet/README.md) reads what
-`fleet/fleet_stream.py` copies, which is `.jsonl` and `.jsonl.gz` files only: with its collectors
-on `ebr` it would get nothing.
+**Reading speed, and why `prefer` stays `jsonl` for now.** Served from either twin, the same
+feed gives the same API output, value for value: `tests/e2e_formats.py` writes a demo feed in
+both formats, serves it twice at a pinned clock, and diffs 41 requests. Its variants cover a
+plain scan, a restart from saved builds, gzipped days, a feed that grows between runs, and
+legacy records with no `ts_epoch`. The page is no faster for it yet. On the demo feed (3 days
+of 4 hosts, `tests/bench_formats.py`):
+
+- A read that filters goes about 2x faster from EBR (one user's exits: 0.12 s against 0.26 s),
+  because it rejects records by interned string before building them.
+- A read that builds every record goes slower:
+  - the startup backfill runs at 0.64x JSONL's speed (0.70 s against 0.45 s), and a 24 h
+    window build at 0.71x (0.44 s against 0.31 s);
+  - orjson parses a JSONL line in C, while EBR builds its dicts in Python;
+  - a collector's frame holds a poll round, about three records, so the per-frame cost is
+    paid often.
+- From gzipped days EBR is ahead on seeks, an hour's read and key scans (1.2-1.4x), and
+  0.85x on full reads.
+
+On disk, EBR is 5.8x smaller live, and about the same once gzipped. Flip `prefer` when
+`bench_formats.py` on your own feed says the reads you serve are faster.
+
+A dashboard fed through [`deploy/fleet`](../deploy/fleet/README.md) gets both formats:
+`fleet/fleet_stream.py` carries `.ebr` and `.ebr.gz` files as it carries `.jsonl` and `.jsonl.gz`.
 
 ## Two deployments on this host
 
