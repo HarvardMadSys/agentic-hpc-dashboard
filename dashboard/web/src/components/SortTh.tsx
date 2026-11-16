@@ -53,7 +53,13 @@ export function SortTh<K extends string>({
       {/* the explanation, if any, rides on the label with its own "?"; the
           header itself carries no tip, so it is not marked a second time */}
       {tip || gloss ? <Term tip={tip} k={gloss}>{children}</Term> : children}
-      <span className="sort-arrow" aria-hidden="true">{on ? (s.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      {/* a word joiner ties the arrow to the label's last word: a header that
+          wraps (a narrow number column) never hangs the arrow on a line of
+          its own */}
+      <span className="sort-arrow" aria-hidden="true">
+        {'\u2060'}
+        {on ? (s.dir === 'asc' ? '▲' : '▼') : '↕'}
+      </span>
     </th>
   );
 }

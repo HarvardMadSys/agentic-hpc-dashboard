@@ -9,8 +9,11 @@ import type { PanelEnvelope } from '../api/types';
 
 export type Panels = Record<string, PanelEnvelope & Record<string, unknown>>;
 
+/** The envelope for a panel the service sent none for. It says only that:
+ *  `_unsent` keeps <Panel> from dressing it as the feed's own report, a status
+ *  pill and "no configured path", which no feed said (Panel.tsx <NotSent>). */
 export function absent(feed: string, why = 'the backend did not return this panel'): PanelEnvelope {
-  return { _feed: feed, _status: 'missing', _present: false, _paths: [], _notice: why };
+  return { _feed: feed, _status: 'missing', _present: false, _paths: [], _notice: why, _unsent: true };
 }
 
 /** The payload for `key`, or an absent-feed envelope carrying the same shape. */

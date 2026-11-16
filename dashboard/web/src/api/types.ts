@@ -131,6 +131,10 @@ export interface PanelEnvelope {
   /** No panel payload has arrived at all (the service is starting or
    *  unreachable): a fact about the connection, not about any feed. */
   _waiting?: boolean;
+  /** The service sent no envelope for this panel (an answer without the key,
+   *  or a request that failed), so the page made one up (lib/panels.ts
+   *  `absent`): a fact about the response, not about the feed. */
+  _unsent?: boolean;
 }
 
 /* ---------------------------------------------------------------- window */

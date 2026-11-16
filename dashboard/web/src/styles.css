@@ -237,15 +237,15 @@ kbd {
 .rail nav button:hover .icon {
   color: var(--ink-2);
 }
-.rail nav button[aria-selected='true'] {
+.rail nav button[aria-current='page'] {
   background: var(--crimson-wash);
   color: var(--crimson-ink);
   font-weight: 600;
 }
-.rail nav button[aria-selected='true'] .icon {
+.rail nav button[aria-current='page'] .icon {
   color: var(--crimson);
 }
-.rail nav button[aria-selected='true']::before {
+.rail nav button[aria-current='page']::before {
   content: '';
   position: absolute;
   left: -10px;
@@ -504,7 +504,7 @@ section.panel {
     justify-content: center;
     padding: 9px 0;
   }
-  .app.mini .rail nav button[aria-selected='true']::before {
+  .app.mini .rail nav button[aria-current='page']::before {
     left: -8px;
   }
   .app.mini .navdot {
@@ -799,6 +799,29 @@ html {
 @media (max-width: 640px) {
   .controls {
     position: static;
+  }
+  /* A panel's controls go under its title rather than squeezing it to a word
+     a line (Tool mix: two switches beside two words), and a switch that still
+     does not fit wraps, drawn as separate keys like `.seg.wrap`. */
+  .panel > header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .panel > header .seg {
+    flex-wrap: wrap;
+    max-width: 100%;
+    gap: 4px;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+  }
+  .panel > header .seg button,
+  .panel > header .seg button:last-child {
+    border: 1px solid var(--edge);
+    border-radius: 5px;
+  }
+  .panel > header .seg button[aria-pressed='true'] {
+    border-color: var(--ink-2);
   }
 }
 
@@ -1334,6 +1357,20 @@ table.faults tr.section td {
   overflow-x: auto;
   max-width: 100%;
 }
+/* A table wider than its panel scrolls sideways inside it. Its edge fades
+ * where there is more to scroll to, so a column cut off at the edge reads as
+ * "scroll for more", not as the table's last column (Users at 900px, most
+ * tables on a phone). lib/scrollEdges.ts keeps `data-more` true to the scroll
+ * position; a table that fits has none, and no fade. */
+.scroller[data-more='right'] {
+  mask-image: linear-gradient(to left, transparent, #000 36px);
+}
+.scroller[data-more='left'] {
+  mask-image: linear-gradient(to right, transparent, #000 36px);
+}
+.scroller[data-more='both'] {
+  mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}
 /* A long table that scrolls inside its panel with its header held in view: a
  * roster of hundreds is read by scrolling, not by "show 15 more". */
 .scroller.vscroll {
@@ -1700,6 +1737,29 @@ td.cmd-cut {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+/* The service sent nothing for the panel (Panel.tsx <NotSent>): the dashed
+ * frame of the missing family, one line high, a neutral pill, and no feed
+ * status, because no feed reported anything. */
+.notsent {
+  border: 1px dashed var(--edge);
+  border-radius: 5px;
+  background: var(--surface-2);
+  padding: 9px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.notsent .pill {
+  border-color: var(--edge);
+  color: var(--ink-2);
+}
+.notsent .feed {
+  color: var(--ink-2);
 }
 /* Feed present, rows exist, the reduction is not finished. A THIRD state, and
  * it must look like neither `nofeed` (dashed, blames the path) nor `none`
@@ -2283,6 +2343,15 @@ table.wrap-head th {
 }
 table.wrap-head th:first-child {
   max-width: none;
+}
+/* A number column's header wraps to keep the column as narrow as its numbers.
+   Its sort arrow, tied to the label's last word (SortTh), hangs in the cell's
+   right padding: the label ends where the numbers under it end, and the arrow
+   adds nothing to the column, so a one-word header ("sessions") neither
+   widens it nor loses its arrow under the next header. Both wrap-head tables
+   are .roomy: 14px of right padding. */
+table.wrap-head th.num .sort-arrow {
+  margin-right: -10px;
 }
 
 /* tables grouped by user (ByUser.tsx) */

@@ -19,6 +19,7 @@ import { WhoFilter } from './components/WhoFilter';
 import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
 import { SectionList, useSections } from './components/SectionNav';
+import { useScrollEdges } from './lib/scrollEdges';
 import { WindowPicker } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
@@ -250,24 +251,6 @@ export default function App() {
     if (p) setLastSub((m) => (m[p] === tab.k ? m : { ...m, [p]: tab.k }));
   }, [tab.k, tab.parent]);
 
-  // A link to a tab that folded into another (`?tab=overview`) lands on the
-  // part it became, once that part is on the page; the link is rewritten to
-  // the tab it is now.
-  useEffect(() => {
-    const sec = LANDS_ON[OPENED_ON];
-    if (!sec) return;
-    setUrl({ tab: url.tab });
-    let tries = 0;
-    const t = window.setInterval(() => {
-      const el = document.getElementById(sec);
-      if (el || ++tries > 50) {
-        window.clearInterval(t);
-        el?.scrollIntoView({ block: 'start' });
-      }
-    }, 120);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Which deployment: the sidebar and the browser tab both say, so a frozen
   // capture and a live feed open side by side are never confused.
   const siteName = String(
@@ -294,7 +277,26 @@ export default function App() {
     )?.password_hash?._value,
   );
   const mainRef = useRef<HTMLElement>(null);
-  const { secs, active } = useSections(mainRef, tab.k);
+  const { secs, active, go: goSec } = useSections(mainRef, tab.k);
+  useScrollEdges(mainRef);
+  // A link to a tab that folded into another (`?tab=overview`) lands on the
+  // part it became, once that part is on the page; the link is rewritten to
+  // the tab it is now.
+  useEffect(() => {
+    const sec = LANDS_ON[OPENED_ON];
+    if (!sec) return;
+    setUrl({ tab: url.tab });
+    let tries = 0;
+    const t = window.setInterval(() => {
+      const el = document.getElementById(sec);
+      if (el || ++tries > 50) {
+        window.clearInterval(t);
+        if (el) goSec(sec, 'auto');
+      }
+    }, 120);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // The window and the filters, one strip held at the top while the tab scrolls
   // (lib/sticky.ts). Feeds is about the service, not a window of data: none.
   const showControls = tab.k !== 'feeds';
@@ -508,7 +510,7 @@ export default function App() {
       label: s.title,
       icon: 'section' as IconName,
       keywords: 'section panel',
-      run: () => document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      run: () => goSec(s.id),
     })),
     ...(showControls
       ? (windows?.presets ?? []).map((p) => ({
@@ -605,7 +607,6 @@ export default function App() {
             <Fragment key={r.key}>
               {(i === 0 || railItems[i - 1].group !== r.group) && <div className="navgroup">{r.group}</div>}
               <button
-                aria-selected={r === railOn}
                 aria-current={r === railOn ? 'page' : undefined}
                 data-tip={mini ? r.lbl : undefined}
                 onClick={() => goRail(r)}
@@ -619,7 +620,7 @@ export default function App() {
                   </>
                 )}
               </button>
-              {r === railOn && !mini && <SectionList secs={secs} active={active} />}
+              {r === railOn && !mini && <SectionList secs={secs} active={active} go={goSec} />}
             </Fragment>
           ))}
         </nav>
