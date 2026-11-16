@@ -54,9 +54,10 @@ const callsOf = (file, name) => (readFileSync(new URL(file, SRC), 'utf8').match(
 /** A file of the page's source, whole. */
 const source = (file) => readFileSync(new URL(file, SRC), 'utf8');
 
-/** The page's own components, rendered to markup: `render('tabs/TaskList.tsx', 'TaskList', props)`. The module loader is Vite's, with no
- *  config of the project's (nor its cache, which is a directory of the system's own), and react is the one in `node_modules`, which
- *  the loader takes from there too. Close it when done: `close()`. */
+/** The page's own components, rendered to markup: `render('tabs/TaskList.tsx', 'TaskList', props)`; `load(file)` is the module itself, for
+ *  the functions it exports beside them. The module loader is Vite's, with no config of the project's (nor its cache, which is a
+ *  directory of the system's own), and react is the one in `node_modules`, which the loader takes from there too. Close it when done:
+ *  `close()`. */
 async function renderer() {
   const { createServer } = await import('vite');
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -72,6 +73,7 @@ async function renderer() {
   });
   return {
     render: async (file, name, props) => renderToStaticMarkup(createElement((await server.ssrLoadModule(`/src/${file}`))[name], props)),
+    load: (file) => server.ssrLoadModule(`/src/${file}`),
     close: () => server.close(),
   };
 }
@@ -2221,4 +2223,109 @@ test('a tick is a crisp 1 px line in `--ink-2`, dark against the pale part betwe
   assert.equal(Number(/stroke-width:\s*([\d.]+);/.exec(tick)?.[1]), 1, 'one pixel wide');
   assert.match(tick, /shape-rendering:\s*crispEdges;/, 'with crisp edges, so it is whole pixels and not a blur across two');
   assert.match(tick, /pointer-events:\s*none;/, 'the band under it keeps its hover');
+});
+
+/** The inspector's table (components/ProcTree.tsx) as rows, its head first: each as the `<div>`s directly in it, which are its columns, with
+ *  each one's class and markup. A row's `id` is its `data-row`. */
+function gridOf(html) {
+  const out = [];
+  let row = null;
+  let depth = 0;
+  let cell = null;
+  for (const m of html.matchAll(/<(\/?)div\b([^>]*)>/g)) {
+    if (m[1] === '/') {
+      if (row == null) continue;
+      if (depth === 0) row = null;
+      else if (depth-- === 1) row.cols.push({ cls: cell.cls, html: html.slice(cell.at, m.index) });
+      continue;
+    }
+    const cls = /\bclass="([^"]*)"/.exec(m[2])?.[1] ?? '';
+    if (row != null) {
+      if (++depth === 1) cell = { cls, at: m.index + m[0].length };
+    } else if (/^pt-(head|row)\b/.test(cls)) {
+      row = { cls, id: /\bdata-row="([^"]*)"/.exec(m[2])?.[1] ?? null, cols: [] };
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+test("the inspector's table, all open: a row has a column under each header, its exit under \"exit\", and its bar under the timeline, on the read's span or on a zoomed range", async () => {
+  const ui = await renderer();
+  try {
+    const PT = await ui.load('components/ProcTree.tsx');
+    const { tree, timeline } = api.trajectory_detail;
+    const served = new Map(PT.spots(tree).map((s) => [s.id, s.e]));
+    const kinds = [...served.values()].map((e) => e.k);
+    // every kind of row: processes, groups, a group's members past the first few, and both kinds of count
+    for (const k of ['p', 'g', 'rest', 'agg', 'more']) assert.ok(kinds.includes(k), `the fixture has a ${k} row`);
+    // A row's bar is where it ran. A group's members past the first few are in the group's own bar, on the row above, and a row with no
+    // time read for it (a parent only the collector's depth places) has nowhere to be drawn.
+    const barred = (e) => e.k !== 'rest' && (e.start != null || e.end != null);
+    const span = timeline.hi - timeline.lo;
+    for (const view of [null, [timeline.lo + span / 4, timeline.lo + span / 2]]) {
+      const [lo, hi] = view ?? [timeline.lo, timeline.hi];
+      const what = view ? 'zoomed' : "on the read's span";
+      // what "expand all" opens
+      const html = await ui.render('components/ProcTree.tsx', 'ProcTree', { root: tree, open: PT.allOpen(tree), setOpen() {}, timeline, view });
+      const [head, ...rows] = gridOf(html);
+      assert.equal(head.cls, 'pt-head');
+      const names = head.cols.map((c) => textOf(c.html));
+      const exit = names.indexOf('exit');
+      assert.equal(names.length, 9, `${what}: ${names.join(' | ')}`);
+      assert.equal(exit, names.length - 2, 'exit is the column before the timeline');
+      assert.equal(head.cols.at(-1).cls, view ? 'pt-tlhead zoomed' : 'pt-tlhead');
+      assert.deepEqual(rows.map((r) => r.id), [...served.keys()], `${what}: a row for each entry served, in order`);
+      let bars = 0;
+      for (const r of rows) {
+        const e = served.get(r.id);
+        const where = `${what}, row ${r.id} (${e.k})`;
+        assert.equal(r.cols.length, head.cols.length, `${where}: a column under each header`);
+        const tl = r.cols.at(-1);
+        assert.equal(tl.cls, 'pt-tl', `${where}: its last column is the timeline`);
+        r.cols.slice(0, -1).forEach((c, i) => assert.doesNotMatch(c.html, /class="pt-bar\b/, `${where}: no bar under ${names[i]}`));
+        const drawn = tl.html.match(/<i class="pt-bar\b[^>]*>/g) ?? [];
+        assert.equal(drawn.length, barred(e) ? 1 : 0, `${where}: ${drawn.length} bars under the timeline`);
+        bars += drawn.length;
+        if (e.k === 'p' && drawn.length) {
+          const left = Number(/left:([\d.]+)%/.exec(drawn[0])?.[1]);
+          const want = Math.max(0, Math.min(1, ((e.start ?? lo) - lo) / (hi - lo))) * 100;
+          assert.ok(Math.abs(left - want) < 0.001, `${where}: its bar starts at ${left}%, and it started at ${want}%`);
+        }
+        const x = r.cols[exit];
+        assert.equal(x.cls, 'num', `${where}: the exit cell is a number, as its header is, and not muted`);
+        if (e.k === 'p' || e.k === 'g') assert.match(x.html, /class="(pt-x|sev)\b/, `${where}: its exit, under "exit"`);
+        else assert.equal(x.html, '', `${where}: a counted row has no exit`);
+      }
+      assert.equal(bars, [...served.values()].filter(barred).length, `${what}: a bar on every row with a time, but a group's rest`);
+      assert.equal((html.match(/class="pt-bar\b/g) ?? []).length, bars, `${what}: every bar is in a row's timeline column`);
+    }
+  } finally {
+    await ui.close();
+  }
+});
+
+test("the table's timeline header: the axis's start and end, and zoomed, the tip and its \"?\" on the end clock, which stays where a full-width bar ends", async () => {
+  const ui = await renderer();
+  try {
+    const { tree, timeline } = api.trajectory_detail;
+    const span = timeline.hi - timeline.lo;
+    for (const view of [null, [timeline.lo + span / 4, timeline.lo + span / 2]]) {
+      const [lo, hi] = view ?? [timeline.lo, timeline.hi];
+      const what = view ? 'zoomed' : "on the read's span";
+      const html = await ui.render('components/ProcTree.tsx', 'ProcTree', { root: tree, open: new Set(), setOpen() {}, timeline, view });
+      const [, attrs, inner] = /<div class="pt-tlhead[^"]*"([^>]*)>(.*?)<\/div>/.exec(html) ?? [];
+      // The "?" a header that explains itself gets is an ::after (styles.css). On the header, a flex row, it would be a third item, and
+      // space-between would pull the end clock in to about 3/4 of the column.
+      assert.doesNotMatch(attrs, /\bdata-tip=/, `${what}: the header's flex row has no tip of its own`);
+      const clocks = [...inner.matchAll(/<span([^>]*)>([^<]*)<\/span>/g)];
+      assert.deepEqual(clocks.map((m) => m[2]), [F.clock(lo), F.clock(hi)], `${what}: the axis's start and end`);
+      assert.doesNotMatch(clocks[0][1], /\bdata-tip=/, `${what}: the start clock has no tip`);
+      assert.equal(/\bdata-tip="zoomed: /.test(clocks[1][1]), !!view, `${what}: the end clock has the zoom's tip`);
+    }
+    // and its "?" takes no room, but hangs past the clock: the clock ends at the header's content box, where a bar at 100% ends
+    assert.match(source('tabs/trajectories.css'), /\n\.pt-tlhead > \[data-tip\]::after \{\s*margin-right: calc\(-1ch - 2px\);\s*\}/);
+  } finally {
+    await ui.close();
+  }
 });

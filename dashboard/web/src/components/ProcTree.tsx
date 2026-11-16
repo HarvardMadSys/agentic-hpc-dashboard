@@ -611,12 +611,13 @@ const RowView = memo(function RowView({
           {body}
         </div>
       </div>
-      {cells.slice(0, 6).map((c, i) => (
-        <div key={i} className={`num${i === 0 || i === 4 ? ' dim' : ''}`}>
+      {/* in the header's order: started, took, cpu s, Σ CPU s, Σ I/O, procs, exit; then the timeline */}
+      {cells.slice(0, 7).map((c, i) => (
+        <div key={i} className={`num${i === 0 || i === 5 ? ' dim' : ''}`}>
           {c}
         </div>
       ))}
-      <div className="pt-tl">{cells[6]}</div>
+      <div className="pt-tl">{cells[7]}</div>
     </div>
   );
 });
@@ -729,9 +730,11 @@ export const ProcTree = memo(function ProcTree({
             procs
           </div>
           <div className="num">exit</div>
-          <div className={`pt-tlhead${view ? ' zoomed' : ''}`} data-tip={view ? 'zoomed: the bars are drawn on the range picked on the strip above' : undefined}>
+          {/* Zoomed, the tip, and with it the "?" of a header that explains itself (styles.css), is on the end clock. On this flex
+              row the "?" would be a third item, and space-between would pull the end clock in from where a full-width bar ends. */}
+          <div className={`pt-tlhead${view ? ' zoomed' : ''}`}>
             <span>{tl ? clock(tl.lo) : 'timeline'}</span>
-            <span>{tl ? clock(tl.hi) : ''}</span>
+            <span data-tip={view ? 'zoomed: the bars are drawn on the range picked on the strip above' : undefined}>{tl ? clock(tl.hi) : ''}</span>
           </div>
         </div>
         {rows.map((r) => {
