@@ -1326,14 +1326,17 @@ def _category(cmds):
 CACHED_TEXT = 4096
 
 
-def _cached(fn):
-    """`functools.lru_cache(65536)` over `fn`, with a call whose texts pass CACHED_TEXT characters
-    read around it. `cache_info` and `cache_clear` are the cache's, and `__wrapped__` is `fn`."""
-    cache = functools.lru_cache(maxsize=65536)(fn)
+def _cached(fn=None, *, maxsize=65536, text_max=CACHED_TEXT):
+    """`functools.lru_cache(maxsize)` over `fn`, with a call whose texts pass `text_max` characters
+    read around it. `cache_info` and `cache_clear` are the cache's, and `__wrapped__` is `fn`.
+    Bare (`@_cached`), or with smaller bounds (`@_cached(maxsize=..., text_max=...)`)."""
+    if fn is None:
+        return functools.partial(_cached, maxsize=maxsize, text_max=text_max)
+    cache = functools.lru_cache(maxsize=maxsize)(fn)
 
     @functools.wraps(fn)
     def call(*args):
-        if sum(len(a) for a in args if isinstance(a, str)) > CACHED_TEXT:
+        if sum(len(a) for a in args if isinstance(a, str)) > text_max:
             return fn(*args)
         return cache(*args)
 

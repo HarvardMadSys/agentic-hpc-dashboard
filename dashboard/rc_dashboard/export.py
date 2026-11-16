@@ -12,12 +12,14 @@ what they actually got.
 Scanning re-reads the day-files rather than serving from memory: a 24-hour window
 of raw events is on the order of 10-20 GB, so it is never buffered.
 """
+import collections
 import glob
 import hashlib
 import heapq
 import json
 import os
 import re
+import threading
 import time
 
 from . import gz, fastjson
@@ -401,8 +403,60 @@ def seek_to_epoch(fh, since, size, probe_lines=64):
     return best
 
 
+# What `_probe` and `head_digest` found, by the file's identity on disk. A
+# probe's answer is a function of the bytes, and the bytes of a file whose
+# device, inode, size and mtime are unchanged are the bytes it read: a sealed
+# day-file is asked the same questions over and over -- the hourly reduction
+# plans every file it reads every hour, and the first levels of each binary
+# search are the same -- and on a `.gz` each answer inflated an 8 MB span. A
+# file that grows has a new identity, so nothing is answered for it from before.
+_MEMO_FILES = 1024
+_MEMO_PROBES = 8192
+_memo = collections.OrderedDict()       # identity -> {key: answer}
+_memo_lock = threading.Lock()
+
+
+def _identity(fh):
+    try:
+        st = os.fstat(fh.fileno())
+    except (OSError, AttributeError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _memo_of(ident):
+    with _memo_lock:
+        m = _memo.get(ident)
+        if m is None:
+            m = _memo[ident] = {}
+            while len(_memo) > _MEMO_FILES:
+                _memo.popitem(last=False)
+        else:
+            _memo.move_to_end(ident)
+        return m
+
+
+def _remember(m, key, answer):
+    if len(m) >= _MEMO_PROBES:
+        m.clear()
+    m[key] = answer
+    return answer
+
+
 def _probe(fh, pos, limit):
-    """Align to the next whole line at/after `pos`; return (offset, ts|None)."""
+    """Align to the next whole line at/after `pos`; return (offset, ts|None).
+    Answered from the memo for a file unchanged since it was asked (`_memo`)."""
+    ident = _identity(fh)
+    if ident is None:
+        return _probe_read(fh, pos, limit)
+    m = _memo_of(ident)
+    hit = m.get(("probe", pos, limit))
+    if hit is not None:
+        return hit
+    return _remember(m, ("probe", pos, limit), _probe_read(fh, pos, limit))
+
+
+def _probe_read(fh, pos, limit):
     fh.seek(pos)
     if pos:
         fh.readline()                     # drop the line we landed inside
@@ -422,15 +476,15 @@ def _probe(fh, pos, limit):
     return off, None
 
 
-def window_plan(roots, since, days=0):
+def window_plan(roots, since, days=0, paths=None):
     """Per-file byte range a window touches, plus the total bytes to read.
 
     Built up front rather than discovered while streaming, so the rebuild can
     report a real percentage instead of a spinner -- and so the cost of a window
-    is answerable BEFORE committing to it.
+    is answerable BEFORE committing to it. `paths`: these of the day-files only.
     """
     plan = []
-    for p in day_files(roots, days):
+    for p in (day_files(roots, days) if paths is None else paths):
         try:
             with gz.open_feed(p) as fh:
                 size = gz.fstat(fh).st_size
@@ -494,9 +548,17 @@ HEAD_BYTES = 4096
 
 
 def head_digest(fh, n):
-    """Digest of a file's first `n` bytes: its identity beyond the inode number."""
+    """Digest of a file's first `n` bytes: its identity beyond the inode number.
+    Read once per file identity (`_memo`): on a `.gz` it inflates the first span."""
+    ident = _identity(fh)
+    m = _memo_of(ident) if ident is not None else None
+    if m is not None:
+        hit = m.get(("head", n))
+        if hit is not None:
+            return hit
     fh.seek(0)
-    return hashlib.sha1(fh.read(n)).hexdigest()
+    out = hashlib.sha1(fh.read(n)).hexdigest()
+    return _remember(m, ("head", n), out) if m is not None else out
 
 
 def event_filter(events):
@@ -515,7 +577,66 @@ def event_filter(events):
     return re.compile(rb'"event"\s*:\s*"(?:' + names + rb')"').search
 
 
-def _window_stream(entry, norm, since, until, stats, wanted=None):
+# A filtered scan's block: the regex engine looks through this much of a
+# day-file at a time for the lines a filter could want (`_found`).
+BLOCK = 8 << 20
+
+
+# A line a line-by-line read passes over without counting it: nothing but
+# whitespace (`not line.strip()`).
+_BLANK = re.compile(rb"^[ \t\r\x0b\x0c]*\n", re.M)
+
+
+def _passed(body, a, b):
+    """How many of the whole lines in `body[a:b]` a line-by-line read counts as
+    skipped: all but the blank ones. `a` is a line's start."""
+    n = body.count(b"\n", a, b)
+    return n - len(_BLANK.findall(body, a, b)) if n else 0
+
+
+def _found(fh, pos, find, stats, entry, block=None):
+    """The complete lines from `pos` on that `find` hits, for a scan after a few.
+
+    The regex engine looks through a block of the day-file at a time, and only
+    the lines it hits are handed on -- a narrow filter wants a few percent of a
+    busy file's lines, and each of the rest cost a Python loop's turn. What a
+    line-by-line read keeps up to date is kept the same: `entry["end"]` just
+    past the line handed on (or the last whole line read), `bytes` read through
+    it, and the lines passed over counted as skipped (a blank one not, as
+    there). A line still being written is left, as there. `find` never matches across a line's end: a
+    record is one line."""
+    block = block or BLOCK
+    rest = b""
+    while True:
+        chunk = fh.read(block)
+        buf = rest + chunk if rest else chunk
+        cut = buf.rfind(b"\n") + 1
+        if cut == 0:
+            if not chunk:
+                return
+            rest = buf
+            continue
+        body, rest = buf[:cut], buf[cut:]
+        done = 0                                    # bytes of `body` accounted for
+        for m in find.finditer(body):
+            ls = body.rfind(b"\n", 0, m.start()) + 1
+            if ls < done:
+                continue                            # another hit in the line just handed on
+            le = body.find(b"\n", m.start()) + 1
+            stats["skipped"] += _passed(body, done, ls)
+            stats["bytes"] += le - done
+            entry["end"] = pos + le
+            done = le
+            yield body[ls:le]
+        stats["skipped"] += _passed(body, done, cut)
+        stats["bytes"] += cut - done
+        entry["end"] = pos + cut
+        pos += cut
+        if not chunk:
+            return
+
+
+def _window_stream(entry, norm, since, until, stats, wanted=None, find=None):
     """One file's in-window records as `(ts, rec)`, ascending.
 
     Records in `entry` how far it got, for a saved window to resume from: the
@@ -535,12 +656,16 @@ def _window_stream(entry, norm, since, until, stats, wanted=None):
         entry["head"] = head_digest(fh, entry["head_n"])
         pos = entry["end"] = entry["start"]
         fh.seek(pos)
-        for line in fh:
-            if not line.endswith(b"\n"):
-                return
-            pos += len(line)
-            entry["end"] = pos
-            stats["bytes"] += len(line)
+        # `find`: only the lines it hits come through (`_found`), each still
+        # judged by `wanted` below, with the reading's end and bytes kept there.
+        lines = fh if find is None else _found(fh, pos, find, stats, entry)
+        for line in lines:
+            if find is None:
+                if not line.endswith(b"\n"):
+                    return
+                pos += len(line)
+                entry["end"] = pos
+                stats["bytes"] += len(line)
             if not line.strip():
                 continue
             if wanted is not None and wanted(line) is None:
@@ -568,7 +693,7 @@ def _window_stream(entry, norm, since, until, stats, wanted=None):
             yield ts, rec
 
 
-def window_scan(plan, norm, since, until=None, events=None, match=None):
+def window_scan(plan, norm, since, until=None, events=None, match=None, find=None):
     """Yield `(rec, stats)` for every in-window record, OLDEST FIRST.
 
     Ascending order is a correctness requirement, not a preference: the tool-mix
@@ -586,6 +711,8 @@ def window_scan(plan, norm, since, until=None, events=None, match=None):
     skip it -- for a caller after a handful of records in a busy file (one
     session's, `proctree.key_matcher`). It must never miss a line the caller
     wants; a false hit only costs a parse, the caller still filters the record.
+    `find`, with `match`, is a compiled pattern every line `match` passes holds:
+    the scan then looks for the lines by it a block at a time (`_found`).
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan)}
@@ -595,7 +722,9 @@ def window_scan(plan, norm, since, until=None, events=None, match=None):
 
         def wanted(line):
             return match(line) if by_event is None or by_event(line) is not None else None
-    streams = [_window_stream(e, norm, since, until, stats, wanted) for e in plan]
+    if match is None:
+        find = None
+    streams = [_window_stream(e, norm, since, until, stats, wanted, find) for e in plan]
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
         yield rec, stats
 

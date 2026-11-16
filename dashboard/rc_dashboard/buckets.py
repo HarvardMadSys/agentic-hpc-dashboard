@@ -48,6 +48,10 @@ class RollingBuckets:
         self.skew_s = skew_s
         self.n = max(1, window_s // bin_s)
         self.bins = {}          # bin_index -> {class -> {counter -> value}}
+        # Moves whenever a record lands in a bin, so a row `series` drew for it
+        # is drawn again only then (`_rows`).
+        self._ver = {}          # bin_index -> version
+        self._rows = {}         # (fmt, counter, classes) -> {bin_index: (version, row)}
         self.newest = None      # newest bin index seen
         self.skew_dropped = 0
         self.no_ts = 0
@@ -105,6 +109,7 @@ class RollingBuckets:
                 continue                 # null is not zero: absent, not measured
             slot[k] = slot.get(k, 0) + v
         slot["n"] = slot.get("n", 0) + 1
+        self._ver[idx] = self._ver.get(idx, 0) + 1
         return True
 
     def evict(self, now=None):
@@ -112,6 +117,10 @@ class RollingBuckets:
         cutoff = self._index(now) - self.n
         for idx in [i for i in self.bins if i < cutoff]:
             del self.bins[idx]
+            self._ver.pop(idx, None)
+        for rows in self._rows.values():
+            for idx in [i for i in rows if i < cutoff]:
+                del rows[idx]
 
     def series(self, classes, counter="n", now=None, window_s=None):
         """One row per bin, oldest first, aligned to wall-clock minutes.
@@ -128,11 +137,23 @@ class RollingBuckets:
         now = now or time.time()
         start, end = self._span(now, window_s)
         fmt = "%H:%M" if (end - start + 1) * self.bin_s <= 86400 else "%m-%d %H:%M"
+        # A bin's row is drawn again only when a record has landed in it since:
+        # a week's view is 10,080 rows, read for every live frame, and all but the
+        # newest few are the rows the frame before had. The rows are shared with
+        # every frame they are served in, never changed in place.
+        cache = self._rows.setdefault((fmt, counter, tuple(classes)), {})
+        ver, bins = self._ver, self.bins
         rows = []
         for idx in range(start, end + 1):
+            v = ver.get(idx, 0)
+            hit = cache.get(idx)
+            if hit is not None and hit[0] == v:
+                rows.append(hit[1])
+                continue
             row = {"t": time.strftime(fmt, time.localtime(idx * self.bin_s)),
                    "epoch": idx * self.bin_s}
-            row.update(self._cells(self.bins.get(idx), classes, counter))
+            row.update(self._cells(bins.get(idx), classes, counter))
+            cache[idx] = (v, row)
             rows.append(row)
         return rows
 

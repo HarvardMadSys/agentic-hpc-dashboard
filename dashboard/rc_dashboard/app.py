@@ -28,11 +28,13 @@ from . import gcwatch
 from . import jsonout
 from . import proctree
 from . import redact
+from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
 from .export import make_predicate, meta_header, parse_filters, scan
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
+from .reducers import phase_names, phase_rules
 
 
 def query_lists(request):
@@ -73,6 +75,25 @@ def view_filter(request, anon=None):
         return winmod.ViewFilter.from_params(dealias(query_lists(request), anon))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# The per-record memos (each a pure function of its text, memoized up to a
+# length and a count): what /api/health says of them, so their bounds can be
+# checked against a site's real command lines.
+MEMOS = (("redact", lambda: redact._redact_memo), ("role_of", lambda: roles._role_memo),
+         ("tagset", lambda: phase_names.tagset), ("tool_bucket", lambda: tool_buckets.bucket),
+         ("category_of", lambda: phase_rules.category_of),
+         ("category_of_argv", lambda: phase_rules.category_of_argv))
+
+
+def memo_status():
+    """For /api/health: each memo's hits, misses and size against its bound."""
+    out = {}
+    for name, get in MEMOS:
+        ci = get().cache_info()
+        out[name] = {"hits": ci.hits, "misses": ci.misses, "size": ci.currsize,
+                     "max": ci.maxsize}
+    return out
 
 
 class CachedStatic(StaticFiles):
@@ -559,7 +580,9 @@ def create_app(cfg):
                         # counts only: no name ever appears here
                         "anonymize": anon.status() if anon is not None else {"enabled": False},
                         # how long the garbage collector held the process (`gcwatch`)
-                        "gc": gcwatch.status()},
+                        "gc": gcwatch.status(),
+                        # the per-record memos against their bounds (`memo_status`)
+                        "memo": memo_status()},
                        request=request)
 
     _roots = agg.roots
