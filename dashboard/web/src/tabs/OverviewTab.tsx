@@ -14,6 +14,8 @@ import { Term } from '../components/Term';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
+import { useNodeWords } from '../lib/nodes';
+import type { NodeWords } from '../lib/nodes';
 import { pick, winLabel } from '../lib/panels';
 import { useSort } from '../lib/useSort';
 import { Fragment } from 'react';
@@ -35,15 +37,15 @@ interface UnitRow {
   io?: IoSort;
 }
 
-const GROUPS: Record<NonNullable<UnitRow['group']>, [string, string]> = {
-  node: ['on this host', 'measured on the host the collector runs on'],
+const groupsOf = (nodes: NodeWords): Record<NonNullable<UnitRow['group']>, [string, string]> => ({
+  node: [`on the ${nodes.many}`, `measured on the ${nodes.many} the collector runs on`],
   slurm: [
     'asked of Slurm',
-    'what the jobs submitted from these hosts REQUESTED on their sbatch / srun / salloc command lines. ' +
+    `what the jobs submitted from these ${nodes.many} REQUESTED on their sbatch / srun / salloc command lines. ` +
       'A request in the script\'s #SBATCH lines is not seen, and GPU use on the compute nodes is not measured: ' +
-      'the collector watches only these hosts, and the scheduler\'s accounting (sacct) is not read here',
+      `the collector watches only these ${nodes.many}, and the scheduler's accounting (sacct) is not read here`,
   ],
-};
+});
 
 export function OverviewTab({
   P,
@@ -63,6 +65,7 @@ export function OverviewTab({
 
   const tmBy = tm.by_class ?? {};
   const resBy = res.by_class ?? {};
+  const GROUPS = groupsOf(useNodeWords());
   const ioBy = io.by_class ?? {};
   const have = cls.filter((c) => c in tmBy || c in resBy || c in ioBy);
 
@@ -94,12 +97,12 @@ export function OverviewTab({
         return v == null ? null : v / 3600;
       }, fmt: (n) => (n == null ? DASH : fmt(n) + ' h'), tip: GLOSS.cpuh,
       cellTip: (c) => topTip(c, 'cpu_s', dur, 'most CPU in one process') },
-    { k: 'disk read', get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes, io: 'rd_mb' },
-    { k: 'disk written', get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.diskbytes, io: 'wr_mb' },
+    { k: 'disk read', get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.rd, io: 'rd_mb' },
+    { k: 'disk written', get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.wr, io: 'wr_mb' },
     { k: 'network sent', get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx, io: 'tx_mb' },
     { k: 'network received', get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx, io: 'rx_mb' },
     { k: 'peak memory', get: peakGb, fmt: (n) => (n == null ? DASH : fmt(n) + ' GB'),
-      tip: 'the most resident memory the class held at once in the window, sampled while processes ran; hover a cell for the single largest process',
+      tip: 'the most memory the class held at once in the window, sampled while processes ran; hover a cell for the single largest process',
       cellTip: (c) => topTip(c, 'peak_rss_mb', (v) => mb(v), 'largest single process') },
     { k: 'sessions', get: (c) => traj?.summary?.[c]?.sessions ?? null,
       tip: GLOSS.session + '; scripts that only probe an agent are not counted' },

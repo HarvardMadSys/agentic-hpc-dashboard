@@ -112,15 +112,15 @@ def _reading(anc, kind, sb):
             return ("wrapper, read at its own exec before it unshares -- says nothing "
                     "about the call it wraps; see the tool-call outcomes")
         if sb == "sandboxed":
-            return "wrapper already inside an isolated namespace (nested)"
+            return "wrapper already inside a sandbox (nested)"
         return None
     if sb == "sandboxed":
         if anc == "none":
-            return ("isolated with no agent sandbox ancestor: a container, apptainer, a "
-                    "systemd unit, or a reused pid inheriting one -- not an agent sandbox")
-        return "under a sandbox wrapper, namespace-isolated"
+            return ("in its own namespaces with no agent sandbox wrapper above it: a container, "
+                    "apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox")
+        return "under a sandbox wrapper, sandboxed"
     if sb == "unsandboxed" and anc != "none":
-        return "under a sandbox wrapper, not isolated"
+        return "under a sandbox wrapper, not sandboxed"
     return None
 
 
@@ -449,37 +449,37 @@ class SandboxReducer:
                        "approval": list(APPROVAL_STATES),
                        "approval_known": list(APPROVAL_KNOWN)},
             "notes": {
-                "meaning": "sandbox = NAMESPACE ISOLATION: /proc/<pid>/ns/{user,mnt,pid,net} "
+                "meaning": "sandboxed = ran in its own namespaces: /proc/<pid>/ns/{user,mnt,pid,net} "
                            "against pid 1's. Landlock has no /proc exposure and seccomp is "
                            "detail only, so a Landlock- or seccomp-only sandbox reads as not "
-                           "isolated; a container, an apptainer user namespace or a "
-                           "PrivateTmp= systemd unit reads as isolated without being an "
+                           "sandboxed; a container, an apptainer user namespace or a "
+                           "PrivateTmp= systemd unit reads as sandboxed without being an "
                            "agent sandbox.",
-                "denied": "'exited before read' (key: denied): the namespace links were "
+                "denied": "'exited before it was checked' (key: denied): the namespace links were "
                           "gone when the collector looked -- it runs as root, so this is a "
                           "process that lived a few ms, not a permission problem. It is "
-                          "NOT 'not isolated', and shares are taken over known verdicts.",
-                "inherit": "most per-event verdicts are copied from the parent at fork "
+                          "NOT 'not sandboxed', and shares are taken over the known answers.",
+                "inherit": "most per-process answers are copied from the parent at fork "
                            "(sandbox_src=inherit), not read on that pid; namespaces are "
                            "inherited across fork, so this is exact unless a pid was reused.",
                 "sessions": "a session is an agent-role root (roles.py) seen in the window, "
-                            "plus the owner of any tool call whose root was not seen. Its "
-                            "sandbox verdict is the outcome of its TOOL CALLS -- the agent "
+                            "plus the owner of any tool call whose root was not seen. Whether "
+                            "it ran sandboxed is the outcome of its TOOL CALLS -- the agent "
                             "process itself is outside its own sandbox by design.",
                 "tool_calls": "a tool call is a sandbox wrapper invocation (bwrap, "
                               "codex-linux-sandbox; nested wrappers folded into the "
                               "outermost) or a Claude Code Bash tool shell no wrapper "
                               "encloses. Codex's unwrapped commands are not counted: argv "
                               "cannot tell them from its own getconf/lsb_release/git.",
-                "failed": "'sandbox attempt failed': the wrapper exited non-zero and no "
-                          "payload ran under it -- tried, and the sandbox did not come up "
+                "failed": "'sandbox failed to start': the wrapper exited non-zero and no "
+                          "wrapped command ran under it -- tried, and the sandbox did not come up "
                           "(e.g. unprivileged user namespaces AppArmor-restricted). A "
-                          "payload the collector dropped as a timer would look the same.",
-                "approval": "read from the session root's own argv only. 'no bypass flag at "
-                            "launch' (key: supervised) is all argv can say: "
+                          "wrapped command the collector dropped as a timer would look the same.",
+                "approval": "read from the session root's own command line only. 'no bypass "
+                            "flag' (key: supervised) is all a command line can say: "
                             "~/.claude/settings.json, a --settings file, codex config.toml "
                             "and a mid-session mode switch are invisible. `codex app-server` "
-                            "takes its policy per thread over JSON-RPC: not observable. "
+                            "takes its policy per thread over JSON-RPC: its command line can't tell. "
                             "`--permission-mode auto` is its own state.",
                 "events_approval": "per event, approval is on the session root's record "
                                    "only: a child is 'unknown', a tagged non-agent (tool "

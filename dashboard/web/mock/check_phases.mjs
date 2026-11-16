@@ -151,25 +151,25 @@ test('phaseWhat: the copy the plan fixes', () => {
   assert.equal(P.phaseWhat(guess), 'a pause after reading, before the test run');
   const holder = ph('run', 0, 900, { n: 4, top: [['python train.py', 3]], slices: [[0, 60]], guess: 'a pause after reading, before the run' });
   assert.notEqual(P.phaseWhat(holder), holder.guess);
-  assert.equal(P.phaseWhat(holder), '4 calls · python train.py ×3 · 1 pause read as an edit (guess): a pause after reading, before the run');
+  assert.equal(P.phaseWhat(holder), '4 tool calls · python train.py ×3 · 1 pause read as an edit (guess): a pause after reading, before the run');
   // R26: a call that ran past, each as `<cmd> kept running for <dur>`
   assert.equal(
     P.phaseWhat(ph('run', 0, 900, { n: 2, top: [['python eval.py', 2]], ran_past: [['train.py', 9600]] })),
-    '2 calls · python eval.py ×2 · train.py kept running for 2.7 h',
+    '2 tool calls · python eval.py ×2 · train.py kept running for 2.7 h',
   );
-  assert.match(P.phaseWhat(ph('run', 0, 900, { ran_past: [[null, 90]] })), /a call kept running for 1\.5 min$/);
+  assert.match(P.phaseWhat(ph('run', 0, 900, { ran_past: [[null, 90]] })), /a tool call kept running for 1\.5 min$/);
   const many = ph('run', 0, 900, { ran_past: [['a', 100], ['b', 300], ['c', 200], ['d', 400], ['e', 50]] });
   assert.match(P.phaseWhat(many), /d kept running for 6\.7 min · b kept running[^·]*· c kept running[^·]*· 2 more kept running$/);
   // the rest of a phase's line, and what it never shows
   assert.equal(P.phaseWhat(ph('explore', 0, 1, { n: 19, mix: [['explore', 8], ['run', 6], ['build', 5]], top: [['ls', 5], ['cat x', 1]] })),
-    '19 calls · exploring, with some running and building · ls ×5, cat x');
+    '19 tool calls · exploring, with some running and building · ls ×5, cat x');
   // a name the tables do not hold is said as it came, and one off Object.prototype is not looked up
-  assert.equal(P.phaseWhat(ph('explore', 0, 1, { n: 5, mix: [['explore', 2], ['constructor', 2], ['toString', 1]] })), '5 calls · exploring, with some constructor and toString');
-  assert.equal(P.phaseWhat(ph('wait', 0, 1, { n: 1, waits_on: 'constructor' })), 'waiting on constructor · 1 call');
-  assert.equal(P.phaseWhat(ph('unknown', 0, 1, { n: 3 })), '3 calls');
-  assert.equal(P.phaseWhat(ph('git', 0, 1, { n: 1, top: [['git status\n  --short', 1]] })), '1 call · git status --short');
-  assert.equal(P.phaseWhat(ph('wait', 0, 1, { n: 2, waits_on: 'sleep', top: [['sleep 600', 2]] })), 'waiting on a fixed sleep · 2 calls · sleep 600 ×2');
-  assert.equal(P.phaseWhat(ph('wait', 0, 1, { n: 2, top: [['sleep 600', 2]] })), '2 calls · sleep 600 ×2');
+  assert.equal(P.phaseWhat(ph('explore', 0, 1, { n: 5, mix: [['explore', 2], ['constructor', 2], ['toString', 1]] })), '5 tool calls · exploring, with some constructor and toString');
+  assert.equal(P.phaseWhat(ph('wait', 0, 1, { n: 1, waits_on: 'constructor' })), 'waiting on constructor · 1 tool call');
+  assert.equal(P.phaseWhat(ph('unknown', 0, 1, { n: 3 })), '3 tool calls');
+  assert.equal(P.phaseWhat(ph('git', 0, 1, { n: 1, top: [['git status\n  --short', 1]] })), '1 tool call · git status --short');
+  assert.equal(P.phaseWhat(ph('wait', 0, 1, { n: 2, waits_on: 'sleep', top: [['sleep 600', 2]] })), 'waiting on a fixed sleep · 2 tool calls · sleep 600 ×2');
+  assert.equal(P.phaseWhat(ph('wait', 0, 1, { n: 2, top: [['sleep 600', 2]] })), '2 tool calls · sleep 600 ×2');
   assert.equal(P.phaseWhat(ph('wait', 0, 9000, { waits_on: 'process', every_s: 30, times: 1, top: [['pgrep -f x', 1]] })), 'waiting on a process · pgrep -f x every 30 s, 1 time');
   // the polled command is the one that ran `times` times
   assert.equal(
@@ -181,11 +181,11 @@ test('phaseWhat: the copy the plan fixes', () => {
   // never counts that call
   assert.equal(
     P.phaseWhat(ph('wait', 0, 900, { n: 7, waits_on: 'slurm', every_s: 120, times: 7, every_cmd: 'squeue -u me', top: [['squeue -u me', 6]], open: true, seen: ['squeue', 'sleep'] })),
-    'waiting on Slurm · squeue -u me every 2 min, 7 times · a call in it is still running, seen through squeue and sleep',
+    'waiting on Slurm · squeue -u me every 2 min, 7 times · a tool call in it is still running, seen through squeue and sleep',
   );
   assert.equal(
     P.phaseWhat(ph('wait', 0, 900, { n: 6, waits_on: 'sleep', every_s: 120, times: 6, every_cmd: 'sleep', top: [], open: true, seen: ['sleep'] })),
-    'waiting on a fixed sleep · sleep every 2 min, 6 times · a call in it is still running, seen through sleep',
+    'waiting on a fixed sleep · sleep every 2 min, 6 times · a tool call in it is still running, seen through sleep',
   );
 });
 
@@ -247,31 +247,31 @@ test('a sentence names a script, not a program alone, past a leading cd and a su
   assert.equal(P.shortCmd('X=$(date)'), 'X=$(date)');
 });
 
-test('an open phase says a call in it is still running, and what was seen under it (R56, R65)', () => {
+test('an open phase says a tool call in it is still running, and what was seen under it (R56, R65)', () => {
   // A call still running is never named by its first child's text: `top` holds the finished one, and the
   // clause names the programs seen under the open one, with the serial comma
   const open = ph('wait', 0, 900, { n: 2, waits_on: 'sleep', top: [['sleep 30', 1]], open: true, seen: ['sleep', 'ugrep'] });
   assert.equal(K.clockPinned(), false);
-  assert.equal(P.openClause(), 'a call in it is still running');
-  assert.equal(P.phaseOpen(open), 'a call in it is still running, seen through sleep and ugrep');
-  assert.equal(P.phaseOpen({ ...open, seen: ['sleep'] }), 'a call in it is still running, seen through sleep');
-  assert.equal(P.phaseOpen({ ...open, seen: ['pgrep', 'sleep', 'ugrep'] }), 'a call in it is still running, seen through pgrep, sleep, and ugrep');
-  assert.equal(P.phaseOpen({ ...open, seen: null }), 'a call in it is still running');
-  assert.equal(P.phaseOpen({ ...open, seen: [] }), 'a call in it is still running');
-  assert.equal(P.phaseWhat(open), 'waiting on a fixed sleep · 2 calls · sleep 30 · a call in it is still running, seen through sleep and ugrep');
+  assert.equal(P.openClause(), 'a tool call in it is still running');
+  assert.equal(P.phaseOpen(open), 'a tool call in it is still running, seen through sleep and ugrep');
+  assert.equal(P.phaseOpen({ ...open, seen: ['sleep'] }), 'a tool call in it is still running, seen through sleep');
+  assert.equal(P.phaseOpen({ ...open, seen: ['pgrep', 'sleep', 'ugrep'] }), 'a tool call in it is still running, seen through pgrep, sleep, and ugrep');
+  assert.equal(P.phaseOpen({ ...open, seen: null }), 'a tool call in it is still running');
+  assert.equal(P.phaseOpen({ ...open, seen: [] }), 'a tool call in it is still running');
+  assert.equal(P.phaseWhat(open), 'waiting on a fixed sleep · 2 tool calls · sleep 30 · a tool call in it is still running, seen through sleep and ugrep');
   assert.equal(P.phaseOpen({ ...open, open: false }), '');
   assert.doesNotMatch(P.phaseWhat({ ...open, open: false }), /still running/);
   // last on the line, after what ran past its phase
   const both = ph('run', 0, 900, { n: 2, top: [['python eval.py', 1]], ran_past: [['nohup x', 600]], open: true, seen: ['python'] });
-  assert.match(P.phaseWhat(both), /^2 calls · python eval\.py · nohup x kept running for [^·]+ · a call in it is still running, seen through python$/);
+  assert.match(P.phaseWhat(both), /^2 tool calls · python eval\.py · nohup x kept running for [^·]+ · a tool call in it is still running, seen through python$/);
   K.setClockPinned(true);
   try {
-    assert.equal(P.openClause(), 'a call in it was still running when the record ended');
-    assert.equal(P.phaseOpen(open), 'a call in it was still running when the record ended, seen through sleep and ugrep');
-    assert.equal(P.phaseOpen({ ...open, seen: null }), 'a call in it was still running when the record ended');
+    assert.equal(P.openClause(), 'a tool call in it was still running when the record ended');
+    assert.equal(P.phaseOpen(open), 'a tool call in it was still running when the record ended, seen through sleep and ugrep');
+    assert.equal(P.phaseOpen({ ...open, seen: null }), 'a tool call in it was still running when the record ended');
     assert.equal(
       P.phaseWhat(open),
-      'waiting on a fixed sleep · 2 calls · sleep 30 · a call in it was still running when the record ended, seen through sleep and ugrep',
+      'waiting on a fixed sleep · 2 tool calls · sleep 30 · a tool call in it was still running when the record ended, seen through sleep and ugrep',
     );
     assert.equal(P.phaseOpen({ ...open, open: false }), '');
   } finally {
@@ -312,7 +312,7 @@ test('a phase on the chart: its hover, the phase and the slice under a time, a l
   // the hover is the row band's own: a name, when, how long, and for an open phase R65's clause
   assert.match(P.phaseTip(ph('explore', 1789400000, 1789400720)), new RegExp(`^Exploring · ${T}–${T} · 12 min$`));
   const open = ph('wait', 1789400000, 1789400900, { open: true, seen: ['sleep', 'ugrep'] });
-  assert.match(P.phaseTip(open), new RegExp(`^Waiting · ${T}–${T} · 15 min · a call in it is still running, seen through sleep and ugrep$`));
+  assert.match(P.phaseTip(open), new RegExp(`^Waiting · ${T}–${T} · 15 min · a tool call in it is still running, seen through sleep and ugrep$`));
   assert.doesNotMatch(P.phaseTip({ ...open, open: false }), /still running/);
   // idle and a guess say what they are on a second line, as a hatch or a gap alone does not
   assert.match(P.phaseTip(ph('idle', 0, 400)), /^Idle · .+ · 6\.7 min\nno tool calls: the user's turn, or the agent thinking$/);
@@ -579,14 +579,14 @@ test('phaseWhat: an idle gap names the call the agent moved past that was still 
   assert.equal(P.phaseWhat(idle), `${said} · linktest still running since ${F.clock(T0 - 600)}`);
   assert.match(P.phaseWhat(idle), /^no tool calls: the user's turn, or the agent thinking · linktest still running since \d\d:\d\d:\d\d$/);
   // a call still running has no preview of its own, so there is no program to name
-  assert.equal(P.phaseWhat({ ...idle, alive: [[null, T0 - 600]] }), `${said} · a call still running since ${F.clock(T0 - 600)}`);
+  assert.equal(P.phaseWhat({ ...idle, alive: [[null, T0 - 600]] }), `${said} · a tool call still running since ${F.clock(T0 - 600)}`);
   // up to three come, the earliest first, and the first is the one named; a command is said as a sentence says it (R69)
   assert.equal(P.phaseWhat({ ...idle, alive: [['sleep 600', T0 - 900], ['linktest', T0 - 600], [null, T0 - 300]] }), `${said} · sleep 600 still running since ${F.clock(T0 - 900)}`);
   assert.equal(
     P.phaseWhat({ ...idle, alive: [['python3 /n/netscratch/alpha_lab/Lab/jdoe/scripts/check_jobs_and_logs.py --all', T0]] }),
     `${said} · python3 …/check_jobs_and_logs.py still running since ${F.clock(T0)}`,
   );
-  assert.equal(P.phaseWhat({ ...idle, alive: [['  ', T0]] }), `${said} · a call still running since ${F.clock(T0)}`);
+  assert.equal(P.phaseWhat({ ...idle, alive: [['  ', T0]] }), `${said} · a tool call still running since ${F.clock(T0)}`);
   // nothing running as it began, nothing said: the service sends none, and a block of the first version has no field
   assert.equal(P.phaseWhat({ ...idle, alive: null }), said);
   assert.equal(P.phaseWhat({ ...idle, alive: [] }), said);
@@ -594,7 +594,7 @@ test('phaseWhat: an idle gap names the call the agent moved past that was still 
   // the hover on the gap says it too, on its second line
   assert.equal(P.phaseTip(idle).split('\n')[1], P.phaseWhat(idle));
   // only an idle gap names one
-  assert.equal(P.phaseWhat(ph('run', 0, 900, { n: 2, top: [['python eval.py', 2]], alive: [['linktest', 5]] })), '2 calls · python eval.py ×2');
+  assert.equal(P.phaseWhat(ph('run', 0, 900, { n: 2, top: [['python eval.py', 2]], alive: [['linktest', 5]] })), '2 tool calls · python eval.py ×2');
 });
 
 test('task copy: labels, sources, the gap and lone lines, and the row line', () => {
@@ -603,9 +603,9 @@ test('task copy: labels, sources, the gap and lone lines, and the row line', () 
   assert.equal(T.taskSource(q), 'commit');
   assert.equal(T.taskSource({ ...q, source: 'pr', ref: '#235' }), 'PR #235');
   assert.equal(T.taskLabel({ ...q, source: null, label: 'Run b.py' }), 'Run b.py');
-  assert.equal(T.gapLine({ s: 7680, alive: [] }), '2.1 h with no new calls');
-  assert.match(T.gapLine({ s: 7680, alive: [['linktest', 1791623144, null]] }), /^2\.1 h with no new calls · linktest still running since \d\d:\d\d:\d\d$/);
-  assert.match(T.loneLine({ ...q, kind: 'lone', source: null, label: 'Read harness/x.py', n: 1 }), /^1 call at \d\d:\d\d:\d\d · read harness\/x\.py$/);
+  assert.equal(T.gapLine({ s: 7680, alive: [] }), '2.1 h with no new tool calls');
+  assert.match(T.gapLine({ s: 7680, alive: [['linktest', 1791623144, null]] }), /^2\.1 h with no new tool calls · linktest still running since \d\d:\d\d:\d\d$/);
+  assert.match(T.loneLine({ ...q, kind: 'lone', source: null, label: 'Read harness/x.py', n: 1 }), /^1 tool call at \d\d:\d\d:\d\d · read harness\/x\.py$/);
   const b = { tasks: ['A', 'B', 'C', 'D', 'E'].map((l) => ({ ...q, source: null, label: l })) };
   assert.equal(T.taskSequence(b), 'A → B → 3 more');
 });
@@ -628,34 +628,34 @@ test('a quoted label shows its source and quotation marks, and a built one shows
   assert.equal(T.taskLabel({ ...q, source: 'issue' }), '“Seek-based frame decoding”');
 });
 
-test('the gap line says how long with no new calls, and names the first call the agent moved past that was running', () => {
+test('the gap line says how long with no new tool calls, and names the first call the agent moved past that was running', () => {
   const T0 = 1791623144;
   const at = F.clock(T0);
-  assert.equal(T.gapLine({ s: 7680, alive: [] }), '2.1 h with no new calls');
-  assert.equal(T.gapLine({ s: 5400, alive: [] }), '1.5 h with no new calls');
+  assert.equal(T.gapLine({ s: 7680, alive: [] }), '2.1 h with no new tool calls');
+  assert.equal(T.gapLine({ s: 5400, alive: [] }), '1.5 h with no new tool calls');
   // The name the service gives the call comes first. The hung call of rtx6000a on 2026-11-01 made a folder and changed into
   // it before it ran anything, so its command, said as a sentence says one, was `mkdir -p…`: the name is the script it ran.
   const hung = 'mkdir -p /tmp/claude-1004/-madsys-x/1a2b3c4d/scratchpad/linktest && cd /tmp/claude-1004/-madsys-x/1a2b3c4d/scratchpad/linktest && timeout 600 bash t.sh';
-  assert.equal(T.gapLine({ s: 7680, alive: [[hung, T0, 't.sh']] }), `2.1 h with no new calls · t.sh still running since ${at}`);
-  assert.equal(T.gapLine({ s: 7680, alive: [[hung, T0, null]] }), `2.1 h with no new calls · ${P.shortCmd(hung)} still running since ${at}`);
-  assert.equal(T.gapLine({ s: 7680, alive: [['linktest', T0, null]] }), `2.1 h with no new calls · linktest still running since ${at}`);
-  assert.equal(T.gapLine({ s: 7680, alive: [['linktest', T0, '  ']] }), `2.1 h with no new calls · linktest still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [[hung, T0, 't.sh']] }), `2.1 h with no new tool calls · t.sh still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [[hung, T0, null]] }), `2.1 h with no new tool calls · ${P.shortCmd(hung)} still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [['linktest', T0, null]] }), `2.1 h with no new tool calls · linktest still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [['linktest', T0, '  ']] }), `2.1 h with no new tool calls · linktest still running since ${at}`);
   // a call still running has no preview of its own: it is named by the programs seen under it, and else is `a call`
-  assert.equal(T.gapLine({ s: 7680, alive: [[null, T0, 'pgrep and sleep']] }), `2.1 h with no new calls · pgrep and sleep still running since ${at}`);
-  assert.equal(T.gapLine({ s: 7680, alive: [[null, T0, null]] }), `2.1 h with no new calls · a call still running since ${at}`);
-  assert.equal(T.gapLine({ s: 7680, alive: [['  ', T0, null]] }), `2.1 h with no new calls · a call still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [[null, T0, 'pgrep and sleep']] }), `2.1 h with no new tool calls · pgrep and sleep still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [[null, T0, null]] }), `2.1 h with no new tool calls · a tool call still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [['  ', T0, null]] }), `2.1 h with no new tool calls · a tool call still running since ${at}`);
   // up to three come, the earliest first, and the first is the one named
-  assert.equal(T.gapLine({ s: 7680, alive: [[null, T0, null], ['linktest', T0 + 60, 'linktest'], ['sleep 600', T0 + 90, null]] }), `2.1 h with no new calls · a call still running since ${at}`);
-  assert.equal(T.gapLine({ s: 7680, alive: [['linktest', T0, null], [null, T0 + 60, 'sleep']] }), `2.1 h with no new calls · linktest still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [[null, T0, null], ['linktest', T0 + 60, 'linktest'], ['sleep 600', T0 + 90, null]] }), `2.1 h with no new tool calls · a tool call still running since ${at}`);
+  assert.equal(T.gapLine({ s: 7680, alive: [['linktest', T0, null], [null, T0 + 60, 'sleep']] }), `2.1 h with no new tool calls · linktest still running since ${at}`);
   // a command with no name is said as a sentence says it (R69)
   assert.equal(
     T.gapLine({ s: 5400, alive: [['python3 /n/netscratch/alpha_lab/Lab/jdoe/scripts/check_jobs_and_logs.py --all', T0, null]] }),
-    `1.5 h with no new calls · python3 …/check_jobs_and_logs.py still running since ${at}`,
+    `1.5 h with no new tool calls · python3 …/check_jobs_and_logs.py still running since ${at}`,
   );
   // the approved wording, with no end time: the call may have ended inside the gap, and the line says when it began
   assert.doesNotMatch(T.gapLine({ s: 7680, alive: [['linktest', T0, 'linktest']] }), /until|ended|–/);
   // the page's own words for how long
-  assert.equal(T.gapLine({ s: 7680, alive: [] }), `${F.dur(7680)} with no new calls`);
+  assert.equal(T.gapLine({ s: 7680, alive: [] }), `${F.dur(7680)} with no new tool calls`);
   // the fixture's gaps name their calls by the names the service gives them
   const named = blocks.flatMap((r) => r.phases.tasks ?? []).filter((t) => t.gap?.alive.length);
   assert.ok(named.some((t) => t.gap.alive[0][0] === null) && named.some((t) => t.gap.alive[0][0] !== null), 'a call with a preview, and one still running');
@@ -669,11 +669,11 @@ test('a lone line says how many calls, when, and what for: a built label in lowe
   const T0 = 1791623144;
   const at = F.clock(T0);
   const lone = task('Read harness/x.py', T0, T0 + 2, { kind: 'lone', n: 1 });
-  assert.equal(T.loneLine(lone), `1 call at ${at} · read harness/x.py`);
-  assert.equal(T.loneLine({ ...lone, n: 3 }), `3 calls at ${at} · read harness/x.py`);
-  assert.equal(T.loneLine({ ...lone, n: 8, label: 'Commands not recorded' }), `8 calls at ${at} · commands not recorded`);
+  assert.equal(T.loneLine(lone), `1 tool call at ${at} · read harness/x.py`);
+  assert.equal(T.loneLine({ ...lone, n: 3 }), `3 tool calls at ${at} · read harness/x.py`);
+  assert.equal(T.loneLine({ ...lone, n: 8, label: 'Commands not recorded' }), `8 tool calls at ${at} · commands not recorded`);
   // a quote is the agent's own text: its capital stays, inside its quotation marks
-  assert.equal(T.loneLine({ ...lone, n: 2, source: 'commit', label: 'Fix the loader' }), `2 calls at ${at} · “Fix the loader”`);
+  assert.equal(T.loneLine({ ...lone, n: 2, source: 'commit', label: 'Fix the loader' }), `2 tool calls at ${at} · “Fix the loader”`);
   assert.equal(P.lowerFirst('Read x'), 'read x');
   assert.equal(P.lowerFirst(''), '');
   assert.equal(P.lowerFirst('“Fix”'), '“Fix”');
@@ -737,28 +737,28 @@ test('taskWhat: the phases a task opens into, and its calls, singular for one', 
   const A = task('A', T0, T0 + 800, { n: 12, phases: [0, 4] });
   const B = task('B', T0 + 9000, T0 + 9100, { n: 1, phases: [4, 5], gap: { s: 8200, alive: [['linktest', T0 + 5]] } });
   const b = { list, tasks: [A, B] };
-  assert.equal(T.taskWhat(A, b), '3 phases · 12 calls');
-  assert.equal(T.taskWhat(B, b), '1 phase · 1 call');
+  assert.equal(T.taskWhat(A, b), '3 phases · 12 tool calls');
+  assert.equal(T.taskWhat(B, b), '1 phase · 1 tool call');
   assert.deepEqual(T.taskPhases(A, b).map((p) => p.kind), ['explore', 'idle', 'run']);
   assert.deepEqual(T.taskPhases(B, b).map((p) => p.kind), ['git']);
   // the task after it is the one that begins where its range ends, whichever object it is: a copy of a task, and a block
   // of copies, hold the same, and the gap's idle phase is not listed again beside its gap line
-  assert.equal(T.taskWhat({ ...A }, b), '3 phases · 12 calls');
+  assert.equal(T.taskWhat({ ...A }, b), '3 phases · 12 tool calls');
   assert.deepEqual(T.taskPhases({ ...A }, b).map((p) => p.kind), ['explore', 'idle', 'run']);
   const copies = { ...b, tasks: b.tasks.map((t) => ({ ...t })) };
-  assert.equal(T.taskWhat(copies.tasks[0], copies), '3 phases · 12 calls');
-  assert.equal(T.taskWhat(A, copies), '3 phases · 12 calls');
-  assert.equal(T.taskWhat({ ...B }, b), '1 phase · 1 call');
+  assert.equal(T.taskWhat(copies.tasks[0], copies), '3 phases · 12 tool calls');
+  assert.equal(T.taskWhat(A, copies), '3 phases · 12 tool calls');
+  assert.equal(T.taskWhat({ ...B }, b), '1 phase · 1 tool call');
   // the last task keeps its idle tail: nothing follows it to say that gap
   const tail = { list: [ph('run', 0, 100, { n: 2 }), ph('idle', 100, 5000, { n: 0, alive: [[null, 50]] })], tasks: [task('A', 0, 100, { n: 2, phases: [0, 2] })] };
-  assert.equal(T.taskWhat(tail.tasks[0], tail), '2 phases · 2 calls');
+  assert.equal(T.taskWhat(tail.tasks[0], tail), '2 phases · 2 tool calls');
   // a gap that is not a cutting one is no gap line, so its idle phase stays in its task
   const short = { list: [ph('run', 0, 100, { n: 2 }), ph('idle', 100, 900, { n: 0 }), ph('run', 900, 1000, { n: 3 })], tasks: [task('A', 0, 900, { n: 2, phases: [0, 2] }), task('B', 900, 1000, { n: 3, phases: [2, 3] })] };
-  assert.equal(T.taskWhat(short.tasks[0], short), '2 phases · 2 calls');
+  assert.equal(T.taskWhat(short.tasks[0], short), '2 phases · 2 tool calls');
   // the page's own count: a thousand has its separator
-  assert.equal(T.taskWhat(task('A', 0, 1, { n: 1234, phases: [0, 1] }), { list: [ph('run', 0, 1)], tasks: [] }), `1 phase · ${F.fint(1234)} calls`);
+  assert.equal(T.taskWhat(task('A', 0, 1, { n: 1234, phases: [0, 1] }), { list: [ph('run', 0, 1)], tasks: [] }), `1 phase · ${F.fint(1234)} tool calls`);
   // a task of no phases says so
-  assert.equal(T.taskWhat(task('A', 0, 1, { n: 4, phases: [3, 3] }), { list: [] }), '0 phases · 4 calls');
+  assert.equal(T.taskWhat(task('A', 0, 1, { n: 4, phases: [3, 3] }), { list: [] }), '0 phases · 4 tool calls');
 });
 
 test("a task block's hover: its label and source, and what it holds; a lone stretch says its line; then a call still running, and a cut log", () => {
@@ -774,35 +774,35 @@ test("a task block's hover: its label and source, and what it holds; a lone stre
   const b = { list, tasks: [A, B] };
   // a quote is in its quotation marks, with where the words came from; then what it holds, as the list says it, so the
   // idle phase of the cutting gap after it is not counted
-  assert.equal(T.taskTip(A, b), '“Fix the loader” · commit\n2 phases · 12 calls');
-  assert.equal(T.taskTip({ ...A, source: 'log' }, b), '“Fix the loader” · log\n2 phases · 12 calls');
-  assert.equal(T.taskTip({ ...A, source: 'pr', ref: '#235' }, b), '“Fix the loader” · PR #235\n2 phases · 12 calls');
-  assert.equal(T.taskTip({ ...A, source: 'pr', ref: '' }, b), '“Fix the loader” · PR\n2 phases · 12 calls');
-  assert.equal(T.taskTip({ ...A, source: 'issue' }, b), '“Fix the loader” · issue\n2 phases · 12 calls');
+  assert.equal(T.taskTip(A, b), '“Fix the loader” · commit\n2 phases · 12 tool calls');
+  assert.equal(T.taskTip({ ...A, source: 'log' }, b), '“Fix the loader” · log\n2 phases · 12 tool calls');
+  assert.equal(T.taskTip({ ...A, source: 'pr', ref: '#235' }, b), '“Fix the loader” · PR #235\n2 phases · 12 tool calls');
+  assert.equal(T.taskTip({ ...A, source: 'pr', ref: '' }, b), '“Fix the loader” · PR\n2 phases · 12 tool calls');
+  assert.equal(T.taskTip({ ...A, source: 'issue' }, b), '“Fix the loader” · issue\n2 phases · 12 tool calls');
   // a built label is no quote: no quotation marks and no source
-  assert.equal(T.taskTip({ ...A, source: null, label: 'Run b.py · out/x' }, b), 'Run b.py · out/x\n2 phases · 12 calls');
-  assert.equal(T.taskTip(B, b), 'Commit it\n1 phase · 1 call');
+  assert.equal(T.taskTip({ ...A, source: null, label: 'Run b.py · out/x' }, b), 'Run b.py · out/x\n2 phases · 12 tool calls');
+  assert.equal(T.taskTip(B, b), 'Commit it\n1 phase · 1 tool call');
   // a lone stretch says its line, whatever its label is
   const lone = task('Read harness/x.py', T0 + 9000, T0 + 9100, { kind: 'lone', n: 1, phases: [3, 4] });
-  assert.equal(T.taskTip(lone, b), `1 call at ${F.clock(T0 + 9000)} · read harness/x.py`);
+  assert.equal(T.taskTip(lone, b), `1 tool call at ${F.clock(T0 + 9000)} · read harness/x.py`);
   const quote = { ...lone, n: 3, source: 'commit', label: 'Fix it' };
   assert.equal(T.taskTip(quote, b), T.loneLine(quote));
-  assert.equal(T.taskTip(quote, b), `3 calls at ${F.clock(T0 + 9000)} · “Fix it”`);
+  assert.equal(T.taskTip(quote, b), `3 tool calls at ${F.clock(T0 + 9000)} · “Fix it”`);
 
   // Last, on a line each: that a call in it is still running, in the words an open phase's line has, and that the call log
   // was full, in the words of the note under the list of phases, from when the block says it was cut.
   const running = P.phaseOpen(ph('run', 0, 1, { open: true }));
-  assert.equal(running, 'a call in it is still running');
+  assert.equal(running, 'a tool call in it is still running');
   const cut = { ...b, cut: 120, cut_at: T0 + 150 };
-  const full = `incomplete from ${F.clock(T0 + 150)}: the call log was full`;
-  const head = '“Fix the loader” · commit\n2 phases · 12 calls';
+  const full = `incomplete from ${F.clock(T0 + 150)}: the tool-call log was full`;
+  const head = '“Fix the loader” · commit\n2 phases · 12 tool calls';
   assert.equal(T.taskTip({ ...A, open: true }, b), `${head}\n${running}`);
   assert.equal(T.taskTip({ ...A, incomplete: true }, cut), `${head}\n${full}`);
-  assert.equal(T.taskTip({ ...A, source: null, label: 'Run b.py', open: true }, b), `Run b.py\n2 phases · 12 calls\n${running}`);
+  assert.equal(T.taskTip({ ...A, source: null, label: 'Run b.py', open: true }, b), `Run b.py\n2 phases · 12 tool calls\n${running}`);
   // both: still running first, then the cut
   assert.equal(T.taskTip({ ...A, open: true, incomplete: true }, cut), `${head}\n${running}\n${full}`);
   // a block with no time for its cut says so without one
-  assert.equal(T.taskTip({ ...A, incomplete: true }, { ...b, cut: 3, cut_at: null }), `${head}\nincomplete: the call log was full`);
+  assert.equal(T.taskTip({ ...A, incomplete: true }, { ...b, cut: 3, cut_at: null }), `${head}\nincomplete: the tool-call log was full`);
   // a lone stretch says them after its line
   assert.equal(T.taskTip({ ...lone, open: true }, b), `${T.loneLine(lone)}\n${running}`);
   assert.equal(T.taskTip({ ...lone, open: true, incomplete: true }, cut), `${T.loneLine(lone)}\n${running}\n${full}`);
@@ -813,7 +813,7 @@ test("a task block's hover: its label and source, and what it holds; a lone stre
   K.setClockPinned(true);
   try {
     const ended = P.phaseOpen(ph('run', 0, 1, { open: true }));
-    assert.equal(ended, 'a call in it was still running when the record ended');
+    assert.equal(ended, 'a tool call in it was still running when the record ended');
     assert.equal(T.taskTip({ ...A, open: true }, b), `${head}\n${ended}`);
     assert.equal(T.taskTip({ ...A, open: true, incomplete: true }, cut), `${head}\n${ended}\n${full}`);
     assert.equal(T.taskTip({ ...lone, open: true }, b), `${T.loneLine(lone)}\n${ended}`);
@@ -844,12 +844,12 @@ test("a task block's hover: its label and source, and what it holds; a lone stre
 
 test('a cut call log is incomplete from when its first left-out call began, and without a time where the block has none', () => {
   const at = 1789396203.6;
-  assert.equal(P.incompleteFrom(at), `incomplete from ${F.clock(at)}: the call log was full`);
-  assert.match(P.incompleteFrom(at), /^incomplete from \d\d:\d\d:\d\d: the call log was full$/);
-  assert.equal(P.incompleteFrom(null), 'incomplete: the call log was full');
-  assert.equal(P.incompleteFrom(undefined), 'incomplete: the call log was full');
+  assert.equal(P.incompleteFrom(at), `incomplete from ${F.clock(at)}: the tool-call log was full`);
+  assert.match(P.incompleteFrom(at), /^incomplete from \d\d:\d\d:\d\d: the tool-call log was full$/);
+  assert.equal(P.incompleteFrom(null), 'incomplete: the tool-call log was full');
+  assert.equal(P.incompleteFrom(undefined), 'incomplete: the tool-call log was full');
   // the start of the epoch is a time, as a missing one is not
-  assert.equal(P.incompleteFrom(0), `incomplete from ${F.clock(0)}: the call log was full`);
+  assert.equal(P.incompleteFrom(0), `incomplete from ${F.clock(0)}: the tool-call log was full`);
   // every cut block of the fixture has a time for it
   for (const r of blocks.filter((x) => x.phases.cut > 0)) assert.equal(typeof r.phases.cut_at, 'number', r.sid);
 });
@@ -858,16 +858,16 @@ test('the note under the phase list for a cut call log: with and without a time 
   const at = 1789396203.6;
   const from = F.clock(at);
   // many calls, from a time: the calls the log left out began later than it
-  assert.equal(P.cutNote({ cut: 120, cut_at: at }), `phases are incomplete from ${from}: the call log was full, so 120 later calls are counted but in no phase`);
+  assert.equal(P.cutNote({ cut: 120, cut_at: at }), `phases are incomplete from ${from}: the tool-call log was full, so 120 later tool calls are counted but in no phase`);
   // one call
-  assert.equal(P.cutNote({ cut: 1, cut_at: at }), `phases are incomplete from ${from}: the call log was full, so 1 later call is counted but in no phase`);
+  assert.equal(P.cutNote({ cut: 1, cut_at: at }), `phases are incomplete from ${from}: the tool-call log was full, so 1 later tool call is counted but in no phase`);
   // with no time for the cut, they are not said to be later, and the sentence has no `from`
-  assert.equal(P.cutNote({ cut: 120, cut_at: null }), 'phases are incomplete: the call log was full, so 120 calls are counted but in no phase');
-  assert.equal(P.cutNote({ cut: 1, cut_at: null }), 'phases are incomplete: the call log was full, so 1 call is counted but in no phase');
+  assert.equal(P.cutNote({ cut: 120, cut_at: null }), 'phases are incomplete: the tool-call log was full, so 120 tool calls are counted but in no phase');
+  assert.equal(P.cutNote({ cut: 1, cut_at: null }), 'phases are incomplete: the tool-call log was full, so 1 tool call is counted but in no phase');
   // the page's own count: a thousand has its separator
-  assert.equal(P.cutNote({ cut: 1234, cut_at: at }), `phases are incomplete from ${from}: the call log was full, so ${F.fint(1234)} later calls are counted but in no phase`);
+  assert.equal(P.cutNote({ cut: 1234, cut_at: at }), `phases are incomplete from ${from}: the tool-call log was full, so ${F.fint(1234)} later tool calls are counted but in no phase`);
   // the start of the epoch is a time, as a missing one is not
-  assert.match(P.cutNote({ cut: 2, cut_at: 0 }), /^phases are incomplete from \d\d:\d\d:\d\d: the call log was full, so 2 later calls are counted/);
+  assert.match(P.cutNote({ cut: 2, cut_at: 0 }), /^phases are incomplete from \d\d:\d\d:\d\d: the tool-call log was full, so 2 later tool calls are counted/);
   // nothing cut, nothing said
   assert.equal(P.cutNote({ cut: 0, cut_at: null }), null);
   assert.equal(P.cutNote({ cut: 0, cut_at: at }), null);
@@ -881,7 +881,7 @@ test('the note under the phase list for a cut call log: with and without a time 
   assert.ok(blocks.some((r) => r.phases.cut > 0) && blocks.some((r) => !(r.phases.cut > 0)), 'a block that was cut, and one that was not');
   // the sentence's words are spelled in phases.ts and nowhere else in the page's code (a task's tooltip and the phase list both
   // take them from there), and the phase list calls the function, as it builds nothing of its own
-  assert.deepEqual(spelledIn(': the call log was full`'), ['lib/phases.ts']);
+  assert.deepEqual(spelledIn(': the tool-call log was full`'), ['lib/phases.ts']);
   assert.equal(callsOf('tabs/PhaseList.tsx', 'cutNote'), 1);
 });
 
@@ -917,7 +917,7 @@ test("the glossary explains tasks: where one starts, what names it, that a quote
   assert.match(g, /or after a commit or pull request\./, 'where a task starts: after a commit');
   assert.match(g, /A quoted label is the agent’s own words\./, 'a quote is the agent’s own words');
   assert.match(g, /Any other label is a verb and the names its commands used\./, 'what names the others');
-  assert.match(g, /A dashed block is a few calls hours from other work\./, 'what a lone stretch is, as it is drawn');
+  assert.match(g, /A dashed block is a few tool calls hours from other work\./, 'what a lone stretch is, as it is drawn');
   assert.doesNotMatch(g, /\bR\d+\b/, 'no ruling number');
   // a hover, not a page: no entry stands far above the others
   const longest = Math.max(...Object.entries(G.GLOSS).filter(([k]) => k !== 'tasks').map(([, v]) => v.length));
@@ -1011,20 +1011,20 @@ test('what a task says of a call still running in it and of a cut log is one fun
   const T0 = 1789400000;
   const t = task('Fix the loader', T0, T0 + 200, { source: 'commit', n: 12, phases: [0, 2] });
   const b = { list: [ph('explore', T0, T0 + 100), ph('run', T0 + 100, T0 + 200)], tasks: [t], cut: 5, cut_at: T0 + 150 };
-  const running = 'a call in it is still running';
-  const full = `incomplete from ${F.clock(T0 + 150)}: the call log was full`;
+  const running = 'a tool call in it is still running';
+  const full = `incomplete from ${F.clock(T0 + 150)}: the tool-call log was full`;
   assert.deepEqual(T.taskState(t, b), []);
   assert.deepEqual(T.taskState({ ...t, open: true }, b), [running]);
   assert.deepEqual(T.taskState({ ...t, incomplete: true }, b), [full]);
   assert.deepEqual(T.taskState({ ...t, open: true, incomplete: true }, b), [running, full], 'still running first');
-  assert.deepEqual(T.taskState({ ...t, incomplete: true }, { ...b, cut_at: null }), ['incomplete: the call log was full']);
+  assert.deepEqual(T.taskState({ ...t, incomplete: true }, { ...b, cut_at: null }), ['incomplete: the tool-call log was full']);
   // the words are the open phase's and the phase list's note: nothing new is spelled here
   assert.deepEqual(T.taskState({ ...t, open: true }, b), [P.openClause()]);
   assert.deepEqual(T.taskState({ ...t, incomplete: true }, b), [P.incompleteFrom(b.cut_at)]);
   // on a pinned clock, which will not grow, the call in it was still running when the record ended
   K.setClockPinned(true);
   try {
-    assert.deepEqual(T.taskState({ ...t, open: true }, b), ['a call in it was still running when the record ended']);
+    assert.deepEqual(T.taskState({ ...t, open: true }, b), ['a tool call in it was still running when the record ended']);
   } finally {
     K.setClockPinned(false);
   }
@@ -1087,7 +1087,7 @@ test('a command of a phase is said as the phase line says it: its masked preview
   assert.equal(P.commandLine(['sleep 600', 1234]), `sleep 600 ×${F.fint(1234)}`);
   // the phase's own line is these, in order, after its count and its mix
   const top = [['rg -n foo', 9], ['ls -la', 1], ['cat  x\n y', 3]];
-  assert.equal(P.phaseWhat(ph('explore', 0, 1, { n: 13, top })), `13 calls · ${top.map(P.commandLine).join(', ')}`);
+  assert.equal(P.phaseWhat(ph('explore', 0, 1, { n: 13, top })), `13 tool calls · ${top.map(P.commandLine).join(', ')}`);
   // every phase of the fixture: each command of its line is in the line
   for (const r of blocks) {
     for (const p of r.phases.list) for (const c of p.top) assert.ok(P.phaseWhat(p).includes(P.commandLine(c)) || p.kind === 'loop' || p.kind === 'wait', `${r.sid} ${p.kind}: ${c[0]}`);
@@ -1113,7 +1113,7 @@ test('the fixture: every phase of every row reads, and nothing is made up', () =
       assert.ok(what.length > 0 || p.kind === 'unknown', `${r.sid} ${p.kind}: empty detail`);
       // R56, R65: an open phase, and only one, says a call in it is still running (the fixture's clock goes
       // on), and names what was seen under it; a phase with no open call names nothing seen
-      assert.equal(/ · a call in it is still running(, seen through .+)?$/.test(what), p.open === true, `${r.sid} ${p.kind}: ${what}`);
+      assert.equal(/ · a tool call in it is still running(, seen through .+)?$/.test(what), p.open === true, `${r.sid} ${p.kind}: ${what}`);
       if (p.open) assert.ok(p.kind !== 'idle' && p.kind !== 'edit_guess', `${r.sid}: an open ${p.kind}`);
       if (p.open) assert.ok(Array.isArray(p.seen), `${r.sid} ${p.kind}: an open phase with no seen`);
       if (!p.open) assert.equal(p.seen, null, `${r.sid} ${p.kind}: seen on a phase with no open call`);
@@ -1251,7 +1251,7 @@ test("the fixture: tasks tile every block's phases, and every phase names its ta
       assert.ok(['task', 'lone'].includes(t.kind), `${where}: kind ${t.kind}`);
       assert.equal(t.n, mine.reduce((s, p) => s + p.n, 0), `${where}: calls`);
       assert.ok(mine[0].n > 0 && mine[0].kind !== 'idle' && mine[0].kind !== 'edit_guess', `${where}: begins at a ${mine[0].kind}, which holds no calls`);
-      if (t.kind === 'lone') assert.ok(t.n <= 8, `${where}: a lone stretch of ${t.n} calls`);
+      if (t.kind === 'lone') assert.ok(t.n <= 8, `${where}: a lone stretch of ${t.n} tool calls`);
       assert.equal(t.t0, mine[0].t0, `${where}: t0`);
       assert.ok(t.t0 <= t.t1 && t.t1 <= mine[mine.length - 1].t1, `${where}: ${t.t0} to ${t.t1}`);
       if (j) {
@@ -1279,11 +1279,11 @@ test("the fixture: tasks tile every block's phases, and every phase names its ta
       // the copy the page says of it reads
       const said = [T.taskLabel(t), T.taskWhat(t, b), t.gap ? T.gapLine(t.gap) : '', t.kind === 'lone' ? T.loneLine(t) : ''];
       for (const s of said) assert.doesNotMatch(s, unread, `${where}: ${s}`);
-      assert.match(T.taskWhat(t, b), /^\d[\d,]* phases? · \d[\d,]* calls?$/, where);
+      assert.match(T.taskWhat(t, b), /^\d[\d,]* phases? · \d[\d,]* tool calls?$/, where);
       assert.equal(T.taskLabel(t).startsWith('“'), t.source !== null, where);
       if (t.source !== null) assert.match(T.taskSource(t), /^(commit|log|PR( #\d+)?)$/, where);
       if (t.gap) assert.equal(/ still running since \d\d:\d\d:\d\d$/.test(T.gapLine(t.gap)), t.gap.alive.length > 0, `${where}: ${T.gapLine(t.gap)}`);
-      if (t.kind === 'lone') assert.match(T.loneLine(t), /^\d+ calls? at \d\d:\d\d:\d\d · .+$/, where);
+      if (t.kind === 'lone') assert.match(T.loneLine(t), /^\d+ tool calls? at \d\d:\d\d:\d\d · .+$/, where);
     });
     assert.equal(next, b.list.length, `${r.sid}: the tasks stop at phase ${next} of ${b.list.length}`);
     assert.equal(b.tasks.reduce((s, t) => s + t.n, 0), b.n_calls - b.cut, `${r.sid}: calls`);
@@ -1705,7 +1705,7 @@ test("the three-level list is the phase list's rows under the tasks, and is word
   }
   assert.equal(callsOf('tabs/TaskList.tsx', 'zoomTip'), 1, 'the click line of a task row, and of a lone row, which is a row of the same button');
   // the button that shows a phase's calls in the tree is worded here, once, and is the one an open phase has
-  assert.deepEqual(spelledIn('show its calls in the tree'), ['tabs/TaskList.tsx']);
+  assert.deepEqual(spelledIn('show its tool calls in the tree'), ['tabs/TaskList.tsx']);
   assert.match(list, /\{opened && <PhaseCalls p=\{p\} onPick=\{onPhase\} \/>\}/);
   assert.match(list, /className="linkish tl-tree" onClick=\{\(\) => onPick\(p\)\}/, 'it picks the phase, as a click on the phase does');
   // a click on a task's row picks the task and opens it; it is the zoom that opens a task by default, and a choice of the reader's wins.
@@ -1855,7 +1855,7 @@ test("the list ends in the session's live edge, as the phase list does, and what
         const html = await ui.render('tabs/TaskList.tsx', 'PhaseCalls', { p, onPick() {} });
         const lines = [...html.matchAll(/<div class="tl-cmd" data-tip="([^"]*)" data-tip-wide="true">(.*?)<\/div>/g)].map(([, tip, line]) => [textOf(tip), textOf(line)]);
         assert.deepEqual(lines, p.top.map((c) => [c[0], P.commandLine(c)]), `${r.sid} ${p.kind} ${p.t0}`);
-        assert.equal((html.match(/<button type="button" class="linkish tl-tree">show its calls in the tree<\/button>/g) ?? []).length, 1, r.sid);
+        assert.equal((html.match(/<button type="button" class="linkish tl-tree">show its tool calls in the tree<\/button>/g) ?? []).length, 1, r.sid);
       }
     }
     assert.ok(edges >= 1, 'the fixture has a session running now');

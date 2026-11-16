@@ -539,7 +539,7 @@ class SlurmReducer:
             "series": series, "rejections": fails,
             "basis": {
                 "sessions": "an agent's own key and every key folded into it (the "
-                            "process index, as Trajectories); people and IDEs one row per user",
+                            "process index, as the Sessions tab); people and IDEs one row per user",
                 "poll": "queries within %gs are one poll; polls within %gs one loop; "
                         "a loop of %d min or more is counted as polling"
                         % (POLL_JOIN_S, LOOP_GAP_S, LOOP_MIN_S // 60),

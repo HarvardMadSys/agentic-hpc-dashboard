@@ -1,6 +1,6 @@
 # The dashboard's demo mode in one image: the real service over a synthetic feed
 # it writes itself (dashboard/rc_dashboard/demo). No collector, no cluster, no
-# root. Everything it serves is made up, and every page says "synthetic data".
+# root. Everything it serves is made up, and every page says "fake data".
 #
 #   docker build -f docker/demo/Dockerfile -t rc-dashboard-demo .
 #   docker run --rm -p 8080:8080 rc-dashboard-demo         # http://127.0.0.1:8080

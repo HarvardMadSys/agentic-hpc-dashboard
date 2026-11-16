@@ -168,19 +168,20 @@ class Probe(threading.Thread):
         self.svc, self.path, self.every = svc, path, every
         self.lat = []
         self.fail = 0
-        self._stop = threading.Event()
+        # not `_stop`: on Python 3.11 and 3.12 Thread.join() calls its own _stop()
+        self._halt = threading.Event()
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             st, _b, dt = self.svc.get(self.path, timeout=120)
             if st == 200:
                 self.lat.append(dt)
             else:
                 self.fail += 1
-            self._stop.wait(self.every)
+            self._halt.wait(self.every)
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
         self.join(150)
         return stats(self.lat)
 

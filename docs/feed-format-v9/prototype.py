@@ -87,8 +87,15 @@ ENVELOPE = ("ts", "ts_epoch", "host", "event", "collector_pid", "schema_version"
 RUN_EVENTS = ("meta", "stop", "residency_totals")      # keep collector_pid (health.py)
 EXIT_EVENTS = ("exit", "truncated")
 TICK_EVENTS = ("residency", "conn", "netio", "submit")
-# Exit fields schema 9 drops: derivable, per-capture constants, or always null.
-EXIT_DROP = ("start", "cpu_pct", "cpu_scope", "samples", "state_last")
+# What schema 9 drops from an `exit` or `truncated` record is only what it can
+# rebuild for THAT record. An `exit` (`_exit_record`) always has `cpu_pct`
+# (cpu_s / duration_s), and `samples`/`state_last` are null poller placeholders.
+# A `truncated` record is built elsewhere (`flush_live`): it has no `cpu_pct`, its
+# `state_last` is the process's last /proc state, its `cpu_scope` is always
+# `process`, and its counters' `io.scope` is `proc`. So `samples` and `state_last`
+# are dropped only when null, and a scope only when it is the capture's own
+# (`meta.cpu_scope`, `meta.counters_scope`).
+NULL_ONLY = ("samples", "state_last")
 MIB = 1048576
 
 # Every difference the round trip may show, and why. Anything else fails `verify`.
@@ -103,7 +110,6 @@ DECLARED = {
     "cpu_pct": "rebuilt from the rounded cpu_s/duration_s, so the last digit can move",
     "conns.peers": "each merged into an endpoint row that agrees on bytes and counts, "
                    "or kept whole in conns.peers_unmatched; checked separately below",
-    "conns.providers": "derivable from net_endpoints' rows",
 }
 
 # The zone schema 8's naive strings are read and written in (`--tz`); None is
@@ -232,7 +238,11 @@ class Index:
         if host not in self.btime:
             self.btime[host] = (ts or 0) - 30 * 86400
             self.btime_guessed.add(host)
-        if ev in EXIT_EVENTS and r.get("pid") is not None:
+        if ev in EXIT_EVENTS and r.get("pid") is not None \
+                and (r.get("duration_s") is not None or r.get("start") is not None):
+            # Only a record that knows its start is a life: one that does not (a
+            # truncated process with no exec time and no /proc start) would be a
+            # life starting at its own timestamp, and a second process on its pid.
             self._life(host, r["pid"], exit_start(r), ts)
         elif ev == "residency" and r.get("pid") is not None and r.get("age_s") is not None:
             self._life(host, r["pid"], ts - r["age_s"], None)
@@ -311,22 +321,33 @@ class Index:
 def exit_start(r):
     if r.get("duration_s") is not None:
         return r["ts_epoch"] - r["duration_s"]
-    if r.get("start"):
+    if r.get("start") is not None:
         return parse_stamp(r["start"])
     return r["ts_epoch"]
 
 
 # --------------------------------------------------------------------------- convert
 
-def io_v9(io8):
+def scopes(ix, host, ts):
+    """The capture's own scopes for a record at `ts`: its run's `meta`."""
+    meta = ix.run_at(host, ts)[1]
+    return (meta.get("cpu_scope") or "process", meta.get("counters_scope") or "process")
+
+
+def io_v9(io8, scope):
+    """The io block in bytes. `scope` goes only where it is not the capture's
+    (`scope`): a truncated record's counters are /proc's (`proc`)."""
     if io8 is None:
         return None
     out = {}
     for k, v in io8.items():
         if k == "scope":
-            continue                     # a property of the capture: meta.counters_scope
-        out[k[:-3] + "_bytes" if k.endswith("_mb") else k] = (
-            None if v is None else int(round(v * 1e6)))
+            if v != scope:
+                out["scope"] = v
+        elif k.endswith("_mb"):
+            out[k[:-3] + "_bytes"] = None if v is None else int(round(v * 1e6))
+        else:
+            out[k] = v
     return out
 
 
@@ -366,9 +387,12 @@ def endpoints_v9(ne, conns):
 
 
 def conns_v9(c, peers_left):
+    """The conns block without `peers`, which the endpoint rows now hold.
+    `providers` stays: it counts every connection (`_conn_fold`), failed ones
+    and those past the top-N peers included, which no endpoint row can."""
     if c is None:
         return None
-    out = {k: v for k, v in c.items() if k not in ("peers", "providers")}
+    out = {k: v for k, v in c.items() if k != "peers"}
     if peers_left:                       # never silently dropped
         out["peers_unmatched"] = peers_left
     return out
@@ -426,7 +450,7 @@ def to_v9(r, ix, day, counts):
     tracked = r.get("actor") is not None
     if ev in EXIT_EVENTS:
         start = round(exit_start(r), 3)
-        if r.get("start") and stamp(start) != r["start"]:
+        if r.get("start") is not None and stamp(start) != r["start"]:
             s = parse_stamp(r["start"])
             if s - 2.0 <= start <= s + 3.0:
                 # The same instant, a second boundary apart: ts_epoch is stamped
@@ -445,7 +469,12 @@ def to_v9(r, ix, day, counts):
         ppk = ix.pk(host, r.get("ppid"), start) if r.get("ppid") else None
         out.update(pk=pk_, ppk=ppk, sess=sess)
         out.update((k, r.get(k)) for k in PROC_KEYS)
-        out["start_epoch"] = round(start, 3)
+        # Null wherever schema 8's `start` is null, as it was: a truncated record
+        # with no exec time and no /proc start, and also an exit whose start the
+        # collector could not place (no boot time) though it has `duration_s`.
+        # `duration_s` is kept either way, and `pk` still takes a start: the
+        # one ts_epoch - duration_s gives, or a guess.
+        out["start_epoch"] = round(start, 3) if r.get("start") is not None else None
         define_session(ix, day, host, sess, ts)
     elif tracked:
         pk_ = ix.pk(host, r.get("pid"), ts)
@@ -461,17 +490,27 @@ def to_v9(r, ix, day, counts):
     peers_left = []
     if ev in EXIT_EVENTS:
         ne, peers_left = endpoints_v9(r.get("net_endpoints"), r.get("conns"))
+        cpu_scope, io_scope = scopes(ix, host, ts)
     for k, v in r.items():
         if k in ENVELOPE or k in V8_IDENTITY:
             continue
         if ev in EXIT_EVENTS:
-            if k in EXIT_DROP:
+            if k == "start":
+                continue                    # start_epoch, above
+            if k == "cpu_pct" and ev == "exit":
+                continue                    # cpu_s / duration_s, rebuilt
+            if k in NULL_ONLY and v is None:
                 continue
+            if k == "cpu_scope" and v == cpu_scope:
+                continue                    # the capture's, in meta
             if k == "peak_rss_mb":
                 out["peak_rss_bytes"] = None if v is None else int(round(v * MIB))
                 continue
+            if k == "rss_mb":               # a truncated record's VmRSS at the stop
+                out["rss_bytes"] = None if v is None else int(round(v * MIB))
+                continue
             if k == "io":
-                out["io"] = io_v9(v)
+                out["io"] = io_v9(v, io_scope)
                 continue
             if k == "conns":
                 out["conns"] = conns_v9(v, peers_left)
@@ -548,15 +587,22 @@ def to_v8(r, ix, defs, sessions):
         if k == "peak_rss_bytes":
             out["peak_rss_mb"] = None if v is None else round(v / MIB, 2)
         elif k == "rss_bytes":
-            out["rss_mb"] = None if v is None else round(v / MIB, 1)
+            # the collector rounds a truncated record's to 2 places, a residency's to 1
+            places = 2 if ev in EXIT_EVENTS else 1
+            out["rss_mb"] = None if v is None else round(v / MIB, places)
         elif k == "top_procs" and v:
             out[k] = [{("rss_mb" if kk == "rss_bytes" else kk):
                        (round(vv / MIB, 1) if kk == "rss_bytes" and vv is not None else vv)
                        for kk, vv in p.items()} for p in v]
         elif k == "io" and v is not None:
-            out["io"] = {(kk[:-6] + "_mb" if kk.endswith("_bytes") else kk):
-                         (None if vv is None else round(vv / 1e6, 3)) for kk, vv in v.items()}
-            out["io"]["scope"] = meta.get("counters_scope") or "process"
+            io = {}
+            for kk, vv in v.items():
+                if kk.endswith("_bytes"):
+                    io[kk[:-6] + "_mb"] = None if vv is None else round(vv / 1e6, 3)
+                else:
+                    io[kk] = vv
+            io.setdefault("scope", meta.get("counters_scope") or "process")
+            out["io"] = io
         elif k == "net_endpoints" and v is not None:
             rows = [{kk: vv for kk, vv in e.items() if kk not in ("conns", "failed")}
                     for e in v.get("endpoints") or []]
@@ -572,10 +618,13 @@ def to_v8(r, ix, defs, sessions):
             out[k] = v
     if ev in EXIT_EVENTS:
         out["start"] = stamp(r["start_epoch"]) if r.get("start_epoch") is not None else None
-        d, c = out.get("duration_s"), out.get("cpu_s")
-        out["cpu_pct"] = round(100.0 * c / d, 1) if d and d >= 0.01 and c is not None else None
-        out["cpu_scope"] = meta.get("cpu_scope") or "process"
-        out["samples"] = out["state_last"] = None
+        if ev == "exit":
+            d, c = out.get("duration_s"), out.get("cpu_s")
+            out["cpu_pct"] = (round(100.0 * c / d, 1) if d and d >= 0.01 and c is not None
+                              else None)
+        out.setdefault("cpu_scope", meta.get("cpu_scope") or "process")
+        for k in NULL_ONLY:
+            out.setdefault(k, None)
     return out
 
 
@@ -877,7 +926,7 @@ def fmt(b):
 
 # ------------------------------------------------------------------------------ demo
 
-def demo(out, hours, hosts):
+def demo(out, hours, hosts, truncated=False):
     """A synthetic schema-8 feed from the dashboard's demo generator."""
     here = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, os.path.join(here, "..", "..", "dashboard"))
@@ -891,7 +940,75 @@ def demo(out, hours, hosts):
         f.append(w.records(t, t1))
         t = t1
     f.close()
+    if truncated:
+        print("added %d truncated record(s); %s's capture is leader-scoped"
+              % add_stops(f.ebpf))
     print("wrote %s (ebpf root %s, node root %s)" % (out, f.ebpf, f.node))
+
+
+def add_stops(root):
+    """What the demo generator never writes, added to its feed (`demo --truncated`).
+
+    Each host-day ends with a collector stop: a `truncated` record for each of up
+    to six agent trees live at their last residency tick, written as the
+    collector's `flush_live` writes one (no cpu_pct, a last /proc state, cpu_scope
+    `process`, /proc counters with io.scope `proc`), one with no start and one
+    with no /proc I/O. And the first host's capture is `leader`-scoped, as on a
+    kernel without the `signal` block: its meta and its exits say `leader`, which
+    its truncated records do not. Returns (records added, that host)."""
+    files = day_files(root)
+    leader = min((h for _d, h in files), default=None)
+    added = 0
+    for (_day, host), streams in files.items():
+        snap, exits = streams.get("snapshot"), streams.get("exits")
+        if not snap or not exits or snap.endswith(".gz") or exits.endswith(".gz"):
+            continue
+        srecs, erecs = read_records(snap), read_records(exits)
+        if host == leader:
+            for r in srecs:
+                if r.get("event") == "meta":
+                    r["cpu_scope"] = r["counters_scope"] = "leader"
+            for r in erecs:
+                if r.get("event") == "exit":
+                    r["cpu_scope"] = "leader"
+                    if r.get("io"):
+                        r["io"]["scope"] = "leader"
+        roots = {r["pid"]: r for r in srecs if r.get("event") == "residency"}
+        metas = [r for r in srecs if r.get("event") == "meta"]
+        t_stop = max(r["ts_epoch"] for r in srecs + erecs) + 1.0
+        for i, r in enumerate(list(roots.values())[:6]):
+            start_ep = r["ts_epoch"] - r["age_s"]
+            known = i != 1                          # no exec time and no /proc start
+            rec = {"ts": stamp(t_stop), "ts_epoch": t_stop, "host": host,
+                   "event": "truncated",
+                   "collector_pid": metas[-1]["collector_pid"] if metas
+                   else r.get("collector_pid"),
+                   "schema_version": r.get("schema_version")}
+            if "synthetic" in r:
+                rec["synthetic"] = r["synthetic"]
+            rec.update((k, r.get(k)) for k in V8_IDENTITY)
+            rec.update({
+                "start": stamp(start_ep) if known else None,
+                "duration_s": round(t_stop - start_ep, 4) if known else None,
+                "duration_src": "proc", "cpu_s": r.get("cpu_s"), "cpu_scope": "process",
+                "child_cpu_s": 0.25 * i, "rss_mb": round((r.get("rss_mb") or 0) + 0.01 * i, 2),
+                "threads": r.get("threads"), "state_last": "RSDSSZ"[i],
+                "min_flt": 1000 + i, "maj_flt": i,
+                "dstate_wait_s": None, "dstate_episodes": None, "dstate_max_s": None,
+                "dstate_src": None,
+                "net_tx_bytes": 100 * i, "net_rx_bytes": 200 * i, "net_calls": i,
+                "io": None if i == 2 else {"rd_mb": round(1.234 + i, 3), "wr_mb": 0.5,
+                                           "rchar_mb": 2.0, "wchar_mb": 0.75,
+                                           "scope": "proc"},
+                "conns": None, "net_endpoints": None,
+                "exit_code": None, "signal": None, "core_dumped": None, "samples": None})
+            erecs.append(rec)
+            added += 1
+        for path, recs in ((snap, srecs), (exits, erecs)):
+            with open(path, "w") as fh:
+                for r in recs:
+                    fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+    return added, leader
 
 
 def main(argv=None):
@@ -901,6 +1018,9 @@ def main(argv=None):
     d.add_argument("dir")
     d.add_argument("--hours", type=float, default=24)
     d.add_argument("--hosts", type=int, default=2)
+    d.add_argument("--truncated", action="store_true",
+                   help="end each host-day with a collector stop (truncated records) and "
+                        "make the first host's capture leader-scoped (add_stops)")
     r = sub.add_parser("run")
     r.add_argument("ebpf_root")
     r.add_argument("out_dir")
@@ -909,7 +1029,7 @@ def main(argv=None):
                                 "process's)")
     a = ap.parse_args(argv)
     if a.cmd == "demo":
-        return demo(a.dir, a.hours, a.hosts)
+        return demo(a.dir, a.hours, a.hosts, a.truncated)
     if a.tz:
         global ZONE
         from zoneinfo import ZoneInfo

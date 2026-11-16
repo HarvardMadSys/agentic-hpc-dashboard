@@ -16,10 +16,12 @@ import { SortTh } from '../components/SortTh';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint, mb, pc } from '../lib/format';
 import { useSort } from '../lib/useSort';
+import { useNodeWords } from '../lib/nodes';
+import type { NodeWords } from '../lib/nodes';
 
 export type EndpointBy = 'calls' | 'bytes';
 const BYS: { k: EndpointBy; lbl: string; tip: string }[] = [
-  { k: 'calls', lbl: 'most calls', tip: 'the endpoints the processes made the most send and receive calls to' },
+  { k: 'calls', lbl: 'most network calls', tip: 'the endpoints the processes made the most send and receive calls to' },
   { k: 'bytes', lbl: 'most bytes', tip: 'the endpoints the processes sent and received the most bytes to and from' },
 ];
 
@@ -50,7 +52,7 @@ export function rankEndpoints(rows: EndpointRow[], cls: readonly string[], by: E
 
 function whence(r: EndpointRow, rdns: boolean): string {
   if (r.pending) return 'name lookup in progress: listed by what is known so far';
-  if (r.source === 'dns') return 'named by reverse DNS from the dashboard’s host';
+  if (r.source === 'dns') return 'named by reverse DNS, looked up where the dashboard runs';
   if (r.source === 'argv') {
     return rdns
       ? 'named by a process’s command line: reverse DNS has no name for it'
@@ -59,14 +61,14 @@ function whence(r: EndpointRow, rdns: boolean): string {
   return rdns ? 'no name: reverse DNS has none, and no command line named it' : 'no name: no command line named it';
 }
 
-function rowTip(r: EndpointRow, rdns: boolean, cls: readonly string[]): string {
+function rowTip(r: EndpointRow, rdns: boolean, cls: readonly string[], nodes: NodeWords): string {
   const more = r.n_addrs - r.addrs.length;
   return [
     r.name,
     whence(r, rdns),
     `${r.n_addrs === 1 ? 'address' : `${fint(r.n_addrs)} addresses`}: ${r.addrs.join(', ')}${more > 0 ? `, and ${fint(more)} more` : ''}`,
-    r.ports.length ? `${r.inbound ? 'this host’s port' : 'port'}: ${r.ports.join(', ')}` : '',
-    r.inbound ? 'inbound: a client that reached this host' : '',
+    r.ports.length ? `${r.inbound ? `this ${nodes.one}’s port` : 'port'}: ${r.ports.join(', ')}` : '',
+    r.inbound ? `inbound: a client that reached this ${nodes.one}` : '',
     r.external ? '' : 'a private or loopback address',
     r.provider ? `provider: ${r.provider}` : '',
     `${fint(callsOf(r, cls))} calls · sent ${mb(txOf(r, cls) / MB)} · received ${mb(rxOf(r, cls) / MB)}`,
@@ -84,6 +86,7 @@ export function NetEndpoints({ ep, have, byClass }: {
   have: string[];
   byClass: Record<string, IoClassBlock>;
 }) {
+  const nodes = useNodeWords();
   const [by, setBy] = useState<EndpointBy>('calls');
   // its own order is the rank; a header re-sorts the ten, a third click restores it
   const s = useSort<Col>('rank', 'asc');
@@ -122,7 +125,7 @@ export function NetEndpoints({ ep, have, byClass }: {
             <thead>
               <tr>
                 <SortTh s={s} k="rank" num first="asc" tip={`the rank by ${by === 'calls' ? 'calls' : 'bytes'}`}>#</SortTh>
-                <SortTh s={s} k="name" first="asc" tip="reverse DNS from the dashboard’s host, else a name a process’s command line gave, else the address; hover a name for its addresses and ports">endpoint</SortTh>
+                <SortTh s={s} k="name" first="asc" tip="reverse DNS, looked up where the dashboard runs, else a name a process’s command line gave, else the address; hover a name for its addresses and ports">endpoint</SortTh>
                 <SortTh s={s} k="calls" num tip="send and receive calls">calls</SortTh>
                 <SortTh s={s} k="tx" num tip="bytes sent to it">sent</SortTh>
                 <SortTh s={s} k="rx" num tip="bytes received from it">received</SortTh>
@@ -140,7 +143,7 @@ export function NetEndpoints({ ep, have, byClass }: {
                 return (
                   <tr key={`${r.name}\u0000${r.inbound}`}>
                     <td className="num nm">{rank.get(r)}</td>
-                    <td className="ep-name" data-tip={rowTip(r, ep.rdns, cls)}>
+                    <td className="ep-name" data-tip={rowTip(r, ep.rdns, cls, nodes)}>
                       <span className="mono">{r.name}</span>
                       {r.inbound && <span className="ep-tag">inbound</span>}
                       {r.pending && <span className="ep-tag">looking up</span>}

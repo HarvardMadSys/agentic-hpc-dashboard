@@ -50,10 +50,11 @@ service's, with its hours in a fixed EDT, so it is the same in any zone.
 The fixture deliberately contains the awkward states the UI has to get right: a `missing`
 feed, a `stale` feed whose `lag_s` exceeds its own `max_age_s`, an `empty` feed, `null`
 rate bins (including a 23-minute outage), accumulators with `n: 0, coverage_pct: 0`, a
-sandbox slice that `exited before read` (key `denied`), a session whose every sandbox
+sandbox slice that `exited before it was checked` (key `denied`), a session whose every sandbox
 attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
-reload — the middleware re-reads the file on every request.
+reload — the middleware re-reads the file on every request. Delete a panel's key instead to
+see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels.
 
 The fixture's agent rows carry the tasks the page has to word: quoted from a commit, from a log entry, and
 from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
@@ -138,13 +139,16 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    Crimson `#A51C30` (`--s1`) is reserved for `agent`. Eight series slots plus one grey
    tail (`--sg`); the purpose table in `src/lib/purposes.ts` folds everything outside its
    eight slots into `other` rather than inventing a ninth hue. A series that is not a
-   class — a tool, or a direction such as egress and ingress — takes its hue from
+   class — a tool, or a direction such as sent and received — takes its hue from
    `TOOL_COL` (`src/charts/TimeChart.tsx`), never a class's.
 4. **Zero is not missing** — `_present === false` renders the shared `<EmptyState>`:
    the panel frame, the title, the feed name, and one line per `_paths` entry, verbatim
    (`no data from /var/log/ebpfm`). A feed that IS present but has no rows renders
    `<NoRows>` — the word `none`. The two look nothing alike, because they are not the
-   same fact.
+   same fact. A panel the backend did not return — an answer without its key, or a
+   request that failed — renders `<NotReturned>`: one dashed line reading `not returned`, the
+   reason, and the feed it reads. It wears no feed status and names no path, because no
+   feed reported anything; whether the feed is healthy is the Feeds tab's to say.
 5. **Nothing fabricated** — there is no `Math.random()` anywhere in `src/`
    (`npm run check:no-random` asserts it), and nothing interpolates between frames. A
    `null` rate bin arrives as `null` and `Lines` emits a separate subpath around it, so a
@@ -153,31 +157,74 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    reach the production bundle. The service's demo mode (`rc_dashboard/demo`) feeds it
    records that were never measured, and the page says so on every tab: the feeds report
    lists the hosts whose records carry `"synthetic": true` (`synthetic_hosts`), and while
-   any does, the header shows a dashed **synthetic data** pill beside the live one and the
-   Feeds tab tags each such host.
+   any does, every tab opens with a *Fake data* note, the header shows a dashed **fake data**
+   pill beside the live one, and the Feeds tab tags each such host.
 6. **Coverage is part of the number** — `<Coverage>`, `<AccumCell>` and `<QuantCells>`
    print `coverage_pct` next to every value that carries one. An accumulator or quantile
    with `n: 0` renders the words **`not measured`**, never `0`.
 7. **Data only** — a panel carries a title, its feed, and the chart or table. Every
    `notes` / `basis` / `cpu_basis` / `scope` / `dedup.rule` string goes into `<Basis>`, a
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
-8. **Responsive to ~900px** — below 900px the rail becomes a drawer, opened from a top bar
-   that names the tab, and the grid collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
-   never scrolls horizontally. A time series is drawn at its container's width, at 1:1
-   (`<Fluid>`, `src/charts/primitives.tsx`), so it fills its panel and its 10px labels stay
-   10px at any width; on a narrow plot its ticks thin out (`tickTarget`) rather than
-   overprint.
+8. **Down to a phone** — at 900px and under (`src/lib/useNarrow.ts`) the rail becomes a
+   drawer, opened from a top bar that names the tab, and every grid collapses to one column.
+   Wide tables scroll inside their own `.scroller`, the widest with their label column held
+   in view (`pin`); the page body never scrolls horizontally, down to 320px, and a table's
+   edge fades where there is more to scroll to (`src/lib/scrollEdges.ts`), so a cut-off
+   column does not pass for the last one. A panel's controls drop under its title and its
+   switches wrap. A time series is drawn at its container's width, at 1:1 (`<Fluid>`,
+   `src/charts/primitives.tsx`), and in the narrow layout so is every other chart in a box
+   narrower than it (`useFit`), so a 10px label stays 10px instead of printing at 3px; on a
+   narrow plot the ticks thin out (`tickTarget`) rather than overprint. On a touch screen a
+   tap shows a `data-tip`, controls are a fingertip high, and form fields are 16px so iOS
+   does not zoom into them. Above 900px, with a mouse, the page is as it was.
 
 Two more that the payloads force:
 
-- **Both grains, where both exist.** The sandbox tab shows per-event *and* per-session (the
+- **Both grains, where both exist.** The Internal tab's sandbox panels show per-process *and* per-session (the
   session judged by its tool calls); Live's *Who uses what* shows the same fleet in eight
   units, because the class ranking is not stable across them.
 - **`denied` is not `unsandboxed`.** Four sandbox states. `denied`, labelled "exited before
-  read", is the namespace links being gone when the collector looked (it is root; these are
+  it was checked", is the namespace links being gone when the collector looked (it is root; these are
   few-ms processes), so it gets its own hue *and* a hatch (`src/components/Defs.tsx`). Every
-  share is a state over the KNOWN verdicts with coverage beside it (`src/lib/sandbox.ts`), so
+  share is a state over the KNOWN states with coverage beside it (`src/lib/sandbox.ts`), so
   neither it nor `unknown` sits silently in a denominator.
+
+## Words
+
+One word for each thing, on every tab. A label says the word in the first column; the words
+in the last are not used for that thing anywhere on the page. `src/lib/glossary.ts` holds
+the same table, and the line each word shows on hover (its `?`), where the precise reading
+is: what is measured, and what it cannot see.
+
+| say | for | not |
+|---|---|---|
+| class: **agent**, **human**, **IDE** | who ran it | "who ran it" as a heading, people, editor |
+| **agent**, **agent type** | an AI coding agent (one running copy of one, as the Agents tab counts them), and which it is: Claude Code, Codex, … | a run of one: that is a session |
+| **session** | one run of an agent or an IDE and everything it started, or one person's terminal login | trajectory, tree, run |
+| **process tree** | a session's processes, each under the one that started it | trajectory |
+| **process** | one program that ran; the collector records it when it exits | event, exits (as a count) |
+| **tool call** | a command an agent issued itself; what that command started counts as processes | call, command of its own |
+| **login node** | a machine the collector watches, in the site's own word (`ui.node_noun`, `src/lib/nodes.ts`) | host, machine |
+| **start folder** | the directory an agent was started in | home: that is a user's home folder |
+| **driven from** | a terminal, a script, an IDE extension, the desktop app, the web or a phone, or unknown | launcher, surface, the CLI/app prefix |
+| **approval at launch** | bypass flag, auto mode, no bypass flag, can't tell | approval bypassed, not observable |
+| **sandboxed** | ran in its own namespaces | namespace-isolated, isolated, unsandboxed |
+| **sandbox failed to start** | a wrapper ran, and the command it wraps did not | attempt failed (no payload ran) |
+| **wrapped command** | what a sandbox wrapper was asked to run | payload |
+| **memory**, **peak memory** | resident memory (RSS), and the most of it held at once | resident, memory in use |
+| **disk read**, **disk written** | bytes that came from or reached the disk | rd, wr, `rd_mb`, `wr_mb` |
+| **read requested**, **write requested** | bytes through `read()` and `write()`, the page cache included | syscall bytes, rchar, wchar |
+| **sent**, **received** | network bytes | tx, rx, egress, ingress |
+| **median** | the middle value | p50 |
+| **pieces** | how many collector keys a session's row was joined from | keys |
+| **feed** | a stream of records the page reads: process tracer, node metrics, job accounting, … | data source, tier, provenance |
+| **fake data** | the demo's made-up records | synthetic data |
+
+The tabs are Live, Users, Agents, **Sessions**, Login nodes (Resources, **Risks**, Slurm), Ask LLM,
+Internal and Feeds. A tab's URL key (`?tab=trajectories`, `?tab=risk`), an API field and a
+filter key keep their old names, so links, citations and exports are unchanged: only what the
+page says moved. A panel whose title changed keeps its old anchor (`id=`), which
+`src/lib/cites.ts` points at.
 
 ## The window control
 
@@ -197,9 +244,10 @@ Three rules it follows, all of them the same rule this page follows everywhere:
   cannot offer a span the process does not hold.
 - **A clamp is shown, never silent.** Ask for 30 days against 7 days of retention and the
   control reads `asked 30d · showing 7d` with the reason on hover.
-- **The three kinds of nothing stay three.** A panel whose window is still being reduced
+- **The kinds of nothing stay apart.** A panel whose window is still being reduced
   renders `<Building>` — a solid frame and a percentage — not `none` (which would assert a
-  measurement) and not the empty state (which would blame the feed).
+  measurement) and not the empty state (which would blame the feed). One the backend did
+  not return renders `<NotReturned>` (rule 4), never the empty state.
 
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
@@ -207,12 +255,15 @@ picker: during a rebuild those genuinely differ, and the plate is the one that m
 ## The rail and "go to"
 
 The rail lists the tabs in their reading order under two words, Monitor and More, each with
-its icon, and the open tab's sections under it. Resources, Risk & Warning and Slurm share one
+its icon, and the open tab's sections under it. Resources, Risks and Slurm share one
 entry, named in the site's own word for its hosts (`ui.node_noun`, "Login nodes"; their
 figures are login-node use, not the cluster's), with a sub-tab each along the foot of the
 head. A sub-tab keeps its own key (`?tab=resources`, `risk`, `slurm`), so links and citations
 land where they did, and the entry reopens the sub-tab last used. Overview's one table is a
-section of Live (*Who uses what*), and `?tab=overview` lands on it. It folds to the icons alone
+section of Live (*Who uses what*), and `?tab=overview` lands on it. The section under the top of
+the screen is marked as the page scrolls — on a page too short to scroll, the first — and one
+picked from the list or from go-to stays marked while it is on screen, even near the foot of a
+page where it cannot reach the top. It folds to the icons alone
 (`[`, or the button at its foot), which this browser remembers (`localStorage`, a per-viewer
 convenience: storage that is absent or refuses just leaves it unfolded). Its foot says how
 the page gets its data: the transport as a light, the last update, the window, and when the
@@ -244,23 +295,21 @@ The tip is visual only: its layer is `aria-hidden`, and no control points at it 
 
 | tab | source | notes |
 |---|---|---|
-| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, *Who uses what* (each class's share of the window in eight units, the old Overview tab; `?tab=overview` lands on it), per-host table with a per-class split, bounded event stream, submissions |
+| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, *Who uses what* (each class's share of the window in eight units, the old Overview tab; `?tab=overview` lands on it), per-login-node table with a per-class split, bounded event stream, submissions |
 | **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait, and shown as a table or as **figures**, each user drawn from their numbers (`src/components/PortraitFigure.tsx`: a part for each number, its numbers and rule on hover, a key beside it); a row or a figure opens the user's **portrait** (`?portrait=`): their figure, how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
-| **Sessions & tools** | `tool_mix` | the 12-way bucket mix, counted then costed; per-class head; shell kinds |
-| **Login nodes › Resources** (`?tab=resources`) | `resources` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, resident memory sampled from residency ticks; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured` |
-| **Login nodes › Risk & Warning** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
+| **Agents** | `cascades`, `tool_mix` | agent and subagent behaviour (`?tab=agents`, `?tab=cascades` still opens it): agent trees deepest first (agent / infra / client nodes, how each parent was found, each agent's start folder, directories and writes outside it), agents with **subagents** kept apart from **hosted** sessions (a daemon or server running them); **Workspace & blast radius** per agent with a *this agent only / with its subagents* toggle -- where its processes **ran** (measured), the **bytes** they moved (measured per process), the paths its command lines **named** (inferred, drawn dashed), writes and deletes outside its start folder flagged by where they landed; depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged; then the **Tool mix** and **Top tools** (the old Sessions & tools tab: the 12-way bucket mix, counted then costed, by class or by kind of tool; per-class head) |
+| **Sessions** (`?tab=trajectories`) | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (processes and CPU always visible), a ribbon (the purpose of each process, or for an agent whose commands are read its phases, with a line naming its tasks: [below](#sessions-tasks-phases-and-processes)) + tool tokens, `dominant_user_share_pct`; a **pieces** count for how many collector session keys each row joins and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |
+| **Login nodes › Resources** (`?tab=resources`; `?tab=io` opens it too) | `resources`, `io_process` | time series over the window (`series`): exits, CPU, runqueue wait, D-state by tool and major faults by exit time, memory sampled from the census of live processes; run vs wait accumulators with coverage, quantile spine, delay accounting shown as `not measured`; then the I/O panels: requested bytes against disk bytes (the gap is the page cache), network bytes and endpoints, disk read and written by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
+| **Login nodes › Risks** (`?tab=risk`) | `risk` | dangerous commands on a login node, credentials on command lines (counted, never shown), and build / interpreter CPU on the login node |
 | **Login nodes › Slurm** (`?tab=slurm`) | `slurm`, `live_now.submits` | sessions at the scheduler, how each class uses it, the submissions it refused, the latest submissions; gone where `slurm.enabled` is false |
-| **I/O** (`?tab=io`) | `io_process`, `resources` | syscall bytes vs disk bytes (the gap is the page cache), network accumulators, reads and writes by tool (each ranked on its own counter), per-user read/write/network, I/O distributions |
-| **Sandbox** | `sandbox` | namespace isolation × approval at launch as independent axes; tool-call outcomes per session (isolated / not / **sandbox attempt failed**), wrapper calls by outcome, launch flags as written, the `ancestry_matrix` by wrapper vs process with `reading` surfaced |
-| **Trajectories** | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (events and cpu columns always visible), a ribbon (the purpose of each process, or for an agent whose commands are read its phases, with a line naming its tasks: [below](#trajectories-tasks-phases-and-processes)) + tool tokens, `dominant_user_share_pct`; a **keys** column for how many collector session keys each row folds and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL): the row's ribbon and tokens over its process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |
-| **Agents** | `cascades` | agent and subagent behaviour (`?tab=agents`, `?tab=cascades` still opens it): agent trees deepest first (agent / infra / client nodes, how each parent was found, each agent's home, directories and outside-home writes), agents with **subagents** kept apart from **hosted** sessions (a daemon or server running them); **Workspace & blast radius** per agent with a *this agent only / with its subagents* toggle -- where its processes **ran** (measured), the **bytes** they moved (measured per process), the paths its command lines **named** (inferred, drawn dashed), writes and deletes outside the home flagged by where they landed; depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged |
-| **Feeds** | `/api/feeds`, `/api/config` | tier, configured **vs** resolved path, status pill, lag vs `max_age_s`, rows, notice |
+| **Internal** (`?tab=sandbox` opens it too) | `sandbox` | panels not settled yet, now the sandbox ones: sandboxed × approval at launch as independent axes; tool-call outcomes per session (sandboxed / not / **sandbox failed to start**), wrapper calls by outcome, launch flags as written, processes by sandbox wrapper, kind and sandbox state (`ancestry_matrix`) with `reading` surfaced |
+| **Feeds** | `/api/feeds`, `/api/config` | the collectors on each login node, then each feed by its plain name and its key: configured **vs** resolved path, status pill, newest record against its own limit (`max_age_s`), files, notice |
 
-### Trajectories: tasks, phases, and processes
+### Sessions: tasks, phases, and processes
 
 A session of an agent whose commands are read (Claude Code and Codex) is drawn at three levels, which the
 page names **Tasks**, **Phases**, and **Processes** (`LEVELS`, `src/lib/phases.ts`). The service builds them
-and holds every threshold (`dashboard/README.md`, *Trajectories: tasks, phases, and processes*); the page has
+and holds every threshold (`dashboard/README.md`, *Sessions: tasks, phases, and processes*); the page has
 none of its own. The words and the geometry for them are in `src/lib/phases.ts` and `src/lib/tasks.ts`, so the
 table, the chart, and the list say one thing.
 

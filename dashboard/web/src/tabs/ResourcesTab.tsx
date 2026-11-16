@@ -185,7 +185,7 @@ function DistTable({ byClass, have, on }: { byClass: Resources['by_class']; have
       <table className="dist">
         <thead>
           <tr>
-            <SortTh s={s} k="measure" first="asc" rowSpan={2}>per process</SortTh>
+            <SortTh s={s} k="measure" first="asc" rowSpan={2} className="pin">per process</SortTh>
             {have.map((c) => (
               <th key={c} colSpan={qs.length} className="grp" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
@@ -207,7 +207,7 @@ function DistTable({ byClass, have, on }: { byClass: Resources['by_class']; have
               ? have.reduce((a, c) => a + (byClass[c]?.oncpu_set_aside ?? 0), 0) : 0;
             return (
               <tr key={qk}>
-                <td>
+                <td className="pin">
                   <Term tip={tip}>{label}</Term>
                   {aside > 0 && (
                     <div className="sub" data-tip={

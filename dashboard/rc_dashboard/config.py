@@ -284,7 +284,7 @@ def defaults():
                 {"id": "commands", "kind": "commands", "rules": "rest",
                  "title": "Commands that should not run here"},
                 {"id": "credentials", "kind": "credentials", "rules": "rest",
-                 "title": "Credentials exposed in argv"},
+                 "title": "Credentials on a command line"},
             ],
         },
         "export": {"max_rows": 5000000},
