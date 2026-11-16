@@ -337,6 +337,21 @@ class CascadeTest(unittest.TestCase):
         got = {(r["agent_type"], r["role"]): r["n"] for r in census}
         self.assertEqual(got, {("claude_code", "tool-shell"): 2})
 
+    def test_a_sockets_age_does_not_date_the_agent(self):
+        # A `conn` record's age_s is its socket's age, and the FAS login nodes' schema-7
+        # collectors stamp it off the wall clock against BPF ktime: ~1.79e9 s, so 14,821
+        # agents of 2026-11-09..16 read as started on 1970-01-02. A tick's age stands.
+        t0 = self.t0
+        recs = [
+            rec("residency", t0, 100, 50, "claude", "claude", agent_pid=100, tree_root=100,
+                is_agent=True, age_s=120.0),
+            rec("conn", t0 + 1, 100, 50, "claude", "claude", agent_pid=100, tree_root=100,
+                is_agent=True, age_s=1794184119.1),
+        ]
+        n = node(tree_of(reduce(recs), 100), 100)
+        self.assertEqual(n["started"], time.strftime("%Y-%m-%d %H:%M:%S",
+                                                     time.localtime(t0 - 120.0)))
+
 
 class DriftTest(unittest.TestCase):
     def setUp(self):
