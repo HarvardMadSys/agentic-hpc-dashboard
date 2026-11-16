@@ -1,7 +1,7 @@
 /* A tree drawn as a tree (roadmap notes 35 and 39): boxes from the top down,
  * joined by lines, the way a model graph reads in Netron -- never an indented
  * table. Shared by the Agents tab (agents and their subagents) and the
- * Trajectories tab (a session's processes).
+ * Sessions tab (a session's processes).
  *
  * The layout is a tidy tree, not a general graph: a process tree is a tree. A
  * leaf takes one slot; a parent takes the slots of its children and sits over

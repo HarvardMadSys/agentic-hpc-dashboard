@@ -935,8 +935,14 @@ function Strip({
       </div>
       {phases && <PhaseLegend list={list} axis={axis} />}
       {outside && <div className="tn-note">{outside}</div>}
-      {merged && <div className="tn-note">{caption}</div>}
-      {phases && <div className="tn-note tn-hk-text">{housekeepingText(phases.housekeeping)}</div>}
+      {/* what the bars count, and what is no call in any phase: one line under the chart */}
+      {(merged || phases) && (
+        <div className="tn-note">
+          {merged && <span>{caption}</span>}
+          {merged && phases && <span className="sep">{' · '}</span>}
+          {phases && <span className="tn-hk-text">{housekeepingText(phases.housekeeping)}</span>}
+        </div>
+      )}
       {zoomed && (
         <ZoomMap
           W={BIN_W}
@@ -1045,6 +1051,7 @@ export function TrajectoryNav({
       ) : (
         <div className="nm">{`no navigator in this payload ${DASH} the service predates it`}</div>
       )}
+      <div className="tn-foot">
       <div className="tn-quick" role="toolbar" aria-label="jump to">
         {quick.map((q) => (
           // aria-disabled, not disabled: a disabled button gets no pointer
@@ -1062,6 +1069,7 @@ export function TrajectoryNav({
       </div>
       <div className="tn-status" aria-live="polite">
         {status}
+      </div>
       </div>
     </div>
   );

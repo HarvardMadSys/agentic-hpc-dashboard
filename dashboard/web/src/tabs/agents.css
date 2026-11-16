@@ -261,21 +261,26 @@ table.trees .sub-chip {
  * A strip compares the types; one is open at a time. */
 .atype-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  /* wide enough that a card's lines do not wrap */
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
+/* a card like the page's plates: the same corners and lift */
 .atype {
   all: unset;
   box-sizing: border-box;
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-left: 3px solid var(--s1);
-  border-radius: 6px;
-  padding: 10px 12px;
+  border-left: 4px solid var(--s1);
+  border-radius: 10px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 3px;
+  box-shadow:
+    0 1px 2px rgba(30, 30, 30, 0.04),
+    0 4px 10px -6px rgba(30, 30, 30, 0.06);
 }
 
 .atype.on {
@@ -560,14 +565,15 @@ table.trees .sub-chip {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* the list stays in view while a long blast radius scrolls past it */
+/* the list stays in view while a long blast radius scrolls past it, below the
+   page's sticky control bar (--controls-h, lib/sticky.ts) */
 .al-list {
   position: sticky;
-  top: 12px;
+  top: calc(var(--controls-h) + 12px);
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: calc(100vh - 24px);
+  max-height: calc(100vh - var(--controls-h) - 24px);
   overflow: auto;
   padding-right: 2px;
 }
@@ -701,8 +707,9 @@ table.trees .sub-chip {
  * when a row is picked below it (AgentsTab.tsx) */
 .al-detail {
   position: sticky;
-  top: 12px;
+  top: calc(var(--controls-h) + 12px);
   min-width: 0;
+  /* plus the page's scroll padding, which is the sticky bar's height */
   scroll-margin-top: 12px;
 }
 @media (max-width: 1100px) {
@@ -718,18 +725,41 @@ table.trees .sub-chip {
 }
 .al-hint,
 .al-empty {
-  border: 1px dashed var(--rule);
-  border-radius: 6px;
+  border: 1px dashed var(--edge);
+  border-radius: 10px;
   color: var(--muted);
   text-align: center;
+  background: var(--surface);
 }
 .al-hint {
   padding: 12px;
   margin-top: 10px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
+/* nothing picked yet: an empty card that says where to look, not a gap */
 .al-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 200px;
   padding: 28px;
+  font-size: 13px;
+}
+.al-empty .icon {
+  box-sizing: content-box;
+  padding: 10px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+/* once the list and the detail stack (1100px and under), the list is above:
+   the arrow points up at it */
+@media (max-width: 1100px) {
+  .al-empty .icon {
+    transform: rotate(90deg);
+  }
 }
 /* under a filter, a tree's box that does not pass it */
 .anode.dim {

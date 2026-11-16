@@ -51,6 +51,9 @@ export RC_DASH_EBPF_ROOTS="${RC_DASH_EBPF_ROOTS:-/scratch/marthen/ebpfm/ebpf}"
 export RC_DASH_NODE_ROOTS="${RC_DASH_NODE_ROOTS:-/scratch/marthen/ebpfm/login}"
 export RC_DASH_PORT="${RC_DASH_PORT:-8124}"
 export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
+# What the backend runs: `serve`, or `demo` for the service over a synthetic
+# feed it writes itself (run-demo.sh, rc_dashboard/demo).
+RC_DASH_COMMAND="${RC_DASH_COMMAND:-serve}"
 # A bundle built anywhere but web/dist is passed to vite as its outDir: a second
 # instance must not share the first one's watcher output, which vite empties
 # on every rebuild.
@@ -93,7 +96,7 @@ backend() {
   exec uv run --with watchfiles watchfiles \
     --filter default \
     --sigint-timeout 15 \
-    "$HERE/.venv/bin/python -m rc_dashboard serve" \
+    "$HERE/.venv/bin/python -m rc_dashboard $RC_DASH_COMMAND" \
     "${WATCH_PATHS[@]}"
 }
 

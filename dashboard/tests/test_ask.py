@@ -361,11 +361,13 @@ class SuggestionsTest(unittest.TestCase):
         self.assertNotIn("a" * 40, json.dumps(ask.parse_suggestions(text)))
 
     def test_a_panel_is_placed_on_its_tab_by_key_or_by_name(self):
-        for name, want in (("panels.risk", ("risk", "Risk & Warning")),
+        for name, want in (("panels.risk", ("risk", "Risks")),
                            ("live_now.users", ("live", "Active users")),
                            ("node", ("live", "Login nodes right now")),
                            ("Resources · I/O", ("resources", "Resources")),
-                           ("Risk & Warning", ("risk", "Risk & Warning")),
+                           ("Risk & Warning", ("risk", "Risks")),
+                           ("Trajectories", ("trajectories", "Sessions")),
+                           ("Overview", ("overview", "Who uses what")),
                            ("somewhere else", (None, "somewhere else"))):
             self.assertEqual(ask.panel_tab(name), want, name)
         got = ask.parse_suggestions(json.dumps({"suggestions": [{"title": "t", "panel": "panels.sandbox"}]}))

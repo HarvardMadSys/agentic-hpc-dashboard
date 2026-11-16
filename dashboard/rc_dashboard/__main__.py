@@ -1,4 +1,5 @@
-"""CLI: `--print-config`, `--check-feeds`, and `serve`."""
+"""CLI: `--print-config`, `--check-feeds`, `serve`, `demo` (rc_dashboard/demo), and
+`new-password`."""
 import argparse
 import json
 import os
@@ -11,7 +12,7 @@ from . import feeds as feedmod
 def build_parser():
     ap = argparse.ArgumentParser(prog="rc-dashboard")
     ap.add_argument("command", nargs="?", default="serve",
-                    choices=["serve", "check-feeds", "print-config"])
+                    choices=["serve", "check-feeds", "print-config", "demo", "new-password"])
     ap.add_argument("--config", default=None)
     # every flag defaults to None so an unset flag never outranks the config file
     ap.add_argument("--ebpf-root", action="append", dest="ebpf_root", default=None)
@@ -33,12 +34,70 @@ def build_parser():
     ap.add_argument("--static-dir", default=None)
     ap.add_argument("--print-config", action="store_true")
     ap.add_argument("--check-feeds", action="store_true")
+    # `demo`: the service over a synthetic feed it writes itself (demo/__init__.py).
+    # Each also reads RC_DASH_DEMO_<NAME>.
+    ap.add_argument("--demo-dir", default=None,
+                    help="where the demo feed and its saved builds live (.cache/demo)")
+    ap.add_argument("--demo-days", type=int, default=None,
+                    help="days of history to write before serving (3)")
+    ap.add_argument("--demo-hosts", type=int, default=None,
+                    help="fictional login nodes (2)")
+    ap.add_argument("--demo-seed", default=None,
+                    help="another seed is another week of made-up sessions (demo)")
+    ap.add_argument("--demo-fresh", action="store_true",
+                    help="discard the demo feed and write it again")
+    ap.add_argument("--demo-write-only", action="store_true",
+                    help="write the history and exit, without serving")
+    # new-password: where the password and its netrc go (auth.DEFAULT_DIR), the
+    # hosts the netrc names beside 127.0.0.1 and localhost, and whether to
+    # replace a password already there.
+    ap.add_argument("--dir", default=None)
+    ap.add_argument("--netrc-host", action="append", default=None)
+    ap.add_argument("--force", action="store_true")
     return ap
+
+
+def new_password(args):
+    """Make a password, write it and a netrc for curl, and print the hash the
+    config needs. The password itself is never printed."""
+    from . import auth
+    try:
+        path, stored = auth.new_password(args.dir, args.netrc_host or (), args.force)
+    except (FileExistsError, ValueError) as e:
+        sys.stderr.write("new-password: %s\n" % e)
+        return 1
+    print("Wrote a new 16-character password to %s, and a netrc for curl beside it, "
+          "both mode 600." % path)
+    print('Put this hash in dashboard.config.json as "server": {"auth": {"password_hash": ...}}, '
+          "then restart the service. Everyone signs in again.")
+    print(stored)
+    return 0
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "new-password":
+        return new_password(args)
     cfg = configmod.load(args, args.config)
+
+    demo = None
+    if args.command == "demo":
+        from . import demo as demomod
+        # A demo reads only the feed it writes: a root or a pinned clock named
+        # here would be ignored, so it is refused rather than dropped quietly.
+        given = [f for f, v in (("--ebpf-root", args.ebpf_root), ("--node-root", args.node_root),
+                                ("--as-of", args.as_of)) if v]
+        if given:
+            sys.stderr.write("demo reads only the synthetic feed it writes; drop %s\n"
+                             % ", ".join(given))
+            return 2
+        opts = demomod.options(args)
+        demomod.configure(cfg, opts)
+        if not args.print_config:
+            demo = demomod.Demo(opts).prepare()
+            if args.demo_write_only:
+                sys.stderr.write("demo: feed written to %s\n" % demo.feed.base)
+                return 0
 
     if args.print_config or args.command == "print-config":
         print(json.dumps(cfg.as_dict(with_origins=True), indent=1, default=str))
@@ -54,7 +113,19 @@ def main(argv=None):
     if cfg.get("clock.as_of"):
         clk = clock.install(cfg, feedmod.resolve(cfg)["ebpf"]["resolved"])
         sys.stderr.write("clock pinned to %s (%s)\n" % (clk["as_of"], clk["source"]))
+    if demo is not None:
+        # Before the app positions its tail: what lands before that is read by
+        # the backfill, what lands after by the tail, and nothing by both.
+        demo.start_live()
+        sys.stderr.write("demo: serving synthetic data on http://%s:%s\n"
+                         % (cfg.get("server.host"), cfg.get("server.port")))
     app = create_app(cfg)
+    if app.state.auth is not None:
+        sys.stderr.write("sign-in on: server.auth.password_hash is set; a session lasts %g days\n"
+                         % (app.state.auth.lifetime_s / 86400))
+    else:
+        sys.stderr.write("sign-in off: server.auth.password_hash is empty, so anyone who "
+                         "reaches port %s reads the page\n" % cfg.get("server.port"))
     # An open websocket (every page holds one) must not hold a restart hostage.
     try:
         uvicorn.run(app, host=cfg.get("server.host"), port=int(cfg.get("server.port")),

@@ -37,6 +37,7 @@ import { DASH, clock, dur, fint, fmt } from '../lib/format';
 import { dashboardHref, readTreePop } from '../lib/popout';
 import { pcol, plbl } from '../lib/purposes';
 import { sessionName } from '../lib/sessions';
+import { AGENT_TYPE_LBL } from '../lib/classes';
 import './trajectories.css';
 import './treepop.css';
 
@@ -447,7 +448,7 @@ function Details({
       <div className="tp-side-t mono">{head}</div>
       {e.k === 'p' && (
         <div className="tp-tags">
-          {e.agent_type && <span className="pt-tag type">{e.agent_type}</span>}
+          {e.agent_type && <span className="pt-tag type">{AGENT_TYPE_LBL[e.agent_type] ?? e.agent_type}</span>}
           {e.role && ROLE_TAG[e.role] && <span className="pt-tag">{ROLE_TAG[e.role]}</span>}
           {e.eff && e.eff !== e.cmd && <span className="pt-tag">{`runs ${e.eff}`}</span>}
           <span className="tp-purpose">

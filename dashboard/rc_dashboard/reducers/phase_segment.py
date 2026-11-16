@@ -151,6 +151,7 @@ DEFAULTS = {
     "max_calls": 20000,         # calls a session's log holds; the rest are counted (`cut`)
     "hk_bin_cap": 10080,        # minutes of housekeeping a session places in time: a week
     "pend_max": 50000,          # parents the pending join holds, at about 1 KB each
+    "app_read_s": 2.0,          # a Codex `cat` with no argv this close to an app read is the app's
 }
 
 # What the block says it is read from. The phases are cut from the commands alone; the words the

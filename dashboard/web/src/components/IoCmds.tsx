@@ -85,10 +85,10 @@ const lit = (c: IoSort, by: IoSort) =>
 const COLS: { k: IoSort; lbl: string; tip: string }[] = [
   { k: 'rd_mb', lbl: 'disk read', tip: 'bytes the processes read from disk (read_bytes)' },
   { k: 'wr_mb', lbl: 'disk written', tip: 'bytes the processes wrote to disk (write_bytes)' },
-  { k: 'rchar_mb', lbl: 'syscall read', tip: 'bytes read through system calls, pipes and terminals included (rchar)' },
-  { k: 'wchar_mb', lbl: 'syscall written', tip: 'bytes written through system calls, pipes and terminals included (wchar)' },
-  { k: 'tx_mb', lbl: 'sent', tip: 'network bytes sent' },
-  { k: 'rx_mb', lbl: 'received', tip: 'network bytes received' },
+  { k: 'rchar_mb', lbl: 'read requested', tip: 'bytes the processes read through read() calls, pipes and terminals included (rchar)' },
+  { k: 'wchar_mb', lbl: 'write requested', tip: 'bytes the processes passed to write() calls, pipes and terminals included (wchar)' },
+  { k: 'tx_mb', lbl: 'sent', tip: 'bytes sent over the network' },
+  { k: 'rx_mb', lbl: 'received', tip: 'bytes received over the network' },
 ];
 
 export function IoCmdsDrawer({ win, who, cls }: { win: number | null; who: Who; cls: Cls[] }) {

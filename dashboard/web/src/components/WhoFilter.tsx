@@ -153,7 +153,7 @@ export function WhoFilter({
 
   return (
     <>
-      <Drop label="user" n={who.users.length} tip="show only these people's processes, on every tab">
+      <Drop label="user" n={who.users.length} tip="show only these users' processes, on every tab">
         <input
           className="who-find"
           autoFocus
@@ -191,7 +191,7 @@ export function WhoFilter({
         </div>
         {more > 0 && !ql && <div className="who-more">{fint(more)} more · type a name</div>}
       </Drop>
-      <Drop label="agent type" n={who.atypes.length} tip="show only processes of these agents or editors, on every tab">
+      <Drop label="agent type" n={who.atypes.length} tip="show only processes of these agents or IDEs, on every tab">
         <div className="who-list" role="listbox" aria-multiselectable>
           {[...types, ...typeExtra.map((t) => ({ agent_type: t, events: null, by_class: undefined }))].map((r) => (
             <Opt

@@ -24,6 +24,8 @@ import type {
   TrajRank,
   Trajectories,
   TrajectoryDetail,
+  UserPortrait,
+  UsersResponse,
   WindowsResponse,
 } from './types';
 import { whoQuery } from '../lib/filters';
@@ -43,10 +45,22 @@ export class ApiError extends Error {
   }
 }
 
+/** The service asks for its password (rc_dashboard/auth.py), and this page's
+ *  session has run out or was signed out elsewhere: back to the sign-in form,
+ *  which returns to this very URL. Once per page, however many requests fail. */
+let signingIn = false;
+function signInAgain(status: number) {
+  if (status !== 401 || signingIn) return;
+  signingIn = true;
+  const back = location.pathname + location.search + location.hash;
+  location.assign('/login?next=' + encodeURIComponent(back));
+}
+
 async function get<T>(path: string, init?: RequestInit): Promise<T> {
   const url = API_BASE + path;
   const r = await fetch(url, { cache: 'no-store', ...init });
   if (!r.ok) {
+    signInAgain(r.status);
     let detail = r.statusText;
     try {
       detail = (await r.text()).slice(0, 400) || detail;
@@ -114,6 +128,7 @@ export async function postAsk(
     body: JSON.stringify({ question, window_min: minutes ?? null, history, context: context ?? null }),
   });
   if (!r.ok) {
+    signInAgain(r.status);
     let detail = r.statusText;
     try {
       detail = ((await r.json()) as { detail?: string }).detail ?? detail;
@@ -135,6 +150,7 @@ async function doneCall(path: string, method: 'POST' | 'DELETE', body?: unknown)
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) {
+    signInAgain(r.status);
     let detail = r.statusText;
     try {
       detail = ((await r.json()) as { detail?: string }).detail ?? detail;
@@ -150,6 +166,17 @@ export const undoDone = (id: string) => doneCall(`/suggestions/done/${encodeURIC
 
 export const getLiveUser = (name: string, minutes?: number | null, s?: AbortSignal, n = 25) =>
   get<LiveUserDetail>(`/live/user?name=${encodeURIComponent(name)}&n=${n}${win(minutes, '&')}`, { signal: s });
+
+/** Every user with an agent session in the window, and how each works with
+ *  their agents (`rc_dashboard/portraits.py`); narrowed by the page's filter. */
+export const getUsers = (minutes?: number | null, s?: AbortSignal, w?: Who | null) => {
+  const q = (win(minutes, '') + who(w)).replace(/^&/, '');
+  return get<UsersResponse>(`/users${q ? '?' + q : ''}`, { signal: s });
+};
+
+/** One user's portrait. `name` is what the page shows: an alias, when names are anonymized. */
+export const getUser = (name: string, minutes?: number | null, s?: AbortSignal, w?: Who | null) =>
+  get<UserPortrait>(`/user?name=${encodeURIComponent(name)}${win(minutes, '&')}${who(w)}`, { signal: s });
 
 export const getTrajectories = (
   rank: TrajRank,

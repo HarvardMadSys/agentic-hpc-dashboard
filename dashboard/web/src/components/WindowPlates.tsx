@@ -13,6 +13,7 @@ import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { CALL_KNOWN, riskLine, shareOfKnown } from '../lib/sandbox';
 import { GLOSS } from '../lib/glossary';
+import { useNodeWords } from '../lib/nodes';
 
 export function WindowPlates({
   P,
@@ -31,8 +32,9 @@ export function WindowPlates({
   const resBy = res.by_class ?? {};
   const have = cls.filter((c) => c in tmBy || c in resBy);
 
+  const nodes = useNodeWords();
   const totN = have.reduce((a, c) => a + (tmBy[c]?.calls ?? 0), 0);
-  // What each class is made of -- which agents, which editors -- on hover.
+  // What each class is made of -- which agents, which IDEs -- on hover.
   const typeTip =
     have
       .map((c) => {
@@ -48,7 +50,7 @@ export function WindowPlates({
   const callIso = shareOfKnown(sb.tool_calls?.agent, 'isolated', sb.states?.tool_call_known ?? CALL_KNOWN);
   const agentSum = cls.includes('agent') ? traj?.summary?.agent : undefined;
   const launch = sb.approval_by_class_sessions?.agent;
-  // a session whose tool calls ran and none was isolated (the Sandbox tab's
+  // a session whose tool calls ran and none was isolated (the Internal tab's sandbox
   // session verdict); one with no tool call seen is neither
   const sessSb = sb.by_class_sessions?.agent;
   const classSum = (rows: { classes?: Partial<Record<string, number>> }[] | undefined, c: string) =>
@@ -71,20 +73,18 @@ export function WindowPlates({
         k="agent processes exited"
         tip={[GLOSS.exited, typeTip].filter(Boolean).join('\n\n')}
         total={cls.includes('agent') ? tmBy.agent?.calls ?? null : null}
-        stripe="var(--s1)"
         by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.calls ?? null]))}
-        note={totN ? `${pc((100 * (tmBy.agent?.calls ?? 0)) / totN)} of every process on the node` : undefined}
+        note={totN ? `${pc((100 * (tmBy.agent?.calls ?? 0)) / totN)} of every process on the ${nodes.many}` : undefined}
       />
       <Plate
         k="agent sessions"
         total={agentSum?.sessions ?? null}
-        stripe="var(--s4)"
         by={Object.fromEntries(cls.filter((c) => traj?.summary?.[c]).map((c) => [c, traj!.summary![c].sessions]))}
         tip={[
           GLOSS.session + '; scripts that only probe `codex --version` are not counted',
           GLOSS.bypass,
           GLOSS.automode,
-          'unsandboxed: the session ran tool calls and not one was namespace-isolated. ' +
+          'not sandboxed: the session ran tool calls and not one ran in a sandbox. ' +
             'a session with no tool call seen is not counted as either',
         ].join('\n\n')}
         note={riskLine(launch, sessSb ? sessSb.unsandboxed ?? 0 : null)}
@@ -92,15 +92,15 @@ export function WindowPlates({
       <Plate
         k="risky agent actions"
         total={cls.includes('agent') && risk._present ? riskyAgent : null}
-        stripe="var(--crit)"
+        alarm={(riskyAgent ?? 0) > 0}
         by={riskyBy}
         tip="commands this site's rules flag (rm -rf on a shared path, builds where they should not run, bulk downloads, …), plus credentials written into a command line"
         note={
-          ([hasDg ? `${fint(dgAgent)} dangerous commands` : null,
+          ([hasDg ? `${fint(dgAgent)} commands that should not run here` : null,
             hasSec ? `${fint(secAgent)} credentials on a command line` : null]
             .filter(Boolean).join(' · ') || 'no command or credential section on this cluster') +
           (callIso && callIso.known
-            ? ` · ${pc(callIso.pct)} of tool calls sandboxed${failedAgent ? `, ${fint(failedAgent)} attempts failed` : ''}`
+            ? ` · ${pc(callIso.pct)} of tool calls sandboxed${failedAgent ? `, ${fint(failedAgent)} sandboxes failed to start` : ''}`
             : '')
         }
       />

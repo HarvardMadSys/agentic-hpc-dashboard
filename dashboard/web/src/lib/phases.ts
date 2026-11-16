@@ -57,7 +57,7 @@ const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const andList = (xs: string[]): string =>
   xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')}, and ${xs[xs.length - 1]}`;
 
-const calls = (n: number): string => `${fint(n)} ${n === 1 ? 'call' : 'calls'}`;
+const calls = (n: number): string => `${fint(n)} ${n === 1 ? 'tool call' : 'tool calls'}`;
 
 /** `Read x` as `read x`: a label that follows a count or a time. */
 export const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1);
@@ -161,7 +161,7 @@ const IDLE_WHAT = "no tool calls: the user's turn, or the agent thinking";
  *  An idle phase's detail (`phaseWhat`) and a task's gap line (`gapLine`, tasks.ts) say it alike. */
 export function aliveClause([preview, since, name]: [string | null, number, (string | null)?]): string {
   const what = (name ? oneLine(name) : '') || (preview ? shortCmd(preview) : '');
-  return `${what || 'a call'} still running since ${clock(since)}`;
+  return `${what || 'a tool call'} still running since ${clock(since)}`;
 }
 
 /** Calls that ran past their phase, as many as `phaseWhat` names before it counts the rest. */
@@ -220,7 +220,7 @@ export function phaseWhat(p: Phase): string {
   }
   const past = [...(p.ran_past ?? [])].sort((a, b) => b[1] - a[1]);
   for (const [cmd, s] of past.slice(0, RAN_PAST_NAMED)) {
-    segs.push(`${cmd ? oneLine(cmd) : 'a call'} kept running for ${dur(s)}`);
+    segs.push(`${cmd ? oneLine(cmd) : 'a tool call'} kept running for ${dur(s)}`);
   }
   if (past.length > RAN_PAST_NAMED) segs.push(`${fint(past.length - RAN_PAST_NAMED)} more kept running`);
   const open = phaseOpen(p);
@@ -233,7 +233,7 @@ export function phaseWhat(p: Phase): string {
  *  edge's `not known yet` and `not known` are. An open phase says it (`phaseOpen`), and so does an open task, in its
  *  tooltip (`taskTip`, tasks.ts). */
 export function openClause(): string {
-  return clockPinned() ? 'a call in it was still running when the record ended' : 'a call in it is still running';
+  return clockPinned() ? 'a tool call in it was still running when the record ended' : 'a tool call in it is still running';
 }
 
 /** What an open phase adds to its line and its tooltip: `openClause`, a call in it still running, seen through its
@@ -251,7 +251,7 @@ export function phaseOpen(p: Phase): string {
  *  call log was full` where the block has no time for it. The list of phases says it under its rows (PhaseList), and a
  *  task the cut may have taken calls of says it in its tooltip (`taskTip`, tasks.ts). */
 export function incompleteFrom(cutAt: number | null | undefined): string {
-  return `incomplete${cutAt != null ? ` from ${clock(cutAt)}` : ''}: the call log was full`;
+  return `incomplete${cutAt != null ? ` from ${clock(cutAt)}` : ''}: the tool-call log was full`;
 }
 
 /** The note under the list of phases for a session whose call log was full: `phases are incomplete from 14:03:22: the call
@@ -261,7 +261,7 @@ export function incompleteFrom(cutAt: number | null | undefined): string {
 export function cutNote(block: Pick<PhaseBlock, 'cut' | 'cut_at'>): string | null {
   const n = block.cut;
   if (!(n > 0)) return null;
-  const left = `${fint(n)} ${block.cut_at != null ? 'later ' : ''}${n === 1 ? 'call is' : 'calls are'}`;
+  const left = `${fint(n)} ${block.cut_at != null ? 'later ' : ''}${n === 1 ? 'tool call is' : 'tool calls are'}`;
   return `phases are ${incompleteFrom(block.cut_at)}, so ${left} counted but in no phase`;
 }
 

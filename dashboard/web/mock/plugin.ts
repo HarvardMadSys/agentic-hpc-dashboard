@@ -27,6 +27,8 @@ interface Fixture {
   live: { rate: Record<string, number | null>[]; events: Record<string, unknown>[]; [k: string]: unknown };
   trajectories: Record<string, unknown>;
   trajectory_detail?: Record<string, unknown>;
+  /** the Users tab's roster, and each user's portrait, composed from `trajectories` (gen_fixture.mjs: `users`) */
+  users?: { roster: Record<string, unknown>; portraits: Record<string, Record<string, unknown>> };
 }
 
 function load(): Fixture {
@@ -420,6 +422,31 @@ export function mockApi(): Plugin {
             const rank = q.get('rank') || 'events';
             return send({ ...fx.trajectories, rank_by: rank,
                           _window: windowStatus(win.minutes) });
+          }
+          case '/api/users': {
+            // The page's user and agent-type filter narrows the roster, as the service's filtered view does.
+            const st = windowStatus(win.minutes);
+            const roster = (fx.users?.roster ?? { users: [], fleet: null, traits: [], rules: {} }) as {
+              users: { user: string; agent_types: Record<string, number> }[];
+              [k: string]: unknown;
+            };
+            const us = q.getAll('user');
+            const ts = q.getAll('agent_type');
+            const users = roster.users.filter(
+              (r) => (!us.length || us.includes(r.user)) && (!ts.length || ts.some((t) => (r.agent_types[t] ?? 0) > 0)),
+            );
+            return send({ ...roster, users, _window: st });
+          }
+          case '/api/user': {
+            const name = q.get('name') || '';
+            const st = windowStatus(win.minutes);
+            const p = fx.users?.portraits[name];
+            return send(
+              p
+                ? { ...p, _window: st }
+                : { user: name, found: false, fleet: (fx.users?.roster as { fleet?: unknown } | undefined)?.fleet ?? null,
+                    _feed: 'ebpfm', _status: 'ok', _present: true, _paths: [], _notice: null, _window: st },
+            );
           }
           case '/api/trajectory': {
             // One hand-built tree, served for any session the fixture ranks, so

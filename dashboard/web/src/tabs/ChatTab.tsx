@@ -89,7 +89,7 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
               <div className="sugg-f">
                 {x.users.map((u) => (
                   <button key={u} className="linkbtn mono" onClick={() => openUserTraj(u)}
-                    data-tip="open this account's sessions on the Trajectories tab">
+                    data-tip="open this account's sessions on the Sessions tab">
                     {u} →
                   </button>
                 ))}
@@ -217,14 +217,14 @@ function Suggestions({ info, openUserTraj, goto, followUp }: {
 const STARTERS = [
   'Which agents ran the most commands, and for whom?',
   'Did any agent run anything risky?',
-  'Which agents wrote outside their own home directory?',
+  'Which agents wrote outside their start folder?',
   'Summarise what Claude Code did in this window.',
 ];
 
 export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto = () => {} }: {
   windowMin: number | null;
   windowLabel: string | null;
-  /** open an account's sessions on the Trajectories tab */
+  /** open an account's sessions on the Sessions tab */
   openUserTraj?: (u: string) => void;
   /** open a tab */
   goto?: (tab: string) => void;
@@ -268,7 +268,7 @@ export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto 
           <div className="none">could not reach the chat service: {infoErr}</div>
         ) : off ? (
           <div className="none">
-            {!info!.enabled ? 'chat is turned off on this dashboard' : `the agent cannot run here: ${info!.error}`}
+            {!info!.enabled ? 'chat is turned off on this dashboard' : `Ask LLM cannot run here: ${info!.error}`}
           </div>
         ) : (
           <div className="chat">

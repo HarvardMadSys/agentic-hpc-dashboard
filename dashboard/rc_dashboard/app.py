@@ -17,6 +17,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import auth as authmod
 from . import feeds as feedmod
 from . import proctree
 from . import redact
@@ -68,6 +69,8 @@ def view_filter(request, anon=None):
 
 
 def create_app(cfg):
+    # First, so a malformed password hash stops the service before it reads anything.
+    gate = authmod.from_config(cfg)
     agg = Aggregator(cfg)
     anon = agg.anon
 
@@ -100,6 +103,7 @@ def create_app(cfg):
                   default_response_class=AnonJSONResponse)
     app.state.cfg = cfg
     app.state.agg = agg
+    app.state.auth = gate
     # ws -> the window that client is viewing. A dict rather than a set because
     # the live frame is window-specific: one payload per DISTINCT window, not
     # one per client, so ten readers on the default window still cost one build.
@@ -341,6 +345,24 @@ def create_app(cfg):
         if anon is not None:
             name = anon.dealias_user(name)
         return respond(redact.payload(agg.live_user(name, window_min, n)))
+
+    @app.get("/api/users")
+    def api_users(request: Request, window_min: int = Query(None)):
+        """Every user with an agent session in the window, and how each works
+        with their agents (portraits.py); narrowed by `user` / `agent_type` as
+        the trajectories are."""
+        return respond(redact.payload(agg.users(window_min, view_filter(request, anon))),
+                       "users")
+
+    @app.get("/api/user")
+    def api_user(request: Request, name: str = Query(...), window_min: int = Query(None)):
+        """One user's portrait: their sessions, rhythm, work, tasks and traits.
+        `name` is the alias the page shows when names are anonymized; a real
+        name then finds nobody, as on /api/live/user."""
+        if anon is not None:
+            name = anon.dealias_user(name)
+        return respond(redact.payload(agg.user(name, window_min, view_filter(request, anon))),
+                       "user")
 
     @app.get("/api/trajectories")
     def api_traj(request: Request, rank: str = Query("recent"),
@@ -589,4 +611,11 @@ def create_app(cfg):
                 "api": ["/api/health", "/api/feeds", "/api/live", "/api/panels",
                         "/api/trajectories", "/api/events", "/api/export"],
             }, status_code=503)
+
+    # -------------------------------------------------------------- sign-in
+    # Around every route above and the static mount, so a route added later is
+    # covered without anyone remembering to be (auth.py).
+    if gate is not None:
+        app.add_middleware(authmod.AuthMiddleware, gate=gate,
+                           site=str(cfg.get("site.name") or ""))
     return app

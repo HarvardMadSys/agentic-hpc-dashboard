@@ -28,7 +28,7 @@ const BUCKET_TIP: Record<string, string> = {
   'slurm-submit': 'putting work on the cluster: sbatch, srun, salloc, scancel',
   'slurm-query': 'asking the scheduler: squeue, sacct, sinfo, scontrol',
   git: 'git and its helpers',
-  runtime: 'the agent and editor runtimes themselves: node, claude, codex, cursor',
+  runtime: 'the agent and IDE runtimes themselves: node, claude, codex, cursor',
   interpreter: 'python, pytest, jupyter, wandb',
   'shell/env-init': 'shells and environment setup: bash, zsh, conda, module, pip',
   search: 'grep, rg, find, fd',
@@ -168,7 +168,7 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
       header={
         <span className="wrapctl" style={{ gap: 6 }}>
           <Segmented value={read} onChange={setRead} options={[
-            { k: 'who', lbl: 'by who ran it', tip: 'each kind of tool, split by class: a row adds to 100%' },
+            { k: 'who', lbl: 'by class', tip: 'each kind of tool, split by class: a row adds to 100%' },
             { k: 'kind', lbl: 'by kind of tool', tip: "each class's work, split by kind of tool: a column adds to 100%" },
           ]} />
           <Segmented value={metric} onChange={setMetric} options={METRICS.map((m) => ({ k: m.k, lbl: m.lbl, tip: m.tip }))} />
@@ -182,8 +182,8 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
               <tr>
                 <SortTh s={s} k="kind" first="asc">kind of tool</SortTh>
                 <SortTh s={s} k={`who:${have[0] ?? ''}`}
-                  tip={`who ran it, as a share of the row; sorts by ${scope.lbl(have[0] ?? '')}'s share`}>
-                  who ran it, as a share of the row
+                  tip={`each class's share of the row; sorts by ${scope.lbl(have[0] ?? '')}'s share`}>
+                  each class's share of the row
                 </SortTh>
                 <SortTh s={s} k="total" num>total</SortTh>
               </tr>
@@ -194,7 +194,7 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
                 return (
                   <tr key={b}>
                     <td><Term tip={BUCKET_TIP[b]}>{b}</Term></td>
-                    <td style={{ minWidth: 320 }}>
+                    <td className="whocell">
                       <span className="whobar">
                         {have.map((c) => {
                           const v = rowVal(get(c, b), metric) ?? 0;
@@ -209,12 +209,13 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
                         {have.map((c) => {
                           const v = rowVal(get(c, b), metric) ?? 0;
                           const io = ioSort(metric);
+                          // an empty slot keeps each class's share in its own column, row to row
                           return v > 0 ? (
                             <span key={c}><i style={{ background: CLS_COL[c] }} />{io ? (
                               <IoNum q={{ title: `${METRICS.find((m) => m.k === metric)!.lbl} · ${b} · ${scope.lbl(c)}`,
                                 sort: io, bucket: [b], ...scope.ioq(c), ...coveredBy(tm) }}>{pc((100 * v) / tot)}</IoNum>
                             ) : pc((100 * v) / tot)}</span>
-                          ) : null;
+                          ) : <span key={c} />;
                         })}
                       </span>
                     </td>

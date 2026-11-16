@@ -66,7 +66,8 @@ import { SurfaceChip } from '../components/SurfaceChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
 import { Basis, Legend, Panel } from '../components/Panel';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { GLOSS } from '../lib/glossary';
 import { serverNow } from '../lib/clock';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
@@ -232,7 +233,7 @@ function Facts({
           <span className="dot" style={{ background: CLS_COL[cls] ?? 'var(--sg)', marginRight: 5 }} />
           {CLS_LBL[cls] ?? cls}
         </span>
-        {r.agent_type && <span className="mono">{r.agent_type}</span>}
+        {r.agent_type && <span>{AGENT_TYPE_LBL[r.agent_type] ?? r.agent_type}</span>}
         <SurfaceChip s={r.surface} detail={r.surface_detail} />
         <span className="mono">
           {r.user ?? DASH}@{r.host ?? DASH}
@@ -242,19 +243,19 @@ function Facts({
       </div>
       <div className="ins-facts">
         <span>
-          events <b>{fint(r.n_events)}</b>
+          processes <b>{fint(r.n_events)}</b>
         </span>
         <span>
-          cpu <b>{fmt(r.cpu_s)}</b> s
+          CPU <b>{fmt(r.cpu_s)}</b> s
         </span>
-        <span>
-          wall <b>{dur(r.wall_s)}</b>
+        <span data-tip={GLOSS.wall}>
+          length <b>{dur(r.wall_s)}</b>
         </span>
         <span>
           tools <b>{fint(r.distinct_tools)}</b>
         </span>
-        <span data-tip={r.owner_via ? `${r.owner_via}: ${VIA_TIP[r.owner_via]}` : undefined}>
-          keys <b>{fint(r.fragments ?? 1)}</b>
+        <span data-tip={`${GLOSS.keys}${r.owner_via ? `\n${r.owner_via}: ${VIA_TIP[r.owner_via]}` : ''}`}>
+          pieces <b>{fint(r.fragments ?? 1)}</b>
           {r.owner_via && r.owner_via !== 'self' && r.owner_via !== 'ancestor' ? ` ${r.owner_via}` : ''}
         </span>
         <span>
@@ -277,7 +278,7 @@ function Facts({
               W={640}
               H={12}
               zoom
-              note={calls < r.n_events ? `(the first ${fint(r.purpose_rle.length)} runs of ${fint(r.n_events)} calls)` : undefined}
+              note={calls < r.n_events ? `(the first ${fint(r.purpose_rle.length)} runs of ${fint(r.n_events)} processes)` : undefined}
               name="purpose runs"
               onPick={(i) => onRun('purpose', i)}
             />
@@ -320,12 +321,23 @@ function ReadLine({
   if (!s || !b) return null;
   const links = PROC_LINKS.filter((k) => k !== 'ppid' && d.links?.[k]);
   const newest = d.order === 'newest';
+  // The limits that bound what the tree draws without cutting the read short: each is named, with its count, on one
+  // line above the tree, and the full wording is a click away. A read that stopped short is not one of these: it
+  // changes what the tree covers, so it keeps a box of its own and its continue button.
+  const weak = links.reduce((a, k) => a + (d.links?.[k] ?? 0), 0);
+  const limits = [
+    b.counted > 0 ? `${fint(b.counted)} counted under their parent` : null,
+    b.elided > 0 ? `${fint(b.elided)} past the ${fint(b.nodes)}-row budget` : null,
+    weak > 0 ? `${fint(weak)} parent${weak === 1 ? '' : 's'} placed on weaker evidence` : null,
+  ].filter(Boolean);
   return (
     <div className="ins-read">
       <div>
-        {`re-read ${bytes(s.bytes)} of ${fint(s.files)} day-file${s.files === 1 ? '' : 's'} in ${s.elapsed_s.toFixed(1)} s · `}
         <b>{fint(s.records)}</b>
         {` processes, ${clock(s.first)} → ${clock(s.last)}`}
+        <span className="ins-scan">
+          {` · re-read ${bytes(s.bytes)} of ${fint(s.files)} day-file${s.files === 1 ? '' : 's'} in ${s.elapsed_s.toFixed(1)} s`}
+        </span>
         {b.stubs > 0 && (
           <span data-tip="parents the records name that left no exit record in this read: the agent still running, or a shell that exited outside the span">
             {` · ${fint(b.stubs)} parent${b.stubs === 1 ? '' : 's'} with no exit in the read`}
@@ -340,17 +352,6 @@ function ReadLine({
           </span>
         )}
       </div>
-      {links.length > 0 && (
-        <div style={{ color: 'var(--muted)' }}>
-          {'parents placed on weaker evidence than their own ppid: '}
-          {links.map((k, i) => (
-            <span key={k} data-tip={LINK_TIP[k]}>
-              {i > 0 ? ' · ' : ''}
-              {`${LINK_LBL[k]} ${fint(d.links?.[k] ?? 0)}`}
-            </span>
-          ))}
-        </div>
-      )}
       {s.stopped && (
         <div className="ins-bound">
           <span>
@@ -375,23 +376,44 @@ function ReadLine({
           </button>
         </div>
       )}
-      {b.counted > 0 && (
-        <div className="ins-bound soft">
-          {newest
-            ? `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the oldest, past the newest ${fint(
-                b.hold,
-              )} in all or the newest ${fint(b.per_parent)} childless processes of one command under one parent`
-            : `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): past ${fint(
-                b.per_parent,
-              )} childless processes of one command under one parent, or ${fint(b.hold)} in all`}
-        </div>
-      )}
-      {b.elided > 0 && (
-        <div className="ins-bound soft">
-          {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget, allotted breadth first${
-            newest ? ' and newest first: counted in ⋯ rows at the deepest levels of the oldest' : ': counted in ⋯ rows at the deepest levels'
-          }`}
-        </div>
+      {limits.length > 0 && (
+        <details className="ins-limits">
+          <summary>
+            <span className="eyebrow">limits</span>
+            {limits.join(' · ')}
+          </summary>
+          <div className="ins-limits-body">
+            {b.counted > 0 && (
+              <div>
+                {newest
+                  ? `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the oldest, past the newest ${fint(
+                      b.hold,
+                    )} in all or the newest ${fint(b.per_parent)} childless processes of one command under one parent`
+                  : `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): past ${fint(
+                      b.per_parent,
+                    )} childless processes of one command under one parent, or ${fint(b.hold)} in all`}
+              </div>
+            )}
+            {b.elided > 0 && (
+              <div>
+                {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget, allotted breadth first${
+                  newest ? ' and newest first: counted in ⋯ rows at the deepest levels of the oldest' : ': counted in ⋯ rows at the deepest levels'
+                }`}
+              </div>
+            )}
+            {weak > 0 && (
+              <div>
+                {'parents placed on weaker evidence than their own ppid: '}
+                {links.map((k, i) => (
+                  <span key={k} data-tip={LINK_TIP[k]}>
+                    {i > 0 ? ' · ' : ''}
+                    {`${LINK_LBL[k]} ${fint(d.links?.[k] ?? 0)}`}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </details>
       )}
     </div>
   );
@@ -818,7 +840,8 @@ export function TrajectoryInspector({
   return (
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
       <Panel
-        title="Session inspector — process tree"
+        id="sec-session-inspector"
+        title="Session inspector"
         ask={{ session: sid }}
         p={env}
         feed="ebpf"
@@ -876,8 +899,8 @@ export function TrajectoryInspector({
                 </a>
               </>
             )}
-            <button className="btn" onClick={onClose} aria-label="close the inspector">
-              close ×
+            <button className="btn ins-close" onClick={onClose} aria-label="close the inspector" data-tip="close the inspector">
+              ×
             </button>
           </div>
         }
@@ -951,16 +974,16 @@ export function TrajectoryInspector({
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
             </label>
-            {hide && hid && <span className="nm">{`${fint(hid.routine)} routine processes hidden`}</span>}
+            {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
             <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
               <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
               hide typos
             </label>
-            {typos && hid && <span className="nm">{`${fint(hid.typos)} ${hid.typos === 1 ? 'typo' : 'typos'} hidden`}</span>}
-            <span className="nm">
+            {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
+            <span className="nm pd-hint">
               {mode === 'tree'
-                ? '· click a box to open what it started · hover for its command'
-                : '· click a row to open what it started · hover for its command'}
+                ? 'click a box to open what it started · hover for its command'
+                : 'click a row to open what it started · hover for its command'}
             </span>
           </div>
         )}

@@ -506,10 +506,10 @@ function sandbox() {
     ancestry_matrix: [
       { ancestry: 'none', kind: 'process', sandbox: 'unsandboxed', n: 1_793_263, dstate_wait_s: 434.2, dstate_coverage_pct: 100, reading: null },
       { ancestry: 'none', kind: 'process', sandbox: 'unknown', n: 18_704, dstate_wait_s: 4.0, dstate_coverage_pct: 100, reading: null },
-      { ancestry: 'bwrap', kind: 'process', sandbox: 'sandboxed', n: 4_118, dstate_wait_s: 12.4, dstate_coverage_pct: 100, reading: 'under a sandbox wrapper, namespace-isolated' },
+      { ancestry: 'bwrap', kind: 'process', sandbox: 'sandboxed', n: 4_118, dstate_wait_s: 12.4, dstate_coverage_pct: 100, reading: 'under a sandbox wrapper, sandboxed' },
       { ancestry: 'bwrap', kind: 'wrapper', sandbox: 'unsandboxed', n: 125, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes' },
       { ancestry: 'codex-linux-sandbox', kind: 'wrapper', sandbox: 'unsandboxed', n: 51, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes' },
-      { ancestry: 'none', kind: 'process', sandbox: 'sandboxed', n: 16, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'isolated with no agent sandbox ancestor: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox' },
+      { ancestry: 'none', kind: 'process', sandbox: 'sandboxed', n: 16, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'in its own namespaces with no agent sandbox wrapper above it: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox' },
       { ancestry: 'none', kind: 'process', sandbox: 'denied', n: 417, dstate_wait_s: null, dstate_coverage_pct: 0, reading: null },
     ],
     sandbox_src: { inherit: 1_791_285, 'none:tick': 1_938, 'userns:exec': 41, 'none:exec': 161, denied: 417 },
@@ -527,9 +527,9 @@ function sandbox() {
       approval_known: ['bypassed', 'auto', 'supervised'],
     },
     notes: {
-      meaning: 'sandbox = NAMESPACE ISOLATION; Landlock/seccomp-only sandboxes are invisible, containers count',
-      denied: "'exited before read' (key: denied) is NOT 'not isolated'",
-      failed: "'sandbox attempt failed': the wrapper exited non-zero and no payload ran under it",
+      meaning: 'sandboxed = ran in its own namespaces; Landlock/seccomp-only sandboxes are invisible, containers count',
+      denied: "'exited before it was checked' (key: denied) is NOT 'not sandboxed'",
+      failed: "'sandbox failed to start': the wrapper exited non-zero and no wrapped command ran under it",
     },
   };
 }
@@ -1396,6 +1396,419 @@ function cascades(nowEpoch) {
   };
 }
 
+/* ------------------------------------------------------------------- users
+ * The Users tab's roster and portraits (`rc_dashboard/portraits.py`), composed from this fixture's own trajectory rows
+ * as the service composes them from its reducers, so a session in a portrait opens a row the Trajectories tab lists.
+ * A session is an agent row, and the two day rows of one agent (`DAY_PAIR`) are one session; its calls by category
+ * are its phases' calls, the agent's own words its quoted tasks, and its time at the scheduler its runs of sbatch and
+ * squeue. An agent of a type whose commands are not read (the Copilot row) has calls of null, not 0. Times of day are
+ * in EDT, the fixture's own zone, so the file is the same on any machine. The traits follow `portraits.RULES`, and
+ * their words are the service's (`portraits.TRAITS`). */
+const PORTRAIT_RULES = {
+  interactive: 0.6, scripted: 0.5, app: 0.5, bypass: 0.5, auto: 0.5, sandboxed: 0.5, parallel: 3, long_s: 7200,
+  short_n: 10, short_s: 600, explore: 0.6, test: 0.15, build: 0.15, slurm: 0.1, wait: 0.25, night: 0.25,
+  night_min: 60, min_calls: 20, mode: 0.5, mostly: 0.5, project: 0.5,
+};
+// what the agents' actions are for (`portraits.USES`), and the ways of driving them (`portraits._MODES`)
+const PORTRAIT_USES = [['explore', ['explore']], ['develop', ['edit', 'test']], ['build', ['build']], ['run', ['run']], ['hpc', ['slurm']], ['git', ['git']]];
+const PORTRAIT_MODES = [['terminal', ['terminal']], ['script', ['script']], ['extension', ['extension']], ['app', ['desktop', 'web']]];
+const PORTRAIT_TRAITS = [
+  ['interactive', "works in the agent's own terminal", '', "60% or more of the sessions are driven from a terminal: the agent's own interactive screen"],
+  ['scripted', 'runs agents from scripts', '', '50% or more of the sessions are driven from a script: claude -p, codex exec, an SDK, or an MCP server, with no one at a terminal'],
+  ['app', 'drives agents from an app or an IDE', '', '50% or more of the sessions are driven from the desktop app, an IDE extension, or the web'],
+  ['bypass', 'launches with a bypass flag', 'crit', '50% or more of the sessions whose launch is known were started with a bypass flag (--dangerously-skip-permissions, --yolo, ...)'],
+  ['auto', 'launches in auto mode', 'warn', '50% or more of the sessions whose launch is known were started in auto mode'],
+  ['sandboxed', 'tool calls run sandboxed', 'ok', '50% or more of the sessions whose tool calls were judged had some or all of them sandboxed'],
+  ['multi_agent', 'uses more than one agent', '', 'sessions of two agent types or more'],
+  ['parallel', 'keeps several sessions open at once', '', '3 sessions or more open at the same moment'],
+  ['long', 'long sessions', '', 'the median session is open 2 h or longer'],
+  ['short', 'many short sessions', '', '10 sessions or more, and the median one is open 10 min or less'],
+  ['explorer', 'agents mostly read and search', '', "60% or more of the calls explore (ls, cat, rg, grep, find, ...), of 20 calls or more; the agent's own Read tool runs no command and is not counted"],
+  ['tester', 'agents test often', '', '15% or more of the calls run tests, of 20 calls or more'],
+  ['builder', 'agents build often', '', '15% or more of the calls build, compile or install, of 20 calls or more'],
+  ['slurm', 'agents drive Slurm', '', 'an agent session submitted a job, or 10% or more of the calls are Slurm commands'],
+  ['poller', 'agents poll', 'warn', 'an agent session polled the scheduler for 10 min or more, or 25% or more of the calls only wait (sleep, ps, pgrep, squeue loops), of 20 calls or more'],
+  ['committer', 'agents commit their work', '', "an agent wrote a commit message or a pull request's title in a command"],
+  ['overnight', 'agents active overnight', '', '25% or more of the minutes in which a call began fall between 00:00 and 06:00, local time, of 60 such minutes or more'],
+];
+const CALL_CATS = ['test', 'slurm', 'run', 'build', 'edit', 'git', 'wait', 'explore', 'unknown']; // `phase_rules.CATS`
+// a phase's calls, by the category of the same name; a loop's are tests, and a guess and an idle gap hold none
+const CAT_OF_PHASE = { explore: 'explore', edit: 'edit', build: 'build', test: 'test', loop: 'test', run: 'run', slurm: 'slurm', wait: 'wait', git: 'git', unknown: 'unknown' };
+// whether a session's tool calls ran sandboxed (the Internal tab's count), from the row's own record
+const SESSION_SANDBOX = { sandboxed: 'sandboxed', unsandboxed: 'unsandboxed', denied: 'failed', unknown: 'no_calls' };
+const EDT = -4 * 3600;
+const localOf = (epoch) => new Date((epoch + EDT) * 1000);
+const qAt = (vals, p) => {
+  if (!vals.length) return null;
+  const v = [...vals].sort((a, b) => a - b);
+  return v[Math.min(v.length - 1, Math.floor(p * (v.length - 1)))];
+};
+const countOf = (xs) => {
+  const m = {};
+  for (const x of xs) m[x] = (m[x] ?? 0) + 1;
+  return Object.fromEntries(Object.entries(m).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)));
+};
+const addInto = (dst, src) => {
+  for (const [k, v] of Object.entries(src)) dst[k] = (dst[k] ?? 0) + v;
+  return dst;
+};
+const runsOf = (r, tool) => r.tool_rle.filter(([t]) => t === tool).reduce((a, [, n]) => a + n, 0);
+
+/* The agent rows as sessions: one per row, and one for the two day rows of `DAY_PAIR`, which share a block. */
+function portraitSessions(traj) {
+  const groups = [];
+  const byBlock = new Map();
+  for (const r of Object.values(traj.rows)) {
+    if (r.actor3 !== 'agent') continue;
+    const block = Array.isArray(r.phases?.list) ? r.phases : null;
+    if (block?.days && byBlock.has(block)) {
+      byBlock.get(block).rows.push(r);
+      continue;
+    }
+    const g = { rows: [r], block };
+    if (block?.days) byBlock.set(block, g);
+    groups.push(g);
+  }
+  return groups.map(({ rows, block }, i) => {
+    const head = rows[0];
+    const first = Math.min(...rows.map((r) => r.first));
+    const last = Math.max(...rows.map((r) => r.last));
+    const read = PHASE_AGENTS.has(head.agent_type);
+    const cats = {};
+    const phaseS = {};
+    const minutes = new Set();
+    const commands = {};
+    for (const p of block?.list ?? []) {
+      phaseS[p.kind] = r3((phaseS[p.kind] ?? 0) + (p.t1 - p.t0));
+      const c = CAT_OF_PHASE[p.kind];
+      if (c && p.n) cats[c] = (cats[c] ?? 0) + p.n;
+      // the minutes a phase's calls began in: no more than its calls, spread over it
+      const m = p.n ? Math.min(p.n, Math.ceil((p.t1 - p.t0) / 60)) : 0;
+      for (let k = 0; k < m; k++) minutes.add(Math.floor((p.t0 + (k * (p.t1 - p.t0)) / m) / 60));
+      for (const [cmd, n] of p.top) commands[cmd] = (commands[cmd] ?? 0) + n;
+    }
+    const tasks = (block?.tasks ?? []).filter((t) => t.kind === 'task');
+    const sbatch = rows.reduce((a, r) => a + runsOf(r, 'sbatch'), 0);
+    const squeue = rows.reduce((a, r) => a + runsOf(r, 'squeue'), 0);
+    return {
+      _minutes: minutes,
+      _commands: commands,
+      _words: countOf(tasks.filter((t) => t.source).map((t) => t.source)),
+      _tasks: tasks,
+      _lone: (block?.tasks ?? []).filter((t) => t.kind === 'lone').length,
+      _slurm: { jobs: sbatch, queries: squeue, polling: squeue >= 8, rejected: i % 11 === 5 ? 1 : 0 },
+      user: head.user,
+      host: head.host,
+      pid: 2_000 + i * 17,
+      agent_type: head.agent_type,
+      surface: head.surface,
+      surface_detail: head.surface_detail,
+      approval: head.approval,
+      sandbox: SESSION_SANDBOX[head.sandbox] ?? 'no_calls',
+      first,
+      last,
+      wall_s: r3(last - first),
+      calls: read ? (block?.days ? block.n_calls : rows.reduce((a, r) => a + (r.n_calls ?? 0), 0)) : null,
+      processes: rows.reduce((a, r) => a + r.n_events, 0),
+      cpu_s: r3(rows.reduce((a, r) => a + r.cpu_s, 0)),
+      rd_mb: r3(rows.reduce((a, r) => a + r.io_rd_mb, 0)),
+      wr_mb: r3(rows.reduce((a, r) => a + r.io_wr_mb, 0)),
+      net_tx_mb: r3(rows.reduce((a, r) => a + r.net_tx_mb, 0)),
+      net_rx_mb: r3(rows.reduce((a, r) => a + r.net_rx_mb, 0)),
+      peak_rss_mb: Math.max(...rows.map((r) => r.peak_rss_mb)),
+      running: rows.some((r) => r.running),
+      sid: rows[rows.length - 1].sid,
+      sids: rows.map((r) => r.sid),
+      project: block?.headline ? block.headline.split(' · ')[0] : null,
+      headline: block?.headline ?? null,
+      tasks: block ? tasks.length : null,
+      quoted: block ? tasks.filter((t) => t.source).length : null,
+      phase_s: block ? phaseS : null,
+      cats: Object.fromEntries(CALL_CATS.filter((c) => cats[c]).map((c) => [c, cats[c]])),
+    };
+  });
+}
+
+/* The most sessions open at one moment; a start is counted before an end at the same instant. */
+function peakOpen(ss) {
+  const ev = ss.flatMap((s) => [[s.first, -1], [s.last, 1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let cur = 0;
+  let peak = 0;
+  for (const [, d] of ev) {
+    cur -= d;
+    peak = Math.max(peak, cur);
+  }
+  return peak;
+}
+
+/* The traits a row holds, as `portraits.traits` gives them. */
+function portraitTraits(row) {
+  const R = PORTRAIT_RULES;
+  const got = {};
+  const of = (k, n) => `${k} of ${n} sessions`;
+  const n = row.sessions;
+  const surf = row.surfaces;
+  const knownS = n - (surf.unknown ?? 0);
+  if (knownS) {
+    if ((surf.terminal ?? 0) >= R.interactive * knownS) got.interactive = of(surf.terminal ?? 0, knownS);
+    if ((surf.script ?? 0) >= R.scripted * knownS) got.scripted = of(surf.script ?? 0, knownS);
+    const app = (surf.desktop ?? 0) + (surf.extension ?? 0) + (surf.web ?? 0);
+    if (app >= R.app * knownS) got.app = of(app, knownS);
+  }
+  const ap = row.approval;
+  const knownA = (ap.bypassed ?? 0) + (ap.auto ?? 0) + (ap.supervised ?? 0);
+  if (knownA && (ap.bypassed ?? 0) >= R.bypass * knownA) got.bypass = of(ap.bypassed ?? 0, knownA);
+  if (knownA && (ap.auto ?? 0) >= R.auto * knownA) got.auto = of(ap.auto ?? 0, knownA);
+  const sb = row.sandbox;
+  const knownB = ['sandboxed', 'partial', 'failed', 'unsandboxed'].reduce((a, k) => a + (sb[k] ?? 0), 0);
+  const iso = (sb.sandboxed ?? 0) + (sb.partial ?? 0);
+  if (knownB && iso >= R.sandboxed * knownB) got.sandboxed = of(iso, knownB);
+  const types = Object.keys(row.agent_types).filter(Boolean);
+  if (types.length >= 2) got.multi_agent = `${types.length} agent types`;
+  if (row.peak_open >= R.parallel) got.parallel = `up to ${row.peak_open}`;
+  const w = row.wall_p50_s;
+  if (w != null && w >= R.long_s) got.long = `median ${(w / 3600).toFixed(1)} h`;
+  if (n >= R.short_n && w != null && w <= R.short_s) got.short = `${n} sessions, median ${Math.round(w / 60)} min`;
+  const logged = Object.values(row.cats).reduce((a, b) => a + b, 0);
+  const share = (c) => (logged >= R.min_calls ? (row.cats[c] ?? 0) / logged : 0);
+  const pctTxt = (p) => (p >= 10 ? String(Math.round(p)) : p.toFixed(1));
+  const num = (v) => v.toLocaleString('en-US');
+  const callsOf = (c) => `${pctTxt(100 * share(c))}% of ${num(logged)} calls`;
+  if (share('explore') >= R.explore) got.explorer = callsOf('explore');
+  if (share('test') >= R.test) got.tester = callsOf('test');
+  if (share('build') >= R.build) got.builder = callsOf('build');
+  const sl = row.slurm ?? {};
+  if (sl.jobs) got.slurm = `${num(sl.jobs)} job${sl.jobs === 1 ? '' : 's'} submitted`;
+  else if (share('slurm') >= R.slurm) got.slurm = callsOf('slurm');
+  if (sl.polling_sessions) got.poller = `${sl.polling_sessions} session${sl.polling_sessions === 1 ? '' : 's'} polled the queue for ${(sl.polling_s / 3600).toFixed(1)} h`;
+  else if (share('wait') >= R.wait) got.poller = callsOf('wait');
+  const words = row.words;
+  if (words.commit || words.pr) {
+    got.committer = [
+      words.commit ? `${words.commit} commit message${words.commit === 1 ? '' : 's'}` : null,
+      words.pr ? `${words.pr} pull request${words.pr === 1 ? '' : 's'}` : null,
+    ].filter(Boolean).join(', ');
+  }
+  if (row.active_min >= R.night_min) {
+    const night = row.hours.slice(0, 6).reduce((a, b) => a + b, 0);
+    if (night >= R.night * row.active_min) got.overnight = `${pctTxt((100 * night) / row.active_min)}% of ${num(row.active_min)} active minutes`;
+  }
+  return PORTRAIT_TRAITS.filter(([id]) => id in got).map(([id, label, tone]) => ({ id, label, tone, detail: got[id] }));
+}
+
+/* How a user leverages their agents, as `portraits.leverage` gives it: each part by PORTRAIT_RULES, null where the
+ * numbers do not say it. */
+function portraitLeverage(row) {
+  const R = PORTRAIT_RULES;
+  const n = row.sessions;
+  const surf = row.surfaces;
+  const knownS = n - (surf.unknown ?? 0);
+  let mode = { id: 'unknown', n: 0, of: n };
+  if (knownS) {
+    let top = null;
+    for (const [m, xs] of PORTRAIT_MODES) {
+      const k = xs.reduce((a, x) => a + (surf[x] ?? 0), 0);
+      if (!top || k > top[1]) top = [m, k]; // the first of a tie
+    }
+    mode = { id: top[1] >= R.mode * knownS ? top[0] : 'mixed', n: top[1], of: knownS };
+  }
+  const ap = row.approval;
+  const b = ap.bypassed ?? 0;
+  const au = ap.auto ?? 0;
+  const knownA = b + au + (ap.supervised ?? 0);
+  const autonomy = knownA
+    ? { id: b >= R.bypass * knownA ? 'bypass' : au >= R.auto * knownA ? 'auto' : 'no_flag', bypassed: b, auto: au, of: knownA }
+    : null;
+  const cats = row.cats;
+  const actions = PORTRAIT_USES.reduce((a, [, cs]) => a + cs.reduce((x, c) => x + (cats[c] ?? 0), 0), 0);
+  let uses = [];
+  let mostly = 0;
+  if (row.calls != null && actions >= R.min_calls) {
+    uses = PORTRAIT_USES.map(([u, cs]) => [u, cs.reduce((x, c) => x + (cats[c] ?? 0), 0)])
+      .filter(([, k]) => k > 0)
+      .map(([u, k], i) => [u, k, i])
+      .sort((x, y) => y[1] - x[1] || x[2] - y[2])
+      .map(([u, k]) => ({ id: u, n: k, pct: Number(((100 * k) / actions).toFixed(1)) }));
+    if (uses[0].n >= R.mostly * actions) mostly = 1;
+    else if (uses.length > 1 && uses[0].n + uses[1].n >= R.mostly * actions) mostly = 2;
+  }
+  const logged = Object.values(cats).reduce((a, x) => a + x, 0);
+  const waiting = logged >= R.min_calls && (cats.wait ?? 0) >= R.wait * logged
+    ? { n: cats.wait, of: logged, pct: Number(((100 * cats.wait) / logged).toFixed(1)) }
+    : null;
+  const project = row.projects.length
+    ? { name: row.projects[0][0], n: row.projects[0][1], of: n, mostly: row.projects[0][1] >= R.project * n }
+    : null;
+  let when = null;
+  if (row.active_min) {
+    let h = 0;
+    for (let i = 1; i < 24; i++) if (row.hours[i] > row.hours[h]) h = i; // the earliest of a tie
+    when = {
+      busiest: h,
+      minutes: row.hours[h],
+      night_pct: row.active_min >= R.night_min
+        ? Number(((100 * row.hours.slice(0, 6).reduce((a, x) => a + x, 0)) / row.active_min).toFixed(1))
+        : null,
+    };
+  }
+  return { mode, autonomy, parallel: row.peak_open >= R.parallel ? row.peak_open : null, uses, actions, mostly, waiting, project, when };
+}
+
+/* One user's row over their sessions, the roster's and the head of their portrait (`grid` adds weekday by hour). */
+function portraitRow(user, ss, grid = false) {
+  const minutes = new Set(ss.flatMap((s) => [...s._minutes]));
+  const hours = Array(24).fill(0);
+  const cells = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const m of [...minutes].sort((a, b) => a - b)) {
+    const d = localOf(m * 60);
+    hours[d.getUTCHours()] += 1;
+    cells[(d.getUTCDay() + 6) % 7][d.getUTCHours()] += 1;
+  }
+  const read = ss.filter((s) => s.calls != null);
+  const cats = {};
+  for (const s of ss) addInto(cats, s.cats);
+  const words = {};
+  for (const s of ss) addInto(words, s._words);
+  const walls = ss.map((s) => s.wall_s);
+  const projects = countOf(ss.map((s) => s.project).filter(Boolean));
+  const polling = ss.filter((s) => s._slurm.polling);
+  const jobs = ss.reduce((a, s) => a + s._slurm.jobs, 0);
+  const queries = ss.reduce((a, s) => a + s._slurm.queries, 0);
+  const rejected = ss.reduce((a, s) => a + s._slurm.rejected, 0);
+  const pollS = polling.map((s) => r3(s.wall_s * 0.25));
+  const longest = polling.length ? polling[pollS.indexOf(Math.max(...pollS))] : null;
+  const slurm = jobs || queries
+    ? {
+        sessions: ss.filter((s) => s._slurm.jobs || s._slurm.queries).length, jobs, rejected, asked: jobs + rejected,
+        queries, queries_per_job: jobs ? Number((queries / jobs).toFixed(1)) : null, cancels: 0,
+        parsable: Math.round(jobs * 0.8), parsable_pct: jobs ? Number(((100 * Math.round(jobs * 0.8)) / (jobs + rejected)).toFixed(2)) : null,
+        polling_sessions: polling.length, polling_s: r3(pollS.reduce((a, b) => a + b, 0)),
+        longest_loop: longest
+          ? { from: longest.first + 600, to: longest.first + 600 + Math.max(...pollS), polls: longest._slurm.queries,
+              span_s: Math.max(...pollS), every_s: Number((Math.max(...pollS) / longest._slurm.queries).toFixed(1)), polling: true }
+          : null,
+        gpu_h: null, gpu_h_known: 0,
+      }
+    : null;
+  const row = {
+    user,
+    sessions: ss.length,
+    running: ss.filter((s) => s.running).length,
+    hosts: [...new Set(ss.map((s) => s.host))].sort(),
+    agent_types: countOf(ss.map((s) => s.agent_type ?? '')),
+    surfaces: countOf(ss.map((s) => s.surface ?? 'unknown')),
+    approval: countOf(ss.map((s) => s.approval ?? 'unknown')),
+    sandbox: countOf(ss.map((s) => s.sandbox)),
+    calls: read.length ? read.reduce((a, s) => a + s.calls, 0) : null,
+    calls_sessions: read.length,
+    calls_p50: qAt(read.map((s) => s.calls), 0.5),
+    cats: Object.fromEntries(CALL_CATS.filter((c) => cats[c]).map((c) => [c, cats[c]])),
+    words,
+    processes: ss.reduce((a, s) => a + s.processes, 0),
+    cpu_s: r3(ss.reduce((a, s) => a + s.cpu_s, 0)),
+    rd_mb: r3(ss.reduce((a, s) => a + s.rd_mb, 0)),
+    wr_mb: r3(ss.reduce((a, s) => a + s.wr_mb, 0)),
+    net_tx_mb: r3(ss.reduce((a, s) => a + s.net_tx_mb, 0)),
+    net_rx_mb: r3(ss.reduce((a, s) => a + s.net_rx_mb, 0)),
+    peak_rss_mb: Math.max(...ss.map((s) => s.peak_rss_mb)),
+    wall_s: r3(walls.reduce((a, b) => a + b, 0)),
+    wall_p50_s: qAt(walls, 0.5),
+    wall_max_s: Math.max(...walls),
+    first: Math.min(...ss.map((s) => s.first)),
+    last: Math.max(...ss.map((s) => s.last)),
+    active_min: minutes.size,
+    hours,
+    peak_open: peakOpen(ss),
+    projects: Object.entries(projects).slice(0, 5),
+    projects_total: Object.keys(projects).length,
+    slurm,
+    ...(grid ? { grid: cells } : {}),
+  };
+  row.traits = portraitTraits(row);
+  row.leverage = portraitLeverage(row);
+  return row;
+}
+
+const PORTRAIT_BASIS = {
+  session: 'one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together',
+  traits: 'plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement',
+};
+
+/* `{roster, portraits}`: what `/api/users` and `/api/user?name=` answer, by user. */
+function users(nowEpoch, traj) {
+  const sessions = portraitSessions(traj);
+  const byUser = new Map();
+  for (const s of sessions) {
+    if (!byUser.has(s.user)) byUser.set(s.user, []);
+    byUser.get(s.user).push(s);
+  }
+  const rows = [...byUser].map(([u, ss]) => portraitRow(u, ss));
+  rows.sort((a, b) => b.sessions - a.sessions || (b.calls ?? 0) - (a.calls ?? 0) || (a.user < b.user ? -1 : 1));
+  const total = (k) => rows.reduce((acc, r) => addInto(acc, r[k]), {});
+  const fleet = {
+    users: rows.length,
+    sessions: sessions.length,
+    sessions_per_user_p50: qAt(rows.map((r) => r.sessions), 0.5),
+    wall_p50_s: qAt(sessions.map((s) => s.wall_s), 0.5),
+    calls_p50: qAt(sessions.filter((s) => s.calls != null).map((s) => s.calls), 0.5),
+    active_min_p50: qAt(rows.map((r) => r.active_min).filter(Boolean), 0.5),
+    peak_open_p50: qAt(rows.map((r) => r.peak_open), 0.5),
+    running: rows.reduce((a, r) => a + r.running, 0),
+    agent_types: total('agent_types'),
+    surfaces: total('surfaces'),
+    approval: total('approval'),
+    sandbox: total('sandbox'),
+    cats: total('cats'),
+    words: total('words'),
+    traits: countOf(rows.flatMap((r) => r.traits.map((t) => t.id))),
+  };
+  const window = { minutes: 1440, from: new Date((nowEpoch - 86_400) * 1000).toISOString(), to: new Date(nowEpoch * 1000).toISOString() };
+  const catalogue = PORTRAIT_TRAITS.map(([id, label, tone, rule]) => ({ id, label, tone, rule }));
+  const shared = { ...ENV('ebpfm', EBPFM_PATHS), window, traits: catalogue, rules: PORTRAIT_RULES, basis: PORTRAIT_BASIS };
+  const portraits = {};
+  for (const [user, ss] of byUser) {
+    const newest = [...ss].sort((a, b) => b.last - a.last);
+    const timeS = {};
+    const callsBy = {};
+    for (const s of newest) addInto(timeS, s.phase_s ?? {});
+    for (const s of newest) addInto(callsBy, s.cats);
+    const tasks = newest.flatMap((s) =>
+      s._tasks.map((t) => ({
+        label: t.label, source: t.source, ref: t.ref, names: t.names, t0: t.t0, t1: t.t1, n: t.n, open: t.open,
+        sid: t.sid ?? s.sid, agent_type: s.agent_type, project: s.project,
+      })),
+    ).sort((a, b) => b.t0 - a.t0);
+    const commands = {};
+    for (const s of newest) addInto(commands, s._commands);
+    portraits[user] = {
+      ...shared,
+      user,
+      found: true,
+      fleet_of: 'window',
+      fleet,
+      row: portraitRow(user, ss, true),
+      phases: {
+        time_s: Object.fromEntries(Object.entries(timeS).map(([k, v]) => [k, r3(v)]).sort((a, b) => b[1] - a[1])),
+        calls: callsBy,
+        sessions: newest.filter((s) => s.phase_s).length,
+        of: newest.filter((s) => s.calls != null).length,
+      },
+      tasks: {
+        n: tasks.length,
+        lone: newest.reduce((a, s) => a + s._lone, 0),
+        quoted: countOf(tasks.filter((t) => t.source).map((t) => t.source)),
+        recent: tasks.slice(0, 40),
+        listed_of: tasks.length,
+      },
+      sessions: newest.map((s) => Object.fromEntries(Object.entries(s).filter(([k]) => !k.startsWith('_')))),
+      sessions_total: newest.length,
+      commands: Object.entries(commands).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 8),
+      tz: 'EDT',
+    };
+  }
+  return { roster: { ...shared, users: rows, fleet, unattributed: 0 }, portraits };
+}
+
 function build() {
   const nowEpoch = 1_789_400_000; // fixed: the fixture must be byte-stable
   const nowIso = new Date(nowEpoch * 1000).toISOString();
@@ -1635,6 +2048,7 @@ function build() {
     live,
     trajectories: trajectories(nowEpoch),
     trajectory_detail: trajectoryDetail(nowEpoch, trajectories(nowEpoch)),
+    users: users(nowEpoch, trajectories(nowEpoch)),
   };
 }
 

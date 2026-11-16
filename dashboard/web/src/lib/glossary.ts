@@ -4,23 +4,57 @@
  * line in the reader's terms, never the collector's; a raw field name keeps its
  * name and says what it counts. `<Term>` and `Plate` show a small "?" beside a
  * term that has an entry here, and the line on hover.
+ *
+ * One word per thing. A label says the word on the left, and the words on the
+ * right are not used on the page for that thing (web/README.md, "Words", is the
+ * same table). Some keys below are older than their words (`payload`, `home`,
+ * `trajectory`, `keys`); the line a key holds says the word the page uses.
+ *
+ *   class: agent, human, IDE   who ran it                    not: who ran it, people, editor
+ *   agent, agent type          an AI coding agent (one running copy of one), and
+ *                              which it is                   not: a run of one (a session)
+ *   session                    one run of an agent or an IDE and all it started,
+ *                              or a person's terminal login  not: trajectory, tree, run
+ *   process tree               a session's processes, drawn  not: trajectory
+ *   process                    one program that ran          not: event, exits (a count)
+ *   tool call                  a command an agent issued     not: call, command of its own
+ *   login node                 a machine the collector watches, in the site's own
+ *                              word (ui.node_noun, nodes.ts) not: host, machine
+ *   start folder               where an agent was started    not: home (a user's home folder)
+ *   driven from                terminal, script, IDE extension, desktop app,
+ *                              web or phone, unknown         not: launcher, surface, CLI/app
+ *   approval at launch         bypass flag, auto mode, no bypass flag, can't tell
+ *                                                            not: approval bypassed, not observable
+ *   sandboxed                  ran in its own namespaces     not: namespace-isolated, isolated, unsandboxed
+ *   sandbox failed to start                                  not: attempt failed (no payload ran)
+ *   wrapped command            what a sandbox wrapper ran    not: payload
+ *   memory, peak memory        resident memory (RSS)         not: resident, memory in use
+ *   disk read, disk written    bytes that reached the disk   not: rd, wr
+ *   read requested,
+ *   write requested            bytes through read()/write()  not: syscall, rchar, wchar
+ *   sent, received             network bytes                 not: tx, rx, egress, ingress
+ *   median                                                   not: p50
+ *   pieces                     collector keys joined in a row not: keys
+ *   feed                       a stream the page reads: process tracer, node metrics, ...
+ *                                                            not: data source, tier, provenance
+ *   fake data                  the demo's made-up records    not: synthetic data
  */
 export const GLOSS: Record<string, string> = {
   // what is counted
   running: 'running: a process alive right now, as seen in the collector’s census of live processes (taken every 60 s)',
   exited: 'exited: a process that finished; each one leaves one record when it exits, so “processes exited” counts what ran',
-  session: 'session: one agent or editor and everything it started, or one person’s terminal login',
-  toolcall: 'tool call: a command an agent ran directly, such as one shell command it issued; what that command started in turn is counted as processes',
-  class: 'class: who ran it. agent = an AI coding agent and everything it started; human = a person’s own terminal; IDE = an editor session such as VS Code',
-  sessions_now: 'sessions: agent and editor sessions with a process running on the node, seen in the last 10 minutes',
-  tree: 'tree: one agent or editor process and everything it started',
-  user: 'user: one account; a person who runs an agent, a shell, and an editor is one user',
+  session: 'session: one run of an agent or an IDE and everything it started, or one person’s terminal login',
+  toolcall: 'tool call: a command an agent issued itself, such as one shell command; what that command started in turn is counted as processes',
+  class: 'class: who ran it. agent = an AI coding agent and everything it started; human = a person’s own terminal; IDE = an editor such as VS Code and everything it started',
+  sessions_now: 'sessions: agent and IDE sessions with a process running on the login node, seen in the last 10 minutes',
+  tree: 'process tree: one session’s processes, each drawn under the process that started it',
+  user: 'user: one account; a person who runs an agent, a shell, and an IDE is one user',
 
   // CPU, memory, waits
   cpuh: 'CPU-hours: CPU time summed over processes; 1 CPU-h is one core busy for one hour',
   cpusmin: 'CPU seconds per minute: CPU time used in each minute; 60 means one core fully busy for that minute',
-  rss: 'resident memory (RSS): the physical memory processes hold, sampled while they run',
-  peakrss: 'peak memory: the most resident memory a process held at any moment',
+  rss: 'memory (resident memory, RSS): the physical memory processes hold, sampled while they run',
+  peakrss: 'peak memory: the most memory a process held at any moment',
   oncpu: 'share of lifetime on CPU: for each process, the time it actually ran on a CPU divided by how long it existed, capped at 100%. A process that mostly waited scores low',
   runqueue: 'runqueue wait: time a process was ready to run but waited for a free CPU',
   dstate: 'D-state (uninterruptible sleep): the process is stuck waiting on the system, usually storage and often a network filesystem (NFS), and cannot be interrupted',
@@ -46,55 +80,56 @@ export const GLOSS: Record<string, string> = {
   max: 'max: the single largest value in the window',
   quantile: 'quantiles (median, p90, p99): the value below which that share of processes fall',
 
-  // I/O
-  diskbytes: 'disk bytes: data that actually reached or came from the disk',
-  syscall: 'syscall bytes: data passed through read() or write() calls; part of it is served from memory (the page cache) and never touches the disk',
+  // I/O: what reached the disk, and what programs asked for (the gap is the page cache)
+  diskbytes: 'disk: bytes that actually reached or came from the disk',
+  syscall: 'requested: bytes programs read or wrote through read() and write() calls; part of what is read is served from memory (the page cache) and never touches the disk',
   pagecache: 'page cache: recently used file data the system keeps in memory, so reading it again does not touch the disk',
-  rchar: 'rchar: bytes read through read()-like calls, cached or not',
-  wchar: 'wchar: bytes written through write()-like calls, before they reach the disk',
-  rd: 'rd: bytes actually read from the disk (block layer)',
-  wr: 'wr: bytes actually written to the disk (block layer)',
-  rchar_mb: 'rchar_mb: megabytes read through read()-like calls, cached or not',
-  wchar_mb: 'wchar_mb: megabytes written through write()-like calls, before they reach the disk',
-  rd_mb: 'rd_mb: megabytes actually read from the disk (block layer)',
-  wr_mb: 'wr_mb: megabytes actually written to the disk (block layer)',
+  rchar: 'read requested: bytes programs read through read() calls, served from memory (the page cache) or from the disk',
+  wchar: 'write requested: bytes programs passed to write() calls, before they reach the disk',
+  rd: 'disk read: bytes actually read from the disk (the block layer)',
+  wr: 'disk written: bytes actually written to the disk (the block layer)',
+  rchar_mb: 'read requested, in MB: megabytes programs read through read() calls, served from memory or from the disk',
+  wchar_mb: 'write requested, in MB: megabytes programs passed to write() calls, before they reach the disk',
+  rd_mb: 'disk read, in MB: megabytes actually read from the disk (the block layer)',
+  wr_mb: 'disk written, in MB: megabytes actually written to the disk (the block layer)',
   cacheserved: 'cache served: bytes read() returned from memory rather than from the disk',
   cachehit: 'cache hit: the share of bytes read that came from memory rather than the disk',
-  tx: 'sent (tx, egress): bytes that left this machine over the network',
-  rx: 'received (rx, ingress): bytes that arrived over the network',
+  tx: 'sent: bytes that left this login node over the network (tx, egress)',
+  rx: 'received: bytes that arrived over the network (rx, ingress)',
   netcalls: 'network calls: send and receive calls the processes made',
   coverage: 'coverage: the share of processes this could be measured for; the number covers those alone',
   exttcp: 'external TCP: open network connections to other machines',
 
   // agents and sandboxing
-  subagent: 'subagent: an agent started by another agent',
+  subagent: 'subagent: an agent session started by another agent',
   hosted: 'hosted: an agent run by a daemon or an app server rather than started from a terminal',
   depth: 'depth: how many steps below the agent a process sits; 0 is the agent, 1 a command it ran, 2 what that command ran',
   fanout: 'fan-out: how many agents one agent started directly',
-  blast: 'blast radius: where an agent ran, what it read and wrote, and what it touched outside its own folder',
-  home: 'home: the folder an agent was started in; its own work is expected there',
-  outsidehome: 'outside home: a path outside the folder the agent was started in, its own temp scratch included',
+  blast: 'blast radius: where an agent ran, what it read and wrote, and what it touched outside its start folder',
+  home: 'start folder: the folder an agent was started in; its own work is expected there',
+  outsidehome: 'outside its start folder: a path outside the folder the agent was started in, its own temp scratch included',
   otherhome: 'another user’s home: a path inside someone else’s home folder',
   shared: 'shared storage: cluster-wide storage such as /scratch or /n/…, which other people use too',
   named: 'files its commands mention: paths that appear in the text of its commands, sorted by what each command does with them; guessed from the text, not measured',
-  sandbox: 'sandboxed (namespace-isolated): the command ran inside an isolated view of the system, so it could not see or change everything the user can',
+  sandbox: 'sandboxed: the command ran in its own namespaces, an isolated view of files, processes or the network that it could not see past (what bwrap and Codex’s sandbox set up). Read from each process’s namespaces, so a Landlock- or seccomp-only sandbox does not show, and a container counts',
   bypass: 'bypass flag: the agent was started with a flag that lets it act without asking (for example --dangerously-skip-permissions or --yolo)',
   automode: 'auto mode: a classifier approves the agent’s actions instead of asking a person',
-  approval: 'approval at launch: how the agent was started: asking before acting, auto mode, or a bypass flag',
-  wrapper: 'sandbox wrapper: the helper (bwrap, codex-linux-sandbox) an agent uses to run a command isolated',
-  payload: 'payload: the command a sandbox wrapper was asked to run',
-  verdict: 'verdict: whether a process ran isolated, read from its namespaces',
-  ancestry: 'ancestry: which sandbox wrapper, if any, a process ran under',
-  inherit: 'inherit: the verdict was taken from the parent, because the process itself exited before it could be read',
-  none_tick: 'none:tick: read during the collector’s periodic census of live processes',
-  none_exec: 'none:exec: read when the process started',
-  exitedbeforeread: 'exited before read: the process was gone before its namespaces could be read',
-  headless: 'headless: an agent running without a terminal, started by a script or a server',
+  approval: 'approval at launch: what the agent’s command line says about asking before it acts: a bypass flag, auto mode, or no bypass flag. A settings file and a switch made mid-session are not seen, so “no bypass flag” is not “asks first”',
+  wrapper: 'sandbox wrapper: the helper (bwrap, codex-linux-sandbox) an agent uses to run a command in a sandbox',
+  payload: 'wrapped command: the command a sandbox wrapper was asked to run',
+  verdict: 'sandboxed?: whether a process ran in a sandbox, read from its namespaces',
+  ancestry: 'under wrapper: which sandbox wrapper, if any, a process ran under',
+  inherit: 'from its parent: the process exited before it could be checked, so its parent’s answer stands in',
+  none_tick: 'census: checked during the collector’s periodic census of live processes',
+  none_exec: 'at start: checked when the process started',
+  userns_exec: 'at start, user namespace: checked when the process started, inside a user namespace',
+  exitedbeforeread: 'exited before it could be checked: the process was gone before its namespaces could be read',
+  headless: 'from a script: a program runs the agent (claude -p, codex exec, an SDK), with no one at a terminal',
   version: 'version: the agent’s version, read from the program’s path where the path shows it',
-  surface: 'driven from: where an agent session is run from, read off the agent’s own command line. CLI = a terminal, or a script; app = a desktop app, an IDE extension, or the web',
+  surface: 'driven from: where an agent session is driven from, read off the agent’s own command line: a terminal, a script, an IDE extension, the desktop app, or the web or a phone',
 
   // risk
-  credentials: 'credentials in argv: a password or token typed into a command line, where any user on the node can read it with ps; counted, never shown',
+  credentials: 'credentials in argv: a password or token typed into a command line, where any user on the login node can read it with ps; counted, never shown',
   dangerous: 'commands that should not run here: commands this site’s rules flag on a shared login node',
   severity: 'severity: how much harm the rule’s command can do (HIGH, med, low)',
   succeeded: 'succeeded: how many of those runs exited with code 0',
@@ -111,13 +146,13 @@ export const GLOSS: Record<string, string> = {
   array: '--array: one submission that runs many copies of a job',
   wrap: '--wrap: the job is a command given inline rather than a script',
 
-  // trajectories
-  trajectory: 'trajectory: one session’s commands in order, as a process tree',
-  purpose: 'purpose: what kind of work each command was (polling, files, build, compute, …), as a colored strip over the session',
-  tasks: 'tasks: what an agent was working on. A task can start after an hour or more in which the agent waited on nothing, when its work moves to something new, or after a commit or pull request. A quoted label is the agent’s own words. Any other label is a verb and the names its commands used. A dashed block is a few calls hours from other work.',
+  // sessions
+  trajectory: 'process tree: one session’s processes, each drawn under the process that started it, with its tool calls in order',
+  purpose: 'purpose: what kind of work each process was (polling, files, build, compute, …), as a coloured strip over the session',
+  tasks: 'tasks: what an agent was working on. A task can start after an hour or more in which the agent waited on nothing, when its work moves to something new, or after a commit or pull request. A quoted label is the agent’s own words. Any other label is a verb and the names its commands used. A dashed block is a few tool calls hours from other work.',
   phases: 'phases: what an agent was doing, read from the commands it ran: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle. Reading and editing inside the agent, and its thinking, leave no command, so an edit shows only when a command makes it or, hatched, as a guess',
-  keys: 'keys: how many collector session ids this row combines',
-  wall: 'wall: elapsed time from the session’s first process to its last',
+  keys: 'pieces: how many pieces the collector recorded this session in, joined into this one row',
+  wall: 'length: elapsed time from the session’s first process to its last',
   sigmacpu: 'Σ CPU: CPU of the process and everything below it',
   procs: 'procs: processes in the subtree',
 };

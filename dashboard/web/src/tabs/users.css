@@ -1,0 +1,560 @@
+/* The Users tab (tabs/UsersTab.tsx): the roster, and one user's portrait.
+ *
+ * Built from the page's own pieces -- the Active users table's rows and chips,
+ * the share cells, the badges -- so a user reads the same here as on Live. Its
+ * colours are the series slots and the phase colours, never a new hue. */
+
+/* ------------------------------------------------------------- the roster */
+table.ur-roster td {
+  vertical-align: middle;
+}
+/* one body a user: their row and the line under it, hovered and opened as one */
+table.ur-roster tbody.ur-user {
+  cursor: pointer;
+}
+table.ur-roster tbody.ur-user:hover td {
+  background: var(--surface-2);
+}
+table.ur-roster tbody.ur-user.open td {
+  background: var(--crimson-wash);
+}
+table.ur-roster tbody.ur-user.open td:first-child {
+  box-shadow: inset 3px 0 0 var(--crimson);
+}
+table.ur-roster tbody.ur-user tr.ur-row td {
+  border-bottom: 0;
+  padding-bottom: 3px;
+}
+table.ur-roster tbody.ur-user tr.ur-sumrow td {
+  padding: 0 14px 10px 24px;
+  white-space: normal;
+  border-bottom: 1px solid var(--rule);
+}
+.ur-sumline {
+  display: block;
+  max-width: 120ch;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+.ur-traitcell {
+  white-space: normal !important;
+  min-width: 220px;
+}
+.ur-words {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.ur-pick.crit[aria-pressed='false'] b {
+  color: var(--crimson-ink);
+}
+.ur-pick.warn[aria-pressed='false'] b {
+  color: #8a6410;
+}
+
+/* running now: the live tier's dot, beside a name or a session */
+.ur-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: #2c6b29;
+  cursor: help;
+}
+.ur-live i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--live);
+  box-shadow: 0 0 0 2px rgba(77, 184, 72, 0.18);
+}
+
+/* active minutes by hour, as a row of 24 small bars in a table cell */
+.ur-strip {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 18px;
+  width: 74px;
+  vertical-align: middle;
+  cursor: help;
+}
+.ur-strip i {
+  display: block;
+  flex: 1;
+  min-height: 1px;
+  background: var(--s1);
+  border-radius: 1px 1px 0 0;
+}
+
+/* ------------------------------------------------------------ the portrait */
+.ur-portrait {
+  scroll-margin-top: 14px;
+}
+.ur-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* the figure beside who they are and how they leverage agents; one column when narrow */
+.ur-top {
+  display: grid;
+  grid-template-columns: minmax(260px, 380px) minmax(0, 1fr);
+  gap: 14px 20px;
+  align-items: start;
+}
+@media (max-width: 820px) {
+  .ur-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ur-fig {
+    max-width: 380px;
+  }
+}
+.ur-topr {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.ur-who h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.ur-traits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ur-traits .u-badge {
+  font-size: 11px;
+  padding: 2px 9px;
+}
+.ur-tdetail {
+  color: var(--muted);
+}
+/* a few numbers, label above value, in as many columns as fit */
+.ur-nums {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+.ur-nums dt {
+  font: 10px 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.ur-nums dt[data-tip] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.ur-nums dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.ur-nums dd .nm {
+  font-weight: 400;
+}
+
+/* share rows: one measure's states, the user's share and the window's */
+.ur-launch {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 22px;
+}
+.ur-shares {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.ur-shares table.shares td:first-child {
+  width: auto;
+  white-space: nowrap;
+}
+.ur-shares table.shares td {
+  padding: 4px 10px 4px 0;
+  vertical-align: middle;
+}
+.ur-shares .share-cell {
+  --track: 84px;
+}
+.ur-rest {
+  font-size: 10.5px;
+}
+
+/* charts */
+.ur-rhythm,
+.ur-work,
+.ur-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ur-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px 22px;
+  align-items: start;
+}
+.ur-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.ur-chart rect[data-tip] {
+  cursor: help;
+}
+.ur-run {
+  stroke: var(--live);
+  stroke-width: 1.5;
+}
+.ur-week {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ur-weekrow {
+  display: grid;
+  grid-template-columns: 30px repeat(24, 1fr);
+  gap: 2px;
+  align-items: center;
+}
+.ur-weekrow i {
+  display: block;
+  height: 11px;
+  border-radius: 2px;
+  cursor: help;
+}
+.ur-weekrow .nm {
+  font-size: 10px;
+}
+
+/* the commands run most */
+.ur-cmds ol {
+  margin: 6px 0 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ur-cmds li {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.ur-cmds code {
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+/* tasks: a quote is the agent's own words, and is set apart as one */
+.ur-tline {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.ur-quote {
+  color: var(--ink);
+  font-weight: 500;
+}
+.ur-src {
+  margin-left: 7px;
+  padding: 0 5px;
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  font: 9.5px/14px 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.ur-src.open {
+  border-color: var(--live);
+  color: #2c6b29;
+}
+table.ur-tasklist td.wrap {
+  min-width: 26ch;
+}
+.ur-pbar {
+  width: 110px;
+}
+.ur-sess {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ur-sess .u-dot {
+  margin-right: 0;
+}
+
+/* share rows (ShareRows): a label, its count, the user's share as a bar and the
+   whole window's as a tick on the same track, and the user's share in numbers */
+.ur-srows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ur-srow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 68px 38px;
+  column-gap: 9px;
+  align-items: center;
+  font-size: 12px;
+  cursor: help;
+}
+.ur-srow .lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+.ur-srow .val,
+.ur-srow .pct {
+  font-family: 'IBM Plex Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.ur-srow .val {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.ur-srow .pct {
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.ur-srow .trk {
+  position: relative;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--rule);
+}
+.ur-srow .trk > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+/* the whole window's share */
+.ur-srow .trk > b {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--ink);
+  opacity: 0.6;
+}
+.ur-key {
+  font-size: 10.5px;
+}
+.ur-key b {
+  display: inline-block;
+  width: 2px;
+  height: 10px;
+  margin: 0 3px -1px;
+  background: var(--ink);
+  opacity: 0.6;
+}
+
+/* roster cells that may wrap: a few words, a few badges */
+table.ur-roster td.ur-wrapcell {
+  white-space: normal;
+  min-width: 120px;
+  max-width: 190px;
+}
+table.ur-roster td.ur-traitcell {
+  max-width: 220px;
+}
+/* a number column is as narrow as its numbers and its header's longest word
+   allow: the header wraps between words instead. A width rather than a max:
+   a max below the longest word clipped it, sort arrow and all, under the
+   next column's header. */
+table.ur-roster th.num {
+  width: 1px;
+}
+.ur-ago {
+  margin-top: 2px;
+  font-size: 10px;
+}
+/* a roster row holds two badges at most; each is cut to the cell, its whole on hover */
+.ur-traitcell .u-badges {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.ur-traitcell .u-badge {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* how they leverage agents: one sentence, then point by point */
+.ur-lev {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--crimson);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.ur-lev-head {
+  margin: 0;
+  max-width: 96ch;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+}
+.ur-lev-points {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.ur-lev-points > div {
+  display: contents;
+}
+.ur-lev-points dt {
+  font: 10px/19px 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.ur-lev-points dt[data-tip] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.ur-lev-points dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------- portrait figures */
+.ur-fig {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+}
+svg.ur-figsvg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+svg.ur-figsvg [data-tip] {
+  cursor: help;
+}
+.ur-figkey {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.ur-figkey summary {
+  cursor: pointer;
+  font: 10px 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.ur-figkey summary:hover {
+  color: var(--ink);
+}
+.ur-figkey p {
+  margin: 6px 0 4px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.ur-figkey dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0;
+}
+.ur-figkey dl > div {
+  display: contents;
+}
+.ur-figkey dt {
+  font-weight: 600;
+  color: var(--ink);
+}
+.ur-figkey dd {
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* the roster as figures: a card a user, in the table's order */
+.ur-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+  padding: 2px 0 6px;
+}
+.ur-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+  min-width: 0;
+}
+.ur-card:hover {
+  border-color: var(--edge);
+  background: var(--surface-2);
+}
+.ur-card:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+.ur-card.open {
+  border-color: var(--crimson);
+  box-shadow: inset 0 3px 0 var(--crimson);
+  background: var(--crimson-wash);
+}
+.ur-cardhead {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+.ur-cardhead .u-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ur-cardn {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ur-cardline {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}

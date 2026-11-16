@@ -54,7 +54,8 @@ Three rules this module exists to enforce:
    because "could not read" must not be reported as "unsandboxed".  The ebpf tier
    runs as root, so that state is not ptrace-gating: across 2026-09-21..25 every
    one of 163 such records lived under 6 ms -- the process had exited before the
-   read.  It is still not "not isolated", and it is labelled "exited before read".
+   read.  It is still not "not sandboxed", and the page labels it "exited before it
+   was checked".
 
 4. Approval is a property of the agent SESSION, read off the argv of the
    process that runs it.  Only a process whose role (roles.py) is `agent` gets a

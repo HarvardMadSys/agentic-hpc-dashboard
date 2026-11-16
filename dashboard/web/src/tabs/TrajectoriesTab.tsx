@@ -50,10 +50,11 @@ import type { Cls, PhaseDay, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajecto
 import { TRAJ_RANKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import { Panel } from '../components/Panel';
+import { Icon } from '../components/Icon';
 import { PhaseBand } from '../components/PhaseBand';
 import { Segmented } from '../components/ClassFilter';
 import { Plate } from '../components/Plate';
-import { CLS_COL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL } from '../lib/classes';
 import { sessionName } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
 import { serverNow } from '../lib/clock';
@@ -61,7 +62,7 @@ import { isBlock, sequenceLine } from '../lib/phases';
 import { pcol, plbl } from '../lib/purposes';
 import { dayInWindow, taskSequence, windowStart } from '../lib/tasks';
 import { surfaceSplit } from '../lib/surfaces';
-import { absent } from '../lib/panels';
+import { absent, winLabel } from '../lib/panels';
 import { SurfaceChip } from '../components/SurfaceChip';
 import { TrajectoryInspector } from './TrajectoryInspector';
 import type { DayJump, RunJump } from './TrajectoryInspector';
@@ -81,7 +82,7 @@ const RANK_TIP: Record<TrajRank, string> = {
   events: 'the sessions that ran the most processes first',
   cpu_s: 'the sessions that used the most CPU first',
   peak_rss_mb:
-    'the sessions whose largest process held the most memory first: peak resident memory ' +
+    'the sessions whose largest process held the most memory first: peak memory (RSS) ' +
     '(DRAM) of any one process that exited, not the session added up',
   io_mb:
     'the sessions that read and wrote the most bytes on disk first. Each process counts ' +
@@ -101,9 +102,9 @@ function rankLine(r: TrajRow, rank: TrajRank, now: number): string | null {
       // the stat line counts tool calls on a row with phases (R3), so the processes ranking says its own quantity
       return countsCalls(r) ? `${fint(r.n_events)} processes` : null;
     case 'peak_rss_mb':
-      return `${mb(r.peak_rss_mb)} largest process`;
+      return `${mb(r.peak_rss_mb)} peak memory`;
     case 'io_mb':
-      return `${mb(r.io_rd_mb)} read · ${mb(r.io_wr_mb)} written`;
+      return `${mb(r.io_rd_mb)} disk read · ${mb(r.io_wr_mb)} written`;
     case 'net_mb':
       return `${mb(r.net_tx_mb)} sent · ${mb(r.net_rx_mb)} received`;
     case 'distinct_tools':
@@ -337,13 +338,12 @@ export function TrajectoriesTab({
           session: see `summary` in reducers/trajectories.py. */}
       <div className="plates">
         <Plate
-          k="agent sessions in window"
+          k={`agent sessions · ${winLabel(t)}`}
           total={agent?.sessions ?? null}
-          stripe="var(--s1)"
           by={byCls((d) => d.sessions)}
           tip={
             'a session is one agent process and everything it ran (for agents), or one ' +
-            'login / terminal (for people and IDEs).\n\n' +
+            'login / terminal (for the human and IDE classes).\n\n' +
             'an agent-type process with no agent above it -- a script checking ' +
             '`codex --version` every minute -- is not a session and is counted apart.'
           }
@@ -368,7 +368,6 @@ export function TrajectoriesTab({
         <Plate
           k="processes per agent session · median"
           total={agent?.calls_p50 ?? null}
-          stripe="var(--s4)"
           by={byCls((d) => d.calls_p50)}
           note={
             agent?.calls_p50 != null
@@ -379,7 +378,6 @@ export function TrajectoriesTab({
         <Plate
           k="agent session length · median"
           total={agent?.wall_p50_s ?? null}
-          stripe="var(--s6)"
           by={byCls((d) => d.wall_p50_s)}
           fmtFn={(n) => dur(n)}
           tip={
@@ -389,7 +387,7 @@ export function TrajectoriesTab({
           note={
             agent?.longest
               ? `longest ${dur(agent.longest.wall_s)} · ${agent.longest.user ?? '?'}, ${
-                  agent.longest.agent_type ?? 'agent'
+                  AGENT_TYPE_LBL[agent.longest.agent_type ?? ''] ?? agent.longest.agent_type ?? 'agent'
                 }, ${fint(agent.longest.tool_calls)} processes`
               : undefined
           }
@@ -397,7 +395,6 @@ export function TrajectoriesTab({
         <Plate
           k="agent processes spent waiting"
           total={agent?.wait_pct ?? null}
-          stripe="var(--s2)"
           by={byCls((d) => d.wait_pct)}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
           tip={
@@ -421,7 +418,7 @@ export function TrajectoriesTab({
           emptyWhat={
             Object.keys(rows).length
               ? 'no session at this rank matches the class filter'
-              : 'the trajectory buffer is empty'
+              : 'no session was read in this window'
           }
         >
           {/* in the body, not the header: the column is too narrow for both */}
@@ -506,7 +503,10 @@ export function TrajectoriesTab({
               routine={routine}
             />
           ) : (
-            <div className="tj-empty">pick a session from the list: its process tree opens here</div>
+            <div className="tj-empty">
+              <Icon name="pointLeft" size={20} />
+              <span>pick a session from the list: its process tree opens here</span>
+            </div>
           )}
         </div>
       </div>

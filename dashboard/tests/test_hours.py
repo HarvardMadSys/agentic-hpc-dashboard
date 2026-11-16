@@ -7,6 +7,7 @@ thread (`WindowRegistry._build`), as in test_window_cache.
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import gc
 import json
 import os
 import pickle
@@ -501,6 +502,72 @@ class StatusTest(HourCase):
         self.assertGreater(st["hours"], 0)
         json.dumps(st)
         self.assertIsNone(self.registry(self.cfg(merge=False)).status()["hours"])
+
+
+class CollectorTest(HourCase):
+    """Merges run with the automatic garbage collector paused (`collector_paused`):
+    each saved state merged set off a full collection, which walks every object
+    the process holds while no other thread runs. The reductions run with it on."""
+
+    @staticmethod
+    def spy(seen):
+        merge_into = hours.merge_into
+
+        def merge(acc, part):
+            seen.append(gc.isenabled())
+            return merge_into(acc, part)
+        return mock.patch.object(hours, "merge_into", merge)
+
+    def test_a_window_merges_with_the_collector_paused_and_reduces_with_it_on(self):
+        self.write(gen(SINCE + 1, NOW - 30))
+        reg = self.registry(self.cfg())
+        merged, reduced = [], []
+        reduce_run = hours.HourStore._reduce_run
+
+        def reduce(store, *a, **kw):
+            reduced.append(gc.isenabled())
+            return reduce_run(store, *a, **kw)
+
+        with self.spy(merged), mock.patch.object(hours.HourStore, "_reduce_run", reduce):
+            view = self.build(reg)
+        self.assertEqual(view.cache["source"], "hours")
+        self.assertTrue(merged and reduced)
+        self.assertEqual((set(merged), set(reduced)), ({False}, {True}))
+        self.assertTrue(gc.isenabled())
+
+    def test_a_day_merges_with_the_collector_paused(self):
+        recs, t, k = [], NOW - 50 * HOUR, 0
+        while t < NOW - 60:
+            recs.append(TM.plain("exit", t, 100000 + k, 1, "git", "git status",
+                                 user=("bob", "carol")[k % 2], **TM.cost(TM.random.Random(k))))
+            k += 1
+            t += 97
+        self.write(recs)
+        reg = self.registry(self.cfg(day_cache=False))
+        self.build(reg, 2880)
+        store = reg.hours
+        day = next(d for d in sorted({h // 24 for h in store.have})
+                   if all(h in store.have for h in range(d * 24, d * 24 + 24)))
+        seen = []
+        with self.spy(seen):
+            store.load_part("d", day)
+        self.assertEqual((len(seen), set(seen)), (24, {False}))
+        self.assertIn(day, store.days)
+        self.assertTrue(gc.isenabled())
+
+    def test_the_collector_comes_back_after_a_failed_merge_and_stays_off_if_it_was(self):
+        with self.assertRaises(RuntimeError):
+            with hours.collector_paused():
+                self.assertFalse(gc.isenabled())
+                raise RuntimeError("a merge that fails")
+        self.assertTrue(gc.isenabled())
+        gc.disable()
+        try:
+            with hours.collector_paused():
+                pass
+            self.assertFalse(gc.isenabled())
+        finally:
+            gc.enable()
 
 
 if __name__ == "__main__":

@@ -5,11 +5,12 @@
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
 import { Fragment, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
-import { Lines } from '../charts/primitives';
+import { Fluid, Lines } from '../charts/primitives';
 import type { LineSeries } from '../charts/primitives';
-import { clockLabel, fullClock, timeTicks } from '../charts/scale';
+import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
@@ -25,6 +26,7 @@ import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { riskLine } from '../lib/sandbox';
+import { useNodeWords } from '../lib/nodes';
 import type { Panels } from '../lib/panels';
 
 /* ------------------------------------------------------------- helpers */
@@ -80,8 +82,6 @@ function nowByClass(now: LiveResponse['now'], key: string): Partial<Record<strin
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
  * word a reader meets is "sessions" (roadmap note 14). */
-const capFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-
 const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct', gloss?: string][] = [
   ['roots', 'sessions', 'int', 'sessions_now'],
   ['procs', 'running', 'int', 'running'],
@@ -142,7 +142,7 @@ function HostBreakdown({ h, cls, by }: { h: LiveHost; cls: Cls[]; by: 'class' | 
           </span>
         ))}
       {total != null && total > typed && (
-        <span data-tip="processes with no agent or editor above them: people’s own shells, and the rest">
+        <span data-tip="processes with no agent or IDE above them: people’s own shells, and the rest">
           {sep}
           <span className="nm">no type</span> <b>{fint(total - typed)}</b>
         </span>
@@ -182,7 +182,7 @@ export function LiveTab({
   openTraj,
   openUserTraj,
   userCols,
-  nodeNoun,
+  whoUses,
 }: {
   live: LiveState;
   /** the window's reduced panels: the "last 24h" plates and every time series */
@@ -194,14 +194,16 @@ export function LiveTab({
   who?: Who;
   feeds: FeedsResponse | null;
   goto: (tab: string) => void;
-  /** open a session's trajectory, or a user's sessions, on the Trajectories tab */
+  /** open a session, or a user's sessions, on the Sessions tab */
   openTraj: (sid: string) => void;
   openUserTraj: (user: string) => void;
   /** the service's default Active users columns (`ui.user_columns`) */
   userCols?: string[] | null;
-  /** what the watched hosts are called (`ui.node_noun`): "login nodes" */
-  nodeNoun?: string | null;
+  /** "Who uses what", the old Overview tab's table: each class's share of the
+   *  window in every unit, drawn under the rate chart (App.tsx) */
+  whoUses?: ReactNode;
 }) {
+  const nodes = useNodeWords();
   const L = live.live;
   const rate = L?.rate ?? [];
   const now = L?.now ?? {};
@@ -233,8 +235,9 @@ export function LiveTab({
 
   /* X ticks that stay legible at ANY window, and at any zoom into it: a round
    * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
-   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`. */
-  const xticks = (a: number, b: number) => timeTicks(a, b, 10);
+   * multiples of it (`timeTicks`), so a label reads `14:00` and not `14:07`.
+   * Fewer where the chart is drawn narrow (`tickTarget`), so none overprint. */
+  const xticks = (W: number) => (a: number, b: number) => timeTicks(a, b, tickTarget(W, 10));
 
   // The last full minute as the service counted it, not each class's newest
   // bin with a value: that is the minute still filling, or for a quiet class
@@ -276,21 +279,32 @@ export function LiveTab({
         _status: (liveFeed?.status ?? 'missing') as FeedReport['status'],
         _present: false,
         _paths: liveFeed?.resolved?.length ? liveFeed.resolved : (liveFeed?.configured ?? []),
-        _notice: liveFeed?.notice ?? 'no live payload has arrived yet',
+        _notice: liveFeed?.notice ?? 'nothing has arrived on the live stream yet',
       } as const);
 
   if (envelope) {
     return (
-      <div className="grid wide">
-        <Panel title="Live tier" span feed={envelope._feed}>
-          <EmptyState
-            feed={envelope._feed}
-            paths={[...envelope._paths]}
-            status={envelope._status}
-            notice={envelope._notice}
-          />
-        </Panel>
-      </div>
+      <>
+        <div className="grid wide">
+          <Panel title="Live stream" span feed={envelope._feed}>
+            <EmptyState
+              feed={envelope._feed}
+              paths={[...envelope._paths]}
+              status={envelope._status}
+              notice={envelope._notice}
+            />
+          </Panel>
+        </div>
+        {/* "Who uses what" is read from the window's panels, not the live tier:
+            with the live tier missing it still has its numbers, as it did on
+            the Overview tab it came from */}
+        {whoUses && (
+          <>
+            <div className="grid-gap" />
+            {whoUses}
+          </>
+        )}
+      </>
     );
   }
 
@@ -308,7 +322,6 @@ export function LiveTab({
         <Plate
           k="processes exited / min"
           total={perMinAll}
-          stripe="var(--s1)"
           by={perMin}
           tip={
             GLOSS.exited + '\n\n' +
@@ -327,17 +340,16 @@ export function LiveTab({
         <Plate
           k="sessions · last 10 min"
           total={rootsTot}
-          stripe="var(--s4)"
           by={roots}
           tip={
-            'sessions on the node in the last 10 minutes. an agent or editor session counts while its ' +
+            `sessions on the ${nodes.many} in the last 10 minutes. an agent or IDE session counts while its ` +
             "process tree is running; a person's own shell reports no running tree, so a human session " +
             '(its login session, else its terminal) counts while a process in it ended in that time.'
           }
           note={
             <>
               {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
-              {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB resident` : ''}
+              {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB of memory` : ''}
               {/* Read off the live agent-session roots' own launch argv
                   (reducers/live.py), the way the window's agent-sessions plate
                   reads them, not the collector's `autonomous`, which never saw
@@ -350,7 +362,6 @@ export function LiveTab({
         <Plate
           k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
           total={U?.total ?? null}
-          stripe="var(--s5)"
           by={usersBy}
           tip={
             'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +
@@ -392,22 +403,29 @@ export function LiveTab({
             />
           }
         >
-          <Lines
-            series={series}
-            W={1060}
-            H={230}
-            ymin={0}
-            xticks={xticks}
-            xfmt={clockLabel}
-            xtip={fullClock}
-            minSpan={3 * (L?.window?.bin_s ?? 60)}
-            ylabel="exited / min"
-            xlabel={`last ${windowLbl}`}
-            xname="at"
-            yname="exited/min"
-          />
+          <Fluid natural={1060}>
+            {(W) => (
+              <Lines
+                series={series}
+                W={W}
+                H={230}
+                ymin={0}
+                xticks={xticks(W)}
+                xfmt={clockLabel}
+                xtip={fullClock}
+                minSpan={3 * (L?.window?.bin_s ?? 60)}
+                ylabel="exited / min"
+                xlabel={`last ${windowLbl}`}
+                xname="at"
+                yname="exited/min"
+              />
+            )}
+          </Fluid>
           <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
+
+        {/* what happened, then who did it: the window's shares, in every unit */}
+        {whoUses && <div className="span2">{whoUses}</div>}
 
         <WindowCharts P={P} cls={cls} />
 
@@ -429,21 +447,21 @@ export function LiveTab({
         />
 
         <Panel
-          title={`${capFirst(nodeNoun?.trim() || 'login nodes')} right now`}
+          title={`${nodes.Many} right now`}
           ask={[{ panel: 'live', keys: ['hosts', 'now'] }]}
           span
           live
           feed={liveFeed?.name ?? 'live'}
           empty={!hosts.length}
-          emptyWhat="no host reported in the window"
+          emptyWhat={`no ${nodes.one} reported in the window`}
           header={
             <Segmented
               label="running, by"
               value={hostBy}
               onChange={setHostBy}
               options={[
-                { k: 'class', lbl: 'class', tip: 'running processes split by class: agents, people, and IDEs' },
-                { k: 'type', lbl: 'agent type', tip: 'running processes split by the agent or editor they belong to; a person’s own shell has no type' },
+                { k: 'class', lbl: 'class', tip: 'running processes split by class: agent, human, IDE' },
+                { k: 'type', lbl: 'agent type', tip: 'running processes split by the agent or IDE they belong to; a person’s own shell has no type' },
               ]}
             />
           }
@@ -452,7 +470,7 @@ export function LiveTab({
             <table>
               <thead>
                 <tr>
-                  <SortTh s={hostSort} k="host" first="asc" className="pin">host</SortTh>
+                  <SortTh s={hostSort} k="host" first="asc" className="pin">{nodes.one}</SortTh>
                   {hostCols.map((c) => (
                     <Fragment key={c[0]}>
                       <SortTh s={hostSort} k={c[0]} num gloss={c[3]}>
@@ -549,6 +567,7 @@ const evVal = (e: LiveEvent, k: EvKey) =>
 
 /** One user's processes, as rows; every user's, with a user column. */
 function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }) {
+  const nodes = useNodeWords();
   const s = useSort<EvKey>('at');
   return (
     <table>
@@ -558,11 +577,11 @@ function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }
           {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
           <SortTh s={s} k="class" first="asc">class</SortTh>
           <SortTh s={s} k="pid" num>pid</SortTh>
-          <SortTh s={s} k="host" first="asc">host</SortTh>
+          <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>
           <SortTh s={s} k="depth" num tip={DEPTH_TIP}>tree depth</SortTh>
           <SortTh s={s} k="cmd" first="asc">command</SortTh>
           <SortTh s={s} k="ran" num>ran</SortTh>
-          <SortTh s={s} k="cpu" num>cpu</SortTh>
+          <SortTh s={s} k="cpu" num>CPU</SortTh>
           <SortTh s={s} k="exit" num>exit</SortTh>
         </tr>
       </thead>
@@ -579,7 +598,7 @@ function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }
               {withUser && <td className="mono">{e.user ?? DASH}</td>}
               <td
                 style={{ color: CLS_COL[e.actor3 ?? ''] ?? 'var(--muted)' }}
-                data-tip={e.agent_type ? `agent type: ${e.agent_type}` : undefined}
+                data-tip={e.agent_type ? `agent type: ${AGENT_TYPE_LBL[e.agent_type] ?? e.agent_type}` : undefined}
               >
                 {CLS_LBL[e.actor3 ?? ''] ?? e.actor3 ?? 'unlabeled'}
               </td>

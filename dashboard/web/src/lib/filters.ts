@@ -46,7 +46,7 @@ export type ScalarKey = (typeof SCALAR_KEYS)[number];
  * keys, and `UI_OMIT_AT` below is a mapped type over them, so adding a key here
  * without deciding what value omits it is a compile error.
  */
-export const UI_KEYS = ['tab', 'rank', 'win', 'traj', 'tfrom', 'tuser', 'torder'] as const;
+export const UI_KEYS = ['tab', 'rank', 'win', 'traj', 'tfrom', 'tuser', 'torder', 'portrait'] as const;
 export type UiKey = (typeof UI_KEYS)[number];
 
 /** The page-wide user and agent-type filter; empty lists are everyone. */
@@ -76,13 +76,16 @@ export interface UrlState extends Filters {
   /** Where the inspector's read starts, epoch seconds: set by "continue" after
    *  a read stopped at its budget, so the continued view is linkable too. */
   tfrom: number | null;
-  /** A user whose sessions the Trajectories tab opens on, from Active users'
+  /** A user whose sessions the Sessions tab opens on, from Active users'
    *  "trajectories →" (roadmap note 7): a view, not a filter, so nothing is
    *  rebuilt for it. */
   tuser: string | null;
   /** Which end of a session the inspector lists first and draws in full. It
    *  stays as other sessions are opened: it is how this reader reads them. */
   torder: TrajOrder;
+  /** The user whose portrait the Users tab has open: a view, not a filter, so
+   *  nothing is rebuilt for it, and a portrait is a link like every other view. */
+  portrait: string | null;
 }
 
 /** The value at which each UI key is left out of the URL, so a default-valued
@@ -95,6 +98,7 @@ const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
   tfrom: null,
   tuser: null,
   torder: 'oldest',
+  portrait: null,
 };
 
 // A saved link ranked by a ranking since removed (`chain_runs`) opens on the default.
@@ -107,6 +111,8 @@ const TAB_ALIAS: Record<string, string> = {
   sessions: 'agents',
   io: 'resources',
   sandbox: 'internal',
+  // Overview's one table is a section of Live now; App.tsx lands such a link on it
+  overview: 'live',
 };
 
 /** How a filter asks for the processes the collector gave no agent type. */
@@ -158,6 +164,7 @@ export function parseUrl(search: string): UrlState {
     tfrom: Number.isFinite(tfrom) && tfrom > 0 ? tfrom : null,
     tuser: p.get('tuser') || null,
     torder: p.get('torder') === 'newest' ? 'newest' : 'oldest',
+    portrait: p.get('portrait') || null,
   };
 }
 

@@ -29,6 +29,7 @@ import { ByUser, distinct } from '../components/ByUser';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { useNodeWords } from '../lib/nodes';
 import { DASH, fint, fmt, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
@@ -50,6 +51,16 @@ import {
   shareOfKnown,
 } from '../lib/sandbox';
 import type { Share } from '../lib/sandbox';
+
+/** When the collector read a process's namespaces, in the page's words; the
+ *  collector's own name for it is on hover. */
+const SRC_LBL: Record<string, string> = {
+  'none:tick': 'census',
+  'none:exec': 'at start',
+  'userns:exec': 'at start, user namespace',
+  inherit: 'from its parent',
+  denied: SB_LABEL.denied,
+};
 
 type ByClass = Record<string, Record<string, number>> | undefined;
 
@@ -112,7 +123,7 @@ function AxisBlock({ by, have, order, col, lbl, grain }: {
   );
 }
 
-/** "coverage agent 99% · IDE 64%" -- what share of each class had a known verdict. */
+/** "coverage agent 99% · IDE 64%" -- what share of each class has a known sandbox state. */
 /** "of 1,351 agent tool calls": the denominator, in words. When some could not
  * be judged, it says the share is of the ones that could, not of all of them. */
 function agentOf(s: Share | undefined, what: string, knownWhat: string) {
@@ -157,15 +168,15 @@ function SessionTable({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHos
           sort: (rs) => rs.reduce((a, r) => a + callsOf(r), 0),
         },
         {
-          h: 'isolated',
+          h: 'sandboxed',
           num: true,
-          tip: 'share of their tool calls with a known verdict that ran namespace-isolated',
+          tip: 'share of their tool calls whose sandbox state is known that ran sandboxed',
           cell: (rs) =>
             known(rs) ? pc((100 * rs.reduce((a, r) => a + (r.calls?.isolated ?? 0), 0)) / known(rs)) : DASH,
           sort: (rs) => (known(rs) ? rs.reduce((a, r) => a + (r.calls?.isolated ?? 0), 0) / known(rs) : null),
         },
         {
-          h: 'failed attempts',
+          h: 'failed to start',
           num: true,
           cell: (rs) => fint(rs.reduce((a, r) => a + (r.calls?.failed ?? 0), 0)) || DASH,
           sort: (rs) => rs.reduce((a, r) => a + (r.calls?.failed ?? 0), 0),
@@ -178,6 +189,7 @@ function SessionTable({ rows, multiHost }: { rows: SandboxSessionRow[]; multiHos
 
 /** One user's sessions, as rows; every user's, with a user column. */
 function SessionRows({ rows, multiHost, withUser }: { rows: SandboxSessionRow[]; multiHost: boolean; withUser?: boolean }) {
+  const nodes = useNodeWords();
   const s = useSort<string>('agent', 'asc');
   const val = (r: SandboxSessionRow, k: string) =>
     k === 'agent' ? r.agent_type : k === 'user' ? r.user : k === 'host' ? r.host : k === 'pid' ? r.pid : k === 'approval' ? label(AP_LABEL, r.approval)
@@ -191,14 +203,14 @@ function SessionRows({ rows, multiHost, withUser }: { rows: SandboxSessionRow[];
           <tr>
             {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
-            {multiHost && <SortTh s={s} k="host" first="asc">host</SortTh>}
+            {multiHost && <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>}
             <SortTh s={s} k="pid" num>pid</SortTh>
             <SortTh s={s} k="approval" first="asc" gloss="approval">approval at launch</SortTh>
             <SortTh s={s} k="flags" first="asc" tip="the flags on the agent's own command line when it started">launch flags</SortTh>
             <SortTh s={s} k="calls" num gloss="toolcall">tool calls</SortTh>
-            <SortTh s={s} k="isolated" num tip="share of the session's tool calls with a known verdict that ran namespace-isolated">isolated</SortTh>
-            <SortTh s={s} k="failed" num tip="sandbox wrapper runs that failed before running the command they were given">failed attempts</SortTh>
-            <SortTh s={s} k="verdict" first="asc" gloss="verdict">verdict</SortTh>
+            <SortTh s={s} k="isolated" num tip="share of the session's tool calls whose sandbox state is known that ran sandboxed">sandboxed</SortTh>
+            <SortTh s={s} k="failed" num tip="sandbox wrapper runs that failed before running the command they were given">failed to start</SortTh>
+            <SortTh s={s} k="verdict" first="asc" tip="what its tool calls add up to">session</SortTh>
           </tr>
         </thead>
         <tbody>
@@ -216,7 +228,7 @@ function SessionRows({ rows, multiHost, withUser }: { rows: SandboxSessionRow[];
                 <td className="num">{n ? fint(n) : DASH}</td>
                 <td
                   className="num"
-                  data-tip={r.calls_known ? `of ${fint(r.calls_known)} tool call${r.calls_known === 1 ? '' : 's'} with a known verdict` : undefined}
+                  data-tip={r.calls_known ? `of ${fint(r.calls_known)} tool call${r.calls_known === 1 ? '' : 's'} whose sandbox state is known` : undefined}
                 >
                   {r.isolated_pct == null ? DASH : pc(r.isolated_pct)}
                 </td>
@@ -260,18 +272,16 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
     <>
       <div className="plates three">
         <Plate
-          k="agent tool calls isolated"
+          k="agent tool calls sandboxed"
           total={callIso.agent?.pct ?? null}
-          stripe="var(--s5)"
           fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="a tool call is a sandbox-wrapper invocation or a Claude Code Bash shell; a failed attempt counts as not isolated, an unreadable payload is left out"
+          tip="a tool call is a sandbox-wrapper invocation or a Claude Code Bash shell; a sandbox that failed to start counts as not sandboxed, an unreadable wrapped command is left out"
           note={agentOf(callIso.agent, 'agent tool calls', 'whose outcome is known')}
         />
         <Plate
-          k="agent sandbox attempts failed"
+          k="agent sandboxes failed to start"
           total={failedAgent}
-          stripe="var(--s4)"
-          tip="a bwrap / codex-linux-sandbox call that exited non-zero with no payload under it: the sandbox was tried and did not come up"
+          tip="a bwrap / codex-linux-sandbox call that exited non-zero with no wrapped command under it: the sandbox was tried and did not come up"
           note={
             wrapperCalls
               ? `of ${fint(wrapperCalls)} sandbox wrapper calls`
@@ -281,16 +291,17 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         <Plate
           k="agent sessions launched with a bypass flag"
           total={sessBypass.agent?.pct ?? null}
-          stripe="var(--crit)"
+          alarm={(sessBypass.agent?.pct ?? 0) > 0}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="read off each session root's own argv. Settings files, codex config.toml and a mid-session switch are invisible; `codex app-server` is not observable and is left out of the share."
+          tip="read off each session root's own command line. Settings files, codex config.toml and a mid-session switch are invisible; for `codex app-server` the command line can’t tell, so it is left out of the share."
           note={agentOf(sessBypass.agent, 'agent sessions', 'whose launch flags are readable')}
         />
       </div>
 
       <div className="grid wide">
         <Panel
-          title="Tool calls — did they run namespace-isolated?"
+          id="sec-tool-calls-did-they-run-namespace-isolated"
+          title="Tool calls — did they run sandboxed?"
           p={sb}
           span
           empty={!tcHave.length && !sessions.length}
@@ -320,17 +331,18 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </Panel>
 
         <Panel
-          title="Namespace isolation — per process and per session"
+          id="sec-namespace-isolation-per-process-and-per-session"
+          title="Sandboxed — per process and per session"
           p={sb}
           empty={!evHave.length && !seHave.length}
-          emptyWhat="no isolation breakdown for the selection"
+          emptyWhat="no sandbox breakdown for the selection"
           basis={
             <Basis
               items={[
                 ['meaning', sb.notes?.meaning],
-                ['exited before read', sb.notes?.denied],
-                ['inherit', sb.notes?.inherit],
-                ['sandbox_src', sb.sandbox_src],
+                [SB_LABEL.denied, sb.notes?.denied],
+                ['from its parent', sb.notes?.inherit],
+                ['when each was checked', sb.sandbox_src],
               ]}
             />
           }
@@ -379,7 +391,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                     k === 'agent' ? m.agent_type : k === 'detail' ? m.detail : k === 'approval' ? label(AP_LABEL, m.approval) : m.n,
                   ).map((m, i) => (
                     <tr key={`${m.agent_type}|${m.detail}|${m.approval}|${i}`}>
-                      <td className="mono">{m.agent_type ?? DASH}</td>
+                      <td>{m.agent_type ? (AGENT_TYPE_LBL[m.agent_type] ?? m.agent_type) : DASH}</td>
                       <td className="mono">{m.detail ?? DASH}</td>
                       <td>{label(AP_LABEL, m.approval)}</td>
                       <td className="num">{fint(m.n)}</td>
@@ -404,7 +416,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                 <tr>
                   <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="wrapper" first="asc" gloss="wrapper">wrapper</SortTh>
                   <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="agent" first="asc">agent</SortTh>
-                  <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="outcome" first="asc" tip="what happened to the command the wrapper was given (its payload)">outcome</SortTh>
+                  <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="outcome" first="asc" tip="what happened to the command the wrapper was given">outcome</SortTh>
                   <SortTh s={sortOf('attempts', 'wrapper', 'asc')} k="n" num>calls</SortTh>
                 </tr>
               </thead>
@@ -414,7 +426,7 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
                 ).map((a, i) => (
                   <tr key={`${a.wrapper}|${a.agent_type}|${a.outcome}|${i}`}>
                     <td className="mono">{a.wrapper}</td>
-                    <td className="mono">{a.agent_type ?? DASH}</td>
+                    <td>{a.agent_type ? (AGENT_TYPE_LBL[a.agent_type] ?? a.agent_type) : DASH}</td>
                     <td>
                       <span
                         className="sev"
@@ -432,17 +444,18 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </Panel>
 
         <Panel
-          title="Ancestry × kind × verdict"
+          id="sec-ancestry-kind-verdict"
+          title="Processes by sandbox wrapper, kind and sandbox state"
           p={sb}
           span
           empty={!anc.length}
-          emptyWhat="the feed carried no ancestry rows"
+          emptyWhat="the feed carried no rows by sandbox wrapper"
           basis={
             <Basis
               items={[
                 [
                   'reading',
-                  'a wrapper is read at its own exec, before it unshares, so its own row is always "not isolated" and says nothing about the call it wraps; what ran under it decides that',
+                  'a wrapper is read at its own exec, before it unshares, so its own row is always "not sandboxed" and says nothing about the call it wraps; what ran under it decides that',
                 ],
                 ['sandbox_detail', sb.sandbox_detail],
                 ['agent_only', sb.agent_only],
@@ -454,9 +467,9 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
             <table>
               <thead>
                 <tr>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="ancestry" first="asc" gloss="ancestry">ancestry</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="ancestry" first="asc" gloss="ancestry">under wrapper</SortTh>
                   <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="kind" first="asc" tip="process: an ordinary process; wrapper: the sandbox helper itself">category</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="verdict" first="asc" gloss="verdict">verdict</SortTh>
+                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="verdict" first="asc" gloss="verdict">sandboxed?</SortTh>
                   <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="n" num tip="processes">n</SortTh>
                   <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="dstate" num gloss="dstate">D-state wait</SortTh>
                   <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="cov" num gloss="coverage">coverage</SortTh>
@@ -507,7 +520,8 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </Panel>
 
         <Panel
-          title="Where the per-process verdict came from"
+          id="sec-where-the-per-process-verdict-came-from"
+          title="When each process was checked"
           p={sb}
           empty={!Object.keys(sb.sandbox_src ?? {}).length}
           emptyWhat="no source breakdown"
@@ -521,14 +535,14 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
               <table className="roomy shares">
                 <thead>
                   <tr>
-                    <SortTh s={sortOf('src', 'src', 'asc')} k="src" first="asc">source</SortTh>
+                    <SortTh s={sortOf('src', 'src', 'asc')} k="src" first="asc">checked</SortTh>
                     <SortTh s={sortOf('src', 'src', 'asc')} k="n">share</SortTh>
                   </tr>
                 </thead>
                 <tbody>
                   {src.map(([k, v]) => (
                     <tr key={k}>
-                      <td className="mono lbl" data-tip={GLOSS[k === 'denied' ? 'exitedbeforeread' : k === 'inherit' ? 'inherit' : k.replace(':', '_')]}>{k === 'denied' ? 'exited before read' : k}</td>
+                      <td className="lbl" data-tip={`${GLOSS[k === 'denied' ? 'exitedbeforeread' : k === 'inherit' ? 'inherit' : k.replace(':', '_')] ?? k}\nas the collector names it: ${k}`}>{SRC_LBL[k] ?? k}</td>
                       <td>
                         <ShareCell pct={tot ? (100 * v) / tot : null} sub={fint(v)} c="var(--s2)" />
                       </td>

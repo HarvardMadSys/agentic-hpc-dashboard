@@ -20,6 +20,7 @@ Two aggregation tiers, because they have different composability:
   offsets it read to (`snapshots`), which is the persisted sketch state that
   makes a restarted view resumable rather than re-read.
 """
+import collections
 import itertools
 import json
 import re
@@ -29,8 +30,10 @@ import time
 from . import anonymize
 from . import ask
 from . import clock
+from . import endpoints
 from . import feeds as feedmod
 from . import gz
+from . import portraits
 from . import proctree
 from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
@@ -79,15 +82,20 @@ class Aggregator:
         # It learns accounts from the roster, so an alias a reader pastes into a
         # filter maps back even for someone the page has not shown yet.
         self.anon = anonymize.from_config(cfg, roster=self._accounts)
-        self.panels_by_window = winmod.WindowRegistry(
-            cfg, self.classes, self.roots, self.lock)
-        self.node_built_at = None
-        self.node_result = {}
-        self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
+        # Names for the Network bytes panel's endpoints, looked up in the
+        # background and applied when the panel is read; None when off.
+        self.rdns = endpoints.from_config(cfg)
         # Set once every file has been handed to the tail.  Until then a poll
         # reads nothing: a file the tail holds no offset for is read from byte
         # 0, and the backfill would then count the same history a second time.
+        # The window builds wait for it too: positioning is minutes long, and
+        # beside a build it is starved of the GIL (windows.WindowRegistry.ready).
         self.positioned = threading.Event()
+        self.panels_by_window = winmod.WindowRegistry(
+            cfg, self.classes, self.roots, self.lock, ready=self.positioned)
+        self.node_built_at = None
+        self.node_result = {}
+        self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
         self.stats = {"records": 0, "last_poll": None}
         # Set at shutdown. The backfill runs on an executor thread, which the
         # interpreter waits for at exit; unchecked, a restart during the minutes
@@ -95,6 +103,10 @@ class Aggregator:
         # SIGKILLed only through its `uv run` wrapper, and the orphan kept the
         # port -- the next server failed to bind and every request was a 502.
         self.stopping = False
+        # The Users tab's portraits, composed from a view's reducers when read
+        # (portraits.py): (view key, what) -> (stamp, when, records, body), where
+        # what is "inputs", "roster" or ("user", name) (`_held`).
+        self._portraits = collections.OrderedDict()
 
     def roots(self):
         return (self.reports["ebpf"]["resolved"]
@@ -115,6 +127,8 @@ class Aggregator:
     def stop(self):
         self.stopping = True
         self.panels_by_window.stop()
+        if self.rdns is not None:
+            self.rdns.close()
 
     # -------------------------------------------------------------- ingestion
     def consume(self, records, older=False):
@@ -208,10 +222,19 @@ class Aggregator:
         hours = int(self.cfg.get("live.backfill_hours", 168))
         span = min(hours * 3600, self.live.retention_s) if hours > 0 else 0
         since = time.time() - span if span else None
+        with self.lock:
+            self.backfill = {"state": "positioning", "pct": 0, "records": 0,
+                             "hours": hours if span else 0}
         try:
+            # Outside the lock. Positioning opens every file and builds each sealed
+            # day's .gz seek index: 4 minutes for a week of 8 login nodes on
+            # rtx6000b. The lock is the window registry's too, so every read of the
+            # views and of the live tier -- the event loop's among them -- would
+            # wait, and the page answered nothing. Nothing else uses the tail until
+            # `positioned` is set: poll_once reads nothing before it.
+            plan = self.source.position(since)
+            total = sum(e["end"] - e["start"] for e in plan)
             with self.lock:
-                plan = self.source.position(since)
-                total = sum(e["end"] - e["start"] for e in plan)
                 self.backfill = {
                     "state": "running" if span else "skipped",
                     "pct": 0 if span else 100, "records": 0,
@@ -307,6 +330,9 @@ class Aggregator:
                         "self_observation": self.norm.stats["dropped_self_observation"],
                     }
                     rep["backfill"] = dict(self.backfill)
+                    # written by the demo (rc_dashboard/demo), not measured: the
+                    # header says so whenever any host's records do
+                    rep["synthetic_hosts"] = self.health.synthetic_hosts()
             return self.reports
 
     def collectors(self):
@@ -401,20 +427,24 @@ class Aggregator:
                 else {"rows": self.node_result}
             body.update(node)
             out["node"] = body
-            return {"panels": out,
-                    # The node tier is a snapshot of current state, not a window
-                    # aggregate, so it keeps its own build stamp.
-                    "full_built_at": status["built_at"] or self.node_built_at,
-                    "node_built_at": self.node_built_at,
-                    "window": win,
-                    "window_status": status,
-                    "filter": flt.block(),
-                    # Who and what the window holds, for the filter's choices:
-                    # the unfiltered view's counts, whichever view this is.
-                    "facets": facets,
-                    "purposes": self.norm.purposes,
-                    "purpose_src": self.norm.purpose_src,
-                    "classes": self.classes}
+            res = {"panels": out,
+                   # The node tier is a snapshot of current state, not a window
+                   # aggregate, so it keeps its own build stamp.
+                   "full_built_at": status["built_at"] or self.node_built_at,
+                   "node_built_at": self.node_built_at,
+                   "window": win,
+                   "window_status": status,
+                   "filter": flt.block(),
+                   # Who and what the window holds, for the filter's choices:
+                   # the unfiltered view's counts, whichever view this is.
+                   "facets": facets,
+                   "purposes": self.norm.purposes,
+                   "purpose_src": self.norm.purpose_src,
+                   "classes": self.classes}
+        # The endpoints, named and ranked on the way out (endpoints.py), after
+        # the lock: this reads only the response's own copy of the panel.
+        out["io_process"] = endpoints.serve(out["io_process"], self.rdns, self.classes)
+        return res
 
     def live_payload(self, window_min=None):
         win = self.window(window_min)
@@ -730,6 +760,136 @@ class Aggregator:
             out["_window"] = view.status()
             out["filter"] = flt.block()
             return out
+
+    # What the Users tab holds between reads, by view: the inputs it takes from
+    # the sandbox and Slurm reducers, its roster, and the portrait of each user
+    # opened. Plain data all: nothing held references a reducer, so a window the
+    # registry drops, or rebuilds, is not kept alive here.
+    PORTRAITS_HELD = 32
+    # How long a roster or a portrait is served without being built again, even
+    # when its view has ingested nothing since: each holds what time alone
+    # changes -- which agents are running now (`LiveReducer.LIVE_S`, which
+    # `/api/trajectories` reads afresh on every request) and which sessions are
+    # still inside the window -- so a quiet feed, or a filtered view whose users
+    # went quiet, must not hold them. The inputs change with records only, and
+    # are kept for as long as the view is unchanged.
+    PORTRAITS_MAX_AGE_S = 60
+
+    def _running_fn(self, now):
+        """`running(host, pid, user)`: whether that user's agent is running now --
+        its own records still arriving (`LiveReducer.LIVE_S`), as `_running_rows`
+        reads it. A pid is reused, and the root running now under it may be
+        another user's: then this session is not the one running
+        (`users_conflict`: a root with no user, or root's, is no other user's).
+        Under the lock."""
+        fresh = now - self.live.LIVE_S
+        roots = self.live.roots
+
+        def running(host, pid, user=None):
+            r = roots.get((host, pid))
+            return r is not None and (r.get("epoch") or 0) >= fresh \
+                and not users_conflict(r.get("user"), user)
+        return running
+
+    def _held(self, view, what, build, max_age=None):
+        """`build()`, held while `view` has not changed: built again once the view
+        has ingested since and `reducers.trajectories.live_s` has passed (as the
+        ranked sessions are re-ranked), when its reducers were swapped in anew,
+        or, given `max_age`, once that many seconds have passed whatever the view
+        ingested. Under the lock. Nothing is held before the view is built."""
+        live_s = float(self.cfg.get("reducers.trajectories.live_s", 5) or 0)
+        key = (winmod.view_key(view.minutes, view.flt), what)
+        stamp = (id(view.reducers.get("trajectories")), view.installed_at)
+        held = self._portraits.get(key)
+        at = time.monotonic()
+        if held is not None and held[0] == stamp:
+            age = at - held[1]
+            if age < live_s or (held[2] == view.live_records
+                                and (max_age is None or age < max_age)):
+                self._portraits.move_to_end(key)
+                return held[3]
+        out = build()
+        if out is not None:
+            self._portraits[key] = (stamp, at, view.live_records, out)
+            self._portraits.move_to_end(key)
+            while len(self._portraits) > self.PORTRAITS_HELD:
+                self._portraits.popitem(last=False)
+        return out
+
+    def _context(self, view):
+        """A `portraits.Context` for one read of the view, None before it is built.
+        The context itself references the reducers and is never kept; the inputs
+        it takes from the sandbox and Slurm are (`portraits.inputs`), so a portrait
+        opened from the roster does not walk every tool call of the window again."""
+        if view.reducers.get("trajectories") is None:
+            return None
+        got = self._held(view, "inputs", lambda: portraits.inputs(view.reducers))
+        now = time.time()
+        return portraits.Context(view.reducers, now, self._running_fn(now), **got)
+
+    def _roster(self, view):
+        def build():
+            ctx = self._context(view)
+            return portraits.roster(ctx) if ctx is not None else None
+        return self._held(view, "roster", build, self.PORTRAITS_MAX_AGE_S)
+
+    def _envelope(self, out, view, flt):
+        """`out` stamped with its feed, its view's status and its filter. Under
+        the lock.
+
+        For what is built from the view's REDUCERS (the roster, a portrait), not
+        from its panels. A view showing panels saved by an earlier one
+        (`payloads`) has no reducers until its own build lands, so its status
+        says `has_payload` while there is no roster: here it says what this
+        body is, a first build, so the page shows "reading" and not "no user ran
+        an agent session"."""
+        out.update(feedmod.panel_meta(self.reports["ebpf"]))
+        st = view.status()
+        if not view.reducers:
+            st["has_payload"] = False
+        out["_window"] = st
+        out["filter"] = flt.block()
+        return out
+
+    def users(self, window_min=None, flt=None):
+        """The Users tab's roster: every user with an agent session in the
+        window, narrowed by `flt` as the trajectories are (portraits.py). While
+        the window is first being read it has no rows, and `_window` says so."""
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        with self.lock:
+            body = self._roster(view)
+            out = dict(body) if body else {"users": [], "fleet": None,
+                                           "traits": portraits.catalogue(),
+                                           "rules": dict(portraits.RULES)}
+            return self._envelope(out, view, flt)
+
+    def user(self, name, window_min=None, flt=None):
+        """One user's portrait (portraits.py). Read against the whole window's
+        users (`fleet`) when the unfiltered view is held, even under a filter: a
+        filter to one user would otherwise compare them with themselves.
+        `found` is None while the window is first being read."""
+        win = self.window(window_min)
+        flt = flt or winmod.NO_FILTER
+        view = self.panels_by_window.request(win["minutes"], flt)
+        base = self.panels_by_window.peek(win["minutes"]) if flt else view
+        with self.lock:
+            ros = None
+            if base is not None and base.reducers:
+                ros = self._roster(base)
+            fleet_of = "window" if base is not None and ros is not None else None
+            if ros is None and base is not view:
+                ros = self._roster(view)
+                fleet_of = "selection" if ros is not None else None
+            def build():
+                ctx = self._context(view)
+                return portraits.portrait(ctx, name, (ros or {}).get("fleet")) \
+                    if ctx is not None else None
+            body = self._held(view, ("user", name), build, self.PORTRAITS_MAX_AGE_S)
+            out = dict(body) if body else {"user": name, "found": None}
+            out["fleet_of"] = fleet_of
+            return self._envelope(out, view, flt)
 
     def _running_rows(self, rows, now=None):
         """The ranked rows, each whose agent is running now marked `running`.

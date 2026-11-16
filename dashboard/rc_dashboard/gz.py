@@ -24,7 +24,12 @@ What it costs, measured on boslogin06's 2026-10-08 exits file (66 MB -> 1.49 GB)
 * the index holds ~40 KB per checkpoint, about 0.5% of the uncompressed size at
   an 8 MB span, and lives only in this process -- an inflater's state cannot be
   pickled -- so a restart indexes again;
-* each open reader holds the two spans it last inflated, 2 x `SPAN` bytes.
+* each open reader holds the two spans it last inflated, 2 x `SPAN` bytes;
+* the process keeps the indexes of the last `_KEEP` files read, and drops
+  the index of a file that is gone or that no reader used for `_IDLE_S`,
+  looked for at every build and at an open once a `_SWEEP_S`. A copy that
+  drops a day of `.gz` files each night, and days that left the window, keep
+  no index here; one read again is indexed again.
 
 A compressed file is taken to be complete. One that changes (size, mtime or
 inode) is indexed again from the start, and a stream that stops without its
@@ -45,6 +50,8 @@ _CHUNK = 1 << 18          # compressed bytes read at a time
 _GZIP = 16 + zlib.MAX_WBITS
 _MAGIC = b"\x1f\x8b"
 _KEEP = 256               # indexes held, least recently used dropped first
+_IDLE_S = 1800.0          # an index no reader used for this long is dropped
+_SWEEP_S = 60.0           # how often an open looks for gone or idle indexes
 
 SUFFIX = ".gz"
 
@@ -126,6 +133,7 @@ class Index:
         self.members = 0
         self.note = None
         self.build_s = 0.0
+        self.used = time.monotonic()   # last open or span inflated
 
     @classmethod
     def build(cls, fh, ident):
@@ -162,6 +170,7 @@ class Index:
 
     def span(self, fh, i):
         """The inflated bytes from checkpoint `i` to the next one (or the end)."""
+        self.used = time.monotonic()
         start = self.offs[i]
         want = (self.offs[i + 1] if i + 1 < len(self.offs) else self.size) - start
         coff, d0 = self.points[i]
@@ -191,13 +200,35 @@ def _ident(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+_swept = 0.0
+
+
+def _sweep(keep):
+    """Drop the index of every file that is gone or that no reader used in
+    `_IDLE_S`, except `keep`'s, the file being opened."""
+    global _swept
+    now = _swept = time.monotonic()
+    with _lock:
+        held = list(_indexes.items())
+    drop = [(p, i) for p, i in held
+            if p != keep and (now - i.used > _IDLE_S or not os.path.exists(p))]
+    if drop:
+        with _lock:
+            for p, i in drop:
+                if _indexes.get(p) is i:
+                    del _indexes[p]
+
+
 def index_for(fh, path):
     """The index for the open compressed file `fh`, building it once."""
     ident = _ident(os.fstat(fh.fileno()))
+    if time.monotonic() - _swept >= _SWEEP_S:
+        _sweep(path)
     with _lock:
         idx = _indexes.get(path)
         if idx is not None and idx.ident == ident:
             _indexes.move_to_end(path)
+            idx.used = time.monotonic()
             return idx
         gate = _building.setdefault(path, threading.Lock())
     with gate:
@@ -206,6 +237,7 @@ def index_for(fh, path):
             if idx is not None and idx.ident == ident:
                 return idx
         idx = Index.build(fh, ident)
+        _sweep(path)
         with _lock:
             _indexes[path] = idx
             _indexes.move_to_end(path)

@@ -30,6 +30,8 @@ import { More, NoRows, Panel, StatusPill } from '../components/Panel';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { DASH, bytes, dur, fint, lagStr } from '../lib/format';
+import { feedLabel } from '../lib/feeds';
+import { useNodeWords } from '../lib/nodes';
 
 /* ----------------------------------------------------------- collectors */
 
@@ -37,8 +39,8 @@ const VERDICT: Record<CollectorVerdict, { pill: FeedStatus | 'live'; text: strin
   ok: { pill: 'live', text: 'OK', tip: 'running: a heartbeat within the last few minutes' },
   degraded: { pill: 'degraded', text: 'degraded', tip: 'running, but losing data it could have' },
   stopped: { pill: 'stale', text: 'stopped', tip: 'stopped cleanly: it wrote a stop record saying why' },
-  silent: { pill: 'missing', text: 'silent', tip: 'no heartbeat and no stop record: killed, crashed, or the host is down' },
-  unknown: { pill: 'empty', text: 'no heartbeat', tip: 'files for this host, but no heartbeat record in what was read' },
+  silent: { pill: 'missing', text: 'silent', tip: 'no heartbeat and no stop record: it was killed, it crashed, or its node is down' },
+  unknown: { pill: 'empty', text: 'no heartbeat', tip: 'files from this collector, but no heartbeat record in what was read' },
 };
 
 const when = (e: number | null | undefined) => (e == null ? DASH : fullClock(e));
@@ -92,6 +94,7 @@ function Runs({ runs, now }: { runs: CollectorRun[]; now: number }) {
 }
 
 function HostDetail({ h, now }: { h: CollectorHost; now: number }) {
+  const nodes = useNodeWords();
   const t = h.files;
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -122,8 +125,8 @@ function HostDetail({ h, now }: { h: CollectorHost; now: number }) {
         </dd>
         <dt>eBPF files</dt>
         <dd>{t.ebpf ? `${fint(t.ebpf.files)} files · ${bytes(t.ebpf.bytes)} · last written ${when(t.ebpf.last_write)}` : 'none'}</dd>
-        <dt>node-tier files</dt>
-        <dd>{t.ebpf_node ? `${fint(t.ebpf_node.files)} files · ${bytes(t.ebpf_node.bytes)} · last written ${when(t.ebpf_node.last_write)}` : 'none for this host'}</dd>
+        <dt>node metrics files</dt>
+        <dd>{t.ebpf_node ? `${fint(t.ebpf_node.files)} files · ${bytes(t.ebpf_node.bytes)} · last written ${when(t.ebpf_node.last_write)}` : `none for this ${nodes.one}`}</dd>
         <dt>heartbeats read</dt>
         <dd>{`${fint(h.heartbeat.seen)}, one every ${dur(h.heartbeat.interval_s)}`}</dd>
       </dl>
@@ -132,6 +135,7 @@ function HostDetail({ h, now }: { h: CollectorHost; now: number }) {
 }
 
 function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
+  const nodes = useNodeWords();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const s = useSort<string>('host', 'asc');
   const sorted = s.sort(hosts, (h, k) =>
@@ -143,7 +147,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
       <table className="roomy byuser-t">
         <thead>
           <tr>
-            <SortTh s={s} k="host" first="asc">host</SortTh>
+            <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>
             <SortTh s={s} k="status" first="asc">status</SortTh>
             <SortTh s={s} k="beat" num tip="the collector writes a heartbeat (residency_totals) every minute">last heartbeat</SortTh>
             <SortTh s={s} k="since">running since</SortTh>
@@ -161,6 +165,14 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
               <tr className={`byuser-row${o ? ' open' : ''}`} onClick={() => setOpen((m) => ({ ...m, [h.host]: !o }))}>
                 <td className="mono">
                   <span className="caret">{o ? '▾' : '▸'}</span> <b>{h.host}</b>
+                  {h.synthetic && (
+                    <>
+                      {' '}
+                      <span className="pill synthetic" data-tip={`written by the demo (rc_dashboard/demo), not by a collector: nothing from this ${nodes.one} was measured`}>
+                        fake
+                      </span>
+                    </>
+                  )}
                 </td>
                 <td>
                   <StatusPill status={v.pill} text={v.text} tip={v.tip} />
@@ -190,7 +202,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                     <div key={r}>{r}</div>
                   ))}
                   {h.limits.map((r) => (
-                    <div key={r} className="nm" data-tip="a limit of this host's kernel: true of every run until the kernel changes, so it does not change the status">
+                    <div key={r} className="nm" data-tip={`a limit of this ${nodes.one}’s kernel: true of every run until the kernel changes, so it does not change the status`}>
                       {`limit: ${r}`}
                     </div>
                   ))}
@@ -252,6 +264,7 @@ function Where({ f }: { f: FeedReport }) {
 }
 
 function Sources({ list }: { list: FeedReport[] }) {
+  const nodes = useNodeWords();
   const s = useSort<string>();
   const sorted = s.sort(list, (f, k) =>
     k === 'source' ? f.name : k === 'status' ? f.status : k === 'newest' ? f.lag_s ?? null
@@ -261,9 +274,9 @@ function Sources({ list }: { list: FeedReport[] }) {
       <table className="roomy">
         <thead>
           <tr>
-            <SortTh s={s} k="source" first="asc">source</SortTh>
+            <SortTh s={s} k="source" first="asc">feed</SortTh>
             <SortTh s={s} k="status" first="asc">status</SortTh>
-            <SortTh s={s} k="newest" num first="asc" tip="the newest record in its newest file, and how old that is against the source's own limit">newest record</SortTh>
+            <SortTh s={s} k="newest" num first="asc" tip="the newest record in its newest file, and how old that is against the feed's own limit">newest record</SortTh>
             <SortTh s={s} k="from" first="asc">read from</SortTh>
             <SortTh s={s} k="files" num>files</SortTh>
           </tr>
@@ -280,7 +293,8 @@ function Sources({ list }: { list: FeedReport[] }) {
             return (
               <tr key={f.name}>
                 <td>
-                  <b className="mono">{f.name}</b>
+                  <b>{feedLabel(f.name)}</b>
+                  {feedLabel(f.name) !== f.name && <span className="mono nm"> {f.name}</span>}
                   {f.required && <span style={{ color: 'var(--crimson-ink)', fontSize: '10px' }}> · required</span>}
                   <div className="nm" style={{ fontSize: '10.5px' }}>{f.label}</div>
                 </td>
@@ -308,7 +322,7 @@ function Sources({ list }: { list: FeedReport[] }) {
                   {f.n_files ? (
                     <div className="nm" style={{ fontSize: '10px' }}>
                       {[bytes(f.bytes), f.days?.length ? `${f.days.length} day${f.days.length === 1 ? '' : 's'}` : null,
-                        f.hosts?.length ? `${f.hosts.length} host${f.hosts.length === 1 ? '' : 's'}` : null]
+                        f.hosts?.length ? nodes.count(f.hosts.length) : null]
                         .filter(Boolean)
                         .join(' · ')}
                     </div>
@@ -328,7 +342,10 @@ function Backfill({ b }: { b: Record<string, unknown> | null | undefined }) {
   const n = (k: string) => (typeof b[k] === 'number' ? (b[k] as number) : null);
   const s = String(b.state ?? '');
   const text =
-    s === 'running'
+    s === 'positioning'
+      ? // each file opened, each sealed .gz indexed: minutes for a week of 8 nodes
+        'finding where the history starts in each file; reading begins next'
+      : s === 'running'
       ? `reading history back to ${b.from ?? DASH}: ${fint(n('pct'))}% · ${fint(n('records'))} records so far`
       : s === 'done'
         ? // a frozen clock (a captured feed) measures every duration as 0: say none
@@ -355,6 +372,7 @@ export function FeedsTab({
   config: Async<ConfigTree>;
   builtAt: string | null;
 }) {
+  const nodes = useNodeWords();
   const col = useCollectors();
   const hosts = col.data?.hosts ?? [];
   const now = col.data?.now ?? Date.now() / 1000;
@@ -378,24 +396,25 @@ export function FeedsTab({
         feed="/api/collectors"
         empty={!col.loading && !hosts.length}
         emptyWhat="no collector has written a file the dashboard can read"
-        header={<span className="pill">{hosts.length ? `${fint(hosts.length)} host${hosts.length === 1 ? '' : 's'} · ${summary}` : 'no hosts'}</span>}
+        header={<span className="pill">{hosts.length ? `${nodes.count(hosts.length)} · ${summary}` : `no ${nodes.many}`}</span>}
       >
         {col.error && <div className="err">{col.error}</div>}
         <p className="paths" style={{ marginTop: 0 }}>
           Judged from what each collector writes: a start record, a heartbeat every minute, and a stop record with
-          why it stopped and how many kernel events it lost. Click a host for its runs, probes, and files.
+          why it stopped and how many kernel events it lost. Click a {nodes.one} for its runs, probes, and files.
         </p>
         {hosts.length > 0 && <Collectors hosts={hosts} now={now} />}
         {nodeTier && nodeTier.status !== 'ok' && (
           <p className="paths">
-            {`Node tier (load, memory, NFS, per-user cgroups): ${nodeTier.status}`}
+            {`Node metrics (load, memory, NFS, per-user cgroups): ${nodeTier.status}`}
             {nodeTier.notice ? ` — ${nodeTier.notice}` : ''}
           </p>
         )}
       </Panel>
 
       <Panel
-        title="Data sources"
+        id="sec-data-sources"
+        title="Feeds"
         span
         feed="/api/feeds"
         empty={!feeds.loading && !list.length}

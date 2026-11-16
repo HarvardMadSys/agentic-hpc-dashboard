@@ -254,7 +254,8 @@ def defaults():
                                         "absorb_s": 300, "poll_min": 5, "poll_cv": 0.25,
                                         "poll_cv_strict": 0.10, "step_s": 1.0,
                                         "top_commands": 3, "max_calls": 20000,
-                                        "hk_bin_cap": 10080, "pend_max": 50000},
+                                        "hk_bin_cap": 10080, "pend_max": 50000,
+                                        "app_read_s": 2.0},
                              # The tasks above them: reducers/phase_tasks.py documents each
                              # threshold. Its DEFAULTS, tuned on seven hand-labeled sessions
                              # (rc_dashboard/phase_report.py); a test holds the two equal.
@@ -283,7 +284,7 @@ def defaults():
                 {"id": "commands", "kind": "commands", "rules": "rest",
                  "title": "Commands that should not run here"},
                 {"id": "credentials", "kind": "credentials", "rules": "rest",
-                 "title": "Credentials exposed in argv"},
+                 "title": "Credentials on a command line"},
             ],
         },
         "export": {"max_rows": 5000000},
@@ -330,7 +331,17 @@ def defaults():
         "cache": {"dir": os.path.join(HERE, ".cache"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,
-                   "static_dir": os.path.join(HERE, "web", "dist")},
+                   "static_dir": os.path.join(HERE, "web", "dist"),
+                   # Sign-in (auth.py): a salted scrypt hash of the one password
+                   # readers sign in with, made by `python -m rc_dashboard
+                   # new-password`. Empty leaves the page open to anyone who
+                   # reaches the port. A session lasts `session_days`.
+                   "auth": {"password_hash": "", "session_days": 30},
+                   # Name the endpoints on the Network bytes panel by reverse
+                   # DNS (endpoints.py): `workers` lookups at a time, from this
+                   # host, off the request path, kept in <cache.dir>/rdns.json.
+                   # Off: names come only from the records' command lines.
+                   "rdns": {"enabled": True, "workers": 4}},
     }
 
 
@@ -386,7 +397,12 @@ ENV_MAP = {
     "server.host": ("RC_DASH_HOST", str),
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
+    "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
+    "server.rdns.enabled": ("RC_DASH_RDNS", lambda v: v not in ("0", "false", "no", "off")),
 }
+
+# Secrets: /api/config and --print-config say whether each is set, never what it is.
+HIDDEN = ("anonymize.salt", "server.auth.password_hash")
 
 # retired names still honoured, with a one-line warning
 ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
@@ -458,6 +474,12 @@ class Config:
     def origin(self, dotted):
         return self._o.get(dotted, "default")
 
+    def set(self, dotted, value, origin):
+        """Override one leaf after load, naming who did (`--print-config` shows
+        it). For a mode that must win over every source, as a demo's feed must."""
+        _set(self._t, dotted, value)
+        self._o[dotted] = origin
+
     @property
     def tree(self):
         return self._t
@@ -477,8 +499,9 @@ class Config:
         out = {}
         for path, val in self._leaves():
             entry = {"_value": val, "_origin": self.origin(path)}
-            if path == "anonymize.salt" and val:
-                # With the salt, a list of candidate names turns every alias back.
+            if path in HIDDEN and val:
+                # With the salt, a list of candidate names turns every alias
+                # back. The password hash is no use to a reader either.
                 entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
                 cand = val if isinstance(val, list) else [val]
