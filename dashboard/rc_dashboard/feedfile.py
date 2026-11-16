@@ -70,9 +70,12 @@ HOLD_S = 300.0
 SETTLE = 4 << 20
 # The most of a file's head read for its first record (`first_record`).
 FIRST_MAX = 64 << 20
-# Frames a seek's probe walks past (SEGMENTs, corrupt regions) for one that says
-# when its records are.
+# Frames a seek's probe walks past (corrupt regions, frames with no time) for one
+# that says when its records are. Frames that hold no records -- SEGMENTs, and the
+# MARKs a converter writes (`ebr.MARK`, ebrview.py) -- are not counted: a probe
+# walks past them up to PROBE_PASS_BYTES.
 PROBE_FRAMES = 16
+PROBE_PASS_BYTES = 4 << 20
 
 
 # ------------------------------------------------------------------- names
@@ -680,15 +683,18 @@ def _placed(f):
 def _probe_ebr(fh, pos, size):
     """`(off, foff, ts_min, ts_max)` for a probe at `pos`: `off` the first frame
     header at or after it, and from there the first DATA frame placed in time
-    (SEGMENTs, corrupt regions and frames with no time at all are walked past,
-    PROBE_FRAMES at most, as `_probe` walks past lines with no time): its
+    (corrupt regions and frames with no time at all are walked past,
+    PROBE_FRAMES at most, as `_probe` walks past lines with no time; frames that
+    hold no record, SEGMENTs and MARKs, up to PROBE_PASS_BYTES): its
     offset and its times. A frame is placed by its header, or -- when a record
     in it has no `ts_epoch`, which leaves the header's times infinite -- by its
     records' own times as `epoch_of` reads them, a legacy record's `ts` string
     included, as `_probe` reads a line's. A capture converted from JSONL older
     than `ts_epoch` is all such frames, and a seek by the headers alone would
     skip all of it. The times are None when there is none by `size` -- the
-    frame is still being written -- and `off` is `size` when no header is.
+    frame is still being written, or no frame after `off` holds a record --
+    and `off` is `size` when no header is; `foff` is then None when the walk
+    was cut short with frames still ahead of it, `size` when it met the end.
     Remembered by the file's identity, as `_probe`'s answers are.
 
     Placing a frame by its records costs a replay of its segment (up to the
@@ -709,9 +715,10 @@ def _probe_ebr(fh, pos, size):
     out = (size, size, None, None)
     off = ebr.resync(src, pos, size)
     if off is not None and off < size:
-        out = (off, size, None, None)
+        out = (off, None, None, None)     # cut short, unless the walk meets the end
         dec = None
-        for n, f in enumerate(ebr.frames(src, off, size, verify=False)):
+        walked = 0
+        for f in ebr.frames(src, off, size, verify=False):
             if f.kind == ebr.DATA and f.n_records and _placed(f):
                 out = (off, f.off, f.ts_min, f.ts_max)
                 break
@@ -722,10 +729,18 @@ def _probe_ebr(fh, pos, size):
                 if times is not None:
                     out = (off, f.off) + times
                     break
-            elif dec is not None:
-                dec.skip(f, src)          # the walk's next frame decodes in step
-            if n + 1 >= PROBE_FRAMES:
+                walked += 1
+            else:
+                if dec is not None:
+                    dec.skip(f, src)      # the walk's next frame decodes in step
+                if f.kind in (ebr.DATA, ebr.BAD):
+                    walked += 1
+                elif f.end - off > PROBE_PASS_BYTES:
+                    break                 # a run of record-less frames past reason
+            if walked >= PROBE_FRAMES:
                 break
+        else:
+            out = (off, size, None, None)     # no frame ahead holds a placed record
     return _remember(m, key, out) if m is not None else out
 
 
@@ -750,13 +765,18 @@ def _record_times(dec, src, f):
 
 def _seek_ebr(fh, since, size):
     """The first frame that reaches `since`. The offset a probe lands on, not
-    the frame it places: what it walked past is read too."""
+    the frame it places: what it walked past is read too. A probe that places
+    nothing searches before it (what follows it is still being written, or
+    holds no record); one whose walk was cut short with frames still ahead is
+    read from as well, so what lies past it is never skipped."""
     lo, hi, best = 0, size, size
     while lo < hi:
         mid = (lo + hi) // 2
-        off, _foff, _tmin, tmax = _probe_ebr(fh, mid, size)
+        off, foff, _tmin, tmax = _probe_ebr(fh, mid, size)
         if tmax is None:
-            hi = mid                      # still being written: widen backwards
+            if foff is None:
+                best = min(best, off)     # not known past its walk: read from here
+            hi = mid                      # and widen backwards
         elif tmax >= since:
             best = min(best, off)
             hi = mid
