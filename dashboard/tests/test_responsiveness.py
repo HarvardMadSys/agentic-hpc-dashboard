@@ -10,7 +10,10 @@ exactly what it served before.
   offsets and plans the same read-back as one after another; a file unchanged
   on disk is not opened again; the node tier's last lines are `readlines()`'s;
 * a backfill normalized on its own normalizer counts what the shared one would;
-* a live frame is reused only while nothing new was dispatched.
+* a live frame is reused only while nothing new was dispatched, and only frames
+  that can still be reused are kept;
+* a static asset is never gzipped on the thread that serves it, and goes out
+  gzipped once a worker has compressed it.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_responsiveness -q
 """
@@ -20,7 +23,10 @@ import gzip
 import json
 import os
 import random
+import shutil
 import sys
+import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -33,6 +39,7 @@ from fastapi.encoders import jsonable_encoder      # noqa: E402
 from fastapi.responses import JSONResponse         # noqa: E402
 
 from rc_dashboard import aggregator as aggmod       # noqa: E402
+from rc_dashboard import app as appmod              # noqa: E402
 from rc_dashboard import anonymize, gz, jsonout     # noqa: E402
 from rc_dashboard import tail                       # noqa: E402
 from rc_dashboard.aggregator import Aggregator      # noqa: E402
@@ -304,6 +311,87 @@ class LiveFrameTest(FeedCase):
         self.assertEqual(json.loads(f2)["payload"]["now"]["events"],
                          dict(NONE, agent=21, human=10))
         self.assertIsNot(agg.live_frame(1440, max_age_s=0), f2)
+
+    def test_only_frames_that_can_be_reused_are_kept(self):
+        self.append("h1.exits.jsonl", self.thirty_exits())
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        # a reader cycling through windows: the most recent FRAMES_MAX are held
+        for m in range(1, 60):
+            agg.live_frame(m, max_age_s=3600)
+        self.assertEqual(list(agg._frames), list(range(60 - Aggregator.FRAMES_MAX, 60)))
+        # a frame past its age is never served again, so the next one drops it
+        agg.live_frame(1440, max_age_s=0)
+        self.assertEqual(list(agg._frames), [1440])
+
+
+class CachedStaticTest(unittest.TestCase):
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.dir, "assets"))
+        self.data = b"console.log('the page');\n" * 400
+        with open(os.path.join(self.dir, "assets", "index-0a1b2c.js"), "wb") as fh:
+            fh.write(self.data)
+        with open(os.path.join(self.dir, "index.html"), "wb") as fh:
+            fh.write(b"<!doctype html><title>page</title>")
+        appmod.CachedStatic._gz.clear()
+        self.static = appmod.CachedStatic(directory=self.dir, html=True)
+
+    def tearDown(self):
+        for t in threading.enumerate():
+            if t.name == "static-gzip":
+                t.join(30)
+        shutil.rmtree(self.dir, ignore_errors=True)
+        appmod.CachedStatic._gz.clear()
+
+    def get(self, rel, accept="gzip, deflate, br"):
+        full = os.path.join(self.dir, rel)
+        headers = [(b"accept-encoding", accept.encode())] if accept else []
+        scope = {"type": "http", "method": "GET", "path": "/" + rel, "headers": headers}
+        return self.static.file_response(full, os.stat(full), scope)
+
+    def test_an_asset_is_never_gzipped_on_the_serving_thread(self):
+        threads = []
+        real = gzip.compress
+
+        def spy(*a, **k):
+            threads.append(threading.current_thread())
+            return real(*a, **k)
+        with mock.patch.object(appmod.gzip, "compress", spy):
+            first = self.get("assets/index-0a1b2c.js")
+            for t in threading.enumerate():
+                if t.name == "static-gzip":
+                    t.join(30)
+        # the first reader got the file as it is, while a worker compressed it
+        self.assertNotIn("content-encoding", first.headers)
+        self.assertEqual(first.headers["vary"], "Accept-Encoding")
+        self.assertEqual(len(threads), 1)
+        self.assertIsNot(threads[0], threading.current_thread())
+        second = self.get("assets/index-0a1b2c.js")
+        self.assertEqual(second.headers["content-encoding"], "gzip")
+        self.assertEqual(gzip.decompress(second.body), self.data)
+        self.assertEqual(second.headers["cache-control"], "public, max-age=31536000, immutable")
+
+    def test_warm_compresses_every_asset_before_a_reader_asks(self):
+        self.assertEqual(self.static.warm(), 1)
+        with mock.patch.object(appmod.gzip, "compress", side_effect=AssertionError):
+            r = self.get("assets/index-0a1b2c.js")
+            plain = self.get("assets/index-0a1b2c.js", accept="")
+        self.assertEqual(gzip.decompress(r.body), self.data)
+        self.assertNotIn("content-encoding", plain.headers)
+        self.assertEqual(plain.headers["vary"], "Accept-Encoding")
+
+    def test_a_changed_asset_is_not_served_from_its_old_bytes(self):
+        self.static.warm()
+        p = os.path.join(self.dir, "assets", "index-0a1b2c.js")
+        with open(p, "ab") as fh:
+            fh.write(b"// more\n")
+        r = self.get("assets/index-0a1b2c.js")
+        self.assertNotIn("content-encoding", r.headers)
+
+    def test_the_page_itself_is_revalidated(self):
+        self.assertEqual(self.get("index.html").headers["cache-control"], "no-cache")
 
 
 if __name__ == "__main__":

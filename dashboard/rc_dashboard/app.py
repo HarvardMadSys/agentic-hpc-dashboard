@@ -83,10 +83,16 @@ class CachedStatic(StaticFiles):
     assets, so it is asked for again on every load (`no-cache` is "revalidate",
     and the ETag makes that a 304). A JavaScript or CSS asset also goes out
     gzipped to a browser that takes it: compressed once per file and kept, so
-    the first load over an SSH tunnel moves a third of the bytes."""
+    the first load over an SSH tunnel moves a third of the bytes.
+
+    Starlette calls `file_response` on the event loop, so nothing is compressed
+    there: `warm()` compresses every asset on a worker thread at start, and an
+    asset not compressed yet (one that changed since) goes out as it is while a
+    thread compresses it for the next reader."""
 
     GZIP_TYPES = (".js", ".css", ".svg", ".json", ".map")
     _gz = {}                            # path -> ((mtime_ns, size), gzipped bytes)
+    _gz_pending = set()                 # paths a thread is compressing now
     _gz_lock = threading.Lock()
 
     def file_response(self, full_path, stat_result, scope, status_code=200):
@@ -94,27 +100,67 @@ class CachedStatic(StaticFiles):
         path = scope.get("path") or ""
         if "/assets/" in path:
             resp.headers["cache-control"] = "public, max-age=31536000, immutable"
-            if resp.status_code == 200 and str(full_path).endswith(self.GZIP_TYPES) \
-                    and "gzip" in (Headers(scope=scope).get("accept-encoding") or ""):
-                body = self._gzipped(str(full_path), stat_result)
-                hdrs = {k: v for k, v in resp.headers.items()
-                        if k not in ("content-length", "content-encoding")}
-                hdrs.update({"content-encoding": "gzip", "vary": "Accept-Encoding"})
-                return Response(body, status_code=200, headers=hdrs)
+            if resp.status_code == 200 and str(full_path).endswith(self.GZIP_TYPES):
+                resp.headers["vary"] = "Accept-Encoding"
+                if "gzip" in (Headers(scope=scope).get("accept-encoding") or ""):
+                    body = self._gzipped(str(full_path), stat_result)
+                    if body is not None:
+                        hdrs = {k: v for k, v in resp.headers.items()
+                                if k not in ("content-length", "content-encoding")}
+                        hdrs["content-encoding"] = "gzip"
+                        return Response(body, status_code=200, headers=hdrs)
         elif path.endswith(".html") or path.endswith("/") or "." not in path.rsplit("/", 1)[-1]:
             resp.headers["cache-control"] = "no-cache"
         return resp
 
     def _gzipped(self, path, st):
-        ident = (st.st_mtime_ns, st.st_size)
+        """The file's gzipped bytes if they are kept for this version of it; if
+        not, None -- the reader gets the file as it is -- and a thread starts
+        compressing it."""
         hit = self._gz.get(path)
-        if hit is not None and hit[0] == ident:
+        if hit is not None and hit[0] == (st.st_mtime_ns, st.st_size):
             return hit[1]
-        with open(path, "rb") as fh:
-            body = gzip.compress(fh.read(), compresslevel=9, mtime=0)
         with self._gz_lock:
-            self._gz[path] = (ident, body)
-        return body
+            if path in self._gz_pending:
+                return None
+            self._gz_pending.add(path)
+        threading.Thread(target=self._compress, args=(path,), name="static-gzip",
+                         daemon=True).start()
+        return None
+
+    def _compress(self, path):
+        try:
+            with open(path, "rb") as fh:
+                before = os.fstat(fh.fileno())
+                data = fh.read()
+                after = os.fstat(fh.fileno())
+            ident = (after.st_mtime_ns, after.st_size)
+            # written to while read: leave it to the next reader
+            if (before.st_mtime_ns, before.st_size) == ident and len(data) == after.st_size:
+                body = gzip.compress(data, compresslevel=9, mtime=0)
+                with self._gz_lock:
+                    self._gz[path] = (ident, body)
+        except OSError:
+            pass
+        finally:
+            with self._gz_lock:
+                self._gz_pending.discard(path)
+
+    def warm(self):
+        """Compress every asset now, on the calling thread (a worker at start).
+        Returns how many."""
+        try:
+            root = os.path.join(self.directory, "assets")
+            names = sorted(os.listdir(root))
+        except (OSError, TypeError):
+            return 0
+        n = 0
+        for name in names:
+            p = os.path.join(root, name)
+            if name.endswith(self.GZIP_TYPES) and os.path.isfile(p):
+                self._compress(p)
+                n += 1
+        return n
 
 
 def create_app(cfg):
@@ -327,6 +373,10 @@ def create_app(cfg):
                            asyncio.create_task(feeds_loop()),
                            asyncio.create_task(rebuild_loop()),
                            asyncio.create_task(windows_loop())]
+        web = getattr(app.state, "static", None)
+        if web is not None:
+            # every asset gzipped before a page asks for it, off the event loop
+            asyncio.get_running_loop().run_in_executor(None, web.warm)
 
     @app.on_event("shutdown")
     async def _shutdown():
@@ -707,7 +757,8 @@ def create_app(cfg):
     # --------------------------------------------------------------- statics
     static = cfg.get("server.static_dir")
     if static and os.path.isdir(static):
-        app.mount("/", CachedStatic(directory=static, html=True), name="web")
+        app.state.static = CachedStatic(directory=static, html=True)
+        app.mount("/", app.state.static, name="web")
     else:
         @app.get("/")
         def _no_ui():

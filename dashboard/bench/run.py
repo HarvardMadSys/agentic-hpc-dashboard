@@ -152,10 +152,10 @@ class Appender(threading.Thread):
         self.rate_x = rate_x
         self.w = amplify.Writer(feed)
         self.lines = 0
-        self._stop = threading.Event()
+        self._halt = threading.Event()      # not `_stop`: Thread.join() calls _stop() (3.11, 3.12)
 
     def run(self):
-        while not self._stop.wait(1.0):
+        while not self._halt.wait(1.0):
             t1 = self.t + self.rate_x
             items = []
             for epoch, tier, host, stream, line in self.world.records(self.t, t1):
@@ -175,7 +175,7 @@ class Appender(threading.Thread):
             self.t = t1
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
         self.join(10)
         self.w.close()
 
@@ -185,20 +185,20 @@ class Poller(threading.Thread):
         super().__init__(daemon=True)
         self.s, self.path, self.every = s, path, every
         self.lat, self.size, self.fail = [], 0, 0
-        self._stop = threading.Event()
+        self._halt = threading.Event()      # not `_stop`: Thread.join() calls _stop() (3.11, 3.12)
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             st, body, dt = self.s.get(self.path, timeout=300, gzip_ok=True)
             if st == 200:
                 self.lat.append(dt)
                 self.size = len(body)
             else:
                 self.fail += 1
-            self._stop.wait(self.every)
+            self._halt.wait(self.every)
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
         self.join(320)
         return dict(stats(self.lat), bytes=self.size, fail=self.fail)
 

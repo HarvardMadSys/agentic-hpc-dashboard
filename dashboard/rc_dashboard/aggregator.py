@@ -145,6 +145,7 @@ class Aggregator:
         # the last bump is the frame a new one would be (`live_frame`).
         self.dispatched = 0
         self._frames = {}               # window minutes -> (dispatched, monotonic, text)
+        self._frames_lock = threading.Lock()
         # Set at shutdown. The backfill runs on an executor thread, which the
         # interpreter waits for at exit; unchecked, a restart during the minutes
         # of a week's backfill outlived the dev runner's SIGINT grace, was
@@ -540,6 +541,9 @@ class Aggregator:
         out["io_process"] = endpoints.serve(out["io_process"], self.rdns, self.classes)
         return res
 
+    # The most live frames kept for reuse, however many windows readers pick.
+    FRAMES_MAX = 16
+
     def live_frame(self, minutes, max_age_s=1.0):
         """The `live` websocket frame for a window, as text.
 
@@ -548,17 +552,27 @@ class Aggregator:
         loop, which only sends it. A frame is reused while nothing has been
         dispatched to the live tier since it was made and it is under
         `max_age_s` old, so readers that connect, or switch to a window, in the
-        same moment as a broadcast share one."""
-        hit = self._frames.get(minutes)
+        same moment as a broadcast share one. Only frames that can still be
+        reused are kept: one past `max_age_s` is dropped when the next is made,
+        and no more than `FRAMES_MAX`, the most recent, are held."""
         mark = self.dispatched
         now = time.monotonic()
+        with self._frames_lock:
+            hit = self._frames.get(minutes)
         if hit is not None and hit[0] == mark and now - hit[1] < max_age_s:
             return hit[2]
         payload = self.live_payload(minutes)
         if self.anon is not None:
             payload = self.anon.payload(payload, label="live")
         text = jsonout.frame("live", payload)
-        self._frames[minutes] = (mark, now, text)
+        with self._frames_lock:
+            frames = self._frames
+            for k in [k for k, v in frames.items() if now - v[1] >= max_age_s]:
+                del frames[k]
+            frames.pop(minutes, None)
+            frames[minutes] = (mark, now, text)
+            while len(frames) > self.FRAMES_MAX:
+                del frames[next(iter(frames))]
         return text
 
     def live_payload(self, window_min=None):
