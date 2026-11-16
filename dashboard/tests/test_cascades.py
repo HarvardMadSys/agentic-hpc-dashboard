@@ -403,6 +403,27 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual((c["summary"]["agents"], c["summary"]["agents_implied"],
                           c["summary"]["nested"]), (1, 0, 0))
 
+    def test_the_sandboxs_seccomp_stage_is_not_an_agent_either(self):
+        # The runtime's second stage: `ARGV0=apply-seccomp /proc/self/fd/3` (comm `3`)
+        # starts the call's shell, `/bin/bash -c exec 3<&- || exit 126; source ...`,
+        # and exits before it; 75 implied agents of the same FAS tree were that shim.
+        t0 = self.t0
+        shim = ("/proc/self/fd/3 /bin/bash -c exec 3<&- || exit 126; source " + HOME
+                + "/.claude/shell-snapshots/snapshot-bash-1.sh && eval make")
+        shell = ("/bin/bash -c exec 3<&- || exit 126; source " + HOME
+                 + "/.claude/shell-snapshots/snapshot-bash-1.sh && eval make")
+        recs = [
+            rec("residency", t0, 100, 50, "claude", "claude", agent_pid=100, tree_root=100,
+                is_agent=True),
+            rec("exit", t0 + 10, 404, 402, "3", shim, agent_pid=404, tree_root=100),
+            rec("exit", t0 + 11, 406, 405, "make", "make", agent_pid=405, tree_root=100),
+            rec("exit", t0 + 12, 405, 404, "bash", shell, agent_pid=405, tree_root=100,
+                is_agent=True),
+        ]
+        c = reduce(recs)["cascades"]
+        self.assertEqual((c["summary"]["agents"], c["summary"]["agents_implied"],
+                          c["summary"]["nested"]), (1, 0, 0))
+
     def test_a_sockets_age_does_not_date_the_agent(self):
         # A `conn` record's age_s is its socket's age, and the FAS login nodes' schema-7
         # collectors stamp it off the wall clock against BPF ktime: ~1.79e9 s, so 14,821
