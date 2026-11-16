@@ -167,6 +167,11 @@ def running_now(tree, fresh):
             "cat": next((k for k in CATS if k in cats), "unknown"), "at": at}
 
 
+def _full(tail):
+    """A bounded tail with every slot taken, so an older row joins it no more."""
+    return tail is not None and tail.maxlen is not None and len(tail) >= tail.maxlen
+
+
 class LiveReducer:
     # conn / netio are read for one thing: the identity block of a running agent
     # root, which carries its launch flags. Residency alone cannot give that -- its
@@ -303,6 +308,12 @@ class LiveReducer:
         self.roster.add(_epoch_of(rec), rec.get("user"), rec["_a3"],
                         rec.get("agent_type"), rec.get("cpu_s"),
                         rd_mb=io.get("rd_mb"), wr_mb=io.get("wr_mb"), tx_mb=tx, rx_mb=rx)
+        u = rec.get("user")
+        if older and _full(self.event_tail) and (not u or _full(self.user_tails.get(u))):
+            # The backfill, past both tails' depth: newer rows hold every slot,
+            # and `_place` would drop this one -- so it is not made. Millions of
+            # a week's exits reach here.
+            return
         row = {
             "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
             "host": rec.get("host"), "user": rec.get("user"),
@@ -324,7 +335,6 @@ class LiveReducer:
             "session_key": rec.get("session_key"),
         }
         self._place(self.event_tail, row, older)
-        u = rec.get("user")
         if u:
             tail = self.user_tails.get(u)
             if tail is None:

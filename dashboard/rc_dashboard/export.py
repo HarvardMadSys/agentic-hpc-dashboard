@@ -12,12 +12,14 @@ what they actually got.
 Scanning re-reads the day-files rather than serving from memory: a 24-hour window
 of raw events is on the order of 10-20 GB, so it is never buffered.
 """
+import collections
 import glob
 import hashlib
 import heapq
 import json
 import os
 import re
+import threading
 import time
 
 from . import gz, fastjson
@@ -401,8 +403,60 @@ def seek_to_epoch(fh, since, size, probe_lines=64):
     return best
 
 
+# What `_probe` and `head_digest` found, by the file's identity on disk. A
+# probe's answer is a function of the bytes, and the bytes of a file whose
+# device, inode, size and mtime are unchanged are the bytes it read: a sealed
+# day-file is asked the same questions over and over -- the hourly reduction
+# plans every file it reads every hour, and the first levels of each binary
+# search are the same -- and on a `.gz` each answer inflated an 8 MB span. A
+# file that grows has a new identity, so nothing is answered for it from before.
+_MEMO_FILES = 1024
+_MEMO_PROBES = 8192
+_memo = collections.OrderedDict()       # identity -> {key: answer}
+_memo_lock = threading.Lock()
+
+
+def _identity(fh):
+    try:
+        st = os.fstat(fh.fileno())
+    except (OSError, AttributeError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _memo_of(ident):
+    with _memo_lock:
+        m = _memo.get(ident)
+        if m is None:
+            m = _memo[ident] = {}
+            while len(_memo) > _MEMO_FILES:
+                _memo.popitem(last=False)
+        else:
+            _memo.move_to_end(ident)
+        return m
+
+
+def _remember(m, key, answer):
+    if len(m) >= _MEMO_PROBES:
+        m.clear()
+    m[key] = answer
+    return answer
+
+
 def _probe(fh, pos, limit):
-    """Align to the next whole line at/after `pos`; return (offset, ts|None)."""
+    """Align to the next whole line at/after `pos`; return (offset, ts|None).
+    Answered from the memo for a file unchanged since it was asked (`_memo`)."""
+    ident = _identity(fh)
+    if ident is None:
+        return _probe_read(fh, pos, limit)
+    m = _memo_of(ident)
+    hit = m.get(("probe", pos, limit))
+    if hit is not None:
+        return hit
+    return _remember(m, ("probe", pos, limit), _probe_read(fh, pos, limit))
+
+
+def _probe_read(fh, pos, limit):
     fh.seek(pos)
     if pos:
         fh.readline()                     # drop the line we landed inside
@@ -494,9 +548,17 @@ HEAD_BYTES = 4096
 
 
 def head_digest(fh, n):
-    """Digest of a file's first `n` bytes: its identity beyond the inode number."""
+    """Digest of a file's first `n` bytes: its identity beyond the inode number.
+    Read once per file identity (`_memo`): on a `.gz` it inflates the first span."""
+    ident = _identity(fh)
+    m = _memo_of(ident) if ident is not None else None
+    if m is not None:
+        hit = m.get(("head", n))
+        if hit is not None:
+            return hit
     fh.seek(0)
-    return hashlib.sha1(fh.read(n)).hexdigest()
+    out = hashlib.sha1(fh.read(n)).hexdigest()
+    return _remember(m, ("head", n), out) if m is not None else out
 
 
 def event_filter(events):

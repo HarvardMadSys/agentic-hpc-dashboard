@@ -194,8 +194,8 @@ import re
 import shlex
 
 from ..redact import MASK, redact
-from .phase_rules import (_GIT_VALUED, _SETUP, _SHELL_VALUE_OPTS, _UV_VALUED, _c_index, _commands,
-                          _in_place, _read, _sub)
+from .phase_rules import (_cached, _GIT_VALUED, _SETUP, _SHELL_VALUE_OPTS, _UV_VALUED, _c_index,
+                          _commands, _in_place, _read, _sub)
 
 KINDS = ("run", "test", "write", "read", "dir", "job", "pr", "branch", "worktree", "pkg", "scratch",
          "cd", "grep", "word")
@@ -1254,9 +1254,13 @@ def own_words(masked):
     return _own_words(_commands(_heredoc_messages(masked))) if masked else None
 
 
+@_cached
 def tagset(text, masked=None):
     """`(names_of(m), own_words(m))`, where `m` is `masked`, or `redact(text)` when it is not given.
-    `((), None)` for no text."""
+    `((), None)` for no text.
+
+    Cached (`phase_rules._cached`): a pure function of its text, whose answer is tuples and
+    strings, read for every tool call an agent makes -- and a session repeats its commands."""
     m = masked if masked is not None else redact(text)
     if not m:
         return (), None

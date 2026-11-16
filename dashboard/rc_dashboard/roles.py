@@ -51,6 +51,7 @@ three nested agents on madsys-gpu1 on 2026-10-10 before this was taken out.
 This is a heuristic over argv, calibrated on the shapes above, and it is stated
 as one: callers publish the role census so a misfiled shape is visible.
 """
+import functools
 import os
 import re
 
@@ -152,8 +153,25 @@ def _exe_index(command, toks):
     return None
 
 
+# Memoized: a pure function of three strings, asked for every tagged record a
+# window reduces, and a session's records repeat their command lines. An argv
+# past ROLE_MEMO_LEN is worked out each time rather than kept.
+ROLE_MEMO_LEN = 4096
+
+
 def role_of(agent_type, command, args):
     """One of ROLES for a process the collector tagged as an agent root."""
+    if args is not None and len(args) > ROLE_MEMO_LEN:
+        return _role_of(agent_type, command, args)
+    return _role_memo(agent_type, command, args)
+
+
+@functools.lru_cache(maxsize=65536)
+def _role_memo(agent_type, command, args):
+    return _role_of(agent_type, command, args)
+
+
+def _role_of(agent_type, command, args):
     command = command or ""
     toks = (args or "").split()
     argv0 = _base(toks[0]) if toks else ""

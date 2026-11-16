@@ -71,6 +71,7 @@ import functools
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 
 from .roles import role_of, subcommand
@@ -171,6 +172,10 @@ SURFACES = ("terminal", "script", "desktop", "extension", "web", "unknown")
 
 
 # ------------------------------------------------------------ optional repo libs
+_HELPERS = []                   # what `_load_helpers` found, once per process
+_HELPERS_LOCK = threading.Lock()
+
+
 def _load_helpers():
     """agent_lib / a purpose taxonomy, each optional with a working fallback.
 
@@ -179,8 +184,23 @@ def _load_helpers():
     retired builder's probe for `purpose_of` never matched it and the taxonomy
     silently fell through to deep_traj_lib's 12 purposes (no `guard`, no `shell`).
     Probe the real name first.
+
+    Probed once per process. Every `Normalizer` -- one per build, hour reduced,
+    inspector read, I/O lookup, /api/events page and export -- used to probe
+    again: `sys.path` gained an entry each time, and an import that fails is not
+    remembered, so each probe walked all of it. A service up for days got
+    slower at every one of those.
     """
-    sys.path.insert(0, os.path.join(REPO, "analyze"))
+    with _HELPERS_LOCK:
+        if not _HELPERS:
+            _HELPERS.append(_probe_helpers())
+        return _HELPERS[0]
+
+
+def _probe_helpers():
+    analyze = os.path.join(REPO, "analyze")
+    if analyze not in sys.path:
+        sys.path.insert(0, analyze)
     eff = actor3 = autonomous = None
     shell_comms = frozenset()
     try:

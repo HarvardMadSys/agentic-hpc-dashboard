@@ -6,7 +6,8 @@ import failed and every tool fell back to the bucket `other` -- the tool mix
 read "100% other" for every class, and the login-node-compute panel, which
 selects by bucket, was empty. So the one file is copied here, verbatim except
 that `agent_lib` stays optional (no sys.path edit; `shellenv_sub` degrades to
-"shell (other)" without it). tests/test_tool_buckets.py checks it against the
+"shell (other)" without it), and that `bucket` is memoized (`lru_cache`: a pure
+function of its token, asked twice for every exit a window reduces). tests/test_tool_buckets.py checks it against the
 original whenever the original is on this machine, so the two cannot drift.
 """
 """Tool-call bucketing: an `effective_comm` token -> one of 13 buckets.
@@ -20,6 +21,7 @@ figure's cannot drift.
 Vocabulary and priority order are VERBATIM from the original; the only change is
 that `SHELLS` is resolved locally when agent_lib is unavailable.
 """
+import functools
 import os
 import re
 import sys
@@ -86,8 +88,12 @@ RUNTIME_EXACT = {"node", "claude", "codex", "cursor", "bwrap", "deno", "bun",
                  "electron", "MainThread"}
 
 
+@functools.lru_cache(maxsize=65536)
 def bucket(ec: str) -> str:
-    """Map an effective_comm token to a tool-call bucket."""
+    """Map an effective_comm token to a tool-call bucket.
+
+    Memoized: a pure function of the token, asked twice for every exit (the tool
+    mix and the risk rules), over a vocabulary of a few thousand commands."""
     if not ec:
         return "other"
     t = ec.strip().strip('"').strip("'")

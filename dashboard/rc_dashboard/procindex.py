@@ -27,7 +27,22 @@ The parent kept is the FIRST one seen. A process whose parent exits is
 reparented to init (or a subreaper), and its later tick records say so; the
 process that started it is the one that matters here.
 """
+import collections
+
 from .roles import spawned_by_agent
+
+
+def pop_oldest(d):
+    """Drop the oldest key of a dict kept in insertion order.
+
+    O(1) on an OrderedDict. `d.pop(next(iter(d)))` on a plain dict at its cap
+    walks every slot deleted before it on every call -- 6 us a pop at 50k keys
+    against 0.4 -- and a busy window evicts at its cap once per new record.
+    Either way the same key goes."""
+    if isinstance(d, collections.OrderedDict):
+        d.popitem(last=False)
+    else:
+        d.pop(next(iter(d)))
 
 MAX_HOPS = 64
 _NO_PARENT = (None, 0, 1)
@@ -44,7 +59,7 @@ class ProcIndex:
     def __init__(self, cfg, classes=None):
         self.cap = int(cfg.get("reducers.sessions.proc_index_max", 200000) or 200000)
         # (host, pid) -> [ppid, role, spawned_by_agent, command, cwd, user]
-        self.entries = {}
+        self.entries = collections.OrderedDict()   # evicted oldest first (`pop_oldest`)
         self.evicted = 0
         # (host, pid) -> [earliest start, user] of the held children naming it
         # as parent. A process reusing the pid later, or as someone else, is
@@ -85,7 +100,7 @@ class ProcIndex:
                 return                  # the pid, reused after or by someone else
         if len(self.entries) >= self.cap:
             # Oldest first: dict order is insertion order. Counted, never silent.
-            self.entries.pop(next(iter(self.entries)))
+            pop_oldest(self.entries)
             self.evicted += 1
         # cwd is the FIRST one seen: an agent's launch directory. The collector
         # re-reads a tree root's cwd every tick, and Claude Code never chdirs
@@ -138,7 +153,8 @@ class ProcIndex:
 
     def strip(self):
         held = self.touched or ()
-        self.entries = {k: e for k, e in self.entries.items() if k in held}
+        self.entries = collections.OrderedDict(
+            (k, e) for k, e in self.entries.items() if k in held)
         self.wanted = {}
         self.touched = None
 
@@ -152,7 +168,7 @@ class ProcIndex:
             cur = self.entries.get(k)
             if cur is None:
                 if len(self.entries) >= self.cap:
-                    self.entries.pop(next(iter(self.entries)))
+                    pop_oldest(self.entries)
                     self.evicted += 1
                 self.entries[k] = e
                 continue

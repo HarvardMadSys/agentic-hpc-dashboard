@@ -130,6 +130,7 @@ room for its own has 0, and is counted (`preview_overflow`, `tag_overflow`).
 """
 import collections
 import copy
+import heapq
 import itertools
 import math
 import os
@@ -139,7 +140,7 @@ from array import array
 from operator import itemgetter
 
 from ..anonymize import HOME_PATTERNS
-from ..procindex import VIA
+from ..procindex import VIA, pop_oldest
 from ..redact import redact
 
 from . import pct
@@ -780,7 +781,7 @@ class TrajectoryReducer:
         # (host, pid) -> [MB read, MB written] its exited children carried, for
         # its own exit to give back (`own_io`), and the keys touched since
         # `track` (for the hours' ageing).
-        self.reaped = {}
+        self.reaped = collections.OrderedDict()
         self.reaped_evicted = 0
         self._rtouched = None
         # Phases. The thresholds: the config's over phase_segment.DEFAULTS.
@@ -1495,7 +1496,7 @@ class TrajectoryReducer:
             acc = self.reaped.get(key)
             if acc is None:
                 if len(self.reaped) >= REAPED_MAX:
-                    self.reaped.pop(next(iter(self.reaped)))
+                    pop_oldest(self.reaped)
                     self.reaped_evicted += 1
                 acc = self.reaped[key] = [0.0, 0.0]
             acc[0] += rd
@@ -1567,7 +1568,7 @@ class TrajectoryReducer:
         self.exited_horizon = c.get("phase_exited_horizon", 0.0)
 
     def strip(self):
-        self.reaped = {}
+        self.reaped = collections.OrderedDict()
         self._rtouched = None
         self.pend.entries = collections.OrderedDict()
         self.pend.touched = None
@@ -2047,8 +2048,9 @@ class TrajectoryReducer:
         # until its shell's exit says whose it is -- either would hold the top.
         real = [s for s in live if self.rooted(s)]
         for r in RANKS:
-            top = sorted(real if r == "recent" else live, key=keyf[r],
-                         reverse=True)[:self.top_n]
+            # the top few of up to `max_sessions`, re-ranked every few seconds:
+            # documented equal to `sorted(..., reverse=True)[:n]`, ties in order
+            top = heapq.nlargest(self.top_n, real if r == "recent" else live, key=keyf[r])
             ranks[r] = [s.sid for s in top]
             for s in top:
                 rows.setdefault(s.sid, self._row(s, *meta[s.sid]))

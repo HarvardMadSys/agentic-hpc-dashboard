@@ -409,6 +409,41 @@ class PanelView:
         self.cache["restored"] = None
         return self.payload
 
+    def materialize_stepwise(self, lock):
+        """`materialize()`, taking `lock` one reducer at a time.
+
+        Each reducer's `result()` is read, and masked, under the lock: the live
+        feed changes reducer state under the same lock. The payload is swapped in
+        whole once every reducer is done, so a reader meanwhile sees the previous
+        one entire, and only if the reducers it was read from are still the
+        view's: a build that installed new ones meanwhile materializes its own.
+        One hold is then the slowest reducer's, not all of them together -- and
+        every reader of the views and of the live tier, the tail included,
+        waited out the whole of it after each build and refresh."""
+        reds = self.reducers
+        out, fresh = {}, {}
+        for key in list(reds):
+            with lock:
+                r = reds.get(key)
+                if r is None:
+                    continue
+                try:
+                    res = r.result()
+                except Exception as e:
+                    res = {"_error": str(e)}
+                out[key] = redact.payload(res)
+                fresh[key] = (time.time(), self.live_records)
+            time.sleep(0)               # a waiter's turn at the lock
+        with lock:
+            if self.reducers is not reds:
+                return self.payload
+            self.payload = out
+            self.materialized_at = time.time()
+            self._fresh = fresh
+            # These panels are the view's own: any it showed from a saved copy are gone.
+            self.cache["restored"] = None
+        return self.payload
+
     def materialize_key(self, key, max_age_s):
         """Re-materialise one reducer's payload when it is older than
         `max_age_s` and the view has ingested since. The rest wait for the
@@ -721,11 +756,14 @@ class WindowRegistry:
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
+        # The panels, a reducer per hold; the view says it is ready once they are in,
+        # and until then shows what it showed while it was building.
+        view.materialize_stepwise(self.lock)
+        with self.lock:
             view.state = "ready"
             view.installed_at = time.time()
             view.progress.update(records=n, pct=100,
                                  elapsed_s=round(time.time() - t0, 1))
-            view.materialize()
 
         if blob is not None:
             try:
@@ -946,8 +984,7 @@ class WindowRegistry:
             if drift > view.window_s * budget_pct:
                 self._enqueue(key)
             else:
-                with self.lock:
-                    view.materialize()
+                view.materialize_stepwise(self.lock)
                 self._save_panels(view)
 
     def status(self, now=None):
