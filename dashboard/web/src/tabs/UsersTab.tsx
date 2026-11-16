@@ -43,7 +43,7 @@ import { Plate } from '../components/Plate';
 import { SortTh } from '../components/SortTh';
 import { SurfaceChip } from '../components/SurfaceChip';
 import { AGENT_TYPE_COL } from '../lib/classes';
-import { serverNow } from '../lib/clock';
+import { useNow } from '../lib/useNow';
 import type { Who } from '../lib/filters';
 import { DASH, ago, dur, fint, fmt, mb, pc } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
@@ -98,6 +98,11 @@ const PHASE_SHORT: Record<string, string> = Object.fromEntries(PHASES.map(([k, ,
 const WAITING = { ...absent('ebpfm', 'waiting for the dashboard service…'), _waiting: true };
 
 /* ------------------------------------------------------------- small parts */
+
+/** `5 min ago`, from epoch seconds, kept current with every live frame (lib/useNow.ts). */
+function Ago({ s }: { s: number }) {
+  return <>{ago(useNow() - s * 1000)}</>;
+}
 
 /** A trait as a badge: its words, coloured by its tone, its numbers and its rule on hover. */
 function TraitBadge({ t, rule, detail = false }: { t: Trait; rule?: string; detail?: boolean }) {
@@ -300,7 +305,6 @@ function Roster({
       case 'last': return r.last;
     }
   });
-  const now = serverNow();
   // the traits the window's users hold, the most held first: each a filter
   const held = ranked(U.fleet?.traits ?? {});
   return (
@@ -421,7 +425,7 @@ function Roster({
                     <td className="num">{r.peak_open ? fint(r.peak_open) : DASH}</td>
                     <td className="num">
                       <HourStrip hours={r.hours} />
-                      <div className="nm ur-ago">{r.last ? ago(now - r.last * 1000) : DASH}</div>
+                      <div className="nm ur-ago">{r.last ? <Ago s={r.last} /> : DASH}</div>
                     </td>
                     <td className="ur-traitcell"><TraitBadges traits={r.traits} catalogue={catalogue} max={2} /></td>
                   </tr>
@@ -765,7 +769,8 @@ function WeekGrid({ grid, tz }: { grid: number[][]; tz?: string | null }) {
 /** Each session over the window, from its first record to its last, packed into
  *  lanes: how many ran at once, and when. */
 function Timeline({ sessions, minutes, total }: { sessions: PortraitSession[]; minutes: number | null; total: number }) {
-  const now = serverNow() / 1000;
+  // the window ends now, and a running session reaches it: read again with every live frame (lib/useNow.ts)
+  const now = useNow() / 1000;
   const spans = sessions.filter((s) => s.first != null && s.last != null);
   if (!spans.length) return null;
   const lo = Math.min(minutes ? now - minutes * 60 : Infinity, ...spans.map((s) => s.first!));

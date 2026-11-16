@@ -67,7 +67,7 @@ import type {
 import type { Phase, PhaseBlock, PhaseHousekeeping, Task, TrajNav, TrajRunning, TrajectoryDetail } from '../api/types';
 import { ZOOM_HINT, ZoomMap, ZoomNote, svgAt, useWheel, wheelFactor, wheelPan } from '../charts/primitives';
 import { Term } from '../components/Term';
-import { serverNow } from '../lib/clock';
+import { useClockPinned, useNow } from '../lib/useNow';
 import { DASH, clock, dur, fint } from '../lib/format';
 import {
   GAP,
@@ -478,6 +478,8 @@ function Strip({
   /** a task or lone stretch picked by its block in the lane */
   onTask?: (t: Task) => void;
 }) {
+  // the edge's name and an open phase's or task's words read the clock's pin
+  useClockPinned();
   const merged = !!phases;
   const list = phases?.list ?? [];
   // a block of the first version has no tasks, and no lane
@@ -675,8 +677,8 @@ function Strip({
   };
 
   // The phases behind the bars: a tinted band each, as tall as the bars and the names above them, with a guessed
-  // phase or slice hatched and idle an outline. Read here, in a render the page repeats with every live frame, as
-  // the pinned clock the edge's name reads is.
+  // phase or slice hatched and idle an outline. The edge's end (`nowS`) is read again with every live frame while
+  // there is an edge, and the strip renders again when the clock's pin, which words the edge, flips (lib/useNow.ts).
   const under: ReactNode[] = [];
   const names: ReactNode[] = [];
   const picks: ReactNode[] = [];
@@ -1005,9 +1007,11 @@ export function TrajectoryNav({
   const nav = d.nav;
   const W = BIN_W;
   // The session track reaches the phases' span and, for a session running now, now, which the live edge runs on
-  // to. Read here, in a render the page repeats with every live frame, as the pinned clock the edge's name reads is.
+  // to: read again with every live frame while there is an edge (lib/useNow.ts).
   const list = phases?.list ?? [];
-  const nowS = list.length && now ? serverNow() / 1000 : null;
+  const live = list.length > 0 && !!now;
+  const at = useNow(live);
+  const nowS = live ? at / 1000 : null;
   const S = sessionAxis(d, axis, list.length ? [list[0].t0, Math.max(list[list.length - 1].t1, nowS ?? -Infinity)] : null);
   // A chart with phases is drawn at its box's own pixel width, so that its names are 10 px whatever the box, less the gutter
   // that its captions stand in, which the three tracks start after (the stylesheet reads it from `--tn-gut`).

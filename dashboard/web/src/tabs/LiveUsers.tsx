@@ -21,7 +21,7 @@ import { CmdCell } from '../components/Cmd';
 import { NoRows, Panel } from '../components/Panel';
 import { SortTh } from '../components/SortTh';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
-import { serverNow } from '../lib/clock';
+import { useNow } from '../lib/useNow';
 import { UNTAGGED, whoMatch } from '../lib/filters';
 import { DASH, ago, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
@@ -269,6 +269,8 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
   // as hooks must be
   const sessSort = useSort<string>('session', 'asc');
   const winSort = useSort<string>();
+  // its last processes say how long ago each exited: read again with every live frame (lib/useNow.ts)
+  const now = useNow();
   if (err) return <div className="nm">could not load {name}: {err}</div>;
   if (!d) return <div className="nm">loading {name}…</div>;
   const row = d.row;
@@ -283,7 +285,6 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
   const hosts = hostsOf(watched, all);
   const recent = host ? all.filter((e) => e.host === host) : all;
   const multiHost = hosts.length > 1 || new Set(sessions.map((s) => s.host)).size > 1;
-  const now = serverNow();
   return (
     <div className="u-detail">
       {/* Two boxes, never one wide table: what runs NOW and what ran in the
@@ -592,6 +593,7 @@ function Stream({ events, depth, watched, cls, q, who, keep }: {
   const nodes = useNodeWords();
   const [n, setN] = useState(25);
   const [host, setHost] = useState('');
+  const now = useNow();
   const ql = q.toLowerCase();
   const all = events
     .filter((e) =>
@@ -621,7 +623,7 @@ function Stream({ events, depth, watched, cls, q, who, keep }: {
         )}
       </div>
       {rows.length ? (
-        <RecentTable rows={rows} multiHost={hosts.length > 1} now={serverNow()} withUser />
+        <RecentTable rows={rows} multiHost={hosts.length > 1} now={now} withUser />
       ) : (
         <NoRows what={host ? `no exited process held on ${host} for the selection` : 'no exited process held for the selection'} />
       )}
@@ -758,7 +760,8 @@ export function UsersPanel({
   };
   // by name until a header is clicked: the frame still holds the busiest rows
   const sorted = sort.sort(rows, val);
-  const now = serverNow();
+  // "last active" is how long ago: read again with every live frame (lib/useNow.ts)
+  const now = useNow();
   const more = !q && !run && !pageOn && partial ? U!.rows_total - U!.rows.length : 0;
 
   // the live tier: the class chips narrow it, the user filter does not

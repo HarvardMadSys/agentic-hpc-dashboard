@@ -27,6 +27,7 @@ import { whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
 import { useUrlState } from './lib/useUrlState';
 import { useStickyBar } from './lib/sticky';
+import { FrameCtx, PinnedCtx } from './lib/useNow';
 import { CLS } from './lib/classes';
 import { Icon } from './components/Icon';
 import type { IconName } from './components/Icon';
@@ -853,5 +854,13 @@ export default function App() {
       <TooltipLayer />
     </div>
   );
-  return <NodeNounCtx.Provider value={nodeNoun}>{page}</NodeNounCtx.Provider>;
+  return (
+    <NodeNounCtx.Provider value={nodeNoun}>
+      {/* Text read against the clock renders again with each live frame, and
+          the frozen-capture wording when the clock's pin flips (lib/useNow.ts). */}
+      <FrameCtx.Provider value={live.receivedAt}>
+        <PinnedCtx.Provider value={live.live?.clock?.pinned === true}>{page}</PinnedCtx.Provider>
+      </FrameCtx.Provider>
+    </NodeNounCtx.Provider>
+  );
 }

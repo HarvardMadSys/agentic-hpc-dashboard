@@ -43,7 +43,7 @@
  * ribbon and says so under it; people and IDEs keep today's row exactly, with no
  * note, because no phase was ever on offer for them.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { Async } from '../api/hooks';
 import type { Cls, PhaseDay, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
@@ -58,6 +58,7 @@ import { AGENT_TYPE_LBL, CLS_COL } from '../lib/classes';
 import { sessionName } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
 import { serverNow } from '../lib/clock';
+import { useClockPinned, useNow } from '../lib/useNow';
 import { isBlock, sequenceLine } from '../lib/phases';
 import { pcol, plbl } from '../lib/purposes';
 import { dayInWindow, taskSequence, windowStart } from '../lib/tasks';
@@ -153,8 +154,8 @@ const BAND_H = 7;
  *  person or an IDE row says nothing: the service sends them `{unavailable}` too, but no phase was ever on
  *  offer for them (R41).
  *
- *  Not memoized, and read in the render of a tab that App re-renders with every live frame: an unknown edge
- *  is worded by `clockPinned()`, a plain flag that frame sets, and must see it. */
+ *  Drawn by `SessionItem`, which renders again with every live frame where the band runs on to now, and whenever
+ *  the clock's pin flips: an unknown edge is worded by `clockPinned()`, a plain flag that frame sets (lib/useNow.ts). */
 function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
   const ph = r.phases;
   const block = isBlock(ph) ? ph : null;
@@ -199,6 +200,61 @@ function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
     </>
   );
 }
+
+/** A row of the list: a session, and a click to open it. It renders again with each live frame only where it says
+ *  something against now -- "last process 2 min ago" when ranked by recency, or a running session's band, which runs
+ *  on to now -- and whenever the clock's pin flips, which words an unknown edge (lib/useNow.ts). */
+const SessionItem = memo(function SessionItem({
+  r,
+  rank,
+  on,
+  onOpen,
+}: {
+  r: TrajRow;
+  rank: TrajRank;
+  /** it is the one open in the inspector */
+  on: boolean;
+  onOpen: (sid: string) => void;
+}) {
+  const ph = r.phases;
+  const edge = isBlock(ph) && ph.list.length > 0 && r.running?.now != null;
+  const now = useNow(rank === 'recent' || edge);
+  useClockPinned();
+  const nm = sessionName(r);
+  const extra = rankLine(r, rank, now);
+  // an agent whose commands are read is counted in tool calls; any other row, in processes
+  const calls = countsCalls(r);
+  const count = calls
+    ? `${fint(r.n_calls)} tool ${r.n_calls === 1 ? 'call' : 'calls'}`
+    : `${fint(r.n_events)} processes`;
+  return (
+    <button
+      data-sid={r.sid}
+      className={`tj-item${on ? ' on' : ''}`}
+      style={{ borderLeftColor: on ? undefined : CLS_COL[r.actor3 ?? 'unlabeled'] }}
+      onClick={() => onOpen(r.sid)}
+      data-tip={`${r.sid}${calls ? `\n${fint(r.n_events)} processes` : ''}\nclick to open its process tree`}
+    >
+      <span className="tj-item-h">
+        <b>{nm.key}</b>
+        <span className="tj-date">{nm.date}</span>
+        <SurfaceChip s={r.surface} detail={r.surface_detail} />
+        {r.running && (
+          <span className="tj-live" data-tip={liveTip(r)}>
+            <i className="ld" />
+            live
+            {r.running.n_procs != null ? ` · ${fint(r.running.n_procs)} running` : ''}
+          </span>
+        )}
+      </span>
+      <span className="tj-item-s">
+        {(r.user ?? (r.users ?? [])[0]) ?? DASH} · {count} · {dur(r.cpu_s)} CPU · {dur(r.wall_s)}
+      </span>
+      {extra && <span className="tj-item-m">{extra}</span>}
+      <RowRibbon r={r} nowS={now / 1000} />
+    </button>
+  );
+});
 
 const reducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -306,7 +362,6 @@ export function TrajectoriesTab({
   }, [pending, sel]);
   const listRef = useRef<HTMLDivElement>(null);
   useFlip(listRef, `${rank}|${win}|${tuser ?? ''}|${cls.join(',')}`);
-  const now = serverNow();
   const open = (sid: string | null) => {
     setJump(null);
     setPending(null);
@@ -445,43 +500,9 @@ export function TrajectoriesTab({
             </div>
           )}
           <div className="tj-list" ref={listRef}>
-            {(tuser && shownList.length ? shownList : listed).map((r) => {
-              const nm = sessionName(r);
-              const extra = rankLine(r, rank, now);
-              // an agent whose commands are read is counted in tool calls; any other row, in processes
-              const calls = countsCalls(r);
-              const count = calls
-                ? `${fint(r.n_calls)} tool ${r.n_calls === 1 ? 'call' : 'calls'}`
-                : `${fint(r.n_events)} processes`;
-              return (
-                <button
-                  key={r.sid}
-                  data-sid={r.sid}
-                  className={`tj-item${sel === r.sid ? ' on' : ''}`}
-                  style={{ borderLeftColor: sel === r.sid ? undefined : CLS_COL[r.actor3 ?? 'unlabeled'] }}
-                  onClick={() => open(r.sid)}
-                  data-tip={`${r.sid}${calls ? `\n${fint(r.n_events)} processes` : ''}\nclick to open its process tree`}
-                >
-                  <span className="tj-item-h">
-                    <b>{nm.key}</b>
-                    <span className="tj-date">{nm.date}</span>
-                    <SurfaceChip s={r.surface} detail={r.surface_detail} />
-                    {r.running && (
-                      <span className="tj-live" data-tip={liveTip(r)}>
-                        <i className="ld" />
-                        live
-                        {r.running.n_procs != null ? ` · ${fint(r.running.n_procs)} running` : ''}
-                      </span>
-                    )}
-                  </span>
-                  <span className="tj-item-s">
-                    {(r.user ?? (r.users ?? [])[0]) ?? DASH} · {count} · {dur(r.cpu_s)} CPU · {dur(r.wall_s)}
-                  </span>
-                  {extra && <span className="tj-item-m">{extra}</span>}
-                  <RowRibbon r={r} nowS={now / 1000} />
-                </button>
-              );
-            })}
+            {(tuser && shownList.length ? shownList : listed).map((r) => (
+              <SessionItem key={r.sid} r={r} rank={rank} on={sel === r.sid} onOpen={open} />
+            ))}
           </div>
         </Panel>
 
