@@ -474,10 +474,10 @@ export interface HBarItem {
   onPick?: () => void;
 }
 
-/** Advance width of `.vlbl` (IBM Plex Mono at 10.5px). */
-const VLBL_CH = 6.3;
-/** Advance width of `.tick` (IBM Plex Mono at 10px). */
-const TICK_CH = 6;
+/** Advance width of `.vlbl` (IBM Plex Mono at 12px). */
+const VLBL_CH = 7.2;
+/** Advance width of `.tick` (IBM Plex Mono at 11.5px). */
+const TICK_CH = 6.9;
 /** The room a fitted HBars keeps for its bars, at most its natural room. */
 const HBAR_MIN = 72;
 
@@ -665,7 +665,7 @@ export function GroupBars({
   const gw = pw / groups.length;
   const bw = Math.min(maxBar, (gw - 14) / series.length);
   const F = (v: number) => (fmtVal ? fmtVal(v) : fmt(v));
-  const CH = 6.3; // advance width of `.vlbl` (IBM Plex Mono at 10.5px)
+  const CH = 7.2; // advance width of `.vlbl` (IBM Plex Mono at 12px)
   const PAD = 5;  // a label that fills its slot edge to edge still collides
   return (
     <>

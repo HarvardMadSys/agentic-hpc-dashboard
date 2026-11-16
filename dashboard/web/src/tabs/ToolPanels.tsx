@@ -342,9 +342,9 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
                           })
                         : undefined,
                     }))}
-                    W={380}
+                    W={400}
                     labelW={100}
-                    valW={170}
+                    valW={190}
                   />
                 ) : <div className="none">none</div>
               ) : (
@@ -353,9 +353,9 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
                     k: r.tool, v: r.calls_pct ?? 0, c: CLS_COL[c],
                     lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
                   }))}
-                  W={380}
+                  W={400}
                   labelW={100}
-                  valW={170}
+                  valW={190}
                 />
               )}
             </div>
