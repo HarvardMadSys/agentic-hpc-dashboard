@@ -636,4 +636,68 @@ class EdgeContextTest(HourCase):
         self.assertEqual(want["tool_mix"]["dedup"]["rule"], got["tool_mix"]["dedup"]["rule"])
 
 
+class PreprocessTest(HourCase):
+    """`panels.preprocess`: every closed hour in retention is reduced up front,
+    so every window, the widest included, is then a merge with nothing to
+    reduce -- and still the window one pass builds."""
+
+    def setUp(self):
+        super().setUp()
+        recs, t, k = [], NOW - 50 * HOUR, 0
+        while t < NOW - 60:
+            recs.append(TM.plain("exit", t, 200000 + k, 1, "git", "git status",
+                                 user=("bob", "carol")[k % 2], **TM.cost(TM.random.Random(k))))
+            k += 1
+            t += 97
+        self.write(recs)
+
+    def cfg(self, merge=True, **panels):
+        c = super().cfg(merge, **panels)
+        c.tree["live"]["retention_min"] = 2880
+        return c
+
+    def test_every_hour_in_retention_is_reduced_and_every_window_is_only_merged(self):
+        reg = self.registry(self.cfg(preprocess=True))
+        store = reg.hours
+        n = store.preprocess([self.root])
+        self.assertGreaterEqual(n, store.retention_h)
+        self.assertGreaterEqual(store.stats["days_built"], 1)
+        self.assertEqual(store.preprocess([self.root]), 0)     # nothing twice
+        for minutes in (60 * 6, 1440, 2880):
+            view = self.build(reg, minutes)
+            self.assertIn("reducing 0 new hour", view.cache["note"])
+        self.assertEqual(store.stats["hours_reduced"], n)
+        scan = self.payload(self.build(self.registry(self.cfg(merge=False)), 2880))
+        self.assertEqual(TM.diff(scan, self.payload(view)), [])
+
+    def test_every_preset_fits_and_the_worker_says_when_it_is_done(self):
+        from rc_dashboard.windows import presets
+        cfg = self.cfg(preprocess=True, max_windows=2)
+        reg = self.registry(cfg)
+        self.assertGreater(reg.max_views, len(presets(cfg)))
+        self.assertEqual(self.registry(self.cfg(max_windows=2)).max_views, 2)
+        reg.start()
+        try:
+            reg.preprocess()
+            for p in presets(cfg):
+                reg.request(p["minutes"])
+            self.assertTrue(reg.wait_idle(120))
+        finally:
+            reg.stop()
+        held = reg.status()["held"]
+        self.assertEqual(sorted(h["minutes"] for h in held),
+                         sorted(p["minutes"] for p in presets(cfg)))
+        self.assertTrue(all(h["state"] == "ready" for h in held))
+        self.assertEqual(reg.status()["queued"], [])
+
+    def test_the_wait_ends_at_its_deadline_on_a_pinned_clock(self):
+        # `clock.as_of` freezes time.time (HourCase pins it too): the deadline
+        # must run on a clock that still moves.
+        reg = self.registry(self.cfg(preprocess=True))
+        reg._busy = True
+        t0 = time.monotonic()
+        self.assertFalse(reg.wait_idle(0.2))
+        self.assertLess(time.monotonic() - t0, 5)
+
+
 ebr_twins(globals())

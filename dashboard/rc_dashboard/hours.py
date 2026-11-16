@@ -1059,6 +1059,33 @@ class HourStore:
         self.prune(now)
         return n
 
+    def preprocess(self, roots, now=None):
+        """Reduce EVERY closed hour in retention and merge every whole day in
+        it, so that any window -- not only the ones asked for so far -- is
+        then a merge of saved states and an edge and a tail, with nothing left
+        to reduce (`panels.preprocess`). Hours already saved cost nothing; on
+        a cold store this is about one scan of the retention, once. Returns
+        the number of hours reduced."""
+        self._sync(roots)
+        now = time.time() if now is None else now
+        h_hi = self.closed_end(now, roots)
+        # One hour more than retention: the widest window's edge hour is
+        # reduced too (`build`), so its first whole hour is joined.
+        h_lo = h_hi - self.retention_h - 1
+        if h_hi <= h_lo:
+            return 0
+        n = self.ensure(roots, h_lo, h_hi)
+        if self.day_cache:
+            for d in range(-(-h_lo // 24), h_hi // 24):
+                if d not in self.days and all(h in self.have
+                                              for h in range(d * 24, d * 24 + 24)):
+                    try:
+                        self.load_part("d", d)
+                    except LookupError:
+                        pass
+        self.prune(now)
+        return n
+
     def prune(self, now=None):
         """Drop hours and days past retention, and states of other code or
         config -- all but the newest such generation, which another process

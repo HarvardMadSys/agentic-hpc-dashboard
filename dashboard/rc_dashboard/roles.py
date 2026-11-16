@@ -96,8 +96,13 @@ _HELPER_PREFIX = ("--codex-run-as-",)
 _PROBE_FLAGS = frozenset({"--version", "-v", "-V", "--help", "-h", "--update"})
 _PROBE_SUB = frozenset({"doctor", "update", "upgrade", "install", "auth", "config",
                         "completion", "setup-token", "migrate-installer", "plugin",
-                        "login", "logout", "version", "help", "features"})
-_CLIENT_SUB = frozenset({"attach", "agents"})
+                        "login", "logout", "version", "help", "features", "debug"})
+_PROBE_SUB_PREFIX = ("migrate-",)       # codex migrate-nfs-db, migrate-rollouts
+# `codex queue --thread X --message M` posts into a thread the app-server holds and
+# exits: 531 on the FAS login nodes in 2026-11-09 .. 16, every one counted as an agent
+_CLIENT_SUB = frozenset({"attach", "agents", "queue"})
+# `codex sandbox -C DIR -P agent -- CMD` runs one command under Codex's sandbox
+_SANDBOX_SUB = frozenset({"sandbox"})
 # `rc`/`remote-control` is the Remote Control server: it starts a
 # `--print --sdk-url` worker per remote session and runs no tool calls itself
 # (none in 7 days on madsys-gpu1, against 30 409 for its worker). The `--rc`
@@ -153,6 +158,44 @@ def _exe_index(command, toks):
     return None
 
 
+# A script the kernel ran through its #! line takes the script's name as its comm,
+# and its argv starts with the interpreter: `/usr/bin/env node .../bin/codex exec`,
+# `/bin/bash .../stub/claude -p`. A JavaScript host runs the agent's own launcher,
+# whose subcommand follows the script. A shell or Python runs a wrapper or a test
+# double named after the agent, never the session itself -- the session, if the
+# script starts one, is its child: 2,658 such scripts were counted as agents on the
+# FAS login nodes in 2026-11-09 .. 16, most of them one project's test suite.
+_PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
+_SCRIPT_REACH = 4          # tokens an interpreter and its options take before the script
+
+
+def _interpreter(toks):
+    """The program a #! line runs: argv[0], or for `env`, the first word after its
+    flags and assignments."""
+    b = _base(toks[0]) if toks else ""
+    if b != "env":
+        return b
+    for tok in toks[1:]:
+        if tok.startswith("-") or "=" in tok:
+            continue
+        return _base(tok)
+    return ""
+
+
+def _agent_index(command, toks):
+    """(index in argv of the agent executable or None, wrapped): `wrapped` when that
+    executable is a script a shell or Python ran -- named after the agent, not it."""
+    if command in _AGENT_EXES and len(toks) > 1:
+        interp = _interpreter(toks)
+        if interp in _SHELLS or interp in _SCRIPT_HOSTS or _PYTHON.match(interp):
+            for i, tok in enumerate(toks[1:_SCRIPT_REACH + 1], 1):
+                if tok == "-c":
+                    break           # a command string, not a script
+                if _base(tok) == command:
+                    return i, interp not in _SCRIPT_HOSTS
+    return _exe_index(command, toks), False
+
+
 # Memoized: a pure function of three strings, asked for every tagged record a
 # window reduces, and a session's records repeat their command lines. The
 # distinct ones are few -- an agent root's argv per session -- so the memo is
@@ -193,7 +236,9 @@ def _role_of(agent_type, command, args):
         # Claude Desktop's remote server: it launches `ccd-cli` sessions over SSH
         return "probe" if _PROBE_FLAGS.intersection(toks[1:]) else "infra"
 
-    i = _exe_index(command, toks)
+    i, wrapped = _agent_index(command, toks)
+    if wrapped:
+        return "helper"
     if i is None:
         if command in _SHELLS and _TOOL_SHELL.search(args or ""):
             return "tool-shell"
@@ -212,10 +257,12 @@ def _role_of(agent_type, command, args):
         return {"proxy": "client", "daemon": "infra"}.get(nxt, "agent")
     if sub == "mcp":
         return "agent" if len(pos) > 1 and pos[1] == "serve" else "probe"
-    if sub in _PROBE_SUB:
+    if sub in _PROBE_SUB or (sub or "").startswith(_PROBE_SUB_PREFIX):
         return "probe"
     if sub in _CLIENT_SUB:
         return "client"
+    if sub in _SANDBOX_SUB:
+        return "sandbox"
     if sub in _INFRA_SUB:
         return "infra"
     return "agent"
@@ -241,10 +288,34 @@ def agent_version(comm, args):
     return m.group(1) if m else None
 
 
-def spawned_by_agent(role, command):
+# Claude Code's sandbox runtime starts a Bash call's shell inside bwrap, in two
+# stages: a shell behind a proxy prologue (`_srt_http=$!`), which runs the seccomp
+# shim (`ARGV0=apply-seccomp /proc/self/fd/3`), which starts the call's shell
+# (`bash -c exec 3<&- || exit 126; source ...`). Each stage's parent is the sandbox,
+# not the agent, and exits before its child, so the index never holds it. Taken for
+# the agent, it made each sandboxed call an implied agent -- 981 in one FAS tree on
+# 2026-11-13. Without the link the call folds into its tree root, the agent.
+_SANDBOX_RUNTIME = re.compile(r"\b_srt_(?:http|socks)=|\bSRT_ALLOW_NESTED_USERNS="
+                              r"|\bARGV0=apply-seccomp\b|\s-c\s+exec 3<&- \|\| exit 126;")
+
+
+def spawned_by_agent(role, command, args=None):
     """True for a process its agent starts directly: its parent IS the agent."""
-    return role == "tool-shell" or \
-        (role == "sandbox" and (command or "").startswith("codex-linux-san"))
+    if role == "tool-shell":
+        return not (args and _SANDBOX_RUNTIME.search(args))
+    return role == "sandbox" and (command or "").startswith("codex-linux-san")
+
+
+def js_launcher(command, args):
+    """True for an agent's own JavaScript launcher, which only starts the agent's
+    native binary: `node .../bin/codex`, or npm's `codex` run through its #! line as
+    `/usr/bin/env node .../bin/codex` (comm `codex`)."""
+    command = command or ""
+    toks = (args or "").split()
+    if command in _SCRIPT_HOSTS:
+        return _exe_index(command, toks) is not None
+    i, wrapped = _agent_index(command, toks)
+    return bool(i) and not wrapped
 
 
 def subcommand(command, args):
@@ -252,11 +323,10 @@ def subcommand(command, args):
     `mcp-server`), or None: there is none, or this is not an agent executable.
     Read as `role_of` reads it, so a word of a prompt is not one."""
     toks = (args or "").split()
-    i = _exe_index(command or "", toks)
+    # a script the kernel ran through its #! line: read past its interpreter, a
+    # wrapper's too -- what it was asked for, whatever runs the session
+    i, _wrapped = _agent_index(command or "", toks)
     if i is None:
         return None
-    # a script the kernel ran through its #! line: argv[0] is the interpreter
-    if i == 0 and len(toks) > 1 and _base(toks[0]) != command and _base(toks[1]) == command:
-        i = 1
     pos = _positionals(toks[i + 1:])
     return pos[0] if pos else None

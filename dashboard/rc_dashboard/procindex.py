@@ -107,7 +107,7 @@ class ProcIndex:
         # (it tracks its working directory itself), but a later record of a
         # process that did would otherwise move the anchor drift is measured from.
         self.entries[key] = [rec.get("ppid"), role,
-                             spawned_by_agent(role, rec.get("_command")),
+                             spawned_by_agent(role, rec.get("_command"), rec.get("args")),
                              rec.get("_command"), rec.get("cwd"), rec.get("user")]
         self.version += 1
         if self.touched is not None:

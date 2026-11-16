@@ -142,6 +142,10 @@ class Aggregator:
         # The window builds wait for it too: positioning is minutes long, and
         # beside a build it is starved of the GIL (windows.WindowRegistry.ready).
         self.positioned = threading.Event()
+        # Set once `start` has queued the window builds: with a conversion to
+        # finish first, that is later than the service's start-up
+        # (`wait_preprocessed`).
+        self.started = threading.Event()
         self.panels_by_window = winmod.WindowRegistry(
             cfg, self.classes, self.roots, self.lock, ready=self.positioned)
         self.node_built_at = None
@@ -169,16 +173,34 @@ class Aggregator:
                 or self.cfg.get("feeds.ebpf.roots") or [])
 
     def start(self):
-        self.panels_by_window.start()
+        reg = self.panels_by_window
+        reg.start()
+        pre = bool(self.cfg.get("panels.preprocess"))
+        if pre:
+            # Every closed hour in retention first, so the window builds
+            # below are merges with nothing left to reduce.
+            reg.preprocess()
         # The default window is what nearly every page load asks for first, so
         # its build -- or its resume from the saved copy -- starts with the
         # service rather than with the first reader.
-        self.panels_by_window.request(self.window(None)["minutes"])
+        default = self.window(None)["minutes"]
+        reg.request(default)
         # Then the cheap windows, so the first switch to one is instant rather
         # than a scan: queued behind the default, built by the same worker.
-        self.panels_by_window.prewarm(
-            [m for m in (self.cfg.get("panels.prewarm_min") or [])
-             if m != self.window(None)["minutes"]])
+        # Preprocessing builds every preset instead, the widest included.
+        warm = ([p["minutes"] for p in winmod.presets(self.cfg)] if pre
+                else (self.cfg.get("panels.prewarm_min") or []))
+        reg.prewarm([m for m in warm if m != default])
+        self.started.set()
+
+    def wait_preprocessed(self, timeout):
+        """Block until the builds `start` queued are done, or `timeout` seconds
+        pass -- `start` itself included, which waits on a conversion when there
+        is one. Returns whether they finished."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        if not self.started.wait(timeout):
+            return False
+        return self.panels_by_window.wait_idle(max(0.0, deadline - time.monotonic()))
 
     def stop(self):
         self.stopping = True

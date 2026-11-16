@@ -90,7 +90,7 @@ needs beyond the template: if a deploy fails at the domain, add **Zone · DNS ·
 | the address | `dashboard-demo.agentic-system.org` (a Custom Domain), and the `workers.dev` URL |
 | the Worker (`src/index.ts`) | sends every request, the page's websocket included, to one container instance named `demo` |
 | the container | `rc_dashboard demo` on port 8080: writes 2 days of history (`RC_DASH_DEMO_DAYS`), then serves and keeps appending in real time |
-| instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~130 MB |
+| instance | `basic` (1/4 vCPU, 1 GiB); the demo holds ~150 MB with every window built |
 | at most | one instance (`max_instances: 1`) |
 | outbound internet | none (`enableInternet = false`); Ask LLM is off in the image |
 | access | a password (the `DEMO_PASSWORD` secret), checked by the Worker before anything reaches the container |
@@ -101,7 +101,11 @@ needs beyond the template: if a deploy fails at the domain, add **Zone · DNS ·
 message (`SLEEP_AFTER`), and the next request starts it. The service writes its history
 before it listens -- about 11 s on a `basic` instance, measured when the demo still wrote
 JSONL, plus the container's own start. EBR, which it writes now, takes longer to write than
-JSONL (timings in [Demo mode](../../dashboard/README.md#demo-mode)). A request waits up to
+JSONL (timings in [Demo mode](../../dashboard/README.md#demo-mode)). It then preprocesses the
+history, also before it listens (`panels.preprocess`): every hour reduced and every window
+built, so the first page has every window ready rather than a *merging* bar. On a laptop
+that took ~6 s for the two days (JSONL); on a `basic` instance expect it to scale the way the
+writing does (not yet measured there). A request waits up to
 6 s (`READY_WAIT_MS`); past that, a page gets a small "starting the demo" page that reloads
 itself every 4 s, and an API call a 503 with `Retry-After`. Each request waits on its own and
 ends its wait before it answers: a wait shared between requests was dropped with the request
