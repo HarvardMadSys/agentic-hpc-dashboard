@@ -9,7 +9,7 @@
  * costs no read of their own. Only the busiest users are listed; anyone else
  * can be typed in, which is what the search bar's user field used to be for.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Facets } from '../api/types';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
@@ -44,6 +44,17 @@ function Mix({ by }: { by: Partial<Record<string, number>> }) {
 function Drop({ label, n, tip, children }: { label: string; n: number; tip: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Opened from a button near the right of a narrow screen, the list would run
+  // off it: slide it left until it fits, and no further than the left edge.
+  const pop = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = pop.current;
+    if (!open || !el) return;
+    el.style.left = '';
+    const r = el.getBoundingClientRect();
+    const over = r.right - (document.documentElement.clientWidth - 8);
+    if (over > 0) el.style.left = `${-Math.min(over, Math.max(0, r.left - 8))}px`;
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => {
@@ -73,7 +84,11 @@ function Drop({ label, n, tip, children }: { label: string; n: number; tip: stri
         {n > 0 && <b>{n}</b>}
         <span className="who-caret">▾</span>
       </button>
-      {open && <div className="who-pop">{children}</div>}
+      {open && (
+        <div className="who-pop" ref={pop}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }

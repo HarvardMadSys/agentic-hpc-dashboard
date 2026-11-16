@@ -137,9 +137,15 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 7. **Data only** — a panel carries a title, its feed, and the chart or table. Every
    `notes` / `basis` / `cpu_basis` / `scope` / `dedup.rule` string goes into `<Basis>`, a
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
-8. **Responsive to ~900px** — below 900px the rail becomes a horizontal nav and the grid
-   collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
-   never scrolls horizontally.
+8. **Down to a phone** — at 900px and under (`src/lib/useNarrow.ts`) the rail becomes a
+   strip of tabs across the top, which stays as the brand scrolls away; its status lines move
+   to the foot of the page; every grid collapses to one column; and a chart is drawn at the
+   width it is shown at rather than scaled down to it (`useFit` in `src/charts/primitives.tsx`),
+   so a label stays 10px instead of printing at 3px. Wide tables scroll inside their own
+   `.scroller`, the widest with their label column held in view (`pin`); the page body never
+   scrolls horizontally, down to 320px. On a touch screen a tap shows a `data-tip`, controls
+   are a fingertip high, and form fields are 16px so iOS does not zoom into them. Above 900px,
+   with a mouse, the page is as it was.
 
 Two more that the payloads force:
 

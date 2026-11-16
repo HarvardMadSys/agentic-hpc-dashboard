@@ -10,22 +10,34 @@
  *
  * Sizing follows the template's one portable idiom: natural width/height
  * attributes plus a viewBox, scaled by CSS (`max-width:100%; height:auto`).
+ * In the narrow layout a chart in a box narrower than its natural width is
+ * drawn at the box's width instead (`useFit`), so its labels keep their size
+ * on a phone.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+  RefObject,
+} from 'react';
 import { niceTicks } from './scale';
 import { fint, fmt } from '../lib/format';
+import { useNarrow } from '../lib/useNarrow';
 
 export interface SvgProps {
   w: number;
   h: number;
   children: ReactNode;
   label?: string;
+  /** the ref `useFit` measures the chart's box through */
+  fit?: RefObject<SVGSVGElement | null>;
 }
 
-export function Svg({ w, h, children, label }: SvgProps) {
+export function Svg({ w, h, children, label, fit }: SvgProps) {
   return (
     <svg
+      ref={fit}
       viewBox={`0 0 ${w} ${h}`}
       width={w}
       height={h}
@@ -36,6 +48,52 @@ export function Svg({ w, h, children, label }: SvgProps) {
       {children}
     </svg>
   );
+}
+
+/** The narrowest a chart is drawn; in a box narrower still, it scales down. */
+const FIT_MIN = 240;
+
+/** The width to draw a chart at, given its natural width `W`, and the ref to
+ * put on its `<svg>`.
+ *
+ * Scaled by its viewBox into a box much narrower than `W` -- a 1060-wide chart
+ * on a phone -- a chart prints its 10 px labels at 3 px. So in the narrow
+ * layout (`useNarrow`), in a box narrower than `W`, it is drawn at the box's
+ * width instead, every label at its real size, down to `FIT_MIN`. In a box as
+ * wide as `W` or wider, and anywhere in the wide layout, where a chart is
+ * scaled down a little at most, it is drawn at `W` as it always was. The box is
+ * the svg's parent, watched as it resizes; a chart that drew nothing has none
+ * until it draws. */
+export function useFit(W: number): [RefObject<SVGSVGElement | null>, number] {
+  const narrow = useNarrow();
+  const ref = useRef<SVGSVGElement | null>(null);
+  const [room, setRoom] = useState<number | null>(null);
+  const seen = useRef<{ box: Element; ro: ResizeObserver } | null>(null);
+  useLayoutEffect(() => {
+    const box = ref.current?.parentElement ?? null;
+    if (box === (seen.current?.box ?? null) || typeof ResizeObserver === 'undefined') return;
+    seen.current?.ro.disconnect();
+    seen.current = null;
+    if (!box) return;
+    const read = () => {
+      const cs = getComputedStyle(box);
+      const n = Math.floor(box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+      // a box that is not laid out (display: none) says nothing about its width
+      if (n > 0) setRoom(n);
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(box);
+    seen.current = { box, ro };
+  });
+  useLayoutEffect(
+    () => () => {
+      seen.current?.ro.disconnect();
+      seen.current = null;
+    },
+    [],
+  );
+  return [ref, narrow && room != null && room < W ? Math.max(FIT_MIN, room) : W];
 }
 
 function YGrid({ x0, x1, y, lbl }: { x0: number; x1: number; y: number; lbl: string }) {
@@ -370,11 +428,16 @@ export interface HBarItem {
   onPick?: () => void;
 }
 
+/** Advance width of `.vlbl` (IBM Plex Mono at 10.5px). */
+const VLBL_CH = 6.3;
+/** Advance width of `.tick` (IBM Plex Mono at 10px). */
+const TICK_CH = 6;
+
 export function HBars({
   items,
-  W = 560,
-  labelW = 132,
-  valW = 54,
+  W: natW = 560,
+  labelW: natLabelW = 132,
+  valW: natValW = 54,
   rowH = 22,
   color = 'var(--s1)',
   max,
@@ -393,14 +456,23 @@ export function HBars({
   zoom?: boolean;
 }) {
   const [ceil, setCeil] = useState<number | null>(null);
+  const [fitRef, W] = useFit(natW);
   const gap = 5;
   const h = items.length * rowH + 6;
   const full = max || Math.max(...items.map((d) => d.v ?? 0), 1);
   const top = ceil ?? full;
-  const bw = W - labelW - valW;
   const wheel = useCeilingWheel(zoom, items.map((d) => d.v), full, top, setCeil);
   if (!items.length) return null;
   const u = unit ? ' ' + unit : '';
+  // Drawn narrower than asked (`useFit`), the label and value columns give up
+  // the room they had beyond their own words before the bars give up any.
+  const words = (ss: string[]) => Math.ceil(Math.max(...ss.map((s) => s.length)) * VLBL_CH);
+  const fitted = W < natW;
+  const labelW = fitted ? Math.min(natLabelW, words(items.map((d) => d.k)) + 12) : natLabelW;
+  const valW = fitted
+    ? Math.min(natValW, words(items.map((d) => (d.lbl != null ? d.lbl : fmt(d.v)))) + 13)
+    : natValW;
+  const bw = W - labelW - valW;
   return (
     <>
       {zoom && (
@@ -411,7 +483,7 @@ export function HBars({
           reset={() => setCeil(null)}
         />
       )}
-      <Svg w={W} h={h}>
+      <Svg w={W} h={h} fit={fitRef}>
         <g
           ref={wheel}
           className={zoom ? 'zoomable' : undefined}
@@ -491,7 +563,7 @@ export interface BarSeries {
 export function GroupBars({
   groups,
   series,
-  W = 560,
+  W: natW = 560,
   H = 200,
   maxBar = 34,
   ylabel,
@@ -515,6 +587,7 @@ export function GroupBars({
   zoom?: boolean;
 }) {
   const [ceil, setCeil] = useState<number | null>(null);
+  const [fitRef, W] = useFit(natW);
   const L = 44;
   const R = 8;
   const TOP = ylabel ? 20 : 10;
@@ -549,7 +622,7 @@ export function GroupBars({
           reset={() => setCeil(null)}
         />
       )}
-      <Svg w={W} h={H} label={ylabel}>
+      <Svg w={W} h={H} label={ylabel} fit={fitRef}>
         {ticks.map((t) => (
           <YGrid key={t} x0={L} x1={W - R} y={y(t)} lbl={tickFmt ? tickFmt(t) : fmt(t)} />
         ))}
@@ -677,13 +750,14 @@ export interface StackSeg {
  * magnified segment would no longer read as a share of anything. */
 export function StackRow({
   segs,
-  W = 560,
+  W: natW = 560,
   H = 30,
 }: {
   segs: StackSeg[];
   W?: number;
   H?: number;
 }) {
+  const [fitRef, W] = useFit(natW);
   const tot = segs.reduce((a, d) => a + (d.v || 0), 0);
   if (!(tot > 0)) return null;
   let x = 0;
@@ -719,7 +793,7 @@ export function StackRow({
     x += w;
   });
   return (
-    <Svg w={W} h={H}>
+    <Svg w={W} h={H} fit={fitRef}>
       {out}
     </Svg>
   );
@@ -755,7 +829,7 @@ export interface LineSeries {
  * the data's own bins. */
 export function Lines({
   series,
-  W = 560,
+  W: natW = 560,
   H = 210,
   L = 48,
   ymin,
@@ -806,6 +880,7 @@ export function Lines({
 }) {
   const clip = 'lc' + useId().replace(/[^\w-]/g, '');
   const [own, setOwn] = useState<[number, number] | null>(null);
+  const [fitRef, W] = useFit(natW);
   const R = 12;
   const TOP = ylabel ? 22 : 12;
   const B = 34;
@@ -915,6 +990,17 @@ export function Lines({
   const F = (v: number) => (yfmt ? yfmt(v) : fmt(v));
   const XF = (v: number) => (xfmt ? xfmt(v) : fmt(v));
   const XT = (v: number) => (xtip ? xtip(v) : XF(v));
+  // Ticks whose labels would run into each other -- a chart drawn narrow, on a
+  // phone -- are thinned from the left, so every label printed is whole.
+  const xtShown: number[] = [];
+  for (let i = 0, lastX = -Infinity, lastHalf = 0; i < xt.length; i++) {
+    const x = X(xt[i]);
+    const half = (XF(xt[i]).length * TICK_CH) / 2;
+    if (x - lastX < lastHalf + half + 8) continue;
+    xtShown.push(xt[i]);
+    lastX = x;
+    lastHalf = half;
+  }
 
   /** Split into runs of consecutive present points -- one subpath per run. */
   const runs = (pts: LinePt[]): LinePt[][] => {
@@ -940,7 +1026,7 @@ export function Lines({
           reset={() => setView(null)}
         />
       )}
-      <Svg w={W} h={H} label={ylabel}>
+      <Svg w={W} h={H} label={ylabel} fit={fitRef}>
         {zoomed && (
           <defs>
             <clipPath id={clip}>
@@ -951,7 +1037,7 @@ export function Lines({
         {yt.map((t) => (
           <YGrid key={'y' + t} x0={L} x1={W - R} y={Y(t)} lbl={F(t)} />
         ))}
-        {xt.map((t, i) => {
+        {xtShown.map((t, i) => {
           // a label centred on a tick at the plot's edge would be cut in half
           const x = X(t);
           const anchor = x > W - R - 18 ? 'end' : x < L + 18 ? 'start' : 'middle';
@@ -1133,7 +1219,7 @@ export function Ribbon({
   rle,
   colour,
   label,
-  W = 420,
+  W: natW = 420,
   H = 13,
   zoom = false,
   onPick,
@@ -1156,6 +1242,7 @@ export function Ribbon({
   const [view, setView] = useState<[number, number] | null>(null);
   const [focus, setFocus] = useState<number | null>(null);
   const [panning, setPanning] = useState(false);
+  const [fitRef, W] = useFit(natW);
   const grab = useRef<{ cx: number; sx: number; a: number; moved: boolean } | null>(null);
   const cum: number[] = [];
   let tot = 0;
@@ -1314,7 +1401,7 @@ export function Ribbon({
           reset={() => setView(null)}
         />
       )}
-      <Svg w={W} h={H}>
+      <Svg w={W} h={H} fit={fitRef}>
         <g
           ref={zoom ? wheel : undefined}
           className={[zoom ? 'zoomable' : '', onPick ? 'pickable' : ''].join(' ').trim() || undefined}

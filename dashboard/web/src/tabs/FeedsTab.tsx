@@ -236,7 +236,7 @@ function Where({ f }: { f: FeedReport }) {
   // this page when a panel is empty, so it stays, marked, beside the one that did.
   const missing = (f.configured ?? []).filter((p) => !resolved.includes(p));
   return (
-    <div className="mono" style={{ fontSize: '10.5px', wordBreak: 'break-all' }} data-tip={tip || undefined}>
+    <div className="mono feed-where" style={{ fontSize: '10.5px', wordBreak: 'break-all' }} data-tip={tip || undefined}>
       {resolved.map((p) => (
         <div key={p}>{p}</div>
       ))}

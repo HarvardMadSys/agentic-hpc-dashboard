@@ -49,6 +49,11 @@
 * {
   box-sizing: border-box;
 }
+/* a phone turned sideways keeps the type at the size it was set, not enlarged */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
   margin: 0;
   background: var(--page);
@@ -1355,29 +1360,101 @@ details.basis .body b {
   align-items: center;
 }
 
+/* The rail's footer, at the foot of the page while the rail is a strip of tabs. */
+.mfoot {
+  display: none;
+}
+
 @media (max-width: 900px) {
-  .app {
-    grid-template-columns: 1fr;
+  /* anchors and scrollIntoView land below the strip of tabs, not under it */
+  html {
+    scroll-padding-top: 52px;
   }
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* The rail becomes a bar across the top: the brand on one line, then every
+   * tab in one row that scrolls sideways. It sticks with its top pulled up by
+   * the brand's height, so the brand scrolls away and the tabs stay: any tab is
+   * one tap away from anywhere on a long page, at the cost of one row. */
   .rail {
-    position: static;
+    --brand-h: 40px;
+    position: sticky;
+    top: calc(-1 * var(--brand-h));
+    z-index: 20;
     height: auto;
+    padding: 0;
+    overflow: visible;
     border-right: none;
     border-bottom: 1px solid var(--rule);
-    overflow: visible;
   }
+  .brand {
+    height: var(--brand-h);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 14px;
+    border-bottom: none;
+  }
+  .brand .mark {
+    flex: none;
+    font-size: 14px;
+  }
+  .brand .sub {
+    margin-top: 0;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Shadows at whichever end has more tabs past it: the `local` layers cover
+   * them once the row is scrolled to that end (scrolling shadows, CSS only). */
   nav {
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    padding: 0 4px;
+    gap: 0;
+    background:
+      linear-gradient(to right, var(--surface) 40%, transparent) left / 28px 100% no-repeat local,
+      linear-gradient(to left, var(--surface) 40%, transparent) right / 28px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.14), transparent) left / 12px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.14), transparent) right / 12px 100% no-repeat scroll,
+      var(--surface);
+  }
+  nav::-webkit-scrollbar {
+    display: none;
   }
   nav button {
     flex: none;
+    padding: 11px 10px 12px;
+    border-radius: 0;
+    white-space: nowrap;
   }
-  .secnav {
+  nav button[aria-selected='true'] {
+    background: none;
+    box-shadow: inset 0 -2px 0 var(--crimson);
+  }
+  .secnav,
+  .rail .foot {
     display: none;
   }
+  .mfoot {
+    display: block;
+    margin-top: 28px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rule);
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
   main {
-    padding: 18px 14px 60px;
+    padding: 16px 14px 48px;
+  }
+  .head h1 {
+    font-size: 21px;
   }
   .grid,
   .grid.wide {
@@ -2070,4 +2147,149 @@ td.host-by {
   text-align: left;
   white-space: nowrap;
   padding-left: 4px;
+}
+
+/* --------------------------------------------- the narrow layout: panels
+ * At 900px and under (lib/useNarrow.ts) the rail is a strip and every grid is
+ * one column, so a panel is the screen's width. These keep what is in a panel
+ * readable at that width without changing what it says. Here, at the end, so
+ * they win over the rules they adjust. */
+@media (max-width: 900px) {
+  /* a panel's controls go under its title rather than squeezing it to a word a line */
+  .panel > header {
+    flex-wrap: wrap;
+  }
+  /* every segmented control wraps, as `.seg.wrap` does, rather than run past the screen */
+  .seg {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  /* a number is never broken from its unit: a table scrolls in its box instead */
+  td.num {
+    white-space: nowrap;
+  }
+  /* a feed's paths break anywhere, so given no width they stand a letter a line */
+  .feed-where {
+    min-width: 200px;
+  }
+  /* A wide table's row names stay in view while its numbers scroll beside
+   * them (`pin` on that column's cells), so no row is read without its name.
+   * Layered under the table's own sticky header, the corner cell over both. */
+  .scroller td.pin,
+  .scroller th.pin {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    box-shadow: 1px 0 0 var(--rule);
+  }
+  .scroller.vscroll thead th {
+    z-index: 2;
+  }
+  .scroller thead th.pin,
+  .scroller.vscroll thead th.pin {
+    z-index: 3;
+  }
+  .scroller.vscroll thead th.pin {
+    box-shadow:
+      1px 0 0 var(--rule),
+      inset 0 -1px 0 var(--rule);
+  }
+  /* no weight of its own, so a row's hover or open shade still reaches it */
+  :where(.scroller td.pin, .scroller th.pin) {
+    background: var(--surface);
+  }
+  /* The faults table keeps its set columns, as shares of its box rather than
+   * pixels: the measures a third, the classes the rest, so every class and
+   * each section's name is in view without scrolling sideways. */
+  table.faults {
+    --measure-w: 32%;
+    --cls-w: calc((100% - var(--measure-w)) / var(--cols, 3));
+  }
+  table.faults td,
+  table.faults th {
+    white-space: normal;
+  }
+  table.faults td.num,
+  table.faults th.num {
+    padding-left: 10px;
+  }
+}
+@media (max-width: 600px) {
+  .panel {
+    padding: 12px 12px 13px;
+  }
+  /* A share's number, its track and its count stack in the cell rather than
+   * sit side by side, so every class's column fits beside the labels. */
+  table.shares th,
+  table.shares td {
+    white-space: normal;
+  }
+  table.shares th:first-child,
+  table.shares td:first-child {
+    width: auto;
+    min-width: 96px;
+  }
+  table.shares.roomy th,
+  table.shares.roomy td {
+    padding-right: 10px;
+  }
+  .share-cell {
+    grid-template-columns: minmax(48px, 1fr);
+    row-gap: 3px;
+  }
+  .share-cell b {
+    order: -1;
+    text-align: left;
+  }
+  /* the measure's name wraps, at a width that holds a word or two a line */
+  table.dist td.pin {
+    white-space: normal;
+    width: 112px;
+  }
+  table.dist th.grp,
+  table.dist td.num.g0,
+  table.dist th.num.g0 {
+    padding-left: 14px;
+  }
+}
+
+/* --------------------------------------------------------- touch screens
+ * A fingertip needs more room than a mouse pointer: controls get about 32 px
+ * each way where a mouse is served by 22. And a form field is set at 16 px,
+ * under which iOS zooms the whole page into it on focus and leaves it zoomed.
+ * Keyed to the pointer, not the width: a narrow desktop window keeps its
+ * compact controls, and a tablet held sideways gets the touch ones. */
+@media (pointer: coarse) {
+  .chip,
+  .seg button {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .btn {
+    padding: 8px 12px;
+    font-size: 11.5px;
+  }
+  .u-pick {
+    padding: 7px 12px;
+  }
+  /* inline, so the room is added to what a tap hits and not to the line */
+  .linkbtn {
+    padding: 6px 0;
+  }
+  details.more > summary,
+  details.basis > summary {
+    padding: 6px 0;
+  }
+  .wininput {
+    padding: 7px 10px;
+    width: 84px;
+  }
+  .u-host {
+    padding: 6px 8px;
+  }
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
 }

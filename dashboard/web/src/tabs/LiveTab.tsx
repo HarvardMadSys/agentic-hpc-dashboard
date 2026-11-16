@@ -452,7 +452,7 @@ export function LiveTab({
             <table>
               <thead>
                 <tr>
-                  <SortTh s={hostSort} k="host" first="asc">host</SortTh>
+                  <SortTh s={hostSort} k="host" first="asc" className="pin">host</SortTh>
                   {hostCols.map((c) => (
                     <Fragment key={c[0]}>
                       <SortTh s={hostSort} k={c[0]} num gloss={c[3]}>
@@ -467,7 +467,7 @@ export function LiveTab({
                 {hosts.map((h) => {
                   return (
                     <tr key={h.host}>
-                      <td className="mono">{h.host}</td>
+                      <td className="mono pin">{h.host}</td>
                       {hostCols.map((c) => (
                         <Fragment key={c[0]}>
                           <td className="num">{hostCell(h, c[0], c[2])}</td>
