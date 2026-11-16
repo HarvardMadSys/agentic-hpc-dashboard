@@ -748,6 +748,13 @@ svg:has(> g.pickable:focus-visible) {
   color: var(--ink);
   font-weight: 600;
 }
+/* The end clock's "?" (ProcTree.tsx) takes no room: it hangs in the 8px the
+ * rows keep clear of the bars, so the clock still ends where a full-width bar
+ * does, as it does unzoomed. -1ch is the "?" itself, in its mono face, and
+ * -2px gives back the margin styles.css puts before it. */
+.pt-tlhead > [data-tip]::after {
+  margin-right: calc(-1ch - 2px);
+}
 /* Where the last jump landed: a ring that stays until the next one, and a
  * flash so the eye finds it after the scroll. */
 .pt-row[aria-current] {
