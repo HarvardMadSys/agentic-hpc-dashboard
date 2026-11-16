@@ -13,7 +13,8 @@ Every folded row is then built as the page gets it (`TrajectoryReducer._row`), a
 
   * every row of an agent pid given with --apid, or in a tree given with --tree (its root's pid,
     `tree_root_pid`; a tree can hold several agents): its user, agent type, collector keys, tool
-    calls, housekeeping, and phase list, and then its tasks: how many, the headline, and a line for
+    calls, housekeeping, the session's category with the uses it rests on and its summary
+    (`phase_summary`), and phase list, and then its tasks: how many, the headline, and a line for
     each (`T<i>`, its span and length, and its label, in quotes with where the agent's own words
     came from when it has them), with the gap before it and what was still running through the
     gap, and a lone stretch (a few calls hours from other work) as a line of its own
@@ -21,9 +22,10 @@ Every folded row is then built as the page gets it (`TrajectoryReducer._row`), a
     commonest shapes of each, so a shape filed in the wrong place shows
   * a summary over the rows whose calls are recognized (Claude Code and Codex): phases per active
     hour (median, p90, max), the share of rows at a handful or fewer, phases per row, tasks per
-    session-day (median, p90, max, over the rows with two active hours or more), the share of tasks
-    named by the agent's words, the lone stretches, the open phases, housekeeping by shape, the
-    joins' bounds, and the solid editing phases that hold no edit call, which must be none
+    session-day (median, p90, max, over the rows with two active hours or more), the sessions by
+    category, each session once, the share of tasks named by the agent's words, the lone
+    stretches, the open phases, housekeeping by shape, the joins' bounds, and the solid editing
+    phases that hold no edit call, which must be none
 
 An active hour is a clock hour in which at least one of the row's calls started, a call still open
 included. Idle phases are not counted as phases. A quantile is the nearest rank. Each call is
@@ -502,6 +504,18 @@ def task_header(block):
     return line
 
 
+def kind_lines(block):
+    """`   category <c> (<use> <pct>%, ...)` and `   summary "<summary>"`, for a block
+    (`phase_summary`); none for a block without them. A row prints them before its phases: they
+    are its block's, as its tasks are, and a row of a session across midnight prints them too."""
+    if "category" not in block:
+        return []
+    uses = ", ".join("%s %s%%" % (u, ("%.1f" % pct).rstrip("0").rstrip("."))
+                     for u, pct in block.get("uses") or [])
+    return ["   category %s%s" % (block["category"], " (%s)" % uses if uses else ""),
+            '   summary "%s"' % block.get("summary", "")]
+
+
 def print_row(out, s, row, mem, calls, why, day, traj, shared=None):
     """One row asked for. `shared` is the sid of the row that has printed the tasks of the block
     this row shares with it, when one has: they are the session's, and are printed once."""
@@ -530,6 +544,8 @@ def print_row(out, s, row, mem, calls, why, day, traj, shared=None):
     print("   calls by category: %s · open %d · cut %s" % (
         ", ".join("%s %d" % kv for kv in cats.most_common()) or "none",
         sum(1 for c in calls.own if c[FLAGS] & OPEN), ph["cut"]), file=out)
+    for line in kind_lines(ph):
+        print(line, file=out)
     print("   %d phases (not idle) over %d active hour(s): %s per active hour" % (
         st["phases"], st["active_hours"],
         "%.1f" % st["per_hour"] if st["per_hour"] is not None else "-"), file=out)
@@ -631,6 +647,10 @@ def report(out, traj, read, day, apids=(), trees=(), top=15, days=1):
         ", ".join("%s %d" % (k, v) for k, v in unavail.most_common()) or "none"), file=out)
     dist = _distribution(out, "sessions", real, days=days)
     _distribution(out, "every row, probes too", stats, brief=True, days=days)
+    categories = session_categories(row for _s, row, _st in real)
+    print("sessions by category (phase_summary), each once: %s" % (", ".join(
+        "%s %s (%s)" % (c, "{:,}".format(n), _pct(n, sum(categories.values())))
+        for c, n in categories.most_common()) or "none"), file=out)
 
     opens = [(s, row, p) for s, row, _m, _c in sup
              for p in of_day(row["phases"]["list"], row["sid"]) if p.get("open")]
@@ -691,7 +711,20 @@ def report(out, traj, read, day, apids=(), trees=(), top=15, days=1):
     return dict(dist, rows=len(sup), sessions=len(real), open=len(opens),
                 no_edit=len(no_edit), off=len(off), pending=len(traj.pend.entries),
                 pending_evicted=traj.pend.evicted, tasks=len(tasks), named=sum(words.values()),
-                lone=len(lone), tag_overflow=traj.tag_overflow)
+                lone=len(lone), tag_overflow=traj.tag_overflow, categories=dict(categories))
+
+
+def session_categories(rows):
+    """`Counter({category: sessions})` over the rows given: each session once, as the block its day
+    rows share (`days`) or the row alone."""
+    seen, out = set(), collections.Counter()
+    for row in rows:
+        block = row["phases"]
+        key = tuple(d["sid"] for d in block.get("days") or ()) or (row["sid"],)
+        if key not in seen and "category" in block:
+            seen.add(key)
+            out[block["category"]] += 1
+    return out
 
 
 def day_tasks(row):

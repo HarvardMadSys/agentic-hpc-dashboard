@@ -1019,7 +1019,8 @@ class LifeCycleTest(unittest.TestCase):
         TM.feed(view.reducers, [Normalizer(c).normalize(r) for r in recs])
         before = view.reducers["trajectories"].result()["rows"]
         state = pickle.loads(snapshots.capture(view.reducers))
-        for skipped in ("phase_params", "task_params", "_phase_cache", "_day_idx"):
+        for skipped in ("phase_params", "task_params", "summary_params", "_phase_cache",
+                        "_day_idx"):
             self.assertNotIn(skipped, state["trajectories"])
         after = snapshots.restore(view.fresh_reducers(), state)["trajectories"].result()["rows"]
         self.assertEqual(set(after), set(before))
@@ -1033,6 +1034,7 @@ class LifeCycleTest(unittest.TestCase):
         tree = configmod.defaults()
         tree["reducers"]["trajectories"]["phases"]["idle_s"] = 100000
         tree["reducers"]["trajectories"]["tasks"]["gap_s"] = 100
+        tree["reducers"]["trajectories"]["summary"]["mostly"] = 1.0
         c2 = configmod.Config(tree, {}, None)
         red2 = snapshots.restore(PanelView(c2, TM.classes(c2), 1440).fresh_reducers(),
                                  pickle.loads(snapshots.capture(view.reducers)))
@@ -1043,6 +1045,10 @@ class LifeCycleTest(unittest.TestCase):
         self.assertEqual(traj2.task_params["gap_s"], 100)
         self.assertEqual(len(before[sid]["phases"]["tasks"]), 1)
         self.assertEqual(len(traj2.result()["rows"][sid]["phases"]["tasks"]), 2)
+        # and the category: reads and tests, neither of them all the work, are a mix at 1.0
+        self.assertEqual(traj2.summary_params["mostly"], 1.0)
+        self.assertNotEqual(before[sid]["phases"]["category"], "mixed")
+        self.assertEqual(traj2.result()["rows"][sid]["phases"]["category"], "mixed")
 
 
 # ------------------------------------------------------------------ merging hours

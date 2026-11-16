@@ -58,7 +58,10 @@ phases is `phase_segment`, when a row is built. Above the phases are `tasks`:
 the session cut by what it worked on (`phase_tasks`), each named from the
 agent's own words or from the names in its commands, and a `headline` for the
 session. A row is cut into tasks, then into phases at their boundaries, then
-named, in one pass (`phase_block`). A row whose calls are not
+named, in one pass (`phase_block`). The block then says what kind of session
+it was, a `category` and the `uses` of its work it rests on, and the session in
+a few sentences, a `summary` (`phase_summary`), read from the same phases and
+calls. A row whose calls are not
 recognized (an agent type outside PHASE_AGENTS, a person, an IDE) says so, and
 its `n_calls` is null: not recognized is not none.
 
@@ -154,6 +157,7 @@ from .phase_rules import (_TOOL_CALL_ROLES, APP_READ, CATS, PHASE_AGENTS, _argv,
                           login_helper, norm_hash, parent_is_agent, program_name, shell_text)
 from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN, prepared,
                             segment)
+from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
 from .phase_tasks import DEFAULTS as TASK_DEFAULTS, name_tasks, task_spans
 
 RANKS = ("recent", "events", "cpu_s", "peak_rss_mb", "io_mb", "net_mb", "distinct_tools")
@@ -740,10 +744,10 @@ class TrajectoryReducer:
     EVENTS = ("exit", "truncated", "residency", "conn", "netio")
     KEY = "trajectories"
     # Derived from the sessions and the index on demand; not worth saving. The
-    # phase and task thresholds are the config's this reducer runs with, not a
-    # saved one's.
-    SNAPSHOT_SKIP = ("_fold_cache", "_group_cache", "phase_params", "task_params", "_phase_cache",
-                     "_pend_idx", "_day_idx")
+    # phase, task, and summary thresholds are the config's this reducer runs
+    # with, not a saved one's.
+    SNAPSHOT_SKIP = ("_fold_cache", "_group_cache", "phase_params", "task_params",
+                     "summary_params", "_phase_cache", "_pend_idx", "_day_idx")
 
     def __init__(self, cfg, classes, window_s=None, procs=None):
         self.cfg = cfg
@@ -788,6 +792,8 @@ class TrajectoryReducer:
         self.phase_params = dict(PHASE_DEFAULTS, **(r.get("phases") or {}))
         # The tasks above them, likewise: the config's over phase_tasks.DEFAULTS.
         self.task_params = dict(TASK_DEFAULTS, **(r.get("tasks") or {}))
+        # And a block's category and summary: the config's over phase_summary.DEFAULTS.
+        self.summary_params = dict(SUMMARY_DEFAULTS, **(r.get("summary") or {}))
         # (host, pid) -> what ran under a process whose own record has not come
         # (phase_log.PendingJoin), carried across hours as `reaped` is.
         self.pend = PendingJoin(int(self.phase_params["pend_max"]),
@@ -1243,7 +1249,9 @@ class TrajectoryReducer:
 
         The calls are cut into tasks first, the phases are cut at the tasks'
         boundaries, and the tasks are then named and each phase marked with
-        its task: the block gains `tasks` and a `headline`. One `step_s`, the
+        its task: the block gains `tasks` and a `headline`. Last, the block
+        and its calls give it a `category`, its `uses`, and a `summary`
+        (`phase_summary.summarize`), with the `summary_params`. One `step_s`, the
         phases', goes to all three, since a task cut by one step and named by
         another would differ silently. The log's `cut_at` says which tasks
         are incomplete (`PhaseLog`), and `project_of` gives the project they
@@ -1372,6 +1380,7 @@ class TrajectoryReducer:
             spans, block, prep, self._tagsets, self._previews, self.task_params,
             self.project_of(first, prep[0]), log.cut_at, step_s,
             user=redact(first.user) if first.user else None)
+        block.update(summarize(block, prep[0], self._tagsets, self.summary_params))
         if len(parts) == 1:
             for ph in block["list"]:
                 ph["sid"] = None
@@ -2149,6 +2158,17 @@ class TrajectoryReducer:
                          "folder its commands change into most. A task that holds a call still "
                          "running is open. When the log dropped calls, the last task is "
                          "incomplete, as is any that ends after the first call dropped.",
+                "category": "per agent row, of the whole block: the use that holds half or "
+                            "more of the session's work, its phases' time but idle, waiting, and "
+                            "commands not recorded, by phase_summary: explore, develop (edit and "
+                            "test), build, run, hpc (Slurm, a wait on Slurm included), or git, as "
+                            "the Users tab counts a user's calls. mixed when no use holds half; "
+                            "wait when it only waited; unknown when commands not recorded hold "
+                            "half of its work and themselves, or it did no work; none when it "
+                            "made no tool call. uses are each use's share of the work, of its "
+                            "calls when no work had a length. The summary says the same in a "
+                            "few sentences, from the block's own numbers: the mix, the calls and "
+                            "tasks with the distinct names they held, and the time spent waiting.",
                 "excluded_key_types": ["usr"],
                 "excluded_why": "a usr-keyed group is 'everything that user did', not a "
                                 "session; counted in by_key_type, never ranked",
