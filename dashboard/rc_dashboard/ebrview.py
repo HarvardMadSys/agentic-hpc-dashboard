@@ -621,6 +621,12 @@ def _resume(view, src, stem, zkw, task):
                 w.close()
                 return _state(view, src, st, off, c, info["head"], info["head_len"], True,
                               base, False)
+            if info.get("src") == os.path.basename(src):
+                # Sealed from this very .gz, which is another file now (another
+                # capture copied over it): its first bytes prove nothing past
+                # them. The collector's own seal comes from the plain file's MARK.
+                raise _Rebuild("%s is another file than the one it was sealed from"
+                               % os.path.basename(src))
         new_off, st, head, head_len, sealed, stuck = _pump(
             src, off, info["head_len"], info["head"], w, c, task)
         if c.skip:

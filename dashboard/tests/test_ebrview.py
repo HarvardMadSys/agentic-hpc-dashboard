@@ -437,6 +437,40 @@ class ResumeTest(ViewCase):
         e = self.entry(v, "h1.exits.jsonl")
         self.assertEqual((e.records, e.bad), (2, 1))
 
+    def test_a_sealed_gz_replaced_under_its_name_is_converted_afresh(self):
+        # A day sealed from its .gz, then another capture copied over the .gz with
+        # the same first 4 KB and length: converted afresh, live and on a restart,
+        # while the collector's own seal (from the plain file) is finished, not rebuilt.
+        recs = [rec(T0 + i, 1000 + i) for i in range(200)]
+        s = self.append("h1.exits.jsonl", recs)
+        v = self.view()
+        p = self.vpath("h1.exits.ebr")
+        ino = os.stat(p).st_ino
+        gz = gzip_in_place(s)
+        self.settle(v)
+        self.assertTrue(self.entry(v, "h1.exits.jsonl").sealed)
+        self.assertEqual(os.stat(p).st_ino, ino)     # the seal: finished, not rebuilt
+
+        def replace_gz(rs):
+            tmp = gz + ".new"
+            with gzip.open(tmp, "wb") as fh:
+                fh.write(b"".join(line(r) for r in rs))
+            os.replace(tmp, gz)
+
+        replace_gz(recs[:-1] + [rec(T0 + 199, 2199)])
+        self.settle(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual(view_records(p)[-1]["pid"], 2199)
+        self.assertConverted("h1.exits.jsonl")
+        ino = os.stat(p).st_ino
+        v.close()
+        replace_gz(recs)
+        v = self.restart(v)
+        self.settle(v)
+        self.assertNotEqual(os.stat(p).st_ino, ino)
+        self.assertEqual(view_records(p)[-1]["pid"], 1199)
+        self.assertConverted("h1.exits.jsonl")
+
     def test_a_source_replaced_under_its_name_is_converted_afresh(self):
         # Another file under the source's name (os.replace, a copy renamed into
         # place): its first bytes prove nothing about the rest, so it is converted
