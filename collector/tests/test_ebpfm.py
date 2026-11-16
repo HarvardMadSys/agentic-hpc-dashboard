@@ -3470,7 +3470,13 @@ class _NetpeerCase(unittest.TestCase):
         self._saved = (T.writer, T.FEATURES, T._tgid_of, T.MIN_UID, T.MIN_DURATION,
                        T.MIN_CPU, T.EXIT_HOLD_MS, T._netp_tab, T._netp_drop_tab,
                        T.WANT_NETIO, T.NET_ENDPOINTS_MAX, T._COLLECTOR_START,
-                       T._cidr_index, T.read_stat)
+                       T._cidr_index, T.read_stat, T.list_pids)
+        # The processes here are made up, so /proc must not judge them: a tick's
+        # reconcile_proc retires a pid on its second miss, and its misses are
+        # kept between ticks -- so a pid this host happened not to run was
+        # retired by the second test's tick, and netio came out empty.
+        T.list_pids = lambda: set(T.proc)
+        T._proc_missing.clear()
         T.writer = self.W = FakeWriter()
         T.FEATURES = {'netbytes', 'netpeer_btf'}
         T._tgid_of = lambda pid: pid
@@ -3491,8 +3497,9 @@ class _NetpeerCase(unittest.TestCase):
         (T.writer, T.FEATURES, T._tgid_of, T.MIN_UID, T.MIN_DURATION,
          T.MIN_CPU, T.EXIT_HOLD_MS, T._netp_tab, T._netp_drop_tab,
          T.WANT_NETIO, T.NET_ENDPOINTS_MAX, T._COLLECTOR_START,
-         T._cidr_index, T.read_stat) = self._saved
+         T._cidr_index, T.read_stat, T.list_pids) = self._saved
         T._pending_exits.clear()
+        T._proc_missing.clear()
         _reset_netp_state()
 
     def _block(self, pid=101, tx=None, rx=None):
