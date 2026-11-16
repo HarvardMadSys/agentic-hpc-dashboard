@@ -118,6 +118,22 @@ def truthy(v):
     return bool(v)
 
 
+def usable_cpus():
+    """The CPUs this process may run on: every one of them is a conversion
+    worker unless `ingest.convert.workers` says otherwise. Its affinity mask, so
+    a Slurm allocation, a cgroup cpuset or taskset is taken as the limit it is
+    (os.process_cpu_count, 3.13+), else the machine's count."""
+    count = getattr(os, "process_cpu_count", None)
+    if count is not None:
+        n = count()
+    else:
+        try:
+            n = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            n = os.cpu_count()
+    return max(1, n or 1)
+
+
 def settings(cfg):
     """`ingest.convert`, resolved: `{enabled, dir, zstd, workers}`."""
     c = cfg.get("ingest.convert") or {}
@@ -131,7 +147,7 @@ def settings(cfg):
     except (TypeError, ValueError):
         workers = 0
     if workers <= 0:
-        workers = max(1, min(4, os.cpu_count() or 1))
+        workers = usable_cpus()
     try:
         level = int(c.get("zstd") or 0)
     except (TypeError, ValueError):
