@@ -321,8 +321,16 @@ table, the chart, and the list say one thing.
   `“Fix the loader” → Run train.py · config/base.yaml → 3 more`. It is two lines at most, with an ellipsis,
   and its hover has the whole of it. A row whose block has no task keeps the order its phases came in,
   `explore → edit → test`, in the same line, and has no tick.
-- **The inspector** (`src/tabs/TrajectoryInspector.tsx`) shows the session's headline, then a chart with a
-  **Tasks** lane above the **Phases**, which are tinted behind the **Processes**, the bars. A gutter at the
+- **What kind of session it was** is a chip on the row, beside where it was driven from
+  (`src/components/CategoryChip.tsx`): the use that holds half its work (`explore`, `edit & test`, `build`,
+  `run`, `Slurm`, `git`), `mixed`, `waiting`, or what it had none of (`not recorded`, `no tool calls`, both
+  dashed, as everything unread is). Its dot is the colour of the phases its use counts, so the chip and the
+  band beside it agree. Its hover says how the category is decided, the shares of the work, and the
+  session's summary. The words are `CATEGORIES` in `src/lib/phases.ts`; the service decides the category.
+- **The inspector** (`src/tabs/TrajectoryInspector.tsx`) shows the session's headline, and under it the
+  category chip and the summary, the session in a few sentences that the service builds from the block's
+  own numbers (`Mostly ran jobs on Slurm (94% of 5.1 h of work). 564 tool calls in 7 tasks, …`). Then a
+  chart with a **Tasks** lane above the **Phases**, which are tinted behind the **Processes**, the bars. A gutter at the
   chart's left captions the three. Under the chart is a list (`src/tabs/TaskList.tsx`): a task opens into
   its phases, a phase into the commands that ran most in it, and a button from there to its calls in the
   tree. A click on a task, in the lane or in the list, zooms the chart to it. A block with no tasks has the

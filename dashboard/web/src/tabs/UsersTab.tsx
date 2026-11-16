@@ -42,6 +42,7 @@ import { absent } from '../lib/panels';
 import { Plate } from '../components/Plate';
 import { SortTh } from '../components/SortTh';
 import { SurfaceChip } from '../components/SurfaceChip';
+import { CategoryChip } from '../components/CategoryChip';
 import { AGENT_TYPE_COL } from '../lib/classes';
 import { useNow } from '../lib/useNow';
 import type { Who } from '../lib/filters';
@@ -1071,7 +1072,7 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
           <tr>
             <SortTh s={s} k="started">started</SortTh>
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
-            <SortTh s={s} k="project" first="asc" tip="its project, and the names that recur across its tasks, as its row on the Sessions tab heads it">project</SortTh>
+            <SortTh s={s} k="project" first="asc" tip="what kind of session it was, its project, and the names that recur across its tasks, as its row on the Sessions tab heads it">project</SortTh>
             <SortTh s={s} k="open" num tip="open from its first record to its last">open for</SortTh>
             <SortTh s={s} k="calls" num gloss="toolcall">tool calls</SortTh>
             <SortTh s={s} k="tasks" num gloss="tasks">tasks</SortTh>
@@ -1096,7 +1097,14 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
                   {multiHost && <span className="nm">{r.host}</span>}
                 </span>
               </td>
-              <td className="wrap mono">{r.headline ?? r.project ?? <span className="nm">{DASH}</span>}</td>
+              <td className="wrap mono">
+                {r.category && (
+                  <>
+                    <CategoryChip of={r} />{' '}
+                  </>
+                )}
+                {r.headline ?? r.project ?? <span className="nm">{DASH}</span>}
+              </td>
               <td className="num">{dur(r.wall_s)}</td>
               <td className="num">{r.calls == null ? <span className="nm" data-tip="not an agent whose commands the service reads">not read</span> : fint(r.calls)}</td>
               <td className="num">

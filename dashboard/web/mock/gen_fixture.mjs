@@ -865,6 +865,59 @@ function dayOf(days, t) {
   return best;
 }
 
+/* What kind of session a block was (`phase_summary.summarize`), from the phases a row draws: its `category`, the
+ * `uses` of its work, and a `summary` of the service's first two sentences. The work is the phases' time but idle
+ * gaps, waiting (a wait on Slurm is Slurm work), and commands not recorded, and a use that holds half of it or more
+ * is the category, else `mixed`. The names its calls held, and how long it waited, which the service says after them,
+ * are left out: the fixture's calls hold no names. */
+const USE_OF = { explore: 'explore', edit: 'develop', edit_guess: 'develop', test: 'develop', loop: 'develop', build: 'build', run: 'run', slurm: 'hpc', git: 'git' };
+const USES = ['explore', 'develop', 'build', 'run', 'hpc', 'git'];
+const DID = { explore: 'explored code and files', develop: 'edited and tested code', build: 'built and installed software', run: 'ran programs', hpc: 'ran jobs on Slurm', git: 'managed code in git' };
+/* A duration as the page writes it (`dur`, src/lib/format.ts), for the durations a summary holds. */
+const durWords = (s) =>
+  s < 90 ? `${s.toFixed(s < 10 ? 1 : 0)} s` : s < 5400 ? `${(s / 60).toFixed(s < 600 ? 1 : 0)} min` : s < 172800 ? `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} h` : `${(s / 86400).toFixed(1)} d`;
+function sessionKind(list, nCalls, tasks) {
+  const time = {};
+  let unrecorded = 0;
+  let waited = 0;
+  for (const p of list) {
+    if (p.kind === 'idle') continue;
+    const s = Math.max(0, p.t1 - p.t0);
+    if (p.kind === 'unknown') unrecorded += s;
+    const use = p.kind === 'wait' ? (p.waits_on === 'slurm' ? 'hpc' : null) : USE_OF[p.kind];
+    if (use) time[use] = (time[use] ?? 0) + s;
+    else if (p.kind === 'wait') waited += s;
+  }
+  const uses = USES.filter((u) => time[u] > 0).sort((a, b) => time[b] - time[a] || USES.indexOf(a) - USES.indexOf(b));
+  const work = uses.reduce((a, u) => a + time[u], 0);
+  const share = (u) => Math.round((1000 * time[u]) / work) / 10;
+  const pct = (u) => `${Math.round(share(u))}%`;
+  const category = !nCalls
+    ? 'none'
+    : unrecorded > 0 && unrecorded >= 0.5 * (work + unrecorded)
+      ? 'unknown'
+      : uses.length
+        ? time[uses[0]] >= 0.5 * work
+          ? uses[0]
+          : 'mixed'
+        : waited > 0
+          ? 'wait'
+          : 'unknown';
+  const named = category === 'mixed' ? uses.slice(0, 3) : [uses[0], ...uses.slice(1, 3).filter((u) => time[u] >= 0.1 * work)];
+  const what =
+    category === 'mixed'
+      ? `Mixed work (${durWords(work)}): ${named.map((u) => `${DID[u]} (${pct(u)})`).join(', ')}.`
+      : USES.includes(category)
+        ? `Mostly ${DID[category]} (${pct(category)} of ${durWords(work)} of work)${named.length > 1 ? `, then ${named.slice(1).map((u) => `${DID[u]} (${pct(u)})`).join(' and ')}` : ''}.`
+        : 'Commands not recorded.';
+  const k = tasks.filter((t) => t.kind === 'task').length;
+  return {
+    category,
+    uses: uses.map((u) => [u, share(u)]),
+    summary: `${what} ${nCalls.toLocaleString('en-US')} tool calls${k > 1 ? ` in ${k} tasks` : ''}.`,
+  };
+}
+
 /* `n_calls` and `phases` for the agent row `i`, whose session ran `[first, last]`. `live` is its
  * place among the running rows, or -1. `script` is `{specs, headline}` for a session that is no
  * row's own (`DAY_PAIR`), else the script of its place among the rows. */
@@ -899,6 +952,7 @@ function phaseFields(i, first, last, live, script = null) {
       list,
       tasks,
       headline: script ? script.headline : PHASE_HEADLINES[k],
+      ...sessionKind(list, n_calls, tasks),
     },
   };
 }
@@ -1521,6 +1575,9 @@ function portraitSessions(traj) {
       sids: rows.map((r) => r.sid),
       project: block?.headline ? block.headline.split(' · ')[0] : null,
       headline: block?.headline ?? null,
+      category: block?.category ?? null,
+      uses: block?.uses ?? null,
+      summary: block?.summary ?? null,
       tasks: block ? tasks.length : null,
       quoted: block ? tasks.filter((t) => t.source).length : null,
       phase_s: block ? phaseS : null,

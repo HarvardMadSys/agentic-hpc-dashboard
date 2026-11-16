@@ -287,6 +287,17 @@ class PortraitTest(unittest.TestCase):
             self.assertIn(s["sid"], rows)
             self.assertFalse(any(k.startswith("_") for k in s))
 
+    def test_a_session_says_what_kind_it_was_as_its_row_does(self):
+        rows = self.reducers["trajectories"].result()["rows"]
+        for s in self.p["sessions"]:
+            block = rows[s["sid"]]["phases"]
+            self.assertEqual((s["category"], s["uses"], s["summary"]),
+                             (block["category"], block["uses"], block["summary"]))
+        # two reads before one quick test: time goes to what the agent started most recently
+        self.assertEqual({s["pid"]: s["category"] for s in self.p["sessions"]},
+                         {1000: "explore", 2000: "git"})
+        self.assertIn("category", self.p["basis"])
+
     def test_the_commands_their_agents_ran_most(self):
         cmds = dict((c, n) for c, n in self.p["commands"])
         self.assertEqual(cmds.get("pytest -q tests/test_a.py"), 1)
