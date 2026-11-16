@@ -1315,3 +1315,28 @@ svg:has(> g.pickable:focus-visible) {
   background: var(--surface-2);
   color: var(--ink-2);
 }
+/* once the list and the detail stack (1100px and under), the list is above:
+   the arrow points up at it */
+@media (max-width: 1100px) {
+  .tj-empty .icon {
+    transform: rotate(90deg);
+  }
+}
+
+/* touch screens (styles.css): a chevron wide enough to hit without picking the
+   row beside it, and rows a fingertip tall */
+@media (pointer: coarse) {
+  .tl-tog {
+    width: 28px;
+    padding: 8px 0;
+  }
+  .tl-pick {
+    padding: 8px 4px 8px 0;
+  }
+  .pl-row {
+    padding: 8px 0;
+  }
+  .pt-tog {
+    width: 24px;
+  }
+}

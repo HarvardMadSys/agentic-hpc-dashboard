@@ -165,14 +165,18 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 7. **Data only** — a panel carries a title, its feed, and the chart or table. Every
    `notes` / `basis` / `cpu_basis` / `scope` / `dedup.rule` string goes into `<Basis>`, a
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
-8. **Responsive to ~900px** — below 900px the rail becomes a drawer, opened from a top bar
-   that names the tab, and the grid collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
-   never scrolls horizontally, and a table's edge fades where there is more to scroll to
-   (`src/lib/scrollEdges.ts`), so a cut-off column does not pass for the last one. On a phone a
-   panel's controls drop under its title and its switches wrap. A time series is drawn at its container's width, at 1:1
-   (`<Fluid>`, `src/charts/primitives.tsx`), so it fills its panel and its 10px labels stay
-   10px at any width; on a narrow plot its ticks thin out (`tickTarget`) rather than
-   overprint.
+8. **Down to a phone** — at 900px and under (`src/lib/useNarrow.ts`) the rail becomes a
+   drawer, opened from a top bar that names the tab, and every grid collapses to one column.
+   Wide tables scroll inside their own `.scroller`, the widest with their label column held
+   in view (`pin`); the page body never scrolls horizontally, down to 320px, and a table's
+   edge fades where there is more to scroll to (`src/lib/scrollEdges.ts`), so a cut-off
+   column does not pass for the last one. A panel's controls drop under its title and its
+   switches wrap. A time series is drawn at its container's width, at 1:1 (`<Fluid>`,
+   `src/charts/primitives.tsx`), and in the narrow layout so is every other chart in a box
+   narrower than it (`useFit`), so a 10px label stays 10px instead of printing at 3px; on a
+   narrow plot the ticks thin out (`tickTarget`) rather than overprint. On a touch screen a
+   tap shows a `data-tip`, controls are a fingertip high, and form fields are 16px so iOS
+   does not zoom into them. Above 900px, with a mouse, the page is as it was.
 
 Two more that the payloads force:
 

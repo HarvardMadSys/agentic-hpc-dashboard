@@ -730,7 +730,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   <th />
                 </tr>
                 <tr>
-                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="user" first="asc">user</SortTh>
+                  <SortTh s={sortOf('io-user', 'user', 'asc')} k="user" first="asc" className="pin">user</SortTh>
                   <SortTh s={sortOf('io-user', 'user', 'asc')} k="cls" first="asc">class</SortTh>
                   <SortTh s={sortOf('io-user', 'user', 'asc')} k="events" num tip="processes exited">processes</SortTh>
                   <SortTh s={sortOf('io-user', 'user', 'asc')} k="rd_mb" num tip={GLOSS.rd}>disk</SortTh>
@@ -748,7 +748,7 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
                   : ((u as unknown as Record<string, string | number | null | undefined>)[k] ?? null),
                 ).map((u, i) => (
                   <tr key={u.user + i}>
-                    <td className="mono">{u.user}</td>
+                    <td className="mono pin">{u.user}</td>
                     <td>{u.cls ? (CLS_LBL[u.cls] ?? u.cls) : DASH}</td>
                     <td className="num">{fint(u.events)}</td>
                     {([['rd_mb', u.rd_mb, 'disk read'], ['rchar_mb', u.rchar_mb, 'read requested'],

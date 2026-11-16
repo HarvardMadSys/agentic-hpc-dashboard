@@ -505,7 +505,7 @@ export function TrajectoriesTab({
           ) : (
             <div className="tj-empty">
               <Icon name="pointLeft" size={20} />
-              <span>pick a session on the left: its process tree opens here</span>
+              <span>pick a session from the list: its process tree opens here</span>
             </div>
           )}
         </div>
