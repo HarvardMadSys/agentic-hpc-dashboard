@@ -53,7 +53,8 @@ rate bins (including a 23-minute outage), accumulators with `n: 0, coverage_pct:
 sandbox slice that `exited before it was checked` (key `denied`), a session whose every sandbox
 attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
-reload — the middleware re-reads the file on every request.
+reload — the middleware re-reads the file on every request. Delete a panel's key instead to
+see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels.
 
 The fixture's agent rows carry the tasks the page has to word: quoted from a commit, from a log entry, and
 from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
@@ -144,7 +145,10 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    the panel frame, the title, the feed name, and one line per `_paths` entry, verbatim
    (`no data from /var/log/ebpfm`). A feed that IS present but has no rows renders
    `<NoRows>` — the word `none`. The two look nothing alike, because they are not the
-   same fact.
+   same fact. A panel the backend did not return — an answer without its key, or a
+   request that failed — renders `<NotReturned>`: one dashed line reading `not returned`, the
+   reason, and the feed it reads. It wears no feed status and names no path, because no
+   feed reported anything; whether the feed is healthy is the Feeds tab's to say.
 5. **Nothing fabricated** — there is no `Math.random()` anywhere in `src/`
    (`npm run check:no-random` asserts it), and nothing interpolates between frames. A
    `null` rate bin arrives as `null` and `Lines` emits a separate subpath around it, so a
@@ -163,7 +167,9 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    collapsed `basis` affordance at the foot of the panel, or into a `data-tip` tooltip.
 8. **Responsive to ~900px** — below 900px the rail becomes a drawer, opened from a top bar
    that names the tab, and the grid collapses to one column. Wide tables scroll inside their own `.scroller`; the page body
-   never scrolls horizontally. A time series is drawn at its container's width, at 1:1
+   never scrolls horizontally, and a table's edge fades where there is more to scroll to
+   (`src/lib/scrollEdges.ts`), so a cut-off column does not pass for the last one. On a phone a
+   panel's controls drop under its title and its switches wrap. A time series is drawn at its container's width, at 1:1
    (`<Fluid>`, `src/charts/primitives.tsx`), so it fills its panel and its 10px labels stay
    10px at any width; on a narrow plot its ticks thin out (`tickTarget`) rather than
    overprint.
@@ -234,9 +240,10 @@ Three rules it follows, all of them the same rule this page follows everywhere:
   cannot offer a span the process does not hold.
 - **A clamp is shown, never silent.** Ask for 30 days against 7 days of retention and the
   control reads `asked 30d · showing 7d` with the reason on hover.
-- **The three kinds of nothing stay three.** A panel whose window is still being reduced
+- **The kinds of nothing stay apart.** A panel whose window is still being reduced
   renders `<Building>` — a solid frame and a percentage — not `none` (which would assert a
-  measurement) and not the empty state (which would blame the feed).
+  measurement) and not the empty state (which would blame the feed). One the backend did
+  not return renders `<NotReturned>` (rule 4), never the empty state.
 
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
@@ -249,7 +256,10 @@ entry, named in the site's own word for its hosts (`ui.node_noun`, "Login nodes"
 figures are login-node use, not the cluster's), with a sub-tab each along the foot of the
 head. A sub-tab keeps its own key (`?tab=resources`, `risk`, `slurm`), so links and citations
 land where they did, and the entry reopens the sub-tab last used. Overview's one table is a
-section of Live (*Who uses what*), and `?tab=overview` lands on it. It folds to the icons alone
+section of Live (*Who uses what*), and `?tab=overview` lands on it. The section under the top of
+the screen is marked as the page scrolls — on a page too short to scroll, the first — and one
+picked from the list or from go-to stays marked while it is on screen, even near the foot of a
+page where it cannot reach the top. It folds to the icons alone
 (`[`, or the button at its foot), which this browser remembers (`localStorage`, a per-viewer
 convenience: storage that is absent or refuses just leaves it unfolded). Its foot says how
 the page gets its data: the transport as a light, the last update, the window, and when the

@@ -1,10 +1,12 @@
-/* Panel chrome, and the two different kinds of nothing.
+/* Panel chrome, and the different kinds of nothing.
  *
  * Rule: zero is not missing.
  *   `_present === false`  -> <EmptyState>: the frame, the title, the feed name,
  *                           and one line naming `_paths` verbatim.
  *   present, but no rows  -> <NoRows>: the word `none`, which looks NOTHING like
  *                           the empty state, because it is a different fact.
+ *   no envelope at all    -> <NotReturned>: the backend did not return the panel.
+ *                           It says so, names the feed, and blames nothing.
  *
  * Rule: data only. A panel carries a title, the feed that fills it, and the
  * chart or table. `notes` / `basis` / `cpu_basis` go in <Basis>, a collapsed
@@ -66,6 +68,33 @@ export function EmptyState({
         )}
       </p>
       {notice && <p className="paths">{notice}</p>}
+    </div>
+  );
+}
+
+/** The service sent nothing for this panel: an answer without it (a service
+ *  older than the page), or a request that failed. That is a fact about the
+ *  response, not the feed, so it names the feed the panel reads and says
+ *  nothing of that feed's health or paths, which are the Feeds tab's: "the
+ *  feed reported no configured path" here would be a diagnosis nobody made.
+ *  The dashed frame of the missing family, one line high. */
+export function NotReturned({ feed, notice }: { feed: string; notice?: string | null }) {
+  return (
+    <div className="notreturned">
+      <span className="pill">not returned</span>
+      <span>
+        {notice || 'the backend did not return this panel'}
+        {feed && (
+          <>
+            {/* a no-break space before the dot: a wrapped line never opens with it */}
+            {'\u00a0· '}
+            <span className="feed">
+              feed{'\u00a0'}
+              <b>{feed}</b>
+            </span>
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -214,6 +243,8 @@ export function Panel({
       )}
       {p?._waiting ? (
         <div className="none">waiting for the dashboard service…</div>
+      ) : missing && p!._unsent ? (
+        <NotReturned feed={feedName} notice={p!._notice} />
       ) : missing ? (
         <EmptyState
           feed={feedName}
