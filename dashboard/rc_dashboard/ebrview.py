@@ -60,6 +60,7 @@ import collections
 import concurrent.futures
 import gzip
 import hashlib
+import io
 import json
 import math
 import multiprocessing
@@ -220,7 +221,14 @@ def feed_lines(data, w, c):
             c.bad += 1
             continue
         if c.skip:
-            c.skip -= 1
+            # Passing the records already in the view past its last MARK: only
+            # one the writer took counts. One it refused was counted bad and
+            # never stored, and counting it would write a stored record twice.
+            if _storable(rec):
+                c.skip -= 1
+            else:
+                c.bad += 1
+                c.unwritable += 1
             continue
         if c.cut:
             t = rec.get("ts_epoch")
@@ -242,6 +250,17 @@ def feed_lines(data, w, c):
             continue
         c.records += 1
         c.written += 1
+
+
+def _storable(rec):
+    """Whether a Writer takes `rec`. What it refuses (TypeError, ValueError,
+    RecordTooLarge) is the record's own doing, never the tables', since a full
+    table starts a segment; so a fresh writer answers for the one that met it."""
+    try:
+        ebr.Writer(io.BytesIO()).write(rec)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def _digest(b):

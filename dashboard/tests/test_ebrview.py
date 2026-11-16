@@ -416,6 +416,27 @@ class ResumeTest(ViewCase):
         self.assertEqual(view_records(p)[-1]["pid"], 2199)
         self.assertConverted("h1.exits.jsonl")
 
+    def test_a_record_ebr_refuses_is_not_counted_when_resuming(self):
+        # After a crash past the last MARK, the records already in the view are
+        # passed over: one the writer refused (too many strings) was never
+        # stored, so it must not count as one of them, or the next is doubled.
+        self.append("h1.exits.jsonl", [rec(T0, 0)])
+        v = self.view()
+        p = self.vpath("h1.exits.ebr")
+        huge = rec(T0 + 1, 1, big=["s%d" % i for i in range(66000)])
+        self.append("h1.exits.jsonl", [huge, rec(T0 + 2, 2)])
+        v.sync()                                # one batch, no MARK yet
+        self.assertEqual([r["pid"] for r in view_records(p)], [0, 2])
+        crashed = Path(p).read_bytes()
+        v.close()                               # (a clean stop MARKs; a crash does not)
+        Path(p).write_bytes(crashed)
+        self.assertEqual(ebr.last_mark(p)[2], 1)
+        v = self.restart(v)
+        self.settle(v)
+        self.assertEqual([r["pid"] for r in view_records(p)], [0, 2])
+        e = self.entry(v, "h1.exits.jsonl")
+        self.assertEqual((e.records, e.bad), (2, 1))
+
     def test_a_source_replaced_under_its_name_is_converted_afresh(self):
         # Another file under the source's name (os.replace, a copy renamed into
         # place): its first bytes prove nothing about the rest, so it is converted
