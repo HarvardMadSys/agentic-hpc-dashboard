@@ -412,6 +412,15 @@ class Aggregator:
                 if key in ("trajectories", "facets") or key.startswith("_"):
                     continue                       # /api/trajectories; below; internal
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
+                # What this adds is the service's own, read as it serves -- the
+                # feed's status (`panel_meta`, whose `_notice` says how old the feed
+                # is), the window's and the filter -- and all of it goes under `_`
+                # keys. The rest of the body is the materialised result, which a view
+                # showing saved panels (`payloads`) serves as it was saved. Keep that
+                # split: test_payload_cache compares a restored panel's un-prefixed
+                # keys with the panel it was saved from, and a field added here
+                # without a `_` that changes with time (an age, a "last seen") would
+                # fail it.
                 body.update(ebpf)
                 body["_window"] = status
                 body["_filter"] = flt.as_dict()
