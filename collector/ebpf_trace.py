@@ -236,8 +236,11 @@ def _secure_path(path, mode):
 # and a reader can skip a frame by its header (time bounds, event kinds). 'both'
 # writes twins, x.jsonl and x.ebr, with the same records in the same order, and
 # is the default while EBR is on trial. Anything else writes both and says so
-# once. Inside a live file nothing is compressed unless EBPFM_EBR_ZLIB (1-9)
-# deflates each frame; sealed days are gzipped whole either way.
+# once. Inside a live file nothing is compressed unless EBPFM_EBR_ZSTD (a zstd
+# level, 1-22) compresses each frame -- which needs a zstd module (Python 3.14+,
+# or zstandard/pyzstd installed); without one EBR is written uncompressed, said
+# once and in meta.output.ebr. Sealed days are gzipped whole either way.
+# EBPFM_EBR_ZLIB (format v1's deflate) is gone: set, it is said once and ignored.
 # EBPFM_EBR_RESET_BYTES is how often a segment (a fresh dictionary a reader can
 # start from) begins, which is also the most one corrupt frame can cost.
 FORMAT_NAMES = ('jsonl', 'ebr')
@@ -266,8 +269,12 @@ def _ebr_setting(name, default, lo, hi):
 FORMATS, _why = _formats_of(os.environ.get('EBPFM_FORMAT'))
 if _why:
     sys.stderr.write('ebpfm: %s\n' % _why)
-EBR_ZLIB = _ebr_setting('EBPFM_EBR_ZLIB', 0, 0, 9)
+EBR_ZSTD = _ebr_setting('EBPFM_EBR_ZSTD', 0, 0, 22)
 EBR_RESET_BYTES = _ebr_setting('EBPFM_EBR_RESET_BYTES', 2 << 20, 1, 1 << 31)
+if (os.environ.get('EBPFM_EBR_ZLIB') or '').strip():
+    sys.stderr.write('ebpfm: EBPFM_EBR_ZLIB is replaced by EBPFM_EBR_ZSTD (a zstd level, '
+                     '1-22; off by default); ignoring it\n')
+_ZSTD_SAID = []           # the warning that EBR_ZSTD has no zstd module: once a process
 
 # --- log compression -------------------------------------------------------
 # The day-files are unbounded (the exits stream can exceed 1 GB) and the only
@@ -2338,9 +2345,9 @@ class _EbrSink(object):
     KEYS = ('records', 'bytes', 'writes', 'frames', 'segments', 'errors', 'lost',
             'repaired_bytes')
 
-    def __init__(self, path, meta, reset_bytes, zlib):
+    def __init__(self, path, meta, reset_bytes, zstd):
         self.path = path
-        self.w = ebr.Writer(path, meta=meta, reset_bytes=reset_bytes, zlib=zlib,
+        self.w = ebr.Writer(path, meta=meta, reset_bytes=reset_bytes, zstd=zstd,
                             mode=_create_mode())
 
     def add(self, rec):
@@ -2410,7 +2417,17 @@ class DailyWriter:
             wanted = ('jsonl',)
         self.formats = wanted
         self.contain = len(wanted) > 1        # twins: EBR trouble never reaches JSONL
-        self.zlib, self.reset_bytes = EBR_ZLIB, EBR_RESET_BYTES
+        self.zstd, self.reset_bytes = EBR_ZSTD, EBR_RESET_BYTES
+        # zstd asked for, and no module to do it: uncompressed EBR beats none
+        self.zstd_unavailable = bool(self.zstd and 'ebr' in wanted
+                                     and not ebr.zstd_available())
+        if self.zstd_unavailable:
+            if not _ZSTD_SAID:
+                _ZSTD_SAID.append(True)
+                sys.stderr.write('ebpfm: EBPFM_EBR_ZSTD=%d, but this Python has no zstd '
+                                 'module (Python 3.14+, or pip install zstandard or pyzstd); '
+                                 'writing EBR uncompressed\n' % self.zstd)
+            self.zstd = 0
         self._jsonl = {}          # stream -> _JsonlSink of the open day
         self._ebr = {}            # stream -> _EbrSink of the open day
         self.dirty = {}           # stream -> written since its last flush
@@ -2458,7 +2475,7 @@ class DailyWriter:
                 if 'ebr' in self.formats:
                     try:
                         ebrs[s] = _EbrSink(self.path(s, day, 'ebr'), self._segment_meta(s, day),
-                                           self.reset_bytes, self.zlib)
+                                           self.reset_bytes, self.zstd)
                     except Exception as e:
                         if not self._contain('ebr', 'open', e):
                             raise
@@ -2626,11 +2643,16 @@ class DailyWriter:
     def descriptor(self):
         """meta.output: the formats written, and the EBR container's settings
         (null without EBR); `ebr_unavailable` says why EBR was asked for and is
-        not written. The container's version is not the records' schema_version."""
-        d = {'formats': list(self.formats),
-             'ebr': ({'version': ebr.VERSION, 'zlib': self.zlib,
-                      'reset_bytes': self.reset_bytes, 'str_id_size': ebr.STR_ID_SIZE}
-                     if 'ebr' in self.formats else None)}
+        not written, ebr.zstd_unavailable that zstd was and no module could do
+        it (zstd is then 0). The container's version is not the records'
+        schema_version."""
+        e = None
+        if 'ebr' in self.formats:
+            e = {'version': ebr.VERSION, 'zstd': self.zstd,
+                 'reset_bytes': self.reset_bytes, 'str_id_size': ebr.STR_ID_SIZE}
+            if self.zstd_unavailable:
+                e['zstd_unavailable'] = True
+        d = {'formats': list(self.formats), 'ebr': e}
         if self.ebr_unavailable:
             d['ebr_unavailable'] = self.ebr_unavailable
         return d

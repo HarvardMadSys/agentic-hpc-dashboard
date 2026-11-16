@@ -1121,7 +1121,7 @@ class EnvelopeTest(unittest.TestCase):
             w = T.DailyWriter(d, 'h', formats=BOTH)
             desc = w.descriptor()
             self.assertEqual(desc, {'formats': ['jsonl', 'ebr'],
-                                    'ebr': {'version': ebr.VERSION, 'zlib': T.EBR_ZLIB,
+                                    'ebr': {'version': ebr.VERSION, 'zstd': T.EBR_ZSTD,
                                             'reset_bytes': T.EBR_RESET_BYTES,
                                             'str_id_size': ebr.STR_ID_SIZE}})
             w.write({'event': 'meta'})
@@ -1775,6 +1775,73 @@ class FlushPolicyTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), str(BOTH))
         self.assertEqual(r.stderr.count('EBPFM_FORMAT'), 1, r.stderr)
+
+    def test_the_zstd_setting_and_the_zlib_one_it_replaces(self):
+        """EBPFM_EBR_ZSTD is a zstd level 0-22, off by default, anything else
+        0 and said once. EBPFM_EBR_ZLIB (format v1's deflate) is gone: set, it
+        is said once and changes nothing."""
+        code = ('import sys; sys.path[:0] = [%r, %r]\nimport ebpf_trace as T\nprint(T.EBR_ZSTD)\n'
+                % (str(_ROOT), str(_ROOT / 'lib')))
+        for env, want, said in (({}, '0', ()),
+                                ({'EBPFM_EBR_ZSTD': '7'}, '7', ()),
+                                ({'EBPFM_EBR_ZSTD': '23'}, '0', ('EBPFM_EBR_ZSTD',)),
+                                ({'EBPFM_EBR_ZLIB': '6'}, '0', ('EBPFM_EBR_ZLIB is replaced',)),
+                                ({'EBPFM_EBR_ZLIB': '', 'EBPFM_EBR_ZSTD': ''}, '0', ())):
+            e = dict(os.environ, EBPFM_OUTPUT_DIR=self.dir)
+            e.pop('EBPFM_EBR_ZSTD', None)
+            e.pop('EBPFM_EBR_ZLIB', None)
+            e.update(env)
+            r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, env=e)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, want), (env, r.stderr))
+            for s in said:
+                self.assertEqual(r.stderr.count(s), 1, (env, r.stderr))
+            if not said:
+                self.assertNotIn('EBPFM_EBR', r.stderr, env)
+
+    def test_zstd_without_a_zstd_module_writes_ebr_uncompressed_and_says_so(self):
+        """Asked for zstd where python3 has no zstd module, the run writes EBR
+        uncompressed rather than none, warns once a process, and meta.output
+        says so: zstd 0, zstd_unavailable."""
+        err = io.StringIO()
+        with mock.patch.object(T, 'EBR_ZSTD', 3), mock.patch.object(ebr, '_ZSTD', False), \
+                mock.patch.object(T, '_ZSTD_SAID', []), mock.patch.object(sys, 'stderr', err):
+            w = T.DailyWriter(self.dir, 'node0')
+            w2 = T.DailyWriter(self.dir, 'node1')
+            for i in range(30):
+                w.write({'event': 'exit', 'pid': i, 'ts': 'x', 'args': 'make -j8 all' * 3})
+            w.close()
+            w2.close()
+        self.assertEqual(err.getvalue().count('EBPFM_EBR_ZSTD=3'), 1, err.getvalue())
+        self.assertIn('writing EBR uncompressed', err.getvalue())
+        self.assertEqual(w.descriptor()['ebr'],
+                         {'version': ebr.VERSION, 'zstd': 0, 'zstd_unavailable': True,
+                          'reset_bytes': T.EBR_RESET_BYTES, 'str_id_size': ebr.STR_ID_SIZE})
+        p = w.path('exits', fmt='ebr')
+        self.assertEqual([f.flags for f in ebr.frames(p)], [0, 0])
+        self.assertEqual(_ebr_lines(p), _lines(self._path()))
+        j = T.DailyWriter(self.dir, 'node2', formats=('jsonl',))
+        self.assertEqual(j.descriptor(), {'formats': ['jsonl'], 'ebr': None})
+
+    @unittest.skipUnless(ebr.zstd_available(), 'no zstd module in this Python')
+    def test_zstd_compresses_the_ebr_twin(self):
+        """EBPFM_EBR_ZSTD=L with a zstd module: the EBR frames are zstd where
+        that is smaller, and the twins still hold the same records."""
+        err = io.StringIO()
+        with mock.patch.object(T, 'EBR_ZSTD', 3), mock.patch.object(sys, 'stderr', err):
+            w = T.DailyWriter(self.dir, 'node0')
+            for i in range(40):
+                w.write({'event': 'exit', 'pid': i, 'ts': 'x', 'args': 'make -j8 all ' * 8})
+                if i % 10 == 9:
+                    w.flush()
+            w.close()
+        self.assertEqual(err.getvalue(), '')
+        self.assertEqual(w.descriptor()['ebr']['zstd'], 3)
+        self.assertNotIn('zstd_unavailable', w.descriptor()['ebr'])
+        p = w.path('exits', fmt='ebr')
+        self.assertEqual([f.flags for f in ebr.frames(p) if f.kind == ebr.DATA],
+                         [ebr.F_ZSTD] * 4)
+        self.assertEqual(_ebr_lines(p), _lines(self._path()))
 
     def test_a_crashed_runs_torn_ebr_tail_is_cut_off_and_counted(self):
         """SIGKILL mid-write can leave part of a frame. The next run's open cuts
@@ -5039,7 +5106,9 @@ class WrapperTest(unittest.TestCase):
             rc, out, _err = self._run('help', EBPFM_FORMAT=fmt)
             self.assertEqual(rc, 0, fmt)
             self.assertIn('EBPFM_FORMAT=jsonl|ebr|both', out)
-        self.assertEqual(self._run('ebr', '--version')[:2], (0, 'ebr %d\n' % ebr.VERSION))
+        rc, out, _err = self._run('ebr', '--version')
+        self.assertEqual(rc, 0)
+        self.assertRegex(out, r'\Aebr %d \(zstd: [^\n]+\)\n\Z' % ebr.VERSION)
 
     def test_the_file_helpers_take_a_format(self):
         """_ebpf_file STREAM [DAY] [EXT]; _twin picks the plain file over its
@@ -5093,7 +5162,7 @@ class WrapperTest(unittest.TestCase):
                 % (d, snapshot, _ROOT / 'lib' / 'ebr.py', fmt)
                 + self._fn1('_want_jsonl') + self._fn1('_want_ebr') + self._fn('_secure_dir')
                 + self._fn('_secure_file') + self._fn('_node_mode') + self._fn('_node_timeout')
-                + self._fn('_node_tick') + 'umask 022\n')
+                + self._fn('_ebr_zstd') + self._fn('_node_tick') + 'umask 022\n')
 
     def test_node_tick_writes_equal_twins_at_the_file_mode(self):
         """The node tier's snapshot is captured, then appended to <host>.jsonl
@@ -5146,6 +5215,46 @@ class WrapperTest(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_node_tick_hands_the_zstd_level_to_append(self):
+        """EBPFM_EBR_ZSTD reaches the node tier's `ebr.py append` (as the
+        eBPF tier reads it: a level 0-22, anything else 0). Where python3 has
+        no zstd module the snapshot is still appended, uncompressed, and the
+        tick says why on stderr; it never costs the EBR twin a snapshot."""
+        self.assertIn('--zstd "$(_ebr_zstd)"', self._fn('_node_tick'))
+        lib_ebr = str(_ROOT / 'lib' / 'ebr.py')
+        shell_zstd = 'zstd: unavailable' not in subprocess.run(
+            ['python3', lib_ebr, '--version'], stdout=subprocess.PIPE,
+            universal_newlines=True).stdout
+        d = tempfile.mkdtemp(prefix='ebpfm_node_')
+        try:
+            snap = os.path.join(d, 'snap.py')
+            with open(snap, 'w') as f:
+                f.write('import json, sys\n'
+                        'print(json.dumps({"timestamp": "x", "hostname": sys.argv[1],\n'
+                        '    "procs": [{"cmd": "python3 train.py --epochs 10", "n": i}\n'
+                        '              for i in range(40)], "ts_epoch": 5.0}))\n')
+            day = os.path.join(d, 'out', datetime.now().strftime('%Y-%m-%d'))
+            for level, want in (('3', 3), ('99', 0), ('', 0)):
+                shutil.rmtree(os.path.join(d, 'out'), ignore_errors=True)
+                env = dict(os.environ, EBPFM_EBR_ZSTD=level)
+                rc, out, err = self._bash(self._node_tick_script(d, 'both', snap)
+                                          + '_node_tick && echo ok\n', env=env)
+                self.assertEqual((rc, out), (0, 'ok\n'), (level, err))
+                e = os.path.join(day, 'node7.ebr')
+                flags = [f.flags for f in ebr.frames(e) if f.kind == ebr.DATA]
+                if want and not shell_zstd:
+                    self.assertIn('--zstd 3: this Python has no zstd module', err)
+                    self.assertIn('appending uncompressed', err)
+                    self.assertEqual(flags, [0])
+                elif want:
+                    self.assertEqual((err, flags), ('', [ebr.F_ZSTD]))
+                else:
+                    self.assertEqual((err, flags), ('', [0]), level)
+                if ebr.zstd_available() or not flags[0]:
+                    self.assertEqual(_ebr_lines(e), _lines(os.path.join(day, 'node7.jsonl')))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_tail_and_overhead_read_ebr_through_its_cat(self):
         """`ebr.py cat` prints an EBR file's records as the JSONL lines they
         were, so tail reads either format, and overhead finds the stop record
@@ -5182,10 +5291,32 @@ class WrapperTest(unittest.TestCase):
 
     def test_check_reports_the_format_and_ebr(self):
         fns = (self._fn1('ok') + self._fn1('warn') + self._fn1('bad') + self._fn1('_want_ebr')
-               + self._fn('_check_format') + 'fails=0\n_check_format; echo "fails=$fails"\n')
-        rc, out, _err = self._bash('FORMAT=both; EBR=%s\n' % (_ROOT / 'lib' / 'ebr.py') + fns)
+               + self._fn('_ebr_zstd') + self._fn('_check_format')
+               + 'fails=0\n_check_format; echo "fails=$fails"\n')
+        env = dict((k, v) for k, v in os.environ.items() if not k.startswith('EBPFM_EBR_'))
+        here = 'FORMAT=both; EBR=%s\n' % (_ROOT / 'lib' / 'ebr.py')
+        rc, out, _err = self._bash(here + fns, env=env)
         self.assertIn('ok    EBPFM_FORMAT', out)
-        self.assertIn('ebr %d (' % ebr.VERSION, out)
+        self.assertIn('ebr %d (zstd: ' % ebr.VERSION, out)
+        m = re.search(r'ok    EBR settings +zstd 0 \(([^\n]+)\), a segment per 2097152 bytes', out)
+        self.assertTrue(m, out)
+        self.assertIn('fails=0', out)
+        self.assertNotIn('WARN', out)
+        # zstd asked for: where python3 has no zstd module EBR goes uncompressed,
+        # a WARN, not a FAIL; a level that is not one, or the v1 knob, a WARN too
+        rc, out, _err = self._bash(here + fns, env=dict(env, EBPFM_EBR_ZSTD='5'))
+        if m.group(1) == 'unavailable':
+            self.assertRegex(out, r'WARN  EBR settings +zstd 5 \(unavailable: written uncompressed')
+        else:
+            self.assertIn('ok    EBR settings                   zstd 5 (%s)' % m.group(1), out)
+        self.assertIn('fails=0', out)
+        rc, out, _err = self._bash(here + fns, env=dict(env, EBPFM_EBR_ZSTD='fast',
+                                                        EBPFM_EBR_ZLIB='6'))
+        self.assertIn("WARN  EBPFM_EBR_ZSTD                 'fast' is not a zstd level 0-22: off",
+                      out)
+        self.assertIn('WARN  EBPFM_EBR_ZLIB                 ignored: replaced by EBPFM_EBR_ZSTD',
+                      out)
+        self.assertIn('zstd 0 (', out)
         self.assertIn('fails=0', out)
         rc, out, _err = self._bash('FORMAT=both; EBR=/nonexistent/ebr.py\n' + fns)
         self.assertIn('FAIL  ebr.py', out)

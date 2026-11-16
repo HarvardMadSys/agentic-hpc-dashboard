@@ -319,6 +319,15 @@ defined once per segment instead of on every line, and each frame (normally one 
 round) carries its time bounds and event kinds, so a reader can skip it unread. `lib/ebr.py`
 is canonical here and mirrored byte-identically to `dashboard/rc_dashboard/ebr.py`.
 
+The format is **v2**: binary throughout. The segment header v1 wrote as JSON is binary now,
+so a reader needs no JSON parser; v1 files are still read, and a v1 day-file the collector
+appends to gets a fresh v2 segment. A frame can be zstd-compressed (`EBPFM_EBR_ZSTD`, off by
+default), which takes a zstd module in the Python that writes it and in every Python that
+reads it: Python 3.14+ has one (`compression.zstd`), older ones need `pip install zstandard`
+(or `pyzstd`). A reader without one skips those frames and says so (`ebr.py verify`:
+`zstd_unavailable`); it never takes them for corruption. Update readers before writers: a v1
+reader takes a v2 segment for a corrupt one.
+
 | file | written | sealed |
 |---|---|---|
 | `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.ebr`, `.snapshot.ebr` | by the eBPF tier, beside (`both`) or instead of (`ebr`) the `.jsonl` | gzipped to `.ebr.gz` at rollover, with the JSONL |
@@ -335,15 +344,17 @@ is canonical here and mirrored byte-identically to `dashboard/rc_dashboard/ebr.p
 | env | default | |
 |---|---|---|
 | `EBPFM_FORMAT` | `both` | `jsonl`, `ebr` or `both`. `ebpfm.sh` refuses anything else; the collector run directly writes both and says so once |
-| `EBPFM_EBR_ZLIB` | `0` | 1-9 deflates each frame inside the live file; sealed days are gzipped whole either way |
+| `EBPFM_EBR_ZSTD` | `0` | a zstd level, 1-22, compresses each frame inside the live file (see [Numbers](#numbers)); without a zstd module in `python3` EBR is written uncompressed, said once, and `meta.output.ebr.zstd_unavailable` is true. Sealed days are gzipped whole either way. `EBPFM_EBR_ZLIB` (v1's deflate) is gone: set, it is ignored with a warning |
 | `EBPFM_EBR_RESET_BYTES` | `2097152` | a new segment — a fresh dictionary a reader can start from — after this many bytes; it bounds what one corrupt frame can cost |
 
 Under systemd the eBPF tier reads these from `/etc/default/ebpfm`. **The node tier takes its
 environment from whoever starts it** (`ebpfm.sh start`, by hand or from the keepalive), not
-from that file, so set `EBPFM_FORMAT` there as well; `EBPFM_EBR_*` apply to the eBPF tier
-only. Without an importable `lib/ebr.py` the collector writes JSONL only, warns on stderr and
-says why in `meta.output.ebr_unavailable`; `ebpfm.sh check` reports the format and FAILs when
-it asks for EBR and `ebr.py --version` does not run.
+from that file, so set `EBPFM_FORMAT` there as well, and `EBPFM_EBR_ZSTD`, which it hands to
+`ebr.py append`; `EBPFM_EBR_RESET_BYTES` applies to the eBPF tier only. Without an importable
+`lib/ebr.py` the collector writes JSONL only, warns on stderr and says why in
+`meta.output.ebr_unavailable`; `ebpfm.sh check` reports the format and FAILs when it asks for
+EBR and `ebr.py --version` does not run, and gives the zstd level with the zstd module
+`python3` has (a WARN when zstd is asked for and there is none).
 
 ### JSONL is never at risk
 
@@ -357,9 +368,10 @@ frames and the next flush retries them, so a full disk that recovers leaves no h
 
 ### What the run reports
 
-- `meta.output`: `{"formats": ["jsonl", "ebr"], "ebr": {"version": 1, "zlib": 0,
+- `meta.output`: `{"formats": ["jsonl", "ebr"], "ebr": {"version": 2, "zstd": 0,
   "reset_bytes": 2097152, "str_id_size": 2}}` — `ebr` null without EBR, plus
-  `ebr_unavailable` when EBR was asked for and could not be imported.
+  `ebr_unavailable` when EBR was asked for and could not be imported, and
+  `ebr.zstd_unavailable: true` (with `zstd` 0) when zstd was and `python3` has no zstd module.
 - `stop.output`: per format, null for one not written — `jsonl {records, bytes, writes,
   errors}`, `ebr {records, bytes, writes, frames, segments, errors, lost, repaired_bytes}`.
   As of the stop record: it, and the flush that lands it, are not counted. `lost` is records
@@ -386,7 +398,7 @@ frames and the next flush retries them, so a full disk that recovers leaves no h
 |---|---|
 | `ebpfm compare [day] [--live]` | every JSONL/EBR twin pair of the day, both tiers, `.gz` or not, record by record: type-exact, key order included. Today's files are live, so one may be a round ahead: `--live` is implied |
 | `ebpfm verify [day]` | every frame and record of the day's EBR files: CRCs, BAD regions, headers against their records, the pending tail |
-| `ebpfm bench [file]` | sizes (JSONL, EBR, EBR+zlib, gzip of each) and µs per record to encode, decode, and reject by field or kind, in memory; today's exits by default |
+| `ebpfm bench [file]` | sizes (JSONL, EBR, EBR+zstd where there is a zstd module, gzip of each) and µs per record to encode, decode, and reject by field or kind, in memory; today's exits by default |
 | `ebpfm ebr VERB …` | `lib/ebr.py`'s own command line: `cat` (prints JSONL byte-identical to the twin; `--tail`, `--kind`, `--where`, `--from`/`--to`), `convert` (JSONL to EBR), `verify`, `compare`, `count`, `append`, `bench`, `frames` |
 
 `tail` reads JSONL as before, or EBR through `ebr.py cat`; `status` gives each stream's
@@ -397,16 +409,18 @@ finds the stop record in either format.
 
 `ebr.py bench` on one host's synthetic demo day (the dashboard's demo generator, schema 8):
 
-| stream | records | JSONL B/rec | EBR B/rec | ratio | EBR + zlib 1 | `.jsonl.gz` | `.ebr.gz` |
+| stream | records | JSONL B/rec | EBR B/rec | ratio | EBR + zstd 3 | `.jsonl.gz` | `.ebr.gz` |
 |---|---|---|---|---|---|---|---|
-| exits | 4 876 | 1 745 | 327 | **5.3x** | 277 | 120 | 110 |
-| snapshot | 6 866 | 1 496 | 176 | **8.5x** | 133 | 42.5 | 38.0 |
-| node | 288 | 3 418 | 819 | **4.2x** | 505 | 106 | 114 |
+| exits | 5 758 | 1 725 | 328 | **5.3x** | 282 | 118 | 109 |
+| snapshot | 8 819 | 1 463 | 166 | **8.8x** | 117 | 39.6 | 33.8 |
+| node | 288 | 4 066 | 886 | **4.6x** | 564 | 123 | 127 |
 
-Decoding an exit record took 6.0 µs (`json.loads` 14.7), rejecting one by a field filter
-3.8 µs and by kind 2.1 µs (Python 3.13). Encoding times swing in this container — exits
-`json.dumps` 10.8 µs against EBR 15.1 µs on 3.13, 20.0 against 12.6 on 3.8 — and the demo's
-exits are sparse, nearly a frame per record, so the per-frame cost lands on every one.
+Decoding an exit record took 8.3 µs (`json.loads` 18.1), rejecting one by a field filter
+5.1 µs and by kind 3.0 µs (Python 3.13). Encoding times swing in this container — exits
+`json.dumps` 13.6 µs against EBR 12.3 µs on 3.13, 18.1 against 18.9 on 3.8 — and the demo's
+exits are sparse, nearly a frame per record, so the per-frame cost lands on every one: zstd 3
+(zstandard) took encoding to 20.6 µs and decoding to 12.1 µs, for 14 % fewer bytes. It pays
+best on fuller frames, and sealed days are gzipped whole either way.
 These are synthetic records; `ebpfm bench` on a login node gives that node's figures, and on
 EL8 the Python 3.6 one the flip waits for.
 
@@ -1026,7 +1040,8 @@ argv read in-kernel at exec, the real limit when uncapped) ·
 `EBPFM_SANDBOX` (on) · `EBPFM_SANDBOX_ALWAYS` (off; read on every exec, for validation) ·
 `EBPFM_RESIDENCY_TOPN` (5) ·
 `EBPFM_OUTPUT_DIR` · `EBPFM_FORMAT` (`both`; `jsonl` or `ebr` for one format, see
-[EBR](#settings)) · `EBPFM_EBR_ZLIB` (0; 1-9 deflates each frame) · `EBPFM_EBR_RESET_BYTES`
+[EBR](#settings)) · `EBPFM_EBR_ZSTD` (0; a zstd level 1-22 compresses each frame, given a
+zstd module) · `EBPFM_EBR_RESET_BYTES`
 (2097152; bytes per segment) · `EBPFM_DURATION` · `EBPFM_RESIDENCY_S` · `EBPFM_FLUSH` ·
 `EBPFM_MIN_UID` (data point 6, default off) · `EBPFM_CWD_ALWAYS` ·
 `EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_TCP_ALL` ·

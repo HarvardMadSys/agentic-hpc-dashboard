@@ -220,7 +220,8 @@ want_ebpf() { [ "$TIER" = ebpf ] || [ "$TIER" = all ]; }
 # EBR, lib/ebr.py's framed binary records (the same records, 4-8x smaller); or
 # both, as twins holding the same records in the same order -- the default while
 # EBR is on trial. Exported, so ebpf_trace.py writes what the node tier does
-# (EBPFM_EBR_ZLIB and EBPFM_EBR_RESET_BYTES reach it the same way).
+# (EBPFM_EBR_ZSTD and EBPFM_EBR_RESET_BYTES reach it the same way; the node tier
+# hands EBPFM_EBR_ZSTD to `ebr.py append`).
 FORMAT="${EBPFM_FORMAT:-both}"
 case "$FORMAT" in
     jsonl|ebr|both) ;;
@@ -229,6 +230,16 @@ esac
 export EBPFM_FORMAT="$FORMAT"
 _want_jsonl() { [ "$FORMAT" != ebr ]; }
 _want_ebr() { [ "$FORMAT" != jsonl ]; }
+
+# EBPFM_EBR_ZSTD as both tiers read it: a zstd level 0-22 (0, the default, is
+# off), anything else 0. zstd needs a module in python3 (3.14+, or zstandard or
+# pyzstd); without one each tier writes EBR uncompressed and says so.
+_ebr_zstd() {
+    local z="${EBPFM_EBR_ZSTD:-0}"
+    case "$z" in ''|*[!0-9]*) echo 0; return ;; esac
+    z="${z#"${z%%[!0]*}"}"                      # leading zeros off: 007 is 7
+    if [ -z "$z" ] || [ "${#z}" -gt 2 ] || [ "$z" -gt 22 ]; then echo 0; else echo "$z"; fi
+}
 # the extension(s) of a day-file in this mode, for printed paths
 _exts() { if [ "$FORMAT" = both ]; then printf '{jsonl,ebr}'; else printf '%s' "$FORMAT"; fi; }
 
@@ -502,11 +513,25 @@ _check_format() {
         jsonl) ok EBPFM_FORMAT "jsonl: no EBR twin" ;;
         ebr)   ok EBPFM_FORMAT "ebr: no JSONL -- every reader must read EBR" ;;
     esac
-    local v
+    local v z zm
     if v="$(python3 "$EBR" --version 2>&1)"; then
         ok ebr.py "$v ($EBR)"
-        _want_ebr && ok "EBR settings" \
-            "zlib ${EBPFM_EBR_ZLIB:-0}, a segment per ${EBPFM_EBR_RESET_BYTES:-2097152} bytes"
+        if _want_ebr; then
+            z="$(_ebr_zstd)"
+            zm="${v#*zstd: }"; zm="${zm%)}"             # `ebr N (zstd: MODULE)`
+            [ "$zm" != "$v" ] || zm=unavailable
+            if [ "$z" != 0 ] && [ "$zm" = unavailable ]; then
+                warn "EBR settings" "zstd $z (unavailable: written uncompressed; Python 3.14+ or pip install zstandard), a segment per ${EBPFM_EBR_RESET_BYTES:-2097152} bytes"
+            else
+                ok "EBR settings" \
+                    "zstd $z ($zm), a segment per ${EBPFM_EBR_RESET_BYTES:-2097152} bytes"
+            fi
+            case "$z:${EBPFM_EBR_ZSTD:-0}" in
+                0:*[!0]*) warn EBPFM_EBR_ZSTD "'$EBPFM_EBR_ZSTD' is not a zstd level 0-22: off" ;;
+            esac
+            [ -z "${EBPFM_EBR_ZLIB:-}" ] \
+                || warn EBPFM_EBR_ZLIB "ignored: replaced by EBPFM_EBR_ZSTD (EBR v2)"
+        fi
     elif _want_ebr; then
         bad ebr.py "does not run ($(printf '%s' "$v" | tail -n 1)) -- no EBR would be written"
     else
@@ -599,7 +624,7 @@ _node_tick() {
     if _want_ebr; then
         { : >> "$d/$HOST.ebr"; } 2>/dev/null; _secure_file "$d/$HOST.ebr"
         if ! printf '%s\n' "$out" | python3 "$EBR" append --host "$HOST" --stream node \
-                --writer node_snapshot.py "$d/$HOST.ebr"; then
+                --writer node_snapshot.py --zstd "$(_ebr_zstd)" "$d/$HOST.ebr"; then
             if _want_jsonl; then
                 echo "ebpfm: node tier: EBR append to $d/$HOST.ebr failed (JSONL unaffected)" >&2
             else
