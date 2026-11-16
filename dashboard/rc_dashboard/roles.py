@@ -288,10 +288,31 @@ def agent_version(comm, args):
     return m.group(1) if m else None
 
 
-def spawned_by_agent(role, command):
+# Claude Code's sandbox runtime starts a Bash call's shell inside bwrap, behind a
+# proxy prologue: that shell's parent is the sandbox, not the agent, and the inner
+# bwrap's exit is written before its child's, so the index never holds it. Taken for
+# the agent, it made each sandboxed call an implied agent -- 981 in one FAS tree on
+# 2026-11-13. Without the link the call folds into its tree root, the agent.
+_SANDBOX_RUNTIME = re.compile(r"\b_srt_(?:http|socks)=|\bSRT_ALLOW_NESTED_USERNS=|\bARGV0=apply-seccomp\b")
+
+
+def spawned_by_agent(role, command, args=None):
     """True for a process its agent starts directly: its parent IS the agent."""
-    return role == "tool-shell" or \
-        (role == "sandbox" and (command or "").startswith("codex-linux-san"))
+    if role == "tool-shell":
+        return not (args and _SANDBOX_RUNTIME.search(args))
+    return role == "sandbox" and (command or "").startswith("codex-linux-san")
+
+
+def js_launcher(command, args):
+    """True for an agent's own JavaScript launcher, which only starts the agent's
+    native binary: `node .../bin/codex`, or npm's `codex` run through its #! line as
+    `/usr/bin/env node .../bin/codex` (comm `codex`)."""
+    command = command or ""
+    toks = (args or "").split()
+    if command in _SCRIPT_HOSTS:
+        return _exe_index(command, toks) is not None
+    i, wrapped = _agent_index(command, toks)
+    return bool(i) and not wrapped
 
 
 def subcommand(command, args):

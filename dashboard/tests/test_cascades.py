@@ -115,6 +115,46 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual((t["root"]["role"], t["root"]["frontend"]), ("client", True))
         self.assertEqual((t["agent_depth"], p["cascades"]["summary"]["nested"]), (1, 0))
 
+    def test_an_env_node_launcher_is_a_front_end_too(self):
+        # npm's `codex` run through its #! line: comm `codex`, argv `/usr/bin/env node
+        # .../bin/codex ...` (FAS login nodes, 2026-11-09 .. 16), read as an agent with
+        # a Codex subagent because its comm is no script host
+        t0 = self.t0
+        native = (HOME + "/.nvm/versions/node/v22.20.0/lib/node_modules/@openai/codex/"
+                  "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
+        recs = [
+            rec("exit", t0 + 9, 100, 50, "codex", "/usr/bin/env node " + HOME
+                + "/.nvm/versions/node/v22.20.0/bin/codex exec -s read-only review the diff",
+                agent_pid=100, tree_root=100, is_agent=True, agent_type="codex"),
+            rec("exit", t0 + 8, 110, 100, "codex", native + " exec -s read-only review the diff",
+                agent_pid=110, tree_root=100, is_agent=True, agent_type="codex"),
+        ]
+        p = reduce(recs)
+        t = tree_of(p, 100)
+        self.assertEqual((t["root"]["role"], t["root"]["frontend"]), ("client", True))
+        self.assertEqual((t["agent_depth"], p["cascades"]["summary"]["nested"]), (1, 0))
+
+    def test_a_front_end_whose_argv_was_cut_before_app_server_is_one_too(self):
+        # A node keeps 200 characters of argv. Under a long nvm path a Codex TUI's child
+        # names `app-server` past that, and the rule read the cut text: 56 front ends of
+        # one FAS user (2026-11-09 .. 16) read as an agent with a subagent
+        t0 = self.t0
+        child = (HOME + "/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex/"
+                 "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+                 " -c features.code_mode_host=true -c model_reasoning_effort=high app-server"
+                 " --analytics-default-enabled")
+        self.assertNotIn("app-server", child[:200])
+        recs = [
+            rec("residency", t0, 100, 50, "codex", "codex", agent_pid=100, tree_root=100,
+                is_agent=True, agent_type="codex"),
+            rec("conn", t0 + 1, 150, 100, "codex", child, agent_pid=150, tree_root=100,
+                is_agent=True, agent_type="codex"),
+        ]
+        p = reduce(recs)
+        t = tree_of(p, 100)
+        self.assertEqual((t["root"]["role"], t["root"]["frontend"]), ("client", True))
+        self.assertEqual((t["agent_depth"], p["cascades"]["summary"]["nested"]), (1, 0))
+
     def test_infrastructure_with_no_agent_below_is_counted_not_listed(self):
         t0 = self.t0
         daemon = HOME + "/.codex/packages/app-server-daemon/current/bin/codex"
@@ -336,6 +376,32 @@ class CascadeTest(unittest.TestCase):
         census = reduce(claude_session(self.t0))["cascades"]["role_census"]
         got = {(r["agent_type"], r["role"]): r["n"] for r in census}
         self.assertEqual(got, {("claude_code", "tool-shell"): 2})
+
+    def test_a_sandboxed_tool_call_is_not_an_agent_of_its_own(self):
+        # Claude Code's sandbox runs a Bash call's shell inside bwrap, behind the sandbox
+        # runtime's proxy prologue (`_srt_http=$!`): the shell's parent is the inner
+        # bwrap, not the agent, and that bwrap's exit comes first, so the index never
+        # holds it. Read as "a tool shell's parent is its agent", every sandboxed call
+        # became an implied agent: 981 in one FAS tree on 2026-11-13.
+        t0 = self.t0
+        bw = "bwrap --new-session --die-with-parent --unshare-net --bind /tmp/claude-http-1.sock"
+        srt = ("/bin/bash -c { socat TCP6-LISTEN:3128,fork UNIX-CONNECT:/tmp/claude-http-1.sock; } "
+               "& _srt_http=$! SRT_ALLOW_NESTED_USERNS=0 ARGV0=apply-seccomp /proc/self/fd/3 "
+               "/bin/bash -c 'source " + HOME + "/.claude/shell-snapshots/snapshot-bash-1.sh "
+               "&& eval make'")
+        recs = [
+            rec("residency", t0, 100, 50, "claude", "claude", agent_pid=100, tree_root=100,
+                is_agent=True),
+            rec("exit", t0 + 10, 401, 1, "bwrap", bw, agent_pid=400, tree_root=100),
+            rec("exit", t0 + 11, 403, 402, "make", "make", agent_pid=402, tree_root=100),
+            rec("exit", t0 + 12, 402, 401, "bash", srt, agent_pid=402, tree_root=100,
+                is_agent=True),
+            rec("exit", t0 + 13, 400, 100, "bwrap", bw, agent_pid=400, tree_root=100,
+                is_agent=True),
+        ]
+        c = reduce(recs)["cascades"]
+        self.assertEqual((c["summary"]["agents"], c["summary"]["agents_implied"],
+                          c["summary"]["nested"]), (1, 0, 0))
 
     def test_a_sockets_age_does_not_date_the_agent(self):
         # A `conn` record's age_s is its socket's age, and the FAS login nodes' schema-7
