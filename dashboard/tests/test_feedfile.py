@@ -12,6 +12,7 @@ boundaries, and reading frames from either end -- against brute force.
 import gzip
 import json
 import os
+import random
 import shutil
 import sys
 import tempfile
@@ -456,6 +457,43 @@ class EbrPrimitivesTest(TmpCase):
             self.assertEqual(feedfile.complete_end(fh, size, fmt="ebr", settle=feedfile.SETTLE),
                              self.size)
             self.assertEqual(feedfile.complete_end(fh, size, fmt="ebr"), size)
+
+    def test_the_settled_end_is_the_frame_by_frame_walks(self):
+        # the walk settled_end did frame by frame before ebr.verify_back checked
+        # the frames in one loop first: the same end, whatever the damage
+        def walked(src, size, settle):
+            end = ebr.complete_end(src, size)
+            if not settle or not end:
+                return end
+            cut = end
+            for f in ebr.frames_reverse(src, end, verify=True):
+                if f.kind == ebr.BAD:
+                    cut = f.off
+                if f.off <= end - settle:
+                    break
+            return cut
+        with open(self.path, "rb") as fh:
+            data = fh.read()
+        rng = random.Random(11)
+        bad = self.p("bad.exits.ebr")
+        for trial in range(120):
+            b = bytearray(data)
+            at = len(b) - rng.randrange(1, 6000)
+            if trial % 3 == 0:
+                b[at:at + 100] = bytes(100)[:len(b[at:at + 100])]      # not yet visible
+            else:
+                b[at] ^= 1 + rng.randrange(255)
+            with open(bad, "wb") as fh:
+                fh.write(bytes(b))
+            for settle in (0, 512, 4096, feedfile.SETTLE):
+                self.assertEqual(feedfile.settled_end(bad, len(b), settle),
+                                 walked(bad, len(b), settle), (trial, settle))
+
+    def test_reading_back_a_file_that_is_gone(self):
+        self.assertEqual(list(feedfile.records_reverse(self.p("gone.exits.ebr"), 100)), [])
+        zp = gzip_file(self.path)
+        got = [r["pid"] for _p, r in feedfile.records_reverse(zp, self.size)]
+        self.assertEqual(got, [r["pid"] for r in self.recs][::-1])
 
     def test_a_decoder_at_a_place_that_is_no_frames_end(self):
         f = self.frames[40]

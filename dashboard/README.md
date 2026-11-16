@@ -150,19 +150,26 @@ stream's EBR twin was started mid-day:
 feed gives the same API output, value for value: `tests/e2e_formats.py` writes a demo feed in
 both formats, serves it twice at a pinned clock, and diffs 41 requests. Its variants cover a
 plain scan, a restart from saved builds, gzipped days, a feed that grows between runs, and
-legacy records with no `ts_epoch`. The page is no faster for it yet. On the demo feed (3 days
-of 4 hosts, `tests/bench_formats.py`):
+legacy records with no `ts_epoch`. The page is not faster for it on every read. On the demo
+feed (3 days of 4 hosts, `tests/bench_formats.py`, the median of three runs; on a shared VM a
+read's ratio moves by 0.05-0.15 from one run to the next):
 
-- A read that filters goes about 2x faster from EBR (one user's exits: 0.12 s against 0.26 s),
-  because it rejects records by interned string before building them.
-- A read that builds every record goes slower:
-  - the startup backfill runs at 0.64x JSONL's speed (0.70 s against 0.45 s), and a 24 h
-    window build at 0.71x (0.44 s against 0.31 s);
-  - orjson parses a JSONL line in C, while EBR builds its dicts in Python;
-  - a collector's frame holds a poll round, about three records, so the per-frame cost is
-    paid often.
-- From gzipped days EBR is ahead on seeks, an hour's read and key scans (1.2-1.4x), and
-  0.85x on full reads.
+- A read that filters goes about 2x faster from EBR (one user's last 500 exits: 0.12 s
+  against 0.28 s), because it rejects records by interned string before building them.
+- From gzipped days EBR is ahead on seeks (1.7x), the startup backfill (1.0x), an hour's
+  read (1.4x) and key scans (1.2x), and behind on a 24 h window build (0.7-0.9x): a `.gz` is
+  inflated to be read, and an EBR day has 5.8x less to inflate.
+- From plain files a read that builds every record is slower: the startup backfill at 0.79x
+  JSONL's speed (0.60 s against 0.50 s), an hour's read at 0.71x (0.068 s against 0.049 s),
+  a 24 h window build at 0.61x (0.46 s against 0.27 s), and key scans at 0.81x. Its seeks
+  no longer cost much (positioning the backfill: 0.78x, from 0.38x); its records do:
+  - building a record costs about what orjson's C parse of its line does: most of either is
+    filling the same dicts;
+  - EBR also applies each frame's new strings and checks its two CRCs, and a collector's
+    frame holds a poll round, about three records;
+  - a read that starts inside a segment (a window's, an hour's) first applies the segment's
+    definitions from its SEGMENT up to there: about 4,000 frames before an hour of the demo
+    feed, where a JSONL seek lands on its line.
 
 On disk, EBR is 5.8x smaller live, and about the same once gzipped. Flip `prefer` when
 `bench_formats.py` on your own feed says the reads you serve are faster.

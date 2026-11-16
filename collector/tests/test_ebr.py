@@ -1580,6 +1580,204 @@ class InjectionTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# the read paths that skip work
+# ---------------------------------------------------------------------------
+
+def damage(data, rng):
+    """`data` with random damage: bytes changed, zeroed, cut out or put in."""
+    b = bytearray(data)
+    k = rng.random()
+    i = rng.randrange(len(b))
+    if k < 0.5:
+        for _ in range(rng.randrange(1, 4)):
+            b[rng.randrange(len(b))] = rng.randrange(256)
+    elif k < 0.65:
+        b[i:i + rng.randrange(1, 200)] = bytes(200)[:len(b[i:i + 200])]
+    elif k < 0.8:
+        del b[i:i + rng.randrange(1, 200)]
+    else:
+        b[i:i] = bytes(rng.randrange(256) for _ in range(rng.randrange(1, 60)))
+    return bytes(b)
+
+
+def decoder_state(d):
+    T = d._T
+    return (d.broken, d.unsupported, d.next_off, d.segment, dict(d.stats),
+            None if T is None else (list(T.S), [(sh.ids, sh.layout) for sh in T.shapes]))
+
+
+class ReadPathTest(unittest.TestCase):
+    """What skips work gives what the general paths give: a decoder placed by
+    `_walk`, the frames a settled end checks in one loop (`verify_back`), a
+    frame whose header says every record is wanted, a dict decoded inline as
+    the shape its slot held first, and a source shared and read ahead."""
+
+    def reference_at(self, data, off):
+        """Decoder.at as it was: frames() and skip() from the segment's start."""
+        d = E.Decoder()
+        if off == 0:
+            return d
+        f = next(E.frames_reverse(data, off))
+        so = f.off - f.seg_back
+        h = E.peek(data, so)
+        if h is None or h.kind != E.SEGMENT:
+            d._set_broken()
+            d.next_off = off
+            return d
+        for g in E.frames(data, so, off, True):
+            d.skip(g, data)
+        if d.next_off != off:
+            d._set_broken()
+        d.next_off = off
+        return d
+
+    def test_a_decoder_placed_is_the_one_frames_and_skip_place(self):
+        recs = mixed_records(240, seed=11)
+        rng = random.Random(5)
+        for data in (write_bytes(recs, flush_every=3, reset_bytes=6000),
+                     write_bytes(recs, flush_every=3, reset_bytes=6000, zlib=6)):
+            for trial in range(30):
+                bad = data if trial == 0 else damage(data, rng)
+                ends = [f.end for f in E.frames(bad, verify=False) if f.kind != E.BAD]
+                for off in ends[trial % 5::5]:
+                    got, want = E.Decoder.at(bad, off), self.reference_at(bad, off)
+                    self.assertEqual(decoder_state(got), decoder_state(want), (trial, off))
+                    a = [pr for g in E.frames(bad, off) for pr in got.records(bad, g)]
+                    b = [pr for g in E.frames(bad, off) for pr in want.records(bad, g)]
+                    self.assertEqual(a, b, (trial, off))
+
+    def test_verify_back_is_a_reverse_walk_that_meets_no_bad_region(self):
+        data = write_bytes(mixed_records(160, seed=13), flush_every=2, reset_bytes=5000)
+        rng = random.Random(17)
+        for trial in range(250):
+            bad = data if trial == 0 else damage(data, rng)
+            end = E.complete_end(bad)
+            for stop in (0, end // 3, end - 400, end - 1, end):
+                clean = True
+                for f in E.frames_reverse(bad, end, verify=True):
+                    if f.kind == E.BAD:
+                        clean = False
+                        break
+                    if f.off <= stop:
+                        break
+                self.assertEqual(E.verify_back(bad, end, stop), clean, (trial, stop))
+
+    def test_a_frame_whose_events_are_all_wanted_is_read_whole(self):
+        recs = []
+        for i in range(96):
+            ev = ['exit', 'conn', 'odd', None, 'meta', 5][(i // 6) % 6]
+            recs.append({'i': i} if ev is None else {'event': ev, 'i': i})
+        recs += [{'event': 'exit', 'i': 200}, {'event': 'meta', 'i': 201}, {'event': 'odd'}]
+        data = write_bytes(recs, flush_every=6)
+        allp = decode(data)[0]
+        real = E.Decoder._some
+        calls = []
+
+        def spy(self, *a):
+            calls.append(a[4])
+            return real(self, *a)
+        cases = [{'exit'}, {'exit', 'conn', 'meta'}, {'odd'}, {'odd', 'exit'}, {None},
+                 {None, 'exit', 'conn'}, frozenset(E.KINDS), {5}]
+        for kinds in cases:
+            del calls[:]
+            with mock.patch.object(E.Decoder, '_some', spy):
+                got, dec = decode(data, kinds)
+                rev = list(E.records_reverse(data, len(data), kinds=kinds))
+            want = reference_filter(allp, kinds, None)
+            self.assertEqual(got, want, kinds)
+            self.assertEqual(rev, want[::-1], kinds)
+            self.assertEqual(dec.stats['records'] + dec.stats['filtered'], len(allp), kinds)
+            # a frame of only wanted events never goes record by record
+            self.assertLess(len(calls), 2 * len(data_frames(data)), kinds)
+        del calls[:]
+        with mock.patch.object(E.Decoder, '_some', spy):
+            decode(data, {'exit', 'conn', 'meta'})
+        self.assertEqual(len(calls), 1)             # the frame that holds an 'odd' too
+
+    def test_a_dict_of_another_shape_than_its_slot_held_first(self):
+        first = {'a': 1, 'o': {'x': 1, 's': 'v'}, 'p': {'y': None}, 'q': {}}
+        others = [{'a': 2, 'o': {'x': 2, 's': 'w'}, 'p': {'y': None}, 'q': {}},
+                  {'a': 3, 'o': {'z': 'another shape'}, 'p': {'y': None}, 'q': {}},
+                  {'a': 4, 'o': {'x': 300000, 's': 'w'}, 'p': {'y': None}, 'q': {}},
+                  {'a': 5, 'o': {'x': 1, 's': 'v'}, 'p': {'y': [1, {'k': 2}]}, 'q': {'e': None}},
+                  {'a': 6, 'o': dict(('k%d' % i, i) for i in range(40)), 'p': {}, 'q': {}}]
+        maps = [{'a': 7 + i, 'o': {'c%d' % i: i}, 'p': {'y': i}, 'q': {}} for i in range(12)]
+        recs = [first] + others + maps + others + [first]
+        for fe in (1, 3, 0):
+            data = write_bytes(recs, flush_every=fe)
+            got = records_of(data)
+            self.assertEqual(len(got), len(recs))
+            self.assertTrue(all(deq(g, oracle(r)) for g, r in zip(got, recs)), fe)
+            rev = [r for _p, r in E.records_reverse(data, len(data))]
+            self.assertTrue(all(deq(g, oracle(r)) for g, r in zip(rev[::-1], recs)), fe)
+
+    def test_inline_dicts_keep_keys_out_of_the_source(self):
+        sources = []
+        real = compile
+
+        def spy(src, *a, **kw):
+            sources.append(src)
+            return real(src, *a, **kw)
+        E._DEC_CACHE.clear()
+        E.compile = spy
+        try:
+            keys = InjectionTest.KEYS
+            rec = dict(('%s%d' % (k, j), {k: j, 's' + k: k, 'n': None}) for j, k in enumerate(keys))
+            recs = [rec, dict(rec), {'z': 1}]
+            self.assertEqual(records_of(write_bytes(recs)), [oracle(r) for r in recs])
+        finally:
+            del E.compile
+        self.assertTrue(any('if b[p] == C' in s for s in sources))
+        allowed = re.compile(r'[A-Za-z0-9_ ,.():\[\]{}=*"\n+-]*\Z')
+        for src in sources:
+            self.assertTrue(allowed.match(src), src)
+            for k in ('__import__', 'zz_unique', "'''", '\\', 'line'):
+                self.assertNotIn(k, src)
+
+    def test_shapes_that_differ_in_int_widths_share_their_code(self):
+        E._DEC_CACHE.clear()
+        recs = [{'n': v, 's': 'x'} for v in (1, 300, 70000, 2 ** 40)]
+        self.assertEqual(records_of(write_bytes(recs, flush_every=1)), recs)
+        self.assertEqual(len(E._DEC_CACHE), 1)
+
+    def test_a_source_is_closed_by_what_opened_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'x.ebr')
+            with open(p, 'wb') as fh:
+                fh.write(write_bytes([exit_rec(1)]))
+            with E.source(p) as s:
+                self.assertIsNotNone(s.fd)
+                with E.source(s) as s2:
+                    self.assertIs(s2, s)
+                self.assertIsNotNone(s.fd)
+                self.assertEqual([f.kind for f in E.frames(s)], [E.SEGMENT, E.DATA])
+                self.assertTrue(E.verify_back(s, os.path.getsize(p)))
+            self.assertIsNone(s.fd)
+
+    def test_read_ahead_is_small_after_a_jump_and_grows_as_reads_move_on(self):
+        data = write_bytes(mixed_records(24000, seed=3), flush_every=3)
+        sizes = []
+
+        class Spy(io.BytesIO):
+            def read(self, n=-1):
+                if self.tell() < len(data):         # not a short read's retry at the end
+                    sizes.append(n)
+                return io.BytesIO.read(self, n)
+        s = E._Src(Spy(data))
+        off = E.resync(s, len(data) // 2)
+        self.assertTrue(sizes and all(n <= E._WIN0 for n in sizes), sizes)   # a probe's
+        del sizes[:]
+        got = [(f.off, f.end, f.payload) for f in E.frames(s, off)]
+        self.assertEqual(got, [(f.off, f.end, f.payload) for f in E.frames(data, off)])
+        self.assertEqual(sizes[:3], [E._WIN0 * 4, E._WIN0 * 16, E._WIN])
+        self.assertLessEqual(len(sizes), 3 + 2 * (len(data) // 2) // E._WIN + 2)
+        del sizes[:]
+        got = [(f.off, f.end) for f in E.frames_reverse(s, len(data))]
+        self.assertEqual(got, [(f.off, f.end) for f in E.frames_reverse(data, len(data))])
+        self.assertEqual(max(sizes), E._WIN)
+
+
+# ---------------------------------------------------------------------------
 # the command line
 # ---------------------------------------------------------------------------
 
