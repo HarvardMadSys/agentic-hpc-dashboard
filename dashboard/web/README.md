@@ -18,7 +18,7 @@ mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```bash
 npm install
 npm run dev          # http://localhost:5173 — /api/* and /ws answered from mock/api.json
-npm run dev:real     # /api and /ws proxied to a running backend
+npm run dev:real     # /api, /ws, /login, and /logout proxied to a running backend
 ```
 
 `npm run dev` needs **no backend**: a Vite middleware (`mock/plugin.ts`) answers every
@@ -96,6 +96,15 @@ Output as of the last build:
 Assets are emitted with a **relative** `base` (`./`), so `dist/` works mounted at `/` or
 under a sub-path. The API is addressed absolutely at `/api` and the socket at `/ws`;
 override with `VITE_API_BASE` / `VITE_WS_URL` at build time if the backend is elsewhere.
+
+Every build stamps the bundle with where it came from, and the foot of the rail shows it:
+`commit 0d516df` (HEAD when it was built, with `+ edits` when anything under `web/`
+differed from it) and `built 2026-11-15 14:02` (local time; the full timestamp is on
+hover). The stamp is `virtual:build-info`, written by the plugin in `vite.config.ts` and
+re-read on each build rather than fixed in a `define`, so the one `vite build --watch`
+that `./run.sh build` keeps alive stamps every rebuild with its own time. The dev server
+builds nothing and says so (`built — (dev server)`); its commit is re-read on every page
+load. Built without git or outside a checkout, the commit reads `—`, not a guess.
 
 ## Dependencies
 
@@ -279,7 +288,8 @@ table, the chart, and the list say one thing.
   first of the calls the agent moved past that were still running, by the name the service gives it, else
   by its command (`· scratchpad/linktest still running since 13:05:44`).
 - **The Codex app's reads of its own plugins** are housekeeping, so they are counted in the line under the
-  chart (`housekeeping, not the model: …`, as the `app assets` shape) and are no call in any phase.
+  chart (`housekeeping, not the model: …`, as the `app assets` shape) and are no call in any phase. So is a
+  `cat` with no argv that ran within 2 s of one of them.
 - **A session across midnight** is a row to a day, and each row serves the one block, so each draws the
   whole session's band, line, and list. A task or a phase picked in the list that the other day's row holds
   opens that row and goes there (`jumpTo` in the tab), whenever the window holds that row: its last record,

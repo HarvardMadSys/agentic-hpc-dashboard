@@ -127,7 +127,9 @@ has no `_role`.
                             file in an `assets/` folder under `.codex/.tmp/plugins/`,
                             `.codex/.tmp/bundled-marketplaces/`, or `.codex/plugins/cache/`, and
                             the same `cat` in Codex's process-setup stage; never a sandboxed
-                            call). A row is a claim that the model did not ask for it.
+                            call). A row is a claim that the model did not ask for it. A `cat`
+                            whose argv was not recorded is a `bare` call here, and the reducer
+                            gives it to the app by when it ran (`cat_without_argv`).
 
 The Codex fs helper (`codex --codex-run-as-fs-helper`) is a `bare` call. The sandbox wrappers
 above it carry the flag too, since it is the command they wrap, and `is_fs_helper` is false for
@@ -154,6 +156,15 @@ What this misreads, in records, from boslogin06 (schema 7) on 2026-10-28 and rtx
   * Codex's fs helper is its own agent in schema 7 (`roles.py` tags the `codex` binary, and the
     helper is one), so its writes are its own row's and never a call of the session that asked
     for them: no `codex fs helper` call on boslogin06 on 2026-10-28.
+  * A `cat` whose argv was not recorded (schema 7) names no file, so it is read by when it ran: it
+    is the desktop app's read when it began within `app_read_s` (2 s) of one of the app's own
+    reads of its assets in the same row, and the model's call otherwise (`cat_without_argv`). On
+    boslogin06 on 2026-10-09, 235 of the 290 such direct children of Codex began within 2 s of
+    one of the app's reads, 233 of them within a second. Six more, 3 to 12 s from one, were the
+    app's own reads around a thread's start, and they stay calls. A wider window would take the
+    model's: on holylogin06 on 2026-10-28 its reads with no argv came 15, 27, and 30 s after a
+    burst, and on four of the five node-days whose captures hold the app's reads a model's call
+    came within 1.2 s of one of them. Within 2 s, a model's `cat` with no argv is the app's.
 """
 import functools
 import math
@@ -1508,7 +1519,10 @@ _DAEMON_CHORES = (
 # On boslogin06 on 2026-10-09 there were 592 under the first two folders (575 `cat`, 17 in the setup
 # stage) and 103 under the third, all one user's. 541 of the 592 were one session's, 529 of them in
 # bursts at 10:09, 14:39, and 16:08. That session's `cat` with no argv (schema 7 kept none for 228)
-# cannot be told from the model's own, so it stays a call.
+# names no file, so no rule over its record can tell it from the model's own. The reducer tells
+# them by time: one that began within `app_read_s` of one of these reads is the app's too
+# (`cat_without_argv`, `PhaseLog.add_app_read`).
+APP_READ = "app assets"     # the housekeeping shape of these reads
 _ASSET_FILE = (r"/(?:\S*/)?\.codex/(?:\.tmp/(?:plugins|bundled-marketplaces)|plugins/cache)/"
                r"(?:\S*/)?assets/\S+")
 _APP_ASSETS = re.compile(
@@ -1631,7 +1645,7 @@ def _codex_chore(command, args, text):
         if pattern.match(flat):
             return shape
     if _APP_ASSETS.match(flat) and not (sandbox or _SANDBOXED.search(flat)):
-        return "app assets"                             # never a sandboxed call
+        return APP_READ                                 # never a sandboxed call
     return "probe" if role_of("codex", command, args) == "probe" else None
 
 
@@ -1729,6 +1743,15 @@ def is_fs_helper(rec):
     command they wrap and so is in their argv, and they are not the helper."""
     command, args, argv0 = _argv(rec)
     return _FS_HELPER in args and not _is_sandbox(command, argv0)
+
+
+def cat_without_argv(rec):
+    """True for a `cat` whose argv was not recorded (schema 7), by the name the kernel gave it. It
+    names no file, so it may be one of the Codex desktop app's reads of its assets (APP_READ) as
+    well as the model's: a Codex row gives it to the app when it began within `app_read_s` of one
+    of the app's own reads (`PhaseLog.add_app_read`), and holds it as a call otherwise."""
+    command, args, _argv0 = _argv(rec)
+    return os.path.basename(command) == "cat" and not args.strip()
 
 
 def call_text(rec, kind):

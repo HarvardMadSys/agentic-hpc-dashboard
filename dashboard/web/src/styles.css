@@ -402,6 +402,28 @@ section.panel {
   background: var(--surface-2);
   color: var(--ink);
 }
+/* Sign out, above the fold button while the service asks for a password: the
+   same quiet row, and the same 40px icon when the rail is folded */
+.rail-signout {
+  margin: 8px 12px 0;
+}
+.rail-signout button {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.rail-signout button:hover {
+  background: var(--surface-2);
+  color: var(--crimson-ink);
+}
 /* the drawer's close, below 900px only (scoped past .iconbtn, which follows) */
 .rail .rail-close {
   display: none;
@@ -444,8 +466,10 @@ section.panel {
   .app.mini .rail-search-t,
   .app.mini .navlbl,
   .app.mini .foot dl,
+  .app.mini .foot .build,
   .app.mini .foot-t,
   .app.mini .foot-warn-t,
+  .app.mini .rail-signout span,
   .app.mini .rail-toggle span {
     position: absolute;
     width: 1px;
@@ -509,6 +533,20 @@ section.panel {
     justify-content: center;
     padding: 8px 0;
   }
+  .app.mini .rail-signout {
+    margin: 6px auto 0;
+  }
+  .app.mini .rail-signout button {
+    width: 40px;
+    justify-content: center;
+    padding: 8px 0;
+  }
+}
+/* which code the page is, set apart from the lines about the data above it */
+.rail .foot .build {
+  margin: 6px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule);
 }
 
 main {
@@ -897,14 +935,16 @@ html {
     0 1px 2px rgba(30, 30, 30, 0.04),
     0 4px 10px -6px rgba(30, 30, 30, 0.06);
 }
-.plate::before {
+/* No colour of its own (components/Plate.tsx): only a count that is a problem
+ * gets an edge, and it is red. */
+.plate.alarm::before {
   content: '';
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
   width: 4px;
-  background: var(--stripe, var(--s1));
+  background: var(--crit);
 }
 .plate .k {
   font-size: 10px;
@@ -1518,6 +1558,17 @@ tbody tr:last-child td {
   border-color: var(--warn);
   border-style: dashed;
   color: #8a6410;
+}
+/* The demo's banner (App.tsx): shown whenever a host's records are synthetic. */
+.fake-note {
+  margin: 0 0 16px;
+  padding: 8px 14px;
+  border: 1px dashed var(--warn);
+  border-radius: 10px;
+  background: #fdf6e3;
+  color: #6b4e0c;
+  font-size: 13.5px;
+  line-height: 1.5;
 }
 @keyframes beat {
   0%,
@@ -2622,31 +2673,40 @@ table tr.section.fold:hover td {
   border-color: var(--ink-2);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-2) 18%, transparent);
 }
-/* the tool mix read across: one bar per kind of tool, split by who ran it */
+/* the tool mix read across: one bar per kind of tool, split by who ran it, and
+ * each class's share on the same line beside it */
+td.whocell {
+  min-width: 320px;
+}
+td.whocell > span {
+  vertical-align: middle;
+}
 .whobar {
-  display: flex;
+  display: inline-flex;
+  width: 360px;
+  max-width: 50%;
   height: 10px;
   border-radius: 2px;
   overflow: hidden;
   background: var(--rule);
-  max-width: 360px;
 }
 .whobar i {
   display: block;
   height: 100%;
 }
 .whopct {
-  display: flex;
+  display: inline-flex;
   gap: 10px;
+  margin-left: 14px;
   font-size: 10.5px;
   color: var(--ink-2);
-  margin-top: 3px;
   font-family: 'IBM Plex Mono', monospace;
 }
 .whopct span {
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  min-width: 48px;
 }
 .whopct i {
   width: 7px;
@@ -2660,6 +2720,54 @@ td.host-by {
   text-align: left;
   white-space: nowrap;
   padding-left: 4px;
+}
+
+/* Network bytes: the bars and the endpoint list side by side, the list under
+   the bars when the panel is too narrow for both (NetEndpoints.tsx) */
+.net-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 32px;
+  align-items: flex-start;
+}
+.net-bars {
+  flex: 0 1 540px;
+  min-width: 0;
+}
+.net-ends {
+  flex: 1 1 520px;
+  min-width: 0;
+}
+.net-ends-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 6px;
+}
+.net-ends-note {
+  margin-top: 8px;
+  line-height: 1.5;
+}
+/* narrower share tracks: one column per class beside five of its own */
+table.ep-table {
+  --track: 44px;
+}
+td.ep-name {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ep-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
 }
 
 /* -------------------------------------------------- go to (Ctrl K, Cmd K, /)
@@ -2785,6 +2893,7 @@ td.host-by {
 .linkbtn:focus-visible,
 .rail-search:focus-visible,
 .rail-toggle:focus-visible,
+.rail-signout button:focus-visible,
 .iconbtn:focus-visible,
 .subtabs button:focus-visible,
 .rail nav button:focus-visible {

@@ -107,6 +107,14 @@ pending entry keeps each record's own argv first (the wrappers have none), and
 the wrapper's call is that argv read as a direct child's would be: a shell's
 command string as shell text, any other program's argv as one command.
 
+A `cat` of Codex's whose argv was not recorded names no file. It is held as a
+call, flagged, and it is the desktop app's read when one of the app's reads of
+its assets began within `app_read_s` of it in the same row, whichever came
+first: then it is counted as the app's housekeeping (`phase_log`). Schema 7
+makes each of the app's reads a key of its own, so in a schema-7 row the fold
+applies the rule, and one pass, the hours merged, and a saved state all take
+the same calls.
+
 Commands are masked (`redact`) and cut when they are interned as previews,
 never later, and held raw only in the pending join, cut to RAW_KEEP. Both joins
 cross hours, so both are carried (`CARRY_AGED`): the pending entries, and the
@@ -135,14 +143,14 @@ from ..procindex import VIA
 from ..redact import redact
 
 from . import pct
-from .phase_log import (OPEN, P_CATS, P_CMDS, P_FIRST, P_HELP, P_LAST, P_N, P_SID, P_SINCE,
-                        P_SINCE_N, P_TEXT, P_WROTE, PAST_SLACK_S, PREV, START_SLACK_S, TAGS,
-                        WROTE, PendingJoin, PhaseLog, fold_entry)
+from .phase_log import (NO_ARGV, OPEN, P_CATS, P_CMDS, P_FIRST, P_HELP, P_LAST, P_N, P_SID,
+                        P_SINCE, P_SINCE_N, P_TEXT, P_WROTE, PAST_SLACK_S, PREV, START_SLACK_S,
+                        TAGS, WROTE, PendingJoin, PhaseLog, fold_entry)
 from .phase_names import tagset
-from .phase_rules import (_TOOL_CALL_ROLES, CATS, PHASE_AGENTS, _argv, _is_sandbox, call_text,
-                          category_of, category_of_argv, classify_direct, codex_chore_of,
-                          is_fs_helper, is_sandbox_probe, login_helper, norm_hash, parent_is_agent,
-                          program_name, shell_text)
+from .phase_rules import (_TOOL_CALL_ROLES, APP_READ, CATS, PHASE_AGENTS, _argv, _is_sandbox,
+                          call_text, cat_without_argv, category_of, category_of_argv,
+                          classify_direct, codex_chore_of, is_fs_helper, is_sandbox_probe,
+                          login_helper, norm_hash, parent_is_agent, program_name, shell_text)
 from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN, prepared,
                             segment)
 from .phase_tasks import DEFAULTS as TASK_DEFAULTS, name_tasks, task_spans
@@ -387,8 +395,9 @@ def _rle_merge(seq, times, over, bseq, btimes, bover, cap):
 def _bound_hk(log, bin_cap):
     """Housekeeping held as one pass holds it: at most MAX_HK_SHAPES named
     shapes, the first seen, the rest under OTHER; at most `bin_cap` minutes, the
-    oldest, the rest counted in `hk_cut`. A merge or a fold of two logs takes
-    the union of theirs, which can hold more."""
+    oldest, the rest counted in `hk_cut`; and at most `bin_cap` spans of the
+    app's reads, the oldest, the rest counted in `app_cut`. A merge or a fold
+    of two logs takes the union of theirs, which can hold more."""
     named = [k for k in log.hk if k != OTHER]
     if len(named) > MAX_HK_SHAPES:
         n = sum(log.hk.pop(k) for k in named[MAX_HK_SHAPES:])
@@ -397,6 +406,9 @@ def _bound_hk(log, bin_cap):
         bins = {b: log.hk_bins[b] for b in sorted(log.hk_bins)[:bin_cap]}
         log.hk_cut += sum(log.hk_bins.values()) - sum(bins.values())
         log.hk_bins = bins
+    if len(log.app) > bin_cap:
+        log.app_cut += len(log.app) - bin_cap
+        log.app = log.app[:bin_cap]
 
 
 def _wrote(rec):
@@ -538,7 +550,7 @@ def merge_session(a, b, params=None):
         for pid, (end, start) in b.past_due.items():
             if not a.phase.ran_past(pid, end, start):
                 due_dropped += _due(a, pid, end, start)    # an older state's: kept for its merge
-    a.phase.merge(b.phase, p["max_calls"])
+    a.phase.merge(b.phase, p["max_calls"], app_s=p["app_read_s"])
     _bound_hk(a.phase, p["hk_bin_cap"])
     a.n += b.n
     a.cpu += b.cpu
@@ -633,7 +645,7 @@ def fold(parts, sid, kv, params=None):
     p = _params(params)
     m = copy.copy(parts[0])
     m.sid, m.kv = sid, kv
-    m.phase = PhaseLog.fold([q.phase for q in parts], p["max_calls"])
+    m.phase = PhaseLog.fold([q.phase for q in parts], p["max_calls"], app_s=p["app_read_s"])
     _bound_hk(m.phase, p["hk_bin_cap"])
     m.past_due = None           # each part's own: the calls it names are in no other
     m.n = sum(p.n for p in parts)
@@ -910,11 +922,18 @@ class TrajectoryReducer:
             if kind == "call" and what == "wrapper" and kids and is_sandbox_probe(kids[P_TEXT]):
                 self._housekeeping(s, "sandbox probe", t0, 1 + kids[P_N])
                 self._went(host, pid, start, end, "hk", "sandbox probe")
+            elif kind == "call" and what == "bare" and cat_without_argv(rec) \
+                    and s.phase.app_near(t0, self.phase_params["app_read_s"]):
+                # a `cat` that names no file, inside one of the app's bursts: the app's read
+                self._housekeeping(s, APP_READ, t0, 1 + (kids[P_N] if kids else 0))
+                self._went(host, pid, start, end, "hk", APP_READ)
             elif kind == "call":
                 self._call(s, rec, what, t0, end, kids)
                 self._went(host, pid, start, end, "call", pid)
             elif kind == "housekeeping":
                 self._housekeeping(s, what, t0, 1 + (kids[P_N] if kids else 0))
+                if what == APP_READ:
+                    self._app_read(s, t0)
                 self._went(host, pid, start, end, "hk", what)
             else:                           # an agent whose calls are not read
                 self._went(host, pid, start, end, "none", None)
@@ -1067,12 +1086,16 @@ class TrajectoryReducer:
             else:
                 command, args, _ = _argv(rec)
                 cat = category_of_argv(command, args)
+                if kind == "bare" and cat_without_argv(rec):
+                    flags = NO_ARGV         # the app's, should one of its reads come close
         pid = rec.get("pid")
         masked = redact(text)
         s.phase.add((t0, end, cat, norm_hash(text), self._intern_preview(masked), flags, pid, None,
                      self._intern_tagset(tagset(text, masked))),
                     self.phase_params["max_calls"])
-        if pid is not None:
+        # A `cat` forks nothing, so no later hour looks for its children, and a later hour's
+        # read of the app's may take it: it is not indexed, so the hours index what one pass does.
+        if pid is not None and not flags & NO_ARGV:
             key = (s.sid, pid)
             # moved to the end, so the cap drops the call longest past
             if self.calls_at.pop(key, None) is None and len(self.calls_at) >= CALLS_AT_MAX:
@@ -1089,6 +1112,14 @@ class TrajectoryReducer:
         if shape not in hk and shape != OTHER and len(hk) - (OTHER in hk) >= MAX_HK_SHAPES:
             shape = OTHER
         s.phase.add_housekeeping(shape, t, self.phase_params["hk_bin_cap"], n)
+
+    def _app_read(self, s, t):
+        """Note one of the Codex app's reads of its assets, begun at `t`, and
+        count the calls with no argv it takes as the app's reads too: those of
+        the session that began within `app_read_s` of it (`PhaseLog`)."""
+        p = self.phase_params
+        for start in s.phase.add_app_read(t, p["app_read_s"], p["hk_bin_cap"]):
+            self._housekeeping(s, APP_READ, start, 1)
 
     def _held(self, s, entry):
         """Count what a root held to its own exit as its housekeeping
@@ -1318,7 +1349,8 @@ class TrajectoryReducer:
         if len(parts) == 1:
             log, last = first.phase, first.last
         else:
-            log = PhaseLog.fold([r.phase for r, _m, _e in parts], p["max_calls"])
+            log = PhaseLog.fold([r.phase for r, _m, _e in parts], p["max_calls"],
+                                app_s=p["app_read_s"])
             _bound_hk(log, p["hk_bin_cap"])
             last = max(r.last for r, _m, _e in parts)
         calls, extra, own = list(log.calls), 0, {}
@@ -1326,7 +1358,9 @@ class TrajectoryReducer:
             opened, hidden = self._open_calls(first.agent_type, last, entries)
             calls += opened
             extra += hidden
-            own[r.sid] = r.phase.n + len(opened)
+            # less what the fold gave the app: a read of another day's came close to it
+            own[r.sid] = (len(r.phase.calls_in(log, p["app_read_s"])) + r.phase.cut
+                          + len(opened))
         step_s = p["step_s"]
         prep = prepared(calls, self._previews, p)
         spans = task_spans(prep, self._tagsets, self.task_params, step_s)

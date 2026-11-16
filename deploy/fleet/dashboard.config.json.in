@@ -1,0 +1,32 @@
+{
+ "//": "Rendered by render.py from site.env. The password hash is not here: keep-running.sh loads it from etc/auth.env.",
+ "feeds": {
+  "ebpf": {"roots": @EBPF_ROOTS_JSON@, "days": @DAYS@},
+  "//ebpf_node": "No node tier: the stream carries each node's eBPF tier only, and this host's own capture, if it has one, is not a source.",
+  "ebpf_node": {"roots": []}
+ },
+ "live": {"retention_min": @RETENTION_MIN@, "window_presets_min": @PRESETS_JSON@,
+          "backfill_hours": @BACKFILL_HOURS@},
+ "//panels": "The day cache merges each finished day's hours into one saved state, so a wide window merges days, not hours. It holds a second day's state beside the built view, so a host short of memory can turn it off (DAY_CACHE).",
+ "panels": {"max_windows": @MAX_WINDOWS@, "prewarm_min": @PREWARM_JSON@, "day_cache": @DAY_CACHE@},
+ "reducers": {"trajectories": {"max_sessions": @MAX_SESSIONS@}},
+ "clock": {"as_of": ""},
+ "risk": {"profile": @RISK_PROFILE_JSON@},
+ "//filters": "The account that runs the senders on the nodes: its processes are the stream, not a user's work.",
+ "filters": {"drop_global": @DROP_GLOBAL_JSON@, "drop_agent": []},
+ "anonymize": {"enabled": @ANONYMIZE@},
+ "ask": {
+  "enabled": @ASK_ENABLED@,
+  "command": ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=1G",
+              @CODEX_JSON@, "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only",
+              "--color", "never", "--json", "-C", "{workdir}", "-o", "{answer_file}", "{model_flag}", "-"]
+ },
+ "site": {"name": @SITE_NAME_JSON@, "description": @SITE_DESCRIPTION_JSON@},
+ "cache": {"dir": "@DASH_ROOT@/cache"},
+ "server": {
+  "host": "127.0.0.1", "port": @DASH_PORT@,
+  "static_dir": "@DASH_ROOT@/current/dist",
+  "auth": {"session_days": 30},
+  "rdns": {"enabled": true}
+ }
+}

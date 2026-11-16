@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -442,6 +443,64 @@ class CapTest(unittest.TestCase):
         r = self.reducer(max_keys=3)
         self.feed(r, 5, key=lambda i: str(100 + i))
         self.assertEqual((len(r.keys), r.dropped), (3, 2))
+
+    @staticmethod
+    def walked(r):
+        """Count the walks over `r`'s keys from here on."""
+        walks = []
+
+        class Keys(dict):
+            def items(self):
+                walks.append(1)
+                return super().items()
+
+        r.keys = Keys(r.keys)
+        return walks
+
+    def test_a_full_cap_inside_the_window_is_walked_once(self):
+        # Every key held is inside the window, so none can go. A walk of all
+        # of them for every new key's record made a feed at the cap
+        # quadratic: 150,000 keys walked per record.
+        r = self.reducer(max_keys=3)
+        self.feed(r, 3, key=lambda i: str(100 + i))
+        walks = self.walked(r)
+        self.feed(r, 50, key=lambda i: str(200 + i % 10))
+        self.assertEqual((len(r.keys), r.dropped, len(walks)), (3, 50, 1))
+
+    def test_a_merge_at_the_cap_walks_the_keys_once(self):
+        # A window merged from its hours reaches the cap partway through, and
+        # nothing inside the window can go: a walk per new key made each later
+        # hour take minutes.
+        r = self.reducer(max_keys=3)
+        self.feed(r, 3, key=lambda i: str(100 + i))
+        o = self.reducer()
+        self.feed(o, 50, key=lambda i: str(200 + i))
+        walks = self.walked(r)
+        r.merge(o)
+        self.assertEqual((len(r.keys), r.dropped, len(walks)), (3, 50, 1))
+
+    def test_a_key_still_goes_once_the_window_passes_it(self):
+        # The walks skipped are only the ones that could drop nothing: a key
+        # added since the last walk, older than every key that walk kept,
+        # still makes room as soon as it leaves the window.
+        r = self.reducer(max_keys=4, window_s=100)
+        t = 1_000_000.0
+
+        def put(kv, ts):
+            r.feed({"_a3": "agent", "_kt": "apid", "_kv": kv, "host": "h1",
+                    "user": "alice", "_ts_epoch": ts, "cwd": PROJ, "args": None})
+
+        with mock.patch.object(ws.time, "time", return_value=t):
+            for kv, ts in (("a", t - 150), ("b", t - 150), ("c", t), ("d", t)):
+                put(kv, ts)
+            put("e", t)                 # the walk drops a and b, and keeps c and d
+            put("s", t - 90)            # late, inside the window: room for it
+            self.assertEqual(set(k for _, k in r.keys), {"c", "d", "e", "s"})
+            put("f", t)                 # nothing has left the window
+        with mock.patch.object(ws.time, "time", return_value=t + 15):
+            put("g", t + 15)            # s has left it: g takes its place
+        self.assertEqual(set(k for _, k in r.keys), {"c", "d", "e", "g"})
+        self.assertEqual(r.dropped, 1)
 
     def test_the_directory_entry_budget_is_global(self):
         r = self.reducer(max_entries=4)

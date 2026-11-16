@@ -26,8 +26,9 @@ export RC_DASH_NODE_ROOTS="${RC_DASH_NODE_ROOTS:-$DEV_ROOT/login}"
 export RC_DASH_RISK_PROFILE="${RC_DASH_RISK_PROFILE:-risk-profiles/gpu-dev.json}"
 export RC_DASH_SLURM="${RC_DASH_SLURM:-0}"
 export RC_DASH_SITE_NAME="${RC_DASH_SITE_NAME:-dev cluster · rtx6000a · live}"
-# Names go out as they are (user, 2026-10-13), though the tunnel serves this
-# without a login. RC_DASH_ANONYMIZE=1 aliases every name (rc_dashboard/anonymize.py).
+# Names go out as they are (user, 2026-10-13). The tunnel serves them only to
+# readers who sign in, once dashboard.config.json sets server.auth.password_hash
+# (rc_dashboard/auth.py). RC_DASH_ANONYMIZE=1 aliases every name (anonymize.py).
 export RC_DASH_ANONYMIZE="${RC_DASH_ANONYMIZE:-0}"
 export RC_DASH_PORT="${RC_DASH_PORT:-8086}"
 

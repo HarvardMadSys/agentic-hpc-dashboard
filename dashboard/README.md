@@ -147,8 +147,10 @@ clock), `live.retention_min` and `live.backfill_hours` (the history written), an
 **Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) is the demo in one
 image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
 working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
-that image behind a Cloudflare Worker for a public URL: one shared instance that sleeps when
-nobody is looking and says it is starting while it wakes.
+that image behind a Cloudflare Worker at <https://hpc-dashboard.agentic-system.org>: one
+shared instance that sleeps when nobody is looking and says it is starting while it wakes.
+The real service over live collectors, behind a password, on a host of your own, is
+[`deploy/fleet`](../deploy/fleet/README.md).
 
 **Restarts resume it.** The feed is a function of the seed, the host count and the clock:
 the same span cut into windows anywhere is the same bytes (`demo/world.py`;
@@ -327,6 +329,19 @@ one failed:
 A drift re-build always scans: it exists to move the window's start forward, which an older copy
 cannot do. Pickle runs code for whoever can write the file, so the directory is created 0700,
 files 0600, and a symlink or a file another user owns or can write is never loaded.
+
+**The panels are saved too** (`payloads.py`). What a view materialises -- every reducer's
+`result()`, credentials masked -- is written to `<cache.dir>/payloads/` after each build and each
+refresh tick, with the span it covers. A view the registry creates (after a restart, or for a
+window the LRU dropped) shows those panels at once, as a drift re-build shows its previous
+reduction: their own `built_at`, coverage and drift, and the "rebuilding" pill, whose tip says
+when they were saved (`cache.restored` in the window status). Its own build then swaps fresh panels
+in. Saved panels are shown only for the same code and config (what a saved build and a saved hour
+are keyed on), the same window and filter, and within the drift budget; otherwise
+`cache.panels_note` says why not. They are a picture of what the page showed, never an input: no
+build reads them. A day's panels on the two-host demo feed are ~0.4 MB, 0.12 MB compressed, and
+load in ~5 ms.
+
 `panels.cache_windows=false` (`RC_DASH_CACHE_WINDOWS=0`) turns all of it off.
 
 ### Hourly merge-reduce
@@ -374,6 +389,10 @@ scanned.
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
+| `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
+| `POST /logout` | signing out: the cookie cleared, then the form |
+
+With a password set, every route above asks for it ([Password](#password)).
 
 `window_min` is optional everywhere and omitting it is `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -546,8 +565,9 @@ every key, annotated.
 email address, and numeric user ID in what the service sends out -- every HTTP response,
 websocket frame, export line, and the Ask-LLM snapshot -- with a stable alias: `user-7f3a9c1e`,
 `lab-1b2c3d4e`, `[email]`, and `[uid]`. It is off by default, so a deployment for the cluster's
-own staff shows real names. `run-dev.sh` and `run-fasrc.sh` turn it on, because both instances
-are reachable without a login through the tunnel. The header says *anonymized* while it is on.
+own staff shows real names. `run-dev.sh` and `run-fasrc.sh` leave it off (user, 2026-10-13), and
+the tunnel serves their pages only to readers who sign in ([Password](#password)). The header says
+*anonymized* while it is on.
 
 - **Stable, not reversible.** An alias is 8 hex characters of an HMAC under a secret salt:
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
@@ -582,6 +602,83 @@ are reachable without a login through the tunnel. The header says *anonymized* w
 
 `tests/test_anonymize_leak.py` starts the app over a feed full of names, then reads every route
 and the websocket. No byte may carry one.
+
+## Password
+
+`server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`) puts the whole service behind one
+password: the page, its assets, every `/api` route (Ask LLM included), and the websocket. It is
+empty by default, which leaves the page open to anyone who reaches the port.
+
+```bash
+cd dashboard && .venv/bin/python -m rc_dashboard new-password --netrc-host dash.example.org
+```
+
+makes a 16-character password with `secrets`, from upper and lower case, digits, and 18
+symbols, with each class present: about 101 bits. It writes the password to
+`~/.config/rc-dashboard/password` and a netrc for curl beside it, both mode 0600, and prints
+only the salted scrypt hash. Put the hash in the gitignored `dashboard.config.json`, then
+restart:
+
+```json
+"server": { "auth": { "password_hash": "scrypt$32768$8$1$..." } }
+```
+
+- **Browsers** get a sign-in form, with a 401, at whatever URL they asked for, and land back
+  on it once signed in. The session is a cookie that lasts `server.auth.session_days` (30). It
+  is HttpOnly and SameSite=Lax, Secure when the request came over https (a proxy such as
+  cloudflared says so in `X-Forwarded-Proto`), and named `rc_dash_<port>`, so two instances on
+  one host keep separate ones. *Sign out*, at the foot of the sidebar, ends it. A page whose
+  session runs out goes back to the form on its next request.
+- **Scripts** send the password as HTTP Basic auth, with any user name:
+  `curl --netrc-file ~/.config/rc-dashboard/netrc http://127.0.0.1:8085/api/health`. The
+  password then never appears on a command line, where `ps` would show it to other users.
+- **What the service keeps.** Only the hash. A password is checked with scrypt, one check at a
+  time, compared in constant time, and a wrong one waits a second more. The cookie is an expiry
+  and its HMAC, under a key drawn from `<cache.dir>/session.key` (made once, mode 0600) and the
+  hash, so a new password or a deleted key file signs everyone out. `/api/config` and
+  `--print-config` show the hash as `(hidden)`.
+- **A restart, not a rebuild.** `server` is left out of both saved-state fingerprints, so
+  setting, changing, or clearing the password costs a restart. A malformed hash stops the
+  service at start rather than serving it open.
+
+`tests/test_auth.py` starts the app with a password, then reads every route, an asset, and the
+websocket, with and without it.
+
+## Network endpoints
+
+The Network bytes panel, in the I/O section of the Resources tab (under *Login nodes* in the
+rail), lists beside its bars the ten remote endpoints the processes made the most send and
+receive calls to. A switch ranks them by bytes sent and received instead. Each row splits its
+calls or bytes by class, and the list follows the who filter and the class choice like the bars.
+It is counted from the collector's `net_endpoints` block (schema 7) as each process exited, so a
+capture from an older collector shows no list. Demo mode turns the lookups below off, so its
+made-up endpoints keep the host names its records give.
+
+- **One row per name.** The I/O reducer adds up the calls and bytes of every remote address
+  (`reducers/io.py`), and the service names each address when the panel is read
+  (`endpoints.py`): by a reverse-DNS lookup from this host, else by a name a process's command
+  line gave for it (the collector's `host`), else by the address itself. Addresses with one name
+  are one row. Inbound endpoints, whose address is a client's, stay apart from outbound ones.
+  Hover a name for its addresses, its ports, and where the name came from.
+- **Lookups never hold up a request.** A few background threads look the addresses up, the
+  busiest first, and keep the answers in `<cache.dir>/rdns.json` (mode 0600), so a restart asks
+  nothing again. A name is asked for again after a week, "no name" after a day, and a lookup
+  that failed after ten minutes, with the old answer served meanwhile. While names are pending,
+  the page reads the panels again a few times. The lookups are this host's: a private address
+  in another site's capture is named as this host's resolver names it.
+- **Exact for any mix of classes.** The service sends the top ten by calls and by bytes for
+  every mix of classes, so the page can rank the classes it shows and still hold their whole top
+  ten.
+- **What it cannot show is said.** The note under the list gives the share of the bars' bytes
+  whose endpoint is known, the bytes a block held with no address, and the processes that moved
+  bytes with no endpoint block at all.
+- **A restart, not a rebuild.** `server.rdns.enabled` (`RC_DASH_RDNS`, on by default) turns the
+  lookups off, and names then come only from command lines. `server.rdns.workers` (4) sets how
+  many run at once. A name is applied when the panel is read and never saved in a reducer's
+  state, so neither setting touches a saved build.
+
+`tests/test_endpoints.py` covers the names, the lookups, the grouping, the ranking, and the
+served payload, and `tests/test_io.py` covers the reducer.
 
 ## Trajectories: tasks, phases, and processes
 
@@ -696,8 +793,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 - **The Codex desktop app's reads of its own plugins** are housekeeping, not the model's calls. The app
   `cat`s the icons of the plugins it lists, hundreds in a minute: one file in an `assets/` folder under
   `.codex/.tmp/plugins/`, `.codex/.tmp/bundled-marketplaces/`, or `.codex/plugins/cache/`. Only the app's own
-  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill stays a call, and so does a `cat`
-  whose argv was not recorded.
+  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill stays a call. A `cat` whose argv was
+  not recorded (schema 7) names no file, so it is read by when it ran: it is the app's when it began within
+  2 s (`reducers.trajectories.phases.app_read_s`) of one of the app's reads in the same row, before it or
+  after, and a call otherwise. On boslogin06 on 2026-10-09 that took 230 of the day's 8,434 Codex calls,
+  226 of them from one row. A wider window would take the model's own reads, which come as soon as 15 s
+  after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
   no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
@@ -792,8 +893,11 @@ per-record path is a few dict lookups. On rtx6000a's 2026-10-10 (1.89 M records,
 build) `feed` took 2.4 s, ~1.4 µs a record, and the saved window grew by 2.4 MB. State is one
 entry per collector session key, capped at `reducers.workspace.max_keys` (150 000) keys,
 `max_dirs` (300) directories per key, `max_dir_entries` (400 000) overall, 64 named paths per
-directory and 32 per command line; past any cap the excess is counted, not kept. Served paths
-are masked (`redact`) and no raw argv is served.
+directory and 32 per command line; past any cap the excess is counted, not kept. At the key
+cap, a new key first drops the keys last seen before the window began. The keys are walked
+for that only once the oldest key the previous walk kept has left the window, so a cap full of
+keys inside the window costs one walk, not one per record. Served paths are masked
+(`redact`) and no raw argv is served.
 
 The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the trajectory rows' reading and stay
 on the Trajectories tab; the Agents page no longer carries them.

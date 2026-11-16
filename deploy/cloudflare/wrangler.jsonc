@@ -8,6 +8,16 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "observability": { "enabled": true },
+  // The demo's address. agentic-system.org is a zone on Cloudflare, and a deploy
+  // from the account that holds it makes this hostname the Worker's Custom
+  // Domain, creating its DNS record and certificate; another account's deploy
+  // fails here (no such zone). Deleting this entry does not detach the domain
+  // (a deploy with no Custom Domains leaves them be): the Worker's Settings,
+  // Domains & Routes, in the Cloudflare dashboard does.
+  "routes": [{ "pattern": "hpc-dashboard.agentic-system.org", "custom_domain": true }],
+  // Routes turn the workers.dev URL off unless it is asked for; it stays, as a
+  // second way in that needs no DNS.
+  "workers_dev": true,
   "containers": [
     {
       "class_name": "DashboardDemo",

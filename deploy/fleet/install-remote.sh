@@ -1,0 +1,83 @@
+#!/bin/bash
+# install-remote.sh SHA FIRST RESTART ROOT [PYTHON]: run on the dashboard's host by
+# deploy.sh (as `bash -s` over ssh), on the payload it unpacked into ROOT/incoming/SHA.
+# ROOT is the deployment's folder (site.env's DASH_ROOT), which holds everything, and
+# PYTHON (site.env's DASH_PYTHON, python3 if not given) makes the venv. Installs the
+# release, moves `current` to it, installs the settings deploy.sh rendered and the tmux
+# unit, keeps etc/auth.env, and starts the session (or restarts it with RESTART=1).
+set -euo pipefail
+umask 077
+if [ $# -lt 4 ] || [ $# -gt 5 ] || [ -z "$4" ]; then
+  echo "usage: install-remote.sh SHA FIRST RESTART ROOT [PYTHON]" >&2
+  exit 2
+fi
+sha=$1 first=$2 restart=$3 R=$4 py=${5:-python3}
+inc=$R/incoming/$sha
+rel=$R/releases/$sha
+# site.env's PRIVATE_TREE, in the stream.json this release ships. "no" (a host that only
+# the team can log in to): the modes and ACLs the user set stay as they are; only etc/,
+# which holds the secrets, is made 700.
+private=$(python3 -c 'import json,sys; print("no" if json.load(open(sys.argv[1])).get("private") is False else "yes")' \
+          "$inc/stream.json" 2>/dev/null || echo yes)
+mkdir -p "$R/releases" "$R/etc" "$HOME/.config/systemd/user"
+if [ "$private" = yes ]; then
+  chmod 700 "$R" "$R/releases" "$R/etc"
+else
+  chmod 700 "$R/etc"
+fi
+
+if [ -e "$rel/.installed" ]; then
+  # The same sha again, as a settings change ships it: the folder already holds this
+  # release, and a running process may use it, so it stays as it is.
+  echo "release $sha already installed; kept as it is"
+else
+  # Unpacked beside it and renamed into place, so releases/SHA is never half-written.
+  rm -rf "$rel" "$rel.tmp"
+  mkdir -p "$rel.tmp"
+  tar -C "$rel.tmp" --strip-components=1 --no-same-permissions -xf "$inc/release.tar"
+  cp -r "$inc/dist" "$rel.tmp/dist"
+  install -m 600 "$inc/requirements.txt" "$rel.tmp/requirements.txt"
+  touch "$rel.tmp/.installed"
+  mv -T "$rel.tmp" "$rel"
+fi
+
+if [ "$first" = 1 ] || [ ! -x "$R/venv/bin/python" ]; then
+  if ! "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    echo "install-remote.sh: $py is not Python 3.11 or later; set DASH_PYTHON in site.env" >&2
+    exit 1
+  fi
+  "$py" -m venv "$R/venv"
+  "$R/venv/bin/python" -m pip install --quiet --upgrade pip
+fi
+"$R/venv/bin/python" -m pip install --quiet --require-hashes -r "$rel/requirements.txt"
+
+ln -sfn "releases/$sha" "$R/current.new"
+mv -T "$R/current.new" "$R/current"
+
+install -m 600 "$inc/stream.json" "$R/etc/stream.json"
+install -m 600 "$inc/dashboard.config.json" "$R/etc/dashboard.config.json"
+[ -e "$R/etc/auth.env" ] || install -m 600 /dev/null "$R/etc/auth.env"
+install -m 600 "$inc/rc-tmux.service" "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable rc-tmux.service >/dev/null 2>&1 || true
+# A session without its two windows (a deploy that stopped half way, or one someone
+# closed) must restart: a start would keep it as it is.
+again=0
+for w in stream dashboard; do
+  tmux -L rc-dashboard list-panes -t "rc-dashboard:$w" >/dev/null 2>&1 || again=1
+done
+# Start the session (a no-op when it runs), then turn linger on, so it outlives this
+# login.
+if [ "$restart" = 1 ] || [ "$again" = 1 ]; then
+  systemctl --user restart rc-tmux.service || echo "rc-tmux did not start; see check-local.sh"
+else
+  systemctl --user start rc-tmux.service || echo "rc-tmux did not start; see check-local.sh"
+fi
+loginctl enable-linger 2>/dev/null || true
+# pip writes executables and libraries with fixed modes (755, 711) whatever the umask;
+# owner-only everywhere keeps the hourly audit quiet and the tree private.
+if [ "$private" = yes ]; then
+  chmod -R go-rwx "$R"
+fi
+rm -rf "$inc" 2>/dev/null || echo "note: could not remove $inc yet (NFS); harmless"
+echo "installed $sha"

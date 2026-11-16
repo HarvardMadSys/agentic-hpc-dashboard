@@ -222,6 +222,14 @@ export interface WindowStatus {
     /** Why a saved build was or was not used, or why this one was not saved. */
     note: string | null;
     saved_at: string | null;
+    /** While the view shows panels an earlier view of its window saved
+     *  (after a restart, or for a window the LRU dropped): which ones. Null
+     *  once its own build has landed. */
+    restored?: string | null;
+    /** When this view's own panels were last saved. */
+    panels_saved_at?: string | null;
+    /** Why saved panels were not shown, or why this view's could not be saved. */
+    panels_note?: string | null;
   };
 }
 
@@ -381,10 +389,71 @@ export interface IoByUser {
   io_coverage_pct?: number | null;
   [k: string]: unknown;
 }
+/** One class's traffic with an endpoint: send and receive calls, and bytes. */
+export interface EndpointUse {
+  calls: number;
+  /** bytes sent */
+  tx: number;
+  /** bytes received */
+  rx: number;
+}
+/** One remote endpoint: every address that goes by one name. */
+export interface EndpointRow {
+  name: string;
+  /** where the name came from: a reverse-DNS lookup, a command line that named
+   *  it, or none (the name is the address) */
+  source: 'dns' | 'argv' | 'address';
+  /** a client that reached this host: its name, and this host's port */
+  inbound: boolean;
+  /** outside the private and loopback ranges */
+  external: boolean;
+  /** the collector's provider bucket for the address, if any */
+  provider: string | null;
+  /** process records that listed it: exact for one address; for several,
+   *  summed over them, so a process that reached two counts twice */
+  procs: number;
+  /** a name lookup for one of its addresses has not finished */
+  pending: boolean;
+  /** the busiest few addresses, and how many there are */
+  addrs: string[];
+  n_addrs: number;
+  /** the busiest few `proto/port`s */
+  ports: string[];
+  by_class: Record<string, EndpointUse>;
+}
+/** What the endpoint list cannot show, per class (bytes and calls). */
+export interface EndpointCover {
+  procs: number;
+  calls: number;
+  tx: number;
+  rx: number;
+  lost_calls: number;
+  lost_tx: number;
+  lost_rx: number;
+  missing: number;
+  missing_bytes: number;
+}
+export interface EndpointList {
+  /** the top `top` by calls and by bytes for every mix of classes, so the
+   *  page's class choice can rank its own mix and hold its whole top */
+  rows: EndpointRow[];
+  top: number;
+  classes: string[];
+  /** every name and address in the window, listed or not */
+  names: number;
+  addresses: number;
+  /** addresses whose name lookup has not finished */
+  pending: number;
+  /** reverse-DNS lookups are on */
+  rdns: boolean;
+  cover: Record<string, EndpointCover>;
+}
 export interface IoProcess extends PanelEnvelope {
   by_class: Record<string, IoClassBlock>;
   by_tool: IoByTool[];
   by_user: IoByUser[];
+  /** the remote ends of the network bytes, named and ranked */
+  endpoints?: EndpointList;
   notes: Record<string, string>;
 }
 
