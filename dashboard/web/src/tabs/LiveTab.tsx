@@ -4,7 +4,7 @@
  * `null` bins as gaps: a minute in which the collector wrote no record is a hole
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, memo, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
@@ -174,7 +174,8 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
 
 /* --------------------------------------------------------------- the tab */
 
-export function LiveTab({
+// It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
+export const LiveTab = memo(function LiveTab({
   live,
   P,
   traj,
@@ -526,7 +527,7 @@ export function LiveTab({
       </div>
     </>
   );
-}
+});
 
 /* Shared by the live stream and the /api/events explorer, so a row looks the
  * same however it was fetched. Class is tagged as TEXT, not colour: crimson is

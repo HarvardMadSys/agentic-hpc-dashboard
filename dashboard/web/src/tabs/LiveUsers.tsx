@@ -13,7 +13,7 @@
  * used to be its own panel (note 18). Switched from "by user" to "every
  * process", the panel is that stream for everyone at once.
  */
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, memo, useEffect, useMemo, useState } from 'react';
 import { getLiveUser, getLiveUsers } from '../api/client';
 import type { Cascades, Cls, IoSort, LiveEvent, LiveUserDetail, LiveUserRow, LiveUserSession, LiveUsers, UsageBlock } from '../api/types';
 import { Segmented } from '../components/ClassFilter';
@@ -879,7 +879,7 @@ export function UsersPanel({
 }
 
 /** The panel, with an anchor the plate can scroll to. */
-export function ActiveUsers(props: UsersProps & { goto?: (tab: string) => void }) {
+export const ActiveUsers = memo(function ActiveUsers(props: UsersProps & { goto?: (tab: string) => void }) {
   const { goto, ...rest } = props;
   return (
     <Panel
@@ -895,7 +895,7 @@ export function ActiveUsers(props: UsersProps & { goto?: (tab: string) => void }
       <UsersPanel {...rest} />
     </Panel>
   );
-}
+});
 
 export const scrollToUsers = () =>
   document.getElementById('live-users')?.scrollIntoView({ behavior: 'smooth', block: 'start' });

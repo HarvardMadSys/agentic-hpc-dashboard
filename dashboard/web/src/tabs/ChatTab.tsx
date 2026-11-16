@@ -17,7 +17,7 @@
  * A question about one panel, or one session, is asked from that panel
  * instead (components/Ask.tsx).
  */
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { ApiError, getAskInfo, getDone, markDone, undoDone } from '../api/client';
 import type { AskInfo, AskJob, DoneSuggestion, OperatorSuggestion } from '../api/types';
 import { fullClock } from '../charts/scale';
@@ -221,7 +221,7 @@ const STARTERS = [
   'Summarise what Claude Code did in this window.',
 ];
 
-export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto = () => {} }: {
+export const ChatTab = memo(function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto = () => {} }: {
   windowMin: number | null;
   windowLabel: string | null;
   /** open an account's sessions on the Sessions tab */
@@ -327,4 +327,4 @@ export function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto 
       </Panel>
     </div>
   );
-}
+});

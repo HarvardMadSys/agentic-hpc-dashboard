@@ -11,7 +11,7 @@
  * events it lost. The dashboard never contacts a collector, so a capture copied
  * from another cluster is judged exactly as a live feed is.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { Async } from '../api/hooks';
 import { useCollectors } from '../api/hooks';
 import type {
@@ -364,7 +364,7 @@ function Backfill({ b }: { b: Record<string, unknown> | null | undefined }) {
   );
 }
 
-export function FeedsTab({
+export const FeedsTab = memo(function FeedsTab({
   feeds,
   config,
   builtAt,
@@ -461,4 +461,4 @@ export function FeedsTab({
       </Panel>
     </div>
   );
-}
+});

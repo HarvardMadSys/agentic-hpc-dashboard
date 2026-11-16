@@ -5,12 +5,12 @@
  * page should have heard something. A feed with a 24 h cadence is not stale at
  * 10 minutes, and the pill must not say so.
  */
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig, useFeeds, usePanels, useTrajectories, useWindows } from './api/hooks';
 import { useLive } from './api/useLive';
 import type { Transport } from './api/useLive';
 import { getAskInfo } from './api/client';
-import type { AskInfo, Facets, FeedReport, FeedStatus } from './api/types';
+import type { AskInfo, Cls, Facets, FeedReport, FeedStatus, TrajOrder, TrajRank } from './api/types';
 import { AskScopeCtx } from './components/Ask';
 import type { AskScope } from './components/Ask';
 import { BuildStamp } from './components/BuildStamp';
@@ -25,7 +25,8 @@ import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
-import { useUrlState } from './lib/useUrlState';
+import { UrlCtx, useUrlState } from './lib/useUrlState';
+import type { Panels } from './lib/panels';
 import { useStickyBar } from './lib/sticky';
 import { FrameCtx, PinnedCtx } from './lib/useNow';
 import { CLS } from './lib/classes';
@@ -97,6 +98,11 @@ const typing = (t: EventTarget | null) =>
 const HIDDEN_TABS = new Set(['events']);
 /** How long after each answer the Sessions list asks again, while it is shown. */
 const TRAJ_LIVE_MS = 5000;
+/** No panels yet: one empty map, not a new one each render, so a memoized tab
+ *  handed it is not drawn again for nothing. */
+const NO_PANELS: Panels = Object.freeze({}) as Panels;
+/** The palette's items while it is closed: none, so it has nothing to rank. */
+const NO_ITEMS: PaletteItem[] = [];
 
 /** Worst status across the feeds that matter, for the header pill. */
 function headline(feeds: Record<string, FeedReport> | null): {
@@ -162,6 +168,26 @@ function pillOf(
 
 export default function App() {
   const [url, setUrl] = useUrlState();
+  // Every handler a tab is given keeps its identity across renders, so the
+  // tabs (React.memo) are drawn again only when what they show changes, not
+  // with every live frame. `setUrl` itself is stable (useUrlState).
+  // Opening a tab, a session or a user's sessions is navigation: back returns.
+  const goto = useCallback((t: string) => setUrl({ tab: t }, true), [setUrl]);
+  const goLive = useCallback(() => setUrl({ tab: 'live' }, true), [setUrl]);
+  const openTraj = useCallback(
+    (sid: string) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true),
+    [setUrl],
+  );
+  const openUserTraj = useCallback(
+    (u: string) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true),
+    [setUrl],
+  );
+  const setPortrait = useCallback((u: string | null) => setUrl({ portrait: u }, true), [setUrl]);
+  const setRank = useCallback((r: TrajRank) => setUrl({ rank: r }), [setUrl]);
+  const select = useCallback((sid: string | null) => setUrl({ traj: sid, tfrom: null }, true), [setUrl]);
+  const setTfrom = useCallback((t: number | null) => setUrl({ tfrom: t }, true), [setUrl]);
+  const setTorder = useCallback((o: TrajOrder) => setUrl({ torder: o }), [setUrl]);
+  const clearUser = useCallback(() => setUrl({ tuser: null }), [setUrl]);
   // a page opened from an answer's citation goes to what it cites, once
   useEffect(() => arriveFromHash(), []);
   const feeds = useFeeds();
@@ -327,6 +353,7 @@ export default function App() {
   // Below 900px the rail is a drawer over the page, opened from the top bar.
   const [navOpen, setNavOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
 
   // Ctrl+K or Cmd+K anywhere, or `/` outside a field, opens "go to"; `[` folds the rail.
   useEffect(() => {
@@ -387,7 +414,14 @@ export default function App() {
     [askInfo, resolvedWin?.minutes, resolvedWin?.label, who, url.cls, tab.lbl],
   );
   const hl = headline(feeds.data);
-  const P = panels.data?.panels ?? {};
+  const P = panels.data?.panels ?? NO_PANELS;
+  const cls: Cls[] = url.cls;
+  // the old Overview tab's table, under Live's rate chart: an element made
+  // again only when what it shows changes, so Live's memo holds across renders
+  const whoUses = useMemo(() => <OverviewTab P={P} cls={cls} traj={traj.data} />, [P, cls, traj.data]);
+  const uiLeaf = config.data?.ui as Record<string, { _value?: unknown }> | undefined;
+  const userCols = (uiLeaf?.user_columns?._value as string[] | undefined) ?? null;
+  const routine = (uiLeaf?.routine_commands?._value as string[] | undefined) ?? null;
 
   const nClasses = url.cls.length;
   const body = (() => {
@@ -398,20 +432,14 @@ export default function App() {
             live={live}
             P={P}
             traj={traj.data}
-            cls={url.cls}
+            cls={cls}
             who={who}
             feeds={feeds.data}
-            goto={(t) => setUrl({ tab: t }, true)}
-            // Opening a session or a user's sessions is navigation: back returns.
-            openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
-            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
-            userCols={
-              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.user_columns?._value as
-                | string[]
-                | undefined) ?? null
-            }
-            // the old Overview tab's table, under the rate chart
-            whoUses={<OverviewTab P={P} live={live.live} cls={url.cls} traj={traj.data} />}
+            goto={goto}
+            openTraj={openTraj}
+            openUserTraj={openUserTraj}
+            userCols={userCols}
+            whoUses={whoUses}
           />
         );
       case 'users':
@@ -420,59 +448,55 @@ export default function App() {
             win={url.win}
             buildNonce={live.buildNonce}
             who={who}
-            cls={url.cls}
+            cls={cls}
             open={url.portrait}
             // Opening a portrait, or a session from it, is navigation: back returns.
-            setOpen={(u) => setUrl({ portrait: u }, true)}
-            openTraj={(sid) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true)}
-            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
+            setOpen={setPortrait}
+            openTraj={openTraj}
+            openUserTraj={openUserTraj}
           />
         );
       case 'resources':
-        return <ResourcesTab P={P} cls={url.cls} />;
+        return <ResourcesTab P={P} cls={cls} />;
       case 'risk':
-        return <RiskIoTab P={P} cls={url.cls} part="risk" />;
+        return <RiskIoTab P={P} cls={cls} part="risk" />;
       case 'chat':
         return (
           <ChatTab
             windowMin={resolvedWin?.minutes ?? null}
             windowLabel={resolvedWin?.label ?? null}
-            openUserTraj={(u) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true)}
-            goto={(t) => setUrl({ tab: t }, true)}
+            openUserTraj={openUserTraj}
+            goto={goto}
           />
         );
       case 'events':
         return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
       case 'internal':
-        return <InternalTab P={P} cls={url.cls} />;
+        return <InternalTab P={P} cls={cls} />;
       case 'trajectories':
         return (
           <TrajectoriesTab
             traj={traj}
             rank={url.rank}
-            setRank={(r) => setUrl({ rank: r })}
-            cls={url.cls}
+            setRank={setRank}
+            cls={cls}
             win={url.win}
             sel={url.traj}
             // Opening a session is navigation: back closes it again.
-            select={(sid) => setUrl({ traj: sid, tfrom: null }, true)}
+            select={select}
             tfrom={url.tfrom}
-            setTfrom={(t) => setUrl({ tfrom: t }, true)}
+            setTfrom={setTfrom}
             torder={url.torder}
-            setTorder={(o) => setUrl({ torder: o })}
+            setTorder={setTorder}
             tuser={url.tuser}
-            clearUser={() => setUrl({ tuser: null })}
-            routine={
-              ((config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.routine_commands?._value as
-                | string[]
-                | undefined) ?? null
-            }
+            clearUser={clearUser}
+            routine={routine}
           />
         );
       case 'slurm':
-        return <SlurmTab P={P} live={live.live} cls={url.cls} goLive={() => setUrl({ tab: 'live' }, true)} />;
+        return <SlurmTab P={P} live={live.live} cls={cls} goLive={goLive} />;
       case 'agents':
-        return <AgentsTab P={P} cls={url.cls} />;
+        return <AgentsTab P={P} cls={cls} />;
       case 'feeds':
         return <FeedsTab feeds={feeds} config={config} builtAt={panels.data?.full_built_at ?? null} />;
       default:
@@ -494,8 +518,9 @@ export default function App() {
   const footWords = TRANSPORT_WORDS[live.transport];
   const footAgo = live.receivedAt ? ago(Date.now() - live.receivedAt) : '—';
 
-  // What "go to" offers: only what this page can already do.
-  const paletteItems: PaletteItem[] = [
+  // What "go to" offers: only what this page can already do. Made only while
+  // it is open; closed, it is handed nothing and is not drawn again.
+  const paletteItems: PaletteItem[] = !paletteOpen ? NO_ITEMS : [
     ...tabs.map((t) => ({
       id: `tab:${t.k}`,
       group: 'Tabs',
@@ -849,17 +874,20 @@ export default function App() {
 
         <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
       </main>
-      <IoCmdsDrawer win={url.win} who={who} cls={url.cls} />
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} items={paletteItems} />
+      <IoCmdsDrawer win={url.win} who={who} cls={cls} />
+      <CommandPalette open={paletteOpen} onClose={closePalette} items={paletteItems} />
       <TooltipLayer />
     </div>
   );
   return (
     <NodeNounCtx.Provider value={nodeNoun}>
       {/* Text read against the clock renders again with each live frame, and
-          the frozen-capture wording when the clock's pin flips (lib/useNow.ts). */}
+          the frozen-capture wording when the clock's pin flips (lib/useNow.ts);
+          what is drawn from the URL itself, when it changes (UrlCtx). */}
       <FrameCtx.Provider value={live.receivedAt}>
-        <PinnedCtx.Provider value={live.live?.clock?.pinned === true}>{page}</PinnedCtx.Provider>
+        <PinnedCtx.Provider value={live.live?.clock?.pinned === true}>
+          <UrlCtx.Provider value={url}>{page}</UrlCtx.Provider>
+        </PinnedCtx.Provider>
       </FrameCtx.Provider>
     </NodeNounCtx.Provider>
   );

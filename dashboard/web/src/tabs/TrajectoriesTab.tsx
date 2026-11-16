@@ -43,7 +43,7 @@
  * ribbon and says so under it; people and IDEs keep today's row exactly, with no
  * note, because no phase was ever on offer for them.
  */
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { Async } from '../api/hooks';
 import type { Cls, PhaseDay, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
@@ -300,7 +300,7 @@ function useFlip(box: RefObject<HTMLElement | null>, reset: string) {
 }
 
 /** `host|2026-10-11|agent|apid:561705` as `10-11` and `apid:561705`. */
-export function TrajectoriesTab({
+export const TrajectoriesTab = memo(function TrajectoriesTab({
   traj,
   rank,
   setRank,
@@ -362,11 +362,19 @@ export function TrajectoriesTab({
   }, [pending, sel]);
   const listRef = useRef<HTMLDivElement>(null);
   useFlip(listRef, `${rank}|${win}|${tuser ?? ''}|${cls.join(',')}`);
+  // Stable, as the list's rows and the inspector (memoized) are handed them.
   const open = (sid: string | null) => {
     setJump(null);
     setPending(null);
     select(sid);
   };
+  // The list's rows (memoized) are handed one function for good, which opens
+  // through the `open` of the latest render.
+  const latestOpen = useRef(open);
+  useLayoutEffect(() => {
+    latestOpen.current = open;
+  });
+  const openRow = useCallback((sid: string) => latestOpen.current(sid), []);
   // A day row is in the window when its last record is at or after the window's start (`dayInWindow`), whether or not the table ranks
   // it among the rows it lists: on a busy day most of a session's day rows are not listed, and each opens all the same. One the window does
   // not hold opens as the panel that says it is not in this window. So there is no jump to it, which the inspector is told, and it makes
@@ -501,7 +509,7 @@ export function TrajectoriesTab({
           )}
           <div className="tj-list" ref={listRef}>
             {(tuser && shownList.length ? shownList : listed).map((r) => (
-              <SessionItem key={r.sid} r={r} rank={rank} on={sel === r.sid} onOpen={open} />
+              <SessionItem key={r.sid} r={r} rank={rank} on={sel === r.sid} onOpen={openRow} />
             ))}
           </div>
         </Panel>
@@ -533,4 +541,4 @@ export function TrajectoriesTab({
       </div>
     </>
   );
-}
+});

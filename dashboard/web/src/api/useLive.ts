@@ -14,7 +14,7 @@
  * page is shown again -- one render, not one a second for as long as it was
  * away. The service's clock is still taken from every live frame as it comes.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
 import { getLive, wsUrl } from './client';
 import { setClockPinned, syncServerClock } from '../lib/clock';
@@ -300,8 +300,10 @@ export function useLive(windowMin: number | null): LiveState {
     void poll();
   }, [windowMin, poll]);
 
-  return {
-    live, transport, error, receivedAt, rebuildNonce, feeds, backfill,
-    windows, buildNonce, refresh,
-  };
+  // one object for as long as nothing in it changes: a memoized tab handed it
+  // is drawn again for a new frame, not for every render of App
+  return useMemo(
+    () => ({ live, transport, error, receivedAt, rebuildNonce, feeds, backfill, windows, buildNonce, refresh }),
+    [live, transport, error, receivedAt, rebuildNonce, feeds, backfill, windows, buildNonce, refresh],
+  );
 }

@@ -11,7 +11,7 @@
  * process exited in); resident memory is the exception, sampled while processes
  * ran. The bins are sized to the window, which the eyebrow names.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { Accum, Cls, IoSort, Resources, SlurmPanel } from '../api/types';
 import { TimeChart, anyValue, binLabel, TOOL_COL } from '../charts/TimeChart';
 import type { TimeLine, View } from '../charts/TimeChart';
@@ -29,7 +29,7 @@ import { openIoCmds } from '../lib/iocmds';
 
 type PickKey = 'wait' | 'dstate' | 'faults' | 'read' | 'write' | 'net' | 'queue' | 'jobs';
 
-export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
+export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
   const sp = pick<SlurmPanel>(P, 'slurm', 'ebpfm');
   const s = r.series;
@@ -361,4 +361,4 @@ export function WindowCharts({ P, cls }: { P: Panels; cls: Cls[] }) {
       </Panel>
     </>
   );
-}
+});

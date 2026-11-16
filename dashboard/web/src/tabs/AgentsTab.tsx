@@ -19,7 +19,7 @@
  *   place that shows them is drawn in the dashed `inferred` style.
  */
 import { ToolPanels } from './ToolPanels';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type {
   Cls,
   CascadeNode,
@@ -1074,7 +1074,7 @@ function AgentBlast({ a, from }: { a: WsAgent | undefined; from?: string | numbe
   );
 }
 
-export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
+export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const c = pick<Cascades>(P, 'cascades', 'ebpfm');
   const win = winLabel(c);
   const trees = c.trees ?? [];
@@ -1316,4 +1316,4 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       <ToolPanels P={P} cls={cls} />
     </>
   );
-}
+});

@@ -17,7 +17,7 @@
  * Its own tab because not every cluster runs Slurm: `slurm.enabled: false`
  * in the service's config hides it.
  */
-import { Fragment, useState } from 'react';
+import { Fragment, memo, useMemo, useState } from 'react';
 import type {
   Cls,
   LiveResponse,
@@ -135,7 +135,7 @@ const SHOWS: Record<Show, (r: SlurmSession) => boolean> = {
   refused: (r) => r.rejected > 0,
 };
 
-function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
+const Sessions = memo(function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
   const [show, setShow] = useState<Show>('all');
   const [open, setOpen] = useState<Record<string, boolean>>({});
   // the filter only picks the rows: they open by session, A to Z, and a
@@ -224,11 +224,11 @@ function Sessions({ rows, total }: { rows: SlurmSession[]; total: number }) {
       </p>
     </>
   );
-}
+});
 
 /* One row per measure, one column per class: the classes differ in size by
  * orders of magnitude, so the rows that compare them are rates and shares. */
-function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: string[]; tm: ToolMix }) {
+const ByClass = memo(function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: string[]; tm: ToolMix }) {
   const nodes = useNodeWords();
   // one row per measure, in different units: the measures sort by name, and
   // the class columns, whose cells are not alike, do not
@@ -289,7 +289,7 @@ function ByClass({ by, have, tm }: { by: Record<string, SlurmClass>; have: strin
       </table>
     </div>
   );
-}
+});
 
 function Latest({ rows }: { rows: LiveSubmit[] }) {
   const out = (r: LiveSubmit) => {
@@ -345,7 +345,11 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
   );
 }
 
-export function SlurmTab({ P, live, cls, goLive = () => {} }: {
+/** No class block: one empty map, so what is made from it holds. */
+const NO_CLASSES: Record<string, SlurmClass> = {};
+
+// It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
+export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {} }: {
   P: Panels;
   live: LiveResponse | null;
   cls: Cls[];
@@ -354,14 +358,16 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
 }) {
   const sp = pick<SlurmPanel>(P, 'slurm', 'ebpfm');
   const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
-  const by = sp.by_class ?? {};
-  const have = shown(by, cls);
+  const by = sp.by_class ?? NO_CLASSES;
+  // the panels' tables are made again only when the panels or the classes
+  // change: a live frame brings only the latest submissions
+  const have = useMemo(() => shown(by, cls), [by, cls]);
   const a = by.agent;
   const win = winLabel(sp);
   const byOf = (f: (c: SlurmClass) => number | null) =>
     Object.fromEntries(have.map((c) => [c, f(by[c])]));
   const topWhy = (sp.rejections ?? []).find((r) => r.cls === 'agent');
-  const sessions = (sp.sessions ?? []).filter((r) => cls.includes(r.cls as Cls));
+  const sessions = useMemo(() => (sp.sessions ?? []).filter((r) => cls.includes(r.cls as Cls)), [sp.sessions, cls]);
   const submits = (live?.submits ?? []).filter(
     (r) => typeof r.actor3 !== 'string' || cls.includes(r.actor3 as Cls),
   );
@@ -470,4 +476,4 @@ export function SlurmTab({ P, live, cls, goLive = () => {} }: {
       </div>
     </>
   );
-}
+});

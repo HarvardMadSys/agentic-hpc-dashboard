@@ -15,7 +15,7 @@
  * itself, because the caveat about how a number is counted lives in these tips,
  * and a reader who does not use a mouse needs it as much.
  */
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 
 const CONTROL = 'button, a[href], input, select, textarea, summary, label, [role="button"]';
 
@@ -48,7 +48,7 @@ function tipUnder(target: EventTarget | null): HTMLElement | null {
   return src?.dataset.tip ? src : null;
 }
 
-export function TooltipLayer() {
+export const TooltipLayer = memo(function TooltipLayer() {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -150,4 +150,4 @@ export function TooltipLayer() {
   }, []);
 
   return <div id="tip" ref={ref} role="tooltip" aria-hidden="true" />;
-}
+});

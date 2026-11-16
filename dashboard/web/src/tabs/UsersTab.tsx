@@ -17,7 +17,7 @@
  * service could not make (the calls of an agent whose commands it does not read)
  * is said to be unread, never drawn as 0.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useUserPortrait, useUsers } from '../api/hooks';
 import type {
   ApprovalState,
@@ -1225,7 +1225,7 @@ function Portrait({
 
 /* ----------------------------------------------------------------- the tab */
 
-export function UsersTab({
+export const UsersTab = memo(function UsersTab({
   win,
   buildNonce,
   who,
@@ -1286,4 +1286,4 @@ export function UsersTab({
       )}
     </>
   );
-}
+});

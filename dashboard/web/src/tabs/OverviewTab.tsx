@@ -6,7 +6,7 @@
  * users stand in for a population -- so processes, CPU, I/O, memory, and
  * sessions sit side by side, each row sortable by any class's share.
  */
-import type { Cls, IoProcess, IoSort, LiveResponse, Resources, SlurmClass, SlurmPanel, ToolMix, Trajectories } from '../api/types';
+import type { Cls, IoProcess, IoSort, Resources, SlurmClass, SlurmPanel, ToolMix, Trajectories } from '../api/types';
 import { Basis, Panel } from '../components/Panel';
 import { ShareCell } from '../components/ShareCell';
 import { SortTh } from '../components/SortTh';
@@ -18,7 +18,7 @@ import { useNodeWords } from '../lib/nodes';
 import type { NodeWords } from '../lib/nodes';
 import { pick, winLabel } from '../lib/panels';
 import { useSort } from '../lib/useSort';
-import { Fragment } from 'react';
+import { Fragment, memo } from 'react';
 import type { Panels } from '../lib/panels';
 import { coveredBy } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
@@ -47,13 +47,12 @@ const groupsOf = (nodes: NodeWords): Record<NonNullable<UnitRow['group']>, [stri
   ],
 });
 
-export function OverviewTab({
+export const OverviewTab = memo(function OverviewTab({
   P,
   cls,
   traj,
 }: {
   P: Panels;
-  live: LiveResponse | null;
   cls: Cls[];
   traj: Trajectories | null;
 }) {
@@ -218,4 +217,4 @@ export function OverviewTab({
       </Panel>
     </div>
   );
-}
+});
