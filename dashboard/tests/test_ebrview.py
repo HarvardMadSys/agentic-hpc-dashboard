@@ -653,6 +653,90 @@ class SetupTest(ViewCase):
         rep = feeds.resolve_dated("ebpf", self.cfg(enabled=False))
         self.assertEqual(os.path.basename(rep["newest_file"]), "h2.exits.jsonl")
 
+    def _modes(self, top):
+        """{relative path: (kind, mode)} of everything under `top`, links as links."""
+        out = {}
+        for dp, dns, fns in os.walk(top):
+            for n in dns + fns:
+                p = os.path.join(dp, n)
+                st = os.lstat(p)
+                kind = "link" if os.path.islink(p) else ("dir" if os.path.isdir(p) else "file")
+                out[os.path.relpath(p, top)] = (kind, st.st_mode & 0o777)
+        return out
+
+    def test_the_view_is_private_to_the_service(self):
+        # The records hold every user's command lines, which the collector keeps
+        # 0640: a copy readable by every local user would leak them.
+        old = os.umask(0o022)
+        try:
+            self.append("h1.exits.jsonl", [rec(T0 + i, i) for i in range(5)])
+            ebr_src = self.src("h2.exits.ebr")
+            with ebr.Writer(ebr_src) as w:
+                w.write(rec(T0, 9, host="h2"))
+            os.chmod(ebr_src, 0o640)
+            self.append("flat_2026-11-14.jsonl", [rec(T0, 7)], day="")
+            self.view()
+            base = os.path.join(self.tmp, "cache", "ebr-view")
+            self.assertEqual(os.stat(base).st_mode & 0o777, 0o700)
+            modes = self._modes(base)
+            self.assertTrue(modes)
+            for rel, (kind, mode) in modes.items():
+                if kind == "dir":
+                    self.assertEqual(mode, 0o700, rel)
+                elif kind == "file":
+                    self.assertEqual(mode, 0o600, rel)
+            self.assertTrue(any(k == "link" for k, _m in modes.values()))
+            self.assertTrue(any(r.endswith("h1.exits.ebr") for r in modes))
+            # a link's target is the collector's file: its mode is left alone
+            self.assertEqual(os.stat(ebr_src).st_mode & 0o777, 0o640)
+        finally:
+            os.umask(old)
+
+    def test_an_older_views_modes_are_narrowed(self):
+        old = os.umask(0o022)
+        try:
+            self.append("h1.exits.jsonl", [rec(T0 + i, i) for i in range(5)])
+            ebr_src = self.src("h2.exits.ebr")
+            with ebr.Writer(ebr_src) as w:
+                w.write(rec(T0, 9, host="h2"))
+            os.chmod(ebr_src, 0o644)
+            v = self.view()
+            base = os.path.join(self.tmp, "cache", "ebr-view")
+            # as the version before this one left it: the umask's modes
+            for rel, (kind, _m) in self._modes(base).items():
+                p = os.path.join(base, rel)
+                if kind == "dir":
+                    os.chmod(p, 0o755)
+                elif kind == "file":
+                    os.chmod(p, 0o644)
+            os.chmod(base, 0o755)
+            self.restart(v)
+            self.assertEqual(os.stat(base).st_mode & 0o777, 0o700)
+            for rel, (kind, mode) in self._modes(base).items():
+                if kind != "link":
+                    self.assertEqual(mode, 0o700 if kind == "dir" else 0o600, rel)
+            self.assertEqual(os.stat(ebr_src).st_mode & 0o777, 0o644)
+            self.assertConverted("h1.exits.jsonl")
+        finally:
+            os.umask(old)
+
+    def test_days_zero_mirrors_every_day(self):
+        # feeds.<tier>.days 0 is every dated dir to the readers (dated_dirs):
+        # the view must not hold fewer days than they would read without it.
+        days = ("2026-11-12", "2026-11-13", DAY)
+        for i, d in enumerate(days):
+            self.append("h1.exits.jsonl", [rec(T0 - 86400 * (2 - i), i)], day=d)
+        self.DAYS = 0
+        self.view()
+        self.assertEqual(sorted(d for d in os.listdir(self.vroot) if d.startswith("20")),
+                         list(days))
+        for d in days:
+            self.assertConverted("h1.exits.jsonl", day=d)
+        self.DAYS = 2
+        self.view(dir=os.path.join(self.tmp, "two"))
+        self.assertEqual(sorted(d for d in os.listdir(self.vroot) if d.startswith("20")),
+                         list(days[1:]))
+
     def test_a_view_inside_a_source_root_is_refused(self):
         cfg = self.cfg(dir=os.path.join(self.root, "view"))
         with self.assertRaises(ebrview.ConvertError):

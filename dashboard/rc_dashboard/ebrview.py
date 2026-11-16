@@ -63,6 +63,7 @@ import json
 import multiprocessing
 import os
 import re
+import stat
 import threading
 import time
 from concurrent.futures.process import BrokenProcessPool
@@ -72,6 +73,11 @@ from .feedfile import HEAD_BYTES, _listing, dated_dirs, format_of, host_of, spli
 
 VIEW_DIR = "ebr-view"           # under cache.dir unless ingest.convert.dir says
 MARKER = "SOURCE.json"          # in every view root: the source it mirrors
+# The view is this service's alone, as its other caches are (payloads.py,
+# hours.py, snapshots.py): its records hold every user's command lines, which
+# the collector keeps 0640 in 0750 dirs. A link's target keeps its own mode.
+DIR_MODE = 0o700
+FILE_MODE = 0o600
 WRITER = "rc_dashboard.ebrview"  # a converted file's segments say who wrote them
 MARK_V = 1                      # a MARK's `v`
 TIERS = ("ebpf", "ebpf_node")
@@ -245,6 +251,47 @@ def _info_ok(info):
                 and info["head_len"] <= info["off"])
     except AttributeError:
         return False
+
+
+def tier_days(cfg, tier):
+    """`feeds.<tier>.days` as the readers take it (`tail.FileTailSource`): the
+    newest that many dated dirs, and 0 every one of them (`dated_dirs`)."""
+    v = cfg.get("feeds.%s.days" % tier)
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return 8 if tier == "ebpf" else 2
+
+
+def narrow(path, mode):
+    """`path` narrowed to `mode` when it is this user's and allows more: a dir
+    or a file a version before this one made with the umask's mode. Never a
+    symlink, whose chmod would reach the collector's file it points at."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode) or st.st_uid != os.getuid() or not (st.st_mode & 0o777 & ~mode):
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def private_dir(path):
+    """`path` made 0700 (and narrowed to it, when it is wider)."""
+    os.makedirs(path, mode=DIR_MODE, exist_ok=True)
+    narrow(path, DIR_MODE)
+
+
+def narrow_tree(top):
+    """Every dir and file under `top` narrowed to the view's modes; links left."""
+    for dp, dns, fns in os.walk(top):
+        for d in dns:
+            narrow(os.path.join(dp, d), DIR_MODE)
+        for f in fns:
+            narrow(os.path.join(dp, f), FILE_MODE)
 
 
 def touch(path, st):
@@ -468,7 +515,8 @@ def _pump(src, off, head_len, head, w, c, task):
 
 def _resume(view, src, stem, zkw, task):
     try:
-        w = ebr.Writer.open_append(view, meta=writer_meta(src), lock_wait=LOCK_WAIT_S, **zkw)
+        w = ebr.Writer.open_append(view, meta=writer_meta(src), lock_wait=LOCK_WAIT_S,
+                                   mode=FILE_MODE, **zkw)
     except ebr.Busy:
         raise
     except ebr.Error as e:
@@ -528,7 +576,7 @@ def _fresh(view, src, zkw, task):
     except OSError:
         pass
     c = _Counts(cut=True)
-    w = ebr.Writer(tmp, meta=writer_meta(src), **zkw)
+    w = ebr.Writer(tmp, meta=writer_meta(src), mode=FILE_MODE, **zkw)
     try:
         off, st, head, head_len, sealed, stuck = _pump(src, 0, 0, None, w, c, task)
         if off or sealed:
@@ -677,7 +725,7 @@ class EbrView(object):
                     srcs.append(os.path.abspath(r))
             if not srcs:
                 continue
-            days = int(self.cfg.get("feeds.%s.days" % tier, 2) or 2)
+            days = tier_days(self.cfg, tier)
             base = os.path.join(self.dir, tier)
             views = []
             for src in srcs:
@@ -703,8 +751,14 @@ class EbrView(object):
         `feeds.<tier>.roots` the view roots, `prefer` ebr, and the collector's
         roots kept as `feeds.<tier>.source_roots`. Before the Aggregator is
         made: everything it builds reads the config once."""
+        if self.roots:
+            private_dir(self.dir)
+        for tier, t in self.tiers.items():
+            private_dir(t["dir"])
         for r in self.roots:
-            os.makedirs(r.view, exist_ok=True)
+            private_dir(r.view)
+            # what a version before this one made with the umask's modes
+            narrow_tree(r.view)
             marker = os.path.join(r.view, MARKER)
             real = os.path.realpath(r.src)
             try:
@@ -718,7 +772,8 @@ class EbrView(object):
                                    % (r.view, had.get("realpath"), real, MARKER))
             if not isinstance(had, dict):
                 tmp = marker + ".%d.tmp" % os.getpid()
-                with open(tmp, "w") as fh:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+                with os.fdopen(fd, "w") as fh:
                     json.dump({"source": r.src, "realpath": real, "tier": r.tier,
                                "writer": WRITER, "created": time.time(),
                                "note": "the EBR view of the source root: links to its EBR "
@@ -912,9 +967,9 @@ class EbrView(object):
                 self._link(root, day, stem, [], chosen)
             else:
                 path = os.path.join(vdir, stem + ".ebr")
-                os.makedirs(vdir, exist_ok=True)
+                private_dir(vdir)
                 # the decision, kept: an empty file is a conversion still to come
-                os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644))
+                os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, FILE_MODE))
                 self._converted(root, day, stem, path, cands)
 
     @staticmethod
@@ -942,7 +997,7 @@ class EbrView(object):
             except OSError:
                 ok = False
         if not ok:
-            os.makedirs(vdir, exist_ok=True)
+            private_dir(vdir)
             tmp = os.path.join(vdir, ".%s.link.%d" % (os.path.basename(want), os.getpid()))
             self._unlink(tmp)
             os.symlink(target, tmp)
@@ -1323,7 +1378,8 @@ class EbrView(object):
         if vst is None or vst.st_ino != e.vino or vst.st_size != e.vsize:
             self._submit(e)
             return None
-        w = ebr.Writer.open_append(e.view, meta=writer_meta(e.plain), lock_wait=0, **self.zkw)
+        w = ebr.Writer.open_append(e.view, meta=writer_meta(e.plain), lock_wait=0,
+                                   mode=FILE_MODE, **self.zkw)
         if w.stats.get("repaired_bytes") or w.end != e.vsize:
             w.close()
             self._submit(e)
@@ -1509,7 +1565,7 @@ def describe(cfg, now=None):
                 if r and os.path.isdir(r)]
         if not srcs:
             continue
-        days = int(cfg.get("feeds.%s.days" % tier, 2) or 2)
+        days = tier_days(cfg, tier)
         n = {"convert": 0, "link": 0, "held": 0, "done": 0}
         todo = 0
         bad = []

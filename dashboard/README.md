@@ -202,7 +202,10 @@ in Python).
 **Where.** `ingest.convert.dir` (`RC_DASH_CONVERT_DIR`), `<cache.dir>/ebr-view` unless set, holds
 one view root per tier and source root, `<dir>/<tier>/<basename>-<sha1 of its real path, 10 hex>/`,
 with a `SOURCE.json` naming the source it mirrors (a view root of another source is refused). Like
-the source it holds the newest `feeds.<tier>.days` dated dirs and as many flat files. The config
+the source it holds the newest `feeds.<tier>.days` dated dirs and as many flat files (every one of
+them for 0, as the readers take it). The view is the service's own, 0700 dirs and 0600 files, as
+its other caches are: its records hold every user's command lines, which the collector keeps 0640.
+Modes a view was left with before are narrowed at startup; a link's target keeps the collector's. The config
 the readers see names the view (`feeds.<tier>.roots`, origin `convert: the EBR view of ...`, and
 `prefer` `ebr`), and the collector's own roots stay in `feeds.<tier>.source_roots`: `/api/config`
 says both. A view dir inside a source root stops the service at startup, as a bad setting does. A
