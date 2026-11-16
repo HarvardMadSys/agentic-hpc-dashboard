@@ -1618,6 +1618,33 @@ class CliTest(_TmpCase):
         rc, out, err = run_cli('cat', jgz)
         self.assertEqual((rc, out), (0, self.lines))
 
+    def test_cat_reads_stdin_in_either_format(self):
+        # '-' is stdin: the bytes read to tell the format are replayed, and stdin
+        # is never closed and opened again (it cannot be)
+        ebr = self.convert()
+        for data in (self.lines, read_file(ebr), gzip.compress(read_file(ebr)),
+                     gzip.compress(self.lines)):
+            rc, out, err = run_cli('cat', '-', input=data)
+            self.assertEqual((rc, out), (0, self.lines), err)
+        rc, out, err = run_cli('cat', '--tail', 2, '-', input=self.lines)
+        self.assertEqual((rc, out), (0, b''.join(self.lines.splitlines(True)[-2:])), err)
+
+    def test_verify_strict_passes_a_sealed_day_and_stdin(self):
+        # a stream source (a .gz, stdin) is sized by what it held: no phantom
+        # pending tail past its last frame
+        ebr = self.convert()
+        gz = self.path('h.exits.ebr.gz')
+        with open(ebr, 'rb') as a, gzip.open(gz, 'wb') as b:
+            b.write(a.read())
+        for args, inp in (((ebr,), None), ((gz,), None), (('-',), read_file(ebr))):
+            rc, out, err = run_cli('verify', '--strict', *args, input=inp)
+            self.assertEqual(rc, 0, out + err)
+            self.assertNotIn(b'pending', out)
+        size = len(read_file(ebr))
+        rc, out, err = run_cli('frames', gz)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(int(out.splitlines()[-1].split()[1]), size)
+
     def test_cat_options(self):
         ebr = self.convert()
         lines = self.lines.splitlines(True)

@@ -1347,7 +1347,9 @@ class _Src(object):
             while skip > 0:
                 x = self.fh.read(min(skip, _WIN))
                 if not x:
-                    self.w0, self.w = off, b""
+                    # the stream ended short of `off`: the window starts where
+                    # it did end, so drain() never counts bytes that were not there
+                    self.w0, self.w = off - skip, b""
                     return b""
                 skip -= len(x)
             keep = b""
@@ -2979,9 +2981,11 @@ def _ebr_iter(s, kinds, where, lo, hi, st):
             yield pr
 
 
-def _feed_iter(path, kinds, where, lo, hi, st):
-    """(pos, rec) of one file of either format, with frame skipping by time."""
-    fh, fmt = open_feed(path)
+def _feed_iter(path, kinds, where, lo, hi, st, opened=None):
+    """(pos, rec) of one file of either format, with frame skipping by time.
+    `opened` is what open_feed(path) already returned, when the caller had to
+    look at the format first: stdin cannot be opened twice."""
+    fh, fmt = opened if opened is not None else open_feed(path)
     if fmt == "ebr":
         try:
             if path != "-" and isinstance(fh, io.BufferedReader):
@@ -2995,11 +2999,18 @@ def _feed_iter(path, kinds, where, lo, hi, st):
             finally:
                 s.close()
         finally:
-            fh.close()
+            if path != "-":
+                fh.close()
         return
-    fh.close()
-    for pr in iter_records(path if path != "-" else sys.stdin.buffer, kinds, where, st):
-        yield pr
+    # JSONL: read on from the reader open_feed() returned, which replays the
+    # bytes it read to tell the format. Reopening would lose them, and '-'
+    # (stdin) cannot be reopened at all once closed.
+    try:
+        for pr in iter_records(fh, kinds, where, st):
+            yield pr
+    finally:
+        if path != "-":
+            fh.close()
 
 
 def _problems(st):
@@ -3073,8 +3084,8 @@ def _tail_of(path, n, kinds, where, lo, hi, st):
         return []
     fh, fmt = open_feed(path)
     plain = path != "-" and isinstance(fh, io.BufferedReader)
-    fh.close()
     if fmt == "ebr" and plain:
+        fh.close()
         out = []
         s = _Src(path)
         try:
@@ -3086,7 +3097,7 @@ def _tail_of(path, n, kinds, where, lo, hi, st):
             s.close()
         return out
     ring = []
-    for pos, rec in _feed_iter(path, kinds, where, lo, hi, st):
+    for pos, rec in _feed_iter(path, kinds, where, lo, hi, st, opened=(fh, fmt)):
         ring.append((path, pos, rec))
         if len(ring) >= 2 * n:
             del ring[:-n]
