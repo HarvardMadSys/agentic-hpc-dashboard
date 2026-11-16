@@ -5,7 +5,7 @@
  * with the coverage attached rather than as a bare total.
  */
 import { GLOSS } from '../lib/glossary';
-import { Fragment, useState } from 'react';
+import { Fragment, memo, useState } from 'react';
 import type { Cls, IoByTool, IoProcess, IoSort, Resources } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
 import { TOOL_COL } from '../charts/TimeChart';
@@ -346,7 +346,7 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
 /* Two tabs from one reduction: Risk (what agents did that they should not have,
  * on a shared login node) and I/O (what their reads, writes and traffic cost).
  * They read the same panels, so they share the setup and each renders its half. */
-export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
+export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, series = true }: {
   P: Panels;
   cls: Cls[];
   part: 'risk' | 'io';
@@ -1022,4 +1022,4 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
       )}
     </>
   );
-}
+});

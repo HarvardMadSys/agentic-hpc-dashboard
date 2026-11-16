@@ -9,7 +9,7 @@
  * Keyboard: type to filter, arrow keys to move, Enter to go, Escape to close.
  * Focus goes back where it was when the palette closes.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
 
@@ -37,7 +37,7 @@ function rank(item: PaletteItem, q: string): number {
   return 1;
 }
 
-export function CommandPalette({
+export const CommandPalette = memo(function CommandPalette({
   open,
   onClose,
   items,
@@ -188,4 +188,4 @@ export function CommandPalette({
       </div>
     </div>
   );
-}
+});

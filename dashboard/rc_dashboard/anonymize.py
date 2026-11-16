@@ -118,6 +118,13 @@ _ALIAS = re.compile(r"(?:user|lab)-[0-9a-f]{8}")
 _NAME_OK = re.compile(r"(?=[^A-Za-z]*[A-Za-z])[A-Za-z0-9_][A-Za-z0-9._-]{1,63}")
 CLIPPED_MIN = 100                 # the shortest string a clipped name is looked for in
 ROSTER_EVERY_S = 2.0
+# What `_rewrite` made of each string, and the strings `learn_text` has read, kept
+# while no name is learned or forgotten (`generation`). A payload's strings repeat
+# (class names, hosts, the same command in every frame), and the rewrite is a few
+# regexes with a Python callback per word. Bounded: past the cap a table starts over;
+# a string longer than `MEMO_LEN` is rewritten every time.
+MEMO_MAX = 50000
+MEMO_LEN = 2000
 
 
 class Anonymizer:
@@ -147,7 +154,9 @@ class Anonymizer:
         self.system = set()       # accounts seen with a uid below 1000: never aliased
         self.collisions = set()   # aliases two accounts share (counted, not resolved)
         self.reserved_hits = set()
-        self.generation = 0
+        self.generation = 0       # moves whenever users, labs or system change
+        self._memo = (0, {})      # (generation, string -> its rewrite)
+        self._learned = set()     # strings learn_text has read: reading again learns nothing
         self._special = None      # (regex, variant -> alias) for names with . or -
         self._sorted = None       # every account, sorted, for the clipped-name lookup
         self.last_ms = {}
@@ -169,11 +178,16 @@ class Anonymizer:
 
     # ----------------------------------------------------------- learning
     def learn_user(self, name, uid=None):
+        system = isinstance(uid, int) and 0 <= uid < 1000
+        if not system and isinstance(name, str) and name in self.users:
+            return                # known: every payload names its users again
         if not isinstance(name, str) or not _NAME_OK.fullmatch(name) or _ALIAS.fullmatch(name):
             return
         with self._lock:
-            if isinstance(uid, int) and 0 <= uid < 1000:
-                self.system.add(name)
+            if system:
+                if name not in self.system:
+                    self.system.add(name)
+                    self.generation += 1      # `_in_place` reads it: the memo must go
                 self._forget(name)
                 return
             if name in self.users or name in self.system or name in self.keep:
@@ -232,7 +246,7 @@ class Anonymizer:
     def learn_text(self, s):
         """Learn the labs the patterns capture in `s`. Names they capture are
         masked where they stand (`_in_place`), not learned."""
-        if not s or not isinstance(s, str):
+        if not s or not isinstance(s, str) or s in self._learned:
             return
         for gate, pats in ((_PATTERN_GATES[0], self._home), (_PATTERN_GATES[1], self._labp)):
             if not pats or not any(g in s for g in gate):
@@ -242,6 +256,12 @@ class Anonymizer:
                     lab = m.groupdict().get("lab")
                     if lab:
                         self.learn_lab(lab)
+        # Learning is idempotent: a lab once learned stays, or gives way to the
+        # account of that name, which learning it again would not undo.
+        if len(s) <= MEMO_LEN:
+            if len(self._learned) >= MEMO_MAX:
+                self._learned = set()
+            self._learned.add(s)
 
     # ----------------------------------------------------------- rewriting
     def _special_names(self):
@@ -328,6 +348,24 @@ class Anonymizer:
                 return "_".join(parts)
         return t
 
+    def _rw(self, s):
+        """`_rewrite(s)`, from the memo when no name has been learned or forgotten
+        since it was made. A rewrite that learns a lab itself (`_groups`) is not
+        kept: its result belongs to the generation it ended in."""
+        gen = self.generation
+        memo = self._memo
+        if memo[0] != gen:
+            memo = self._memo = (gen, {})
+        table = memo[1]
+        out = table.get(s)
+        if out is None:
+            out = self._rewrite(s)
+            if self.generation == gen and len(s) <= MEMO_LEN:
+                if len(table) >= MEMO_MAX:
+                    table.clear()
+                table[s] = out
+        return out
+
     def _rewrite(self, s):
         """Every mask, in an order where each step only sees what the earlier
         ones left: uids before emails (`user@2004.service` is no address);
@@ -384,7 +422,7 @@ class Anonymizer:
         if not s or not isinstance(s, str):
             return s
         self.learn_text(s)
-        return self._rewrite(s)
+        return self._rw(s)
 
     # ----------------------------------------------------------- payloads
     def _collect(self, obj):
@@ -426,11 +464,11 @@ class Anonymizer:
             return a
         if k.isidentifier():
             return k
-        return self._rewrite(k)
+        return self._rw(k)
 
     def _walk(self, o):
         if isinstance(o, str):
-            return self._rewrite(o)
+            return self._rw(o)
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():

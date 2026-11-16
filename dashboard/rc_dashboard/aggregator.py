@@ -33,6 +33,7 @@ from . import clock
 from . import endpoints
 from . import feeds as feedmod
 from . import gz
+from . import jsonout
 from . import portraits
 from . import proctree
 from .health import CollectorHealth
@@ -57,6 +58,45 @@ BACKFILL_BATCH = 256
 _ASK_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}(\.[A-Za-z][A-Za-z0-9_]{0,39})?")
 
 
+def normalized(norm, raws):
+    """`raws` through `norm`, the ones it keeps, in order."""
+    out = []
+    for raw in raws:
+        rec = norm.normalize(raw)
+        if rec is not None:
+            out.append(rec)
+    return out
+
+
+def last_lines(path, n, window=1 << 20):
+    """The last `n` lines of a day-file, as `readlines()[-n:]` gives them (a final
+    line with no newline yet counts as one), without reading the rest: a node
+    tier snapshot is ~200 KB a line, a minute apart, so a day is ~300 MB a host,
+    and every rebuild tick read whole files to keep two lines of each."""
+    with gz.open_feed(path) as fh:
+        size = gz.fstat(fh).st_size
+        while True:
+            start = max(0, size - window)
+            fh.seek(start)
+            chunk = fh.read(size - start)
+            if not chunk:
+                return []
+            pieces = chunk.split(b"\n")
+            whole = chunk.endswith(b"\n")
+            if whole:
+                pieces.pop()            # readlines gives no empty line after the last newline
+            if start > 0:
+                pieces = pieces[1:]     # cut mid-line: not a line of its own
+            if len(pieces) >= n or start == 0:
+                # decoded as `gz.open_text` reads them; each with its newline but a
+                # last one still being written
+                out = [p.decode("utf-8", "replace") + "\n" for p in pieces[-n:]]
+                if out and not whole:
+                    out[-1] = out[-1][:-1]
+                return out
+            window *= 4
+
+
 class Aggregator:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -64,6 +104,10 @@ class Aggregator:
         self.classes = [canonical_class(c) for c in cfg.get("filters.classes") or []] + \
             [cfg.get("filters.unlabeled_class", "unlabeled")]
         self.norm = Normalizer(cfg)
+        # The tail's own: a poll is read, parsed and normalized outside the lock
+        # (`poll_once`), and its counters are folded into `norm`'s -- which
+        # /api/feeds reads -- under it (`_fold`).
+        self._poll_norm = Normalizer(cfg)
         # The cluster's risk rules, built now: any secret pattern it adds must be
         # masked (redact.extend) before the first byte is served.
         risk_ruleset(cfg)
@@ -97,6 +141,11 @@ class Aggregator:
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
         self.stats = {"records": 0, "last_poll": None}
+        # Bumped by every batch dispatched to the live tier: a live frame made since
+        # the last bump is the frame a new one would be (`live_frame`).
+        self.dispatched = 0
+        self._frames = {}               # window minutes -> (dispatched, monotonic, text)
+        self._frames_lock = threading.Lock()
         # Set at shutdown. The backfill runs on an executor thread, which the
         # interpreter waits for at exit; unchecked, a restart during the minutes
         # of a week's backfill outlived the dev runner's SIGINT grace, was
@@ -132,23 +181,26 @@ class Aggregator:
 
     # -------------------------------------------------------------- ingestion
     def consume(self, records, older=False):
-        """Normalize and dispatch a batch.
+        """Normalize and dispatch a batch. Under the lock.
 
         `older` marks the backfill: records that predate everything held, which
         feed the live tier only.  The historical views build from disk, oldest
         first, and their own scans already cover every row the backfill reads.
         """
-        n = 0
-        for raw in records:
-            rec = self.norm.normalize(raw)
-            if rec is None:
-                continue
-            if rec.get("event") in LiveReducer.EVENTS:
+        return self.dispatch(normalized(self.norm, records), older)
+
+    def dispatch(self, recs, older=False):
+        """Hand records `normalized` already to the live tier, the collectors'
+        health and, unless `older`, every held view. Under the lock."""
+        live_ev, health_ev = LiveReducer.EVENTS, CollectorHealth.EVENTS
+        for rec in recs:
+            ev = rec.get("event")
+            if ev in live_ev:
                 try:
                     self.live.feed(rec, older=older)
                 except Exception:
                     pass          # one bad record must never stop the stream
-            if rec.get("event") in CollectorHealth.EVENTS:
+            if ev in health_ev:
                 try:
                     self.health.feed(rec)
                 except Exception:
@@ -157,9 +209,26 @@ class Aggregator:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
                 self.panels_by_window.feed(rec)
-            n += 1
-        self.stats["records"] += n
-        return n
+        self.stats["records"] += len(recs)
+        self.dispatched += 1
+        return len(recs)
+
+    def _fold(self, norm):
+        """Add a private normalizer's counters to the shared one's, and zero them.
+        Under the lock: `refresh_feeds` reads the shared ones there."""
+        dst = self.norm.stats
+        for k, v in norm.stats.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float, dict)):
+                continue
+            if isinstance(v, dict):
+                if v:
+                    d = dst.setdefault(k, {})
+                    for kk, vv in v.items():
+                        d[kk] = d.get(kk, 0) + vv
+                    v.clear()
+            elif v:
+                dst[k] = dst.get(k, 0) + v
+                norm.stats[k] = 0
 
     def read_node_tier(self):
         """The node tier is a SNAPSHOT feed, not an event stream.
@@ -179,8 +248,7 @@ class Aggregator:
         n = 0
         for f in rep.get("files", []):
             try:
-                with gz.open_text(f["path"]) as fh:
-                    lines = fh.readlines()[-keep:]
+                lines = last_lines(f["path"], keep)
             except OSError:
                 continue
             for line in lines:
@@ -195,10 +263,32 @@ class Aggregator:
         return n
 
     def poll_once(self):
+        """Read what the collectors appended since the last poll into the live tier
+        and every held view.
+
+        The read, the parse and the normalization happen outside the lock: once
+        positioned, only this thread touches the tail. The records are then
+        dispatched under it a slice of `BACKFILL_BATCH` at a time, in their order,
+        as the backfill does. One hold used to take the whole poll, and a poll is
+        up to `tail.READ_CAP` a file -- a new day's files, a new host, a stream
+        catching up after a dropped connection are tens of thousands of records
+        -- while every read of the views and of the live tier waited.
+        """
         if not self.positioned.is_set():
             return 0
+        it = self.source.poll()
+        n = 0
+        while True:
+            raws = list(itertools.islice(it, BACKFILL_BATCH))
+            if not raws:
+                break
+            recs = normalized(self._poll_norm, raws)
+            with self.lock:
+                self._fold(self._poll_norm)
+                n += self.dispatch(recs)
+            # Hand the lock over: this thread keeps the GIL otherwise (see the backfill).
+            time.sleep(0)
         with self.lock:
-            n = self.consume(self.source.poll())
             self.source.prune_state()
             self.stats["last_poll"] = time.time()
         return n
@@ -264,27 +354,29 @@ class Aggregator:
 
         t0 = time.time()
         stats = {"bytes": 0, "parse_errors": 0, "records": 0}
+        # Its own normalizer, so a batch is read, parsed and normalized outside the
+        # lock; the lock is held only to hand the batch to the live tier, and to
+        # fold this normalizer's counters into the shared one's.
+        norm = Normalizer(self.cfg)
 
-        def raws():
-            for _ts, raw in read_back(plan, stats):
-                stats["records"] += 1
-                yield raw
-
-        # Consumed lazily, a batch per lock hold, never materialised: holding a
-        # batch of parsed records alive makes every garbage-collector pass
-        # rescan them, which measured as a 50% slower read.
-        stream = raws()
+        # Consumed lazily, a batch at a time, never materialised: holding many
+        # parsed records alive makes every garbage-collector pass rescan them,
+        # which measured as a 50% slower read.
+        stream = read_back(plan, stats)
         try:
             while True:
                 if self.stopping:
                     with self.lock:
                         self.backfill.update(state="stopped", records=stats["records"])
                     return stats["records"]
+                raws = [raw for _ts, raw in itertools.islice(stream, BACKFILL_BATCH)]
+                if not raws:
+                    break
+                stats["records"] += len(raws)
+                recs = normalized(norm, raws)
                 with self.lock:
-                    before = stats["records"]
-                    self.consume(itertools.islice(stream, BACKFILL_BATCH), older=True)
-                    if stats["records"] == before:
-                        break
+                    self._fold(norm)
+                    self.dispatch(recs, older=True)
                     self.backfill.update(
                         records=stats["records"], bytes=stats["bytes"],
                         pct=min(99, int(100 * stats["bytes"] / total)) if total else 99)
@@ -319,8 +411,11 @@ class Aggregator:
 
     # ---------------------------------------------------------------- results
     def refresh_feeds(self):
+        # The filesystem outside the lock: globbing every day-dir and reading the
+        # newest file's tail is no reason for the tail and every reader to wait.
+        reports = feedmod.resolve(self.cfg)
         with self.lock:
-            self.reports = feedmod.resolve(self.cfg)
+            self.reports = reports
             for name, rep in self.reports.items():
                 if name == "ebpf":
                     rep["rows"] = self.stats["records"]
@@ -454,6 +549,40 @@ class Aggregator:
         # the lock: this reads only the response's own copy of the panel.
         out["io_process"] = endpoints.serve(out["io_process"], self.rdns, self.classes)
         return res
+
+    # The most live frames kept for reuse, however many windows readers pick.
+    FRAMES_MAX = 16
+
+    def live_frame(self, minutes, max_age_s=1.0):
+        """The `live` websocket frame for a window, as text.
+
+        The payload is taken under the lock; it is masked (`anonymize`) and
+        serialized outside it, on whatever thread calls this -- never the event
+        loop, which only sends it. A frame is reused while nothing has been
+        dispatched to the live tier since it was made and it is under
+        `max_age_s` old, so readers that connect, or switch to a window, in the
+        same moment as a broadcast share one. Only frames that can still be
+        reused are kept: one past `max_age_s` is dropped when the next is made,
+        and no more than `FRAMES_MAX`, the most recent, are held."""
+        mark = self.dispatched
+        now = time.monotonic()
+        with self._frames_lock:
+            hit = self._frames.get(minutes)
+        if hit is not None and hit[0] == mark and now - hit[1] < max_age_s:
+            return hit[2]
+        payload = self.live_payload(minutes)
+        if self.anon is not None:
+            payload = self.anon.payload(payload, label="live")
+        text = jsonout.frame("live", payload)
+        with self._frames_lock:
+            frames = self._frames
+            for k in [k for k, v in frames.items() if now - v[1] >= max_age_s]:
+                del frames[k]
+            frames.pop(minutes, None)
+            frames[minutes] = (mark, now, text)
+            while len(frames) > self.FRAMES_MAX:
+                del frames[next(iter(frames))]
+        return text
 
     def live_payload(self, window_min=None):
         win = self.window(window_min)

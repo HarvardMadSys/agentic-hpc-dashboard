@@ -21,6 +21,7 @@
  * shell a person types into: an agent's failed call is the agent's own step
  * (user, 2026-10-29). It is counted the same way.
  */
+import { memo, useCallback, useMemo } from 'react';
 import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcNode } from '../api/types';
 import { ioBrief, ioTip } from '../lib/procio';
 import { DASH, clock, dur, fint } from '../lib/format';
@@ -473,7 +474,7 @@ export function reveal(
   return { open, all, off };
 }
 
-export function ProcDiagram({
+export const ProcDiagram = memo(function ProcDiagram({
   root,
   open,
   setOpen,
@@ -489,7 +490,29 @@ export function ProcDiagram({
   all: Set<string>;
   setAll: (s: Set<string>) => void;
 }) {
-  const nodes = procNodes(root, open, hide, all);
+  // Worked out again only when the tree, what is open or shown in full, or
+  // what is hidden changes: an expanded session is thousands of boxes.
+  const nodes = useMemo(() => procNodes(root, open, hide, all), [root, open, hide, all]);
+  const onSelect = useCallback(
+    (id: string) => {
+      const n = nodes.find((x) => x.id === id);
+      if (!n) return;
+      if (n.data.e.k === 'cap') {
+        setAll(new Set([...all, n.data.e.parent]));
+        return;
+      }
+      if (!n.data.kids) return;
+      const next = new Set(open);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setOpen(next);
+    },
+    [nodes, all, open, setAll, setOpen],
+  );
+  const render = useCallback(
+    (n: PNode) => <Box e={n.data.e} open={open.has(n.id)} kids={n.data.kids} root={n.id === 'r'} />,
+    [open],
+  );
   return (
     <TreeDiagram
       nodes={nodes}
@@ -498,20 +521,8 @@ export function ProcDiagram({
       gapX={14}
       gapY={26}
       className="pd"
-      onSelect={(id) => {
-        const n = nodes.find((x) => x.id === id);
-        if (!n) return;
-        if (n.data.e.k === 'cap') {
-          setAll(new Set([...all, n.data.e.parent]));
-          return;
-        }
-        if (!n.data.kids) return;
-        const next = new Set(open);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        setOpen(next);
-      }}
-      render={(n) => <Box e={n.data.e} open={open.has(n.id)} kids={n.data.kids} root={n.id === 'r'} />}
+      onSelect={onSelect}
+      render={render}
     />
   );
-}
+});

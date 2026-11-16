@@ -36,10 +36,12 @@ Two correctness rules, both from how the collector writes:
   (`gz.open_feed`), so the `.gz` takes up where the plain file was left -- read
   from byte 0, the whole day would be counted twice.
 """
+import concurrent.futures
 import glob
 import heapq
 import json
 import os
+from operator import itemgetter
 
 from . import gz, fastjson
 from .export import dated_dirs, feed_files, iter_lines_reverse, seek_to_epoch
@@ -49,6 +51,18 @@ from .normalize import epoch_of
 # file first seen after startup, read from byte 0 -- catches up over several
 # polls instead of pulling a whole day-file into memory at once.
 READ_CAP = 64 << 20
+
+# Files positioned at once at start. Positioning a sealed `.gz` inflates all of it
+# to index it (`gz.Index.build`): minutes for a week of a busy fleet, one file after
+# another. zlib lets go of the GIL while it inflates, and the index is built once
+# per file whoever asks (`gz.index_for`), so files are positioned side by side --
+# a few at a time: each open reader holds two inflated spans (`gz.SPAN`).
+POSITION_WORKERS = max(1, min(4, os.cpu_count() or 1))
+
+
+def _disk(st):
+    """A file's identity on disk: changes whenever it is appended to or replaced."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 class IngestSource:
@@ -104,20 +118,44 @@ class FileTailSource(IngestSource):
         live tier from.  `since=None` plans nothing: the tail starts at the end
         and fills forward.
         """
-        plan = []
-        for p in self.files():
+        def one(p):
             try:
                 fh = gz.open_feed(p)
             except OSError:
-                continue
+                return None
             with fh:
                 try:
                     st = gz.fstat(fh)
+                    disk = _disk(os.fstat(fh.fileno()))
                     end = complete_end(fh, st.st_size)
                     start = end if since is None else seek_to_epoch(fh, since, end)
                 except OSError:
-                    continue
-            self._remember(p, st, end, None)
+                    return None
+            return p, st, disk, end, start
+
+        def guarded(p):
+            try:
+                return one(p)
+            except Exception as e:      # raised below, in file order
+                return e
+
+        files = self.files()
+        if POSITION_WORKERS > 1 and len(files) > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                    min(POSITION_WORKERS, len(files)), thread_name_prefix="position") as ex:
+                done = list(ex.map(guarded, files))
+        else:
+            done = [guarded(p) for p in files]
+        plan = []
+        # In file order, as one pass would: a file that failed stops it there,
+        # with every file before it handed to the tail and none after.
+        for got in done:
+            if isinstance(got, Exception):
+                raise got
+            if got is None:
+                continue
+            p, st, disk, end, start = got
+            self._remember(p, st, end, None, disk)
             if start < end:
                 plan.append({"path": p, "start": start, "end": end})
         return plan
@@ -133,6 +171,17 @@ class FileTailSource(IngestSource):
 
     # ------------------------------------------------------------------- read
     def _read_one(self, path):
+        # A file the tail has read to its end and that has not changed on disk
+        # since is not opened: a sealed `.gz` would otherwise be opened and its
+        # index looked up every poll, for nothing.
+        held = self.state.get(path)
+        if held is not None and held.get("disk") is not None \
+                and held.get("offset", 0) >= held.get("size", 0):
+            try:
+                if _disk(os.stat(path)) == held["disk"]:
+                    return
+            except OSError:
+                pass
         try:
             fh = gz.open_feed(path)
         except OSError:
@@ -140,6 +189,7 @@ class FileTailSource(IngestSource):
         with fh:
             try:
                 st = gz.fstat(fh)
+                disk = _disk(os.fstat(fh.fileno()))
             except OSError:
                 return
             rec = self.state.get(path)
@@ -154,7 +204,7 @@ class FileTailSource(IngestSource):
             elif rec:
                 self.stats["resets"] += 1          # replaced: different inode
             if offset >= st.st_size:
-                self._remember(path, st, offset, rec)
+                self._remember(path, st, offset, rec, disk)
                 return
             fh.seek(offset)
             data = fh.read(min(st.st_size - offset, READ_CAP))
@@ -176,7 +226,7 @@ class FileTailSource(IngestSource):
 
         # The inode that was read, not the path's now: a day compressed since
         # has no plain file left to stat, and its `.gz` takes up from here.
-        self._remember(path, st, offset + consumed, self.state.get(path))
+        self._remember(path, st, offset + consumed, self.state.get(path), disk)
 
     def _compressed(self, path, st):
         """The offset record of `.gz` file `path` if this tail followed it under
@@ -187,10 +237,12 @@ class FileTailSource(IngestSource):
         rec = self.state[path] = dict(twin, dev=st.st_dev, inode=st.st_ino)
         return rec
 
-    def _remember(self, path, st, offset, prev):
+    def _remember(self, path, st, offset, prev, disk=None):
+        # `disk` is the file as it was when it was read: a later append changes it,
+        # and only then is the file opened again (`_read_one`).
         self.state[path] = {"dev": st.st_dev, "inode": st.st_ino,
                             "size": st.st_size, "offset": offset,
-                            "mtime": st.st_mtime}
+                            "mtime": st.st_mtime, "disk": disk}
 
     def poll(self):
         """Yield every complete record appended since the last call."""
@@ -214,7 +266,7 @@ def read_back(plan, stats):
     a record with no timestamp keeps its place in its file.
     """
     return heapq.merge(*[_read_back_one(e, stats) for e in plan],
-                       key=lambda kr: kr[0], reverse=True)
+                       key=itemgetter(0), reverse=True)
 
 
 def _read_back_one(entry, stats):

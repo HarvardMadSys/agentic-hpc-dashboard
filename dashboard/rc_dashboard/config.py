@@ -341,7 +341,16 @@ def defaults():
                    # DNS (endpoints.py): `workers` lookups at a time, from this
                    # host, off the request path, kept in <cache.dir>/rdns.json.
                    # Off: names come only from the records' command lines.
-                   "rdns": {"enabled": True, "workers": 4}},
+                   "rdns": {"enabled": True, "workers": 4},
+                   # How long a thread may hold the GIL while another waits for
+                   # it (`sys.setswitchinterval`; Python's own is 5 ms). Builds,
+                   # the backfill and the tail are pure Python and keep the GIL;
+                   # the event loop gives it up at every read and write and
+                   # waited up to this long for it each time. 1 ms: on the bench
+                   # feed a warm start's default window was ready in 16 s, not 29,
+                   # and a static file's p99 fell from 594 ms to 248 ms. 0 keeps
+                   # Python's.
+                   "gil_switch_ms": 1.0},
     }
 
 
@@ -399,6 +408,7 @@ ENV_MAP = {
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
     "server.rdns.enabled": ("RC_DASH_RDNS", lambda v: v not in ("0", "false", "no", "off")),
+    "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.

@@ -24,12 +24,12 @@
  * A row of a phase (`PhaseRow`) and the live edge (`EdgeRow`) are exported, so that the list of tasks (TaskList.tsx), which
  * has each task open into its phases, draws them the same way.
  *
- * Not memoized, and read in the render of a page that repeats with every live frame: the live edge's name is
- * worded by `clockPinned()`, a plain flag that frame sets, as is an open phase's, and its end by
- * `serverNow()`.
+ * The live edge's name is worded by `clockPinned()`, a plain flag each live frame sets, as is an open phase's, so both rows
+ * render again when it flips (`useClockPinned`); the edge's end is now, read again with every live frame (`useNow`,
+ * lib/useNow.ts).
  */
 import type { Phase, PhaseBlock, TrajRunning } from '../api/types';
-import { serverNow } from '../lib/clock';
+import { useClockPinned, useNow } from '../lib/useNow';
 import { clock, dur } from '../lib/format';
 import { cutNote, edgeLabel, edgeWhat, phaseCol, phaseLbl, phaseWhat, zoomTip } from '../lib/phases';
 
@@ -44,6 +44,7 @@ function Chip({ look, fill }: { look: Look; fill?: string }) {
 /** One phase, as a row to click: its chip, name, when it began and ended, how long it was, and what it was. Picking it is
  *  the caller's: `onPick` is told which. */
 export function PhaseRow({ p, onPick }: { p: Phase; onPick: (p: Phase) => void }) {
+  useClockPinned();
   const col = phaseCol(p.kind);
   const look: Look = p.kind === 'edit_guess' ? 'guess' : col === 'none' ? 'idle' : 'fill';
   return (
@@ -70,9 +71,12 @@ export function EdgeRow({
   const list = block.list;
   const last = list.length ? list[list.length - 1] : null;
   const edge = last && now && (now.state === 'running' || now.state === 'idle' || now.state === 'unknown') ? now : null;
+  // it runs on to now: read again with every live frame (lib/useNow.ts)
+  const at = useNow(edge != null);
+  useClockPinned();
   if (!edge) return null;
   const from = last?.t1 ?? 0;
-  const to = Math.max(serverNow() / 1000, from);
+  const to = Math.max(at / 1000, from);
   // the edge is drawn as the chart draws it: filled in what is running, an empty dashed outline where the census
   // shows nothing beyond what was up already (a proxy for idle), and a dotted one where it cannot say
   const fill = edge.state === 'running' ? phaseCol(edge.cat) : 'none';
