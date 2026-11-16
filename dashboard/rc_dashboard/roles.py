@@ -288,12 +288,15 @@ def agent_version(comm, args):
     return m.group(1) if m else None
 
 
-# Claude Code's sandbox runtime starts a Bash call's shell inside bwrap, behind a
-# proxy prologue: that shell's parent is the sandbox, not the agent, and the inner
-# bwrap's exit is written before its child's, so the index never holds it. Taken for
+# Claude Code's sandbox runtime starts a Bash call's shell inside bwrap, in two
+# stages: a shell behind a proxy prologue (`_srt_http=$!`), which runs the seccomp
+# shim (`ARGV0=apply-seccomp /proc/self/fd/3`), which starts the call's shell
+# (`bash -c exec 3<&- || exit 126; source ...`). Each stage's parent is the sandbox,
+# not the agent, and exits before its child, so the index never holds it. Taken for
 # the agent, it made each sandboxed call an implied agent -- 981 in one FAS tree on
 # 2026-11-13. Without the link the call folds into its tree root, the agent.
-_SANDBOX_RUNTIME = re.compile(r"\b_srt_(?:http|socks)=|\bSRT_ALLOW_NESTED_USERNS=|\bARGV0=apply-seccomp\b")
+_SANDBOX_RUNTIME = re.compile(r"\b_srt_(?:http|socks)=|\bSRT_ALLOW_NESTED_USERNS="
+                              r"|\bARGV0=apply-seccomp\b|\s-c\s+exec 3<&- \|\| exit 126;")
 
 
 def spawned_by_agent(role, command, args=None):
