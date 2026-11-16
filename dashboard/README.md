@@ -1,10 +1,10 @@
 # Live agent-behaviour dashboard
 
-A FastAPI service that tails the [`ebpfm`](../collector) collector's JSONL,
-keeps rolling aggregates over a **selectable** window, and pushes them to a React page over a
-WebSocket. Every number on the page is measured: a feed with no data names the path it
-expected instead of showing a plausible figure, and a metric the collector could not
-populate reads **not measured** rather than `0`.
+A FastAPI service that tails the [`ebpfm`](../collector) collector's day-files, JSONL or
+EBR ([Two formats](#two-formats)), keeps rolling aggregates over a **selectable** window, and
+pushes them to a React page over a WebSocket. Every number on the page is measured: a feed with
+no data names the path it expected instead of showing a plausible figure, and a metric the
+collector could not populate reads **not measured** rather than `0`.
 
 This replaces a static-HTML demo, retired from the tree and recoverable in git history
 under `dashboard/archive/`. That demo generated most of its own numbers (`rc_synth.py`),
@@ -47,9 +47,14 @@ never outranks the file.
   *that*" is never a guess.
 - Path defaults are **candidate lists**, probed against the filesystem. `--check-feeds` shows
   every candidate and which one won.
+- `feeds.ebpf.prefer` (`RC_DASH_EBPF_PREFER`) and `feeds.ebpf_node.prefer`
+  (`RC_DASH_NODE_PREFER`) say which twin of a stream written in both formats is read:
+  `jsonl` (the default) or `ebr` ([Two formats](#two-formats)). Any other value stops the
+  service at startup rather than guess.
 
-JSON rather than TOML: the format is shared with the rest of the repo (every collector writes
-JSONL; the retired builder's contract was `data.json`) and `--print-config` has to round-trip it.
+JSON rather than TOML: the format is shared with the rest of the repo (every collector's records
+are JSON, whether written as JSONL or as EBR; the retired builder's contract was `data.json`) and
+`--print-config` has to round-trip it.
 
 ## The two feeds
 
@@ -58,6 +63,11 @@ JSONL; the retired builder's contract was `data.json`) and `--print-config` has 
 | `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `log/ebpfm`, `/var/log/ebpfm` |
 | `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `…/ebpfm/node/logs`, `/var/log/ebpfm-login`, `log/login` |
 
+Under a root, a day is a directory of one file per host and stream in each format written:
+`<YYYY-MM-DD>/<host>.exits.{jsonl,ebr}[.gz]` and `<host>.snapshot.{jsonl,ebr}[.gz]` for the eBPF
+tier, `<YYYY-MM-DD>/<host>.{jsonl,ebr}` for the node tier. A `.gz` is a day the collector has
+sealed; it never seals the node tier's.
+
 `log/login` is last but load-bearing: `node_snapshot.py` is a vendored copy of
 `collect/common/snapshot.py`, so the existing login feed is schema-compatible and works before
 `ebpfm --node` is deployed anywhere.
@@ -65,6 +75,80 @@ JSONL; the retired builder's contract was `data.json`) and `--print-config` has 
 Reading the collector's output uses a **separate** env var from the collector's own
 `EBPFM_OUTPUT_DIR`, following `collect/healthcheck.py`: sharing one would let an operator shell
 silently repoint the readers along with the writer.
+
+### Two formats
+
+The collector writes each day-file as JSONL, as EBR, or as both (`EBPFM_FORMAT`, `both` by
+default while EBR is on trial). EBR, "ebpfm binary records" (`rc_dashboard/ebr.py`, a
+byte-identical copy of the collector's `lib/ebr.py`), holds the same records: decoding one gives
+back what `json.loads` gives for its JSONL line, types and key order included, so every reducer
+sees the same record either way. It is 4-8x smaller, and it is framed: CRC-checked frames,
+normally one per poll round, each with its records' time bounds and event kinds in its header,
+so a reader can pass a frame without building its records. The format, its numbers and the
+collector's side are in the [collector README](../collector/README.md#binary-records-ebr).
+
+**One file per stream.** With `both`, every stream has twins, `x.jsonl` and `x.ebr`, holding the
+same records in the same order, and the service reads exactly one of them (`feedfile.choose`), so
+a day is never counted twice:
+
+| the stream has | read |
+|---|---|
+| one file, of either format | that file |
+| twins, the preferred one holding a record | the preferred twin -- unless its first record is more than 1 s after the other twin's first: it was started mid-day, so the other twin, which holds the day's start, is read, and the reason is reported |
+| twins, only the other one holding a record | nothing until 300 s after that twin's first record (*held*), then that twin |
+| twins, neither holding a record | nothing (*held*); the day still counts as one |
+
+A file holds a record once it holds one complete line, or one complete frame of records. The
+choice depends only on each twin's first record, which never changes once written, so a live day
+never moves from one twin to the other. That happens only when the twin being read is deleted:
+the tail then follows the other one from its end, so at most one poll's records are missed and
+none is read twice (`twin_switches`), and a saved window that read the deleted twin is scanned
+afresh. For either format a plain file beats its `.gz`, as it always did.
+
+**`prefer`.** `feeds.ebpf.prefer` and `feeds.ebpf_node.prefer` (`RC_DASH_EBPF_PREFER`,
+`RC_DASH_NODE_PREFER`) name the preferred format, `jsonl` unless set. Both are part of the config
+the saved windows are keyed on, so changing either builds them afresh; `feeds.ebpf.prefer` is part
+of the saved hours' too. Old JSONL captures read as before: a stream with one file is read in its
+format, whatever `prefer` says.
+
+**What was read, and why.** Each of the two tiers' entries in `/api/feeds` says:
+
+| field | |
+|---|---|
+| `prefer` | the preferred format |
+| `formats` | `{read, unread}`: how many files of each format are read, and how many are left unread as the twin not chosen |
+| `files[].format`, `files[].held` | each file's format, and whether its stream is held |
+| `twins` | each stream that has two files: its `day` and `stream`, the format `read` and the one `unread`, and a `reason` when the one read is not the preferred one |
+| `held` | each stream nothing is read from yet, and why |
+| `format_notice` | set when a stream is read from its non-preferred twin, or when the twin read was last written more than `max_age_s` before the other (one format's writer stopped). It reports; it never switches |
+
+`--check-feeds` prints a `formats` line per tier and the notice, and an export's `_meta` header
+carries the eBPF tier's as `feed_formats`. For example, with `prefer=ebr`, a day whose exits
+stream's EBR twin was started mid-day:
+
+```
+  formats ebpf      prefer ebr; read ebr 1, jsonl 1; unread ebr 1, jsonl 1; 0 held
+  ! 1 stream(s) read from their jsonl twin, not the preferred ebr: demo-login01.exits (2026-11-14): the ebr twin's first record is 14.7 h after the jsonl twin's: it was started mid-day
+```
+
+**Moving to EBR**, the dashboard's half of the collector's
+[rollout](../collector/README.md#rollout):
+
+1. **Trial.** Collectors on `both`, the dashboard on `prefer=jsonl`: both are the defaults. The
+   page reads JSONL as before while the twins are checked on each host (`ebpfm compare`,
+   `ebpfm verify`).
+2. **`prefer=ebr`**, for both tiers (`RC_DASH_EBPF_PREFER=ebr`, `RC_DASH_NODE_PREFER=ebr`).
+   The page reads EBR. A day whose EBR twin started mid-day -- its collector was moved to
+   `both` during it -- is read from its JSONL twin instead, and listed (`twins[].reason`,
+   `format_notice`, `--check-feeds`).
+3. **Collectors to `ebr`.** A new day has only its `.ebr` file, which is read whatever `prefer`
+   says.
+4. **JSONL deleted last**, keeping the JSONL of every day listed in step 2: that day's EBR twin
+   lacks the day's start, and once it is the stream's only file it is the one read.
+
+A dashboard fed through [`deploy/fleet`](../deploy/fleet/README.md) reads what
+`fleet/fleet_stream.py` copies, which is `.jsonl` and `.jsonl.gz` files only: with its collectors
+on `ebr` it would get nothing.
 
 ## Two deployments on this host
 
@@ -95,11 +179,11 @@ uv run python -m rc_dashboard demo        # http://127.0.0.1:8080
 ```
 
 For showing the dashboard where there is no cluster: a laptop, a talk, a reviewer. `demo`
-writes a few days of collector records for fictional login nodes into `.cache/demo/feed`,
-keeps appending to them in real time, and starts the service, unchanged, over them
-(`rc_dashboard/demo/`). The tail, the backfill, every reducer, the saved builds and the
-websocket run as they do on a cluster; the page is not fed from a fixture, so what it shows
-is what the service makes of the records, and the Live tab moves.
+writes a few days of collector records for fictional login nodes into `.cache/demo/feed`, as
+EBR unless `--demo-format` says otherwise, keeps appending to them in real time, and starts the
+service, unchanged, over them (`rc_dashboard/demo/`). The tail, the backfill, every reducer,
+the saved builds and the websocket run as they do on a cluster; the page is not fed from a
+fixture, so what it shows is what the service makes of the records, and the Live tab moves.
 
 **Nothing in it was measured, and it says so everywhere.** Every record carries
 `"synthetic": true`, a key no collector writes. `health.py` notes each host whose records
@@ -129,17 +213,19 @@ panels' shapes recognisable and are a model of nothing.
 
 **What it overrides**, whatever the shell or the config file says -- `run.sh` exports the
 cluster's feed roots, and a demo must never read them: both feed roots (the demo's own),
-the other feeds (a path in the demo dir that does not exist, so they read *not set up*),
-`cache.dir` (so no real deployment's saved builds are evicted), `clock.as_of` (the wall
-clock), `live.retention_min` and `live.backfill_hours` (the history written), and
-`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
-`--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
+both feeds' `prefer` (`ebr`, or `jsonl` for a JSONL-only demo), the other feeds (a path in the
+demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
+saved builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
+`live.backfill_hours` (the history written), and `site.name`/`site.description`. Each reads
+`demo` as its origin in `--print-config`. `--ebpf-root`, `--node-root` and `--as-of` are
+refused rather than ignored.
 
 | flag | env | default | |
 |---|---|---|---|
 | `--demo-days` | `RC_DASH_DEMO_DAYS` | 3 | history written before serving, 1..14 |
 | `--demo-hosts` | `RC_DASH_DEMO_HOSTS` | 2 | login nodes, 1..6 |
 | `--demo-seed` | `RC_DASH_DEMO_SEED` | `demo` | another seed is another set of sessions |
+| `--demo-format` | `RC_DASH_DEMO_FORMAT` | `ebr` | the day-files' format: `ebr`, `jsonl`, or `both` (twins, as a collector on `EBPFM_FORMAT=both` writes them; the service reads the EBR one) |
 | `--demo-dir` | `RC_DASH_DEMO_DIR` | `.cache/demo` | the feed, the saved builds, the stamp |
 | `--demo-fresh` | | | discard the feed and write it again |
 | `--demo-write-only` | | | write the history and exit |
@@ -153,13 +239,14 @@ The real service over live collectors, behind a password, on a host of your own,
 [`deploy/fleet`](../deploy/fleet/README.md).
 
 **Restarts resume it.** The feed is a function of the seed, the host count and the clock:
-the same span cut into windows anywhere is the same bytes (`demo/world.py`;
-`tests/test_demo.py` checks it). `demo.json` stamps how far the feed was written, so a
-restart -- `run.sh` restarts on every save -- cuts whatever a stopped round left past that,
+the same span cut into windows anywhere is the same records -- JSONL: the same bytes; EBR: the
+same decoded records, its frames following the rounds that wrote them (`demo/world.py`;
+`tests/test_demo.py` checks it in each format). `demo.json` stamps how far the feed was written,
+so a restart -- `run.sh` restarts on every save -- cuts whatever a stopped round left past that,
 then writes on from it; nothing is written twice and nothing is missed. A stamp from another
-seed or host count, or one older than the history asked for, starts the feed afresh. One
-demo writes a directory at a time (`.demo.lock`), as one collector writes a host. Three days
-of two hosts is ~85 MB, written in about two seconds.
+seed, host count or format, or one older than the history asked for, starts the feed afresh.
+One demo writes a directory at a time (`.demo.lock`), as one collector writes a host. Three days
+of two hosts is 84 MB of JSONL, written in about 2 s, or 14 MB of EBR, in about 3 s.
 
 ## A capture from another cluster
 
@@ -167,9 +254,11 @@ A feed collected elsewhere and copied here -- `run-fasrc.sh` serves boslogin06's
 with the same hot reload as `./run.sh build` -- differs from a live one in two ways, and the
 service handles both without touching a record.
 
-**It is compressed.** A day-file may be `<host>.<stream>.jsonl.gz`, read in place
-(`rc_dashboard/gz.py`). Every reader here addresses a file by byte offset (the window plan's
-binary search, the read-back that walks from the end, a saved window's resume, the tail),
+**It is compressed.** A day-file may be `<host>.<stream>.jsonl.gz` or `<host>.<stream>.ebr.gz`,
+read in place (`rc_dashboard/gz.py`, which serves either: it knows nothing of the format inside,
+and an EBR file's frames sit at the same offsets as in the plain file). Every reader here
+addresses a file by byte offset (the window plan's binary search, the read-back that walks from
+the end, a saved window's resume, the tail),
 and gzip offers none of that, so the first open inflates the file once and keeps a copy of the
 inflater every 8 MB of output. Reaching any offset then inflates at most 8 MB, and offsets are
 into the uncompressed stream, so a byte range or a saved build means the same thing for either
@@ -254,9 +343,10 @@ of exactly the bins the chart drew. A window **wider than retention is clamped a
 drawing bins the process never held is the same error as imputing a zero.
 
 Rebuilding costs the *window*, not the *day*. A day-file is appended in time order, so it is
-sorted by timestamp and `export.seek_to_epoch` binary-searches the first in-window byte: a
-1-hour view of a 15 GB day-file reads ~20 probes and one hour of rows. Files entirely older
-than the window are skipped without being opened. The rebuild feeds records **oldest first**,
+sorted by timestamp and `export.seek_to_epoch` binary-searches the first in-window byte (in an
+EBR file, by its frames' headers, which carry their time bounds): a 1-hour view of a 15 GB
+day-file reads ~20 probes and one hour of rows. Files entirely older than the window are
+skipped without being opened. The rebuild feeds records **oldest first**,
 which is a correctness requirement and not a preference — the tool-mix shell-wrapper dedup
 relies on a child's exit arriving before the shell that waited on it, and a trajectory's
 run-length-encoded chain is appended in place.
@@ -298,17 +388,24 @@ service, not with the first page load.
 Two things keep a build from costing more than it must:
 
 - **Only the records the panels read are parsed.** Every historical reducer reads `exit` and
-  `truncated` and nothing else, so a scan skips the other ~70% of a day-file's lines (residency,
-  connections, sockets) on a byte match before `json.loads`. The match cannot miss a record — any
-  JSON writer emits `"event": "exit"` — and a false hit only costs a parse.
+  `truncated` and nothing else, so a scan skips the other ~70% of a JSONL day-file's lines
+  (residency, connections, sockets) on a byte match before `json.loads`. The match cannot miss a
+  record — a JSON writer emits `"event": "exit"`, give or take whitespace — and a false hit only
+  costs a parse. An EBR file is not matched as bytes: a frame whose header's event kinds hold
+  none of those read, or whose time bounds lie outside the window, is passed without building
+  its records, and in a frame that is read a record is rejected by the interned id of its
+  `event` string before it is built. A view's users and agent types, the inspector's session
+  keys, and the user, host and directory of the commands looked up behind a clicked I/O figure
+  (`iocmds.py`) are tested the same way (`where`): on the record's strings, before the record
+  exists.
 - **Every build is saved, and resumed rather than repeated.** At the end of each scan the
   reducers are pickled to `<cache.dir>/windows/` together with exactly how far into each day-file
   the scan read: `(st_dev, st_ino)`, a digest of the first 4 KB, and the offset past the last
-  complete line. A restart (and `run.sh` restarts on every save), or a return to a window the
-  LRU evicted, loads that and reads each file on from its offset — only what the collector wrote
-  since. On one login node's feed a 24 h window goes from ~7 s to ~0.2 s and a 7 d window from
-  ~42 s to ~1.4 s, plus the catch-up. A snapshot is ~12 MB per day of window; `panels.cache_keep`
-  (8) bounds how many are kept.
+  complete line, or EBR frame. A restart (and `run.sh` restarts on every save), or a return to a
+  window the LRU evicted, loads that and reads each file on from its offset — only what the
+  collector wrote since. On one login node's feed a 24 h window goes from ~7 s to ~0.2 s and a
+  7 d window from ~42 s to ~1.4 s, plus the catch-up. A snapshot is ~12 MB per day of window;
+  `panels.cache_keep` (8) bounds how many are kept.
 
 A resumed view holds the records a service that had never stopped would hold, and reproduces a
 fresh scan's panels exactly — checked on real data, and in `tests/test_window_cache.py`. It keeps
@@ -321,8 +418,12 @@ one failed:
   config key outside `server`) — changing how a record is counted must never resume a reduction
   counted the old way;
 - the same files: every one it read still there, the same inode *and* the same first 4 KB (a
-  file deleted and rewritten can get its inode number back), at least as long, a line ending at
-  the saved offset;
+  file deleted and rewritten can get its inode number back), at least as long, and a line or an
+  EBR frame ending at the saved offset. A day the collector has gzipped since (`x.jsonl` to
+  `x.jsonl.gz`, `x.ebr` to `x.ebr.gz`) is the same bytes at the same offsets under a new name
+  and inode, so it is read on from its `.gz`, known by its first 4 KB alone, in either format.
+  And each stream must still be read from the twin it was read from, not from its twin of the
+  other format ([Two formats](#two-formats));
 - built within the window's drift budget. An older one would be re-scanned the moment it caught
   up, so catching it up would only add to the cost.
 
@@ -366,18 +467,20 @@ untouched, which is the one place a merged 7 d window differs from one pass over
 longer holds week-old pending requests, which on rtx6000a made one pass refuse a few legitimate
 parents whose pid an older process had used. An hour closes once the newest record is
 `panels.hour_grace_s` (300 s) past its end; a record that arrives for a closed hour is found by the
-next hour's read and merged into its hour's saved state, not lost. On one login node's feed a
-24 h window then builds in ~2-3 s and a 7 d one in ~8 s after a restart, a window switch or a drift
-refresh (against ~15 s and ~160 s scanned); filling the hours the first time costs about what one
-scan does. A week of hours is ~38 MB on disk. A view filtered to users or agent types is still
-scanned.
+next hour's read and merged into its hour's saved state, not lost. An EBR file is read a whole
+frame at a time, a record's position being its frame's offset plus its index in it, so where an
+hour's read stops, where the next one resumes and which records are stragglers are all decided at
+frame boundaries. On one login node's feed a 24 h window then builds in ~2-3 s and a 7 d one in
+~8 s after a restart, a window switch or a drift refresh (against ~15 s and ~160 s scanned);
+filling the hours the first time costs about what one scan does. A week of hours is ~38 MB on
+disk. A view filtered to users or agent types is still scanned.
 
 ## API
 
 | endpoint | purpose |
 |---|---|
 | `GET /api/config` | resolved config, `_origin` per key |
-| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill |
+| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill; for the eBPF and node tiers, which format each stream is read in: `prefer`, `formats`, each file's `format` and `held`, `twins`, `held`, `format_notice` ([Two formats](#two-formats)) |
 | `GET /api/collectors` | per host: is its collector OK -- verdict and reasons, heartbeat age, the run in progress, every run and how it ended (events lost), probes that could not load (`health.py`) |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
@@ -401,8 +504,9 @@ clamped, and the response carries `requested`, `clamped` and a `note` saying why
 `/api/trajectory` (`rc_dashboard/proctree.py`) is the inspector behind a clicked trajectory row.
 No reducer holds per-process rows -- one day's busiest session on rtx6000a ran 1.59 M processes --
 so it re-reads the window's day-files for exactly the records the row folds (their `_sid`), through
-the same normaliser scan a window build uses, with a byte pre-check on `session_key` so the rest of
-the file is skipped before parsing. Parents come from each record's own `ppid`; a parent placed on
+the same normaliser scan a window build uses, with a byte pre-check on `session_key` (in an EBR
+file, a test of the record's session key before the record is built) so the rest of the file is
+skipped before parsing. Parents come from each record's own `ppid`; a parent placed on
 weaker evidence (the process index, the collector's `depth`, the fold) says so in `link`, and one
 with no exit record in the read is drawn without one. Consecutive siblings of one shape fold into
 counted groups. Every bound is in the response, never applied quietly: the read stops at
@@ -426,8 +530,10 @@ Filters are shared by `/api/events` and `/api/export`, so **the download is exac
 `from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox
 approval depth_min depth_max cpu_min duration_min exit_code signal q`.
 
-The export's first line is a `_meta` header (filters, window, feed paths, schema versions) and
-its last is a `_trailer` (row count, whether the cap truncated it). Body rows are the
+The export's first line is a `_meta` header (filters, window, feed paths, schema versions, and
+`feed_formats`: the preferred format, how many files of each were read, and the streams read
+from their other twin) and its last is a `_trailer` (row count, whether the cap truncated it).
+It is JSONL whichever format the day-files are in. Body rows are the
 collector's own fields plus additive `_`-prefixed derived keys — originals unmodified,
 except credentials.
 
@@ -1027,8 +1133,10 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 |---|---|
 | `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
+| `rc_dashboard/feedfile.py` | the collector's day-files in either format: listing them, the twin rule (`choose`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line or frame ends, EBR's frames and records |
+| `rc_dashboard/ebr.py` | the EBR codec, a byte-identical copy of `collector/lib/ebr.py` (`tests/test_ebr_sync.py` keeps it so) |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
-| `rc_dashboard/gz.py` | a `.jsonl.gz` day-file read in place, seekable by uncompressed offset through a per-process inflater index |
+| `rc_dashboard/gz.py` | a `.jsonl.gz` or `.ebr.gz` day-file read in place, seekable by uncompressed offset through a per-process inflater index |
 | `rc_dashboard/health.py` | each collector's verdict, from its own meta / heartbeat / stop records |
 | `rc_dashboard/clock.py` | the service's present; `clock.as_of` pins (and freezes) it for a captured feed |
 | `rc_dashboard/normalize.py` | schema contract, `actor3`, sandbox/approval, session keys, null gating |
@@ -1042,7 +1150,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
-| `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (`seek_to_epoch`) |
+| `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (over `feedfile.py`, whose names it re-exports) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
 | `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
@@ -1053,12 +1161,12 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 service was running.** Nothing in the live tier is restored from a previous run (the historical
 windows resume from saved builds, but only from ones that are provably a prefix of the same files —
 see *The time window*). On every start the service hands
-each day-file to the tail at the end of its last complete line, then reads the history behind
-that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it, located
-by the same timestamp binary search the window rebuild uses. Offsets used to be persisted while
-the bins they fed were not, so a restart resumed at EOF with empty bins and the page showed only
-what the collector wrote after the service came back — and `run.sh` restarts the service on
-every save.
+each day-file to the tail at the end of its last complete line or frame, then reads the history
+behind that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it,
+located by the same timestamp binary search the window rebuild uses. Offsets used to be
+persisted while the bins they fed were not, so a restart resumed at EOF with empty bins and the
+page showed only what the collector wrote after the service came back — and `run.sh` restarts
+the service on every save.
 
 The read-back runs **newest first**, k-way merged across hosts, while the tail is already
 polling; a poll that lands before the hand-off reads nothing, so no record is counted twice. The
@@ -1072,9 +1180,14 @@ submission tails — only takes an older record where nothing newer has claimed 
 `DailyWriter.write()` (`collector/ebpf_trace.py`) buffers and flushes once per poll round, which
 is not atomic against a concurrent reader. So the tailer reads to EOF, finds the last newline,
 yields only complete lines, and **advances its stored offset only that far** — trailing bytes are
-re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup
-hand-off obeys the same rule, so a line still being written belongs to the tail, never to the
-read-back.
+re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. An EBR file is
+followed by the same rule a frame at a time: a poll yields only complete frames, whose CRCs
+hold, and a frame still being written waits, whole, for the next poll. Near a plain file's end,
+within its last 4 MiB, a region that does not check out is taken for one still being written
+too, not for corruption: over NFS a write can reach a reader in pieces. Further back it is a
+corrupt region, counted (`corrupt_frames`) and skipped to the next segment, which bounds what it
+costs (`EBPFM_EBR_RESET_BYTES`, 2 MiB). The startup hand-off obeys the same rule, so a line or
+frame still being written belongs to the tail, never to the read-back.
 
 Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
 rather than silently seeked past its end. A file first seen after startup — a new date

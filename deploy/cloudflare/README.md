@@ -99,13 +99,14 @@ needs beyond the template: if a deploy fails at the domain, add **Zone · DNS ·
 
 **Cold start.** The container sleeps after 15 minutes with no request and no websocket
 message (`SLEEP_AFTER`), and the next request starts it. The service writes its history
-before it listens -- about 11 s on a `basic` instance, measured, plus the container's own
-start. A request waits up to 6 s (`READY_WAIT_MS`); past that, a page gets a small
-"starting the demo" page that reloads itself every 4 s, and an API call a 503 with
-`Retry-After`. Each request waits on its own and ends its wait before it answers: a wait
-shared between requests was dropped with the request that began it and left every request
-after it hanging (found under `wrangler dev`). The feed lives in the container, so each
-start writes it afresh, ending at the moment it starts.
+before it listens -- about 11 s on a `basic` instance, measured when the demo still wrote
+JSONL, plus the container's own start. EBR, which it writes now, takes longer to write than
+JSONL (timings in [Demo mode](../../dashboard/README.md#demo-mode)). A request waits up to
+6 s (`READY_WAIT_MS`); past that, a page gets a small "starting the demo" page that reloads
+itself every 4 s, and an API call a 503 with `Retry-After`. Each request waits on its own and
+ends its wait before it answers: a wait shared between requests was dropped with the request
+that began it and left every request after it hanging (found under `wrangler dev`). The feed
+lives in the container, so each start writes it afresh, ending at the moment it starts.
 
 **Cost.** A container is billed while it is awake. An open page keeps it awake -- the
 dashboard streams over a websocket, and every message counts as activity -- so a tab left

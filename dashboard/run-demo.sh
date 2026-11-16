@@ -17,9 +17,10 @@
 #   ./run-demo.sh dev      Vite dev server with HMR on :5173, backend on :8087
 #   ./run-demo.sh api      backend only, serving whatever the bundle dir holds
 #
-# RC_DASH_DEMO_DAYS (3), RC_DASH_DEMO_HOSTS (2), RC_DASH_DEMO_SEED (demo) and
-# RC_DASH_DEMO_DIR (.cache/demo) shape the feed; a different seed is a different
-# set of sessions, and changing any of them writes the feed afresh.
+# RC_DASH_DEMO_DAYS (3), RC_DASH_DEMO_HOSTS (2), RC_DASH_DEMO_SEED (demo),
+# RC_DASH_DEMO_FORMAT (ebr; or jsonl, or both as twins) and RC_DASH_DEMO_DIR
+# (.cache/demo) shape the feed; a different seed is a different set of sessions,
+# and changing any of them writes the feed afresh.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
