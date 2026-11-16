@@ -11,6 +11,7 @@ import gzip
 import json
 import os
 import re
+import sys
 import threading
 import time
 
@@ -120,6 +121,11 @@ def create_app(cfg):
     # First, so a malformed password hash stops the service before it reads anything.
     gate = authmod.from_config(cfg)
     gcwatch.install()
+    # The event loop gives up the GIL at every read and write and waits to get
+    # it back; beside a build or the backfill it waited the whole interval.
+    switch = float(cfg.get("server.gil_switch_ms", 1.0) or 0)
+    if switch > 0:
+        sys.setswitchinterval(switch / 1000.0)
     agg = Aggregator(cfg)
     anon = agg.anon
 
