@@ -50,7 +50,7 @@ import time
 from ..procindex import MAX_HOPS, _start, users_conflict
 from . import add_counts, max_of, min_of, pct
 from ..redact import redact
-from ..roles import agent_version, subcommand
+from ..roles import agent_version, js_launcher, subcommand
 from .sandbox import session_state
 from .workspace import tilde
 
@@ -179,6 +179,10 @@ class CascadeReducer:
                 # a session the daemon starts before it is asked for one: the
                 # session it becomes once claimed, the daemon's until then (`_idle`)
                 "spare": role == "agent" and subcommand(rec.get("_command"), args) == "bg-spare",
+                # read off the WHOLE argv, before the cut above: under a long nvm
+                # path a Codex's `app-server` falls past 200 characters
+                "app_server": bool(_APP_SERVER.search(args)),
+                "launcher": role == "agent" and js_launcher(rec.get("_command"), args),
                 "first": e, "last": e, "start": None, "exited": False,
                 "duration_s": None, "implied": False, "frontend": False,
                 "approval": None, "approval_detail": None, "version": None,
@@ -332,9 +336,10 @@ class CascadeReducer:
             if n["role"] != "agent" or n["via"] != "ancestor" or n["path"]:
                 continue
             p = live[(n["host"], n["parent"])]
+            # a node from a state saved before the flags existed reads its cut argv
             if p["role"] == "agent" and p["agent_type"] == n["agent_type"] and (
-                    _APP_SERVER.search(n["args"] or "")
-                    or (p["command"] or "") in _SCRIPT_HOSTS):
+                    n.get("app_server", bool(_APP_SERVER.search(n["args"] or "")))
+                    or p.get("launcher") or (p["command"] or "") in _SCRIPT_HOSTS):
                 p["role"], p["frontend"] = "client", True
                 # the session's launch is the front-end's: `codex --yolo` starts
                 # an app-server whose own argv names no approval
