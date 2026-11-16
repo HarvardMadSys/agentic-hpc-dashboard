@@ -23,6 +23,7 @@ import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { coveredBy, openIoCmds } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
+import { NetEndpoints } from './NetEndpoints';
 import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/types';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
@@ -619,72 +620,79 @@ export function RiskIoTab({ P, cls, part, plates = true, series = true }: {
 
         <Panel
           title="Network bytes"
-          ask={[{ panel: 'io_process', keys: ['by_class', 'by_tool', 'notes'] }]}
+          ask={[{ panel: 'io_process', keys: ['by_class', 'by_tool', 'endpoints', 'notes'] }]}
           p={io}
+          span
           empty={!have.length || netGroups.every((g) => g.v.tx == null && g.v.rx == null)}
           emptyWhat="no TCP accounting for the selection"
         >
-          {/* The groups are the classes; the bars in each are directions, so
-              they wear hues no class owns: crimson egress under "IDE" read as
-              agent. */}
-          <GroupBars
-            groups={netGroups}
-            series={[
-              { k: 'tx', lbl: 'egress (tx)', c: TOOL_COL[0] },
-              { k: 'rx', lbl: 'ingress (rx)', c: TOOL_COL[1] },
-            ]}
-            W={520}
-            H={200}
-            ylabel="MB"
-            fmtVal={(v) => mb(v)}
-          />
-          <Legend
-            items={[
-              { k: 'egress (tx)', c: TOOL_COL[0] },
-              { k: 'ingress (rx)', c: TOOL_COL[1] },
-            ]}
-          />
-          <More label="network bytes per class">
-            <div className="scroller">
-              <table>
-                <thead>
-                  <tr>
-                    <SortTh s={sortOf('net-class')} k="cls" first="asc">class</SortTh>
-                    <SortTh s={sortOf('net-class')} k="tx" num tip={GLOSS.tx}>tx</SortTh>
-                    <SortTh s={sortOf('net-class')} k="rx" num tip={GLOSS.rx}>rx</SortTh>
-                    <SortTh s={sortOf('net-class')} k="calls" num tip={GLOSS.netcalls}>calls</SortTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortOf('net-class').sort(have, (c, k) =>
-                    k === 'cls' ? CLS_LBL[c] ?? c
-                    : k === 'tx' ? byClass[c]?.net_tx_mb?.total ?? null
-                    : k === 'rx' ? byClass[c]?.net_rx_mb?.total ?? null
-                    : byClass[c]?.net_calls?.total ?? null,
-                  ).map((c) => (
-                    <tr key={c}>
-                      <td>{CLS_LBL[c] ?? c}</td>
-                      <td className="num">
-                        <IoNum q={{ title: `network sent · ${CLS_LBL[c] ?? c}`, sort: 'tx_mb', class: [c], ...coveredBy(io) }}>
-                          <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
-                        </IoNum>
-                      </td>
-                      <td className="num">
-                        <IoNum q={{ title: `network received · ${CLS_LBL[c] ?? c}`, sort: 'rx_mb', class: [c], ...coveredBy(io) }}>
-                          <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
-                        </IoNum>
-                      </td>
-                      {/* an Acc like its tx/rx neighbours: the count carries the
-                          same coverage, so it must show it the same way */}
-                      <td className="num">
-                        <AccumCell a={byClass[c]?.net_calls} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {/* the bars, and beside them (under them, when narrow) where the bytes went */}
+          <div className="net-split">
+            <div className="net-bars">
+              {/* The groups are the classes; the bars in each are directions, so
+                  they wear hues no class owns: crimson egress under "IDE" read as
+                  agent. */}
+              <GroupBars
+                groups={netGroups}
+                series={[
+                  { k: 'tx', lbl: 'egress (tx)', c: TOOL_COL[0] },
+                  { k: 'rx', lbl: 'ingress (rx)', c: TOOL_COL[1] },
+                ]}
+                W={520}
+                H={200}
+                ylabel="MB"
+                fmtVal={(v) => mb(v)}
+              />
+              <Legend
+                items={[
+                  { k: 'egress (tx)', c: TOOL_COL[0] },
+                  { k: 'ingress (rx)', c: TOOL_COL[1] },
+                ]}
+              />
+              <More label="network bytes per class">
+                <div className="scroller">
+                  <table>
+                    <thead>
+                      <tr>
+                        <SortTh s={sortOf('net-class')} k="cls" first="asc">class</SortTh>
+                        <SortTh s={sortOf('net-class')} k="tx" num tip={GLOSS.tx}>tx</SortTh>
+                        <SortTh s={sortOf('net-class')} k="rx" num tip={GLOSS.rx}>rx</SortTh>
+                        <SortTh s={sortOf('net-class')} k="calls" num tip={GLOSS.netcalls}>calls</SortTh>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortOf('net-class').sort(have, (c, k) =>
+                        k === 'cls' ? CLS_LBL[c] ?? c
+                        : k === 'tx' ? byClass[c]?.net_tx_mb?.total ?? null
+                        : k === 'rx' ? byClass[c]?.net_rx_mb?.total ?? null
+                        : byClass[c]?.net_calls?.total ?? null,
+                      ).map((c) => (
+                        <tr key={c}>
+                          <td>{CLS_LBL[c] ?? c}</td>
+                          <td className="num">
+                            <IoNum q={{ title: `network sent · ${CLS_LBL[c] ?? c}`, sort: 'tx_mb', class: [c], ...coveredBy(io) }}>
+                              <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
+                            </IoNum>
+                          </td>
+                          <td className="num">
+                            <IoNum q={{ title: `network received · ${CLS_LBL[c] ?? c}`, sort: 'rx_mb', class: [c], ...coveredBy(io) }}>
+                              <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
+                            </IoNum>
+                          </td>
+                          {/* an Acc like its tx/rx neighbours: the count carries the
+                              same coverage, so it must show it the same way */}
+                          <td className="num">
+                            <AccumCell a={byClass[c]?.net_calls} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </More>
             </div>
-          </More>
+            {io.endpoints && <NetEndpoints ep={io.endpoints} have={have} byClass={byClass} />}
+          </div>
         </Panel>
 
         <Panel

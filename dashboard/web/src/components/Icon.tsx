@@ -143,6 +143,13 @@ const PATHS = {
       <path d="M7.5 16.5h5M10 13.5v3" />
     </>
   ),
+  // sign out: a door, and an arrow that leaves it
+  signout: (
+    <>
+      <path d="M8.5 3.5H5.3a1.5 1.5 0 0 0-1.5 1.5v10a1.5 1.5 0 0 0 1.5 1.5h3.2" />
+      <path d="M12.6 6.4L16.2 10l-3.6 3.6M16.2 10H8" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

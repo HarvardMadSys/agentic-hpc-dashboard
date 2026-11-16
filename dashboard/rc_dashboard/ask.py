@@ -120,7 +120,9 @@ GUIDE = """Where to look in the snapshot:
   agent type's share of calls and CPU.
 - panels.risk: dangerous commands and credentials on command lines -- counts,
   users, and who ran them (types).
-- panels.io_process: disk and network bytes per class, tool, and user.
+- panels.io_process: disk and network bytes per class, tool, and user, and
+  endpoints: the remote ends of the network bytes, the busiest by send and
+  receive calls and by bytes, each split by class.
 - panels.resources: CPU, memory, and waits per class.
 - panels.sandbox: whether agents' tool calls ran isolated, and how sessions
   were launched (approval).

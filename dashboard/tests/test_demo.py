@@ -220,6 +220,9 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.get("cache.dir"), feed.cache)
         self.assertEqual(cfg.get("site.name"), demomod.SITE_NAME)
         self.assertEqual(cfg.get("live.retention_min"), 2 * 1440)
+        # The endpoint list names the made-up addresses by the records' own host
+        # names: a demo asks no DNS server (endpoints.py).
+        self.assertIs(cfg.get("server.rdns.enabled"), False)
         self.assertEqual(cfg.origin("feeds.ebpf.roots"), "demo")
         # and the page's config says where each came from
         tree = cfg.as_dict(with_origins=True)

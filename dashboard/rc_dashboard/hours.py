@@ -61,8 +61,12 @@ older than retention are pruned.
 Nothing here runs in parallel: the hours are reduced one at a time on the
 registry's single build thread, which yields between hours
 (`panels.hour_pause_s`), so a deployment with one core keeps its live tier.
+A merge runs with the automatic garbage collector paused (`collector_paused`),
+so the states it loads do not set off a full collection each.
 """
 import collections
+import contextlib
+import gc
 import glob
 import hashlib
 import heapq
@@ -190,6 +194,33 @@ def merge_into(acc, part):
     `acc`'s links between them are untouched. `part` is consumed."""
     for k, r in acc.items():
         r.merge(part[k])
+
+
+@contextlib.contextmanager
+def collector_paused():
+    """No automatic garbage collection while saved states are merged.
+
+    A merge makes the millions of objects a view or a day holds. Each saved
+    state loaded and merged adds its objects to the count that sets off a
+    full collection, and a full collection walks every object the process
+    holds while no other thread runs: not the history refill, not the API.
+    Merging 24 saved hours of the eight FAS login nodes set off 18 of them on
+    rtx6000a, up to 2.5 s each and about half the merge's time. Paused, the
+    merged state is walked once, after the merge.
+
+    Nothing a merge drops waits on the collector: a reducer state holds no
+    reference cycles, so reference counting frees each saved state as soon as
+    it is merged. Only the other threads' cyclic garbage waits, for the length
+    of one merge. The reductions are not paused: they can run for hours, and
+    each hour's state is saved and freed. A collector already off stays off.
+    """
+    was = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was:
+            gc.enable()
 
 
 def install(acc, carry):
@@ -826,20 +857,21 @@ class HourStore:
         for r in day.values():
             if hasattr(r, "bin_s"):
                 r.bin_s = HOUR_BIN_S
-        for h in range(idx * 24, idx * 24 + 24):
-            part = self.load("h", h)
-            if part is None:
-                raise LookupError("hour %d is not saved" % h)
-            merge_into(day, part)
-            del part
-        try:
-            self._write(self._path("d", idx), {"kind": "day", "day": idx,
-                                               "bin_s": HOUR_BIN_S},
-                        snapshots.capture(day))
-            self.days.add(idx)
-            self.stats["days_built"] += 1
-        except Exception:
-            pass                            # a day not saved is merged again next time
+        with collector_paused():
+            for h in range(idx * 24, idx * 24 + 24):
+                part = self.load("h", h)
+                if part is None:
+                    raise LookupError("hour %d is not saved" % h)
+                merge_into(day, part)
+                del part
+            try:
+                self._write(self._path("d", idx), {"kind": "day", "day": idx,
+                                                   "bin_s": HOUR_BIN_S},
+                            snapshots.capture(day))
+                self.days.add(idx)
+                self.stats["days_built"] += 1
+            except Exception:
+                pass                        # a day not saved is merged again next time
         return day
 
     def install_carry(self, acc, last_hour):
@@ -1011,66 +1043,70 @@ def build(reg, view):
     except Exception as e:      # a store that cannot be written is no store
         view.cache["note"] = "scanned: reducing the hours failed (%s)" % e
         return False
-    with reg.lock:
-        view._replay = collections.deque()
-    try:
-        files = store._files(roots, h_lo)
-        prog["files"] = len(files)
-        norm = Normalizer(store.cfg)
-        stats = new_stats()
-        stream, _plan, stats = read_span(files, norm, since, h_lo * HOUR, store.events,
-                                         stats=stats)
-        n_edge, _ = feed_all(acc, stream)
-        step(1, n_edge, stats["bytes"])
-        for kind, idx in parts:
-            part = store.load_part(kind, idx)
-            if part is None:
-                raise LookupError("the saved %s %d is unreadable" %
-                                  ("hour" if kind == "h" else "day", idx))
-            merge_into(acc, part)
-            del part
-            store.stats["merged_states"] += 1
-            step(0.1)
-        joined = store.install_carry(acc, h_hi - 1)
-        stats = new_stats()
-        stream, _plan, stats = read_span(files, norm, h_hi * HOUR, None, store.events,
-                                         stats=stats)
-        n_tail, newest = feed_all(acc, stream)
-        step(1, n_tail, stats["bytes"])
-    except Exception as e:
+    # The reads and the merges make the view's state, and the install
+    # materializes it under the lock: no collection runs until all of it
+    # is done (`collector_paused`). The reductions above are not paused.
+    with collector_paused():
         with reg.lock:
-            view._replay = None
-        view.cache["note"] = "scanned: merging the saved hours failed (%s)" % e
-        return False
-    if newest is None:
-        newest = store.newest_of(range(h_lo, h_hi))
-    dispatch = view.build_dispatch(acc)
-    with reg.lock:
-        view.reducers = acc
-        view.dispatch = dispatch
-        view.covers_from = since
-        # What the reads actually reached, not what they aimed at: an empty or
-        # lagging feed must not claim coverage up to `now`.
-        view.covers_to = newest or h_hi * HOUR
-        view.built_at = time.time()
-        view.consumed_through = newest
-        view.live_through = None
-        view.live_records = 0
-        days = sum(1 for k, _ in parts if k == "d")
-        view.cache["source"] = "hours"
-        view.cache["saved_at"] = None
-        view.cache["note"] = (
-            "merged %d saved hour state(s)%s, reducing %d new hour(s); read %s "
-            "record(s) before the first whole hour and %s since the last closed "
-            "one%s" % (len(parts) - days, " and %d day(s)" % days if days else "",
-                       reduced, "{:,}".format(n_edge), "{:,}".format(n_tail),
-                       "" if joined else "; the newest hour's join state was not at "
-                       "hand, so the open hour joins only within itself"))
-        pending, view._replay = view._replay, None
-        for rec in pending or ():
-            view.feed(rec)
-        view.state = "ready"
-        view.installed_at = time.time()
-        prog.update(pct=100, elapsed_s=round(time.time() - t0, 1))
-        view.materialize()
-    return True
+            view._replay = collections.deque()
+        try:
+            files = store._files(roots, h_lo)
+            prog["files"] = len(files)
+            norm = Normalizer(store.cfg)
+            stats = new_stats()
+            stream, _plan, stats = read_span(files, norm, since, h_lo * HOUR, store.events,
+                                             stats=stats)
+            n_edge, _ = feed_all(acc, stream)
+            step(1, n_edge, stats["bytes"])
+            for kind, idx in parts:
+                part = store.load_part(kind, idx)
+                if part is None:
+                    raise LookupError("the saved %s %d is unreadable" %
+                                      ("hour" if kind == "h" else "day", idx))
+                merge_into(acc, part)
+                del part
+                store.stats["merged_states"] += 1
+                step(0.1)
+            joined = store.install_carry(acc, h_hi - 1)
+            stats = new_stats()
+            stream, _plan, stats = read_span(files, norm, h_hi * HOUR, None, store.events,
+                                             stats=stats)
+            n_tail, newest = feed_all(acc, stream)
+            step(1, n_tail, stats["bytes"])
+        except Exception as e:
+            with reg.lock:
+                view._replay = None
+            view.cache["note"] = "scanned: merging the saved hours failed (%s)" % e
+            return False
+        if newest is None:
+            newest = store.newest_of(range(h_lo, h_hi))
+        dispatch = view.build_dispatch(acc)
+        with reg.lock:
+            view.reducers = acc
+            view.dispatch = dispatch
+            view.covers_from = since
+            # What the reads actually reached, not what they aimed at: an empty or
+            # lagging feed must not claim coverage up to `now`.
+            view.covers_to = newest or h_hi * HOUR
+            view.built_at = time.time()
+            view.consumed_through = newest
+            view.live_through = None
+            view.live_records = 0
+            days = sum(1 for k, _ in parts if k == "d")
+            view.cache["source"] = "hours"
+            view.cache["saved_at"] = None
+            view.cache["note"] = (
+                "merged %d saved hour state(s)%s, reducing %d new hour(s); read %s "
+                "record(s) before the first whole hour and %s since the last closed "
+                "one%s" % (len(parts) - days, " and %d day(s)" % days if days else "",
+                           reduced, "{:,}".format(n_edge), "{:,}".format(n_tail),
+                           "" if joined else "; the newest hour's join state was not at "
+                           "hand, so the open hour joins only within itself"))
+            pending, view._replay = view._replay, None
+            for rec in pending or ():
+                view.feed(rec)
+            view.state = "ready"
+            view.installed_at = time.time()
+            prog.update(pct=100, elapsed_s=round(time.time() - t0, 1))
+            view.materialize()
+        return True

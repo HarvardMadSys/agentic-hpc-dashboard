@@ -45,10 +45,22 @@ export class ApiError extends Error {
   }
 }
 
+/** The service asks for its password (rc_dashboard/auth.py), and this page's
+ *  session has run out or was signed out elsewhere: back to the sign-in form,
+ *  which returns to this very URL. Once per page, however many requests fail. */
+let signingIn = false;
+function signInAgain(status: number) {
+  if (status !== 401 || signingIn) return;
+  signingIn = true;
+  const back = location.pathname + location.search + location.hash;
+  location.assign('/login?next=' + encodeURIComponent(back));
+}
+
 async function get<T>(path: string, init?: RequestInit): Promise<T> {
   const url = API_BASE + path;
   const r = await fetch(url, { cache: 'no-store', ...init });
   if (!r.ok) {
+    signInAgain(r.status);
     let detail = r.statusText;
     try {
       detail = (await r.text()).slice(0, 400) || detail;
@@ -116,6 +128,7 @@ export async function postAsk(
     body: JSON.stringify({ question, window_min: minutes ?? null, history, context: context ?? null }),
   });
   if (!r.ok) {
+    signInAgain(r.status);
     let detail = r.statusText;
     try {
       detail = ((await r.json()) as { detail?: string }).detail ?? detail;
@@ -137,6 +150,7 @@ async function doneCall(path: string, method: 'POST' | 'DELETE', body?: unknown)
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) {
+    signInAgain(r.status);
     let detail = r.statusText;
     try {
       detail = ((await r.json()) as { detail?: string }).detail ?? detail;

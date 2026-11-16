@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -147,6 +148,86 @@ class RestartTest(FeedCase):
         agg.backfill_now()
         agg.poll_once()
         self.assertEqual(self.events(agg), dict(NONE, agent=20, human=10))
+
+
+class PositioningTest(FeedCase):
+
+    def test_the_page_is_served_while_the_tail_is_positioned(self):
+        # Positioning opens every file and, for a sealed day's .gz, builds its
+        # seek index: on rtx6000b on 2026-11-13, 7 days of 8 nodes (128 files)
+        # took 4 minutes. Held under the aggregator's lock, which the window
+        # registry shares, it kept every read of the views and of the live tier
+        # waiting -- and the event loop reads both -- so the page answered
+        # nothing until it ended.
+        self.append("h1.exits.jsonl", self.thirty_exits())
+        agg = Aggregator(self.cfg())
+        inside, release = threading.Event(), threading.Event()
+        position = agg.source.position
+
+        def slow(since):
+            inside.set()
+            release.wait(30)
+            return position(since)
+        agg.source.position = slow
+        fill = threading.Thread(target=agg.backfill_now)
+        fill.start()
+        try:
+            self.assertTrue(inside.wait(10))
+            read = threading.Thread(target=lambda: (agg.panels_by_window.status(),
+                                                    agg.live_payload(1440)))
+            read.start()
+            read.join(5)
+            self.assertFalse(read.is_alive(), "reads waited for the positioning")
+            # The page can now ask during those minutes, and is told what runs.
+            self.assertEqual(agg.backfill["state"], "positioning")
+            # The tail still reads nothing until every file is handed to it.
+            self.assertEqual(agg.poll_once(), 0)
+        finally:
+            release.set()
+            fill.join(30)
+        self.assertEqual(agg.backfill["state"], "done")
+        agg.poll_once()
+        self.assertEqual(self.events(agg), dict(NONE, agent=20, human=10))
+
+
+    def test_window_builds_wait_until_the_tail_is_positioned(self):
+        # A build is pure Python and keeps the GIL; positioning inflates .gz
+        # files in short C calls, and each must win the GIL back. Beside a build
+        # it got 5% of a core on rtx6000b (2026-11-13), and the live tail, which
+        # reads nothing until positioning ends, stood still as long. Positioning
+        # takes minutes; the builds start when it ends.
+        self.append("h1.exits.jsonl", self.thirty_exits())
+        agg = Aggregator(self.cfg())
+        inside, release = threading.Event(), threading.Event()
+        position = agg.source.position
+
+        def slow(since):
+            inside.set()
+            release.wait(30)
+            return position(since)
+        agg.source.position = slow
+        agg.start()
+        fill = threading.Thread(target=agg.backfill_now)
+        fill.start()
+        try:
+            self.assertTrue(inside.wait(10))
+            agg.panels(1440)                        # the page asks for its window
+            time.sleep(1)
+            held = {w["minutes"]: w for w in agg.panels_by_window.status()["held"]}
+            self.assertEqual(held[1440]["state"], "queued")
+        finally:
+            release.set()
+            fill.join(30)
+        try:
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                held = {w["minutes"]: w for w in agg.panels_by_window.status()["held"]}
+                if held[1440]["state"] in ("ready", "error"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual((held[1440]["state"], held[1440]["error"]), ("ready", None))
+        finally:
+            agg.stop()
 
 
 class HandOffTest(FeedCase):

@@ -9,7 +9,7 @@ hold a secret, and `tagset` masks first when it is given the raw text.
 
 It is a heuristic over text and stated as one. On the two captures these rules were tested on,
 boslogin06 (FAS RC, schema 7) on 2026-10-09 and rtx6000a (schema 8) on 2026-11-01 and 2026-11-02,
-the agent rows hold 22,744 tool calls. Of them 12,541 (55%) have a name, 760 (3%) have the six
+the agent rows hold 22,775 tool calls. Of them 12,519 (55%) have a name, 762 (3%) have the six
 that a call keeps, and 278 (1%) have words of the agent's own (2026-11-03). The other counts below
 are from an earlier sample, 12,244 tool calls of boslogin06 on 2026-10-09 and rtx6000a on
 2026-11-01, which can no longer be rebuilt. On it `tagset` took about 200 us a call, and 160 of
@@ -47,8 +47,8 @@ glob, an expansion, a word with a space, and an assignment are not files.
   read     the files `cat`, `head`, `tail`, `less`, `nl`, `wc`, `sed -n`, `diff`, `grep`, and `rg`
            were given; not the pattern of the last two
   dir      the targets of `mkdir -p` and `git worktree add`, and the destination of `rsync` or
-           `cp -r` when it ends in `/`. A brace expansion is cut at its first brace. One of
-           Claude Code's own folders is none (below).
+           `cp -r` when it ends in `/`, which for `cp -r -t out/` is `out`. A brace expansion is
+           cut at its first brace. A folder Claude Code or Codex keeps for itself is none (below).
   job      `--job-name=X`, `--job-name X`, or `-J X`, on `sbatch`, `srun`, or `salloc`, before
            the script; `--wrap` gives none
   pr       the number given to `gh pr view`, `checks`, `edit`, `merge`, and `diff`, after the
@@ -64,11 +64,11 @@ glob, an expansion, a word with a space, and an assignment are not files.
   scratch  the basename without its extension of a file written or read, or of an assignment's
            value, under `$SCRATCH`, `$TMPDIR`, a `tmp/` folder, or a `logs/` folder: the names an
            agent gives its own scratch (`$SCRATCH/update_claude_exe.log` is `update_claude_exe`).
-           Claude Code's output of a background task, `…/claude-<uid>/…/tasks/<id>.output`, is
-           none: Claude Code names it, not the agent, and 229 such ids were scratch names on
-           boslogin06 on 2026-10-09
-  cd       the last component of a `cd` target, unless the target is one of Claude Code's own
-           folders (below)
+           Claude Code's output of a background task, `…/claude-<uid>/<project>/<session>/tasks/
+           <id>.output`, is none: Claude Code names it, not the agent, and 229 such ids were
+           scratch names on boslogin06 on 2026-10-09
+  cd       the last component of a `cd` target, unless the target is a folder Claude Code or
+           Codex keeps for itself (below)
   grep     the pattern of `grep`, `rg`, and `ugrep`, the first word that is not an option or `-e X`,
            cut at GREP_CHARS. Not with `-v`: that pattern is what a filter drops, as in
            `| grep -v Warning`, not what was looked for.
@@ -79,13 +79,18 @@ glob, an expansion, a word with a space, and an assignment are not files.
            `python -m` are not words either, and neither is any argument of `cd`, `source`, and
            the other setup commands (`_SETUP`), nor of a shell test (`[[`, `[`, and `test`): its
            operands are a loop's stop condition, not its work, as in `until ...; [[ "$s" =~
-           ^(COMPLETED|OUT_OF_ME|NODE_FAIL) ]]`. Where one of the readers above knows that an option
-           takes a value, the value is never a word, whether or not another rule names it: the
-           partition of `srun -p kempner_h100`, the test of `pytest -k test_io`, and the folder of
-           `rsync --exclude __pycache__`. Slurm's queue and accounting commands (`squeue`, `sacct`,
-           `sinfo`, `sstat`, `sprio`, `sshare`, and `scontrol`) give no word at all: what they are
-           given is the user, the partition, the states, the format, and the jobs they ask about,
-           and `squeue -u xq404` put its user in a headline on boslogin06 on 2026-10-09.
+           ^(COMPLETED|OUT_OF_ME|NODE_FAIL) ]]`. Nor is the argument of a lookup of a program
+           (`which`, `whereis`, `type`, and `command -v`), which is a program's name, as in
+           `PY=$(which python3)`, nor the host `ssh` logs in to (`ssh boslogin07 cat …`), which is
+           where a command ran, not what it worked on. Where one of the readers above knows that
+           an option takes a value, the value is never a word, whether or not another rule names
+           it: the partition of `srun -p kempner_h100`, the test of `pytest -k test_io`, the
+           folder of `rsync --exclude __pycache__`, and the folder of `cp -t out_1` and
+           `mv -t out_1`, which the other words are copied or moved into. Slurm's queue and
+           accounting commands (`squeue`, `sacct`, `sinfo`, `sstat`, `sprio`, `sshare`, and
+           `scontrol`) give no word at all: what they are given is the user, the partition, the
+           states, the format, and the jobs they ask about, and `squeue -u xq404` put its user in
+           a headline on boslogin06 on 2026-10-09.
 
 A name that holds a mask is no name, and nor is one that holds a `$` (`scripts/$s.py`,
 `diag-$name`, `run_$$`, or the `feat-$` that a cut `$(date +%s)` leaves): what the shell fills in
@@ -96,22 +101,30 @@ text: after a backslash it is a dollar sign, and one that is a regex's anchor, a
 substitution in it (`^$jid$`), or a bare `$`, is none.
 
 Claude Code names some things itself, and they name nothing a reader knows. Its id for a
-subagent's worktree, `agent-` and hex digits (`agent-a69e2723ecfaa3a16`), is no name of any kind,
-nor is a name that ends in one. Its own folders in its temporary folder are no folder made, no
-folder changed into, and no scratch name: `claude-<uid>`, the project and the session under it,
-and the session's `scratchpad` and `tasks`, as in `/tmp/claude-61002/-n-home02-x/0d1e2f30-…/
-scratchpad`, wherever the temporary folder is. Two of them labeled tasks and headlines on
-boslogin06 on 2026-10-09, `0d1e2f30-…/scratchpad` and `scratchpad`. What the agent makes inside its
-scratchpad is its own, and is named as usual: `scratchpad/q.py`, and `ext` for `$SP/ext`. What
+subagent's worktree, `agent-` and 17 hex digits (`agent-a69e2723ecfaa3a16`), is no name of any
+kind, nor is a name that ends in one. With another number of hex digits it is the agent's own name
+(`agent-1`, `agent-bad`). Its own folders in its temporary folder are no folder made, no folder
+changed into, and no scratch name: `claude-<uid>`, the project in it, the session in that, and the
+session's `scratchpad` and `tasks`, as in `/tmp/claude-61002/-n-home02-x/0d1e2f30-…/scratchpad`.
+They are told by their shapes, wherever the temporary folder is: the project's folder is its path
+with `-` for each character but a letter or a digit, and the session's is its id. `claude-<uid>`
+alone is told by the folder it is in, `tmp` or `$TMPDIR`. Two of them labeled tasks and headlines
+on boslogin06 on 2026-10-09, `0d1e2f30-…/scratchpad` and `scratchpad`. What the agent makes inside
+its scratchpad is its own, and is named as usual: `scratchpad/q.py`, and `ext` for `$SP/ext`. So
+is a folder it makes in `claude-<uid>` itself, as agents made `rev` and `fix_cleanup` in
+`/tmp/claude-<uid>` on boslogin06 on 2026-10-09, and a folder of its own named `claude-3`. What
 Claude Code keeps in its home is no name of any kind either: `~/.claude/projects`, a project's
 folder in it, a session's transcript `<uuid>.jsonl` and the folder `<uuid>/` beside it with all
 that is in it, and the project's `memory` folder and its index `MEMORY.md`. On boslogin06 on
 2026-10-09 a transcript labeled a task of apid 4193830 (`-n-netscratch-…/3b2a1c0d-….jsonl`) and
 `memory/MEMORY.md` one of apid 1103933, and on rtx6000a on 2026-11-01 `memory/MEMORY.md` labeled
 one of apid 2559300. The notes the agent writes in `memory` are its own and are named:
-`memory/project-nimbus-load-scaling.md`. To tell one of these, a relative path is read in the
-folder the call last changed into, and a leading variable the call assigned is read as its value
-(`_where`): `MEMORY.md` after `cd ~/.claude/projects/x/memory` is the index.
+`memory/project-nimbus-load-scaling.md`. Codex keeps its memory in its home too, and its folder
+`~/.codex/memories` and the index `MEMORY.md` in it are no name either: on boslogin06 on 2026-10-09
+eight calls of Codex rows named `memories/MEMORY.md`. The notes the agent writes there are named,
+as in `memory`. To tell one of these, a relative path is read in the folder the call last changed
+into, and a leading variable the call assigned is read as its value (`_where`): `MEMORY.md` after
+`cd ~/.claude/projects/x/memory` is the index.
 
 The agent's own words, `(source, line, ref)`. Only text in the command counts: `git commit -F
 msg.txt` has none. A call holds at most one, the first of SOURCES that it has, and the first of
@@ -151,8 +164,21 @@ What this misreads:
     but its files are not read.
   * The value of an option no reader above knows of is read as any other argument, and can be a
     word: `ps -u xq404` gives `xq404` (the naming leaves a session's user out, `phase_tasks`).
+  * The folder of `cp -t` and `mv -t` is read when it is a word of its own, after `-t` or after a
+    cluster that ends in it (`-rt out`). Attached to it (`-tout`) it is not, and the last word is
+    taken for the destination.
+  * A host is set aside only as the one `ssh` logs in to: `ping boslogin07` gives the word
+    `boslogin07`. What `ssh` runs there is read as its arguments, not as commands.
   * Only a `cd` earlier in the same call places a relative path, and a `cd` in a subshell is taken
     to last: `cat MEMORY.md` in a call that did not change into the `memory` folder is a name.
+  * Of what Codex keeps for its memory only the folder and its index are known. Any other file in
+    `~/.codex/memories` is named, as a note the agent wrote would be.
+  * A subagent's id is told by its length alone: a name the agent gave that is `agent-` and 17 hex
+    digits is none, and an id of Claude Code's of another length would be a name.
+  * Claude Code's temporary folder is told by the shapes of its parts. A session's folder whose id
+    the agent mistyped is the agent's own, and so is `claude-<uid>` alone in a temporary folder of
+    another name than `tmp` or `$TMPDIR`. A folder of the agent's own named `claude-3` in `/tmp`
+    is taken for Claude Code's.
   * The agent's words are what a command holds. A commit message or a log entry that the agent
     wrote with its own Edit or Write tool is not in any command.
   * A quote that never closes runs to the end of its line, or to the `;`, `&`, or `|` where
@@ -197,16 +223,25 @@ _ANCHOR = re.compile(r"\$\{?\w+\}?|~")                  # a bare variable or `~`
 # A name of any other kind is none when it holds a `$` at all (`_expands`).
 _SHELL_VARIABLE = re.compile(r"(?<!\\)\$(?:[A-Za-z_{(]|\d)")
 _UNDER_SCRATCH = re.compile(r"^\$\{?(?:SCRATCH|TMPDIR)\}?/|(?:^|/)(?:tmp|logs)/")
-# Claude Code's own output of a background task, `/tmp/claude-<uid>/<project>/<session>/tasks/
-# <id>.output`, wherever its temporary folder is (`/private/tmp`, `$TMPDIR`, a home's `tmp`): the
-# agent does not name it, and its id names nothing a reader knows.
-_TASK_OUTPUT = re.compile(r"(?:^|/)claude-\d+/(?:[^/]+/)*tasks/[^/]+\.output$")
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# Claude Code's temporary folder, `/tmp/claude-<uid>/<project>/<session>/`: the project is its
+# path with `-` for each character but a letter or a digit (`-n-home02-x`), and the session is its
+# id. These shapes tell it wherever the temporary folder is (`/private/tmp`, `$TMPDIR`, a home's
+# `tmp`), and `claude-<uid>` alone is told by the folder it is in, `tmp` or `$TMPDIR`. A folder
+# the agent makes in `claude-<uid>` itself is no project (`/tmp/claude-61001/rev`), and a folder
+# of its own named `claude-3` is in no folder named `tmp` (`~/src/claude-3`).
+_CLAUDE_PROJECT = r"(?:^|/)claude-\d+/-[A-Za-z0-9-]*"
+# Claude Code's own output of a background task, `<session>/tasks/<id>.output`: the agent does not
+# name it, and its id names nothing a reader knows.
+_TASK_OUTPUT = re.compile(_CLAUDE_PROJECT + "/" + _UUID + r"/tasks/[^/]+\.output$")
 # Claude Code's own folders in the same temporary folder: `claude-<uid>`, the project and the
-# session under it, and the session's `scratchpad` and `tasks`, as in
+# session in it, and the session's `scratchpad` and `tasks`, as in
 # `/tmp/claude-61002/-n-home02-x/0d1e2f30-…/scratchpad`. Claude Code names them, and not the agent,
 # so a folder made, a folder changed into, or a scratch name that is one of them is no name. What
 # the agent makes inside its scratchpad is its own: `scratchpad/q.py` and `$SP/ext` are names.
-_CLAUDE_FOLDER = re.compile(r"(?:^|/)claude-\d+(?:/[^/]+(?:/[^/]+(?:/(?:scratchpad|tasks))?)?)?/*$")
+_CLAUDE_FOLDER = re.compile(
+    r"(?:(?:^|/)(?:tmp|\$\{?TMPDIR\}?)/claude-\d+"
+    r"|" + _CLAUDE_PROJECT + r"(?:/" + _UUID + r"(?:/(?:scratchpad|tasks))?)?)/*$")
 # What Claude Code keeps in its home, `~/.claude/projects`: that folder, a project's folder in it
 # (the project's path with `-` for `/`, `-n-home01-x-cbm`), a session's transcript `<uuid>.jsonl`
 # and the folder `<uuid>/` beside it with all that Claude Code keeps there (its subagents'
@@ -215,21 +250,29 @@ _CLAUDE_FOLDER = re.compile(r"(?:^|/)claude-\d+(?:/[^/]+(?:/[^/]+(?:/(?:scratchp
 # labeled a task of boslogin06's apid 4193830 on 2026-10-09. The notes the agent writes in `memory`
 # are its own and are named: `memory/project_mark1_A_depletion.md`. The folders and the files are
 # two patterns, so that a file is never taken for a folder of the same depth.
-_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _CLAUDE_HOME_FOLDER = re.compile(r"(?:^|/)\.claude/projects(?:/[^/]+(?:/(?:" + _UUID
                                  + r"(?:/.*)?|memory))?)?/*$")
 _CLAUDE_HOME_FILE = re.compile(r"(?:^|/)\.claude/projects/[^/]+/(?:" + _UUID
                                + r"(?:\.jsonl|/.+)|memory/MEMORY\.md)$")
-# Claude Code's own folders and its own files (`_claude_codes`). The folder patterns match a file
-# at their depth too, so a file is told by the file patterns alone: `/tmp/claude-61001/rev/x.py`
-# is a file the agent wrote, at the depth of a session's folder.
-_CLAUDE_FOLDERS = (_CLAUDE_FOLDER, _CLAUDE_HOME_FOLDER)
-_CLAUDE_FILES = (_TASK_OUTPUT, _CLAUDE_HOME_FILE)
+# What Codex keeps for its memory in its home: the folder `~/.codex/memories` and its index
+# `MEMORY.md`. Codex names them, and not the agent: eight calls of Codex rows on boslogin06 on
+# 2026-10-09 named `memories/MEMORY.md`. The notes the agent writes there are its own and are
+# named: `memories/gpu-quota.md`.
+_CODEX_HOME_FOLDER = re.compile(r"(?:^|/)\.codex/memories/*$")
+_CODEX_HOME_FILE = re.compile(r"(?:^|/)\.codex/memories/MEMORY\.md$")
+# The folders and the files that Claude Code and Codex keep for themselves (`_kept`). The folder
+# patterns would match a file of a folder's name too, so a file is told by the file patterns
+# alone, and the folder patterns only keep a path that is one of the folders from being a scratch
+# name.
+_KEPT_FOLDERS = (_CLAUDE_FOLDER, _CLAUDE_HOME_FOLDER, _CODEX_HOME_FOLDER)
+_KEPT_FILES = (_TASK_OUTPUT, _CLAUDE_HOME_FILE, _CODEX_HOME_FILE)
 # A variable at the start of a path, `$M` or `${M}`, which `_where` reads as the value assigned.
 _LEADING_VARIABLE = re.compile(r"\$(?:\{(\w+)\}|(\w+))(?=/|$)")
-# Claude Code's id for a subagent's worktree, `agent-a69e2723ecfaa3a16`: `agent-` and hex digits.
-# It names nothing a reader knows, so a name that is one, or ends in one, is none (`_Names`).
-_AGENT_SLUG = re.compile(r"agent-[0-9a-f]+")
+# Claude Code's id for a subagent's worktree, `agent-a69e2723ecfaa3a16`: `agent-` and 17 hex digits,
+# the length of every such id on both captures. It names nothing a reader knows, so a name that is
+# one, or ends in one, is none (`_Names`). At any other length it is a name the agent gave:
+# `agent-1` and `agent-bad` are names.
+_AGENT_SLUG = re.compile(r"agent-[0-9a-f]{17}")
 _NOT_A_STEM = re.compile(r"[\s*?\[\]{}()`$]")
 
 
@@ -269,8 +312,8 @@ def _where(path, out):
     """`path` where the call put it: a leading variable that the call assigned earlier is read as
     its value, and a relative path is read in the folder the call last changed into. `MEMORY.md`
     after `cd ~/.claude/projects/x/memory` is `~/.claude/projects/x/memory/MEMORY.md`. It is read
-    only to tell Claude Code's own folders and files (`_claude_codes`): a name is shown as the
-    command gave it."""
+    only to tell the folders and files Claude Code and Codex keep (`_kept`): a name is shown as
+    the command gave it."""
     m = _LEADING_VARIABLE.match(path)
     if m and (m.group(1) or m.group(2)) in out.assigned:
         path = out.assigned[m.group(1) or m.group(2)] + path[m.end():]
@@ -279,12 +322,12 @@ def _where(path, out):
     return os.path.normpath(path) if path else path
 
 
-def _claude_codes(path, out, patterns):
-    """True when `path`, where the call put it (`_where`), is one of `patterns`: Claude Code's own
-    folders (`_CLAUDE_FOLDERS`: in its temporary folder, and what it keeps in
-    `~/.claude/projects`), or its own files (`_CLAUDE_FILES`: a background task's output, a
-    session's transcript and what is kept beside it, and the memory index). Claude Code names
-    them, and not the agent, so they get no name."""
+def _kept(path, out, patterns):
+    """True when `path`, where the call put it (`_where`), is one of `patterns`: the folders that
+    Claude Code and Codex keep for themselves (`_KEPT_FOLDERS`: Claude Code's in its temporary
+    folder and in `~/.claude/projects`, and Codex's memory folder), or their files (`_KEPT_FILES`:
+    a background task's output, a session's transcript and what is kept beside it, and the two
+    memory indexes). They name them, and not the agent, so they get no name."""
     where = _where(path, out)
     return any(p.search(where) for p in patterns)
 
@@ -426,6 +469,17 @@ _SLURM_QUERIES = frozenset({"squeue", "sacct", "sinfo", "sstat", "sprio", "sshar
 # loop on `sacct` put two job states, `OUT_OF_ME` and `NODE_FAIL`, in a headline on boslogin06 on
 # 2026-10-09. A test gives no `word`.
 _SHELL_TESTS = frozenset({"[[", "[", "test"})
+# A lookup of a program. What it is given is a program's name, not what a task works on, as in
+# `PY=$(which python3)`: it gives no `word`. Lookups put `python3` in a label and a headline on
+# boslogin06 on 2026-10-09. `command` is one only with `-v` or `-V`, and else is read as the program
+# it runs (`_commands`).
+_LOOKUPS = frozenset({"which", "whereis", "type", "command"})
+_NO_WORDS = _SETUP | _SLURM_QUERIES | _SHELL_TESTS | _LOOKUPS
+# The options of ssh that take a value, from its manual, so that the host it logs in to is the first
+# word after them. The host is where a command ran, not what it worked on, and is no `word`. On
+# boslogin06 on 2026-10-09 `ssh -o BatchMode=yes boslogin07 cat …` put the login node in a label,
+# and an `ssh` to a compute node put the node in another.
+_SSH_VALUED = frozenset("-B -b -c -D -E -e -F -I -i -J -L -l -m -O -o -P -p -Q -R -S -W -w".split())
 _HAS_EXTENSION = re.compile(r"\.[A-Za-z]\w*$")
 _MAX_DEPTH = 3                  # `sbatch --wrap` lines read inside one another this deep
 
@@ -544,7 +598,22 @@ def _python_writes(code):
 
 _SED_VALUED = frozenset({"-e", "-f", "-l", "--expression", "--file", "--line-length"})
 _SED_SCRIPT = frozenset({"-e", "-f", "--expression", "--file"})
-_CP_TARGET = frozenset({"-t", "--target-directory"})
+# The option of `cp` and `mv` that the folder they copy or move into follows: `-t`, alone or at the
+# end of a cluster (`-rt`), or `--target-directory`. `--target-directory=DIR` holds its folder.
+_CP_TARGET = re.compile(r"-[A-Za-su-z]*t|--target-directory")
+
+
+def _copy_args(args, taken=None):
+    """`(folder, rest)` of `cp` or `mv`: the folder an option gave (`_CP_TARGET`), or None, and the
+    words that are not options, nor that folder. The folder goes into the set `taken`, when one is
+    given: a value an option takes is never a `word`."""
+    given = set()
+    rest = _positional(args, frozenset(a for a in args if _CP_TARGET.fullmatch(a)), given)
+    folder = next((a.split("=", 1)[1] for a in args if a.startswith("--target-directory=")),
+                  next(iter(given), None))
+    if taken is not None:
+        taken.update(given)
+    return folder, rest
 
 
 def _sed_files(args, taken=None):
@@ -584,10 +653,10 @@ def _writes(cmd, taken=None):
         out = _sed_files(args, taken)
     elif name == "perl" and _in_place(args, "eEMmIFxCdDV"):
         out = _perl_files(args, taken)
-    elif name in ("cp", "mv") and not any(
-            a in _CP_TARGET or a.startswith("--target-directory=") for a in args):
-        pos = _positional(args)
-        out = pos[-1:] if len(pos) >= 2 else []         # the destination, given a source
+    elif name in ("cp", "mv"):
+        folder, pos = _copy_args(args, taken)           # a folder `-t` gave names no file
+        if folder is None:
+            out = pos[-1:] if len(pos) >= 2 else []     # the destination, given a source
     code = _python_code(cmd)
     return out + cmd.writes + (_python_writes(code) if code else [])
 
@@ -680,8 +749,8 @@ _PUSH_VALUED = frozenset({"-o", "--push-option", "--receive-pack", "--exec", "--
 
 def _folders(cmd, taken=None):
     """The folders a command makes: `mkdir -p`, `git worktree add`, and the destination of `rsync`
-    or `cp -r` when it ends in `/`. The values of the options read on the way go into the set
-    `taken`, when one is given."""
+    or `cp -r` when it ends in `/`, which for `cp -t` is the folder `-t` gave. The values of the
+    options read on the way go into the set `taken`, when one is given."""
     name, args = cmd.name, cmd.args
     if name == "mkdir" and _has_flag(args, "p", "--parents"):
         return _positional(args, frozenset({"-m", "--mode"}), taken)
@@ -689,10 +758,14 @@ def _folders(cmd, taken=None):
         sub, rest = _sub(args, _GIT_VALUED, taken)
         if sub == "worktree" and rest[:1] == ["add"]:
             return _positional(rest[1:], frozenset({"-b", "-B", "--reason"}), taken)[:1]
-    elif name == "rsync" or (name == "cp" and (_has_flag(args, "rRa", "--recursive")
-                                                or "--archive" in args)):
-        pos = _positional(args, _RSYNC_VALUED if name == "rsync" else frozenset(), taken)
+    elif name == "rsync":
+        pos = _positional(args, _RSYNC_VALUED, taken)
         return pos[-1:] if len(pos) >= 2 and pos[-1].endswith("/") else []
+    elif name == "cp" and (_has_flag(args, "rRa", "--recursive") or "--archive" in args):
+        folder, pos = _copy_args(args, taken)
+        if folder is None:                              # the destination is the last word
+            folder, pos = (pos[-1], pos[:-1]) if pos else ("", [])
+        return [folder] if pos and folder.endswith("/") else []
     return []
 
 
@@ -871,25 +944,25 @@ class _Names:
 
 
 def _file_names(out, kind, path):
-    """The names a file gets: what the program made of it, and what it is under scratch. One of
-    Claude Code's own files gets neither, and a file in one of its folders no scratch name
-    (`_claude_codes`)."""
-    if _claude_codes(path, out, _CLAUDE_FILES):
+    """The names a file gets: what the program made of it, and what it is under scratch. A file
+    Claude Code or Codex keeps gets neither, and a file in one of their folders no scratch name
+    (`_kept`)."""
+    if _kept(path, out, _KEPT_FILES):
         return
     if _is_file(path):
         out(kind, _shown(path))
-    if not _claude_codes(path, out, _CLAUDE_FOLDERS):
+    if not _kept(path, out, _KEPT_FOLDERS):
         out("scratch", _scratch_stem(path))
 
 
 def _cd(cmd, out, used):
     """The last component of a `cd` target, unless it is `..`, `-`, `~`, or an expansion, or the
-    target is one of Claude Code's own folders (`_claude_codes`). The target is where the call's
-    later relative paths are (`_where`)."""
+    target is a folder Claude Code or Codex keeps (`_kept`). The target is where the call's later
+    relative paths are (`_where`)."""
     target = (_positional(cmd.args) or [""])[0]
     last = target.rstrip("/").rsplit("/", 1)[-1]
     if (last not in ("", ".", "..", "-", "~") and not _NOT_A_NAME.search(last)
-            and not _claude_codes(target, out, _CLAUDE_FOLDERS)):
+            and not _kept(target, out, _KEPT_FOLDERS)):
         out("cd", last)
         used.add(target)
     if target not in ("", "-"):
@@ -906,13 +979,15 @@ def _command_names(cmd, out):
         _slurm(cmd, out, used)
     _tests(cmd, out, used)
     for folder in _folders(cmd, used):
-        out("dir", "" if _claude_codes(folder, out, _CLAUDE_FOLDERS) else _folder(folder))
+        out("dir", "" if _kept(folder, out, _KEPT_FOLDERS) else _folder(folder))
         used.add(folder)
     if name == "git":
         _git(cmd, out, used)
     elif name == "gh":
         _gh(cmd, out, used)
     _packages(cmd, out, used)
+    if name == "ssh":
+        used.update(_positional(args, _SSH_VALUED, used)[:1])     # the host, set aside
     files, pattern = _reads(cmd, used)
     if pattern is not None and any(c.isalnum() for c in pattern):
         out("grep", _cut(pattern.strip(), GREP_CHARS))
@@ -927,10 +1002,10 @@ def _command_names(cmd, out):
             out("worktree", slug)
         if _ASSIGNMENT.match(word):
             variable, value = word.split("=", 1)
-            if not _claude_codes(value, out, _CLAUDE_FOLDERS + _CLAUDE_FILES):
+            if not _kept(value, out, _KEPT_FOLDERS + _KEPT_FILES):
                 out("scratch", _scratch_stem(value))
             out.assigned[variable] = value
-    if name not in _SETUP and name not in _SLURM_QUERIES and name not in _SHELL_TESTS:
+    if name not in _NO_WORDS:
         for a in args:
             if a not in used and _is_word(a):
                 out("word", a)

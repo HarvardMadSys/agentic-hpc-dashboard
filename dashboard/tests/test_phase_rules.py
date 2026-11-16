@@ -23,10 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard.normalize import Normalizer  # noqa: E402
 from rc_dashboard.procindex import ProcIndex  # noqa: E402
-from rc_dashboard.reducers.phase_rules import (CATS, PHASE_AGENTS, call_text, category_of,  # noqa: E402
-                                               category_of_argv, classify_direct, codex_chore_of,
-                                               is_fs_helper, is_sandbox_probe, login_helper,
-                                               norm_hash, parent_is_agent, program_name, shell_text,
+from rc_dashboard.reducers.phase_rules import (CATS, PHASE_AGENTS, call_text,  # noqa: E402
+                                               cat_without_argv, category_of, category_of_argv,
+                                               classify_direct, codex_chore_of, is_fs_helper,
+                                               is_sandbox_probe, login_helper, norm_hash,
+                                               parent_is_agent, program_name, shell_text,
                                                split_simple, waits_on)
 from rc_dashboard.roles import ROLES  # noqa: E402
 from test_sessions import cfg, claude_session, rec  # noqa: E402
@@ -1690,10 +1691,19 @@ class CodexAppReadsTest(unittest.TestCase):
 
     def test_a_read_whose_argv_was_not_recorded_is_still_a_call(self):
         # Schema 7 kept no argv for 228 `cat` in one session's bursts. With nothing to name its
-        # file, such a `cat` cannot be told from the model's own.
+        # file, its record cannot tell such a `cat` from the model's own. The reducer tells them
+        # by time (`test_traj_phases.CodexAppReadsTest`).
         for args in (None, "", "   "):
             with self.subTest(args=args):
                 self.assertEqual(classify_direct(self.rec(args), "codex"), ("call", "bare"))
+                self.assertTrue(cat_without_argv(self.rec(args)))
+
+    def test_only_a_cat_with_no_argv_at_all_is_one_the_time_can_give_the_app(self):
+        for command, args in (("cat", "/bin/cat " + self.ICON), ("cat", "/bin/cat AGENTS.md"),
+                              ("exe", ""), ("git", None), ("bash", "")):
+            with self.subTest(command=command, args=args):
+                self.assertFalse(cat_without_argv(self.rec(args, command)))
+        self.assertTrue(cat_without_argv({"_command": "cat", "command": "cat", "args": ""}))
 
     def test_it_is_known_by_its_argv_alone(self):
         # what ran under a process that never exited keeps only its argv (PendingJoin's P_TEXT)

@@ -12,16 +12,17 @@ PhaseLog: one session's calls and housekeeping, bounded.
   A call is a tuple `(start, end, cat, h, prev, flags, pid, past, tags)`, indexed by S, E, CAT, H,
   PREV, FLAGS, PID, PAST, TAGS: epoch seconds, one of `phase_rules.CATS`, the hash of the
   normalized command (0 for none), the id of its masked preview (0 for none), the flags OPEN (still
-  running, seen through its children) and WROTE (Codex's fs helper wrote bytes), the pid of the
-  process that ran it, `past`: the end of the last process that outlived the call, or None, and
-  `tags`: the id of its tag set, the names it worked on and the agent's own words in it
-  (`phase_names.tagset`; 0 for the empty set, which is also what a call whose set the reducer could
-  not keep has). A call that starts a background job (`nohup python train.py &`) returns at once
-  and the job runs for hours; that time belongs to the call, as `past`, and is not a call of its
-  own. The ids of the preview and the tag set are the reducer's own, and it renumbers them when two
-  hours merge. An OPEN call, which the reducer makes when a row is read and never logs, has a tenth
-  field, SEEN: the programs seen under it. Its `h`, `prev`, and `tags` are its first child's text,
-  which is no command of its own (R65): what it waits on is read from them, and nothing else.
+  running, seen through its children), WROTE (Codex's fs helper wrote bytes), and NO_ARGV (a `cat`
+  of Codex's whose argv was not recorded, below), the pid of the process that ran it, `past`: the
+  end of the last process that outlived the call, or None, and `tags`: the id of its tag set, the
+  names it worked on and the agent's own words in it (`phase_names.tagset`; 0 for the empty set,
+  which is also what a call whose set the reducer could not keep has). A call that starts a
+  background job (`nohup python train.py &`) returns at once and the job runs for hours; that time
+  belongs to the call, as `past`, and is not a call of its own. The ids of the preview and the tag
+  set are the reducer's own, and it renumbers them when two hours merge. An OPEN call, which the
+  reducer makes when a row is read and never logs, has a tenth field, SEEN: the programs seen under
+  it. Its `h`, `prev`, and `tags` are its first child's text, which is no command of its own (R65):
+  what it waits on is read from them, and nothing else.
 
   The log holds at most `cap` calls, the first it was shown, and counts the rest: `cut` is how many
   it dropped and `cut_at` the earliest start among them, so `n` is every call seen and the list is
@@ -32,6 +33,22 @@ PhaseLog: one session's calls and housekeeping, bounded.
   Housekeeping is what an agent runs that the model did not ask for. It is counted by shape (`hk`)
   and by the minute it began (`hk_bins`, at most `bin_cap` minutes). A command with no time, or in
   a minute past that bound, is in `hk` and in `hk_cut`: sum(hk) == sum(hk_bins) + hk_cut.
+
+  The Codex desktop app reads its plugins' assets in bursts, hundreds in a few seconds, and those
+  reads are housekeeping (`phase_rules.APP_READ`). A read whose argv was not recorded (schema 7)
+  is a `cat` that names no file, and only its time tells the app's from the model's. It is held as
+  a call flagged NO_ARGV, and it is the app's when one of the app's reads began within the window
+  (`app_read_s`) of it, before it or after. The log keeps when the app's reads began as `app`:
+  sorted, disjoint spans `[first, last]`, each read within twice the window of the next, so a time
+  is within the window of a span exactly when it is within the window of a read. A call is taken
+  whichever comes first: the reducer counts one as housekeeping when a read held is close to it
+  (`app_near`), `add_app_read` takes the calls held close to a new read, and `merge` and `fold`
+  take the calls close to a read of another part, before the cap. So the same calls are taken
+  however the records were split, by hour or by key. That matters: schema 7 tags each of the
+  app's reads, whose argv names `.codex`, so each read is a key of its own, and in a schema-7 row
+  the reads meet the runtime's calls only in the fold. On boslogin06 on 2026-10-09, 233 of the 290
+  `cat`s with no argv under Codex began within a second of one of the app's reads. A log holds at
+  most `bin_cap` spans; a read that would begin another is counted (`app_cut`) and takes nothing.
 
 PendingJoin: what ran under a process that has not been recorded.
 
@@ -107,16 +124,19 @@ PendingJoin: what ran under a process that has not been recorded.
 """
 import itertools
 import math
+from bisect import bisect_left, bisect_right, insort
 from collections import OrderedDict
 from operator import itemgetter
 
 from . import add_counts
+from .phase_rules import APP_READ
 
 # A call: (start, end, cat, h, prev, flags, pid, past, tags)
 S, E, CAT, H, PREV, FLAGS, PID, PAST, TAGS = range(9)
 SEEN = 9                    # an OPEN call's: the programs seen under it
 OPEN = 1                    # a flag: still running, seen through its children
 WROTE = 2                   # a flag: Codex's fs helper wrote bytes
+NO_ARGV = 4                 # a flag: a Codex `cat` with no argv, which the app's reads can take
 
 # A pending entry: [first, last, n, cats, cmds, text, wrote, sid, since, since_n, help]
 P_FIRST, P_LAST, P_N, P_CATS, P_CMDS, P_TEXT, P_WROTE, P_SID, P_SINCE, P_SINCE_N, P_HELP = range(11)
@@ -126,8 +146,28 @@ START_SLACK_S = 60.0        # a child can seem to begin before its parent did, o
 PAST_SLACK_S = 1.0          # a process that ended within this of its call's end did not outlive it
 
 
+def _near(spans, t, w):
+    """True when a span of `spans` (sorted, disjoint `[first, last]`) holds `t` within `w` of it:
+    the last span with `first - w <= t` has `t <= last + w`."""
+    i = bisect_right(spans, t, key=lambda sp: sp[0] - w) - 1
+    return i >= 0 and t <= spans[i][1] + w
+
+
+def _joined(spans, w):
+    """`spans`, `[first, last]` in any order, sorted and joined where one begins within `2 * w`
+    of the end of the one before: new lists, sharing none with `spans`."""
+    out = []
+    for first, last in sorted(spans):
+        if out and first - out[-1][1] <= 2 * w:
+            out[-1][1] = max(out[-1][1], last)
+        else:
+            out.append([first, last])
+    return out
+
+
 class PhaseLog:
-    __slots__ = ("calls", "by_pid", "hk", "hk_bins", "hk_cut", "cut", "cut_at")
+    __slots__ = ("calls", "by_pid", "hk", "hk_bins", "hk_cut", "cut", "cut_at", "app", "app_cut",
+                 "no_argv")
 
     def __init__(self):
         self.calls = []         # call tuples, in the order they were recorded
@@ -137,6 +177,9 @@ class PhaseLog:
         self.hk_cut = 0         # housekeeping commands in `hk` and in no bin
         self.cut = 0            # calls past the cap: counted, not held
         self.cut_at = None      # the earliest start among them
+        self.app = []           # when the app's reads began: sorted, disjoint [first, last]
+        self.app_cut = 0        # reads that would have begun a span past the bound
+        self.no_argv = []       # the starts of the held calls flagged NO_ARGV, sorted
 
     @property
     def n(self):
@@ -156,7 +199,69 @@ class PhaseLog:
             return
         if call[PID] is not None:
             self.by_pid[call[PID]] = len(self.calls)       # a reused pid names the newest call
+        if call[FLAGS] & NO_ARGV:
+            insort(self.no_argv, call[S])
         self.calls.append(call)
+
+    def app_near(self, t, w):
+        """True when one of the app's reads held began within `w` seconds of `t`."""
+        return _near(self.app, t, w)
+
+    def add_app_read(self, t, w, bin_cap):
+        """Hold one of the app's reads, begun at `t`, in at most `bin_cap` spans, and take the held
+        calls flagged NO_ARGV that began within `w` of it. They leave the log, and their starts are
+        returned, in the order they were held, for the caller to count as housekeeping: the log
+        counts neither the read nor them. A read that would begin a span past `bin_cap` is counted
+        (`app_cut`) and takes nothing."""
+        spans = self.app
+        i = bisect_right(spans, t, key=itemgetter(0))       # spans[:i] begin at or before t
+        if i and t - spans[i - 1][1] <= 2 * w:
+            cur = spans[i - 1]
+            cur[1] = max(cur[1], t)
+            if i < len(spans) and spans[i][0] - cur[1] <= 2 * w:
+                cur[1] = max(cur[1], spans.pop(i)[1])        # it joins the two around it
+        elif i < len(spans) and spans[i][0] - t <= 2 * w:
+            spans[i][0] = t
+        elif len(spans) < bin_cap:
+            spans.insert(i, [t, t])
+        else:
+            self.app_cut += 1
+            return []
+        lo, hi = bisect_left(self.no_argv, t - w), bisect_right(self.no_argv, t + w)
+        if lo == hi:
+            return []
+        return self._take(lambda s: t - w <= s <= t + w)
+
+    def calls_in(self, block, app_s):
+        """The calls this log holds that `block`, a fold it is part of, holds as calls too: all but
+        the ones flagged NO_ARGV that began within `app_s` of one of the block's reads of the app's,
+        which the fold took. A session's day rows count their own calls, and so they add up to the
+        block's. The log's own list when the fold took none of them."""
+        if not any(block.app_near(t, app_s) for t in self.no_argv):
+            return self.calls
+        return [c for c in self.calls if not (c[FLAGS] & NO_ARGV and block.app_near(c[S], app_s))]
+
+    def _take(self, near):
+        """Drop the held calls flagged NO_ARGV whose start `near` holds, and return their starts,
+        in the order they were held."""
+        kept, taken = [], []
+        for c in self.calls:
+            (taken if c[FLAGS] & NO_ARGV and near(c[S]) else kept).append(c)
+        if taken:
+            self.calls = kept
+            self.by_pid = {c[PID]: i for i, c in enumerate(kept) if c[PID] is not None}
+            self.no_argv = sorted(c[S] for c in kept if c[FLAGS] & NO_ARGV)
+        return [c[S] for c in taken]
+
+    def _count_taken(self, starts):
+        """Count the calls a read of the app's took as its housekeeping (APP_READ), by the minute
+        they began. As a merge's or a fold's bins, these are not bounded here: the caller bounds
+        them (`trajectories._bound_hk`)."""
+        if starts:
+            self.hk[APP_READ] = self.hk.get(APP_READ, 0) + len(starts)
+            for t in starts:
+                b = int(t // 60) * 60
+                self.hk_bins[b] = self.hk_bins.get(b, 0) + 1
 
     def ran_past(self, pid, end, start=None):
         """A process whose parent is `pid` exited at `end`, having begun at `start` (None if
@@ -193,10 +298,18 @@ class PhaseLog:
                 return
         self.hk_cut += n
 
-    def merge(self, later, cap):
+    def merge(self, later, cap, app_s=None):
         """Join the LATER log of the same session, as one pass over both would have held it: the
-        first `cap` calls, and the rest counted. The bins are the union of both. `later` is
-        consumed."""
+        first `cap` calls, and the rest counted. The bins are the union of both, and so are the
+        app's reads. With a window `app_s`, a call flagged NO_ARGV in either log that began within
+        it of one of those reads is taken first, before the cap, and counted as housekeeping: one
+        pass would have taken it when the later of the two came. `later` is consumed."""
+        self.app = _joined(self.app + later.app, app_s or 0.0)
+        self.app_cut += later.app_cut
+        if app_s is not None and self.app and (self.no_argv or later.no_argv):
+            def near(s):
+                return _near(self.app, s, app_s)
+            self._count_taken(self._take(near) + later._take(near))
         base = len(self.calls)
         held = later.calls[:max(0, cap - base)]
         dropped = later.calls[len(held):]
@@ -204,6 +317,8 @@ class PhaseLog:
         for pid, i in later.by_pid.items():
             if i < len(held):
                 self.by_pid[pid] = base + i
+        if later.no_argv:
+            self.no_argv = sorted(self.no_argv + [c[S] for c in held if c[FLAGS] & NO_ARGV])
         starts = [c[S] for c in dropped]
         if later.cut_at is not None:
             starts.append(later.cut_at)
@@ -213,16 +328,27 @@ class PhaseLog:
         self.hk_cut += later.hk_cut
 
     @classmethod
-    def fold(cls, parts, cap):
+    def fold(cls, parts, cap, app_s=None):
         """One log from the collector keys of one agent: a NEW object, sharing no list or dict with
         a part, which goes on ingesting. The keys' calls are interleaved by start, and the earliest
-        `cap` are held."""
+        `cap` are held. The app's reads are those of every part, and with a window `app_s` a call
+        flagged NO_ARGV that began within it of one of them is taken first, before the cap, and
+        counted as housekeeping, whichever part held the call and whichever held the read."""
         out = cls()
         calls = sorted(itertools.chain.from_iterable(p.calls for p in parts), key=itemgetter(S))
+        out.app = _joined(itertools.chain.from_iterable(p.app for p in parts), app_s or 0.0)
+        out.app_cut = sum(p.app_cut for p in parts)
+        taken = []
+        if app_s is not None and out.app and any(p.no_argv for p in parts):
+            kept = []
+            for c in calls:
+                (taken if c[FLAGS] & NO_ARGV and _near(out.app, c[S], app_s) else kept).append(c)
+            calls = kept
         dropped = calls[cap:]
         del calls[cap:]
         out.calls = calls
         out.by_pid = {c[PID]: i for i, c in enumerate(calls) if c[PID] is not None}
+        out.no_argv = [c[S] for c in calls if c[FLAGS] & NO_ARGV]     # in order, as the calls
         starts = [p.cut_at for p in parts if p.cut_at is not None]
         if dropped:
             starts.append(dropped[0][S])                   # they are in order of start
@@ -231,6 +357,7 @@ class PhaseLog:
             add_counts(out.hk, p.hk)
             add_counts(out.hk_bins, p.hk_bins)
             out.hk_cut += p.hk_cut
+        out._count_taken([c[S] for c in taken])
         return out
 
 

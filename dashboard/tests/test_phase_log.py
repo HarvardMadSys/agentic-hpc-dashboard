@@ -21,14 +21,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rc_dashboard.reducers.phase_log import (CAT, E, FLAGS, H, OPEN, P_CATS, P_CMDS,  # noqa: E402
-                                             P_FIRST, P_HELP, P_LAST, P_N, P_SID, P_SINCE,
+from rc_dashboard.reducers.phase_log import (CAT, E, FLAGS, H, NO_ARGV, OPEN, P_CATS,  # noqa: E402
+                                             P_CMDS, P_FIRST, P_HELP, P_LAST, P_N, P_SID, P_SINCE,
                                              P_SINCE_N, P_TEXT, P_WROTE, PAST, PID, PREV, S, WROTE,
                                              PendingJoin, PhaseLog, fold_entry)
+from rc_dashboard.reducers.phase_rules import APP_READ                        # noqa: E402
 
 
 def C(s, e, cat="explore", pid=None):
     return (s, e, cat, 0, 0, 0, pid, None)
+
+
+def B(s, pid=None):
+    """A `cat` of Codex's whose argv was not recorded: a call flagged NO_ARGV."""
+    return (s, s + 0.001, "explore", 0, 0, NO_ARGV, pid, None)
 
 
 class LogTest(unittest.TestCase):
@@ -67,7 +73,7 @@ class LogTest(unittest.TestCase):
         self.assertEqual((S, E, CAT, H, PREV, FLAGS, PID, PAST), tuple(range(8)))
         self.assertEqual((P_FIRST, P_LAST, P_N, P_CATS, P_CMDS, P_TEXT, P_WROTE, P_SID),
                          tuple(range(8)))
-        self.assertEqual((OPEN, WROTE), (1, 2))
+        self.assertEqual((OPEN, WROTE, NO_ARGV), (1, 2, 4))
 
     # ------------------------------------------------------------ the cap
     def test_cut_at_is_the_earliest_start_among_the_calls_not_held(self):
@@ -265,13 +271,193 @@ class LogTest(unittest.TestCase):
         lg.add(C(0, 5, "run", pid=201), 10)
         lg.ran_past(201, 3600)
         lg.add_housekeeping("git", 60, 10)
+        lg.add(B(900, pid=202), 10)
+        lg.add_app_read(100, 2.0, 1)
+        lg.add_app_read(500, 2.0, 1)                        # past the cap of one span
         def state(x):
-            return (x.calls, x.by_pid, x.hk, x.hk_bins, x.hk_cut, x.cut, x.cut_at, x.n)
+            return (x.calls, x.by_pid, x.hk, x.hk_bins, x.hk_cut, x.cut, x.cut_at, x.n, x.app,
+                    x.app_cut, x.no_argv)
 
         for clone in (pickle.loads(pickle.dumps(lg)), pickle.loads(pickle.dumps(lg, 2)),
                       copy.deepcopy(lg)):
             self.assertEqual(state(clone), state(lg))
         self.assertFalse(hasattr(lg, "__dict__"))
+
+
+class AppReadsTest(unittest.TestCase):
+    """The Codex desktop app's reads of its own assets, and the `cat`s with no argv they take.
+
+    A read whose argv was not recorded names no file, so only its time can tell it from the
+    model's: a call flagged NO_ARGV is the app's when one of the app's own reads began within the
+    window of it, before or after, in the same log or in a log it is merged or folded with."""
+
+    def test_a_read_takes_the_calls_with_no_argv_within_the_window(self):
+        lg = PhaseLog()
+        lg.add(B(100.0, pid=1), 10)
+        lg.add(C(100.5, 101, pid=2), 10)                # the model's, with its argv: never taken
+        lg.add(B(200.0, pid=3), 10)                     # far from the read
+        self.assertEqual(lg.add_app_read(101.0, 2.0, 10), [100.0])
+        self.assertEqual([c[S] for c in lg.calls], [100.5, 200.0])
+        self.assertEqual((lg.n, lg.no_argv, lg.by_pid, lg.app), (2, [200.0], {2: 0, 3: 1},
+                                                                  [[101.0, 101.0]]))
+        # the caller counts what was taken: the log does not count a read or a take as housekeeping
+        self.assertEqual(lg.hk, {})
+
+    def test_the_window_holds_a_call_at_its_edge_and_not_one_past_it(self):
+        for gap, took in ((2.0, True), (2.001, False), (-2.0, True), (-2.001, False)):
+            with self.subTest(gap=gap):
+                lg = PhaseLog()
+                lg.add(B(100.0), 10)
+                self.assertEqual(lg.add_app_read(100.0 + gap, 2.0, 10), [100.0] if took else [])
+                self.assertEqual(lg.app_near(100.0, 2.0), took)
+
+    def test_a_read_takes_nothing_from_a_log_with_no_call_close_to_it(self):
+        lg = PhaseLog()
+        lg.add(C(100, 101, pid=1), 10)
+        calls, by_pid = lg.calls, lg.by_pid
+        self.assertEqual(lg.add_app_read(100.5, 2.0, 10), [])
+        self.assertIs(lg.calls, calls)                  # nothing was rebuilt
+        self.assertIs(lg.by_pid, by_pid)
+
+    def test_a_reused_pid_names_the_newest_call_left(self):
+        lg = PhaseLog()
+        lg.add(C(0, 1, pid=7), 10)
+        lg.add(B(500, pid=7), 10)                       # the pid again, on a read with no argv
+        self.assertEqual(lg.by_pid, {7: 1})
+        lg.add_app_read(500.5, 2.0, 10)
+        self.assertEqual(lg.by_pid, {7: 0})
+        self.assertTrue(lg.ran_past(7, 900))
+        self.assertEqual(lg.calls[0][PAST], 900)
+
+    def test_reads_join_into_spans_and_a_read_can_join_two(self):
+        lg = PhaseLog()
+        for t in (0.0, 10.0):                           # 10 s apart: more than twice the window
+            lg.add_app_read(t, 2.0, 10)
+        self.assertEqual(lg.app, [[0.0, 0.0], [10.0, 10.0]])
+        lg.add_app_read(4.0, 2.0, 10)                   # within 4 s of the first
+        self.assertEqual(lg.app, [[0.0, 4.0], [10.0, 10.0]])
+        lg.add_app_read(7.0, 2.0, 10)                   # within 4 s of both: one span
+        self.assertEqual(lg.app, [[0.0, 10.0]])
+        lg.add_app_read(-3.0, 2.0, 10)                  # before it, within 4 s of its first
+        lg.add_app_read(5.0, 2.0, 10)                   # inside it
+        self.assertEqual(lg.app, [[-3.0, 10.0]])
+
+    def test_a_time_is_near_the_spans_exactly_when_it_is_near_a_read(self):
+        rng = random.Random(7)
+        for _ in range(300):
+            w = rng.choice((0.5, 2.0, 5.0))
+            reads = [rng.uniform(0, 100) for _ in range(rng.randint(1, 30))]
+            lg = PhaseLog()
+            for t in reads:
+                lg.add_app_read(t, w, 10000)
+            self.assertTrue(all(a[1] < b[0] - 2 * w for a, b in zip(lg.app, lg.app[1:])))
+            for _ in range(40):
+                t = rng.uniform(-10, 110)
+                self.assertEqual(lg.app_near(t, w), any(abs(t - r) <= w for r in reads))
+            # the same reads split over hours or keys hold the same spans once joined
+            parts = [PhaseLog() for _ in range(3)]
+            for t in reads:
+                rng.choice(parts).add_app_read(t, w, 10000)
+            self.assertEqual(PhaseLog.fold(parts, 10, app_s=w).app, lg.app)
+            a, b = parts[0], parts[1]
+            a.merge(b, 10, app_s=w)
+            a.merge(parts[2], 10, app_s=w)
+            self.assertEqual(a.app, lg.app)
+
+    def test_reads_past_the_span_cap_are_counted_and_take_nothing(self):
+        lg = PhaseLog()
+        lg.add_app_read(0.0, 2.0, 2)
+        lg.add_app_read(100.0, 2.0, 2)
+        lg.add(B(300.0), 10)
+        self.assertEqual(lg.add_app_read(300.5, 2.0, 2), [])        # a third span: not held
+        self.assertEqual((len(lg.app), lg.app_cut, lg.n), (2, 1, 1))
+        self.assertEqual(lg.add_app_read(101.0, 2.0, 2), [])        # it joins a span held
+        self.assertEqual((lg.app, lg.app_cut), ([[0.0, 0.0], [100.0, 101.0]], 1))
+
+    # -------------------------------------------------------------- merge
+    def test_merge_takes_the_calls_close_to_a_read_of_the_other_hour(self):
+        a, b = PhaseLog(), PhaseLog()
+        a.add(B(1000.0, pid=2), 10)                     # far from any read: the model's
+        a.add(B(3599.0, pid=1), 10)                     # the hour's last: no read of the app's yet
+        a.add(C(3599.5, 3600, pid=4), 10)
+        b.add_app_read(3600.5, 2.0, 10)
+        b.add_housekeeping(APP_READ, 3600.5, 10)        # as the reducer counts the read itself
+        b.add(B(3700.0, pid=3), 10)
+        a.merge(b, 10, app_s=2.0)
+        self.assertEqual([c[S] for c in a.calls], [1000.0, 3599.5, 3700.0])
+        self.assertEqual((a.n, a.no_argv, a.by_pid), (3, [1000.0, 3700.0], {2: 0, 4: 1, 3: 2}))
+        self.assertEqual((a.hk, a.hk_bins), ({APP_READ: 2}, {3540: 1, 3600: 1}))
+        self.assertEqual(a.app, [[3600.5, 3600.5]])
+
+    def test_merge_takes_a_later_hours_calls_close_to_an_earlier_read(self):
+        a, b = PhaseLog(), PhaseLog()
+        a.add_app_read(3599.0, 2.0, 10)
+        b.add(B(3600.0, pid=1), 10)                     # its hour knew no read of the app's
+        b.add(C(3601, 3602, pid=2), 10)
+        a.merge(b, 10, app_s=2.0)
+        self.assertEqual(([c[S] for c in a.calls], a.no_argv, a.by_pid), ([3601], [], {2: 0}))
+        self.assertEqual((a.hk, a.hk_bins), ({APP_READ: 1}, {3600: 1}))
+
+    def test_merge_takes_before_the_cap(self):
+        a, b = PhaseLog(), PhaseLog()
+        a.add(B(10.0), 2)
+        a.add(B(11.0), 2)                               # a is full
+        b.add_app_read(10.5, 2.0, 10)
+        b.add(C(20, 21), 2)
+        b.add(C(30, 31), 2)
+        a.merge(b, 2, app_s=2.0)
+        self.assertEqual(([c[S] for c in a.calls], a.cut, a.n), ([20, 30], 0, 2))
+
+    def test_with_no_window_a_merge_or_a_fold_takes_nothing(self):
+        a, b = PhaseLog(), PhaseLog()
+        a.add(B(10.0), 10)
+        b.add_app_read(10.0, 2.0, 10)
+        f = PhaseLog.fold([a, b], 10)
+        a.merge(b, 10)
+        for lg in (f, a):
+            self.assertEqual((lg.n, lg.no_argv, lg.hk, lg.app), (1, [10.0], {}, [[10.0, 10.0]]))
+
+    # --------------------------------------------------------------- fold
+    def test_fold_takes_the_calls_close_to_a_read_of_another_key(self):
+        # Schema 7 tags each of the app's reads (its argv names `.codex`), so each is a key of its
+        # own, and the runtime's key holds the reads that kept no argv. They meet in the fold.
+        runtime, r1, r2 = PhaseLog(), PhaseLog(), PhaseLog()
+        for s in (100.0, 100.3, 900.0):
+            runtime.add(B(s, pid=int(s * 10)), 10)
+        runtime.add(C(100.1, 100.2, pid=5), 10)
+        for lg, t in ((r1, 100.2), (r2, 100.4)):
+            lg.add_app_read(t, 2.0, 10)
+            lg.add_housekeeping(APP_READ, t, 10)
+        f = PhaseLog.fold([runtime, r1, r2], 10, app_s=2.0)
+        self.assertEqual([c[S] for c in f.calls], [100.1, 900.0])
+        self.assertEqual((f.n, f.no_argv, f.by_pid), (2, [900.0], {5: 0, 9000: 1}))
+        self.assertEqual((f.hk, f.hk_bins, f.app), ({APP_READ: 4}, {60: 4}, [[100.2, 100.4]]))
+        # the parts go on ingesting: none of them was changed, and the fold shares no list
+        self.assertEqual((runtime.n, runtime.no_argv), (4, [100.0, 100.3, 900.0]))
+        self.assertEqual((r1.app, r2.app, r1.hk), ([[100.2, 100.2]], [[100.4, 100.4]],
+                                                   {APP_READ: 1}))
+        theirs = {id(x) for p in (runtime, r1, r2) for x in (p.app, p.no_argv, *p.app)}
+        self.assertFalse({id(f.app), id(f.no_argv), *(id(x) for x in f.app)} & theirs)
+
+    def test_a_part_counts_its_calls_less_the_ones_the_fold_took(self):
+        # two days of one session: a read just before midnight takes a `cat` just after it
+        day1, day2 = PhaseLog(), PhaseLog()
+        day1.add_app_read(86399.5, 2.0, 10)
+        day1.add(C(80000, 80001, pid=4), 10)
+        for c in (B(86400.5, pid=1), B(87000.0, pid=2), C(86401, 86402, pid=3)):
+            day2.add(c, 10)
+        f = PhaseLog.fold([day1, day2], 10, app_s=2.0)
+        self.assertEqual([c[S] for c in day2.calls_in(f, 2.0)], [87000.0, 86401])
+        self.assertIs(day1.calls_in(f, 2.0), day1.calls)        # nothing of its own was taken
+        self.assertEqual(sum(len(p.calls_in(f, 2.0)) + p.cut for p in (day1, day2)), f.n)
+
+    def test_fold_takes_before_the_cap(self):
+        runtime, app = PhaseLog(), PhaseLog()
+        for c in (B(10.0), B(11.0), C(20, 21), C(30, 31)):
+            runtime.add(c, 10)
+        app.add_app_read(10.5, 2.0, 10)
+        f = PhaseLog.fold([runtime, app], 2, app_s=2.0)
+        self.assertEqual(([c[S] for c in f.calls], f.cut, f.n), ([20, 30], 0, 2))
 
 
 def leaf(pj, s, e=None, cat="explore", cmd="ugrep", text=None, wrote=False, sid="s"):
