@@ -224,7 +224,9 @@ Modes a view was left with before are narrowed at startup; a link's target keeps
 the readers see names the view (`feeds.<tier>.roots`, origin `convert: the EBR view of ...`, and
 `prefer` `ebr`), and the collector's own roots stay in `feeds.<tier>.source_roots`: `/api/config`
 says both. A view dir inside a source root stops the service at startup, as a bad setting does. A
-tier with no source root that exists is read as configured, and says why in `/api/feeds`.
+tier with no source root that exists is read as configured, and says why in `/api/feeds`; once
+one does, every configured root is planned, and one still missing (a mount coming up late) is
+mirrored when it appears.
 `--check-feeds` still reads the collector's roots, converts nothing, and adds a line per tier on
 what the conversion would do:
 

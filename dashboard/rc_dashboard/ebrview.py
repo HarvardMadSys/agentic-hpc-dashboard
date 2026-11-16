@@ -690,6 +690,7 @@ class _Root(object):
         self.src = src
         self.view = view
         self.days = days
+        self.ready = False              # its view dir and marker made (`_ensure_root`)
         self.newest = None              # the newest dated dir seen in the source
         self.recent = frozenset()       # its newest two: every poll looks at them
         self.held = 0                   # streams held at the last full listing
@@ -772,11 +773,15 @@ class EbrView(object):
 
     def _plan_roots(self):
         for tier in TIERS:
+            # Every configured root once one of them is there: a root missing
+            # now (a mount still coming up) is mirrored once it appears, as the
+            # readers' feed resolution would find it. A tier with none is read
+            # as configured, and reported missing.
             srcs = []
             for r in self.cfg.get("feeds.%s.roots" % tier) or []:
-                if r and os.path.isdir(r) and os.path.abspath(r) not in srcs:
+                if r and os.path.abspath(r) not in srcs:
                     srcs.append(os.path.abspath(r))
-            if not srcs:
+            if not any(os.path.isdir(r) for r in srcs):
                 continue
             days = mirror_days(self.cfg, tier)
             base = os.path.join(self.dir, tier)
@@ -809,30 +814,7 @@ class EbrView(object):
         for tier, t in self.tiers.items():
             private_dir(t["dir"])
         for r in self.roots:
-            private_dir(r.view)
-            # what a version before this one made with the umask's modes
-            narrow_tree(r.view)
-            marker = os.path.join(r.view, MARKER)
-            real = os.path.realpath(r.src)
-            try:
-                with open(marker) as fh:
-                    had = json.load(fh)
-            except (OSError, ValueError):
-                had = None
-            if isinstance(had, dict) and had.get("realpath") not in (None, real):
-                raise ConvertError("view root %s mirrors %s, not %s (%s): remove it, or set "
-                                   "ingest.convert.dir elsewhere"
-                                   % (r.view, had.get("realpath"), real, MARKER))
-            if not isinstance(had, dict):
-                tmp = marker + ".%d.tmp" % os.getpid()
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
-                with os.fdopen(fd, "w") as fh:
-                    json.dump({"source": r.src, "realpath": real, "tier": r.tier,
-                               "writer": WRITER, "created": time.time(),
-                               "note": "the EBR view of the source root: links to its EBR "
-                                       "day-files, EBR conversions of its JSONL ones "
-                                       "(rc_dashboard/ebrview.py)"}, fh, indent=1)
-                os.replace(tmp, marker)
+            self._ensure_root(r)
         for tier, t in self.tiers.items():
             was = self.cfg.origin("feeds.%s.roots" % tier)
             self.cfg.set("feeds.%s.source_roots" % tier, list(t["sources"]), was)
@@ -842,6 +824,40 @@ class EbrView(object):
         # nothing is read before the catch-up has filled the view (`converting`)
         self.state = "catching_up"
         return self
+
+    def _ensure_root(self, r):
+        """`r`'s view root made, with its marker, once its source exists: True
+        when it is. ConvertError when the view root mirrors another source."""
+        if r.ready:
+            return True
+        if not os.path.isdir(r.src):
+            return False
+        private_dir(r.view)
+        # what a version before this one made with the umask's modes
+        narrow_tree(r.view)
+        marker = os.path.join(r.view, MARKER)
+        real = os.path.realpath(r.src)
+        try:
+            with open(marker) as fh:
+                had = json.load(fh)
+        except (OSError, ValueError):
+            had = None
+        if isinstance(had, dict) and had.get("realpath") not in (None, real):
+            raise ConvertError("view root %s mirrors %s, not %s (%s): remove it, or set "
+                               "ingest.convert.dir elsewhere"
+                               % (r.view, had.get("realpath"), real, MARKER))
+        if not isinstance(had, dict):
+            tmp = marker + ".%d.tmp" % os.getpid()
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+            with os.fdopen(fd, "w") as fh:
+                json.dump({"source": r.src, "realpath": real, "tier": r.tier,
+                           "writer": WRITER, "created": time.time(),
+                           "note": "the EBR view of the source root: links to its EBR "
+                                   "day-files, EBR conversions of its JSONL ones "
+                                   "(rc_dashboard/ebrview.py)"}, fh, indent=1)
+            os.replace(tmp, marker)
+        r.ready = True
+        return True
 
     # ------------------------------------------------------------- listing
     def _note(self, msg, entry=None):
@@ -898,6 +914,8 @@ class EbrView(object):
                 self._note("listing %s: %s: %s" % (root.src, type(e).__name__, e))
 
     def _discover_root(self, root, full, now):
+        if not root.ready and not self._ensure_root(root):
+            return                      # not there (yet): mirrored once it appears
         try:
             dates = sorted(d for d in os.listdir(root.src) if d.startswith("20")
                            and os.path.isdir(os.path.join(root.src, d)))

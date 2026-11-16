@@ -842,6 +842,34 @@ class SetupTest(ViewCase):
         self.settle(v)
         self.assertConverted("h1.exits.jsonl", day=days[0])
 
+    def test_a_root_missing_at_startup_is_mirrored_once_it_appears(self):
+        # Two roots, one not there yet (a mount still coming up): the readers are
+        # pointed at both views, and the second is made, its streams converted,
+        # once it appears, as the readers' feed resolution would find it.
+        from rc_dashboard import feedfile
+        other = os.path.join(self.tmp, "ebpf2")
+        self.append("h1.exits.jsonl", [rec(T0, 1)])
+        cfg = self.cfg()
+        cfg.set("feeds.ebpf.roots", [self.root, other], "test")
+        v = ebrview.EbrView.from_config(cfg)
+        v.prepare()
+        self.views.append(v)
+        v.catch_up()
+        views = cfg.get("feeds.ebpf.roots")
+        self.assertEqual(len(views), 2)
+        self.assertEqual(cfg.get("feeds.ebpf.source_roots"), [self.root, other])
+        self.assertFalse(os.path.exists(views[1]))      # nothing made for a root not there
+        p = os.path.join(other, DAY, "h2.exits.jsonl")
+        os.makedirs(os.path.dirname(p))
+        with open(p, "wb") as fh:
+            fh.write(line(rec(T0 + 1, 2, host="h2")))
+        v._full_at = None
+        self.settle(v)
+        got = view_records(os.path.join(views[1], DAY, "h2.exits.ebr"))
+        self.assertEqual([r["pid"] for r in got], [2])
+        self.assertEqual(len(feedfile.day_files(views, 0, "ebr")),
+                         len(feedfile.day_files([self.root, other], 0, "jsonl")))
+
     def test_a_view_inside_a_source_root_is_refused(self):
         cfg = self.cfg(dir=os.path.join(self.root, "view"))
         with self.assertRaises(ebrview.ConvertError):
