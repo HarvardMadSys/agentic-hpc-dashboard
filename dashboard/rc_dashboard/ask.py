@@ -329,7 +329,12 @@ window, filter, and classes the reader has on screen. Lists cut short end with
 SESSION_GUIDE = """The snapshot is ONE session the reader opened on the Sessions tab -- an
 agent (or a person's terminal, or an IDE) and every process it ran, re-read from
 the collector's records -- and nothing else from the dashboard.
-- session: whose, where, when (the host's local time), and its totals.
+- session: whose, where, when (the host's local time), and its totals. For an
+  agent whose commands the dashboard reads, also what kind of session it was
+  (category: the use that held half its work, explore, develop, build, run,
+  hpc for Slurm, or git; else mixed, wait, unknown, or none), its project and
+  the names its tasks recur on (headline), and a summary the dashboard built
+  from its phases and calls -- by rule, not by a model.
 - tools: the commands it ran, in order, as runs (`git x25` is 25 in a row);
   purposes: the same sequence by the dashboard's kind of work, and each kind's
   share of the processes -- a count, not a share of the session's time.
@@ -519,6 +524,9 @@ def session_digest(body, with_argv=False, max_lines=300):
     session = {k: row.get(k) for k in keep if row.get(k) is not None}
     session.update(first=_clock(row.get("first")), last=_clock(row.get("last")),
                    wall=_secs(row.get("wall_s")))
+    # what kind of session its phase block says it was, what it was about, and its summary
+    block = row.get("phases") if isinstance(row.get("phases"), dict) else {}
+    session.update({k: block[k] for k in ("category", "headline", "summary") if block.get(k)})
     if row.get("sid"):
         session["_go"] = {"sid": row["sid"]}
     shares = collections.Counter()

@@ -2615,6 +2615,33 @@ td.lbl[data-tip] {
   border-style: dashed;
   color: var(--muted);
 }
+/* What kind of session an agent's block says it was (components/CategoryChip.tsx):
+ * outlined as a surface chip is, with a dot of the colour of the phases its use
+ * counts; no tool call and commands not recorded dashed, as everything unread is. */
+.sess-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--edge);
+  border-radius: 99px;
+  font: 9.5px/13px 'IBM Plex Mono', monospace;
+  color: var(--ink-2);
+  white-space: nowrap;
+  cursor: help;
+}
+.sess-cat > i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.sess-cat-none,
+.sess-cat-unknown {
+  border-style: dashed;
+  color: var(--muted);
+}
 table tr.u-cls td {
   font-weight: 600;
 }

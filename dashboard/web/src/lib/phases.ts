@@ -9,7 +9,17 @@
  * work. A call the agent moved past may still run through it, and then its line
  * says so. A guess says it is one wherever it is named.
  */
-import type { Phase, PhaseBlock, PhaseHousekeeping, PhaseKind, PhasesUnavailable, TrajRunning } from '../api/types';
+import type {
+  Phase,
+  PhaseBlock,
+  PhaseHousekeeping,
+  PhaseKind,
+  PhasesUnavailable,
+  SessionCategory,
+  SessionKind,
+  TrajRunning,
+  UseKind,
+} from '../api/types';
 import { clockPinned } from './clock';
 import { clock, dur, fint } from './format';
 
@@ -499,6 +509,71 @@ export function edgeSpan(
   const a = Math.max(from, v0);
   const b = Math.min(to, v1);
   return b > a ? { from, to, a, b } : null;
+}
+
+/* ------------------------------------------------- what kind of session */
+
+/** What kind of session a block was (`PhaseBlock.category`), as `[short, label, colour]`: the short name is a chip's,
+ *  the label a hover's, and the colour the slot of the phases its use counts, so a chip and the band beside it agree.
+ *  A session with no use has the grey of what is not read, and one with no tool call no fill. The uses are the Users
+ *  tab's (`USE_VERB`, lib/portraits.ts), worded as nouns. */
+export const CATEGORIES: Record<SessionCategory, [short: string, label: string, colour: string]> = {
+  explore: ['explore', 'Exploring code and files', 'var(--s3)'],
+  develop: ['edit & test', 'Editing and testing', 'var(--s5)'],
+  build: ['build', 'Building and installing software', 'var(--s2)'],
+  run: ['run', 'Running programs', 'var(--s6)'],
+  hpc: ['Slurm', 'Slurm jobs', 'var(--s4)'],
+  git: ['git', 'Git', 'var(--s7)'],
+  mixed: ['mixed', 'Mixed work', 'var(--sg)'],
+  wait: ['waiting', 'Only waiting', 'var(--s1)'],
+  unknown: ['not recorded', 'Commands not recorded', 'var(--sg)'],
+  none: ['no tool calls', 'No tool calls', 'none'],
+};
+
+/** How each category is decided, for a chip's hover (`phase_summary`). */
+const CATEGORY_RULE: Record<SessionCategory, string> = {
+  explore: 'reading and searching hold half its work or more',
+  develop: 'changing files from the shell, and testing, hold half its work or more',
+  build: 'building and installing hold half its work or more',
+  run: 'running programs holds half its work or more',
+  hpc: 'Slurm, its jobs waited on included, holds half its work or more',
+  git: 'git and gh hold half its work or more',
+  mixed: 'no one use holds half its work',
+  wait: 'its tool calls only waited: a sleep, or polls of a process or a file',
+  unknown: 'commands not recorded hold half its time or more, or it did nothing else',
+  none: 'it made no tool call. The agent’s own Read and Edit tools, and its thinking, leave no command',
+};
+
+/** A use as a share names it: `Slurm 94%`. */
+const USE_SHORT: Record<UseKind, string> = {
+  explore: 'explore',
+  develop: 'edit & test',
+  build: 'build',
+  run: 'run',
+  hpc: 'Slurm',
+  git: 'git',
+};
+
+/** A category's `[short, label, colour]`, and a category this page does not know as itself, in grey. */
+export function categoryOf(c: string): [string, string, string] {
+  return Object.hasOwn(CATEGORIES, c) ? CATEGORIES[c as SessionCategory] : [c, c, 'var(--sg)'];
+}
+
+/** The hover of a session's category: what it is and how it is decided, the shares of its work, and its summary. */
+export function categoryTip(block: SessionKind): string {
+  const c = block.category;
+  if (!c) return '';
+  const rule = Object.hasOwn(CATEGORY_RULE, c) ? CATEGORY_RULE[c] : '';
+  const uses = (block.uses ?? [])
+    .map(([u, pct]) => `${Object.hasOwn(USE_SHORT, u) ? USE_SHORT[u] : u} ${pct >= 10 ? Math.round(pct) : pct}%`)
+    .join(' · ');
+  return [
+    `${categoryOf(c)[1]}${rule ? `: ${rule}` : ''}`,
+    uses ? `its work: ${uses}` : '',
+    block.summary ?? '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /* ---------------------------------------------------------- the whole row */

@@ -200,6 +200,9 @@ BASIS = {
               "newest %d sessions" % PHASE_SESSIONS,
     "project": "the folder the agent was started in, or when that is a home folder or named for a "
                "person, the folder its commands change into most (as a task's headline)",
+    "category": "what kind of session it was, from the same phase blocks, for the newest %d "
+                "sessions: the use that holds half its work or more, else mixed, as the Sessions "
+                "tab's rows say it" % PHASE_SESSIONS,
     "sandbox": "whether each session's tool calls ran sandboxed, as the Internal tab counts them",
     "slurm": "the user's agent sessions as the Slurm tab folds them",
     "traits": "plain statements, each from one rule over these numbers; the rules are served "
@@ -787,6 +790,9 @@ def portrait(ctx, user, fleet=None):
                 "peak_rss_mb": round(s["peak_rss_mb"], 1),
                 "sids": [r.sid for r in s["_rows"]],
                 "headline": block.get("headline") if block is not None else None,
+                # what kind of session it was, as its row on the Sessions tab says (phase_summary)
+                **{k: block.get(k) if block is not None else None
+                   for k in ("category", "uses", "summary")},
                 "tasks": n_own if block is not None else None,
                 "quoted": q_own if block is not None else None,
                 "phase_s": {k: round(v, 1) for k, v in mine.most_common()} if block is not None

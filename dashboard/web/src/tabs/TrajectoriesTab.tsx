@@ -31,7 +31,10 @@
  * window's start, whether or not the table ranks it. Where the window does not
  * hold that row, it opens nothing, and the pick is made on the open row.
  *
- * A row of an agent whose commands are read says what the agent was doing
+ * A row of an agent whose commands are read says what kind of session it was, a
+ * chip beside where it was driven from (components/CategoryChip.tsx): the use that
+ * holds half its work, `mixed`, or what it had none of, with its summary on hover.
+ * It says what the agent was doing too
  * (components/PhaseBand.tsx): a thin band of its phases stands where the purpose
  * ribbon did, with a tick on it where each task or lone stretch after the first
  * begins, and the line under it names the tasks (`A → B → 3 more`), or where the
@@ -65,6 +68,7 @@ import { dayInWindow, taskSequence, windowStart } from '../lib/tasks';
 import { surfaceSplit } from '../lib/surfaces';
 import { absent, winLabel } from '../lib/panels';
 import { SurfaceChip } from '../components/SurfaceChip';
+import { CategoryChip } from '../components/CategoryChip';
 import { TrajectoryInspector } from './TrajectoryInspector';
 import type { DayJump, RunJump } from './TrajectoryInspector';
 import './trajectories.css';
@@ -239,6 +243,7 @@ const SessionItem = memo(function SessionItem({
         <b>{nm.key}</b>
         <span className="tj-date">{nm.date}</span>
         <SurfaceChip s={r.surface} detail={r.surface_detail} />
+        <CategoryChip of={isBlock(ph) ? ph : null} />
         {r.running && (
           <span className="tj-live" data-tip={liveTip(r)}>
             <i className="ld" />

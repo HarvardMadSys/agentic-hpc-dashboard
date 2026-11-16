@@ -7620,7 +7620,27 @@
          "sid": null
         }
        ],
-       "headline": "proj · src/io.py"
+       "headline": "proj · src/io.py",
+       "category": "develop",
+       "uses": [
+        [
+         "develop",
+         53.1
+        ],
+        [
+         "explore",
+         27.1
+        ],
+        [
+         "run",
+         13.5
+        ],
+        [
+         "git",
+         6.3
+        ]
+       ],
+       "summary": "Mostly edited and tested code (53% of 30 min of work), then explored code and files (27%) and ran programs (14%). 66 tool calls in 2 tasks."
       }
      },
      "period4-holylogin02-mmarthen-1037": {
@@ -8260,7 +8280,31 @@
          "sid": null
         }
        ],
-       "headline": "proj"
+       "headline": "proj",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         28.4
+        ],
+        [
+         "explore",
+         27
+        ],
+        [
+         "run",
+         27
+        ],
+        [
+         "build",
+         13.5
+        ],
+        [
+         "git",
+         4.1
+        ]
+       ],
+       "summary": "Mixed work (1.8 h): edited and tested code (28%), explored code and files (27%), ran programs (27%). 255 tool calls in 2 tasks."
       }
      },
      "period4-boslogin01-jsilva-1111": {
@@ -9178,7 +9222,31 @@
          "sid": null
         }
        ],
-       "headline": "proj · src/io.py"
+       "headline": "proj · src/io.py",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         41.4
+        ],
+        [
+         "hpc",
+         21.4
+        ],
+        [
+         "explore",
+         21.4
+        ],
+        [
+         "run",
+         10.7
+        ],
+        [
+         "git",
+         5
+        ]
+       ],
+       "summary": "Mixed work (6.6 h): edited and tested code (41%), ran jobs on Slurm (21%), explored code and files (21%). 104 tool calls in 2 tasks."
       }
      },
      "period4-holylogin01-aparker-1222": {
@@ -10167,7 +10235,31 @@
          "sid": null
         }
        ],
-       "headline": "proj · src/app.py"
+       "headline": "proj · src/app.py",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         37.4
+        ],
+        [
+         "explore",
+         28.8
+        ],
+        [
+         "run",
+         20.6
+        ],
+        [
+         "build",
+         8.2
+        ],
+        [
+         "git",
+         4.9
+        ]
+       ],
+       "summary": "Mixed work (8.0 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 74 tool calls in 2 tasks."
       }
      },
      "period4-boslogin01-thomwg11-1333": {
@@ -10768,7 +10860,27 @@
          "sid": null
         }
        ],
-       "headline": null
+       "headline": null,
+       "category": "mixed",
+       "uses": [
+        [
+         "explore",
+         38.9
+        ],
+        [
+         "run",
+         37
+        ],
+        [
+         "develop",
+         18.5
+        ],
+        [
+         "git",
+         5.6
+        ]
+       ],
+       "summary": "Mixed work (7.1 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 79 tool calls in 2 tasks."
       }
      },
      "period4-boslogin02-jsilva-1370": {
@@ -11527,7 +11639,35 @@
          "sid": null
         }
        ],
-       "headline": "proj · train.log"
+       "headline": "proj · train.log",
+       "category": "mixed",
+       "uses": [
+        [
+         "hpc",
+         48.6
+        ],
+        [
+         "explore",
+         18
+        ],
+        [
+         "run",
+         13.5
+        ],
+        [
+         "develop",
+         9
+        ],
+        [
+         "build",
+         9
+        ],
+        [
+         "git",
+         1.8
+        ]
+       ],
+       "summary": "Mixed work (12 h): ran jobs on Slurm (49%), explored code and files (18%), ran programs (14%). 281 tool calls in 2 tasks."
       }
      },
      "period4-holylogin01-thomwg11-1444": {
@@ -12116,7 +12256,31 @@
          "sid": null
         }
        ],
-       "headline": "proj"
+       "headline": "proj",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         27.5
+        ],
+        [
+         "explore",
+         27.4
+        ],
+        [
+         "run",
+         27.4
+        ],
+        [
+         "build",
+         13.7
+        ],
+        [
+         "git",
+         4.1
+        ]
+       ],
+       "summary": "Mixed work (13 h): edited and tested code (28%), explored code and files (27%), ran programs (27%). 272 tool calls in 2 tasks."
       }
      },
      "period4-holylogin02-aparker-1481": {
@@ -12822,7 +12986,27 @@
          "sid": null
         }
        ],
-       "headline": null
+       "headline": null,
+       "category": "mixed",
+       "uses": [
+        [
+         "explore",
+         38.9
+        ],
+        [
+         "run",
+         37
+        ],
+        [
+         "develop",
+         18.5
+        ],
+        [
+         "git",
+         5.6
+        ]
+       ],
+       "summary": "Mixed work (11 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 107 tool calls in 2 tasks."
       }
      },
      "period4-boslogin01-mmarthen-1555": {
@@ -13460,7 +13644,27 @@
          "sid": null
         }
        ],
-       "headline": "proj · src/io.py"
+       "headline": "proj · src/io.py",
+       "category": "develop",
+       "uses": [
+        [
+         "develop",
+         52.4
+        ],
+        [
+         "explore",
+         27.5
+        ],
+        [
+         "run",
+         13.7
+        ],
+        [
+         "git",
+         6.4
+        ]
+       ],
+       "summary": "Mostly edited and tested code (52% of 19 h of work), then explored code and files (28%) and ran programs (14%). 167 tool calls in 2 tasks."
       }
      },
      "period4-boslogin02-rkoshy-1592": {
@@ -14196,7 +14400,31 @@
          "sid": null
         }
        ],
-       "headline": "proj"
+       "headline": "proj",
+       "category": "mixed",
+       "uses": [
+        [
+         "run",
+         48.5
+        ],
+        [
+         "develop",
+         19.5
+        ],
+        [
+         "explore",
+         19.4
+        ],
+        [
+         "build",
+         9.7
+        ],
+        [
+         "git",
+         2.9
+        ]
+       ],
+       "summary": "Mixed work (19 h): ran programs (49%), edited and tested code (20%), explored code and files (19%). 310 tool calls in 2 tasks."
       }
      },
      "period4-holylogin01-thomwg11-1666": {
@@ -14955,7 +15183,31 @@
          "sid": null
         }
        ],
-       "headline": "proj · src/app.py"
+       "headline": "proj · src/app.py",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         37.3
+        ],
+        [
+         "explore",
+         28.9
+        ],
+        [
+         "run",
+         20.6
+        ],
+        [
+         "build",
+         8.3
+        ],
+        [
+         "git",
+         5
+        ]
+       ],
+       "summary": "Mixed work (18 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 148 tool calls in 2 tasks."
       }
      },
      "period4-holylogin02-thomwg11-1703": {
@@ -15871,7 +16123,35 @@
          "sid": null
         }
        ],
-       "headline": "proj · train.log"
+       "headline": "proj · train.log",
+       "category": "mixed",
+       "uses": [
+        [
+         "hpc",
+         41.2
+        ],
+        [
+         "develop",
+         22.9
+        ],
+        [
+         "explore",
+         15.3
+        ],
+        [
+         "run",
+         11.5
+        ],
+        [
+         "build",
+         7.6
+        ],
+        [
+         "git",
+         1.5
+        ]
+       ],
+       "summary": "Mixed work (23 h): ran jobs on Slurm (41%), edited and tested code (23%), explored code and files (15%). 336 tool calls in 2 tasks."
       }
      },
      "period4-boslogin02-mmarthen-1814": {
@@ -16745,7 +17025,31 @@
          "sid": null
         }
        ],
-       "headline": "proj · src/app.py"
+       "headline": "proj · src/app.py",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         37.3
+        ],
+        [
+         "explore",
+         28.9
+        ],
+        [
+         "run",
+         20.6
+        ],
+        [
+         "build",
+         8.3
+        ],
+        [
+         "git",
+         5
+        ]
+       ],
+       "summary": "Mixed work (22 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 188 tool calls in 2 tasks."
       }
      },
      "period4-holylogin01-thomwg11-1888": {
@@ -17336,7 +17640,27 @@
          "sid": null
         }
        ],
-       "headline": null
+       "headline": null,
+       "category": "mixed",
+       "uses": [
+        [
+         "explore",
+         38.9
+        ],
+        [
+         "run",
+         37
+        ],
+        [
+         "develop",
+         18.5
+        ],
+        [
+         "git",
+         5.6
+        ]
+       ],
+       "summary": "Mixed work (19 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 98 tool calls in 2 tasks."
       }
      },
      "period4-holylogin02-dwei-1925": {
@@ -18095,7 +18419,35 @@
          "sid": null
         }
        ],
-       "headline": "proj · train.log"
+       "headline": "proj · train.log",
+       "category": "mixed",
+       "uses": [
+        [
+         "hpc",
+         48.6
+        ],
+        [
+         "explore",
+         18
+        ],
+        [
+         "run",
+         13.5
+        ],
+        [
+         "develop",
+         9
+        ],
+        [
+         "build",
+         9
+        ],
+        [
+         "git",
+         1.8
+        ]
+       ],
+       "summary": "Mixed work (28 h): ran jobs on Slurm (49%), explored code and files (18%), ran programs (14%). 474 tool calls in 2 tasks."
       }
      },
      "period4-boslogin01-aparker-1999": {
@@ -18993,6 +19345,30 @@
         }
        ],
        "headline": "proj · src/loader.py",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         37.9
+        ],
+        [
+         "explore",
+         24.1
+        ],
+        [
+         "hpc",
+         24.1
+        ],
+        [
+         "git",
+         6.9
+        ],
+        [
+         "build",
+         6.9
+        ]
+       ],
+       "summary": "Mixed work (6.8 h): edited and tested code (38%), explored code and files (24%), ran jobs on Slurm (24%). 124 tool calls in 3 tasks.",
        "days": [
         {
          "sid": "boslogin02|2026-09-13|agent|apid:4242",
@@ -19787,6 +20163,30 @@
         }
        ],
        "headline": "proj · src/loader.py",
+       "category": "mixed",
+       "uses": [
+        [
+         "develop",
+         37.9
+        ],
+        [
+         "explore",
+         24.1
+        ],
+        [
+         "hpc",
+         24.1
+        ],
+        [
+         "git",
+         6.9
+        ],
+        [
+         "build",
+         6.9
+        ]
+       ],
+       "summary": "Mixed work (6.8 h): edited and tested code (38%), explored code and files (24%), ran jobs on Slurm (24%). 124 tool calls in 3 tasks.",
        "days": [
         {
          "sid": "boslogin02|2026-09-13|agent|apid:4242",
@@ -41394,7 +41794,27 @@
        "sid": null
       }
      ],
-     "headline": "proj · src/io.py"
+     "headline": "proj · src/io.py",
+     "category": "develop",
+     "uses": [
+      [
+       "develop",
+       53.1
+      ],
+      [
+       "explore",
+       27.1
+      ],
+      [
+       "run",
+       13.5
+      ],
+      [
+       "git",
+       6.3
+      ]
+     ],
+     "summary": "Mostly edited and tested code (53% of 30 min of work), then explored code and files (27%) and ran programs (14%). 66 tool calls in 2 tasks."
     }
    },
    "period4-holylogin02-mmarthen-1037": {
@@ -42034,7 +42454,31 @@
        "sid": null
       }
      ],
-     "headline": "proj"
+     "headline": "proj",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       28.4
+      ],
+      [
+       "explore",
+       27
+      ],
+      [
+       "run",
+       27
+      ],
+      [
+       "build",
+       13.5
+      ],
+      [
+       "git",
+       4.1
+      ]
+     ],
+     "summary": "Mixed work (1.8 h): edited and tested code (28%), explored code and files (27%), ran programs (27%). 255 tool calls in 2 tasks."
     }
    },
    "period4-boslogin01-jsilva-1111": {
@@ -42952,7 +43396,31 @@
        "sid": null
       }
      ],
-     "headline": "proj · src/io.py"
+     "headline": "proj · src/io.py",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       41.4
+      ],
+      [
+       "hpc",
+       21.4
+      ],
+      [
+       "explore",
+       21.4
+      ],
+      [
+       "run",
+       10.7
+      ],
+      [
+       "git",
+       5
+      ]
+     ],
+     "summary": "Mixed work (6.6 h): edited and tested code (41%), ran jobs on Slurm (21%), explored code and files (21%). 104 tool calls in 2 tasks."
     }
    },
    "period4-holylogin01-aparker-1222": {
@@ -43941,7 +44409,31 @@
        "sid": null
       }
      ],
-     "headline": "proj · src/app.py"
+     "headline": "proj · src/app.py",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       37.4
+      ],
+      [
+       "explore",
+       28.8
+      ],
+      [
+       "run",
+       20.6
+      ],
+      [
+       "build",
+       8.2
+      ],
+      [
+       "git",
+       4.9
+      ]
+     ],
+     "summary": "Mixed work (8.0 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 74 tool calls in 2 tasks."
     }
    },
    "period4-boslogin01-thomwg11-1333": {
@@ -44542,7 +45034,27 @@
        "sid": null
       }
      ],
-     "headline": null
+     "headline": null,
+     "category": "mixed",
+     "uses": [
+      [
+       "explore",
+       38.9
+      ],
+      [
+       "run",
+       37
+      ],
+      [
+       "develop",
+       18.5
+      ],
+      [
+       "git",
+       5.6
+      ]
+     ],
+     "summary": "Mixed work (7.1 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 79 tool calls in 2 tasks."
     }
    },
    "period4-boslogin02-jsilva-1370": {
@@ -45301,7 +45813,35 @@
        "sid": null
       }
      ],
-     "headline": "proj · train.log"
+     "headline": "proj · train.log",
+     "category": "mixed",
+     "uses": [
+      [
+       "hpc",
+       48.6
+      ],
+      [
+       "explore",
+       18
+      ],
+      [
+       "run",
+       13.5
+      ],
+      [
+       "develop",
+       9
+      ],
+      [
+       "build",
+       9
+      ],
+      [
+       "git",
+       1.8
+      ]
+     ],
+     "summary": "Mixed work (12 h): ran jobs on Slurm (49%), explored code and files (18%), ran programs (14%). 281 tool calls in 2 tasks."
     }
    },
    "period4-holylogin01-thomwg11-1444": {
@@ -45890,7 +46430,31 @@
        "sid": null
       }
      ],
-     "headline": "proj"
+     "headline": "proj",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       27.5
+      ],
+      [
+       "explore",
+       27.4
+      ],
+      [
+       "run",
+       27.4
+      ],
+      [
+       "build",
+       13.7
+      ],
+      [
+       "git",
+       4.1
+      ]
+     ],
+     "summary": "Mixed work (13 h): edited and tested code (28%), explored code and files (27%), ran programs (27%). 272 tool calls in 2 tasks."
     }
    },
    "period4-holylogin02-aparker-1481": {
@@ -46596,7 +47160,27 @@
        "sid": null
       }
      ],
-     "headline": null
+     "headline": null,
+     "category": "mixed",
+     "uses": [
+      [
+       "explore",
+       38.9
+      ],
+      [
+       "run",
+       37
+      ],
+      [
+       "develop",
+       18.5
+      ],
+      [
+       "git",
+       5.6
+      ]
+     ],
+     "summary": "Mixed work (11 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 107 tool calls in 2 tasks."
     }
    },
    "period4-boslogin01-mmarthen-1555": {
@@ -47234,7 +47818,27 @@
        "sid": null
       }
      ],
-     "headline": "proj · src/io.py"
+     "headline": "proj · src/io.py",
+     "category": "develop",
+     "uses": [
+      [
+       "develop",
+       52.4
+      ],
+      [
+       "explore",
+       27.5
+      ],
+      [
+       "run",
+       13.7
+      ],
+      [
+       "git",
+       6.4
+      ]
+     ],
+     "summary": "Mostly edited and tested code (52% of 19 h of work), then explored code and files (28%) and ran programs (14%). 167 tool calls in 2 tasks."
     }
    },
    "period4-boslogin02-rkoshy-1592": {
@@ -47970,7 +48574,31 @@
        "sid": null
       }
      ],
-     "headline": "proj"
+     "headline": "proj",
+     "category": "mixed",
+     "uses": [
+      [
+       "run",
+       48.5
+      ],
+      [
+       "develop",
+       19.5
+      ],
+      [
+       "explore",
+       19.4
+      ],
+      [
+       "build",
+       9.7
+      ],
+      [
+       "git",
+       2.9
+      ]
+     ],
+     "summary": "Mixed work (19 h): ran programs (49%), edited and tested code (20%), explored code and files (19%). 310 tool calls in 2 tasks."
     }
    },
    "period4-holylogin01-thomwg11-1666": {
@@ -48729,7 +49357,31 @@
        "sid": null
       }
      ],
-     "headline": "proj · src/app.py"
+     "headline": "proj · src/app.py",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       37.3
+      ],
+      [
+       "explore",
+       28.9
+      ],
+      [
+       "run",
+       20.6
+      ],
+      [
+       "build",
+       8.3
+      ],
+      [
+       "git",
+       5
+      ]
+     ],
+     "summary": "Mixed work (18 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 148 tool calls in 2 tasks."
     }
    },
    "period4-holylogin02-thomwg11-1703": {
@@ -49645,7 +50297,35 @@
        "sid": null
       }
      ],
-     "headline": "proj · train.log"
+     "headline": "proj · train.log",
+     "category": "mixed",
+     "uses": [
+      [
+       "hpc",
+       41.2
+      ],
+      [
+       "develop",
+       22.9
+      ],
+      [
+       "explore",
+       15.3
+      ],
+      [
+       "run",
+       11.5
+      ],
+      [
+       "build",
+       7.6
+      ],
+      [
+       "git",
+       1.5
+      ]
+     ],
+     "summary": "Mixed work (23 h): ran jobs on Slurm (41%), edited and tested code (23%), explored code and files (15%). 336 tool calls in 2 tasks."
     }
    },
    "period4-boslogin02-mmarthen-1814": {
@@ -50519,7 +51199,31 @@
        "sid": null
       }
      ],
-     "headline": "proj · src/app.py"
+     "headline": "proj · src/app.py",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       37.3
+      ],
+      [
+       "explore",
+       28.9
+      ],
+      [
+       "run",
+       20.6
+      ],
+      [
+       "build",
+       8.3
+      ],
+      [
+       "git",
+       5
+      ]
+     ],
+     "summary": "Mixed work (22 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 188 tool calls in 2 tasks."
     }
    },
    "period4-holylogin01-thomwg11-1888": {
@@ -51110,7 +51814,27 @@
        "sid": null
       }
      ],
-     "headline": null
+     "headline": null,
+     "category": "mixed",
+     "uses": [
+      [
+       "explore",
+       38.9
+      ],
+      [
+       "run",
+       37
+      ],
+      [
+       "develop",
+       18.5
+      ],
+      [
+       "git",
+       5.6
+      ]
+     ],
+     "summary": "Mixed work (19 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 98 tool calls in 2 tasks."
     }
    },
    "period4-holylogin02-dwei-1925": {
@@ -51869,7 +52593,35 @@
        "sid": null
       }
      ],
-     "headline": "proj · train.log"
+     "headline": "proj · train.log",
+     "category": "mixed",
+     "uses": [
+      [
+       "hpc",
+       48.6
+      ],
+      [
+       "explore",
+       18
+      ],
+      [
+       "run",
+       13.5
+      ],
+      [
+       "develop",
+       9
+      ],
+      [
+       "build",
+       9
+      ],
+      [
+       "git",
+       1.8
+      ]
+     ],
+     "summary": "Mixed work (28 h): ran jobs on Slurm (49%), explored code and files (18%), ran programs (14%). 474 tool calls in 2 tasks."
     }
    },
    "period4-boslogin01-aparker-1999": {
@@ -52767,6 +53519,30 @@
       }
      ],
      "headline": "proj · src/loader.py",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       37.9
+      ],
+      [
+       "explore",
+       24.1
+      ],
+      [
+       "hpc",
+       24.1
+      ],
+      [
+       "git",
+       6.9
+      ],
+      [
+       "build",
+       6.9
+      ]
+     ],
+     "summary": "Mixed work (6.8 h): edited and tested code (38%), explored code and files (24%), ran jobs on Slurm (24%). 124 tool calls in 3 tasks.",
      "days": [
       {
        "sid": "boslogin02|2026-09-13|agent|apid:4242",
@@ -53561,6 +54337,30 @@
       }
      ],
      "headline": "proj · src/loader.py",
+     "category": "mixed",
+     "uses": [
+      [
+       "develop",
+       37.9
+      ],
+      [
+       "explore",
+       24.1
+      ],
+      [
+       "hpc",
+       24.1
+      ],
+      [
+       "git",
+       6.9
+      ],
+      [
+       "build",
+       6.9
+      ]
+     ],
+     "summary": "Mixed work (6.8 h): edited and tested code (38%), explored code and files (24%), ran jobs on Slurm (24%). 124 tool calls in 3 tasks.",
      "days": [
       {
        "sid": "boslogin02|2026-09-13|agent|apid:4242",
@@ -57155,6 +57955,26 @@
       ],
       "project": "proj",
       "headline": "proj · src/io.py",
+      "category": "develop",
+      "uses": [
+       [
+        "develop",
+        53.1
+       ],
+       [
+        "explore",
+        27.1
+       ],
+       [
+        "run",
+        13.5
+       ],
+       [
+        "git",
+        6.3
+       ]
+      ],
+      "summary": "Mostly edited and tested code (53% of 30 min of work), then explored code and files (27%) and ran programs (14%). 66 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57201,6 +58021,30 @@
       ],
       "project": "proj",
       "headline": "proj",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        28.4
+       ],
+       [
+        "explore",
+        27
+       ],
+       [
+        "run",
+        27
+       ],
+       [
+        "build",
+        13.5
+       ],
+       [
+        "git",
+        4.1
+       ]
+      ],
+      "summary": "Mixed work (1.8 h): edited and tested code (28%), explored code and files (27%), ran programs (27%). 255 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57250,6 +58094,30 @@
       ],
       "project": "proj",
       "headline": "proj · src/io.py",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        41.4
+       ],
+       [
+        "hpc",
+        21.4
+       ],
+       [
+        "explore",
+        21.4
+       ],
+       [
+        "run",
+        10.7
+       ],
+       [
+        "git",
+        5
+       ]
+      ],
+      "summary": "Mixed work (6.6 h): edited and tested code (41%), ran jobs on Slurm (21%), explored code and files (21%). 104 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57298,6 +58166,30 @@
       ],
       "project": "proj",
       "headline": "proj · src/app.py",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        37.4
+       ],
+       [
+        "explore",
+        28.8
+       ],
+       [
+        "run",
+        20.6
+       ],
+       [
+        "build",
+        8.2
+       ],
+       [
+        "git",
+        4.9
+       ]
+      ],
+      "summary": "Mixed work (8.0 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 74 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 0,
       "phase_s": {
@@ -57348,6 +58240,26 @@
       ],
       "project": null,
       "headline": null,
+      "category": "mixed",
+      "uses": [
+       [
+        "explore",
+        38.9
+       ],
+       [
+        "run",
+        37
+       ],
+       [
+        "develop",
+        18.5
+       ],
+       [
+        "git",
+        5.6
+       ]
+      ],
+      "summary": "Mixed work (7.1 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 79 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 0,
       "phase_s": {
@@ -57395,6 +58307,30 @@
       ],
       "project": "proj",
       "headline": "proj",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        27.5
+       ],
+       [
+        "explore",
+        27.4
+       ],
+       [
+        "run",
+        27.4
+       ],
+       [
+        "build",
+        13.7
+       ],
+       [
+        "git",
+        4.1
+       ]
+      ],
+      "summary": "Mixed work (13 h): edited and tested code (28%), explored code and files (27%), ran programs (27%). 272 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57444,6 +58380,26 @@
       ],
       "project": null,
       "headline": null,
+      "category": "mixed",
+      "uses": [
+       [
+        "explore",
+        38.9
+       ],
+       [
+        "run",
+        37
+       ],
+       [
+        "develop",
+        18.5
+       ],
+       [
+        "git",
+        5.6
+       ]
+      ],
+      "summary": "Mixed work (11 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 107 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 0,
       "phase_s": {
@@ -57491,6 +58447,30 @@
       ],
       "project": "proj",
       "headline": "proj",
+      "category": "mixed",
+      "uses": [
+       [
+        "run",
+        48.5
+       ],
+       [
+        "develop",
+        19.5
+       ],
+       [
+        "explore",
+        19.4
+       ],
+       [
+        "build",
+        9.7
+       ],
+       [
+        "git",
+        2.9
+       ]
+      ],
+      "summary": "Mixed work (19 h): ran programs (49%), edited and tested code (20%), explored code and files (19%). 310 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57540,6 +58520,30 @@
       ],
       "project": "proj",
       "headline": "proj · src/app.py",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        37.3
+       ],
+       [
+        "explore",
+        28.9
+       ],
+       [
+        "run",
+        20.6
+       ],
+       [
+        "build",
+        8.3
+       ],
+       [
+        "git",
+        5
+       ]
+      ],
+      "summary": "Mixed work (18 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 148 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 0,
       "phase_s": {
@@ -57590,6 +58594,34 @@
       ],
       "project": "proj",
       "headline": "proj · train.log",
+      "category": "mixed",
+      "uses": [
+       [
+        "hpc",
+        41.2
+       ],
+       [
+        "develop",
+        22.9
+       ],
+       [
+        "explore",
+        15.3
+       ],
+       [
+        "run",
+        11.5
+       ],
+       [
+        "build",
+        7.6
+       ],
+       [
+        "git",
+        1.5
+       ]
+      ],
+      "summary": "Mixed work (23 h): ran jobs on Slurm (41%), edited and tested code (23%), explored code and files (15%). 336 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57641,6 +58673,26 @@
       ],
       "project": null,
       "headline": null,
+      "category": "mixed",
+      "uses": [
+       [
+        "explore",
+        38.9
+       ],
+       [
+        "run",
+        37
+       ],
+       [
+        "develop",
+        18.5
+       ],
+       [
+        "git",
+        5.6
+       ]
+      ],
+      "summary": "Mixed work (19 h): explored code and files (39%), ran programs (37%), edited and tested code (19%). 98 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 0,
       "phase_s": {
@@ -57688,6 +58740,34 @@
       ],
       "project": "proj",
       "headline": "proj · train.log",
+      "category": "mixed",
+      "uses": [
+       [
+        "hpc",
+        48.6
+       ],
+       [
+        "explore",
+        18
+       ],
+       [
+        "run",
+        13.5
+       ],
+       [
+        "develop",
+        9
+       ],
+       [
+        "build",
+        9
+       ],
+       [
+        "git",
+        1.8
+       ]
+      ],
+      "summary": "Mixed work (28 h): ran jobs on Slurm (49%), explored code and files (18%), ran programs (14%). 474 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -57738,6 +58818,30 @@
       ],
       "project": "proj",
       "headline": "proj · src/loader.py",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        37.9
+       ],
+       [
+        "explore",
+        24.1
+       ],
+       [
+        "hpc",
+        24.1
+       ],
+       [
+        "git",
+        6.9
+       ],
+       [
+        "build",
+        6.9
+       ]
+      ],
+      "summary": "Mixed work (6.8 h): edited and tested code (38%), explored code and files (24%), ran jobs on Slurm (24%). 124 tool calls in 3 tasks.",
       "tasks": 3,
       "quoted": 1,
       "phase_s": {
@@ -58363,6 +59467,9 @@
       ],
       "project": null,
       "headline": null,
+      "category": null,
+      "uses": null,
+      "summary": null,
       "tasks": null,
       "quoted": null,
       "phase_s": null,
@@ -59061,6 +60168,34 @@
       ],
       "project": "proj",
       "headline": "proj · train.log",
+      "category": "mixed",
+      "uses": [
+       [
+        "hpc",
+        48.6
+       ],
+       [
+        "explore",
+        18
+       ],
+       [
+        "run",
+        13.5
+       ],
+       [
+        "develop",
+        9
+       ],
+       [
+        "build",
+        9
+       ],
+       [
+        "git",
+        1.8
+       ]
+      ],
+      "summary": "Mixed work (12 h): ran jobs on Slurm (49%), explored code and files (18%), ran programs (14%). 281 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -59809,6 +60944,26 @@
       ],
       "project": "proj",
       "headline": "proj · src/io.py",
+      "category": "develop",
+      "uses": [
+       [
+        "develop",
+        52.4
+       ],
+       [
+        "explore",
+        27.5
+       ],
+       [
+        "run",
+        13.7
+       ],
+       [
+        "git",
+        6.4
+       ]
+      ],
+      "summary": "Mostly edited and tested code (52% of 19 h of work), then explored code and files (28%) and ran programs (14%). 167 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 1,
       "phase_s": {
@@ -60543,6 +61698,30 @@
       ],
       "project": "proj",
       "headline": "proj · src/app.py",
+      "category": "mixed",
+      "uses": [
+       [
+        "develop",
+        37.3
+       ],
+       [
+        "explore",
+        28.9
+       ],
+       [
+        "run",
+        20.6
+       ],
+       [
+        "build",
+        8.3
+       ],
+       [
+        "git",
+        5
+       ]
+      ],
+      "summary": "Mixed work (22 h): edited and tested code (37%), explored code and files (29%), ran programs (21%). 188 tool calls in 2 tasks.",
       "tasks": 2,
       "quoted": 0,
       "phase_s": {

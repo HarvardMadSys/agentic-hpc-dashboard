@@ -983,7 +983,9 @@ An agent session's row says what the agent was doing at three levels, which the 
 
 A row of Claude Code or Codex carries the first two as `phases`: the `list` of phases, the `tasks` above
 them (each phase says which one it belongs to), a `headline` (the project, then the names that recur
-across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`. A row of any other
+across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`; and what kind of session
+it was, a `category` with the `uses` of its work it rests on and a `summary` (*What kind of session it
+was*, below). A row of any other
 agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`: not recognized is not none.
 How the page draws the levels is in [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
 
@@ -1104,14 +1106,59 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   whose span, first record to last, holds its start, else the nearest. A row's own `n_calls` stays its day's,
   and the block's counts the session's.
 
+**What kind of session it was.** Each block says it in a word and in a few sentences
+(`reducers/phase_summary.py`), so a list of sessions can be read, and counted, by what they were for. The
+`category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
+files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
+programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
+wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
+apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
+the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
+whose phases have no length at all (a call or two that began and ended in one second) is weighed by its
+calls. A session that only waited is `wait`; one whose commands not recorded hold half of its work and
+themselves, or that did nothing else, is `unknown`; and one that made no tool call is `none`. `uses` gives
+each use's share of the work, the most first.
+
+The `summary` is one to three sentences, each built from the block's own numbers and none from a model: what
+the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then explored code and files
+(12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
+the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
+that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+
+On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
+2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
+lasted under a second and ran only the agent's own commands (`rg`, `git`), and an agent that only reads and
+edits with its own tools leaves no command either. Of the 4,096 that made one, 33% were `explore`, 29% `run`, 20%
+`hpc`, 6% `mixed`, 5% `develop`, 4% `unknown`, 1% `wait`, and under 1% each `build` and `git`. One use held
+half of the work in 94% of the sessions that did any, and a count of calls would have named a different
+category for about a third of them, most of them Slurm sessions and long runs. A fifth of the summaries say
+the agent waited. Claude Code's sessions were 27% `hpc` and Codex's 4%; Codex's were 42% `run`. One
+misreading is known: 114 sessions of one user's Codex desktop app on 2026-11-15 ran two calls each, a
+`mkdir -p` and a `chmod 700` of a folder of its own under `/var/tmp`, and read as `develop` (`Only changed
+files from the shell. 2 tool calls.`), as their tasks read `Edit`. The folder is that user's setup, not
+Codex's, so it is not read as housekeeping. `rc_dashboard/phase_report.py` prints each row's category and summary, and counts a day's
+sessions by category, each once.
+
+The page shows the category as a chip on the row and in the Users tab's list of a user's sessions, and the
+summary under the headline in the inspector (`web/README.md`). The plates over every session in the window
+do not count categories: a category needs a session's block, and building a block for every session of a
+week on eight login nodes takes minutes, where the plates are read again every few seconds.
+
 **Config.** `reducers.trajectories.tasks` sets the thresholds. It equals `phase_tasks.DEFAULTS`, where each
 one is documented, and a test holds the two equal. `reducers.trajectories.phases`, beside it, does the same
-for the fine phases (`reducers/phase_segment.py`). Like the rest of `reducers`, both are part of the config a
+for the fine phases (`reducers/phase_segment.py`), and `reducers.trajectories.summary` for a block's
+category and summary (`reducers/phase_summary.py`): `mostly` (0.5), the share of the work a use must hold
+for the session to be put under it, and `also` (0.1), the share a second use, or waiting, needs before the
+summary names it. Like the rest of `reducers`, all three are part of the config a
 saved window or hour is fingerprinted by, so a changed value builds them again rather than resuming them
 (*The time window*). A saved state needs that only for the phase thresholds read as records arrive, which
 bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max`, and `idle_s`).
-The rest, every task threshold among them, are read when a row is built: the reducer cuts and names a row
-each time it serves it, with the thresholds it runs with, and no saved state holds a task.
+The rest, every task and summary threshold among them, are read when a row is built: the reducer cuts and
+names a row each time it serves it, with the thresholds it runs with, and no saved state holds a task or a
+category.
 
 | key | default | meaning |
 |---|---|---|

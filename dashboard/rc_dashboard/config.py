@@ -284,7 +284,12 @@ def defaults():
                                        "new_steps": 5, "new_window_s": 1800,
                                        "close_overlap": 0.5, "close_series_s": 300,
                                        "min_s": 600, "min_calls": 5, "cap": 10,
-                                       "headline_names": 3}},
+                                       "headline_names": 3},
+                             # What kind of session a block was, and its summary:
+                             # reducers/phase_summary.py documents each threshold. Its
+                             # DEFAULTS, read against eight FAS RC login nodes
+                             # (rc_dashboard/phase_report.py); a test holds the two equal.
+                             "summary": {"mostly": 0.5, "also": 0.1}},
         },
         # What counts as risky differs by cluster. The rules are built in
         # (reducers/risk.py, which documents every key); this switches them
