@@ -34,9 +34,16 @@ VOLATILE = frozenset((
 ))
 
 
-def strip(o):
+# The inspector's own account of its read (`/api/trajectory` `scan`): how it
+# searched and how much it parsed to find the session's records -- the work, not
+# the session. Its bounds (`from`, `to`, `stopped_at`) and what it found stay.
+SCAN_WORK = frozenset(("bytes", "parsed", "skipped", "method"))
+
+
+def strip(o, parent=None):
     if isinstance(o, dict):
-        return {k: strip(v) for k, v in o.items() if k not in VOLATILE}
+        drop = VOLATILE | SCAN_WORK if parent == "scan" else VOLATILE
+        return {k: strip(v, k) for k, v in o.items() if k not in drop}
     if isinstance(o, list):
         return [strip(v) for v in o]
     return o
