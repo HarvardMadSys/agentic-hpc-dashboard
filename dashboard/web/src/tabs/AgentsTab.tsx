@@ -1089,11 +1089,17 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const [opened, setOpened] = useState<string[]>([]);
   const [showIdle, setShowIdle] = useState(false);
   // a row picked while the page is scrolled past the top of the detail
-  // brings the detail back into view
+  // brings the detail back into view; so does one picked while the detail is
+  // stacked under the list (a narrow screen) and starts low or below the fold,
+  // where the pick would otherwise seem to do nothing
   const pane = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = pane.current;
-    if (el && sel && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (!el || !sel) return;
+    const top = el.getBoundingClientRect().top;
+    const list = el.previousElementSibling?.getBoundingClientRect();
+    const under = list != null && top >= list.bottom - 1;
+    if (top < 0 || (under && top > window.innerHeight / 2)) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }, [sel?.entry]);
 
   // One list of every type: a Claude Code can start a Codex and a Codex a
@@ -1221,7 +1227,7 @@ export function AgentsTab({ P, cls }: { P: Panels; cls: Cls[] }) {
         </div>
       );
     }
-    return <div className="al-empty">pick an agent on the left: its tree and blast radius open here</div>;
+    return <div className="al-empty">pick an agent from the list: its tree and blast radius open here</div>;
   })();
 
   return (

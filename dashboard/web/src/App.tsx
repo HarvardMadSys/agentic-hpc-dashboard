@@ -223,7 +223,52 @@ export default function App() {
   const hl = headline(feeds.data);
   const P = panels.data?.panels ?? {};
 
+  // On a narrow screen the rail is a strip of tabs across the top: keep the
+  // open one in view in it, as the vertical rail always shows every tab.
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = navRef.current;
+    const on = nav?.querySelector<HTMLElement>('button[aria-selected="true"]');
+    if (!nav || !on || nav.scrollWidth <= nav.clientWidth) return;
+    const r = on.getBoundingClientRect();
+    const n = nav.getBoundingClientRect();
+    nav.scrollLeft += r.left + r.width / 2 - (n.left + n.width / 2);
+  }, [tab.k]);
+
   const nClasses = url.cls.length;
+  // The rail's footer. On a narrow screen the rail is a strip of tabs, so this
+  // moves to the foot of the page instead (`.mfoot`) rather than being lost.
+  const foot = (
+    <>
+      updates{' '}
+      <span style={{ color: 'var(--ink-2)' }}>
+        {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
+          live.transport
+        ]}
+      </span>
+      <br />
+      last update {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
+      <br />
+      window <span style={{ color: 'var(--ink-2)' }}>{resolvedWin?.label ?? '—'}</span>
+      {windows?.retention_minutes != null && (
+        <span> of {Math.round(windows.retention_minutes / 60)}h held</span>
+      )}
+      <br />
+      panels built {panels.data?.full_built_at ?? '—'}
+      {/* Restored from a saved build: the age above is that build's, and
+          everything written since was read from the files on top of it. */}
+      {winStatus?.cache?.source === 'snapshot' && (
+        <span data-tip={winStatus.cache.note ?? ''}> · restored</span>
+      )}
+      <br />
+      {nClasses < 3 && (
+        <span style={{ color: 'var(--crimson-ink)' }}>
+          {nClasses} of 3 classes shown
+        </span>
+      )}
+      <BuildStamp />
+    </>
+  );
   const body = (() => {
     switch (tab.k) {
       case 'live':
@@ -317,7 +362,7 @@ export default function App() {
             {siteName || 'rc_measurement'}
           </div>
         </div>
-        <nav>
+        <nav ref={navRef}>
           {tabs.map((t) => (
             <Fragment key={t.k}>
             <button
@@ -348,35 +393,7 @@ export default function App() {
             </Fragment>
           ))}
         </nav>
-        <div className="foot mono">
-          updates{' '}
-          <span style={{ color: 'var(--ink-2)' }}>
-            {{ ws: 'streaming', polling: 'every 15 s', connecting: 'connecting…', down: 'disconnected' }[
-              live.transport
-            ]}
-          </span>
-          <br />
-          last update {live.receivedAt ? ago(Date.now() - live.receivedAt) : '—'}
-          <br />
-          window <span style={{ color: 'var(--ink-2)' }}>{resolvedWin?.label ?? '—'}</span>
-          {windows?.retention_minutes != null && (
-            <span> of {Math.round(windows.retention_minutes / 60)}h held</span>
-          )}
-          <br />
-          panels built {panels.data?.full_built_at ?? '—'}
-          {/* Restored from a saved build: the age above is that build's, and
-              everything written since was read from the files on top of it. */}
-          {winStatus?.cache?.source === 'snapshot' && (
-            <span data-tip={winStatus.cache.note ?? ''}> · restored</span>
-          )}
-          <br />
-          {nClasses < 3 && (
-            <span style={{ color: 'var(--crimson-ink)' }}>
-              {nClasses} of 3 classes shown
-            </span>
-          )}
-          <BuildStamp />
-        </div>
+        <div className="foot mono">{foot}</div>
       </aside>
 
       <main ref={mainRef}>
@@ -478,6 +495,7 @@ export default function App() {
         )}
 
         <AskScopeCtx.Provider value={askScope}>{body}</AskScopeCtx.Provider>
+        <footer className="mfoot mono">{foot}</footer>
       </main>
       <IoCmdsDrawer win={url.win} who={who} cls={url.cls} />
       <TooltipLayer />

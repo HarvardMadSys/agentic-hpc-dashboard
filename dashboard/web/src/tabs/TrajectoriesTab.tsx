@@ -506,7 +506,7 @@ export function TrajectoriesTab({
               routine={routine}
             />
           ) : (
-            <div className="tj-empty">pick a session on the left: its process tree opens here</div>
+            <div className="tj-empty">pick a session from the list: its process tree opens here</div>
           )}
         </div>
       </div>

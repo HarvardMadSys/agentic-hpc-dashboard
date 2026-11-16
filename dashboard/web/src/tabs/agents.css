@@ -735,3 +735,10 @@ table.trees .sub-chip {
 .anode.dim {
   opacity: 0.4;
 }
+
+/* touch screens (styles.css): the mark filters, a fingertip high */
+@media (pointer: coarse) {
+  .ltag-key button {
+    padding: 6px 9px;
+  }
+}
