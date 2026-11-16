@@ -54,7 +54,7 @@ sandbox slice that `exited before it was checked` (key `denied`), a session whos
 attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
 reload — the middleware re-reads the file on every request. Delete a panel's key instead to
-see `<NotSent>`; the fixture already leaves out the Slurm and risk-rules panels.
+see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels.
 
 The fixture's agent rows carry the tasks the page has to word: quoted from a commit, from a log entry, and
 from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
@@ -145,8 +145,8 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    the panel frame, the title, the feed name, and one line per `_paths` entry, verbatim
    (`no data from /var/log/ebpfm`). A feed that IS present but has no rows renders
    `<NoRows>` — the word `none`. The two look nothing alike, because they are not the
-   same fact. A panel the service sent nothing for — an answer without its key, or a
-   request that failed — renders `<NotSent>`: one dashed line reading `not sent`, the
+   same fact. A panel the backend did not return — an answer without its key, or a
+   request that failed — renders `<NotReturned>`: one dashed line reading `not returned`, the
    reason, and the feed it reads. It wears no feed status and names no path, because no
    feed reported anything; whether the feed is healthy is the Feeds tab's to say.
 5. **Nothing fabricated** — there is no `Math.random()` anywhere in `src/`
@@ -242,8 +242,8 @@ Three rules it follows, all of them the same rule this page follows everywhere:
   control reads `asked 30d · showing 7d` with the reason on hover.
 - **The kinds of nothing stay apart.** A panel whose window is still being reduced
   renders `<Building>` — a solid frame and a percentage — not `none` (which would assert a
-  measurement) and not the empty state (which would blame the feed). One the service did
-  not send renders `<NotSent>` (rule 4), never the empty state.
+  measurement) and not the empty state (which would blame the feed). One the backend did
+  not return renders `<NotReturned>` (rule 4), never the empty state.
 
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.

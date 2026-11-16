@@ -5,8 +5,8 @@
  *                           and one line naming `_paths` verbatim.
  *   present, but no rows  -> <NoRows>: the word `none`, which looks NOTHING like
  *                           the empty state, because it is a different fact.
- *   no envelope at all    -> <NotSent>: the service did not send the panel; it
- *                           says that and names the feed, and blames nothing.
+ *   no envelope at all    -> <NotReturned>: the backend did not return the panel.
+ *                           It says so, names the feed, and blames nothing.
  *
  * Rule: data only. A panel carries a title, the feed that fills it, and the
  * chart or table. `notes` / `basis` / `cpu_basis` go in <Basis>, a collapsed
@@ -78,10 +78,10 @@ export function EmptyState({
  *  nothing of that feed's health or paths, which are the Feeds tab's: "the
  *  feed reported no configured path" here would be a diagnosis nobody made.
  *  The dashed frame of the missing family, one line high. */
-export function NotSent({ feed, notice }: { feed: string; notice?: string | null }) {
+export function NotReturned({ feed, notice }: { feed: string; notice?: string | null }) {
   return (
-    <div className="notsent">
-      <span className="pill">not sent</span>
+    <div className="notreturned">
+      <span className="pill">not returned</span>
       <span>
         {notice || 'the backend did not return this panel'}
         {feed && (
@@ -244,7 +244,7 @@ export function Panel({
       {p?._waiting ? (
         <div className="none">waiting for the dashboard service…</div>
       ) : missing && p!._unsent ? (
-        <NotSent feed={feedName} notice={p!._notice} />
+        <NotReturned feed={feedName} notice={p!._notice} />
       ) : missing ? (
         <EmptyState
           feed={feedName}

@@ -1738,10 +1738,10 @@ td.cmd-cut {
   flex-direction: column;
   gap: 2px;
 }
-/* The service sent nothing for the panel (Panel.tsx <NotSent>): the dashed
+/* The service sent nothing for the panel (Panel.tsx <NotReturned>): the dashed
  * frame of the missing family, one line high, a neutral pill, and no feed
  * status, because no feed reported anything. */
-.notsent {
+.notreturned {
   border: 1px dashed var(--edge);
   border-radius: 5px;
   background: var(--surface-2);
@@ -1754,11 +1754,11 @@ td.cmd-cut {
   font-size: 11px;
   color: var(--muted);
 }
-.notsent .pill {
+.notreturned .pill {
   border-color: var(--edge);
   color: var(--ink-2);
 }
-.notsent .feed {
+.notreturned .feed {
   color: var(--ink-2);
 }
 /* Feed present, rows exist, the reduction is not finished. A THIRD state, and
