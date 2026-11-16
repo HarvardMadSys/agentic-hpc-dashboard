@@ -99,6 +99,9 @@ REPLAY_CAP = 20000
 
 # The build worker's queue entry for "reduce the hours closed since" (`hours`).
 HOURS_JOB = "_hours"
+# Reduce every closed hour in retention and merge its whole days, ahead of any
+# window (`panels.preprocess`, `hours.HourStore.preprocess`).
+PREPROCESS_JOB = "_preprocess"
 
 # Values one filter may name. A filter is a whole view -- reducer state and a
 # window's read -- so a request naming hundreds is refused, not built.
@@ -597,6 +600,10 @@ class WindowRegistry:
         self.lock = lock                # the aggregator's; guards reducer swaps
         self.views = collections.OrderedDict()   # view_key -> PanelView
         self.max_views = max(1, int(cfg.get("panels.max_windows", 2)))
+        if cfg.get("panels.preprocess"):
+            # Every preset is built and held, so none evicts another; one slot
+            # more for a filtered view or a window typed in by hand.
+            self.max_views = max(self.max_views, len(presets(cfg)) + 1)
         self.budget_pct = max(1, int(cfg.get("panels.max_drift_pct", 25))) / 100.0
         self.store = snapshots.SnapshotStore.from_config(cfg)
         # The panels each view last served, shown by a view this registry
@@ -620,6 +627,7 @@ class WindowRegistry:
         # build it got 5% of a core on rtx6000b (2026-11-13) -- while the live
         # tail, which reads nothing until positioning ends, stood still.
         self.ready = ready
+        self._busy = False              # the worker is running a job (`wait_idle`)
 
     # ---------------------------------------------------------------- worker
     def start(self):
@@ -643,26 +651,59 @@ class WindowRegistry:
                 if self._stop:
                     return
                 key = self._queue.popleft()
-            if key == HOURS_JOB:
-                try:
-                    self.hours.advance(self.roots_fn())
-                except Exception:
-                    pass                # retried at the next refresh
-                continue
-            with self.lock:
-                view = self.views.get(key)       # may have been evicted meanwhile
-            if view is not None:
-                try:
-                    self._build(view)
-                except Exception as e:                 # never kill the worker
-                    view.state, view.error = "error", str(e)
-                    view._replay = None
+                self._busy = True
+            try:
+                self._job(key)
+            finally:
+                with self._cv:
+                    self._busy = False
+                    self._cv.notify_all()
+
+    def _job(self, key):
+        if key == HOURS_JOB:
+            try:
+                self.hours.advance(self.roots_fn())
+            except Exception:
+                pass                # retried at the next refresh
+            return
+        if key == PREPROCESS_JOB:
+            try:
+                self.hours.preprocess(self.roots_fn())
+            except Exception:
+                pass                # each window build reduces what it lacks
+            return
+        with self.lock:
+            view = self.views.get(key)       # may have been evicted meanwhile
+        if view is not None:
+            try:
+                self._build(view)
+            except Exception as e:                 # never kill the worker
+                view.state, view.error = "error", str(e)
+                view._replay = None
 
     def _enqueue(self, key):
         with self._cv:
             if key not in self._queue:
                 self._queue.append(key)
                 self._cv.notify_all()
+
+    def preprocess(self):
+        """Queue the reduction of every closed hour in retention, ahead of the
+        window builds, so each of them is a merge with nothing to reduce."""
+        if self.hours is not None:
+            self._enqueue(PREPROCESS_JOB)
+
+    def wait_idle(self, timeout):
+        """Block until nothing is queued or building, or `timeout` seconds
+        pass. Returns whether it got there."""
+        deadline = time.time() + max(0.0, float(timeout))
+        with self._cv:
+            while self._queue or self._busy:
+                left = deadline - time.time()
+                if left <= 0:
+                    return False
+                self._cv.wait(timeout=min(left, 1.0))
+        return True
 
     # ----------------------------------------------------------------- build
     def _build(self, view):

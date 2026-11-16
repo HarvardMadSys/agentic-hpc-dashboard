@@ -473,6 +473,17 @@ def create_app(cfg):
         if web is not None:
             # every asset gzipped before a page asks for it, off the event loop
             asyncio.get_running_loop().run_in_executor(None, web.warm)
+        # uvicorn binds the port only once this returns, so waiting here keeps
+        # a reader from ever landing on a window still being merged; the
+        # loops above run meanwhile (`panels.preprocess_wait_s`).
+        wait = float(cfg.get("panels.preprocess_wait_s") or 0)
+        if cfg.get("panels.preprocess") and wait > 0:
+            t0 = time.time()
+            done = await asyncio.get_running_loop().run_in_executor(
+                None, agg.wait_preprocessed, wait)
+            print("preprocess: %s in %.1f s; listening" % (
+                "every window built" if done else
+                "not finished, the builds carry on", time.time() - t0), flush=True)
 
     @app.on_event("shutdown")
     async def _shutdown():

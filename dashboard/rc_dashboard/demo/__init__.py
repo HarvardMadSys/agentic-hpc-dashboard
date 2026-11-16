@@ -36,6 +36,7 @@ exports the cluster's feed roots, and a demo must never read them):
     cache.dir                                 the demo's own, so no real saved build is evicted
     clock.as_of                               "" -- the wall clock: the feed is live
     live.retention_min, backfill_hours        the history written, so every window is filled
+    panels.preprocess, preprocess_wait_s      every window built before the port opens
     site.name, site.description               as above
     server.rdns.enabled                       off: the Network bytes panel names its
                                               endpoints by the records' own host names,
@@ -119,6 +120,11 @@ def configure(cfg, opts):
             ("live.retention_min", mins),
             ("live.backfill_hours", days * 24),
             ("live.window_min", min(1440, mins)),
+            # Every window built before the port opens: a visitor arriving
+            # after a cold start waits on the "starting" page, never on a
+            # "merging" bar (deploy/cloudflare).
+            ("panels.preprocess", True),
+            ("panels.preprocess_wait_s", 300),
             ("site.name", SITE_NAME),
             ("site.description", SITE_DESC),
             ("server.rdns.enabled", False)):

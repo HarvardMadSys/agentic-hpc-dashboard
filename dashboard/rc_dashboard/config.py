@@ -246,6 +246,19 @@ def defaults():
             # first 7 d window after a code change) never holds the live tier
             # off for the length of the read.
             "hour_pause_s": 0.02,
+            # Preprocess everything at start-up rather than as readers ask:
+            # reduce every closed hour in retention and merge its whole days,
+            # then build and hold EVERY preset window, the widest included
+            # (max_windows is raised to fit them), so no window switch waits on
+            # a reduction. Off by default: on a busy node a held 7 d window is
+            # up to ~1 GB. The demo turns it on.
+            "preprocess": False,
+            # With preprocess on, hold the port closed for up to this long
+            # while it runs, so the first page already has every window built
+            # instead of a "merging" bar. 0 serves at once, preprocessing
+            # behind. A deadline, not a requirement: past it the service
+            # listens and the builds carry on.
+            "preprocess_wait_s": 0,
         },
         "filters": {
             "drop_global": ["juncheng"],     # the monitoring operator
@@ -410,6 +423,9 @@ ENV_MAP = {
                              lambda v: v not in ("0", "false", "no")),
     "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE",
                             lambda v: v not in ("0", "false", "no")),
+    "panels.preprocess": ("RC_DASH_PREPROCESS",
+                          lambda v: v not in ("0", "false", "no", "off", "")),
+    "panels.preprocess_wait_s": ("RC_DASH_PREPROCESS_WAIT_S", float),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
     "ingest.convert.enabled": ("RC_DASH_CONVERT",
                                lambda v: v.strip().lower() not in ("0", "false", "no", "off")),

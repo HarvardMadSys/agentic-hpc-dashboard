@@ -8,8 +8,9 @@
  *
  * The container sleeps after SLEEP_AFTER with no request and no websocket
  * message, and the next request starts it again. The service then writes its
- * synthetic history (RC_DASH_DEMO_DAYS) before it listens: ~11 s on a `basic`
- * instance, measured, plus the container's own start. The containers package
+ * synthetic history (RC_DASH_DEMO_DAYS) and builds every window from it before
+ * it listens: ~11 s on a `basic` instance for the history, measured, plus the
+ * window builds (`panels.preprocess`) and the container's own start. The containers package
  * waits 20 s for a port and then fails the request, so a request that finds the
  * demo cold waits at most READY_WAIT_MS for it and otherwise gets a page that
  * says it is starting and reloads itself (an API call, a 503). The container

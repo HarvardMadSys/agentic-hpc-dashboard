@@ -399,9 +399,10 @@ cluster's feed roots, and a demo must never read them: both feed roots (the demo
 both feeds' `prefer` (`ebr`, or `jsonl` for a JSONL-only demo), the other feeds (a path in the
 demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
 saved builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
-`live.backfill_hours` (the history written), and `site.name`/`site.description`. Each reads
-`demo` as its origin in `--print-config`. `--ebpf-root`, `--node-root` and `--as-of` are
-refused rather than ignored.
+`live.backfill_hours` (the history written), `panels.preprocess` and `panels.preprocess_wait_s`
+(every window built before the port opens, so a visitor never lands on a *merging* bar), and
+`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
+`--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
 
 | flag | env | default | |
 |---|---|---|---|
@@ -657,6 +658,16 @@ frame boundaries. On one login node's feed a 24 h window then builds in ~2-3 s a
 ~8 s after a restart, a window switch or a drift refresh (against ~15 s and ~160 s scanned);
 filling the hours the first time costs about what one scan does. A week of hours is ~38 MB on
 disk. A view filtered to users or agent types is still scanned.
+
+**Preprocessing everything.** By default only the windows a reader asks for (and the cheap
+`panels.prewarm_min` ones) are built, and only the hours inside them are reduced, so the first
+switch to a wide window still reduces and merges while the page says *merging*. With
+`panels.preprocess` on (`RC_DASH_PREPROCESS=1`) the service instead, at start-up, reduces every
+closed hour in retention and merges its whole days, then builds **every** preset window and holds
+them all (`max_windows` is raised to fit). With `panels.preprocess_wait_s` (`RC_DASH_PREPROCESS_WAIT_S`)
+above 0 it does that before it opens its port -- uvicorn binds only once start-up returns -- so
+the first page finds every window ready; past that deadline it listens anyway and the builds carry
+on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the demo turns both on.
 
 ## API
 
