@@ -154,9 +154,13 @@ def _exe_index(command, toks):
 
 
 # Memoized: a pure function of three strings, asked for every tagged record a
-# window reduces, and a session's records repeat their command lines. An argv
-# past ROLE_MEMO_LEN is worked out each time rather than kept.
+# window reduces, and a session's records repeat their command lines. The
+# distinct ones are few -- an agent root's argv per session -- so the memo is
+# small in count (ROLE_MEMO_MAX x ROLE_MEMO_LEN characters, ~16 MB, at most)
+# but keeps a long argv: a prompt on the command line recurs with its session.
+# An argv past ROLE_MEMO_LEN is worked out each time rather than kept.
 ROLE_MEMO_LEN = 4096
+ROLE_MEMO_MAX = 4096
 
 
 def role_of(agent_type, command, args):
@@ -166,7 +170,7 @@ def role_of(agent_type, command, args):
     return _role_memo(agent_type, command, args)
 
 
-@functools.lru_cache(maxsize=65536)
+@functools.lru_cache(maxsize=ROLE_MEMO_MAX)
 def _role_memo(agent_type, command, args):
     return _role_of(agent_type, command, args)
 

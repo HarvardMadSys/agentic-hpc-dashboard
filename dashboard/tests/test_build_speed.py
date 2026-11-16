@@ -130,6 +130,32 @@ class FoundTest(Scratch):
         g = self.gzip(p)
         self.assertEqual(self.check(g, ViewFilter(["bob"])), want)
 
+    def test_lines_passed_over_are_counted_as_the_line_scan_counts_them(self):
+        p = self.write("h1.exits.jsonl", self.recs())
+        with open(p, "rb") as fh:
+            lines = fh.read().splitlines(keepends=True)
+        with open(p, "wb") as fh:                    # blank and whitespace-only lines among them
+            for i, line in enumerate(lines):
+                fh.write(line)
+                if i % 7 == 0:
+                    fh.write(b"\n" if i % 2 else b" \t\r\n")
+        flt = ViewFilter(["bob"])
+        cfg = configmod.Config(configmod.defaults(), {}, None)
+
+        def counters(find, block=None):
+            entry = {"path": p, "start": 0, "size": os.path.getsize(p)}
+            st = None
+            with mock.patch.object(export, "BLOCK", block or export.BLOCK):
+                for _rec, st in export.window_scan(
+                        [entry], Normalizer(cfg), self.t0 - 10, events=("exit", "residency"),
+                        match=flt.line_match, find=flt.line_find if find else None):
+                    pass
+            return dict(st), entry["end"]
+        want = counters(False)
+        self.assertTrue(want[0]["skipped"])
+        for block in (None, 512, 4096):
+            self.assertEqual(counters(True, block), want, block)
+
     def test_until_stops_where_the_line_scan_stops(self):
         p = self.write("h1.exits.jsonl", self.recs(), compact=True)
         got = self.check(p, ViewFilter(["alice"]), until=self.t0 + 200)
@@ -286,6 +312,49 @@ class PureMemoTest(unittest.TestCase):
             redact._EXTRA[:] = saved
             redact._redact_memo.cache_clear()
         self.assertEqual(redact.redact(text), before)
+
+    def test_tagset_forgets_what_it_masked_when_the_rules_grow(self):
+        text = "git commit -m 'rotate SITE-BBBBBBBBBBBB today'"
+        before = phase_names.tagset(text)
+        self.assertNotIn(redact.MASK, json.dumps(before))
+        saved = list(redact._EXTRA)
+        try:
+            redact.extend([r"SITE-[A-Z]{12}"])
+            after = phase_names.tagset(text)
+            self.assertIn(redact.MASK, json.dumps(after))
+            self.assertEqual(after, phase_names.tagset.__wrapped__(text))
+        finally:
+            redact._EXTRA[:] = saved
+            redact._redact_memo.cache_clear()
+            phase_names.tagset.cache_clear()
+        self.assertEqual(phase_names.tagset(text), before)
+
+    def test_the_memos_keep_short_texts_and_a_bounded_count(self):
+        redact._redact_memo.cache_clear()
+        phase_names.tagset.cache_clear()
+        roles._role_memo.cache_clear()
+        long = "echo " + "x" * 2000
+        for fn in (redact.redact, phase_names.tagset):
+            fn(long)
+            fn("ls -la /tmp")
+        self.assertEqual(redact._redact_memo.cache_info().currsize, 1)
+        self.assertEqual(phase_names.tagset.cache_info().currsize, 1)
+        self.assertEqual(redact._redact_memo.cache_info().maxsize, redact.MEMO_MAX)
+        self.assertEqual(phase_names.tagset.cache_info().maxsize, 16384)
+        # an agent root's argv recurs with its session, long or not: kept up to 4 KB
+        roles.role_of("claude_code", "node", "node /x/claude -p " + "y" * 3000)
+        roles.role_of("claude_code", "node", "node /x/claude -p " + "y" * 5000)
+        self.assertEqual(roles._role_memo.cache_info().currsize, 1)
+        self.assertEqual(roles._role_memo.cache_info().maxsize, roles.ROLE_MEMO_MAX)
+
+    def test_health_reports_each_memo_against_its_bound(self):
+        from rc_dashboard import app as appmod
+        st = appmod.memo_status()
+        self.assertEqual(set(st), {"redact", "role_of", "tagset", "tool_bucket", "category_of",
+                                   "category_of_argv"})
+        for v in st.values():
+            self.assertEqual(set(v), {"hits", "misses", "size", "max"})
+            self.assertLessEqual(v["size"], v["max"])
 
     def test_a_normalizer_no_longer_grows_sys_path(self):
         cfg = configmod.Config(configmod.defaults(), {}, None)

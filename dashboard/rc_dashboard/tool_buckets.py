@@ -88,7 +88,7 @@ RUNTIME_EXACT = {"node", "claude", "codex", "cursor", "bwrap", "deno", "bun",
                  "electron", "MainThread"}
 
 
-@functools.lru_cache(maxsize=65536)
+@functools.lru_cache(maxsize=8192)
 def bucket(ec: str) -> str:
     """Map an effective_comm token to a tool-call bucket.
 

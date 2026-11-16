@@ -423,7 +423,15 @@ class PanelView:
         view's: a build that installed new ones meanwhile materializes its own.
         One hold is then the slowest reducer's, not all of them together -- and
         every reader of the views and of the live tier, the tail included,
-        waited out the whole of it after each build and refresh."""
+        waited out the whole of it after each build and refresh.
+
+        What that gives up is one instant for the whole payload. A live record
+        can land between two reducers' turns, so one panel may count a few
+        records another does not yet -- a total ahead of a breakdown by what
+        arrived in those milliseconds. `_fresh` stamps each key with its own time
+        and count, the next refresh brings them level, and `_save_panels` saves
+        the payload as it was read. `materialize()`, one hold for all, is still
+        here for a caller that needs a single instant."""
         reds = self.reducers
         out, fresh = {}, {}
         for key in list(reds):

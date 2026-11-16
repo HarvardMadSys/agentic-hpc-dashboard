@@ -582,6 +582,18 @@ def event_filter(events):
 BLOCK = 8 << 20
 
 
+# A line a line-by-line read passes over without counting it: nothing but
+# whitespace (`not line.strip()`).
+_BLANK = re.compile(rb"^[ \t\r\x0b\x0c]*\n", re.M)
+
+
+def _passed(body, a, b):
+    """How many of the whole lines in `body[a:b]` a line-by-line read counts as
+    skipped: all but the blank ones. `a` is a line's start."""
+    n = body.count(b"\n", a, b)
+    return n - len(_BLANK.findall(body, a, b)) if n else 0
+
+
 def _found(fh, pos, find, stats, entry, block=None):
     """The complete lines from `pos` on that `find` hits, for a scan after a few.
 
@@ -590,8 +602,8 @@ def _found(fh, pos, find, stats, entry, block=None):
     busy file's lines, and each of the rest cost a Python loop's turn. What a
     line-by-line read keeps up to date is kept the same: `entry["end"]` just
     past the line handed on (or the last whole line read), `bytes` read through
-    it, and the lines passed over counted as skipped. A line still being
-    written is left, as there. `find` never matches across a line's end: a
+    it, and the lines passed over counted as skipped (a blank one not, as
+    there). A line still being written is left, as there. `find` never matches across a line's end: a
     record is one line."""
     block = block or BLOCK
     rest = b""
@@ -611,12 +623,12 @@ def _found(fh, pos, find, stats, entry, block=None):
             if ls < done:
                 continue                            # another hit in the line just handed on
             le = body.find(b"\n", m.start()) + 1
-            stats["skipped"] += body.count(b"\n", done, ls)
+            stats["skipped"] += _passed(body, done, ls)
             stats["bytes"] += le - done
             entry["end"] = pos + le
             done = le
             yield body[ls:le]
-        stats["skipped"] += body.count(b"\n", done, cut)
+        stats["skipped"] += _passed(body, done, cut)
         stats["bytes"] += cut - done
         entry["end"] = pos + cut
         pos += cut

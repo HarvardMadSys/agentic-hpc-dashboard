@@ -174,14 +174,32 @@ RULES = (
 _EXTRA = []
 
 
+# The `cache_clear` of every memo elsewhere whose answers are built from masked
+# text (`phase_names.tagset`): what was masked changes when the rules grow, so
+# `extend` drops them with its own. Registered by the memo's module, which
+# imports this one -- never the other way round.
+_DEPENDENT = []
+
+
+def masked_by_rules(cache_clear):
+    """Register a memo built from `redact`'s output; `extend` clears it."""
+    _DEPENDENT.append(cache_clear)
+    return cache_clear
+
+
 def extend(patterns):
     """Also mask every match of these regexes (idempotent)."""
     have = {rx.pattern for rx in _EXTRA}
+    grew = False
     for p in patterns:
         if p and p not in have:
             _EXTRA.append(re.compile(p))
             have.add(p)
-            _redact_memo.cache_clear()          # masked under the old rules
+            grew = True
+    if grew:                                    # masked under the old rules
+        _redact_memo.cache_clear()
+        for clear in _DEPENDENT:
+            clear()
 
 
 # Fields of a record or payload that carry argv or free text from a process.
@@ -190,8 +208,12 @@ TEXT_KEYS = frozenset(("args", "argv", "cmdline", "captured_tail", "submit_line"
 
 # A command line is masked wherever it is read -- every tool call reduced, every
 # panel materialized, every frame -- and the same ones recur. Memoized up to a
-# length; `extend` drops the memo, since what is masked changes with the rules.
-MEMO_LEN = 4096
+# length and a count, both small: the repeats are short commands, a long one is
+# nearly always unique (a heredoc, a prompt), and the memo holds its text and
+# its masked copy for as long as it stays -- MEMO_MAX x 2 x MEMO_LEN characters
+# at most, ~33 MB. `extend` drops it, since what is masked changes with the rules.
+MEMO_LEN = 1024
+MEMO_MAX = 16384
 
 
 def redact(text):
@@ -204,7 +226,7 @@ def redact(text):
     return _redact_memo(text)
 
 
-@functools.lru_cache(maxsize=65536)
+@functools.lru_cache(maxsize=MEMO_MAX)
 def _redact_memo(text):
     return _redact(text)
 
