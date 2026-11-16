@@ -10,7 +10,7 @@
  * lands in the bin its process exited in. Resident memory is the exception,
  * sampled while processes run, and its pill says that instead.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { Accum, Cls, MaxProcess, Quant, Resources } from '../api/types';
 import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
@@ -305,7 +305,7 @@ function FaultTable({
 export { TimeChart };
 export type { TimeLine, View };
 
-export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
+export const ResourcesTab = memo(function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
   const byClass = r.by_class ?? {};
   const have = shown(byClass, cls);
@@ -383,4 +383,4 @@ export function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       <RiskIoTab P={P} cls={cls} part="io" plates={false} series={false} />
     </>
   );
-}
+});

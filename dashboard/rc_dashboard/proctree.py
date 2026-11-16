@@ -80,6 +80,7 @@ from array import array
 from . import feeds as feedmod, fastjson
 from . import gz
 from .export import _window_stream, event_filter, window_plan, window_scan
+from .feedfile import day_files, end_at_jsonl as _end_at, format_of, host_of, prefer_of
 from .normalize import Normalizer, epoch_of
 from .procindex import VIA
 from .redact import redact
@@ -1399,21 +1400,78 @@ def _trie(words):
     return emit(root).encode()
 
 
+# A terminal's name, as a JSON writer spells it with no escape but `/`'s.
+_PLAIN_TTY = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+def _term_values(members):
+    """(scopes, ttys) when every key is a login session's scope (`sess:N`) or a
+    terminal (`tty:user@tty`), else None."""
+    scopes, ttys = set(), set()
+    for m in members:
+        kt, _, kv = m.rpartition("|")[2].partition(":")
+        if kt == "sess" and kv.isdigit():
+            scopes.add(kv)
+        elif kt == "tty" and "@" in kv and _PLAIN_TTY.fullmatch(kv.rpartition("@")[2]):
+            ttys.add(kv.rpartition("@")[2])
+        else:
+            return None
+    return (scopes, ttys) if scopes or ttys else None
+
+
+def _json_spelled(text):
+    """A regex for `text` as a JSON string's content may hold it: `/` or `\\/`."""
+    return rb"(?:/|\\/)".join(re.escape(p.encode()) for p in text.split("/"))
+
+
 def key_patterns(members):
-    """(session_key, agent_pid) patterns for these keys' lines, or None.
+    """Byte patterns for these keys' lines, or None.
 
     Never a false negative, by the normaliser's own rule (`session_key_of`): an
     apid key is `session_key` after its first colon, else `agent_pid`, so a
-    line is the session's only if one of the two names one of its keys. A false
-    hit -- another host's same pid, an agent_pid beside some other session_key
-    -- only costs a parse; the `_sid` decides.
+    line is the session's only if one of the two names one of its keys. A key
+    with neither is a login session's -- the scope its cgroup names
+    (`session-N.scope`) -- or, failing that, a terminal's, its `tty`; so a line
+    on it holds those bytes. A false hit -- another host's same pid, an
+    agent_pid beside some other session_key, a scope named in an argv -- only
+    costs a parse; the `_sid` decides.
     """
+    kvs = _key_values(members)
+    if kvs is not None:
+        alt = _trie(sorted(kvs))
+        return (re.compile(rb'"session_key"\s*:\s*"(?:[^":]*:)?' + alt + rb'"'),
+                re.compile(rb'"agent_pid"\s*:\s*"?' + alt + rb'(?![0-9])'))
+    tv = _term_values(members)
+    if tv is None:
+        return None
+    scopes, ttys = tv
+    pats = []
+    if scopes:
+        pats.append(re.compile(rb"session-" + _trie(sorted(scopes)) + rb"\.scope"))
+    if ttys:
+        pats.append(re.compile(rb'"tty"\s*:\s*"(?:' +
+                               b"|".join(_json_spelled(t) for t in sorted(ttys)) + rb')"'))
+    return tuple(pats)
+
+
+def key_where(members):
+    """`key_patterns` for an EBR day-file's decoder: an `ebr` filter (`where`)
+    that passes every record whose session key is one of these, or None
+    exactly when `_key_values` is None (a key not on a pid: no prefilter).
+
+    By the normaliser's rule (`session_key_of`): an apid key is `session_key`
+    after its first colon when there is one, else `agent_pid`. So a record is
+    the session's only if one of the two names one of its pids -- an OR of
+    the two tests. Like the patterns, it may pass a record of another session
+    (another host's same pid, an agent_pid beside some other session_key);
+    the `_sid` decides."""
     kvs = _key_values(members)
     if kvs is None:
         return None
-    alt = _trie(sorted(kvs))
-    return (re.compile(rb'"session_key"\s*:\s*"(?:[^":]*:)?' + alt + rb'"'),
-            re.compile(rb'"agent_pid"\s*:\s*"?' + alt + rb'(?![0-9])'))
+    kvs = frozenset(kvs)
+    return [{"session_key": lambda v: isinstance(v, str) and bool(v)
+             and v.split(":", 1)[-1] in kvs},
+            {"agent_pid": kvs}]
 
 
 def key_matcher(members):
@@ -1421,40 +1479,7 @@ def key_matcher(members):
     pats = key_patterns(members)
     if pats is None:
         return None
-    sk, ap = pats
-    return lambda line: sk.search(line) or ap.search(line)
-
-
-def _end_at(fh, t, size, probe_lines=64):
-    """An offset past which every line is later than `t`, or `size`.
-
-    `export.seek_to_epoch`'s binary search with the opposite caution: a probe
-    that cannot be placed in time searches LATER, because an end bound read too
-    far only costs a search, and one cut too early would lose records.
-    """
-    lo, hi, best = 0, size, size
-    while lo < hi:
-        mid = (lo + hi) // 2
-        fh.seek(mid)
-        if mid:
-            fh.readline()
-        off, ts = fh.tell(), None
-        for _ in range(probe_lines):
-            line = fh.readline()
-            if not line:
-                break
-            try:
-                ts = epoch_of(fastjson.loads(line)) if line.strip() else None
-            except ValueError:
-                ts = None
-            if ts is not None:
-                break
-        if ts is not None and ts > t:
-            best = min(best, off)
-            hi = mid
-        else:
-            lo = max(off, mid) + 1
-    return best
+    return lambda line: any(p.search(line) for p in pats)
 
 
 def _hits(mm, pats, pos, stop):
@@ -1470,17 +1495,82 @@ def _hits(mm, pats, pos, stop):
     return sorted(out)
 
 
-def _key_stream(entry, norm, since, until, stats, pats, ev):
-    """One file's records on the keys, as `(ts, rec)`, ascending."""
+def _line_end_before(fh, start, end, block=1 << 16):
+    """`mm.rfind(b"\\n", start, end) + 1` for a file that cannot be mapped."""
+    pos = end
+    while pos > start:
+        n = min(block, pos - start)
+        pos -= n
+        fh.seek(pos)
+        cut = fh.read(n).rfind(b"\n")
+        if cut != -1:
+            return pos + cut + 1
+    return 0
+
+
+def _key_stream_gz(entry, norm, since, until, stats, pats, ev):
+    """`_key_stream` over a compressed day-file: the same end bound and the same
+    search, over its inflated bytes a CHUNK at a time instead of a memory map.
+    It used to be read line by line to its end, every line tested in Python
+    and the end never bounded, so a morning's session read the rest of the day."""
+    try:
+        fh = gz.open_feed(entry["path"])
+    except OSError:
+        return
+    with fh:
+        size = gz.fstat(fh).st_size
+        start = entry["start"]
+        if size <= start:
+            return
+        end = _end_at(fh, until + UNTIL_SLACK, size) if until is not None else size
+        end = _line_end_before(fh, start, max(start, end))
+        pos = start
+        while pos < end:
+            fh.seek(pos)
+            buf = fh.read(min(CHUNK, end - pos))
+            if not buf:
+                return
+            if pos + len(buf) < end and not buf.endswith(b"\n"):
+                buf += fh.readline()        # to the end of the line the chunk cut
+            buf = buf[:end - pos]
+            stats["bytes"] += len(buf)
+            for ls in _hits(buf, pats, 0, len(buf)):
+                line = buf[ls:buf.find(b"\n", ls)]
+                if ev is not None and ev(line) is None:
+                    stats["skipped"] += 1
+                    continue
+                stats["scanned"] += 1
+                try:
+                    raw = fastjson.loads(line)
+                except ValueError:
+                    stats["parse_errors"] += 1
+                    continue
+                rec = norm.normalize(raw)
+                if rec is None:
+                    continue
+                ts = rec.get("_ts_epoch")
+                if ts is None:
+                    stats["no_ts"] += 1
+                    continue
+                if ts < since:
+                    continue
+                if until is not None and ts > until:
+                    return                    # sorted: nothing later qualifies
+                yield ts, rec
+            pos += len(buf)
+
+
+def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=None):
+    """One file's records on the keys, as `(ts, rec)`, ascending.
+
+    An EBR day-file is read as a window scan reads it (`export._window_stream`),
+    its decoder rejecting by `kinds` and the keys' `where` (`key_where`) before
+    a record is built: there are no lines to search."""
+    if format_of(entry["path"]) == "ebr":
+        yield from _window_stream(entry, norm, since, until, stats, kinds=kinds, where=where)
+        return
     if gz.is_gz(entry["path"]):
-        # A compressed file cannot be mapped: its lines are read in order and
-        # the key test runs on each before it is parsed, as `window_scan` runs
-        # its `match`.
-        def wanted(line):
-            if ev is not None and ev(line) is None:
-                return None
-            return line if any(rx.search(line) for rx in pats) else None
-        yield from _window_stream(entry, norm, since, until, stats, wanted)
+        yield from _key_stream_gz(entry, norm, since, until, stats, pats, ev)
         return
     try:
         fh = open(entry["path"], "rb")
@@ -1530,7 +1620,7 @@ def _key_stream(entry, norm, since, until, stats, pats, ev):
             mm.close()
 
 
-def key_scan(plan, norm, since, until, pats, events=EVENTS):
+def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
     """Yield `(rec, stats)` for the records on these session keys, OLDEST FIRST.
 
     `window_scan` for one session: the same byte ranges, the same per-file
@@ -1543,11 +1633,17 @@ def key_scan(plan, norm, since, until, pats, events=EVENTS):
 
     `skipped` here counts the lines a key hit that are not one of `events`;
     the lines no key hit are never visited, so they are not counted at all.
+    An EBR day-file is decoded instead, rejecting by `events` and `where`
+    (`key_where`) before a record is built; `skipped` then counts what those
+    rejected, and `bytes` the frames read (`inspect_max_bytes` bounds the
+    bytes READ, in either format).
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan), "method": "key search"}
     ev = event_filter(events)
-    streams = [_key_stream(e, norm, since, until, stats, pats, ev) for e in plan]
+    kinds = frozenset(events) if events else None
+    streams = [_key_stream(e, norm, since, until, stats, pats, ev, kinds, where)
+               for e in plan]
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
         yield rec, stats
 
@@ -1735,20 +1831,26 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
         until = min(until, last + 1) if until else last + 1
     if to:
         until = min(until, to) if until else to
-    plan, total = window_plan(roots, since, int(max(0, t0 - since) // 86400) + 2)
+    days = int(max(0, t0 - since) // 86400) + 2
+    prefer = prefer_of(cfg, "ebpf")
     # The sid names one host, and a day-file is named for its host: reading
     # the other hosts' files would only find other processes with the same pids.
-    mine = [e for e in plan if host and e["path"].rsplit("/", 1)[-1].startswith(host + ".")]
-    if mine:
-        plan, total = mine, sum(e["size"] - e["start"] for e in mine)
+    # Its files are planned alone, and every host's only when none of them
+    # holds the span -- as the full plan, cut to the host's, read before. The
+    # host is the file's exactly (`feedfile.host_of`): `login1.` is a prefix of
+    # `login1.rc.fas`'s files too.
+    mine = [p for p in day_files(roots, days, prefer) if host and host_of(p) == host]
+    plan, total = window_plan(roots, since, days, paths=mine) if mine else ([], 0)
+    if not plan:
+        plan, total = window_plan(roots, since, days, prefer=prefer)
 
     b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
     pats = key_patterns(members)
-    records = (key_scan(plan, norm, since, until, pats) if pats is not None else
-               window_scan(plan, norm, since, until, events=EVENTS))
+    records = (key_scan(plan, norm, since, until, pats, where=key_where(members))
+               if pats is not None else window_scan(plan, norm, since, until, events=EVENTS))
     if give_way is not None and give_way():
         raise _GiveWay
     for rec, stats in records:
@@ -1929,7 +2031,9 @@ def _warm_loop(agg):
                 view = reg.views.get(minutes)
                 tj = ((view.payload or {}).get("trajectories")
                       if view is not None and view.state == "ready" else None)
-                sids = list(((tj or {}).get("ranks") or {}).get("events") or [])[:WARM_TOP]
+                # the ranking the page opens on (`recent`), so the session a
+                # reader clicks first is the one read ahead
+                sids = list(((tj or {}).get("ranks") or {}).get("recent") or [])[:WARM_TOP]
             for sid in sids:
                 if _waiting[0] or getattr(agg, "stopping", False):
                     break

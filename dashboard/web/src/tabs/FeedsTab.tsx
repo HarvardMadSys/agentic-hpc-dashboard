@@ -11,7 +11,7 @@
  * events it lost. The dashboard never contacts a collector, so a capture copied
  * from another cluster is judged exactly as a live feed is.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { Async } from '../api/hooks';
 import { useCollectors } from '../api/hooks';
 import type {
@@ -32,6 +32,7 @@ import { useSort } from '../lib/useSort';
 import { DASH, bytes, dur, fint, lagStr } from '../lib/format';
 import { feedLabel } from '../lib/feeds';
 import { useNodeWords } from '../lib/nodes';
+import { useNow } from '../lib/useNow';
 
 /* ----------------------------------------------------------- collectors */
 
@@ -363,7 +364,7 @@ function Backfill({ b }: { b: Record<string, unknown> | null | undefined }) {
   );
 }
 
-export function FeedsTab({
+export const FeedsTab = memo(function FeedsTab({
   feeds,
   config,
   builtAt,
@@ -375,6 +376,8 @@ export function FeedsTab({
   const nodes = useNodeWords();
   const col = useCollectors();
   const hosts = col.data?.hosts ?? [];
+  // without the service's `now`, "up 3 h" is read against the wall clock: again with every live frame (lib/useNow.ts)
+  useNow(col.data?.now == null);
   const now = col.data?.now ?? Date.now() / 1000;
   const list = Object.values(feeds.data ?? {}).sort(
     (a, b) => Number(b.required) - Number(a.required) || (a.tier || '').localeCompare(b.tier || '') || (a.name || '').localeCompare(b.name || ''),
@@ -458,4 +461,4 @@ export function FeedsTab({
       </Panel>
     </div>
   );
-}
+});

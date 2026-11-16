@@ -6,7 +6,9 @@ seeded on (seed, host, day, user), so one person's plan never moves another's.
 A session is BUILT into its records only when a window being written overlaps
 it: every record it will ever write, whole, from its own seeded generator. A
 window keeps the records that fall in it. So `records(a, b) + records(b, c)` is
-`records(a, c)`, byte for byte, which is what lets a stopped demo resume.
+`records(a, c)`, byte for byte, which is what lets a stopped demo resume. On disk
+(feed.py) that is, for JSONL: same bytes; for EBR: same decoded records, since an
+EBR file's frames and segments follow the rounds that wrote it.
 
 Pids come from a block per (day, session), so two sessions on one host never
 share a pid on a day -- a row is keyed on its root's pid and its day, so two would

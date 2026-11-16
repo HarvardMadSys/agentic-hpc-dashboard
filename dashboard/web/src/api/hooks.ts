@@ -1,7 +1,7 @@
 /* Data hooks. One `Async<T>` shape everywhere so the shell can render a
  * consistent loading / error state without every tab reinventing it.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CollectorsResponse,
   ConfigTree,
@@ -70,19 +70,19 @@ function useFetched<T>(fn: (s?: AbortSignal) => Promise<T>, deps: unknown[]): As
   }, [...deps, nonce]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
-  return { data, error, loading, reload };
+  // One object for as long as nothing in it changes, so a memoized component
+  // handed it is not re-rendered by every render of its parent.
+  return useMemo(() => ({ data, error, loading, reload }), [data, error, loading, reload]);
 }
 
 export const useConfig = (): Async<ConfigTree> => useFetched(getConfig, []);
 
-/** Each collector's state, re-read every `everyMs` while the caller is mounted. */
+/** Each collector's state, re-read `everyMs` after each answer while the
+ *  caller is mounted and the page is on screen. On a fixed beat, a reply
+ *  slower than the beat was cancelled by the next request and never arrived. */
 export function useCollectors(everyMs = 20000): Async<CollectorsResponse> {
   const a = useFetched(getCollectors, []);
-  const { reload } = a;
-  useEffect(() => {
-    const t = setInterval(reload, everyMs);
-    return () => clearInterval(t);
-  }, [reload, everyMs]);
+  useRefresh(a, everyMs);
   return a;
 }
 
@@ -96,7 +96,8 @@ export function useCollectors(everyMs = 20000): Async<CollectorsResponse> {
  * The Network bytes panel's endpoint names are looked up in the background
  * after the service first lists the addresses (rc_dashboard/endpoints.py), so
  * while some are pending the panels are read again, later each time, and only
- * a few times: a name still missing after that waits for the next build. */
+ * a few times: a name still missing after that waits for the next build. Not
+ * while the page is hidden: each is the whole of /api/panels again. */
 const NAME_REREADS_MS = [3000, 6000, 12000, 24000, 48000];
 
 export function usePanels(
@@ -107,6 +108,7 @@ export function usePanels(
   const view = `${win}|${who ? whoQuery(who) : ''}`;
   const a = useFetched((s) => getPanels(win, s, who), [win, buildNonce, view]);
   const { data, loading, reload } = a;
+  const visible = useVisible();
   const pending = (data?.panels?.io_process?.endpoints as { pending?: number } | undefined)?.pending ?? 0;
   const rereads = useRef({ view, n: 0 });
   useEffect(() => {
@@ -114,13 +116,13 @@ export function usePanels(
     if (r.view !== view || !pending) rereads.current = { view, n: 0 };
     const n = rereads.current.n;
     // not while a read is out: its answer may hold the names, or be another view's
-    if (!pending || loading || n >= NAME_REREADS_MS.length) return;
+    if (!pending || loading || !visible || n >= NAME_REREADS_MS.length) return;
     const t = setTimeout(() => {
       rereads.current.n = n + 1;
       reload();
     }, NAME_REREADS_MS[n]);
     return () => clearTimeout(t);
-  }, [data, loading, pending, reload, view]);
+  }, [data, loading, pending, reload, view, visible]);
   return a;
 }
 
@@ -231,7 +233,7 @@ export function useFeeds(): Async<FeedsResponse> & { merge: (f: FeedsResponse) =
   const base = useFetched(getFeeds, []);
   const [override, setOverride] = useState<FeedsResponse | null>(null);
   const merge = useCallback((f: FeedsResponse) => setOverride(f), []);
-  return { ...base, data: override ?? base.data, merge };
+  return useMemo(() => ({ ...base, data: override ?? base.data, merge }), [base, override, merge]);
 }
 
 /** The offered windows and the retention ceiling, seeded over REST.

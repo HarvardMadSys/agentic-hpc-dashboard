@@ -99,7 +99,11 @@
       "//4": "EBPFM_RESIDENCY_S (default 60s) whether or not anything was tracked,",
       "//5": "so freshness here means liveness, not activity. 300 = 5 ticks, the same",
       "//6": "threshold collect/healthcheck.py uses for 'ebpfm'.",
-      "required": true
+      "required": true,
+      "//prefer": "A collector writing both formats (EBPFM_FORMAT=both) leaves x.jsonl and x.ebr",
+      "//prefer1": "with the same records: one per stream is read, this one (jsonl|ebr) unless it",
+      "//prefer2": "started mid-day. RC_DASH_EBPF_PREFER. Changing it rebuilds saved windows and hours.",
+      "prefer": "jsonl"
     },
 
     "//7": "Node tier (unprivileged): node_snapshot.py is a vendored copy of",
@@ -113,7 +117,9 @@
       "//10": "2 snapshots: per_user_cgroup.cpu_usage_usec is CUMULATIVE, so a per-user",
       "//11": "CPU rate only exists as a delta between two consecutive snapshots.",
       "max_age_s": 900,
-      "required": false
+      "required": false,
+      "//prefer": "as feeds.ebpf.prefer, for the node tier's <host>.{jsonl,ebr}. RC_DASH_NODE_PREFER.",
+      "prefer": "jsonl"
     },
 
     "//12": "collect/slurm_query.bash writes ONE FILE PER DAY into DEST_DIR, named",
@@ -235,7 +241,11 @@
   "//server4": "rdns: name the Network bytes panel's endpoints by reverse DNS from this host, `workers`",
   "//server5": "lookups at a time, off the request path, kept in <cache.dir>/rdns.json. Off: names come",
   "//server6": "only from the records' command lines. A restart, never a rebuild.",
+  "//server7": "gil_switch_ms: how long one thread may hold the GIL while another waits for it",
+  "//server8": "(Python's own: 5 ms). A build and the backfill keep it; the event loop gives it up at",
+  "//server9": "every read and write. 1 keeps the page answering beside a build. 0 keeps Python's.",
   "server": { "host": "127.0.0.1", "port": 8080, "static_dir": "dashboard/web/dist",
               "auth": { "password_hash": "", "session_days": 30 },
-              "rdns": { "enabled": true, "workers": 4 } }
+              "rdns": { "enabled": true, "workers": 4 },
+              "gil_switch_ms": 1.0 }
 }

@@ -11,6 +11,7 @@ is masked before the preview is cut.
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
 import collections
+import gzip
 import json
 import os
 import re
@@ -749,8 +750,26 @@ class KeyMatcherTest(unittest.TestCase):
         for w in words + ["1", "124", "3", "12345", "21", "9999", "0"]:
             self.assertEqual(bool(rx.match(w.encode())), w in words, w)
 
-    def test_no_byte_check_for_a_session_not_keyed_on_a_pid(self):
-        self.assertIsNone(key_matcher(["h1|2026-10-11|human|tty:alice@pts1"]))
+    def test_a_login_session_is_found_by_its_scope_and_nothing_longer(self):
+        m = key_matcher(["h1|2026-10-11|human|sess:12", "h1|2026-10-11|human|sess:120"])
+        self.assertTrue(m(b'{"cgroup": "/user.slice/user-1000.slice/session-12.scope"}'))
+        self.assertTrue(m(b'{"cgroup":"/user.slice/user-1000.slice/session-120.scope"}'))
+        self.assertFalse(m(b'{"cgroup": "/user.slice/user-1000.slice/session-1.scope"}'))
+        self.assertFalse(m(b'{"cgroup": "/user.slice/user-1000.slice/session-121.scope"}'))
+        self.assertFalse(m(b'{"cgroup": "/user.slice/user-1000.slice/session-112.scope"}'))
+
+    def test_a_terminal_is_found_by_its_tty_either_way_its_slash_is_written(self):
+        m = key_matcher(["h1|2026-10-11|human|tty:alice@pts/3"])
+        self.assertTrue(m(b'{"user": "alice", "tty": "pts/3"}'))
+        self.assertTrue(m(b'{"tty":"pts\\/3"}'))
+        self.assertFalse(m(b'{"tty": "pts/31"}'))
+        self.assertFalse(m(b'{"tty": "pts/4"}'))
+
+    def test_no_byte_check_for_keys_it_cannot_spell(self):
+        self.assertIsNone(key_matcher(["h1|2026-10-11|human|tty:alice@pts\u00e9"]))
+        self.assertIsNone(key_matcher(["h1|2026-10-11|human|usr:alice"]))
+        self.assertIsNone(key_matcher(["h1|2026-10-11|agent|apid:12",
+                                       "h1|2026-10-11|human|sess:12"]))
 
 
 # ------------------------------------------------------------- end to end
@@ -870,6 +889,64 @@ class KeyScanTest(unittest.TestCase):
             proctree.CHUNK = old
         self.assertEqual(fast, line)
         self.assertEqual(len(fast), 42)
+
+    def gzip_day(self, day_offset=0, host="h1"):
+        p = os.path.join(self.dir, time.strftime(
+            "%Y-%m-%d", time.localtime(self.t0 + day_offset * 86400)), host + ".jsonl")
+        with open(p, "rb") as src, gzip.open(p + ".gz", "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.unlink(p)
+
+    def test_a_compressed_day_reads_what_the_plain_one_read(self):
+        self.write(self.recs())
+        plain = self.both({self.sid(12)}, self.t0 - 10, self.t0 + 30)
+        self.gzip_day()
+        old = proctree.CHUNK
+        for chunk in (old, 700):                        # whole, and under two lines a chunk
+            proctree.CHUNK = chunk
+            try:
+                line, fast = self.both({self.sid(12)}, self.t0 - 10, self.t0 + 30)
+            finally:
+                proctree.CHUNK = old
+            self.assertEqual(fast, line)
+            self.assertEqual(fast, plain[1])
+            self.assertEqual(plain[0], plain[1])
+
+    def test_a_compressed_day_is_read_only_to_the_end_bound(self):
+        recs = self.recs() + [raw("exit", self.t0 + 3000 + i, 9000 + i, 12, "z", "z",
+                                  agent_pid=12, tree_root=12) for i in range(400)]
+        recs.sort(key=lambda r: r["ts_epoch"])
+        self.write(recs)
+        self.gzip_day()
+        plan, total = window_plan([self.dir], self.t0 - 10, 3)
+        got = list(key_scan([dict(e) for e in plan], Normalizer(self.cfg), self.t0 - 10,
+                            self.t0 + 30, key_patterns({self.sid(12)})))
+        self.assertTrue(got)
+        self.assertLess(got[-1][1]["bytes"], total / 2, "stopped near `until`, not at the end")
+
+    def term(self, t, pid, **kw):
+        r = raw("exit", t, pid, 1, "ls", "ls", agent_pid=None, tree_root=None,
+                actor="human", actor3="human", agent_type=None, session_key=None)
+        r.update(kw)
+        return r
+
+    def test_a_login_session_and_a_terminal_read_what_the_line_scan_reads(self):
+        t0 = self.t0
+        recs = []
+        for i in range(30):
+            recs.append(self.term(t0 + i, 100 + i,
+                                  cgroup="/user.slice/user-1000.slice/session-7.scope"))
+            recs.append(self.term(t0 + i + 0.2, 200 + i,
+                                  cgroup="/user.slice/user-1000.slice/session-77.scope"))
+            recs.append(self.term(t0 + i + 0.4, 300 + i, cgroup="/system.slice/x", tty="pts/5"))
+            recs.append(self.term(t0 + i + 0.6, 400 + i, cgroup="/system.slice/x", tty="pts/55"))
+        self.write(recs)
+        day = time.strftime("%Y-%m-%d", time.localtime(t0))
+        for key, pids in (("sess:7", range(100, 130)), ("tty:alice@pts/5", range(300, 330))):
+            members = {"h1|%s|human|%s" % (day, key)}
+            line, fast = self.both(members, t0 - 10)
+            self.assertEqual(fast, line, key)
+            self.assertEqual([p for _, p in fast], list(pids), key)
 
     def test_since_until_and_two_days_merged_in_time_order(self):
         self.write(self.recs())

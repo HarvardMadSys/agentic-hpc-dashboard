@@ -44,6 +44,8 @@ def build_parser():
                     help="fictional login nodes (2)")
     ap.add_argument("--demo-seed", default=None,
                     help="another seed is another week of made-up sessions (demo)")
+    ap.add_argument("--demo-format", default=None, choices=["jsonl", "ebr", "both"],
+                    help="the day-files' format; both writes the two as twins (ebr)")
     ap.add_argument("--demo-fresh", action="store_true",
                     help="discard the demo feed and write it again")
     ap.add_argument("--demo-write-only", action="store_true",

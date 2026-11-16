@@ -26,7 +26,8 @@ import threading
 import time
 import uuid
 
-from . import clock, export
+from . import clock, ebr, export
+from .feedfile import prefer_of
 from .proctree import _trie
 from .normalize import Normalizer
 from .redact import redact
@@ -82,6 +83,32 @@ def prefilter(f, apid, host, cwd):
     if len(checks) == 1:
         return checks[0]
     return lambda line: all(c(line) for c in checks)
+
+
+def prefilter_where(f, apid, host, cwd):
+    """`prefilter` for an EBR day-file's decoder: an `ebr` filter (`where`) built
+    from the same inputs, which passes every record `predicate` keeps, or None
+    when there is nothing to test.
+
+    The user, the host, and a directory (`Prefix`: the record's `cwd` starts
+    with it, which a directory and everything below it does). With agent pids,
+    an OR of the two ways a record names its agent (`normalize.session_key_of`):
+    its `session_key` after the first colon, else its `agent_pid`."""
+    base = {}
+    users = f.get("user")
+    if users:
+        base["user"] = frozenset(users)
+    if host:
+        base["host"] = frozenset([host])
+    root = cwd.rstrip("/") if cwd else None
+    if root:
+        base["cwd"] = ebr.Prefix(root)
+    if apid:
+        pids = frozenset(str(p) for p in apid)
+        return [dict(base, session_key=lambda v: isinstance(v, str) and bool(v)
+                     and v.split(":", 1)[-1] in pids),
+                dict(base, agent_pid=pids)]
+    return base or None
 
 
 def agent_keys(view, host, pids):
@@ -206,6 +233,7 @@ class IoCommands:
     def __init__(self, cfg, roots):
         self.cfg = cfg
         self.roots = roots
+        self.prefer = prefer_of(cfg, "ebpf")
         self.jobs = {}             # id -> Job, every one still held
         self.lock = threading.Lock()
         self.gate = threading.Semaphore(WORKERS)
@@ -268,20 +296,23 @@ class IoCommands:
                     self._trim()
 
     def _read(self, j, f, apid, host, cwd):
-        plan, j.total_bytes = export.window_plan(self.roots(), j.since)
+        plan, j.total_bytes = export.window_plan(self.roots(), j.since, prefer=self.prefer)
         norm = Normalizer(self.cfg)
         ok = predicate(f, apid, host, cwd)
         by_event = export.event_filter(EVENTS)
         match = prefilter(f, apid, host, cwd)
         wanted = by_event if match is None else (
             lambda line: match(line) if by_event(line) is not None else None)
+        # the same two checks, for an EBR day-file's decoder
+        where = prefilter_where(f, apid, host, cwd)
         groups = j.groups = {}
         tot = [0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0]
         st = j.stats
         # Files one after another, not merged on time: a sum has no order, and
         # a merge holds every file open to seed it.
         for entry in plan:
-            for _ts, rec in export._window_stream(entry, norm, j.since, j.until, st, wanted):
+            for _ts, rec in export._window_stream(entry, norm, j.since, j.until, st, wanted,
+                                                  kinds=EVENTS, where=where):
                 if rec.get("event") not in EVENTS or not ok(rec):
                     continue
                 st["matched"] += 1

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
-from test_ingest import DAY, FeedCase             # noqa: E402
+from test_ingest import DAY, FeedCase, ebr_twins  # noqa: E402
 import test_merge as TM                           # noqa: E402
 
 HOUR = 3600
@@ -634,3 +634,6 @@ class EdgeContextTest(HourCase):
                 self.assertEqual(TM.diff(want[key], got[key]), [])
         self.assertEqual(want["sandbox"]["n_events"], got["sandbox"]["n_events"])
         self.assertEqual(want["tool_mix"]["dedup"]["rule"], got["tool_mix"]["dedup"]["rule"])
+
+
+ebr_twins(globals())

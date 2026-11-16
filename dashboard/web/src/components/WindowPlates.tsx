@@ -5,6 +5,7 @@
  *
  * The headline is the agent's; the other classes sit beside it for scale.
  */
+import { memo } from 'react';
 import type { Cls, Resources, RiskPanel, Sandbox, ToolMix, Trajectories } from '../api/types';
 import { Plate } from './Plate';
 import { AGENT_TYPE_LBL, CLS_LBL } from '../lib/classes';
@@ -15,7 +16,7 @@ import { CALL_KNOWN, riskLine, shareOfKnown } from '../lib/sandbox';
 import { GLOSS } from '../lib/glossary';
 import { useNodeWords } from '../lib/nodes';
 
-export function WindowPlates({
+export const WindowPlates = memo(function WindowPlates({
   P,
   cls,
   traj,
@@ -106,4 +107,4 @@ export function WindowPlates({
       />
     </div>
   );
-}
+});

@@ -13,13 +13,14 @@
  * A ref the snapshot never held is marked as no source: the model wrote it,
  * and it points at nothing.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { use, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { AskCite, AskJob, AskView } from '../api/types';
 import { CITE_RE, citeOrder, go, hrefOf, refsOf, target } from '../lib/cites';
 import type { Target } from '../lib/cites';
 import { clock } from '../lib/format';
+import { UrlCtx } from '../lib/useUrlState';
 
 /** What an answer's citations are read against. */
 export interface CiteCtx {
@@ -181,6 +182,8 @@ function Seen({ data, quoted }: { data: unknown; quoted: Quoted[] }) {
 /** The panel an agent's part was read from, beside the trajectory a click
  *  opens: a link of its own, filtered to it. */
 function AlsoLink({ also, what, onGo }: { also: NonNullable<Target['also']>; what: string; onGo: () => void }) {
+  // its href is the page's own query with the citation's patch: drawn again when the URL changes
+  use(UrlCtx);
   return (
     <a
       className="cite-also"
@@ -267,6 +270,8 @@ export function CiteLink({ r, ctx, className, children }: {
   className?: string;
   children: ReactNode;
 }) {
+  // its href is the page's own query with the citation's patch: drawn again when the URL changes
+  use(UrlCtx);
   const cite = ctx.cites[r];
   const n = ctx.order.indexOf(r) + 1;
   const [open, setOpen] = useState(false);

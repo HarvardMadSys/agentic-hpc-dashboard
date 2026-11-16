@@ -4,11 +4,12 @@
  * operator reads, so they can be discussed without crowding those tabs. A
  * panel leaves when we know what it says, or when we decide it says nothing.
  */
+import { memo } from 'react';
 import type { Cls } from '../api/types';
 import type { Panels } from '../lib/panels';
 import { SandboxTab } from './SandboxTab';
 
-export function InternalTab({ P, cls }: { P: Panels; cls: Cls[] }) {
+export const InternalTab = memo(function InternalTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   return (
     <>
       <p className="intro">
@@ -19,4 +20,4 @@ export function InternalTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       <SandboxTab P={P} cls={cls} />
     </>
   );
-}
+});

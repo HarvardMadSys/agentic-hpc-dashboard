@@ -62,8 +62,9 @@ import threading
 import time
 
 from . import hours as hourmod, payloads, redact, snapshots
-from .export import (UNTAGGED, agent_type_token, agent_type_want, parse_filters,
-                     resume_plan, window_plan, window_scan)
+from .export import (UNTAGGED, agent_type_token, agent_type_want, agent_type_where,
+                     parse_filters, resume_plan, window_plan, window_scan)
+from .feedfile import prefer_of
 from .normalize import Normalizer
 from .procindex import ProcIndex
 from .reducers.cascades import CascadeReducer
@@ -179,11 +180,11 @@ def presets(cfg):
 
 
 def _byte_check(field, values):
-    """A pre-parse search for `"field": "<one of values>"`, or None when unsafe."""
+    """A pre-parse pattern for `"field": "<one of values>"`, or None when unsafe."""
     if not values or not all(_PLAIN.match(v) for v in values):
         return None
     names = b"|".join(re.escape(v.encode()) for v in sorted(values))
-    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"').search
+    return re.compile(rb'"' + field.encode() + rb'"\s*:\s*"(?:' + names + rb')"')
 
 
 class ViewFilter:
@@ -203,7 +204,8 @@ class ViewFilter:
     empty series read as an idle person.
     """
 
-    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match")
+    __slots__ = ("users", "agent_types", "key", "_u", "_t", "line_match", "line_find",
+                 "where")
 
     NOT_NARROWED = (
         "resident memory and live processes over time: sampled from each host's "
@@ -226,15 +228,29 @@ class ViewFilter:
         # through. A narrow filter on a busy feed parses a few percent of the
         # lines a full build does. `none` cannot be searched for -- an untagged
         # record may carry `null` or no key at all -- so it only narrows by user.
-        checks = [c for c in (_byte_check("user", self.users),
-                              None if UNTAGGED in self._t
-                              else _byte_check("agent_type", self.agent_types))
+        checks = [c.search for c in (_byte_check("user", self.users),
+                                     None if UNTAGGED in self._t
+                                     else _byte_check("agent_type", self.agent_types))
                   if c is not None]
         if len(checks) == 2:
             a, b = checks
             self.line_match = lambda line: a(line) and b(line)
         else:
             self.line_match = checks[0] if checks else None
+        # The first check's pattern, which the scan runs over whole blocks of a
+        # day-file to find the lines worth looking at (`export.window_scan`
+        # `find`); `line_match` still decides each one it finds.
+        self.line_find = checks[0].__self__ if checks else None
+        # The same narrowing for an EBR day-file's decoder (`ebr.match_where`),
+        # from the same inputs: it rejects a record before building it, and
+        # `match` still decides each one it lets through. `none` it can test:
+        # a null or empty agent type is `str(v)` "None" or "".
+        w = {}
+        if self.users:
+            w["user"] = frozenset(self.users)
+        if self.agent_types:
+            w["agent_type"] = agent_type_where(self.agent_types)
+        self.where = w or None
 
     @classmethod
     def from_params(cls, params):
@@ -409,6 +425,49 @@ class PanelView:
         self.cache["restored"] = None
         return self.payload
 
+    def materialize_stepwise(self, lock):
+        """`materialize()`, taking `lock` one reducer at a time.
+
+        Each reducer's `result()` is read, and masked, under the lock: the live
+        feed changes reducer state under the same lock. The payload is swapped in
+        whole once every reducer is done, so a reader meanwhile sees the previous
+        one entire, and only if the reducers it was read from are still the
+        view's: a build that installed new ones meanwhile materializes its own.
+        One hold is then the slowest reducer's, not all of them together -- and
+        every reader of the views and of the live tier, the tail included,
+        waited out the whole of it after each build and refresh.
+
+        What that gives up is one instant for the whole payload. A live record
+        can land between two reducers' turns, so one panel may count a few
+        records another does not yet -- a total ahead of a breakdown by what
+        arrived in those milliseconds. `_fresh` stamps each key with its own time
+        and count, the next refresh brings them level, and `_save_panels` saves
+        the payload as it was read. `materialize()`, one hold for all, is still
+        here for a caller that needs a single instant."""
+        reds = self.reducers
+        out, fresh = {}, {}
+        for key in list(reds):
+            with lock:
+                r = reds.get(key)
+                if r is None:
+                    continue
+                try:
+                    res = r.result()
+                except Exception as e:
+                    res = {"_error": str(e)}
+                out[key] = redact.payload(res)
+                fresh[key] = (time.time(), self.live_records)
+            time.sleep(0)               # a waiter's turn at the lock
+        with lock:
+            if self.reducers is not reds:
+                return self.payload
+            self.payload = out
+            self.materialized_at = time.time()
+            self._fresh = fresh
+            # These panels are the view's own: any it showed from a saved copy are gone.
+            self.cache["restored"] = None
+        return self.payload
+
     def materialize_key(self, key, max_age_s):
         """Re-materialise one reducer's payload when it is older than
         `max_age_s` and the view has ingested since. The rest wait for the
@@ -547,6 +606,8 @@ class WindowRegistry:
         # window is merged from saved hour states rather than re-read. None
         # when off, and every window is scanned as before.
         ret = retention_min(cfg)
+        # which twin of a stream written in both formats is read (`feedfile.choose`)
+        self.prefer = prefer_of(cfg, "ebpf")
         self.hours = hourmod.HourStore.from_config(
             cfg, classes, lambda: PanelView(cfg, classes, ret).fresh_reducers(), EVENTS)
         self._queue = collections.deque()
@@ -634,7 +695,7 @@ class WindowRegistry:
             saved, reducers = None, view.fresh_reducers()
             since = t0 - view.window_s
             days = int(view.window_s // 86400) + 2
-            plan, total = window_plan(roots, since, days)
+            plan, total = window_plan(roots, since, days, prefer=self.prefer)
         view.progress = {"pct": 0, "records": 0, "bytes": 0,
                          "total_bytes": total, "files": len(plan),
                          "elapsed_s": 0.0, "mode": "resume" if saved else "scan"}
@@ -649,7 +710,8 @@ class WindowRegistry:
         keep = view.flt.match if view.flt else None
         every = 20000 if keep is None else 500
         for rec, stats in window_scan(plan, norm, since, events=EVENTS,
-                                      match=view.flt.line_match):
+                                      match=view.flt.line_match, find=view.flt.line_find,
+                                      where=view.flt.where):
             if keep is not None and not keep(rec):
                 continue
             ts = rec.get("_ts_epoch")
@@ -721,11 +783,14 @@ class WindowRegistry:
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
+        # The panels, a reducer per hold; the view says it is ready once they are in,
+        # and until then shows what it showed while it was building.
+        view.materialize_stepwise(self.lock)
+        with self.lock:
             view.state = "ready"
             view.installed_at = time.time()
             view.progress.update(records=n, pct=100,
                                  elapsed_s=round(time.time() - t0, 1))
-            view.materialize()
 
         if blob is not None:
             try:
@@ -820,7 +885,8 @@ class WindowRegistry:
                 view.cache["note"] = "scanned: %s" % why
                 return None
             days = int((t0 - meta["covers_from"]) // 86400) + 2
-            got = resume_plan(roots, meta["covers_from"], meta["files"], days)
+            got = resume_plan(roots, meta["covers_from"], meta["files"], days,
+                              prefer=self.prefer)
             if got is None:
                 view.cache["note"] = ("scanned: the day-files the saved build read "
                                       "have changed since")
@@ -946,8 +1012,7 @@ class WindowRegistry:
             if drift > view.window_s * budget_pct:
                 self._enqueue(key)
             else:
-                with self.lock:
-                    view.materialize()
+                view.materialize_stepwise(self.lock)
                 self._save_panels(view)
 
     def status(self, now=None):

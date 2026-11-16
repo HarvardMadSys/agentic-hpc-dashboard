@@ -79,10 +79,11 @@ import time
 import zlib
 from operator import itemgetter
 
-from . import fastjson, gz, snapshots
+from . import ebr, fastjson, gz, snapshots
 from .export import (HEAD_BYTES, SCAN_SLACK_S, day_files, event_filter, head_digest,
                      seek_to_epoch)
-from .normalize import Normalizer
+from .feedfile import decoder_at, ebr_src, errors, format_of, prefer_of, settle_of, twin_names
+from .normalize import Normalizer, epoch_of
 
 FORMAT = 1
 HOUR = 3600
@@ -110,7 +111,7 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 # one or the other.
 CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.py",
               "tool_buckets.py", "proctree.py", "fastjson.py", "snapshots.py", "hours.py",
-              "gz.py")
+              "gz.py", "feedfile.py", "ebr.py")
 # Config that changes nothing a reduction holds: the server, the window
 # registry's own knobs, the live tier's views and backfill, the clock, the
 # masking of names on the way out (anonymize.py), the questions asked of a
@@ -291,9 +292,16 @@ def plan_span(files, lo, prev=None):
     uncompressed offsets: it is matched to the read of its plain name by its
     head alone. Unmatched, the slack before `lo` -- records the previous hour
     already took -- would be taken again as late arrivals for it.
+
+    An EBR day-file is planned the same way, at frame boundaries
+    (`_stream_ebr`). One whose stream the previous hour read from its twin of
+    the other format (deleted since, `feedfile.choose`) has no offsets to go
+    by: its records before `lo` are the ones that read took, so none of them
+    is a straggler (`prev_stop` is its end).
     """
     out = []
     for p in files:
+        fmt = format_of(p)
         try:
             with gz.open_feed(p) as fh:
                 st = gz.fstat(fh)
@@ -301,7 +309,8 @@ def plan_span(files, lo, prev=None):
                 n = min(HEAD_BYTES, size)
                 e = {"path": p, "dev": st.st_dev, "ino": st.st_ino, "head_n": n,
                      "head": head_digest(fh, n), "size": size}
-                start = seek_to_epoch(fh, lo - SCAN_SLACK_S, size)
+                start = (seek_to_epoch(fh, lo - SCAN_SLACK_S, size) if fmt == "jsonl" else
+                         seek_to_epoch(fh, lo - SCAN_SLACK_S, size, fmt))
         except OSError:
             continue
         pv, same = (prev or {}).get(p), ("dev", "ino", "head_n", "head")
@@ -312,13 +321,15 @@ def plan_span(files, lo, prev=None):
             start = min(start, pv["stop"])
             if pv.get("resume") is not None:
                 start = min(start, pv["resume"])
+        elif pv is None and prev and any(t in prev for t in twin_names(p)):
+            e["prev_stop"] = size
         e["start"] = e["stop"] = start
         e["resume"] = None
         out.append(e)
     return out
 
 
-def _stream(e, norm, lo, hi, wanted, stats, strays):
+def _stream(e, norm, lo, hi, wanted, stats, strays, kinds=None):
     """One file's records with `lo <= ts < hi`, as `(ts, rec)`, in file order.
 
     Stops at the first record more than SCAN_SLACK_S past `hi` and records in
@@ -328,8 +339,14 @@ def _stream(e, norm, lo, hi, wanted, stats, strays):
     starts there at the latest too (`plan_span`). A record from before `lo`
     that the previous hour's read never reached is a straggler, and goes to
     `strays` when given.
+
+    An EBR day-file is read by `_stream_ebr`, by the same rules a frame at a
+    time; `kinds` are its decoder's event types, where `wanted` is a line's.
     """
     if e["start"] >= e["size"]:
+        return
+    if format_of(e["path"]) == "ebr":
+        yield from _stream_ebr(e, norm, lo, hi, kinds, stats, strays)
         return
     try:
         fh = gz.open_feed(e["path"])
@@ -377,6 +394,112 @@ def _stream(e, norm, lo, hi, wanted, stats, strays):
         e["stop"] = pos
 
 
+def _stream_ebr(e, norm, lo, hi, kinds, stats, strays):
+    """`_stream` over an EBR day-file: the same rules at frame granularity.
+
+    A frame is processed WHOLE or not at all, and a record's position is its
+    frame's offset plus its index in it (`ebr`), so every offset kept is a
+    frame boundary:
+
+    * `stop` is the end of the last frame processed, and the read returns
+      after the first frame holding a record more than SCAN_SLACK_S past `hi`
+      -- processed, all of it: what in it is this hour's is yielded, what is
+      the next hour's is left for it, what is earlier is a straggler or was
+      the hour before's. A record before `stop` is never yielded again.
+    * `resume` is the offset of the first frame holding a record from `hi` on,
+      so the next hour reads that frame again (`plan_span`); a frame that
+      spans hours is read by each of them, and each takes its own.
+    * A straggler is a record from before `lo` in a frame the hour before did
+      not process (`pos >= prev_stop`, which for a frame boundary is its
+      offset).
+
+    Two kinds of frame are passed without building their records, their
+    definitions still applied (`Decoder.skip`): one wholly before `lo` that
+    the hour before processed -- nothing in it is this hour's, nor a
+    straggler -- and one wholly from `hi` on, every record of which is the
+    next hour's (its offset still `resume`). A frame whose records cannot all
+    be placed in time by its header is decoded and judged record by record.
+    """
+    try:
+        fh = gz.open_feed(e["path"])
+    except OSError:
+        return
+    prev_stop = e.get("prev_stop")
+    with fh:
+        src = ebr_src(fh)
+        dec = decoder_at(src, e["start"])
+        err0 = errors(dec.stats)
+        mask, exact = ebr.kind_mask(kinds) if kinds is not None else (None, False)
+        far = None if hi is None else hi + SCAN_SLACK_S
+        try:
+            for f in ebr.frames(src, e["start"], e["size"], settle=settle_of(e["path"])):
+                stats["bytes"] += f.end - f.off
+                if f.kind != ebr.DATA or not f.n_records:
+                    dec.skip(f, src)
+                    e["stop"] = f.end
+                    continue
+                tmin, tmax = f.ts_min, f.ts_max
+                placed = tmin - tmin == 0.0 and tmax - tmax == 0.0
+                if exact and not f.kinds & mask:
+                    # none of the records it holds is one this read takes
+                    dec.skip(f, src)
+                    e["stop"] = f.end
+                    continue
+                if placed and hi is not None and tmin >= hi:
+                    dec.skip(f, src)
+                    if e["resume"] is None:
+                        e["resume"] = f.off
+                    e["stop"] = f.end
+                    if tmax > far:
+                        return
+                    continue
+                if placed and tmax < lo and (strays is None or (
+                        prev_stop is not None and f.end <= prev_stop)):
+                    dec.skip(f, src)
+                    e["stop"] = f.end
+                    continue
+                past = deferred = False
+                for pos, raw in dec.records(src, f, kinds):
+                    # A frame spans a round, or more: what its time says can
+                    # change nothing here is not normalised (the read's own
+                    # Normalizer, whose counters nothing reads).
+                    t = epoch_of(raw)
+                    if t is not None:
+                        if hi is not None and t >= hi:
+                            if deferred and (past or t <= far):
+                                continue
+                        elif t < lo and (strays is None or (
+                                prev_stop is not None and pos < prev_stop)):
+                            continue
+                    rec = norm.normalize(raw)
+                    if rec is None:
+                        continue
+                    ts = rec.get("_ts_epoch")
+                    if ts is None:
+                        stats["no_ts"] += 1
+                        continue
+                    if hi is not None and ts >= hi:
+                        deferred = True
+                        if ts > far:
+                            past = True
+                        continue
+                    if ts >= lo:
+                        stats["records"] += 1
+                        yield ts, rec
+                    elif strays is not None and (prev_stop is None or pos >= prev_stop):
+                        if len(strays) < STRAGGLER_CAP:
+                            strays.append((ts, rec, e["path"], pos))
+                        else:
+                            stats["strays_dropped"] += 1
+                if deferred and e["resume"] is None:
+                    e["resume"] = f.off
+                e["stop"] = f.end
+                if past:
+                    return
+        finally:
+            stats["parse_errors"] += errors(dec.stats) - err0
+
+
 def read_span(files, norm, lo, hi, events, prev=None, strays=None, stats=None):
     """Every record with `lo <= ts < hi` (`hi` None: to the end), oldest first,
     k-way merged across files as `export.window_scan` merges them. Returns the
@@ -384,7 +507,8 @@ def read_span(files, norm, lo, hi, events, prev=None, strays=None, stats=None):
     stats = stats if stats is not None else new_stats()
     plan = plan_span(files, lo, prev)
     wanted = event_filter(events)
-    streams = [_stream(e, norm, lo, hi, wanted, stats, strays) for e in plan]
+    kinds = frozenset(events) if events else None
+    streams = [_stream(e, norm, lo, hi, wanted, stats, strays, kinds) for e in plan]
     return heapq.merge(*streams, key=itemgetter(0)), plan, stats
 
 
@@ -439,6 +563,8 @@ class HourStore:
         self.retention_h = int(math.ceil(max(5, int(cfg.get("live.retention_min", 10080)))
                                           / 60.0))
         self.newest_seen = None
+        # which twin of a stream written in both formats is read (`feedfile.choose`)
+        self.prefer = prefer_of(cfg, "ebpf")
         self.fp = None
         self.roots = None
         self.have = set()               # hours saved under the current fingerprint
@@ -472,7 +598,7 @@ class HourStore:
             # Not yet fed, or quiet: ask the files. The live tail keeps this
             # current while it runs, so this is a start-up and an idle-feed read.
             from .clock import newest_record
-            self.saw(newest_record(roots)[0])
+            self.saw(newest_record(roots, self.prefer)[0])
         horizon = now if self.newest_seen is None else min(now, self.newest_seen)
         return int((horizon - self.grace) // HOUR)
 
@@ -742,7 +868,7 @@ class HourStore:
     def _files(self, roots, oldest_hour):
         # a run may reach back MAX_GAP_H further, to the newest saved hour
         days = int((time.time() - (oldest_hour - MAX_GAP_H) * HOUR) // 86400) + 2
-        return day_files(roots, max(1, days))
+        return day_files(roots, max(1, days), self.prefer)
 
     def _reduce_run(self, files, a, b, carry, ages, tick=None):
         """Hours `[a, b)`, each seeded with the join state the one before
@@ -1122,8 +1248,11 @@ def build(reg, view):
             pending, view._replay = view._replay, None
             for rec in pending or ():
                 view.feed(rec)
+        # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
+        # with no collection running; ready once they are in.
+        view.materialize_stepwise(reg.lock)
+        with reg.lock:
             view.state = "ready"
             view.installed_at = time.time()
             prog.update(pct=100, elapsed_s=round(time.time() - t0, 1))
-            view.materialize()
         return True

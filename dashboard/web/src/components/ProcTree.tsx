@@ -19,7 +19,7 @@
  * to open to show it. A zoomed time range re-scales the timeline column and
  * marks the rows that ran inside it.
  */
-import { memo, useLayoutEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode, TrajOrder } from '../api/types';
 import { ioTip, ioTotal } from '../lib/procio';
@@ -622,7 +622,7 @@ const RowView = memo(function RowView({
   );
 });
 
-export function ProcTree({
+export const ProcTree = memo(function ProcTree({
   root,
   open,
   setOpen,
@@ -650,17 +650,27 @@ export function ProcTree({
 }) {
   const flip = onOrder ? () => onOrder(newest ? 'oldest' : 'newest') : undefined;
   const rows = useMemo(() => flatten(root, open, hide), [root, open, hide]);
-  const full =
-    timeline?.lo != null && timeline?.hi != null && timeline.hi >= timeline.lo
-      ? { lo: timeline.lo, hi: timeline.hi }
-      : null;
-  const tl = view ? { lo: view[0], hi: view[1] } : full;
-  const toggle = (id: string) => {
-    const next = new Set(open);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setOpen(next);
-  };
+  // The rows are memoized (RowView). The axis and the toggle they are handed
+  // keep their identity while what they stand for is the same: made anew on
+  // every render, they drew every row of an expanded tree again each time.
+  const vlo = view?.[0] ?? null;
+  const vhi = view?.[1] ?? null;
+  const flo = timeline?.lo ?? null;
+  const fhi = timeline?.hi ?? null;
+  const tl = useMemo<Span | null>(() => {
+    // a zoomed range, else the read's own span
+    if (vlo != null && vhi != null) return { lo: vlo, hi: vhi };
+    return flo != null && fhi != null && fhi >= flo ? { lo: flo, hi: fhi } : null;
+  }, [vlo, vhi, flo, fhi]);
+  const toggle = useCallback(
+    (id: string) => {
+      const next = new Set(open);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setOpen(next);
+    },
+    [open, setOpen],
+  );
   // A jump scrolls the tree, not the page, to the row it landed on: the strip
   // that was clicked stays where it was. The page moves only when the tree
   // itself is out of sight.
@@ -746,4 +756,4 @@ export function ProcTree({
       </div>
     </div>
   );
-}
+});

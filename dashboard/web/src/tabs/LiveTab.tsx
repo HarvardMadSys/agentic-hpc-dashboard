@@ -4,12 +4,12 @@
  * `null` bins as gaps: a minute in which the collector wrote no record is a hole
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, memo, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Fluid, Lines } from '../charts/primitives';
-import type { LineSeries } from '../charts/primitives';
+import type { LinePt, LineSeries } from '../charts/primitives';
 import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
 import { Plate } from '../components/Plate';
@@ -43,6 +43,9 @@ function depthLabel(d: number | null | undefined): string {
   if (d == null) return DASH;
   return d === 0 ? '0 (agent)' : String(d);
 }
+
+/** No live frame yet: one empty list, so a memo keyed on the bins holds. */
+const NO_BINS: LiveResponse['rate'] = [];
 
 /** The newest bin that actually carried a value for this class. */
 function latest(rate: LiveResponse['rate'], c: string): number | null {
@@ -171,7 +174,8 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
 
 /* --------------------------------------------------------------- the tab */
 
-export function LiveTab({
+// It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
+export const LiveTab = memo(function LiveTab({
   live,
   P,
   traj,
@@ -205,7 +209,7 @@ export function LiveTab({
 }) {
   const nodes = useNodeWords();
   const L = live.live;
-  const rate = L?.rate ?? [];
+  const rate = L?.rate ?? NO_BINS;
   const now = L?.now ?? {};
 
   /* The live feed report, for the staleness line on the rate panel. */
@@ -221,17 +225,31 @@ export function LiveTab({
     );
   }, [feeds]);
 
-  const series: LineSeries[] = cls.map((c) => ({
-    lbl: CLS_LBL[c],
-    c: CLS_COL[c],
-    area: c === 'agent',
-    mark: c === 'agent' ? (latest(rate, c) != null ? fint(latest(rate, c)) + '/min' : null) : null,
-    // x is the bin's epoch, not its index: the window slides a bin every
-    // minute, and a zoom held in indices would drift off the minutes picked.
-    pts: rate
-      .filter((r) => Number.isFinite(Number(r.epoch)))
-      .map((r) => ({ x: Number(r.epoch), y: typeof r[c] === 'number' ? (r[c] as number) : null })),
-  }));
+  // Every class's points in one pass over the bins -- a week is 10,080 of them
+  // -- made again only when the frame or the classes shown change.
+  const series: LineSeries[] = useMemo(() => {
+    const pts: LinePt[][] = cls.map(() => []);
+    for (const r of rate) {
+      // x is the bin's epoch, not its index: the window slides a bin every
+      // minute, and a zoom held in indices would drift off the minutes picked.
+      const x = Number(r.epoch);
+      if (!Number.isFinite(x)) continue;
+      for (let k = 0; k < cls.length; k++) {
+        const v = r[cls[k]];
+        pts[k].push({ x, y: typeof v === 'number' ? v : null });
+      }
+    }
+    return cls.map((c, k) => {
+      const last = c === 'agent' ? latest(rate, c) : null;
+      return {
+        lbl: CLS_LBL[c],
+        c: CLS_COL[c],
+        area: c === 'agent',
+        mark: c === 'agent' ? (last != null ? fint(last) + '/min' : null) : null,
+        pts: pts[k],
+      };
+    });
+  }, [rate, cls]);
 
   /* X ticks that stay legible at ANY window, and at any zoom into it: a round
    * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
@@ -509,7 +527,7 @@ export function LiveTab({
       </div>
     </>
   );
-}
+});
 
 /* Shared by the live stream and the /api/events explorer, so a row looks the
  * same however it was fetched. Class is tagged as TEXT, not colour: crimson is

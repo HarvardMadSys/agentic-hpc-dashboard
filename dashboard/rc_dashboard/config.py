@@ -22,6 +22,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _MISSING = object()
+# The day-file formats `feeds.<tier>.prefer` may name (feedfile.FORMATS).
+PREFER_FORMATS = ("jsonl", "ebr")
 
 
 def _env(name, default=None):
@@ -93,6 +95,10 @@ def defaults():
                 "days": 8,
                 "max_age_s": 300,       # residency_totals ticks every 60s -> 5x
                 "required": True,
+                # Which file of a stream the collector writes in both formats
+                # (EBPFM_FORMAT=both) is read: "jsonl" or "ebr" (feedfile.choose).
+                # A day whose preferred twin started mid-day is read from the other.
+                "prefer": "jsonl",
             },
             "ebpf_node": {
                 "roots": _node_candidates(),
@@ -100,6 +106,7 @@ def defaults():
                 "snapshots_per_host": 2,   # cpu_usage_usec is cumulative: need a delta
                 "max_age_s": 900,
                 "required": False,
+                "prefer": "jsonl",         # as feeds.ebpf.prefer, for the node tier
             },
             "sacct": {
                 "dir": REPO,
@@ -341,7 +348,16 @@ def defaults():
                    # DNS (endpoints.py): `workers` lookups at a time, from this
                    # host, off the request path, kept in <cache.dir>/rdns.json.
                    # Off: names come only from the records' command lines.
-                   "rdns": {"enabled": True, "workers": 4}},
+                   "rdns": {"enabled": True, "workers": 4},
+                   # How long a thread may hold the GIL while another waits for
+                   # it (`sys.setswitchinterval`; Python's own is 5 ms). Builds,
+                   # the backfill and the tail are pure Python and keep the GIL;
+                   # the event loop gives it up at every read and write and
+                   # waited up to this long for it each time. 1 ms: on the bench
+                   # feed a warm start's default window was ready in 16 s, not 29,
+                   # and a static file's p99 fell from 594 ms to 248 ms. 0 keeps
+                   # Python's.
+                   "gil_switch_ms": 1.0},
     }
 
 
@@ -350,8 +366,10 @@ ENV_MAP = {
     "feeds.ebpf.roots": ("RC_DASH_EBPF_ROOTS", _pathsep),
     "feeds.ebpf.days": ("RC_DASH_EBPF_DAYS", int),
     "feeds.ebpf.max_age_s": ("RC_DASH_EBPF_MAX_AGE_S", int),
+    "feeds.ebpf.prefer": ("RC_DASH_EBPF_PREFER", str),
     "feeds.ebpf_node.roots": ("RC_DASH_NODE_ROOTS", _pathsep),
     "feeds.ebpf_node.days": ("RC_DASH_NODE_DAYS", int),
+    "feeds.ebpf_node.prefer": ("RC_DASH_NODE_PREFER", str),
     "feeds.sacct.dir": ("RC_DASH_SACCT_DIR", str),
     "feeds.sacct.pattern": ("RC_DASH_SACCT_PATTERN", str),
     "feeds.sacct.max_days": ("RC_DASH_SACCT_MAX_DAYS", int),
@@ -399,6 +417,7 @@ ENV_MAP = {
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
     "server.rdns.enabled": ("RC_DASH_RDNS", lambda v: v not in ("0", "false", "no", "off")),
+    "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
@@ -594,6 +613,17 @@ def load(args=None, config_path=None):
                 else:
                     origins[prefix + "." + k] = "profile:%s" % pth
         mark(ptree, "risk")
+
+    # Which twin a stream written in both formats is read from: one of the two,
+    # or the service refuses to start rather than guess (feedfile.choose).
+    for feed in ("ebpf", "ebpf_node"):
+        key = "feeds.%s.prefer" % feed
+        val = _get(tree, key, "jsonl")
+        norm = str(val if val is not None else "").strip().lower()
+        if norm not in PREFER_FORMATS:
+            raise SystemExit("%s: %r is not one of %s (set by %s)" % (
+                key, val, ", ".join(PREFER_FORMATS), origins.get(key, "default")))
+        _set(tree, key, norm)
 
     # candidate-probe annotation for the multi-root feeds
     for feed in ("ebpf", "ebpf_node"):
