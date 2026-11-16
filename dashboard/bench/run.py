@@ -208,7 +208,11 @@ def page(feed, work, seconds=75, rate_x=10.0):
     live = os.path.join(work, "feed-live")
     if os.path.exists(live):
         shutil.rmtree(live)
-    shutil.copytree(feed, live)
+    # What the service and the appender read, and nothing else: the default work
+    # directory is inside the feed, so a copy of all of it would copy itself.
+    os.makedirs(live)
+    shutil.copy2(os.path.join(feed, "feed.json"), live)
+    shutil.copytree(os.path.join(feed, "feed"), os.path.join(live, "feed"))
     cache = os.path.join(work, "cache-live")
     if os.path.exists(cache):
         shutil.rmtree(cache)
