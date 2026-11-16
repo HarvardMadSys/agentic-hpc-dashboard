@@ -32,6 +32,7 @@ import { useId } from 'react';
 import type { ReactNode } from 'react';
 import type { Phase, Task, TrajRunning } from '../api/types';
 import { GAP, edgeTip, phaseCol, phaseTip, placeBand, sequenceLine, sliceTip } from '../lib/phases';
+import { useClockPinned } from '../lib/useNow';
 
 type Look = 'fill' | 'guess' | 'idle' | 'unknown';
 
@@ -65,6 +66,8 @@ export interface PhaseBandProps {
 }
 
 export function PhaseBand({ list, tasks, t0, t1, W, H, now, nowAt }: PhaseBandProps) {
+  // an open phase's and an unknown edge's words read the clock's pin (lib/useNow.ts)
+  useClockPinned();
   const hatch = 'ph' + useId().replace(/[^\w-]/g, '');
   const axis: [number, number] = [t0, t1];
   /** A stretch's left edge and width in px, cut at the axis and kept inside the band (`placeBand`). */

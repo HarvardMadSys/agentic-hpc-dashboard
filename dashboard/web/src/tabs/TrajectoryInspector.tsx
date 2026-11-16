@@ -69,6 +69,7 @@ import { Basis, Legend, Panel } from '../components/Panel';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { GLOSS } from '../lib/glossary';
 import { serverNow } from '../lib/clock';
+import { useNow } from '../lib/useNow';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
 import { isBlock, phaseLbl } from '../lib/phases';
@@ -316,6 +317,8 @@ function ReadLine({
   setFrom: (t: number | null) => void;
   reread: () => void;
 }) {
+  // "kept from a read 2 min ago" stays current with every live frame (lib/useNow.ts)
+  const now = useNow(!!d.cached);
   const s = d.scan;
   const b = d.bounds;
   if (!s || !b) return null;
@@ -345,7 +348,7 @@ function ReadLine({
         )}
         {d.cached && (
           <span data-tip="the service keeps the trees it read recently, so going back to a session is instant; a session still running may have done more since">
-            {` · kept from a read ${dur(Math.max(0, serverNow() / 1000 - s.computed_at))} ago · `}
+            {` · kept from a read ${dur(Math.max(0, now / 1000 - s.computed_at))} ago · `}
             <button className="linkish" onClick={reread}>
               read again
             </button>

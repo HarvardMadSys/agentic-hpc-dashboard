@@ -7,7 +7,7 @@
  * Then it lists every command line that ran, each once, with what all of its
  * processes moved -- sorted by the quantity that was clicked, a page at a time
  * so a day's hundreds of thousands of command lines never arrive at once. */
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { getIoCmds, startIoCmds } from '../api/client';
 import type { Cls, IoCmdJob, IoCmdRow, IoSort } from '../api/types';
@@ -91,7 +91,7 @@ const COLS: { k: IoSort; lbl: string; tip: string }[] = [
   { k: 'rx_mb', lbl: 'received', tip: 'bytes received over the network' },
 ];
 
-export function IoCmdsDrawer({ win, who, cls }: { win: number | null; who: Who; cls: Cls[] }) {
+export const IoCmdsDrawer = memo(function IoCmdsDrawer({ win, who, cls }: { win: number | null; who: Who; cls: Cls[] }) {
   const q = useIoCmds();
   const [job, setJob] = useState<IoCmdJob | null>(null);
   const [rows, setRows] = useState<IoCmdRow[]>([]);
@@ -304,4 +304,4 @@ export function IoCmdsDrawer({ win, who, cls }: { win: number | null; who: Who; 
       </div>
     </div>
   );
-}
+});

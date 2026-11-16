@@ -24,6 +24,12 @@ export interface Sorter<K extends string> {
   sort: <T>(rows: T[], get: (row: T, k: K) => SortVal) => T[];
 }
 
+/** Text compares through one collator. `localeCompare` with an options object
+ *  builds a collator per call, and a sort of a few thousand rows makes tens of
+ *  thousands of calls; `compare` here is the same comparison (ECMA-402 defines
+ *  `localeCompare(that, locales, options)` as exactly this). */
+const TEXT = new Intl.Collator(undefined, { numeric: true });
+
 /** `rows` in the order `key` and `dir` give; the order they came in for no key. */
 function sortRows<T, K extends string>(rows: T[], get: (row: T, k: K) => SortVal, key: K | null, dir: SortDir): T[] {
   if (key == null) return rows;
@@ -36,7 +42,7 @@ function sortRows<T, K extends string>(rows: T[], get: (row: T, k: K) => SortVal
       if (am || bm) return am && bm ? a.i - b.i : am ? 1 : -1;
       const c = typeof a.v === 'number' && typeof b.v === 'number'
         ? a.v - b.v
-        : String(a.v).localeCompare(String(b.v), undefined, { numeric: true });
+        : TEXT.compare(String(a.v), String(b.v));
       return c ? sign * c : a.i - b.i;
     })
     .map((x) => x.r);

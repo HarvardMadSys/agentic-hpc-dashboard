@@ -15,7 +15,7 @@
  * itself, because the caveat about how a number is counted lives in these tips,
  * and a reader who does not use a mouse needs it as much.
  */
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 
 const CONTROL = 'button, a[href], input, select, textarea, summary, label, [role="button"]';
 
@@ -48,22 +48,32 @@ function tipUnder(target: EventTarget | null): HTMLElement | null {
   return src?.dataset.tip ? src : null;
 }
 
-export function TooltipLayer() {
+export const TooltipLayer = memo(function TooltipLayer() {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // The tip on show and its box: written and measured again only when the
+    // element under the pointer, or its text, changes. Every pointermove used to
+    // write the text and read the box back, a forced layout each time. Hidden,
+    // it is forgotten, so the next hover measures afresh.
+    let cur: { src: HTMLElement; tip: string; wide: boolean; box: DOMRect } | null = null;
     const hide = () => {
       el.style.opacity = '0';
+      cur = null;
     };
     /** Shows `src`'s tip and gives its box, for placing it. */
     const show = (src: HTMLElement) => {
-      el.textContent = src.dataset.tip ?? '';
+      const tip = src.dataset.tip ?? '';
       // a whole command line reads better in a wider box than a sentence does
-      el.classList.toggle('wide', src.hasAttribute('data-tip-wide'));
+      const wide = src.hasAttribute('data-tip-wide');
       el.style.opacity = '1';
-      return el.getBoundingClientRect();
+      if (cur && cur.src === src && cur.tip === tip && cur.wide === wide) return cur.box;
+      el.textContent = tip;
+      el.classList.toggle('wide', wide);
+      cur = { src, tip, wide, box: el.getBoundingClientRect() };
+      return cur.box;
     };
     const place = (x: number, y: number) => {
       el.style.left = x + 'px';
@@ -150,4 +160,4 @@ export function TooltipLayer() {
   }, []);
 
   return <div id="tip" ref={ref} role="tooltip" aria-hidden="true" />;
-}
+});

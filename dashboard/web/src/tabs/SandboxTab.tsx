@@ -19,6 +19,7 @@
  * (lib/sandbox.ts). `exited before read` and `unknown` are never folded into a
  * "no", and never silently into a denominator either.
  */
+import { memo } from 'react';
 import { GLOSS } from '../lib/glossary';
 import type { Cls, Sandbox, SandboxSessionRow } from '../api/types';
 import { Basis, Panel, More } from '../components/Panel';
@@ -243,7 +244,7 @@ function SessionRows({ rows, multiHost, withUser }: { rows: SandboxSessionRow[];
   );
 }
 
-export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
+export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   const sb = pick<Sandbox>(P, 'sandbox', 'ebpfm');
   const st = sb.states ?? { sandbox: SANDBOX_ORDER, approval: APPROVAL_ORDER };
   const callKnown = st.tool_call_known ?? CALL_KNOWN;
@@ -556,4 +557,4 @@ export function SandboxTab({ P, cls }: { P: Panels; cls: Cls[] }) {
       </div>
     </>
   );
-}
+});

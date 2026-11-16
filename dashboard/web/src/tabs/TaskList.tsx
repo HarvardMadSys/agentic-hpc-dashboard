@@ -27,8 +27,8 @@
  * A session running now ends in its live edge, and a session with more calls than its log holds says from when it is
  * incomplete, under the rows, both as the phase list does.
  *
- * Not memoized, and read in the render of a page that repeats with every live frame: a call still running is worded by
- * `clockPinned()`, a plain flag that frame sets, and the live edge's end by `serverNow()`.
+ * A call still running is worded by `clockPinned()`, a plain flag each live frame sets, so the list renders again when it
+ * flips (`useClockPinned`); the live edge's row reads now with every live frame itself (lib/useNow.ts).
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Phase, PhaseBlock, Task, TrajRunning } from '../api/types';
@@ -45,6 +45,7 @@ import {
   taskState,
   taskWhat,
 } from '../lib/tasks';
+import { useClockPinned } from '../lib/useNow';
 import { EdgeRow, PhaseRow } from './PhaseList';
 
 /** The button under a phase's commands: what it does is what a click on the phase does. */
@@ -102,6 +103,8 @@ export function TaskList({
   onTask: (t: Task) => void;
   onPhase: (p: Phase) => void;
 }) {
+  // an open task says a call in it is still running, worded by the clock's pin
+  useClockPinned();
   const tasks = block.tasks ?? [];
   const numbers = taskNumbers(tasks);
   const held = taskInView(tasks, view);

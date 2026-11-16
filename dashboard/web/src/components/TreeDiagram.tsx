@@ -19,7 +19,7 @@
  * that was clicked stays where it was on screen while the tree re-lays out
  * around what it opened.
  */
-import { useLayoutEffect, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 export interface TreeNode<T> {
@@ -128,7 +128,7 @@ export function treeGeometry<T>(
   return { W: slots * sx, H: (depth + 1) * sy - gapY, nodeW, nodeH, boxes, at, edges };
 }
 
-export function TreeDiagram<T>({
+function TreeDiagramView<T>({
   nodes,
   render,
   nodeW = 184,
@@ -152,9 +152,25 @@ export function TreeDiagram<T>({
   focus?: string | null;
   className?: string;
 }) {
-  const { W, H, boxes, edges } = treeGeometry(nodes, nodeW, nodeH, gapX, gapY);
+  // laid out again only when the boxes or their sizes change
+  const { W, H, boxes, edges } = useMemo(
+    () => treeGeometry(nodes, nodeW, nodeH, gapX, gapY),
+    [nodes, nodeW, nodeH, gapX, gapY],
+  );
   const box = useRef<HTMLDivElement>(null);
   const els = useRef(new Map<string, HTMLDivElement>());
+  // One ref for every box. A function made per box per render was a new ref
+  // each time, so React detached and attached all of them again on every
+  // render. This one files a box under its id as it mounts, and what it
+  // returns takes it out when the box goes (React 19's ref cleanup).
+  const keep = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const id = el.dataset.id ?? '';
+    els.current.set(id, el);
+    return () => {
+      if (els.current.get(id) === el) els.current.delete(id);
+    };
+  }, []);
   // the clicked box and where it was on screen, to put it back after the click
   const pin = useRef<{ id: string; left: number } | null>(null);
   const want = focus ?? boxes[0]?.n.id ?? null;
@@ -194,10 +210,7 @@ export function TreeDiagram<T>({
         {boxes.map((p) => (
           <div
             key={p.n.id}
-            ref={(el) => {
-              if (el) els.current.set(p.n.id, el);
-              else els.current.delete(p.n.id);
-            }}
+            ref={keep}
             className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}`}
             data-id={p.n.id}
             style={{ left: p.x, top: p.y, width: nodeW, height: nodeH }}
@@ -213,3 +226,7 @@ export function TreeDiagram<T>({
     </div>
   );
 }
+
+/** Memoized: drawn again when its boxes, its sizes, or what it is handed to
+ *  draw and do with them change. Typed as the generic function it wraps. */
+export const TreeDiagram = memo(TreeDiagramView) as typeof TreeDiagramView;
