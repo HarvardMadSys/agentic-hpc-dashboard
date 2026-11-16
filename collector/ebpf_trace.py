@@ -60,10 +60,16 @@ on the owning exit record; v7 added `netio`). Two files per host per day:
 stream_of() is the single mapping, and the split is a filing decision, not a
 schema one: a reader that globs the day directory sees exactly what one file
 used to give it. Schema in README.md.
+
+EBPFM_FORMAT=jsonl|ebr|both (default both) picks the container: JSONL as above,
+EBR (lib/ebr.py's framed binary records, `<stream>.ebr`, 4-8x smaller), or both
+as twins holding the same records in the same order. The records themselves are
+the same in every container; meta.output says which were written.
 """
 import bisect
 import collections
 import ctypes
+import errno
 import hashlib
 import ipaddress
 import itertools
@@ -97,6 +103,12 @@ try:  # netlink socket-diag for standing connections
     import sockdiag
 except Exception:  # pragma: no cover
     sockdiag = None
+try:  # the binary day-file format; absent -> JSONL only, said in meta.output
+    import ebr
+    _EBR_ERROR = None
+except Exception as _e:  # pragma: no cover
+    ebr = None
+    _EBR_ERROR = '%s: %s' % (type(_e).__name__, _e)
 
 # This process's pid, stamped on every record (see _envelope). Read once: the
 # tracer never forks itself -- ebpfm.sh daemonizes before Python starts -- and a
@@ -218,12 +230,52 @@ def _secure_path(path, mode):
         except OSError:
             pass
 
+# --- output format ---------------------------------------------------------
+# What a day-file is written as. 'jsonl' is what every reader has always read;
+# 'ebr' is lib/ebr.py's framed binary records: the same records, 4-8x smaller,
+# and a reader can skip a frame by its header (time bounds, event kinds). 'both'
+# writes twins, x.jsonl and x.ebr, with the same records in the same order, and
+# is the default while EBR is on trial. Anything else writes both and says so
+# once. Inside a live file nothing is compressed unless EBPFM_EBR_ZLIB (1-9)
+# deflates each frame; sealed days are gzipped whole either way.
+# EBPFM_EBR_RESET_BYTES is how often a segment (a fresh dictionary a reader can
+# start from) begins, which is also the most one corrupt frame can cost.
+FORMAT_NAMES = ('jsonl', 'ebr')
+
+
+def _formats_of(value):
+    """EBPFM_FORMAT -> (formats, warning or None). Unset or empty is 'both'."""
+    v = (value or '').strip().lower() or 'both'
+    if v == 'both':
+        return FORMAT_NAMES, None
+    if v in FORMAT_NAMES:
+        return (v,), None
+    return FORMAT_NAMES, 'EBPFM_FORMAT=%r is not jsonl, ebr or both; writing both' % value
+
+
+def _ebr_setting(name, default, lo, hi):
+    """An integer EBR knob in [lo, hi]; anything else is `default`, said once."""
+    v = env_num(name, default, int)
+    if lo <= v <= hi:
+        return v
+    sys.stderr.write('ebpfm: %s=%r is not in %d..%d; using %d\n'
+                     % (name, os.environ.get(name), lo, hi, default))
+    return default
+
+
+FORMATS, _why = _formats_of(os.environ.get('EBPFM_FORMAT'))
+if _why:
+    sys.stderr.write('ebpfm: %s\n' % _why)
+EBR_ZLIB = _ebr_setting('EBPFM_EBR_ZLIB', 0, 0, 9)
+EBR_RESET_BYTES = _ebr_setting('EBPFM_EBR_RESET_BYTES', 2 << 20, 1, 1 << 31)
+
 # --- log compression -------------------------------------------------------
 # The day-files are unbounded (the exits stream can exceed 1 GB) and the only
 # rotation is the daily rollover -- nothing shrinks a sealed day. gzip on this
 # newline-delimited JSON is ~10-20x, so sealed days are compressed in place to
-# <file>.jsonl.gz. Only SEALED days are touched; the live day's open files are
-# never compressed. Default on; EBPFM_COMPRESS=0 disables.
+# <file>.jsonl.gz, and EBR twins to <file>.ebr.gz. Only SEALED days are touched;
+# the live day's open files are never compressed. Default on; EBPFM_COMPRESS=0
+# disables.
 COMPRESS      = os.environ.get('EBPFM_COMPRESS', '1') != '0'
 
 def _compress_file(path):
@@ -257,12 +309,15 @@ def _compress_file(path):
         pass
 
 def _compress_day(root, day, host):
-    """Compress a sealed day's stream files. Called at rollover for the day that
-    just closed, and by the startup sweep for any older sealed day."""
+    """Compress a sealed day's stream files, JSONL and EBR alike, whatever this
+    run writes: a day written under another EBPFM_FORMAT is sealed the same way.
+    Called at rollover for the day that just closed, and by the startup sweep for
+    any older sealed day."""
     if not COMPRESS or not day:
         return
     for s in STREAMS:
-        _compress_file(os.path.join(root, day, '%s.%s.jsonl' % (host, s)))
+        for fmt in FORMAT_NAMES:
+            _compress_file(os.path.join(root, day, '%s.%s.%s' % (host, s, fmt)))
 
 def _sweep_sealed_days(root, host, keep_day):
     """At startup, gzip any sealed day left uncompressed by a prior run or crash.
@@ -2179,14 +2234,141 @@ def stream_of(event):
     return 'exits' if event in EXIT_EVENTS else 'snapshot'
 
 
-class DailyWriter:
-    """JSONL sink: two files per host per day, one per stream.
+# What a failed write(2) (ENOSPC, EIO) leaves unwritten is kept for the next
+# flush to retry, as a BufferedWriter keeps its buffer. Past this much, it is
+# dropped instead: a disk that stays full must not grow the collector unbounded.
+_RETRY_MAX = 16 << 20
+_O_CLOEXEC = getattr(os, 'O_CLOEXEC', 0)
 
-    Layout is `<root>/<YYYY-MM-DD>/<host>.<stream>.jsonl`, `stream` in
-    (snapshot, exits) per stream_of(). Both handles open when the day opens,
-    not on first use, so a running collector always shows the pair and an empty
-    `.exits.jsonl` reads as "no exits observed" rather than "collector never
-    started".
+
+def _create_mode():
+    """The mode a new day-file is created with: the configured one, so no file
+    ever holds a record at a looser mode, or the umask's when opted out.
+    _secure_path() still applies the mode and group to every file opened."""
+    return FILE_MODE if FILE_MODE is not None else 0o666
+
+
+class _JsonlSink(object):
+    """One stream's JSONL day-file.
+
+    The bytes are json.dumps(rec) + '\\n' per record, exactly what the text-mode
+    handle this replaces wrote, buffered until flush(), which hands them to ONE
+    os.write (looping only on a short write). That handle split any round over
+    8 KiB into several write(2)s; this is one per round, so the count in
+    stop.output.jsonl.writes is exact. A failed write keeps the bytes it did not
+    write, and the next flush writes them first, as a BufferedWriter would."""
+    fmt = 'jsonl'
+    KEYS = ('records', 'bytes', 'writes', 'errors')
+
+    def __init__(self, path):
+        self.path = path
+        self.fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_CLOEXEC,
+                          _create_mode())
+        self.buf = []
+        self.retry = b''          # what a failed write left unwritten
+        self.torn = False         # the file ends mid-line: a short write, then an error
+        self.records = self.bytes = self.writes = self.errors = 0
+
+    def add(self, rec):
+        try:
+            line = json.dumps(rec)
+        except Exception:
+            self.errors += 1
+            raise
+        self.buf.append(line + '\n')
+        self.records += 1
+
+    def flush(self):
+        """Write what is buffered in one os.write; the bytes written."""
+        if not self.buf and not self.retry:
+            return 0
+        data = ''.join(self.buf).encode('utf-8')    # ASCII: json.dumps escapes the rest
+        self.buf = []
+        if self.retry:
+            data, self.retry = self.retry + data, b''
+        total = len(data)
+        done = 0
+        try:
+            while done < total:
+                k = os.write(self.fd, memoryview(data)[done:] if done else data)
+                self.writes += 1
+                if k <= 0:
+                    raise OSError(errno.EIO, 'write(2) wrote nothing')
+                done += k
+        except Exception:
+            self.errors += 1
+            self.bytes += done
+            if done:
+                self.torn = data[done - 1:done] != b'\n'
+            self.retry = self._bounded(data[done:])
+            raise
+        self.bytes += done
+        self.torn = False
+        return done
+
+    def _bounded(self, rest):
+        """`rest`, or past _RETRY_MAX only the end of the line the file already
+        holds the start of, so that the next record still starts a line."""
+        if len(rest) <= _RETRY_MAX:
+            return rest
+        i = rest.find(b'\n') if self.torn else -1
+        return rest[:i + 1] if i >= 0 else b''
+
+    def stats(self):
+        return {'records': self.records, 'bytes': self.bytes, 'writes': self.writes,
+                'errors': self.errors}
+
+    def close(self):
+        if self.fd is None:
+            return
+        try:
+            self.flush()
+        finally:
+            os.close(self.fd)
+            self.fd = None
+
+
+class _EbrSink(object):
+    """One stream's EBR day-file: an ebr.Writer, whose flush() is one os.write of
+    every frame the round made (the segment header rides with the first). It
+    writes nothing to a file before the first record, so a 0-byte `.ebr` means
+    "opened, nothing written", as an empty `.jsonl` does. Opening it repairs a
+    tail a crashed run left torn (stop.output.ebr.repaired_bytes)."""
+    fmt = 'ebr'
+    KEYS = ('records', 'bytes', 'writes', 'frames', 'segments', 'errors', 'lost',
+            'repaired_bytes')
+
+    def __init__(self, path, meta, reset_bytes, zlib):
+        self.path = path
+        self.w = ebr.Writer(path, meta=meta, reset_bytes=reset_bytes, zlib=zlib,
+                            mode=_create_mode())
+
+    def add(self, rec):
+        self.w.write(rec)
+
+    def flush(self):
+        return self.w.flush()
+
+    def stats(self):
+        st = self.w.stats
+        return {'records': st['records'], 'bytes': st['bytes'], 'writes': st['writes'],
+                'frames': st['frames'], 'segments': st['segments'],
+                'lost': st['lost_records'], 'repaired_bytes': st['repaired_bytes']}
+
+    def close(self):
+        self.w.close()
+
+
+class DailyWriter:
+    """The day-files: per host and day, one file per stream and per format.
+
+    Layout is `<root>/<YYYY-MM-DD>/<host>.<stream>.<fmt>`, `stream` in
+    (snapshot, exits) per stream_of(), `fmt` in `formats` (EBPFM_FORMAT): jsonl,
+    ebr, or both as twins holding the same records in the same order. Every
+    (stream, format) file opens when the day opens, not on first use, so a
+    running collector always shows the whole set and an empty `.exits.jsonl`
+    reads as "no exits observed" rather than "collector never started" (a 0-byte
+    `.ebr` reads the same).
 
     Flush policy is the whole I/O cost of this collector. Through schema 5 every
     record was followed by fh.flush(), which is one write(2) per record -- and
@@ -2196,30 +2378,63 @@ class DailyWriter:
     many records the round produced, and a burst of 400 exits costs one write
     instead of 400. Only DIRTY streams flush, so the split costs a second
     write(2) only in a round that actually wrote to both -- an idle round still
-    costs nothing, and a pure-exit burst still costs one.
+    costs nothing, and a pure-exit burst still costs one. A stream's flush is one
+    write(2) per format, JSONL's first; `flushes` counts stream flushes.
+
+    Twins: JSONL is the format every reader trusts, so EBR can never cost it a
+    record. Each record is encoded for JSONL first, and one JSON refuses never
+    reaches EBR, so the twins stay equal. With both formats an EBR error (open,
+    write, flush, close) is counted, said once per kind on stderr, and goes no
+    further; 1000 in a row stop EBR until the next day opens. With one format,
+    its errors are the caller's, as JSONL's always were.
 
     What that trades: a record is durable within one poll round rather than
     immediately. SIGTERM, SIGINT and the duration stop all run through close(),
     which flushes, so the exposure is SIGKILL or power loss losing at most one
     round. EBPFM_FLUSH_MODE=record restores the old behaviour."""
 
-    def __init__(self, root, host, flush_mode=None):
-        self.root, self.host, self.day = root, host, None
-        self.fh = {}              # stream -> open file
-        self.dirty = {}           # stream -> bool
-        self.n = 0
-        self.flushes = 0          # write(2) count; reported in the stop record
-        self.per_record = (flush_mode or FLUSH_MODE) == 'record'
+    EBR_ERRORS_IN_A_ROW = 1000
 
-    def path(self, stream, day=None):
-        """Where `stream` lands for `day` (default: the open day). Used by the
+    def __init__(self, root, host, flush_mode=None, formats=None):
+        self.root, self.host, self.day = root, host, None
+        if formats is None:
+            formats = FORMATS
+        elif isinstance(formats, str):
+            formats = FORMAT_NAMES if formats == 'both' else (formats,)
+        wanted = tuple(f for f in FORMAT_NAMES if f in formats)
+        if not wanted or set(formats) - set(FORMAT_NAMES):
+            raise ValueError('formats are jsonl and/or ebr, not %r' % (formats,))
+        # Without lib/ebr.py this writes JSONL: never nothing.
+        self.ebr_unavailable = _EBR_ERROR if ('ebr' in wanted and ebr is None) else None
+        if ebr is None:
+            wanted = ('jsonl',)
+        self.formats = wanted
+        self.contain = len(wanted) > 1        # twins: EBR trouble never reaches JSONL
+        self.zlib, self.reset_bytes = EBR_ZLIB, EBR_RESET_BYTES
+        self._jsonl = {}          # stream -> _JsonlSink of the open day
+        self._ebr = {}            # stream -> _EbrSink of the open day
+        self.dirty = {}           # stream -> written since its last flush
+        self.n = 0
+        self.flushes = 0          # stream flushes, one write(2) per format each; in the stop record
+        self.per_record = (flush_mode or FLUSH_MODE) == 'record'
+        self._errors = dict.fromkeys(FORMAT_NAMES, 0)     # those no sink counts itself
+        self._retired = dict((f, collections.Counter()) for f in FORMAT_NAMES)
+        self._said = set()        # (format, what) already reported on stderr
+        self._ebr_run = 0         # EBR errors in a row
+        self._ebr_off = False     # stopped until the next day opens
+
+    def path(self, stream, day=None, fmt=None):
+        """Where `stream` lands for `day` (default: the open day) in `fmt`
+        (default: the first format written -- JSONL whenever it is). Used by the
         tests and by anything that needs to name a file without writing one."""
         return os.path.join(self.root, day or self.day,
-                            '%s.%s.jsonl' % (self.host, stream))
+                            '%s.%s.%s' % (self.host, stream, fmt or self.formats[0]))
 
     def _roll(self, day):
-        """Open the day's pair, closing the outgoing one. _shut() flushes first,
-        so a rollover cannot strand a record in the old day's buffer."""
+        """Open the day's files, every (stream, format) of them, so twins exist
+        before any record, closing the outgoing day's. _shut() flushes first, so
+        a rollover cannot strand a record in the old day's buffer. If an open
+        fails, nothing new is kept open and the next write tries again."""
         prev_day = self.day
         self._shut()
         daydir = os.path.join(self.root, day)
@@ -2229,22 +2444,74 @@ class DailyWriter:
         # browsing /scratch/ebpfm sees the same policy at every level.
         _secure_path(self.root, DIR_MODE)
         _secure_path(daydir, DIR_MODE)
+        self._ebr_off, self._ebr_run = False, 0
+        jsonl, ebrs = {}, {}
+        try:
+            for s in STREAMS:
+                if 'jsonl' in self.formats:
+                    try:
+                        jsonl[s] = _JsonlSink(self.path(s, day, 'jsonl'))
+                    except Exception:
+                        self._errors['jsonl'] += 1
+                        raise
+                    _secure_path(jsonl[s].path, FILE_MODE)
+                if 'ebr' in self.formats:
+                    try:
+                        ebrs[s] = _EbrSink(self.path(s, day, 'ebr'), self._segment_meta(s, day),
+                                           self.reset_bytes, self.zlib)
+                    except Exception as e:
+                        if not self._contain('ebr', 'open', e):
+                            raise
+                    else:
+                        _secure_path(ebrs[s].path, FILE_MODE)
+        except BaseException:
+            for sink in list(jsonl.values()) + list(ebrs.values()):
+                try:
+                    sink.close()
+                except Exception:
+                    pass
+            raise
+        self._jsonl, self._ebr = jsonl, ebrs
+        self.dirty = dict.fromkeys(STREAMS, False)
         self.day = day
-        for s in STREAMS:
-            path = self.path(s)
-            self.fh[s] = open(path, 'a')
-            _secure_path(path, FILE_MODE)
-            self.dirty[s] = False
         # The outgoing day's files are now closed and complete -- compress them
         # out of band. prev_day is None on the first open (nothing to seal).
         if prev_day and prev_day != day:
             _compress_day(self.root, prev_day, self.host)
 
+    def _segment_meta(self, stream, day):
+        """What every EBR segment of this file says about its writer."""
+        return {'host': self.host, 'stream': stream, 'writer': 'ebpf_trace.py',
+                'pid': COLLECTOR_PID, 'schema_version': SCHEMA_VERSION, 'day': day}
+
     def _shut(self):
+        """Flush and close the open day. A flush error that reaches the caller
+        (JSONL's, or EBR's when it is the only format) leaves every file open, so
+        the next write retries the roll with the bytes still held."""
         self.flush()
-        for fh in self.fh.values():
-            fh.close()
-        self.fh, self.dirty = {}, {}
+        jsonl, ebrs = self._jsonl, self._ebr
+        self._jsonl, self._ebr, self.dirty = {}, {}, {}
+        err = None
+        for sink in jsonl.values():
+            try:
+                sink.close()
+            except Exception as e:
+                if err is None:
+                    err = e
+            self._retire(sink)
+        for sink in ebrs.values():
+            try:
+                sink.close()
+            except Exception as e:
+                if not self._contain('ebr', 'close', e) and err is None:
+                    err = e
+            self._retire(sink)
+        if err is not None:
+            raise err
+
+    def _retire(self, sink):
+        """Fold a closed file's counters into the run's (output_stats)."""
+        self._retired[sink.fmt].update(sink.stats())
 
     def write(self, rec):
         # Backstop for `ts_epoch`: every record type is supposed to get it from
@@ -2257,22 +2524,134 @@ class DailyWriter:
         if day != self.day:
             self._roll(day)
         s = stream_of(rec.get('event'))
-        self.fh[s].write(json.dumps(rec) + '\n')
+        j = self._jsonl.get(s)
+        if j is not None:
+            j.add(rec)               # its errors are the caller's, as they always were
+        e = self._ebr.get(s)
+        if e is not None:
+            try:
+                e.add(rec)
+                self._ebr_run = 0
+            except Exception as x:
+                if not self._contain('ebr', 'write', x):
+                    raise
         self.n += 1
         if self.per_record:
-            self.fh[s].flush()
-            self.flushes += 1
+            self._flush((s,))
         else:
             self.dirty[s] = True
 
     def flush(self):
         """Called once per poll round. A no-op for any stream the round left
         alone, which on an idle node is both of them."""
-        for s, fh in self.fh.items():
-            if self.dirty.get(s):
-                fh.flush()
-                self.flushes += 1
+        dirty = [s for s in STREAMS if self.dirty.get(s)]
+        if dirty:
+            self._flush(dirty)
+
+    def _flush(self, streams):
+        """One write(2) per format for each of `streams`, JSONL's before EBR's,
+        so the format every reader trusts is never the one behind. A stream
+        counts in `flushes` once its writes succeed. One whose write failed
+        stays dirty, for the next round to retry with the bytes it kept, and the
+        first such error is raised once every stream has had its turn."""
+        err = None
+        failed = set()
+        for s in streams:
+            j = self._jsonl.get(s)
+            if j is not None:
+                try:
+                    j.flush()
+                except Exception as x:
+                    failed.add(s)
+                    if err is None:
+                        err = x
+        for s in streams:
+            e = self._ebr.get(s)
+            if e is not None:
+                try:
+                    e.flush()
+                    self._ebr_run = 0
+                except Exception as x:
+                    if not self._contain('ebr', 'flush', x):
+                        failed.add(s)
+                        if err is None:
+                            err = x
+        for s in streams:
+            if s not in failed:
                 self.dirty[s] = False
+                self.flushes += 1
+        if err is not None:
+            raise err
+
+    def _contain(self, fmt, what, exc):
+        """Count an error in `fmt`'s `what` (open, write, flush, close). Between
+        twins it goes no further (True) once the first of each kind is said on
+        stderr, and EBR_ERRORS_IN_A_ROW EBR errors in a row stop EBR until the
+        next day opens. A format written alone keeps its errors the caller's
+        (False: re-raise)."""
+        self._errors[fmt] += 1
+        if not self.contain:
+            return False
+        if (fmt, what) not in self._said:
+            self._said.add((fmt, what))
+            sys.stderr.write('ebpfm: %s %s error, JSONL unaffected (any more are only counted, '
+                             'in stop.output.%s.errors): %s: %s\n'
+                             % (fmt.upper(), what, fmt, type(exc).__name__, exc))
+        if fmt == 'ebr':
+            self._ebr_run += 1
+            if self._ebr_run >= self.EBR_ERRORS_IN_A_ROW and not self._ebr_off:
+                self._drop_ebr()
+        return True
+
+    def _drop_ebr(self):
+        self._ebr_off = True
+        sinks, self._ebr = self._ebr, {}
+        sys.stderr.write('ebpfm: %d EBR errors in a row; no EBR until the next day opens '
+                         '(JSONL unaffected)\n' % self._ebr_run)
+        for sink in sinks.values():
+            try:
+                sink.close()
+            except Exception as e:
+                self._contain('ebr', 'close', e)
+            self._retire(sink)
+
+    def pending_flushes(self, stream):
+        """The stream flushes still to come for the records written so far plus
+        one more in `stream`: what the stop record's own write and the close
+        after it add to `flushes`. stop.flushes = flushes + this, which is exact
+        where the old `+ 1` missed the exits stream that flush_live's truncated
+        records leave dirty."""
+        return len(set(s for s in STREAMS if self.dirty.get(s)) | {stream})
+
+    def descriptor(self):
+        """meta.output: the formats written, and the EBR container's settings
+        (null without EBR); `ebr_unavailable` says why EBR was asked for and is
+        not written. The container's version is not the records' schema_version."""
+        d = {'formats': list(self.formats),
+             'ebr': ({'version': ebr.VERSION, 'zlib': self.zlib,
+                      'reset_bytes': self.reset_bytes, 'str_id_size': ebr.STR_ID_SIZE}
+                     if 'ebr' in self.formats else None)}
+        if self.ebr_unavailable:
+            d['ebr_unavailable'] = self.ebr_unavailable
+        return d
+
+    def output_stats(self):
+        """stop.output: what each format cost the run so far -- jsonl {records,
+        bytes, writes, errors}, ebr {records, bytes, writes, frames, segments,
+        errors, lost, repaired_bytes} -- null for a format not written. Read for
+        the stop record, so that record and the flush landing it are not in it."""
+        out = {}
+        for sink_cls, open_sinks in ((_JsonlSink, self._jsonl), (_EbrSink, self._ebr)):
+            fmt = sink_cls.fmt
+            if fmt not in self.formats:
+                out[fmt] = None
+                continue
+            t = collections.Counter(self._retired[fmt])
+            for sink in open_sinks.values():
+                t.update(sink.stats())
+            t['errors'] += self._errors[fmt]
+            out[fmt] = dict((k, t[k]) for k in sink_cls.KEYS)
+        return out
 
     def close(self):
         self._shut()
@@ -5549,16 +5928,23 @@ def main():
                        'dstack_max': DSTACK_MAX, 'flush': FLUSH_ON_EXIT,
                        'submit_comms': sorted(SUBMIT_COMMS), 'gc_grace_s': GRACE_S},
             'seeded_pids': len(proc)})
+    # The container, not the records: which formats this run writes (EBPFM_FORMAT)
+    # and the EBR settings. Informational; the records are the same in each.
+    meta['output'] = writer.descriptor()
     writer.write(meta)
     writer.flush()          # `ebpfm.sh status` looks for this record immediately
     for k, v in sysctls.items():
         if v == '0':
             sys.stderr.write('warning: %s=0 — the dstate_*/blkio_* fields will read 0 '
                              '(run `ebpfm.sh bootstrap` to set it)\n' % k)
+    if writer.ebr_unavailable:
+        sys.stderr.write('warning: lib/ebr.py could not be imported (%s); writing JSONL only\n'
+                         % writer.ebr_unavailable)
     # `ebpfm.sh overhead` waits for "running on" in this line
-    sys.stderr.write('ebpfm running on %s -> %s/<date>/%s.{snapshot,exits}.jsonl '
+    exts = writer.formats[0] if len(writer.formats) == 1 else '{%s}' % ','.join(writer.formats)
+    sys.stderr.write('ebpfm running on %s -> %s/<date>/%s.{snapshot,exits}.%s '
                      '(features: %s)\n'
-                     % (HOSTNAME, OUTPUT_DIR, HOSTNAME, ','.join(sorted(feats)) or 'base'))
+                     % (HOSTNAME, OUTPUT_DIR, HOSTNAME, exts, ','.join(sorted(feats)) or 'base'))
 
     start = time.time()
     last_gc = last_res = last_resync = start
@@ -5643,13 +6029,15 @@ def main():
                      'handler_errors': dict(_handler_errors) or None,
                      'proc_vanished': _proc_stats['vanished'],
                      'proc_late_exits': _proc_stats['late_exits'],
-                     # write(2) count for the whole run, against `records` above:
+                     # stream flushes for the whole run, against `records` above:
                      # the pair IS the I/O amplification, measured rather than
-                     # assumed. +1 because this record is built before it is
-                     # written, and the flush that lands it has not happened yet
-                     # -- true in both modes.
+                     # assumed. Each is one write(2) per format (output.<fmt>.
+                     # writes counts those). This record is built before it is
+                     # written, so the flushes still to come are added: the one
+                     # landing it, and close()'s of any other stream left dirty
+                     # (the truncated records) -- exact in both modes.
                      'flush_mode': 'record' if writer.per_record else 'poll',
-                     'flushes': writer.flushes + 1,
+                     'flushes': writer.flushes + writer.pending_flushes(stream_of('stop')),
                      # folded connections whose owning process never produced a
                      # record; the acceptance gate for the schema-6 fold
                      'conns_dropped': _conn_dropped['n'],
@@ -5666,6 +6054,11 @@ def main():
                      # queue (each a `host` that may be missing)
                      'argv_hosts': dict(_host_stats) if WANT_ARGV_HOSTS else None,
                      'reason': 'duration' if DURATION and not _stop else 'signal'})
+    # What each format cost: records, bytes and write(2)s, errors, and for EBR
+    # its frames, segments, records lost to a failed write and the torn tail a
+    # crashed run left (repaired at open). As of now: this record and the flush
+    # that lands it are not in it.
+    stop_rec['output'] = writer.output_stats()
     writer.write(stop_rec)
     if any(_perf_lost.values()):
         sys.stderr.write('warning: perf events dropped: %s\n' % json.dumps(_perf_lost))

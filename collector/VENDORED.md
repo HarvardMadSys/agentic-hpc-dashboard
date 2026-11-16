@@ -16,7 +16,16 @@ run without the rest of the repo. The price is six copied modules.
 `node_snapshot.py` is the **node tier** (`ebpfm.sh start` runs it unprivileged on a
 300 s loop). It is vendored rather than imported for the same reason as the rest: the
 bundle has to run on a node with no repo. `collect/common/snapshot.py` stays canonical —
-`collect/compute/` still uses it directly, and it is the file to edit.
+`collect/compute/` still uses it directly, and it is the file to edit. Its EBR twin
+(`<host>.ebr`) is written by `ebpfm.sh`, which pipes the snapshot's line to
+`lib/ebr.py append`; `node_snapshot.py` itself is unchanged for it.
+
+**Not vendored: `lib/ebr.py`.** The EBR codec (the binary day-file format, see README.md)
+is canonical **here**, and it goes the other way: `dashboard/rc_dashboard/ebr.py` is a
+byte-identical mirror, so the dashboard reads exactly what the collector writes. It is
+not in `.vendored.sha256`, which lists only files copied *into* this folder. Edit it here,
+then copy it across unchanged: `DashboardSyncTest` in `tests/test_ebr.py` fails while the
+two differ.
 
 Vendored from repo commit `9a76f14`; the three sources were last touched upstream in
 `fb6c9ab` (2026-08-01). Full hashes are in `.vendored.sha256`, which is the machine-readable
