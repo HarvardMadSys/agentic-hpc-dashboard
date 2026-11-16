@@ -116,6 +116,22 @@ class JsonOutTest(unittest.TestCase):
         small = jsonout.response({"ok": True}, Req("gzip"))
         self.assertNotIn("content-encoding", small.headers)
 
+    def test_a_zero_quality_refuses_gzip(self):
+        # q=0 is a refusal (RFC 9110 12.5.3): such a reader gets the body as it is
+        for ae in ("gzip;q=0, identity;q=1", "gzip; q=0", "GZIP;Q=0.0", "x-gzip;q=0",
+                   "*;q=1, gzip;q=0", "gzip;q=0, *", "*;q=0", "deflate, br"):
+            self.assertFalse(jsonout.gzip_ok(ae), ae)
+        for ae in ("gzip", "gzip;q=0.5, identity", "x-gzip", "*", "identity;q=0, *;q=0.1",
+                   "br;q=1.0, gzip;q=0.8, *;q=0.1"):
+            self.assertTrue(jsonout.gzip_ok(ae), ae)
+
+        class Req:
+            headers = {"accept-encoding": "gzip;q=0, identity;q=1"}
+        big = {"rows": [{"user": "u%d" % i, "n": i} for i in range(500)]}
+        r = jsonout.response(big, Req())
+        self.assertNotIn("content-encoding", r.headers)
+        self.assertEqual(r.body, jsonout.dumps(big))
+
 
 class AnonMemoTest(unittest.TestCase):
 
@@ -381,6 +397,12 @@ class CachedStaticTest(unittest.TestCase):
         self.assertEqual(gzip.decompress(r.body), self.data)
         self.assertNotIn("content-encoding", plain.headers)
         self.assertEqual(plain.headers["vary"], "Accept-Encoding")
+
+    def test_a_reader_that_refuses_gzip_gets_the_asset_as_it_is(self):
+        self.static.warm()
+        r = self.get("assets/index-0a1b2c.js", accept="gzip;q=0, identity;q=1")
+        self.assertNotIn("content-encoding", r.headers)
+        self.assertEqual(r.headers["vary"], "Accept-Encoding")
 
     def test_a_changed_asset_is_not_served_from_its_old_bytes(self):
         self.static.warm()

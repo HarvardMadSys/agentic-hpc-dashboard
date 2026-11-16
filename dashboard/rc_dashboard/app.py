@@ -123,7 +123,7 @@ class CachedStatic(StaticFiles):
             resp.headers["cache-control"] = "public, max-age=31536000, immutable"
             if resp.status_code == 200 and str(full_path).endswith(self.GZIP_TYPES):
                 resp.headers["vary"] = "Accept-Encoding"
-                if "gzip" in (Headers(scope=scope).get("accept-encoding") or ""):
+                if jsonout.gzip_ok(Headers(scope=scope).get("accept-encoding")):
                     body = self._gzipped(str(full_path), stat_result)
                     if body is not None:
                         hdrs = {k: v for k, v in resp.headers.items()

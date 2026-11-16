@@ -76,12 +76,41 @@ def frame(kind, payload):
     return dumps_str({"type": kind, "payload": payload}).decode("utf-8")
 
 
+def gzip_ok(accept_encoding):
+    """Whether an `Accept-Encoding` value lets a body be gzipped.
+
+    Yes when it names `gzip` (or `x-gzip`) with a non-zero quality, or `*` with
+    one and gzip is not named. A zero quality is a refusal, not a low preference
+    (RFC 9110, 12.5.3): `gzip;q=0, identity;q=1` asks for the body as it is. A
+    quality that does not parse counts as zero, so a malformed header never
+    gets a body its sender may not read.
+    """
+    star = False
+    for part in (accept_encoding or "").split(","):
+        name, _, params = part.partition(";")
+        name = name.strip().lower()
+        if not name:
+            continue
+        q = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 0.0
+        if name in ("gzip", "x-gzip"):
+            return q > 0
+        if name == "*":
+            star = q > 0
+    return star
+
+
 def accepts_gzip(request):
     headers = getattr(request, "headers", None)
     if headers is None:
         return False
-    ae = headers.get("accept-encoding") or ""
-    return any(p.split(";")[0].strip().lower() == "gzip" for p in ae.split(","))
+    return gzip_ok(headers.get("accept-encoding"))
 
 
 def response(obj, request=None, status_code=200, headers=None, encode=dumps):
