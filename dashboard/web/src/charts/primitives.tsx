@@ -953,6 +953,8 @@ export function Lines({
   const clip = 'lc' + useId().replace(/[^\w-]/g, '');
   const [own, setOwn] = useState<[number, number] | null>(null);
   const [fitRef, W] = useFit(natW);
+  /** the text of each x and each y drawn, on the scales they were drawn on (`marks`) */
+  const coords = useRef({ xk: '', yk: '', xs: new Map<number, string>(), ys: new Map<number, string>() });
   const R = 12;
   const TOP = ylabel ? 22 : 12;
   const B = 34;
@@ -1078,6 +1080,31 @@ export function Lines({
   const marks = useMemo(() => {
     const X = xScale(L, pw, x0, x1, xlog);
     const Y = yScale(TOP, ph, y0, y1, ylog);
+    // A coordinate's text, kept for as long as its scale stands. Within a
+    // minute a week's chart moves only its newest bin, and toFixed for every
+    // vertex of every path was most of a frame. The same value on the same
+    // scale is the same text, so every path reads as it did.
+    const c = coords.current;
+    const xk = `${L}|${pw}|${x0}|${x1}|${xlog ? 1 : 0}`;
+    const yk = `${TOP}|${ph}|${y0}|${y1}|${ylog ? 1 : 0}`;
+    if (c.xk !== xk) {
+      c.xk = xk;
+      c.xs = new Map();
+    }
+    if (c.yk !== yk) {
+      c.yk = yk;
+      c.ys = new Map();
+    }
+    const xt1 = (v: number) => {
+      let t = c.xs.get(v);
+      if (t === undefined) c.xs.set(v, (t = X(v).toFixed(1)));
+      return t;
+    };
+    const yt1 = (v: number) => {
+      let t = c.ys.get(v);
+      if (t === undefined) c.ys.set(v, (t = Y(v).toFixed(1)));
+      return t;
+    };
     const F = (v: number) => (yfmt ? yfmt(v) : fmt(v));
     const XF = (v: number) => (xfmt ? xfmt(v) : fmt(v));
     const XT = (v: number) => (xtip ? xtip(v) : XF(v));
@@ -1104,7 +1131,7 @@ export function Lines({
         let d = '';
         let j = i;
         for (; j < pts.length && pts[j].y != null; j++) {
-          d += (j > i ? ' L' : 'M') + X(pts[j].x).toFixed(1) + ' ' + Y(pts[j].y as number).toFixed(1);
+          d += (j > i ? ' L' : 'M') + xt1(pts[j].x) + ' ' + yt1(pts[j].y as number);
         }
         const first = pts[i];
         const last = pts[j - 1];
@@ -1113,7 +1140,7 @@ export function Lines({
           <g key={ri++}>
             {se.area && n > 1 && (
               <path
-                d={`${d} L ${X(last.x).toFixed(1)} ${Y(y0).toFixed(1)} L ${X(first.x).toFixed(1)} ${Y(y0).toFixed(1)} Z`}
+                d={`${d} L ${xt1(last.x)} ${yt1(y0)} L ${xt1(first.x)} ${yt1(y0)} Z`}
                 fill={se.c}
                 opacity={0.1}
               />
@@ -1146,8 +1173,8 @@ export function Lines({
         hover.push(
           <circle
             key={'h' + i}
-            cx={X(p.x).toFixed(1)}
-            cy={Y(y).toFixed(1)}
+            cx={xt1(p.x)}
+            cy={yt1(y)}
             r={8}
             fill="transparent"
             className={se.onPick ? 'hpick' : undefined}
