@@ -23,7 +23,7 @@ tr.tj-row.sel td:first-child {
   all: unset;
   cursor: pointer;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
+  font-size: 12.5px;
   white-space: nowrap;
   color: var(--ink);
   text-decoration: underline dotted var(--edge);
@@ -56,7 +56,7 @@ table.tj-table td.wrap {
   white-space: normal;
 }
 table.tj-table td .sub {
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--muted);
 }
 .tj-date {
@@ -70,12 +70,12 @@ table.tj-table td .sub {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 12px;
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--ink-2);
 }
 .ins-id .sid {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
   word-break: break-all;
 }
@@ -83,7 +83,7 @@ table.tj-table td .sub {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 18px;
-  font-size: 11px;
+  font-size: 12.5px;
   font-family: 'IBM Plex Mono', monospace;
   color: var(--muted);
 }
@@ -97,16 +97,16 @@ table.tj-table td .sub {
   grid-template-columns: auto 1fr;
   gap: 6px 12px;
   align-items: center;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .ins-summary > .eyebrow {
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
 }
 .ins-read {
-  font-size: 11px;
+  font-size: 12.5px;
   font-family: 'IBM Plex Mono', monospace;
   color: var(--ink-2);
   display: flex;
@@ -115,7 +115,7 @@ table.tj-table td .sub {
 }
 /* the session's headline, above the navigator: the project, and the names its tasks recur on */
 .ins-headline {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 500;
   line-height: 1.35;
   color: var(--ink);
@@ -124,7 +124,7 @@ table.tj-table td .sub {
 /* under it, what kind of session it was and the session in a few sentences */
 .ins-gist {
   margin: 0;
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.45;
   color: var(--ink-2);
   overflow-wrap: anywhere;
@@ -170,7 +170,7 @@ details.ins-limits > summary::-webkit-details-marker {
 details.ins-limits > summary::before {
   content: '\25B8';
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11.5px;
 }
 details.ins-limits[open] > summary::before {
   content: '\25BE';
@@ -179,7 +179,7 @@ details.ins-limits > summary:hover {
   color: var(--ink);
 }
 details.ins-limits > summary .eyebrow {
-  font-size: 9.5px;
+  font-size: 11px;
 }
 .ins-limits-body {
   display: flex;
@@ -199,20 +199,20 @@ details.ins-limits > summary .eyebrow {
 }
 /* the close button is the last thing in the row, a square beside the others */
 .ins-tools .ins-close {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   padding: 3px 8px 4px;
 }
 
 /* -------------------------------------------------------------------- tree */
 .pt {
-  --pt-cols: minmax(440px, 1fr) 84px 66px 58px 64px 72px 60px 96px 190px;
+  --pt-cols: minmax(440px, 1fr) 96px 72px 64px 72px 80px 66px 106px 210px;
   border: 1px solid var(--rule);
   border-radius: 5px;
   overflow: auto;
   max-height: 72vh;
   overscroll-behavior: contain;
-  font-size: 11.5px;
+  font-size: 13px;
 }
 .pt-in {
   min-width: 1100px;
@@ -231,9 +231,9 @@ details.ins-limits > summary .eyebrow {
   z-index: 1;
   background: var(--surface);
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 9.5px;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.04em;
   color: var(--muted);
   align-items: end;
   padding-top: 5px;
@@ -248,7 +248,7 @@ details.ins-limits > summary .eyebrow {
 /* "started" is the order the rows are in, and flips it as a sortable header would */
 .pt-head .sort-arrow {
   margin-left: 3px;
-  font-size: 8px;
+  font-size: 9.5px;
   color: var(--ink-2);
 }
 .pt-head .pt-sort {
@@ -330,7 +330,7 @@ details.ins-limits > summary .eyebrow {
   text-align: center;
   cursor: pointer;
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 11.5px;
   line-height: 1;
 }
 .pt-tog:hover {
@@ -378,7 +378,7 @@ details.ins-limits > summary .eyebrow {
 .pt-tag {
   flex: none;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--muted);
   border: 1px solid var(--rule);
   border-radius: 3px;
@@ -408,7 +408,7 @@ details.ins-limits > summary .eyebrow {
 }
 .pt-x {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
 }
 .pt-x.ok {
   color: var(--muted);
@@ -472,7 +472,7 @@ details.ins-limits > summary .eyebrow {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   align-items: center;
 }
@@ -503,14 +503,14 @@ details.ins-limits > summary .eyebrow {
   gap: 10px;
   align-items: baseline;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
 }
 .tn-cap .eyebrow {
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
 }
 .tn-cap b {
   font-weight: 500;
@@ -586,7 +586,7 @@ details.ins-limits > summary .eyebrow {
   min-width: 0;
   min-height: 17px;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   word-break: break-word;
 }
@@ -658,7 +658,7 @@ details.ins-limits > summary .eyebrow {
   gap: 2px 14px;
   margin-top: 3px;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--ink-2);
 }
@@ -692,7 +692,7 @@ details.ins-limits > summary .eyebrow {
 /* a line of caption under the chart */
 .tn-note {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
 }
 
@@ -826,7 +826,7 @@ svg:has(> g.pickable:focus-visible) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: 13px;
 }
 .pd-h .pt-tag {
   flex: none;
@@ -834,12 +834,12 @@ svg:has(> g.pickable:focus-visible) {
 }
 .pd-caret {
   flex: none;
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--muted);
   font-family: 'IBM Plex Mono', monospace;
 }
 .pd-s {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
@@ -858,7 +858,7 @@ svg:has(> g.pickable:focus-visible) {
   gap: 8px;
   align-items: center;
   margin: 2px 0 4px;
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .pd-bar label {
@@ -873,7 +873,7 @@ svg:has(> g.pickable:focus-visible) {
 /* how to use the tree: at the row's far end, out of the way of the controls */
 .pd-bar .pd-hint {
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: 12px;
 }
 /* the session list beside the inspector: one column of compact rows */
 .tj-rank {
@@ -925,18 +925,18 @@ svg:has(> g.pickable:focus-visible) {
   flex-wrap: wrap;
   gap: 2px 6px;
   align-items: baseline;
-  font-size: 12px;
+  font-size: 13.5px;
 }
 .tj-item-h .tj-date {
   white-space: nowrap;
 }
 .tj-item-s {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
 }
 /* the ranked quantity, when the line above does not already say it */
 .tj-item-m {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink);
 }
 /* a session's phases (components/PhaseBand.tsx): the band stands where the purpose
@@ -944,7 +944,7 @@ svg:has(> g.pickable:focus-visible) {
    in the order they came. It is two lines at most, with an ellipsis, so that two long
    quotes do not make a tall row, and all of it is in its hover (`data-tip`, TrajectoriesTab.tsx) */
 .tj-seq {
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--ink-2);
   overflow-wrap: anywhere;
@@ -966,13 +966,13 @@ svg:has(> g.pickable:focus-visible) {
 }
 /* why an agent's row has no band: its type is not one whose commands are read */
 .tj-note {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 /* a band's names, on the inspector's chart, in the bands with room for one */
 .ph-lbl {
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
+  font-size: 11.5px;
   pointer-events: none;
   user-select: none;
 }
@@ -1009,7 +1009,7 @@ svg:has(> g.pickable:focus-visible) {
   align-items: start;
   padding: 4px 0;
   border-top: 1px solid var(--rule);
-  font-size: 11.5px;
+  font-size: 13px;
   line-height: 1.4;
   cursor: pointer;
 }
@@ -1060,7 +1060,7 @@ svg:has(> g.pickable:focus-visible) {
 .pl-when,
 .pl-dur {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -1073,7 +1073,7 @@ svg:has(> g.pickable:focus-visible) {
   margin-top: 2px;
   padding: 4px 0 3px;
   border-top: 1px solid var(--rule);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 /* in a narrow box the words go under the name, the times, and the length, not beside them */
@@ -1101,7 +1101,7 @@ svg:has(> g.pickable:focus-visible) {
   align-items: flex-start;
   gap: 0 2px;
   border-top: 1px solid var(--rule);
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.4;
 }
 .tl-row:first-child {
@@ -1119,7 +1119,7 @@ svg:has(> g.pickable:focus-visible) {
   width: 16px;
   padding: 5px 0;
   text-align: center;
-  font-size: 10px;
+  font-size: 11.5px;
   line-height: 1.4;
   color: var(--ink-2);
   cursor: pointer;
@@ -1140,7 +1140,7 @@ svg:has(> g.pickable:focus-visible) {
   flex: 1 1 auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: 20px 110px minmax(0, 1fr) auto;
+  grid-template-columns: 20px 128px minmax(0, 1fr) auto;
   gap: 0 8px;
   align-items: baseline;
   padding: 5px 4px 5px 0;
@@ -1153,7 +1153,7 @@ svg:has(> g.pickable:focus-visible) {
 .tl-num,
 .tl-when {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -1168,16 +1168,16 @@ svg:has(> g.pickable:focus-visible) {
   font-weight: 500;
 }
 /* where a quoted label's words came from: `commit`, `PR #235`, or `log`. It is inside the row's button, as the label is, so it is
-   interactive text and needs 4.5 to 1 (`--ink-2`, 8.98 to 1 on the surface; `--muted` is 3.82 to 1) */
+   interactive text and needs 4.5 to 1 (`--ink-2`, 8.98 to 1 on the surface; `--muted` is 5.64 to 1) */
 .tl-src {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--ink-2);
   white-space: nowrap;
 }
 .tl-what {
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -1185,17 +1185,17 @@ svg:has(> g.pickable:focus-visible) {
    label is, so it is interactive text and needs 4.5 to 1: `--ink-2`, as the source beside the label is, and not `--muted` */
 .tl-state {
   grid-column: 3 / -1;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
 }
 /* a gap between two tasks, and a lone stretch, are quiet lines among the task rows; the gap's begins under the span, and a lone
    stretch has no number, so it begins there too. Quieter is not the same colour, though. A gap line is a note, with no click, and is
-   `--muted`. A lone stretch's line is a row to click, so its text is interactive and needs 4.5 to 1, which `--muted` is not (3.82 to
-   1 on the surface, at 11 px): it is `--ink-2` (8.98 to 1), which is still quieter than a task's label, in `--ink` */
+   `--muted`. A lone stretch's line is a row to click, so its text is interactive and is a step louder than the gap's `--muted` (5.64
+   to 1 on the surface): it is `--ink-2` (8.98 to 1), which is still quieter than a task's label, in `--ink` */
 .tl-gap {
   flex: none;
   padding: 3px 0 3px 46px;
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: 1.4;
   color: var(--muted);
 }
@@ -1204,7 +1204,7 @@ svg:has(> g.pickable:focus-visible) {
   padding-left: 28px;
 }
 .tl-line {
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--ink-2);
 }
 .tl-row.lone .tl-state {
@@ -1234,7 +1234,7 @@ svg:has(> g.pickable:focus-visible) {
 .tl-cmd {
   padding: 1px 0;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: 1.5;
   color: var(--ink-2);
   white-space: nowrap;
@@ -1244,7 +1244,7 @@ svg:has(> g.pickable:focus-visible) {
 .tl-tree {
   display: inline-block;
   margin-top: 3px;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 /* in a narrow box a task's span and what it holds take the first line, and its label the line under them */
 @media (max-width: 720px) {
@@ -1277,7 +1277,7 @@ svg:has(> g.pickable:focus-visible) {
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--good);
   white-space: nowrap;
 }
@@ -1307,7 +1307,7 @@ svg:has(> g.pickable:focus-visible) {
   }
 }
 .tj-filter {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
   margin-bottom: 6px;
 }
@@ -1324,7 +1324,7 @@ svg:has(> g.pickable:focus-visible) {
   background: var(--surface);
   padding: 28px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   text-align: center;
 }
 .tj-empty .icon {

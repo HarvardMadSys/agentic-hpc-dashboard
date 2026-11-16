@@ -157,14 +157,14 @@ function InstanceRows({ rows, showArgs, withUser }: { rows: RiskInstance[]; show
             <tr key={`${w.pid}-${i}`}>
               <td className="mono" style={{ color: 'var(--muted)' }}>{w.ts ?? DASH}</td>
               {withUser && <td className="mono">{w.user ?? DASH}</td>}
-              <td className="num mono" style={{ fontSize: '10.5px' }}
+              <td className="num mono" style={{ fontSize: '12px' }}
                   data-tip={w.ppid != null ? `parent pid ${w.ppid}` : undefined}>
                 {w.pid ?? DASH}
               </td>
               <td>{fromLbl(w) ?? DASH}</td>
               <td className="mono" style={{ color: 'var(--muted)' }}>{w.host ?? DASH}</td>
               <td className="mono">{w.tool ?? DASH}</td>
-              {showArgs && <CmdCell text={w.args} style={{ fontSize: '10.5px' }} />}
+              {showArgs && <CmdCell text={w.args} style={{ fontSize: '12px' }} />}
               <td className="num">{w.cpu_s == null ? DASH : fmt(w.cpu_s)}</td>
               <td className="num">
                 {w.signal != null ? `sig${w.signal}` : w.exit_code == null ? DASH : w.exit_code}
@@ -301,12 +301,12 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
                   <td className="nm">{x.kind}</td>
                   <td>
                     {x.label}
-                    <div className="mono nm" style={{ fontSize: '10.5px' }}>{x.id}</div>
+                    <div className="mono nm" style={{ fontSize: '12px' }}>{x.id}</div>
                   </td>
                   <td>{x.severity}</td>
                   <td style={x.source !== 'built-in' ? { color: 'var(--crimson-ink)' } : undefined}>{x.source}</td>
                   <td>{x.section ? secTitle[x.section] ?? x.section : DASH}</td>
-                  <CmdCell text={x.pattern_resolved} style={{ fontSize: '10.5px' }} />
+                  <CmdCell text={x.pattern_resolved} style={{ fontSize: '12px' }} />
                 </tr>
               ))}
               {r.disabled.map((x) => (
@@ -314,7 +314,7 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
                   <td>{x.kind === 'dangerous' ? 'dangerous command' : 'credential'}</td>
                   <td>
                     <s>{x.label}</s>
-                    <div className="mono" style={{ fontSize: '10.5px' }}>{x.id}</div>
+                    <div className="mono" style={{ fontSize: '12px' }}>{x.id}</div>
                   </td>
                   <td>{DASH}</td>
                   <td>switched off</td>
@@ -327,7 +327,7 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
                   <td>{x.kind === 'dangerous' ? 'dangerous command' : 'credential'}</td>
                   <td>
                     {x.label}
-                    <div className="mono" style={{ fontSize: '10.5px' }}>{x.id}</div>
+                    <div className="mono" style={{ fontSize: '12px' }}>{x.id}</div>
                   </td>
                   <td>{DASH}</td>
                   <td>{DASH}</td>
@@ -878,7 +878,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
                           <td className="num">{dur(r.cpu_s)}</td>
                           <td className="num">{pc(r.cpu_pct)}</td>
                           <td className="num">{fint(r.users)}</td>
-                          <td className="mono" style={{ fontSize: '10.5px' }}>{r.hosts.join(' ')}</td>
+                          <td className="mono" style={{ fontSize: '12px' }}>{r.hosts.join(' ')}</td>
                           <td><WhoChips r={r} cls={cls} /></td>
                         </tr>
                       ))}
@@ -929,7 +929,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
                         <td><span className={`sev ${r.severity}`}>{r.severity}</span></td>
                         <td className="num">{fint(r.n)}</td>
                         <td className="num">{fint(r.users)}</td>
-                        <td className="mono" style={{ fontSize: '10.5px' }}>{r.tools.join(' ')}</td>
+                        <td className="mono" style={{ fontSize: '12px' }}>{r.tools.join(' ')}</td>
                         <td><WhoChips r={r} cls={cls} /></td>
                       </tr>
                       {isOpen(r.id) && (

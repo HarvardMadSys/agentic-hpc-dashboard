@@ -34,12 +34,12 @@ tr.ws-detail > td {
 }
 .ws-sub {
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 12px;
   font-family: 'IBM Plex Mono', monospace;
 }
 .ws-path {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--ink);
   word-break: break-all;
 }
@@ -48,7 +48,7 @@ tr.ws-detail > td {
 }
 .ws-kind {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11.5px;
   font-family: 'IBM Plex Mono', monospace;
   margin-left: 6px;
   white-space: nowrap;
@@ -60,7 +60,7 @@ tr.ws-detail > td {
   padding: 0 6px;
   margin-right: 5px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 11.5px;
   font-family: 'IBM Plex Mono', monospace;
   border: 1px solid var(--edge);
   color: var(--ink-2);
@@ -84,7 +84,7 @@ td.ws-inf {
 /* named-path counts, by what the command does with the path */
 .ws-ops {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
+  font-size: 12.5px;
   white-space: nowrap;
 }
 .ws-ops span + span {
@@ -127,7 +127,7 @@ td.ws-inf {
 }
 .ws-root {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10px;
+  font-size: 11.5px;
   padding: 0 5px;
   border: 1px solid var(--rule);
   border-radius: 3px;
@@ -157,7 +157,7 @@ td.ws-inf {
 }
 .ws-flags h4 {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--ink);
 }
@@ -177,7 +177,7 @@ td.ws-inf {
   margin-right: 6px;
   padding: 0 5px;
   border-radius: 3px;
-  font-size: 9.5px;
+  font-size: 11px;
   font-family: 'IBM Plex Mono', monospace;
   border: 1px solid var(--serious);
   color: var(--ink-2);
@@ -197,7 +197,7 @@ td.ws-inf {
   all: unset;
   cursor: pointer;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   text-decoration: underline dotted var(--edge);
   text-underline-offset: 3px;
@@ -213,13 +213,13 @@ td.ws-inf {
 }
 .ws-foot {
   margin-top: 6px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
   font-family: 'IBM Plex Mono', monospace;
 }
 .ws-home {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   word-break: break-all;
   color: var(--ink);
 }
@@ -289,9 +289,9 @@ table.trees .sub-chip {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--s1) 22%, transparent);
 }
 .atype .k {
-  font-size: 10px;
+  font-size: 11.5px;
   text-transform: uppercase;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.05em;
   color: var(--muted);
   font-family: 'IBM Plex Mono', monospace;
 }
@@ -301,12 +301,12 @@ table.trees .sub-chip {
   letter-spacing: -0.02em;
 }
 .atype .v small {
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 400;
   color: var(--ink-2);
 }
 .atype .n {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .warnword {
@@ -318,7 +318,7 @@ table.trees .sub-chip {
 
 /* a tree's title row, and a lone agent's, at the head of the detail */
 .atree-t {
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 600;
   margin-bottom: 2px;
 }
@@ -339,7 +339,7 @@ table.trees .sub-chip {
   flex-wrap: wrap;
 }
 .ablast-head h4 {
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 600;
   margin: 0;
 }
@@ -347,7 +347,7 @@ table.trees .sub-chip {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
   margin: 6px 0;
   align-items: center;
@@ -355,7 +355,7 @@ table.trees .sub-chip {
 
 /* the way back to a folded tree (AgentsTab.tsx TreeView) */
 .atree-fold {
-  font-size: 11px;
+  font-size: 12.5px;
   margin: 0 0 4px;
 }
 /* One view of every agent type (AgentsTab.tsx): a tree's title row, and its
@@ -371,7 +371,7 @@ table.trees .sub-chip {
   min-width: 0;
 }
 .atree-t .atree-sum {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 400;
   white-space: nowrap;
 }
@@ -401,13 +401,13 @@ table.trees .sub-chip {
   min-width: 0;
 }
 .anode-h b {
-  font-size: 12px;
+  font-size: 13.5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .anode-s {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
@@ -456,7 +456,7 @@ table.trees .sub-chip {
  * B bypass flag, A auto mode, U tool calls not sandboxed, F sandbox failed. */
 .aver {
   flex: none;
-  font-size: 10px;
+  font-size: 11.5px;
   font-family: 'IBM Plex Mono', monospace;
   color: var(--muted);
   white-space: nowrap;
@@ -494,7 +494,7 @@ table.trees .sub-chip {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--ink-2);
   margin: 0 0 8px;
 }
@@ -521,7 +521,7 @@ table.trees .sub-chip {
   gap: 10px;
   align-items: center;
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .afilter .ltag-key {
   margin: 0;
@@ -557,7 +557,7 @@ table.trees .sub-chip {
 }
 .amd {
   display: grid;
-  grid-template-columns: minmax(270px, 350px) minmax(0, 1fr);
+  grid-template-columns: minmax(290px, 380px) minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -590,7 +590,7 @@ table.trees .sub-chip {
   gap: 4px;
 }
 .al-user {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--ink-2);
   margin: 6px 0 0;
@@ -629,7 +629,7 @@ table.trees .sub-chip {
   display: flex;
   gap: 6px;
   align-items: baseline;
-  font-size: 12px;
+  font-size: 13.5px;
   min-width: 0;
 }
 .al-h b {
@@ -639,7 +639,7 @@ table.trees .sub-chip {
   white-space: normal;
 }
 .al-s {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
@@ -707,7 +707,7 @@ table.trees .sub-chip {
 /* what the list does not hold, said in it: the trees past the service's cap,
    the daemon's idle spares (AgentsTab.tsx) */
 .al-note {
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--muted);
   margin: 2px 0;
 }
@@ -742,7 +742,7 @@ table.trees .sub-chip {
 .al-hint {
   padding: 12px;
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 13.5px;
 }
 /* nothing picked yet: an empty card that says where to look, not a gap */
 .al-empty {
@@ -753,7 +753,7 @@ table.trees .sub-chip {
   gap: 10px;
   min-height: 200px;
   padding: 28px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .al-empty .icon {
   box-sizing: content-box;

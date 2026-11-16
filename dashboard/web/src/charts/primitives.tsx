@@ -840,7 +840,7 @@ export function StackRow({
           x={x + (w - 2) / 2}
           y={H / 2 + 3.5}
           textAnchor="middle"
-          style={{ fontSize: '10.5px', fontFamily: "'IBM Plex Mono',monospace", fill: 'var(--surface)' }}
+          style={{ fontSize: '12px', fontFamily: "'IBM Plex Mono',monospace", fill: 'var(--surface)' }}
         >
           {pctv.toFixed(w > 62 ? 1 : 0)}%
         </text>,

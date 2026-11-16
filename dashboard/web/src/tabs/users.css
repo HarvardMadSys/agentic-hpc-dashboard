@@ -33,7 +33,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
 .ur-sumline {
   display: block;
   max-width: 120ch;
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.45;
   color: var(--ink-2);
 }
@@ -42,7 +42,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   min-width: 220px;
 }
 .ur-words {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .ur-pick.crit[aria-pressed='false'] b {
@@ -59,7 +59,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   gap: 4px;
   margin-left: 8px;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   color: #2c6b29;
   cursor: help;
 }
@@ -132,7 +132,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   gap: 6px;
 }
 .ur-traits .u-badge {
-  font-size: 11px;
+  font-size: 12.5px;
   padding: 2px 9px;
 }
 .ur-tdetail {
@@ -148,9 +148,9 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   border-top: 1px solid var(--rule);
 }
 .ur-nums dt {
-  font: 10px 'IBM Plex Mono', monospace;
+  font: 11.5px 'IBM Plex Mono', monospace;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.04em;
   color: var(--muted);
 }
 .ur-nums dt[data-tip] {
@@ -161,7 +161,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
 .ur-nums dd {
   margin: 2px 0 0;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -193,7 +193,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   --track: 84px;
 }
 .ur-rest {
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 /* charts */
@@ -241,7 +241,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   cursor: help;
 }
 .ur-weekrow .nm {
-  font-size: 10px;
+  font-size: 11.5px;
 }
 
 /* the commands run most */
@@ -253,18 +253,18 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   gap: 3px;
 }
 .ur-cmds li {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--muted);
 }
 .ur-cmds code {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink);
 }
 
 /* tasks: a quote is the agent's own words, and is set apart as one */
 .ur-tline {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 14px;
   color: var(--ink-2);
 }
 .ur-quote {
@@ -276,7 +276,7 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
   padding: 0 5px;
   border: 1px solid var(--edge);
   border-radius: 3px;
-  font: 9.5px/14px 'IBM Plex Mono', monospace;
+  font: 11px/16px 'IBM Plex Mono', monospace;
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -312,7 +312,7 @@ table.ur-tasklist td.wrap {
   grid-template-columns: minmax(0, 1fr) auto 68px 38px;
   column-gap: 9px;
   align-items: center;
-  font-size: 12px;
+  font-size: 13.5px;
   cursor: help;
 }
 .ur-srow .lbl {
@@ -329,11 +329,11 @@ table.ur-tasklist td.wrap {
   white-space: nowrap;
 }
 .ur-srow .val {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .ur-srow .pct {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink);
 }
 .ur-srow .trk {
@@ -359,7 +359,7 @@ table.ur-tasklist td.wrap {
   opacity: 0.6;
 }
 .ur-key {
-  font-size: 10.5px;
+  font-size: 12px;
 }
 .ur-key b {
   display: inline-block;
@@ -388,7 +388,7 @@ table.ur-roster th.num {
 }
 .ur-ago {
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11.5px;
 }
 /* a roster row holds two badges at most; each is cut to the cell, its whole on hover */
 .ur-traitcell .u-badges {
@@ -416,7 +416,7 @@ table.ur-roster th.num {
   margin: 0;
   max-width: 96ch;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 500;
   line-height: 1.5;
   letter-spacing: -0.005em;
@@ -426,15 +426,15 @@ table.ur-roster th.num {
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 4px 16px;
   margin: 0;
-  font-size: 12.5px;
+  font-size: 14px;
 }
 .ur-lev-points > div {
   display: contents;
 }
 .ur-lev-points dt {
-  font: 10px/19px 'IBM Plex Mono', monospace;
+  font: 11.5px/20px 'IBM Plex Mono', monospace;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.04em;
   color: var(--muted);
 }
 .ur-lev-points dt[data-tip] {
@@ -468,14 +468,14 @@ svg.ur-figsvg [data-tip] {
   cursor: help;
 }
 .ur-figkey {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .ur-figkey summary {
   cursor: pointer;
-  font: 10px 'IBM Plex Mono', monospace;
+  font: 11.5px 'IBM Plex Mono', monospace;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.04em;
   color: var(--muted);
 }
 .ur-figkey summary:hover {
@@ -483,7 +483,7 @@ svg.ur-figsvg [data-tip] {
 }
 .ur-figkey p {
   margin: 6px 0 4px;
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: 1.45;
 }
 .ur-figkey dl {
@@ -549,12 +549,12 @@ svg.ur-figsvg [data-tip] {
 .ur-cardn {
   margin-left: auto;
   padding-left: 8px;
-  font-size: 11px;
+  font-size: 12.5px;
   white-space: nowrap;
 }
 .ur-cardline {
   margin: 0;
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.45;
   color: var(--ink-2);
 }

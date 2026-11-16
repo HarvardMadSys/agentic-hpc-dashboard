@@ -6,7 +6,7 @@
   max-width: 900px;
 }
 .chat-who {
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--muted);
 }
 .chat-who b {
@@ -47,13 +47,13 @@
 }
 .chat .md code {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 12px;
+  font-size: 13.5px;
   background: var(--sunken);
   padding: 1px 4px;
   border-radius: 3px;
 }
 .chat-meta {
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--muted);
 }
 .chat-wait {
@@ -75,7 +75,7 @@
   resize: vertical;
   min-height: 44px;
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--rule);
@@ -169,7 +169,7 @@
   color: var(--ink);
 }
 .sugg-e {
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--ink-2);
 }
 .sugg-f {
@@ -177,7 +177,7 @@
   flex-wrap: wrap;
   gap: 12px;
   align-items: baseline;
-  font-size: 11.5px;
+  font-size: 13px;
 }
 
 /* a suggestion marked done (ChatTab.tsx): its button, and the list it goes to */
@@ -186,7 +186,7 @@
 }
 .sugg-done summary {
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--ink-2);
   font-family: 'IBM Plex Mono', monospace;
 }
@@ -203,7 +203,7 @@
   flex-wrap: wrap;
   gap: 10px;
   align-items: baseline;
-  font-size: 12px;
+  font-size: 13.5px;
 }
 .sugg-done-t {
   color: var(--ink-2);
@@ -259,7 +259,7 @@
   border-radius: 6px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.45;
   /* it scrolls itself, and hands nothing on to the page at its ends */
   overscroll-behavior: contain;
@@ -270,7 +270,7 @@
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .cite-pop-l {
   margin: 4px 0 8px;
@@ -278,8 +278,8 @@
   overflow-wrap: anywhere;
 }
 .cite-pop-k {
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
   margin-bottom: 4px;
@@ -287,12 +287,12 @@
 .cite-data {
   width: 100%;
   border-collapse: collapse;
-  font: 11px/1.45 'IBM Plex Mono', monospace;
+  font: 12.5px/1.45 'IBM Plex Mono', monospace;
 }
 /* a figure a line: its path, in the page's own case, and its value */
 .cite-data th {
   text-align: left;
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 400;
   text-transform: none;
   letter-spacing: normal;
@@ -321,20 +321,20 @@
   font-weight: 600;
 }
 .cite-lit-k {
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--crimson-ink);
   margin-bottom: 3px;
 }
 .cite-more {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--muted);
 }
 .cite-line {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 11px/1.45 'IBM Plex Mono', monospace;
+  font: 12.5px/1.45 'IBM Plex Mono', monospace;
   background: var(--sunken);
   padding: 6px 8px;
   border-radius: 4px;
@@ -344,17 +344,17 @@
   padding-top: 6px;
   border-top: 1px solid var(--rule);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .cite-src {
   margin-top: 10px;
   padding-top: 6px;
   border-top: 1px solid var(--rule);
-  font-size: 12px;
+  font-size: 13.5px;
 }
 .cite-src-h {
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
   margin-bottom: 4px;

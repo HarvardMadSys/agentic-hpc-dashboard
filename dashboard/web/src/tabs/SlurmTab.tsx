@@ -187,7 +187,7 @@ const Sessions = memo(function Sessions({ rows, total }: { rows: SlurmSession[];
                       <i className="u-dot" style={{ background: CLS_COL[String(r.cls)] }} />
                       <span className="nm">{who(r)}</span>
                       {r.first != null && r.last != null && (
-                        <div className="mono nm" style={{ fontSize: '10.5px', paddingLeft: 14 }}>
+                        <div className="mono nm" style={{ fontSize: '12px', paddingLeft: 14 }}>
                           {span(r.first, r.last)}
                         </div>
                       )}

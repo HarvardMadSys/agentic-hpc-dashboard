@@ -264,11 +264,11 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
           </table>
         )}
         {idle.length > 0 && (
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+          <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--muted)' }}>
             none in the window: {idle.join(', ')}
           </div>
         )}
-        {scope.note && <div className="nm" style={{ marginTop: 6, fontSize: 11 }}>{scope.note}</div>}
+        {scope.note && <div className="nm" style={{ marginTop: 6, fontSize: 12.5 }}>{scope.note}</div>}
       </div>
     </Panel>
   );

@@ -622,7 +622,7 @@ function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }
               </td>
               <td
                 className="num mono"
-                style={{ fontSize: '10.5px' }}
+                style={{ fontSize: '12px' }}
                 data-tip={e.ppid != null ? `parent pid ${e.ppid}` : undefined}
               >
                 {e.pid ?? DASH}
