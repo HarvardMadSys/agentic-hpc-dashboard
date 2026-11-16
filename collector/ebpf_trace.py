@@ -3099,8 +3099,12 @@ _ROLE_HELPER_PREFIX = ('--codex-run-as-',)
 _ROLE_PROBE_FLAGS = frozenset({'--version', '-v', '-V', '--help', '-h', '--update'})
 _ROLE_PROBE_SUB = frozenset({'doctor', 'update', 'upgrade', 'install', 'auth', 'config',
                              'completion', 'setup-token', 'migrate-installer', 'plugin',
-                             'login', 'logout', 'version', 'help', 'features'})
-_ROLE_CLIENT_SUB = frozenset({'attach', 'agents'})
+                             'login', 'logout', 'version', 'help', 'features', 'debug'})
+_ROLE_PROBE_SUB_PREFIX = ('migrate-',)       # codex migrate-nfs-db, migrate-rollouts
+# `codex queue --thread X --message M` posts into a thread the app-server holds and exits
+_ROLE_CLIENT_SUB = frozenset({'attach', 'agents', 'queue'})
+# `codex sandbox -C DIR -P agent -- CMD` runs one command under Codex's sandbox
+_ROLE_SANDBOX_SUB = frozenset({'sandbox'})
 _ROLE_INFRA_SUB = frozenset({'daemon', 'bg-pty-host'})
 # Flags that take the next token as their value, so it is not mistaken for a
 # subcommand (`codex -c features.code_mode_host=true app-server`).
@@ -3151,6 +3155,43 @@ def _role_exe_index(command, toks):
     return None
 
 
+# A script the kernel ran through its #! line takes the script's name as its comm, and
+# its argv starts with the interpreter: `/usr/bin/env node .../bin/codex exec`,
+# `/bin/bash .../stub/claude -p`. A JavaScript host runs the agent's own launcher, whose
+# subcommand follows the script; a shell or Python runs a wrapper or a test double
+# named after the agent, never the session itself (the session, if the script starts
+# one, is its child).
+_ROLE_PYTHON = re.compile(r'^python(?:\d+(?:\.\d+)*)?$')
+_ROLE_SCRIPT_REACH = 4     # tokens an interpreter and its options take before the script
+
+
+def _role_interpreter(toks):
+    """The program a #! line runs: argv[0], or for `env`, the first word after its
+    flags and assignments."""
+    b = _role_base(toks[0]) if toks else ''
+    if b != 'env':
+        return b
+    for tok in toks[1:]:
+        if tok.startswith('-') or '=' in tok:
+            continue
+        return _role_base(tok)
+    return ''
+
+
+def _role_agent_index(command, toks):
+    """(index in argv of the agent executable or None, wrapped): `wrapped` when that
+    executable is a script a shell or Python ran -- named after the agent, not it."""
+    if command in _ROLE_AGENT_EXES and len(toks) > 1:
+        interp = _role_interpreter(toks)
+        if interp in _ROLE_SHELLS or interp in _ROLE_SCRIPT_HOSTS or _ROLE_PYTHON.match(interp):
+            for i, tok in enumerate(toks[1:_ROLE_SCRIPT_REACH + 1], 1):
+                if tok == '-c':
+                    break           # a command string, not a script
+                if _role_base(tok) == command:
+                    return i, interp not in _ROLE_SCRIPT_HOSTS
+    return _role_exe_index(command, toks), False
+
+
 def agent_role(agent_type, command, args):
     """What a process the classifier tagged `agent_type` is: one of the roles
     above. `command` is the whole executable name (_command_of)."""
@@ -3171,7 +3212,9 @@ def agent_role(agent_type, command, args):
         # Claude Desktop's remote server: it launches `ccd-cli` sessions over SSH
         return 'probe' if _ROLE_PROBE_FLAGS.intersection(toks[1:]) else 'infra'
 
-    i = _role_exe_index(command, toks)
+    i, wrapped = _role_agent_index(command, toks)
+    if wrapped:
+        return 'helper'
     if i is None:
         if command in _ROLE_SHELLS and _ROLE_TOOL_SHELL.search(args):
             return 'tool-shell'
@@ -3190,10 +3233,12 @@ def agent_role(agent_type, command, args):
         return {'proxy': 'client', 'daemon': 'infra'}.get(nxt, 'agent')
     if sub == 'mcp':
         return 'agent' if len(pos) > 1 and pos[1] == 'serve' else 'probe'
-    if sub in _ROLE_PROBE_SUB:
+    if sub in _ROLE_PROBE_SUB or (sub or '').startswith(_ROLE_PROBE_SUB_PREFIX):
         return 'probe'
     if sub in _ROLE_CLIENT_SUB:
         return 'client'
+    if sub in _ROLE_SANDBOX_SUB:
+        return 'sandbox'
     if sub in _ROLE_INFRA_SUB:
         return 'infra'
     return 'agent'
