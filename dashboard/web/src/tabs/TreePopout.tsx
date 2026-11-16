@@ -16,9 +16,13 @@ import type { PointerEvent as RPointerEvent, ReactNode } from 'react';
 import type { ProcCount, ProcGroup, ProcNode } from '../api/types';
 import { useConfig, useTrajectory } from '../api/hooks';
 import {
+  BOX_H,
+  BOX_W,
   Box,
   DEFAULT_ROUTINE,
   boxText,
+  findIds,
+  findIndex,
   hiddenCount,
   procNodes,
   reveal,
@@ -26,8 +30,8 @@ import {
   typoTip,
   unhidNote,
 } from '../components/ProcDiagram';
-import type { Hide, Item, PNode } from '../components/ProcDiagram';
-import { LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, sigName, spots } from '../components/ProcTree';
+import type { Hide, PNode } from '../components/ProcDiagram';
+import { LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, sigName } from '../components/ProcTree';
 import { treeGeometry } from '../components/TreeDiagram';
 import type { TreeGeo } from '../components/TreeDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
@@ -42,8 +46,8 @@ import './trajectories.css';
 import './treepop.css';
 
 /* the inline diagram's sizes, so a box reads the same in both */
-const NW = 206;
-const NH = 80;
+const NW = BOX_W;
+const NH = BOX_H;
 const GX = 14;
 const GY = 26;
 const K_MIN = 0.02;
@@ -62,18 +66,6 @@ function stamp(t: number | null | undefined): string {
   if (t == null) return DASH;
   const d = new Date(t * 1000);
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${clock(t)}`;
-}
-
-/** What find looks through: everything a box or its details name. */
-function textOf(e: Item): string {
-  if (e.k === 'p')
-    return [e.cmd, e.label, e.eff, e.cmdline, e.args, e.pid != null ? `pid ${e.pid}` : null, e.cwd, e.agent_type]
-      .filter(Boolean)
-      .join('\n')
-      .toLowerCase();
-  if (e.k === 'g') return [...e.motif, ...e.samples.map((s) => s.cmdline ?? s.args ?? '')].join('\n').toLowerCase();
-  if (e.k === 'agg' || e.k === 'more') return e.cmds.map(([c]) => c).join('\n').toLowerCase();
-  return '';
 }
 
 /* ---------------------------------------------------------------- export */
@@ -104,7 +96,7 @@ function treeSvg(geo: TreeGeo<PNode['data']>, open: Set<string>): { svg: string;
   const muted = c('var(--muted)');
   const crit = c('var(--crit)');
   for (const b of geo.boxes) {
-    const t = boxText(b.n.data.e, open.has(b.n.id), b.n.data.kids, b.n.id === 'r');
+    const t = boxText(b.n.data.e, open.has(b.n.id), b.n.data.kids, b.n.id === 'r', b.n.data.dir);
     const bg = t.kind === 'g' ? c('var(--surface-2)') : c('var(--surface)');
     const rule = t.color ? c(t.color) : t.kind === 'more' ? c('var(--rule)') : c('var(--edge)');
     out.push(`<g transform="translate(${b.x.toFixed(1)},${b.y.toFixed(1)})">`);
@@ -121,6 +113,8 @@ function treeSvg(geo: TreeGeo<PNode['data']>, open: Set<string>): { svg: string;
         `${xml(title)}${t.type ? `<tspan fill="${ink2}" font-size="9.5" font-weight="400">  ${xml(t.type)}</tspan>` : ''}</text>`,
     );
     if (t.caret) out.push(`<text x="${NW - 8}" y="16" font-size="10" text-anchor="end" fill="${muted}">${xml(t.caret)}</text>`);
+    if (t.where) out.push(`<text x="10" y="31" font-size="10" fill="${t.whereOwn ? ink2 : muted}">${xml(clipText(t.where, Math.floor((NW - 18) / 6)))}</text>`);
+    const top = t.where ? 47 : 34;
     t.lines.forEach((pieces, i) => {
       let left = Math.floor((NW - 18) / 6.3);
       const spans: string[] = [];
@@ -130,7 +124,7 @@ function treeSvg(geo: TreeGeo<PNode['data']>, open: Set<string>): { svg: string;
         left -= cut.length;
         spans.push(`<tspan fill="${bad ? crit : t.kind === 'more' ? muted : ink2}">${xml(cut)}</tspan>`);
       }
-      out.push(`<text x="10" y="${34 + i * 16}" font-size="10.5" xml:space="preserve">${spans.join('')}</text>`);
+      out.push(`<text x="10" y="${top + i * 16}" font-size="10.5" xml:space="preserve">${spans.join('')}</text>`);
     });
     out.push('</g>');
   }
@@ -288,7 +282,8 @@ function Cmd({ text }: { text: string }) {
   );
 }
 
-function ProcDetails({ e }: { e: ProcNode }) {
+/** `dir`: the folder it ran in, its own or its parent's. */
+function ProcDetails({ e, dir }: { e: ProcNode; dir: string | null }) {
   const alive = e.ev == null && e.start != null && e.end != null;
   return (
     <>
@@ -320,7 +315,11 @@ function ProcDetails({ e }: { e: ProcNode }) {
             DASH
           )}
         </Pair>
-        {e.cwd && <Pair k="working dir">{e.cwd}</Pair>}
+        {e.cwd ? (
+          <Pair k="working dir">{e.cwd}</Pair>
+        ) : dir ? (
+          <Pair k="working dir">{`${dir} · its parent's`}</Pair>
+        ) : null}
         {e.link && (
           <Pair k="parent link" tip={LINK_TIP[e.link]}>
             {LINK_LBL[e.link]}
@@ -469,7 +468,7 @@ function Details({
           </button>
         )}
       </div>
-      {e.k === 'p' && <ProcDetails e={e} />}
+      {e.k === 'p' && <ProcDetails e={e} dir={n.data.dir} />}
       {e.k === 'g' && <GroupDetails g={e} />}
       {(e.k === 'agg' || e.k === 'more') && <CountDetails c={e} />}
       {e.k === 'rest' && (
@@ -525,11 +524,8 @@ export default function TreePopout() {
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 
   // find: through every served entry, drawn or not
-  const index = useMemo(() => (tree ? spots(tree).map((s) => ({ id: s.id, t: textOf(s.e) })) : []), [tree]);
-  const matches = useMemo(() => {
-    const s = query.trim().toLowerCase();
-    return s ? index.filter((x) => x.t.includes(s)).map((x) => x.id) : [];
-  }, [index, query]);
+  const index = useMemo(() => (tree ? findIndex(tree) : []), [tree]);
+  const matches = useMemo(() => findIds(index, query), [index, query]);
   const hits = useMemo(() => new Set(matches), [matches]);
 
   /* ---- the view */
@@ -776,6 +772,7 @@ export default function TreePopout() {
                 open={open.has(id)}
                 kids={b.n.data.kids}
                 root={id === 'r'}
+                dir={b.n.data.dir}
                 onCaret={() => !dragged.current && act.current.toggle(id)}
               />
             </div>
@@ -869,7 +866,7 @@ export default function TreePopout() {
             <input
               ref={findRef}
               type="search"
-              placeholder="find a command, pid, or path"
+              placeholder="find a command, folder, or pid"
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);

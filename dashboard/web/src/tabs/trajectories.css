@@ -789,6 +789,15 @@ svg:has(> g.pickable:focus-visible) {
     animation: none;
   }
 }
+/* What find matched (TrajectoryInspector.tsx): the row tinted, and a closed
+ * row with a match below it given a dashed rule, so a match in a folded part
+ * of the tree is not out of sight and out of mind. */
+.pt-row.hit > .pt-tree {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.pt-row.hit-in > .pt-tree {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warn) 80%, transparent);
+}
 
 /* ------------------------------------------ the process tree, as a tree
  * (components/ProcDiagram.tsx): a box per process, its purpose on the left
@@ -849,6 +858,28 @@ svg:has(> g.pickable:focus-visible) {
 .pd-box .bad {
   color: var(--crit);
 }
+/* the folder it ran in, under its name: muted where it is its parent's, in
+ * ink where the process changed folder */
+.pd-w {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pd-w.own {
+  color: var(--ink-2);
+}
+/* what find matched: the box ringed, and a closed box with a match below it
+ * dashed */
+.pd .tnode.hit {
+  outline: 2px solid var(--warn);
+  outline-offset: 1px;
+}
+.pd .tnode.hit-in {
+  outline: 1.5px dashed var(--warn);
+  outline-offset: 1px;
+}
 .pd .tdiag-canvas {
   margin: 0;
 }
@@ -869,6 +900,33 @@ svg:has(> g.pickable:focus-visible) {
 }
 .pd-bar label + .nm {
   margin-right: 8px;
+}
+/* find: a command, a command line, or the folder a process ran in */
+.pd-find {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.pd-find input {
+  width: 15em;
+  max-width: 100%;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.pd-find input:focus-visible {
+  outline: 2px solid var(--edge);
+  outline-offset: 0;
+}
+.pd-find .btn {
+  padding: 1px 6px;
+}
+.pd-find .nm {
+  min-width: 5.5em;
 }
 /* how to use the tree: at the row's far end, out of the way of the controls */
 .pd-bar .pd-hint {

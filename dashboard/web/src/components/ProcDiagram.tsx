@@ -20,6 +20,16 @@
  * which the line that worked then says ("after 1 failed try"). Only at a
  * shell a person types into: an agent's failed call is the agent's own step
  * (user, 2026-10-29). It is counted the same way.
+ *
+ * Each box says the folder its process ran in, under its command (`where`),
+ * and find (`findIndex`) looks through the commands, their command lines, and
+ * those folders: the inspector's find box and the popped-out tree's read the
+ * same text, so the two find the same boxes. The service sends a process's cwd
+ * only where it differs from its parent's, so the folder is carried down the
+ * tree: a box whose process changed folder says it in ink, one that ran where
+ * its parent did, muted. What a process opened is not recorded (the collector
+ * does not trace open), so a folder it only read from is found only where its
+ * command line names it.
  */
 import { memo, useCallback, useMemo } from 'react';
 import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcNode } from '../api/types';
@@ -34,15 +44,81 @@ type Rest = { k: 'rest'; more: number; of: ProcGroup };
 type Cap = { k: 'cap'; more: number; parent: string };
 export type Item = ProcEntry | Rest | Cap;
 /** A box: what it stands for, and how many children it would open to. */
-export type PNode = TreeNode<{ e: Item; kids: number }>;
+export type PNode = TreeNode<{ e: Item; kids: number; dir: string | null }>;
 
 /** Children drawn under one parent before a "+N more" box stands for the rest. */
 export const MAX_KIDS = 30;
+/** A box's size, here and in the popped-out tree: room for its name, the
+ *  folder it ran in, and three lines. */
+export const BOX_W = 206;
+export const BOX_H = 94;
 
 function kidsOf(e: Item): Item[] {
   if (e.k === 'p') return e.kids ?? [];
   if (e.k === 'g') return e.more > 0 ? [...e.items, { k: 'rest', more: e.more, of: e }] : e.items;
   return [];
+}
+
+/** A working directory short enough for a box: home as `~`, and only its last
+ *  two folders past three. The full path is in the hover. */
+export function shortPath(p: string): string {
+  const parts = p.replace(/^\/home\/[^/]+/, '~').split('/');
+  return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : parts.join('/');
+}
+
+/** The folder an entry says it ran in: a process's own cwd, or a run's where
+ *  all its drawn members name one. Null where it ran where its parent did. */
+function folderOf(e: Item): string | null {
+  if (e.k === 'p') return e.cwd ?? null;
+  if (e.k === 'g') {
+    const c = e.items[0]?.cwd;
+    return c && e.items.every((m) => m.cwd === c) ? c : null;
+  }
+  return null;
+}
+
+/** The folder an entry ran in: its own, else the one it inherited (`up`), as a
+ *  process does its parent's cwd. A counted row's processes are not known one
+ *  by one, so it has none. */
+export function dirOf(e: Item, up: string | null): string | null {
+  return e.k === 'p' || e.k === 'g' ? (folderOf(e) ?? up) : null;
+}
+
+/** What find looks through, lower-cased: everything a box or its details name
+ *  -- the command, its command line, the folder it ran in, its pid. A counted
+ *  row names the commands it counts. */
+export function findText(e: Item): string {
+  if (e.k === 'p')
+    return [e.cmd, e.label, e.eff, e.cmdline, e.args, e.pid != null ? `pid ${e.pid}` : null, e.cwd, e.agent_type]
+      .filter(Boolean)
+      .join('\n')
+      .toLowerCase();
+  if (e.k === 'g') return [...e.motif, ...e.samples.map((x) => x.cmdline ?? x.args ?? '')].join('\n').toLowerCase();
+  if (e.k === 'agg' || e.k === 'more') return e.cmds.map(([c]) => c).join('\n').toLowerCase();
+  return '';
+}
+
+/** What find looks through, entry by entry, with the ids `spots` gives them:
+ *  `findText`, and the folder each ran in where it inherited it. */
+export function findIndex(root: ProcNode): { id: string; t: string }[] {
+  const out: { id: string; t: string }[] = [];
+  const walk = (e: Item, id: string, up: string | null) => {
+    const dir = dirOf(e, up);
+    const t = findText(e);
+    out.push({ id, t: dir && dir !== folderOf(e) ? `${t}\n${dir.toLowerCase()}` : t });
+    kidsOf(e).forEach((k, i) => walk(k, `${id}.${i}`, dir ?? up));
+  };
+  walk(root, 'r', null);
+  return out;
+}
+
+/** The ids of the entries a find query matches, in the tree's order. Each word
+ *  of the query must be in the entry's text, so `pytest kempner` finds pytest
+ *  run in a folder named for it. */
+export function findIds(index: { id: string; t: string }[], query: string): string[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return index.filter((x) => words.every((w) => x.t.includes(w))).map((x) => x.id);
 }
 
 /* ------------------------------------------------------------- routine */
@@ -232,12 +308,12 @@ export function unhidNote(off: { routine: boolean; typos: boolean }): string {
 
 /* --------------------------------------------------------------- boxes */
 
-function nodeTip(e: ProcNode): string {
+function nodeTip(e: ProcNode, dir: string | null): string {
   return [
     e.cmdline || e.args || e.cmd || '(no record)',
     `pid ${e.pid ?? '?'}${e.ppid != null ? ` · parent ${e.ppid}` : ''}`,
     e.start != null ? `started ${clock(e.start)}${e.end != null ? `, ${e.ev ? 'exited' : 'last seen'} ${clock(e.end)}` : ''}` : null,
-    e.cwd ? `in ${e.cwd}` : null,
+    e.cwd ? `in ${e.cwd}` : dir ? `in ${dir}, where its parent ran` : null,
     e.n > 1 ? `${fint(e.n)} processes in its subtree` : null,
     e.ev == null ? 'no exit in the read: it outlived it, or left no record' : null,
     typoTip(e),
@@ -263,6 +339,10 @@ export interface BoxText {
   title: string;
   /** an agent's type, tagged beside its name */
   type: string | null;
+  /** the folder it ran in, short (`shortPath`), on the line under its name */
+  where: string | null;
+  /** `where` is the entry's own, not the folder it inherited: where it changed folder */
+  whereOwn: boolean;
   caret: string | null;
   /** the lines under the title, in pieces; a piece marked true is a failure */
   lines: [string, boolean][][];
@@ -272,8 +352,13 @@ export interface BoxText {
   tip?: string;
 }
 
-export function boxText(e: Item, open: boolean, kids: number, root: boolean): BoxText {
+/** `up`: the folder it ran in when it says none of its own, its parent's. */
+export function boxText(e: Item, open: boolean, kids: number, root: boolean, up: string | null = null): BoxText {
   const caret = kids > 0 ? (open ? '▾' : `▸ ${fint(kids)}`) : null;
+  const own = folderOf(e);
+  const dir = dirOf(e, up);
+  const where = dir ? shortPath(dir) : null;
+  const whereOwn = own != null;
   if (e.k === 'p') {
     const bad = failed(e);
     // an agent's own process can be named for its runtime (`server`, `node`):
@@ -283,6 +368,8 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean): Bo
       kind: 'p',
       title: e.label ?? e.cmd ?? '(no record)',
       type,
+      where,
+      whereOwn,
       caret,
       lines: [
         [[
@@ -303,7 +390,7 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean): Bo
       ],
       bad,
       color: pcol(e.purpose),
-      tip: nodeTip(e),
+      tip: nodeTip(e, dir),
     };
   }
   if (e.k === 'g') {
@@ -312,6 +399,8 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean): Bo
       kind: 'g',
       title: `${e.motif.join(' › ')} ×${fint(e.reps)}`,
       type: null,
+      where,
+      whereOwn,
       caret,
       lines: [
         [[`${fint(e.n)} processes${e.sub_cpu != null ? ` · CPU ${dur(e.sub_cpu)}` : ''}`, false]],
@@ -323,11 +412,11 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean): Bo
       ],
       bad: false,
       color: null,
-      tip: `${fint(e.count)} runs of the same shape in a row\n${e.samples.map((x) => `${x.n}× ${x.cmdline ?? x.args ?? ''}`).join('\n')}`,
+      tip: `${fint(e.count)} runs of the same shape in a row${dir ? `\nin ${dir}${own ? '' : ', where its parent ran'}` : ''}\n${e.samples.map((x) => `${x.n}× ${x.cmdline ?? x.args ?? ''}`).join('\n')}`,
     };
   }
   if (e.k === 'cap') {
-    return { kind: 'more', title: `+${fint(e.more)} more`, type: null, caret: null, lines: [[['click to show them all', false]]], bad: false, color: null };
+    return { kind: 'more', title: `+${fint(e.more)} more`, type: null, where: null, whereOwn: false, caret: null, lines: [[['click to show them all', false]]], bad: false, color: null };
   }
   const n = e.k === 'rest' ? e.more : (e as ProcCount).n;
   const cmds = e.k === 'rest' ? [] : (e as ProcCount).cmds;
@@ -335,6 +424,8 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean): Bo
     kind: 'more',
     title: `+${fint(n)} more processes`,
     type: null,
+    where: null,
+    whereOwn: false,
     caret: null,
     lines: [
       [[e.k === 'rest' ? 'more runs of the same shape' : 'counted, not drawn: past the read’s budget', false]],
@@ -353,15 +444,18 @@ export function Box({
   open,
   kids,
   root,
+  dir = null,
   onCaret,
 }: {
   e: Item;
   open: boolean;
   kids: number;
   root: boolean;
+  /** the folder it ran in, its own or its parent's (`dirOf`) */
+  dir?: string | null;
   onCaret?: () => void;
 }) {
-  const t = boxText(e, open, kids, root);
+  const t = boxText(e, open, kids, root, dir);
   const caret = !t.caret ? null : onCaret ? (
     <button
       className="pd-caret pd-tog"
@@ -388,6 +482,7 @@ export function Box({
         {t.type && <span className="pt-tag type">{t.type}</span>}
         {caret}
       </div>
+      {t.where && <div className={`pd-w mono${t.whereOwn ? ' own' : ''}`}>{t.where}</div>}
       {t.lines.map((l, i) => (
         <div key={i} className="pd-s">
           {l.map(([s, bad], j) => (
@@ -423,20 +518,27 @@ export function hiddenCount(root: ProcNode, h: Hide): { routine: number; typos: 
  *  most MAX_KIDS under a parent not in `all`. Ids are the table view's. */
 export function procNodes(root: ProcNode, open: Set<string>, h: Hide, all: Set<string>): PNode[] {
   const nodes: PNode[] = [];
-  const walk = (e: Item, id: string, parent: string | null) => {
+  const walk = (e: Item, id: string, parent: string | null, up: string | null) => {
     // children once, so each keeps the index the table view's ids use
     const full = kidsOf(e).map((k, i) => [k, i] as const);
     const kids = full.filter(([k]) => !isHidden(k, h));
-    nodes.push({ id, parent, data: { e, kids: kids.length } });
+    const dir = dirOf(e, up);
+    nodes.push({ id, parent, data: { e, kids: kids.length, dir } });
     if (!kids.length || !open.has(id)) return;
     const shown = all.has(id) ? kids : kids.slice(0, MAX_KIDS);
-    shown.forEach(([k, i]) => walk(k, `${id}.${i}`, id));
+    shown.forEach(([k, i]) => walk(k, `${id}.${i}`, id, dir ?? up));
     if (shown.length < kids.length) {
-      nodes.push({ id: `${id}.+`, parent: id, data: { e: { k: 'cap', more: kids.length - shown.length, parent: id }, kids: 0 } });
+      nodes.push({ id: `${id}.+`, parent: id, data: { e: { k: 'cap', more: kids.length - shown.length, parent: id }, kids: 0, dir: null } });
     }
   };
-  walk(root, 'r', null);
+  walk(root, 'r', null, null);
   return nodes;
+}
+
+/** The ids above box `id`, the root first: `r.0.3` is under `r` and `r.0`. */
+function ancestorIds(id: string): string[] {
+  const parts = id.split('.');
+  return parts.slice(1).map((_, i) => parts.slice(0, i + 1).join('.'));
 }
 
 /** What it takes to draw box `id`: the boxes to open above it, the parents
@@ -481,6 +583,9 @@ export const ProcDiagram = memo(function ProcDiagram({
   hide,
   all,
   setAll,
+  hits,
+  cur,
+  goTo,
 }: {
   root: ProcNode;
   open: Set<string>;
@@ -489,6 +594,12 @@ export const ProcDiagram = memo(function ProcDiagram({
   /** parents whose every child is shown, past the first MAX_KIDS */
   all: Set<string>;
   setAll: (s: Set<string>) => void;
+  /** the boxes find matched; a closed box with one below it is marked too */
+  hits?: Set<string> | null;
+  /** the match find went to last */
+  cur?: string | null;
+  /** brings a box into view, again on each new `n` */
+  goTo?: { id: string; n: number } | null;
 }) {
   // Worked out again only when the tree, what is open or shown in full, or
   // what is hidden changes: an expanded session is thousands of boxes.
@@ -510,19 +621,32 @@ export const ProcDiagram = memo(function ProcDiagram({
     [nodes, all, open, setAll, setOpen],
   );
   const render = useCallback(
-    (n: PNode) => <Box e={n.data.e} open={open.has(n.id)} kids={n.data.kids} root={n.id === 'r'} />,
+    (n: PNode) => <Box e={n.data.e} open={open.has(n.id)} kids={n.data.kids} root={n.id === 'r'} dir={n.data.dir} />,
     [open],
+  );
+  // a closed box holds a match when a match's id runs through it
+  const holds = useMemo(() => {
+    const s = new Set<string>();
+    for (const id of hits ?? []) for (const a of ancestorIds(id)) s.add(a);
+    return s;
+  }, [hits]);
+  const mark = useCallback(
+    (id: string) => (hits?.has(id) ? 'hit' : holds.has(id) && !open.has(id) ? 'hit-in' : undefined),
+    [hits, holds, open],
   );
   return (
     <TreeDiagram
       nodes={nodes}
-      nodeW={206}
-      nodeH={80}
+      nodeW={BOX_W}
+      nodeH={BOX_H}
       gapX={14}
       gapY={26}
       className="pd"
       onSelect={onSelect}
       render={render}
+      selected={cur}
+      mark={hits?.size ? mark : undefined}
+      goTo={goTo}
     />
   );
 });

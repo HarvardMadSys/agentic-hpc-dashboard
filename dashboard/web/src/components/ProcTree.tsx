@@ -25,7 +25,7 @@ import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcLink, ProcNode, TrajO
 import { ioTip, ioTotal } from '../lib/procio';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
-import { hiders, isHidden, typoLabel, typoTip } from './ProcDiagram';
+import { hiders, isHidden, shortPath, typoLabel, typoTip } from './ProcDiagram';
 import type { Hide } from './ProcDiagram';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
@@ -282,11 +282,6 @@ export function defaultOpen(root: ProcNode, extra = 160): Set<string> {
 
 /* ------------------------------------------------------------------ cells */
 
-const shortPath = (p: string) => {
-  const parts = p.replace(/^\/home\/[^/]+/, '~').split('/');
-  return parts.length > 3 ? '…/' + parts.slice(-2).join('/') : parts.join('/');
-};
-
 /** hh:mm:ss, with the date when it is not the read's own day. */
 function when(t: number | null | undefined, lo: number | null): string {
   if (t == null) return DASH;
@@ -417,6 +412,7 @@ const RowView = memo(function RowView({
   tl,
   zoomed,
   flash,
+  hit,
   newest,
 }: {
   r: Row;
@@ -426,6 +422,8 @@ const RowView = memo(function RowView({
   /** a zoomed range is on: mark whether this row ran inside it */
   zoomed: boolean;
   flash: boolean;
+  /** find matched it, or, closed, a row below it */
+  hit?: 'hit' | 'hit-in';
   /** the tree was served newest first */
   newest: boolean;
 }) {
@@ -587,6 +585,7 @@ const RowView = memo(function RowView({
     rowCls += inside ? ' inz' : ' outz';
   }
   if (flash) rowCls += ' flash';
+  if (hit) rowCls += ` ${hit}`;
   return (
     <div
       className={`pt-row${rowCls}`}
@@ -632,6 +631,7 @@ export const ProcTree = memo(function ProcTree({
   hide,
   newest = false,
   onOrder,
+  hits,
 }: {
   root: ProcNode;
   open: Set<string>;
@@ -647,9 +647,16 @@ export const ProcTree = memo(function ProcTree({
   newest?: boolean;
   /** asks for the other order; the "started" header flips it, as a sort would */
   onOrder?: (o: TrajOrder) => void;
+  /** the rows find matched; a closed row with one below it is marked too */
+  hits?: Set<string> | null;
 }) {
   const flip = onOrder ? () => onOrder(newest ? 'oldest' : 'newest') : undefined;
   const rows = useMemo(() => flatten(root, open, hide), [root, open, hide]);
+  const holds = useMemo(() => {
+    const s = new Set<string>();
+    for (const id of hits ?? []) for (const a of ancestors(id)) s.add(a);
+    return s;
+  }, [hits]);
   // The rows are memoized (RowView). The axis and the toggle they are handed
   // keep their identity while what they stand for is the same: made anew on
   // every render, they drew every row of an expanded tree again each time.
@@ -749,6 +756,7 @@ export const ProcTree = memo(function ProcTree({
               tl={tl}
               zoomed={!!view}
               flash={on}
+              hit={hits?.has(r.id) ? 'hit' : holds.has(r.id) && !open.has(r.id) ? 'hit-in' : undefined}
               newest={newest}
             />
           );
