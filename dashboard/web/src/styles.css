@@ -2790,6 +2790,67 @@ table tr.section.fold:hover td {
   position: relative;
   margin: 0 auto;
 }
+/* a side the tree runs past: the edge fades into the panel, so a box cut there reads as more tree and not as a narrow
+   box, and a button in it scrolls a screenful that way. The fade takes no pointer; the button does */
+.tdiag-wrap {
+  position: relative;
+  max-width: 100%;
+  min-width: 0;
+}
+.tdiag-wrap::before,
+.tdiag-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+}
+.tdiag-wrap::before {
+  left: 0;
+  background: linear-gradient(to right, var(--surface) 25%, transparent);
+}
+.tdiag-wrap::after {
+  right: 0;
+  background: linear-gradient(to left, var(--surface) 25%, transparent);
+}
+.tdiag-wrap.more-l::before,
+.tdiag-wrap.more-r::after {
+  opacity: 1;
+}
+.tdiag-more {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 22px;
+  height: 30px;
+  padding: 0 0 2px;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tdiag-more.l {
+  left: 0;
+}
+.tdiag-more.r {
+  right: 0;
+}
+.tdiag-more:hover {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+.tdiag-more:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 1px;
+}
 .tdiag-edges {
   position: absolute;
   left: 0;

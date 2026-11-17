@@ -18,8 +18,12 @@
  * caller names one) when first drawn and when the focus changes, and a box
  * that was clicked stays where it was on screen while the tree re-lays out
  * around what it opened.
+ *
+ * A box cut at the edge of the scroll box looks like a narrow box, not like
+ * more tree. So an edge the tree runs past fades out (`.tdiag-wrap.more-l`,
+ * `.more-r`), and holds a button that scrolls a screenful that way.
  */
-import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 export interface TreeNode<T> {
@@ -181,6 +185,8 @@ function TreeDiagramView<T>({
   // the clicked box and where it was on screen, to put it back after the click
   const pin = useRef<{ id: string; left: number } | null>(null);
   const want = focus ?? boxes[0]?.n.id ?? null;
+  // which sides the tree runs past the scroll box on
+  const [more, setMore] = useState<{ l: boolean; r: boolean }>({ l: false, r: false });
 
   useLayoutEffect(() => {
     const p = pin.current;
@@ -207,6 +213,31 @@ function TreeDiagramView<T>({
     went.current = goTo.n;
     el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
   }, [goTo, nodes]);
+  // Kept as the box scrolls and is resized, and read again when the tree is a different width. Declared after the
+  // effects that scroll, so it reads where they left the box.
+  useLayoutEffect(() => {
+    const b = box.current;
+    if (!b) return;
+    const read = () => {
+      const l = b.scrollLeft > 1;
+      const r = b.scrollLeft + b.clientWidth < b.scrollWidth - 1;
+      setMore((m) => (m.l === l && m.r === r ? m : { l, r }));
+    };
+    read();
+    b.addEventListener('scroll', read, { passive: true });
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(read);
+    ro?.observe(b);
+    return () => {
+      b.removeEventListener('scroll', read);
+      ro?.disconnect();
+    };
+  }, [W]);
+  const page = (dir: 1 | -1) => {
+    const b = box.current;
+    if (!b) return;
+    const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    b.scrollBy({ left: dir * Math.max(nodeW + gapX, b.clientWidth * 0.8), behavior: smooth ? 'smooth' : 'auto' });
+  };
   const click = onSelect
     ? (id: string) => {
         const el = els.current.get(id);
@@ -217,29 +248,41 @@ function TreeDiagramView<T>({
       }
     : undefined;
   return (
-    <div className={`tdiag ${className ?? ''}`} ref={box}>
-      <div className="tdiag-canvas" style={{ width: W, height: H }}>
-        <svg width={W} height={H} className="tdiag-edges" aria-hidden="true">
-          {edges.map((e) => (
-            <path key={e.id} d={e.d} />
+    <div className={`tdiag-wrap${more.l ? ' more-l' : ''}${more.r ? ' more-r' : ''}`}>
+      <div className={`tdiag ${className ?? ''}`} ref={box}>
+        <div className="tdiag-canvas" style={{ width: W, height: H }}>
+          <svg width={W} height={H} className="tdiag-edges" aria-hidden="true">
+            {edges.map((e) => (
+              <path key={e.id} d={e.d} />
+            ))}
+          </svg>
+          {boxes.map((p) => (
+            <div
+              key={p.n.id}
+              ref={keep}
+              className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}${mark ? ` ${mark(p.n.id) ?? ''}` : ''}`}
+              data-id={p.n.id}
+              style={{ left: p.x, top: p.y, width: nodeW, height: nodeH }}
+              onClick={click ? () => click(p.n.id) : undefined}
+              role={click ? 'button' : undefined}
+              tabIndex={click ? 0 : undefined}
+              onKeyDown={click ? (e) => e.key === 'Enter' && click(p.n.id) : undefined}
+            >
+              {render(p.n)}
+            </div>
           ))}
-        </svg>
-        {boxes.map((p) => (
-          <div
-            key={p.n.id}
-            ref={keep}
-            className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}${mark ? ` ${mark(p.n.id) ?? ''}` : ''}`}
-            data-id={p.n.id}
-            style={{ left: p.x, top: p.y, width: nodeW, height: nodeH }}
-            onClick={click ? () => click(p.n.id) : undefined}
-            role={click ? 'button' : undefined}
-            tabIndex={click ? 0 : undefined}
-            onKeyDown={click ? (e) => e.key === 'Enter' && click(p.n.id) : undefined}
-          >
-            {render(p.n)}
-          </div>
-        ))}
+        </div>
       </div>
+      {more.l && (
+        <button type="button" className="tdiag-more l" onClick={() => page(-1)} aria-label="scroll the tree left" data-tip="more of the tree to the left">
+          ‹
+        </button>
+      )}
+      {more.r && (
+        <button type="button" className="tdiag-more r" onClick={() => page(1)} aria-label="scroll the tree right" data-tip="more of the tree to the right">
+          ›
+        </button>
+      )}
     </div>
   );
 }

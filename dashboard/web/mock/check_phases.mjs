@@ -1583,16 +1583,16 @@ test("the zoom hint shows over the chart with no phases as it does over the one 
   assert.match(nav, /tasks: \[0, R\.task\],/, 'Tasks at the lane');
   assert.match(nav, /phases: \[R\.top, R\.lbl\],/, 'Phases at the row of the names');
   assert.match(nav, /processes: \[BASE - PH, PH\],/, 'Processes at the bars');
-  // These rows are in the chart's own units, which are px only where it is drawn at its box's width. The chart with no phases is
-  // drawn in `BIN_W` units and scaled to its plot, so a caption's box is its row's share of the plot's height, and sits at the bars
-  // there too, where px would put it below them and over the quick jumps in a narrow plot.
+  // These rows are in the chart's own units, which are px only once it is drawn at its box's width, and not before the box is first
+  // measured. So a caption's box is its row's share of the plot's height, and sits at the bars then too, where px would put it below
+  // them and over the quick jumps in a narrow plot.
   assert.match(nav, /top: `\$\{\(capBox\[level\]\[0\] \/ H\) \* 100\}%`/);
   assert.match(nav, /height: `\$\{\(capBox\[level\]\[1\] \/ H\) \* 100\}%`/);
   assert.doesNotMatch(nav, /top: capBox\[level\]\[0\]/, 'no px of the chart\'s units');
   assert.match(nav, /\{LEVELS\[level\]\}/, 'each in the page\'s name for the level');
 });
 
-test("a caption of a level stands at the row it names, in a chart drawn at its box's width and in one drawn in units and scaled to it, and the zoom note and the plot stand where the hint's rule looks for them", async () => {
+test("a caption of a level stands at the row it names, in a chart with phases and in one with none, each drawn at its box's width, and the zoom note and the plot stand where the hint's rule looks for them", async () => {
   const ui = await renderer();
   try {
     const row = rows.find((r) => r.sid === 'period4-holylogin01-thomwg11-1000');
@@ -1639,11 +1639,14 @@ test("a caption of a level stands at the row it names, in a chart drawn at its b
     const withTasks = await render(row.phases);
     const noTasks = await render({ ...row.phases, tasks: [] });
 
-    // the chart with no phases is drawn in `BIN_W` units, scaled to its plot: one caption, at the bars, in a share of the plot's height
+    // the chart with no phases is drawn as wide as its box leaves beside the gutter, as the one with phases is, so its words are not
+    // scaled down in a narrow box: one caption, at the bars, in a share of the plot's height, and what the bars count under the chart
     const a = read(noPhases);
     assert.deepEqual(Object.keys(a.caps), ['Processes']);
-    assert.equal(a.W, 1120);
+    assert.equal(a.W, P.plotW(1120));
     bars(a, 'no phases');
+    assert.doesNotMatch(noPhases, /<text class="tick"[^>]*>process starts per/, 'the caption is not in the drawing');
+    assert.match(noPhases, /<div class="tn-note"><span>process starts per [^<]*<\/span><\/div>/, 'it is the line under the chart');
     // the chart with phases and a lane, and the one with phases and no lane: a caption at each row that is there
     const b = read(withTasks);
     assert.deepEqual(Object.keys(b.caps), ['Tasks', 'Phases', 'Processes']);
