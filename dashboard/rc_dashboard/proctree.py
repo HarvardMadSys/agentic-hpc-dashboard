@@ -78,9 +78,9 @@ import time
 from array import array
 
 from . import feeds as feedmod, fastjson
-from . import gz
-from .export import _window_stream, event_filter, window_plan, window_scan
-from .feedfile import day_files, end_at_jsonl as _end_at, format_of, host_of, prefer_of
+from . import gz, replica
+from .export import event_filter, window_plan, window_scan
+from .feedfile import day_files, end_at_jsonl as _end_at, host_of
 from .normalize import Normalizer, epoch_of
 from .procindex import VIA
 from .redact import redact
@@ -1455,7 +1455,7 @@ def key_patterns(members):
 
 
 def key_where(members):
-    """`key_patterns` for an EBR day-file's decoder: an `ebr` filter (`where`)
+    """`key_patterns` for a sealed file's replica: a `where` (`where.py`)
     that passes every record whose session key is one of these, or None
     exactly when `_key_values` is None (a key not on a pid: no prefilter).
 
@@ -1563,11 +1563,13 @@ def _key_stream_gz(entry, norm, since, until, stats, pats, ev):
 def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=None):
     """One file's records on the keys, as `(ts, rec)`, ascending.
 
-    An EBR day-file is read as a window scan reads it (`export._window_stream`),
-    its decoder rejecting by `kinds` and the keys' `where` (`key_where`) before
-    a record is built: there are no lines to search."""
-    if format_of(entry["path"]) == "ebr":
-        yield from _window_stream(entry, norm, since, until, stats, kinds=kinds, where=where)
+    A sealed file with a replica is read from it (`_key_stream_replica`), the
+    replica rejecting by the keys' `where` (`key_where`) on its columns before a
+    record is built: the session's few records of a day are found without
+    inflating the `.gz` to search it."""
+    rep = replica.for_path(entry["path"]) if where is not None else None
+    if rep is not None:
+        yield from _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where)
         return
     if gz.is_gz(entry["path"]):
         yield from _key_stream_gz(entry, norm, since, until, stats, pats, ev)
@@ -1620,6 +1622,53 @@ def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=No
             mm.close()
 
 
+def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
+    """`_key_stream_gz` over a sealed file's replica, read and counted as that
+    reads and counts the file: the same end (the read's end and its slack, to a
+    line's end), `bytes` a CHUNK at a time -- each chunk ending at a line's end,
+    counted before its records are looked at -- and `skipped` the records on the
+    keys of an event not asked for. So `inspect_max_bytes` stops a read at the
+    same record either way. The records on the keys are found by `where` on the
+    replica's columns rather than by the patterns, and a line that does not
+    parse, which no column describes, is not looked at."""
+    size = rep.size
+    start = entry["start"]
+    if size <= start:
+        return
+    end = rep.end_at(until + UNTIL_SLACK, size) if until is not None else size
+    end = rep.prev_boundary(max(start, end))
+    if end <= start:
+        return
+
+    def chunk(pos):
+        return min(rep.next_boundary(min(pos + CHUNK, end)), end)
+    pos, stop = start, chunk(start)
+    stats["bytes"] += stop - pos
+    for off, _n, raw in rep.records(start, end, where=where):
+        while off >= stop:
+            pos, stop = stop, chunk(stop)
+            stats["bytes"] += stop - pos
+        if kinds is not None and raw.get("event") not in kinds:
+            stats["skipped"] += 1
+            continue
+        stats["scanned"] += 1
+        rec = norm.normalize(raw)
+        if rec is None:
+            continue
+        ts = rec.get("_ts_epoch")
+        if ts is None:
+            stats["no_ts"] += 1
+            continue
+        if ts < since:
+            continue
+        if until is not None and ts > until:
+            return                    # sorted: nothing later qualifies
+        yield ts, rec
+    while stop < end:
+        pos, stop = stop, chunk(stop)
+        stats["bytes"] += stop - pos
+
+
 def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
     """Yield `(rec, stats)` for the records on these session keys, OLDEST FIRST.
 
@@ -1633,10 +1682,11 @@ def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
 
     `skipped` here counts the lines a key hit that are not one of `events`;
     the lines no key hit are never visited, so they are not counted at all.
-    An EBR day-file is decoded instead, rejecting by `events` and `where`
-    (`key_where`) before a record is built; `skipped` then counts what those
-    rejected, and `bytes` the frames read (`inspect_max_bytes` bounds the
-    bytes READ, in either format).
+    A sealed file with a replica is read from it instead, the keys' `where`
+    (`key_where`) rejecting on its columns before a record is built, and counted
+    as its search would be: the same `bytes`, chunk by chunk, so
+    `inspect_max_bytes` stops the read at the same record, and the same
+    `skipped` (`_key_stream_replica`).
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan), "method": "key search"}
@@ -1832,17 +1882,16 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     if to:
         until = min(until, to) if until else to
     days = int(max(0, t0 - since) // 86400) + 2
-    prefer = prefer_of(cfg, "ebpf")
     # The sid names one host, and a day-file is named for its host: reading
     # the other hosts' files would only find other processes with the same pids.
     # Its files are planned alone, and every host's only when none of them
     # holds the span -- as the full plan, cut to the host's, read before. The
     # host is the file's exactly (`feedfile.host_of`): `login1.` is a prefix of
     # `login1.rc.fas`'s files too.
-    mine = [p for p in day_files(roots, days, prefer) if host and host_of(p) == host]
+    mine = [p for p in day_files(roots, days) if host and host_of(p) == host]
     plan, total = window_plan(roots, since, days, paths=mine) if mine else ([], 0)
     if not plan:
-        plan, total = window_plan(roots, since, days, prefer=prefer)
+        plan, total = window_plan(roots, since, days)
 
     b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
     norm = Normalizer(cfg)

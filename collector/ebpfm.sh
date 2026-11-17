@@ -11,23 +11,17 @@
 #
 # Run it as root and you get both tiers. Run it as an ordinary user and you get
 # the node tier, with `check` naming exactly what is skipped. EBPFM_TIER
-# (node|ebpf|all) overrides the choice. Both tiers write their day-files as
-# JSONL, as EBR (lib/ebr.py's binary records, the same records 4-8x smaller), or
-# as both, twins: EBPFM_FORMAT=jsonl|ebr|both, default both.
+# (node|ebpf|all) overrides the choice. Both tiers write their day-files as JSONL.
 #
-#        ./ebpfm.sh check          one line per precondition; exit code = FAIL count
+#        ./ebpfm.sh check         one line per precondition; exit code = FAIL count
 #        ./ebpfm.sh start|stop|status
-#        ./ebpfm.sh once [secs]    foreground capture
-#        ./ebpfm.sh tail [n]       last n records of today's file
-#        ./ebpfm.sh compare [day]  JSONL vs EBR twins, record by record, both tiers
-#        ./ebpfm.sh verify [day]   check every frame and record of the day's EBR files
-#        ./ebpfm.sh bench [file]   EBR's size and codec speed on a day-file, in memory
-#        ./ebpfm.sh ebr VERB ...   lib/ebr.py: cat convert verify compare count append bench
-#        ./ebpfm.sh bundle [out]   emit a self-extracting single-file copy
-#   sudo ./ebpfm.sh bootstrap      install dependencies, set required sysctls, verify
-#   sudo ./ebpfm.sh features       probe the BPF blocks, print the resolved set
-#   sudo ./ebpfm.sh overhead       one-off cost measurement (see README)
-#   sudo ./ebpfm.sh install-unit   install the persistent systemd unit (fleet deploys)
+#        ./ebpfm.sh once [secs]   foreground capture
+#        ./ebpfm.sh tail [n]      last n records of today's file
+#        ./ebpfm.sh bundle [out]  emit a self-extracting single-file copy
+#   sudo ./ebpfm.sh bootstrap     install dependencies, set required sysctls, verify
+#   sudo ./ebpfm.sh features      probe the BPF blocks, print the resolved set
+#   sudo ./ebpfm.sh overhead      one-off cost measurement (see README)
+#   sudo ./ebpfm.sh install-unit  install the persistent systemd unit (fleet deploys)
 #
 # Why `start` uses systemd-run: the userspace drain is cgroup-charged, and `sudo`
 # does NOT leave the caller's slice — a sudo'd child stays in
@@ -49,7 +43,6 @@ DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
 TRACER="$DIR/ebpf_trace.py"
 NODE_SNAPSHOT="$DIR/node_snapshot.py"
-EBR="$DIR/lib/ebr.py"
 NAME="ebpfm"
 HOST="$(hostname -s)"
 IS_ROOT=0; [ "$(id -u)" = 0 ] && IS_ROOT=1
@@ -105,9 +98,9 @@ _secure_dir() {
 }
 
 # Apply the configured file mode + optional group to an existing file.
-# Best-effort. The node tier's day-files are created by the shell and by
-# `ebr.py append` (umask) and tightened here, before a record lands in them; the
-# ebpf tier's files are handled in ebpf_trace.py.
+# Best-effort. The node tier's day-file is created by the shell (umask) and
+# tightened here, before a record lands in it; the ebpf tier's files are handled
+# in ebpf_trace.py.
 _secure_file() {
     local f="$1"
     [ -e "$f" ] || return 0
@@ -116,65 +109,61 @@ _secure_file() {
     return 0
 }
 
-# The ebpf tier writes TWO streams per host per day; stream_of() in ebpf_trace.py
-# is the authority on which record goes where. Each is a .jsonl, a .ebr, or both
-# (EBPFM_FORMAT). The node tier is unaffected -- it emits snapshots only, into
-# its own root, and keeps its single stream, <host>.jsonl and/or <host>.ebr.
-#   <host>.exits.{jsonl,ebr}      exit, truncated   (per-process, unbounded rate)
-#   <host>.snapshot.{jsonl,ebr}   everything else   (census, conns, submits, meta/stop)
+# The ebpf tier writes TWO files per host per day; stream_of() in ebpf_trace.py
+# is the authority on which record goes where. The node tier is unaffected --
+# it emits snapshots only, into its own root, and keeps its single file.
+#   <host>.exits.jsonl      exit, truncated   (per-process, unbounded rate)
+#   <host>.snapshot.jsonl   everything else   (census, conns, submits, meta/stop)
 EBPF_STREAMS="snapshot exits"
 # The installed unit passes %H, the FULL hostname, where this script says
 # `hostname -s`; a file under either name is this host's, so status and tail
-# find the unit's files too. EXT is the format's extension, jsonl or ebr (with
-# .gz for a sealed day).
-_ebpf_file() {   # STREAM [DAY] [EXT=jsonl]
-    local d="$OUTPUT_DIR/${2:-$(date +%F)}" x="${3:-jsonl}" g
-    if [ ! -e "$d/$HOST.$1.$x" ]; then
-        for g in "$d/$HOST".*."$1.$x"; do
+# find the unit's files too.
+_ebpf_file() {   # STREAM [DAY]
+    local d="$OUTPUT_DIR/${2:-$(date +%F)}" g
+    if [ ! -e "$d/$HOST.$1.jsonl" ]; then
+        for g in "$d/$HOST".*."$1".jsonl; do
             [ -e "$g" ] && { echo "$g"; return 0; }
         done
     fi
-    echo "$d/$HOST.$1.$x"
+    echo "$d/$HOST.$1.jsonl"
 }
 
-# The file holding STEM's records in format EXT (jsonl, ebr) in DIR: the plain
-# file, else its .gz (a sealed day), else nothing and status 1. Plain wins: while
-# gzip runs both exist, and only the plain one is complete.
-_twin() {   # DIR STEM EXT
-    local f="$1/$2.$3"
+# The day-file holding STEM's records in DIR: STEM.jsonl, else its .gz (a sealed
+# day), else nothing and status 1. Plain wins: while gzip runs both exist, and
+# only the plain one is complete.
+_jsonl_file() {   # DIR STEM
+    local f="$1/$2.jsonl"
     if [ -e "$f" ]; then echo "$f"; return 0; fi
     if [ -e "$f.gz" ]; then echo "$f.gz"; return 0; fi
     return 1
 }
 
-# Records in a day-file of either format, plain or gzipped: EBR's from its frame
-# headers (nothing is decoded), JSONL's by counting lines. Empty if unreadable.
+# Records in a day-file, plain or gzipped: one per line. Empty if unreadable.
 _feed_count() {   # FILE
     case "$1" in
-        *.ebr|*.ebr.gz) python3 "$EBR" count "$1" 2>/dev/null ;;
-        *.gz)           zcat -- "$1" 2>/dev/null | wc -l | tr -d ' ' ;;
-        *)              wc -l < "$1" 2>/dev/null | tr -d ' ' ;;
+        *.gz) zcat -- "$1" 2>/dev/null | wc -l | tr -d ' ' ;;
+        *)    wc -l < "$1" 2>/dev/null | tr -d ' ' ;;
     esac
 }
 
-# One line about a feed and its twin: the record count, then each format's
-# size -- "1234 records, jsonl 21M | ebr 4.0M" -- or each format's own count when
-# they differ (the live day's EBR can be a poll round behind its JSONL).
-_twins_line() {   # NOUN FILE...   (files that do not exist are skipped)
-    local noun="$1" f x n sz one="" all="" n0="" k=0 same=1
-    shift
-    for f in "$@"; do
-        [ -f "$f" ] || continue
-        x="${f%.gz}"; x="${x##*.}"
-        n="$(_feed_count "$f")"; n="${n:-?}"
-        sz="$(du -h "$f" | cut -f1)"
-        k=$((k + 1))
-        if [ "$k" = 1 ]; then n0="$n"; elif [ "$n" != "$n0" ]; then same=0; fi
-        one="$one${one:+ | }$x $sz"
-        all="$all${all:+ | }$x $n $noun $sz"
-    done
-    [ "$k" -gt 0 ] || return 1
-    if [ "$same" = 1 ]; then echo "$n0 $noun, $one"; else echo "$all"; fi
+# The last `stop` record in a day-file, plain or gzipped, as its line: a run's
+# own summary, wherever in the file it landed. Empty if there is none.
+_last_stop() {   # FILE
+    python3 -c '
+import gzip,json,sys
+p=sys.argv[1]
+last=""
+kw=dict(encoding="utf-8",errors="replace")
+with (gzip.open(p,"rt",**kw) if p.endswith(".gz") else open(p,**kw)) as fh:
+    for line in fh:
+        if "\"stop\"" not in line:
+            continue
+        try:
+            if json.loads(line).get("event")=="stop":
+                last=line
+        except Exception:
+            pass
+sys.stdout.write(last)' "$1" 2>/dev/null
 }
 
 fails=0
@@ -214,34 +203,6 @@ case "$TIER" in
 esac
 want_node() { [ "$TIER" = node ] || [ "$TIER" = all ]; }
 want_ebpf() { [ "$TIER" = ebpf ] || [ "$TIER" = all ]; }
-
-# --- formats ---------------------------------------------------------------
-# What both tiers write a day-file as: JSONL, what every reader has always read;
-# EBR, lib/ebr.py's framed binary records (the same records, 4-8x smaller); or
-# both, as twins holding the same records in the same order -- the default while
-# EBR is on trial. Exported, so ebpf_trace.py writes what the node tier does
-# (EBPFM_EBR_ZSTD and EBPFM_EBR_RESET_BYTES reach it the same way; the node tier
-# hands EBPFM_EBR_ZSTD to `ebr.py append`).
-FORMAT="${EBPFM_FORMAT:-both}"
-case "$FORMAT" in
-    jsonl|ebr|both) ;;
-    *) die "EBPFM_FORMAT must be jsonl, ebr or both (got '$FORMAT')" ;;
-esac
-export EBPFM_FORMAT="$FORMAT"
-_want_jsonl() { [ "$FORMAT" != ebr ]; }
-_want_ebr() { [ "$FORMAT" != jsonl ]; }
-
-# EBPFM_EBR_ZSTD as both tiers read it: a zstd level 0-22 (0, the default, is
-# off), anything else 0. zstd needs a module in python3 (3.14+, or zstandard or
-# pyzstd); without one each tier writes EBR uncompressed and says so.
-_ebr_zstd() {
-    local z="${EBPFM_EBR_ZSTD:-0}"
-    case "$z" in ''|*[!0-9]*) echo 0; return ;; esac
-    z="${z#"${z%%[!0]*}"}"                      # leading zeros off: 007 is 7
-    if [ -z "$z" ] || [ "${#z}" -gt 2 ] || [ "$z" -gt 22 ]; then echo 0; else echo "$z"; fi
-}
-# the extension(s) of a day-file in this mode, for printed paths
-_exts() { if [ "$FORMAT" = both ]; then printf '{jsonl,ebr}'; else printf '%s' "$FORMAT"; fi; }
 
 # The node tier's collection mode follows the tier set: when the eBPF tier is
 # also running it collects the four ptrace-crippled per-process sections
@@ -390,7 +351,6 @@ cmd_check() {
         *) ok lockdown "$ld" ;;
     esac
 
-    _check_format
     if want_node; then _check_node_tier; fi
     if ! want_ebpf; then
         printf -- '-- vendored libraries\n'
@@ -503,43 +463,6 @@ cmd_check() {
     return "$fails"
 }
 
-# Both tiers write in EBPFM_FORMAT, and EBR through lib/ebr.py: without a
-# working one the eBPF tier falls back to JSONL alone and the node tier writes
-# no EBR, so a format that asks for EBR makes that a FAIL.
-_check_format() {
-    printf -- '-- output format (both tiers)\n'
-    case "$FORMAT" in
-        both)  ok EBPFM_FORMAT "both: JSONL and EBR twins (the trial)" ;;
-        jsonl) ok EBPFM_FORMAT "jsonl: no EBR twin" ;;
-        ebr)   ok EBPFM_FORMAT "ebr: no JSONL -- every reader must read EBR" ;;
-    esac
-    local v z zm
-    if v="$(python3 "$EBR" --version 2>&1)"; then
-        ok ebr.py "$v ($EBR)"
-        if _want_ebr; then
-            z="$(_ebr_zstd)"
-            zm="${v#*zstd: }"; zm="${zm%)}"             # `ebr N (zstd: MODULE)`
-            [ "$zm" != "$v" ] || zm=unavailable
-            if [ "$z" != 0 ] && [ "$zm" = unavailable ]; then
-                warn "EBR settings" "zstd $z (unavailable: written uncompressed; Python 3.14+ or pip install zstandard), a segment per ${EBPFM_EBR_RESET_BYTES:-2097152} bytes"
-            else
-                ok "EBR settings" \
-                    "zstd $z ($zm), a segment per ${EBPFM_EBR_RESET_BYTES:-2097152} bytes"
-            fi
-            case "$z:${EBPFM_EBR_ZSTD:-0}" in
-                0:*[!0]*) warn EBPFM_EBR_ZSTD "'$EBPFM_EBR_ZSTD' is not a zstd level 0-22: off" ;;
-            esac
-            [ -z "${EBPFM_EBR_ZLIB:-}" ] \
-                || warn EBPFM_EBR_ZLIB "ignored: replaced by EBPFM_EBR_ZSTD (EBR v2)"
-        fi
-    elif _want_ebr; then
-        bad ebr.py "does not run ($(printf '%s' "$v" | tail -n 1)) -- no EBR would be written"
-    else
-        warn ebr.py "does not run ($(printf '%s' "$v" | tail -n 1)); unused with EBPFM_FORMAT=jsonl"
-    fi
-    return 0
-}
-
 _check_node_tier() {
     printf -- '-- node tier (unprivileged)\n'
     [ -f "$NODE_SNAPSHOT" ] && ok node_snapshot "$NODE_SNAPSHOT" \
@@ -600,14 +523,13 @@ _check_vendored() {
 cmd_features() { need_root features; exec python3 "$TRACER" --features; }
 cmd_dump_c()   { need_root dump-c;   exec python3 "$TRACER" --dump-c; }
 
-# One node-tier snapshot appended to today's file(s). Unprivileged.
+# One node-tier snapshot appended to today's file. Unprivileged.
 # node_snapshot.py prints one JSON line. It is captured first, so a snapshot the
 # timeout kills appends nothing rather than half a line; then the line is
-# appended to $HOST.jsonl and/or handed to `ebr.py append` for the $HOST.ebr
-# twin (one frame per snapshot, continuing the file's segment, under its lock).
-# node_snapshot.py itself is vendored and stays as it is (VENDORED.md).
+# appended to $HOST.jsonl. node_snapshot.py itself is vendored and stays as it
+# is (VENDORED.md).
 _node_tick() {
-    local d out rc=0
+    local d out
     d="$NODE_OUTPUT_DIR/$(date +%F)"
     _secure_dir "$d" || return 1
     # Bounded: one snapshot stuck on a hung mount would otherwise stall every
@@ -615,24 +537,10 @@ _node_tick() {
     out="$(SNAPSHOT_MODE="$(_node_mode)" $(_node_timeout) python3 "$NODE_SNAPSHOT" \
         "$HOST" "$NODE_TOP_N")" || return 1
     [ -n "$out" ] || return 1
-    # Each file is created and given the configured mode/group before the
-    # record lands, so no snapshot ever sits in a file at the umask's mode.
-    if _want_jsonl; then
-        { : >> "$d/$HOST.jsonl"; } 2>/dev/null; _secure_file "$d/$HOST.jsonl"
-        printf '%s\n' "$out" >> "$d/$HOST.jsonl" || rc=1
-    fi
-    if _want_ebr; then
-        { : >> "$d/$HOST.ebr"; } 2>/dev/null; _secure_file "$d/$HOST.ebr"
-        if ! printf '%s\n' "$out" | python3 "$EBR" append --host "$HOST" --stream node \
-                --writer node_snapshot.py --zstd "$(_ebr_zstd)" "$d/$HOST.ebr"; then
-            if _want_jsonl; then
-                echo "ebpfm: node tier: EBR append to $d/$HOST.ebr failed (JSONL unaffected)" >&2
-            else
-                rc=1
-            fi
-        fi
-    fi
-    return "$rc"
+    # The file is created and given the configured mode/group before the record
+    # lands, so no snapshot ever sits in a file at the umask's mode.
+    { : >> "$d/$HOST.jsonl"; } 2>/dev/null; _secure_file "$d/$HOST.jsonl"
+    printf '%s\n' "$out" >> "$d/$HOST.jsonl" || return 1
 }
 
 # `timeout` with a limit just under the interval, when coreutils has it
@@ -648,13 +556,13 @@ _node_loop() { while true; do _node_tick || true; sleep "$NODE_INTERVAL"; done; 
 cmd_once() {
     local dur="${1:-${EBPFM_DURATION:-30}}"
     if want_node; then
-        echo "node tier: one snapshot (mode=$(_node_mode)) -> $NODE_OUTPUT_DIR/$(date +%F)/$HOST.$(_exts)"
+        echo "node tier: one snapshot (mode=$(_node_mode)) -> $NODE_OUTPUT_DIR/$(date +%F)/$HOST.jsonl"
         _node_tick && echo "  ok" || echo "  FAILED"
     fi
     if want_ebpf; then
         need_root once
         _secure_dir "$OUTPUT_DIR"
-        echo "ebpf tier: capturing ${dur}s on $HOST -> $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.$(_exts)"
+        echo "ebpf tier: capturing ${dur}s on $HOST -> $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl"
         EBPFM_DURATION="$dur" python3 "$TRACER" "$HOST"
     fi
 }
@@ -717,7 +625,7 @@ _node_start() {
     fi
     echo "$np" > "$NODE_PID_FILE"
     echo "node tier started on $HOST (pid $np, mode=$(_node_mode), every ${NODE_INTERVAL}s)"
-    echo "  output: $NODE_OUTPUT_DIR/<date>/$HOST.$(_exts)"
+    echo "  output: $NODE_OUTPUT_DIR/<date>/$HOST.jsonl"
     return 0
 }
 
@@ -732,17 +640,17 @@ _node_stop() {
 }
 
 _node_status() {
-    local p b line
+    local p f
     if p="$(_node_running_pid)"; then
         echo "$NAME node tier: RUNNING on $HOST (pid $p, mode=$(_node_mode))"
     else
         echo "$NAME node tier: NOT RUNNING on $HOST"
     fi
-    b="$NODE_OUTPUT_DIR/$(date +%F)/$HOST"
-    if line="$(_twins_line snapshots "$b.jsonl" "$b.ebr")"; then
-        echo "  today: $line"
+    f="$NODE_OUTPUT_DIR/$(date +%F)/$HOST.jsonl"
+    if [ -f "$f" ]; then
+        echo "  today: $(_feed_count "$f") snapshots, $(du -h "$f" | cut -f1)"
     else
-        echo "  today: no file yet ($b.$(_exts))"
+        echo "  today: no file yet ($f)"
     fi
 }
 
@@ -780,7 +688,7 @@ _ebpf_start() {
         echo "$NAME started on $HOST (pid $(cat "$PID_FILE"))"
     fi
     echo "  log:    $LOG"
-    echo "  output: $OUTPUT_DIR/<date>/$HOST.{snapshot,exits}.$(_exts)"
+    echo "  output: $OUTPUT_DIR/<date>/$HOST.{snapshot,exits}.jsonl"
 }
 
 _passthru_env() {
@@ -837,16 +745,16 @@ _ebpf_status() {
     fi
     # Both streams, separately: a snapshot file that is growing while the exits
     # file is flat is a real and diagnosable state (census ticking, no process
-    # exits seen), and one summed number would hide it. Each with both formats'
-    # sizes, whichever exist.
-    local s line any=0
+    # exits seen), and one summed number would hide it.
+    local s f any=0
     for s in $EBPF_STREAMS; do
-        if line="$(_twins_line records "$(_ebpf_file "$s")" "$(_ebpf_file "$s" "" ebr)")"; then
+        f="$(_ebpf_file "$s")"
+        if [ -f "$f" ]; then
             any=1
-            printf '  today (%-8s): %s\n' "$s" "$line"
+            printf '  today (%-8s): %s records, %s\n' "$s" "$(_feed_count "$f")" "$(du -h "$f" | cut -f1)"
         fi
     done
-    [ "$any" = 1 ] || echo "  today: no files yet ($OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.$(_exts))"
+    [ "$any" = 1 ] || echo "  today: no files yet ($OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl)"
 }
 
 # --- persistent systemd unit ------------------------------------------------
@@ -871,8 +779,7 @@ cmd_install_unit() {
     systemctl daemon-reload || die "daemon-reload failed"
     echo "installed $UNIT_DST"
     echo "  collector: $DIR/ebpf_trace.py"
-    echo "  output:    $OUTPUT_DIR/<date>/<host>.{snapshot,exits}.{jsonl,ebr}"
-    echo "             (which of the two: EBPFM_FORMAT in /etc/default/ebpfm, default both)"
+    echo "  output:    $OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl"
     echo
     echo "  systemctl enable --now $NAME     # start it and survive reboots"
     echo "  systemctl status $NAME"
@@ -911,147 +818,18 @@ cmd_status() {
     if want_ebpf; then _ebpf_status; fi
 }
 
-# Today's file to read for STREAM: the JSONL while it is written, else the EBR
-# twin, else a JSONL a run in another format left. Status 1 if there is none.
-_tail_file() {   # STREAM
-    local j e
-    j="$(_ebpf_file "$1")"; e="$(_ebpf_file "$1" "" ebr)"
-    if _want_jsonl && [ -f "$j" ]; then echo "$j"
-    elif [ -f "$e" ]; then echo "$e"
-    elif [ -f "$j" ]; then echo "$j"
-    else return 1
-    fi
-}
-
 # `tail [n] [stream]` -- both streams by default, since which one carries the
-# record you are looking for is exactly what you may not know yet. JSONL is
-# tailed as it always was; EBR through `ebr.py cat --tail`, which prints the
-# same JSONL lines, newest frames first read from the end.
+# record you are looking for is exactly what you may not know yet.
 cmd_tail() {
     local n="${1:-3}" want="${2:-}" s f any=0
     for s in ${want:-$EBPF_STREAMS}; do
-        f="$(_tail_file "$s")" || continue
+        f="$(_ebpf_file "$s")"
+        [ -f "$f" ] || continue
         any=1
         echo "== $s ($f)"
-        case "$f" in
-            *.ebr)
-                if command -v jq >/dev/null 2>&1; then python3 "$EBR" cat --tail "$n" "$f" | jq .
-                else python3 "$EBR" cat --tail "$n" "$f"; fi ;;
-            *)
-                if command -v jq >/dev/null 2>&1; then tail -n "$n" "$f" | jq .
-                else tail -n "$n" "$f"; fi ;;
-        esac
+        if command -v jq >/dev/null 2>&1; then tail -n "$n" "$f" | jq .; else tail -n "$n" "$f"; fi
     done
-    [ "$any" = 1 ] || { echo "no log yet: $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.$(_exts)"; return 1; }
-}
-
-# ---------------------------------------------------------------------------
-# EBR: the binary twin, and what it takes to trust it before relying on it
-# ---------------------------------------------------------------------------
-# `ebr VERB ...` is lib/ebr.py's own command line: cat, convert, verify, compare,
-# count, append, bench, frames (`ebpfm.sh ebr --help`). Exit 0 ok, 1 a data
-# problem, 2 a usage or I/O error.
-cmd_ebr() { exec python3 "$EBR" "$@"; }
-
-# The stems of DIR's day-files, once each: node7.exits for node7.exits.jsonl,
-# node7.exits.ebr.gz and the rest.
-_stems() {   # DIR
-    local f s
-    for f in "$1"/*.jsonl "$1"/*.jsonl.gz "$1"/*.ebr "$1"/*.ebr.gz; do
-        [ -e "$f" ] || continue
-        s="${f##*/}"; s="${s%.gz}"; echo "${s%.*}"
-    done | sort -u
-}
-
-# Every stem of DIR that has both formats, compared by `ebr.py compare`: record
-# by record, type-exact, key order included. Counts the pairs in _pairs.
-_compare_dir() {   # DIR LIVE
-    local dir="$1" live="$2" stem a b out rc=0
-    for stem in $(_stems "$dir"); do
-        a="$(_twin "$dir" "$stem" jsonl)" || a=""
-        b="$(_twin "$dir" "$stem" ebr)" || b=""
-        if [ -z "$a" ] || [ -z "$b" ]; then
-            printf '  %-34s %s only: nothing to compare\n' "$stem" "$([ -n "$a" ] && echo jsonl || echo ebr)"
-            continue
-        fi
-        _pairs=$((_pairs + 1))
-        out="$(python3 "$EBR" compare $live "$a" "$b" 2>&1)" || rc=1
-        printf '  %-34s %s\n' "$stem" "$(printf '%s\n' "$out" | tail -n 1)"
-        printf '%s\n' "$out" | sed '$d' | sed 's/^/      /'
-    done
-    return "$rc"
-}
-
-# `compare [day] [--live]` -- every JSONL/EBR twin pair of the day (today by
-# default), both tiers, sealed (.gz) or not. A live day's files are still being
-# written, JSONL first in each round, so for today one may be a round ahead of
-# the other: --live, which today implies, allows that and nothing else.
-cmd_compare() {
-    local day="" live="" a dir seen="" rc=0
-    for a in "$@"; do
-        case "$a" in
-            --live) live=--live ;;
-            -*) die "compare: unknown option '$a' (compare [day] [--live])" ;;
-            *) day="$a" ;;
-        esac
-    done
-    [ -n "$day" ] || day="$(date +%F)"
-    [ "$day" = "$(date +%F)" ] && live=--live
-    echo "== compare $day: JSONL vs EBR, record by record${live:+ (live: one may be a round ahead)}"
-    _pairs=0
-    for dir in "$OUTPUT_DIR/$day" "$NODE_OUTPUT_DIR/$day"; do
-        [ -d "$dir" ] && [ "$dir" != "$seen" ] || continue
-        seen="$dir"
-        echo "-- $dir"
-        _compare_dir "$dir" "$live" || rc=1
-    done
-    if [ "$_pairs" = 0 ]; then
-        echo "== nothing compared: no day-file of $day under $OUTPUT_DIR or $NODE_OUTPUT_DIR has both formats"
-        return 1
-    fi
-    if [ "$rc" = 0 ]; then echo "== $_pairs twin pairs, all equal"
-    else echo "== $_pairs twin pairs, NOT all equal"; fi
-    return "$rc"
-}
-
-# `verify [day]` -- every frame and record of the day's EBR files, both tiers. A
-# pending tail (a round still being written) is reported, not a problem; a BAD
-# region, a lost record or a frame whose header disagrees with its records is.
-cmd_verify() {
-    local day="${1:-$(date +%F)}" dir f seen=""
-    local files=()
-    for dir in "$OUTPUT_DIR/$day" "$NODE_OUTPUT_DIR/$day"; do
-        [ -d "$dir" ] && [ "$dir" != "$seen" ] || continue
-        seen="$dir"
-        for f in "$dir"/*.ebr "$dir"/*.ebr.gz; do
-            [ -e "$f" ] || continue
-            case "$f" in *.gz) [ -e "${f%.gz}" ] && continue ;; esac   # plain beats .gz
-            files+=("$f")
-        done
-    done
-    if [ "${#files[@]}" -eq 0 ]; then
-        echo "no EBR file for $day under $OUTPUT_DIR or $NODE_OUTPUT_DIR"
-        return 1
-    fi
-    python3 "$EBR" verify "${files[@]}"
-}
-
-# `bench [file] [options]` -- EBR's size and codec speed against JSONL on one
-# day-file, in memory (nothing is written): today's exits by default, else the
-# newest exits file. Run on the collector host it gives that host's Python's
-# numbers, which on EL8 is the 3.6 figure the flip to EBR waits for.
-cmd_bench() {
-    local f=""
-    case "${1:-}" in ''|-*) ;; *) f="$1"; shift ;; esac
-    if [ -z "$f" ]; then
-        f="$(_ebpf_file exits)"
-        [ -s "$f" ] || f="$(_ebpf_file exits "" ebr)"
-        [ -s "$f" ] || f="$(ls -t "$OUTPUT_DIR"/*/"$HOST".exits.* "$OUTPUT_DIR"/*/"$HOST".*.exits.* \
-                            2>/dev/null | head -n 1)"
-    fi
-    { [ -n "$f" ] && [ -s "$f" ]; } \
-        || die "bench: no exits file to measure under $OUTPUT_DIR; name one: $SELF bench FILE"
-    python3 "$EBR" bench "$@" "$f"
+    [ "$any" = 1 ] || { echo "no log yet: $OUTPUT_DIR/$(date +%F)/$HOST.{snapshot,exits}.jsonl"; return 1; }
 }
 
 # ---------------------------------------------------------------------------
@@ -1157,32 +935,28 @@ for avg,n,cnt,ns in rows[:12]:
     [ "$prev_stats" != missing ] && [ "$prev_stats" != 1 ] \
         && sysctl -w kernel.bpf_stats_enabled="$prev_stats" >/dev/null 2>&1
 
-    # `recs` is the whole capture, so it sums both streams, from whichever format
-    # the run wrote (JSONL when it wrote both). The perf counters come off the
-    # `stop` record, which rides the SNAPSHOT stream: `ebr.py cat --kind stop`
-    # finds it in either format -- the last line of the exits file would
-    # silently be an exit record and report every counter as null.
+    # `recs` is the whole capture, so it sums both streams. The perf counters
+    # come off the `stop` record, which rides the SNAPSHOT stream: the last one
+    # there -- the last line of the exits file would silently be an exit record
+    # and report every counter as null.
     local d; d="$tmp/$(date +%F)"
     local f s n recs=0 stop lostline seenline seentot bytesline
     for s in $EBPF_STREAMS; do
-        f="$(_twin "$d" "$HOST.$s" jsonl)" || f="$(_twin "$d" "$HOST.$s" ebr)" || continue
+        f="$(_jsonl_file "$d" "$HOST.$s")" || continue
         n="$(_feed_count "$f")"
         case "$n" in ''|*[!0-9]*) n=0 ;; esac
         recs=$((recs + n))
     done
-    f="$(_twin "$d" "$HOST.snapshot" jsonl)" || f="$(_twin "$d" "$HOST.snapshot" ebr)" || f=""
-    stop="$( [ -n "$f" ] && python3 "$EBR" cat --tail 1 --kind stop "$f" 2>/dev/null )"
+    f="$(_jsonl_file "$d" "$HOST.snapshot")" || f=""
+    stop="$( [ -n "$f" ] && _last_stop "$f" )"
     lostline="$(printf '%s' "$stop" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps(d.get("perf_lost")))' 2>/dev/null || echo '{}')"
     seenline="$(printf '%s' "$stop" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps(d.get("perf_seen")))' 2>/dev/null || echo '{}')"
     seentot="$(printf '%s' "$stop" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(sum((d.get("perf_seen") or {}).values()))' 2>/dev/null || echo 0)"
-    # Per format, from stop.output: bytes and write(2)s up to the stop record.
+    # From stop.output: the bytes and write(2)s up to the stop record.
     bytesline="$(printf '%s' "$stop" | python3 -c '
 import json,sys
-o=json.load(sys.stdin).get("output") or {}
-p=["%s %.2f MB in %d writes" % (k, o[k]["bytes"]/1e6, o[k]["writes"]) for k in ("jsonl","ebr") if o.get(k)]
-if o.get("jsonl") and o.get("ebr") and o["ebr"]["bytes"]:
-    p.append("EBR %.1fx smaller" % (float(o["jsonl"]["bytes"])/o["ebr"]["bytes"]))
-print(" | ".join(p) or "n/a")' 2>/dev/null || echo 'n/a')"
+o=(json.load(sys.stdin).get("output") or {}).get("jsonl")
+print("jsonl %.2f MB in %d writes" % (o["bytes"]/1e6, o["writes"]) if o else "n/a")' 2>/dev/null || echo 'n/a')"
 
     echo
     echo "-- per BPF program (own stats window; the knob adds ~2 ktime calls/run)"
@@ -1305,15 +1079,11 @@ case "${1:-}" in
     status)    shift; cmd_status "$@" ;;
     overhead)  shift; cmd_overhead "$@" ;;
     tail)      shift; cmd_tail "$@" ;;
-    compare)   shift; cmd_compare "$@" ;;
-    verify)    shift; cmd_verify "$@" ;;
-    bench)     shift; cmd_bench "$@" ;;
-    ebr)       shift; cmd_ebr "$@" ;;
     install-unit)   shift; cmd_install_unit "$@" ;;
     uninstall-unit) shift; cmd_uninstall_unit "$@" ;;
     _node_daemon) shift; _node_loop ;;   # internal: the nohup'd node-tier child
     bundle)    shift; cmd_bundle "$@" ;;
     -h|--help|help|"")
-        sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+        sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown verb '${1}'. Try: $0 --help" ;;
 esac

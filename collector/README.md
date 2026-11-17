@@ -12,13 +12,8 @@ Only half of what a login node needs is a kernel event, so only half needs root:
 
 | Tier | Privilege | What | Output |
 |---|---|---|---|
-| **node** | **unprivileged** | node health: load, memory, filesystem space, NFS per-mount RTT, interface counters, the D-state census, the process tree, per-user cgroup totals, boot time | `$EBPFM_NODE_OUTPUT_DIR/<date>/<host>.{jsonl,ebr}` |
-| **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes and the endpoint each went to, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.{jsonl,ebr}` |
-
-Both tiers write each day-file as JSONL, as EBR (`lib/ebr.py`'s binary records: the same
-records, 4-8x smaller), or as both, twins holding the same records in the same order:
-`EBPFM_FORMAT=jsonl|ebr|both`, default `both` while EBR is on trial. See
-[Binary records (EBR)](#binary-records-ebr).
+| **node** | **unprivileged** | node health: load, memory, filesystem space, NFS per-mount RTT, interface counters, the D-state census, the process tree, per-user cgroup totals, boot time | `$EBPFM_NODE_OUTPUT_DIR/<date>/<host>.jsonl` |
+| **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes and the endpoint each went to, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` |
 
 **eBPF cannot produce load average, memory totals, filesystem space or interface
 counters**, and it is not a process census (only *tracked* processes are emitted — see
@@ -285,159 +280,18 @@ real flush count for any run, so the amplification is measurable rather than ass
 `stop.flushes` counts **stream flushes**, and is exact. The stop record is built before it
 is written, so it adds the flushes still to come: the one that lands it, and `close()`'s of
 any other stream left dirty — the `truncated` records — which the old `+ 1` missed. Each
-stream flush is **one `write(2)` per format**, JSONL's first. JSONL now goes out through
-`os.write` from a buffer: byte for byte what the text-mode handle wrote, but one syscall per
-round where that handle split a round past 8 KiB into several, so
-`stop.output.<format>.writes` is the real syscall count (up to the stop record).
+stream flush is **one `write(2)`**. JSONL goes out through `os.write` from a buffer: byte
+for byte what the text-mode handle wrote, but one syscall per round where that handle split
+a round past 8 KiB into several, so `stop.output.jsonl.writes` is the real syscall count (up
+to the stop record).
 
-What twins cost the write path, measured through `DailyWriter` on one host's synthetic demo
-day (11 742 eBPF records, flushed per 0.1 s of `ts_epoch`, 1.6 records per flush, so a
-syscall per format nearly every record):
-
-| `EBPFM_FORMAT` | µs per record (Python 3.13 / 3.8) | on disk | `write(2)` |
-|---|---|---|---|
-| `jsonl` | 13.5 / 18.7 | 18.78 MB | 7 279 |
-| `ebr` | 14.6 / 19.3 | 2.80 MB | 7 279 |
-| `both` | 29.2 / 41.8 | 21.58 MB (+15 % on JSONL) | 14 558 |
-
-That is per record *written*, and records are a fraction of the events decoded — every
-fork, exec and exit is an event, only a tracked process's end is a record — so against the
-157 µs per decoded event above, `both` costs the drain a few percent; a busy node also
-spreads each syscall over more records. `ebr` alone costs what `jsonl` does and writes 6.7x
-fewer bytes.
-
----
-
-## Binary records (EBR)
-
-`lib/ebr.py` is a framed, append-only binary container for exactly the records this
-collector writes; its docstring is the normative spec. Decoding an EBR file gives back what
-`json.loads` gives for its JSONL twin, with exact types and key order, so the records — and
-`SCHEMA_VERSION` — are the same in every format; the container has its own version
-(`meta.output.ebr.version`). A record is a shape id and packed values, its keys and strings
-defined once per segment instead of on every line, and each frame (normally one per poll
-round) carries its time bounds and event kinds, so a reader can skip it unread. `lib/ebr.py`
-is canonical here and mirrored byte-identically to `dashboard/rc_dashboard/ebr.py`.
-
-The format is **v2**: binary throughout. The segment header v1 wrote as JSON is binary now,
-so a reader needs no JSON parser; v1 files are still read, and a v1 day-file the collector
-appends to gets a fresh v2 segment. A frame can be zstd-compressed (`EBPFM_EBR_ZSTD`, off by
-default), which takes a zstd module in the Python that writes it and in every Python that
-reads it: Python 3.14+ has one (`compression.zstd`), older ones need `pip install zstandard`
-(or `pyzstd`). A reader without one skips those frames and says so (`ebr.py verify`:
-`zstd_unavailable`); it never takes them for corruption. Update readers before writers: a v1
-reader takes a v2 segment for a corrupt one.
-
-| file | written | sealed |
-|---|---|---|
-| `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.ebr`, `.snapshot.ebr` | by the eBPF tier, beside (`both`) or instead of (`ebr`) the `.jsonl` | gzipped to `.ebr.gz` at rollover, with the JSONL |
-| `$EBPFM_NODE_OUTPUT_DIR/<date>/<host>.ebr` | by the node tier: `ebr.py append`, one frame per snapshot | never, as its JSONL |
-
-- **Twins.** With `both`, `x.jsonl` and `x.ebr` hold the same records in the same order, and
-  a reader reads one of them. For either format the plain file beats its `.gz`.
-- **Empty.** Every file of the day opens when the day does, and a 0-byte `.ebr` means
-  "opened, nothing written", as an empty `.jsonl` does: the segment header is written with
-  the first record.
-
-### Settings
-
-| env | default | |
-|---|---|---|
-| `EBPFM_FORMAT` | `both` | `jsonl`, `ebr` or `both`. `ebpfm.sh` refuses anything else; the collector run directly writes both and says so once |
-| `EBPFM_EBR_ZSTD` | `0` | a zstd level, 1-22, compresses each frame inside the live file (see [Numbers](#numbers)); without a zstd module in `python3` EBR is written uncompressed, said once, and `meta.output.ebr.zstd_unavailable` is true. Sealed days are gzipped whole either way. `EBPFM_EBR_ZLIB` (v1's deflate) is gone: set, it is ignored with a warning |
-| `EBPFM_EBR_RESET_BYTES` | `2097152` | a new segment — a fresh dictionary a reader can start from — after this many bytes; it bounds what one corrupt frame can cost |
-
-Under systemd the eBPF tier reads these from `/etc/default/ebpfm`. **The node tier takes its
-environment from whoever starts it** (`ebpfm.sh start`, by hand or from the keepalive), not
-from that file, so set `EBPFM_FORMAT` there as well, and `EBPFM_EBR_ZSTD`, which it hands to
-`ebr.py append`; `EBPFM_EBR_RESET_BYTES` applies to the eBPF tier only. Without an importable
-`lib/ebr.py` the collector writes JSONL only, warns on stderr and says why in
-`meta.output.ebr_unavailable`; `ebpfm.sh check` reports the format and FAILs when it asks for
-EBR and `ebr.py --version` does not run, and gives the zstd level with the zstd module
-`python3` has (a WARN when zstd is asked for and there is none).
-
-### JSONL is never at risk
-
-With twins, JSONL is the format every reader trusts, and EBR can never cost it a record.
-Each record goes to JSONL first, so one that `json.dumps` refuses never reaches EBR and the
-twins stay equal. An EBR error — open, encode, write, close — is counted in
-`stop.output.ebr.errors`, said once per kind on stderr ("JSONL unaffected"), and goes no
-further; after 1000 in a row EBR stops until the next day opens. A failed EBR write keeps its
-frames and the next flush retries them, so a full disk that recovers leaves no hole. With
-`ebr` alone its errors are the caller's, as JSONL's always were.
-
-### What the run reports
-
-- `meta.output`: `{"formats": ["jsonl", "ebr"], "ebr": {"version": 2, "zstd": 0,
-  "reset_bytes": 2097152, "str_id_size": 2}}` — `ebr` null without EBR, plus
-  `ebr_unavailable` when EBR was asked for and could not be imported, and
-  `ebr.zstd_unavailable: true` (with `zstd` 0) when zstd was and `python3` has no zstd module.
-- `stop.output`: per format, null for one not written — `jsonl {records, bytes, writes,
-  errors}`, `ebr {records, bytes, writes, frames, segments, errors, lost, repaired_bytes}`.
-  As of the stop record: it, and the flush that lands it, are not counted. `lost` is records
-  encoded but dropped by a write that could not be undone; `repaired_bytes` is the torn tail
-  a crashed run left, cut off when the file was reopened.
-
-### Crash model
-
-- **One writer per file**: the collector's lock file, plus `flock` on every `.ebr`
-  (`ebr.py append`, the node tier's writer, waits up to 30 s for it). Readers never lock.
-- **Append-only, one `os.write` per round**, so SIGKILL loses at most one round, as with
-  JSONL. What a crash can leave is part of a frame; the next open truncates that torn tail
-  (at most 64 MiB + 52 bytes) and counts it in `repaired_bytes`, where a torn JSONL line
-  stays in the file.
-- **A failed write** is retried at the next flush; a partial write that cannot be undone
-  drops the round's frames (`lost`) and starts a new segment.
-- **For a reader**, an incomplete last frame is pending, not an error. A bad frame followed
-  by a good one is a BAD region, skipped to the next segment, so one corrupt frame costs at
-  most `EBPFM_EBR_RESET_BYTES`.
-
-### Tools
-
-| verb | does |
-|---|---|
-| `ebpfm compare [day] [--live]` | every JSONL/EBR twin pair of the day, both tiers, `.gz` or not, record by record: type-exact, key order included. Today's files are live, so one may be a round ahead: `--live` is implied |
-| `ebpfm verify [day]` | every frame and record of the day's EBR files: CRCs, BAD regions, headers against their records, the pending tail |
-| `ebpfm bench [file]` | sizes (JSONL, EBR, EBR+zstd where there is a zstd module, gzip of each) and µs per record to encode, decode, and reject by field or kind, in memory; today's exits by default |
-| `ebpfm ebr VERB …` | `lib/ebr.py`'s own command line: `cat` (prints JSONL byte-identical to the twin; `--tail`, `--kind`, `--where`, `--from`/`--to`), `convert` (JSONL to EBR), `verify`, `compare`, `count`, `append`, `bench`, `frames` |
-
-`tail` reads JSONL as before, or EBR through `ebr.py cat`; `status` gives each stream's
-size in both formats (and each one's count when they differ); `overhead` counts records and
-finds the stop record in either format.
-
-### Numbers
-
-`ebr.py bench` on one host's synthetic demo day (the dashboard's demo generator, schema 8):
-
-| stream | records | JSONL B/rec | EBR B/rec | ratio | EBR + zstd 3 | `.jsonl.gz` | `.ebr.gz` |
-|---|---|---|---|---|---|---|---|
-| exits | 5 758 | 1 725 | 328 | **5.3x** | 282 | 118 | 109 |
-| snapshot | 8 819 | 1 463 | 166 | **8.8x** | 117 | 39.6 | 33.8 |
-| node | 288 | 4 066 | 886 | **4.6x** | 564 | 123 | 127 |
-
-Decoding an exit record took 8.3 µs (`json.loads` 18.1), rejecting one by a field filter
-5.1 µs and by kind 3.0 µs (Python 3.13). Encoding times swing in this container — exits
-`json.dumps` 13.6 µs against EBR 12.3 µs on 3.13, 18.1 against 18.9 on 3.8 — and the demo's
-exits are sparse, nearly a frame per record, so the per-frame cost lands on every one: zstd 3
-(zstandard) took encoding to 20.6 µs and decoding to 12.1 µs, for 14 % fewer bytes. It pays
-best on fuller frames, and sealed days are gzipped whole either way.
-These are synthetic records; `ebpfm bench` on a login node gives that node's figures, and on
-EL8 the Python 3.6 one the flip waits for.
-
-### Rollout
-
-1. **Now: `both`.** Every reader keeps reading JSONL; EBR is written beside it to be
-   checked.
-2. **Flip the collectors to `ebr`** — in `/etc/default/ebpfm`, and wherever the node tier
-   is started — once, on every host:
-   - `ebpfm compare <day>` and `ebpfm verify <day>` have been clean for 7 days or more;
-   - `stop.output.ebr.errors` is 0;
-   - `ebpfm bench` on EL8's Python 3.6 encodes no slower than `json.dumps`.
-
-   Whatever reads the feed must read EBR by then (the dashboard's own default, `prefer`,
-   flips separately, on its read-path benchmark). Old JSONL captures stay readable.
-3. **Going back** is `EBPFM_FORMAT=both` or `jsonl`: nothing is converted, and a day
-   written in either format is sealed and read as it is.
+Measured through `DailyWriter` on one host's synthetic demo day (11 742 eBPF records,
+flushed per 0.1 s of `ts_epoch`, 1.6 records per flush, so a syscall nearly every record),
+writing JSONL took **13.5 µs per record** on Python 3.13 and 18.7 on 3.8: 18.78 MB on disk
+in 7 279 `write(2)`s. That is per record *written*, and records are a fraction of the events
+decoded — every fork, exec and exit is an event, only a tracked process's end is a record —
+so it is small against the 157 µs per decoded event above; a busy node also spreads each
+syscall over more records.
 
 ---
 
@@ -448,13 +302,13 @@ This section is the **eBPF tier**. For the node tier's 36-key snapshot schema se
 same schema the login poller has always written, which is what keeps every existing
 `log/login` consumer working.
 
-`SCHEMA_VERSION = 8`. JSON records, one per line in JSONL (and the same records in the EBR
-twin, `.ebr`, per `EBPFM_FORMAT`), split across **two streams per host per day**:
+`SCHEMA_VERSION = 8`. JSONL, one record per line,
+split across **two files per host per day**:
 
 | file | `event` | why separate |
 |---|---|---|
-| `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.{jsonl,ebr}` | `exit`, `truncated` | the per-process terminal records. Unbounded: the rate is the node's fork rate, highest exactly when the node is busiest, and on a build node this is essentially the whole file |
-| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.{jsonl,ebr}` | `meta`, `conn`, `netio`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a moment. Small, bounded by the residency tick, and the part you want when asking "what was running" rather than "what ended" |
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.jsonl` | `exit`, `truncated` | the per-process terminal records. Unbounded: the rate is the node's fork rate, highest exactly when the node is busiest, and on a build node this is essentially the whole file |
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.jsonl` | `meta`, `conn`, `netio`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a moment. Small, bounded by the residency tick, and the part you want when asking "what was running" rather than "what ended" |
 
 `stream_of()` in `ebpf_trace.py` is the single authority on the mapping; an event
 kind added without a decision there lands in `snapshot` rather than vanishing.
@@ -462,13 +316,13 @@ kind added without a decision there lands in `snapshot` rather than vanishing.
 The split left the **record** schema untouched; it happened within schema 6. Every
 record is self-describing and carries its own `host`, so a consumer that globs
 `<date>/*.jsonl` sees exactly what the single file used to give it, and a feed
-captured before the split reads unchanged. Every file of the day — both streams, in
-each format written — is created when the day opens, so an empty `.exits.jsonl` (or a
-0-byte `.exits.ebr`) means "no exits observed", not "collector never started".
+captured before the split reads unchanged. Both files are created when the day
+opens, so an empty `.exits.jsonl` means "no exits observed", not "collector never
+started".
 
 | `event` | When | Grain |
 |---|---|---|
-| `meta` | startup | resolved blocks, rejected blocks + compiler reason, sysctl state, kernel, BCC version, `output` (the formats written and the EBR settings) |
+| `meta` | startup | resolved blocks, rejected blocks + compiler reason, sysctl state, kernel, BCC version, `output` (`{"formats": ["jsonl"], "ebr": null}`: the format written) |
 | `exit` | process exit | the main record: identity, CPU, RSS, I/O, D-state, net bytes, **`conns`**, **`net_endpoints`** |
 | `conn` | residency tick | one per **standing external** socket: `proto`, RTT, retransmits, bytes, idle |
 | `netio` | residency tick; a series process's exit; stop | one per process that moved bytes: bytes per endpoint since its previous `netio` |
@@ -476,7 +330,7 @@ each format written — is created when the day opens, so an empty `.exits.jsonl
 | `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate`, the endpoint table's counters, and (schema 8) the run's `perf_seen`/`perf_lost`, `handler_errors`, `proc_entries`, `proc_vanished`, `thread_acc`, `netpeer_kernel` |
 | `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir`, `captured_tail` (masked; null for `--pty`) |
 | `truncated` | SIGTERM | one per live tracked process, with accumulated counters |
-| `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (per format: records, bytes, `write(2)`s, errors; see [EBR](#what-the-run-reports)) |
+| `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (`jsonl`: records, bytes, `write(2)`s and errors up to this record; `ebr`: null) |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
 `ts` is local, naive and second-granular — fine for reading one host's file, useless for
@@ -1005,17 +859,13 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 | Verb | Does |
 |---|---|
 | `bootstrap` | detect distro and kernel, install missing dependencies, set required sysctls, re-verify |
-| `check` | privilege, the output format and whether `lib/ebr.py` runs, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink reachability, the cgroup the collector would land in and its `cpu.max`, vendored-file divergence |
+| `check` | privilege, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink reachability, the cgroup the collector would land in and its `cpu.max`, vendored-file divergence |
 | `features` | probe the BPF blocks, print the resolved set as JSON |
 | `dump-c` | emit the generated BPF C (for debugging a rejected block) |
 | `once [secs]` | foreground capture |
-| `start` / `stop` / `status` | daemon with a pidfile, via `systemd-run --scope --slice=system.slice`; `status` gives each stream's records and its size in each format |
+| `start` / `stop` / `status` | daemon with a pidfile, via `systemd-run --scope --slice=system.slice`; `status` gives each stream's records and size today |
 | `overhead` | the one-off measurement above |
-| `tail [n] [stream]` | last n records of today's files: JSONL as it is, EBR through `ebr.py cat` |
-| `compare [day] [--live]` | JSONL against EBR, every twin pair of the day, both tiers ([EBR](#tools)) |
-| `verify [day]` | every frame and record of the day's EBR files |
-| `bench [file]` | EBR's sizes and codec speed against JSONL on one day-file, in memory |
-| `ebr VERB …` | `lib/ebr.py`'s command line: `cat`, `convert`, `verify`, `compare`, `count`, `append`, `bench`, `frames` |
+| `tail [n] [stream]` | last n records of today's files |
 | `bundle` | emit the whole folder as one self-extracting `.sh` |
 
 ### Bootstrap, on a fresh Ubuntu 24.04
@@ -1039,10 +889,7 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 argv read in-kernel at exec, the real limit when uncapped) ·
 `EBPFM_SANDBOX` (on) · `EBPFM_SANDBOX_ALWAYS` (off; read on every exec, for validation) ·
 `EBPFM_RESIDENCY_TOPN` (5) ·
-`EBPFM_OUTPUT_DIR` · `EBPFM_FORMAT` (`both`; `jsonl` or `ebr` for one format, see
-[EBR](#settings)) · `EBPFM_EBR_ZSTD` (0; a zstd level 1-22 compresses each frame, given a
-zstd module) · `EBPFM_EBR_RESET_BYTES`
-(2097152; bytes per segment) · `EBPFM_DURATION` · `EBPFM_RESIDENCY_S` · `EBPFM_FLUSH` ·
+`EBPFM_OUTPUT_DIR` · `EBPFM_DURATION` · `EBPFM_RESIDENCY_S` · `EBPFM_FLUSH` ·
 `EBPFM_MIN_UID` (data point 6, default off) · `EBPFM_CWD_ALWAYS` ·
 `EBPFM_DSTACK_MAX` / `_DEPTH` · `EBPFM_CONN_ALL` / `_UNTRACKED` · `EBPFM_TCP_ALL` ·
 `EBPFM_CONNS_TOPN` (5) · `EBPFM_EXIT_HOLD_MS` (250; `0` = emit exit records inline and
@@ -1064,7 +911,7 @@ rejected block).
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 598 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # 476 tests, no root, no BPF needed
 python3 tests/bpf_compile_check.py           # compile every block with BCC, no root
 ```
 
@@ -1079,13 +926,11 @@ are agent roots (schema 8: the role table and whole agent trees), attribution pr
 (ancestry beats tty beats uid), tty **non**-inheritance, cwd inheritance, thread-clone
 skip, pid recycling, and the netlink parser against a captured response blob.
 
-The day-files: one `write(2)` per format per dirty stream (`os.write` counted), the JSONL
-bytes unchanged, each EBR twin decoding to its JSONL's lines, an EBR failure that never
-reaches JSONL and is said once, exact stop `flushes`, each format alone, a crashed run's torn
-EBR tail, `.ebr` sealed to `.ebr.gz`, and `ebpfm.sh`'s helpers run for real (`_node_tick`
-with a stub snapshot, `tail`, `compare`, `verify`). `tests/test_ebr.py` is the codec's own
-suite (round trips against `json`, torn tails at every byte, corruption, the CLI), and both
-suites hold the collector's Python to 3.6 syntax, EL8's.
+The day-files: one `write(2)` per dirty stream (`os.write` counted), the JSONL bytes
+unchanged, exact stop `flushes`, a failed write kept and retried, sealed days gzipped, and
+`ebpfm.sh`'s helpers run for real (`_node_tick` with a stub snapshot, `tail`, the record
+count and `stop` record `overhead` reads). The suite holds the collector's Python, the
+Python inside `ebpfm.sh` included, to 3.6 syntax, EL8's.
 
 The schema-7 network section is also **compiled and run**: `build_net_c()` is built with
 the host C compiler against `tests/bpf_mock.h` (map semantics, `bpf_probe_read` as a

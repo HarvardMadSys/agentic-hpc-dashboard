@@ -26,8 +26,8 @@ import threading
 import time
 import uuid
 
-from . import clock, ebr, export
-from .feedfile import prefer_of
+from . import clock, export
+from .where import Prefix
 from .proctree import _trie
 from .normalize import Normalizer
 from .redact import redact
@@ -86,7 +86,7 @@ def prefilter(f, apid, host, cwd):
 
 
 def prefilter_where(f, apid, host, cwd):
-    """`prefilter` for an EBR day-file's decoder: an `ebr` filter (`where`) built
+    """`prefilter` for a sealed file's replica: a `where` (`where.py`) built
     from the same inputs, which passes every record `predicate` keeps, or None
     when there is nothing to test.
 
@@ -102,7 +102,7 @@ def prefilter_where(f, apid, host, cwd):
         base["host"] = frozenset([host])
     root = cwd.rstrip("/") if cwd else None
     if root:
-        base["cwd"] = ebr.Prefix(root)
+        base["cwd"] = Prefix(root)
     if apid:
         pids = frozenset(str(p) for p in apid)
         return [dict(base, session_key=lambda v: isinstance(v, str) and bool(v)
@@ -233,7 +233,6 @@ class IoCommands:
     def __init__(self, cfg, roots):
         self.cfg = cfg
         self.roots = roots
-        self.prefer = prefer_of(cfg, "ebpf")
         self.jobs = {}             # id -> Job, every one still held
         self.lock = threading.Lock()
         self.gate = threading.Semaphore(WORKERS)
@@ -296,14 +295,14 @@ class IoCommands:
                     self._trim()
 
     def _read(self, j, f, apid, host, cwd):
-        plan, j.total_bytes = export.window_plan(self.roots(), j.since, prefer=self.prefer)
+        plan, j.total_bytes = export.window_plan(self.roots(), j.since)
         norm = Normalizer(self.cfg)
         ok = predicate(f, apid, host, cwd)
         by_event = export.event_filter(EVENTS)
         match = prefilter(f, apid, host, cwd)
         wanted = by_event if match is None else (
             lambda line: match(line) if by_event(line) is not None else None)
-        # the same two checks, for an EBR day-file's decoder
+        # the same two checks, for a sealed file's replica
         where = prefilter_where(f, apid, host, cwd)
         groups = j.groups = {}
         tot = [0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0]

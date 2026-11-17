@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import iocmds                         # noqa: E402
 from rc_dashboard.export import parse_filters           # noqa: E402
-from test_ingest import FeedCase, ebr_twins, exit_rec, jsonl_only   # noqa: E402
+from test_ingest import FeedCase, exit_rec   # noqa: E402
 
 
 def rec(epoch, pid, args, user="alice", actor3="agent", rd=0.0, wr=0.0, rc=0.0, wc=0.0,
@@ -105,8 +105,6 @@ class Lookup(FeedCase):
         self.assertEqual({r["cmd"] for r in self.rows(j)},
                          {"python train.py --lr 3", "cat notes.md", "rg TODO"})
 
-    @jsonl_only("the byte prefilter is a JSONL line's; its EBR form, prefilter_where, is "
-                "property-tested in test_formats")
     def test_prefilter_never_misses(self):
         f = parse_filters({"user": ["alice"]})
         m = iocmds.prefilter(f, frozenset({"7"}), "h1", "/home/alice/proj")
@@ -161,6 +159,3 @@ class AgentKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-ebr_twins(globals())

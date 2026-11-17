@@ -26,7 +26,7 @@ from rc_dashboard import snapshots, windows        # noqa: E402
 from rc_dashboard.export import window_plan, window_scan   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
-from test_ingest import FeedCase, ebr_twins, exit_rec, stamp    # noqa: E402
+from test_ingest import FeedCase, exit_rec, stamp    # noqa: E402
 
 WIN = 1440
 # Enough variety that every reducer holds state worth getting wrong: a shell
@@ -448,6 +448,3 @@ class FingerprintTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-ebr_twins(globals())

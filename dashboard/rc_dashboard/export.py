@@ -18,13 +18,11 @@ import os
 import re
 import time
 
-from . import ebr, gz, fastjson
+from . import gz, fastjson, replica
 # The day-file layer that was defined here lives in feedfile.py; every name of
 # it is imported back, so `export.<name>` still works for its callers.
-from .feedfile import (HEAD_BYTES, chosen_for, day_files, decoder_at, ebr_src, end_at,
-                       errors, format_of, head_digest, is_boundary, iter_lines_forward,
-                       iter_lines_reverse, records_forward, records_reverse, seek_to_epoch,
-                       settle_of, stem_of)
+from .feedfile import (HEAD_BYTES, chosen_for, day_files, head_digest, is_boundary,
+                       iter_lines_forward, iter_lines_reverse, seek_to_epoch, stem_of)
 from .feedfile import (_MEMO_FILES, _MEMO_PROBES, _identity, _memo, _memo_lock,  # noqa: F401
                        _memo_of, _probe, _probe_read, _remember, dated_dirs, feed_files)
 from .normalize import canonical_class, epoch_of
@@ -55,7 +53,7 @@ def agent_type_want(values):
 
 
 def agent_type_where(want):
-    """`agent_type_token(v) in want` as an `ebr` set test (`str(v) in S`): `none`
+    """`agent_type_token(v) in want` as a `where` set test (`str(v) in S`): `none`
     is also the record whose agent type is null or empty. A superset, as every
     `where` must be: it may let a record through the token rejects, never the
     other way round."""
@@ -185,34 +183,18 @@ def make_predicate(f):
     ok.bounds = (lo, hi)
     # and the event types, for its byte-level pre-check (`event_filter`)
     ok.events = f.get("event")
-    # and the record's own fields it tests, for an EBR day-file's decoder to
+    # and the record's own fields it tests, for a sealed file's replica to
     # reject records by before it builds them (`where_of`)
     ok.where = where_of(f)
     return ok
 
 
-def and_where(where, field, test):
-    """`where` (an `ebr` filter: a dict ANDs, a list ORs its dicts) with
-    `test` on `field` ANDed to it."""
-    def add(br):
-        old = br.get(field)
-        if old is None:
-            return dict(br, **{field: test})
-        return dict(br, **{field: lambda v: ebr.match_where({field: old}, {field: v})
-                           and test(v)})
-    if where is None:
-        return {field: test}
-    if isinstance(where, dict):
-        return add(where)
-    return [add(br) for br in where]
-
-
 def where_of(f):
-    """The filters of `make_predicate` that test a record's own fields, as an
-    `ebr` filter: each one AND the others, by the predicate's own rule
+    """The filters of `make_predicate` that test a record's own fields, as a
+    `where` (`where.py`): each one AND the others, by the predicate's own rule
     (`str(value) in` the wanted set). None when there is none. Never stricter
-    than the predicate -- a record it keeps always passes -- since the decoder
-    drops what this rejects before the predicate sees it."""
+    than the predicate -- a record it keeps always passes -- since a sealed
+    file's replica drops what this rejects before the predicate sees it."""
     w = {}
     for key in ("user", "host", "exit_code", "signal"):
         if f.get(key):
@@ -247,8 +229,10 @@ def _matching(path, norm, pred, newest_first, stats):
     lo, hi = getattr(pred, "bounds", (None, None))
     lo = None if lo is None else lo - SCAN_SLACK_S
     hi = None if hi is None else hi + SCAN_SLACK_S
-    if format_of(path) == "ebr":
-        yield from _matching_ebr(path, norm, pred, newest_first, stats, lo, hi)
+    where = getattr(pred, "where", None)
+    rep = replica.for_path(path) if where is not None else None
+    if rep is not None:
+        yield from _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where)
         return
     edge = hi if newest_first else lo
     at = None
@@ -285,54 +269,36 @@ def _matching(path, norm, pred, newest_first, stats):
         yield (NO_TS if ts is None else ts), rec
 
 
-def _matching_ebr(path, norm, pred, newest_first, stats, lo, hi):
-    """`_matching` over an EBR day-file: the same per-record rule, the records
-    from its frames. Oldest first starts at the first frame that reaches `lo`
-    (`seek_to_epoch`); newest first ends before the first frame that starts
-    after `hi` (`end_at`), since a frame spans a poll round. The predicate's
-    event types and own fields are the decoder's filters (`kinds`, `where`)."""
+def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where):
+    """`_matching` over a sealed file's replica, for a predicate that tests the
+    records' own fields: the same read -- from the same edge (the replica's time
+    search answers as the file's), stopping at the same record past the far
+    bound, `scanned` counting the same records by each one handed on
+    (`Replica.line_read`) -- with only the records the predicate's event types
+    and fields could keep built (`replica.records`), the same rule deciding
+    each."""
     edge = hi if newest_first else lo
-    try:
-        with gz.open_feed(path) as fh:
-            size = gz.fstat(fh).st_size
-            if edge is None:
-                at = size if newest_first else 0
-            elif newest_first:
-                at = end_at(fh, edge, size, "ebr")
-            else:
-                at = seek_to_epoch(fh, edge, size, "ebr")
-    except OSError:
-        return
+    at = None if edge is None else rep.seek_to_epoch(edge)
     kinds = getattr(pred, "events", None)
-    where = getattr(pred, "where", None)
-    # A frame holds a poll round, and a test's or a capture's can span hours:
-    # its records short of the near bound are rejected before they are built,
-    # as a line seek would have started past them. Not the far bound: the read
-    # stops at the first record past it, as a line read does.
-    if newest_first and hi is not None:
-        where = and_where(where, "ts_epoch", lambda v: not isinstance(v, (int, float))
-                          or not v > hi)
-    elif not newest_first and lo is not None:
-        where = and_where(where, "ts_epoch", lambda v: not isinstance(v, (int, float))
-                          or not v < lo)
-    if newest_first:
-        recs = records_reverse(path, at, 0, kinds, where)
-    else:
-        recs = records_forward(path, at, None, kinds, where)
-    for _pos, raw in recs:
-        stats["scanned"] += 1
-        ts = epoch_of(raw)
-        if ts is not None and (lo if newest_first else hi) is not None:
-            if (ts < lo) if newest_first else (ts > hi):
-                return
+    if at is None:
+        at = rep.complete_end if newest_first else 0
+    start, end, count, total = rep.line_read(at, kinds, lo if newest_first else hi,
+                                             reverse=newest_first)
+    done = 0
+    for off, _n, raw in rep.records(start, end, reverse=newest_first, kinds=kinds,
+                                    where=where):
         rec = norm.normalize(raw)
         if rec is None or not pred(rec):
             continue
+        got = count(off)
+        stats["scanned"] += got - done
+        done = got
         ts = rec.get("_ts_epoch")
         yield (NO_TS if ts is None else ts), rec
+    stats["scanned"] += total - done
 
 
-def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True, prefer="jsonl"):
+def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True):
     """Yield `(rec, scanned, matched)` for records matching `pred`, in time order.
 
     `newest_first` is the default because this feeds a log view and the newest
@@ -357,7 +323,7 @@ def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True, pre
     """
     stats = {"scanned": 0}
     streams = [_matching(p, norm, pred, newest_first, stats)
-               for p in day_files(roots, days, prefer)]
+               for p in day_files(roots, days)]
     matched = 0
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0],
                                 reverse=newest_first):
@@ -383,23 +349,29 @@ def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True, pre
 # of a 15 GB day-file then reads ~20 probes and one hour of rows.
 
 
-def window_plan(roots, since, days=0, paths=None, prefer="jsonl"):
+def _place(p, since):
+    """`(start, size)` of day-file `p` for a read from epoch `since`: its first
+    in-range offset and its size. A sealed file's replica answers both as the
+    file would, without the `.gz` being inflated to search it."""
+    rep = replica.for_path(p)
+    if rep is not None:
+        return rep.seek_to_epoch(since), rep.size
+    with gz.open_feed(p) as fh:
+        size = gz.fstat(fh).st_size
+        return seek_to_epoch(fh, since, size), size
+
+
+def window_plan(roots, since, days=0, paths=None):
     """Per-file byte range a window touches, plus the total bytes to read.
 
     Built up front rather than discovered while streaming, so the rebuild can
     report a real percentage instead of a spinner -- and so the cost of a window
     is answerable BEFORE committing to it. `paths`: these of the day-files only.
-    `prefer`: which twin a stream written in both formats is read from
-    (`feedfile.choose`).
     """
     plan = []
-    for p in (day_files(roots, days, prefer) if paths is None else paths):
-        fmt = format_of(p)
+    for p in (day_files(roots, days) if paths is None else paths):
         try:
-            with gz.open_feed(p) as fh:
-                size = gz.fstat(fh).st_size
-                start = (seek_to_epoch(fh, since, size) if fmt == "jsonl" else
-                         seek_to_epoch(fh, since, size, fmt))
+            start, size = _place(p, since)
         except OSError:
             continue
         if start < size:
@@ -407,27 +379,26 @@ def window_plan(roots, since, days=0, paths=None, prefer="jsonl"):
     return plan, sum(e["size"] - e["start"] for e in plan)
 
 
-def resume_plan(roots, since, files, days=0, prefer="jsonl"):
+def resume_plan(roots, since, files, days=0):
     """The byte ranges a saved window still has to read, or None.
 
     `files` is what the saved scan read: per file its path, `(dev, ino)` and the
-    offset just past the last complete record it consumed (a line's end, or an
-    EBR frame's). Each of those files is read on from that offset -- the records
-    before it are already in the saved reducers -- and any file the scan never
-    read is planned from `since`, as a fresh build would plan it.
+    offset just past the last complete line it consumed. Each of those files is
+    read on from that offset -- the records before it are already in the saved
+    reducers -- and any file the scan never read is planned from `since`, as a
+    fresh build would plan it.
 
     A plain file compressed since (the collector's nightly `x.jsonl` ->
-    `x.jsonl.gz`, or `x.ebr` -> `x.ebr.gz`) is the same bytes at the same
-    offsets under a new name and inode: it is read on from its `.gz`, known by
-    its head alone, and its stream is not planned a second time.
+    `x.jsonl.gz`) is the same bytes at the same offsets under a new name and
+    inode: it is read on from its `.gz`, known by its head alone, and its stream
+    is not planned a second time. A sealed file's replica answers for it.
 
     None when the saved scan no longer describes the files: one has vanished, is
     a different inode, starts with different bytes (a file deleted and written
-    again can get its inode number back), is shorter than the offset, has no
-    record ending there, or is no longer the twin its stream is read from
-    (`feedfile.chosen_for`: its twin of the other format is read now).
-    The saved reducers then hold records that are not on disk in that form, and
-    resuming them would serve numbers the files cannot reproduce.
+    again can get its inode number back), is shorter than the offset, or has no
+    line ending there. The saved reducers then hold records that are not on disk
+    in that form, and resuming them would serve numbers the files cannot
+    reproduce.
     """
     known = {f["path"]: f for f in files}
     plan, planned = [], set()
@@ -435,32 +406,33 @@ def resume_plan(roots, since, files, days=0, prefer="jsonl"):
         q = p
         if not gz.is_gz(p) and not os.path.exists(p) and os.path.exists(p + gz.SUFFIX):
             q = p + gz.SUFFIX
-        fmt = format_of(q)
-        chosen = chosen_for(q, prefer)
-        if chosen is None or format_of(chosen) != fmt:
+        if chosen_for(q) is None:
             return None
         try:
-            with gz.open_feed(q) as fh:
-                st = gz.fstat(fh)
-                if (q == p and (st.st_dev, st.st_ino) != (f["dev"], f["ino"])) \
-                        or st.st_size < f["end"] \
-                        or head_digest(fh, f["head_n"]) != f["head"]:
+            st = os.stat(q)
+            if q == p and (st.st_dev, st.st_ino) != (f["dev"], f["ino"]):
+                return None
+            rep = replica.for_path(q)
+            if rep is not None:
+                size = rep.size
+                if size < f["end"] or rep.head_digest(f["head_n"]) != f["head"] \
+                        or not rep.is_boundary(f["end"]):
                     return None
-                if not is_boundary(fh, f["end"], fmt):
-                    return None
+            else:
+                with gz.open_feed(q) as fh:
+                    size = gz.fstat(fh).st_size
+                    if size < f["end"] or head_digest(fh, f["head_n"]) != f["head"] \
+                            or not is_boundary(fh, f["end"]):
+                        return None
         except OSError:
             return None
-        plan.append({"path": q, "start": f["end"], "size": st.st_size})
+        plan.append({"path": q, "start": f["end"], "size": size})
         planned.add(stem_of(q))
-    for p in day_files(roots, days, prefer):
+    for p in day_files(roots, days):
         if p in known or stem_of(p) in planned:
             continue
-        fmt = format_of(p)
         try:
-            with gz.open_feed(p) as fh:
-                size = gz.fstat(fh).st_size
-                start = (seek_to_epoch(fh, since, size) if fmt == "jsonl" else
-                         seek_to_epoch(fh, since, size, fmt))
+            start, size = _place(p, since)
         except OSError:
             continue
         if start < size:
@@ -554,11 +526,14 @@ def _window_stream(entry, norm, since, until, stats, wanted=None, find=None, kin
     A trailing line with no newline is still being written; it is left for the
     tail, and for the next resume, rather than lost as a parse error.
 
-    An EBR day-file is read by `_window_stream_ebr`, with `kinds` and `where`
-    for its decoder where `wanted` and `find` are a JSONL line's byte checks.
+    A sealed file read with a `where` -- one session's, one user's, the commands
+    behind one figure -- is read from its replica when it has one
+    (`_window_stream_replica`), `kinds` and `where` deciding there which records
+    are built, where `wanted` and `find` are a line's byte checks here.
     """
-    if format_of(entry["path"]) == "ebr":
-        yield from _window_stream_ebr(entry, norm, since, until, stats, kinds, where)
+    rep = replica.for_path(entry["path"]) if where is not None else None
+    if rep is not None:
+        yield from _window_stream_replica(entry, rep, norm, since, until, stats, kinds, where)
         return
     try:
         fh = gz.open_feed(entry["path"])
@@ -608,78 +583,47 @@ def _window_stream(entry, norm, since, until, stats, wanted=None, find=None, kin
             yield ts, rec
 
 
-def _window_stream_ebr(entry, norm, since, until, stats, kinds=None, where=None):
-    """`_window_stream` over an EBR day-file, a frame at a time.
-
-    A frame is read whole or passed whole, so `end` is always a frame's end: a
-    saved window resumes there (`resume_plan` checks it is one). A frame whose
-    newest record is before `since` is passed without building its records
-    (its definitions still apply, `Decoder.skip`); one whose oldest is past
-    `until` by more than the slack a poll round's disorder needs ends the read;
-    within a frame, the records are judged as a line's are. A corrupt region
-    is counted in `parse_errors` with the records it took with it (the decoder
-    is broken until the next SEGMENT), and one near the end of a plain file is
-    left as still being written (`feedfile.SETTLE`).
-
-    One source serves the decoder's placement and the frames after it, and a
-    frame whose oldest record is from `since` on (its header says so) has
-    none to pass over.
-    """
-    path = entry["path"]
+def _window_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
+    """`_window_stream` over a sealed file's replica: the same records, offsets and
+    `end` as the line read, with only the records `kinds` and `where` could keep
+    built (`replica.records`); the others counted as skipped, as the byte checks
+    count theirs, and the lines that do not parse as parse errors."""
     try:
-        fh = gz.open_feed(path)
+        st = os.stat(entry["path"])
     except OSError:
         return
-    with fh, ebr.source(ebr_src(fh)) as src:
-        st = gz.fstat(fh)
-        entry["dev"], entry["ino"] = st.st_dev, st.st_ino
-        entry["head_n"] = min(HEAD_BYTES, st.st_size)
-        entry["head"] = head_digest(fh, entry["head_n"])
-        entry["end"] = entry["start"]
-        dec = decoder_at(src, entry["start"])
-        dst = dec.stats
-        err0, filt0 = errors(dst), dst["filtered"]
-        far = None if until is None else until + SCAN_SLACK_S
-        try:
-            for f in ebr.frames(src, entry["start"], st.st_size, settle=settle_of(path)):
-                if f.kind != ebr.DATA:
-                    dec.skip(f, src)
-                elif far is not None and f.ts_min > far:
-                    return                    # sorted to within a round: nothing later qualifies
-                elif f.ts_max < since:
-                    dec.skip(f, src)
-                else:
-                    entry["end"] = f.end
-                    stats["bytes"] += f.end - f.off
-                    early = not f.ts_min >= since
-                    for _pos, raw in dec.records(src, f, kinds, where):
-                        if early:
-                            t = epoch_of(raw)
-                            if t is not None and t < since:
-                                continue      # before the window: a line seek starts past it
-                        stats["scanned"] += 1
-                        rec = norm.normalize(raw)
-                        if rec is None:
-                            continue
-                        ts = rec.get("_ts_epoch")
-                        if ts is None:
-                            stats["no_ts"] += 1
-                            continue
-                        if ts < since:
-                            continue
-                        if until is not None and ts > until:
-                            return            # sorted: nothing later qualifies
-                        yield ts, rec
-                    continue
-                entry["end"] = f.end
-                stats["bytes"] += f.end - f.off
-        finally:
-            stats["parse_errors"] += errors(dst) - err0
-            stats["skipped"] += dst["filtered"] - filt0
+    entry["dev"], entry["ino"] = st.st_dev, st.st_ino
+    entry["head_n"] = min(HEAD_BYTES, rep.size)
+    entry["head"] = rep.head_digest(entry["head_n"])
+    start = last = entry["end"] = entry["start"]
+    built = 0
+    try:
+        for off, n, raw in rep.records(start, None, kinds=kinds, where=where):
+            stats["bytes"] += off + n - last
+            last = entry["end"] = off + n
+            built += 1
+            stats["scanned"] += 1
+            rec = norm.normalize(raw)
+            if rec is None:
+                continue
+            ts = rec.get("_ts_epoch")
+            if ts is None:
+                stats["no_ts"] += 1
+                continue
+            if ts < since:
+                continue
+            if until is not None and ts > until:
+                return                    # sorted: nothing later qualifies
+            yield ts, rec
+        stats["bytes"] += rep.complete_end - last
+        last = entry["end"] = rep.complete_end
+    finally:
+        stats["skipped"] += rep.record_count(start, last) - built
+        stats["parse_errors"] += rep.bad_in(start, last)
 
 
 def window_scan(plan, norm, since, until=None, events=None, match=None, find=None,
-                where=None):
+                where=None, stats=None):
     """Yield `(rec, stats)` for every in-window record, OLDEST FIRST.
 
     Ascending order is a correctness requirement, not a preference: the tool-mix
@@ -700,12 +644,16 @@ def window_scan(plan, norm, since, until=None, events=None, match=None, find=Non
     `find`, with `match`, is a compiled pattern every line `match` passes holds:
     the scan then looks for the lines by it a block at a time (`_found`).
 
-    An EBR day-file has its decoder do both: `events` are its `kinds`, and
-    `where` (`ebr.match_where`'s filter, e.g. `windows.ViewFilter.where`) the
-    structured form of `match`, built from the same inputs, never stricter.
+    A sealed file's replica does both: `events` are its `kinds`, and `where`
+    (`where.py`, e.g. `windows.ViewFilter.where`) the structured form of
+    `match`, built from the same inputs, never stricter.
+
+    `stats`, when given, is the dict the counts are kept in, so a caller has
+    them once the scan is done, whether or not a record came through.
     """
-    stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
-             "no_ts": 0, "files": len(plan)}
+    stats = {} if stats is None else stats
+    stats.update({"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
+                  "no_ts": 0, "files": len(plan)})
     wanted = event_filter(events)
     if match is not None:
         by_event = wanted
@@ -721,17 +669,6 @@ def window_scan(plan, norm, since, until=None, events=None, match=None, find=Non
         yield rec, stats
 
 
-def feed_formats(rep):
-    """What a feed report says about its formats (`feeds.resolve_dated`): the
-    preferred one, the files read and left unread of each, and the streams read
-    from their non-preferred twin or held."""
-    return {"prefer": rep.get("prefer"),
-            "formats": rep.get("formats") or {},
-            "twins": len(rep.get("twins") or ()),
-            "not_preferred": [t for t in rep.get("twins") or () if t.get("reason")],
-            "held": len(rep.get("held") or ())}
-
-
 def meta_header(f, reports, cfg, matched, truncated, elapsed):
     return {"_meta": {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -744,7 +681,6 @@ def meta_header(f, reports, cfg, matched, truncated, elapsed):
         "feed_status": reports["ebpf"]["status"],
         "schema_versions": reports["ebpf"].get("schema_versions") or {},
         # which format each stream was read from, where a collector wrote both
-        "feed_formats": feed_formats(reports["ebpf"]),
         "elapsed_s": round(elapsed, 2),
         "note": "Records are the collector's own, plus additive `_`-prefixed derived "
                 "keys (_a3, _eff, _purpose, _sandbox, _approval, _surface, _sid, _ts_epoch). "

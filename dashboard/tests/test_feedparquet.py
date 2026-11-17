@@ -9,6 +9,8 @@ that finds nothing changed), and the two input formats giving the same tables.
 
     cd dashboard && uv run --extra parquet python -m unittest tests.test_feedparquet -q
 """
+import base64
+import gzip
 import json
 import math
 import os
@@ -95,8 +97,8 @@ class Base(unittest.TestCase):
     def roundtrip(self, recs):
         """(the records read back, in the order given; the manifest)."""
         path = self.write_day(recs)
-        man = fp.convert_host_day(DAY, HOST, [path], self.out)
-        its = {name: fp.records(fp.out_path(self.out, name, DAY, HOST))
+        man = fp.convert_source(DAY, path, self.out)
+        its = {name: fp.records(fp.out_path(self.out, name, DAY, HOST + ".exits"))
                for name in man["records"]}
         got = [next(its[(fp.table_of(r) or fp.TABLES["other"]).name]) for r in recs]
         for name, it in its.items():
@@ -104,7 +106,7 @@ class Base(unittest.TestCase):
         return got, man
 
     def column(self, table, name):
-        t = pq.read_table(fp.out_path(self.out, table, DAY, HOST), columns=[name])
+        t = pq.read_table(fp.out_path(self.out, table, DAY, HOST + ".exits"), columns=[name])
         return t.column(name).to_pylist()
 
     def assertSameRecords(self, recs, got, order=True):
@@ -131,7 +133,7 @@ class RoundTrip(Base):
         self.roundtrip([rec])
         self.assertEqual(self.column("exit", "pid"), [rec["pid"]])
         self.assertEqual(self.column("exit", "cpu_s"), [rec["cpu_s"]])
-        self.assertEqual(str(pq.read_schema(fp.out_path(self.out, "exit", DAY, HOST))
+        self.assertEqual(str(pq.read_schema(fp.out_path(self.out, "exit", DAY, HOST + ".exits"))
                              .field("ts").type), "timestamp[ms]")
         self.assertEqual(self.column("exit", "ts")[0].strftime(fp.TS_FORMAT), rec["ts"])
         io = self.column("exit", "io")[0]
@@ -286,97 +288,114 @@ class Misfits(Base):
         self.assertEqual(self.column("other", "event"), ["session", None, None])
 
 
+EXITS = HOST + ".exits"
+SNAP = HOST + ".snapshot"
+
+
 class Layout(Base):
     def test_paths_modes_manifest(self):
         self.write_day([full("exit", 0), full("exit", 1)])
         self.write_day([full("conn", 2), full("residency_totals", 3)],
-                       name=HOST + ".snapshot.jsonl")
+                       name=SNAP + ".jsonl")
         self.write_day([full("exit", 4)], day="2026-11-15")
         rc = fp.main(["convert", "--out", self.out, "--jobs", "1", self.root])
         self.assertEqual(rc, 0)
-        for table, day in (("exit", DAY), ("conn", DAY), ("residency_totals", DAY),
-                           ("exit", "2026-11-15")):
-            p = fp.out_path(self.out, table, day, HOST)
+        for table, day, stem in (("exit", DAY, EXITS), ("conn", DAY, SNAP),
+                                 ("residency_totals", DAY, SNAP), ("exit", "2026-11-15", EXITS)):
+            p = fp.out_path(self.out, table, day, stem)
             self.assertTrue(os.path.exists(p), p)
             self.assertEqual(os.stat(p).st_mode & 0o007, 0, "no access for other")
             footer = json.loads(pq.read_schema(p).metadata[fp.META_KEY])
-            self.assertEqual((footer["table"], footer["host"], footer["day"]), (table, HOST, day))
-        man = fp.read_manifest(self.out, DAY, HOST)
-        self.assertEqual(man["records"], {"exit": 2, "conn": 1, "residency_totals": 1})
-        self.assertEqual([s["name"] for s in man["sources"]],
-                         [HOST + ".exits.jsonl", HOST + ".snapshot.jsonl"])
+            self.assertEqual((footer["table"], footer["host"], footer["day"], footer["stem"]),
+                             (table, HOST, day, stem))
+        self.assertEqual(fp.read_manifest(self.out, DAY, EXITS)["records"], {"exit": 2})
+        man = fp.read_manifest(self.out, DAY, SNAP)
+        self.assertEqual(man["records"], {"conn": 1, "residency_totals": 1})
+        self.assertEqual(man["source"]["name"], SNAP + ".jsonl")
         self.assertEqual(fp.main(["verify", "--out", self.out, "--jobs", "1", self.root]), 0)
 
     def test_unchanged_sources_are_not_converted_again(self):
         path = self.write_day([full("exit", 0), full("conn", 1)])
         fp.main(["convert", "--out", self.out, "--jobs", "1", self.root])
-        mp = fp.manifest_path(self.out, DAY, HOST)
+        mp = fp.manifest_path(self.out, DAY, EXITS)
         first = os.stat(mp).st_mtime_ns
+        self.assertTrue(fp.current(fp.read_manifest(self.out, DAY, EXITS), path))
         fp.main(["convert", "--out", self.out, "--jobs", "1", self.root])
         self.assertEqual(os.stat(mp).st_mtime_ns, first)
         # the day-file changes: converted again, and a table it no longer has goes
         time.sleep(0.01)
         with open(path, "w") as fh:
             fh.write(json.dumps(full("exit", 5)) + "\n")
+        self.assertFalse(fp.current(fp.read_manifest(self.out, DAY, EXITS), path))
         fp.main(["convert", "--out", self.out, "--jobs", "1", self.root])
         self.assertNotEqual(os.stat(mp).st_mtime_ns, first)
-        self.assertEqual(fp.read_manifest(self.out, DAY, HOST)["records"], {"exit": 1})
-        self.assertFalse(os.path.exists(fp.out_path(self.out, "conn", DAY, HOST)))
+        self.assertEqual(fp.read_manifest(self.out, DAY, EXITS)["records"], {"exit": 1})
+        self.assertFalse(os.path.exists(fp.out_path(self.out, "conn", DAY, EXITS)))
+        fp.drop_source(self.out, DAY, EXITS)
+        self.assertIsNone(fp.read_manifest(self.out, DAY, EXITS))
+        self.assertFalse(os.path.exists(fp.out_path(self.out, "exit", DAY, EXITS)))
 
     def test_today_waits_unless_asked(self):
         today = time.strftime("%Y-%m-%d")
         self.write_day([full("exit", 0)], day=today)
-        self.assertEqual(fp.host_days([self.root]), [])
-        self.assertEqual([d for d, _h, _p in fp.host_days([self.root], include_today=True)],
-                         [today])
+        self.assertEqual(fp.sources([self.root]), [])
+        self.assertEqual([d for d, _p in fp.sources([self.root], include_today=True)], [today])
 
-    def test_a_bad_host_day_does_not_stop_the_others(self):
+    def test_a_bad_file_does_not_stop_the_others(self):
         self.write_day([full("exit", 0)])
         with open(os.path.join(self.root, DAY, "other.example.org.exits.jsonl.gz"), "wb") as fh:
             fh.write(b"\x1f\x8b\x08\x00 not gzip at all")
         self.assertEqual(fp.main(["convert", "--out", self.out, "--jobs", "1", self.root]), 1)
-        self.assertTrue(os.path.exists(fp.out_path(self.out, "exit", DAY, HOST)))
-        self.assertIsNone(fp.read_manifest(self.out, DAY, "other.example.org"))
+        self.assertTrue(os.path.exists(fp.out_path(self.out, "exit", DAY, EXITS)))
+        self.assertIsNone(fp.read_manifest(self.out, DAY, "other.example.org.exits"))
         left = [n for _d, _s, ns in os.walk(self.out) for n in ns if ".tmp-" in n]
         self.assertEqual(left, [])
 
-    def test_a_torn_line_is_counted_not_kept(self):
+
+class Positions(Base):
+    """What a replica needs: every row's `_off`, and in the manifest everything
+    else a reader of the file could ask (`replica.py`)."""
+
+    def lines(self):
+        recs = [full("exit", i) for i in range(4)]
+        return [json.dumps(recs[0]), "", json.dumps(recs[1]), "{not json", "  ",
+                json.dumps(recs[2]), "[1, 2]", json.dumps(recs[3])], recs
+
+    def test_offsets_and_what_is_not_a_record(self):
+        lines, recs = self.lines()
+        d = os.path.join(self.root, DAY)
+        os.makedirs(d)
+        path = os.path.join(d, EXITS + ".jsonl.gz")
+        data = "".join(x + "\n" for x in lines).encode()
+        with gzip.open(path, "wb") as fh:
+            fh.write(data)
+        man = fp.convert_source(DAY, path, self.out)
+        starts, at = [], 0
+        for x in lines:
+            starts.append(at)
+            at += len(x.encode()) + 1
+        self.assertEqual((man["usize"], man["complete_end"], man["partial"]),
+                         (len(data), len(data), None))
+        self.assertEqual(base64.b64decode(man["head"]), data[:4096])
+        self.assertEqual(man["nonrec"], [[starts[1], "blank"], [starts[3], "bad"],
+                                         [starts[4], "blank"], [starts[6], "nondict"]])
+        self.assertEqual(man["malformed"], 2)
+        got = list(fp.records(fp.out_path(self.out, "exit", DAY, EXITS), offsets=True))
+        self.assertEqual([o for o, _r in got], [starts[0], starts[2], starts[5], starts[7]])
+        self.assertSameRecords(recs, [r for _o, r in got])
+        self.assertNotIn("_off", got[0][1])
+        self.assertEqual(fp.verify_source(DAY, path, self.out)["differ"], 0)
+
+    def test_an_unfinished_last_line_ends_the_file(self):
         path = self.write_day([full("exit", 0)])
         with open(path, "a") as fh:
             fh.write('{"event": "exit", "ts_ep')
-        man = fp.convert_host_day(DAY, HOST, [path], self.out)
-        self.assertEqual((man["records"], man["malformed"]), ({"exit": 1}, 1))
-
-
-class Formats(Base):
-    def test_jsonl_and_ebr_twins_give_the_same_tables(self):
-        from rc_dashboard.demo.feed import Feed
-        from rc_dashboard.demo.world import World
-        end = float(int(time.time()) // 3600 * 3600) - 86400
-        t = end - 2 * 3600
-        w, f = World("demo", 2, t), Feed(self.root, fmt="both")
-        while t < end:
-            f.append(w.records(t, t + 3600))
-            t += 3600
-        f.close()
-        outs = {}
-        for prefer in ("jsonl", "ebr"):
-            out = outs[prefer] = os.path.join(self.tmp, "pq-" + prefer)
-            todo = fp.host_days([f.ebpf], include_today=True, prefer=prefer)
-            self.assertTrue(todo)
-            for day, host, paths in todo:
-                self.assertTrue(all(fp.feedfile.format_of(p) == prefer for p in paths))
-                fp.convert_host_day(day, host, paths, out)
-                rep = fp.verify_host_day(day, host, paths, out)
-                self.assertEqual((rep["differ"], rep["rows_left_over"]), (0, {}), rep)
-        names = sorted(os.path.relpath(os.path.join(d, n), outs["jsonl"])
-                       for d, _s, ns in os.walk(outs["jsonl"]) for n in ns
-                       if n.endswith(".parquet"))
-        self.assertTrue(names)
-        for rel in names:
-            a = pq.read_table(os.path.join(outs["jsonl"], rel))
-            b = pq.read_table(os.path.join(outs["ebr"], rel))
-            self.assertTrue(a.equals(b), rel)
+        size = os.path.getsize(path)
+        man = fp.convert_source(DAY, path, self.out)
+        self.assertEqual((man["records"], man["malformed"]), ({"exit": 1}, 0))
+        self.assertEqual(man["partial"], man["complete_end"])
+        self.assertEqual(man["usize"], size)
+        self.assertLess(man["complete_end"], size)
 
 
 if __name__ == "__main__":

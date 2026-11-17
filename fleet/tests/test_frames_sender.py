@@ -22,8 +22,8 @@ FLEET = os.path.dirname(HERE)
 sys.path.insert(0, FLEET)
 sys.path.insert(0, HERE)
 
-import fleet_stream as fs                            # noqa: E402
-from fakecollector import FakeCollector, ebr, records   # noqa: E402
+import fleet_stream as fs                      # noqa: E402
+from fakecollector import FakeCollector        # noqa: E402
 
 SCRIPT = os.path.join(FLEET, "fleet_stream.py")
 HOST = "nodeA.cluster.example.org"
@@ -33,17 +33,16 @@ class SenderProc:
     """One sender process, with its frames decoded on a reader thread.
 
     Every `data` payload goes through one decompressor in arrival order, as a
-    receiver's would, and each frame is queued as (header, payload, plain). With no
-    `formats` the hello is an older receiver's, which lists none."""
+    receiver's would, and each frame is queued as (header, payload, plain). `extra`
+    adds keys to the hello, as another release's receiver may send."""
 
-    def __init__(self, root, have=None, days=3, formats=None):
+    def __init__(self, root, have=None, days=3, extra=None):
         self.p = subprocess.Popen(
             [sys.executable, SCRIPT, "send", "--root", root,
              "--poll", "0.05", "--ping", "0.5", "--trailer-poll", "0.1"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         hello = {"v": 1, "days": days, "have": have or {}}
-        if formats is not None:
-            hello["formats"] = formats
+        hello.update(extra or {})
         self.p.stdin.write((json.dumps(hello) + "\n").encode("utf-8"))
         self.p.stdin.flush()
         self.q = queue.Queue()
@@ -352,70 +351,47 @@ class TestSender(Base):
         self.assertTrue([h for h, _, _ in frames if h["t"] == "ping"])
 
 
-@unittest.skipIf(ebr is None, "no collector/lib/ebr.py alongside fleet/")
-class TestFormats(Base):
-    """A sender sends the day-file formats a receiver's hello asks for. An older
-    receiver's hello asks for none and gets `.jsonl` files only, as before EBR, so a
-    new sender keeps feeding it from a node that writes both."""
-
-    def both(self):
-        """Each stream as `.jsonl` and `.ebr` twins: 2026-11-10 sealed and gzipped,
-        2026-11-11 live."""
-        c = FakeCollector(self.root, day="2026-11-10", formats=("jsonl", "ebr"))
-        c.write_twins("exits", records(80))
-        c.roll("2026-11-11", gzip=True)
-        c.write_twins("exits", records(20, start=80))
-        return c
-
-    def test_an_older_receiver_gets_jsonl_only(self):
-        c = self.both()
-        s = self.sender()
-        frames = s.frames_until(got_bytes(c.key("exits"), len(c.read("exits")))) + s.frames_for(0.5)
-        self.assertEqual(frames[0][0]["formats"], ["jsonl"])
-        sealed = [c.key(st, "2026-11-10") for st in ("exits", "snapshot")]
-        self.assertEqual(sorted(set(h["path"] for h, _, _ in frames if "path" in h)),
-                         sorted(sealed + [k + ".gz" for k in sealed]
-                                + [c.key("exits"), c.key("snapshot")]))
-
-    def test_a_receiver_that_asks_gets_both(self):
-        """Each `.ebr` twin's live bytes and sealed `.ebr.gz` cross as the source holds
-        them, as the `.jsonl` twin's do, each sealed one with its trailer."""
-        c = self.both()
-        s = self.sender(formats=["jsonl", "ebr"])
-        live = dict((c.key("exits", fmt=f), len(c.read("exits", fmt=f))) for f in ("jsonl", "ebr"))
-        frames = s.frames_until(got_all(live)) + s.frames_for(0.3)
-        self.assertEqual(frames[0][0]["formats"], ["jsonl", "ebr"])
-        for f in ("jsonl", "ebr"):
-            self.assertEqual(data_of(frames, c.key("exits", fmt=f)), c.read("exits", fmt=f))
-            sealed = c.key("exits", "2026-11-10", f)
-            gz = b"".join(p for h, p, _ in frames if h["t"] == "gz" and h["path"] == sealed + ".gz")
-            self.assertEqual(gz, read(c.path("exits", "2026-11-10", f) + ".gz"))
-            self.assertTrue([h for h, _, _ in frames if h["t"] == "trailer" and h["path"] == sealed])
+class TestDayFiles(Base):
+    """Which files cross, and in what order the live day's appear."""
 
     def test_the_live_days_files_are_named_before_their_bytes(self):
         """Each live file the receiver lacks is named (a zero-length data frame) before
-        any file's bytes cross, so a stream's twins appear in the copy together, as the
-        collector makes them: a reader never finds the `.ebr` twin there alone."""
-        c = self.both()
-        s = self.sender(formats=["jsonl", "ebr"])
-        live = dict((c.key("exits", fmt=f), len(c.read("exits", fmt=f))) for f in ("jsonl", "ebr"))
+        any file's bytes cross, so the day's files appear in the copy together, as the
+        collector makes them."""
+        c = FakeCollector(self.root)
+        c.append("exits", b'{"pid":1}\n' * 100)
+        c.append("snapshot", b'{"event":"residency"}\n' * 10)
+        s = self.sender()
+        live = dict((c.key(st), len(c.read(st))) for st in ("exits", "snapshot"))
         today = [h for h, _, _ in s.frames_until(got_all(live))
                  if h["t"] == "data" and h["path"].startswith(c.day + "/")]
         first = next(i for i, h in enumerate(today) if h["plain"])
         self.assertEqual(sorted(h["path"] for h in today[:first]),
-                         sorted(c.key(st, fmt=f) for st in ("exits", "snapshot") for f in ("jsonl", "ebr")))
+                         sorted(c.key(st) for st in ("exits", "snapshot")))
 
-    def test_only_the_formats_asked_for(self):
-        """`ebr` alone: no `.jsonl` file crosses. A format this sender does not know is
-        not sent, and not said to be."""
-        c = self.both()
-        s = self.sender(formats=["ebr", "parquet"])
-        ebr_key = c.key("exits", fmt="ebr")
-        frames = s.frames_until(got_bytes(ebr_key, len(c.read("exits", fmt="ebr")))) + s.frames_for(0.5)
-        self.assertEqual(frames[0][0]["formats"], ["ebr"])
-        paths = set(h["path"] for h, _, _ in frames if "path" in h)
-        self.assertIn(ebr_key, paths)
-        self.assertEqual([p for p in paths if not (p.endswith(".ebr") or p.endswith(".ebr.gz"))], [])
+    def test_only_jsonl_day_files_cross(self):
+        """A day folder can hold more than the collector's `.jsonl` files -- `.ebr`
+        ones an earlier collector release wrote beside them, live and sealed -- and a
+        receiver of that release lists `formats` in its hello. Only the `.jsonl` files
+        and their `.gz` cross, whatever the hello asks."""
+        c = FakeCollector(self.root, day="2026-11-10")
+        c.append("exits", b'{"pid":1}\n' * 80)
+        stray = os.path.join(self.root, "2026-11-10", "%s.exits.ebr" % c.host)
+        with open(stray, "wb") as fh:
+            fh.write(b"\x00not JSONL")
+        subprocess.check_call(["gzip", "-f", stray])
+        c.roll("2026-11-11", gzip=True)
+        c.append("exits", b'{"pid":2}\n' * 20)
+        with open(os.path.join(self.root, "2026-11-11", "%s.exits.ebr" % c.host), "wb") as fh:
+            fh.write(b"\x00not JSONL")
+        s = self.sender(extra={"formats": ["jsonl", "ebr"]})
+        frames = s.frames_until(got_bytes(c.key("exits"), len(c.read("exits")))) + s.frames_for(0.5)
+        sealed = [c.key(st, "2026-11-10") for st in ("exits", "snapshot")]
+        self.assertEqual(sorted(set(h["path"] for h, _, _ in frames if "path" in h)),
+                         sorted(sealed + [k + ".gz" for k in sealed]
+                                + [c.key("exits"), c.key("snapshot")]))
+        gz = b"".join(p for h, p, _ in frames if h["t"] == "gz" and h["path"] == sealed[0] + ".gz")
+        self.assertEqual(gz, read(c.path("exits", "2026-11-10") + ".gz"))
 
 
 if __name__ == "__main__":

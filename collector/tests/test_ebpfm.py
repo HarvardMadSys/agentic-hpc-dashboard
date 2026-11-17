@@ -33,12 +33,9 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / 'lib'))
 
 import ebpf_trace as T           # noqa: E402
-import ebr                       # noqa: E402
 import sockdiag                  # noqa: E402
 import agent_classify as C       # noqa: E402
 import slurm_args as SA          # noqa: E402
-
-BOTH = ('jsonl', 'ebr')          # EBPFM_FORMAT's default; pinned where files are counted
 
 ALL_BLOCKS = set(T.BLOCK_NAMES)
 # offsets a real host would get from BTF; fixed here so no bpftool is needed
@@ -1136,38 +1133,32 @@ class EnvelopeTest(unittest.TestCase):
         runtime starts a session inside an agent tree (AgentRootTest), exit
         counters over every thread, masked args/captured_tail, NFS out of net_*.
 
-        The EBR container (EBPFM_FORMAT) is not a bump: the records are the same
-        in every format, meta.output and stop.output are informational
-        additions, and the container has its own version, ebr.VERSION."""
+        meta.output and stop.output are informational, and keep their shape:
+        no bump."""
         self.assertEqual(T.SCHEMA_VERSION, 8)
 
-    def test_meta_and_stop_say_what_each_format_was_and_cost(self):
-        """meta.output = descriptor(), stop.output = output_stats(): their keys,
-        null for a format not written, and JSON all the way down."""
+    def test_meta_and_stop_say_what_was_written_and_what_it_cost(self):
+        """meta.output = descriptor(), stop.output = output_stats(): JSONL, with
+        the `ebr` key the blocks have always had, null; and JSON all the way
+        down."""
         d = tempfile.mkdtemp(prefix='ebpfm_env_')
         try:
-            w = T.DailyWriter(d, 'h', formats=BOTH)
+            w = T.DailyWriter(d, 'h')
             desc = w.descriptor()
-            self.assertEqual(desc, {'formats': ['jsonl', 'ebr'],
-                                    'ebr': {'version': ebr.VERSION, 'zstd': T.EBR_ZSTD,
-                                            'reset_bytes': T.EBR_RESET_BYTES,
-                                            'str_id_size': ebr.STR_ID_SIZE}})
+            self.assertEqual(desc, {'formats': ['jsonl'], 'ebr': None})
+            self.assertEqual(w.output_stats(), {'jsonl': {'records': 0, 'bytes': 0, 'writes': 0,
+                                                          'errors': 0}, 'ebr': None})
             w.write({'event': 'meta'})
             st = w.output_stats()
             self.assertEqual(list(st), ['jsonl', 'ebr'])
             self.assertEqual(list(st['jsonl']), ['records', 'bytes', 'writes', 'errors'])
-            self.assertEqual(list(st['ebr']), ['records', 'bytes', 'writes', 'frames', 'segments',
-                                               'errors', 'lost', 'repaired_bytes'])
-            self.assertEqual((st['jsonl']['records'], st['ebr']['records']), (1, 1))
+            self.assertEqual((st['jsonl']['records'], st['jsonl']['writes']), (1, 0))
+            self.assertIsNone(st['ebr'])
             w.close()
             st = w.output_stats()
-            self.assertEqual((st['jsonl']['writes'], st['ebr']['writes'], st['ebr']['segments']),
-                             (1, 1, 1))
+            self.assertEqual((st['jsonl']['records'], st['jsonl']['writes']), (1, 1))
+            self.assertEqual(st['jsonl']['bytes'], os.path.getsize(w.path('snapshot')))
             self.assertEqual(json.loads(json.dumps([desc, st])), [desc, st])
-            j = T.DailyWriter(d, 'j', formats=('jsonl',))
-            self.assertEqual(j.descriptor(), {'formats': ['jsonl'], 'ebr': None})
-            self.assertEqual(j.output_stats(), {'jsonl': {'records': 0, 'bytes': 0, 'writes': 0,
-                                                          'errors': 0}, 'ebr': None})
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -1416,14 +1407,13 @@ class FlushPolicyTest(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_flush_')
-        self._saved = (T.FLUSH_MODE, T.FORMATS, T.COMPRESS)
-        # The default, twins, whatever EBPFM_FORMAT the suite runs under; and no
-        # gzip of a day a test rolls away from (CompressionTest covers that).
-        T.FORMATS, T.COMPRESS = BOTH, False
+        self._saved = (T.FLUSH_MODE, T.COMPRESS)
+        # No gzip of a day a test rolls away from (CompressionTest covers that).
+        T.COMPRESS = False
         self.day = datetime.now().strftime('%Y-%m-%d')
 
     def tearDown(self):
-        T.FLUSH_MODE, T.FORMATS, T.COMPRESS = self._saved
+        T.FLUSH_MODE, T.COMPRESS = self._saved
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _path(self, stream='exits'):
@@ -1555,7 +1545,7 @@ class FlushPolicyTest(unittest.TestCase):
         self.assertEqual((w.n, w.flushes), (7, 1))
         w.close()
 
-    # --- formats: JSONL and EBR twins ---------------------------------------
+    # --- the bytes, and the write(2)s that land them -----------------------
     def _varied(self, n=300):
         """Records whose values are the encoding's hazards: ints past 64 bits,
         floats that look like ints, NaN/inf/-0.0, null vs absent, non-ASCII and
@@ -1586,14 +1576,13 @@ class FlushPolicyTest(unittest.TestCase):
         w.close()
         for s in T.STREAMS:
             want = ''.join(json.dumps(r) + '\n' for r in recs if T.stream_of(r['event']) == s)
-            with open(w.path(s, fmt='jsonl'), 'rb') as f:
+            with open(w.path(s), 'rb') as f:
                 self.assertEqual(f.read(), want.encode('ascii'), s)
 
-    def test_a_dirty_stream_costs_one_write_per_format(self):
-        """Twins cost one more write(2) per dirty stream, and no more: one per
-        format however many records and bytes the round made (the text handle
-        this replaced split a round past 8 KiB into several), JSONL's first,
-        and none at all in an idle round."""
+    def test_a_dirty_stream_costs_one_write(self):
+        """One write(2) per dirty stream, however many records and bytes the
+        round made (the text handle this replaced split a round past 8 KiB into
+        several), and none at all in an idle round."""
         T.FLUSH_MODE = 'poll'
         w = T.DailyWriter(self.dir, 'node0')
         calls, patch = _counted_writes()
@@ -1601,129 +1590,26 @@ class FlushPolicyTest(unittest.TestCase):
             for i in range(400):
                 w.write({'event': 'exit', 'pid': i, 'args': 'x' * 200, 'ts': 'x'})
             w.flush()
-            self.assertEqual(calls, ['node0.exits.jsonl', 'node0.exits.ebr'])
+            self.assertEqual(calls, ['node0.exits.jsonl'])
             self.assertGreater(os.path.getsize(self._path()), 10 * 8192)
             del calls[:]
             for _ in range(100):
                 w.write(self._rec('exit'))
                 w.write(self._rec('residency'))
             w.flush()
-            self.assertEqual(sorted(calls[:2]), ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
-            self.assertEqual(sorted(calls[2:]), ['node0.exits.ebr', 'node0.snapshot.ebr'])
+            self.assertEqual(sorted(calls), ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
             del calls[:]
             for _ in range(10):
                 w.flush()
-            self.assertEqual(calls, [], 'an idle round writes nothing in either format')
-        self.assertEqual(w.flushes, 3, 'flushes still counts stream flushes')
+            self.assertEqual(calls, [], 'an idle round writes nothing')
+        self.assertEqual(w.flushes, 3, 'flushes counts stream flushes')
         w.close()
-
-    def test_the_ebr_twin_holds_the_jsonl_records(self):
-        """Decoding the .ebr gives back the .jsonl's records, in order, with
-        exact types and key order: re-encoded, each is its JSONL line."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        recs = self._varied()
-        for i, r in enumerate(recs):
-            w.write(r)
-            if i % 37 == 0:
-                w.flush()
-        w.close()
-        total = 0
-        for s in T.STREAMS:
-            lines = _lines(w.path(s, fmt='jsonl'))
-            self.assertEqual(_ebr_lines(w.path(s, fmt='ebr')), lines, s)
-            total += len(lines)
-        self.assertEqual(total, len(recs))
-        st = w.output_stats()
-        self.assertEqual((st['jsonl']['records'], st['ebr']['records']), (len(recs), len(recs)))
-        self.assertEqual((st['jsonl']['errors'], st['ebr']['errors'], st['ebr']['lost']), (0, 0, 0))
-        self.assertLess(st['ebr']['bytes'], st['jsonl']['bytes'])
-
-    def test_an_ebr_error_never_costs_jsonl_a_record(self):
-        """With twins, EBR is the format on trial: an error encoding a record is
-        counted and said once on stderr, never raised, and JSONL still gets
-        every record."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        err = io.StringIO()
-        with mock.patch.object(T._EbrSink, 'add', _refuse), contextlib.redirect_stderr(err):
-            for i in range(300):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.flush()
-        w.close()
-        self.assertEqual([r['pid'] for r in self._on_disk()], list(range(300)))
-        said = err.getvalue().splitlines()
-        self.assertEqual(len(said), 1, said)
-        self.assertIn('EBR write error, JSONL unaffected', said[0])
-        st = w.output_stats()
-        self.assertEqual((st['jsonl']['records'], st['jsonl']['errors']), (300, 0))
-        self.assertEqual((st['ebr']['records'], st['ebr']['errors']), (0, 300))
-        self.assertEqual((w.n, w.flushes), (300, 1))
-
-    def test_a_failed_ebr_write_is_retried_and_jsonl_does_not_wait(self):
-        """ENOSPC on the .ebr alone: JSONL's write goes ahead, EBR keeps its
-        frames, and once there is room the twin catches up whole."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        err = io.StringIO()
-        calls, patch = _counted_writes(fail=lambda name: name.endswith('.ebr'))
-        with patch, contextlib.redirect_stderr(err):
-            for i in range(50):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.flush()
-        self.assertEqual(calls, ['node0.exits.jsonl'])
-        self.assertEqual(len(self._on_disk()), 50)
-        self.assertEqual(os.path.getsize(w.path('exits', fmt='ebr')), 0)
-        self.assertIn('EBR flush error, JSONL unaffected', err.getvalue())
-        w.write({'event': 'exit', 'pid': 50, 'ts': 'x'})
-        w.flush()
-        w.close()
-        self.assertEqual(_ebr_lines(w.path('exits', fmt='ebr')), _lines(self._path()))
-        st = w.output_stats()['ebr']
-        self.assertEqual((st['records'], st['errors'], st['lost']), (51, 1, 0))
-
-    def test_a_thousand_ebr_errors_in_a_row_stop_ebr_until_the_next_day(self):
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        err = io.StringIO()
-        with mock.patch.object(T._EbrSink, 'add', _refuse), contextlib.redirect_stderr(err):
-            for i in range(1500):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.flush()
-        self.assertEqual(w.output_stats()['ebr']['errors'], 1000, 'stopped at the 1000th')
-        self.assertEqual(len(self._on_disk()), 1500, 'JSONL kept every record')
-        said = err.getvalue().splitlines()
-        self.assertEqual(len(said), 2, said)
-        self.assertIn('1000 EBR errors in a row; no EBR until the next day opens', said[1])
-        with mock.patch.object(T, 'datetime', _clock('2099-01-01')):
-            w.write({'event': 'exit', 'pid': 1500, 'ts': 'x'})
-        w.close()
-        back = _ebr_lines(w.path('exits', '2099-01-01', 'ebr'))
-        self.assertEqual(back, _lines(w.path('exits', '2099-01-01', 'jsonl')))
-        self.assertEqual(len(back), 1, 'the next day writes EBR again')
-
-    def test_ebr_errors_that_are_not_in_a_row_never_stop_it(self):
-        w = T.DailyWriter(self.dir, 'node0')
-        real_add = T._EbrSink.add
-
-        def flaky(sink, rec):
-            if rec['pid'] % 500:
-                raise ValueError('refused')
-            real_add(sink, rec)
-        with mock.patch.object(T._EbrSink, 'add', flaky), \
-                contextlib.redirect_stderr(io.StringIO()):
-            for i in range(3000):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-        w.close()
-        self.assertEqual([json.loads(l)['pid'] for l in _ebr_lines(w.path('exits', fmt='ebr'))],
-                         list(range(0, 3000, 500)))
-        self.assertEqual(w.output_stats()['ebr']['errors'], 3000 - 6)
 
     def test_the_stop_records_flushes_are_exact(self):
         """stop.flushes is built before the stop record is written, so it adds
         what is still to come: the flush that lands it, and close()'s of the
         exits stream that flush_live's truncated records leave dirty, which the
-        old `+ 1` missed. Each flush is one write(2) per format."""
+        old `+ 1` missed. Each flush is one write(2)."""
         for mode in ('poll', 'record'):
             w = T.DailyWriter(self.dir, 'node-' + mode, flush_mode=mode)
             calls, patch = _counted_writes()
@@ -1742,31 +1628,17 @@ class FlushPolicyTest(unittest.TestCase):
                 w.write(stop)
                 w.close()
             self.assertEqual(stop['flushes'], w.flushes, mode)
-            self.assertEqual(len(calls), 2 * w.flushes, mode)
+            self.assertEqual(len(calls), w.flushes, mode)
             if mode == 'poll':
                 self.assertEqual(old, w.flushes - 1, 'the old count missed the exits flush')
 
-    def test_one_format_alone(self):
-        """EBPFM_FORMAT=jsonl writes no .ebr and =ebr no .jsonl, and path()
-        names the format written. Alone, EBR's errors are the caller's, as
-        JSONL's always were: there is no twin to fall back on."""
-        daydir = os.path.join(self.dir, self.day)
-        for fmt in BOTH:
-            host = 'only-' + fmt
-            w = T.DailyWriter(self.dir, host, formats=(fmt,))
-            for i in range(20):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.write({'event': 'meta', 'ts': 'x'})
-            self.assertTrue(w.path('exits').endswith('.exits.' + fmt))
-            w.close()
-            self.assertEqual(sorted(f for f in os.listdir(daydir) if f.startswith(host + '.')),
-                             ['%s.exits.%s' % (host, fmt), '%s.snapshot.%s' % (host, fmt)])
-            self.assertEqual([r['pid'] for _p, r in ebr.iter_records(w.path('exits'))],
-                             list(range(20)))
-            self.assertEqual(w.descriptor()['formats'], [fmt])
-            self.assertIsNone(w.output_stats()['ebr' if fmt == 'jsonl' else 'jsonl'])
-            self.assertEqual(w.output_stats()[fmt]['records'], 21)
-        w = T.DailyWriter(self.dir, 'only-ebr-raises', formats=('ebr',))
+    def test_errors_are_the_callers_and_a_failed_write_is_retried(self):
+        """A record json.dumps refuses raises, as it always did, and none of it
+        is written. A write that fails (ENOSPC) raises too and keeps its bytes:
+        the stream stays dirty, the next flush writes them first, and the file
+        holds every record whole. stop.output.jsonl.errors counts both."""
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
         with self.assertRaises(TypeError):
             w.write({'event': 'exit', 'pid': object()})
         w.write({'event': 'exit', 'pid': 1, 'ts': 'x'})
@@ -1774,121 +1646,15 @@ class FlushPolicyTest(unittest.TestCase):
         with patch, self.assertRaises(OSError):
             w.flush()
         self.assertTrue(w.dirty['exits'], 'a failed flush is retried the next round')
-        w.close()
-        self.assertEqual([r['pid'] for _p, r in ebr.iter_records(w.path('exits'))], [1])
-        self.assertEqual(w.output_stats()['ebr']['errors'], 2)
-
-    def test_the_format_setting(self):
-        """EBPFM_FORMAT: jsonl, ebr or both, unset meaning both; anything else
-        writes both and says why."""
-        self.assertEqual(T._formats_of(None), (BOTH, None))
-        self.assertEqual(T._formats_of(''), (BOTH, None))
-        self.assertEqual(T._formats_of('both'), (BOTH, None))
-        self.assertEqual(T._formats_of(' EBR '), (('ebr',), None))
-        self.assertEqual(T._formats_of('jsonl'), (('jsonl',), None))
-        formats, why = T._formats_of('parquet')
-        self.assertEqual(formats, BOTH)
-        self.assertIn("EBPFM_FORMAT='parquet'", why)
-        self.assertEqual(T.DailyWriter(self.dir, 'x', formats='both').formats, BOTH)
-        self.assertEqual(T.DailyWriter(self.dir, 'x').formats, BOTH)
-        with self.assertRaises(ValueError):
-            T.DailyWriter(self.dir, 'x', formats=('jsonl', 'xml'))
-
-    def test_an_unknown_format_setting_writes_both_and_says_so_once(self):
-        code = ('import sys; sys.path[:0] = [%r, %r]\nimport ebpf_trace as T\nprint(T.FORMATS)\n'
-                % (str(_ROOT), str(_ROOT / 'lib')))
-        r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, universal_newlines=True,
-                           env=dict(os.environ, EBPFM_FORMAT='parquet', EBPFM_OUTPUT_DIR=self.dir))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), str(BOTH))
-        self.assertEqual(r.stderr.count('EBPFM_FORMAT'), 1, r.stderr)
-
-    def test_the_zstd_setting_and_the_zlib_one_it_replaces(self):
-        """EBPFM_EBR_ZSTD is a zstd level 0-22, off by default, anything else
-        0 and said once. EBPFM_EBR_ZLIB (format v1's deflate) is gone: set, it
-        is said once and changes nothing."""
-        code = ('import sys; sys.path[:0] = [%r, %r]\nimport ebpf_trace as T\nprint(T.EBR_ZSTD)\n'
-                % (str(_ROOT), str(_ROOT / 'lib')))
-        for env, want, said in (({}, '0', ()),
-                                ({'EBPFM_EBR_ZSTD': '7'}, '7', ()),
-                                ({'EBPFM_EBR_ZSTD': '23'}, '0', ('EBPFM_EBR_ZSTD',)),
-                                ({'EBPFM_EBR_ZLIB': '6'}, '0', ('EBPFM_EBR_ZLIB is replaced',)),
-                                ({'EBPFM_EBR_ZLIB': '', 'EBPFM_EBR_ZSTD': ''}, '0', ())):
-            e = dict(os.environ, EBPFM_OUTPUT_DIR=self.dir)
-            e.pop('EBPFM_EBR_ZSTD', None)
-            e.pop('EBPFM_EBR_ZLIB', None)
-            e.update(env)
-            r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, universal_newlines=True, env=e)
-            self.assertEqual((r.returncode, r.stdout.strip()), (0, want), (env, r.stderr))
-            for s in said:
-                self.assertEqual(r.stderr.count(s), 1, (env, r.stderr))
-            if not said:
-                self.assertNotIn('EBPFM_EBR', r.stderr, env)
-
-    def test_zstd_without_a_zstd_module_writes_ebr_uncompressed_and_says_so(self):
-        """Asked for zstd where python3 has no zstd module, the run writes EBR
-        uncompressed rather than none, warns once a process, and meta.output
-        says so: zstd 0, zstd_unavailable."""
-        err = io.StringIO()
-        with mock.patch.object(T, 'EBR_ZSTD', 3), mock.patch.object(ebr, '_ZSTD', False), \
-                mock.patch.object(T, '_ZSTD_SAID', []), mock.patch.object(sys, 'stderr', err):
-            w = T.DailyWriter(self.dir, 'node0')
-            w2 = T.DailyWriter(self.dir, 'node1')
-            for i in range(30):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x', 'args': 'make -j8 all' * 3})
-            w.close()
-            w2.close()
-        self.assertEqual(err.getvalue().count('EBPFM_EBR_ZSTD=3'), 1, err.getvalue())
-        self.assertIn('writing EBR uncompressed', err.getvalue())
-        self.assertEqual(w.descriptor()['ebr'],
-                         {'version': ebr.VERSION, 'zstd': 0, 'zstd_unavailable': True,
-                          'reset_bytes': T.EBR_RESET_BYTES, 'str_id_size': ebr.STR_ID_SIZE})
-        p = w.path('exits', fmt='ebr')
-        self.assertEqual([f.flags for f in ebr.frames(p)], [0, 0])
-        self.assertEqual(_ebr_lines(p), _lines(self._path()))
-        j = T.DailyWriter(self.dir, 'node2', formats=('jsonl',))
-        self.assertEqual(j.descriptor(), {'formats': ['jsonl'], 'ebr': None})
-
-    @unittest.skipUnless(ebr.zstd_available(), 'no zstd module in this Python')
-    def test_zstd_compresses_the_ebr_twin(self):
-        """EBPFM_EBR_ZSTD=L with a zstd module: the EBR frames are zstd where
-        that is smaller, and the twins still hold the same records."""
-        err = io.StringIO()
-        with mock.patch.object(T, 'EBR_ZSTD', 3), mock.patch.object(sys, 'stderr', err):
-            w = T.DailyWriter(self.dir, 'node0')
-            for i in range(40):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x', 'args': 'make -j8 all ' * 8})
-                if i % 10 == 9:
-                    w.flush()
-            w.close()
-        self.assertEqual(err.getvalue(), '')
-        self.assertEqual(w.descriptor()['ebr']['zstd'], 3)
-        self.assertNotIn('zstd_unavailable', w.descriptor()['ebr'])
-        p = w.path('exits', fmt='ebr')
-        self.assertEqual([f.flags for f in ebr.frames(p) if f.kind == ebr.DATA],
-                         [ebr.F_ZSTD] * 4)
-        self.assertEqual(_ebr_lines(p), _lines(self._path()))
-
-    def test_a_crashed_runs_torn_ebr_tail_is_cut_off_and_counted(self):
-        """SIGKILL mid-write can leave part of a frame. The next run's open cuts
-        it off -- stop.output.ebr.repaired_bytes says how much -- and appends
-        after the last whole frame, so the file decodes whole."""
-        w = T.DailyWriter(self.dir, 'node0')
-        w.write({'event': 'exit', 'pid': 1, 'ts': 'x'})
-        w.close()
-        p = w.path('exits', fmt='ebr')
-        with open(p, 'rb') as f:
-            whole = f.read()
-        with open(p, 'ab') as f:
-            f.write(whole[:30])                     # a frame's first 30 bytes
-        w = T.DailyWriter(self.dir, 'node0')
+        self.assertEqual(self._on_disk(), [])
         w.write({'event': 'exit', 'pid': 2, 'ts': 'x'})
-        self.assertEqual(w.output_stats()['ebr']['repaired_bytes'], 30)
+        w.flush()
+        self.assertFalse(w.dirty['exits'])
+        self.assertEqual([r['pid'] for r in self._on_disk()], [1, 2])
         w.close()
-        self.assertEqual([r['pid'] for _p, r in ebr.iter_records(p)], [1, 2])
-        self.assertEqual(_ebr_lines(p), _lines(self._path()))
+        st = w.output_stats()['jsonl']
+        self.assertEqual((st['records'], st['errors'], st['writes']), (2, 2, 1))
+        self.assertEqual((w.n, w.flushes), (2, 1))
 
 
 def _fd_name(fd):
@@ -1911,11 +1677,6 @@ def _counted_writes(fail=None):
     return calls, mock.patch.object(os, 'write', write)
 
 
-def _refuse(sink, rec):
-    """An _EbrSink.add that refuses every record."""
-    raise ValueError('refused')
-
-
 def _clock(day):
     """ebpf_trace's `datetime`, with now() at midday of `day`: DailyWriter.write()
     takes the day from the wall clock, and this lets a test choose it."""
@@ -1930,11 +1691,6 @@ def _lines(path):
     """A JSONL file's lines, gzipped or not."""
     with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
         return f.read().splitlines()
-
-
-def _ebr_lines(path):
-    """An EBR file's records, gzipped or not, as the JSONL lines they were."""
-    return [json.dumps(r) for _p, r in ebr.iter_records(path)]
 
 
 class StreamSplitTest(unittest.TestCase):
@@ -1967,25 +1723,17 @@ class StreamSplitTest(unittest.TestCase):
         # dedicated CompressionTest covers the gzip behaviour on its own.
         self._compress = T.COMPRESS
         T.COMPRESS = False
-        # Twins, the default, whatever EBPFM_FORMAT the suite runs under: the
-        # split holds in each format.
-        self._formats, T.FORMATS = T.FORMATS, BOTH
         self.day = datetime.now().strftime('%Y-%m-%d')
 
     def tearDown(self):
         T.FLUSH_MODE = self._mode
         T.COMPRESS = self._compress
-        T.FORMATS = self._formats
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _read(self, stream, host='node0'):
         p = os.path.join(self.dir, self.day, '%s.%s.jsonl' % (host, stream))
         with open(p) as f:
             return [json.loads(l) for l in f if l.strip()]
-
-    def _read_ebr(self, stream, host='node0'):
-        p = os.path.join(self.dir, self.day, '%s.%s.ebr' % (host, stream))
-        return [r for _p, r in ebr.iter_records(p)]
 
     # --- the mapping -------------------------------------------------------
     def test_every_documented_event_maps_to_a_real_stream(self):
@@ -2022,8 +1770,6 @@ class StreamSplitTest(unittest.TestCase):
         self.assertEqual([r['event'] for r in self._read('snapshot')],
                          ['meta', 'conn', 'netio', 'submit',
                           'residency', 'residency_totals', 'stop'])
-        for s in T.STREAMS:      # and each .ebr twin holds its .jsonl's records
-            self.assertEqual(self._read_ebr(s), self._read(s), s)
 
     def test_the_streams_do_not_bleed(self):
         w = T.DailyWriter(self.dir, 'node0')
@@ -2043,8 +1789,6 @@ class StreamSplitTest(unittest.TestCase):
             w.write({'event': ev, 'ts': 'x'})
         w.close()
         self.assertEqual(len(self._read('exits')) + len(self._read('snapshot')),
-                         len(self.ALL_EVENTS) * 13)
-        self.assertEqual(len(self._read_ebr('exits')) + len(self._read_ebr('snapshot')),
                          len(self.ALL_EVENTS) * 13)
         self.assertEqual(w.n, len(self.ALL_EVENTS) * 13)
 
@@ -2067,10 +1811,6 @@ class StreamSplitTest(unittest.TestCase):
         w.close()
         self.assertEqual(self._read('exits'), [], 'no exits observed, not a missing file')
         self.assertEqual(len(self._read('snapshot')), 1)
-        # the EBR twins too; an EBR file with no record holds nothing at all,
-        # not even the segment header, so it reads exactly as the empty .jsonl
-        self.assertEqual(os.path.getsize(w.path('exits', fmt='ebr')), 0)
-        self.assertEqual(len(self._read_ebr('snapshot')), 1)
 
     def test_ts_epoch_backstop_still_applies_to_both_streams(self):
         w = T.DailyWriter(self.dir, 'node0')
@@ -2088,18 +1828,15 @@ class StreamSplitTest(unittest.TestCase):
                          os.path.join(self.dir, self.day, 'node0.exits.jsonl'))
         self.assertEqual(w.path('snapshot'),
                          os.path.join(self.dir, self.day, 'node0.snapshot.jsonl'))
-        self.assertEqual(w.path('exits', fmt='ebr'),
-                         os.path.join(self.dir, self.day, 'node0.exits.ebr'))
-        self.assertEqual(w.path('snapshot', '2026-01-01', 'ebr'),
-                         os.path.join(self.dir, '2026-01-01', 'node0.snapshot.ebr'))
+        self.assertEqual(w.path('snapshot', '2026-01-01'),
+                         os.path.join(self.dir, '2026-01-01', 'node0.snapshot.jsonl'))
         w.close()
 
     # --- day rollover ------------------------------------------------------
     def test_rollover_opens_a_new_pair_and_strands_nothing(self):
-        """The rollover path closes two handles per format, not one. Records
-        buffered in EITHER stream must reach disk before the day changes -- with
-        one handle that was automatic, with four it is a thing that can be got
-        wrong.
+        """The rollover path closes two handles, not one. Records buffered in
+        EITHER stream must reach disk before the day changes -- with one handle
+        that was automatic, with two it is a thing that can be got wrong.
 
         _roll() is driven directly because the day is taken from the wall clock:
         reassigning w.day would still resolve to today's directory and prove
@@ -2113,16 +1850,12 @@ class StreamSplitTest(unittest.TestCase):
         self.assertEqual(w.flushes, 2, 'the roll flushed both streams')
         self.assertEqual(len(self._read('exits')), 1, 'day 1 exit reached disk')
         self.assertEqual(len(self._read('snapshot')), 1, 'day 1 residency reached disk')
-        self.assertEqual(len(self._read_ebr('exits')), 1, 'and so did its EBR twin')
-        self.assertEqual(len(self._read_ebr('snapshot')), 1)
 
-        # the new day opens a pair per format: four files, before any record
-        day2 = os.path.join(self.dir, '1999-01-01')
+        day2 = os.path.join(self.dir, '1999-01-01')  # the new day opens a PAIR
         self.assertEqual(sorted(os.listdir(day2)),
-                         ['node0.exits.ebr', 'node0.exits.jsonl',
-                          'node0.snapshot.ebr', 'node0.snapshot.jsonl'])
+                         ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
         self.assertEqual([os.path.getsize(os.path.join(day2, f))
-                          for f in sorted(os.listdir(day2))], [0, 0, 0, 0])
+                          for f in sorted(os.listdir(day2))], [0, 0])
         w.close()
 
     def test_record_mode_routes_the_same_way(self):
@@ -2136,20 +1869,18 @@ class StreamSplitTest(unittest.TestCase):
 
 
 class CompressionTest(unittest.TestCase):
-    """Sealed day-files are gzipped in place to <file>.jsonl.gz, and EBR twins to
-    <file>.ebr.gz; the live day is left plain. The gzip runs as a fire-and-forget
-    `nice` subprocess, so these tests WAIT for it to land rather than assuming it
-    is synchronous -- the race that assumption caused is exactly what this suite
-    exists to prevent."""
+    """Sealed day-files are gzipped in place to <file>.jsonl.gz; the live day is
+    left plain. The gzip runs as a fire-and-forget `nice` subprocess, so these
+    tests WAIT for it to land rather than assuming it is synchronous -- the race
+    that assumption caused is exactly what this suite exists to prevent."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_gz_')
         self._mode, T.FLUSH_MODE = T.FLUSH_MODE, 'poll'
         self._compress, T.COMPRESS = T.COMPRESS, True
-        self._formats, T.FORMATS = T.FORMATS, BOTH
 
     def tearDown(self):
-        T.FLUSH_MODE, T.COMPRESS, T.FORMATS = self._mode, self._compress, self._formats
+        T.FLUSH_MODE, T.COMPRESS = self._mode, self._compress
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _wait_gz(self, path, timeout=10.0):
@@ -2177,19 +1908,15 @@ class CompressionTest(unittest.TestCase):
         self._write_on(w, '2026-01-02', {'event': 'meta', 'ts_epoch': 2.0})  # seals 2026-01-01
         d1 = os.path.join(self.dir, '2026-01-01')
         for s in ('exits', 'snapshot'):
-            for fmt in BOTH:
-                gz = self._wait_gz(os.path.join(d1, 'node0.%s.%s' % (s, fmt)))
-                self.assertTrue(gz.endswith('.%s.gz' % fmt))
-        # content survives the round trip, in either format
-        gz = os.path.join(d1, 'node0.exits.%s.gz')
-        self.assertEqual(_lines(gz % 'jsonl'), [json.dumps({'event': 'exit', 'pid': 1,
-                                                            'ts_epoch': 1.0})])
-        self.assertEqual(_ebr_lines(gz % 'ebr'), _lines(gz % 'jsonl'))
+            gz = self._wait_gz(os.path.join(d1, 'node0.%s.jsonl' % s))
+            self.assertTrue(gz.endswith('.jsonl.gz'))
+        # content survives the round trip
+        self.assertEqual(_lines(os.path.join(d1, 'node0.exits.jsonl.gz')),
+                         [json.dumps({'event': 'exit', 'pid': 1, 'ts_epoch': 1.0})])
         # the LIVE day stays plain -- it is still being appended to
         d2 = os.path.join(self.dir, '2026-01-02')
         self.assertEqual(sorted(os.listdir(d2)),
-                         ['node0.exits.ebr', 'node0.exits.jsonl',
-                          'node0.snapshot.ebr', 'node0.snapshot.jsonl'])
+                         ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
         w.close()
 
     def test_disabled_leaves_sealed_day_uncompressed(self):
@@ -2200,27 +1927,7 @@ class CompressionTest(unittest.TestCase):
         time.sleep(0.3)                              # give any (unexpected) gzip a chance
         d1 = os.path.join(self.dir, '2026-01-01')
         self.assertIn('node0.exits.jsonl', os.listdir(d1))
-        self.assertIn('node0.exits.ebr', os.listdir(d1))
         self.assertFalse(any(f.endswith('.gz') for f in os.listdir(d1)))
-        w.close()
-
-    def test_a_sealed_day_is_gzipped_in_both_formats_whatever_this_run_writes(self):
-        """A day written under another EBPFM_FORMAT is sealed the same way: a
-        JSONL-only run still gzips the .ebr a previous run left."""
-        T.FORMATS = ('jsonl',)
-        old = os.path.join(self.dir, '2026-01-01')
-        os.makedirs(old)
-        w = T.DailyWriter(self.dir, 'node0')
-        e = ebr.Writer(os.path.join(old, 'node0.exits.ebr'))
-        e.write({'event': 'exit', 'pid': 7})
-        e.close()
-        with open(os.path.join(old, 'node0.exits.jsonl'), 'w') as f:
-            f.write('{"event": "exit", "pid": 7}\n')
-        self._write_on(w, '2026-01-01', {'event': 'exit', 'ts_epoch': 1.0})
-        self._write_on(w, '2026-01-02', {'event': 'exit', 'ts_epoch': 2.0})
-        gz = self._wait_gz(os.path.join(old, 'node0.exits.ebr'))
-        self.assertEqual([r['pid'] for _p, r in ebr.iter_records(gz)], [7])
-        self._wait_gz(os.path.join(old, 'node0.exits.jsonl'))
         w.close()
 
     def test_startup_sweep_compresses_leftover_sealed_day(self):
@@ -2228,22 +1935,18 @@ class CompressionTest(unittest.TestCase):
         os.makedirs(old)
         with open(os.path.join(old, 'node0.exits.jsonl'), 'w') as f:
             f.write('{}\n')
-        open(os.path.join(old, 'node0.exits.ebr'), 'w').close()   # opened, nothing written
         T._sweep_sealed_days(self.dir, 'node0', '2026-01-02')
         self._wait_gz(os.path.join(old, 'node0.exits.jsonl'))
-        self._wait_gz(os.path.join(old, 'node0.exits.ebr'))
 
     def test_sweep_skips_today(self):
         today = '2026-01-02'
         d = os.path.join(self.dir, today)
         os.makedirs(d)
-        for fmt in BOTH:
-            with open(os.path.join(d, 'node0.exits.' + fmt), 'w') as f:
-                f.write('{}\n' if fmt == 'jsonl' else '')
+        with open(os.path.join(d, 'node0.exits.jsonl'), 'w') as f:
+            f.write('{}\n')
         T._sweep_sealed_days(self.dir, 'node0', today)
         time.sleep(0.3)
         self.assertIn('node0.exits.jsonl', os.listdir(d), 'today must stay plain')
-        self.assertIn('node0.exits.ebr', os.listdir(d))
         self.assertFalse(any(f.endswith('.gz') for f in os.listdir(d)))
 
 
@@ -4160,7 +3863,7 @@ class Python36Test(unittest.TestCase):
 
     def test_what_runs_on_the_collector_host_parses_as_python_3_6(self):
         """Every Python file the collector runs -- the tracer, the node tier,
-        lib/ including ebr.py, these tests -- and the Python inside ebpfm.sh:
+        lib/, these tests -- and the Python inside ebpfm.sh:
         3.6 syntax, no f-strings (the project's rule) and no subprocess
         `text=`/`capture_output=`, which 3.6 rejects at the call."""
         sources = [(p.name, p.read_text(encoding='utf-8')) for p in
@@ -4181,33 +3884,6 @@ class Python36Test(unittest.TestCase):
                     if fn in ('run', 'Popen', 'call', 'check_call', 'check_output'):
                         kws = set(k.arg for k in node.keywords)
                         self.assertFalse(kws & set(['text', 'capture_output']), name)
-
-    def test_without_lib_ebr_the_collector_still_writes_jsonl(self):
-        """`import ebr` is guarded: an interpreter that cannot load it still
-        collects, in JSONL alone whatever EBPFM_FORMAT asks, and meta.output
-        says why there is no EBR."""
-        d = tempfile.mkdtemp(prefix='ebpfm_noebr_')
-        try:
-            code = ('import json, sys\nsys.modules["ebr"] = None\nsys.path[:0] = [%r, %r]\n'
-                    'import ebpf_trace as T\n'
-                    'w = T.DailyWriter(%r, "h")\n'
-                    'w.write({"event": "meta"})\nw.write({"event": "exit"})\nw.close()\n'
-                    'print(json.dumps([T.ebr is None, list(w.formats), w.descriptor(),'
-                    ' w.output_stats()]))\n' % (str(_ROOT), str(_ROOT / 'lib'), d))
-            r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, universal_newlines=True,
-                               env=dict(os.environ, EBPFM_FORMAT='ebr', EBPFM_OUTPUT_DIR=d))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            unavailable, formats, desc, st = json.loads(r.stdout)
-            self.assertTrue(unavailable)
-            self.assertEqual(formats, ['jsonl'])
-            self.assertIsNone(desc['ebr'])
-            self.assertRegex(desc['ebr_unavailable'], r'^\w*(Import|NotFound)Error: .*\bebr\b')
-            self.assertEqual((st['jsonl']['records'], st['ebr']), (2, None))
-            day = os.path.join(d, datetime.now().strftime('%Y-%m-%d'))
-            self.assertEqual(sorted(os.listdir(day)), ['h.exits.jsonl', 'h.snapshot.jsonl'])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -5111,11 +4787,7 @@ class WrapperTest(unittest.TestCase):
     def test_a_node_snapshot_is_bounded(self):
         self.assertIn('$(_node_timeout) python3 "$NODE_SNAPSHOT"', self.src)
 
-    # --- formats ------------------------------------------------------------
-    def _fn1(self, name):
-        """A one-line function, `name() { ...; }`."""
-        return re.search(r'^%s\(\)\s+\{.*\}$' % re.escape(name), self.src, re.M).group(0) + '\n'
-
+    # --- run for real ------------------------------------------------------
     def _bash(self, script, env=None):
         r = subprocess.run(['bash', '-c', 'set -uo pipefail\n' + script], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -5130,81 +4802,60 @@ class WrapperTest(unittest.TestCase):
                            universal_newlines=True)
         return r.returncode, r.stdout, r.stderr
 
-    def test_the_format_is_validated_like_the_tier(self):
-        self.assertIn('EBR="$DIR/lib/ebr.py"', self.src)
-        self.assertIn('FORMAT="${EBPFM_FORMAT:-both}"', self.src)
-        self.assertIn('export EBPFM_FORMAT="$FORMAT"', self.src)
-        rc, _out, err = self._run('help', EBPFM_FORMAT='xml')
-        self.assertEqual(rc, 1)
-        self.assertIn("EBPFM_FORMAT must be jsonl, ebr or both (got 'xml')", err)
-        for fmt in ('jsonl', 'ebr', 'both', ''):
-            rc, out, _err = self._run('help', EBPFM_FORMAT=fmt)
-            self.assertEqual(rc, 0, fmt)
-            self.assertIn('EBPFM_FORMAT=jsonl|ebr|both', out)
-        rc, out, _err = self._run('ebr', '--version')
-        self.assertEqual(rc, 0)
-        self.assertRegex(out, r'\Aebr %d \(zstd: [^\n]+\)\n\Z' % ebr.VERSION)
+    def test_help_prints_the_header_and_no_more(self):
+        """`help` prints the header comment, every verb in it, and stops at its
+        end: the line range it prints follows the header's length."""
+        rc, out, err = self._run('help')
+        self.assertEqual((rc, err), (0, ''))
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith('ebpfm.sh'), lines[0])
+        self.assertIn('install-unit  install the persistent systemd unit', lines[-2])
+        self.assertEqual(lines[-1], '')
+        self.assertEqual(self._run('no-such-verb')[0], 1)
 
-    def test_the_file_helpers_take_a_format(self):
-        """_ebpf_file STREAM [DAY] [EXT]; _twin picks the plain file over its
-        .gz; _feed_count counts either format, plain or gzipped."""
+    def test_the_day_file_helpers(self):
+        """_jsonl_file takes the plain file over its .gz -- while gzip runs both
+        exist, and only the plain one is complete -- else the .gz, else none;
+        _feed_count counts a day-file's records, plain or gzipped."""
         d = tempfile.mkdtemp(prefix='ebpfm_wrap_')
         try:
-            day = os.path.join(d, '2026-11-01')
-            os.makedirs(day)
-            open(os.path.join(day, 'node7.rc.example.edu.exits.ebr'), 'w').close()
-            for name in ('h.exits.jsonl.gz', 'h.exits.ebr', 'h.exits.ebr.gz'):
+            for name in ('a.exits.jsonl', 'a.exits.jsonl.gz', 'b.exits.jsonl.gz'):
                 open(os.path.join(d, name), 'w').close()
-            script = ('OUTPUT_DIR=%s; HOST=node7\n' % d + self._fn('_ebpf_file') + self._fn('_twin')
-                      + '_ebpf_file exits 2026-11-01 ebr; _ebpf_file snapshot 2026-11-01 ebr\n'
-                      + '_ebpf_file exits 2026-11-01\n'
-                      + '_twin %s h.exits jsonl; _twin %s h.exits ebr\n' % (d, d)
-                      + '_twin %s h.snapshot ebr || echo none\n' % d)
+            script = (self._fn('_jsonl_file')
+                      + '_jsonl_file %s a.exits; _jsonl_file %s b.exits\n' % (d, d)
+                      + '_jsonl_file %s c.exits || echo none\n' % d)
             rc, out, err = self._bash(script)
             self.assertEqual((rc, err), (0, ''))
-            self.assertEqual(out.split(), [
-                os.path.join(day, 'node7.rc.example.edu.exits.ebr'),
-                os.path.join(day, 'node7.snapshot.ebr'), os.path.join(day, 'node7.exits.jsonl'),
-                os.path.join(d, 'h.exits.jsonl.gz'), os.path.join(d, 'h.exits.ebr'), 'none'])
+            self.assertEqual(out.split(), [os.path.join(d, 'a.exits.jsonl'),
+                                           os.path.join(d, 'b.exits.jsonl.gz'), 'none'])
 
-            recs = [{'event': 'exit', 'pid': i} for i in range(5)]
+            body = ''.join(json.dumps({'event': 'exit', 'pid': i}) + '\n' for i in range(5))
             with open(os.path.join(d, 'x.jsonl'), 'w') as f:
-                f.write(''.join(json.dumps(r) + '\n' for r in recs))
-            w = ebr.Writer(os.path.join(d, 'x.ebr'))
-            for r in recs:
-                w.write(r)
-                w.flush()
-            w.close()
-            for name in ('x.jsonl', 'x.ebr'):
-                with open(os.path.join(d, name), 'rb') as a, \
-                        gzip.open(os.path.join(d, name + '.gz'), 'wb') as b:
-                    b.write(a.read())
-            open(os.path.join(d, 'empty.ebr'), 'w').close()
-            files = ' '.join(os.path.join(d, n) for n in
-                             ('x.jsonl', 'x.jsonl.gz', 'x.ebr', 'x.ebr.gz', 'empty.ebr'))
-            script = ('EBR=%s\n' % (_ROOT / 'lib' / 'ebr.py') + self._fn('_feed_count')
-                      + 'for f in %s; do _feed_count "$f"; done\n' % files)
+                f.write(body)
+            with gzip.open(os.path.join(d, 'x.jsonl.gz'), 'wt') as f:
+                f.write(body)
+            open(os.path.join(d, 'empty.jsonl'), 'w').close()
+            files = ' '.join(os.path.join(d, n) for n in ('x.jsonl', 'x.jsonl.gz', 'empty.jsonl'))
+            script = self._fn('_feed_count') + 'for f in %s; do _feed_count "$f"; done\n' % files
             rc, out, err = self._bash(script)
             self.assertEqual((rc, err), (0, ''))
-            self.assertEqual(out.split(), ['5', '5', '5', '5', '0'])
+            self.assertEqual(out.split(), ['5', '5', '0'])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def _node_tick_script(self, d, fmt, snapshot):
+    def _node_tick_script(self, d, snapshot):
         return ('NODE_OUTPUT_DIR=%s/out; HOST=node7; NODE_SNAPSHOT=%s; NODE_TOP_N=25\n'
-                'NODE_INTERVAL=300; EBR=%s; FORMAT=%s; DIR_MODE=0750; FILE_MODE=0640\n'
+                'NODE_INTERVAL=300; DIR_MODE=0750; FILE_MODE=0640\n'
                 'EBPFM_GROUP=; want_ebpf() { return 1; }\n'
-                % (d, snapshot, _ROOT / 'lib' / 'ebr.py', fmt)
-                + self._fn1('_want_jsonl') + self._fn1('_want_ebr') + self._fn('_secure_dir')
-                + self._fn('_secure_file') + self._fn('_node_mode') + self._fn('_node_timeout')
-                + self._fn('_ebr_zstd') + self._fn('_node_tick') + 'umask 022\n')
+                % (d, snapshot)
+                + self._fn('_secure_dir') + self._fn('_secure_file') + self._fn('_node_mode')
+                + self._fn('_node_timeout') + self._fn('_node_tick') + 'umask 022\n')
 
-    def test_node_tick_writes_equal_twins_at_the_file_mode(self):
-        """The node tier's snapshot is captured, then appended to <host>.jsonl
-        and handed to `ebr.py append` for <host>.ebr: twins holding the same
-        records, both at the configured mode however permissive the umask, the
-        second snapshot continuing the first's segment. node_snapshot.py is not
-        touched, so a stub stands in for it."""
+    def test_node_tick_appends_whole_snapshots_at_the_file_mode(self):
+        """The node tier's snapshot is captured, then appended to <host>.jsonl,
+        a line each, at the configured mode however permissive the umask; one
+        the timeout kills appends nothing, not half a line. node_snapshot.py is
+        not touched, so a stub stands in for it."""
         d = tempfile.mkdtemp(prefix='ebpfm_node_')
         try:
             snap = os.path.join(d, 'snap.py')
@@ -5214,197 +4865,74 @@ class WrapperTest(unittest.TestCase):
                         '    "top_n": int(sys.argv[2]), "mode": os.environ.get("SNAPSHOT_MODE"),\n'
                         '    "load": [0.5, 1, None], "user": "\\u00e9\\ud800", "big": 2 ** 70,\n'
                         '    "ts_epoch": time.time()}))\n')
-            rc, out, err = self._bash(self._node_tick_script(d, 'both', snap)
+            rc, out, err = self._bash(self._node_tick_script(d, snap)
                                       + '_node_tick && _node_tick && echo ok\n')
             self.assertEqual((rc, out, err), (0, 'ok\n', ''))
             day = os.path.join(d, 'out', datetime.now().strftime('%Y-%m-%d'))
-            j, e = os.path.join(day, 'node7.jsonl'), os.path.join(day, 'node7.ebr')
+            self.assertEqual(os.listdir(day), ['node7.jsonl'])
+            j = os.path.join(day, 'node7.jsonl')
             lines = _lines(j)
             self.assertEqual(len(lines), 2)
+            self.assertEqual([json.loads(l)['top_n'] for l in lines], [25, 25])
             self.assertEqual(json.loads(lines[0])['mode'], 'full')
-            self.assertEqual(_ebr_lines(e), lines)
-            for p in (j, e):
-                self.assertEqual(os.stat(p).st_mode & 0o777, 0o640, p)
+            self.assertEqual(os.stat(j).st_mode & 0o777, 0o640)
             self.assertEqual(os.stat(day).st_mode & 0o777, 0o750)
-            frames = list(ebr.frames(e))
-            self.assertEqual([f.kind for f in frames], [ebr.SEGMENT, ebr.DATA, ebr.DATA])
-            dec = ebr.Decoder()
-            dec.skip(frames[0], e)
-            self.assertEqual((dec.segment['host'], dec.segment['stream'], dec.segment['writer']),
-                             ('node7', 'node', 'node_snapshot.py'))
-            # one format alone writes only that file
-            for fmt, other in (('jsonl', 'ebr'), ('ebr', 'jsonl')):
-                shutil.rmtree(os.path.join(d, 'out'))
-                rc, out, err = self._bash(self._node_tick_script(d, fmt, snap) + '_node_tick\n')
-                self.assertEqual((rc, err), (0, ''), fmt)
-                self.assertEqual(os.listdir(day), ['node7.' + fmt])
             # a snapshot that dies (the timeout's kill) appends nothing, not half a line
             with open(snap, 'w') as f:
                 f.write('import sys\nsys.stdout.write(\'{"timestamp": "x", "half\')\n'
                         'sys.stdout.flush()\nsys.exit(124)\n')
             shutil.rmtree(os.path.join(d, 'out'))
-            rc, out, err = self._bash(self._node_tick_script(d, 'both', snap) + '_node_tick\n')
+            rc, out, err = self._bash(self._node_tick_script(d, snap) + '_node_tick\n')
             self.assertEqual(rc, 1)
             self.assertEqual([os.path.getsize(os.path.join(day, n)) for n in sorted(os.listdir(day))]
                              if os.path.isdir(day) else [], [])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def test_node_tick_hands_the_zstd_level_to_append(self):
-        """EBPFM_EBR_ZSTD reaches the node tier's `ebr.py append` (as the
-        eBPF tier reads it: a level 0-22, anything else 0). Where python3 has
-        no zstd module the snapshot is still appended, uncompressed, and the
-        tick says why on stderr; it never costs the EBR twin a snapshot."""
-        self.assertIn('--zstd "$(_ebr_zstd)"', self._fn('_node_tick'))
-        lib_ebr = str(_ROOT / 'lib' / 'ebr.py')
-        shell_zstd = 'zstd: unavailable' not in subprocess.run(
-            ['python3', lib_ebr, '--version'], stdout=subprocess.PIPE,
-            universal_newlines=True).stdout
-        d = tempfile.mkdtemp(prefix='ebpfm_node_')
-        try:
-            snap = os.path.join(d, 'snap.py')
-            with open(snap, 'w') as f:
-                f.write('import json, sys\n'
-                        'print(json.dumps({"timestamp": "x", "hostname": sys.argv[1],\n'
-                        '    "procs": [{"cmd": "python3 train.py --epochs 10", "n": i}\n'
-                        '              for i in range(40)], "ts_epoch": 5.0}))\n')
-            day = os.path.join(d, 'out', datetime.now().strftime('%Y-%m-%d'))
-            for level, want in (('3', 3), ('99', 0), ('', 0)):
-                shutil.rmtree(os.path.join(d, 'out'), ignore_errors=True)
-                env = dict(os.environ, EBPFM_EBR_ZSTD=level)
-                rc, out, err = self._bash(self._node_tick_script(d, 'both', snap)
-                                          + '_node_tick && echo ok\n', env=env)
-                self.assertEqual((rc, out), (0, 'ok\n'), (level, err))
-                e = os.path.join(day, 'node7.ebr')
-                flags = [f.flags for f in ebr.frames(e) if f.kind == ebr.DATA]
-                if want and not shell_zstd:
-                    self.assertIn('--zstd 3: this Python has no zstd module', err)
-                    self.assertIn('appending uncompressed', err)
-                    self.assertEqual(flags, [0])
-                elif want:
-                    self.assertEqual((err, flags), ('', [ebr.F_ZSTD]))
-                else:
-                    self.assertEqual((err, flags), ('', [0]), level)
-                if ebr.zstd_available() or not flags[0]:
-                    self.assertEqual(_ebr_lines(e), _lines(os.path.join(day, 'node7.jsonl')))
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
-
-    def test_tail_and_overhead_read_ebr_through_its_cat(self):
-        """`ebr.py cat` prints an EBR file's records as the JSONL lines they
-        were, so tail reads either format, and overhead finds the stop record
-        by kind -- the last line of a file is not a record in EBR."""
+    def test_tail_and_overhead_read_the_day_files(self):
+        """tail prints the last lines of today's files as they are. overhead
+        counts both streams' records, plain or gzipped, and takes the perf
+        counters and the bytes written from the snapshot stream's last `stop`
+        record: the last line of the exits file is an exit record."""
         tail = self._fn('cmd_tail')
-        self.assertIn('python3 "$EBR" cat --tail "$n" "$f" | jq .', tail)
-        self.assertIn('tail -n "$n" "$f" | jq .', tail, 'JSONL is tailed as it always was')
+        self.assertIn('tail -n "$n" "$f" | jq .', tail)
         over = self._fn('cmd_overhead')
-        self.assertIn('python3 "$EBR" cat --tail 1 --kind stop "$f"', over)
+        self.assertIn('f="$(_jsonl_file "$d" "$HOST.$s")" || continue', over)
         self.assertIn('_feed_count "$f"', over)
+        self.assertIn('_last_stop "$f"', over)
         self.assertNotIn('tail -1 "$f"', over)
-        self.assertIn('o=json.load(sys.stdin).get("output")', over, 'bytes from stop.output')
-        # and the tail runs: EBR alone, today
+        self.assertIn('o=(json.load(sys.stdin).get("output") or {}).get("jsonl")', over,
+                      'bytes from stop.output')
         d = tempfile.mkdtemp(prefix='ebpfm_tail_')
         try:
-            with mock.patch.object(T, 'FORMATS', ('ebr',)):
-                w = T.DailyWriter(d, 'node7')
+            w = T.DailyWriter(d, 'node7')
             recs = [{'event': 'exit', 'pid': i, 'ts_epoch': 1.5 + i} for i in range(5)]
-            for r in recs:
+            w.write({'event': 'meta', 'ts_epoch': 1.0})
+            stop = {'event': 'stop', 'perf_seen': {'exit': 5}, 'ts_epoch': 9.0}
+            for r in recs + [stop, {'event': 'residency', 'ts_epoch': 9.5}]:
                 w.write(r)
             w.close()
-            script = ('OUTPUT_DIR=%s; HOST=node7; EBR=%s; FORMAT=ebr; EBPF_STREAMS="snapshot exits"\n'
-                      'jq() { cat; }\n' % (d, _ROOT / 'lib' / 'ebr.py')
-                      + self._fn1('_want_jsonl') + self._fn1('_exts') + self._fn('_ebpf_file')
-                      + self._fn('_tail_file') + self._fn('cmd_tail') + 'cmd_tail 2\n')
+            script = ('OUTPUT_DIR=%s; HOST=node7; EBPF_STREAMS="snapshot exits"\n'
+                      'jq() { cat; }\n' % d
+                      + self._fn('_ebpf_file') + self._fn('cmd_tail') + 'cmd_tail 2\n')
             rc, out, err = self._bash(script)
             self.assertEqual((rc, err), (0, ''))
             self.assertEqual([l for l in out.splitlines() if l.startswith('== ')],
                              ['== snapshot (%s)' % w.path('snapshot'), '== exits (%s)' % w.path('exits')])
-            self.assertEqual([l for l in out.splitlines() if not l.startswith('== ')],
-                             [json.dumps(r) for r in recs[-2:]])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
-
-    def test_check_reports_the_format_and_ebr(self):
-        fns = (self._fn1('ok') + self._fn1('warn') + self._fn1('bad') + self._fn1('_want_ebr')
-               + self._fn('_ebr_zstd') + self._fn('_check_format')
-               + 'fails=0\n_check_format; echo "fails=$fails"\n')
-        env = dict((k, v) for k, v in os.environ.items() if not k.startswith('EBPFM_EBR_'))
-        here = 'FORMAT=both; EBR=%s\n' % (_ROOT / 'lib' / 'ebr.py')
-        rc, out, _err = self._bash(here + fns, env=env)
-        self.assertIn('ok    EBPFM_FORMAT', out)
-        self.assertIn('ebr %d (zstd: ' % ebr.VERSION, out)
-        m = re.search(r'ok    EBR settings +zstd 0 \(([^\n]+)\), a segment per 2097152 bytes', out)
-        self.assertTrue(m, out)
-        self.assertIn('fails=0', out)
-        self.assertNotIn('WARN', out)
-        # zstd asked for: where python3 has no zstd module EBR goes uncompressed,
-        # a WARN, not a FAIL; a level that is not one, or the v1 knob, a WARN too
-        rc, out, _err = self._bash(here + fns, env=dict(env, EBPFM_EBR_ZSTD='5'))
-        if m.group(1) == 'unavailable':
-            self.assertRegex(out, r'WARN  EBR settings +zstd 5 \(unavailable: written uncompressed')
-        else:
-            self.assertIn('ok    EBR settings                   zstd 5 (%s)' % m.group(1), out)
-        self.assertIn('fails=0', out)
-        rc, out, _err = self._bash(here + fns, env=dict(env, EBPFM_EBR_ZSTD='fast',
-                                                        EBPFM_EBR_ZLIB='6'))
-        self.assertIn("WARN  EBPFM_EBR_ZSTD                 'fast' is not a zstd level 0-22: off",
-                      out)
-        self.assertIn('WARN  EBPFM_EBR_ZLIB                 ignored: replaced by EBPFM_EBR_ZSTD',
-                      out)
-        self.assertIn('zstd 0 (', out)
-        self.assertIn('fails=0', out)
-        rc, out, _err = self._bash('FORMAT=both; EBR=/nonexistent/ebr.py\n' + fns)
-        self.assertIn('FAIL  ebr.py', out)
-        self.assertIn('fails=1', out)
-        rc, out, _err = self._bash('FORMAT=jsonl; EBR=/nonexistent/ebr.py\n' + fns)
-        self.assertIn('WARN  ebr.py', out)
-        self.assertIn('fails=0', out)
-
-    def test_compare_and_verify_cover_every_twin_of_the_day(self):
-        """compare: every JSONL/EBR pair of the day in both tiers, sealed (.gz)
-        or not, record by record; a pair that differs fails it. verify: every
-        EBR file of the day."""
-        d = tempfile.mkdtemp(prefix='ebpfm_cmp_')
-        try:
-            day = '2026-01-01'
-            ebpf, node = os.path.join(d, 'ebpf'), os.path.join(d, 'login')
-            with mock.patch.object(T, 'datetime', _clock(day)), \
-                    mock.patch.object(T, 'COMPRESS', False):
-                w = T.DailyWriter(ebpf, 'node7', formats=BOTH)
-                for i in range(50):
-                    w.write({'event': ('exit', 'residency')[i % 2], 'pid': i, 'ts_epoch': 1.0 + i})
-                w.close()
-            for f in os.listdir(os.path.join(ebpf, day)):     # sealed: gzipped in place
-                subprocess.check_call(['gzip', os.path.join(ebpf, day, f)])
-            os.makedirs(os.path.join(node, day))
-            nb = os.path.join(node, day, 'node7')
-            snaps = [{'timestamp': 'x', 'n': i, 'ts_epoch': 2.0 + i} for i in range(3)]
-            with open(nb + '.jsonl', 'w') as f:
-                f.write(''.join(json.dumps(r) + '\n' for r in snaps))
-            e = ebr.Writer(nb + '.ebr')
-            for r in snaps:
-                e.write(r)
-            e.close()
-            env = {'EBPFM_OUTPUT_DIR': ebpf, 'EBPFM_NODE_OUTPUT_DIR': node, 'EBPFM_FORMAT': 'both'}
-            rc, out, err = self._run('compare', day, **env)
-            self.assertEqual(rc, 0, out + err)
-            self.assertIn('node7.exits', out)
-            self.assertIn('25 records compared, 0 differ, OK', out)
-            self.assertIn('3 records compared, 0 differ, OK', out)
-            self.assertIn('== 3 twin pairs, all equal', out)
-            rc, out, err = self._run('verify', day, **env)
-            self.assertEqual(rc, 0, out + err)
-            self.assertEqual(len([l for l in out.splitlines() if ': ebr, ' in l and l.endswith('OK')]),
-                             3, out)
-            e = ebr.Writer.open_append(nb + '.ebr')        # the EBR twin gains a record
-            e.write({'timestamp': 'x', 'n': 99})
-            e.close()
-            rc, out, err = self._run('compare', day, **env)
-            self.assertEqual(rc, 1, out + err)
-            self.assertIn('B has 1 more', out)
-            self.assertIn('NOT all equal', out)
-            self.assertEqual(self._run('compare', '1999-01-01', **env)[0], 1, 'nothing compared')
-            self.assertEqual(self._run('verify', '1999-01-01', **env)[0], 1)
+            self.assertEqual([json.loads(l)['event'] for l in out.splitlines()
+                              if not l.startswith('== ')], ['stop', 'residency', 'exit', 'exit'])
+            subprocess.check_call(['gzip', w.path('snapshot')])
+            fns = self._fn('_last_stop') + self._fn('_jsonl_file') + self._fn('_feed_count')
+            for name in ('node7.snapshot', 'node7.exits', 'node7.none'):
+                rc, out, err = self._bash(
+                    fns + 'f="$(_jsonl_file %s %s)" || f=""\n' % (os.path.dirname(w.path('exits')), name)
+                    + 'echo "count=$([ -n "$f" ] && _feed_count "$f")"\n'
+                    + '[ -n "$f" ] && _last_stop "$f"; true\n')
+                self.assertEqual((rc, err), (0, ''), name)
+                count, _, line = out.partition('\n')
+                want = {'node7.snapshot': (3, json.dumps(stop) + '\n'),
+                        'node7.exits': (5, ''), 'node7.none': ('', '')}[name]
+                self.assertEqual((count, line), ('count=%s' % want[0], want[1]), name)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
