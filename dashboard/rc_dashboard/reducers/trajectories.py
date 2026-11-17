@@ -1308,14 +1308,14 @@ class TrajectoryReducer:
         """
         return self._phases(s, members)[0]
 
-    def _phases(self, s, members):
+    def _phases(self, s, members, fresh=True):
         """`(block, n_calls)`: `phase_block`, and the calls of row `s` alone,
         which `_row` serves as the row's own. `n_calls` is None for a row whose
         calls are not recognized, and the block's own for a row of one day. The
         counts of the rows of a block add up to the block's."""
         if s.cls != "agent" or s.agent_type not in PHASE_AGENTS:
             return {"unavailable": UNAVAILABLE}, None
-        parts = [(r, m, self._pending_of(m)) for r, m in self._day_rows(s, members)]
+        parts = [(r, m, self._pending_of(m)) for r, m in self._day_rows(s, members, fresh)]
         key = (tuple((r.sid, r.n, len(r.phase.calls), len(m), len(e), sum(x[P_N] for x in e),
                       max((x[P_LAST] for x in e), default=None))
                      for r, m, e in parts),
@@ -1328,17 +1328,19 @@ class TrajectoryReducer:
             hit = self._phase_cache[at] = (key, *self._build_block(parts))
         return hit[1], hit[2][s.sid]
 
-    def _day_rows(self, s, members):
+    def _day_rows(self, s, members, fresh=True):
         """`[(row, members)]`, the day rows whose calls make one block with row
         `s` (`phase_block`), in time order, `s` among them with its `members`.
         The others are the current fold's rows of the same agent
         (`_agent_key`) that have a time and whose calls are read. The fold is
         made if it is stale (`folded`), as `result` makes it before it reads a
-        row. `s` alone when it is not keyed on an agent or has no time."""
+        row -- unless `fresh` is False, when the last fold is taken as it is
+        (`_agent_days`). `s` alone when it is not keyed on an agent or has no
+        time."""
         rows = [(s, members)]
         key = _agent_key(s)
         if key is not None and s.first is not None:
-            others = self._agent_days().get(key, ())
+            others = self._agent_days(fresh).get(key, ())
             held = self._fold_cache[2]      # after the line above, which makes the fold if need be
             rows += [(r, held.get(r.sid) or [r.sid]) for r, _via, _k in others
                      if r.sid != s.sid and r.first is not None and r.cls == "agent"
@@ -1900,23 +1902,32 @@ class TrajectoryReducer:
                 return s, via, k, list(members)
         return None
 
-    def _by_agent(self, since=None):
+    def _by_agent(self, since=None, fold=None):
         """(host, agent pid, user) -> [(session, owner_via, n_keys)]: the folded
         rows of each agent (`_agent_key`), one for each day and class (the sid
         carries both). Sessions last active before `since` are left out."""
         by = {}
-        for s, via, k in self.folded()[0]:
+        for s, via, k in (fold if fold is not None else self.folded())[0]:
             key = _agent_key(s)
             if key is not None and (since is None or (s.last or 0) >= since):
                 by.setdefault(key, []).append((s, via, k))
         return by
 
-    def _agent_days(self):
+    def _agent_days(self, fresh=True):
         """`_by_agent()`, held until the fold changes: every row asks it for the
-        rows it shares a block with (`phase_block`)."""
-        fold = self.folded()
+        rows it shares a block with (`phase_block`).
+
+        `fresh` False takes the last fold as it is, when there is one. The
+        inspector's row (`_row` given its members by `lookup`) asks so: the
+        agent's other days are what the last fold holds -- seconds old on a live
+        window, whose ranking folds every few -- and a new fold is every session
+        of the window folded again under the service's lock, seconds on a
+        busy one, to change nothing the row reads."""
+        fold = self._fold_cache[1]
+        if fresh or fold is None:
+            fold = self.folded()
         if self._day_idx[0] is not fold:
-            self._day_idx = (fold, self._by_agent())
+            self._day_idx = (fold, self._by_agent(fold=fold))
         return self._day_idx[1]
 
     def agent_sessions(self, since=None):
@@ -1992,10 +2003,13 @@ class TrajectoryReducer:
         chain = s.chain[:self.max_runs]
         purpose = s.purpose[:self.purpose_cap]
         surface, surface_detail = self.surface_of(s)
+        given = members is not None
         if members is None:
             held = self._fold_cache[2]
             members = (held.get(s.sid) if held else None) or [s.sid]
-        phases, n_calls = self._phases(s, members)
+        # given its members (`lookup`), the row takes the agent's other days from
+        # the last fold rather than folding the window again (`_agent_days`)
+        phases, n_calls = self._phases(s, members, fresh=not given)
         return {
             "sid": s.sid, "key_type": s.kt, "host": s.host, "user": s.user,
             # how many collector session keys this row folds together, and how

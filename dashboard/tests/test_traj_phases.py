@@ -891,6 +891,50 @@ def session(rec_):
     return trajmod.Session(Normalizer(cfg()).normalize(rec_))
 
 
+class InspectorRowTest(unittest.TestCase):
+    def test_the_inspectors_row_takes_the_agents_other_days_from_the_last_fold(self):
+        """The inspector's row (`_row` given its members by `lookup`) reads the
+        agent's other day from the last fold rather than folding every session of
+        the window again under the service's lock: on a live window a record comes
+        every second, so the fold is always stale. The block it builds is the one
+        both days' rows share; the payload still folds afresh."""
+        midnight = time.mktime(time.localtime(time.time() - 7200)[:3] + (0, 0, 0, 0, 0, -1))
+        c = cfg()
+        view = PanelView(c, TM.classes(c), 1440)
+        red = view.reducers = view.fresh_reducers()
+        dispatch, norm = PanelView.build_dispatch(red), Normalizer(c)
+
+        def feed(recs):
+            for r in recs:
+                for x in dispatch.get(r["event"], ()):
+                    x.feed(norm.normalize(r))
+        feed([root8(midnight - 900), bash8(midnight - 500, 201, "ls"),
+              root8(midnight + 5), bash8(midnight + 630, 202, "ls")])
+        traj = red["trajectories"]
+        rows = traj.result(midnight + 650)["rows"]
+        new = time.strftime("%Y-%m-%d", time.localtime(midnight + 1))
+        sid = next(s for s in rows if s.endswith(":100") and s.split("|")[1] == new)
+        s, via, k, members = traj.lookup(sid)
+        want = traj._row(s, via, k, members)
+        self.assertEqual(want["phases"], rows[sid]["phases"])
+        self.assertEqual(len(want["phases"].get("days") or ()), 2, "the block spans both days")
+        # another agent's record: the fold is stale now, as on any live window
+        feed([bash8(midnight + 640, 901, "pwd", root=900), root8(midnight + 641, root=900)])
+        with mock.patch.object(type(traj), "_fold_all",
+                               side_effect=AssertionError("folded the window again")):
+            got = traj._row(s, via, k, members)
+        self.assertEqual(got["phases"], want["phases"])
+        folds = []
+        real = type(traj)._fold_all
+
+        def counting(this, sessions):
+            folds.append(1)
+            return real(this, sessions)
+        with mock.patch.object(type(traj), "_fold_all", counting):
+            traj.result(midnight + 650)
+        self.assertEqual(len(folds), 1, "the payload folds afresh")
+
+
 class LifeCycleTest(unittest.TestCase):
     def test_a_merge_keeps_the_housekeeping_bounds(self):          # R20, R21
         a, b = session(bash8(T0, 201, "ls")), session(bash8(T0, 201, "ls"))

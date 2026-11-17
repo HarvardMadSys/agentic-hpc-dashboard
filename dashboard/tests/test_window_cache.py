@@ -402,9 +402,11 @@ class FingerprintTest(unittest.TestCase):
         # which finds the day-files whose roots the fingerprint holds,
         # anonymize.py, whose home patterns the trajectories read only to name
         # a task's project when a read builds a phase block (`_phase_cache`,
-        # which SNAPSHOT_SKIP leaves unsaved), and payloads.py, which saves the
-        # panels a build served and nothing a build reads.
-        out = {"hours.py", "feeds.py", "anonymize.py", "payloads.py"}
+        # which SNAPSHOT_SKIP leaves unsaved), payloads.py, which saves the
+        # panels a build served and nothing a build reads, and keysearch.py, the
+        # session inspector's read fanned out over worker processes, which reads
+        # what proctree's own read does and nothing any saved state holds.
+        out = {"hours.py", "feeds.py", "anonymize.py", "payloads.py", "keysearch.py"}
         got = _reached(["normalize.py", "export.py", "windows.py", "snapshots.py",
                         "redact.py"] + sorted(_reducers()), out)
         self.assertEqual(got - set(snapshots.CODE_FILES) - _reducers() - out, set())
@@ -413,10 +415,10 @@ class FingerprintTest(unittest.TestCase):
         # The hours leave the live tier out of their fingerprint, so no reducer
         # an hour holds may reach it. Out on purpose: clock.py, which says which
         # hours are closed, feeds.py, which finds the day-files, and
-        # anonymize.py, as for a saved build.
+        # anonymize.py and keysearch.py, as for a saved build.
         from rc_dashboard import hours
         held = _reducers() - {"reducers/live.py"}
-        out = {"clock.py", "feeds.py", "anonymize.py"}
+        out = {"clock.py", "feeds.py", "anonymize.py", "keysearch.py"}
         got = _reached(["normalize.py", "export.py", "redact.py", "hours.py"] + sorted(held),
                        out)
         self.assertNotIn("reducers/live.py", got)
