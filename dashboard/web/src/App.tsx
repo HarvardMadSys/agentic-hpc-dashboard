@@ -746,6 +746,44 @@ export default function App() {
           <Icon name={mini ? 'expand' : 'collapse'} size={16} />
           <span>fold</span>
         </button>
+        {/* Who made it, and with whom. Folded, the MaDSys hexagon alone. */}
+        <div className="credits">
+          <a
+            className="credits-lab"
+            href="https://madsys.seas.harvard.edu/"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-tip={mini ? 'MaDSys, Harvard SEAS · with Harvard SEAS and FASRC' : undefined}
+          >
+            <img
+              className="credits-full"
+              src="./logos/madsys.png"
+              alt="Harvard University MaDSys: Measurement and Design of Systems"
+              width={385}
+              height={140}
+            />
+            <img className="credits-mark" src="./logos/madsys-mark.png" alt="MaDSys" width={117} height={132} />
+          </a>
+          <div className="credits-with">in collaboration with</div>
+          <div className="credits-partners">
+            <a href="https://seas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+              <img
+                src="./logos/harvard-seas.svg"
+                alt="Harvard John A. Paulson School of Engineering and Applied Sciences"
+                width={307}
+                height={86}
+              />
+            </a>
+            <a href="https://www.rc.fas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+              <img
+                src="./logos/fasrc.png"
+                alt="FAS Research Computing, Harvard University"
+                width={284}
+                height={61}
+              />
+            </a>
+          </div>
+        </div>
       </aside>
 
       <main ref={mainRef}>

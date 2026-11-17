@@ -429,6 +429,56 @@ section.panel {
   background: var(--surface-2);
   color: var(--crimson-ink);
 }
+/* the rail's last word: the lab that built it, and its partners. The logos
+   keep their own colours; each is drawn for a white ground, as the rail is. */
+.credits {
+  margin: 12px 12px 0;
+  padding: 12px 4px 0;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.credits img {
+  display: block;
+  height: auto;
+}
+.credits-lab .credits-full {
+  width: 160px;
+}
+.credits-lab .credits-mark {
+  display: none;
+  width: 30px;
+}
+.credits-with {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.credits-partners {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.credits-partners a:first-child img {
+  width: 176px;
+}
+.credits-partners a:last-child img {
+  width: 112px;
+}
+.credits a {
+  border-radius: 4px;
+}
+.credits a:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
 /* the drawer's close, below 900px only (scoped past .iconbtn, which follows) */
 .rail .rail-close {
   display: none;
@@ -488,6 +538,18 @@ section.panel {
   }
   .app.mini .rail-search kbd {
     display: none;
+  }
+  .app.mini .credits {
+    margin: 10px 8px 0;
+    padding: 10px 0 0;
+  }
+  .app.mini .credits-full,
+  .app.mini .credits-with,
+  .app.mini .credits-partners {
+    display: none;
+  }
+  .app.mini .credits-lab .credits-mark {
+    display: block;
   }
   .app.mini .rail-search {
     margin: 0 auto 6px;

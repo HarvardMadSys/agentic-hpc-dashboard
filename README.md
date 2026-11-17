@@ -2,6 +2,20 @@
 
 The aims of this repository is to collect agent behaviors on HPC login nodes (the collector), and make them visible to human (the dashboard).
 
+<p>
+  <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="64"></a>
+</p>
+
+Built by [MaDSys](https://madsys.seas.harvard.edu/) in collaboration with
+[Harvard SEAS](https://seas.harvard.edu/) and
+[FAS Research Computing (FASRC)](https://www.rc.fas.harvard.edu/).
+
+<p>
+  <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="44"></a>
+  &nbsp;&nbsp;
+  <a href="https://www.rc.fas.harvard.edu/"><img src="dashboard/web/public/logos/fasrc.png" alt="FAS Research Computing, Harvard University" height="32"></a>
+</p>
+
 ## Quick start -- Collector (`/collector`)
 A single file (`ebpfm.sh`) acts as a single entry point for the collectors.
 Its commands are:
