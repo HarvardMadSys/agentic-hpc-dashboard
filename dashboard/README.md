@@ -583,6 +583,8 @@ are in `rc_dashboard/redact.py`.
 These are research-integrity rules, not preferences. Each one is a mistake this project has
 already made once.
 
+What every figure on the page computes, from which records, by which read path and at what cost, is in [`docs/figures`](../docs/figures/README.md).
+
 - **Three classes, never two** — `agent` / `human` / `ide` (+ `unlabeled`). `ide` is any
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
