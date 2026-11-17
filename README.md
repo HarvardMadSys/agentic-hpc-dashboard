@@ -6,10 +6,6 @@ The aims of this repository is to collect agent behaviors on HPC login nodes (th
   <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="64"></a>
 </p>
 
-Built by [MaDSys](https://madsys.seas.harvard.edu/) in collaboration with
-[Harvard SEAS](https://seas.harvard.edu/) and
-[FAS Research Computing (FASRC)](https://www.rc.fas.harvard.edu/).
-
 <p>
   <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="44"></a>
   &nbsp;&nbsp;

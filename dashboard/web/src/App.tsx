@@ -746,14 +746,14 @@ export default function App() {
           <Icon name={mini ? 'expand' : 'collapse'} size={16} />
           <span>fold</span>
         </button>
-        {/* Who made it, and with whom. Folded, the MaDSys hexagon alone. */}
+        {/* MaDSys, Harvard SEAS and FASRC. Folded, the MaDSys hexagon alone. */}
         <div className="credits">
           <a
             className="credits-lab"
             href="https://madsys.seas.harvard.edu/"
             target="_blank"
             rel="noopener noreferrer"
-            data-tip={mini ? 'MaDSys, Harvard SEAS · with Harvard SEAS and FASRC' : undefined}
+            data-tip={mini ? 'MaDSys · Harvard SEAS · FASRC' : undefined}
           >
             <img
               className="credits-full"
@@ -764,7 +764,6 @@ export default function App() {
             />
             <img className="credits-mark" src="./logos/madsys-mark.png" alt="MaDSys" width={117} height={132} />
           </a>
-          <div className="credits-with">in collaboration with</div>
           <div className="credits-partners">
             <a href="https://seas.harvard.edu/" target="_blank" rel="noopener noreferrer">
               <img
