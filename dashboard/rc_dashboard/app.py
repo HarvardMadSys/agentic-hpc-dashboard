@@ -27,6 +27,7 @@ from . import history as historymod
 from . import feeds as feedmod
 from . import gcwatch
 from . import jsonout
+from . import keysearch
 from . import proctree
 from . import redact
 from . import roles, tool_buckets
@@ -424,6 +425,7 @@ def create_app(cfg):
             t.cancel()
         agg.stop()
         store.stop()
+        keysearch.shutdown()            # the inspector's workers (keysearch.py)
 
     # ------------------------------------------------------------------- API
     @app.get("/api/config")

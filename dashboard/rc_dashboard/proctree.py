@@ -78,7 +78,7 @@ import time
 from array import array
 
 from . import feeds as feedmod, fastjson
-from . import gz, replica
+from . import gz, keysearch, replica
 from .export import event_filter, window_plan, window_scan
 from .feedfile import day_files, end_at_jsonl as _end_at, host_of
 from .normalize import Normalizer, epoch_of
@@ -140,6 +140,10 @@ DEFAULTS = {
     "inspect_newest_records": 600000,
     # Bytes of day-file read before the scan stops, likewise.
     "inspect_max_bytes": 6 << 30,
+    # Worker processes a read's records are built in (`keysearch`), at most this
+    # many and no more than the CPUs the service may use; 1 builds them in the
+    # service's own process. The same records either way.
+    "inspect_workers": 8,
     # Processes itemised; past it a process with nothing below it is counted
     # under its parent instead (`k: "agg"`), and a parent at 1.5x it too.
     "inspect_hold": 20000,
@@ -227,7 +231,11 @@ def _io_of(rec):
 
 
 def _io_add(a, b):
-    return b if a is None else a if b is None else tuple(x + y for x, y in zip(a, b))
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3], a[4] + b[4], a[5] + b[5])
 
 
 def _io_out(v):
@@ -250,10 +258,12 @@ class Agg:
         self.kv, self.depth = kv, depth
 
     def _span(self, t0, t1):
-        for t in (t0, t1):
-            if t is not None:
-                self.t0 = t if self.t0 is None else min(self.t0, t)
-                self.t1 = t if self.t1 is None else max(self.t1, t)
+        if t0 is not None:
+            self.t0 = t0 if self.t0 is None else min(self.t0, t0)
+            self.t1 = t0 if self.t1 is None else max(self.t1, t0)
+        if t1 is not None:
+            self.t0 = t1 if self.t0 is None else min(self.t0, t1)
+            self.t1 = t1 if self.t1 is None else max(self.t1, t1)
 
     def _cmd(self, cmd, n):
         cmd = cmd or "?"
@@ -1668,7 +1678,8 @@ def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
         stats["bytes"] += stop - pos
 
 
-def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
+def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None, workers=1,
+             cfg=None):
     """Yield `(rec, stats)` for the records on these session keys, OLDEST FIRST.
 
     `window_scan` for one session: the same byte ranges, the same per-file
@@ -1686,15 +1697,33 @@ def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
     as its search would be: the same `bytes`, chunk by chunk, so
     `inspect_max_bytes` stops the read at the same record, and the same
     `skipped` (`_key_stream_replica`).
+
+    With `workers` over 1 (and `cfg`, the config `norm` was made from), a plain
+    file's and a replica's records are built and normalised in that many worker
+    processes, a part of the file each, and replayed here in order with the same
+    counters (`keysearch`); a `.gz` with no replica is read here as before.
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan), "method": "key search"}
     ev = event_filter(events)
     kinds = frozenset(events) if events else None
-    streams = [_key_stream(e, norm, since, until, stats, pats, ev, kinds, where)
-               for e in plan]
-    for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
-        yield rec, stats
+    spec = keysearch.cfg_spec(cfg) if workers > 1 and cfg is not None else None
+    read = keysearch.next_read() if spec is not None else None
+    try:
+        streams = []
+        for e in plan:
+            s = (keysearch.stream(e, spec, since, until, stats, pats, events, kinds, where,
+                                  workers, read) if spec is not None else None)
+            streams.append(s if s is not None
+                           else _key_stream(e, norm, since, until, stats, pats, ev, kinds,
+                                            where))
+        for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
+            yield rec, stats
+    finally:
+        # stopped early (a budget, a reader gone elsewhere): what the workers have
+        # left of this read is dropped, so the next read does not wait behind it
+        if read is not None:
+            keysearch.cancel(read)
 
 
 def _day_end(sid):
@@ -1897,7 +1926,9 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
     pats = key_patterns(members)
-    records = (key_scan(plan, norm, since, until, pats, where=key_where(members))
+    workers = keysearch.workers_for(lim["inspect_workers"])
+    records = (key_scan(plan, norm, since, until, pats, where=key_where(members),
+                        workers=workers, cfg=cfg)
                if pats is not None else window_scan(plan, norm, since, until, events=EVENTS))
     if give_way is not None and give_way():
         raise _GiveWay
@@ -1913,6 +1944,10 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
         if stats["bytes"] >= lim["inspect_max_bytes"]:
             stopped, stopped_at = "bytes", rec.get("_ts_epoch")
             break
+    # Its workers let go now, not when this read's frame goes (`keysearch.cancel`).
+    close = getattr(records, "close", None)
+    if close is not None:
+        close()
     elapsed = time.time() - t0
 
     with lock:
