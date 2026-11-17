@@ -478,7 +478,8 @@ The 7 sealed days 2026-11-10 to 2026-11-16 of the same 8 hosts -- 112 day-files,
 of `.gz`, 182,151,599 records -- converted by the dashboard's history store (`history.py`:
 a file per day-file, 128 Ki-row groups, 8 processes): 701 s, 260 k records a second, into
 6.22 GB in 337 files, 33.8 % of the `.gz` (version 1, below: 33.4 % of 2026-11-09 to
-2026-11-15). A process held 0.4 to 0.6 GB.
+2026-11-15). A process held up to 0.8 GB (0.66 to 0.80 GB resident across the 8, measured
+in a running service mid-conversion).
 
 The reads the dashboard takes from it, each in a fresh process, against the same reads of
 the `.gz`, with the same answers both ways:

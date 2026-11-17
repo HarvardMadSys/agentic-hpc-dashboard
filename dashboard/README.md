@@ -132,7 +132,7 @@ dirs when that is set. The node tier is never sealed, so it is never converted.
 
 **What it costs and buys**, on FAS RC's mirror: 8 login nodes, the 7 sealed days 2026-11-10 to
 2026-11-16 (112 day-files, 18.4 GB of `.gz`, 182 M records). Converting them took 12 minutes in 8
-processes of 0.4 to 0.6 GB each, into 6.2 GB of Parquet, 34 % of the `.gz`. Each read below ran
+processes of up to 0.8 GB each, into 6.2 GB of Parquet, 34 % of the `.gz`. Each read below ran
 in a fresh process, with the same answers both ways:
 
 | | from the `.gz` | from the replicas |
