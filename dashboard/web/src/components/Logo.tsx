@@ -3,24 +3,21 @@
  * mark, tile included, is docs/logo/mark.svg and public/favicon.svg; keep the
  * three in step.
  *
- * A process tree seen from its root: one child is the agent (the spark), the
- * other branch is ordinary processes (the dimmed dots).
+ * pstree's └─ from a root process, ending in the agent's spark.
  */
 export function LogoGlyph({ size = 30 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" focusable="false">
+      <circle cx="9" cy="8.5" r="3" />
       <path
-        d="M9.5 10.5V21a2.5 2.5 0 0 0 2.5 2.5H14.5M9.5 15.5H13"
+        d="M9 12.1V18.3a1.2 1.2 0 0 0 1.2 1.2H13.1"
         fill="none"
         stroke="currentColor"
-        strokeWidth={2.2}
+        strokeWidth={2.6}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="9.5" cy="8.5" r="2.7" />
-      <path d="M19.6 9.5C20.32 14.78 20.32 14.78 25.6 15.5C20.32 16.22 20.32 16.22 19.6 21.5C18.88 16.22 18.88 16.22 13.6 15.5C18.88 14.78 18.88 14.78 19.6 9.5Z" />
-      <circle cx="18" cy="23.5" r="1.9" fillOpacity={0.6} />
-      <circle cx="23" cy="23.5" r="1.9" fillOpacity={0.6} />
+      <path d="M19.5 12.5C20.41 18.59 20.41 18.59 26.5 19.5C20.41 20.41 20.41 20.41 19.5 26.5C18.59 20.41 18.59 20.41 12.5 19.5C18.59 18.59 18.59 18.59 19.5 12.5Z" />
     </svg>
   );
 }

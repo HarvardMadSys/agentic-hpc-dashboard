@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/logo/lockup-dark.svg">
-    <img src="docs/logo/lockup.svg" alt="Harvard MaDSys: Agent Behaviour, agentic hpc dashboard" width="440">
+    <img src="docs/logo/lockup.svg" alt="Agent Behaviour, Harvard MaDSys" width="380">
   </picture>
 </p>
 

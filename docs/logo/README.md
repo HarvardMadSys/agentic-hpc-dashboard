@@ -1,16 +1,16 @@
 # Logo
 
-A process tree seen from its root: one child is the agent (the spark), the other
-branch is ordinary processes (the dimmed dots). Crimson `#A51C30` is the page's
+`pstree`'s `└─` from a root process, ending in the agent's spark: an agent seen
+where it runs, in the process tree. Crimson `#A51C30` is the page's
 accent and the `agent` series colour, so the mark uses it and nothing else.
 
 | file | use |
 |---|---|
 | `mark.svg` | the mark on its crimson tile; also `dashboard/web/public/favicon.svg` |
 | `mark-512.png` | the mark as a raster, for places that won't take SVG |
-| `lockup.svg` / `lockup-dark.svg` | mark + wordmark under a HARVARD · MADSYS line, for light / dark grounds |
+| `lockup.svg` / `lockup-dark.svg` | mark + "Agent Behaviour" over "Harvard MaDSys", for light / dark grounds |
 
-The wordmark is IBM Plex Sans 600 and IBM Plex Mono 500 (the dashboard's faces),
+The wordmark is IBM Plex Sans 600 and 500 (the dashboard's face),
 outlined to paths so it renders the same without the fonts installed.
 
 Harvard appears as words, not as the Veritas shield: Harvard's identity rules
