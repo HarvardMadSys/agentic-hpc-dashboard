@@ -3,7 +3,7 @@
 Every chart, table, plate, pill, ranking and list the dashboard page draws, and the operation on
 the data that produces it: which records it reads, by which read path, which reducer folds them
 and which method renders its payload, what that costs, and where the code is. It is written for
-the dashboard's maintainers and describes `develop` at `fa21623` (2026-11-17).
+the dashboard's maintainers and describes `develop` at `0a9eb37` (2026-11-17).
 
 The machinery this page refers to -- the live tier, window builds and their saved copies, the
 hourly merge-reduce, the history store of Parquet replicas -- is explained in
@@ -174,6 +174,17 @@ a time) and, in a sealed file with a replica, by testing the replica's `session_
 `agent_pid` columns (`key_where`); a terminal's or a login scope's key is searched for in the
 inflated `.gz`.
 
+The records a search finds are built and normalized in `inspect_workers` worker processes (8, no
+more than the CPUs the service may use; `keysearch.py:stream`), a part of a day-file each: a
+replica's row groups, or two of a plain file's 32 MB chunks. A record comes back holding only the
+28 fields the tree reads (`keysearch.py:INSPECT_KEYS`). The service's process replays the parts in
+file order with the one-process read's counters, so every bound below stops at the same record,
+and feeds the tree; a read that stops early cancels the parts still out. A sealed `.gz` with no
+usable replica -- every one, for a terminal's or a login scope's key -- is searched in the
+service's process, as before. The row shown beside the tree (SE-4) takes the agent's other days
+from the window's last fold, so opening a session folds only the keys sharing its row's prefix.
+See the inspector under [API](../../dashboard/README.md#api), "How a read is made".
+
 Bounds, each stated in the response: `inspect_max_records` 150,000 (600,000 newest first),
 `inspect_max_bytes` 6 GiB, `inspect_hold` 20,000 processes itemised, `inspect_per_parent` 2,000
 childless processes of one command per parent, `inspect_nodes` 6,000 entries served. One read runs
@@ -185,7 +196,10 @@ reader (`_warm_loop`).
 Measured: searching for the keys read one 11,000-line Claude session of a 627 MB day-file in 0.8 s
 against 2.9 s line by line (`proctree.py:key_scan`); in FAS's busiest sealed day-file (17.4 GB
 inflated) a session's key search took 30-43 s from the `.gz` and 2.8 s from its replica
-([History in Parquet](../../dashboard/README.md#history-in-parquet)).
+([History in Parquet](../../dashboard/README.md#history-in-parquet)). With the records built in 8
+processes, a 150,000-record read of a FAS agent session (boslogin06, 2026-11-16, its fold stale as
+on a live window) went from 9.9 s to 2.5-2.7 s, and a newest-first read of 149,573 records
+(boslogin05) from 12.1 s to 5.3-5.5 s, most of it now the tree keeping the newest.
 
 ### EVENTS: the events scan
 
@@ -1017,7 +1031,9 @@ and for how the page draws them
   the tree at its first record.
 - **Computation:** SE-2's row (`tool_rle` cut to 60 runs, `purpose_rle` to 80, with their start
   times). The inspector's own copy is made under the lock by `_inspect`, whose `lookup` folds only
-  the keys sharing the row's prefix when the window's fold is stale.
+  the keys sharing the row's prefix when the window's fold is stale; the agent's other days come
+  from the window's last fold as it stands (`TrajectoryReducer._agent_days(fresh=False)`), not
+  from a fold of every session made again.
 
 #### SE-5 inspector: what was read, and its limits
 
@@ -1073,8 +1089,9 @@ and for how the page draws them
   index, the collector's depth or the fold, and draws parents with no record (at most 2,000);
   `render` folds runs of siblings (motifs of up to 4) and serves `inspect_nodes` entries breadth
   first; `_typos` marks what a person mistyped at a terminal.
-- **Cost:** INSPECT's: one read at a time, up to 150,000 records or 6 GiB at about 25 µs a record;
-  cached 600 s.
+- **Cost:** INSPECT's: one read at a time, up to 150,000 records or 6 GiB. Building a record costs
+  about 44 µs on FAS, in the `inspect_workers` processes, and feeding it to the tree about 6 µs, in
+  the service's own: a 150,000-record read 2.5-2.7 s. Cached 600 s.
 
 ## Login nodes › Resources
 
@@ -1567,8 +1584,12 @@ by the work the code does.
    minutes for a week of 8 login nodes; reading is 35-45 s per node-week. Window builds wait for the
    placing to finish, and the inflater indexes are rebuilt on every restart.
 4. **The session inspector's read** (SE-5, SE-7, SE-9): up to 150,000 records (600,000 newest first)
-   or 6 GiB per open, one at a time, so a second reader waits. In FAS's busiest sealed day-file a
-   session's key search took 30-43 s from the `.gz` and 2.8 s from its replica.
+   or 6 GiB per open, one at a time, so a second reader waits. Its records are built in 8
+   processes: on FAS a 150,000-record read takes 2.5-2.7 s, and a newest-first one of as many
+   5.3-5.5 s, most of it the tree keeping the newest. A sealed `.gz` with no replica, and every
+   sealed day of a terminal's or a login scope's session, is still searched in the service's
+   process: 30-43 s for a session in FAS's busiest sealed day-file, against 2.8 s from its replica
+   in one process.
 5. **Folding and ranking the sessions on read** (SE-1 to SE-3, LV-5, US-*, AG-2). The fold of every
    held key, "half a second to most of one" at 24 h on rtx6000a, runs under the aggregator's lock,
    which the tail and every reader share, whenever a record arrived since the last fold; the
@@ -1591,16 +1612,3 @@ by the work the code does.
 9. **The live frame** (LV-1 to LV-3, LV-7, LV-19 to LV-23): one per distinct window per poll that
    brought records, cheap by design -- a bin's rows are cached until a record lands in it, and the
    roster sums closed bins once -- but it holds the aggregator's lock for its payload.
-
-## Where this page and the dashboard README differ
-
-The code is the source for this page. Three statements in
-[`dashboard/README.md`](../../dashboard/README.md) no longer match it:
-
-- "Built windows are an LRU of `panels.max_windows` (2)": the default in `config.py:defaults` is 5;
-  2 is only the fallback in `windows.py` when the key is missing.
-- "Every historical reducer reads `exit` and `truncated` and nothing else, so a scan skips the other
-  ~70% of a JSONL day-file's lines": the window's reducers also subscribe to `residency`, `conn`,
-  `netio`, `submit` and `residency_totals` (`windows.EVENTS`), so a scan skips only `meta` and
-  `stop`.
-- The inspector's tree "is served again for a minute": `proctree.py` keeps it for `CACHE_TTL`, 600 s.
