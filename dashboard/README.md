@@ -4,7 +4,9 @@ A FastAPI service that tails the [`ebpfm`](../collector) collector's JSONL day-f
 kept as Parquet too: [History in Parquet](#history-in-parquet)), keeps rolling aggregates over a **selectable** window, and
 pushes them to a React page over a WebSocket. Every number on the page is measured: a feed with
 no data names the path it expected instead of showing a plausible figure, and a metric the
-collector could not populate reads **not measured** rather than `0`.
+collector could not populate reads **not measured** rather than `0`. What each figure on the page
+computes, from which records, by which read path and at what cost, is in
+[docs/figures](../docs/figures/README.md).
 
 This replaces a static-HTML demo, retired from the tree and recoverable in git history
 under `dashboard/archive/`. That demo generated most of its own numbers (`rc_synth.py`),
@@ -582,8 +584,6 @@ are in `rc_dashboard/redact.py`.
 
 These are research-integrity rules, not preferences. Each one is a mistake this project has
 already made once.
-
-What every figure on the page computes, from which records, by which read path and at what cost, is in [`docs/figures`](../docs/figures/README.md).
 
 - **Three classes, never two** — `agent` / `human` / `ide` (+ `unlabeled`). `ide` is any
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
