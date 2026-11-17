@@ -21,9 +21,8 @@ import time
 from . import gz, fastjson, replica
 # The day-file layer that was defined here lives in feedfile.py; every name of
 # it is imported back, so `export.<name>` still works for its callers.
-from .feedfile import (HEAD_BYTES, chosen_for, day_files, end_at, head_digest, is_boundary,
+from .feedfile import (HEAD_BYTES, chosen_for, day_files, head_digest, is_boundary,
                        iter_lines_forward, iter_lines_reverse, seek_to_epoch, stem_of)
-from .where import match as match_where
 from .feedfile import (_MEMO_FILES, _MEMO_PROBES, _identity, _memo, _memo_lock,  # noqa: F401
                        _memo_of, _probe, _probe_read, _remember, dated_dirs, feed_files)
 from .normalize import canonical_class, epoch_of
@@ -190,22 +189,6 @@ def make_predicate(f):
     return ok
 
 
-def and_where(where, field, test):
-    """`where` (`where.py`: a dict ANDs, a list ORs its dicts) with `test` on
-    `field` ANDed to it."""
-    def add(br):
-        old = br.get(field)
-        if old is None:
-            return dict(br, **{field: test})
-        return dict(br, **{field: lambda v: match_where({field: old}, {field: v})
-                           and test(v)})
-    if where is None:
-        return {field: test}
-    if isinstance(where, dict):
-        return add(where)
-    return [add(br) for br in where]
-
-
 def where_of(f):
     """The filters of `make_predicate` that test a record's own fields, as a
     `where` (`where.py`): each one AND the others, by the predicate's own rule
@@ -293,16 +276,9 @@ def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where):
     bound, `scanned` counting the same records by each one handed on
     (`Replica.line_read`) -- with only the records the predicate's event types
     and fields could keep built (`replica.records`), the same rule deciding
-    each. A record past the near edge is rejected unbuilt too: the predicate's
-    bounds, which the edge carries a slack past, reject it there."""
+    each."""
     edge = hi if newest_first else lo
     at = None if edge is None else rep.seek_to_epoch(edge)
-    if newest_first and hi is not None:
-        where = and_where(where, "ts_epoch", lambda v: not isinstance(v, (int, float))
-                          or not v > hi)
-    elif not newest_first and lo is not None:
-        where = and_where(where, "ts_epoch", lambda v: not isinstance(v, (int, float))
-                          or not v < lo)
     kinds = getattr(pred, "events", None)
     if at is None:
         at = rep.complete_end if newest_first else 0

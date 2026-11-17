@@ -55,7 +55,11 @@ TIER = "ebpf"
 # hour's span touches one or two row groups. 1 Mi rows compress 5-8 % better.
 ROW_GROUP_ROWS = 1 << 17
 DISCOVER_S = 60.0
-REPLICAS_MAX = 128
+# Replicas held between reads, with the indexes their reads built (`Replica.nbytes`,
+# about 30 bytes a line): at most this many, and this much memory. A day of 8 busy
+# login nodes (26 M lines) fits; a read over a week builds again what was let go.
+REPLICAS_MAX = 64
+REPLICA_BYTES = 1 << 30
 WORKERS_MAX = 8                  # a conversion holds about a row group in memory
 DEFAULTS = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -243,6 +247,7 @@ class HistoryStore:
             hit = self._cache.get(path)
             if hit is not None and hit[0] == ident:
                 self._cache.move_to_end(path)
+                self._trim()
                 return hit[1]
         src, day, stem = loc
         out = self.roots[src]
@@ -252,9 +257,21 @@ class HistoryStore:
         rep = replica.Replica(out, man)
         with self._lock:
             self._cache[path] = (ident, rep)
-            while len(self._cache) > REPLICAS_MAX:
-                self._cache.popitem(last=False)
+            self._trim()
         return rep
+
+    def _trim(self):
+        """Let the least recently used replicas go while more than REPLICAS_MAX are
+        held, or their indexes hold more than REPLICA_BYTES -- never the one just
+        asked for. A reader still holding one keeps it until it is done."""
+        held = self.held_bytes()
+        while len(self._cache) > 1 and (len(self._cache) > REPLICAS_MAX
+                                        or held > REPLICA_BYTES):
+            _p, (_i, rep) = self._cache.popitem(last=False)
+            held -= rep.nbytes()
+
+    def held_bytes(self):
+        return sum(rep.nbytes() for _i, rep in list(self._cache.values()))
 
     # ------------------------------------------------------------- the work
     def discover(self):
@@ -379,6 +396,7 @@ class HistoryStore:
             prog = dict(self.progress)
             errors = list(self.errors)
             lookups = dict(self.lookups)
+            held = {"replicas": len(self._cache), "bytes": self.held_bytes()}
         replicas = files = 0
         size = 0
         for out in self.roots.values():
@@ -398,6 +416,7 @@ class HistoryStore:
                 "source_roots": sorted(self.roots), "store_roots": sorted(self.roots.values()),
                 "replicas": replicas, "files": files, "bytes": size,
                 "converted": self.converted, "swept": self.swept, "lookups": lookups,
+                "held": held,
                 "progress": prog, "errors": errors[-5:]}
 
 

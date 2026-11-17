@@ -79,7 +79,7 @@ from array import array
 
 from . import feeds as feedmod, fastjson
 from . import gz, replica
-from .export import _window_stream, event_filter, window_plan, window_scan
+from .export import event_filter, window_plan, window_scan
 from .feedfile import day_files, end_at_jsonl as _end_at, host_of
 from .normalize import Normalizer, epoch_of
 from .procindex import VIA

@@ -49,6 +49,7 @@ from . import where as wh
 from .normalize import epoch_of
 
 BATCH_ROWS = 8192            # rows built into records at a time
+WANT_MAX = 4                 # event-kind sets whose line masks a replica keeps (`line_read`)
 _TIME_KEYS = ("ts_epoch", "ts", "timestamp")
 
 _lookup = None               # path -> Replica or None, set by the history store
@@ -208,14 +209,15 @@ class Replica:
         ts = np.concatenate(tss)[order]
         has = np.concatenate(hass)[order]
         n = len(starts)
-        nxt = np.where(has, np.arange(n), n)
+        nxt = np.where(has, np.arange(n, dtype=np.int32 if n < 2 ** 31 else np.int64), n)
         if n:
             nxt = np.minimum.accumulate(nxt[::-1])[::-1]
-        got = (starts, ts, has, nxt)
         with self._lock:
-            self._probe_ix = got
             if self._starts is None:
                 self._starts = starts
+            else:
+                starts = self._starts         # the same values: hold them once
+            got = self._probe_ix = (starts, ts, has, nxt)
         return got
 
     def _times(self, table, path):
@@ -224,8 +226,10 @@ class Replica:
         pa = fp._pa()
         pf = self._file(table.name, path)
         names = set(pf.schema_arrow.names)
-        cols = ["_off", "_extra", "_absent"] + [k for k in ("ts_epoch", "ts") if k in names]
-        tab = pf.read(columns=cols)
+        # a row's `ts_epoch` is its time unless `_extra` holds its time keys: the
+        # rest of what `epoch_of` reads is read only for the rows that need it
+        tab = pf.read(columns=["_off", "_extra"] + (["ts_epoch"] if "ts_epoch" in names
+                                                    else []))
         off = tab.column("_off").to_numpy()
         n = tab.num_rows
         ts = np.zeros(n)
@@ -241,7 +245,8 @@ class Replica:
         else:
             slow = np.arange(n)
         if len(slow):
-            sub = tab.take(pa.array(slow))
+            cols = ["_extra", "_absent"] + [k for k in ("ts_epoch", "ts") if k in names]
+            sub = pf.read(columns=cols).take(pa.array(slow))
             rows = _Columns(table, sub, [k for k in _TIME_KEYS if k in names])
             for k, i in enumerate(slow):
                 e = epoch_of(rows.record(k, _TIME_KEYS))
@@ -284,14 +289,30 @@ class Replica:
                     .fill_null(False).to_numpy(zero_copy_only=False)
                 idx = idx[keep]
             want[idx] = True
-        cw = np.zeros(len(starts) + 1, dtype=np.int64)
+        cw = np.zeros(len(starts) + 1, dtype=np.int32 if len(starts) < 2 ** 31 else np.int64)
         np.cumsum(want, out=cw[1:])
         got = (want, cw)
         with self._lock:
-            if len(self._want) >= 8:
+            if len(self._want) >= WANT_MAX:
                 self._want.pop(next(iter(self._want)))
             self._want[key] = got
         return got
+
+    def nbytes(self):
+        """The memory this replica's indexes hold, which the history store bounds:
+        about 30 bytes a line once a time search and a ranged read have been made."""
+        with self._lock:
+            arrays = [self._starts, self._nonrec, self._bad] + list(self._offs.values())
+            arrays += list(self._probe_ix or ())
+            for pair in self._want.values():
+                arrays += list(pair)
+        seen = set()
+        n = 0
+        for a in arrays:
+            if a is not None and id(a) not in seen:
+                seen.add(id(a))
+                n += a.nbytes
+        return n
 
     def line_read(self, at, kinds, far=None, reverse=False):
         """A line read of the file as `export._matching` makes it: from `at`

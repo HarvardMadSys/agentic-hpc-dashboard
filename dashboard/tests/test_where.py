@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rc_dashboard import config as configmod                      # noqa: E402
 from rc_dashboard import feedparquet as fp                        # noqa: E402
 from rc_dashboard import iocmds, proctree, replica                # noqa: E402
-from rc_dashboard.export import and_where, make_predicate, parse_filters    # noqa: E402
+from rc_dashboard.export import make_predicate, parse_filters    # noqa: E402
 from rc_dashboard.normalize import Normalizer                     # noqa: E402
 from rc_dashboard.where import Prefix, match                      # noqa: E402
 from rc_dashboard.windows import ViewFilter                       # noqa: E402
@@ -166,8 +166,6 @@ class WherePropertyTest(unittest.TestCase):
             wheres = [ViewFilter(["alice"], ["none"]).where,
                       ViewFilter([], ["codex", "none"]).where,
                       pred.where,
-                      and_where(pred.where, "ts_epoch",
-                                lambda v: not isinstance(v, (int, float)) or v < T0 + 3600),
                       make_predicate(parse_filters({"exit_code": ["1"],
                                                     "signal": ["9"]})).where,
                       iocmds.prefilter_where({}, frozenset({"7"}), "h1", "/home/a/proj"),

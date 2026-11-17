@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -159,6 +160,27 @@ class HistoryTest(unittest.TestCase):
         self.assertTrue(os.path.exists(live))
         self.assertEqual(again.status()["swept"], 1)
         self.assertIsNotNone(again.replica_for(p))
+
+    def test_replicas_are_held_by_memory_and_count(self):
+        """A replica's indexes are let go, least recently used first, once the held
+        ones pass REPLICA_BYTES or REPLICAS_MAX; the one just asked for stays."""
+        paths = [self.write("2026-11-1%d" % d, "exits", [full("exit", i) for i in range(50)])
+                 for d in (1, 2, 3)]
+        st = history.HistoryStore(self.cfg)
+        st.run_once()
+        for p in paths:
+            rep = st.replica_for(p)
+            rep.seek_to_epoch(0)                   # builds its index
+            self.assertGreater(rep.nbytes(), 0)
+        self.assertEqual(len(st._cache), 3)
+        with mock.patch.object(history, "REPLICA_BYTES", 1):
+            st.replica_for(paths[0])
+            self.assertEqual(list(st._cache), [paths[0]])
+        with mock.patch.object(history, "REPLICAS_MAX", 2):
+            for p in paths:
+                st.replica_for(p)
+            self.assertEqual(list(st._cache), paths[1:])
+        self.assertEqual(st.status()["held"]["replicas"], 2)
 
     def test_lookups_are_counted(self):
         """What /api/feeds says of the store's use: a sealed file asked for is

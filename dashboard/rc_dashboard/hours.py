@@ -82,7 +82,7 @@ from operator import itemgetter
 from . import fastjson, gz, snapshots
 from .export import (HEAD_BYTES, SCAN_SLACK_S, day_files, event_filter, head_digest,
                      seek_to_epoch)
-from .normalize import Normalizer, epoch_of
+from .normalize import Normalizer
 
 FORMAT = 1
 HOUR = 3600
