@@ -212,10 +212,12 @@ reads a filtered query of a sealed day -- one user's events, one session's proce
 from it rather than inflating the `.gz` ([History in
 Parquet](../../dashboard/README.md#history-in-parquet)). It takes about a third of the
 `.gz`'s disk, and is made in the background after a start and as each day is sealed, by
-up to 8 processes (one per CPU the service may use), each holding 0.4 to 0.6 GB inside the
-`DASH_MEMORY_MAX` cap. Nothing waits for it: a day not converted yet is read from its `.gz`.
-Measured offline on a copy of the 8 nodes below, 7 sealed days (18.4 GB of `.gz`, 182 M
-records) became 6.2 GB of Parquet in 12 minutes with 8 processes.
+up to 8 processes (one per CPU the service may use), each holding up to 0.8 GB inside the
+`DASH_MEMORY_MAX` cap while it works; they exit when the days are converted. Nothing waits
+for it: a day not converted yet is read from its `.gz`. On a deployment over the same 8 nodes
+with a 32G cap, the first start after this store came in converted their 7 sealed days
+(18.4 GB of `.gz`, 182 M records) into 5.8 GB of Parquet in 12 minutes beside its refill,
+the service peaking at 19.1 GiB meanwhile and holding 12.5 GiB after.
 
 For scale, one deployment that reads 8 busy login nodes, measured with the defaults and a
 32G cap:

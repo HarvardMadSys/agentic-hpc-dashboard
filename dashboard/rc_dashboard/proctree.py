@@ -82,6 +82,7 @@ from . import gz, replica
 from .export import event_filter, window_plan, window_scan
 from .feedfile import day_files, end_at_jsonl as _end_at, host_of
 from .normalize import Normalizer, epoch_of
+from .where import AfterColon
 from .procindex import VIA
 from .redact import redact
 from .reducers.trajectories import fold as fold_sessions
@@ -1469,9 +1470,7 @@ def key_where(members):
     if kvs is None:
         return None
     kvs = frozenset(kvs)
-    return [{"session_key": lambda v: isinstance(v, str) and bool(v)
-             and v.split(":", 1)[-1] in kvs},
-            {"agent_pid": kvs}]
+    return [{"session_key": AfterColon(kvs)}, {"agent_pid": kvs}]
 
 
 def key_matcher(members):
