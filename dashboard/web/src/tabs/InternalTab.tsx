@@ -3,21 +3,30 @@
  * Panels whose takeaway is still open sit here, apart from the tabs an
  * operator reads, so they can be discussed without crowding those tabs. A
  * panel leaves when we know what it says, or when we decide it says nothing.
+ *
+ * Also here (user, 2026-11-17): the resource and I/O panels an operator does
+ * not act on -- per-class quantiles, kernel delay accounting, the page-cache
+ * series -- each a researcher's table or a repeat of a Live chart. They keep
+ * their titles, so a citation of one still lands on it (lib/cites.ts).
  */
 import { memo } from 'react';
 import type { Cls } from '../api/types';
 import type { Panels } from '../lib/panels';
+import { ResourcesTab } from './ResourcesTab';
 import { SandboxTab } from './SandboxTab';
 
 export const InternalTab = memo(function InternalTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   return (
     <>
       <p className="intro">
-        Panels whose takeaway we have not settled yet. They are here for us to discuss, and may
-        change, move to a main tab, or go.
+        Panels whose takeaway we have not settled yet, and the detail behind the operator tabs.
+        They are here for us to discuss, and may change, move to a main tab, or go.
       </p>
       <div className="rowlabel">sandbox · did agents' tool calls run sandboxed?</div>
       <SandboxTab P={P} cls={cls} />
+      <div className="grid-gap" />
+      <div className="rowlabel">resources and I/O · the distributions and counters behind the Resources tab</div>
+      <ResourcesTab P={P} cls={cls} part="internal" />
     </>
   );
 });

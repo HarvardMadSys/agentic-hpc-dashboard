@@ -346,14 +346,17 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
 /* Two tabs from one reduction: Risk (what agents did that they should not have,
  * on a shared login node) and I/O (what their reads, writes and traffic cost).
  * They read the same panels, so they share the setup and each renders its half. */
-export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, series = true }: {
+export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, io: ioPart = 'main' }: {
   P: Panels;
   cls: Cls[];
   part: 'risk' | 'io';
   /** the I/O tiles: off on Resources, where their numbers are Overview rows */
   plates?: boolean;
-  /** the syscall-against-disk time series: off on Resources, they are on Live */
-  series?: boolean;
+  /** which I/O panels: `main` is who moved the bytes (by tool, by user) and
+   *  where the network bytes went, on Resources; `internal` is the
+   *  requested-against-disk series (a repeat of Live's picker, with the
+   *  per-class page-cache table) and the raw counters' quantiles, on Internal */
+  io?: 'main' | 'internal';
 }) {
   const nodes = useNodeWords();
   // A command or pattern row opens in place into who ran it; the old list of
@@ -533,7 +536,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
 
       {part === 'io' && (
       <div className="grid wide">
-        {series && (
+        {ioPart === 'internal' && (
         <Panel
           id="sec-syscall-bytes-against-disk-bytes"
           title="Requested bytes against disk bytes"
@@ -607,6 +610,8 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
         </Panel>
         )}
 
+        {ioPart === 'main' && (
+        <>
         <Panel
           id="sec-reads-by-tool"
           title="Disk read by tool"
@@ -770,8 +775,10 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
             </table>
           </div>
         </Panel>
+        </>
+        )}
 
-        {quantKeys.length > 0 && (
+        {ioPart === 'internal' && quantKeys.length > 0 && (
           <Panel title="I/O distributions" p={io} span empty={!have.length}
             ask={[{ panel: 'io_process', keys: ['by_class', 'notes'] }]}>
             <div className="scroller">
