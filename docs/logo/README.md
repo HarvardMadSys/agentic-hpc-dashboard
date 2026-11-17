@@ -8,7 +8,7 @@ accent and the `agent` series colour, so the mark uses it and nothing else.
 |---|---|
 | `mark.svg` | the mark on its crimson tile; also `dashboard/web/public/favicon.svg` |
 | `mark-512.png` | the mark as a raster, for places that won't take SVG |
-| `lockup.svg` / `lockup-dark.svg` | mark + "Agent Behaviour" over "Harvard MaDSys", for light / dark grounds |
+| `lockup.svg` / `lockup-dark.svg` | mark + "Agent Observatory" over "Harvard MaDSys", for light / dark grounds |
 
 The wordmark is IBM Plex Sans 600 and 500 (the dashboard's face),
 outlined to paths so it renders the same without the fonts installed.

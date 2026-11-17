@@ -311,7 +311,7 @@ export default function App() {
     (config.data?.site as Record<string, { _value?: unknown }> | undefined)?.name?._value ?? '',
   );
   useEffect(() => {
-    document.title = siteName ? `${siteName} · Agent Behaviour` : 'Agent Behaviour';
+    document.title = siteName ? `${siteName} · Agent Observatory` : 'Agent Observatory';
   }, [siteName]);
   // Names are aliased on the way out (rc_dashboard/anonymize.py): the header
   // says so, or a reader takes `user-7f3a9c1e` for a real account.
@@ -622,7 +622,7 @@ export default function App() {
           <span className="bmark bmark-sm" aria-hidden="true">
             <LogoGlyph size={22} />
           </span>
-          Agent Behaviour
+          Agent Observatory
         </span>
         <span className="topbar-tab">
           <Icon name={railOn.icon} size={16} />
@@ -642,7 +642,7 @@ export default function App() {
             <span className="bmark" aria-hidden="true">
               <LogoGlyph />
             </span>
-            <span className="mark-t">Agent Behaviour</span>
+            <span className="mark-t">Agent Observatory</span>
           </div>
           <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
             {siteName || 'rc_measurement'}
