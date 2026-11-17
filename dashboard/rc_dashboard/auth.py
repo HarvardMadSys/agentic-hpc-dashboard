@@ -361,7 +361,7 @@ button:focus-visible { outline: 2px solid var(--crimson); outline-offset: 2px; }
 </head>
 <body>
 <form method="post" action="/login">
-<div class="mark"><span class="bmark"><svg width="30" height="30" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="9" cy="8.5" r="3"/><path d="M9 12.1V18.3a1.2 1.2 0 0 0 1.2 1.2H13.1" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M19.5 12.5C20.41 18.59 20.41 18.59 26.5 19.5C20.41 20.41 20.41 20.41 19.5 26.5C18.59 20.41 18.59 20.41 12.5 19.5C18.59 18.59 18.59 18.59 19.5 12.5Z"/></svg></span>Agent Observatory</div>
+<div class="mark"><span class="bmark"><svg width="30" height="30" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M5.7 24.1a8 8 0 0 1 16 0z"/><path d="M14.4 17.9L18.4 13.9" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><rect x="4.7" y="23.9" width="18" height="2.6" rx="1.3"/><path d="M23.4 4.6C23.96 8.34 23.96 8.34 27.7 8.9C23.96 9.46 23.96 9.46 23.4 13.2C22.84 9.46 22.84 9.46 19.1 8.9C22.84 8.34 22.84 8.34 23.4 4.6Z"/></svg></span>Agent Observatory</div>
 <div class="site">$site</div>
 <label for="password">Password</label>
 <input id="password" type="password" name="password" autocomplete="current-password" required autofocus>
