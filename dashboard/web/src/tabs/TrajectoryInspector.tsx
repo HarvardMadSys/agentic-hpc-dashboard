@@ -37,6 +37,16 @@
  * it the jump (`pendingJump`), which it goes to as any pick once it has read itself. Where the
  * window does not hold it, the pick is made on this row.
  *
+ * Find, over the tree, looks through every process the read served: its
+ * command, its command line, and the folder it ran in, its own or the one it
+ * inherited (ProcDiagram.tsx `findIndex`), every word of the query in one
+ * process. What a process opened is not recorded, so a folder it only read
+ * from is found only where its command line names it. It marks what it
+ * matched in either view, and a closed row or box with a match below it, and
+ * Enter or its arrows go from one match to the next: the rows above it are
+ * opened, and a match that "hide routine" or "hide typos" took out turns that
+ * off, as a jump does, and says so.
+ *
  * Oldest first or newest first (`?torder=`) is asked of the service, not
  * sorted here: the read's budgets keep one end drawn and count the other, and
  * newest first moves them to keep the newest (rc_dashboard/proctree.py). A
@@ -62,7 +72,7 @@ import {
   spots,
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
-import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount, unhidNote } from '../components/ProcDiagram';
+import { DEFAULT_ROUTINE, ProcDiagram, findIds, findIndex, hiddenCount, reveal, unhidNote } from '../components/ProcDiagram';
 import type { Hide } from '../components/ProcDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
 import { CategoryChip } from '../components/CategoryChip';
@@ -514,11 +524,20 @@ export function TrajectoryInspector({
   const [failIdx, setFailIdx] = useState<number | null>(null);
   const [note, setNote] = useState<ReactNode>(null);
   const [want, setWant] = useState<Pending | null>(null);
+  // find: what is typed, which match it went to last (-1: none yet), that
+  // match's box in the tree view, and what going there turned off
+  const [query, setQuery] = useState('');
+  const [hi, setHi] = useState(-1);
+  const [goTo, setGoTo] = useState<{ id: string; n: number } | null>(null);
+  const [findNote, setFindNote] = useState('');
   const stampKey = `${sid}|${d?.scan?.computed_at ?? ''}`;
   useEffect(() => {
     if (tree) setOpen(defaultOpen(tree));
     setDopen(new Set(['r']));
     setDall(new Set());
+    setHi(-1);
+    setGoTo(null);
+    setFindNote('');
     // a new read is a new axis and new rows: nothing from the last one applies
     setView(null);
     setAim(null);
@@ -568,6 +587,42 @@ export function TrajectoryInspector({
   }, [jumpHere]);
 
   const index = useMemo(() => (tree ? spots(tree) : []), [tree]);
+  const found = useMemo(() => (tree ? findIndex(tree) : []), [tree]);
+  const matches = useMemo(() => findIds(found, query), [found, query]);
+  const hits = useMemo(() => (matches.length ? new Set(matches) : null), [matches]);
+  // matches that what is hidden takes out: found, and drawn once gone to
+  const hiddenHits = useMemo(
+    () => (tree ? matches.filter((id) => { const o = hiddenAt(tree, id, hiding); return o.routine || o.typos; }).length : 0),
+    [tree, matches, hiding],
+  );
+  /** Go to match `i`: open what is above it, show it if it is hidden, and
+   *  bring it into view, in the view that is shown. */
+  const findGo = (i: number) => {
+    const id = matches[i];
+    if (!tree || id == null) return;
+    setHi(i);
+    const off = hiddenAt(tree, id, hiding);
+    if (off.routine) setHide(false);
+    if (off.typos) setTypos(false);
+    setFindNote(off.routine || off.typos ? unhidNote(off) : '');
+    if (mode === 'tree') {
+      const r = reveal(tree, id, hiding);
+      setDopen((o) => (r.open.every((x) => o.has(x)) ? o : new Set([...o, ...r.open])));
+      setDall((a) => (r.all.every((x) => a.has(x)) ? a : new Set([...a, ...r.all])));
+      setGoTo((g) => ({ id, n: (g?.n ?? 0) + 1 }));
+    } else {
+      setOpen((o) => {
+        const up = ancestors(id);
+        return up.every((x) => o.has(x)) ? o : new Set([...o, ...up]);
+      });
+      setFlash((f) => ({ id, n: (f?.n ?? 0) + 1 }));
+    }
+  };
+  const findStep = (dir: 1 | -1) => {
+    if (!matches.length) return;
+    const n = matches.length;
+    findGo(hi < 0 || hi >= n ? (dir > 0 ? 0 : n - 1) : (hi + dir + n) % n);
+  };
   const axis: [number, number] | null =
     d?.timeline?.lo != null && d.timeline.hi != null && d.timeline.hi >= d.timeline.lo
       ? [d.timeline.lo, d.timeline.hi]
@@ -984,6 +1039,59 @@ export function TrajectoryInspector({
           ))}
         {tree && (
           <div className="pd-bar">
+            <span className="pd-find">
+              {/* the explanation is on the label, not the box: a tip on a box shows on focus, over the tree being searched */}
+              <span
+                className="q-mark"
+                data-tip={
+                  'looks through every process the read served: its command, its command line, and the folder it ran in ' +
+                  '(its own, or its parent’s). Files and folders it only opened are not recorded, so they are found only where its command line names them. ' +
+                  'Every word must be in one process: `pytest myproj` finds pytest run in a folder named myproj. ' +
+                  'Processes counted rather than drawn are found by their command name only\n' +
+                  'Enter: the next match · Shift+Enter: the one before · Esc: clear'
+                }
+              >
+                find
+              </span>
+              <input
+                type="search"
+                placeholder="a command or folder"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setHi(-1);
+                  setFindNote('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    findStep(e.shiftKey ? -1 : 1);
+                  } else if (e.key === 'Escape') {
+                    setQuery('');
+                    setHi(-1);
+                    setFindNote('');
+                  }
+                }}
+                aria-label="find a command or folder"
+              />
+              <button className="btn" onClick={() => findStep(-1)} disabled={!matches.length} aria-label="previous match">
+                ‹
+              </button>
+              <button className="btn" onClick={() => findStep(1)} disabled={!matches.length} aria-label="next match">
+                ›
+              </button>
+              {query.trim() && (
+                <span
+                  className="nm"
+                  data-tip={hiddenHits ? `${fint(hiddenHits)} of them are in what hide routine or hide typos takes out: going to one shows it` : undefined}
+                >
+                  {matches.length
+                    ? `${hi >= 0 ? fint(hi + 1) : DASH} of ${fint(matches.length)}${hiddenHits ? ` · ${fint(hiddenHits)} hidden` : ''}`
+                    : 'no match'}
+                  {findNote ? ` · ${findNote}` : ''}
+                </span>
+              )}
+            </span>
             <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
@@ -1011,6 +1119,9 @@ export function TrajectoryInspector({
             hide={hiding}
             all={dall}
             setAll={setDall}
+            hits={hits}
+            cur={hi >= 0 ? (matches[hi] ?? null) : null}
+            goTo={goTo}
           />
         )}
         {tree && mode === 'table' && (
@@ -1024,6 +1135,7 @@ export function TrajectoryInspector({
             hide={hiding}
             newest={newest}
             onOrder={setOrder}
+            hits={hits}
           />
         )}
         {tree && (

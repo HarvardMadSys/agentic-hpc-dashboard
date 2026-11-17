@@ -138,6 +138,8 @@ function TreeDiagramView<T>({
   selected,
   onSelect,
   focus,
+  mark,
+  goTo,
   className,
 }: {
   nodes: TreeNode<T>[];
@@ -150,6 +152,11 @@ function TreeDiagramView<T>({
   onSelect?: (id: string) => void;
   /** the box to scroll into view; the first root when not given */
   focus?: string | null;
+  /** a class of a box's own, by its id: what a find matched */
+  mark?: (id: string) => string | undefined;
+  /** a box to bring into view, across and down the page, on each new `n`:
+   *  where a find went */
+  goTo?: { id: string; n: number } | null;
   className?: string;
 }) {
   // laid out again only when the boxes or their sizes change
@@ -190,6 +197,16 @@ function TreeDiagramView<T>({
     if (e.left >= r.left && e.right <= r.right) return; // already in view
     b.scrollLeft += e.left + e.width / 2 - (r.left + r.width / 2);
   }, [want]);
+  // Once, after the layout that draws it: a find opens the boxes above its
+  // match, so the box may only be drawn a render after `goTo` came.
+  const went = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (!goTo || went.current === goTo.n) return;
+    const el = els.current.get(goTo.id);
+    if (!el) return;
+    went.current = goTo.n;
+    el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  }, [goTo, nodes]);
   const click = onSelect
     ? (id: string) => {
         const el = els.current.get(id);
@@ -211,7 +228,7 @@ function TreeDiagramView<T>({
           <div
             key={p.n.id}
             ref={keep}
-            className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}`}
+            className={`tnode${selected === p.n.id ? ' on' : ''}${click ? ' click' : ''}${mark ? ` ${mark(p.n.id) ?? ''}` : ''}`}
             data-id={p.n.id}
             style={{ left: p.x, top: p.y, width: nodeW, height: nodeH }}
             onClick={click ? () => click(p.n.id) : undefined}
