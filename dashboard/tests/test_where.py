@@ -68,8 +68,8 @@ class WherePropertyTest(unittest.TestCase):
                 ("actor3", ("agent", "human", None, self.MISSING)),
                 ("host", ("h1", "h2", "", None, self.MISSING)),
                 ("session_key", ("apid:7", "apid:8", "claude:7", "7", "", None, self.MISSING,
-                                 "x:y:7", "apid:70")),
-                ("agent_pid", (7, 8, "7", 70, None, self.MISSING)),
+                                 "x:y:7", "apid:70", ":7", "apid:")),
+                ("agent_pid", (7, 8, "7", 70, None, self.MISSING, -7, 2 ** 40)),
                 ("cwd", ("/home/a/proj", "/home/a/proj/sub", "/home/a/project2", "/", "",
                          None, self.MISSING)),
                 ("exit_code", (0, 1, "1", None, self.MISSING)),
@@ -168,6 +168,10 @@ class WherePropertyTest(unittest.TestCase):
                       pred.where,
                       make_predicate(parse_filters({"exit_code": ["1"],
                                                     "signal": ["9"]})).where,
+                      # an integer column against what `str` does and does not make
+                      # of an int, and None for a null
+                      {"exit_code": frozenset({"1", "01", "+1", " 1", "None", "x"})},
+                      {"agent_pid": frozenset({"-7", "1099511627776", "7.0", "8"})},
                       iocmds.prefilter_where({}, frozenset({"7"}), "h1", "/home/a/proj"),
                       {"cwd": Prefix("/home/a/proj")},
                       proctree.key_where({"h1|x|agent|apid:7"}),

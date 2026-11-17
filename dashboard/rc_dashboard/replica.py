@@ -483,8 +483,9 @@ def _keep(table, rb, kinds, where, wfields, n):
     """Which of `n` rows (`rb`: their filter columns) a reader would keep by
     `kinds` and `where`, as a list of bools. A row whose `_absent` names one of
     the keys tested, or whose `_extra` mentions one, is decided on its record's
-    keys one by one; the others a column at a time: a set test on a string column
-    is `is_in`, a `Prefix` on one is `starts_with`, anything else the test on each
+    keys one by one; the others a column at a time: a set test on a string or an
+    integer column is `is_in`, a `Prefix` on a string one `starts_with`, an
+    `AfterColon` one `is_in` past the first colon, anything else the test on each
     value."""
     if n == 0 or rb is None:
         return []
@@ -548,6 +549,18 @@ def _test_column(table, col, f, t, n):
     if col is None:                                  # no such column: every value None
         return pa.array([wh.test(t, None)] * n)
     kind = dict(table.columns).get(f)
+    if kind is fp.STR and isinstance(t, wh.AfterColon):
+        # the part after the first colon, as `str.split(":", 1)[-1]` gives it
+        tail = pc.replace_substring_regex(col, pattern="^[^:]*:", replacement="",
+                                          max_replacements=1)
+        return pc.fill_null(pc.is_in(tail, value_set=pa.array(sorted(t), pa.string())),
+                            False)
+    if kind in (fp.I32, fp.I64) and isinstance(t, (set, frozenset)):
+        # `str(v)` of an int is its plain decimal, so only those members can match
+        ints = [int(s) for s in t if isinstance(s, str) and _decimal(s)]
+        ints = [i for i in ints if -2 ** 63 <= i < 2 ** 63]
+        hit = pc.is_in(col.cast(pa.int64()), value_set=pa.array(ints, pa.int64()))
+        return pc.if_else(col.is_null(), pa.scalar("None" in t), hit.fill_null(False))
     if kind is fp.STR and isinstance(t, (set, frozenset)):
         hit = pc.is_in(col, value_set=pa.array(sorted(map(str, t)), pa.string()))
         # str(None) is "None": a null passes when the set holds that word
@@ -560,6 +573,15 @@ def _test_column(table, col, f, t, n):
     if kind is not None and _needs_back(kind):
         vals = [None if v is None else kind.back(v) for v in vals]
     return pa.array([wh.test(t, v) for v in vals], pa.bool_())
+
+
+def _decimal(s):
+    """Whether `s` is what `str` makes of some int: no sign but a leading minus,
+    no leading zero, no spaces or underscores."""
+    try:
+        return str(int(s)) == s
+    except ValueError:
+        return False
 
 
 def _in(v, kinds):

@@ -6,7 +6,12 @@ missing field is None:
 
 * a set (or frozenset) passes when `str(value)` is in it;
 * a `Prefix` passes when the value is a str that starts with it;
+* an `AfterColon` set passes when the value is a str whose part after its first
+  colon (all of it, when it has none) is in it: a session key's pid;
 * a callable passes when `fn(value)` is truthy.
+
+Tests that are not callables are what a replica can apply to a whole column at
+once; a callable it has to call on each value.
 
 The readers build these from the same inputs as their own checks, never
 stricter, and still check each record they are handed: a `where` only lets a
@@ -23,8 +28,20 @@ class Prefix(str):
         return "Prefix(%s)" % str.__repr__(self)
 
 
+class AfterColon(frozenset):
+    """A `where` test: the field is a str whose part after its first colon -- the
+    whole str when it has none -- is one of these. A session key names its pid so
+    (`normalize.session_key_of`: `apid:<pid>`, `claude:<pid>`, or the bare pid)."""
+    __slots__ = ()
+
+    def __repr__(self):
+        return "AfterColon(%s)" % sorted(self)
+
+
 def test(t, v):
     """Whether value `v` passes the single test `t`."""
+    if isinstance(t, AfterColon):
+        return isinstance(v, str) and v.split(":", 1)[-1] in t
     if isinstance(t, (set, frozenset)):
         return str(v) in t
     if isinstance(t, Prefix):
