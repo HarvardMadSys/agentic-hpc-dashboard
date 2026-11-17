@@ -1,11 +1,14 @@
 # The feed as Parquet tables
 
-**Status: a tool beside the feed.** `rc_dashboard.feedparquet` writes a typed, columnar
-copy of the eBPF tier's day-files and reads every record back from it exactly. The
-collector and the dashboard's read path do not change. This is the "columnar copy of
-sealed days" that [schema 9's proposal](../feed-format-v9/README.md) left open (its §4.3
-and open question 5), built for the feed as it is today: FAS's login nodes write schema
-7, the collector in this repo writes 8, and both convert.
+**Status: the dashboard's history store.** `rc_dashboard.feedparquet` writes a typed,
+columnar copy of the eBPF tier's day-files and reads every record back from it exactly.
+The dashboard keeps such a copy of every sealed day-file, made in the background, and
+answers a selective read or a time search of the file from it, at the file's own offsets
+([History in Parquet](../../dashboard/README.md#history-in-parquet)); the collector does
+not change. This is the "columnar copy of sealed days" that [schema 9's
+proposal](../feed-format-v9/README.md) left open (its §4.3 and open question 5), built for
+the feed as it is today: FAS's login nodes write schema 7, the collector in this repo
+writes 8, and both convert.
 
 Every number here comes from the FAS mirror (8 login nodes, the 7 sealed days
 2026-11-09 to 2026-11-15) unless it says otherwise. The data names real users and
@@ -25,26 +28,30 @@ commands, so this page gives aggregates only.
 - **Fast to ask**: counting a day's 17 M exits by class takes DuckDB 0.03 s on the
   tables and 28 s as a parallel orjson scan of the `.gz`; a week's p99 tool-call
   duration per agent type, over 145 M exits, 0.8 s.
+- **What the dashboard reads from it**: one user's exits on a sealed day in 14-15 s
+  rather than 220-440 s from the `.gz`, and a session's records in a 17 GB day-file in
+  2.8 s rather than 30-43 s.
 
 ## Running it
 
-pyarrow is an optional extra; the service never imports the module.
+The dashboard does this itself for the sealed days it reads (`history.py`); by hand, for
+a capture of your own (pyarrow is one of the dashboard's dependencies):
 
 ```bash
 cd dashboard
-uv run --extra parquet python -m rc_dashboard.feedparquet convert --out /path/to/pq \
+uv run python -m rc_dashboard.feedparquet convert --out /path/to/pq \
     /scratch/marthen/rc-dashboard/data/mirror/*      # the roots feeds.ebpf.roots lists
-uv run --extra parquet python -m rc_dashboard.feedparquet verify  --out /path/to/pq \
+uv run python -m rc_dashboard.feedparquet verify  --out /path/to/pq \
     /scratch/marthen/rc-dashboard/data/mirror/*      # every record, rebuilt and compared
-uv run --extra parquet python -m rc_dashboard.feedparquet schema --markdown
+uv run python -m rc_dashboard.feedparquet schema --markdown
 ```
 
-- It reads what the dashboard reads: `.jsonl` or `.ebr`, plain or `.gz`, one twin per
-  stream (`--prefer`), through `feedfile`.
+- It reads what the dashboard reads: `.jsonl`, plain or `.gz` (a plain file before its
+  `.gz`), through `feedfile`.
 - Today's day-files are skipped (they are still being written) unless `--include-today`.
-- A host-day whose sources have not changed since its manifest is skipped, so a cron
-  job can run it every night; `--force` converts again. `--days N` and `--day D` narrow
-  it, `--jobs` sets the processes (one per host-day).
+- A day-file whose source has not changed since its manifest (its name, size, mtime and
+  inode) is skipped, so a cron job can run it every night; `--force` converts again.
+  `--days N` and `--day D` narrow it, `--jobs` sets the processes (one per day-file).
 - Output is written beside its final name and renamed into place, files `0640` and
   directories `0750`, as the collector writes the day-files: the tables hold what those
   hold.
@@ -52,14 +59,22 @@ uv run --extra parquet python -m rc_dashboard.feedparquet schema --markdown
 ### Layout
 
 ```
-pq/<table>/day=<YYYY-MM-DD>/<host>.parquet
-pq/_manifest/day=<YYYY-MM-DD>/<host>.json     sources (name, size, mtime), records per table,
-                                              malformed lines, rows with _extra, seconds
+pq/<table>/day=<YYYY-MM-DD>/<host>.<stream>.parquet
+pq/_manifest/day=<YYYY-MM-DD>/<host>.<stream>.json   the source (name, size, mtime, inode);
+                                                     its inflated size and complete end, its
+                                                     first 4 KB, where each line that is not
+                                                     a record lies (blank, bad, not an
+                                                     object); records per table, seconds
 ```
 
-A table is a directory, `day` a Hive partition, and every file also carries its host
-(the `host` column) and its provenance (the footer's `rcfeed` entry), so it stands
-alone. A day leaves the copy the way it leaves the feed: its directories go.
+A table is a directory, `day` a Hive partition, and a file is one source day-file's
+records of that table -- `<host>.exits` or `<host>.snapshot` -- so each sealed file's
+copy is made, checked and replaced on its own. Every row carries `_off`, the byte offset
+of its line in the uncompressed day-file (delta-packed: under a byte a row), so a row can
+be found in the file and a range of the file in the table: what lets the dashboard read a
+sealed file from its copy at the file's own offsets (`replica.py`). Every file also
+carries its host (the `host` column) and its provenance (the footer's `rcfeed` entry),
+so it stands alone. A day leaves the copy the way it leaves the feed: its directories go.
 
 ```sql
 -- DuckDB
@@ -78,7 +93,7 @@ import polars as pl                       # or pyarrow.dataset.dataset("pq/exit"
 pl.scan_parquet("pq/exit/**/*.parquet").group_by("actor3").len().collect()
 
 from rc_dashboard import feedparquet      # the records themselves, exactly as the day-file had them
-for rec in feedparquet.records("pq/exit/day=2026-11-15/<host>.parquet"):
+for rec in feedparquet.records("pq/exit/day=2026-11-15/<host>.exits.parquet"):
     ...
 ```
 
@@ -457,8 +472,30 @@ From profiling every field of every record of 2026-11-15 (8 hosts, 21.6 M record
 
 ## Measured
 
+### As the dashboard's store (version 2)
+
+The 7 sealed days 2026-11-10 to 2026-11-16 of the same 8 hosts -- 112 day-files, 18.39 GB
+of `.gz`, 182,151,599 records -- converted by the dashboard's history store (`history.py`:
+a file per day-file, 128 Ki-row groups, 8 processes): 701 s, 260 k records a second, into
+6.22 GB in 337 files, 33.8 % of the `.gz` (version 1, below: 33.4 % of 2026-11-09 to
+2026-11-15). A process held 0.4 to 0.6 GB.
+
+The reads the dashboard takes from it, each in a fresh process, against the same reads of
+the `.gz`, with the same answers both ways:
+
+| | from the `.gz` | from the replicas |
+|---|---:|---:|
+| one user's exits on one sealed day, 500 rows, either order (the week's 128 day-files planned, as `/api/events` plans them) | 222-444 s | 13.6-15.4 s |
+| a session's key search through the busiest day-file (17.4 GB inflated) | 30-43 s | 2.8 s |
+| a time search in that file: the first, then each after | 12.3 s, then 0.1 s | 0.17 s, then 0.06 ms |
+
+The `.gz` side inflates each file it places, whole, to learn its size and build its seek
+index: the whole week, 367 GB, for the events query.
+
+### Version 1
+
 All 56 sealed host-days of the mirror (8 hosts, 2026-11-09 to 2026-11-15), 179,448,351
-records, converted with the defaults.
+records, converted with the defaults of the time: a file per host-day, 1 Mi-row groups.
 
 ### Size
 
@@ -553,8 +590,14 @@ every line to get them.
 - **Rows in file order**, which is time order to within the collector's 250 ms exit
   hold: row-group statistics on `ts_epoch` skip by time, and the order of the day-file
   is kept without a sequence column.
+- **A file per source day-file (version 2), and each row's offset.** Version 1 wrote a
+  file per host-day, both streams' records together; the dashboard's store needs each
+  sealed file's copy to stand for that file, to be current or stale as it is, and to say
+  where in it each record lies.
 - **zstd 9, 1 Mi-row groups, dictionary pages, with `pid`/`ppid` delta-packed and
-  `ts_epoch` byte-stream-split** in the tables keyed by process. Measured on one FAS
+  `ts_epoch` byte-stream-split** in the tables keyed by process. The dashboard's store
+  writes 128 Ki-row groups instead: an hour of a busy node's exits is one or two, so a
+  read of an hour's span decodes no more, at the 5-8 % that costs. Measured on one FAS
   host-day: zstd 9 is 5 % smaller than zstd 3, and zstd 19 another 10 % at eight times
   the encoding time (`--zstd-level 19` for an archive); groups of 128 Ki or 256 Ki rows
   cost 5-8 %; a larger dictionary page limit costs 9 %; the three encodings save 10.5 %
@@ -572,16 +615,20 @@ every line to get them.
   demo generator writes `by_agent_type`'s `users` and `autonomous` the other way round
   from the collector; those come back in the collector's order.
 - **What is not kept**: a line that is not a JSON object (the torn end of a live file),
-  counted in the manifest as `malformed`, as every reader of the feed counts it.
+  counted in the manifest as `malformed`, as every reader of the feed counts it; where it
+  lies, and whether it is blank, unparseable or JSON but not an object, is (`nonrec`), so
+  every offset stays the file's. The dashboard stands a copy in for its file only when the
+  file has no last line still being written and no line that is JSON but not an object.
 - **The node tier** is not covered: its 36-key snapshots have no `event` and would land
   in `other`. A table of its own is the next step if it is wanted.
 
 ## Open questions
 
-1. **Where it runs.** The mirror host, nightly after the `.gz` lands, is the natural
-   place; the skip-unchanged rule makes a nightly cron cheap.
-2. **Keep or replace the `.gz`.** The copy is exact, so it could replace the sealed
+1. **Keep or replace the `.gz`.** The copy is exact, so it could replace the sealed
    JSONL at rest, at a third of its size. Keeping both until `verify` has run clean
    for a while is the cautious order.
+2. **Whole-range reads.** The dashboard's backfill and hour reductions still read the
+   JSONL: making a record of a row costs more in Arrow than orjson's parse of a line.
+   Reducers that read columns, not records, would take those from the copy too.
 3. **A node-tier table**, and whether `pk`/`ppk` columns should be added when schema 9
    lands (until then its keys arrive in `_extra`, losslessly).

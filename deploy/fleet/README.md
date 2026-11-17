@@ -26,7 +26,7 @@ everything on the host stays private.
 
 | Where | What |
 |---|---|
-| Each source node | The collector, which writes `SOURCE_ROOT/<day>/<host>.<stream>.jsonl`, `.ebr`, or both (`EBPFM_FORMAT`); the stream carries either. The sender, `SENDER_DIR/current/fleet_stream.py`, which a forced-command ssh key starts. |
+| Each source node | The collector, which writes `SOURCE_ROOT/<day>/<host>.<stream>.jsonl`. The sender, `SENDER_DIR/current/fleet_stream.py`, which a forced-command ssh key starts. |
 | The dashboard's host | One folder, `DASH_ROOT`, and one tmux session, `rc-dashboard`, which the systemd user unit `rc-tmux.service` starts. The session's window `stream` runs `fleet_stream.py receive`, which keeps one ssh connection to each node and writes the copy. Its window `dashboard` runs the dashboard on `127.0.0.1:DASH_PORT`. |
 | This machine | The repository and `site.env`. `deploy.sh` builds and ships each release, and `check.sh` checks the host every hour. |
 
@@ -102,9 +102,8 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
    proxy's name), and prints only the hash. On the dashboard's host, put the hash in
    `$DASH_ROOT/etc/auth.env` (mode 600) as one line, `RC_DASH_PASSWORD_HASH=<hash>`.
 5. Optional, to spare the nodes' network: if the nodes' sealed days are already in a
-   folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz` and
-   `*.ebr.gz`, seed the copy from it before the first start. From a checkout of this
-   repository on the host:
+   folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz`, seed the
+   copy from it before the first start. From a checkout of this repository on the host:
    `python3 fleet/seed_mirror.py <folder> $DASH_ROOT/data --free-min-gb <FREE_MIN_GB>`.
    `fleet/pull-gz.sh <folder>` makes such a folder with rsync, on a machine that logs in to
    the nodes with an ordinary key (the stream's key runs only the sender), with the
@@ -202,11 +201,21 @@ sessions per view, or days of history), the first build of each view reduces its
 again from the copy.
 
 The copy keeps a sealed day as `.gz`, as each node does (`keep_gz` in `stream.json`):
-about 19 times less disk than plain JSONL. The dashboard reads a `.gz` through an index of
+about 19 times less disk than plain. The dashboard reads a `.gz` through an index of
 about 0.5% of its plain size, and drops the index of a file that is gone or that no
 reader used for 30 minutes. At each day's end the stream gzips the day it has just
 checked. The stream pauses every node's link while the copy's volume has less free space
 than `FREE_MIN_GB`, or than 10% of the volume if that is more.
+
+The dashboard keeps each sealed day as Parquet too, in `DASH_ROOT/cache/history`, and
+reads a filtered query of a sealed day -- one user's events, one session's process tree --
+from it rather than inflating the `.gz` ([History in
+Parquet](../../dashboard/README.md#history-in-parquet)). It takes about a third of the
+`.gz`'s disk, and is made in the background after a start and as each day is sealed, by
+up to 8 processes (one per CPU the service may use), each holding 0.4 to 0.6 GB inside the
+`DASH_MEMORY_MAX` cap. Nothing waits for it: a day not converted yet is read from its `.gz`.
+Measured offline on a copy of the 8 nodes below, 7 sealed days (18.4 GB of `.gz`, 182 M
+records) became 6.2 GB of Parquet in 12 minutes with 8 processes.
 
 For scale, one deployment that reads 8 busy login nodes, measured with the defaults and a
 32G cap:
@@ -232,9 +241,7 @@ On this machine, from a tree with no uncommitted changes to tracked files:
     deploy/fleet/deploy.sh --restart    # install HEAD and restart the session
 
 A deploy installs the sender on the nodes first, then the release on the dashboard's
-host, so the nodes never run an older sender than the receiver expects. A sender sends
-`.ebr` files only to a receiver that asks for them, so a receiver still on an older
-release, which does not, keeps getting `.jsonl` files only until it restarts. Without
+host, so the nodes never run an older sender than the receiver expects. Without
 `--restart`, the new code and settings are used at each process's next start. A change to
 `site.env` alone (the same commit) keeps the release folder as it is and replaces only
 the settings.

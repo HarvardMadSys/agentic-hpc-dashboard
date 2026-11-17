@@ -13,11 +13,6 @@ sudo ./collector/ebpfm.sh status       # check the collector runtime
 sudo ./collector/ebpfm.sh stop         # stop the collector
 ```
 
-The collector writes each day's records as JSONL, as EBR (binary records: the same records,
-4-8x smaller), or as both side by side: `EBPFM_FORMAT=jsonl|ebr|both`, `both` by default
-while EBR is on trial. See [Binary records (EBR)](collector/README.md#binary-records-ebr) in
-the collector's README for the format, its settings, and when to move to `ebr`.
-
 ### Collector -- RPM install (Rocky/RHEL 8)
 
 A signed-off release publishes an `ebpfm-collector` RPM (noarch, built for
@@ -39,7 +34,7 @@ The RPM lays down:
 | `/usr/bin/ebpfm` | symlink to `ebpfm.sh` — the entry point for `check`/`status`/`tail` |
 | `/usr/lib/systemd/system/ebpfm.service` | the eBPF-tier unit, paths pre-substituted (no `install-unit` needed) |
 | `/usr/lib/sysctl.d/99-ebpfm.conf` | the two required sysctls, applied on install and every boot |
-| `/etc/default/ebpfm` | the unit's environment: the output format (`EBPFM_FORMAT`) and the other settings, kept across upgrades |
+| `/etc/default/ebpfm` | the unit's environment: the collector's settings, kept across upgrades |
 | `/var/log/ebpfm/` | default output directory |
 
 Dependencies and sysctls are handled by the package, not a separate bootstrap
@@ -102,7 +97,7 @@ docker run -d --name ebpfm \
   --privileged \                       # eBPF load + attach on EL8's 4.18 kernel
   --pid=host \                         # see/attribute every process on the node
   -v /sys:/sys:ro \                    # BTF + tracefs for program load
-  -v /var/log/ebpfm:/var/log/ebpfm \   # persist the day-files (JSONL and/or EBR)
+  -v /var/log/ebpfm:/var/log/ebpfm \   # persist the JSONL output
   -e EBPFM_HOST="$(hostname -s)" \     # name day-files for the node, not the container
   ghcr.io/fasrc/agentic-hpc-dashboard/collector:latest
 ```
@@ -119,8 +114,6 @@ Notes:
   `... ebpfm features`.
 * The collector emits **only** to the mounted output directory; it makes
   no outbound network connections.
-* The output format is `-e EBPFM_FORMAT=jsonl|ebr|both` (`both` unless set):
-  `/etc/default/ebpfm` is the systemd unit's, and does not reach a container.
 
 ## Quick start -- Dashboard (`/dashboard`)
 Step-by-step
@@ -154,10 +147,8 @@ runs the dashboard over them behind a password, all set from one settings file.
 ```bash
 RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # Where the ebpf collected data reside
 RC_DASH_NODE_ROOTS=/var/log/ebpfm-login  # Where the other data reside (node-level)
-RC_DASH_EBPF_PREFER=jsonl                # jsonl (default) or ebr: which twin to read
-RC_DASH_NODE_PREFER=jsonl                # the same, for the node tier
-RC_DASH_CONVERT=1                        # read EBR only: JSONL converted at startup into an EBR view (0: off)
-RC_DASH_CONVERT_WORKERS=0                # processes converting at startup: 0 (default) = every CPU it may use
+RC_DASH_HISTORY=1                        # keep every sealed (.jsonl.gz) day-file as Parquet too (0: off)
+RC_DASH_HISTORY_WORKERS=0                # processes converting in the background: 0 (default) = up to 8
 ```
-See [Two formats](dashboard/README.md#two-formats) for how the dashboard reads a collector
-writing both, and the order to move to EBR in.
+See [History in Parquet](dashboard/README.md#history-in-parquet) for what the store holds,
+which reads it answers, and what it costs.
