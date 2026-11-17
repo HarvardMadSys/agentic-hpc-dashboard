@@ -57,29 +57,44 @@ export interface FeedReport {
   backfill: unknown;
   /** hosts whose records were written by the demo (rc_dashboard/demo), not measured */
   synthetic_hosts?: string[];
-  /** the dated tiers read through the EBR view: the collector's own roots */
-  source_roots?: string[];
-  /** the dated tiers: the startup conversion to EBR (rc_dashboard/ebrview.py) */
-  convert?: ConvertStatus;
+  /** the eBPF tier: its sealed day-files kept as Parquet (rc_dashboard/history.py) */
+  history?: HistoryStatus;
 }
 export type FeedsResponse = Record<string, FeedReport>;
 
-/** How a dated tier is read: through the EBR view the service converts its
- *  JSONL into (and links its EBR into) at startup, or as the files are. */
-export interface ConvertStatus {
+/** The history store: a Parquet copy of every sealed (`.jsonl.gz`) day-file of
+ *  the eBPF tier, made in the background. A selective read of a sealed file --
+ *  one user's events, one session's tree -- and a search of it by time are
+ *  answered from its copy once there is one; nothing waits for the store. */
+export interface HistoryStatus {
   enabled: boolean;
-  state: 'off' | 'catching_up' | 'live' | 'stopped' | 'error';
-  reason?: string;
-  pct?: number;
+  state: 'off' | 'idle' | 'converting' | 'error';
+  note?: string | null;
   dir?: string;
+  workers?: number;
+  /** the newest dated dirs kept; 0 for every one */
+  days?: number;
   source_roots?: string[];
-  view_roots?: string[];
-  counts?: { converted: number; linked: number; held: number };
-  records?: number;
-  bad_lines?: number;
-  bytes_in?: number;
-  bytes_out?: number;
-  lag_bytes?: number;
+  store_roots?: string[];
+  /** sealed day-files with a current copy */
+  replicas?: number;
+  /** Parquet files, one per table a day-file has records of */
+  files?: number;
+  bytes?: number;
+  /** day-files converted since the service started */
+  converted?: number;
+  /** sealed day-files a reader asked for since the service started: answered
+   *  from a copy, or read as JSONL (no copy yet) */
+  lookups?: { replica: number; jsonl: number };
+  /** the current (or last) round of conversions */
+  progress?: {
+    todo: number;
+    done: number;
+    failed: number;
+    records: number;
+    bytes_in: number;
+    elapsed_s: number;
+  };
   errors?: { at: number; file: string | null; error: string }[];
 }
 
@@ -1551,7 +1566,7 @@ export interface LiveSubmit {
  *  have not been read yet: a gap, not a quiet fleet. `retained_from` here is
  *  set once it is `done`. */
 export interface BackfillStatus {
-  state: 'idle' | 'converting' | 'positioning' | 'running' | 'done' | 'skipped' | 'error';
+  state: 'idle' | 'positioning' | 'running' | 'done' | 'skipped' | 'error';
   pct: number;
   records: number;
   hours: number;
