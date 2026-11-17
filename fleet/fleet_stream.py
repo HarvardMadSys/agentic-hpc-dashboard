@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """fleet_stream: carry each node's ebpfm capture to one host as it is written.
 
-The collector writes `<root>/<YYYY-MM-DD>/<host>.<stream>.<fmt>` on each node's own
-disk (root is /scratch/ebpfm, the packaged collector's output folder), `<fmt>` being
-`jsonl`, `ebr` (its binary records, collector/lib/ebr.py), or both side by side
-(EBPFM_FORMAT), and gzips a day once it is sealed (`.jsonl.gz`, `.ebr.gz`). This tool
-brings every node's files to the host that runs the dashboard, over one ssh connection
-per node, so each byte crosses the network once. It copies bytes, not records: both
-formats travel alike, and a copy that ends in a partial line or frame is read as one
-still being written, as its source would be.
+The collector writes `<root>/<YYYY-MM-DD>/<host>.<stream>.jsonl` on each node's own
+disk (root is /scratch/ebpfm, the packaged collector's output folder) and gzips a day
+once it is sealed. This tool brings every node's files to the host that runs the
+dashboard, over one ssh connection per node, so each byte crosses the network once. It
+copies bytes, not records: a copy that ends in a partial line is read as one still
+being written, as its source would be.
 
   send     runs on a source node, started by a forced-command ssh key. It reads
            `--root` (default /scratch/ebpfm) and writes frames to stdout: the bytes
@@ -26,23 +24,22 @@ Wire format. Every frame is a 4-byte big-endian header length, a compact JSON he
 and `header["len"]` payload bytes (`write_frame`, `read_frame`). The receiver's hello
 is one JSON line on the sender's stdin:
 
-    {"v": 1, "days": N, "have": {"<day>/<file>": {"size": int, "verified": bool}},
-     "formats": ["jsonl", "ebr"]}
+    {"v": 1, "days": N, "have": {"<day>/<file>": {"size": int, "verified": bool}}}
 
 (a verified day the copy keeps as `.gz` is listed by its plain name as
-`{"verified": true}`, with no size). `formats` lists the day-file formats the receiver
-takes, and the sender sends files of those only. A hello without it, an older
-receiver's, gets `.jsonl` files only, as before; an older sender ignores it, and sends
-`.jsonl` files only. The sender answers with frames, by `t`:
+`{"verified": true}`, with no size), and the sender answers with frames, by `t`:
 
-    hello    {v, host, live, formats}   always first; `formats`: what it sends
-    data     {path, off, plain}         zlib chunk of plain bytes [off, off+plain)
-    gz       {path, off, size}          raw bytes of the source `.gz`
-    sealed   {path, size}               the plain file is final at `size`
-    trailer  {path, crc, isize}         the source `.gz`'s last 8 bytes, once gzip is done
-    reset    {path, why}                drop the copy of `path`; it is sent again from 0
-    ping     {}                         after `--ping` seconds of silence
-    error    {msg}                      the sender exits 1 right after
+    hello    {v, host, live}         always first
+    data     {path, off, plain}      zlib chunk of plain bytes [off, off+plain)
+    gz       {path, off, size}       raw bytes of the source `.gz`
+    sealed   {path, size}            the plain file is final at `size`
+    trailer  {path, crc, isize}      the source `.gz`'s last 8 bytes, once gzip is done
+    reset    {path, why}             drop the copy of `path`; it is sent again from 0
+    ping     {}                      after `--ping` seconds of silence
+    error    {msg}                   the sender exits 1 right after
+
+Only `.jsonl` day-files (and their `.gz`) are sent; any other file in a day folder stays
+on the node, and a hello's other keys are ignored.
 """
 import argparse
 import collections
@@ -70,10 +67,6 @@ MAX_PAYLOAD = CHUNK + (1 << 16)    # deflate can grow incompressible input a lit
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GZ = ".gz"
 GZ_LEVEL = 6                   # gzip's default, as the collector's `nice gzip -f` uses
-# The collector's day-file formats (EBPFM_FORMAT), each named by its file's suffix: a
-# stream is `<host>.<stream>.jsonl`, `.ebr`, or both, plus `.gz` once its day is sealed.
-FORMATS = ("jsonl", "ebr")
-SUFFIXES = tuple("." + f for f in FORMATS)
 
 
 class ProtocolError(Exception):
@@ -138,24 +131,15 @@ def list_days(root):
                   if DAY_RE.match(d) and os.path.isdir(os.path.join(root, d)))
 
 
-def stream_names(folder, suffixes=SUFFIXES):
-    """The plain name (`x.jsonl`, `x.ebr`) of every stream in a day folder, plain or
-    gzipped, whose format's suffix is one of `suffixes`."""
+def stream_names(folder):
+    """The plain name (`x.jsonl`) of every stream in a day folder, plain or gzipped."""
     names = set()
     for n in os.listdir(folder):
-        plain = n[:-len(GZ)] if n.endswith(GZ) else n
-        if plain.endswith(suffixes):
-            names.add(plain)
+        if n.endswith(".jsonl"):
+            names.add(n)
+        elif n.endswith(".jsonl" + GZ):
+            names.add(n[:-len(GZ)])
     return sorted(names)
-
-
-def asked_formats(hello):
-    """The formats a receiver's hello asks for, in FORMATS order: those its `formats`
-    lists, or `jsonl` alone when it has no list, as an older receiver's hello has not."""
-    listed = hello.get("formats")
-    if not isinstance(listed, list):
-        return ["jsonl"]
-    return [f for f in FORMATS if f in listed]
 
 
 def gz_trailer(path):
@@ -202,8 +186,6 @@ class Sender:
         self.poll_s, self.ping_s, self.trailer_poll_s = poll_s, ping_s, trailer_poll_s
         self.z = zlib.compressobj(6)
         self.have = {}
-        self.formats = asked_formats({})   # until the hello says: what an older receiver takes
-        self.suffixes = tuple("." + f for f in self.formats)
         self.live = None
         self.files = {}        # key -> {"fh", "ino", "off", "path"}: the live day's open files
         self.awaiting = {}     # key -> its `.gz` path, until gzip is done and the trailer sent
@@ -237,10 +219,7 @@ class Sender:
         """A file the receiver lacks gets a zero-length data frame, so its copy exists
         too: nothing else would ever name an empty one. The live day's files are named
         so before any of their bytes cross, so they appear in the copy together, as
-        the collector makes them; otherwise a stream's `.ebr` twin would hold records
-        in the copy before its `.jsonl` twin existed, and a reader that picks one twin
-        per stream (the dashboard's) could read the first, then switch to the second
-        while it is still catching up."""
+        the collector makes them."""
         if key not in self.have:
             payload = self.z.compress(b"") + self.z.flush(zlib.Z_SYNC_FLUSH)
             self.emit({"t": "data", "path": key, "off": 0, "plain": 0}, payload)
@@ -323,7 +302,7 @@ class Sender:
 
     def catch_up_sealed(self, day):
         folder = os.path.join(self.root, day)
-        for name in stream_names(folder, self.suffixes):
+        for name in stream_names(folder):
             key = "%s/%s" % (day, name)
             if key in self.done:
                 continue
@@ -354,7 +333,7 @@ class Sender:
         """Open the live day's files not yet open, at the receiver's size."""
         folder = os.path.join(self.root, self.live)
         try:
-            names = sorted(n for n in os.listdir(folder) if n.endswith(self.suffixes))
+            names = sorted(n for n in os.listdir(folder) if n.endswith(".jsonl"))
         except FileNotFoundError:
             return
         for name in names:
@@ -456,8 +435,6 @@ class Sender:
                 hello.get("v") if isinstance(hello, dict) else None, PROTOCOL)})
             return 1
         self.have = hello.get("have") or {}
-        self.formats = asked_formats(hello)
-        self.suffixes = tuple("." + f for f in self.formats)
         keep = max(1, int(hello.get("days", 1)))
         try:
             days = list_days(self.root)
@@ -466,7 +443,7 @@ class Sender:
             return 1
         self.live = days[-1] if days else None
         self.emit({"t": "hello", "v": PROTOCOL, "host": socket.gethostname().split(".")[0],
-                   "live": self.live, "formats": self.formats})
+                   "live": self.live})
         for day in days[-keep:-1]:
             self.catch_up_sealed(day)
         if self.live:
@@ -520,8 +497,7 @@ def send_main(root, inp, out, poll_s=1.0, ping_s=30.0, trailer_poll_s=30.0):
 # every file through that open handle, so renaming the base folder and putting
 # another in its place cannot redirect a write.
 
-KEY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})/([A-Za-z0-9][A-Za-z0-9._-]*\.(?:%s))(\.gz)?$"
-                    % "|".join(FORMATS))
+KEY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})/([A-Za-z0-9][A-Za-z0-9._-]*\.jsonl)(\.gz)?$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
@@ -884,10 +860,10 @@ class Mirror:
         have = {}
         for day in self.days()[-days:]:
             for name in self.base.listdir("mirror/%s/%s" % (self.host, day)):   # x before x.gz
-                if name.endswith(SUFFIXES):
+                if name.endswith(".jsonl"):
                     key = "%s/%s" % (day, name)
                     have[key] = dict(self._head(day, name), verified=key in self.verified)
-                elif name.endswith(GZ) and name[:-len(GZ)].endswith(SUFFIXES):
+                elif name.endswith(".jsonl" + GZ):
                     key = "%s/%s" % (day, name[:-len(GZ)])
                     if key in self.verified and key not in have:
                         have[key] = {"verified": True}
@@ -895,8 +871,8 @@ class Mirror:
             if not DAY_RE.match(day):
                 continue
             for name in self.base.listdir("staging/%s/%s" % (self.host, day)):
-                plain = name[:-len(".gz.part")]
-                if name.endswith(".gz.part") and plain.endswith(SUFFIXES):
+                if name.endswith(".jsonl.gz.part"):
+                    plain = name[:-len(".gz.part")]
                     have["%s/%s%s" % (day, plain, GZ)] = {
                         "size": self.base.size("staging/%s/%s/%s" % (self.host, day, name))}
         return have
@@ -1227,8 +1203,7 @@ class Link:
         self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(self.proc.stderr,),
                                                daemon=True)
         self._stderr_thread.start()
-        hello = {"v": PROTOCOL, "days": self.days, "have": self.mirror.inventory(self.days),
-                 "formats": list(FORMATS)}
+        hello = {"v": PROTOCOL, "days": self.days, "have": self.mirror.inventory(self.days)}
         self.proc.stdin.write((json.dumps(hello) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
         src = _Counting(self.proc.stdout)
@@ -1331,8 +1306,8 @@ class Receiver:
     * retention: each host keeps its `days` newest day folders;
     * status every 10 s and traffic every 60 s, into state/;
     * `keep_gz` (default false): sealed days stay in the copy as `.gz`, about 19x
-      smaller on disk for JSONL. A day fetched whole keeps the collector's own file;
-      the live day, once sealed and checked, is gzipped here, so nothing crosses twice.
+      smaller on disk. A day fetched whole keeps the collector's own file; the live
+      day, once sealed and checked, is gzipped here, so nothing crosses twice.
       The dashboard reads `.gz` too, but it holds an index for each one it reads.
     """
 

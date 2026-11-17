@@ -22,7 +22,7 @@ sys.path.insert(0, FLEET)
 sys.path.insert(0, HERE)
 
 import fleet_stream as fs                      # noqa: E402
-from fakecollector import DAY_SUFFIXES, FakeCollector   # noqa: E402
+from fakecollector import FakeCollector        # noqa: E402
 
 SCRIPT = os.path.join(FLEET, "fleet_stream.py")
 HOST = "nodeA"
@@ -34,16 +34,16 @@ def read(p):
 
 
 def source_tree(src):
-    """{<day>/<file>: plain bytes} of every day-file, `.jsonl` or `.ebr`: a plain file as
-    it is, and a `.gz` whose plain file is gone inflated."""
+    """{<day>/<file>: plain bytes} of every `.jsonl` day-file: a plain file as it is, and
+    a `.gz` whose plain file is gone inflated."""
     out = {}
     for day in sorted(os.listdir(src)):
         folder = os.path.join(src, day)
         for name in sorted(os.listdir(folder)):
             p = os.path.join(folder, name)
-            if name.endswith(DAY_SUFFIXES):
+            if name.endswith(".jsonl"):
                 out["%s/%s" % (day, name)] = read(p)
-            elif name.endswith(".gz") and name[:-3].endswith(DAY_SUFFIXES) and not os.path.exists(p[:-3]):
+            elif name.endswith(".jsonl.gz") and not os.path.exists(p[:-3]):
                 out["%s/%s" % (day, name[:-3])] = gzip.decompress(read(p))
     return out
 
