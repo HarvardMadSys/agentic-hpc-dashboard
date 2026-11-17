@@ -228,6 +228,10 @@
       "//8": "first. A FAS login node makes 45k keys on a median day, 105k at most,",
       "//9": "and each held costs about 6 KB: 150k holds a busy day whole.",
       "idle_evict_s": 7200, "max_sessions": 150000,
+      "//10": "The session inspector's read builds a session's records in inspect_workers",
+      "//11": "worker processes (no more than the CPUs it may use); 1 builds them in the",
+      "//12": "service's own process. The same records either way (keysearch.py).",
+      "inspect_workers": 8,
       "include_key_types": ["apid", "sess", "tty"],
       "//": "'usr' is excluded: a usr-keyed group is 'everything that user did',",
       "//1": "which is not a trajectory. It is counted in by_key_type, never ranked."

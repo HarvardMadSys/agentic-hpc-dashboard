@@ -412,7 +412,7 @@ on 2026-10-28 the sessions active in the last four hours alone held 52 840 keys.
 to go key by key and against the clock: a window merged from its hours oldest first met the
 cap with every session looking idle, and kept only each long session's afternoon.)
 
-Built windows are an LRU of `panels.max_windows` (2), and builds are serialised on one worker:
+Built windows are an LRU of `panels.max_windows` (5), and builds are serialised on one worker:
 two concurrent rebuilds would contend for the same page cache and each make the other look
 slow. Ten readers on the same window cost one build, because the WebSocket sends one frame per
 *distinct* window rather than one per client. The default window starts building with the
@@ -420,11 +420,11 @@ service, not with the first page load.
 
 Two things keep a build from costing more than it must:
 
-- **Only the records the panels read are parsed.** Every historical reducer reads `exit` and
-  `truncated` and nothing else, so a scan skips the other ~70% of a JSONL day-file's lines
-  (residency, connections, sockets) on a byte match before `json.loads`. The match cannot miss a
-  record — a JSON writer emits `"event": "exit"`, give or take whitespace — and a false hit only
-  costs a parse. A view's users and agent types, the inspector's session keys, and the user,
+- **Only the records the panels read are parsed.** Each reducer names the event kinds it reads
+  (`EVENTS`), and a scan passes over every other line -- `meta` and `stop`, and a kind no
+  reducer knows -- on a byte match before `json.loads`. The match cannot miss a record -- a JSON
+  writer emits `"event": "exit"`, give or take whitespace -- and a false hit only costs a
+  parse. A view's users and agent types, the inspector's session keys, and the user,
   host and directory of the commands looked up behind a clicked I/O figure (`iocmds.py`) are
   byte checks too; in a sealed file's replica they are a `where` (`where.py`) tested on its
   columns, so a record they reject is never built.
@@ -551,7 +551,23 @@ counted groups. Every bound is in the response, never applied quietly: the read 
 `inspect_per_parent` (2 000) childless ones of one command per parent are itemised and the rest
 counted under their parent, and `inspect_nodes` (6 000) rows are served breadth first with the rest
 counted. Command lines are masked (`redact.py`) and then cut to 220 characters. One read runs at
-a time and is served again for a minute.
+a time, and its tree is served again for ten minutes (`CACHE_TTL`) while the window is the same
+build.
+
+**How a read is made.** Most of a large session's read is building its records and normalising
+them -- 44 us a record on FAS, against 6 us for the tree they feed -- so that is done in
+`reducers.trajectories.inspect_workers` worker processes (8, and no more than the CPUs the
+service may use; 1 builds them in the service's own process), a part of each day-file each: a
+replica's row groups, or a plain file's 32 MB chunks (`keysearch.py`). A record comes back holding
+only the fields the tree reads. The parts are replayed in file order with the counters the
+one-process read keeps, so every bound above stops a read at the same record either way
+(`tests/test_keysearch.py`); a read that stops early is cancelled in its workers, so the next one
+does not wait behind it. A sealed day-file with no replica is read in the service's own process,
+as before. And a row's summary takes the agent's other days from the ranking's last fold rather
+than folding every session of the window again under the service's lock. On FAS's boslogin06,
+2026-11-16, read as a live window is (its fold stale), a 150 000-record read went from 9.9 s to
+2.5-2.7 s, and a 3 121-key agent's from 13.2 s to 2.2-2.6 s; newest first, 149 573 records on
+boslogin05 from 12.1 s to 5.3-5.5 s, the tree's own keeping of the newest now the most of it.
 
 Each of those bounds keeps one end of the session and counts the other, and by default all of
 them keep the **oldest**, the order the records arrive in. `order=newest` moves every one of them
@@ -1236,6 +1252,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/feedfile.py` | the collector's day-files: listing them (a plain file before its `.gz`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line ends, the head digest |
 | `rc_dashboard/history.py` | the history store: every sealed day-file kept as Parquet, converted in the background ([History in Parquet](#history-in-parquet)) |
+| `rc_dashboard/keysearch.py` | the session inspector's key search with its records built in worker processes, replayed with the one-process read's counters |
 | `rc_dashboard/replica.py` | a sealed day-file read from its Parquet tables as the file itself: its offsets, time searches and records |
 | `rc_dashboard/where.py` | the filters a replica rejects records by before it builds them |
 | `rc_dashboard/feedparquet.py` | the Parquet schema, the converter and its verifier ([The feed as Parquet tables](#the-feed-as-parquet-tables)) |
