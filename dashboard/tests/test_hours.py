@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
-from test_ingest import DAY, FeedCase, ebr_twins  # noqa: E402
+from test_ingest import DAY, FeedCase             # noqa: E402
 import test_merge as TM                           # noqa: E402
 
 HOUR = 3600
@@ -698,6 +698,3 @@ class PreprocessTest(HourCase):
         t0 = time.monotonic()
         self.assertFalse(reg.wait_idle(0.2))
         self.assertLess(time.monotonic() - t0, 5)
-
-
-ebr_twins(globals())

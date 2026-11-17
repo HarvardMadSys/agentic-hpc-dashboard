@@ -23,7 +23,7 @@ from starlette.datastructures import Headers
 from starlette.responses import Response
 
 from . import auth as authmod
-from . import ebrview
+from . import history as historymod
 from . import feeds as feedmod
 from . import gcwatch
 from . import jsonout
@@ -33,7 +33,6 @@ from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
 from .export import make_predicate, meta_header, parse_filters, scan
-from .feedfile import prefer_of
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
 from .reducers import phase_names, phase_rules
@@ -195,22 +194,10 @@ def create_app(cfg):
     switch = float(cfg.get("server.gil_switch_ms", 1.0) or 0)
     if switch > 0:
         sys.setswitchinterval(switch / 1000.0)
-    # The service reads EBR only (ebrview.py): every tier with a source root is
-    # read through its EBR view, which `feeds.<tier>.roots` now names. Before the
-    # Aggregator, since everything it builds takes the roots from the config.
-    conv, conv_error = None, None
-    try:
-        conv = ebrview.EbrView.from_config(cfg)
-        if conv is not None:
-            conv.prepare()
-    except ebrview.ConvertError as e:
-        raise SystemExit("ingest.convert: %s" % e)
-    except OSError as e:
-        conv, conv_error = None, "%s: %s" % (type(e).__name__, e)
-        sys.stderr.write("ingest.convert: the EBR view could not be made (%s); the "
-                         "day-files are read as they are\n" % conv_error)
     agg = Aggregator(cfg)
-    agg.convert, agg.convert_error = conv, conv_error
+    # The sealed day-files' Parquet tables (history.py): made in the background,
+    # from the start, and taken by the readers file by file as each is ready.
+    store = agg.history = historymod.HistoryStore(cfg)
     anon = agg.anon
 
     class AnonJSONResponse(jsonout.JSONOut):
@@ -313,64 +300,12 @@ def create_app(cfg):
                     app.state.clients.pop(ws, None)
 
     # ------------------------------------------------------------ background
-    def converting():
-        """The view is being filled: what reads the day-files waits for it."""
-        return conv is not None and conv.converting()
-
-    def converting_response():
-        """What an endpoint that reads the day-files answers while they are
-        being converted: a 503 that says so, rather than a half-built view."""
-        p = dict(conv.progress)
-        return JSONResponse({
-            "error": "converting",
-            "detail": "The service is converting the collector's JSONL day-files to EBR "
-                      "before it reads them (ingest.convert): %d%% done. Ask again shortly."
-                      % (p.get("pct") or 0),
-            "convert": {"state": conv.state, "pct": p.get("pct"), "files": p.get("files"),
-                        "bytes": p.get("done"), "total_bytes": p.get("work")}},
-            status_code=503, headers={"Retry-After": "5"})
-
-    def catch_up():
-        """Fill the view (ebrview.EbrView.catch_up), saying how far in `backfill`."""
-        def progress(p):
-            with agg.lock:
-                agg.backfill = {"state": "converting", "pct": p.get("pct") or 0,
-                                "records": p.get("records") or 0, "hours": 0,
-                                "files": p.get("files"), "bytes": p.get("done"),
-                                "total_bytes": p.get("work")}
-        progress(conv.progress)
-        try:
-            conv.catch_up(progress)
-        except Exception as e:      # the service reads what there is, and says so
-            conv.state = "error"
-            conv._note("catch-up: %s: %s" % (type(e).__name__, e))
-
     def poll():
-        """One poll: what the collector appended converted into the view first,
-        so a record converted is read in the same poll."""
-        if conv is not None:
-            try:
-                conv.sync()
-            except Exception as e:
-                conv._note("sync: %s: %s" % (type(e).__name__, e))
         return agg.poll_once()
 
     async def ingest_loop():
         interval = max(0.2, int(cfg.get("ingest.poll_ms", 1000)) / 1000.0)
         loop = asyncio.get_running_loop()
-        if conv is not None:
-            # Before anything reads: the JSONL behind converted into the view, off
-            # the event loop so the page answers (and says so) meanwhile. Then
-            # the window builds, the backfill and the polls, as without a view.
-            converted = loop.run_in_executor(None, catch_up)
-            while not converted.done():
-                await asyncio.wait([converted], timeout=interval)
-                try:
-                    await broadcast_live()
-                except Exception:
-                    pass
-            await broadcast("backfill", agg.backfill)
-            agg.start()
         # The backfill hands the tail every file at its end, then reads the
         # history behind that point newest first -- while this loop is already
         # polling, so the page is live from the first second and watches the past
@@ -448,8 +383,6 @@ def create_app(cfg):
         loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(interval)
-            if converting():
-                continue                # it reads the day-files: not a half-built view
             try:
                 await loop.run_in_executor(None, agg.rebuild_history)
                 # also the hourly full collection that bounds what freezing keeps
@@ -463,8 +396,8 @@ def create_app(cfg):
 
     @app.on_event("startup")
     async def _startup():
-        if conv is None:
-            agg.start()                 # else once the view is filled (`ingest_loop`)
+        store.start()                   # nothing waits for it (history.py)
+        agg.start()
         app.state.tasks = [asyncio.create_task(ingest_loop()),
                            asyncio.create_task(feeds_loop()),
                            asyncio.create_task(rebuild_loop()),
@@ -490,9 +423,7 @@ def create_app(cfg):
         for t in getattr(app.state, "tasks", []):
             t.cancel()
         agg.stop()
-        if conv is not None:
-            # every converted file's place MARKed, for the next start to resume at
-            await asyncio.get_running_loop().run_in_executor(None, conv.close)
+        store.stop()
 
     # ------------------------------------------------------------------- API
     @app.get("/api/config")
@@ -516,8 +447,6 @@ def create_app(cfg):
         body = await request.json()
         flt = view_filter(request, anon)
         ctx = body.get("context")
-        if isinstance(ctx, dict) and ctx.get("session") is not None and converting():
-            return converting_response()     # a session is read again from the day-files
         if isinstance(ctx, dict) and ctx.get("session") is not None:
             ctx = dict(ctx, session=dealias_sid(ctx["session"], anon))
         try:
@@ -655,8 +584,6 @@ def create_app(cfg):
         that launched a filtered-to-Claude-Code session would cut the tree at
         its root rather than narrow it.
         """
-        if converting():
-            return converting_response()
         body = masked(redacted(proctree.serve(agg, dealias_sid(sid, anon), window_min,
                                               frm, to, order)), "trajectory")
         # serialized as it always was (`default=str`), with orjson, here on the worker
@@ -680,7 +607,6 @@ def create_app(cfg):
 
     _roots = agg.roots
     # which twin of a stream written in both formats the event views read
-    prefer = prefer_of(cfg, "ebpf")
     iocmds = IoCommands(cfg, _roots)
 
     # Every command behind an I/O number (iocmds.py): a lookup the page starts
@@ -690,8 +616,6 @@ def create_app(cfg):
     def api_io_commands(request: Request, window_min: int = Query(None),
                         apid: str = Query(None), host: str = Query(None),
                         cwd: str = Query(None)):
-        if converting():
-            return converting_response()
         f = parse_filters(dealias(query_lists(request), anon))
         f.pop("q", None)
         f["event"] = None                 # exits and truncations: iocmds.EVENTS
@@ -752,8 +676,6 @@ def create_app(cfg):
                    limit: int = Query(200, le=5000),
                    cursor: int = Query(0, ge=0),
                    order: str = Query("desc")):
-        if converting():
-            return converting_response()
         f, qv = event_filters(request)
         pred = make_predicate(f)
         norm = Normalizer(cfg)
@@ -772,8 +694,7 @@ def create_app(cfg):
             pred = search(pred, qv)
         rows, scanned, matched = [], 0, 0
         for rec, scanned, matched in scan(_roots(), norm, pred, limit=limit,
-                                          offset=cursor, newest_first=newest,
-                                          prefer=prefer):
+                                          offset=cursor, newest_first=newest):
             rows.append(redact.record(rec))
         rep = agg.reports["ebpf"]
         full = len(rows) >= limit
@@ -789,8 +710,6 @@ def create_app(cfg):
 
     @app.get("/api/export")
     def api_export(request: Request, order: str = Query("desc")):
-        if converting():
-            return converting_response()
         f, qv = event_filters(request)
         # same default as /api/events, so "the download is the view" holds
         export_default_event = not f.get("event")
@@ -808,7 +727,7 @@ def create_app(cfg):
             matched = 0
             body = []
             for rec, _scanned, matched in scan(_roots(), norm, pred, limit=cap,
-                                               newest_first=order != "asc", prefer=prefer):
+                                               newest_first=order != "asc"):
                 # the download is the view, credentials and names masked like it
                 body.append(json.dumps(masked(redact.record(rec)), default=str))
                 if len(body) >= 500:

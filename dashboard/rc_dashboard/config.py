@@ -22,10 +22,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _MISSING = object()
-# The day-file formats `feeds.<tier>.prefer` may name (feedfile.FORMATS).
-PREFER_FORMATS = ("jsonl", "ebr")
-# `ingest.convert` (ebrview.py) unless set.
-CONVERT = {"enabled": True, "dir": "", "zstd": 0, "workers": 0, "days": 0}
+# `history` (history.py) unless set.
+HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 
 
 def _env(name, default=None):
@@ -97,10 +95,6 @@ def defaults():
                 "days": 8,
                 "max_age_s": 300,       # residency_totals ticks every 60s -> 5x
                 "required": True,
-                # Which file of a stream the collector writes in both formats
-                # (EBPFM_FORMAT=both) is read: "jsonl" or "ebr" (feedfile.choose).
-                # A day whose preferred twin started mid-day is read from the other.
-                "prefer": "jsonl",
             },
             "ebpf_node": {
                 "roots": _node_candidates(),
@@ -108,7 +102,6 @@ def defaults():
                 "snapshots_per_host": 2,   # cpu_usage_usec is cumulative: need a delta
                 "max_age_s": 900,
                 "required": False,
-                "prefer": "jsonl",         # as feeds.ebpf.prefer, for the node tier
             },
             "sacct": {
                 "dir": REPO,
@@ -147,17 +140,13 @@ def defaults():
         },
         "ingest": {
             "poll_ms": 1000,
-            # The service reads EBR only (ebrview.py): at startup, every stream
-            # the collector wrote only as JSONL is converted into an EBR view
-            # under `dir` (<cache.dir>/ebr-view unless set), and the readers are
-            # pointed at the view; a stream written as EBR is linked into it.
-            # The copies are kept current as the collector appends. `zstd`: the
-            # level of the view's zstd frames, 0 for none. `workers`: processes
-            # converting at startup, 0 for every CPU it may use, 1 for this one.
-            # `days`: dated dirs mirrored, 0 for every one the source holds (what
-            # event scans and exports read), or a bound for a long history.
-            "convert": dict(CONVERT),
         },
+        # Every sealed day-file of the eBPF tier kept as Parquet (history.py),
+        # under `dir` (<cache.dir>/history unless set), converted in the
+        # background in `workers` processes (0: up to 8, as the CPUs allow); a
+        # sealed file's selective reads and time searches are answered from it.
+        # `days`: the newest dated dirs kept, 0 for every one the source holds.
+        "history": dict(HISTORY),
         # The service's present. "" is the wall clock; "auto" or a local time
         # pins (and freezes) it, for a feed captured elsewhere and copied here.
         # See clock.py.
@@ -398,10 +387,8 @@ ENV_MAP = {
     "feeds.ebpf.roots": ("RC_DASH_EBPF_ROOTS", _pathsep),
     "feeds.ebpf.days": ("RC_DASH_EBPF_DAYS", int),
     "feeds.ebpf.max_age_s": ("RC_DASH_EBPF_MAX_AGE_S", int),
-    "feeds.ebpf.prefer": ("RC_DASH_EBPF_PREFER", str),
     "feeds.ebpf_node.roots": ("RC_DASH_NODE_ROOTS", _pathsep),
     "feeds.ebpf_node.days": ("RC_DASH_NODE_DAYS", int),
-    "feeds.ebpf_node.prefer": ("RC_DASH_NODE_PREFER", str),
     "feeds.sacct.dir": ("RC_DASH_SACCT_DIR", str),
     "feeds.sacct.pattern": ("RC_DASH_SACCT_PATTERN", str),
     "feeds.sacct.max_days": ("RC_DASH_SACCT_MAX_DAYS", int),
@@ -427,12 +414,11 @@ ENV_MAP = {
                           lambda v: v not in ("0", "false", "no", "off", "")),
     "panels.preprocess_wait_s": ("RC_DASH_PREPROCESS_WAIT_S", float),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
-    "ingest.convert.enabled": ("RC_DASH_CONVERT",
-                               lambda v: v.strip().lower() not in ("0", "false", "no", "off")),
-    "ingest.convert.dir": ("RC_DASH_CONVERT_DIR", str),
-    "ingest.convert.zstd": ("RC_DASH_CONVERT_ZSTD", int),
-    "ingest.convert.workers": ("RC_DASH_CONVERT_WORKERS", int),
-    "ingest.convert.days": ("RC_DASH_CONVERT_DAYS", int),
+    "history.enabled": ("RC_DASH_HISTORY",
+                        lambda v: v.strip().lower() not in ("0", "false", "no", "off")),
+    "history.dir": ("RC_DASH_HISTORY_DIR", str),
+    "history.workers": ("RC_DASH_HISTORY_WORKERS", int),
+    "history.days": ("RC_DASH_HISTORY_DAYS", int),
     "clock.as_of": ("RC_DASH_AS_OF", str),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
@@ -655,37 +641,25 @@ def load(args=None, config_path=None):
                     origins[prefix + "." + k] = "profile:%s" % pth
         mark(ptree, "risk")
 
-    # Which twin a stream written in both formats is read from: one of the two,
-    # or the service refuses to start rather than guess (feedfile.choose).
-    for feed in ("ebpf", "ebpf_node"):
-        key = "feeds.%s.prefer" % feed
-        val = _get(tree, key, "jsonl")
-        norm = str(val if val is not None else "").strip().lower()
-        if norm not in PREFER_FORMATS:
-            raise SystemExit("%s: %r is not one of %s (set by %s)" % (
-                key, val, ", ".join(PREFER_FORMATS), origins.get(key, "default")))
-        _set(tree, key, norm)
-
-    # The startup conversion (ebrview.py): a switch, a directory, a zstd level
-    # and a worker count, or the service refuses to start rather than guess.
-    conv = _get(tree, "ingest.convert", None)
-    if not isinstance(conv, dict):
-        raise SystemExit("ingest.convert: %r is not an object (set by %s)" % (
-            conv, origins.get("ingest.convert", "default")))
+    # The history store (history.py): a switch, a directory, a worker count and
+    # a day bound, or the service refuses to start rather than guess.
+    hist = _get(tree, "history", None)
+    if not isinstance(hist, dict):
+        raise SystemExit("history: %r is not an object (set by %s)" % (
+            hist, origins.get("history", "default")))
     for key, ok, what in (
             ("enabled", lambda v: isinstance(v, bool), "true or false"),
             ("dir", lambda v: v is None or isinstance(v, str), "a path, or empty"),
-            ("zstd", lambda v: type(v) is int and 0 <= v <= 22, "a zstd level 0..22 (0: off)"),
             ("days", lambda v: type(v) is int and 0 <= v <= 100000,
              "a count of dated dirs 0..100000 (0: every one the source holds)"),
             ("workers", lambda v: type(v) is int and 0 <= v <= 256,
-             "a process count 0..256 (0: every CPU this process may use)")):
-        dotted = "ingest.convert." + key
-        val = conv.get(key, CONVERT[key])
+             "a process count 0..256 (0: up to 8, as the CPUs allow)")):
+        dotted = "history." + key
+        val = hist.get(key, HISTORY[key])
         if not ok(val):
             raise SystemExit("%s: %r is not %s (set by %s)" % (
                 dotted, val, what, origins.get(dotted, "default")))
-        conv[key] = "" if (key == "dir" and val is None) else val
+        hist[key] = "" if (key == "dir" and val is None) else val
 
     # candidate-probe annotation for the multi-root feeds
     for feed in ("ebpf", "ebpf_node"):

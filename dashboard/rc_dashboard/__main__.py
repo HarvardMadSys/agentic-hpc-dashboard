@@ -44,8 +44,6 @@ def build_parser():
                     help="fictional login nodes (2)")
     ap.add_argument("--demo-seed", default=None,
                     help="another seed is another week of made-up sessions (demo)")
-    ap.add_argument("--demo-format", default=None, choices=["jsonl", "ebr", "both"],
-                    help="the day-files' format; both writes the two as twins (ebr)")
     ap.add_argument("--demo-fresh", action="store_true",
                     help="discard the demo feed and write it again")
     ap.add_argument("--demo-write-only", action="store_true",
@@ -105,11 +103,11 @@ def main(argv=None):
         print(json.dumps(cfg.as_dict(with_origins=True), indent=1, default=str))
         return 0
     if args.check_feeds or args.command == "check-feeds":
-        # The collector's roots as they are (nothing is converted here), and
-        # what the service's startup conversion would make of them (ebrview.py).
+        # The collector's roots, and what the history store holds of their
+        # sealed days (history.py); nothing is converted here.
         code = feedmod.print_table(feedmod.resolve(cfg))
-        from . import ebrview
-        for line in ebrview.describe(cfg):
+        from . import history
+        for line in history.describe(cfg):
             print(line)
         return code
 

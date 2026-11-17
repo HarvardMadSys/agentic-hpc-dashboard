@@ -3,8 +3,7 @@
 A `.jsonl.gz` must read exactly as the `.jsonl` inside it does: the same bytes
 at the same offsets, so every byte-addressed reader -- the window plan's binary
 search, the backwards read-back, a saved window's resume, the tail -- gives the
-same answer for either. So must an `.ebr.gz` as its `.ebr`: each FeedCase here
-runs again on EBR day-files (`ebr_twins`).
+same answer for either.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_gz -q
 """
@@ -30,7 +29,7 @@ from rc_dashboard.feeds import host_of                  # noqa: E402
 from rc_dashboard.normalize import Normalizer           # noqa: E402
 from rc_dashboard.tail import FileTailSource, read_back  # noqa: E402
 from rc_dashboard.windows import EVENTS                 # noqa: E402
-from test_ingest import DAY, NONE, FeedCase, ebr_twins, exit_rec   # noqa: E402
+from test_ingest import DAY, NONE, FeedCase, exit_rec   # noqa: E402
 
 
 def payload(n, seed):
@@ -213,12 +212,12 @@ class CompressedFeed(FeedCase):
 
     def test_seek_and_resume_are_by_uncompressed_offset(self):
         plain = self.path("h1.exits.jsonl")
-        zp = os.path.join(self.zroot, DAY, self.fname("h1.exits.jsonl.gz"))
+        zp = os.path.join(self.zroot, DAY, "h1.exits.jsonl.gz")
         since = self.now - 1800
         offs = []
         for p in (plain, zp):
             with gz.open_feed(p) as fh:
-                offs.append(seek_to_epoch(fh, since, gz.fstat(fh).st_size, self.FORMAT))
+                offs.append(seek_to_epoch(fh, since, gz.fstat(fh).st_size))
         self.assertEqual(offs[0], offs[1])
         # what a saved build records, and resuming from it
         plan, _ = window_plan([self.zroot], since)
@@ -240,7 +239,7 @@ class CompressedFeed(FeedCase):
 
     def test_plain_file_wins_over_its_gz_twin(self):
         d = os.path.join(self.root, DAY)
-        with gzip.open(os.path.join(d, self.fname("h1.exits.jsonl.gz")), "wb") as fh:
+        with gzip.open(os.path.join(d, "h1.exits.jsonl.gz"), "wb") as fh:
             fh.write(b"")
         self.assertEqual(feed_files(d), [self.path("h1.exits.jsonl")])
 
@@ -288,8 +287,8 @@ class CompressedUnderTheTail(FeedCase):
 
     def test_lines_written_just_before_the_compression_arrive_once(self):
         # The day's last poll round lands after the tail's last read -- half
-        # of its first line (EBR: its frame) was there already -- and the day
-        # is sealed and compressed before the tail looks again.
+        # of its first line was there already -- and the day is sealed and
+        # compressed before the tail looks again.
         five, sixth, rest = self.rounds([self.recs[:5], self.recs[5:6], self.recs[6:]])
         self.write_raw("h1.exits.jsonl", five + sixth[:20])
         src = FileTailSource([self.root])
@@ -426,9 +425,6 @@ class PinnedClock(CompressedFeed):
                                                                 "%Y-%m-%d %H:%M:%S")))
         with self.assertRaises(SystemExit):
             clock.resolve(self.cfg_as_of("yesterday"), [self.zroot])
-
-
-ebr_twins(globals())
 
 
 if __name__ == "__main__":

@@ -25,6 +25,11 @@ DISCOVER_S as days are sealed; a file not converted yet is read as JSONL. A repl
 whose source is gone goes too, and so does one older than the newest `history.days`
 dated dirs when that is set. The store is the service's own: each store root is
 made 0700, as its other caches are, since it holds every user's command lines.
+
+A conversion writes beside each final name (`.tmp-<pid>`) and renames into place,
+the manifest last. A worker stopped by SIGTERM (systemd stopping the service)
+removes what it was writing, as on any error; what a SIGKILL leaves is swept the
+next time the service starts, once its process is gone.
 """
 import collections
 import concurrent.futures
@@ -33,6 +38,7 @@ import json
 import multiprocessing
 import os
 import re
+import signal
 import threading
 import time
 
@@ -53,6 +59,7 @@ REPLICAS_MAX = 128
 WORKERS_MAX = 8                  # a conversion holds about a row group in memory
 DEFAULTS = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
+_TMP = re.compile(r"\.tmp-(\d+)$")       # feedparquet.convert_source's own suffix
 
 
 def usable_cpus():
@@ -101,8 +108,49 @@ def root_name(src):
 
 
 def _convert(day, path, out):
-    """One conversion, in a worker process."""
-    return fp.convert_source(day, path, out, row_group_rows=ROW_GROUP_ROWS)
+    """One conversion, in a worker process. A SIGTERM ends the worker, once
+    `convert_source` has removed what it was writing: its pool would only hand
+    it the next file."""
+    try:
+        return fp.convert_source(day, path, out, row_group_rows=ROW_GROUP_ROWS)
+    except SystemExit:
+        os._exit(143)
+
+
+def _worker_init():
+    """A conversion worker: SIGTERM ends it as an error would, so the files it was
+    writing are removed (`convert_source`) rather than left half-written."""
+    signal.signal(signal.SIGTERM, _terminated)
+
+
+def _terminated(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True                 # someone else's: running
+    return True
+
+
+def sweep(out):
+    """Remove what a conversion killed mid-file left under store root `out`: each
+    `.tmp-<pid>` file whose process is gone. Returns how many."""
+    n = 0
+    for dp, _dns, fns in os.walk(out):
+        for f in fns:
+            m = _TMP.search(f)
+            if m and not _alive(int(m.group(1))):
+                try:
+                    os.unlink(os.path.join(dp, f))
+                    n += 1
+                except OSError:
+                    pass
+    return n
 
 
 class HistoryStore:
@@ -121,6 +169,10 @@ class HistoryStore:
                          "elapsed_s": 0.0}
         self.errors = collections.deque(maxlen=20)
         self.converted = 0                     # since start
+        self.swept = 0                         # a killed conversion's leftovers removed
+        # sealed files a reader asked for, since start: answered from a replica,
+        # or left to the JSONL (no current replica yet)
+        self.lookups = {"replica": 0, "jsonl": 0}
         self._lock = threading.Lock()
         self._cache = collections.OrderedDict()   # path -> (ident, Replica)
         self._stop = threading.Event()
@@ -155,6 +207,7 @@ class HistoryStore:
                            "note": "Parquet tables of the source root's sealed day-files "
                                    "(rc_dashboard/history.py)"}, fh, indent=1)
             os.replace(tmp, marker)
+        self.swept += sweep(out)
         self._ready[src] = True
         return out
 
@@ -175,6 +228,12 @@ class HistoryStore:
         loc = self._locate(path)
         if loc is None:
             return None
+        rep = self._replica(path, loc)
+        with self._lock:
+            self.lookups["jsonl" if rep is None else "replica"] += 1
+        return rep
+
+    def _replica(self, path, loc):
         try:
             st = os.stat(path)
         except OSError:
@@ -260,12 +319,13 @@ class HistoryStore:
                 done += self._finish(p, _try(_convert, day, p, out), t0)
         else:
             ctx = multiprocessing.get_context("spawn")
-            with concurrent.futures.ProcessPoolExecutor(workers, mp_context=ctx) as ex:
+            with concurrent.futures.ProcessPoolExecutor(workers, mp_context=ctx,
+                                                        initializer=_worker_init) as ex:
                 futs = {ex.submit(_convert, day, p, out): p for day, p, out in todo}
                 for f in concurrent.futures.as_completed(futs):
                     try:
                         res = f.result()
-                    except Exception as e:      # one file failing stops nothing else
+                    except BaseException as e:  # one file failing stops nothing else
                         res = e
                     done += self._finish(futs[f], res, t0)
                     if self._stop.is_set():
@@ -278,7 +338,7 @@ class HistoryStore:
     def _finish(self, path, res, t0):
         with self._lock:
             self.progress["elapsed_s"] = round(time.time() - t0, 1)
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 self.progress["failed"] += 1
                 self.errors.append({"file": path, "error": "%s: %s" % (type(res).__name__, res),
                                     "at": time.time()})
@@ -318,6 +378,7 @@ class HistoryStore:
         with self._lock:
             prog = dict(self.progress)
             errors = list(self.errors)
+            lookups = dict(self.lookups)
         replicas = files = 0
         size = 0
         for out in self.roots.values():
@@ -336,7 +397,41 @@ class HistoryStore:
                 "dir": self.dir, "workers": self.workers, "days": self.days,
                 "source_roots": sorted(self.roots), "store_roots": sorted(self.roots.values()),
                 "replicas": replicas, "files": files, "bytes": size,
-                "converted": self.converted, "progress": prog, "errors": errors[-5:]}
+                "converted": self.converted, "swept": self.swept, "lookups": lookups,
+                "progress": prog, "errors": errors[-5:]}
+
+
+def describe(cfg):
+    """`--check-feeds`'s lines on the store, read-only: what it holds of the
+    sealed day-files and what it would convert."""
+    s = settings(cfg)
+    if not s["enabled"]:
+        return ["  history %-9s off (history.enabled): sealed days are read as JSONL" % TIER]
+    st = HistoryStore(cfg)
+    sealed = current = 0
+    todo_bytes = 0
+    for src, out in st.roots.items():
+        if not os.path.isdir(src):
+            continue
+        dirs = feedfile.dated_dirs(src, 0)
+        if st.days:
+            dirs = dirs[-st.days:]
+        for day, files in dirs:
+            for p in files:
+                if not p.endswith(".jsonl.gz"):
+                    continue
+                sealed += 1
+                if fp.current(fp.read_manifest(out, day, fp.stem_of(p)), p):
+                    current += 1
+                else:
+                    try:
+                        todo_bytes += os.path.getsize(p)
+                    except OSError:
+                        pass
+    return ["  history %-9s on: %d sealed day-file(s), %d with a current replica, %d to "
+            "convert (%.1f MB compressed); store %s" % (
+                TIER, sealed, current, sealed - current, todo_bytes / 1e6,
+                os.path.join(s["dir"], TIER))]
 
 
 def _try(fn, *args):

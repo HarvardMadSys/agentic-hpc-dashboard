@@ -15,8 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from rc_dashboard import config as configmod    # noqa: E402
 from rc_dashboard import feedparquet as fp      # noqa: E402
-from rc_dashboard import history, replica        # noqa: E402
+from rc_dashboard import history, hours, replica, snapshots     # noqa: E402
 
 from tests.test_feedparquet import full          # noqa: E402
 
@@ -134,6 +135,57 @@ class HistoryTest(unittest.TestCase):
         self.assertIsNone(replica.for_path(p))
         replica.install(st.replica_for)
         self.assertIsNotNone(replica.for_path(p))
+
+    def test_a_killed_conversions_leftovers_are_swept(self):
+        """What a conversion killed mid-file left (`.tmp-<pid>`) goes when the store
+        next starts, once its process is gone; a live process's stays."""
+        p = self.write("2026-11-13", "exits", [full("exit", 0)])
+        st = history.HistoryStore(self.cfg)
+        st.run_once()
+        out = st.roots[os.path.abspath(self.root)]
+        target = fp.out_path(out, "exit", "2026-11-13", HOST + ".exits")
+        dead = os.fork()
+        if dead == 0:
+            os._exit(0)
+        os.waitpid(dead, 0)
+        gone = target + ".tmp-%d" % dead
+        live = target + ".tmp-%d" % os.getpid()
+        for x in (gone, live):
+            with open(x, "wb") as fh:
+                fh.write(b"half a file")
+        again = history.HistoryStore(self.cfg)
+        again.discover()
+        self.assertFalse(os.path.exists(gone))
+        self.assertTrue(os.path.exists(live))
+        self.assertEqual(again.status()["swept"], 1)
+        self.assertIsNotNone(again.replica_for(p))
+
+    def test_lookups_are_counted(self):
+        """What /api/feeds says of the store's use: a sealed file asked for is
+        answered from its replica, or left to the JSONL; any other file is no
+        lookup of the store's."""
+        p = self.write("2026-11-13", "exits", [full("exit", 0)])
+        live = self.write("2026-11-14", "exits", [full("exit", 1)], sealed=False)
+        st = history.HistoryStore(self.cfg)
+        self.assertIsNone(st.replica_for(p))
+        st.run_once()
+        self.assertIsNotNone(st.replica_for(p))
+        self.assertIsNotNone(st.replica_for(p))
+        self.assertIsNone(st.replica_for(live))
+        self.assertEqual(st.status()["lookups"], {"replica": 2, "jsonl": 1})
+
+
+class FingerprintTest(unittest.TestCase):
+    """The store changes no answer, so no saved build is fingerprinted with it:
+    switching it on or off, or moving it, is a restart, not a rebuild."""
+
+    def test_no_saved_window_or_hour_is_rebuilt_for_a_history_setting(self):
+        a = configmod.Config(configmod.defaults(), {}, None)
+        tree = configmod.defaults()
+        tree["history"].update(enabled=False, dir="/elsewhere", workers=3, days=7)
+        b = configmod.Config(tree, {}, None)
+        for f in (snapshots.fingerprint, hours.fingerprint):
+            self.assertEqual(f("code", a, ["/r"]), f("code", b, ["/r"]), f.__module__)
 
 
 if __name__ == "__main__":

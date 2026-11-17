@@ -36,19 +36,6 @@ Two correctness rules, both from how the collector writes:
   (`gz.open_feed`), so the `.gz` takes up where the plain file was left -- read
   from byte 0, the whole day would be counted twice.
 
-An EBR day-file (`feedfile`, `ebr`) is followed a FRAME at a time by the same
-rules: a poll reads every complete frame after the offset -- at least one,
-however large, else up to READ_CAP -- and advances only past the last of them,
-so a frame still being written (or, near a plain file's end, not yet all
-visible over NFS: `feedfile.SETTLE`) is re-read whole next time and counted a
-`partial_hold`. Its decoder is kept with the offset, so a poll decodes from its
-string and shape tables rather than replaying its segment, and it moves to the
-`.gz` with the offset. A corrupt frame is counted (`corrupt_frames`).
-
-Where a collector writes both formats, only the twin `feedfile.choose` names
-for a stream is listed. A twin is taken over by the other only when it is
-deleted: the remaining one is then followed from its end (`_switched`), so at
-most one poll's records are missed and none is read twice (`twin_switches`).
 """
 import concurrent.futures
 import glob
@@ -57,10 +44,9 @@ import json
 import os
 from operator import itemgetter
 
-from . import ebr, gz, fastjson
-from .feedfile import (complete_end, dated_dirs, decoder_at, ebr_source, ebr_src, errors,
-                       feed_files, format_of, iter_lines_reverse, records_reverse,
-                       seek_to_epoch, settle_of, twin_names)
+from . import gz, fastjson
+from .feedfile import (complete_end, dated_dirs, feed_files, iter_lines_reverse,
+                       seek_to_epoch)
 from .normalize import epoch_of
 
 # The most one poll reads from one file.  A tail that has fallen behind -- or a
@@ -92,15 +78,12 @@ class IngestSource:
 
 
 class FileTailSource(IngestSource):
-    def __init__(self, roots, days=2, prefer="jsonl"):
+    def __init__(self, roots, days=2):
         self.roots = list(roots)
         self.days = days
-        self.prefer = prefer     # which twin of a stream written in both formats is read
         self.state = {}          # path -> offset record; this process only
-        self.held = set()        # the files of streams the twin rule holds, at the last listing
         self.stats = {"files": 0, "bytes_read": 0, "partial_holds": 0,
-                      "parse_errors": 0, "resets": 0, "corrupt_frames": 0,
-                      "twin_switches": 0}
+                      "parse_errors": 0, "resets": 0}
 
     # ------------------------------------------------------------------ state
     def prune_state(self):
@@ -108,18 +91,12 @@ class FileTailSource(IngestSource):
 
         A plain file compressed since the last poll has left the listing too,
         but its offset is where its `.gz` takes up: it is kept until the tail
-        has met the `.gz`. So is a twin whose stream is now read from its twin
-        of the other format, until that one has its own (`_switched`), and a
-        file of a stream the twin rule holds for now.
+        has met the `.gz`.
         """
         keep = set(self.files())
 
         def kept(k):
-            if k in keep or k in self.held:
-                return True
-            if k + gz.SUFFIX in keep and k + gz.SUFFIX not in self.state:
-                return True
-            return any(t in keep and t not in self.state for t in twin_names(k))
+            return k in keep or (k + gz.SUFFIX in keep and k + gz.SUFFIX not in self.state)
         self.state = {k: v for k, v in self.state.items() if kept(k)}
 
     def position(self, since):
@@ -132,7 +109,6 @@ class FileTailSource(IngestSource):
         and fills forward.
         """
         def one(p):
-            fmt = format_of(p)
             try:
                 fh = gz.open_feed(p)
             except OSError:
@@ -141,15 +117,9 @@ class FileTailSource(IngestSource):
                 try:
                     st = gz.fstat(fh)
                     disk = _disk(os.fstat(fh.fileno()))
-                    if fmt == "ebr":
-                        # past the last complete frame, never past a region of a
-                        # plain file's end not all visible yet (`feedfile.SETTLE`)
-                        end = complete_end(fh, st.st_size, fmt=fmt, settle=settle_of(p))
-                        start = end if since is None else seek_to_epoch(fh, since, end, fmt)
-                    else:
-                        end = complete_end(fh, st.st_size)
-                        start = end if since is None else seek_to_epoch(fh, since, end)
-                except (OSError, ebr.Error):
+                    end = complete_end(fh, st.st_size)
+                    start = end if since is None else seek_to_epoch(fh, since, end)
+                except OSError:
                     return None
             return p, st, disk, end, start
 
@@ -175,19 +145,18 @@ class FileTailSource(IngestSource):
             if got is None:
                 continue
             p, st, disk, end, start = got
-            self._remember(p, st, end, None, disk)
+            self._remember(p, st, end, disk)
             if start < end:
                 plan.append({"path": p, "start": start, "end": end, "since": since})
         return plan
 
     # ------------------------------------------------------------------ files
     def files(self):
-        out, notes = [], []
+        out = []
         for root in self.roots:
-            for _d, files in dated_dirs(root, self.days, self.prefer, report=notes):
+            for _d, files in dated_dirs(root, self.days):
                 out += files
-            out += feed_files(root, self.prefer, report=notes)[-self.days:]
-        self.held = {p for n in notes if n["path"] is None for p in n["files"].values()}
+            out += feed_files(root)[-self.days:]
         return sorted(set(out))
 
     # ------------------------------------------------------------------- read
@@ -203,9 +172,6 @@ class FileTailSource(IngestSource):
                     return
             except OSError:
                 pass
-        if format_of(path) == "ebr":
-            yield from self._read_one_ebr(path)
-            return
         try:
             fh = gz.open_feed(path)
         except OSError:
@@ -219,8 +185,6 @@ class FileTailSource(IngestSource):
             rec = self.state.get(path)
             if rec is None and gz.is_gz(path):
                 rec = self._compressed(path, st)
-            if rec is None:
-                rec = self._switched(path, fh, st)
             offset = 0
             if rec and rec.get("dev") == st.st_dev and rec.get("inode") == st.st_ino:
                 offset = rec.get("offset", 0)
@@ -230,7 +194,7 @@ class FileTailSource(IngestSource):
             elif rec:
                 self.stats["resets"] += 1          # replaced: different inode
             if offset >= st.st_size:
-                self._remember(path, st, offset, rec, disk)
+                self._remember(path, st, offset, disk)
                 return
             fh.seek(offset)
             data = fh.read(min(st.st_size - offset, READ_CAP))
@@ -252,108 +216,22 @@ class FileTailSource(IngestSource):
 
         # The inode that was read, not the path's now: a day compressed since
         # has no plain file left to stat, and its `.gz` takes up from here.
-        self._remember(path, st, offset + consumed, self.state.get(path), disk)
-
-    def _read_one_ebr(self, path):
-        """`_read_one` for an EBR day-file: the complete frames after the offset."""
-        try:
-            fh = gz.open_feed(path)
-        except OSError:
-            return
-        with fh:
-            try:
-                st = gz.fstat(fh)
-                disk = _disk(os.fstat(fh.fileno()))
-            except OSError:
-                return
-            rec = self.state.get(path)
-            if rec is None and gz.is_gz(path):
-                rec = self._compressed(path, st)
-            if rec is None:
-                rec = self._switched(path, fh, st)
-            offset = 0
-            if rec and rec.get("dev") == st.st_dev and rec.get("inode") == st.st_ino:
-                offset = rec.get("offset", 0)
-                if st.st_size < offset:
-                    offset = 0                     # truncated or rewritten
-                    self.stats["resets"] += 1
-            elif rec:
-                self.stats["resets"] += 1          # replaced: different inode
-            if offset >= st.st_size:
-                self._remember(path, st, offset, rec, disk)
-                return
-            src = ebr_src(fh)
-            # Out of the state while it reads: a read abandoned half way leaves
-            # no decoder that is ahead of the offset.
-            dec = rec.pop("dec", None) if rec else None
-            if dec is None or rec.get("dec_at") != offset:
-                try:
-                    dec = decoder_at(src, offset)
-                except OSError:
-                    return
-            got = []
-            try:
-                for f in ebr.frames(src, offset, st.st_size, settle=settle_of(path)):
-                    got.append(f)
-                    if f.end - offset >= READ_CAP:
-                        break
-            except OSError:
-                return
-        # Decoded with the file closed, as the lines are split: a verified frame
-        # holds its payload.
-        if not got:
-            self.stats["partial_holds"] += 1       # no complete frame yet; re-read later
-            self._remember(path, st, offset, None, disk, dec)
-            return
-        consumed = got[-1].end - offset
-        self.stats["bytes_read"] += consumed
-        err0 = errors(dec.stats)
-        for f in got:
-            if f.kind == ebr.BAD:
-                self.stats["corrupt_frames"] += 1
-            for _pos, raw in dec.records(None, f):
-                yield raw
-        self.stats["parse_errors"] += errors(dec.stats) - err0
-        self._remember(path, st, offset + consumed, self.state.get(path), disk, dec)
+        self._remember(path, st, offset + consumed, disk)
 
     def _compressed(self, path, st):
         """The offset record of `.gz` file `path` if this tail followed it under
-        its plain name, moved to the `.gz` (an EBR file's decoder with it); else
-        None."""
+        its plain name, moved to the `.gz`; else None."""
         twin = self.state.get(gz.plain_name(path))
         if twin is None:
             return None
         rec = self.state[path] = dict(twin, dev=st.st_dev, inode=st.st_ino)
         return rec
 
-    def _switched(self, path, fh, st):
-        """The offset record of `path` if this tail followed its stream in the
-        other format -- the twin listed before, deleted since: `path` is taken
-        up at its end, as positioning would hand it over. What was written to it
-        after the tail's last read of the twin is the most this misses; reading
-        it from its start would count the whole day twice. Else None."""
-        if not any(t in self.state for t in twin_names(path)):
-            return None
-        fmt = format_of(path)
-        try:
-            end = complete_end(fh, st.st_size, fmt=fmt, settle=settle_of(path))
-        except ebr.Error:
-            end = 0
-        self.stats["twin_switches"] += 1
-        self._remember(path, st, end, None)
-        return self.state[path]
-
-    def _remember(self, path, st, offset, prev, disk=None, dec=None):
+    def _remember(self, path, st, offset, disk=None):
         # `disk` is the file as it was when it was read: a later append changes it,
-        # and only then is the file opened again (`_read_one`). An EBR file's
-        # decoder is kept with the offset it is at.
-        self.state[path] = rec = {"dev": st.st_dev, "inode": st.st_ino,
-                                  "size": st.st_size, "offset": offset,
-                                  "mtime": st.st_mtime, "disk": disk}
-        if dec is None and prev and prev.get("dec_at") == offset:
-            dec = prev.get("dec")
-        if dec is not None:
-            rec["dec"], rec["dec_at"] = dec, offset
+        # and only then is the file opened again (`_read_one`).
+        self.state[path] = {"dev": st.st_dev, "inode": st.st_ino, "size": st.st_size,
+                            "offset": offset, "mtime": st.st_mtime, "disk": disk}
 
     def poll(self):
         """Yield every complete record appended since the last call."""
@@ -387,9 +265,6 @@ def _read_back_one(entry, stats):
     if not gz.is_gz(path) and not os.path.exists(path) \
             and os.path.exists(path + gz.SUFFIX):
         path += gz.SUFFIX
-    if format_of(path) == "ebr":
-        yield from _read_back_ebr(path, entry, stats)
-        return
     for line in iter_lines_reverse(path, start=entry["start"], end=entry["end"]):
         stats["bytes"] += len(line) + 1
         try:
@@ -401,57 +276,3 @@ def _read_back_one(entry, stats):
         if ts is not None:
             last = ts
         yield last, raw
-
-
-def _read_back_ebr(path, entry, stats):
-    """`_read_back_one` for an EBR day-file: its frames in `[start, end)` decoded
-    newest first (`ebr.records_reverse`), `bytes` counted as the read moves back.
-
-    `start` is a frame's, and a frame holds a poll round: the first one's
-    records before its first record from `since` on are not read, as a JSONL
-    file's line-by-line seek starts at that record (`position`)."""
-    last = float("inf")
-    st = {}
-    prev = entry["end"]
-    since = entry.get("since")
-    first = _first_data_end(path, entry["start"], entry["end"]) if since is not None else None
-    held = []                       # the first frame's records, newest first
-    try:
-        for pos, raw in records_reverse(path, entry["end"], entry["start"], stats=st):
-            if prev > pos:
-                stats["bytes"] += prev - pos
-            prev = pos
-            if first is not None and pos < first:
-                held.append(raw)
-                continue
-            ts = raw.get("ts_epoch")
-            if type(ts) is not float:
-                ts = epoch_of(raw)  # what it gives a float, read here without the call
-            if ts is not None:
-                last = ts
-            yield last, raw
-        stats["bytes"] += max(0, prev - entry["start"])
-        if held:
-            held.reverse()          # file order: drop what comes before `since` is reached
-            k = next((i for i, t in enumerate(epoch_of(raw) for raw in held)
-                      if t is not None and t >= since), len(held))
-            for raw in reversed(held[k:]):
-                ts = epoch_of(raw)
-                if ts is not None:
-                    last = ts
-                yield last, raw
-    finally:
-        if st:
-            stats["parse_errors"] += errors(st)
-
-
-def _first_data_end(path, start, end):
-    """The end of the first DATA frame in `[start, end)` of an EBR file, or None."""
-    try:
-        with ebr_source(path) as src:
-            for f in ebr.frames(src, start, end, verify=False):
-                if f.kind == ebr.DATA:
-                    return f.end
-    except OSError:
-        pass
-    return None

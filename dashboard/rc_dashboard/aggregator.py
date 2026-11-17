@@ -30,8 +30,6 @@ import time
 from . import anonymize
 from . import ask
 from . import clock
-from . import ebr
-from . import ebrview
 from . import endpoints
 from . import feeds as feedmod
 from . import gz
@@ -46,7 +44,6 @@ from .procindex import users_conflict
 from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
 from .tail import FileTailSource, read_back
-from .feedfile import format_of, last_records, prefer_of
 
 # Records per lock hold during the backfill.  Between batches the tail and the
 # API take their turn, so the page stays live and watches the history fill in
@@ -116,13 +113,12 @@ class Aggregator:
         risk_ruleset(cfg)
         self.lock = threading.RLock()
         self.reports = feedmod.resolve(cfg)
-        # The EBR view the feeds are read through (ebrview.py), set by the app
-        # once this is made, or None: the day-files are read as they are.
-        self.convert = None
-        self.convert_error = None
+        # The store of sealed day-files' Parquet tables (history.py), set by
+        # the app once this is made, or None.
+        self.history = None
         self.source = FileTailSource(
             self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
-            days=int(cfg.get("feeds.ebpf.days", 8)), prefer=prefer_of(cfg, "ebpf"))
+            days=int(cfg.get("feeds.ebpf.days", 8)))
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
@@ -276,17 +272,6 @@ class Aggregator:
         keep = int(self.cfg.get("feeds.ebpf_node.snapshots_per_host", 2) or 2)
         n = 0
         for f in rep.get("files", []):
-            if f.get("held"):
-                continue                # a twin with no record yet: none is read
-            if format_of(f["path"]) == "ebr":
-                try:
-                    recs = last_records(f["path"], keep)
-                except (OSError, ebr.Error):
-                    continue
-                for rec in recs:
-                    self.node.feed_snapshot(rec)
-                    n += 1
-                continue
             try:
                 lines = last_lines(f["path"], keep)
             except OSError:
@@ -467,21 +452,14 @@ class Aggregator:
                     rep["backfill"] = dict(self.backfill)
                     # what the tail met in the files it follows
                     rep["tail"] = {k: self.source.stats.get(k, 0) for k in (
-                        "partial_holds", "corrupt_frames", "twin_switches", "parse_errors",
-                        "resets")}
+                        "partial_holds", "parse_errors", "resets")}
                     # written by the demo (rc_dashboard/demo), not measured: the
                     # header says so whenever any host's records do
                     rep["synthetic_hosts"] = self.health.synthetic_hosts()
-                if name in ebrview.TIERS:
-                    # read through the EBR view, or as they are, and why
-                    rep["convert"] = self.convert_status(name)
+                    # the sealed days kept as Parquet, and how far along
+                    rep["history"] = (self.history.status() if self.history is not None
+                                      else {"enabled": False, "state": "off"})
             return self.reports
-
-    def convert_status(self, tier):
-        """The tier's `convert` block (ebrview.EbrView.status)."""
-        if self.convert is not None:
-            return self.convert.status(tier)
-        return ebrview.status_off(self.cfg, tier, self.convert_error)
 
     def collectors(self):
         """Is each collector OK: its own records (`health`) and its files on disk.

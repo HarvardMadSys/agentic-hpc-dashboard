@@ -11,6 +11,9 @@ thing whichever of the two a reader took it from:
     size, complete_end          the uncompressed file's size; the end of its last line
     head_digest(n)              `feedfile.head_digest` of its first n bytes
     is_boundary(off)            `feedfile.is_boundary`
+    next_boundary(x), prev_boundary(x)
+                                the first line boundary at or after `x`, the last at or
+                                before it: where a read by chunks stops
     seek_to_epoch(since, size)  `feedfile.seek_to_epoch`: the same probes, the same answer
     end_at(t, size)             `feedfile.end_at_jsonl`, likewise
     records(start, end, ...)    `(off, nbytes, record)` for every record line in
@@ -20,6 +23,9 @@ thing whichever of the two a reader took it from:
                                 reader would drop
     bad_in(start, end)          lines in the range that do not parse: a reader's
                                 `parse_errors`
+    line_read(at, kinds, far)   where a line read from `at` that parses the records of
+                                `kinds` stops at the first past `far`, and how many it
+                                has parsed by each record: `export._matching`'s read
 
 Which records a range holds, in which order, at which offsets, and each one key for
 key and type for type: all the same as the file's (tests/test_replica.py checks them
@@ -98,6 +104,7 @@ class Replica:
         self._offs = {}          # table name -> its rows' `_off`
         self._pf = {}            # table name -> ParquetFile
         self._rg = {}            # table name -> first row of each row group, and the end
+        self._want = {}          # kinds -> (which lines a read of them parses, running count)
 
     # ------------------------------------------------------------ what it is
     def head_digest(self, n):
@@ -110,9 +117,38 @@ class Replica:
         i = int(starts.searchsorted(off))
         return i < len(starts) and int(starts[i]) == off
 
+    def next_boundary(self, x):
+        """The first line boundary at or after offset `x` (the file's start, a
+        line's start, or `complete_end`): where a read that runs to the end of
+        the line holding byte `x - 1` stops."""
+        if x <= 0:
+            return 0
+        if x >= self.complete_end:
+            return self.complete_end
+        starts = self.starts()
+        i = int(starts.searchsorted(x))
+        return int(starts[i]) if i < len(starts) else self.complete_end
+
+    def prev_boundary(self, x):
+        """The last line boundary at or before offset `x`: 0 when no line ends
+        before it."""
+        if x >= self.complete_end:
+            return self.complete_end
+        if x <= 0:
+            return 0
+        starts = self.starts()
+        i = int(starts.searchsorted(x, side="right")) - 1
+        return int(starts[i]) if i >= 0 else 0
+
     def bad_in(self, start, end):
         b = self._bad
         return int(b.searchsorted(end) - b.searchsorted(start))
+
+    def record_count(self, start, end):
+        """How many record lines start in [start, end)."""
+        s, nr = self.starts(), self._nonrec
+        return int((s.searchsorted(end) - s.searchsorted(start))
+                   - (nr.searchsorted(end) - nr.searchsorted(start)))
 
     # ------------------------------------------------------------ the parts
     def _file(self, name, path):
@@ -213,6 +249,90 @@ class Replica:
                     ts[i] = e
                     has[i] = True
         return off, ts, has
+
+    def _wanted(self, kinds):
+        """`(want, cw)` over every line: whether a line read that parses the
+        records of `kinds` (all of them for None) parses it, as `event_filter`
+        lets a line through by its `event`, and the running count of those
+        (`cw[i]`: how many of the lines before line i)."""
+        key = None if kinds is None else frozenset(kinds)
+        with self._lock:
+            got = self._want.get(key)
+        if got is not None:
+            return got
+        np = _np()
+        pa = fp._pa()
+        starts = self.starts()
+        want = np.zeros(len(starts), dtype=bool)
+        for t, p in self.tables:
+            if key is None:
+                hit = None                              # every record
+            else:
+                # the events a table's rows may hold: its own, or (`other`) any
+                # name no table holds
+                own = {e for e in t.events if e is not None}
+                hit = key - set(fp.EVENT_TABLE) if None in t.events else key & own
+                if not hit:
+                    continue
+                if hit == own:
+                    hit = None
+            offs = self.offs(t.name, p)
+            idx = starts.searchsorted(offs)
+            if hit is not None:
+                ev = self._file(t.name, p).read(columns=["event"]).column("event")
+                keep = pa.compute.is_in(ev, value_set=pa.array(sorted(hit))) \
+                    .fill_null(False).to_numpy(zero_copy_only=False)
+                idx = idx[keep]
+            want[idx] = True
+        cw = np.zeros(len(starts) + 1, dtype=np.int64)
+        np.cumsum(want, out=cw[1:])
+        got = (want, cw)
+        with self._lock:
+            if len(self._want) >= 8:
+                self._want.pop(next(iter(self._want)))
+            self._want[key] = got
+        return got
+
+    def line_read(self, at, kinds, far=None, reverse=False):
+        """A line read of the file as `export._matching` makes it: from `at`
+        forward, or (`reverse`) newest first from the line ending at `at`,
+        parsing the records of `kinds` (all of them for None) and counting each,
+        and stopping at the first whose time (`epoch_of`) is past `far` -- above
+        it forward, below it newest first -- counted, not handed on.
+
+        Returns `(start, end, count, total)`: the records it hands on are those
+        of [start, end); `count(off)` is how many it has counted once it has
+        parsed the record at `off`, that one included; `total`, how many once it
+        has stopped (or reached the end)."""
+        np = _np()
+        want, cw = self._wanted(kinds)
+        starts, ts, has, _nxt = self._index()
+        n = len(starts)
+        if reverse:
+            top = int(starts.searchsorted(at))           # the lines before `at`
+            s = -1
+            if far is not None and top:
+                past = np.flatnonzero(want[:top] & has[:top] & (ts[:top] < far))
+                if len(past):
+                    s = int(past[-1])
+            start = 0 if s < 0 else (int(starts[s + 1]) if s + 1 < n else self.complete_end)
+            total = int(cw[top] - cw[max(s, 0)])
+
+            def count(off):
+                return int(cw[top] - cw[int(starts.searchsorted(off))])
+            return start, at, count, total
+        first = int(starts.searchsorted(at))
+        s = n
+        if far is not None and first < n:
+            past = np.flatnonzero(want[first:] & has[first:] & (ts[first:] > far))
+            if len(past):
+                s = first + int(past[0])
+        end = int(starts[s]) if s < n else self.complete_end
+        total = int(cw[min(s + 1, n)] - cw[first])
+
+        def count(off):
+            return int(cw[int(starts.searchsorted(off)) + 1] - cw[first])
+        return at, end, count, total
 
     # ------------------------------------------------------------ time searches
     def _probe(self, pos, limit):

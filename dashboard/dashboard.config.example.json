@@ -99,11 +99,7 @@
       "//4": "EBPFM_RESIDENCY_S (default 60s) whether or not anything was tracked,",
       "//5": "so freshness here means liveness, not activity. 300 = 5 ticks, the same",
       "//6": "threshold collect/healthcheck.py uses for 'ebpfm'.",
-      "required": true,
-      "//prefer": "A collector writing both formats (EBPFM_FORMAT=both) leaves x.jsonl and x.ebr",
-      "//prefer1": "with the same records: one per stream is read, this one (jsonl|ebr) unless it",
-      "//prefer2": "started mid-day. RC_DASH_EBPF_PREFER. Changing it rebuilds saved windows and hours.",
-      "prefer": "jsonl"
+      "required": true
     },
 
     "//7": "Node tier (unprivileged): node_snapshot.py is a vendored copy of",
@@ -117,9 +113,7 @@
       "//10": "2 snapshots: per_user_cgroup.cpu_usage_usec is CUMULATIVE, so a per-user",
       "//11": "CPU rate only exists as a delta between two consecutive snapshots.",
       "max_age_s": 900,
-      "required": false,
-      "//prefer": "as feeds.ebpf.prefer, for the node tier's <host>.{jsonl,ebr}. RC_DASH_NODE_PREFER.",
-      "prefer": "jsonl"
+      "required": false
     },
 
     "//12": "collect/slurm_query.bash writes ONE FILE PER DAY into DEST_DIR, named",
@@ -201,15 +195,15 @@
     "hour_pause_s": 0.02
   },
 
-  "//convert": "The service reads EBR only: at startup every stream the collector wrote only as",
-  "//convert1": "JSONL is converted into an EBR view under `dir` (empty: <cache.dir>/ebr-view), an",
-  "//convert2": "EBR one is linked into it, and the readers are pointed at the view; the copies",
-  "//convert3": "are kept current as the collector appends. `zstd`: the level of the view's zstd",
-  "//convert4": "frames, 0 for none. `workers`: processes converting at startup, 0 for every CPU it may use.",
-  "//convert5": "enabled: false (RC_DASH_CONVERT=0) reads the day-files as they are.",
-  "//convert6": "`days`: dated dirs mirrored, 0 for every one the source holds; a bound saves a first start on a long history.",
-  "ingest":  { "poll_ms": 1000,
-               "convert": { "enabled": true, "dir": "", "zstd": 0, "workers": 0, "days": 0 } },
+  "ingest":  { "poll_ms": 1000 },
+  "//history": "Every sealed (.jsonl.gz) day-file of the eBPF tier kept as Parquet under `dir`",
+  "//history1": "(empty: <cache.dir>/history), converted in the background in `workers` processes",
+  "//history2": "(0: up to 8, as the CPUs allow). A selective read of a sealed file, and a search of",
+  "//history3": "it by time, is answered from its copy once there is one; nothing waits for it.",
+  "//history4": "`days`: the newest dated dirs kept, 0 for every one the source holds.",
+  "//history5": "enabled: false (RC_DASH_HISTORY=0) reads every day-file as JSONL. Switching it,",
+  "//history6": "or moving `dir`, rebuilds no saved window or hour: a copy reads as its file does.",
+  "history": { "enabled": true, "dir": "", "workers": 0, "days": 0 },
   "rebuild": { "interval_s": 900 },
 
   "//21": "Standard repo exclusions -- see analyze/tool_calls_distribution.py:53.",
