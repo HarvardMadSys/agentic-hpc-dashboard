@@ -5,22 +5,29 @@ day-files that every record can be read back from exactly.
     python -m rc_dashboard.feedparquet verify  --out DIR ROOT [ROOT ...]
     python -m rc_dashboard.feedparquet schema  [--markdown]
 
-It needs pyarrow, which the service does not: `uv sync --extra parquet`, or
-`uv run --extra parquet python -m rc_dashboard.feedparquet ...`. A ROOT is what
-`feeds.ebpf.roots` lists: a directory of `<YYYY-MM-DD>/` day dirs. Files are read
-through `feedfile` (`.jsonl` or `.ebr`, plain or `.gz`, one twin per stream).
+A ROOT is what `feeds.ebpf.roots` lists: a directory of `<YYYY-MM-DD>/` day dirs of
+JSONL day-files, plain or `.gz`. The service keeps the same tables of every sealed
+day-file as its history store (`history.py`), and its readers take a sealed file's
+records from them (`replica.py`).
 
-LAYOUT. One directory per table, one file per host and day, and a manifest per
-host and day saying what was read:
+LAYOUT. One directory per table, one file per day-file (`<host>.<stream>`, its
+rows in the day-file's order), and a manifest per day-file saying what was read:
 
-    DIR/<table>/day=<YYYY-MM-DD>/<host>.parquet
-    DIR/_manifest/day=<YYYY-MM-DD>/<host>.json
+    DIR/<table>/day=<YYYY-MM-DD>/<host>.<stream>.parquet
+    DIR/_manifest/day=<YYYY-MM-DD>/<host>.<stream>.json
 
 so `read_parquet('DIR/exit/*/*.parquet', hive_partitioning=true)` in DuckDB,
 `pl.scan_parquet('DIR/exit/**/*.parquet')`, or `pyarrow.dataset.dataset('DIR/exit',
 partitioning='hive')` is a whole table, `day` a partition column, and a day leaves
 the copy the way it leaves the feed: its directories go. Each file also carries its
-host in its `host` column and its provenance in the footer, so it stands alone.
+host in its `host` column and its source in the footer, so it stands alone.
+
+POSITIONS. Every row also has `_off`, the offset of its line in the uncompressed
+day-file, and the manifest keeps what a reader of the file could ask that the rows
+cannot say: the file's size and complete end, its first HEAD_BYTES, and the offset
+of every line that is not a record (blank, malformed). With those a sealed file's
+tables answer every question its readers ask of it -- a time search, a ranged read,
+`is_boundary`, the head digest -- with the same offsets (`replica.py`).
 
 TABLES. One per record kind (`TABLES`): `exit` (exit and truncated, one row per
 process end), `conn`, `netio`, `residency`, `residency_totals`, `submit`, `meta` and
@@ -94,6 +101,7 @@ The day-files are read as the dashboard reads them (`fastjson`): orjson reads an
 integer past 64 bits as a float, so the copy holds that float, in `_extra`.
 """
 import argparse
+import base64
 import datetime as _dt
 import gzip
 import json
@@ -103,8 +111,9 @@ import sys
 import time
 
 from . import fastjson, feedfile
+from .feedfile import HEAD_BYTES
 
-PARQUET_VERSION = 1          # this layout's own version, in every footer and manifest
+PARQUET_VERSION = 2          # this layout's own version, in every footer and manifest
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 ROW_GROUP_ROWS = 1 << 20     # rows per row group
 BATCH_ROWS = 1 << 16         # records converted to Arrow at a time
@@ -531,7 +540,8 @@ class Table:
         if self._schema is None:
             pa = _pa()
             fields = [pa.field(k, kind.arrow()) for k, kind in self.columns]
-            fields += [pa.field("_absent", pa.list_(pa.string())),
+            fields += [pa.field("_off", pa.int64()),
+                       pa.field("_absent", pa.list_(pa.string())),
                        pa.field("_extra", pa.string())]
             self._schema = pa.schema(fields)
         return self._schema
@@ -598,7 +608,7 @@ class Builder:
 
     def __init__(self, table):
         self.table = table
-        self.ncols = len(table.columns) + 2
+        self.ncols = len(table.columns) + 3      # then `_off`, `_absent`, `_extra`
         self.rows = []
         self.layouts = {}
         self.extra_rows = 0
@@ -621,7 +631,8 @@ class Builder:
         lay = self.layouts[(ev, keys)] = (steps, absent)
         return lay
 
-    def add(self, rec):
+    def add(self, rec, off=None):
+        """Add one record; `off` is its line's offset in its day-file (`_off`)."""
         ev = rec.get("event")
         if type(ev) is not str:
             ev = None
@@ -648,6 +659,7 @@ class Builder:
             if extra is None:
                 extra = {}
             extra[k] = v
+        row[-3] = off
         row[-2] = absent
         row[-1] = extra
         self.rows.append(row)
@@ -664,6 +676,7 @@ class Builder:
         arrays = []
         for i, (k, kind) in enumerate(self.table.columns):
             arrays.append(self._array(k, kind, cols[i], rows))
+        arrays.append(pa.array(cols[-3], type=pa.int64()))
         arrays.append(pa.array(cols[-2], type=pa.list_(pa.string())))
         extras = []
         for r in rows:
@@ -764,9 +777,10 @@ def rebuild(table, row):
     return out
 
 
-def records(path):
-    """Every record a Parquet file of this layout holds, in order. (Every column
-    is read: a record cannot be put back together from some of them.)"""
+def records(path, offsets=False):
+    """Every record a Parquet file of this layout holds, in order; with `offsets`,
+    as `(off, record)`, `off` its line's offset in its day-file. (Every column is
+    read: a record cannot be put back together from some of them.)"""
     pa = _pa()
     pf = pa.parquet.ParquetFile(path)
     name = (pf.schema_arrow.metadata or {}).get(META_KEY)
@@ -775,106 +789,138 @@ def records(path):
         raise ValueError("%s: not a feedparquet file (no %r in its footer)" % (path, META_KEY))
     for b in pf.iter_batches(batch_size=BATCH_ROWS):
         for row in b.to_pylist():
-            yield rebuild(table, row)
+            yield (row["_off"], rebuild(table, row)) if offsets else rebuild(table, row)
 
 
 # ------------------------------------------------------------------ day-files -> records
 class Source:
-    """The records of one day-file, in order; lines that are not a JSON object
-    (the torn end of a live file) are counted, as every reader of the feed does."""
+    """The records of one JSONL day-file as `(offset, record)`, in order, offsets
+    into the uncompressed file. What is not a record is kept by its offset in
+    `nonrec` -- a blank line, a line that does not parse (`bad`) or is not an
+    object (`nondict`) -- because a reader's time search counts those lines too
+    (`feedfile._probe`); and a last line with no newline, which every reader
+    leaves for the writer to finish, ends the read (`partial`, its offset).
+    After the read: `usize` the bytes read, `head` the first HEAD_BYTES of them."""
 
     def __init__(self, path):
         self.path = path
         self.malformed = 0
+        self.nonrec = []
+        self.partial = None
+        self.usize = 0
+        self.head = b""
 
     def __iter__(self):
-        if feedfile.format_of(self.path) == "ebr":
-            for _pos, rec in feedfile.records_forward(self.path):
-                yield rec
-            return
         opener = gzip.open if self.path.endswith(".gz") else open
         loads = fastjson.loads
+        off = 0
+        head = bytearray()
         with opener(self.path, "rb") as fh:
             for line in fh:
+                at = off
+                off += len(line)
+                if len(head) < HEAD_BYTES:
+                    head += line[:HEAD_BYTES - len(head)]
+                if not line.endswith(b"\n"):
+                    self.partial = at          # a last line still being written
+                    break
                 if not line.strip():
+                    self.nonrec.append([at, "blank"])
                     continue
                 try:
                     rec = loads(line)
                 except ValueError:
                     self.malformed += 1
+                    self.nonrec.append([at, "bad"])
                     continue
                 if type(rec) is not dict:
                     self.malformed += 1
+                    self.nonrec.append([at, "nondict"])
                     continue
-                yield rec
+                yield at, rec
+        self.usize = off
+        self.head = bytes(head)
 
 
-def fingerprint(paths):
-    out = []
-    for p in sorted(paths):
-        st = os.stat(p)
-        out.append({"name": os.path.basename(p), "size": st.st_size,
-                    "mtime": round(st.st_mtime, 3)})
-    return out
+def identity(path):
+    """What a source file is: its name and what `stat` says of it. A replica is
+    current while its source still says the same (a sealed `.gz` never changes)."""
+    st = os.stat(path)
+    return {"name": os.path.basename(path), "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns, "ino": st.st_ino}
 
 
-def host_days(roots, days=0, include_today=False, prefer=feedfile.PREFER, today=None):
-    """`[(day, host, [paths])]` for every host-day under `roots`, oldest first.
-    Today's are left out unless asked for: a live day is still growing."""
+def stem_of(path):
+    """`<host>.<stream>` of a day-file: what its tables' files are named."""
+    return feedfile.split_name(path)[0]
+
+
+def sources(roots, days=0, include_today=False, today=None):
+    """`[(day, path)]` for every day-file under `roots`, oldest first. Today's
+    are left out unless asked for: a live day is still growing."""
     today = today or _dt.date.today().isoformat()
-    out = {}
+    out = []
     for root in roots:
-        for day, files in feedfile.dated_dirs(root, days, prefer):
+        for day, files in feedfile.dated_dirs(root, days):
             if day >= today and not include_today:
                 continue
-            for p in files:
-                out.setdefault((day, feedfile.host_of(p)), []).append(p)
-    return [(d, h, sorted(ps)) for (d, h), ps in sorted(out.items())]
+            out += [(day, p) for p in files]
+    return sorted(set(out))
 
 
-def out_path(out, table, day, host):
-    return os.path.join(out, table, "day=%s" % day, "%s.parquet" % host)
+def out_path(out, table, day, stem):
+    return os.path.join(out, table, "day=%s" % day, "%s.parquet" % stem)
 
 
-def manifest_path(out, day, host):
-    return os.path.join(out, "_manifest", "day=%s" % day, "%s.json" % host)
+def manifest_path(out, day, stem):
+    return os.path.join(out, "_manifest", "day=%s" % day, "%s.json" % stem)
 
 
-def read_manifest(out, day, host):
+def read_manifest(out, day, stem):
     try:
-        with open(manifest_path(out, day, host)) as fh:
+        with open(manifest_path(out, day, stem)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
 
 
+def current(man, path):
+    """Whether manifest `man` describes `path` as it is now, in this version."""
+    try:
+        return (man is not None and man.get("parquet_version") == PARQUET_VERSION
+                and man.get("source") == identity(path))
+    except OSError:
+        return False
+
+
 def writer_options(table, level=ZSTD_LEVEL):
     """zstd at `level`, statistics on every column, and dictionary pages on every
-    column but those `table.encodings` encodes otherwise."""
-    opts = dict(compression="zstd", compression_level=level, write_statistics=True,
-                use_dictionary=True)
-    if table.encodings:
-        opts["use_dictionary"] = [p for p in table.leaves if p not in table.encodings]
-        opts["column_encoding"] = dict(table.encodings)
-    return opts
+    column but those `table.encodings` encodes otherwise (and `_off`, delta-packed:
+    an offset is unique and ascending)."""
+    enc = dict(table.encodings, _off="DELTA_BINARY_PACKED")
+    return dict(compression="zstd", compression_level=level, write_statistics=True,
+                use_dictionary=[p for p in table.leaves if p not in enc],
+                column_encoding=enc)
 
 
-def convert_host_day(day, host, paths, out, level=ZSTD_LEVEL,
-                     row_group_rows=ROW_GROUP_ROWS, batch_rows=BATCH_ROWS):
-    """Write every table's file for one host-day, then its manifest. Files are
-    written beside their final names and renamed into place, the manifest last,
-    so a manifest names only files that are whole."""
+def convert_source(day, path, out, level=ZSTD_LEVEL,
+                   row_group_rows=ROW_GROUP_ROWS, batch_rows=BATCH_ROWS):
+    """Write the tables of one day-file, then its manifest. Files are written
+    beside their final names and renamed into place, the manifest last, so a
+    manifest names only files that are whole."""
     pa = _pa()
     pq = pa.parquet
     t0 = time.time()
-    sources = fingerprint(paths)
+    stem = stem_of(path)
+    host = feedfile.host_of(path)
+    ident = identity(path)
     builders, writers, pending, counts = {}, {}, {}, {}
     tmp_tag = ".tmp-%d" % os.getpid()
 
     def footer(name):
         return {META_KEY: json.dumps({
             "parquet_version": PARQUET_VERSION, "table": name, "host": host, "day": day,
-            "sources": sources}, separators=(",", ":")).encode()}
+            "stem": stem, "source": ident}, separators=(",", ":")).encode()}
 
     def flush(name, final=False):
         b = builders[name].batch()
@@ -883,39 +929,36 @@ def convert_host_day(day, host, paths, out, level=ZSTD_LEVEL,
         rows = sum(x.num_rows for x in pending[name])
         if pending[name] and (final or rows >= row_group_rows):
             if name not in writers:
-                path = out_path(out, name, day, host)
-                _makedirs(os.path.dirname(path))
+                p = out_path(out, name, day, stem)
+                _makedirs(os.path.dirname(p))
                 schema = TABLES[name].schema.with_metadata(footer(name))
-                writers[name] = pq.ParquetWriter(path + tmp_tag, schema,
+                writers[name] = pq.ParquetWriter(p + tmp_tag, schema,
                                                  **writer_options(TABLES[name], level))
             writers[name].write_table(pa.Table.from_batches(pending[name]),
                                       row_group_size=row_group_rows)
             pending[name] = []
 
-    malformed = 0
+    src = Source(path)
     try:
-        for p in paths:
-            src = Source(p)
-            for rec in src:
-                t = table_of(rec) or TABLES["other"]
-                name = t.name
-                b = builders.get(name)
-                if b is None:
-                    b = builders[name] = Builder(t)
-                    pending[name] = []
-                    counts[name] = 0
-                counts[name] += 1
-                if b.add(rec) >= batch_rows:
-                    flush(name)
-            malformed += src.malformed
+        for off, rec in src:
+            t = table_of(rec) or TABLES["other"]
+            name = t.name
+            b = builders.get(name)
+            if b is None:
+                b = builders[name] = Builder(t)
+                pending[name] = []
+                counts[name] = 0
+            counts[name] += 1
+            if b.add(rec, off) >= batch_rows:
+                flush(name)
         for name in builders:
             flush(name, final=True)
         for name, w in writers.items():
             w.close()
         for name in writers:
-            path = out_path(out, name, day, host)
-            os.chmod(path + tmp_tag, FILE_MODE)
-            os.replace(path + tmp_tag, path)
+            p = out_path(out, name, day, stem)
+            os.chmod(p + tmp_tag, FILE_MODE)
+            os.replace(p + tmp_tag, p)
     except BaseException:
         for name, w in writers.items():
             try:
@@ -923,29 +966,42 @@ def convert_host_day(day, host, paths, out, level=ZSTD_LEVEL,
             except Exception:
                 pass
             try:
-                os.unlink(out_path(out, name, day, host) + tmp_tag)
+                os.unlink(out_path(out, name, day, stem) + tmp_tag)
             except OSError:
                 pass
         raise
-    # a table this host-day no longer has must not keep an older conversion's file
+    # a table this day-file no longer has must not keep an older conversion's file
     for name in TABLES:
         if name not in writers:
             try:
-                os.unlink(out_path(out, name, day, host))
+                os.unlink(out_path(out, name, day, stem))
             except OSError:
                 pass
-    man = {"parquet_version": PARQUET_VERSION, "host": host, "day": day,
-           "sources": sources, "records": counts, "malformed": malformed,
+    man = {"parquet_version": PARQUET_VERSION, "day": day, "stem": stem, "host": host,
+           "source": ident, "usize": src.usize,
+           "complete_end": src.usize if src.partial is None else src.partial,
+           "partial": src.partial, "head": base64.b64encode(src.head).decode(),
+           "nonrec": src.nonrec, "records": counts, "malformed": src.malformed,
            "extra_rows": {n: b.extra_rows for n, b in builders.items() if b.extra_rows},
            "seconds": round(time.time() - t0, 1),
-           "bytes": {n: os.path.getsize(out_path(out, n, day, host)) for n in writers}}
-    mp = manifest_path(out, day, host)
+           "bytes": {n: os.path.getsize(out_path(out, n, day, stem)) for n in writers}}
+    mp = manifest_path(out, day, stem)
     _makedirs(os.path.dirname(mp))
     with open(mp + tmp_tag, "w") as fh:
         json.dump(man, fh, indent=1, sort_keys=True)
     os.chmod(mp + tmp_tag, FILE_MODE)
     os.replace(mp + tmp_tag, mp)
     return man
+
+
+def drop_source(out, day, stem):
+    """Remove every table file and the manifest of one day-file's replica (its
+    source is gone), the manifest first so no reader takes a half-gone replica."""
+    for p in [manifest_path(out, day, stem)] + [out_path(out, t, day, stem) for t in TABLES]:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 def _makedirs(d):
@@ -990,41 +1046,43 @@ def same_order(a, b):
     return True
 
 
-def verify_host_day(day, host, paths, out, limit=5):
-    """Read every record of a host-day's day-files and its tables side by side,
-    each table in order, and compare. Returns a report dict."""
+def verify_source(day, path, out, limit=5):
+    """Read every record of a day-file and of its tables side by side, each
+    table in order, and compare the records and their offsets. A report dict."""
+    stem = stem_of(path)
     iters, counts = {}, {}
     diffs, order = [], 0
     n = 0
-    for p in paths:
-        for rec in Source(p):
-            t = table_of(rec) or TABLES["other"]
-            it = iters.get(t.name)
-            if it is None:
-                path = out_path(out, t.name, day, host)
-                it = iters[t.name] = records(path) if os.path.exists(path) else iter(())
-                counts[t.name] = 0
-            got = next(it, _MISSING)
-            n += 1
-            counts[t.name] += 1
-            if got is _MISSING:
-                diffs.append({"table": t.name, "row": counts[t.name] - 1, "why": "missing"})
-                break
-            if not same(rec, got):
-                if len(diffs) < limit:
-                    keys = sorted(k for k in set(rec) | set(got)
-                                  if k not in rec or k not in got or not same(rec[k], got[k]))
-                    diffs.append({"table": t.name, "row": counts[t.name] - 1, "keys": keys})
-                else:
-                    diffs.append(None)
-            elif not same_order(rec, got):
-                order += 1
+    for off, rec in Source(path):
+        t = table_of(rec) or TABLES["other"]
+        it = iters.get(t.name)
+        if it is None:
+            p = out_path(out, t.name, day, stem)
+            it = iters[t.name] = records(p, offsets=True) if os.path.exists(p) else iter(())
+            counts[t.name] = 0
+        got = next(it, _MISSING)
+        n += 1
+        counts[t.name] += 1
+        if got is _MISSING:
+            diffs.append({"table": t.name, "row": counts[t.name] - 1, "why": "missing"})
+            break
+        goff, got = got
+        if goff != off or not same(rec, got):
+            if len(diffs) < limit:
+                keys = sorted(k for k in set(rec) | set(got)
+                              if k not in rec or k not in got or not same(rec[k], got[k]))
+                diffs.append({"table": t.name, "row": counts[t.name] - 1, "keys": keys,
+                              "off": [off, goff]})
+            else:
+                diffs.append(None)
+        elif not same_order(rec, got):
+            order += 1
     left = {name: sum(1 for _ in it) for name, it in iters.items()}
     left = {k: v for k, v in left.items() if v}
     for name in TABLES:
-        if name not in iters and os.path.exists(out_path(out, name, day, host)):
-            left[name] = sum(1 for _ in records(out_path(out, name, day, host)))
-    return {"day": day, "host": host, "records": n, "by_table": counts,
+        if name not in iters and os.path.exists(out_path(out, name, day, stem)):
+            left[name] = sum(1 for _ in records(out_path(out, name, day, stem)))
+    return {"day": day, "stem": stem, "records": n, "by_table": counts,
             "differ": len(diffs), "examples": [d for d in diffs if d][:limit],
             "order_only": order, "rows_left_over": left}
 
@@ -1094,16 +1152,16 @@ def schema_text(markdown=False):
 
 # ------------------------------------------------------------------ CLI
 def _work(args):
-    kind, day, host, paths, out, opts = args
+    kind, day, path, out, opts = args
     if kind == "convert":
-        return convert_host_day(day, host, paths, out, **opts)
-    return verify_host_day(day, host, paths, out)
+        return convert_source(day, path, out, **opts)
+    return verify_source(day, path, out)
 
 
 def _run(kind, jobs, todo, out, opts):
-    """`(work, result)` per host-day as each finishes; `result` is the exception a
-    host-day raised (a corrupt `.gz`, a full disk), and the others go on."""
-    work = [(kind, d, h, ps, out, opts) for d, h, ps in todo]
+    """`(work, result)` per day-file as each finishes; `result` is the exception a
+    day-file raised (a corrupt `.gz`, a full disk), and the others go on."""
+    work = [(kind, d, p, out, opts) for d, p in todo]
     if jobs <= 1 or len(work) <= 1:
         for w in work:
             try:
@@ -1135,8 +1193,6 @@ def main(argv=None):
         p.add_argument("--day", action="append", default=[], help="only this day (repeatable)")
         p.add_argument("--include-today", action="store_true",
                        help="also today's day-files, which are still being written")
-        p.add_argument("--prefer", default=feedfile.PREFER, choices=feedfile.FORMATS,
-                       help="the twin read when a stream has both formats")
         p.add_argument("--jobs", type=int, default=max(1, min(8, os.cpu_count() or 1)))
         if name == "convert":
             p.add_argument("--force", action="store_true",
@@ -1150,15 +1206,15 @@ def main(argv=None):
         _pa()
         print(schema_text(a.markdown))
         return 0
-    todo = host_days(a.roots, a.days, a.include_today, a.prefer)
+    todo = sources(a.roots, a.days, a.include_today)
     if a.day:
         todo = [t for t in todo if t[0] in set(a.day)]
     if a.cmd == "convert":
         if not a.force:
-            todo = [t for t in todo if (read_manifest(a.out, t[0], t[1]) or {}).get("sources")
-                    != fingerprint(t[2])
-                    or (read_manifest(a.out, t[0], t[1]) or {}).get("parquet_version")
-                    != PARQUET_VERSION]
+            todo = [(d, p) for d, p in todo
+                    if not current(read_manifest(a.out, d, stem_of(p)), p)]
+        # the biggest first, so the longest conversion does not start last
+        todo.sort(key=lambda t: -os.path.getsize(t[1]))
         opts = {"level": a.zstd_level, "row_group_rows": a.row_group_rows}
     else:
         opts = {}
@@ -1166,20 +1222,21 @@ def main(argv=None):
         print("nothing to %s" % a.cmd, file=sys.stderr)
         return 0
     bad = 0
-    for (_k, day, host, _ps, _o, _opts), res in _run(a.cmd, a.jobs, todo, a.out, opts):
+    for (_k, day, path, _o, _opts), res in _run(a.cmd, a.jobs, todo, a.out, opts):
+        name = os.path.basename(path)
         if isinstance(res, Exception):
             bad += 1
-            print("%s %s: FAILED: %s: %s" % (day, host, type(res).__name__, res))
+            print("%s %s: FAILED: %s: %s" % (day, name, type(res).__name__, res))
         elif a.cmd == "convert":
             print("%s %s: %s records in %.1f s%s%s" % (
-                day, host, sum(res["records"].values()), res["seconds"],
+                day, name, sum(res["records"].values()), res["seconds"],
                 ", %d malformed" % res["malformed"] if res["malformed"] else "",
                 ", _extra on %s" % res["extra_rows"] if res["extra_rows"] else ""))
         else:
             ok = not res["differ"] and not res["rows_left_over"]
             bad += not ok
             print("%s %s: %d records, %s%s" % (
-                day, host, res["records"], "same" if ok else "DIFFER: %s" % json.dumps(
+                day, name, res["records"], "same" if ok else "DIFFER: %s" % json.dumps(
                     {k: res[k] for k in ("differ", "examples", "rows_left_over")}),
                 ", %d in another key order" % res["order_only"] if res["order_only"] else ""))
         sys.stdout.flush()
