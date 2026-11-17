@@ -31,6 +31,7 @@ import { useStickyBar } from './lib/sticky';
 import { FrameCtx, PinnedCtx } from './lib/useNow';
 import { CLS } from './lib/classes';
 import { Icon } from './components/Icon';
+import { LogoGlyph } from './components/Logo';
 import type { IconName } from './components/Icon';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteItem } from './components/CommandPalette';
@@ -618,7 +619,9 @@ export default function App() {
           <Icon name="menu" />
         </button>
         <span className="topbar-brand">
-          <span className="bdot" />
+          <span className="bmark bmark-sm" aria-hidden="true">
+            <LogoGlyph size={22} />
+          </span>
           Agent Behaviour
         </span>
         <span className="topbar-tab">
@@ -637,7 +640,7 @@ export default function App() {
         <div className="brand">
           <div className="mark">
             <span className="bmark" aria-hidden="true">
-              <Icon name="agents" size={15} />
+              <LogoGlyph />
             </span>
             <span className="mark-t">Agent Behaviour</span>
           </div>

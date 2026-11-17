@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/lockup-dark.svg">
+    <img src="docs/logo/lockup.svg" alt="Agent Behaviour, agentic hpc dashboard" width="420">
+  </picture>
+</p>
+
 # agentic-hpc-dashboard
 
 The aims of this repository is to collect agent behaviors on HPC login nodes (the collector), and make them visible to human (the dashboard).

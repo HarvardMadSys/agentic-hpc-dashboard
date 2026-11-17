@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- A process tree seen from its root: one child is the agent (the spark),
+       the other branch is ordinary processes (the dimmed dots). -->
+  <rect width="32" height="32" rx="7.5" fill="#A51C30"/>
+  <path d="M9.5 10.5V21a2.5 2.5 0 0 0 2.5 2.5H14.5M9.5 15.5H13" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="9.5" cy="8.5" r="2.7" fill="#fff"/>
+  <path d="M19.6 9.5C20.32 14.78 20.32 14.78 25.6 15.5C20.32 16.22 20.32 16.22 19.6 21.5C18.88 16.22 18.88 16.22 13.6 15.5C18.88 14.78 18.88 14.78 19.6 9.5Z" fill="#fff"/>
+  <circle cx="18" cy="23.5" r="1.9" fill="#fff" fill-opacity=".6"/>
+  <circle cx="23" cy="23.5" r="1.9" fill="#fff" fill-opacity=".6"/>
+</svg>
