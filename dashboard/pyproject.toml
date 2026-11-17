@@ -10,6 +10,11 @@ dependencies = [
     "zstandard>=0.22",
 ]
 
+[project.optional-dependencies]
+# rc_dashboard.feedparquet: the feed as Parquet tables (docs/feed-parquet). The
+# service never imports it.
+parquet = ["pyarrow>=15"]
+
 [project.scripts]
 rc-dashboard = "rc_dashboard.__main__:main"
 

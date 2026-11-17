@@ -474,6 +474,21 @@ is what makes a capture useful as a test, at four levels:
 | cross-check | a few totals counted straight from the `.gz` by an independent script (exits per class per hour, distinct users, agent sessions) against `/api/live` and `/api/panels` at the pinned clock | proposed |
 | replay | the live path the frozen view never runs -- the tail following appends, WebSocket pushes, drift re-builds, the build/tail seam -- by writing the capture into a plain staging root at N x speed while the service's clock runs from the replay's start | proposed |
 
+## The feed as Parquet tables
+
+For analysis across many host-days, `rc_dashboard/feedparquet.py` writes the sealed
+day-files as Parquet: a typed table per record kind (`exit`, `conn`, `netio`, `residency`,
+`residency_totals`, `submit`, `meta`, `stop`), one file per host and day, from which every
+record reads back exactly. It needs pyarrow, an optional extra the service does not use:
+
+```bash
+uv run --extra parquet python -m rc_dashboard.feedparquet convert --out /path/to/pq ROOT...
+uv run --extra parquet python -m rc_dashboard.feedparquet verify  --out /path/to/pq ROOT...
+```
+
+The schema, its choices and what it measured on FAS's feed (a third of the sealed `.gz`,
+every record of a week the same) are in [docs/feed-parquet](../docs/feed-parquet/README.md).
+
 ## Is each collector OK?
 
 The **Feeds** tab leads with one row per host and a verdict an admin can act on, judged
