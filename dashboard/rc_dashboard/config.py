@@ -24,6 +24,11 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MISSING = object()
 # `history` (history.py) unless set.
 HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
+# `ingest.workers`: processes reducing the hours (hours.py); 1 is one pass in
+# the service's own process.
+INGEST_WORKERS = 1
+# `ingest.reducer_groups`: processes per node's hour, one per reducer group (1 or 2).
+INGEST_REDUCER_GROUPS = 2
 
 
 def _env(name, default=None):
@@ -140,6 +145,22 @@ def defaults():
         },
         "ingest": {
             "poll_ms": 1000,
+            # Processes reducing the hours (hours.py): 1 reduces each hour in
+            # one pass in the service's own process; N >= 2 reduces each
+            # node's share of an hour in a worker process of its own, at most
+            # N at once, and merges them (one node never uses more than one,
+            # so past the node count more do nothing); 0 is one per CPU the
+            # service may use. Going from 1 to more, or back, reduces the
+            # hours afresh: a merged hour's "first N" lists and ties can
+            # differ from one pass's, its counts and sums cannot.
+            "workers": INGEST_WORKERS,
+            # With workers >= 2, each node's hour in this many processes: 2
+            # splits its reducers into the two groups that share nothing (the
+            # session reducers and their process index; the counting panels),
+            # each reading the node's records itself, so the busiest node's
+            # hours take two cores. The states put back together are one
+            # pass's, so this changes no number (and no saved hour).
+            "reducer_groups": INGEST_REDUCER_GROUPS,
         },
         # Every sealed day-file of the eBPF tier kept as Parquet (history.py),
         # under `dir` (<cache.dir>/history unless set), converted in the
@@ -419,6 +440,8 @@ ENV_MAP = {
     "history.dir": ("RC_DASH_HISTORY_DIR", str),
     "history.workers": ("RC_DASH_HISTORY_WORKERS", int),
     "history.days": ("RC_DASH_HISTORY_DAYS", int),
+    "ingest.workers": ("RC_DASH_INGEST_WORKERS", int),
+    "ingest.reducer_groups": ("RC_DASH_INGEST_REDUCER_GROUPS", int),
     "clock.as_of": ("RC_DASH_AS_OF", str),
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
@@ -640,6 +663,18 @@ def load(args=None, config_path=None):
                 else:
                     origins[prefix + "." + k] = "profile:%s" % pth
         mark(ptree, "risk")
+
+    # The processes reducing the hours (hours.py): a count, or the service
+    # refuses to start rather than guess.
+    workers = _get(tree, "ingest.workers", INGEST_WORKERS)
+    if type(workers) is not int or not 0 <= workers <= 256:
+        raise SystemExit("ingest.workers: %r is not a process count 0..256 (0: one per CPU this "
+                         "process may use; 1: one pass in this process) (set by %s)" % (
+                             workers, origins.get("ingest.workers", "default")))
+    groups = _get(tree, "ingest.reducer_groups", INGEST_REDUCER_GROUPS)
+    if type(groups) is not int or groups not in (1, 2):
+        raise SystemExit("ingest.reducer_groups: %r is not 1 or 2 (set by %s)" % (
+            groups, origins.get("ingest.reducer_groups", "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

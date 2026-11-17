@@ -191,6 +191,39 @@ class TestInstall(Rig):
         self.assertIn("python3.12 -m venv %s/venv" % self.r, self.calls())
         self.assertEqual(os.readlink(os.path.join(self.r, "current")), "releases/" + SHA)
 
+    def python_stub(self, path, version):
+        """A Python that says it is `version` when asked, makes a venv of itself as
+        `-m venv` does, and logs every call."""
+        with open(path, "w") as fh:
+            fh.write('#!/bin/bash\necho "%s $*" >> "$STUB_LOG"\n'
+                     '[ "$1" = -c ] && echo %s\n'
+                     'if [ "$1" = -m ] && [ "$2" = venv ]; then mkdir -p "$3/bin"; '
+                     'cp "$0" "$3/bin/python"; fi\nexit 0\n' % (os.path.basename(path), version))
+        os.chmod(path, 0o700)
+
+    def test_a_venv_of_another_python_is_made_again(self):
+        """DASH_PYTHON moved to a newer Python: a deploy that is not the first one makes
+        the venv again with it, and keeps the old one beside it."""
+        venv_py = os.path.join(self.r, "venv", "bin", "python")
+        self.python_stub(venv_py, "3.12")
+        new = os.path.join(self.bin, "python3.14")
+        self.python_stub(new, "3.14")
+        self.payload()
+        out = self.install(py=new)
+        self.assertIn("the venv is Python 3.12, DASH_PYTHON is 3.14: making it again", out)
+        self.assertIn("python3.14 -m venv %s/venv" % self.r, self.calls())
+        self.assertTrue(os.path.exists(os.path.join(self.r, "venv.old", "bin", "python")))
+
+    def test_a_venv_of_the_same_python_is_kept(self):
+        venv_py = os.path.join(self.r, "venv", "bin", "python")
+        self.python_stub(venv_py, "3.14")
+        same = os.path.join(self.bin, "python3.14")
+        self.python_stub(same, "3.14")
+        self.payload()
+        self.install(py=same)
+        self.assertNotIn("-m venv", self.calls())
+        self.assertFalse(os.path.exists(os.path.join(self.r, "venv.old")))
+
     def test_no_restart_without_the_flag(self):
         self.payload()
         self.install()

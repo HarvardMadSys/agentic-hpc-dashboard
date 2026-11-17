@@ -51,6 +51,11 @@ never outranks the file.
   sealed day-file as Parquet too, made in the background, and answers a selective read of one
   from that copy ([History in Parquet](#history-in-parquet)); `RC_DASH_HISTORY=0` reads every
   day-file as JSONL. Switching it changes no answer, and rebuilds no saved window.
+- `ingest.workers` (`RC_DASH_INGEST_WORKERS`, 1 by default) and `ingest.reducer_groups`
+  (`RC_DASH_INGEST_REDUCER_GROUPS`, 2) reduce the hours in worker processes, a node's share
+  of an hour and a group of reducers each; 0 workers is one per CPU the service may use
+  ([Hourly merge-reduce](#hourly-merge-reduce)). Going from 1 worker to more, or back,
+  reduces the hours afresh; the count and the groups change no saved hour.
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's record
 is a JSON line; the retired builder's contract was `data.json`) and
@@ -499,6 +504,61 @@ next hour's read and merged into its hour's saved state, not lost. On one login 
 ~8 s after a restart, a window switch or a drift refresh (against ~15 s and ~160 s scanned);
 filling the hours the first time costs about what one scan does. A week of hours is ~38 MB on
 disk. A view filtered to users or agent types is still scanned.
+
+**Reducing by node, in parallel (`ingest.workers`).** A reducer is pure Python and holds the
+GIL, so the service's threads share one core: one pass over an hour of the eight FAS login nodes
+(1.45 M records, 2.7 GB of JSONL) takes ~95 s of it, and decoding the records is under 10% of that
+-- the reducers are the rest, whatever the format. With `ingest.workers` at 2 or more
+(`RC_DASH_INGEST_WORKERS`) each node's share of an hour is reduced in a worker process of its own,
+at most that many at once, and the hour saved is the node states merged in node order; 0 is one
+per CPU the service may use. The joins stay exact, since a process, its session, its tree and its
+wrapper are all on one node: each node carries its own join state from hour to hour (a chain
+holds one per node), and a window installs them as one. Nodes run ahead of one another by at most
+four hours, so a quiet node does not wait on a busy one.
+
+**And by reducer group (`ingest.reducer_groups`, 2 by default).** A node's hours are chained, so
+one node is one process at a time and the busiest node sets the pace. With 2, each node's hour is
+reduced in two processes, one per group of reducers that share nothing (`hours.reducer_groups`):
+the session reducers and the process index they fold through (`_procs`, `trajectories`,
+`workspace`, `sandbox`, `slurm`, `cascades`), and the counting panels (`resources`, `io_process`,
+`tool_mix`, `risk`, `facets`). No reducer writes into the records it reads, so each group reads
+the node's records itself, in order, and the two states put together are the node's one-process
+state: the split changes no number and no saved hour (`NodeSplitTest`, and every panel of a real
+hour). The second read costs CPU, so a node is split only when there are at least as many
+workers as nodes. Measured on rtx6000b (32 cores, other users' load beside it) over the eight
+nodes' real feed of 2026-11-16, Python 3.14:
+
+| workers (reducer groups) | 1 | 4 | 8 (1) | 8 (2) | 12 (2) | 16 (2) |
+|---|---|---|---|---|---|---|
+| 15:00, a balanced hour (1.45 M records) | 90 s | 28 s | 22 s | 18 s | **15 s** (6.2x) | 15 s |
+| 11:00-14:00, boslogin07 at 2 GB/h (4.94 M) | 367 s | 120 s | 119 s | 111 s | **92 s** (4.0x) | 101 s |
+
+The balanced hour is bound by boslogin06 and the merge into the hour (~4 s an hour in the
+service's own process); the spike hours by boslogin07, whose records cost more to read than to
+reduce, so its second read buys less. Two workers per node -- one per node and group -- is the
+most that helps; each is ~0.5 GB (16 of them ~7.4 GB, plus ~1.7 GB in the service while it
+merges), and they count against the service's memory cap. The FAS deployment uses that
+(`INGEST_WORKERS` in `deploy/fleet/site.env`, empty for two per node).
+
+**Python 3.14.** The same reductions run 5-10% faster on CPython 3.14 than on 3.12, and every
+panel is the same (compared field by field on a real slice); the test suite passes on both. Its
+experimental JIT (`PYTHON_JIT=1`) was slower here, and so was PyPy 3.11, whose panels also
+differ in float rounding. The free-threaded build (3.14t) does run one node's groups as threads
+in parallel, exactly, but each thread is ~18% slower and orjson has no free-threaded build, so
+the processes above are what the dashboard uses.
+
+What a merge of two nodes' states of the same hour can take differently from one pass is what
+`merge` takes from one state rather than adding: a "newest record's" field (a user's class in the
+I/O panel), a home learned from one node's argv no longer places another node's paths, the rows
+that tie at a cap (the 200 Slurm sessions), and float sums in another order (the last digit). The
+"first N" samples (the risk panel's instances, a Slurm rejection's example) keep the earliest in
+time. Counts, sums, sets and the quantile sketches are the same, and so is every panel for any
+worker count from 2 up (`tests/test_hours.py`, `NodeSplitTest`). The join caps (`REAPED_MAX` and
+the like) hold per node, so fewer pending joins are evicted. The split is in the hours'
+fingerprint and the count is not: going from 1 to more, or back, reduces the hours afresh;
+changing the count does not. The workers are spawned once and kept (`hours.status` reports
+`node_workers`, `node_cpu_by` per node, `node_merge_s`), and they count against the service's
+memory cap.
 
 **Preprocessing everything.** By default only the windows a reader asks for (and the cheap
 `panels.prewarm_min` ones) are built, and only the hours inside them are reduced, so the first

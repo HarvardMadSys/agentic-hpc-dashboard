@@ -58,13 +58,29 @@ then the zlib-compressed state, written atomically, 0600 in a 0700 directory,
 and never loaded unless private to this uid, as `snapshots` does it. Hours
 older than retention are pruned.
 
-Nothing here runs in parallel: the hours are reduced one at a time on the
-registry's single build thread, which yields between hours
-(`panels.hour_pause_s`), so a deployment with one core keeps its live tier.
+**In parallel, by node (`ingest.workers`).** With 1 the hours are reduced one
+at a time on the registry's single build thread, one pass over every node's
+records, which yields between hours (`panels.hour_pause_s`), so a deployment
+with one core keeps its live tier. With more, each node's share of an hour is
+reduced in a worker process of its own, at most that many at once, and the
+node states are merged in node order into the hour that is saved. A reducer
+is pure Python and holds the GIL, so threads would not help: processes do.
+The joins stay exact -- a process, its session, its tree and its wrapper are
+all on one node -- so each node carries its own join state from hour to hour
+(a chain saves one per node, `NODES`). What can differ from one pass is what
+`merge` takes from the LATER state when two nodes' states meet in the same
+hour: a "first N instances" list, a "newest record's" field, the order of
+rows that tie. Counts, sums, sets and the quantile sketches are the same. So
+the split is in the fingerprint, and switching to it or back reduces the
+hours afresh; the worker count itself is not (any count >= 2 makes the same
+states). Nodes proceed independently: a quiet node runs ahead of a busy one by
+at most `NODE_LOOKAHEAD_H` hours, so the hours waiting to be merged stay few.
+
 A merge runs with the automatic garbage collector paused (`collector_paused`),
 so the states it loads do not set off a full collection each.
 """
 import collections
+import concurrent.futures
 import contextlib
 import gc
 import glob
@@ -72,16 +88,19 @@ import hashlib
 import heapq
 import json
 import math
+import multiprocessing
 import os
 import pickle
 import sys
 import time
 import zlib
+from concurrent.futures.process import BrokenProcessPool
 from operator import itemgetter
 
 from . import fastjson, gz, snapshots
 from .export import (HEAD_BYTES, SCAN_SLACK_S, day_files, event_filter, head_digest,
                      seek_to_epoch)
+from .feedfile import host_of
 from .normalize import Normalizer
 
 FORMAT = 1
@@ -98,6 +117,11 @@ CARRY_KEEP_H = 24
 MAX_GAP_H = 24
 # Records found for an hour already closed, held per reduction for its patch.
 STRAGGLER_CAP = 100000
+# The node split (`ingest.workers` >= 2): the key a chain holds its per-node
+# join states under, which no reducer's key can be; and how many hours a node
+# may be reduced past the oldest hour not yet merged.
+NODES = "__nodes__"
+NODE_LOOKAHEAD_H = 4
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what an hour's state means. `live.py` is not here:
@@ -150,8 +174,49 @@ def fingerprint(code, cfg, roots):
                                                 or {}).items() if k != "roots"}}
     tree["cache"] = {k: v for k, v in (tree.get("cache") or {}).items()
                      if k not in ("dir", "state_dir")}
+    # `ingest` is out, but whether an hour is one pass or merged by node is in
+    # (not the worker count: any count >= 2 makes the same states). Absent for
+    # one pass, so the hours saved before the split existed are kept.
+    if ingest_workers(cfg) > 1:
+        tree["split"] = "node"
     blob = json.dumps([code, tree, list(roots)], sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def usable_cpus():
+    """The CPUs this process may run on: its affinity mask, so a Slurm
+    allocation, a cgroup cpuset or taskset is the limit it is."""
+    count = getattr(os, "process_cpu_count", None)
+    if count is not None:
+        n = count()
+    else:
+        try:
+            n = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            n = os.cpu_count()
+    return max(1, n or 1)
+
+
+def reducer_group_count(cfg):
+    """`ingest.reducer_groups`, resolved: 2 reduces each node's hour in two
+    processes, one per group of reducers that share nothing (`reducer_groups`),
+    each reading the node's records itself; 1 in one."""
+    try:
+        return 2 if int(cfg.get("ingest.reducer_groups", 1) or 1) >= 2 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def ingest_workers(cfg):
+    """`ingest.workers`, resolved: 1 reduces each hour in one pass in this
+    process; N >= 2 reduces each node's share of an hour in a process of its
+    own, at most N at once; 0 is one per CPU this process may use (so 1 on a
+    one-CPU host, one pass)."""
+    try:
+        n = int(cfg.get("ingest.workers", 1) or 0)
+    except (TypeError, ValueError):
+        n = 1
+    return usable_cpus() if n <= 0 else n
 
 
 # ------------------------------------------------------------ the reducer set
@@ -267,6 +332,164 @@ def age(red_cls, carry, ages, hour, keep_h=None):
         if done is not None:
             done(c)
     return carry, ages
+
+
+# ------------------------------------------------------------ the node split
+def combine_carries(by_node):
+    """One join state from a node-split chain's per-node ones, for a window
+    to install (`install_carry`). Every carried key is one node's -- `(host,
+    pid)`, a session's id, a root -- so each reducer's carried maps are unioned
+    in node order, and a carried number (a count of units, a horizon) is the
+    largest. `by_node` is consumed."""
+    out = {}
+    for node in sorted(by_node):
+        for k, c in (by_node[node] or {}).items():
+            if c is None:
+                continue
+            cur = out.get(k)
+            if cur is None:
+                out[k] = c
+                continue
+            for f, v in c.items():
+                have = cur.get(f)
+                if isinstance(have, dict) and isinstance(v, dict):
+                    for key, val in v.items():
+                        have.setdefault(key, val)
+                elif (isinstance(v, (int, float)) and not isinstance(v, bool)
+                      and isinstance(have, (int, float)) and not isinstance(have, bool)):
+                    cur[f] = max(have, v)
+                elif have is None:
+                    cur[f] = v
+    return out
+
+
+_SHAREABLE = (dict, list, set, collections.deque)
+
+
+def reducer_groups(red, n):
+    """The keys of reducer set `red` in `n` groups (1 or 2) that share nothing, so
+    each can be fed a node's records in a process of its own and the states put
+    back together are one pass's (`ingest.reducer_groups`).
+
+    Reducers that hold one another (the process index the session reducers fold
+    through, the trajectories and the workspace the cascades read) or hold the
+    same container are one component. With 2, the largest component is one
+    group and every other reducer the other. Keys keep the set's order, which
+    is the order `feed_all` feeds them in."""
+    keys = list(red)
+    if n <= 1 or len(keys) < 2:
+        return [keys]
+    owner = {}
+    parent = {k: k for k in keys}
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for k, r in red.items():
+        owner[id(r)] = k
+    for k, r in red.items():
+        for v in vars(r).values():
+            o = owner.get(id(v))
+            if o is None and isinstance(v, _SHAREABLE):
+                o = owner.setdefault(id(v), k)
+            if o is not None and find(o) != find(k):
+                parent[find(o)] = find(k)
+    comps = collections.OrderedDict()
+    for k in keys:
+        comps.setdefault(find(k), []).append(k)
+    big = max(comps.values(), key=len)
+    rest = [k for k in keys if k not in big]
+    return [big, rest] if rest else [big]
+
+
+def pick_carry(carry, keys):
+    """A group's share of a node's join state: the entries of its reducers."""
+    if carry is None or keys is None:
+        return carry
+    return {k: c for k, c in carry.items() if k in keys}
+
+
+def pick_ages(ages, keys):
+    """A group's share of a node's ages (`age`), keyed `<reducer>.<field>`."""
+    if keys is None:
+        return ages or {}
+    return {a: v for a, v in (ages or {}).items() if a.split(".", 1)[0] in keys}
+
+
+def join_carries(parts):
+    """A node's join state (or ages) from its groups', whose keys are disjoint."""
+    out = None
+    for p in parts:
+        if p is not None:
+            out = dict(p) if out is None else out
+            if out is not p:
+                out.update(p)
+    return out
+
+
+class NodeContext:
+    """What a node's share of an hour is reduced with: the reducer set, the
+    normaliser, the events read. One per worker process (`_node_init`), or the
+    store's own when the hours are reduced in this process."""
+
+    def __init__(self, fresh, cfg, events):
+        self.fresh = fresh
+        self.cfg = cfg
+        self.events = events
+        self.norm = Normalizer(cfg)
+        self.cls = {k: type(r) for k, r in fresh().items()}
+
+
+_NODE_CTX = None
+
+
+def _node_init(fresh, cfg, events, as_of):
+    """A worker process's start: the clock pinned as the service's is (a
+    reducer reads `time.time()`; clock.install), then its context."""
+    global _NODE_CTX
+    if as_of is not None:
+        ns = int(as_of * 1e9)
+        time.time = lambda: as_of
+        time.time_ns = lambda: ns
+    _NODE_CTX = NodeContext(fresh, cfg, events)
+
+
+def _node_task(task):
+    return reduce_node_hour(_NODE_CTX, task)
+
+
+def reduce_node_hour(ctx, task):
+    """One node's records of one hour, reduced as `_reduce_run` reduces a whole
+    hour: seeded with the join state that node's previous hour ended with,
+    stripped, its carry aged. Returns the state captured
+    (`snapshots.capture`), the carry, and what the hour's meta needs."""
+    t0, c0 = time.monotonic(), time.process_time()
+    h = task["hour"]
+    red = prepare(ctx.fresh())
+    if task.get("keys") is not None:
+        # one group of the set (`reducer_groups`): only its reducers are fed,
+        # seeded, carried and captured; the other group's are another task's
+        red = {k: red[k] for k in task["keys"]}
+    carry = task["carry"]
+    if carry is not None:
+        seed(red, carry)
+    prev = task["prev"]
+    strays = [] if prev is not None else None
+    stream, plan, stats = read_span(task["files"], ctx.norm, h * HOUR, (h + 1) * HOUR,
+                                    ctx.events, prev, strays, new_stats())
+    n, newest = feed_all(red, stream)
+    carry = take_carry(red)
+    strip(red)
+    files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop", "resume")}
+                  for e in plan]
+    carry, ages = age(ctx.cls, carry, task["ages"], h)
+    return {"node": task["node"], "hour": h, "state": snapshots.capture(red), "records": n,
+            "newest": newest, "files": files_meta, "carry": carry, "ages": ages,
+            "strays": strays, "bytes": stats["bytes"],
+            "wall_s": time.monotonic() - t0, "cpu_s": time.process_time() - c0}
 
 
 # ------------------------------------------------------------------ reading
@@ -451,6 +674,19 @@ class HourStore:
                       "merged_states": 0, "days_built": 0, "pruned": 0, "chains_saved": 0,
                       "chain_bytes": 0}
         self._cls = {k: type(r) for k, r in fresh().items()}
+        # The node split (`ingest.workers`): 1 is one pass in this process.
+        self.workers = ingest_workers(cfg)
+        self.split = self.workers > 1
+        self._pool = None               # the worker processes, made on first use
+        self._pool_size = 0
+        self._ctx = None                # this process's NodeContext, when it reduces a node
+        # and each node's hour in this many processes, by reducer group (1 or 2)
+        self.n_groups = reducer_group_count(cfg) if self.split else 1
+        self._groups = None
+        if self.split:
+            self.stats.update(node_tasks=0, node_cpu_s=0.0, node_wall_s=0.0, node_merge_s=0.0,
+                              node_workers=0, node_in_process=0, node_note=None,
+                              node_cpu_by={})
 
     @classmethod
     def from_config(cls, cfg, classes, fresh, events):
@@ -750,6 +986,8 @@ class HourStore:
         ended with. Each saves that state for itself, its chain, then itself,
         and drops the chain of the hour before. Returns the join state the
         last one ended with."""
+        if self.split:
+            return self._reduce_nodes(files, a, b, carry, ages, tick)
         norm = Normalizer(self.cfg)
         pm = self.meta(a - 1)
         # With no read of the hour before to go by, a record from before this
@@ -798,6 +1036,223 @@ class HourStore:
             if self.pause:
                 time.sleep(self.pause)      # the live tier's turn
         return carry, ages
+
+    # ------------------------------------------------------------ by node
+    def _node_pool(self, want):
+        """The worker processes, `want` of them at most, made on first use and
+        kept; None when they cannot be (the reducer factory does not pickle, or
+        processes cannot start), and the nodes are reduced in this process."""
+        n = max(1, min(self.workers, want))
+        if self._pool is not None and self._pool_size >= n:
+            return self._pool
+        self.close()
+        try:
+            pickle.dumps((self.fresh, self.cfg, self.events), protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as e:
+            self.stats["node_note"] = "reducing in this process: %s" % e
+            return None
+        from . import clock
+        as_of = clock._state.get("as_of") if clock._state.get("pinned") else None
+        try:
+            self._pool = concurrent.futures.ProcessPoolExecutor(
+                max_workers=n, mp_context=multiprocessing.get_context("spawn"),
+                initializer=_node_init, initargs=(self.fresh, self.cfg, self.events, as_of))
+        except (OSError, ValueError, ImportError) as e:
+            self.stats["node_note"] = "reducing in this process: %s" % e
+            return None
+        self._pool_size = n
+        self.stats["node_workers"] = n
+        return self._pool
+
+    def close(self):
+        """Stop the worker processes (made again on next use)."""
+        pool, self._pool, self._pool_size = self._pool, None, 0
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _run_node(self, pool, task):
+        """A future for one node-hour: in a worker, or done here."""
+        if pool is not None:
+            try:
+                return pool.submit(_node_task, task)
+            except (BrokenProcessPool, RuntimeError):
+                self.close()
+        fut = concurrent.futures.Future()
+        if self._ctx is None:
+            self._ctx = NodeContext(self.fresh, self.cfg, self.events)
+        # A worker gets the carry as a copy; here it would be the object the
+        # chain of the hour before is saved from, which a node run ahead would
+        # change before that save.
+        task = dict(task, carry=pickle.loads(pickle.dumps(task["carry"],
+                                                           protocol=pickle.HIGHEST_PROTOCOL)),
+                    ages=pickle.loads(pickle.dumps(task["ages"],
+                                                   protocol=pickle.HIGHEST_PROTOCOL)))
+        try:
+            fut.set_result(reduce_node_hour(self._ctx, task))
+        except BaseException as e:
+            fut.set_exception(e)
+        self.stats["node_in_process"] += 1
+        return fut
+
+    def _reduce_nodes(self, files, a, b, carry, ages, tick=None):
+        """`_reduce_run` split by node (`ingest.workers`), and each node's hour by
+        reducer group (`ingest.reducer_groups`). Each unit -- a node, or a node
+        and a group -- reduces its share of each hour in a worker process,
+        seeded with the join state its own previous hour ended with; the hour
+        saved is each node's groups put together, then the nodes merged in node
+        order, and its chain every node's join state (`NODES`). A unit's next
+        hour is queued as soon as its last one is back, so a quiet node runs
+        ahead of a busy one -- by `NODE_LOOKAHEAD_H` at most, which bounds the
+        states held waiting to be merged. Returns the join state the last hour
+        ended with, per node."""
+        by_node = collections.defaultdict(list)
+        for p in files:
+            by_node[host_of(p)].append(p)
+        carried_in = carry is not None and NODES in carry
+        node_carry = dict(carry[NODES]) if carried_in else {}
+        node_ages = dict((ages or {}).get(NODES) or {}) if carried_in else {}
+        nodes = sorted(set(by_node) | set(node_carry))
+        pm = self.meta(a - 1)
+        # With no read of the hour before to go by, a record from before this
+        # hour is the slack of a time-ordered file, not a straggler.
+        prev0 = {f["path"]: f for f in pm["files"]} if pm else None
+        if not nodes:
+            nodes = [""]                # no file at all: an empty hour each, as one pass saves
+        groups = self._reducer_groups(len(nodes))
+        units = [(nd, g) for nd in nodes for g in range(len(groups))]
+        pool = self._node_pool(len(units))
+        # each unit's own join state, next hour to queue, and read of its previous hour
+        carries = {(nd, g): pick_carry(node_carry.get(nd), groups[g] if len(groups) > 1 else None)
+                   for nd, g in units}
+        ages_of = {(nd, g): pick_ages(node_ages.get(nd), groups[g] if len(groups) > 1 else None)
+                   for nd, g in units}
+        nxt = {u: a for u in units}
+        prev = {u: prev0 for u in units}
+        done = collections.defaultdict(dict)    # hour -> unit -> result
+        running = {}                            # future -> unit
+        h = a                                   # the oldest hour not yet saved
+
+        def queue(u):
+            hr = nxt[u]
+            if hr >= b or hr >= h + NODE_LOOKAHEAD_H:
+                return
+            nxt[u] = hr + 1
+            nd, g = u
+            task = {"node": nd, "hour": hr, "files": by_node.get(nd, []), "prev": prev[u],
+                    "carry": carries[u], "ages": ages_of[u],
+                    "keys": groups[g] if len(groups) > 1 else None}
+            running[self._run_node(pool, task)] = u
+
+        try:
+            for u in units:
+                queue(u)
+            t_hour = time.monotonic()
+            while h < b:
+                if not running:
+                    raise RuntimeError("node reduction stalled at hour %d" % h)
+                fin, _ = concurrent.futures.wait(list(running),
+                                                 return_when=concurrent.futures.FIRST_COMPLETED)
+                for fut in fin:
+                    u = running.pop(fut)
+                    try:
+                        got = fut.result()
+                    except BrokenProcessPool:
+                        # a worker died (a crash, the OOM killer): this run stops, and the
+                        # next one starts a fresh pool from the newest chain saved
+                        self.close()
+                        raise
+                    carries[u], ages_of[u] = got["carry"], got["ages"]
+                    prev[u] = {f["path"]: f for f in got["files"]}
+                    done[got["hour"]][u] = got
+                    self.stats["node_tasks"] += 1
+                    self.stats["node_cpu_s"] += got["cpu_s"]
+                    self.stats["node_wall_s"] += got["wall_s"]
+                    # the busiest node sets the pace: one unit is one process at a time
+                    by = self.stats["node_cpu_by"]
+                    by[u[0]] = round(by.get(u[0], 0.0) + got["cpu_s"], 1)
+                while h < b and len(done.get(h, ())) == len(units):
+                    n, nbytes = self._save_node_hour(h, done.pop(h), nodes, len(groups),
+                                                     carried_in or h > a)
+                    self.stats["reduce_s"] += time.monotonic() - t_hour
+                    t_hour = time.monotonic()
+                    if tick:
+                        tick(records=n, bytes=nbytes)
+                    h += 1
+                busy = set(running.values())
+                for u in units:
+                    if u not in busy:
+                        queue(u)
+        except BaseException:
+            for fut in running:
+                fut.cancel()
+            raise
+        return ({NODES: {nd: join_carries(carries[(nd, g)] for g in range(len(groups)))
+                         for nd in nodes}},
+                {NODES: {nd: join_carries(ages_of[(nd, g)] for g in range(len(groups)))
+                         for nd in nodes}})
+
+    def _reducer_groups(self, n_nodes):
+        """The reducer set's keys in `ingest.reducer_groups` groups (`reducer_groups`)
+        -- in one when there are fewer workers than nodes. Each group reads the
+        node's records itself, so splitting costs a read per node-hour, and only
+        pays where a node can have a second core: on the FAS nodes' spike hours,
+        4 workers for 8 nodes took 153 s split against 120 s whole."""
+        if self.n_groups < 2 or self.workers < n_nodes:
+            return [list(self._cls)]
+        if self._groups is None:
+            self._groups = reducer_groups(self.fresh(), self.n_groups)
+        return self._groups
+
+    def _save_node_hour(self, h, got, nodes, n_groups, carried):
+        """Put each node's groups together, merge the nodes in node order, and
+        save hour `h` as `_reduce_run` saves an hour: its chain first (every
+        node's join state as its own hour ended), then the hour. Returns its
+        records and bytes."""
+        t0 = time.monotonic()
+        red = None
+        chain, chain_ages = {}, {}
+        for nd in nodes:
+            parts = [got[(nd, g)] for g in range(n_groups)]
+            state = {}
+            for x in parts:
+                # the groups' keys are disjoint, and each holds its own reducers whole
+                state.update(pickle.loads(x["state"]))
+                x["state"] = None
+            part = snapshots.restore(self.fresh(), state)
+            del state
+            for r in part.values():
+                if hasattr(r, "bin_s"):
+                    r.bin_s = HOUR_BIN_S
+            if red is None:
+                red = part
+            else:
+                merge_into(red, part)
+            del part
+            # as each node's own hour `h` ended (a unit may already be past it)
+            chain[nd] = join_carries(x["carry"] for x in parts)
+            chain_ages[nd] = join_carries(x["ages"] for x in parts)
+        # every group of a node read the same records: its counts, files and strays are one's
+        first = [got[(nd, 0)] for nd in nodes]
+        files_meta = sorted((f for x in first for f in x["files"]), key=lambda f: f["path"])
+        n = sum(x["records"] for x in first)
+        newest = max((x["newest"] for x in first if x["newest"] is not None), default=None)
+        self._save_chain(h, {NODES: chain}, {NODES: chain_ages})
+        self._save_hour(h, red, {"records": n, "newest": newest, "carried": carried,
+                                 "files": files_meta, "stragglers": 0,
+                                 "reduced_at": time.time(), "nodes": len(nodes),
+                                 "groups": n_groups})
+        del red
+        if h - 1 in self.chains:
+            self._drop("c", h - 1)
+        strays = [s for x in first for s in (x["strays"] or ())]
+        if strays:
+            self._patch(strays)
+        nbytes = sum(x["bytes"] for x in first)
+        self.stats["hours_reduced"] += 1
+        self.stats["records"] += n
+        self.stats["bytes"] += nbytes
+        self.stats["node_merge_s"] += time.monotonic() - t0
+        return n, nbytes
 
     def _patch(self, strays, norm=None):
         """Reduce records that arrived for closed hours, and merge each hour's
@@ -897,8 +1352,11 @@ class HourStore:
         newest one's. Returns whether it was."""
         if self.chain is None or self.chain[0] != last_hour:
             return False
-        install(acc, pickle.loads(pickle.dumps(self.chain[1],
-                                               protocol=pickle.HIGHEST_PROTOCOL)))
+        carry = pickle.loads(pickle.dumps(self.chain[1], protocol=pickle.HIGHEST_PROTOCOL))
+        if carry and NODES in carry:
+            # reduced by node: the window's tail and live feed are one pass over every node
+            carry = combine_carries(carry[NODES])
+        install(acc, carry)
         return True
 
     def newest_of(self, hours):

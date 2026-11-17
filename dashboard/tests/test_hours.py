@@ -698,3 +698,183 @@ class PreprocessTest(HourCase):
         t0 = time.monotonic()
         self.assertFalse(reg.wait_idle(0.2))
         self.assertLess(time.monotonic() - t0, 5)
+
+
+class NodeSplitTest(HourCase):
+    """`ingest.workers` >= 2: each node's share of an hour is reduced in a worker
+    process of its own, and the hour saved is the node states merged in node order.
+    The test feed is two nodes (h1, h2) in one root."""
+
+    def setUp(self):
+        super().setUp()
+        self.write(gen(SINCE + 1, NOW - 30))
+        # the workers pin their clock to the service's (`clock.install`); this
+        # case pins `time.time` by patching it, which a spawned process never sees
+        from rc_dashboard import clock
+        self.pin = mock.patch.dict(clock._state, {"pinned": True, "as_of": NOW})
+        self.pin.start()
+
+    def tearDown(self):
+        self.pin.stop()
+        super().tearDown()
+
+    def node_cfg(self, workers, tag=None, groups=None):
+        c = self.cfg()
+        c.tree["ingest"]["workers"] = workers
+        if groups is not None:
+            c.tree["ingest"]["reducer_groups"] = groups
+        c.tree["cache"]["dir"] = os.path.join(self.tmp, "cache-%s" % (tag or workers))
+        return c
+
+    def built(self, workers, tag=None, fresh=None, groups=None):
+        reg = self.registry(self.node_cfg(workers, tag, groups))
+        self.addCleanup(reg.stop)
+        if fresh is not None:
+            reg.hours.fresh = fresh(reg.hours.fresh)
+        return reg, self.build(reg)
+
+    def same(self, a, b):
+        pa, pb = self.payload(a), self.payload(b)
+        self.assertEqual(sorted(pa), sorted(pb))
+        for key in sorted(pa):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(pa[key], pb[key]), [])
+
+    def test_hours_are_reduced_by_node_in_worker_processes(self):
+        reg, view = self.built(2, groups=1)
+        st = reg.hours.stats
+        self.assertEqual(view.cache["source"], "hours")
+        self.assertEqual(st["node_workers"], 2)
+        self.assertEqual(st["node_in_process"], 0)
+        self.assertGreaterEqual(st["hours_reduced"], 3)
+        # every hour is one task per node
+        self.assertEqual(st["node_tasks"], 2 * st["hours_reduced"])
+        self.assertEqual(sorted(st["node_cpu_by"]), ["h1", "h2"])
+
+    def test_each_node_by_reducer_group_makes_the_same_hours(self):
+        # Two groups that share nothing, each fed every record of the node in
+        # order: put back together, the node's state is one process's.
+        one, v1 = self.built(4, "g1", groups=1)
+        two, v2 = self.built(4, "g2", groups=2)
+        self.assertEqual(one.hours.fp, two.hours.fp)          # no saved hour changes
+        self.assertEqual(two.hours.stats["node_tasks"], 2 * one.hours.stats["node_tasks"])
+        self.assertEqual(two.hours.stats["node_workers"], 4)
+        self.same(v1, v2)
+        # and the chains: each node's join state whole, as one group-less run saves it
+        c1, c2 = one.hours.chain[1][hours.NODES], two.hours.chain[1][hours.NODES]
+        self.assertEqual(sorted(c1), sorted(c2))
+        for nd in c1:
+            self.assertEqual(sorted(c1[nd]), sorted(c2[nd]))
+
+    def test_reducers_that_share_an_object_are_one_group(self):
+        reg = self.registry(self.node_cfg(2, "groups"))
+        red = reg.hours.fresh()
+        groups = hours.reducer_groups(red, 2)
+        self.assertEqual(sorted(sum(groups, [])), sorted(red))      # each key once
+        self.assertEqual(len(groups), 2)
+        where = {k: i for i, g in enumerate(groups) for k in g}
+        for k, r in red.items():
+            for v in vars(r).values():
+                for k2, r2 in red.items():
+                    if v is r2:
+                        self.assertEqual(where[k], where[k2], (k, k2))
+        # the session reducers and the process index they fold through
+        self.assertEqual(len({where[k] for k in ("_procs", "trajectories", "cascades")}), 1)
+        self.assertEqual(hours.reducer_groups(red, 1), [list(red)])
+        # each group keeps the set's order, which is the order records are fed in
+        for g in groups:
+            self.assertEqual(g, [k for k in red if k in g])
+
+    def test_a_node_is_split_only_when_the_workers_cover_the_nodes(self):
+        # Each group reads the node's records itself: with fewer workers than
+        # nodes, a second read per node-hour costs more than a second core gives.
+        reg = self.registry(self.node_cfg(4, "cover"))
+        self.assertEqual(len(reg.hours._reducer_groups(4)), 2)
+        self.assertEqual(len(reg.hours._reducer_groups(5)), 1)
+        self.assertEqual(reg.hours._reducer_groups(5), [list(reg.hours.fresh())])
+        one = self.registry(self.node_cfg(4, "one", groups=1))
+        self.assertEqual(len(one.hours._reducer_groups(2)), 1)
+
+    def test_any_count_from_two_makes_the_same_hours(self):
+        reg2, v2 = self.built(2)
+        reg3, v3 = self.built(3)
+        self.assertEqual(reg2.hours.fp, reg3.hours.fp)
+        self.assertEqual(sorted(reg2.hours.have), sorted(reg3.hours.have))
+        self.same(v2, v3)
+
+    def test_a_factory_that_does_not_pickle_reduces_each_node_here_alike(self):
+        _reg, want = self.built(2)
+        reg, got = self.built(2, "here", fresh=lambda f: (lambda: f()))
+        self.assertEqual(reg.hours.stats["node_workers"], 0)
+        self.assertGreater(reg.hours.stats["node_in_process"], 0)
+        self.assertIn("in this process", reg.hours.stats["node_note"])
+        self.same(want, got)
+
+    def test_each_node_carries_its_own_join_state(self):
+        reg, _view = self.built(2)
+        hour, carry, ages = reg.hours.chain
+        self.assertEqual(sorted(carry), [hours.NODES])
+        self.assertEqual(sorted(carry[hours.NODES]), ["h1", "h2"])
+        self.assertEqual(sorted(ages[hours.NODES]), ["h1", "h2"])
+        # as saved, so a restart resumes every node from its own
+        saved = reg.hours._load_chain(hour)
+        self.assertEqual(sorted(saved[1][hours.NODES]), ["h1", "h2"])
+        # and a window installs them as one: its tail and live feed are one pass
+        acc = reg.hours.fresh()
+        self.assertTrue(reg.hours.install_carry(acc, hour))
+        self.assertNotIn(hours.NODES, reg.hours.chain[1][hours.NODES])
+
+    def test_a_window_merged_from_node_hours_counts_what_one_pass_counts(self):
+        # The counts, sums, sets and sketches a merge adds are the same whatever
+        # the order; what may differ is what `merge` takes from one state (a
+        # "first N" sample, a "newest record's" field, ties). Here, the totals.
+        _r1, one = self.built(1)
+        _r2, split = self.built(2)
+        a, b = self.payload(one), self.payload(split)
+        for key in ("facets", "resources", "io_process", "tool_mix", "slurm", "workspace"):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(a[key], b[key]), [])
+
+    def test_the_split_is_in_the_fingerprint_and_the_count_is_not(self):
+        fp = lambda c: hours.fingerprint("code", c, [self.root])     # noqa: E731
+        one, two, eight = (fp(self.node_cfg(w, "fp")) for w in (1, 2, 8))
+        self.assertNotEqual(one, two)
+        self.assertEqual(two, eight)
+        # one pass is the fingerprint the hours had before the split existed
+        bare = self.node_cfg(1, "fp")
+        del bare.tree["ingest"]["workers"]
+        self.assertEqual(fp(bare), one)
+        # 0 is one per CPU: one pass on a one-CPU host
+        with mock.patch.object(hours, "usable_cpus", return_value=1):
+            self.assertEqual(fp(self.node_cfg(0, "fp")), one)
+        with mock.patch.object(hours, "usable_cpus", return_value=16):
+            self.assertEqual(fp(self.node_cfg(0, "fp")), two)
+
+    def test_a_count_that_is_not_one_is_refused_at_start(self):
+        from rc_dashboard import config as configmod
+        for var, bad in (("RC_DASH_INGEST_WORKERS", "-1"), ("RC_DASH_INGEST_WORKERS", "257"),
+                         ("RC_DASH_INGEST_REDUCER_GROUPS", "0"),
+                         ("RC_DASH_INGEST_REDUCER_GROUPS", "3")):
+            with self.subTest(var=var, value=bad), mock.patch.dict(os.environ, {var: bad}):
+                with self.assertRaises(SystemExit):
+                    configmod.load(None, None)
+
+
+class CombineCarriesTest(unittest.TestCase):
+
+    def test_per_node_join_state_is_one_join_state(self):
+        a = {"tools": {"child_tok": {("s1", 1): {"x"}}},
+             "sandbox": {"below": {("h1", 5): [1]}, "units": {}, "n_units": 3},
+             "trajectories": {"reaped": {("h1", 9): [1.0, 0.0]},
+                              "phase_exited_horizon": 10.0}}
+        b = {"tools": {"child_tok": {("s2", 2): {"y"}}},
+             "sandbox": {"below": {("h2", 5): [2]}, "units": {}, "n_units": 7},
+             "trajectories": {"reaped": {("h2", 9): [2.0, 0.0]},
+                              "phase_exited_horizon": 4.0}}
+        got = hours.combine_carries({"h2": b, "h1": a})
+        self.assertEqual(list(got["tools"]["child_tok"]), [("s1", 1), ("s2", 2)])
+        self.assertEqual(sorted(got["sandbox"]["below"]), [("h1", 5), ("h2", 5)])
+        self.assertEqual(got["sandbox"]["n_units"], 7)
+        self.assertEqual(got["trajectories"]["phase_exited_horizon"], 10.0)
+        self.assertEqual(len(got["trajectories"]["reaped"]), 2)
+

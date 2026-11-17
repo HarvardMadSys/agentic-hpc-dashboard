@@ -584,6 +584,20 @@ class PanelView:
         return st
 
 
+class FreshReducers:
+    """A window's fresh reducer set, made on call: the hour store's factory.
+    A class rather than a closure so that it pickles -- the hour store's node
+    workers (`hours`, `ingest.workers`) each make their own sets from it."""
+
+    def __init__(self, cfg, classes, ret):
+        self.cfg = cfg
+        self.classes = list(classes)
+        self.ret = ret
+
+    def __call__(self):
+        return PanelView(self.cfg, self.classes, self.ret).fresh_reducers()
+
+
 class WindowRegistry:
     """A bounded LRU of built windows, with one serialised build worker.
 
@@ -612,9 +626,8 @@ class WindowRegistry:
         # window is merged from saved hour states rather than re-read. None
         # when off, and every window is scanned as before.
         ret = retention_min(cfg)
-        # which twin of a stream written in both formats is read (`feedfile.choose`)
         self.hours = hourmod.HourStore.from_config(
-            cfg, classes, lambda: PanelView(cfg, classes, ret).fresh_reducers(), EVENTS)
+            cfg, classes, FreshReducers(cfg, classes, ret), EVENTS)
         self._queue = collections.deque()
         self._cv = threading.Condition()
         self._worker = None
@@ -638,6 +651,8 @@ class WindowRegistry:
         self._stop = True
         with self._cv:
             self._cv.notify_all()
+        if self.hours is not None:
+            self.hours.close()          # the node workers (`ingest.workers`)
 
     def _run(self):
         while self.ready is not None and not self.ready.is_set() and not self._stop:

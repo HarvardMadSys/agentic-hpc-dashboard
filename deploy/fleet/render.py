@@ -96,6 +96,12 @@ def derive(v):
     days = int(v.get("HISTORY_DAYS") or 7)
     if days < 1:
         raise ValueError("HISTORY_DAYS must be at least 1")
+    # Two processes per node reduce the hours by default, one per reducer group: a node
+    # and group is one process at a time, so more do nothing, and with fewer than one per
+    # node the dashboard reduces each node's hour in one process.
+    workers = v.get("INGEST_WORKERS") or str(2 * len(sources))
+    if not workers.isdigit() or int(workers) > 256:
+        raise ValueError("INGEST_WORKERS=%r must be a process count 0..256" % workers)
     free = float(v.get("FREE_MIN_GB") or 300)
     if free < 0:
         raise ValueError("FREE_MIN_GB must not be negative")
@@ -135,6 +141,7 @@ def derive(v):
         "SITE_DESCRIPTION_JSON": json.dumps(v.get("SITE_DESCRIPTION", "")),
         "MAX_WINDOWS": str(int(v.get("MAX_WINDOWS") or 5)),
         "MAX_SESSIONS": str(int(v.get("MAX_SESSIONS") or 150000)),
+        "INGEST_WORKERS": str(int(workers)),
         "DASH_PORT": str(int(v["DASH_PORT"])),
     })
     return d
