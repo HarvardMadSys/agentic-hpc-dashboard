@@ -318,6 +318,25 @@ class ToolCallTest(unittest.TestCase):
                              [("alice", "supervised", {"not_isolated": 2}),
                               ("bob", "bypassed", {})])
 
+    def test_a_call_that_outlives_its_agent_is_still_its_agents(self):
+        """A background Bash call's shell can exit after its agent. Matched by its
+        exit, it was another process's: a session of its own with approval
+        unknown, beside the agent's with no calls -- or, once a later root of the
+        same user had the pid, that root's. A call starts while its agent runs."""
+        t0 = time.time() - 7000
+        agent = rec("exit", t0 + 60, 4242, 3000, "claude", "claude", agent_pid=4242,
+                    tree_root=4242, is_agent=True, duration_s=60.0)
+        shell = rec("exit", t0 + 90, 5010, 4242, "zsh", SNAP + "'sleep 80'", agent_pid=5010,
+                    tree_root=4242, is_agent=True, duration_s=80.0)
+        later = rec("exit", t0 + 200, 4242, 3100, "claude", "claude --dangerously-skip-permissions",
+                    agent_pid=4242, tree_root=4242, is_agent=True, duration_s=115.0)
+        for recs, want in (
+                ([agent, shell], [("supervised", {"not_isolated": 1})]),
+                ([agent, shell, later], [("bypassed", {}), ("supervised", {"not_isolated": 1})])):
+            with self.subTest(n=len(recs)):
+                sb = reduce(recs)["sandbox"]
+                self.assertEqual(sorted((r["approval"], r["calls"]) for r in sb["sessions"]), want)
+
     def test_the_wrapper_reading_is_not_called_a_probe(self):
         recs = [root_tick(self.t0, 100)] + bwrap_call(self.t0, 100, 300)
         rows = reduce(recs)["sandbox"]["ancestry_matrix"]

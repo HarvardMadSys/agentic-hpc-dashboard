@@ -70,7 +70,7 @@ APPROVAL_KNOWN = ("bypassed", "auto", "supervised")
 _PAYLOAD, _ISO, _UNK, _START, _UNITS = range(5)
 # units[uid] slots
 (_U_KIND, _U_HOST, _U_PID, _U_APID, _U_ROOT, _U_CLS, _U_TYPE, _U_USER, _U_CMD,
- _U_ISO, _U_PAYLOAD, _U_UNK, _U_FAILED, _U_OK, _U_ABSORBED) = range(15)
+ _U_ISO, _U_PAYLOAD, _U_UNK, _U_FAILED, _U_OK, _U_ABSORBED, _U_START) = range(16)
 # roots[(host, pid)] slots, after cls, agent_type, approval, detail: the user, the
 # earliest time the process is known at (its start, else its first record), its exit
 _R_USER, _R_START, _R_END = 4, 5, 6
@@ -79,7 +79,7 @@ _SLACK_S = 1.0          # two readings of one process's start differ by this muc
 
 def _in_root(r, user, t):
     """Whether a record or tool call of `user` at time `t` (a record's start,
-    else its own time; a call's exit) is of root r's process. A pid is reused:
+    else its own time; a call's start) is of root r's process. A pid is reused:
     another user's, or one from after the root exited, is another process's."""
     if users_conflict(r[_R_USER], user):
         return False
@@ -258,7 +258,7 @@ class SandboxReducer:
             self.units[uid] = [
                 "wrapper" if wrapper else "tool-shell", host, pid, rec.get("agent_pid"),
                 rec.get("tree_root_pid"), rec["_a3"], rec.get("agent_type"), rec.get("user"),
-                (rec.get("_command") or "")[:24], iso, payload, unk, failed, ok, False]
+                (rec.get("_command") or "")[:24], iso, payload, unk, failed, ok, False, start]
             up.append(uid)
         if role == "agent":
             up = []             # a session root: its calls are final, nothing above absorbs them
@@ -410,15 +410,15 @@ class SandboxReducer:
                                      "detail": r[3], "user": r[_R_USER],
                                      "calls": collections.Counter(), "root": True}
         attempts = collections.Counter()
-        for uid, u in self.units.items():
+        for u in self.units.values():
             if u[_U_ABSORBED]:
                 continue
             oc = _outcome(u)
             host = u[_U_HOST]
             owner = self._owner(host, u[_U_APID], u[_U_ROOT])
-            # the call's own exit, which its uid names unless it had no time
-            gen, _r = self._root_gen((host, owner), u[_U_USER],
-                                     uid[2] if uid[0] != "n" else None)
+            # by when the call started, which its agent was running at: a
+            # background call's shell can exit after its agent has
+            gen, _r = self._root_gen((host, owner), u[_U_USER], u[_U_START])
             key = (host, owner, gen)
             s = out.get(key)
             if s is None:
@@ -543,7 +543,7 @@ class SandboxReducer:
                             "plus the owner of any tool call whose root was not seen. A pid is "
                             "reused: a root of another user, or one started after the held root "
                             "exited, is a session of its own, and a call goes to the root of "
-                            "its user that was running when it ended. Whether "
+                            "its user that was running when it started. Whether "
                             "it ran sandboxed is the outcome of its TOOL CALLS -- the agent "
                             "process itself is outside its own sandbox by design.",
                 "tool_calls": "a tool call is a sandbox wrapper invocation (bwrap, "
