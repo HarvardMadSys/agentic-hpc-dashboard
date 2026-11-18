@@ -8,7 +8,10 @@ Two kinds, both on by default (EBPFM_REDACT, see ebpf_trace.py):
            the dashboard's, copied from dashboard/rc_dashboard/redact.py because
            this folder runs standalone; a test holds the two copies equal
            whenever both are present. Same mask, so the dashboard's own pass
-           over a collector-masked line changes nothing.
+           over a collector-masked line changes nothing. A deny-list, and best
+           effort: a secret in a shape no rule knows is written as it is
+           (collector/README.md lists the shapes). Past TEXT_MAX a line is cut,
+           and CUT written where the rest was.
   prompts  the free text a coding agent is handed on its command line:
            `claude -p "..."`, `codex exec "..."`, `gemini -p "..."` and the
            like, run directly, through node/npx/uvx, under a wrapper
