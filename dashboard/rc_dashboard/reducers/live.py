@@ -24,15 +24,19 @@ from ..procindex import pop_oldest, users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
-from .own_io import CLAMP_TOL_MB, DISK, START_SLACK_S, OwnIo
+from .own_io import CLAMP_TOL_MB, DISK, START_SLACK_S, OwnIo, cap_of
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
 # Each process's own disk bytes, in both orders the live tier is fed in
 # (`LiveReducer._own_io`): parents noted for children the backfill has yet to
 # read, at most this many; and how far out of order a day-file's records are,
-# within a poll round.
-BOOKED_MAX = 200000
+# within a poll round. A note is about 0.5 KB, so 10 MB at most. One lives
+# until the backfill reads past its start, so what is held is the exits of
+# about BOOKED_SLACK_S and what ran across them: 254 at most over the demo's
+# week, 1,520 at eight times its density; a node writing 2.7 M exits a day
+# writes some 9,400 in BOOKED_SLACK_S.
+BOOKED_MAX = 20000
 BOOKED_SLACK_S = 300
 
 
@@ -268,9 +272,9 @@ class LiveReducer:
         # was running before the tail began is noted too: the backfill may yet
         # read the children it reaped. Each pairing is held to what the shared
         # join allows: the same user, and a child begun after its parent.
-        self.io_join = OwnIo(DISK)
+        self.io_join = OwnIo(DISK, cap_of(cfg))
         self.io_booked = collections.OrderedDict()   # (host, pid) -> a note (_B_*)
-        self.io_given = OwnIo(DISK)
+        self.io_given = OwnIo(DISK, cap_of(cfg))
         self._io_starts = []         # (-start, note's number, key): the latest start first
         self._io_seq = 0
         self.io_tail_from = None     # when the first exit the tail read ended

@@ -70,10 +70,10 @@ def person(event, t, pid, ppid, command, args, user, **kw):
                **kw)
 
 
-def window(recs, minutes=1440):
+def window(recs, minutes=1440, c=None):
     """`recs` normalised and fed to a window's reducer set, as a build feeds it.
     Returns the view, with its panels materialised."""
-    c = cfg()
+    c = c or cfg()
     view = PanelView(c, CLASSES + [c.get("filters.unlabeled_class")], minutes)
     view.reducers = view.fresh_reducers()
     view.dispatch = PanelView.build_dispatch(view.reducers)
@@ -86,9 +86,9 @@ def window(recs, minutes=1440):
     return view
 
 
-def live(recs, older=False):
+def live(recs, older=False, c=None):
     """The live tier fed `recs` in the order given; `older` as the backfill feeds."""
-    c = cfg()
+    c = c or cfg()
     lv = LiveReducer(c, CLASSES)
     norm = Normalizer(c)
     for r in recs:
@@ -519,14 +519,20 @@ def join_of(red):
     return red.own
 
 
+def capped(n):
+    """The default config with every join held to `n` parents."""
+    c = cfg()
+    c.set("reducers.own_io.max_parents", n, "test")
+    return c
+
+
 class JoinBoundsTest(unittest.TestCase):
     """What the join drops is counted, never silent: past a reducer's own cap,
-    and past one pass's where a window puts the nodes' joins together. REAPED_MAX
-    lowered to 3 for both."""
+    and past one pass's where a window puts the nodes' joins together. The cap
+    (`reducers.own_io.max_parents`) set to 3 for both."""
 
     def test_the_reducer_s_own_cap(self):
-        with mock.patch.object(own_io, "REAPED_MAX", 3):
-            v = window(shells(time.time() - 900))
+        v = window(shells(time.time() - 900), c=capped(3))
         # five parents waiting, three held: the first two dropped, and their
         # cats' bytes count again at their shells' exits
         for k in JOINS:
@@ -541,7 +547,7 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual(p["trajectories"]["buffer"]["reaped_evicted"], 2)
 
     def test_one_pass_s_cap_where_a_window_puts_the_nodes_joins_together(self):
-        c = cfg()
+        c = capped(3)
         fresh = lambda: PanelView(c, CLASSES, 1440).fresh_reducers()   # noqa: E731
         kinds = {k: type(r) for k, r in fresh().items()}
         t = time.time() - 900
@@ -554,14 +560,43 @@ class JoinBoundsTest(unittest.TestCase):
             carries[host], ages[host] = hours.age(kinds, hours.take_carry(red), {},
                                                   int(t // HOUR))
         acc = fresh()
-        with mock.patch.object(own_io, "REAPED_MAX", 3):
-            got = hours.combine_carries(carries, ages, acc)
+        got = hours.combine_carries(carries, ages, acc)
         for k in JOINS:
             with self.subTest(reducer=k):
                 self.assertEqual(len(got[k]["reaped"]), 3)
                 self.assertEqual(join_of(acc[k]).evicted, 1)
         hours.install(acc, got)
         self.assertEqual(acc["io_process"].result()["own_io"]["evicted"], 1)
+
+    def test_the_parent_given_to_least_recently_goes_first(self):
+        # an agent at work, a shell that has stopped reaping, then a third
+        # parent past a cap of two: the shell goes, and the agent's exit still
+        # takes both its tool calls off
+        def ex(t, pid, ppid, rd):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": "alice",
+                    "_ts_epoch": t, "duration_s": 1.0, "io": iob(rd, rd)}
+        t = time.time() - 600
+        j = own_io.OwnIo(own_io.DISK, cap=2)
+        j.take(ex(t, 11, 10, 1.0))
+        j.take(ex(t + 1, 21, 20, 1.0))
+        j.take(ex(t + 2, 12, 10, 1.0))
+        j.take(ex(t + 3, 31, 30, 1.0))
+        self.assertEqual(list(j.reaped), [("h1", 10), ("h1", 30)])
+        self.assertEqual(j.evicted, 1)
+        self.assertEqual(j.take(ex(t + 4, 10, 1, 5.0)), (3.0, 0.0))
+
+    def test_every_join_is_held_to_the_setting(self):
+        self.assertEqual(own_io.cap_of(cfg()), own_io.REAPED_MAX)
+        self.assertEqual(own_io.OwnIo().cap, own_io.REAPED_MAX)
+        c = capped(7)
+        red = PanelView(c, CLASSES, 60).fresh_reducers()
+        for k in JOINS:
+            with self.subTest(reducer=k):
+                self.assertEqual(join_of(red[k]).cap, 7)
+                self.assertEqual(red[k].carry_caps()["reaped"], 7)
+        lv = LiveReducer(c, CLASSES)
+        self.assertEqual((lv.io_join.cap, lv.io_given.cap), (7, 7))
+        self.assertEqual(TreeBuilder(own_cap=own_io.cap_of(c)).own.cap, 7)
 
 
 class ClampTest(unittest.TestCase):
@@ -599,13 +634,13 @@ class ClampTest(unittest.TestCase):
 class LookupTest(FeedCase):
     """The commands behind a number: the same own bytes, and exits only."""
 
-    def test_a_lookup_sums_what_the_panels_sum(self):
+    def lookup(self, c):
         t = self.now - 600
         recs = family(t) + [
             person("truncated", t + 200, 300, 250, "vim", "vim notes.txt", "alice",
                    io=dict(iob(50.0, 50.0), scope="proc"), cpu_s=40.0)]
         self.append("h1.jsonl", recs)
-        io = iocmds.IoCommands(self.cfg(), lambda: [self.root])
+        io = iocmds.IoCommands(c, lambda: [self.root])
         f = parse_filters({})
         f.pop("q", None)
         f["event"] = None
@@ -615,6 +650,17 @@ class LookupTest(FeedCase):
                 break
             time.sleep(0.02)
         self.assertEqual(j.state, "done", j.error)
+        return j
+
+    def test_its_join_is_held_to_the_setting(self):
+        c = self.cfg()
+        c.set("reducers.own_io.max_parents", 7, "test")
+        with mock.patch.object(iocmds, "OwnIo", side_effect=own_io.OwnIo) as made:
+            self.lookup(c)
+        self.assertEqual([k.get("cap") for _a, k in made.call_args_list], [7])
+
+    def test_a_lookup_sums_what_the_panels_sum(self):
+        j = self.lookup(self.cfg())
         self.assertEqual((j.totals["n"], j.totals["rd_mb"], j.totals["rchar_mb"]),
                          (4, 1006.0, 1310.0))
         rows = {r["cmd"]: r["rd_mb"] for r in j.page("rd_mb", True, 0, 100)}

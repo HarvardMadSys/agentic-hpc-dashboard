@@ -49,11 +49,20 @@ The join crosses hours: a shell that exits in the next hour gives back what the
 children it reaped in this one carried. So `reaped` is CARRIED into each hour's
 reduction and is not part of the saved hour (`hours`): a reducer's `carry`,
 `seed`, `strip` and `track` hand it on, its CARRY_AGED ages it with the rest of
-its join state, and its `carry_caps` hold it to REAPED_MAX parents, the oldest
-first out. Every parent dropped is counted (`evicted`): at the reducer's own
-cap, and at one pass's when a window puts the nodes' joins together
-(`carry_trimmed`); its children's bytes then count again at its exit. So is a
-figure short of what its children carried (`clamped`): shown as 0, never below.
+its join state, and its `carry_caps` hold it to the join's cap. Every parent
+dropped is counted (`evicted`): at the reducer's own cap, and at one pass's
+when a window puts the nodes' joins together (`carry_trimmed`); its children's
+bytes then count again at its exit. So is a figure short of what its children
+carried (`clamped`): shown as 0, never below.
+
+The cap is a setting, `reducers.own_io.max_parents` (`cap_of`; REAPED_MAX
+unless set), because a service holds some 35 joins at once -- five in each
+held window, five carried in the hours' chain, the live tier's two, an
+inspector read's and a lookup's -- and each holds its parents apart. A parent costs about 0.5 KB with one
+entry and up to 2.5 KB with PER_PID, so the default is at worst some 48 MB
+over all of them (README, "Disk I/O is each process's own"). The parent given
+to least recently goes first: a dead one whose orphans' bytes wait under its
+pid, or one that has stopped reaping, before one at work.
 """
 import collections
 
@@ -61,7 +70,7 @@ from ..procindex import pop_oldest, users_conflict
 
 FIELDS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb")
 DISK = ("rd_mb", "wr_mb")
-REAPED_MAX = 200000         # parents with exited children held for their own exit
+REAPED_MAX = 600            # parents held for their own exit, unless the setting says (`cap_of`)
 START_SLACK_S = 60.0        # how long before a process's recorded start its child may begin
 # A figure short of what its children carried by more than the collector's
 # rounding (MB to three places, per child) is counted when it is shown as 0.
@@ -73,6 +82,13 @@ CLAMP_TOL_MB = 0.01
 # of them, the two of one user whose starts are closest merged past it.
 _G_USER, _G_START, _G_VALS = 0, 1, 2
 PER_PID = 8
+
+
+def cap_of(cfg):
+    """The parents one join holds: `reducers.own_io.max_parents`, REAPED_MAX
+    unless set."""
+    r = (cfg.get("reducers.own_io", {}) if cfg is not None else None) or {}
+    return max(1, int(r.get("max_parents") or REAPED_MAX))
 
 
 def _entry_for(held, user, st):
@@ -137,12 +153,13 @@ def _start(rec):
 class OwnIo:
     """One reducer's join (the module docstring): `take` every exit, in order."""
 
-    __slots__ = ("fields", "reaped", "evicted", "rejected", "clamped", "touched")
+    __slots__ = ("fields", "cap", "reaped", "evicted", "rejected", "clamped", "touched")
 
-    def __init__(self, fields=FIELDS):
+    def __init__(self, fields=FIELDS, cap=None):
         self.fields = tuple(fields)
+        self.cap = max(1, int(REAPED_MAX if cap is None else cap))
         # (host, pid) -> what its exited children carried, for its own exit to
-        # give back: a group per user (_G_*)
+        # give back (_G_* entries), the one given to least recently first
         self.reaped = collections.OrderedDict()
         self.evicted = 0            # parents dropped at either cap (`carry_trimmed`)
         self.rejected = 0           # groups a process could not have reaped: dropped
@@ -206,10 +223,12 @@ class OwnIo:
         key = (rec.get("host"), ppid)
         held = self.reaped.get(key)
         if held is None:
-            if len(self.reaped) >= REAPED_MAX:
+            if len(self.reaped) >= self.cap:
                 pop_oldest(self.reaped)
                 self.evicted += 1
             held = self.reaped[key] = []
+        else:
+            self.reaped.move_to_end(key)
         user, st = rec.get("user") or None, _start(rec)
         g = _entry_for(held, user, st)
         if g is None:
@@ -272,7 +291,7 @@ class OwnIo:
 
     def carry_caps(self):
         """What one pass holds `reaped` to (`hours.combine_carries`)."""
-        return {"reaped": REAPED_MAX}
+        return {"reaped": self.cap}
 
     def carry_trimmed(self, c, dropped):
         """The parents `hours.combine_carries` dropped past that cap, putting the

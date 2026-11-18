@@ -86,7 +86,7 @@ from .where import AfterColon
 from .procindex import VIA
 from .redact import redact
 from .reducers import EXIT_ANSWERS
-from .reducers.own_io import OwnIo
+from .reducers.own_io import OwnIo, cap_of
 from .reducers.trajectories import fold as fold_sessions
 
 NO_PARENT = (None, 0, 1)
@@ -452,7 +452,7 @@ class TreeBuilder:
     """
 
     def __init__(self, hold=DEFAULTS["inspect_hold"],
-                 per_parent=DEFAULTS["inspect_per_parent"], newest=False):
+                 per_parent=DEFAULTS["inspect_per_parent"], newest=False, own_cap=None):
         self.hold = max(1, int(hold))
         self.hard = self.hold + self.hold // 2
         self.per_parent = max(1, int(per_parent))
@@ -488,7 +488,7 @@ class TreeBuilder:
         # Each process's own disk and syscall bytes (reducers/own_io.py), over
         # the records this read takes: a child the read does not take (another
         # session's) is not taken off its parent.
-        self.own = OwnIo()
+        self.own = OwnIo(cap=own_cap)
 
     # ----------------------------------------------------------------- feed
     def feed(self, rec):
@@ -1937,7 +1937,8 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     if not plan:
         plan, total = window_plan(roots, since, days)
 
-    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
+    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest,
+                    own_cap=cap_of(cfg))
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}

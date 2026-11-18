@@ -29,7 +29,7 @@ import collections
 import time
 
 from . import INSTANCE_CAP, Acc, Quant, add_counts, pct, top_by, who
-from .own_io import OwnIo
+from .own_io import OwnIo, cap_of
 from ..redact import redact
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
@@ -123,7 +123,7 @@ class ResourceReducer:
         # its row is not made at all: nearly every exit waited for a CPU a little.
         self.floor = {"worst_stall": 0, "worst_fault": 0, "worst_wait": 0}
         # each process's own bytes for the I/O series (own_io.py)
-        self.own = OwnIo()
+        self.own = OwnIo(cap=cap_of(cfg))
 
     def _bin(self, rec):
         """The bin a record lands in, or None when it has no usable time."""

@@ -160,7 +160,7 @@ from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN
                             segment)
 from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
 from .phase_tasks import DEFAULTS as TASK_DEFAULTS, name_tasks, task_spans
-from .own_io import DISK, OwnIo
+from .own_io import DISK, OwnIo, cap_of
 
 RANKS = ("recent", "events", "cpu_s", "peak_rss_mb", "io_mb", "net_mb", "distinct_tools")
 RANK_MEANING = {
@@ -786,7 +786,7 @@ class TrajectoryReducer:
         # (host, pid) -> [MB read, MB written] its exited children carried, for
         # its own exit to give back (`own_io`): the join every panel that sums
         # disk bytes holds one of (own_io.py), here over disk bytes alone.
-        self.own = OwnIo(DISK)
+        self.own = OwnIo(DISK, cap_of(cfg))
         # Phases. The thresholds: the config's over phase_segment.DEFAULTS.
         self.phase_params = dict(PHASE_DEFAULTS, **(r.get("phases") or {}))
         # The tasks above them, likewise: the config's over phase_tasks.DEFAULTS.

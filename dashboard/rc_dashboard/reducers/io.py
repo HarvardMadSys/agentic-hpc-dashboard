@@ -34,7 +34,7 @@ import collections
 import heapq
 
 from . import Acc, Quant, add_counts, pct
-from .own_io import OwnIo
+from .own_io import OwnIo, cap_of
 
 IO_KEYS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # The losses a `net_endpoints` block states, beside its endpoints.
@@ -103,7 +103,7 @@ class IoReducer:
         self.endpoints = collections.defaultdict(_endpoint)
         self.ep_cover = collections.defaultdict(_ep_cover)
         # each process's own bytes, its reaped children's taken off (own_io.py)
-        self.own = OwnIo()
+        self.own = OwnIo(cap=cap_of(cfg))
 
     def feed(self, rec):
         c = self.cls[rec["_a3"]]

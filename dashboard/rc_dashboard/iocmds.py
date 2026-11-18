@@ -36,7 +36,7 @@ from .where import Prefix
 from .proctree import _trie
 from .normalize import Normalizer
 from .redact import redact
-from .reducers.own_io import OwnIo
+from .reducers.own_io import OwnIo, cap_of
 
 # Exits, as every panel's sums take them: a `truncated` record is a process still
 # running at a collector stop, which its exit after the restart counts again.
@@ -315,7 +315,7 @@ class IoCommands:
         groups = j.groups = {}
         tot = [0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0]
         st = j.stats
-        join = OwnIo()
+        join = OwnIo(cap=cap_of(self.cfg))
         # Files one after another, not merged on time: a sum has no order, and
         # a merge holds every file open to seed it. Each host's own day-files
         # come in date order (`day_files`), so a child is read before the

@@ -19,7 +19,7 @@ conservative rule.
 import collections
 
 from . import EXIT_ANSWERS, SIGPIPE, Reducer, add_counts, pct
-from .own_io import DISK, OwnIo
+from .own_io import DISK, OwnIo, cap_of
 from ..procindex import pop_oldest
 from ..tool_buckets import BUCKETS, bucket
 
@@ -101,7 +101,7 @@ class ToolMixReducer(Reducer):
         self.dropped = 0
         self.total = 0
         self.evicted = 0
-        self.own = OwnIo(DISK)
+        self.own = OwnIo(DISK, cap_of(cfg))
 
     def feed(self, rec):
         sid = rec.get("_sid")

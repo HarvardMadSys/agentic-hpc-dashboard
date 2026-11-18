@@ -61,7 +61,7 @@ import time
 
 from ..proctree import ran
 from ..redact import redact
-from .own_io import OwnIo
+from .own_io import OwnIo, cap_of
 
 R, W, D, N = 1, 2, 4, 8
 OPS = (("read", R), ("write", W), ("delete", D), ("named", N))
@@ -1031,7 +1031,7 @@ class WorkspaceReducer:
         self._admitted = {}
         # each process's own bytes (own_io.py), over the records kept here: an
         # agent's process reaps only its agent's
-        self.own = OwnIo()
+        self.own = OwnIo(cap=cap_of(cfg))
 
     # ------------------------------------------------------------- feed
     def feed(self, rec):
