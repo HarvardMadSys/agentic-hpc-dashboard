@@ -803,7 +803,8 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
 - **Stable, not reversible.** An alias is 8 hex characters of an HMAC under a secret salt:
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
   account reads the same in every tab, window, and restart, and without the salt a list of
-  candidate names does not turn an alias back. Changing the salt reshuffles every alias.
+  candidate names does not turn an alias back -- nor does sending them to the service
+  (**Requests**, below). Changing the salt reshuffles every alias.
   Neither `/api/config` nor `--print-config` shows it.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
@@ -824,15 +825,34 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   state keep raw names, and `anonymize` is left out of both saved-state fingerprints, so
   switching it is a restart, never a rebuild. Anonymizing that fails is a 500 with no body,
   never the raw payload.
-- **Requests.** A `user` filter, the user drill-down, and both searches take aliases. A real
-  name matches nothing, so the page cannot be used to ask whether someone is here.
+- **Requests.** The page sends aliases, and a real name in their place finds nothing, so the
+  service cannot be used to ask whether someone is here, or which alias is theirs.
+  - A `user` filter, the user drill-down (`name`), and a session id (`sid`, whose `tty:` and
+    `usr:` keys name an account) take an alias. Anything else maps to `user-unknown`, which
+    matches no record.
+  - Both searches (`q`), and the `host`, `tool` and directory (`cwd`) filters, match the text
+    as the reader sees it: each record's account is learned before its text is masked, so a
+    real name matches nothing even in records no response has named yet. An alias inside a
+    path or a word is turned back into its account only to find the records to test.
+  - What a response echoes of a request goes back exactly as it was sent, never through the
+    rewrite (`anonymize.Verbatim`): the export header's filters, a view's filter block and
+    window status, an I/O lookup's query, a session id, and an Ask question, its title and
+    classes, the answer, and the suggestions marked done. Rewritten, the service translated
+    any name it was sent: `host=alice,zed9` came back as her alias and `zed9`, which is no
+    account, as it was.
 - **Not covered.** A person's name in free text that no rule ties to an account (a commit
-  message, a folder named after someone), hostnames, partitions, and job ids. In `/api/health`,
-  `anonymize` counts the names it knows, the collisions (two names, one alias), and the
-  accounts left visible because their name is a reserved word. It never shows a name.
+  message, a folder named after someone), hostnames, partitions, and job ids. Nor a name the
+  masking cannot see yet: an account named in another account's command line, outside a home
+  path, before any response has named that account. A search for that name finds the line,
+  and if the same scan of `/api/events` read that account's own records, the line is served
+  with its alias there. In `/api/health`, `anonymize` counts the names it knows, the
+  collisions (two names, one alias), and the accounts left visible because their name is a
+  reserved word. It never shows a name.
 
 `tests/test_anonymize_leak.py` starts the app over a feed full of names, then reads every route
-and the websocket. No byte may carry one.
+and the websocket. No byte may carry one. Its `ReaderTextTest` sends a real name in every
+query, path and body parameter of every route instead: no answer may carry that name's alias,
+or any of that account's rows.
 
 ## Password
 
