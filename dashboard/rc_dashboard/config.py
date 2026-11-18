@@ -29,6 +29,9 @@ HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 INGEST_WORKERS = 1
 # `ingest.reducer_groups`: processes per node's hour, one per reducer group (1 or 2).
 INGEST_REDUCER_GROUPS = 2
+# `reducers.own_io.max_parents`: the parents each own-I/O join holds
+# (reducers/own_io.py, whose REAPED_MAX a test holds equal).
+OWN_IO_MAX_PARENTS = 2000
 
 
 def _env(name, default=None):
@@ -296,8 +299,9 @@ def defaults():
             # at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at worst
             # (eight, ~2.5 KB) 159 MB. The repo's streams hold under 500 at
             # once; a busy login node may need more, at 19 to 80 KB for each
-            # one added (README, "Disk I/O is each process's own").
-            "own_io": {"max_parents": 2000},
+            # one added (README, "Disk I/O is each process's own"). A count of
+            # one or more: 0 is refused at start, as is anything not a count.
+            "own_io": {"max_parents": OWN_IO_MAX_PARENTS},
             # `live_s`: how stale the ranked sessions may get while the view
             # is fed live -- the panel re-reads them that often, and they are
             # re-ranked on the read, not only at the next rebuild.
@@ -691,6 +695,17 @@ def load(args=None, config_path=None):
     if type(groups) is not int or groups not in (1, 2):
         raise SystemExit("ingest.reducer_groups: %r is not 1 or 2 (set by %s)" % (
             groups, origins.get("ingest.reducer_groups", "default")))
+
+    # The parents each own-I/O join holds (reducers/own_io.py): a count of one
+    # or more, or the service refuses to start rather than guess -- 0 is neither
+    # "unbounded" nor "no join". Null is the default.
+    key = "reducers.own_io.max_parents"
+    cap = _get(tree, key, OWN_IO_MAX_PARENTS)
+    if cap is None:
+        _set(tree, key, OWN_IO_MAX_PARENTS)
+    elif type(cap) is not int or cap < 1:
+        raise SystemExit("%s: %r is not a count of parents, 1 or more (set by %s)" % (
+            key, cap, origins.get(key, "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

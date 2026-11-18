@@ -762,9 +762,9 @@ already made once.
   in `rejected` (on four million records, one child in 2.7 M began a minute to an hour before
   its parent's recorded start). A figure short of what its children carried shows as 0, never
   below, and is counted too. Each join holds at most `reducers.own_io.max_parents` parents
-  (2000), the one given to least recently dropped first, counted (`evicted`) and said on stderr
-  (the first time, then at most hourly a panel), its children's bytes then counted again at its
-  exit. What is held for an agent runtime, or for the process that started one, is passed over:
+  (2000; below 1 the service refuses to start), the one given to least recently dropped first,
+  counted (`evicted`) and said on stderr (the first time, then at most hourly a panel), its
+  children's bytes then counted again at its exit. What is held for an agent runtime, or for the process that started one, is passed over:
   an agent sits idle as long as its reader does while other parents reap, and its tool calls'
   bytes are the most a parent holds. A service holds some 35 joins (five in each held window,
   five carried in the hours' chain, the live tier's two, an inspector read's and a lookup's): at

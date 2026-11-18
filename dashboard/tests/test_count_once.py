@@ -19,7 +19,10 @@ Two ways the per-class totals counted one process's resources twice.
 """
 import contextlib
 import io
+import json
+import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -28,6 +31,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from rc_dashboard import config as configmod                   # noqa: E402
 from rc_dashboard import hours, iocmds                         # noqa: E402
 from rc_dashboard.export import parse_filters                  # noqa: E402
 from rc_dashboard.normalize import Normalizer                  # noqa: E402
@@ -747,6 +751,41 @@ class JoinBoundsTest(unittest.TestCase):
                          [(7, "live"), (7, "live")])
         own = TreeBuilder(own_cap=own_io.cap_of(c)).own
         self.assertEqual((own.cap, own.name), (7, "inspector"))
+
+
+class SettingTest(unittest.TestCase):
+    """`reducers.own_io.max_parents` is a count of one or more: 0 is neither
+    "unbounded" nor "no join", and the service refuses it at start rather than
+    run with the default."""
+
+    def load(self, value):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "dashboard.config.json")
+            with open(path, "w") as fh:
+                json.dump({"reducers": {"own_io": {"max_parents": value}}}, fh)
+            return configmod.load(None, path)
+
+    def test_below_one_or_not_a_count_is_refused_at_start(self):
+        for bad in (0, -1, 1.5, True, "600"):
+            with self.subTest(value=bad):
+                with self.assertRaises(SystemExit) as cm:
+                    self.load(bad)
+                self.assertIn("reducers.own_io.max_parents: %r is not a count of parents, "
+                              "1 or more" % (bad,), str(cm.exception))
+
+    def test_null_is_the_default_and_one_is_one(self):
+        self.assertEqual(self.load(None).get("reducers.own_io.max_parents"), own_io.REAPED_MAX)
+        self.assertEqual(own_io.cap_of(self.load(1)), 1)
+
+    def test_a_join_refuses_it_too(self):
+        c = cfg()
+        c.set("reducers.own_io.max_parents", 0, "test")
+        with self.assertRaises(ValueError):
+            own_io.cap_of(c)
+        with self.assertRaises(ValueError):
+            own_io.OwnIo(cap=0)
+        c.set("reducers.own_io.max_parents", None, "test")
+        self.assertEqual(own_io.cap_of(c), own_io.REAPED_MAX)
 
 
 class ClampTest(unittest.TestCase):

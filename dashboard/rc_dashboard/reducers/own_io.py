@@ -148,9 +148,18 @@ def _now():
 
 def cap_of(cfg):
     """The parents one join holds: `reducers.own_io.max_parents`, REAPED_MAX
-    unless set."""
+    when unset or null. Below 1 is refused, here as at config load: 0 is
+    neither "unbounded" nor "no join"."""
     r = (cfg.get("reducers.own_io", {}) if cfg is not None else None) or {}
-    return max(1, int(r.get("max_parents") or REAPED_MAX))
+    v = r.get("max_parents")
+    return REAPED_MAX if v is None else _count(v)
+
+
+def _count(v):
+    if type(v) is not int or v < 1:
+        raise ValueError("reducers.own_io.max_parents: %r is not a count of parents, "
+                         "1 or more" % (v,))
+    return v
 
 
 def _entry_for(held, user, st):
@@ -220,7 +229,7 @@ class OwnIo:
 
     def __init__(self, fields=FIELDS, cap=None, name="own_io"):
         self.fields = tuple(fields)
-        self.cap = max(1, int(REAPED_MAX if cap is None else cap))
+        self.cap = REAPED_MAX if cap is None else _count(cap)
         self.name = name            # the panel it serves, for what it says (`_say`)
         # (host, pid) -> what its exited children carried, for its own exit to
         # give back (_G_* entries), the one given to least recently first
