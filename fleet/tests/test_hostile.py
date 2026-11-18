@@ -391,8 +391,13 @@ class TestSkewedNode(unittest.TestCase):
             c.append("exits", b'{"d":2}\n')
             rig.start()
             sealed = [c.key(s, day) for day in d[:2] for s in ("exits", "snapshot")]
+            # The hello names the live day before its first bytes are applied, and
+            # those make its folder: wait for the folder too, so that the retention
+            # pass below meets all three days.
             self.assertTrue(wait_for(lambda: all(k in rig.mirror.verified for k in sealed)
-                                     and rig.link.live == d[2]), rig.link.status())
+                                     and rig.link.live == d[2]
+                                     and os.path.isdir(os.path.join(rig.mdir, d[2]))),
+                            rig.link.status())
             r = fs.Receiver({"base": rig.basedir, "days": 3, "hosts": {}})
             r.base, r.links = rig.base, [rig.link]
             r.retention()
