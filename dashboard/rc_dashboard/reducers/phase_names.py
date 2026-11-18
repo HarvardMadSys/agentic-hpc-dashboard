@@ -196,6 +196,7 @@ import shlex
 from ..redact import MASK, masked_by_rules, redact
 from .phase_rules import (_cached, _GIT_VALUED, _SETUP, _SHELL_VALUE_OPTS, _UV_VALUED, _c_index,
                           _commands, _in_place, _read, _sub)
+from .phase_rules import _cut as _cut_text
 
 KINDS = ("run", "test", "write", "read", "dir", "job", "pr", "branch", "worktree", "pkg", "scratch",
          "cd", "grep", "word")
@@ -1270,9 +1271,10 @@ def tagset(text, masked=None):
 
     Cached (`phase_rules._cached`): a pure function of its text and the masking rules, whose answer
     is tuples and strings, read for every tool call an agent makes -- and a session repeats its
-    commands. The repeats are short, so the cache keeps texts of 1 KB at most, 16,384 of them; and
-    it is dropped whenever the masking rules grow (`redact.masked_by_rules`)."""
-    m = masked if masked is not None else redact(text)
+    commands. The repeats are short, so the cache keeps texts of 1 KB at most, 16,384 of them, and
+    longer ones by digest (`_cached`); both are dropped whenever the masking rules grow
+    (`redact.masked_by_rules`). A text is read as far as `phase_rules._MAX_TEXT` (`_cut_text`)."""
+    m = _cut_text(masked) if masked is not None else redact(_cut_text(text or ""))
     if not m:
         return (), None
     cmds, read = _commands(m), _heredoc_messages(m)

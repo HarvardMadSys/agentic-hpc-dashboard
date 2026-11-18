@@ -225,6 +225,48 @@ class SplitterTest(unittest.TestCase):
         self.assertLess(dt, BOUND)
 
 
+class LongTextTest(unittest.TestCase):
+    """A text past 4 KB was read around the caches, again every time it came, and as far as
+    100,000 characters: 100 KB of short lines took 0.8 s in each of category_of, tagset and
+    category_of_argv, at each record that carried it."""
+
+    def setUp(self):
+        for fn in (R.category_of, R.category_of_argv, N.tagset):
+            fn.cache_clear()
+
+    tearDown = setUp
+
+    def test_a_long_text_is_read_once_and_only_so_far(self):
+        text = "a\n" * 50000
+        t0 = time.perf_counter()
+        for _ in range(4):
+            R.category_of(text)
+            N.tagset(text)
+            R.category_of_argv("bash", "bash -c " + text)
+        self.assertLess(time.perf_counter() - t0, 1.5)     # 4 x 2.5 s on develop
+
+    def test_a_long_text_is_remembered_by_its_digest_and_never_kept(self):
+        text = "cat notes.md\n" + "ls\n" * 3000
+        first = N.tagset(text)
+        self.assertEqual(first, ((("read", "notes.md"),), None))
+        self.assertIs(N.tagset(text), first)               # not read again
+        (key,) = N.tagset.cache_long
+        self.assertEqual((type(key), len(key)), (bytes, 16))
+        self.assertEqual(N.tagset.cache_info().currsize, 0)
+        self.assertEqual(R.category_of(text), "explore")
+        self.assertEqual(len(R.category_of.cache_long), 1)
+        N.tagset.cache_clear()                             # as a change of the masking rules does
+        self.assertEqual(len(N.tagset.cache_long), 0)
+
+    def test_what_lies_past_the_cut_is_not_read(self):
+        self.assertEqual(R.category_of("ls\n" * (R._MAX_TEXT // 3) + "pytest -q"), "explore")
+        self.assertEqual(R.category_of("ls\npytest -q"), "test")
+        for text in ("ab " * 10000, "a\n" * 10000 + "b" * 20000, "x" * 20000):
+            cut = R._cut(text)
+            self.assertTrue(text.startswith(cut) and len(cut) <= R._MAX_TEXT)
+            self.assertTrue(text[len(cut)] in " \n" or len(cut) == R._MAX_TEXT, text[:8])
+
+
 class HeredocMessageTest(unittest.TestCase):
     """`_heredoc_messages` read a heredoc it then did not take again from every opening inside it:
     1 s for 1,600 nested openings (39 KB)."""

@@ -166,11 +166,14 @@ What this misreads, in records, from boslogin06 (schema 7) on 2026-10-28 and rtx
     burst, and on four of the five node-days whose captures hold the app's reads a model's call
     came within 1.2 s of one of them. Within 2 s, a model's `cat` with no argv is the app's.
 """
+import collections
 import functools
+import hashlib
 import math
 import os
 import re
 import shlex
+import threading
 import zlib
 
 from ..procindex import _NO_PARENT
@@ -180,7 +183,11 @@ from ..roles import (_AGENT_EXES, _EMBEDDED, _SANDBOX_PREFIX, _SHELLS, _TOOL_SHE
 # In priority order: a call that holds several commands takes the first category any of them has.
 CATS = ("test", "slurm", "run", "build", "edit", "git", "wait", "explore", "unknown")
 
-_MAX_TEXT = 100000          # characters of one command read; the longest argv seen was 58 k
+# Characters of one command read, at most (`_cut`). A Claude Bash call's argv is 2.6 KB at the 99th
+# percentile on boslogin06 and 6.8 KB at most, and the collector's in-kernel read keeps 4 KB; only
+# an argv read from /proc at its start is longer (the longest seen, 58 k). Reading costs about
+# 16 us a line: 100,000 characters of short lines took 0.8 s for each of category_of and tagset.
+_MAX_TEXT = 16384
 _MAX_DEPTH = 3              # `$( )`, `sh -c` and `eval` read inside one another this deep
 _LOOKAHEAD = 40             # lines a quoted string may run on, looking for its closing quote
 _LOOKAHEAD_MISSES = 8       # quotes a text may leave open for good before its lines are not looked past
@@ -451,6 +458,17 @@ def _left_open(s, state=""):
             i, state = i + 1, "" if state == "\\" else '"'
 
 
+def _cut(text):
+    """`text` as far as `_MAX_TEXT` characters: cut at its last line before that, else its last word,
+    not in a word -- half a word would read as a program."""
+    if len(text) <= _MAX_TEXT:
+        return text
+    k = text.rfind("\n", 0, _MAX_TEXT + 1)
+    if k <= 0:
+        k = max(text.rfind(" ", 0, _MAX_TEXT + 1), text.rfind("\t", 0, _MAX_TEXT + 1))
+    return text[:k if k > 0 else _MAX_TEXT]
+
+
 def _is_separator(tok):
     return bool(tok) and all(c in _SEPARATOR for c in tok)
 
@@ -471,10 +489,7 @@ def _lines(text):
     every line, took 2 s over 1,000 lines that each end in three backslashes. A text whose quotes
     stay open for good `_LOOKAHEAD_MISSES` times has its next such lines split on whitespace
     without looking past them; the test texts leave two at most."""
-    if len(text) > _MAX_TEXT:
-        k = text.rfind("\n", 0, _MAX_TEXT)
-        text = text[:k if k > 0 else _MAX_TEXT]
-    lines = text.split("\n")
+    lines = _cut(text).split("\n")
     n, i, misses = len(lines), 0, 0
     while i < n:
         line = lines[i]
@@ -1387,28 +1402,58 @@ def _category(cmds):
     return "explore" if setup else "unknown"
 
 
-# Characters of a text the rule caches hold: a longer one is read each time it comes, so each
-# cache holds 65,536 texts of 4 KB at most. On boslogin06 a Claude Bash call's argv is 2.6 KB at the
-# 99th percentile and 6.8 KB at most (the final review's measure); a text is read only as far as
-# _MAX_TEXT in any case.
+# Characters of a text the rule caches hold: each cache holds 65,536 texts of 4 KB at most. On
+# boslogin06 a Claude Bash call's argv is 2.6 KB at the 99th percentile and 6.8 KB at most (the final
+# review's measure); a text is read only as far as _MAX_TEXT in any case. A longer text is
+# remembered by a digest of it instead, LONG_CACHED of them: read again each time it came, one of
+# crafted shape took seconds at every window build.
 CACHED_TEXT = 4096
+LONG_CACHED = 4096
+
+
+def _digest(args):
+    """16 bytes that stand for a call's arguments (texts, or None), in place of the texts."""
+    h = hashlib.blake2b(digest_size=16)
+    for a in args:
+        b = a.encode("utf-8", "surrogatepass") if isinstance(a, str) else repr(a).encode()
+        h.update(b"%d:%s:" % (len(b), type(a).__name__.encode()))
+        h.update(b)
+    return h.digest()
 
 
 def _cached(fn=None, *, maxsize=65536, text_max=CACHED_TEXT):
-    """`functools.lru_cache(maxsize)` over `fn`, with a call whose texts pass `text_max` characters
-    read around it. `cache_info` and `cache_clear` are the cache's, and `__wrapped__` is `fn`.
-    Bare (`@_cached`), or with smaller bounds (`@_cached(maxsize=..., text_max=...)`)."""
+    """`functools.lru_cache(maxsize)` over `fn`, and for a call whose texts pass `text_max` characters
+    a cache of LONG_CACHED answers by the digest of its texts (`cache_long`), which never holds the
+    texts themselves. `cache_info` is the first cache's, `cache_clear` clears both, and
+    `__wrapped__` is `fn`. Bare (`@_cached`), or with smaller bounds (`@_cached(maxsize=...,
+    text_max=...)`)."""
     if fn is None:
         return functools.partial(_cached, maxsize=maxsize, text_max=text_max)
     cache = functools.lru_cache(maxsize=maxsize)(fn)
+    long, lock = collections.OrderedDict(), threading.Lock()
 
     @functools.wraps(fn)
     def call(*args):
-        if sum(len(a) for a in args if isinstance(a, str)) > text_max:
-            return fn(*args)
-        return cache(*args)
+        if sum(len(a) for a in args if isinstance(a, str)) <= text_max:
+            return cache(*args)
+        key = _digest(args)
+        with lock:
+            if key in long:
+                long.move_to_end(key)
+                return long[key]
+        out = fn(*args)
+        with lock:
+            long[key] = out
+            if len(long) > LONG_CACHED:
+                long.popitem(last=False)            # the least recently used
+        return out
 
-    call.cache_info, call.cache_clear = cache.cache_info, cache.cache_clear
+    def clear():
+        cache.cache_clear()
+        with lock:
+            long.clear()
+
+    call.cache_info, call.cache_clear, call.cache_long = cache.cache_info, clear, long
     return call
 
 
@@ -1417,11 +1462,11 @@ def category_of(text):
     """One of CATS for a shell command text. A call that holds several commands takes the first of
     CATS any of them has; a loop that sleeps is a wait whatever it holds; setup-only commands name a
     call only when nothing else is in it; and a text with no command to read is `unknown`. A text
-    is read as far as _MAX_TEXT (100,000 characters), cut at the last line before it (`_lines`).
+    is read as far as _MAX_TEXT (16,384 characters), cut at the last line before it (`_cut`).
 
     Cached: a command line recurs (a poll runs the same one every round) and this runs on millions
     of records a day. It is a pure function of the text, so the cache cannot go stale. A text past
-    CACHED_TEXT characters is read around the cache (`_cached`)."""
+    CACHED_TEXT characters is remembered by its digest (`_cached`)."""
     if not text or not text.strip() or "CODEX_REMOTE_PAYLOAD" in text:
         return "unknown"
     return _category(_commands(text))
@@ -1435,7 +1480,9 @@ def category_of_argv(command, args):
 
     A wrapper's shell is read through too (`sudo -n bash -c pytest -q`, `nohup sh -c ...`).
 
-    Cached on `(command, args)`, like `category_of`, and around the cache past CACHED_TEXT."""
+    Cached on `(command, args)`, like `category_of`, and by digest past CACHED_TEXT. `args` is read
+    as far as _MAX_TEXT, as a text is (`_cut`)."""
+    args = _cut(args) if args else args
     text = shell_text(command, args)
     if text is not None:
         return category_of(text)
