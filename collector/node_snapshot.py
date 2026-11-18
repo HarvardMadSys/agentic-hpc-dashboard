@@ -556,7 +556,8 @@ def parse_d_state_procs(s):
 # tests/test_ebpfm.py's ClassifyTest holds the two equal.
 _AGENT_PATTERNS = [
     ('claude_code', re.compile(r'anthropic\.claude-code|native-binary/claude'
-                               r'|/\.claude/(?!worktrees/)|claude-agent-sdk'
+                               r'|/\.claude/(?:local|remote)/|/\.claude/cli\.[cm]?js$'
+                               r'|claude-agent-sdk'
                                r'|(?:^|/|\s)claude(?:\s|$)'
                                r'|/claude/versions/|@anthropic-ai/claude-code'
                                r'|claude-code/cli\.[cm]?js$', re.I)),

@@ -389,8 +389,9 @@ What moves:
   path with nothing else naming Claude (`~/.local/share/claude/versions/2.1.282
   --session-id …`), Claude Code's npm launcher by path (`node
   …/@anthropic-ai/claude-code/cli.js`), and `npx @anthropic-ai/claude-code`.
-- **A program in a Claude worktree is the project's**: `<repo>/.claude/worktrees/…` does
-  not make a program Claude's, as `~/.claude/…` does.
+- **Under `~/.claude/` only Claude Code's own installs are Claude's**: `~/.claude/local/…`,
+  `~/.claude/remote/…` and its CLI's `cli.js`. A hook or a status line script there, run
+  by hand, is the user's, and a program in a project's `.claude/worktrees/…` the project's.
 - The role table's `helper`s that were tagged only for a path among their arguments
   (`chmod`, `mkdir` and `sh -c ls` on `~/.claude/` or `~/.codex/`), and the native binary
   run as `rg` or `ugrep`, are not tagged: in a tree they are its processes at the same

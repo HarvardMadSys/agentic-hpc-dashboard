@@ -24,10 +24,14 @@ import re
 
 # The agents' own programs: their names, and the places they are installed. Read
 # against the program words of a command line (_program_words), one word at a time.
-# A project's .claude/worktrees/ holds the project's programs, not Claude's.
+# Under ~/.claude/ only Claude Code's own installs are Claude's -- local/ (its
+# local installer), remote/ (the desktop app's ccd-cli and server) and its CLI's
+# entry script, cli.js: a hook or a status line there is the user's script, and a
+# project's .claude/worktrees/ holds the project's programs.
 _AGENT_PATTERNS = [
     ('claude_code', re.compile(r'anthropic\.claude-code|native-binary/claude'
-                               r'|/\.claude/(?!worktrees/)|claude-agent-sdk'
+                               r'|/\.claude/(?:local|remote)/|/\.claude/cli\.[cm]?js$'
+                               r'|claude-agent-sdk'
                                r'|(?:^|/|\s)claude(?:\s|$)'
                                r'|/claude/versions/|@anthropic-ai/claude-code'
                                r'|claude-code/cli\.[cm]?js$', re.I)),

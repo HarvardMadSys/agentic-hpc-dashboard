@@ -727,6 +727,11 @@ class ClassifyTest(unittest.TestCase):
         'grep -r CURSOR_SANDBOX .',
         'rg WINDSURF_STATE ' + HOME + '/notes',
         'less ' + HOME + '/windsurf-terminal.log',
+        # the user's own scripts under ~/.claude/, run by hand
+        'python3 ' + HOME + '/.claude/statusline.py',
+        'bash ' + HOME + '/.claude/hooks/check.sh',
+        '/bin/bash ' + HOME + '/.claude/hooks/command-guard.sh',
+        'node ' + HOME + '/.claude/plugins/cache/x/server/index.js',
         # a project's own program in a Claude worktree: a venv's console script
         HOME + '/repo/.claude/worktrees/fix-1/.venv/bin/python3 ' + HOME
         + '/repo/.claude/worktrees/fix-1/.venv/bin/pytest -q',
@@ -752,6 +757,8 @@ class ClassifyTest(unittest.TestCase):
         (HOME + '/proj/.venv/bin/python -I /tmp/tmp8vrbdxsm/bin/claude -p', 'claude_code'),
         ('python3 -O -W ignore /tmp/tmp8vrbdxsm/bin/codex exec', 'codex'),
         ('deno run -A ' + HOME + '/.claude/local/cli.js', 'claude_code'),
+        ('node /x/.claude/cli.js', 'claude_code'),
+        (HOME + '/.claude/remote/srv/89cb/server --serve --socket x.sock', 'claude_code'),
         # through a wrapper, a package runner, a shell's -c command
         ('env FOO=1 claude --resume', 'claude_code'),
         ('nohup codex exec fix it', 'codex'),

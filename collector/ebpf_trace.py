@@ -2839,8 +2839,8 @@ def proc_del(pid):
 #   agent          an agent session runtime: the thing that talks to the model and runs tools
 #   tool-shell     the shell a Claude Code Bash tool call runs in
 #   helper         tagged for an agent's name or path without being its runtime (a
-#                  wrapper named after it, a hook in ~/.claude/; in older records,
-#                  any argv that mentioned an agent path), or the agent binary run
+#                  wrapper or test double named after it; in older records, any
+#                  argv that mentioned an agent path), or the agent binary run
 #                  as a helper of its own (Codex's fs helper, Claude's Chrome MCP server)
 
 # The agent executables. Claude's native binary is installed as its version
