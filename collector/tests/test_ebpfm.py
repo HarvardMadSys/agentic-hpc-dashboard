@@ -368,7 +368,7 @@ class SelfPathTest(unittest.TestCase):
     happened to work, which is why the collector's own test runs missed it."""
 
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def test_self_is_resolved_absolute(self):
         self.assertIn('SELF="$(cd "$(dirname "$0")"', self.src)
@@ -2708,7 +2708,7 @@ def _net_binary(feats, offs):
                             'f_file': offs.get('socket', {}).get('file', -1),
                             'birth_cmd': birth, 'dump': dump}
     path = os.path.join(_NET_BIN_DIR[0], 'net%d' % len(_NET_BIN_CACHE))
-    with open(path + '.c', 'w') as f:
+    with open(path + '.c', 'w', encoding='utf-8') as f:
         f.write('#include "%s"\n%s\n%s\n%s' % (
             _MOCK_H, T.build_tcp_common_c() if tcp_on else '', net, driver))
     p = subprocess.run([_CC, '-std=gnu11', '-w', '-o', path, path + '.c'],
@@ -3869,7 +3869,7 @@ class Python36Test(unittest.TestCase):
         sources = [(p.name, p.read_text(encoding='utf-8')) for p in
                    [_ROOT / 'ebpf_trace.py', _ROOT / 'node_snapshot.py', Path(__file__).resolve()]
                    + sorted((_ROOT / 'lib').glob('*.py'))]
-        sh = (_ROOT / 'ebpfm.sh').read_text()
+        sh = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
         snippets = re.findall(r"python3 -c '([^']*)'", sh)
         snippets += re.findall(r"python3 - <<'PY'\n(.*?)\nPY\n", sh, re.S)
         self.assertGreaterEqual(len(snippets), 6)
@@ -4750,7 +4750,7 @@ class UnsafeDirTest(unittest.TestCase):
 
 class WrapperTest(unittest.TestCase):
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def _fn(self, name):
         m = re.search(r'^%s\(\) \{[^\n]*\n.*?^\}\n' % re.escape(name), self.src, re.M | re.S)
@@ -4799,7 +4799,7 @@ class WrapperTest(unittest.TestCase):
         e.update(env)
         r = subprocess.run(['bash', str(_ROOT / 'ebpfm.sh')] + list(args), env=e,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
+                           encoding='utf-8')
         return r.returncode, r.stdout, r.stderr
 
     def test_help_prints_the_header_and_no_more(self):
