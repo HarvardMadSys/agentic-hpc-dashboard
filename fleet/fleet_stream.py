@@ -40,9 +40,15 @@ is one JSON line on the sender's stdin:
 
 Only `.jsonl` day-files (and their `.gz`) are sent; any other file in a day folder stays
 on the node, and a hello's other keys are ignored.
+
+The receiver refuses a frame no sender writes, and reconnects: a data frame of more
+than CHUNK plain bytes, or one that ends the zlib stream; a day that is not a real
+date, or is after the receiver's tomorrow; and a `data`, `gz`, or `reset` frame for a
+file the copy holds verified.
 """
 import argparse
 import collections
+import datetime
 import errno
 import json
 import os
@@ -130,6 +136,22 @@ def list_days(root):
     """The `YYYY-MM-DD` folders under `root`, oldest first. Raises OSError."""
     return sorted(d for d in os.listdir(root)
                   if DAY_RE.match(d) and os.path.isdir(os.path.join(root, d)))
+
+
+def day_date(day):
+    """The date a `YYYY-MM-DD` name stands for, or None when it names no real date."""
+    if not DAY_RE.match(day):
+        return None
+    try:
+        return datetime.date(int(day[:4]), int(day[5:7]), int(day[8:10]))
+    except ValueError:
+        return None
+
+
+def tomorrow(today=None):
+    """The day after `today` (this host's date), as `YYYY-MM-DD`: the newest day a
+    node may name. A node's clock or time zone can put its day one ahead, no more."""
+    return ((today or datetime.date.today()) + datetime.timedelta(days=1)).isoformat()
 
 
 def stream_names(folder):
@@ -846,10 +868,23 @@ class Mirror:
 
     @staticmethod
     def parse(path):
+        """(day, plain name, is_gz) of a frame's path. Its day must be a real date no
+        later than this host's tomorrow: retention keeps days by date, and a day
+        after that is no node's."""
         m = KEY_RE.match(path if isinstance(path, str) else "")
         if not m:
             raise ProtocolError("a bad path %r" % (path,))
+        if day_date(m.group(1)) is None or m.group(1) > tomorrow():
+            raise ProtocolError("%r: a day that is not a date, or is after tomorrow" % (path,))
         return m.group(1), m.group(2), bool(m.group(3))
+
+    def _unverified(self, day, name, t):
+        """Refuse a `t` frame that would change a file the copy holds verified. No
+        honest sender resets, extends, or fetches one again (catch_up_sealed skips
+        them), and accepting one would let a node erase or replace a checked day."""
+        key = "%s/%s" % (day, name)
+        if key in self.verified:
+            raise ProtocolError("a %s frame for %s, which is verified" % (t, key))
 
     def days(self):
         return [d for d in self.base.listdir("mirror/" + self.host) if DAY_RE.match(d)]
@@ -921,6 +956,7 @@ class Mirror:
         day, name, is_gz = self.parse(h.get("path"))
         if is_gz:
             raise ProtocolError("plain data for a .gz path")
+        self._unverified(day, name, "data")
         plain = h.get("plain")
         if type(plain) is not int or not 0 <= plain <= CHUNK:
             raise ProtocolError("a data frame of %r plain bytes" % (plain,))
@@ -945,6 +981,7 @@ class Mirror:
         day, name, is_gz = self.parse(h.get("path"))
         if not is_gz:
             raise ProtocolError("gz bytes for a plain path")
+        self._unverified(day, name, "gz")
         size = h.get("size")
         fd = self.base.open_append(self.part(day, name))
         try:
@@ -1077,6 +1114,7 @@ class Mirror:
 
     def _reset(self, h):
         day, name, is_gz = self.parse(h.get("path"))
+        self._unverified(day, name, "reset")
         rel = self.part(day, name) if is_gz else self.rel(day, name)
         self.dropped += self.base.size(rel)
         self.base.unlink(rel)
@@ -1179,6 +1217,7 @@ class Link:
                 err = "the stream ended"
             except Exception as e:         # any failure means: reconnect later
                 err = "%s: %s" % (type(e).__name__, e)
+                _log("%s: %s" % (self.host, err))      # in the log, as in the status
                 if isinstance(e, DiskFull):
                     self.paused.set()      # every link waits until space returns
             finally:
@@ -1323,7 +1362,11 @@ class Receiver:
     * the free-space guard: below max(`free_min_gb`, `free_min_fraction` of the
       volume), 300 GB and 10% unless the config says otherwise, every link pauses,
       and resumes once space returns;
-    * retention: each host keeps its `days` newest day folders;
+    * retention: each host keeps the day folders dated within its last `days` days,
+      today included, and tomorrow (a node's clock may run a little ahead), by
+      date, so no folder a node names can push a day out. A frame that names a
+      later day, or would reset, extend, or fetch again a verified file, is
+      refused;
     * status every 10 s and traffic every 60 s, into state/;
     * `keep_gz` (default false): sealed days stay in the copy as `.gz`, about 19x
       smaller on disk. A day fetched whole keeps the collector's own file; the live
@@ -1362,19 +1405,25 @@ class Receiver:
             self.paused.clear()
 
     def retention(self):
-        """Keep each host's `days` newest day folders, in the copy and in staging."""
+        """Keep each host's day folders dated from `days` - 1 days before today to
+        tomorrow, in the copy and in staging; the ledger forgets the others. By date
+        relative to today, not by the order of whatever folders exist, so a node that
+        names days of its own cannot push the real ones out."""
+        today = datetime.date.today()
+        first = (today - datetime.timedelta(days=max(1, self.days) - 1)).isoformat()
+        last = tomorrow(today)
+
+        def kept(day):
+            return day_date(day) is not None and first <= day <= last
         for link in self.links:
             m = link.mirror
-            days = m.days()
-            keep = set(days[-self.days:])
-            for day in days:
-                if day not in keep:
+            for day in m.days():
+                if not kept(day):
                     self.base.rmtree("mirror/%s/%s" % (m.host, day))
-            oldest = min(keep) if keep else None
             for day in self.base.listdir("staging/" + m.host):
-                if DAY_RE.match(day) and oldest and day < oldest:
+                if DAY_RE.match(day) and not kept(day):
                     self.base.rmtree("staging/%s/%s" % (m.host, day))
-            gone = set(k for k in m.verified if k.split("/", 1)[0] not in keep)
+            gone = set(k for k in m.verified if not kept(k.split("/", 1)[0]))
             if gone:
                 m.verified -= gone
                 m._save_ledger()
