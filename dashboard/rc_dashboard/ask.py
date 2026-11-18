@@ -23,6 +23,14 @@ are filled in, the prompt arrives on stdin, and a command with no
 bounds how many agents run at once: on a small deployment a second question
 waits rather than starting a second agent.
 
+Off unless `ask.enabled`, and refused while the service has no password
+(`check`): the question is the reader's own text in the agent's prompt, and
+the agent can read whatever the service's account can read -- its sandbox is
+read-only, not confined. So it runs with only the environment a program needs
+(`AGENT_ENV`), in a directory of its own in the system's temporary one, not
+beside the service's cache, and a question is at most MAX_QUESTION
+characters. Run the service as a dedicated account, not a person's.
+
 Every answer cites its sources (`ask.citations`, on by default). Each object
 the model reads carries a `ref` -- every section, the dicts up to REF_DEPTH
 levels into it, every row of a list -- and each line of an outline starts with
@@ -56,6 +64,39 @@ PRESETS = {
               "--sandbox", "read-only", "--color", "never", "--json",
               "-C", "{workdir}", "-o", "{answer_file}", "{model_flag}", "-"],
 }
+
+# The longest question a reader may ask. The earlier turns the prompt carries
+# are cut by `prompt`: the last three, 600 and 1 500 characters a side.
+MAX_QUESTION = 4000
+
+# What `describe` says, and `check` refuses with, while the service has no password.
+NO_PASSWORD = ("this dashboard has no password, and Ask runs only behind one, since the agent "
+               "can read whatever the service's account can read: set server.auth.password_hash "
+               "(`python -m rc_dashboard new-password` makes one)")
+
+# What of the service's environment the agent is given: what a program needs to
+# run, to find its login, and to reach its provider through the site's proxy --
+# the presets' and the documented commands' own (CODEX_HOME, OPENAI_*,
+# ANTHROPIC_*, CLAUDE_*) -- and nothing else. The service's settings (its
+# password hash among them) and whatever else its environment holds stay
+# behind; a command that needs more sets it itself (`env NAME=value cli ...`).
+AGENT_ENV = frozenset((
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM",
+    "LD_LIBRARY_PATH", "CODEX_HOME",
+    # systemd-run --user, as deploy/fleet runs the agent, finds the user manager by these
+    "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS"))
+AGENT_ENV_PREFIXES = ("LC_", "OPENAI_", "ANTHROPIC_", "CLAUDE_")
+
+
+def agent_env(environ=None):
+    """The agent's environment: the service's, kept to AGENT_ENV."""
+    env = os.environ if environ is None else environ
+    return {k: v for k, v in env.items() if k in AGENT_ENV or k.startswith(AGENT_ENV_PREFIXES)}
 
 # Bulky, per-row, or per-bin fields that cost the budget and answer little a
 # question about the window needs; the summaries beside them stay.
@@ -893,7 +934,9 @@ def describe(cfg):
         err = None if exe else "%s was not found on the service's PATH" % (argv[0] if argv else "?")
     except ValueError as e:
         argv, exe, err = [], None, str(e)
-    return {"enabled": bool(cfg.get("ask.enabled", True)),
+    if not str(cfg.get("server.auth.password_hash") or "").strip():
+        err = NO_PASSWORD
+    return {"enabled": bool(cfg.get("ask.enabled", False)),
             "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")
             else _program(argv) or "custom",
             "model": cfg.get("ask.model") or None,
@@ -902,6 +945,21 @@ def describe(cfg):
             "system_prompt": ("file" if cfg.get("ask.system_prompt_file")
                               else "config" if cfg.get("ask.system_prompt") else "built-in"),
             "timeout_s": int(cfg.get("ask.timeout_s", 240))}
+
+
+def check(cfg, question=""):
+    """`describe`, or a ValueError saying why `question` cannot run here,
+    before anything is read for it: Ask is off, the service has no password,
+    the agent cannot run, or the question is longer than MAX_QUESTION."""
+    info = describe(cfg)
+    if not info["enabled"]:
+        raise ValueError("chat is turned off (ask.enabled)")
+    if not info["available"]:
+        raise ValueError(info["error"] or "the agent cannot run here")
+    n = len(question or "")
+    if n > MAX_QUESTION:
+        raise ValueError("a question is at most %d characters; this one is %d" % (MAX_QUESTION, n))
+    return info
 
 
 def _progress_of(line):
@@ -1018,11 +1076,7 @@ class Asker:
         snapshot's `steps` and `keep`; `parse: "suggestions"` reads the answer
         as the operator's suggestions too (`parse_suggestions`)."""
         scope = scope or {}
-        info = describe(self.cfg)
-        if not info["enabled"]:
-            raise ValueError("chat is turned off (ask.enabled)")
-        if not info["available"]:
-            raise ValueError(info["error"] or "the agent cannot run here")
+        info = check(self.cfg, question)
         question = (question or "").strip()
         if not question:
             raise ValueError("ask a question")
@@ -1076,9 +1130,10 @@ class Asker:
     def _run(self, job, text):
         with self.slots:
             self._set(job, state="running", started=time.time(), progress="starting the agent")
-            base = os.path.join(self.cfg.get("cache.dir") or tempfile.gettempdir(), "ask")
-            os.makedirs(base, mode=0o700, exist_ok=True)
-            work = tempfile.mkdtemp(prefix="q-", dir=base)
+            # In the system's temporary directory, not under cache.dir: the
+            # salt, the session key and the saved builds are not its
+            # neighbours. Mode 0700 (mkdtemp), and removed once it has answered.
+            work = tempfile.mkdtemp(prefix="rc-dash-ask-")
             answer_file = os.path.join(work, "answer.md")
             timeout = int(self.cfg.get("ask.timeout_s", 240))
             try:
@@ -1089,8 +1144,8 @@ class Asker:
                 # Its own session, so a timeout can stop the agent and anything
                 # it started, not only the first process.
                 proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, cwd=work, text=True,
-                                        start_new_session=True)
+                                        stderr=subprocess.PIPE, cwd=work, env=agent_env(),
+                                        text=True, start_new_session=True)
                 killer = threading.Timer(timeout, lambda: _kill(proc))
                 killer.start()
                 last, out_lines = None, []

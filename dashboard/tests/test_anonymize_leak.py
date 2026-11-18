@@ -7,8 +7,11 @@ the export stream, the event search and the first websocket frames, and looks
 for any of those names in any byte. It also checks the aliases DO arrive, so
 the test cannot pass by serving nothing.
 
+Behind a password, as Ask runs nowhere else; every request sends it.
+
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import base64
 import json
 import os
 import shutil
@@ -33,9 +36,12 @@ from websockets.sync.client import connect         # noqa: E402
 
 from rc_dashboard import app as appmod             # noqa: E402
 from rc_dashboard import ask as ask_mod            # noqa: E402
+from rc_dashboard import auth                      # noqa: E402
 from rc_dashboard import config as configmod       # noqa: E402
 from test_ingest import DAY, line, stamp           # noqa: E402
 
+PASSWORD = "Leak-test:1"
+AUTH = {"Authorization": "Basic " + base64.b64encode(("rc:" + PASSWORD).encode()).decode()}
 SECRETS = ("alice", "bob.smith", "bob-smith", "carol", "tambe", "kempner_grads",
            "me@fas.harvard.edu", "claude-1234", "user-1234.slice", "user@1234.service",
            '"uid": 1234', '"uid":1234')
@@ -125,7 +131,9 @@ class LeakTest(unittest.TestCase):
             "import os,sys,uuid; d=sys.argv[1]; t=sys.stdin.read();"
             "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); print('ok')",
             cls.prompts]
+        tree["ask"]["enabled"] = True
         tree["anonymize"]["enabled"] = True
+        tree["server"]["auth"]["password_hash"] = auth.hash_password(PASSWORD, n=16, r=1, p=1)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)    # on_event
@@ -162,7 +170,8 @@ class LeakTest(unittest.TestCase):
     def get(cls, path):
         url = "http://127.0.0.1:%d%s" % (cls.port, path)
         try:
-            with urllib.request.urlopen(url, timeout=60) as r:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=AUTH),
+                                        timeout=60) as r:
                 return r.status, r.read().decode()
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
@@ -171,7 +180,7 @@ class LeakTest(unittest.TestCase):
     def post(cls, path, obj):
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (cls.port, path),
                                      data=json.dumps(obj).encode(),
-                                     headers={"content-type": "application/json"})
+                                     headers=dict(AUTH, **{"content-type": "application/json"}))
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return r.status, r.read().decode()
@@ -243,7 +252,8 @@ class LeakTest(unittest.TestCase):
         self.assertIn(self.anon.labs["tambe_lab"], self.get("/api/export")[1])
 
     def test_the_websocket_frames_are_clean(self):
-        with connect("ws://127.0.0.1:%d/ws" % self.port, open_timeout=20) as ws:
+        with connect("ws://127.0.0.1:%d/ws" % self.port, open_timeout=20,
+                     additional_headers=AUTH) as ws:
             for _ in range(3):
                 self.assertClean("/ws", ws.recv(timeout=20))
 
@@ -315,7 +325,8 @@ class LeakTest(unittest.TestCase):
         self.assertClean("ask: suggestions with done", sent)
         did = json.loads(body)["items"][0]["id"]
         req = urllib.request.Request("http://127.0.0.1:%d/api/suggestions/done/%s" % (self.port, did),
-                                     method="DELETE")
+                                     method="DELETE",
+                                     headers=dict(AUTH, **{"content-type": "application/json"}))
         with urllib.request.urlopen(req, timeout=30) as r:
             self.assertEqual(json.loads(r.read())["items"], [])
         # a field inside a field, and a panel this deployment lacks, said so

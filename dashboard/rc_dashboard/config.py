@@ -208,8 +208,13 @@ def defaults():
         # runs the agent CLI on this host as the service's user -- the preset
         # `codex` uses that user's own Codex login -- with a compact, masked
         # snapshot of the window's panels. That snapshot leaves the host.
+        # Off unless turned on, and refused while the service has no password.
+        # The agent can read whatever the service's account can read (its
+        # sandbox is read-only, not confined): the collector's files, the
+        # cache, that account's home. Run the service as a dedicated account,
+        # not a person's.
         "ask": {
-            "enabled": True,
+            "enabled": False,
             "agent": "codex",          # a preset (ask.PRESETS), or set `command`
             # argv, or one shell-style string; {workdir} {answer_file} {model}
             # are filled in, the prompt arrives on stdin, and with no

@@ -27,6 +27,10 @@ cookie nor a Basic header to another site. These checks cover the rest:
 Outside the sign-in (auth.py), so a request refused here costs no password
 check, and outside every route and the static mount, so a route added later
 is covered without anyone remembering to be.
+
+`JsonOnly`, inside the sign-in: a request under /api that may change
+something takes a JSON body, which another site's page cannot send without the
+browser asking first.
 """
 import ipaddress
 import urllib.parse
@@ -117,3 +121,28 @@ class SiteGuard:
         else:
             await JSONResponse({"detail": why}, status_code=403, headers=NO_STORE)(
                 scope, receive, send)
+
+
+class JsonOnly:
+    """ASGI: a request under /api with any method but GET, HEAD and OPTIONS --
+    one that may change something, or start an agent -- must say its body is
+    JSON, or gets a 415 before it is read. A form or a text/plain body is what
+    a page on another site can send without the browser first asking this
+    service (a CORS preflight, which it never answers); a JSON one it cannot.
+    Inside the sign-in, so a request without the password is told that first."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path") or ""
+        if scope["type"] == "http" and scope.get("method") not in ("GET", "HEAD", "OPTIONS") \
+                and (path == "/api" or path.startswith("/api/")):
+            ctype = next((v.decode("latin-1") for k, v in scope.get("headers") or ()
+                          if k == b"content-type"), "")
+            if ctype.split(";")[0].strip().lower() != "application/json":
+                await JSONResponse({"detail": "this route takes a JSON body, sent as "
+                                              "Content-Type: application/json"},
+                                   status_code=415, headers=NO_STORE)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)

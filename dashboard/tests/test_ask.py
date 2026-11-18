@@ -25,8 +25,11 @@ PY = sys.executable
 
 
 class Cfg:
+    """A service with Ask on, behind a password: Ask runs nowhere else."""
+
     def __init__(self, **kv):
-        self.kv = {"cache.dir": tempfile.mkdtemp()}
+        self.kv = {"cache.dir": tempfile.mkdtemp(), "ask.enabled": True,
+                   "server.auth.password_hash": "scrypt$16$1$1$c2FsdHNhbHQ=$a2V5a2V5a2V5a2V5a2V5a2V5"}
         self.kv.update(kv)
 
     def get(self, dotted, default=None):
@@ -703,11 +706,90 @@ class CiteTest(unittest.TestCase):
         self.assertIsNone(a.submit("q", {}, None, "w")["view"])
 
 
+class FailClosedTest(unittest.TestCase):
+    """Ask is off unless turned on, never runs while the service has no
+    password, and the agent gets a short question, a short environment and a
+    directory of its own."""
+
+    def test_off_by_default(self):
+        self.assertIs(configmod.defaults()["ask"]["enabled"], False)
+        info = ask.describe(configmod.Config(configmod.defaults(), {}, None))
+        self.assertFalse(info["enabled"])
+
+    def test_no_password_no_agent(self):
+        mark = os.path.join(tempfile.mkdtemp(), "ran")
+        cfg = Cfg(**{"ask.command": [PY, "-c", "open(%r, 'w')" % mark],
+                     "server.auth.password_hash": ""})
+        info = ask.describe(cfg)
+        self.assertTrue(info["enabled"])
+        self.assertFalse(info["available"])
+        self.assertIn("no password", info["error"])
+        self.assertIn("new-password", info["error"])
+        with self.assertRaises(ValueError) as cm:
+            ask.Asker(cfg).submit("q", PANELS, None, "w")
+        self.assertIn("no password", str(cm.exception))
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_a_long_question_is_refused_whole(self):
+        a = ask.Asker(Cfg(**{"ask.command": [PY, "-c", "import sys; sys.stdin.read(); print('ok')"]}))
+        for n in (ask.MAX_QUESTION + 1, 3000000):
+            with self.subTest(n=n), self.assertRaises(ValueError) as cm:
+                a.submit("x" * n, PANELS, None, "w")
+            self.assertIn("at most %d characters" % ask.MAX_QUESTION, str(cm.exception))
+        v = wait(a, a.submit("x" * ask.MAX_QUESTION, PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "done", v)
+
+    def test_the_prompt_carries_three_earlier_turns_cut_short(self):
+        turns = [{"q": "Q%d" % i + "q" * 5000, "a": "A%d" % i + "a" * 5000} for i in range(5)]
+        p = ask.prompt("now", "{}", "w", history=turns)
+        self.assertEqual(p.count("Earlier question:"), 3)
+        self.assertNotIn("Q1", p)
+        self.assertNotIn("q" * 601, p)
+        self.assertNotIn("a" * 1501, p)
+
+    def test_the_agent_gets_only_the_environment_a_program_needs(self):
+        env = {"RC_DASH_PASSWORD_HASH": "scrypt$the-hash", "SLACK_WEBHOOK": "https://hooks/x",
+               "AWS_SECRET_ACCESS_KEY": "aws", "GITHUB_TOKEN": "gh", "RC_DASH_CACHE_DIR": "/c",
+               "OPENAI_API_KEY": "k", "ANTHROPIC_BASE_URL": "u", "CODEX_HOME": "/h",
+               "LC_ALL": "C.UTF-8", "HTTPS_PROXY": "http://proxy:3128",
+               "XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/b"}
+        cmd = [PY, "-c", "import os, sys; sys.stdin.read(); print('env', *sorted(os.environ))"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        with mock.patch.dict(os.environ, env):
+            v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "done", v)
+        seen = set(v["answer"].split()[1:])
+        for name in ("PATH", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "CODEX_HOME", "LC_ALL",
+                     "HTTPS_PROXY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+            self.assertIn(name, seen)
+        for name in ("RC_DASH_PASSWORD_HASH", "SLACK_WEBHOOK", "AWS_SECRET_ACCESS_KEY",
+                     "GITHUB_TOKEN", "RC_DASH_CACHE_DIR"):
+            self.assertNotIn(name, seen)
+
+    def test_its_directory_is_its_own_and_goes_when_it_answers(self):
+        cmd = [PY, "-c", "import os, json, sys; sys.stdin.read(); "
+                         "print('dir', json.dumps([os.getcwd(), os.stat('.').st_mode & 0o777]))"]
+        cfg = Cfg(**{"ask.command": cmd})
+        with open(os.path.join(cfg.kv["cache.dir"], "anonymize.salt"), "w") as fh:
+            fh.write("00" * 32)
+        a = ask.Asker(cfg)
+        v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "done", v)
+        cwd, mode = json.loads(v["answer"].partition(" ")[2])
+        self.assertEqual(os.path.dirname(cwd), os.path.realpath(tempfile.gettempdir()))
+        self.assertTrue(os.path.basename(cwd).startswith("rc-dash-ask-"))
+        self.assertFalse(cwd.startswith(os.path.realpath(cfg.kv["cache.dir"])))
+        self.assertEqual(mode, 0o700)
+        self.assertFalse(os.path.exists(cwd))
+
+
 class AggregatorCiteTest(unittest.TestCase):
     """What the aggregator hands the snapshot so a cited row can be opened."""
 
     def agg(self):
         agg = Aggregator.__new__(Aggregator)
+        agg.cfg = Cfg(**{"ask.command": [PY, "-c", "0"]})
         agg.anon = None
         agg.window = lambda m: {"minutes": 60, "label": "last 1 h"}
         agg.panels = lambda m, v=None: {"panels": {}, "facets": None,
@@ -791,6 +873,23 @@ class AggregatorCiteTest(unittest.TestCase):
         self.assertEqual(found(sessions, "h", 1, None), "h|2026-10-29|agent|apid:1")
         self.assertIsNone(found(sessions, "h", 2, "alice"))
         self.assertIsNone(found(sessions, "other", 1, "alice"))
+
+    def test_a_question_that_cannot_run_reads_nothing(self):
+        cmd = [PY, "-c", "0"]
+        for why, cfg, q in (("no password", Cfg(**{"ask.command": cmd,
+                                                    "server.auth.password_hash": ""}), "q"),
+                            ("off", Cfg(**{"ask.command": cmd, "ask.enabled": False}), "q"),
+                            ("too long", Cfg(**{"ask.command": cmd}), "x" * (ask.MAX_QUESTION + 1))):
+            for ctx in (None, {"suggest": True}, {"parts": [{"panel": "risk"}]},
+                        {"session": "h|d|agent|apid:1"}):
+                with self.subTest(why=why, ctx=ctx):
+                    agg = self.agg()
+                    agg.cfg = cfg
+                    agg.panels = agg.trajectories = agg.live_payload = agg.window = mock.Mock(
+                        side_effect=AssertionError("read before the question was refused"))
+                    with self.assertRaises(ValueError):
+                        agg.ask(q, 60, (), ctx)
+                    agg.asker.submit.assert_not_called()
 
     def test_a_panel_question_states_its_view(self):
         agg = self.agg()

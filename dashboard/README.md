@@ -619,7 +619,9 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
-With a password set, every route above asks for it ([Password](#password)).
+With a password set, every route above asks for it ([Password](#password)). `POST /api/ask`,
+`GET /api/ask` and `/api/suggestions/done` are [Ask LLM](#ask-llm)'s; every route under `/api`
+that is not a GET or HEAD takes a JSON body only (a 415 otherwise).
 
 `window_min` is optional everywhere and omitting it is `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -914,6 +916,44 @@ websocket, with and without it.
 
 `tests/test_guard.py` sends the handshakes a browser, a script and Vite's proxy send, and
 starts the app open and behind a password.
+
+## Ask LLM
+
+The Ask LLM tab, and the *ask* button on a panel or a session, run an agent CLI on this host
+(`rc_dashboard/ask.py`): by default `codex exec --sandbox read-only`, as the service's account
+and with its Codex login, given the question and a compact, masked snapshot of the window. The
+snapshot leaves the host, for the agent's provider.
+
+**The agent can read whatever the service's account can read.** Its sandbox is read-only, not
+confined: the collector's files, the service's cache (the anonymize salt and the session key
+among them), and that account's home are all within its reach, and the question it is given is
+a reader's own text. Run the service as a dedicated account, not a person's, that holds no other
+credentials. So:
+
+- **Off by default.** `ask.enabled` (`RC_DASH_ASK=1`) turns it on.
+- **Never without a password.** While `server.auth.password_hash` is empty, Ask is refused,
+  even when turned on: `GET /api/ask` says why, and a question gets a 400 saying so. A refused
+  question reads nothing.
+- **A short environment.** The agent gets what a program needs to run, to find its login and
+  to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV`): `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
+  `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
+  `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
+  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. The service's own settings, its
+  password hash among them, stay behind. A command that needs more sets it itself:
+  `env NAME=value cli ...`.
+- **A directory of its own**, made 0700 in the system's temporary directory for each question
+  and removed after, not under `cache.dir`, so the salt, the session key and the saved builds
+  are not its neighbours.
+- **A short question.** At most 4 000 characters (a 400 past that); the prompt carries the last
+  three earlier turns, cut to 600 and 1 500 characters a side.
+- **JSON only.** `POST /api/ask`, and `POST`/`DELETE /api/suggestions/done`, take
+  `Content-Type: application/json` (a 415 otherwise), which another site's page cannot send
+  without the browser asking first; a body past 1 MB is a 413, and a malformed one a 400.
+
+`ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, `{workdir}`,
+`{answer_file}` and `{model}` filled in, the prompt on stdin. `tests/test_ask.py` checks the
+refusals, the environment and the directory, and `tests/test_guard.py` the routes.
 
 ## Network endpoints
 

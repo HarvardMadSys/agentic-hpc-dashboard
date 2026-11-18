@@ -141,12 +141,14 @@ export async function postAsk(
 }
 
 /** The operator's suggestions marked done: the service keeps them for
- *  everyone, until undone. A mark names an answer and a suggestion in it. */
+ *  everyone, until undone. A mark names an answer and a suggestion in it.
+ *  JSON either way, body or not: the service takes nothing else on a call
+ *  that changes something (rc_dashboard/guard.py, `JsonOnly`). */
 export const getDone = (s?: AbortSignal) => get<DoneList>('/suggestions/done', { signal: s });
 async function doneCall(path: string, method: 'POST' | 'DELETE', body?: unknown): Promise<DoneList> {
   const r = await fetch(API_BASE + path, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
+    headers: { 'content-type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) {

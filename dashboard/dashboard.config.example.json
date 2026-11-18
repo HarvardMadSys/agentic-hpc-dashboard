@@ -20,9 +20,11 @@
 
   "//ask": "Chat with LLM: each question runs an agent CLI on this host, as the service's",
   "//ask1": "user (the `codex` preset uses that user's Codex login), with a compact, masked",
-  "//ask2": "snapshot of the window on screen. That snapshot leaves the host.",
+  "//ask2": "snapshot of the window on screen. That snapshot leaves the host. Off by default, and",
+  "//ask3": "refused while server.auth.password_hash is empty. The agent can read whatever the",
+  "//ask4": "service's account can read: run the service as a dedicated account, not a person's.",
   "ask": {
-    "enabled": true,
+    "enabled": false,
     "agent": "codex",
     "//command": "or any CLI: argv list or one string; prompt on stdin, answer on stdout",
     "//command1": "(or in {answer_file}); {workdir} {answer_file} {model} are filled in",
