@@ -2814,13 +2814,16 @@ def proc_del(pid):
 # ---------------------------------------------------------------------------
 # agent roles: which classifier-tagged processes are an agent session
 # ---------------------------------------------------------------------------
-# classify() answers "which agent's tree is this?" and matches any argv that
-# mentions ~/.claude/, ~/.codex/ or ~/.vscode-server/. Most processes it tags are
-# not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/shell-snapshots/
-# ...`, its native binary re-executed as rg/ugrep/bfs, codex-linux-sandbox and
-# bwrap, --version and `auth status` probes, Codex's self-update script, VS Code's
-# server and its helpers. agent_role() says which one a tagged process is, from
-# its own argv, and resolve() lets only an `agent` start a session inside a tree.
+# classify() answers "which agent's tree is this?" from the program a command line
+# runs and the artifacts only an agent's runtime writes on it. Most processes it
+# tags are not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/
+# shell-snapshots/...`, codex-linux-sandbox and bwrap, --version and `auth status`
+# probes, VS Code's server and its helpers. Until it read the program alone it
+# matched any argv that mentioned ~/.claude/, ~/.codex/ or ~/.vscode-server/, so
+# it also tagged the native binary re-executed as rg/ugrep/bfs, Codex's
+# self-update script and a human's `vim ~/.claude/CLAUDE.md`. agent_role() says
+# which one a tagged process is, from its own argv, and resolve() lets only an
+# `agent` start a session inside a tree.
 #
 # A port of dashboard/rc_dashboard/roles.py, which applies the same rules to
 # schema <= 7 records at read time; keep the two in sync. It is a heuristic over
@@ -2835,9 +2838,10 @@ def proc_del(pid):
 #   infra          hosts sessions without being one (claude daemon, bg-pty-host, remote server)
 #   agent          an agent session runtime: the thing that talks to the model and runs tools
 #   tool-shell     the shell a Claude Code Bash tool call runs in
-#   helper         tagged only because its argv mentions an agent path, or the agent
-#                  binary run as a helper of its own (Codex's fs helper, Claude's
-#                  Chrome MCP server)
+#   helper         tagged for an agent's name or path without being its runtime (a
+#                  wrapper named after it, a hook in ~/.claude/; in older records,
+#                  any argv that mentioned an agent path), or the agent binary run
+#                  as a helper of its own (Codex's fs helper, Claude's Chrome MCP server)
 
 # The agent executables. Claude's native binary is installed as its version
 # (`~/.local/share/claude/versions/2.1.291`), so its comm is a version string.

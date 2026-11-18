@@ -1,11 +1,12 @@
 """What a process the collector tagged as an agent actually is.
 
 The collector's classifier (`collector/lib/agent_classify.py`) answers "which
-agent's tree is this?" from argv, and it matches any path under `~/.claude/`,
-`~/.codex/` or `~/.vscode-server/`. That is right for the tree, and wrong for
-the process: `resolve()` makes every argv match its own agent root (`is_agent`,
-`depth` 0, `agent_pid` = itself), so a process that only *mentions* an agent
-path becomes the `agent_pid`, and so the `session_key`, of everything under it.
+agent's tree is this?" from argv, and until it read the program alone it matched
+any path under `~/.claude/`, `~/.codex/` or `~/.vscode-server/`. That is right for
+the tree, and wrong for the process: through schema 7 `resolve()` made every argv
+match its own agent root (`is_agent`, `depth` 0, `agent_pid` = itself), so a
+process that only *mentions* an agent path became the `agent_pid`, and so the
+`session_key`, of everything under it.
 
 Across two weeks of madsys-gpu1 (2026-09-20 .. 10-07) the tagged processes are
 mostly not agents:

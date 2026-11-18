@@ -347,6 +347,56 @@ tracked as a human, so the collector's own `truncated` record and its children's
 `sudo` processes above it have pids of their own and are not covered by the rule. The
 field also tells two runs in one day's file apart.
 
+### Agent tags: the program, not a mention
+
+Within schema 8, with no bump: `classify()` (`lib/agent_classify.py`, and its copy in
+`node_snapshot.py` behind `proc_tree.agents`) reads the program a command line runs, not
+every word of it. It matched its patterns anywhere, so at a human's prompt `grep claude
+notes.txt`, `vim ~/.claude/CLAUDE.md`, `cat ~/.claude/settings.json`, `git commit -m "ask
+claude about this"`, `git clone https://github.com/openai/codex` and `pip install
+claude-agent-sdk` each became an agent root of its own (`actor` `agent` by ancestry,
+`is_agent`, `depth` 0, a session of its own), and the dashboard, which takes `actor3` as
+given, counted each as an agent session. So was a tmux or screen session named `claude`
+or `codex`, and every command in its panes with it: its server keeps the client's argv.
+
+The program is:
+
+- argv[0], by its name (`claude`, `codex`, `codex-linux-sandbox`, `bwrap`) or where it is
+  installed (`~/.claude/remote/…`, `~/.local/share/claude/versions/…`, `~/.codex/…`, an
+  IDE extension, `~/.vscode-server/…`);
+- past `env`, `exec`, `nohup`, `setsid`, `nice`, `timeout` and any `VAR=value`, the word
+  they run;
+- a package runner's package: `npx`, `npm exec`, `pnpm dlx`, `yarn dlx`, `bunx`, `bun x`;
+- an interpreter's script (`node`, `bun`, `deno`, `python`, a shell): `node
+  …/@anthropic-ai/claude-code/cli.js`, `/usr/bin/env node …/bin/codex`;
+- the first word of a shell's `-c` command (`sh -c exec claude …`);
+- for a `bwrap`, every word: a sandbox is tagged by what it confines, as before.
+
+Beside the program, the artifacts only an agent's runtime writes count anywhere on the
+line: Claude Code's tool-call shell (a shell sourcing `~/.claude/shell-snapshots/…`), and
+Cursor's and Windsurf's `CURSOR_SANDBOX`, `WINDSURF_STATE` and `windsurf-terminal`.
+`ClassifyTest` pins both lists, and that the node tier's copy agrees.
+
+What moves:
+
+- **A command that only mentions an agent is its runner's.** At a person's prompt it is
+  theirs (`actor` by tty), not an agent root. Inside an agent tree nothing changes: an
+  untagged child joins its tree as a tagged one did. It no longer buys a sandbox and cwd
+  read of its own at exec; it inherits them, as any untagged child does.
+- **Some agents are tagged that were not**: Claude's native binary started by its versions
+  path with nothing else naming Claude (`~/.local/share/claude/versions/2.1.282
+  --session-id …`), Claude Code's npm launcher by path (`node
+  …/@anthropic-ai/claude-code/cli.js`), and `npx @anthropic-ai/claude-code`.
+- **A program in a Claude worktree is the project's**: `<repo>/.claude/worktrees/…` does
+  not make a program Claude's, as `~/.claude/…` does.
+- The role table's `helper`s that were tagged only for a path among their arguments
+  (`chmod`, `mkdir` and `sh -c ls` on `~/.claude/` or `~/.codex/`), and the native binary
+  run as `rg` or `ugrep`, are not tagged: in a tree they are its processes at the same
+  depth, with its session.
+
+No record says which rule tagged it, so a capture across the deploy has both; the `meta`
+record of the collector's restart is where to cut it.
+
 ### Schema 8: one session per agent, whole processes, masked text
 
 Two sets of changes share schema 8: sessions that stop splitting at every tool
@@ -360,7 +410,7 @@ This part renames no field. It changes what `is_agent`, `agent_pid`, `session_ke
 
 Through schema 7, `resolve()` made every process whose own argv matched the classifier
 (`lib/agent_classify.py`) its own agent root: `is_agent` true, `depth` 0, `agent_pid`
-itself. The classifier matches any argv that mentions `/.claude/`, `/.codex/` or
+itself. The classifier then matched any argv that mentioned `/.claude/`, `/.codex/` or
 `.vscode-server`, so these all became roots, each starting a session of its own:
 
 - Claude Code's shell for each Bash tool call (`zsh -c source ~/.claude/shell-snapshots/…`)
@@ -379,8 +429,8 @@ sorts tagged processes into `agent`, `tool-shell`, `embedded-tool`, `sandbox`, `
 `client`, `infra`, `ide` and `helper`, and only `agent` starts a session inside a tree.
 `AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1 and the FAS login
 nodes. Among them is the agent binary run as a helper of its own, which is `helper`:
-Codex's `--codex-run-as-fs-helper` and Claude's `--claude-in-chrome-mcp`. The classifier
-itself is unchanged; see `VENDORED.md`.
+Codex's `--codex-run-as-fs-helper` and Claude's `--claude-in-chrome-mcp`. Schema 8 left
+the classifier itself unchanged; it has since come to read the program alone (above).
 
 For a tagged process that is not an agent runtime, inside an agent tree:
 
@@ -398,9 +448,9 @@ Claude process's `session_key`, at depths 1, 2 and 1.
 - **Nested agents are still roots.** `claude -p` run from a tool call, and the
   `--print --sdk-url` workers `claude rc` starts, keep their own sessions. `tree_root_pid`
   still names the outermost agent, and it is unchanged for every process.
-- **Outside an agent tree nothing changes.** Running `claude --version` or
-  `chmod ~/.claude/…` at a human prompt still gives its own root, with the same `actor`
-  and `actor3`.
+- **Outside an agent tree nothing changes.** Running `claude --version` at a human
+  prompt still gives its own root, with the same `actor` and `actor3`. So did
+  `chmod ~/.claude/…`, until the classifier read the program alone (above).
 - **`actor3` can move inside a tree, because `agent_type` follows the tree.** The
   `claude auth status` probe that VS Code's extension host runs every few minutes is now
   `vscode`, so `human-vscode`, and no longer `agent`. Something an agent runs that matches
