@@ -438,5 +438,47 @@ class SessionizeTest(unittest.TestCase):
         self.assertEqual(sb["by_class_sessions"]["agent"], {"sandboxed": 1})
 
 
+class ReusedPidIndexTest(unittest.TestCase):
+    """The index holds one process a pid, the first. A later record of another
+    process on that pid -- another user's, or one from after the first exited --
+    filled in the parent and cwd the first lacked, so a walk up from the first
+    went through the later process's parent."""
+
+    def setUp(self):
+        self.t0 = time.time() - 7200
+        # alice's tool shell, orphaned when its agent went: no parent, no cwd
+        self.first = rec("exit", self.t0, 7000, 1, "zsh", SNAP + "'ls'", agent_pid=7000,
+                         tree_root=7000, is_agent=True, cwd=None, duration_s=1.0)
+
+    def later(self, user):
+        return rec("exit", self.t0 + 3600, 7000, 6000, "claude", "claude", agent_pid=7000,
+                   tree_root=7000, is_agent=True, user=user, cwd=HOME + "/other",
+                   duration_s=100.0)
+
+    @staticmethod
+    def index(recs):
+        from rc_dashboard.procindex import ProcIndex
+        procs, norm = ProcIndex(cfg()), Normalizer(cfg())
+        for r in recs:
+            procs.feed(norm.normalize(r))
+        return procs
+
+    def test_a_later_process_on_the_pid_fills_nothing_in(self):
+        for user in ("bob", "alice"):
+            with self.subTest(user=user):
+                procs = self.index([self.first, self.later(user)])
+                self.assertEqual(procs.get("h1", 7000), (1, "tool-shell", "zsh", None, "alice"))
+                # nor across saved hours
+                a, b = self.index([self.first]), self.index([self.later(user)])
+                a.merge(b)
+                self.assertEqual(a.get("h1", 7000), (1, "tool-shell", "zsh", None, "alice"))
+
+    def test_the_same_process_still_fills_in_what_it_lacked(self):
+        tick = rec("residency", self.t0 - 5, 7000, 1, "zsh", SNAP + "'ls'", agent_pid=7000,
+                   tree_root=7000, is_agent=True, cwd=None, age_s=4.0)
+        procs = self.index([tick, dict(self.first, ppid=6000, cwd=HOME + "/proj")])
+        self.assertEqual(procs.get("h1", 7000), (6000, "tool-shell", "zsh", HOME + "/proj", "alice"))
+
+
 if __name__ == "__main__":
     unittest.main()
