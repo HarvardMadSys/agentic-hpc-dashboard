@@ -38,7 +38,9 @@ child's own exit, and the process that reaped it (init, or a subreaper) never
 names them. Left ambiguous: an orphan that began within START_SLACK_S of the
 next holder's start is taken off that holder, and past PER_PID entries for
 one pid the closest two merge, so an orphan whose start is nearer a holder's
-child than any two of its children are to each other goes with them.
+child than any two of its children are to each other goes with them. When no
+two can merge (each another user's) the earliest begun is dropped, counted
+apart from the cap's (`crowded`): raising the cap does nothing for it.
 
 A known limit: the record has no fork time apart from that exec (the
 collector writes the exec's when it saw one, the fork's only when it did not:
@@ -190,7 +192,7 @@ class Held:
 # the setting: the first time, then at most once in SAY_EVERY_S for that panel
 # (`OwnIo._say`). Otherwise only the panel's `own_io.evicted` shows it.
 SAY_EVERY_S = 3600.0
-_SAID = {}                  # panel -> when it last said so (`_now`)
+_SAID = {}                  # panel -> when it last said so (`_now`), in this process
 
 
 def _now():
@@ -276,7 +278,7 @@ class OwnIo:
     """One reducer's join (the module docstring): `take` every exit, in order."""
 
     __slots__ = ("fields", "cap", "name", "reaped", "evicted", "rejected", "clamped",
-                 "touched")
+                 "crowded", "touched")
 
     def __init__(self, fields=FIELDS, cap=None, name="own_io"):
         self.fields = tuple(fields)
@@ -288,6 +290,7 @@ class OwnIo:
         self.evicted = 0            # parents dropped at either cap (`carry_trimmed`)
         self.rejected = 0           # groups a process could not have reaped: dropped
         self.clamped = 0            # processes whose figure fell short of their children's
+        self.crowded = 0            # groups dropped from a pid past PER_PID
         self.touched = None         # the keys touched since `track`, for the ageing
 
     def take(self, rec):
@@ -368,7 +371,7 @@ class OwnIo:
                 g[i] += v
         if len(held) > PER_PID and not _merge_closest(held):
             _drop(held, min(held, key=_entry_age))
-            self.evicted += 1
+            self.crowded += 1
         if self.touched is not None:
             self.touched.add(key)
 
@@ -471,10 +474,14 @@ class OwnIo:
         self.evicted += o.evicted
         self.rejected += o.rejected
         self.clamped += o.clamped
+        self.crowded += o.crowded
 
     def status(self):
         """What a panel says of its join: parents dropped at a cap, whose reaped
         children's bytes then count again at their exit; groups of children a
-        process could not have reaped, not taken off it; and processes whose
-        figure fell short of what their children carried, shown as 0."""
-        return {"evicted": self.evicted, "rejected": self.rejected, "clamped": self.clamped}
+        process could not have reaped, not taken off it; processes whose figure
+        fell short of what their children carried, shown as 0; and groups
+        dropped from a pid holding PER_PID others' already, which also count
+        again at its exit."""
+        return {"evicted": self.evicted, "rejected": self.rejected, "clamped": self.clamped,
+                "crowded": self.crowded}

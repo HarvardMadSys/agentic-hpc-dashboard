@@ -672,6 +672,24 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual(j.evicted, 1)
         self.assertEqual(j.take(ex(t + 4, 10, 1, 5.0)), (3.0, 0.0))
 
+    def test_a_pid_crowded_past_its_entries_is_not_the_cap(self):
+        # nine users' children under root's cron 1: a pid holds PER_PID groups
+        # and no two of one user merge, so the earliest begun is dropped --
+        # counted apart, not said, and not in the cap's count the warning gives
+        def ex(t, pid, ppid, user):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": user,
+                    "_ts_epoch": t, "duration_s": 1.0, "io": iob(1.0, 1.0)}
+        t = time.time() - 600
+        j = own_io.OwnIo(own_io.DISK, cap=2, name="io_process")
+        for k in range(own_io.PER_PID + 1):
+            j.take(ex(t + k, 100 + k, 1, "user%d" % k))
+        self.assertEqual((j.crowded, j.evicted, self.said()), (1, 0, []))
+        j.take(ex(t + 20, 200, 2, "alice"))
+        j.take(ex(t + 21, 300, 3, "alice"))
+        self.assertEqual(j.status(), {"evicted": 1, "rejected": 0, "clamped": 0, "crowded": 1})
+        self.assertEqual(len(self.said()), 1)
+        self.assertIn("at reducers.own_io.max_parents (2), 1 so far", self.said()[0])
+
     def test_an_agent_runtime_and_what_started_it_are_passed_over_at_the_cap(self):
         # claude 100, started from alice's login bash 50, makes a tool call and
         # sits idle while three other parents reap past a cap of two: they go,
