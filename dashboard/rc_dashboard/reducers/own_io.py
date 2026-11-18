@@ -23,17 +23,22 @@ parent has reaped.
 A child its parent never waited for -- one that outlived it -- exits after it,
 and still names it: the collector keeps the parent a process was forked by
 (`proc_add`). Its figure is left under a pid that is free, and that a later
-process may take. So what is held for a pid is kept by the children's user,
-with the earliest start among them, and a process takes off only what it can
-have reaped: not another user's children (root aside, `users_conflict`), and
-not children that began before it did. Its recorded start is its last exec,
-which can come after children it forked first -- a login shell's profile, a
-script's setup before `exec` -- so a child may begin up to START_SLACK_S
-before it; a pid comes round again only once the kernel has handed out every
-other one, minutes at the least on a busy node. What a process does not take
-is dropped, and counted (`rejected`): those bytes were counted at the
-outliving child's own exit, and the process that reaped it (init, or a
-subreaper) never names them.
+process may take. A child cannot begin before its parent did, and an earlier
+holder's orphan began before that holder exited, so before the next holder
+began. So what is held for a pid is kept by the children's user and when they
+began (`_entry_for`), and a process takes off only what it can have reaped:
+not another user's children (root aside, `users_conflict`), and not children
+that began before it did. Its recorded start is its last exec, which can come
+after children it forked first -- a login shell's profile, a script's setup
+before `exec` -- so a child may begin up to START_SLACK_S before it; a pid
+comes round again only once the kernel has handed out every other one,
+minutes at the least on a busy node. What a process does not take is
+dropped, and counted (`rejected`): those bytes were counted at the outliving
+child's own exit, and the process that reaped it (init, or a subreaper) never
+names them. Left ambiguous: an orphan that began within START_SLACK_S of the
+next holder's start is taken off that holder, and past PER_PID entries for
+one pid the closest two merge, so an orphan whose start is nearer a holder's
+child than any two of its children are to each other goes with them.
 
 Each reducer that sums bytes holds its own join, over the fields it sums (the
 record's names: `rd_mb`, `wr_mb`, `rchar_mb`, `wchar_mb`), and feeds it every
@@ -62,9 +67,63 @@ START_SLACK_S = 60.0        # how long before a process's recorded start its chi
 # rounding (MB to three places, per child) is counted when it is shown as 0.
 CLAMP_TOL_MB = 0.01
 
-# What is held for a pid: a group per user of its children, each
-# [user, earliest start (None: none known), MB per field...].
+# What is held for a pid: its children's figures, an entry per user and stretch
+# of starts no wider than START_SLACK_S (one with no start known apart), each
+# [user, earliest start (None: none known), MB per field...]; at most PER_PID
+# of them, the two of one user whose starts are closest merged past it.
 _G_USER, _G_START, _G_VALS = 0, 1, 2
+PER_PID = 8
+
+
+def _entry_for(held, user, st):
+    """The entry a child of `user` begun at `st` joins: its user's whose
+    earliest start is closest to it and within START_SLACK_S, or None."""
+    best, gap = None, None
+    for g in held:
+        if g[_G_USER] != user:
+            continue
+        gs = g[_G_START]
+        if st is None or gs is None:
+            if st is None and gs is None:
+                return g
+            continue
+        d = abs(gs - st)
+        if d <= START_SLACK_S and (gap is None or d < gap):
+            best, gap = g, d
+    return best
+
+
+def _merge_closest(held):
+    """Merge the two entries of one user whose starts are closest: an earlier
+    holder's orphan began minutes before the next holder's children at the
+    least, and one holder's children often seconds apart. False when no two
+    entries can merge."""
+    pair, gap = None, None
+    for i, a in enumerate(held):
+        for b in held[i + 1:]:
+            if a[_G_USER] != b[_G_USER] or a[_G_START] is None or b[_G_START] is None:
+                continue
+            d = abs(a[_G_START] - b[_G_START])
+            if gap is None or d < gap:
+                pair, gap = (a, b), d
+    if pair is None:
+        return False
+    a, b = pair
+    a[_G_START] = min(a[_G_START], b[_G_START])
+    for i in range(_G_VALS, len(a)):
+        a[i] += b[i]
+    _drop(held, b)
+    return True
+
+
+def _drop(held, g):
+    """`g` out of `held`, by identity: two entries can be equal lists."""
+    del held[next(i for i, x in enumerate(held) if x is g)]
+
+
+def _entry_age(g):
+    """For dropping one entry when none can merge: the earliest-begun first."""
+    return (g[_G_START] is not None, g[_G_START] or 0.0)
 
 
 def _start(rec):
@@ -145,24 +204,25 @@ class OwnIo:
         if ppid is None or not any(vals):
             return
         key = (rec.get("host"), ppid)
-        groups = self.reaped.get(key)
-        if groups is None:
+        held = self.reaped.get(key)
+        if held is None:
             if len(self.reaped) >= REAPED_MAX:
                 pop_oldest(self.reaped)
                 self.evicted += 1
-            groups = self.reaped[key] = []
+            held = self.reaped[key] = []
         user, st = rec.get("user") or None, _start(rec)
-        for g in groups:
-            if g[_G_USER] == user:
-                break
-        else:
+        g = _entry_for(held, user, st)
+        if g is None:
             g = [user, st] + [0.0] * len(vals)
-            groups.append(g)
-        if st is not None and (g[_G_START] is None or st < g[_G_START]):
+            held.append(g)
+        elif st is not None and st < g[_G_START]:
             g[_G_START] = st
         for i, v in enumerate(vals, _G_VALS):
             if v:
                 g[i] += v
+        if len(held) > PER_PID and not _merge_closest(held):
+            _drop(held, min(held, key=_entry_age))
+            self.evicted += 1
         if self.touched is not None:
             self.touched.add(key)
 

@@ -433,9 +433,14 @@ class LiveReducer:
         ppid = rec.get("ppid")
         if io.get("scope") != "process" or ppid is None or not (rd or wr):
             return
+        # The noted parent reaped this child only if the child ended before it
+        # did and BEGAN after it did, give or take its last exec (own_io.py):
+        # an earlier holder's orphan can end inside the noted one's life.
         b = self.io_booked.get((host, ppid))
+        st = _start(rec)
         if b is not None and end is not None and end <= b[_B_END] + 1 \
-                and (b[_B_START] is None or b[_B_START] - START_SLACK_S <= end) \
+                and (b[_B_START] is None
+                     or (st if st is not None else end) >= b[_B_START] - START_SLACK_S) \
                 and not users_conflict(rec.get("user"), b[_B_USER]):
             self._take_back(b, rd or 0.0, wr or 0.0)
             return

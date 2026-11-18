@@ -439,6 +439,55 @@ class PidReuseTest(unittest.TestCase):
                                  {(500, "alice"): 7.0, (501, "alice"): 100.0,
                                   (502, "bob"): 5.0, (500, "bob"): 20.0})
 
+    def live_rd(self, recs, older):
+        lv, norm = LiveReducer(cfg(), CLASSES), Normalizer(cfg())
+        for r in (reversed(recs) if older else recs):
+            lv.feed(norm.normalize(dict(r)), older=older)
+        return rd_of(lv, self.now)
+
+    def test_the_same_user_s_next_holder_takes_off_what_it_reaped_and_no_more(self):
+        # the rsync's bytes and the cat's wait under 500 for one user: the cat
+        # began under the new holder, the rsync ten minutes before it
+        recs = self.recs("alice")
+        self.assertEqual(self.by_user(recs), {"alice": 132.0})
+        for older in (False, True):
+            with self.subTest(older=older):
+                self.assertEqual(self.live_rd(recs, older), {"alice": 132.0})
+
+    def test_an_orphan_still_running_under_the_next_holder_is_not_taken_off_it(self):
+        # the rsync runs on until the new holder of 500 is running, and exits
+        # before it: by its exit it is inside that holder's life, by its start not
+        t = self.now - 1200
+        recs = [person("exit", t, 500, 1, "bash", "bash sync.sh", "alice", io=iob(7.0, 7.0),
+                       duration_s=60.0),
+                person("exit", t + 700, 501, 500, "rsync", "rsync -a src/ dst/", "alice",
+                       io=iob(100.0, 100.0), duration_s=705.0),
+                person("exit", t + 800, 500, 1, "python", "python job.py", "alice",
+                       io=iob(20.0, 20.0), duration_s=200.0)]
+        self.assertEqual(self.by_user(recs), {"alice": 127.0})
+        for older in (False, True):
+            with self.subTest(older=older):
+                self.assertEqual(self.live_rd(recs, older), {"alice": 127.0})
+
+    def test_a_pid_holds_a_few_entries_and_the_closest_merge(self):
+        # an earlier holder's orphan, then twelve children of the next holder ten
+        # minutes apart: held to PER_PID entries, the orphan's still its own
+        def ex(t, pid, ppid, dur, rd, user="alice"):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": user,
+                    "_ts_epoch": t, "duration_s": dur, "io": iob(rd, rd)}
+        t = self.now - 20000
+        j = own_io.OwnIo()
+        j.take(ex(t + 60, 501, 500, 65.0, 100.0))            # began at t - 5
+        n = own_io.PER_PID + 4
+        for k in range(n):
+            j.take(ex(t + 1000 + 600 * k + 30, 600 + k, 500, 30.0, 1.0))
+        held = j.reaped[("h1", 500)]
+        self.assertEqual(len(held), own_io.PER_PID)
+        self.assertEqual(min(g[own_io._G_START] for g in held), t - 5)
+        own = j.take(ex(t + 1000 + 600 * n, 500, 1, 700.0 + 600 * n, n + 2.0))
+        self.assertEqual(own[0], 2.0)                         # its children off, not the rsync
+        self.assertEqual((j.rejected, j.evicted), (1, 0))
+
     def test_a_child_forked_before_its_parent_s_last_exec_is_still_its(self):
         # `bash -lc` reads a profile, then execs the command: the record's start
         # is that exec, 30 s after the profile's own child began
