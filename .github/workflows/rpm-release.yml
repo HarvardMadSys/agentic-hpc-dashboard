@@ -42,8 +42,9 @@ jobs:
           # python3 is EL8's 3.6, what the collector runs on, for its tests below
           dnf -y install rpm-build rpmdevtools git-core python3
 
+      # Actions pinned to a commit, not a tag, since this job can write releases.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Nothing is built or published from a collector whose tests fail.
       - name: Collector tests
@@ -98,7 +99,7 @@ jobs:
           rpm -qpl "$rpm_path"
 
       - name: Upload RPM as workflow artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ${{ steps.build.outputs.rpm_name }}
           path: ${{ steps.build.outputs.rpm_path }}
@@ -106,7 +107,7 @@ jobs:
 
       - name: Attach RPM to GitHub Release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: ${{ steps.build.outputs.rpm_path }}
           fail_on_unmatched_files: true
