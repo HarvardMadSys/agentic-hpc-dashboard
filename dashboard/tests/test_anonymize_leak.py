@@ -366,7 +366,7 @@ class LeakTest(Served):
         self.assertEqual(h["alias_collisions"], 0)
 
 
-SALT = "reader-text"
+SALT = "reader-text-salt-1"   # 16 bytes or more, as a salt must be
 MARK = "zq7mark"        # in dave's command lines only: his rows wherever they are served
 
 
