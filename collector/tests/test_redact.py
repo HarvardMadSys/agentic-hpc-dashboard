@@ -869,6 +869,39 @@ class CoverageTest(unittest.TestCase):
             self.assertEqual(red(['curl', '-H', 'Authorization: %s %s' % (scheme, cred), 'https://x']),
                              'curl -H Authorization: %s %s https://x' % (scheme, K))
 
+    def test_a_quoted_value_one_level_down_is_read_whole(self):
+        """Inside a "..." string a quoted value is written \\"...\\". mysql's
+        attached -p took the backslash alone for its value, and wrote the
+        password: `-p[REDACTED]\\"se cret\\"`. A \\\\ in such a value -- a JSON
+        escape, one level down -- ended it early: `[REDACTED]\\"def\\"`."""
+        for line, want in (
+                ('sh -c "mysql -p\\"se cret\\" db"', 'sh -c "mysql -p%s db"' % K),
+                ('mysql -p"se cret" db', 'mysql -p%s db' % K),
+                ("mysql -p'se cret' db", 'mysql -p%s db' % K),
+                ('sh -c "redis-cli -h r1 -a \\"se cret\\" ping"',
+                 'sh -c "redis-cli -h r1 -a %s ping"' % K),
+                ('sh -c "sshpass -p\\"se cret\\" ssh h"', 'sh -c "sshpass -p%s ssh h"' % K),
+                ('sh -c "docker login -u a -p\\"se cret\\" reg"',
+                 'sh -c "docker login -u a -p%s reg"' % K),
+                ('sh -c "tool --password=\\"se cret\\" x"', 'sh -c "tool --password=%s x"' % K),
+                ('curl -u "alice:se cret" https://x', 'curl -u "alice:%s" https://x' % K),
+                ('sh -c "curl -u \\"alice:se cret\\" https://x"',
+                 'sh -c "curl -u \\"alice:%s\\" https://x"' % K),
+                ('echo "{\\"Authorization\\": \\"Bearer abc\\\\\\"def\\"}"',
+                 'echo "{\\"Authorization\\": \\"Bearer %s\\"}"' % K),
+                ('echo "{\\"X-Api-Key\\": \\"abc\\\\\\\\def\\"}"', 'echo "{\\"X-Api-Key\\": \\"%s\\"}"' % K),
+                ('bash -c "export TOKEN=\\"abc\\\\\\"def\\" && x"', 'bash -c "export TOKEN=%s && x"' % K),
+                ('bash -c "curl -H \\"Authorization: Bearer abc\\\\\\"def\\" https://x"',
+                 'bash -c "curl -H \\"Authorization: Bearer %s\\" https://x"' % K)):
+            out = R.redact_keys(line)[0]
+            self.assertEqual(out, want, line)
+            self.assertNotRegex(out, r'\bse\b|cret|def', line)
+            self.assertEqual(R.redact_line(line)[0], want, line)
+            self.assertEqual(R.redact_keys(want), (want, []), line)      # and on a second pass
+        # a container's quoted uid:gid stays
+        self.assertEqual(R.redact_keys('docker run -u "1000:1000" img'),
+                         ('docker run -u "1000:1000" img', []))
+
     def test_an_option_however_far_from_its_program(self):
         """The scan from a program to its -p or -a, and a command's span, were
         cut at 400 or 2000 characters: a password past that went out as it

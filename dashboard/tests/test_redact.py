@@ -83,6 +83,14 @@ MASKED = [
      '"Authorization: Bearer ' + MASK + '" https://x'),
     ("curl -H 'Authorization: Basic abc\\\\def-secret' https://x", "def-secret",
      "'Authorization: Basic " + MASK + "' https://x"),
+    # a quoted value one level down, \"...\", read whole: an attached -p's, a -u's, and a
+    # JSON header's with an escape of its own
+    ('sh -c "mysql -p\\"se cret\\" db"', "cret", 'sh -c "mysql -p' + MASK + ' db"'),
+    ('mysql -p"se cret" db', "cret", "mysql -p" + MASK + " db"),
+    ('sh -c "redis-cli -a \\"se cret\\" ping"', "cret", "-a " + MASK + " ping"),
+    ('curl -u "alice:se cret" https://x', "cret", 'curl -u "alice:' + MASK + '" https://x'),
+    ('echo "{\\"Authorization\\": \\"Bearer abc\\\\\\"def\\"}"', "def",
+     '\\"Bearer ' + MASK + '\\"}"'),
 ]
 
 # Real command lines, from real login-node feeds, that must come back as they were.

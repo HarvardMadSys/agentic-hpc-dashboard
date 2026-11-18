@@ -38,13 +38,18 @@ MASK = "[REDACTED]"
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
 _NOT_CODE = (r"(?!(?:os\.)?(?:environ\b|getenv\()|Path\("
              r"|(?:None|True|False|%s|\{\})(?=[\s)\],;}\"']|$))")
+# The inside of a value opened by \" -- a quote escaped inside a "..." string,
+# one level down: there \\ is a backslash, which escapes what follows it
+# (\\\" is an escaped quote, \\\\ a backslash), so only a \" not so escaped
+# ends the value, or a bare ", the outer string's own end. Deeper nesting is
+# read the same way, which may end such a value early.
+_IN_ESCAPED = r"(?:\\\\\\[\s\S]|\\\\[^\\\"]|\\[^\\\"]|[^\\\"])*"
 # A value: a word, or a quoted string whole. In "...", read as sh reads it, a
 # backslash escapes the character after it, so neither it nor \" ends the
-# value; one opened by \" -- a quote escaped inside a "..." string -- ends at
-# the next \", or at a bare ", that string's own end. One whose closing quote
-# is not in the text -- cut there at TEXT_MAX, or by the kernel's read -- runs
-# to the text's end, so no part of it is written.
-_VALUE = (r"(\\\"(?:[^\"\\]|\\[^\"])*(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+# value; one opened by \" ends as _IN_ESCAPED says. One whose closing quote is
+# not in the text -- cut there at TEXT_MAX, or by the kernel's read -- runs to
+# the text's end, so no part of it is written.
+_VALUE = (r"(\\\"" + _IN_ESCAPED + r"(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
           r"|\\?'[^']*(?:'|\Z)|[^\s\"']+)")
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
@@ -102,41 +107,13 @@ def _until(start, chars=r"[^\n]"):
 
 # A command's span for the rules that read every value in it: to the end of
 # the command, a quoted string whole, as _VALUE reads one, `;` in it and all.
-_SPAN = (r"((?:\\\"(?:[^\"\\]|\\[^\"])*(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+_SPAN = (r"((?:\\\"" + _IN_ESCAPED + r"(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
          r"|'[^']*(?:'|\Z)|[^\n;&|<>\"'])*)")
 _DB = _CMD_START + r"(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh)\b"
 _REDIS = _CMD_START + r"redis-cli\b"
 _LOGIN = (_CMD_START + r"(?:(?:docker|podman|nerdctl|buildah|skopeo|oras|helm|apptainer"
           r"|singularity)(?:\s+(?:registry|remote))?\s+login|az\s+login|twine\s+(?:upload|register)"
           r"|mongo(?:sh|dump|restore|export|import|stat|top|files)?)\b")
-
-
-# A container's `--user 1000:1000` is a uid and a gid, not a user and password:
-# docker's, podman's, a wrapper of theirs (`podman-hpc`, a test's
-# `fake_podman.py`), lines continued with a backslash and all. The rule matches
-# such a command whole, from the program's name to the command's end, and masks
-# what in it is not a uid:gid; so each part of a line is read once, however
-# many `-u` it holds.
-_UID_GID = re.compile(r"\d+:\d+\Z")
-_CONTAINER_RUN = (r"(?:^|[\s/;&|(_-])(?:docker|podman|nerdctl|buildah|enroot|kubectl|"
-                  r"crictl|ctr)\b(?:\\\n|[^;&|\n])*")
-_USER_PASSWORD = re.compile(
-    r"((?:^|\s)(?:-u|--user|--proxy-user)(?:=|\s*)[\"']?)(?![+\[])([^\s:\"']+:)(?!\$)"
-    r"([^\s\"']+)")
-
-
-def _user_password(m):
-    """`-u user:` kept and the password masked; in a container's command, all
-    but a uid:gid."""
-    if m.group(1) is None:
-        return _USER_PASSWORD.sub(_not_a_uid_gid, m.group(0))
-    return m.group(1) + m.group(2) + MASK
-
-
-def _not_a_uid_gid(m):
-    if _UID_GID.match(m.group(2) + m.group(3)):
-        return m.group(0)
-    return m.group(1) + m.group(2) + MASK
 
 
 # A word on a joined line, where a backslash escapes the character after it:
@@ -151,10 +128,41 @@ def _quoted(quote, escaped):
     a backslash before it. Opened by a bare quote, a backslash escapes the
     character after it, so neither it nor an escaped quote ends the value, but
     the same quote does; opened by an escaped one (a \\" inside a "..."
-    string), the next escaped quote ends it, or a bare one. With no closing
-    quote in the text, the value runs to the text's end."""
-    return (r"(?!\s)(?(" + escaped + r")(?:(?!" + quote + r")[^\\]|\\(?!" + quote + r")[\s\S])+"
+    string), as _IN_ESCAPED reads one. With no closing quote in the text, the
+    value runs to the text's end."""
+    return (r"(?!\s)(?(" + escaped + r")(?:\\\\\\[\s\S]|\\\\(?!\\|" + quote + r")[\s\S]"
+            r"|\\(?!\\|" + quote + r")[\s\S]|(?!" + quote + r")[^\\])+"
             r"|(?:(?!" + quote + r")[^\\]|\\[\s\S])+)")
+
+
+# A container's `--user 1000:1000` is a uid and a gid, not a user and password:
+# docker's, podman's, a wrapper of theirs (`podman-hpc`, a test's
+# `fake_podman.py`), lines continued with a backslash and all. The rule matches
+# such a command whole, from the program's name to the command's end, and masks
+# what in it is not a uid:gid; so each part of a line is read once, however
+# many `-u` it holds. A quoted `user:password` has its password read to the
+# closing quote (_quoted).
+_UID_GID = re.compile(r"\d+:\d+\Z")
+_CONTAINER_RUN = (r"(?:^|[\s/;&|(_-])(?:docker|podman|nerdctl|buildah|enroot|kubectl|"
+                  r"crictl|ctr)\b(?:\\\n|[^;&|\n])*")
+_USER_PASSWORD = re.compile(
+    r"((?:^|\s)(?:-u|--user|--proxy-user)(?:=|\s*)((\\)?([\"']))?)(?![+\[])([^\s:\"']+:)(?!\$)"
+    r"((?(2)" + _quoted(r"\4", "3") + r"|[^\s\"']+))")
+
+
+def _user_password(m):
+    """`-u user:` kept and the password masked; in a container's command, all
+    but a uid:gid."""
+    if m.group(1) is None:
+        return _USER_PASSWORD.sub(_not_a_uid_gid, m.group(0))
+    return m.group(1) + m.group(5) + MASK
+
+
+def _not_a_uid_gid(m):
+    if _UID_GID.match(m.group(5) + m.group(6)):
+        return m.group(0)
+    return m.group(1) + m.group(5) + MASK
+
 
 # A credential header's name: an API key, a token (`X-Auth-Token`,
 # `X-Vault-Token`, GitLab's `PRIVATE-TOKEN`), a secret, a session's cookie, an
@@ -254,13 +262,14 @@ RULES = (
         r"sig|signature|X-Amz-Signature|X-Amz-Credential|X-Goog-Signature)=)([^&\s\"'#]+)", re.I),
      lambda m: m.group(1) + MASK),
     # mysql -pSECRET (no space), redis-cli -a SECRET, sshpass -p SECRET. Not psql:
-    # its -p is the port. The option is looked for however far it is (_until).
+    # its -p is the port. The option is looked for however far it is (_until),
+    # and a quoted value read whole (_VALUE): `-p"se cret"`, `-p\"se cret\"`.
     ("db_password", (("mysql", "mariadb", "mongo"), ("-p",)), re.compile(
-        r"(" + _DB + _until(_DB) + r"\s-p)(?=\S)([^\s\"']+)"),
+        r"(" + _DB + _until(_DB) + r"\s-p)(?=\S)" + _VALUE),
      lambda m: m.group(1) + MASK),
     ("short_password", (("redis-cli", "sshpass"),), re.compile(
         r"(" + _CMD_START + r"(?:redis-cli\b" + _until(_REDIS) + r"\s-a|sshpass\s+-p)\s*)"
-        + _NOT_A_REF + r"([^\s\"']+)"),
+        + _NOT_A_REF + _VALUE),
      lambda m: m.group(1) + MASK),
     # A login's -p, spaced or not: a registry login's (docker, podman,
     # apptainer, singularity ...), az login's, twine upload's, the mongo
