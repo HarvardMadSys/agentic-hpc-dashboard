@@ -8,6 +8,7 @@ writes them, and applied to a Mirror or fed to a Link.
 import datetime
 import gzip
 import io
+import json
 import os
 import shutil
 import sys
@@ -69,6 +70,35 @@ def transport(folder, frames, ping_s=None):
 
 def hello(live=DAY):
     return {"t": "hello", "v": 1, "host": HOST, "live": live}, b""
+
+
+def run_sender(root, hello_line, wait=1.0, ping_s=30.0):
+    """(exit status, [(header, plain or raw payload)]) of a sender run in this process
+    over `root`, given `hello_line` (bytes, or a dict sent as JSON), until its stdin
+    closes `wait` seconds later."""
+    if isinstance(hello_line, dict):
+        hello_line = (json.dumps(hello_line) + "\n").encode("utf-8")
+    r, w = os.pipe()
+    inp, out, res = os.fdopen(r, "rb", buffering=0), io.BytesIO(), []
+    t = threading.Thread(target=lambda: res.append(fs.send_main(root, inp, out, 0.05, ping_s, 0.1)),
+                         daemon=True)
+    t.start()
+    try:
+        os.write(w, hello_line)
+    except BrokenPipeError:              # it stopped reading, as it should have
+        pass
+    time.sleep(wait)
+    os.close(w)
+    t.join(10)
+    inp.close()
+    out.seek(0)
+    frames, z = [], zlib.decompressobj()
+    while True:
+        f = fs.read_frame(out)
+        if f is None:
+            return (res[0] if res else None), frames
+        h, payload = f
+        frames.append((h, z.decompress(payload) if h.get("t") == "data" else payload))
 
 
 class Deflater:
@@ -326,10 +356,13 @@ class LinkCase(MirrorCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
         super().tearDown()
 
-    def start_link(self, frames, ping_s=None, backoff=(5, 5)):
+    def start_link(self, frames, ping_s=None, backoff=(5, 5), stall_s=None):
         self.paused, self.stop = threading.Event(), threading.Event()
         self.link = fs.Link(HOST, transport(self.tmp, frames, ping_s), self.m, 3, fs.Counters(),
                             self.paused, self.stop, backoff=backoff)
+        if stall_s is not None:
+            self.link.stall_s = stall_s
+        self.down0 = self.link.down_since
         self.thread = threading.Thread(target=self.link.run, daemon=True)
         self.thread.start()
 
@@ -347,6 +380,74 @@ class TestRefusalIsReported(LinkCase):
             self.assertTrue(any("verified" in c[0][0] for c in log.call_args_list),
                             log.call_args_list)
         self.assertEqual(self.held(), body)
+        self.assertFalse(self.link.connected)
+        self.assertEqual(self.link.down_since, self.down0)
+
+
+class TestStall(LinkCase):
+    def test_a_link_silent_after_its_hello_is_closed_and_stays_down(self):
+        """The review's case: a transport that sent a hello and then nothing showed
+        connected: true, its lag_s growing for a day, and no alert. The read now ends
+        after stall_s and the link reconnects; nothing after a hello ever came, so it
+        never counted as up, and down_since still says when it went down."""
+        self.start_link([hello()], backoff=(0.1, 0.2), stall_s=0.3)
+        self.assertTrue(wait_for(lambda: len(self.link.attempts) >= 3), self.link.status())
+        st = self.link.status()
+        self.assertFalse(st["connected"])
+        self.assertIn("Stalled", st["last_error"] or "")
+        self.assertEqual(st["down_since"], self.down0)
+
+    def test_an_idle_sender_that_pings_is_not_stalled(self):
+        self.start_link([hello()], ping_s=0.1, backoff=(0.1, 0.2), stall_s=0.5)
+        self.assertTrue(wait_for(lambda: self.link.connected), self.link.status())
+        time.sleep(1.5)
+        st = self.link.status()
+        self.assertTrue(st["connected"], st)
+        self.assertIsNone(st["down_since"])
+        self.assertEqual(len(self.link.attempts), 1)
+
+    def test_a_long_frame_is_not_a_stall(self):
+        """Only waiting for the sender counts. Checking a big sealed day against its
+        trailer, and gzipping it with keep_gz, can take minutes; here each write the
+        frames make takes longer than stall_s, and the link stays up."""
+        def slow(fd, data):
+            time.sleep(0.6)
+            return os.write(fd, data)
+        self.m = fs.Mirror(self.base, HOST, write=slow, keep_gz=True)
+        body = b'{"k":1}\n' * 1000
+        crc = zlib.crc32(body) & 0xffffffff
+        self.start_link([hello(),
+                         ({"t": "data", "path": KEY, "off": 0, "plain": len(body)}, Deflater()(body)),
+                         ({"t": "sealed", "path": KEY, "size": len(body)}, b""),
+                         ({"t": "trailer", "path": KEY, "crc": crc, "isize": len(body)}, b"")],
+                        ping_s=0.1, backoff=(0.1, 0.2), stall_s=0.3)
+        self.assertTrue(wait_for(lambda: KEY in self.m.verified), self.link.status())
+        self.assertEqual(len(self.link.attempts), 1, self.link.last_error)
+        self.assertTrue(self.link.connected)
+
+
+class TestSenderPings(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="fleet-src-")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_the_sender_pings_while_it_inflates_what_the_copy_has(self):
+        """A sealed day the copy has most of comes from the node's `.gz`: the sender
+        inflates the part the copy has, sending nothing, before the rest. For a big
+        day that was minutes with no ping, longer than a receiver now waits."""
+        os.makedirs(os.path.join(self.root, "2026-11-11"))
+        os.makedirs(os.path.join(self.root, DAY))
+        body = (b'{"pid":12345,"cmd":"python train.py --epochs 10"}\n' * 260000)[:3 * fs.CHUNK]
+        with gzip.open(os.path.join(self.root, DAY, "nodeA.exits.jsonl.gz"), "wb") as fh:
+            fh.write(body)
+        have = {KEY: {"size": len(body) - 10, "verified": False}}
+        _, frames = run_sender(self.root, {"v": 1, "days": 3, "have": have}, ping_s=0.0)
+        first = next(i for i, (h, _) in enumerate(frames) if h.get("path") == KEY)
+        self.assertEqual([h["t"] for h, _ in frames[:first]], ["hello", "ping", "ping"])
+        self.assertEqual(frames[first][0]["off"], len(body) - 10)
+        self.assertEqual(frames[first][1], body[-10:])
 
 
 if __name__ == "__main__":

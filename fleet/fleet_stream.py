@@ -35,7 +35,7 @@ is one JSON line on the sender's stdin:
     sealed   {path, size}            the plain file is final at `size`
     trailer  {path, crc, isize}      the source `.gz`'s last 8 bytes, once gzip is done
     reset    {path, why}             drop the copy of `path`; it is sent again from 0
-    ping     {}                      after `--ping` seconds of silence
+    ping     {}                      after `--ping` seconds of silence, catch-up included
     error    {msg}                   the sender exits 1 right after
 
 Only `.jsonl` day-files (and their `.gz`) are sent; any other file in a day folder stays
@@ -71,6 +71,7 @@ EXIT_UNSAFE = 3                # the receiver's base folder is not what it was
 MAX_HEADER = 1 << 20
 MAX_PAYLOAD = CHUNK + (1 << 16)    # deflate can grow incompressible input a little
 STDERR_LINE = 4096             # a transport's stderr line is kept up to this; the rest goes
+STALL_S = 300.0                # a receiver's read with nothing from the sender this long ends it
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GZ = ".gz"
 GZ_LEVEL = 6                   # gzip's default, as the collector's `nice gzip -f` uses
@@ -78,6 +79,10 @@ GZ_LEVEL = 6                   # gzip's default, as the collector's `nice gzip -
 
 class ProtocolError(Exception):
     pass
+
+
+class Stalled(ProtocolError):
+    """The transport is open, but nothing has come from the sender, not even a ping."""
 
 
 # --------------------------------------------------------------------- frames
@@ -222,6 +227,12 @@ class Sender:
         self.out.flush()
         self.last_out = time.time()
 
+    def ping_if_quiet(self):
+        """A ping once `ping_s` passed with nothing sent, so the receiver can tell a
+        sender with nothing new, or busy in a long catch-up, from one that stopped."""
+        if time.time() - self.last_out >= self.ping_s:
+            self.emit({"t": "ping"})
+
     def reset(self, key, why):
         self.emit({"t": "reset", "path": key, "why": why})
         self.have.pop(key, None)           # the receiver no longer holds it
@@ -277,6 +288,7 @@ class Sender:
                             self.reset(key, "the file was replaced while the link was down")
                             return self.send_inflated(key, gz_path, 0)
                 if pos <= skip:
+                    self.ping_if_quiet()   # minutes, for a big day the copy mostly has
                     continue
                 if start < skip:
                     piece, start = piece[skip - start:], skip
@@ -490,8 +502,7 @@ class Sender:
                 self.scan_live()
                 self.follow_live()
             self.check_trailers()
-            if time.time() - self.last_out >= self.ping_s:
-                self.emit({"t": "ping"})
+            self.ping_if_quiet()
 
 
 def send_main(root, inp, out, poll_s=1.0, ping_s=30.0, trailer_poll_s=30.0):
@@ -1164,22 +1175,39 @@ class Counters:
 
 
 class _Counting:
-    def __init__(self, raw):
-        self.raw, self.n = raw, 0
+    """The transport's stdout, read straight from its pipe, counting the bytes. A read
+    that waits more than `stall_s` for its next byte raises Stalled. Only waiting
+    counts: time spent applying a frame (a long trailer check) does not."""
+
+    def __init__(self, raw, stall_s=None):
+        self.fd, self.n, self.stall_s = raw.fileno(), 0, stall_s
+        self.poll = select.poll()
+        self.poll.register(self.fd, select.POLLIN)
 
     def read(self, n):
-        b = self.raw.read(n)
+        if self.stall_s and not self.poll.poll(max(1, int(self.stall_s * 1000))):
+            raise Stalled("nothing from the sender for %g s" % self.stall_s)
+        b = os.read(self.fd, min(n, 1 << 16))
         self.n += len(b)
         return b
 
 
 class Link:
     """One source host: keeps one transport (ssh, or any argv speaking the
-    protocol) open, applies its frames, and reconnects with backoff."""
+    protocol) open, applies its frames, and reconnects with backoff.
 
-    def __init__(self, host, argv, mirror, days, counters, paused, stop, backoff=(5, 300)):
+    A sender pings after `--ping` (30) seconds with nothing else to send, even in
+    a long catch-up, so a read that waits `stall_s` (300) seconds for anything at
+    all ends the connection (Stalled). The link counts as connected only once a
+    frame after the sender's hello has been applied: a sender that says hello and
+    then stops, or whose frames are refused, stays down, and its down_since keeps
+    counting across reconnections."""
+
+    def __init__(self, host, argv, mirror, days, counters, paused, stop, backoff=(5, 300),
+                 stall_s=STALL_S):
         self.host, self.argv, self.mirror, self.days = host, list(argv), mirror, days
         self.counters, self.paused, self.stop, self.backoff = counters, paused, stop, backoff
+        self.stall_s = stall_s
         self.proc = None
         self.connected = False
         self.down_since = time.time()      # None while connected
@@ -1265,7 +1293,7 @@ class Link:
         hello = {"v": PROTOCOL, "days": self.days, "have": self.mirror.inventory(self.days)}
         self.proc.stdin.write((json.dumps(hello) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
-        src = _Counting(self.proc.stdout)
+        src = _Counting(self.proc.stdout, self.stall_s)
         inflater = zlib.decompressobj()
         while not self.stop.is_set() and not self.paused.is_set():
             before = src.n
@@ -1277,8 +1305,7 @@ class Link:
             self.last_frame = time.time()
             t = h.get("t")
             if t == "hello":
-                self.live, self.connected, self.last_error = h.get("live"), True, None
-                self.down_since = None
+                self.live = h.get("live")
             elif t == "error":
                 raise ProtocolError("the sender says: %s" % h.get("msg"))
             elif t != "ping":
@@ -1290,6 +1317,8 @@ class Link:
                         self.live = day
                 elif t == "gz":
                     self.counters.add(self.host, gz=len(payload))
+            if t != "hello" and not self.connected:   # a frame after the hello applied
+                self.connected, self.down_since, self.last_error = True, None, None
             dropped = self.mirror.take_dropped()
             if dropped:
                 self.counters.add(self.host, resent=dropped)
@@ -1367,6 +1396,8 @@ class Receiver:
       date, so no folder a node names can push a day out. A frame that names a
       later day, or would reset, extend, or fetch again a verified file, is
       refused;
+    * `stall_s` (default 300): a link whose sender sends nothing, not even its
+      pings, for that long is closed, shows as down, and reconnects (Link);
     * status every 10 s and traffic every 60 s, into state/;
     * `keep_gz` (default false): sealed days stay in the copy as `.gz`, about 19x
       smaller on disk. A day fetched whole keeps the collector's own file; the live
@@ -1482,8 +1513,10 @@ class Receiver:
             return EXIT_UNSAFE
         backoff = tuple(self.cfg.get("backoff") or (5, 300))
         keep_gz = bool(self.cfg.get("keep_gz", False))
+        stall_s = float(self.cfg.get("stall_s") or STALL_S)
         self.links = [Link(host, argv, Mirror(self.base, host, keep_gz=keep_gz), self.days,
-                           self.counters, self.paused, self.stop, backoff=backoff)
+                           self.counters, self.paused, self.stop, backoff=backoff,
+                           stall_s=stall_s)
                       for host, argv in sorted(self.cfg["hosts"].items())]
         self.threads = [threading.Thread(target=l.run, name=l.host, daemon=True) for l in self.links]
         for t in self.threads:
