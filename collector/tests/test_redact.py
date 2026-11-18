@@ -7,10 +7,13 @@ import contextlib
 import ctypes
 import importlib.util
 import io
+import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -992,6 +995,84 @@ class NodeTierTest(unittest.TestCase):
         line = 'claude --name Mantis shrimp'
         self.assertEqual(R.redact_ps_line(line, self.p.pid), R.redact_line(line))
         self.assertEqual(R.redact_ps_line(self.line, 2 ** 22 + 7), R.redact_line(self.line))
+
+
+class NodeSnapshotTest(unittest.TestCase):
+    """node_snapshot.py run whole from a copy, its lib/ as each test makes it,
+    beside a process whose argv holds a password."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.decoy = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)',
+                                      '--password=hunter2decoy'])
+        for _ in range(200):                    # until the child has exec'd
+            with open('/proc/%d/cmdline' % cls.decoy.pid, 'rb') as f:
+                if b'hunter2decoy' in f.read():
+                    break
+            time.sleep(0.01)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.decoy.kill()
+        cls.decoy.wait()
+
+    def snapshot(self, lib, **env):
+        d = tempfile.mkdtemp(prefix='ebpfm_node_')
+        try:
+            shutil.copy(str(_ROOT / 'node_snapshot.py'), d)
+            os.mkdir(os.path.join(d, 'lib'))
+            if lib is not None:
+                with open(os.path.join(d, 'lib', 'redact.py'), 'w') as f:
+                    f.write(lib)
+            e = dict(os.environ, SNAPSHOT_MODE='node', SNAPSHOT_PROC_TREE='0')
+            e.pop('EBPFM_REDACT', None)
+            e.update(env)
+            r = subprocess.run([sys.executable, '-B', os.path.join(d, 'node_snapshot.py'), 'testhost',
+                                '100000'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=e,
+                               universal_newlines=True, timeout=120)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        snap = json.loads(r.stdout)
+        rows = [p['args'] for p in snap['top_cpu_processes'] + snap['top_rss_processes']
+                if p['pid'] == self.decoy.pid]
+        self.assertTrue(rows)
+        return snap, set(rows), r.stdout
+
+    def test_without_its_masking_it_writes_no_command_line(self):
+        """It wrote them raw, with `redact: []`, when lib/redact.py was missing."""
+        for lib in (None, 'def redact_line(:\n'):       # missing, or not Python
+            snap, rows, out = self.snapshot(lib)
+            self.assertEqual(snap['redact'], ['error'])
+            self.assertEqual(rows, {'[REDACTED]'})
+            self.assertNotIn('hunter2decoy', out)
+        # switched off, they are written as they are
+        snap, rows, out = self.snapshot(None, EBPFM_REDACT='0')
+        self.assertEqual(snap['redact'], [])
+        self.assertIn('--password=hunter2decoy', rows.pop())
+
+    def test_with_it_the_password_is_masked(self):
+        snap, rows, out = self.snapshot((_ROOT / 'lib' / 'redact.py').read_text(encoding='utf-8'))
+        self.assertEqual(snap['redact'], ['keys', 'prompts'])
+        self.assertNotIn('hunter2decoy', out)
+        self.assertIn('--password=' + K, rows.pop())
+
+    def test_only_the_ps_rows_it_keeps_are_masked(self):
+        """Every row was masked and all but top_n dropped, twice a snapshot."""
+        src = (_ROOT / 'node_snapshot.py').read_text(encoding='utf-8')
+        head = src.split('\nwith ThreadPoolExecutor(max_workers=8) as ex:')[0]
+        ns = {'__file__': str(_ROOT / 'node_snapshot.py'), '__name__': 'node_snapshot_head'}
+        argv, sys.argv = sys.argv, ['node_snapshot.py', 'testhost', '5']
+        try:
+            exec(compile(head, 'node_snapshot.py', 'exec'), ns)
+        finally:
+            sys.argv = argv
+        masked = []
+        ns['_mask'] = lambda cmd, pid=None: masked.append(pid) or cmd
+        ps = ''.join('%d 1 u 0.0 0.1 100 S 10:00 0:00 tool --token t%d\n' % (1000 + i, i)
+                     for i in range(50))
+        self.assertEqual([r['pid'] for r in ns['parse_ps'](ps, 5)], [1000, 1001, 1002, 1003, 1004])
+        self.assertEqual(masked, [1000, 1001, 1002, 1003, 1004])
 
 
 class DashboardSyncTest(unittest.TestCase):

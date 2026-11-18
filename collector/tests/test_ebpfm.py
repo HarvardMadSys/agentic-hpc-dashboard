@@ -4787,6 +4787,32 @@ class WrapperTest(unittest.TestCase):
     def test_a_node_snapshot_is_bounded(self):
         self.assertIn('$(_node_timeout) python3 "$NODE_SNAPSHOT"', self.src)
 
+    def test_check_masks_a_credential_through_the_node_tiers_lib(self):
+        """It only compiled node_snapshot.py: a lib/redact.py it could not
+        import, or that masked nothing, passed."""
+        d = tempfile.mkdtemp(prefix='ebpfm_check_')
+        try:
+            os.mkdir(os.path.join(d, 'lib'))
+            snap = os.path.join(d, 'node_snapshot.py')
+            shutil.copy(str(_ROOT / 'node_snapshot.py'), snap)
+            script = ('ok() { echo "ok $1"; }; warn() { echo "warn $1"; }; bad() { echo "bad $1"; }\n'
+                      '_node_mode() { echo node; }; want_ebpf() { return 1; }\n'
+                      'NODE_SNAPSHOT=%s; NODE_OUTPUT_DIR=%s/out\n' % (snap, d)
+                      + self._fn('_check_node_tier') + '_check_node_tier\n')
+
+            def verdict():
+                rc, out, err = self._bash(script)
+                return [l for l in out.splitlines() if l.split()[1:] == ['redact']]
+            self.assertEqual(verdict(), ['bad redact'])               # no lib/redact.py
+            shutil.copy(str(_ROOT / 'lib' / 'redact.py'), os.path.join(d, 'lib'))
+            self.assertEqual(verdict(), ['ok redact'])
+            with open(os.path.join(d, 'lib', 'redact.py'), 'w') as f:  # one that masks nothing
+                f.write('MASK = "[REDACTED]"\n\n\ndef redact_line(line, **kw):\n'
+                        '    return line, None\n')
+            self.assertEqual(verdict(), ['bad redact'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     # --- run for real ------------------------------------------------------
     def _bash(self, script, env=None):
         r = subprocess.run(['bash', '-c', 'set -uo pipefail\n' + script], env=env,

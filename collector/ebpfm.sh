@@ -471,6 +471,14 @@ _check_node_tier() {
         python3 -m py_compile "$NODE_SNAPSHOT" 2>/dev/null && ok "node_snapshot syntax" ok \
             || bad "node_snapshot syntax" "py_compile failed"
     fi
+    # The node tier masks argv with the lib/redact.py beside it. One it cannot
+    # import leaves every command line [REDACTED]; one that masks nothing, raw.
+    if python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import redact; out = redact.redact_line("tool --password hunter2check")[0]; sys.exit(0 if "hunter2check" not in out and redact.MASK in out else 1)' \
+            "$(dirname "$NODE_SNAPSHOT")/lib" >/dev/null 2>&1; then
+        ok redact "masks a test credential"
+    else
+        bad redact "$(dirname "$NODE_SNAPSHOT")/lib/redact.py did not mask a test credential"
+    fi
     ok "snapshot mode" "$(_node_mode)$(want_ebpf && echo '  (ebpf tier carries the 4 dropped sections)' || echo '  (no ebpf tier: keeping every section)')"
 
     # snapshot.py shells out to these. A missing one degrades one section to
