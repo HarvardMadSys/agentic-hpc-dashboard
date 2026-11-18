@@ -275,7 +275,9 @@ class LiveOpen(Live):
             with self.subTest(body=str(body)[:40]):
                 self.assertEqual(self.req("POST", "/api/ask", body, JSON)[0], 400)
         for body in ("[]", "nope"):
-            self.assertEqual(self.req("POST", "/api/suggestions/done", body, JSON)[0], 400)
+            for path in ("/api/suggestions/done", "/api/annotate"):
+                with self.subTest(path=path, body=body):
+                    self.assertEqual(self.req("POST", path, body, JSON)[0], 400)
         self.assertEqual(self.req("POST", "/api/ask", b"{" + b" " * (1 << 20) + b"}", JSON)[0], 413)
 
 

@@ -1318,9 +1318,16 @@ Set it up under `annotate` (every key: `dashboard.config.example.json`):
 | `ask` | whatever agent the chat (`ask`) runs | the agent's own |
 | `command` | any command: the prompt on stdin, a JSON answer on stdout or in `{answer_file}` | -- |
 
+A CLI provider (`codex`, `claude`, `ask`, `command`) runs an agent on this host over other
+users' command lines, so it keeps [Ask LLM](#ask-llm)'s rules: refused while the service has no
+password, and run with only part of the service's environment (`ask.env_passthrough` names
+more) in a directory of its own in the system's temporary one. An HTTP provider runs nothing
+here: the model gets the masked text the page shows, with no tools, and its answer is read only
+as a label and a kind, so it is not refused for want of a password.
+
 The key is read from the variable `api_key_env` names (empty: the one above), else from
 `api_key_file`, else from `api_key` -- which `/api/config` and `--print-config` show only as
-set or not. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
+set or not, as they do `command` and `system_prompt`. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
 `auto: true` asks as soon as a session opens instead of on the button. The environment can set
 `RC_DASH_ANNOTATE=1`, `RC_DASH_ANNOTATE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_KEY_ENV`,
 `_KEY_FILE` and `_CMD`. For example, a local model:

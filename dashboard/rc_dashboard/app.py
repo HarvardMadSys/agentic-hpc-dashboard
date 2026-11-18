@@ -542,7 +542,7 @@ def create_app(cfg):
         its job: `job` is that one when this request started none, and `also`
         names any others, so every reader of the session gets the answers. The body is the tree's own text, masked once: it is sent as
         it is, so the page matches each call to its row exactly."""
-        body = await request.json()
+        body = await json_body(request)
         sid = body.get("sid")
         if not isinstance(sid, str) or not sid:
             raise HTTPException(400, "name a session (sid)")

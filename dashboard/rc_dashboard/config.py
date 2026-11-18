@@ -247,7 +247,9 @@ def defaults():
         # What each tool call in a session was for, in a model's words (annotate.py):
         # the session inspector's "annotate purposes". Off by default: it sends
         # the session's tool-call command lines -- masked, as the page shows
-        # them -- and the folders they ran in to the provider below.
+        # them -- and the folders they ran in to the provider below. A CLI
+        # provider runs an agent on this host, as Ask does: only behind a
+        # password, with ask.env_passthrough's part of the environment.
         "annotate": {
             "enabled": False,
             # anthropic | openai (any OpenAI-compatible endpoint) | codex | claude
@@ -562,10 +564,10 @@ ENV_MAP = {
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
-# The agent's command and its instructions can carry a provider's key
+# An agent's command and its instructions can carry a provider's key
 # (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
 HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt",
-          "annotate.api_key")
+          "annotate.api_key", "annotate.command", "annotate.system_prompt")
 
 # retired names still honoured, with a one-line warning
 ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
