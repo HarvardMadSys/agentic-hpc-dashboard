@@ -183,6 +183,7 @@ CATS = ("test", "slurm", "run", "build", "edit", "git", "wait", "explore", "unkn
 _MAX_TEXT = 100000          # characters of one command read; the longest argv seen was 58 k
 _MAX_DEPTH = 3              # `$( )`, `sh -c` and `eval` read inside one another this deep
 _LOOKAHEAD = 40             # lines a quoted string may run on, looking for its closing quote
+_LOOKAHEAD_MISSES = 8       # quotes a text may leave open for good before its lines are not looked past
 
 # ------------------------------------------------------------------ the tables
 # Programs, by what a call that runs one is. A program no table names is `run`.
@@ -290,7 +291,9 @@ _BUILD_WORDS = frozenset({"build", "install", "setup", "compile", "configure", "
                           "fetch", "download"})
 
 # Python that writes a file: open() with a mode that writes, and the calls that write or delete.
-_FILE_MODE = r"['\"][rwxabt+]*[wax+][rwxabt+]*['\"]"
+# A mode is read up to its first `w`, `a`, `x` or `+`, in one way only: `[rwxabt+]*` before that
+# letter could take any of them, and `'www...wz'` took 1.4 s at 16,000 characters.
+_FILE_MODE = r"['\"][rbt]*[wax+][rwxabt+]*['\"]"
 _PY_WRITES = re.compile(
     r"\bopen\s*\((?:[^()]|\([^()]*\))*?(?:,\s*|\bmode\s*=\s*)" + _FILE_MODE +
     r"|\.open\s*\(\s*" + _FILE_MODE +
@@ -415,6 +418,39 @@ def _lex(line):
         return None
 
 
+_OPENS = re.compile(r"['\"\\]")         # what opens a quote or escapes, outside quotes
+_IN_DOUBLE = re.compile(r'["\\]')         # what closes a double quote or escapes, inside one
+
+
+def _left_open(s, state=""):
+    """What `_lex` is left inside at the end of `s`, starting inside `state`: "" for nothing, `'`
+    or `"` for a quote, or a backslash (`\\`, or `"\\` inside double quotes) that takes the next
+    character as it is. `_lex` fails exactly when this is not "" -- shlex's posix rules: a single
+    quote holds a backslash as it is, a double quote does not. One pass over `s`, jumping from one
+    quote or backslash to the next."""
+    i, n = 0, len(s)
+    while True:
+        if not state:
+            m = _OPENS.search(s, i)
+            if m is None:
+                return ""
+            i, state = m.end(), m.group()
+        elif state == "'":
+            i = s.find("'", i)
+            if i < 0:
+                return state
+            i, state = i + 1, ""
+        elif state == '"':
+            m = _IN_DOUBLE.search(s, i)
+            if m is None:
+                return state
+            i, state = m.end(), "" if m.group() == '"' else '"\\'
+        else:
+            if i >= n:
+                return state
+            i, state = i + 1, "" if state == "\\" else '"'
+
+
 def _is_separator(tok):
     return bool(tok) and all(c in _SEPARATOR for c in tok)
 
@@ -428,18 +464,28 @@ def _lines(text):
     each follows the one before with no space, and the bodies of the heredocs it opens, which are
     the lines that follow it. A line that ends in a backslash goes on, and so does one with an
     open quote, for up to `_LOOKAHEAD` lines. A text longer than `_MAX_TEXT` is cut at a line, not
-    in a word: half a word would read as a program."""
+    in a word: half a word would read as a program.
+
+    Where an open quote closes is found in one pass over the lines after it (`_left_open`), and
+    the line is lexed once, joined to them: lexing a growing join up to `_LOOKAHEAD` times, for
+    every line, took 2 s over 1,000 lines that each end in three backslashes. A text whose quotes
+    stay open for good `_LOOKAHEAD_MISSES` times has its next such lines split on whitespace
+    without looking past them; the test texts leave two at most."""
     if len(text) > _MAX_TEXT:
         k = text.rfind("\n", 0, _MAX_TEXT)
         text = text[:k if k > 0 else _MAX_TEXT]
     lines = text.split("\n")
-    n, i = len(lines), 0
+    n, i, misses = len(lines), 0, 0
     while i < n:
         line = lines[i]
         i += 1
-        while line.endswith("\\") and not line.endswith("\\\\") and i < n:
-            line = line[:-1] + " " + lines[i]
-            i += 1
+        if line.endswith("\\") and not line.endswith("\\\\") and i < n:
+            held = []                   # joined once: adding each to the last was quadratic
+            while line.endswith("\\") and not line.endswith("\\\\") and i < n:
+                held.append(line[:-1])
+                line = lines[i]
+                i += 1
+            line = " ".join(held + [line])
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         bodies = []
@@ -459,14 +505,20 @@ def _lines(text):
 
         if "<<" in line:
             line = _HEREDOC_OP.sub(cut, line)
-        first, resume, lexed, k = line, i, _lex(line), 0
-        while lexed is None and i < n and k < _LOOKAHEAD:   # an open quote runs on to the next line
-            line += "\n" + lines[i]
-            i += 1
-            k += 1
-            lexed = _lex(line)
+        lexed = _lex(line)
+        if lexed is None and i < n and misses < _LOOKAHEAD_MISSES:
+            # an open quote runs on to the next line: to the first line that closes it
+            state, k, stop = _left_open(line), 0, min(n, i + _LOOKAHEAD)
+            while state and i + k < stop:
+                state = _left_open("\n" + lines[i + k], state)
+                k += 1
+            joined = None if state else _lex("\n".join([line] + lines[i:i + k]))
+            if joined is None:
+                misses += 1
+            else:
+                lexed, i = joined, i + k
         if lexed is None:
-            i, toks = resume, first.split()
+            toks = line.split()
             lexed = toks, [False] * len(toks)
         yield lexed[0], lexed[1], bodies
 
@@ -495,9 +547,25 @@ class _Splitter:
         self.braces = []                        # open `{` groups: the index in `out` of each
         self.group = None                       # a group just closed: where in `out` it began
         self.cases, self.pat, self.test, self.glue = 0, False, False, False
+        self.lead = {}          # a command's word list, by id: [the list, how many lead keywords]
 
     def _in_sub(self):
         return any(k == "$" for k, _c, _e, _i in self.stack)
+
+    def _at_start(self):
+        """True while the command being read holds only keywords: where a command starts. A
+        command's words are only added to, and only the last is glued onto, so how many of the
+        words before the last are keywords is kept for each list: a run of `{` read them all again
+        for each one (0.6 s at 16,000 characters)."""
+        cur = self.cur
+        lead = self.lead.get(id(cur))
+        if lead is None or lead[0] is not cur:
+            lead = self.lead[id(cur)] = [cur, 0]
+        k, last = lead[1], len(cur) - 1
+        while k < last and cur[k] in _KEYWORDS:
+            k += 1
+        lead[1] = k
+        return k >= last and (last < 0 or cur[last] in _KEYWORDS)
 
     def _arith(self):
         return bool(self.stack) and self.stack[-1][0] == "(("
@@ -544,13 +612,13 @@ class _Splitter:
             self.cur.append(t)
             self.flush(kind="def")
             return
-        if t == "[[" and all(w in _KEYWORDS for w in self.cur):
+        if t == "[[" and self._at_start():
             self.test = True                    # `[[` where a command starts, `if [[` included
         elif t == "]]":
             self.test = False
-        elif t == "{" and all(w in _KEYWORDS for w in self.cur):
+        elif t == "{" and self._at_start():
             self.braces.append(len(self.out))   # a group opens where a command starts
-        elif t == "}" and self.braces and all(w in _KEYWORDS for w in self.cur):
+        elif t == "}" and self.braces and self._at_start():
             self.group = self.braces.pop()
         self.cur.append(t)
 
@@ -1450,8 +1518,9 @@ _FLOCK_CHECK = re.compile(r"if\s+command\s+-v\s+flock\b")
 # `;`, `&`, `|`, a newline, `(`, or `{`, and not as an argument (`cp -r . ~/.codex/backup`). Nor
 # after `if`: a newer Codex sources the snapshot so before the model's own command, `if . <snapshot>
 # >/dev/null 2>&1; then :; fi ... exec bash -c '<command>'`, which is a tool call (2 on boslogin06 on
-# 2026-10-28).
-_CODEX_SOURCED = re.compile(r"""(?:^|[;&|\n({])\s*(?:source|\.)\s+["']?\S*/\.codex/""")
+# 2026-10-28). The space after a separator holds no newline, which is a separator itself: `\s*`
+# there read a run of newlines again from each of them (1.3 s at 16,000), for the same matches.
+_CODEX_SOURCED = re.compile(r"""(?:^|[;&|\n({])[^\S\n]*(?:source|\.)\s+["']?\S*/\.codex/""")
 _SH_S = re.compile(r"^\S+\s+-s(?:\s|$)")                         # `sh -s`: a script on stdin
 # Codex's remote launcher. Its VS Code extension starts Codex over SSH as a login shell that execs
 # the extension's payload, `bash -l -i -c 'CODEX_HOME=...; exec /bin/sh -c "$CODEX_REMOTE_PAYLOAD"'`,
@@ -1526,8 +1595,11 @@ _DAEMON_CHORES = (
 # them by time: one that began within `app_read_s` of one of these reads is the app's too
 # (`cat_without_argv`, `PhaseLog.add_app_read`).
 APP_READ = "app assets"     # the housekeeping shape of these reads
-_ASSET_FILE = (r"/(?:\S*/)?\.codex/(?:\.tmp/(?:plugins|bundled-marketplaces)|plugins/cache)/"
-               r"(?:\S*/)?assets/\S+")
+# The file is read one folder at a time, and each folder once (atomic groups): its first
+# `.codex/<cache>/` and the first `assets/` after it are as good as any later one, and trying every
+# pair took 0.97 s for a 6.7 KB `cat` of `.codex/plugins/cache/` and `assets/` repeated.
+_ASSET_FILE = (r"/(?>(?:[^\s/]*/)*?\.codex/(?:\.tmp/(?:plugins|bundled-marketplaces)"
+               r"|plugins/cache)/)(?>(?:[^\s/]*/)*?assets/)\S+")
 _APP_ASSETS = re.compile(
     r"^(?:(?:\S*/)?cat|/proc/self/exe --codex-run-as-process-setup (?:\S+ )+?/bin/cat /bin/cat) "
     + _ASSET_FILE + "$")
