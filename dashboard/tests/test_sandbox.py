@@ -337,6 +337,47 @@ class ToolCallTest(unittest.TestCase):
                 sb = reduce(recs)["sandbox"]
                 self.assertEqual(sorted((r["approval"], r["calls"]) for r in sb["sessions"]), want)
 
+    def three_lifetimes(self, t0, middle):
+        """alice's three agents on pid 4242, one after another: [0, 60] supervised,
+        `middle` bypassed, and [300, 400] in auto mode."""
+        def root(t, args, **kw):
+            return rec("exit", t, 4242, 3000, "claude", args, agent_pid=4242, tree_root=4242,
+                       is_agent=True, **kw)
+        return ([root(t0 + 60, "claude", duration_s=60.0)] + middle(root)
+                + [root(t0 + 400, "claude --permission-mode auto", duration_s=100.0)])
+
+    def call(self, t0, start):
+        return rec("exit", t0 + start + 10, 5010, 4242, "zsh", SNAP + "'make'", agent_pid=5010,
+                   tree_root=4242, is_agent=True, duration_s=10.0)
+
+    def sessions(self, recs):
+        return sorted((r["approval"], r["calls"]) for r in reduce(recs)["sandbox"]["sessions"])
+
+    def test_a_call_goes_to_the_lifetime_it_started_in(self):
+        """A call at 150 is the [100, 200] agent's: of the roots that had not
+        exited by then, the last to have started. Read by the exit alone, it
+        went to the newest, [300, 400]."""
+        t0 = time.time() - 7000
+        recs = self.three_lifetimes(t0, lambda root: [
+            self.call(t0, 150),
+            root(t0 + 200, "claude --dangerously-skip-permissions", duration_s=100.0)])
+        self.assertEqual(self.sessions(recs), [("auto", {}), ("bypassed", {"not_isolated": 1}),
+                                               ("supervised", {})])
+
+    def test_a_call_before_a_roots_first_record_goes_to_the_first_still_running(self):
+        """The middle agent's start was never read: it is known from a tick at
+        120 and an exit with no duration. A call at 90, after the first agent
+        exited, is before every start known, so it goes to the first root still
+        running -- the middle one, which had started by its first record."""
+        t0 = time.time() - 7000
+        recs = self.three_lifetimes(t0, lambda root: [
+            rec("conn", t0 + 120, 4242, 3000, "claude", "claude --dangerously-skip-permissions",
+                agent_pid=4242, tree_root=4242, is_agent=True),
+            self.call(t0, 90),
+            root(t0 + 200, "claude --dangerously-skip-permissions", duration_s=None)])
+        self.assertEqual(self.sessions(recs), [("auto", {}), ("bypassed", {"not_isolated": 1}),
+                                               ("supervised", {})])
+
     def test_the_wrapper_reading_is_not_called_a_probe(self):
         recs = [root_tick(self.t0, 100)] + bwrap_call(self.t0, 100, 300)
         rows = reduce(recs)["sandbox"]["ancestry_matrix"]

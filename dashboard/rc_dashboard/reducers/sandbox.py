@@ -79,8 +79,9 @@ _SLACK_S = 1.0          # two readings of one process's start differ by this muc
 
 def _in_root(r, user, t):
     """Whether a record or tool call of `user` at time `t` (a record's start,
-    else its own time; a call's start) is of root r's process. A pid is reused:
-    another user's, or one from after the root exited, is another process's."""
+    else its own time; a call's start) can be of root r's process. A pid is
+    reused: another user's, or one from after the root exited, is another
+    process's. `_root_gen` picks among the roots it can be of."""
     if users_conflict(r[_R_USER], user):
         return False
     return not (t is not None and r[_R_END] is not None and t > r[_R_END] + _SLACK_S)
@@ -292,15 +293,25 @@ class SandboxReducer:
 
     def _root_gen(self, key, user, t):
         """(generation, root) of the root on `key` that a record or a tool call
-        of `user` at time `t` is of, or (None, None)."""
-        r = self.roots.get(key)
-        if r is not None and _in_root(r, user, t):
-            return 0, r
-        later = self.later_roots.get(key, ())
-        for i in range(len(later) - 1, -1, -1):
-            if _in_root(later[i], user, t):
-                return i + 1, later[i]
-        return None, None
+        of `user` at time `t` is of, or (None, None). Of its user's roots that
+        had not exited by `t`, the last to have started by then. When none had,
+        the first of them: a start known only from a later record (a tick with
+        no age) or read late is after the true one, and lifetimes on a pid
+        follow one another, so the first root still running after `t` is the
+        one that followed the last exit before it. A time not known takes the
+        first of its user's roots."""
+        r0 = self.roots.get(key)
+        if r0 is None:
+            return None, None
+        live = [(g, r) for g, r in enumerate([r0] + self.later_roots.get(key, []))
+                if _in_root(r, user, t)]
+        if not live or t is None:
+            return live[0] if live else (None, None)
+        started = [(g, r) for g, r in live
+                   if r[_R_START] is not None and r[_R_START] <= t + _SLACK_S]
+        if started:
+            return max(started, key=lambda gr: gr[1][_R_START])
+        return min(live, key=lambda gr: (gr[1][_R_START] is None, gr[1][_R_START] or 0.0))
 
     def _take_root(self, key, r, at):
         """A root's record (`feed`), or a later state's root (`merge`), as of
