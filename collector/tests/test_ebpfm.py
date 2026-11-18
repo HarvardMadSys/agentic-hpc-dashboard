@@ -1633,6 +1633,39 @@ class FlushPolicyTest(unittest.TestCase):
             if mode == 'poll':
                 self.assertEqual(old, w.flushes - 1, 'the old count missed the exits flush')
 
+    def _restart_on(self, content):
+        """A day's snapshot file holding `content`, then a start that writes its
+        meta record: the file's bytes after, and the writer."""
+        os.makedirs(os.path.dirname(self._path('snapshot')))
+        with open(self._path('snapshot'), 'wb') as f:
+            f.write(content)
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'meta', 'schema_version': 8, 'ts': 'x', 'ts_epoch': 1.0})
+        w.flush()
+        w.close()
+        with open(self._path('snapshot'), 'rb') as f:
+            return f.read(), w
+
+    def test_a_line_cut_short_is_ended_before_the_next_start_writes(self):
+        """SIGKILL, a power cut or a full disk can leave the file ending in half a
+        line; appended to, it would swallow the next start's meta record:
+        `...partial li{"event": "meta", ...}`, neither line parseable."""
+        whole = b'{"event": "residency", "ts": "x"}\n'
+        got, w = self._restart_on(whole + b'{"event": "residency", "partial li')
+        lines = got.split(b'\n')
+        self.assertEqual(lines[:2], [whole[:-1], b'{"event": "residency", "partial li'])
+        self.assertEqual(json.loads(lines[2].decode())['event'], 'meta')
+        self.assertEqual(lines[3:], [b''])
+        self.assertEqual(w.output_stats()['jsonl']['writes'], 1, 'in the same write(2)')
+
+    def test_a_file_that_ends_its_lines_gets_nothing_more(self):
+        meta = (json.dumps({'event': 'meta', 'schema_version': 8, 'ts': 'x',
+                            'ts_epoch': 1.0}) + '\n').encode()
+        for before in (b'', b'{"event": "residency", "ts": "x"}\n'):
+            got, _w = self._restart_on(before)
+            self.assertEqual(got, before + meta)
+            shutil.rmtree(os.path.join(self.dir, self.day))
+
     def test_errors_are_the_callers_and_a_failed_write_is_retried(self):
         """A record json.dumps refuses raises, as it always did, and none of it
         is written. A write that fails (ENOSPC) raises too and keeps its bytes:

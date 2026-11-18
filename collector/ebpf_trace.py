@@ -2260,6 +2260,19 @@ def _create_mode():
     return FILE_MODE if FILE_MODE is not None else 0o666
 
 
+def _ends_mid_line(fd, path):
+    """True when the file open at `fd` holds bytes and the last is not a newline."""
+    try:
+        size = os.fstat(fd).st_size
+        if not size:
+            return False
+        with open(path, 'rb') as fh:
+            fh.seek(size - 1)
+            return fh.read(1) != b'\n'
+    except (IOError, OSError):
+        return False
+
+
 class _JsonlSink(object):
     """One stream's JSONL day-file.
 
@@ -2276,8 +2289,12 @@ class _JsonlSink(object):
         self.fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_CLOEXEC,
                           _create_mode())
         self.buf = []
-        self.retry = b''          # what a failed write left unwritten
-        self.torn = False         # the file ends mid-line: a short write, then an error
+        # the file ends mid-line: a short write, then an error -- or, found at
+        # open, a line a killed collector, a lost power or a full disk cut short
+        self.torn = _ends_mid_line(self.fd, path)
+        # what a failed write left unwritten; at open, the end of that cut line,
+        # so the next record starts a line of its own rather than joining it
+        self.retry = b'\n' if self.torn else b''
         self.records = self.bytes = self.writes = self.errors = 0
 
     def add(self, rec):
