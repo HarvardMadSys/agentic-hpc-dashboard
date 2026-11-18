@@ -534,7 +534,10 @@ def create_app(cfg):
                 if info["enabled"] else []
             if job is None and also:
                 job = annotator.view(also.pop(0))
+            # the calls themselves, so the page keeps only their answers out of
+            # a followed job that another session started
             return {"info": info, "calls": len(calls), "total": total,
+                    "cmds": [c["cmd"] for c in calls],
                     "known": known, "job": job, "also": also}
 
         try:

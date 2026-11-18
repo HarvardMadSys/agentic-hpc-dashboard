@@ -16,6 +16,8 @@ import { fint } from '../lib/format';
 const POLL_MS = 1500;
 
 export interface AnnotateState {
+  /** the session these are for */
+  sid: string;
   info: AnnotateInfo | null;
   set: LlmPurposeSet | null;
   /** distinct tool calls taken, and how many the session has */
@@ -51,6 +53,16 @@ export function useAnnotate(
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const live = useRef<AbortController | null>(null);
+  // this read's calls: a followed job may be another session's, and only the
+  // answers for these are this session's (null: keep all, as before)
+  const mine = useRef<Set<string> | null>(null);
+  const only = useCallback((r: AnnotateResults): AnnotateResults => {
+    const keep = mine.current;
+    if (!keep) return r;
+    const out: AnnotateResults = {};
+    for (const [k, v] of Object.entries(r)) if (keep.has(k)) out[k] = v;
+    return out;
+  }, []);
 
   useEffect(() => {
     let on = true;
@@ -73,7 +85,7 @@ export function useAnnotate(
     pending.current += 1;
     const step = (cur: AnnotateJob) => {
       if (main) setJob(cur);
-      setBy((b) => ({ ...b, ...cur.results }));
+      setBy((b) => ({ ...b, ...only(cur.results) }));
       if (cur.state === 'done' || cur.state === 'error') {
         if (cur.state === 'error' && main) setErr(cur.error);
         ended();
@@ -95,7 +107,7 @@ export function useAnnotate(
         .then(step)
         .catch(() => !ac.signal.aborted && ended());
     } else step(j);
-  }, [ended]);
+  }, [ended, only]);
 
   const ask = useCallback(
     (run: boolean) => {
@@ -110,7 +122,8 @@ export function useAnnotate(
           if (ac.signal.aborted) return;
           setInfo(r.info);
           setCounts({ calls: r.calls, total: r.total });
-          setBy((b) => ({ ...b, ...r.known }));
+          mine.current = r.cmds ? new Set(r.cmds) : null;
+          setBy((b) => ({ ...b, ...only(r.known) }));
           // this request's job, or the one already asking about these calls,
           // and any other asking about some of them: their answers reach
           // this reader too
@@ -126,13 +139,14 @@ export function useAnnotate(
           setBusy(false);
         });
     },
-    [sid, win, from, to, order, poll],
+    [sid, win, from, to, order, poll, only],
   );
 
   // a new session or read starts over; what is known is fetched at once, and
   // asked for when the site annotates on opening
   useEffect(() => {
     setBy({});
+    mine.current = null;
     setJob(null);
     setErr(null);
     setBusy(false);
@@ -148,7 +162,7 @@ export function useAnnotate(
     () => (Object.keys(by).length ? { by, model } : null),
     [by, model],
   );
-  return { info, set, calls: counts.calls, total: counts.total, job, err, busy, run: () => ask(true) };
+  return { sid, info, set, calls: counts.calls, total: counts.total, job, err, busy, run: () => ask(true) };
 }
 
 /** The button and what it has done. Nothing when the site has it off. */
@@ -164,7 +178,9 @@ export function AnnotateControl({ a }: { a: AnnotateState }) {
     `Answers are kept, so a call is asked about once. A purpose is a model's reading, marked ✦, never a measurement` +
     (a.total > a.calls ? `\nthe first ${fint(a.calls)} of ${fint(a.total)} distinct calls are asked about (annotate.max_calls)` : '');
   let status: string | null = null;
-  if (busy && job) status = `asking ${job.label}: ${fint(job.done)} of ${fint(job.total)}`;
+  if (busy && job && job.about != null && job.about !== a.sid)
+    status = `waiting on another session's request to ${job.label}`;
+  else if (busy && job) status = `asking ${job.label}: ${fint(job.done)} of ${fint(job.total)}`;
   else if (busy) status = 'reading the session…';
   else if (a.calls) status = `${fint(known)} of ${fint(a.calls)} calls have a purpose`;
   if (!busy && job?.state === 'done' && job.unlabelled) status += ` · ${fint(job.unlabelled)} left unlabelled by the model`;

@@ -2290,8 +2290,10 @@ export interface AnnotateJob {
   state: 'queued' | 'running' | 'done' | 'error';
   provider: string;
   model: string | null;
-  /** `provider:model`, who the answers are kept under */
+  /** `provider:model`, who wrote the answers */
   label: string;
+  /** the session the job was started for */
+  about?: string | null;
   /** calls asked about, answered so far, and left out by the model's answers */
   total: number;
   done: number;
@@ -2305,6 +2307,8 @@ export interface AnnotateResponse {
   /** distinct tool calls taken (at most info.max_calls), and how many there are */
   calls: number;
   total: number;
+  /** the calls taken, as the tree serves their command lines */
+  cmds?: string[];
   known: AnnotateResults;
   /** this request's job, or, when it started none, the one already asking about its calls */
   job: AnnotateJob | null;
