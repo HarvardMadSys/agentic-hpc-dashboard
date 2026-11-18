@@ -238,16 +238,16 @@ def _matching(path, norm, pred, newest_first, stats):
     rep = replica.for_path(path) if where is not None else None
     at = None
     if rep is not None:
-        got = {}
+        resume = {}
         try:
             yield from _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where,
-                                         got)
+                                         resume)
             return
         except Exception as e:
             # The replica stopped answering part way: the rest of the read from
             # the file, past the last record it read (`replica.failed`).
             replica.failed(path, rep, e)
-            at = got.get("at")
+            at = resume.get("at")
     edge = hi if newest_first else lo
     if at is None and edge is not None:
         try:
@@ -282,15 +282,15 @@ def _matching(path, norm, pred, newest_first, stats):
         yield (NO_TS if ts is None else ts), rec
 
 
-def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where, got=None):
+def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where, resume=None):
     """`_matching` over a sealed file's replica, for a predicate that tests the
     records' own fields: the same read -- from the same edge (the replica's time
     search answers as the file's), stopping at the same record past the far
     bound, `scanned` counting the same records by each one handed on
     (`Replica.line_read`) -- with only the records the predicate's event types
     and fields could keep built (`replica.records`), the same rule deciding
-    each. `got["at"]` keeps where a read of the file would go on from: past the
-    last record read, in the read's direction."""
+    each. `resume["at"]` keeps where a read of the file would go on from: past
+    the last record read, in the read's direction."""
     edge = hi if newest_first else lo
     at = None if edge is None else rep.seek_to_epoch(edge)
     kinds = getattr(pred, "events", None)
@@ -298,11 +298,11 @@ def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where, got=N
         at = rep.complete_end if newest_first else 0
     start, end, count, total = rep.line_read(at, kinds, lo if newest_first else hi,
                                              reverse=newest_first)
-    got = {} if got is None else got
+    resume = {} if resume is None else resume
     done = 0
     for off, _n, raw in rep.records(start, end, reverse=newest_first, kinds=kinds,
                                     where=where):
-        got["at"] = off if newest_first else off + _n
+        resume["at"] = off if newest_first else off + _n
         rec = norm.normalize(raw)
         if rec is None or not pred(rec):
             continue

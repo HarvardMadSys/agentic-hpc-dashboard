@@ -268,6 +268,11 @@ class ReplicaTest(unittest.TestCase):
         cfg = configmod.Config(configmod.defaults(), {}, None)
         span = t - T0
         reads = 0
+        # A healthy replica is never taken for a broken one: a read that raised
+        # part way would go on from the file all the same, the records and the
+        # counts unchanged, and only the store would know -- letting the replica
+        # go and converting the file again, at every query.
+        broken = []
         try:
             for events in (None, {"exit"}, {"truncated"}, {"exit", "truncated"},
                            {"exit", "conn"}, {"submit"}):
@@ -281,7 +286,8 @@ class ReplicaTest(unittest.TestCase):
                     for newest_first in (True, False):
                         got = {}
                         for name in ("gz", "replica"):
-                            rp.install((lambda p: rep) if name == "replica" else None)
+                            rp.install((lambda p: rep) if name == "replica" else None,
+                                       lambda p, r, e: broken.append(repr(e)))
                             st = {"scanned": 0}
                             seen = [(ts, r, st["scanned"]) for ts, r in export._matching(
                                 path, Normalizer(cfg), pred, newest_first, st)]
@@ -292,6 +298,7 @@ class ReplicaTest(unittest.TestCase):
         finally:
             rp.install(None)
         self.assertGreater(reads, 20, "the reads found records")
+        self.assertEqual(broken, [])
 
     def broken(self, path, rep, after):
         """`rep` installed for `path`, its ranged reads raising once `after`
