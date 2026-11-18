@@ -212,6 +212,24 @@ class JobTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             a.submit("q", {}, None, "w")
 
+    def test_refused_while_names_are_anonymized_unless_allowed(self):
+        # An answer goes back as the agent wrote it, and the agent can read the
+        # raw feeds: with names masked, a real name it read would be shown.
+        cmd = [PY, "-c", "import sys; sys.stdin.read(); print('ok')"]
+        masked = Cfg(**{"ask.command": cmd, "anonymize.enabled": True})
+        info = ask.describe(masked)
+        self.assertEqual((info["available"], info["error"]), (False, ask.UNMASKED))
+        self.assertIn("ask.unmasked_answers", info["error"])
+        with self.assertRaises(ValueError) as cm:
+            ask.Asker(masked).submit("q", {}, None, "w")
+        self.assertEqual(str(cm.exception), ask.UNMASKED)
+        allowed = Cfg(**{"ask.command": cmd, "anonymize.enabled": True,
+                         "ask.unmasked_answers": True})
+        self.assertTrue(ask.describe(allowed)["available"])
+        a = ask.Asker(allowed)
+        self.assertEqual(wait(a, a.submit("q", {}, None, "w")["id"])["answer"], "ok")
+        self.assertIs(configmod.defaults()["ask"]["unmasked_answers"], False)
+
     def test_one_at_a_time(self):
         cmd = [PY, "-c", "import sys,time; sys.stdin.read(); time.sleep(0.6); print('ok')"]
         a = ask.Asker(Cfg(**{"ask.command": cmd, "ask.max_concurrent": 1}))

@@ -144,6 +144,8 @@ class Served(unittest.TestCase):
             "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); " + cls.ANSWER,
             cls.prompts]
         tree["anonymize"]["enabled"] = True
+        # these questions are asked with names masked: answers as the agent wrote them
+        tree["ask"]["unmasked_answers"] = True
         cls.configure(tree)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():

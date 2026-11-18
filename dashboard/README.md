@@ -843,6 +843,9 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
     classes, the answer, and the suggestions marked done. Rewritten, the service translated
     any name it was sent: `host=alice,zed9` came back as her alias and `zed9`, which is no
     account, as it was.
+  - So Ask is refused while names are anonymized, unless `ask.unmasked_answers` is set: its
+    answer is shown as the agent writes it, and the agent can read whatever the service's
+    account can, the raw feeds included, so a real name it read there would be shown.
 - **Not covered.** A person's name in free text that no rule ties to an account (a commit
   message, a folder named after someone), hostnames, partitions, and job ids. Nor a name the
   masking cannot see yet: an account named in another account's command line, outside a home

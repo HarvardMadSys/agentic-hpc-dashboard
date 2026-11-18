@@ -885,6 +885,15 @@ def _program(argv):
     return os.path.basename(rest[0]) if rest and rest[0] else None
 
 
+# Why a question is refused while names are anonymized: an answer goes back as
+# the agent wrote it (`Asker.view`; rewritten, a name typed into the question
+# came back as its alias), and the agent can read whatever the service's
+# account can -- the raw feeds among it -- so a real name it read would be shown.
+UNMASKED = ("names are anonymized here (anonymize.enabled), and an answer is shown as the "
+            "agent writes it, while the agent can read the raw feeds: a real name it read "
+            "there would be shown. Set ask.unmasked_answers to allow Ask anyway.")
+
+
 def describe(cfg):
     """What the page shows about the agent, and whether it can run here. A
     command of one's own is named by the program it runs, as a preset is."""
@@ -894,6 +903,8 @@ def describe(cfg):
         err = None if exe else "%s was not found on the service's PATH" % (argv[0] if argv else "?")
     except ValueError as e:
         argv, exe, err = [], None, str(e)
+    if cfg.get("anonymize.enabled") and not cfg.get("ask.unmasked_answers"):
+        err = UNMASKED
     return {"enabled": bool(cfg.get("ask.enabled", True)),
             "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")
             else _program(argv) or "custom",
