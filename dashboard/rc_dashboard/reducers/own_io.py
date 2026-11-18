@@ -86,9 +86,9 @@ parents hold over half the cap (`Held`): an agent sits idle as long as its
 reader does while other parents reap, and its tool calls' bytes, or a whole
 session's, are the most a parent holds; the half is for the ones that never
 exit, a login shell that outlives the feed, which would otherwise crowd
-every other parent out. Carried, the two are one map, the runtimes last, so
-a pass's cap trims the others first. The hours' chain still ages one out
-after `hours.CARRY_KEEP_H` untouched.
+every other parent out. Carried, the two are one map, the runtimes last, and
+a pass's cap keeps the same share of it (`carry_trimmed`). The hours' chain
+still ages one out after `hours.CARRY_KEEP_H` untouched.
 """
 import collections
 import itertools
@@ -124,6 +124,12 @@ def _runtime(rec):
     schema 7 gave each tool call an `agent_pid` of its own."""
     r = rec.get("tree_root_pid")
     return r is not None and (rec.get("ppid") == r or rec.get("pid") == r)
+
+
+def runtime_share(cap):
+    """How much of a cap of `cap` runtimes keep while other parents want it:
+    half. With fewer others they keep the rest of it, and with none, all."""
+    return cap // 2
 
 
 class Held:
@@ -179,8 +185,10 @@ class Held:
         self._tier(key).move_to_end(key)
 
     def pop_least_recent(self, share):
-        """Drop the least recently given of the rest, or of the runtimes' when
-        none of the rest is left or they hold more than `share`."""
+        """One past the cap, the one just given to included: drop the least
+        recently given of the rest, or of the runtimes' when none of the rest is
+        left or they hold more than `share`. What stays is what
+        `OwnIo.carry_trimmed` keeps of the same parents."""
         pop_oldest(self.agents if not self.rest or len(self.agents) > share else self.rest)
 
     def carried(self):
@@ -350,11 +358,13 @@ class OwnIo:
         key = (rec.get("host"), ppid)
         held = self.reaped.get(key)
         if held is None:
-            if len(self.reaped) >= self.cap:
-                self.reaped.pop_least_recent(self.cap // 2)
+            # counted in before the cap is applied: a runtime past a cap of 1
+            # held by another parent is itself the one that goes
+            held = self.reaped[key] = AgentHeld() if _runtime(rec) else []
+            if len(self.reaped) > self.cap:
+                self.reaped.pop_least_recent(runtime_share(self.cap))
                 self.evicted += 1
                 self._say(1)
-            held = self.reaped[key] = AgentHeld() if _runtime(rec) else []
         else:
             self.reaped.move_to_end(key)
             if type(held) is list and _runtime(rec):
@@ -426,21 +436,23 @@ class OwnIo:
 
     def carry_trimmed(self, c, dropped):
         """The parents `hours.combine_carries` dropped past that cap, putting the
-        nodes' joins together for a window: what is held for an agent runtime
-        is put back in place of the oldest of the rest, and the dropped are
-        counted and said, as at the reducer's own cap."""
+        nodes' joins together for a window. The cut went by age alone, so what
+        stays is chosen again from all it saw, as the reducer's own cap would
+        leave it (`Held.pop_least_recent`): runtimes up to `runtime_share`, or
+        more where fewer others fill the cap, the others the rest, the most
+        recently given of each, the runtimes last. The older ones past that
+        stay dropped, counted and said as at the reducer's own cap."""
         gone = dropped.get("reaped") or ()
         d = c.get("reaped")
-        back = [kv for kv in gone if type(kv[1]) is AgentHeld]
-        if back and isinstance(d, collections.OrderedDict):
-            out = [k for k, v in d.items() if type(v) is not AgentHeld][:len(back)]
-            for k in out:
-                del d[k]
-            # with fewer of the rest kept than runtimes dropped, the older of
-            # those runtimes stay dropped (and counted below)
-            for k, v in reversed(back[len(back) - len(out):]):
-                d[k] = v
-                d.move_to_end(k, last=False)
+        if gone and isinstance(d, collections.OrderedDict):
+            every = list(gone) + list(d.items())         # least recently given first
+            rt = [kv for kv in every if type(kv[1]) is AgentHeld]
+            rest = [kv for kv in every if type(kv[1]) is not AgentHeld]
+            cap = len(d)
+            n_rt = min(len(rt), max(runtime_share(cap), cap - len(rest)))
+            d.clear()
+            d.update(rest[len(rest) - (cap - n_rt):])
+            d.update(rt[len(rt) - n_rt:])
         self.evicted += len(gone)
         if gone:
             self._say(len(gone))

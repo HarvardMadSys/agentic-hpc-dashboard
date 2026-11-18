@@ -17,10 +17,12 @@ Two ways the per-class totals counted one process's resources twice.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_count_once -q
 """
+import collections
 import contextlib
 import io
 import json
 import os
+import random
 import sys
 import tempfile
 import time
@@ -565,6 +567,37 @@ def join_of(red):
     return red.own
 
 
+class PassRed:
+    """A reducer that is only a join, for `hours.combine_carries`."""
+
+    def __init__(self, cap):
+        self.own = own_io.OwnIo(own_io.DISK, cap=cap, name="t")
+
+    def carry_caps(self):
+        return self.own.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
+
+
+def pass_cap(nodes, cap, hours_of=None):
+    """Each node's carried map from `nodes` (host -> [(pid, runtime?)], least
+    recently given first), put together at one pass's `cap`. Returns what is
+    kept, as (host, pid, "R" for a runtime, else "p"), in order, and the join."""
+    by_node = {}
+    for host, held in nodes.items():
+        h = own_io.Held()
+        for pid, rt in held:
+            h[(host, pid)] = (own_io.AgentHeld if rt else list)([["u", None, 1.0, 0.0]])
+        by_node[host] = {"r": {"reaped": h.carried(), "touched": {}}}
+    ages = {host: {"r.reaped": {(host, pid): hr for pid, _rt in nodes[host]}}
+            for host, hr in (hours_of or {}).items()}
+    red = PassRed(cap)
+    got = hours.combine_carries(by_node, ages, {"r": red})["r"]["reaped"]
+    return ([(k[0], k[1], "R" if type(v) is own_io.AgentHeld else "p") for k, v in got.items()],
+            red.own)
+
+
 def capped(n):
     """The default config with every join held to `n` parents."""
     c = cfg()
@@ -735,8 +768,58 @@ class JoinBoundsTest(unittest.TestCase):
         got = hours.combine_carries(carries, ages, acc)
         for k in JOINS:
             with self.subTest(reducer=k):
-                self.assertEqual(list(got[k]["reaped"]), [("h1", 100), ("h2", 320)])
+                self.assertEqual(list(got[k]["reaped"]), [("h2", 320), ("h1", 100)])
                 self.assertEqual(join_of(acc[k]).evicted, 1)
+
+    def test_one_pass_s_cap_keeps_what_the_join_s_own_cap_would(self):
+        # one rule in two forms: parents given to one at a time through a join
+        # at its cap, and the same parents cut at one pass's cap, keep the same
+        rng = random.Random(7)
+        for trial in range(300):
+            cap = rng.randint(1, 12)
+            kinds = [rng.random() < 0.5 for _ in range(rng.randint(cap + 1, 3 * cap + 5))]
+            j = own_io.OwnIo(own_io.DISK, cap=cap, name="t")
+            for i, rt in enumerate(kinds):
+                j.give({"host": "h", "pid": 10 ** 6 + i, "ppid": i, "user": "u",
+                        "tree_root_pid": i if rt else None, "io": iob(1.0, 1.0)})
+            every = [(("h", i), own_io.AgentHeld() if rt else []) for i, rt in enumerate(kinds)]
+            d = collections.OrderedDict(every[len(every) - cap:])
+            PassRed(cap).carry_trimmed({"reaped": d}, {"reaped": every[:len(every) - cap]})
+            with self.subTest(trial=trial):
+                self.assertEqual(list(d), list(j.reaped.carried()))
+
+    def test_one_pass_s_cap_holds_runtimes_to_their_share(self):
+        # two nodes, each five plain parents and five runtimes, at a pass's cap
+        # of ten: the newest five of each kind stay, the runtimes last
+        nodes = {h: [(100 + i, False) for i in range(5)] + [(900 + i, True) for i in range(5)]
+                 for h in ("n1", "n2")}
+        kept, own = pass_cap(nodes, 10)
+        self.assertEqual("".join(x[2] for x in kept), "pppppRRRRR")
+        self.assertEqual({x[:2] for x in kept},
+                         {("n2", 102), ("n1", 103), ("n2", 103), ("n1", 104), ("n2", 104),
+                          ("n2", 902), ("n1", 903), ("n2", 903), ("n1", 904), ("n2", 904)})
+        self.assertEqual(own.evicted, 10)
+
+    def test_with_few_others_runtimes_fill_the_rest_of_one_pass_s_cap(self):
+        # fifteen runtimes on one node, two plain parents on the other, at a cap
+        # of ten: both plain parents stay, and the newest eight runtimes
+        kept, own = pass_cap({"n1": [(900 + i, True) for i in range(15)],
+                              "n2": [(100, False), (101, False)]}, 10)
+        self.assertEqual(kept, [("n2", 100, "p"), ("n2", 101, "p")]
+                         + [("n1", 900 + i, "R") for i in range(7, 15)])
+        self.assertEqual(own.evicted, 7)
+
+    def test_runtimes_one_pass_s_cap_trimmed_come_back_to_their_share(self):
+        # n1's six runtimes from the hour before, n2's ten plain parents this
+        # hour: the cut takes the six runtimes, and the newest five come back in
+        # place of the oldest five plain parents
+        h = 500000
+        kept, own = pass_cap({"n1": [(900 + i, True) for i in range(6)],
+                              "n2": [(100 + i, False) for i in range(10)]}, 10,
+                             hours_of={"n1": h - 1, "n2": h})
+        self.assertEqual(kept, [("n2", 100 + i, "p") for i in range(5, 10)]
+                         + [("n1", 900 + i, "R") for i in range(1, 6)])
+        self.assertEqual(own.evicted, 6)
 
     def test_and_so_is_an_agent_runtime_s_note_in_the_live_tier_s_backfill(self):
         # newest first: claude 100 is noted, then three of bob's processes past

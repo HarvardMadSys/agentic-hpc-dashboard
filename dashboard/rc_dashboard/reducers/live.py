@@ -24,7 +24,8 @@ from ..procindex import users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
-from .own_io import CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, Held, OwnIo, cap_of
+from .own_io import (CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, Held, OwnIo, cap_of,
+                     runtime_share)
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
@@ -489,7 +490,7 @@ class LiveReducer:
         self.io_booked[key] = AgentHeld(note) if key[1] == rec.get("tree_root_pid") else note
         self.io_booked.move_to_end(key)
         if len(self.io_booked) > BOOKED_MAX:
-            self.io_booked.pop_least_recent(BOOKED_MAX // 2)
+            self.io_booked.pop_least_recent(runtime_share(BOOKED_MAX))
             self.io_dropped += 1
         if st is not None:
             heapq.heappush(self._io_starts, (-st, self._io_seq, key))
