@@ -724,7 +724,11 @@ class TestSenderReadsOnlyTheCapture(unittest.TestCase):
             errors = [h["msg"] for h in frames if h["t"] == "error"]
             self.assertEqual(len(errors), 1, (locked, [h["t"] for h in frames]))
             self.assertIn("Permission denied", errors[0])
+            self.assertIn(locked, errors[0])          # the receiver's last_error names it
             self.assertEqual(code, 1, locked)
+            # Fatal for a sealed day too, so the live day stops with it: no frame lets a
+            # sender report an error and go on.
+            self.assertFalse([h for h in frames if h.get("path", "").startswith(today)], locked)
 
     def test_head_n_from_the_hello_is_kept_to_head(self):
         """The review's case: head_n=-1 read a whole 64 MiB file, and head_n=10**12 ran

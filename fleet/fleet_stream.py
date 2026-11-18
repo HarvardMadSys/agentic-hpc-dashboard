@@ -44,7 +44,8 @@ dated no later than the node's own tomorrow; of the sealed days, those among the
 newest that are within `days` days of the live one are sent. Under `--root` the sender
 follows no link and reads regular files only, it takes the hello's counts as no less
 than 0 (and `head_n` as no more than HEAD), and a hello longer than MAX_HELLO is an
-error.
+error. So is a day folder in the window it may not read, sealed or live: the live day
+stops with it, as no frame lets a sender report an error and go on.
 
 The receiver refuses a frame no sender writes, and reconnects: a data frame of more
 than CHUNK plain bytes, or one that ends the zlib stream; a day that is not a real
@@ -414,6 +415,12 @@ class Sender:
         self.done.add(key)
 
     def catch_up_sealed(self, day):
+        """Send what the receiver lacks of a sealed day. A day folder the sending
+        account may not read is fatal, as on the live day: open_day raises, the
+        receiver shows the error frame naming the folder, and the live day is not
+        sent until it can be read or leaves the window. Not skipped with a note: the
+        protocol has no error a sender goes on after (`error` ends the connection),
+        and a new frame would break receivers that do not know it."""
         dfd = open_day(self.root, day)
         if dfd is None:
             return                         # gone, or not a real folder
