@@ -343,6 +343,13 @@ table, the chart, and the list say one thing.
   its phases, a phase into the commands that ran most in it, and a button from there to its calls in the
   tree. A click on a task, in the lane or in the list, zooms the chart to it. A block with no tasks has the
   phase list alone (`src/tabs/PhaseList.tsx`).
+- **✦ annotate purposes** (`src/components/Annotate.tsx`), in the bar over the tree, when the site
+  turned `annotate` on: a language model's reading of what each tool call was for. The inspector shows
+  what is already known as soon as the tree is in, and asks the model about the rest on the button. A
+  purpose is a dashed purple ✦ tag beside the command in the table and a ✦ beside a box's name in the
+  tree, and every hover names the model and says it is not measured. The answers reach the two views
+  through `LlmPurposes` (`src/lib/annotate.ts`), keyed by the command line exactly as the tree serves
+  it; nothing else on the page reads them ([the service's side](../README.md#tool-call-purposes-from-a-model)).
 - **A label says where it came from.** The agent's own words are a quote, in quotation marks, with their
   source (`commit`, `PR #235`, or `log`) where there is room for it. A label built from the names in the
   task's commands has neither, so it is never taken for something the agent wrote. The basis line over the

@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.responses import Response
 
+from . import annotate as annotatemod
 from . import auth as authmod
 from . import history as historymod
 from . import feeds as feedmod
@@ -489,6 +490,58 @@ def create_app(cfg):
         if j is None:
             raise HTTPException(404, "no such question")
         return j
+
+    # What each tool call of a session was for, in a model's words (annotate.py).
+    # The calls are the service's own read of the session -- the tree the page
+    # was served, masked as it was -- never command lines the page posts, so
+    # the endpoint cannot be used to send a model anything else.
+    annotator = app.state.annotator = annotatemod.Annotator(cfg)
+
+    @app.get("/api/annotate")
+    def api_annotate_info():
+        return annotatemod.describe(cfg)
+
+    @app.post("/api/annotate")
+    async def api_annotate(request: Request):
+        """`{sid, window_min, from, to, order, run}`: the session's tool calls,
+        what is already known of them, and -- with `run` -- a job asking about
+        the rest. The body is the tree's own text, masked once: it is sent as
+        it is, so the page matches each call to its row exactly."""
+        body = await request.json()
+        sid = body.get("sid")
+        if not isinstance(sid, str) or not sid:
+            raise HTTPException(400, "name a session (sid)")
+
+        def num(k):
+            v = body.get(k)
+            return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        def work():
+            info = annotatemod.describe(cfg)
+            tree = masked(redacted(proctree.serve(
+                agg, dealias_sid(sid, anon), num("window_min"), num("from"), num("to"),
+                "newest" if body.get("order") == "newest" else "oldest")), "annotate")
+            calls, total = annotatemod.calls_in(tree, info["max_calls"])
+            known = annotator.known([c["cmd"] for c in calls]) if info["enabled"] else {}
+            job = None
+            if body.get("run") and info["enabled"]:
+                row = tree.get("row") if isinstance(tree.get("row"), dict) else {}
+                job = annotator.submit(calls, row.get("agent_type"), about=sid)
+            return {"info": info, "calls": len(calls), "total": total,
+                    "known": known, "job": job}
+
+        try:
+            out = await asyncio.to_thread(work)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return jsonout.response(out, request)
+
+    @app.get("/api/annotate/{jid}")
+    def api_annotate_job(jid: str, request: Request):
+        j = annotator.view(jid)
+        if j is None:
+            raise HTTPException(404, "no such annotation job")
+        return jsonout.response(j, request)
 
     @app.get("/api/collectors")
     def api_collectors(request: Request):
