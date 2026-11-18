@@ -163,7 +163,9 @@ class Aggregator:
         self.node_built_at = None
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
-        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0}
+        # `polled_at`: when a poll last ended, or handed a batch over -- whether
+        # the tail is moving, which /api/health's `ok` is judged by
+        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0, "polled_at": None}
         # Bumped by every batch dispatched to the live tier: a live frame made since
         # the last bump is the frame a new one would be (`live_frame`).
         self.dispatched = 0
@@ -328,6 +330,7 @@ class Aggregator:
         -- while every read of the views and of the live tier waited.
         """
         if not self.positioned.is_set():
+            self.stats["polled_at"] = time.time()
             return 0
         it = self.source.poll_at()
         n = 0
@@ -339,11 +342,12 @@ class Aggregator:
             with self.lock:
                 self._fold(self._poll_norm)
                 n += self.dispatch(recs, at=at)
+                self.stats["polled_at"] = time.time()
             # Hand the lock over: this thread keeps the GIL otherwise (see the backfill).
             time.sleep(0)
         with self.lock:
             self.source.prune_state()
-            self.stats["last_poll"] = time.time()
+            self.stats["last_poll"] = self.stats["polled_at"] = time.time()
         return n
 
     def backfill_now(self):
