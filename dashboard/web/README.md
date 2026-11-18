@@ -343,11 +343,12 @@ table, the chart, and the list say one thing.
   - **What it did**: a map of the whole session (`src/tabs/SessionMap.tsx`), its **Tasks** as a lane of
     numbered blocks over its **Phases** as a band, on the session's own clock, drawn from the row's block
     before any process is read. The chart below is the read's, and a long session's read stops at its
-    budget, so that chart can hold the first hour of a ten-hour session; the map holds all of it. Under the map is the list
-    (`src/tabs/TaskList.tsx`): each closed task names its phases in order with the chip of each
-    (`explore 60 min → edit → test → git`), a task opens into its phases, a phase into the commands that ran
-    most in it, and a button from there to its calls in the tree. A block with no tasks has the phase list
-    alone (`src/tabs/PhaseList.tsx`). An agent of a type whose commands are not read says so here instead.
+    budget, so that chart can hold the first hour of a ten-hour session; the map holds all of it. Under
+    the map is the list (`src/tabs/TaskList.tsx`): each closed task names its phases in order with the
+    chip of each (`explore 60 min → edit → test → git`), a task opens into its phases, a phase into the
+    commands that ran most in it, and a button from there to its calls in the tree. A block with no tasks
+    has the phase list alone (`src/tabs/PhaseList.tsx`). An agent of a type whose commands are not read
+    says so here instead.
   - **Processes**: the purpose ribbon and the tool tokens (they count processes, so a poll loop is most of
     the ribbon however little of the work it was), what the read covers and its limits, then the chart of
     the read, with a **Tasks** lane above the **Phases**, which are tinted behind the **Processes**, the
@@ -356,6 +357,13 @@ table, the chart, and the list say one thing.
 
   A click on a task or a phase, in the map, the chart's lane, or the list, picks it: the chart zooms to it
   and the tree opens at its first call, reading the page that holds it if the read does not.
+- **✦ annotate purposes** (`src/components/Annotate.tsx`), in the bar over the tree, when the site
+  turned `annotate` on: a language model's reading of what each tool call was for. The inspector shows
+  what is already known as soon as the tree is in, and asks the model about the rest on the button. A
+  purpose is a dashed purple ✦ tag beside the command in the table and a ✦ beside a box's name in the
+  tree, and every hover names the model and says it is not measured. The answers reach the two views
+  through `LlmPurposes` (`src/lib/annotate.ts`), keyed by the command line exactly as the tree serves
+  it; nothing else on the page reads them ([the service's side](../README.md#tool-call-purposes-from-a-model)).
 - **A label says where it came from.** The agent's own words are a quote, in quotation marks, with their
   source (`commit`, `PR #235`, or `log`) where there is room for it. A label built from the names in the
   task's commands has neither, so it is never taken for something the agent wrote. The basis line over the
