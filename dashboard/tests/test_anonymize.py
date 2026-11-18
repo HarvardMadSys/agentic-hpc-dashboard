@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -267,9 +268,30 @@ class RequestTest(unittest.TestCase):
         roster.append("ana")
         alias = Anonymizer(b"salt").user_alias("ana")
         self.assertEqual(a.dealias_user(alias), "ana")
+        b = anon(roster=lambda: list(roster))
         roster.append("bo")
         bo = Anonymizer(b"salt").user_alias("bo")
-        self.assertEqual(a.dealias_text("/scratch/%s/x" % bo), "/scratch/bo/x")
+        self.assertEqual(b.dealias_text("/scratch/%s/x" % bo), "/scratch/bo/x")
+
+    def test_unknown_aliases_reread_the_roster_at_most_once_a_second(self):
+        # Any reader can send aliases no one has, as many as they like; each
+        # re-read copies the roster under the aggregator's lock.
+        class Clock:
+            t = 100.0
+
+            def monotonic(self):
+                return self.t
+            perf_counter = monotonic
+        clock, reads = Clock(), []
+        a = anon(roster=lambda: reads.append(1) or ["glen"])
+        with mock.patch.object(anonmod, "time", clock):
+            for i in range(200):
+                self.assertEqual(a.dealias_user("user-%08x" % i), UNKNOWN)
+                a.dealias_text("/scratch/user-%08x/x" % (i + 1000))
+            self.assertEqual(len(reads), 1)
+            clock.t += anonmod.FORCED_EVERY_S
+            a.dealias_user("user-0000ffff")
+            self.assertEqual(len(reads), 2)
 
     def test_an_alias_in_a_path_or_a_word_maps_back_and_nothing_else_does(self):
         a = anon("glen", "bob.smith")

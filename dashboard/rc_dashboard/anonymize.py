@@ -128,6 +128,10 @@ _ALIAS = re.compile(r"(?:user|lab)-[0-9a-f]{8}")
 _NAME_OK = re.compile(r"(?=[^A-Za-z]*[A-Za-z])[A-Za-z0-9_][A-Za-z0-9._-]{1,63}")
 CLIPPED_MIN = 100                 # the shortest string a clipped name is looked for in
 ROSTER_EVERY_S = 2.0
+# A re-read forced by an alias the service does not know (`dealias_user`,
+# `dealias_text`): any reader can send one, and each copies the roster under
+# the aggregator's lock, so however many arrive, one this often at most.
+FORCED_EVERY_S = 1.0
 # What `_rewrite` made of each string, and the strings `learn_text` has read, kept
 # while no name is learned or forgotten (`generation`). A payload's strings repeat
 # (class names, hosts, the same command in every frame), and the rewrite is a few
@@ -183,6 +187,8 @@ class Anonymizer:
         self._roster = roster
         self._roster_n = -1
         self._roster_at = 0.0
+        self._forced_at = None
+        self._forced_lock = threading.Lock()
         self._lock = threading.RLock()
         self.users = {}           # account -> alias
         self.labs = {}            # lab -> alias
@@ -264,10 +270,17 @@ class Anonymizer:
             self._special = self._sorted = None
 
     def refresh(self, force=False):
-        """Learn every account the live roster holds, at most every 2 s."""
+        """Learn every account the live roster holds, at most every 2 s; when
+        forced, at most once a second (`FORCED_EVERY_S`)."""
         if self._roster is None:
             return
         now = time.monotonic()
+        if force:
+            with self._forced_lock:
+                if self._forced_at is not None and now - self._forced_at < FORCED_EVERY_S:
+                    force = False
+                else:
+                    self._forced_at = now
         if not force and now - self._roster_at < ROSTER_EVERY_S:
             return
         self._roster_at = now
