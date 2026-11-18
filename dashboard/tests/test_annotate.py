@@ -368,6 +368,25 @@ class AnnotatorTest(unittest.TestCase):
         b = annotate.Annotator(cfg, complete_fn=self.fake)
         self.assertEqual(b.known([c["cmd"] for c in calls]), {})
 
+    def test_a_changed_prompt_is_asked_afresh(self):
+        f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        f.write("Answer in English.")
+        f.close()
+        cfg = Cfg(**{"annotate.system_prompt_file": f.name})
+        a = annotate.Annotator(cfg, complete_fn=self.fake)
+        calls, _ = annotate.calls_in(TREE)
+        wait(a, a.submit(calls)["id"])
+        self.assertEqual(len(a.known([c["cmd"] for c in calls])), 3)
+        # the file is read on every question: an edit is a new prompt
+        with open(f.name, "w") as fh:
+            fh.write("Réponds en français.")
+        b = annotate.Annotator(cfg, complete_fn=self.fake)
+        self.assertEqual(b.known([c["cmd"] for c in calls]), {})
+        self.assertIsNotNone(b.submit(calls))
+        # and the inline prompt counts as well
+        cfg2 = Cfg(**{"cache.dir": cfg.kv["cache.dir"], "annotate.system_prompt": "Be brief."})
+        self.assertEqual(annotate.Annotator(cfg2, complete_fn=self.fake).known(["git status"]), {})
+
     def test_a_call_the_answer_leaves_out_is_counted_not_filled_in(self):
         a = annotate.Annotator(Cfg(), complete_fn=lambda *a: '{"1": "only the first"}')
         calls, _ = annotate.calls_in(TREE)

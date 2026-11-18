@@ -1215,9 +1215,10 @@ model anything else. The first `annotate.max_calls` (400) distinct calls are ask
 `annotate.batch_size` (40) to a request.
 
 Each answer is kept in `<cache.dir>/annotate/purposes.jsonl`, keyed by the provider and model,
-the prompt's version and the command line: a command asked about once is known to every reader
-of every session that runs it, and opening a session shows what is known at once, asking
-nothing. A different model, or a new prompt version, asks afresh. A call the model's answer
+the prompt it was asked with and the command line: a command asked about once is known to every
+reader of every session that runs it, and opening a session shows what is known at once, asking
+nothing. A different model, or a changed prompt -- a new built-in version, or an edit to
+`annotate.system_prompt` or its file -- asks afresh. A call the model's answer
 leaves out stays unlabelled and is counted as such; nothing is filled in for it.
 
 Set it up under `annotate` (every key: `dashboard.config.example.json`):

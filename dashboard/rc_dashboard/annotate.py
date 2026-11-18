@@ -30,7 +30,8 @@ honoured as urllib honours it. An API key is read from the environment variable
 `api_key_file`, or -- last, and never shown by /api/config -- `api_key`.
 
 Every answer is kept (`<cache.dir>/annotate/purposes.jsonl`), keyed by the
-provider and model, the prompt's version and the command line, so a command
+provider and model, the prompt it was asked with (the built-in one's version,
+or a digest of the site's own) and the command line, so a command
 an agent runs in every session is asked about once, and every reader who opens
 a session sees what any reader asked for before.
 """
@@ -222,8 +223,16 @@ def describe(cfg):
 
 
 def label_of(cfg):
-    """Who wrote an answer: `provider:model`, the key answers are kept under."""
+    """Who wrote an answer: `provider:model`, as the page names it."""
     return "%s:%s" % (provider_of(cfg), model_of(cfg) or "default")
+
+
+def ident_of(cfg):
+    """What an answer is kept under: who wrote it, and a digest of the prompt
+    it was written to -- the site's own when it has one -- so a changed prompt
+    is asked afresh. ValueError when the prompt file cannot be read."""
+    digest = hashlib.sha256(system_text(cfg).encode()).hexdigest()[:12]
+    return "%s|%s" % (label_of(cfg), digest)
 
 
 # ------------------------------------------------------------- the calls
@@ -473,8 +482,8 @@ class Annotator:
                             "annotate", "purposes.jsonl")
 
     @staticmethod
-    def key(label, cmd):
-        h = hashlib.sha256(("%s\0%d\0%s" % (label, PROMPT_VERSION, cmd)).encode()).hexdigest()
+    def key(ident, cmd):
+        h = hashlib.sha256(("%s\0%d\0%s" % (ident, PROMPT_VERSION, cmd)).encode()).hexdigest()
         return h[:32]
 
     def _table(self):
@@ -536,12 +545,15 @@ class Annotator:
     def known(self, cmds):
         """`{cmd: [purpose, kind]}` for each command already answered by the
         configured model under this prompt."""
-        label = label_of(self.cfg)
+        try:
+            ident = ident_of(self.cfg)
+        except ValueError:
+            return {}
         with self.lock:
             table = self._table()
             out = {}
             for c in cmds:
-                hit = table.get(self.key(label, c))
+                hit = table.get(self.key(ident, c))
                 if hit:
                     out[c] = [hit[0], hit[1]]
             return out
@@ -556,19 +568,20 @@ class Annotator:
             raise ValueError("annotation is turned off (annotate.enabled)")
         if not info["available"]:
             raise ValueError(info["error"] or "the annotator cannot run here")
-        system_text(self.cfg)            # an unreadable prompt file fails here
+        ident = ident_of(self.cfg)       # an unreadable prompt file fails here
         label = label_of(self.cfg)
         with self.lock:
             table = self._table()
-            todo = [c for c in calls if self.key(label, c["cmd"]) not in table
-                    and (label, c["cmd"]) not in self._inflight]
+            todo = [c for c in calls if self.key(ident, c["cmd"]) not in table
+                    and (ident, c["cmd"]) not in self._inflight]
             if not todo:
                 return None
             jid = uuid.uuid4().hex[:12]
             for c in todo:
-                self._inflight[(label, c["cmd"])] = jid
+                self._inflight[(ident, c["cmd"])] = jid
             job = {"id": jid, "state": "queued", "about": about,
                    "provider": info["provider"], "model": info["model"], "label": label,
+                   "ident": ident,
                    "total": len(todo), "done": 0, "unlabelled": 0,
                    "submitted": time.time(), "started": None, "finished": None,
                    "error": None, "results": {}}
@@ -589,9 +602,12 @@ class Annotator:
         """The ids of the jobs still asking about any of `calls`, oldest first,
         but `exclude`: a reader whose calls another request is already asking
         about follows that request's job rather than seeing nothing."""
-        label = label_of(self.cfg)
+        try:
+            ident = ident_of(self.cfg)
+        except ValueError:
+            return []
         with self.lock:
-            ids = {self._inflight.get((label, c["cmd"])) for c in calls}
+            ids = {self._inflight.get((ident, c["cmd"])) for c in calls}
             return [j for j in self.jobs if j in ids and j != exclude]
 
     def view(self, jid):
@@ -605,7 +621,7 @@ class Annotator:
         return out
 
     def _run(self, job, todo, agent_type):
-        label = job["label"]
+        label, ident = job["label"], job["ident"]
         size = max(1, int(self.cfg.get("annotate.batch_size", 40)))
         timeout = int(self.cfg.get("annotate.timeout_s", 120))
         try:
@@ -622,12 +638,12 @@ class Annotator:
                     with self.lock:
                         table = self._table()
                         for j, c in enumerate(batch):
-                            self._inflight.pop((label, c["cmd"]), None)
+                            self._inflight.pop((ident, c["cmd"]), None)
                             if j not in got:
                                 job["unlabelled"] += 1
                                 continue
                             p, k = got[j]
-                            key = self.key(label, c["cmd"])
+                            key = self.key(ident, c["cmd"])
                             table[key] = [p, k, label, now]
                             rows.append((key, (p, k, label, now)))
                             job["results"][c["cmd"]] = [p, k]
@@ -642,4 +658,4 @@ class Annotator:
         finally:
             with self.lock:
                 for c in todo:
-                    self._inflight.pop((label, c["cmd"]), None)
+                    self._inflight.pop((ident, c["cmd"]), None)
