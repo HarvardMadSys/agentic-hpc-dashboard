@@ -459,6 +459,15 @@ def append(path, data):
         fh.write(data)
 
 
+def unprivileged():
+    """A sender's preexec_fn: as nobody when these tests run as root, whom a folder's
+    mode does not stop."""
+    if os.geteuid() == 0:
+        os.setgroups([])
+        os.setgid(65534)
+        os.setuid(65534)
+
+
 def data_for(frames, key):
     return b"".join(p for h, p in frames if h["t"] == "data" and h["path"] == key)
 
@@ -578,6 +587,48 @@ class TestSenderReadsOnlyTheCapture(unittest.TestCase):
         self.assertEqual(set(h["path"] for h, _ in frames if "path" in h), {key})
         self.assertEqual(data_for(frames, key), b'{"real":1}\n')
         self.assertEqual(res, 0)
+
+    def test_a_day_folder_it_may_not_read_is_an_error(self):
+        """Codex's case: the sending account can list --root but not read a day's
+        folder. The sender sent hello and pings and exited 0, so the receiver showed a
+        healthy link while none of that day came. Only a folder that is gone, is not
+        a folder, or is a link is passed over; any other error stops the sender with an
+        error frame, as before. Today's folder, then a sealed day's."""
+        os.chmod(self.tmp, 0o755)
+        os.chmod(self.root, 0o755)
+        yesterday, today = days_from_today(-1, 0)
+        for day in (yesterday, today):
+            os.mkdir(os.path.join(self.root, day), 0o755)
+            append(os.path.join(self.root, day, "nodeA.exits.jsonl"), b'{"a":1}\n')
+        for locked in (today, yesterday):
+            folder = os.path.join(self.root, locked)
+            os.chmod(folder, 0)
+            try:
+                p = subprocess.Popen([sys.executable, "-I", SCRIPT, "send", "--root", self.root,
+                                      "--poll", "0.05", "--ping", "0.2"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     preexec_fn=unprivileged)
+                p.stdin.write(b'{"v": 1, "days": 3, "have": {}}\n')
+                p.stdin.flush()
+                time.sleep(1.0)
+                try:
+                    p.stdin.close()
+                except BrokenPipeError:
+                    pass
+                frames = []
+                while True:
+                    f = fs.read_frame(p.stdout)
+                    if f is None:
+                        break
+                    frames.append(f[0])
+                code = p.wait(10)
+                p.stdout.close()
+            finally:
+                os.chmod(folder, 0o755)
+            errors = [h["msg"] for h in frames if h["t"] == "error"]
+            self.assertEqual(len(errors), 1, (locked, [h["t"] for h in frames]))
+            self.assertIn("Permission denied", errors[0])
+            self.assertEqual(code, 1, locked)
 
     def test_head_n_from_the_hello_is_kept_to_head(self):
         """The review's case: head_n=-1 read a whole 64 MiB file, and head_n=10**12 ran

@@ -157,8 +157,16 @@ def list_days(root):
 # --root itself may be a link; nothing under it is followed.
 
 def open_day(root, day):
-    """A handle on the day folder `root/day`; OSError if it is gone or not a real folder."""
-    return os.open(os.path.join(root, day), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    """A handle on the day folder `root/day`, or None when it is gone, is not a folder,
+    or is a link to one. Any other OSError (a folder the sending account may not read)
+    is raised: the sender stops with an error the receiver shows, instead of sending
+    pings and none of that day."""
+    try:
+        return os.open(os.path.join(root, day), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            return None
+        raise
 
 
 def open_file(dfd, name):
@@ -390,9 +398,8 @@ class Sender:
         self.done.add(key)
 
     def catch_up_sealed(self, day):
-        try:
-            dfd = open_day(self.root, day)
-        except OSError:
+        dfd = open_day(self.root, day)
+        if dfd is None:
             return                         # gone, or not a real folder
         try:
             for name in stream_names(dfd):
@@ -424,9 +431,8 @@ class Sender:
     # ---- the live day
     def scan_live(self):
         """Open the live day's files not yet open, at the receiver's size."""
-        try:
-            dfd = open_day(self.root, self.live)
-        except OSError:
+        dfd = open_day(self.root, self.live)
+        if dfd is None:
             return
         try:
             names = sorted(n for n in os.listdir(dfd) if n.endswith(".jsonl"))
@@ -452,10 +458,7 @@ class Sender:
             os.close(dfd)
 
     def follow_live(self):
-        try:
-            dfd = open_day(self.root, self.live)
-        except OSError:
-            dfd = None                     # gone; the handles still read their files
+        dfd = open_day(self.root, self.live)   # None once gone: the handles still read
         try:
             for key in sorted(self.files):
                 f = self.files[key]
@@ -512,9 +515,8 @@ class Sender:
         self.next_trailer = now + self.trailer_poll_s
         for key in sorted(self.awaiting):
             day, name = self.awaiting[key]
-            try:
-                dfd = open_day(self.root, day)
-            except OSError:
+            dfd = open_day(self.root, day)
+            if dfd is None:
                 continue
             try:
                 if entry(dfd, name) is not None:
