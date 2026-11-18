@@ -39,10 +39,15 @@ jobs:
     steps:
       - name: Install build tooling
         run: |
-          dnf -y install rpm-build rpmdevtools git-core
+          # python3 is EL8's 3.6, what the collector runs on, for its tests below
+          dnf -y install rpm-build rpmdevtools git-core python3
 
       - name: Checkout
         uses: actions/checkout@v5
+
+      # Nothing is built or published from a collector whose tests fail.
+      - name: Collector tests
+        run: python3 -m unittest discover -s collector/tests -q
 
       - name: Compute version and release
         id: ver
