@@ -982,6 +982,26 @@ class WorstCaseTest(unittest.TestCase):
         out, what = R.redact_argv(argv)
         self.assertEqual((out, what), ('bash -c claude %s %s' % (P, R.CUT), ['cut', 'prompt']))
 
+    def test_a_cut_inside_a_quoted_credential_writes_none_of_it(self):
+        """The cut falls at a space; inside a quoted value it left the quote
+        open, which no value was read as, and the words before the cut went
+        out: `--password "private credential phrase [CUT]`."""
+        pad = 'tool ' + 'x ' * 8170
+        secret = 'private credential phrase that crosses boundary'
+        for tail in ('--password "%s"' % secret, '{"password": "%s"}' % secret,
+                     "export DB_PASSWORD='%s'" % secret):
+            for out in (R.redact_keys(pad + tail)[0], R.redact_line(pad + tail)[0],
+                        red(['bash', '-c', pad + tail])):
+                self.assertTrue(out.endswith(K + ' ' + R.CUT), (tail, out[-60:]))
+                self.hidden_words(out, secret)
+        # and a value whose closing quote the kernel's read cut off
+        self.assertEqual(R.redact_keys('mysql --password "hunter2 zz'),
+                         ('mysql --password %s' % K, ['secret_flag']))
+
+    def hidden_words(self, out, secret):
+        for w in secret.split():
+            self.assertNotIn(w, out)
+
 
 class NodeTierTest(unittest.TestCase):
     """The node tier has ps's joined lines; it masks each from the process's own

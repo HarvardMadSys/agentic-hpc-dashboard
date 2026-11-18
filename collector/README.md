@@ -511,7 +511,8 @@ Schema 8 is the fix for each; every point below changes what a field holds.
   environment it is started with whose value says a sentence (`env 'PROMPT=...'`).
 
   Every rule reads a line in time linear in its length. Past 16 KB a line is cut at a
-  space, the rest neither read nor written, and `[CUT]` written after the masked part;
+  space, the rest neither read nor written, and `[CUT]` written after the masked part
+  (a quoted credential the cut falls in is masked whole, as is one whose quote never closes);
   `args_redacted` names `cut` and `args_truncated` is true. A submit record's
   `captured_tail` is masked whole and then cut to its last 300 characters. The node
   tier fails closed: if it cannot import `lib/redact.py` it writes every command line

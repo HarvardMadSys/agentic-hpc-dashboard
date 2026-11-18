@@ -192,6 +192,11 @@ class RuleTest(unittest.TestCase):
         self.assertTrue(out.endswith(" " + redact.CUT))
         self.assertLessEqual(len(out), redact.READ_MAX + 1 + len(redact.CUT))
         self.assertEqual(redact.redact(out[:1000]), out[:1000])
+        # a cut inside a quoted credential shows none of it
+        line = "deploy " + "x " * 49985 + '--password "private credential phrase here"'
+        out = redact.redact(line)
+        self.assertTrue(out.endswith("--password " + MASK + " " + redact.CUT), out[-50:])
+        self.assertNotIn("private", out)
 
 
 class ExitTest(unittest.TestCase):

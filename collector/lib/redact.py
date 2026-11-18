@@ -48,7 +48,10 @@ PROMPT_MASK = "[REDACTED-PROMPT]"
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
 _NOT_CODE = (r"(?!(?:os\.)?(?:environ\b|getenv\()|Path\("
              r"|(?:None|True|False|%s|\{\})(?=[\s)\],;}\"']|$))")
-_VALUE = r"(\\?\"[^\"]*\"|\\?'[^']*'|[^\s\"']+)"
+# A value: a word, or a quoted string whole. One whose closing quote is not in
+# the text -- cut there at TEXT_MAX, or by the kernel's read -- runs to the
+# text's end, so no part of it is written.
+_VALUE = r"(\\?\"[^\"]*(?:\"|\Z)|\\?'[^']*(?:'|\Z)|[^\s\"']+)"
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
 # on the END of the name: `HF_TOKEN`, `db_password`, `AWS_SECRET_ACCESS_KEY`,
@@ -70,9 +73,10 @@ _CMD_START = r"(?:^|[\s/'\"`;|&(=])"
 
 # Every rule reads a text in time linear in its length; past TEXT_MAX
 # characters a text is cut -- at the last space before the limit, so no word is
-# written in part -- and CUT is written after what was read. The rest is
-# neither read nor written: a command line can be as long as the kernel
-# allows, and every one is masked.
+# written in part, and a quoted value the cut falls in is read to the text's
+# end (_VALUE) -- and CUT is written after what was read. The rest is neither
+# read nor written: a command line can be as long as the kernel allows, and
+# every one is masked.
 TEXT_MAX = 16384
 CUT = "[CUT]"
 
@@ -214,7 +218,7 @@ RULES = (
      lambda m: m.group(1) + MASK),
     # The same names as JSON keys: curl -d '{"password": "..."}'.
     ("secret_json", ((":",), _NAME_WORDS), re.compile(
-        r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"[^\"]*\"|'[^']*')", re.I),
+        r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z))", re.I),
      lambda m: m.group(1) + MASK),
     # Credential headers as JSON or TOML keys, escaped or not: an MCP server's
     # `"headers": {"Authorization": "Bearer ..."}`, codex's `http_headers=
