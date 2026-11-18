@@ -950,11 +950,18 @@ credentials. So:
   `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
   `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
   provider reached through a cloud, is named in `ask.env_passthrough`
-  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or prefixes written
-  `NAME_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION",
-  "ANTHROPIC_VERTEX_*", "AZURE_*"]` as the provider needs. The service's own `RC_DASH_*`
-  settings, its password hash among them, are never passed. An agent that fails says so, since
-  a credential left out fails it without a word about the environment.
+  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix,
+  three characters or more and then `_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_*", "AZURE_*"]` as the provider needs. A shorter prefix,
+  or one without the `_` (`S*`), would take in whatever else begins so, and is refused at
+  start; such a variable is named whole. The service's own `RC_DASH_*` settings, its password
+  hash among them, are never passed. An agent that fails says so, since a credential left out
+  fails it without a word about the environment.
+  **The proxy variables are passed as they are**: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+  `NO_PROXY` and their lower-case forms, so the agent reaches its provider through the site's
+  proxy. A proxy URL often carries a user and password (`http://user:pass@proxy:3128`), and
+  then the agent can read them -- an agent whose prompt holds other users' command lines. For
+  the service's account, prefer a proxy that needs no password in the URL.
 - **A directory of its own**, made 0700 in the system's temporary directory for each question
   and removed after, not under `cache.dir`, so the salt, the session key and the saved builds
   are not its neighbours.

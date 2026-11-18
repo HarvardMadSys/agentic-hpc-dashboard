@@ -163,9 +163,14 @@ class Passthrough(Case):
         self.assertEqual(cfg.get("ask.env_passthrough"), ["AWS_*", "CLOUD_ML_REGION"])
         cfg, _ = self.load({"ask": {"env_passthrough": ["GOOGLE_APPLICATION_CREDENTIALS"]}})
         self.assertEqual(cfg.get("ask.env_passthrough"), ["GOOGLE_APPLICATION_CREDENTIALS"])
-        for bad in (["*"], ["A B"], ["AWS_**"], ["*AWS"], ["X*Y"], [5], "AWS_*"):
+        for bad in (["*"], ["A B"], ["AWS_**"], ["*AWS"], ["X*Y"], [5], "AWS_*",
+                    # a prefix short of a family's, or with no _, takes in what else begins so
+                    ["A*"], ["S*"], ["AWS*"], ["A_*"], ["AB_*"], ["_*"], ["1AB_*"], ["__X_*"]):
             with self.subTest(bad=bad):
                 self.assertIn("ask.env_passthrough", self.refused({"ask": {"env_passthrough": bad}}))
+        good = ["AWS_*", "ANTHROPIC_VERTEX_*", "AZURE_*", "HF_TOKEN", "X"]
+        self.assertEqual(self.load({"ask": {"env_passthrough": good}})[0].get("ask.env_passthrough"),
+                         good)
         self.assertIn("the nearest is ask.env_passthrough",
                       self.refused({"ask": {"env_passthru": ["AWS_*"]}}))
 

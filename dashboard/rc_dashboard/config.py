@@ -25,6 +25,7 @@ import difflib
 import fnmatch
 import json
 import os
+import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +38,9 @@ HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 INGEST_WORKERS = 1
 # `ingest.reducer_groups`: processes per node's hour, one per reducer group (1 or 2).
 INGEST_REDUCER_GROUPS = 2
+# An entry of `ask.env_passthrough`: a variable's name, or a family's prefix,
+# three characters or more and then `_*`.
+PASSTHROUGH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[A-Za-z][A-Za-z0-9_]{2,}_\*")
 
 
 def _env(name, default=None):
@@ -223,10 +227,10 @@ def defaults():
             "model": "",               # empty: the agent's own default
             # The agent gets only what a program needs of the service's
             # environment (ask.AGENT_ENV) and these besides: variable names, or
-            # prefixes written NAME_*, for a provider reached through a cloud --
-            # ["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"].
-            # Never * alone, and never an RC_DASH_* one. Annotate's CLI
-            # providers get the same.
+            # a family's prefix -- three characters or more, then _* -- for a
+            # provider reached through a cloud: ["AWS_*",
+            # "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"]. Never an
+            # RC_DASH_* one. Annotate's CLI providers get the same.
             "env_passthrough": [],
             "timeout_s": 240,
             "max_concurrent": 1,       # a second question waits, not a second agent
@@ -868,13 +872,15 @@ def load(args=None, config_path=None):
             raise SystemExit("%s: %r is not a list of names (set by %s)" % (
                 key, val, origins.get(key, "default")))
     # What of the service's environment the agents get besides ask.AGENT_ENV:
-    # variable names, or prefixes written NAME_*, never * alone (all of it).
+    # variable names, or a family's prefix -- three characters or more, then
+    # `_*` (AWS_*). A shorter one, or one with no `_` (S*), takes in whatever
+    # else begins so; such a variable is named whole instead.
     val = _get(tree, "ask.env_passthrough", [])
     if not isinstance(val, list) or not all(
-            isinstance(x, str) and x.rstrip("*").isascii() and x.rstrip("*").isidentifier()
-            and x.count("*") <= 1 for x in val):
-        raise SystemExit("ask.env_passthrough: %r is not a list of variable names, or of "
-                         "prefixes written NAME_* (set by %s)" % (
+            isinstance(x, str) and PASSTHROUGH.fullmatch(x) for x in val):
+        raise SystemExit("ask.env_passthrough: %r is not a list of variable names, or of a "
+                         "family's prefix written NAME_* with three characters or more before "
+                         "the _* (AWS_*) (set by %s)" % (
                              val, origins.get("ask.env_passthrough", "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and

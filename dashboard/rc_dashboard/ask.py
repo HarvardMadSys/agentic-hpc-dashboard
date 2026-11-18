@@ -88,6 +88,7 @@ AGENT_ENV = frozenset((
     # systemd-run --user, as deploy/fleet runs the agent, finds the user manager by these
     "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
     "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    # passed as they are, a user and password in the URL included (README, Ask LLM)
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",

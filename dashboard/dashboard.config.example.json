@@ -31,7 +31,7 @@
     "command": null,
     "model": "",
     "//env_passthrough": "the agent gets only what a program needs of the service's environment;",
-    "//env_passthrough1": "name what else it needs here, as names or NAME_* prefixes, for a provider",
+    "//env_passthrough1": "name what else it needs here, as names or NAME_* prefixes (3+ characters before _*), for a provider",
     "//env_passthrough2": "reached through a cloud: [\"AWS_*\", \"GOOGLE_APPLICATION_CREDENTIALS\"]",
     "env_passthrough": [],
     "timeout_s": 240,
