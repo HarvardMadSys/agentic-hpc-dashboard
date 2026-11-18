@@ -1016,12 +1016,14 @@ class Mirror:
     def days(self):
         return [d for d in self.base.listdir("mirror/" + self.host) if DAY_RE.match(d)]
 
-    def inventory(self, days):
+    def inventory(self):
         """What this copy holds: the hello's `have`. A verified day kept as `.gz`
         counts as held whatever `keep_gz` says, so a copy seeded with `.gz` files
-        works under either setting; an unlisted `.gz` is not counted."""
+        works under either setting; an unlisted `.gz` is not counted. Every day folder
+        is listed, not the newest `days`: retention keeps by date (tomorrow too), and a
+        verified day left out would be sent again and refused. Retention bounds them."""
         have = {}
-        for day in self.days()[-days:]:
+        for day in self.days():
             for name in self.base.listdir("mirror/%s/%s" % (self.host, day)):   # x before x.gz
                 if name.endswith(".jsonl"):
                     key = "%s/%s" % (day, name)
@@ -1406,7 +1408,7 @@ class Link:
         self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(self.proc.stderr,),
                                                daemon=True)
         self._stderr_thread.start()
-        hello = {"v": PROTOCOL, "days": self.days, "have": self.mirror.inventory(self.days)}
+        hello = {"v": PROTOCOL, "days": self.days, "have": self.mirror.inventory()}
         self.proc.stdin.write((json.dumps(hello) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
         src = _Counting(self.proc.stdout, self.stall_s)

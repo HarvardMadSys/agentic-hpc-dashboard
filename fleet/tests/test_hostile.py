@@ -402,6 +402,38 @@ class TestSkewedNode(unittest.TestCase):
         finally:
             rig.cleanup()
 
+    def test_the_hello_lists_every_day_the_copy_keeps(self):
+        """1a1a11a's case: the hello listed the copy's newest `days` folders, while
+        retention keeps by date, tomorrow included. With a folder for tomorrow in the
+        copy (left from a time the node ran ahead), the oldest verified day dropped out
+        of the hello, the sender sent it again, and the receiver refused it at every
+        connection."""
+        rig = Rig(days=3)
+        try:
+            d = days_from_today(-2, -1, 0, 1)
+            c = FakeCollector(rig.src, day=d[0])
+            c.append("exits", b'{"d":0}\n' * 100)
+            c.roll(d[1], gzip=True)
+            c.append("exits", b'{"d":1}\n' * 100)
+            c.roll(d[2], gzip=True)
+            c.append("exits", b'{"d":2}\n')
+            rig.start()
+            sealed = [c.key(s, day) for day in d[:2] for s in ("exits", "snapshot")]
+            self.assertTrue(wait_for(lambda: all(k in rig.mirror.verified for k in sealed)),
+                            rig.link.status())
+            rig.halt()
+            os.makedirs(os.path.join(rig.mdir, d[3]))
+            append(os.path.join(rig.mdir, d[3], "nodeA.cluster.example.org.exits.jsonl"), b"")
+            gz = rig.counters.total(HOST, "gz")
+            rig.start()
+            self.assertTrue(wait_for(lambda: rig.link.connected), rig.link.status())
+            time.sleep(1.0)
+            self.assertIsNone(rig.link.last_error)
+            self.assertEqual(len(rig.link.attempts), 1)
+            self.assertEqual(rig.counters.total(HOST, "gz"), gz)
+        finally:
+            rig.cleanup()
+
 
 class LinkCase(MirrorCase):
     """A Link over a transport that writes frames given here."""
