@@ -824,10 +824,11 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
         {/* One panel per section, in the order this cluster's risk profile
             lists them (risk.sections); a section it leaves out is not drawn and
             not computed. */}
+        {/* none only of a risk panel the service reduced: while it is waited for,
+            building, not reduced or not sent, the panel's envelope says which */}
         {sections.length === 0 && (
-          <Panel title="No risk sections" span>
-            <NoRows what="this cluster's risk profile lists no sections (risk.sections)" />
-          </Panel>
+          <Panel title="Risk sections" p={risk} span empty
+            emptyWhat="this cluster's risk profile lists no sections (risk.sections)" />
         )}
         {sections.map((sc) =>
           sc.kind === 'login_compute' ? (

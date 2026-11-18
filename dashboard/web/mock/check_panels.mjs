@@ -102,3 +102,25 @@ test('Agents waits with the service, and shows a first build, rather than saying
   }));
   assert.match(none, /none · no agent process in this window/);
 });
+
+test('Risks says the risk panel is waited for, building, not reduced or not sent, rather than that it has no sections', async () => {
+  const risks = async (P) => textOf(await ui.render('tabs/RiskIoTab.tsx', 'RiskIoTab', { P, cls: ALL, part: 'risk' }));
+  const NO_SECTIONS = /lists no sections/;
+  // on develop each of these read "No risk sections · none · this cluster's risk profile lists no sections"
+  const waiting = await risks({});
+  assert.doesNotMatch(waiting, NO_SECTIONS);
+  assert.match(waiting, /waiting for the dashboard service/);
+  const failedRisk = await risks({ ...FIX, risk: failed() });
+  assert.doesNotMatch(failedRisk, NO_SECTIONS);
+  assert.match(failedRisk, NOT_REDUCED);
+  const building = await risks({ ...FIX, risk: { ...failed(), _error: undefined, _window: firstBuild } });
+  assert.doesNotMatch(building, NO_SECTIONS);
+  assert.match(building, /reducing 24h/);
+  // the fixture sends no risk panel at all
+  const unsent = await risks(FIX);
+  assert.doesNotMatch(unsent, NO_SECTIONS);
+  assert.match(unsent, /not returned/);
+  // a risk panel the service reduced, whose profile lists no section, says so
+  const none = await risks({ ...FIX, risk: { ...failed(), _error: undefined, sections: [] } });
+  assert.match(none, /none · this cluster's risk profile lists no sections/);
+});
