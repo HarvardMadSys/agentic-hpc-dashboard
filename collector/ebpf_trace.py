@@ -1796,12 +1796,105 @@ def _short_err(err):
     return ' | '.join(keep)[:600]
 
 
+_BTF_GAP = 'BTF lacks required members (needs bpftool + /sys/kernel/btf/vmlinux)'
+
+
 def _feature_cache_path():
     return os.path.join(OUTPUT_DIR, '.features_%s.json' % os.uname().release.replace('/', '_'))
 
 
+def _feature_key():
+    """What a probe's outcome rests on beside the kernel release (the cache file's
+    name) and the block list: the BCC that compiles the blocks, whether bpftool
+    and the kernel's BTF are there for the offsets, and each block's program
+    text, which holds the settings compiled into it (EBPFM_ARGV_KMAX,
+    EBPFM_SUBMIT_BUDGET, ...). A cache made under another key is not used."""
+    import shutil
+    texts = [build_bpf_text(set(BLOCK_NAMES), offs={})]
+    texts += [build_bpf_text({name} | set(requires), offs={}) for name, requires, _p in BLOCKS]
+    return {'bcc': _bcc_version(), 'bpftool': shutil.which('bpftool') is not None,
+            'btf': os.path.exists('/sys/kernel/btf/vmlinux'),
+            'text': hashlib.sha1('\n'.join(texts).encode('utf-8')).hexdigest()}
+
+
+def _cached_features(key):
+    """The last probe's outcome on this kernel, or None: none saved, unreadable,
+    or made for another block list or `_feature_key`."""
+    try:
+        with open(_feature_cache_path()) as fh:
+            cached = json.load(fh)
+    except Exception:
+        return None
+    if (not isinstance(cached, dict) or cached.get('blocks') != list(BLOCK_NAMES)
+            or cached.get('key') != key or not isinstance(cached.get('features'), list)
+            or not isinstance(cached.get('rejected'), dict)):
+        return None
+    return cached
+
+
+def _probe(BPF, was=None):
+    """The greedy probe: each block in turn on top of those accepted before it,
+    -> (bpf, accepted, rejected). `was` is the set the last probe accepted: a
+    block it accepted on top of the very same blocks is taken without a load,
+    every other block is decided as a fresh probe decides it, and the set is
+    loaded once at the end. None when that load fails."""
+    order = dict((n, i) for i, n in enumerate(BLOCK_NAMES))
+    b = None
+    if was is None:
+        b, err = _try_load(BPF, set(), quiet=False)
+        if b is None:
+            raise SystemExit('error: even the base BPF program failed to load:\n%s' % err)
+    accepted, rejected, taken = set(), {}, False
+    for name, requires, _purpose in BLOCKS:
+        alt = ALTERNATIVES.get(name)
+        sup = [a for a in ((alt,) if alt else ()) + ALSO_SUPERSEDED_BY.get(name, ()) if a in accepted]
+        if sup:
+            rejected[name] = 'superseded by %s' % ','.join(sup)
+            continue
+        if any(r not in accepted for r in requires):
+            rejected[name] = 'requires %s' % ','.join(requires)
+            continue
+        if not btf_ok(name):
+            rejected[name] = _BTF_GAP
+            continue
+        cand = accepted | {name}
+        if was is not None and name in was and \
+                accepted == set(n for n in was if order[n] < order[name]):
+            accepted, taken = cand, True
+            continue
+        nb, err = _try_load(BPF, cand)
+        if nb is None:
+            rejected[name] = _short_err(err)
+            continue
+        if b is not None:
+            try:
+                b.cleanup()
+            except Exception:
+                pass
+        b, accepted, taken = nb, cand, False
+    if b is None or taken:
+        nb, err = _try_load(BPF, accepted)
+        if b is not None:
+            try:
+                b.cleanup()
+            except Exception:
+                pass
+        if nb is None:
+            return None
+        b = nb
+    return b, accepted, rejected
+
+
 def probe_features(BPF, verbose=True):
-    """Greedy per-block probing -> (bpf, accepted_set, rejected{name: reason})."""
+    """Greedy per-block probing -> (bpf, accepted_set, rejected{name: reason}).
+
+    The outcome is cached per kernel. A start takes from the cache only what is
+    final -- a block that loaded on top of the same blocks, one superseded by a
+    variant, one missing a block it requires -- and probes again every block a
+    load or BTF error refused, with the blocks that need it: a refusal of a
+    moment's (memory pressure, a slow bpftool) is not kept for good. If the set
+    then fails to load, or the cache was made under another `_feature_key`,
+    every block is probed afresh."""
     global BTF_OFFS
     if FEATURES_ENV != 'auto':
         feats = {x.strip() for x in FEATURES_ENV.split(',') if x.strip()}
@@ -1815,52 +1908,23 @@ def probe_features(BPF, verbose=True):
         if b is None:
             raise SystemExit('pinned feature set failed to load: %s' % err)
         return b, feats, {}
-    if FEATURE_CACHE:
-        try:
-            with open(_feature_cache_path()) as fh:
-                cached = json.load(fh)
-            # Keyed by kernel release, but only valid for the block list it was
-            # probed against: a collector that has gained a block since must probe
-            # it, or every host that ran the older collector never would.
-            if cached.get('blocks') != list(BLOCK_NAMES):
-                raise ValueError('feature cache predates the current block list')
-            feats = set(cached.get('features', []))
-            if cached.get('btf_offs'):
-                BTF_OFFS = cached['btf_offs']
-            b, err = _try_load(BPF, feats)
-            if b is not None:
-                if verbose:
-                    sys.stderr.write('BPF features (cached for %s): %s\n'
-                                     % (os.uname().release, ','.join(sorted(feats))))
-                return b, feats, cached.get('rejected', {})
-        except Exception:
-            pass
-    b, err = _try_load(BPF, set(), quiet=False)
-    if b is None:
-        raise SystemExit('error: even the base BPF program failed to load:\n%s' % err)
-    accepted, rejected = set(), {}
-    for name, requires, _purpose in BLOCKS:
-        alt = ALTERNATIVES.get(name)
-        sup = [a for a in ((alt,) if alt else ()) + ALSO_SUPERSEDED_BY.get(name, ()) if a in accepted]
-        if sup:
-            rejected[name] = 'superseded by %s' % ','.join(sup)
-            continue
-        if any(r not in accepted for r in requires):
-            rejected[name] = 'requires %s' % ','.join(requires)
-            continue
-        if not btf_ok(name):
-            rejected[name] = 'BTF lacks required members (needs bpftool + /sys/kernel/btf/vmlinux)'
-            continue
-        cand = accepted | {name}
-        nb, err = _try_load(BPF, cand)
-        if nb is None:
-            rejected[name] = _short_err(err)
-            continue
-        try:
-            b.cleanup()
-        except Exception:
-            pass
-        b, accepted = nb, cand
+    # Keyed by kernel release, and only for the block list and `_feature_key` it
+    # was probed under: a collector that has gained a block since must probe it,
+    # or every host that ran the older collector never would.
+    key = _feature_key() if FEATURE_CACHE else None
+    cached = _cached_features(key) if FEATURE_CACHE else None
+    got = None
+    if cached is not None:
+        before = BTF_OFFS
+        # the offsets this kernel's BTF gave, unless a block found them lacking:
+        # then bpftool is asked again
+        if cached.get('btf_offs') and not any(_BTF_GAP in r for r in cached['rejected'].values()):
+            BTF_OFFS = cached['btf_offs']
+        got = _probe(BPF, set(cached['features']))
+        if got is None:
+            BTF_OFFS = before
+    from_cache = got is not None
+    b, accepted, rejected = got if got is not None else _probe(BPF)
     # A failed variant whose sibling loaded is not a capability gap; say so while
     # keeping the compiler line for the record.
     for group in (PIDS_BLOCKS, TCP_BLOCKS, {'argv_user', 'argv_kernel'}, DSTATE_BLOCKS,
@@ -1878,13 +1942,15 @@ def probe_features(BPF, verbose=True):
             with open(cache_path, 'w') as fh:
                 json.dump({'kernel': os.uname().release, 'features': sorted(accepted),
                            'rejected': rejected, 'btf_offs': btf_offsets(),
-                           'blocks': list(BLOCK_NAMES),
+                           'blocks': list(BLOCK_NAMES), 'key': key,
                            'probed_at': _now()}, fh, indent=1)
             _secure_path(cache_path, FILE_MODE)
         except Exception:
             pass
     if verbose:
-        sys.stderr.write('BPF features: %s\n' % (','.join(sorted(accepted)) or '(base only)'))
+        sys.stderr.write('BPF features%s: %s\n' % (
+            ' (cached for %s)' % os.uname().release if from_cache else '',
+            ','.join(sorted(accepted)) or '(base only)'))
         gaps = []
         for k, v in rejected.items():
             v1 = v.replace('\n', ' | ')

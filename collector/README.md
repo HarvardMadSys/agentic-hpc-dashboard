@@ -838,7 +838,13 @@ inbound connections also get a proper close.
 4. **Every kernel read is a probed block.** A kernel that cannot compile one drops *that
    block alone* and records the compiler's reason in `meta.features_rejected`. Dropped
    blocks emit `null`, **never `0`** — an absent measurement must not read as a zero
-   measurement.
+   measurement. The outcome is cached per kernel (`$EBPFM_OUTPUT_DIR/.features_<release>.json`),
+   and a start takes from it only what is final: a block that loaded on top of the same
+   blocks, one superseded by a variant, one missing a block it requires. A block a load or
+   BTF error refused is probed again at every start, with the blocks that need it, so a
+   refusal of a moment's is not kept for good; and the cache is ignored when the block
+   list, the BCC version, bpftool or the kernel's BTF, or the program text with the
+   settings compiled into it changed. `bootstrap` deletes it.
 5. **`perf_lost` is the acceptance gate** for anything added to the tick.
 
 ### One caveat worth knowing
@@ -858,7 +864,7 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 
 | Verb | Does |
 |---|---|
-| `bootstrap` | detect distro and kernel, install missing dependencies, set required sysctls, re-verify |
+| `bootstrap` | detect distro and kernel, install missing dependencies, set required sysctls, delete the feature cache, re-verify |
 | `check` | privilege, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink reachability, the cgroup the collector would land in and its `cpu.max`, vendored-file divergence |
 | `features` | probe the BPF blocks, print the resolved set as JSON |
 | `dump-c` | emit the generated BPF C (for debugging a rejected block) |
