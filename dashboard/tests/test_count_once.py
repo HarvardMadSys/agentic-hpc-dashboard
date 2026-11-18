@@ -737,6 +737,64 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual(lv.io_dropped, 3)
         self.assertEqual(rd_of(lv, now)["alice"], 5.0)
 
+    def test_runtimes_idle_past_any_look_ahead_still_keep_their_place(self):
+        # seventy agent runtimes, each holding a tool call, then idle -- the least
+        # recently given of all -- and eighty plain parents given to after them:
+        # one more plain parent past the cap drops the oldest plain one, never a
+        # runtime; with only runtimes held, the least recently given goes
+        n = 70
+
+        def ex(t, pid, ppid, root=None):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": "alice",
+                    "_ts_epoch": t, "duration_s": 1.0, "io": iob(1.0, 1.0),
+                    "tree_root_pid": root}
+        t = time.time() - 600
+        j = own_io.OwnIo(own_io.DISK, cap=150)
+        for k in range(n):
+            j.take(ex(t, 10000 + k, 1000 + k, root=1000 + k))
+        for k in range(81):
+            j.take(ex(t + 1, 20000 + k, 2000 + k))
+        self.assertEqual((j.evicted, ("h1", 2000) in j.reaped), (1, False))
+        self.assertEqual([k for k in range(n) if ("h1", 1000 + k) not in j.reaped], [])
+        r = own_io.OwnIo(own_io.DISK, cap=n)
+        for k in range(n + 1):
+            r.take(ex(t + k, 10000 + k, 1000 + k, root=1000 + k))
+        self.assertEqual((len(r.reaped), ("h1", 1000) in r.reaped, r.evicted), (n, False, 1))
+
+    def test_past_half_the_cap_runtimes_give_way(self):
+        # runtimes that never exit -- a login shell the feed never sees end --
+        # would crowd every other parent out: past half the cap the least
+        # recently given of them goes first
+        def ex(t, pid, ppid, root=None):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": "alice",
+                    "_ts_epoch": t, "duration_s": 1.0, "io": iob(1.0, 1.0),
+                    "tree_root_pid": root}
+        t = time.time() - 600
+        j = own_io.OwnIo(own_io.DISK, cap=10)
+        for k in range(6):
+            j.take(ex(t, 10000 + k, 1000 + k, root=1000 + k))
+        for k in range(5):
+            j.take(ex(t + 1 + k, 20000 + k, 2000 + k))
+        self.assertEqual((("h1", 1000) in j.reaped, ("h1", 2000) in j.reaped), (False, True))
+        j.take(ex(t + 9, 20009, 2009))
+        self.assertEqual((("h1", 1001) in j.reaped, ("h1", 2000) in j.reaped), (True, False))
+
+    def test_and_so_do_runtimes_notes_in_the_live_tier_s_backfill(self):
+        # newest first: seventy agent runtimes' exits noted, then eighty-one of
+        # bob's processes past BOOKED_MAX: bob's oldest note goes, every
+        # runtime's stays
+        n = 70
+        self.enterContext(mock.patch.object(livemod, "BOOKED_MAX", 150))
+        t = time.time() - 900
+        recs = [raw("exit", t + 100 - 0.01 * k, 1000 + k, 50, "claude", "claude",
+                    is_agent=True, agent_pid=1000 + k, tree_root=1000 + k,
+                    io=iob(5.0, 5.0), duration_s=200.0) for k in range(n)]
+        recs += [person("exit", t + 20 - 0.01 * k, 400 + k, 300 + k, "sleep", "sleep 1", "bob",
+                        io=iob(1.0, 1.0)) for k in range(81)]
+        lv = live(recs, older=True)
+        self.assertEqual((lv.io_dropped, ("h1", 400) in lv.io_booked), (1, False))
+        self.assertEqual([k for k in range(n) if ("h1", 1000 + k) not in lv.io_booked], [])
+
     def test_every_join_is_held_to_the_setting(self):
         self.assertEqual(own_io.cap_of(cfg()), own_io.REAPED_MAX)
         self.assertEqual(own_io.OwnIo().cap, own_io.REAPED_MAX)

@@ -24,8 +24,7 @@ from ..procindex import users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
-from .own_io import (CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, OwnIo, cap_of,
-                     pop_least_recent)
+from .own_io import CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, Held, OwnIo, cap_of
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
@@ -274,7 +273,7 @@ class LiveReducer:
         # read the children it reaped. Each pairing is held to what the shared
         # join allows: the same user, and a child begun after its parent.
         self.io_join = OwnIo(DISK, cap_of(cfg), "live")
-        self.io_booked = collections.OrderedDict()   # (host, pid) -> a note (_B_*)
+        self.io_booked = Held()      # (host, pid) -> a note (_B_*), runtimes' apart
         self.io_given = OwnIo(DISK, cap_of(cfg), "live")
         self._io_starts = []         # (-start, note's number, key): the latest start first
         self._io_seq = 0
@@ -490,7 +489,7 @@ class LiveReducer:
         self.io_booked[key] = AgentHeld(note) if key[1] == rec.get("tree_root_pid") else note
         self.io_booked.move_to_end(key)
         if len(self.io_booked) > BOOKED_MAX:
-            pop_least_recent(self.io_booked)
+            self.io_booked.pop_least_recent(BOOKED_MAX // 2)
             self.io_dropped += 1
         if st is not None:
             heapq.heappush(self._io_starts, (-st, self._io_seq, key))

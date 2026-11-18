@@ -764,16 +764,18 @@ already made once.
   below, and is counted too. Each join holds at most `reducers.own_io.max_parents` parents
   (2000; below 1 the service refuses to start), the one given to least recently dropped first,
   counted (`evicted`) and said on stderr (the first time, then at most hourly a panel), its
-  children's bytes then counted again at its exit. What is held for an agent runtime, or for the process that started one, is passed over:
-  an agent sits idle as long as its reader does while other parents reap, and its tool calls'
-  bytes are the most a parent holds. A service holds some 35 joins (five in each held window,
-  five carried in the hours' chain, the live tier's two, an inspector read's and a lookup's): at
-  one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at the demo's 2.8 ~69 MB, at worst
-  (eight, ~2.5 KB) 159 MB; the live tier's notes add at most ~10 MB. The repo's streams hold
-  under 500 parents at once, and the bench's feed, 32 times the demo's records, drops none at
-  2000. A busy login node may need more -- over one real day an uncapped join of agent children
-  alone ended holding 177,411 parents, most of them stale (`reducers/phase_log.py`): raise it
-  while `evicted` grows, at 19 to 80 KB for each one added.
+  children's bytes then counted again at its exit. What is held for an agent runtime, or for
+  the process that started one, goes only after every other parent, unless such parents hold
+  over half the cap: an agent sits idle as long as its reader does while other parents reap,
+  and its tool calls' bytes are the most a parent holds, but a login shell the feed never sees
+  exit would otherwise crowd the rest out. A service holds some 35 joins (five in each held
+  window, five carried in the hours' chain, the live tier's two, an inspector read's and a
+  lookup's): at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at the demo's 2.8 ~69 MB,
+  at worst (eight, ~2.5 KB) 159 MB; the live tier's notes add at most ~10 MB. The repo's
+  streams hold under 500 parents at once, and the bench's feed, 32 times the demo's records,
+  drops none at 2000. A busy login node may need more -- over one real day an uncapped join of
+  agent children alone ended holding 177,411 parents, most of them stale
+  (`reducers/phase_log.py`): raise it while `evicted` grows, at 19 to 80 KB for each one added.
 - **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a

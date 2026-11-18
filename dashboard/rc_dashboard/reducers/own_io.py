@@ -77,12 +77,16 @@ costs about 0.5 KB with one entry and up to 2.5 KB with PER_PID: the default
 is some 39 MB over all of them at one entry a parent, 159 MB at worst
 (README, "Disk I/O is each process's own"). The parent given to least
 recently goes first: a dead one whose orphans' bytes wait under its pid, or
-one that has stopped reaping, before one at work. Passed over, looking
-RUNTIME_PASS deep, is what is held for an agent runtime or for the process
-that started one (`_runtime`, by the collector's `tree_root_pid`): an agent
-sits idle as long as its reader does while other parents reap, and its tool
-calls' bytes, or a whole session's, are the most a parent holds. The hours'
-chain still ages it out after `hours.CARRY_KEEP_H` untouched.
+one that has stopped reaping, before one at work. What is held for an agent
+runtime, or for the process that started one (`_runtime`, by the collector's
+`tree_root_pid`), is kept apart and goes before the rest only once such
+parents hold over half the cap (`Held`): an agent sits idle as long as its
+reader does while other parents reap, and its tool calls' bytes, or a whole
+session's, are the most a parent holds; the half is for the ones that never
+exit, a login shell that outlives the feed, which would otherwise crowd
+every other parent out. Carried, the two are one map, the runtimes last, so
+a pass's cap trims the others first. The hours' chain still ages one out
+after `hours.CARRY_KEEP_H` untouched.
 """
 import collections
 import itertools
@@ -106,11 +110,6 @@ CLAMP_TOL_MB = 0.01
 _G_USER, _G_START, _G_VALS = 0, 1, 2
 PER_PID = 8
 
-# What is held for an agent runtime or what started one (`_runtime`) is passed
-# over at the cap, looking this deep for another to drop (`pop_least_recent`).
-RUNTIME_PASS = 64
-
-
 class AgentHeld(list):
     """What is held for a pid that is an agent runtime, or started one."""
     __slots__ = ()
@@ -125,15 +124,67 @@ def _runtime(rec):
     return r is not None and (rec.get("ppid") == r or rec.get("pid") == r)
 
 
-def pop_least_recent(d):
-    """Drop the least recently given of `d`, an OrderedDict kept in that order,
-    that is not held for an agent runtime, looking RUNTIME_PASS deep; past
-    that, the least recently given of all."""
-    for k, v in itertools.islice(d.items(), RUNTIME_PASS):
-        if type(v) is not AgentHeld:
-            del d[k]
-            return
-    pop_oldest(d)
+class Held:
+    """Parents held for their own exit, least recently given first, as two
+    OrderedDicts: the rest, and agent runtimes' (an `AgentHeld` value), which
+    go first only past their share (`pop_least_recent`): O(1), whatever the
+    mix. The dict calls the joins make, on either. Carried as one OrderedDict,
+    the runtimes last (`carried`); `Held(items)` splits one again."""
+
+    __slots__ = ("rest", "agents")
+
+    def __init__(self, items=()):
+        self.rest = collections.OrderedDict()
+        self.agents = collections.OrderedDict()
+        for k, v in items:
+            self[k] = v
+
+    def _tier(self, key):
+        return self.agents if key in self.agents else self.rest
+
+    def __len__(self):
+        return len(self.rest) + len(self.agents)
+
+    def __contains__(self, key):
+        return key in self.rest or key in self.agents
+
+    def __iter__(self):
+        return itertools.chain(self.rest, self.agents)
+
+    def items(self):
+        return itertools.chain(self.rest.items(), self.agents.items())
+
+    def get(self, key, default=None):
+        return self._tier(key).get(key, default)
+
+    def __getitem__(self, key):
+        return self._tier(key)[key]
+
+    def __setitem__(self, key, v):
+        """Set `key`, moving it to the other map when its kind changed."""
+        tier, other = ((self.agents, self.rest) if type(v) is AgentHeld
+                       else (self.rest, self.agents))
+        other.pop(key, None)
+        tier[key] = v
+
+    def __delitem__(self, key):
+        del self._tier(key)[key]
+
+    def pop(self, key, default=None):
+        return self._tier(key).pop(key, default)
+
+    def move_to_end(self, key):
+        self._tier(key).move_to_end(key)
+
+    def pop_least_recent(self, share):
+        """Drop the least recently given of the rest, or of the runtimes' when
+        none of the rest is left or they hold more than `share`."""
+        pop_oldest(self.agents if not self.rest or len(self.agents) > share else self.rest)
+
+    def carried(self):
+        out = collections.OrderedDict(self.rest)
+        out.update(self.agents)
+        return out
 
 # A join that drops a parent at its cap says so on stderr, naming its panel and
 # the setting: the first time, then at most once in SAY_EVERY_S for that panel
@@ -233,7 +284,7 @@ class OwnIo:
         self.name = name            # the panel it serves, for what it says (`_say`)
         # (host, pid) -> what its exited children carried, for its own exit to
         # give back (_G_* entries), the one given to least recently first
-        self.reaped = collections.OrderedDict()
+        self.reaped = Held()
         self.evicted = 0            # parents dropped at either cap (`carry_trimmed`)
         self.rejected = 0           # groups a process could not have reaped: dropped
         self.clamped = 0            # processes whose figure fell short of their children's
@@ -297,7 +348,7 @@ class OwnIo:
         held = self.reaped.get(key)
         if held is None:
             if len(self.reaped) >= self.cap:
-                pop_least_recent(self.reaped)
+                self.reaped.pop_least_recent(self.cap // 2)
                 self.evicted += 1
                 self._say(1)
             held = self.reaped[key] = AgentHeld() if _runtime(rec) else []
@@ -360,8 +411,9 @@ class OwnIo:
         self.touched = set()
 
     def carry(self, c):
-        """`c`, a reducer's carry, with this join's state in it."""
-        c["reaped"] = self.reaped
+        """`c`, a reducer's carry, with this join's state in it: one OrderedDict,
+        as `hours` ages, combines and saves it."""
+        c["reaped"] = self.reaped.carried()
         c.setdefault("touched", {})["reaped"] = self.touched or ()
         return c
 
@@ -381,6 +433,8 @@ class OwnIo:
             out = [k for k, v in d.items() if type(v) is not AgentHeld][:len(back)]
             for k in out:
                 del d[k]
+            # with fewer of the rest kept than runtimes dropped, the older of
+            # those runtimes stay dropped (and counted below)
             for k, v in reversed(back[len(back) - len(out):]):
                 d[k] = v
                 d.move_to_end(k, last=False)
@@ -406,12 +460,10 @@ class OwnIo:
 
     def seed(self, c):
         """Take the join's state from `c`, a reducer's carry."""
-        x = c.get("reaped")
-        self.reaped = (x if isinstance(x, collections.OrderedDict)
-                       else collections.OrderedDict(x or ()))
+        self.reaped = Held((c.get("reaped") or {}).items())
 
     def strip(self):
-        self.reaped = collections.OrderedDict()
+        self.reaped = Held()
         self.touched = None
 
     def merge(self, o):
