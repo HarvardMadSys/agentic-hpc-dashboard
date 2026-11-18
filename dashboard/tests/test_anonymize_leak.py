@@ -14,6 +14,7 @@ nothing, even for an account no response has named yet.
 """
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -37,6 +38,7 @@ from websockets.sync.client import connect         # noqa: E402
 from rc_dashboard import app as appmod             # noqa: E402
 from rc_dashboard import ask as ask_mod            # noqa: E402
 from rc_dashboard import config as configmod       # noqa: E402
+from rc_dashboard import export                    # noqa: E402
 from rc_dashboard.anonymize import Anonymizer      # noqa: E402
 from test_ingest import DAY, line, stamp           # noqa: E402
 
@@ -511,6 +513,129 @@ class ReaderTextTest(Served):
         for body in (windows, json.dumps(job)):
             self.assertNotIn(alice, body)
 
+    # The bodies each POST route reads, with SENT where the reader's text goes.
+    # A POST route added later fails the walk below until it is listed here.
+    SENT = object()
+    BODIES = {
+        "/api/ask": [
+            {"question": SENT},
+            {"question": SENT, "history": [{"q": SENT, "a": SENT}],
+             "context": {"parts": [{"panel": "risk"}], "title": SENT, "tab": SENT,
+                         "classes": [SENT]}},
+            {"question": "q", "context": {"suggest": True, "classes": [SENT]}},
+            {"question": "q", "context": {"session": SENT, "title": SENT}},
+        ],
+        "/api/suggestions/done": [{"job": SENT, "index": 0}],
+    }
+
+    @classmethod
+    def body_with(cls, body, name):
+        if body is cls.SENT:
+            return name
+        if isinstance(body, dict):
+            return {k: cls.body_with(v, name) for k, v in body.items()}
+        if isinstance(body, list):
+            return [cls.body_with(v, name) for v in body]
+        return body
+
+    def send(self, method, path, body=None):
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method=method,
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"content-type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def answers(self, where, status, body):
+        """A question the walk asked, once the agent has answered it."""
+        if where[:2] != ("POST", "/api/ask") or status != 200:
+            return []
+        job, text = json.loads(body), body
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.05)
+            text = self.get("/api/ask/%s" % job["id"])[1]
+            job = json.loads(text)
+        return [text]
+
+    def test_no_route_answers_a_real_name_with_its_alias_or_its_rows(self):
+        """dave's name in every query, path and body parameter of every route,
+        one at a time (a POST route's query, which only its view filter reads,
+        all at once): no answer may carry his alias, or any of his rows (each
+        holds MARK). His records are older than the live roster and past the
+        first page of anything unfiltered, so only a filter or a search could
+        reach them, and only a translation of his name could produce his alias.
+        The routes are the app's own; a POST route needs its body in BODIES."""
+        dave, quote = self.alias("dave"), urllib.parse.quote
+        # A reader with his alias finds him, and the service has learned his
+        # name: a bare `dave` echoed through the rewrite would be translated.
+        got = self.rows("q=" + dave)
+        self.assertEqual(({r["user"] for r in got}, len(got)), ({dave}, 3))
+        self.assertIn("dave", self.anon.users)
+        day = time.strftime("%Y-%m-%d", time.localtime(self.now - 3 * 3600))
+        names = ("dave", "/home/dave", "h1|%s|human|usr:dave" % day)
+        sid = next(iter(json.loads(self.get("/api/trajectories")[1])["ranks"]["recent"]))
+        # a lookup and a question to name, made when their route is reached:
+        # the walk's own lookups push older ones out
+        made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"],
+                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"]}
+        fill = {"name": self.alias("alice"), "sid": sid}
+        filters = list(export.LIST_FIELDS + export.SCALARS)
+
+        def check(where, status, body):
+            if where[1] != "/":           # "frontend not built": no UI here, by design
+                self.assertLess(status, 500, where)
+            for text in [body] + self.answers(where, status, body):
+                self.assertNotIn(dave, text, where)
+                self.assertNotIn(MARK, text, where)
+
+        swept, seen = [], set()
+        for r in self.app.routes:
+            if not isinstance(r, APIRoute):
+                continue
+            declared = [p.alias for p in r.dependant.query_params]
+            required = {p.alias: fill.get(p.alias, "x") for p in r.dependant.query_params
+                        if p.field_info.is_required()}
+            path = re.sub(r"\{[^}]+\}", made.get(r.path, lambda: "nope")(), r.path)
+            for method in sorted(r.methods):
+                seen.add((method, r.path))
+                bodies = [None]
+                if method == "POST":
+                    self.assertIn(r.path, self.BODIES, "a POST route the walk does not know")
+                    bodies = self.BODIES[r.path]
+                elif method == "GET" and "{" not in r.path:
+                    swept.append((r.path, required))
+                for name in names:
+                    for slot in [p.name for p in r.dependant.path_params]:
+                        check((method, r.path, slot, name), *self.send(method, r.path.replace(
+                            "{%s}" % slot, quote(name, safe="")), self.body_with(bodies[0], "q")))
+                    if method == "GET":
+                        for key in dict.fromkeys(declared + filters):
+                            query = urllib.parse.urlencode(dict(required, **{key: name}))
+                            check((method, r.path, key, name), *self.get(path + "?" + query))
+                        continue
+                    # the others read the query for the page's view filter alone: it
+                    # goes with the first body, the window's own question, which runs
+                    # whether or not the filtered view is built yet
+                    query = urllib.parse.urlencode(dict({k: name for k in declared + filters},
+                                                        **required))
+                    check((method, r.path, "?" + query), *self.send(
+                        method, path + "?" + query, self.body_with(bodies[0], "q")))
+                    for body in bodies:
+                        check((method, r.path, body, name),
+                              *self.send(method, path, self.body_with(body, name)))
+        self.assertIn(("POST", "/api/ask"), seen)
+        self.assertGreater(len(seen), 20)
+        # and nothing the walk left behind -- a filtered view, a lookup, a
+        # question -- tells any later reader
+        for path, required in swept:
+            check(("GET", path), *self.get(path + "?" + urllib.parse.urlencode(required)))
+        with connect("ws://127.0.0.1:%d/ws" % self.port, open_timeout=20) as ws:
+            for _ in range(3):
+                check(("WS", "/ws"), 200, ws.recv(timeout=20))
 
 if __name__ == "__main__":
     unittest.main()
