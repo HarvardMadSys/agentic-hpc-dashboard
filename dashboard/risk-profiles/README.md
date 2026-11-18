@@ -52,7 +52,7 @@ It is regex text, inserted as is: `"holy|bos|c\\d{3,}"` is an alternation, not a
 
 | variable | default | used by |
 |---|---|---|
-| `compute_hosts` | `holy\|bos\|node\|gpu\|c\d{3,}` | `ssh_compute`: the host names that follow `ssh` |
+| `compute_hosts` | `holy\|bos\|node\|gpu\|c\d{3,}` | `ssh_compute`: the host an `ssh` goes to (its destination, not the remote command) |
 
 A pattern that names a variable nobody set is left out and reported.
 
@@ -75,12 +75,25 @@ An added rule:
 | `axis` | | `policy-unaware` | dangerous only: `policy-unaware` (it works, and the site asks you not to) or `environment-unaware` (it runs, and tells you nothing useful here) |
 | `gate` | | none | literals of which at least one appears in **every** line the pattern matches |
 
-**What a pattern is matched against.** A dangerous pattern sees the command name and its
-arguments, `"<command> <args>"`, case-insensitively: `git push --force` matches `(?:^|/)git\b`
-and `PIP install` matches `pip`. A secret pattern sees the arguments only, case-sensitively,
-because token formats are (`AKIA…` is a key, `akia…` is not).
+**What a rule reads.** A built-in dangerous rule reads the words of the command line, case-
+insensitively: the command is the process's own program (or the script Python runs), never a
+folder of a path, so `ls /usr/local/go/bin` is no build; a flag is a word that begins with `-`,
+and short ones may stand together or apart (`-rf`, `-r -f`), up to `--`; and what a rule asks
+of an argument it asks of that argument alone -- the host an `ssh` goes to, not its remote
+command, and the mode a `chmod` sets, not a file name with `777` in it. The table below says
+what each one asks; the Risk tab shows the same under **Rules in effect**.
 
-**Gates.** Each built-in rule carries a gate: a cheap substring test that skips the regex on
+A pattern a profile gives -- an `override` with a `pattern`, or an `add` -- is a regex over the
+command name and its arguments, `"<command> <args>"`, case-insensitively: `git push --force`
+matches `^git\b` and `PIP install` matches `pip`. A secret pattern sees the arguments only,
+case-sensitively, because token formats are (`AKIA…` is a key, `akia…` is not). A pattern reads
+the first 4,096 characters of a line at most, cut at a word, and the line is anyone's to write:
+write it so its time grows with the line, not faster. Anchor it at the command
+(`^(?:\S*/)?rm\b`) and put each further condition in a lookahead (`(?=.*\s-…)`), as
+`example.json` does; a chain such as `rm\b[^\n]*-rf[^\n]*/scratch/` is tried from every
+place it could start, and took 17 s on one crafted line of 4 KB.
+
+**Gates.** Each built-in rule carries a gate: a cheap substring test that skips the rule on
 the command lines that cannot match, which took pattern time from 2.1 s to 0.4 s on a day of
 one login node's command lines. A gate is only correct for the pattern it was written for, so it is
 dropped -- the rule runs on every line -- when a profile replaces the pattern (unless the
@@ -150,25 +163,25 @@ movement" section of their own ahead of the rest.
 
 ## The built-in rules
 
-Dangerous commands -- matched against `"<command> <args>"`, case-insensitively:
+Dangerous commands -- read by word (above), case-insensitively:
 
-| id | label | axis | severity |
-|---|---|---|---|
-| `nvidia_smi_login` | nvidia-smi (pointless without a local GPU) | environment-unaware | low |
-| `nvcc_login` | nvcc compile on a login node | environment-unaware | low |
-| `pip_install` | pip install on a login node | policy-unaware | med |
-| `conda_install` | conda/mamba install or create on login | policy-unaware | med |
-| `build_login` | compiler or make on a login node | policy-unaware | med |
-| `ssh_compute` | ssh straight into a compute node (uses `{{compute_hosts}}`) | policy-unaware | med |
-| `server_on_login` | http.server / tensorboard / streamlit on login | policy-unaware | med |
-| `bulk_download` | wget/curl bulk download on login | policy-unaware | med |
-| `hf_download` | huggingface download on login | policy-unaware | med |
-| `headless_browser` | headless browser swarm | policy-unaware | low |
-| `git_force_push` | git push --force | policy-unaware | low |
-| `rm_rf_shared` | rm -rf against a shared path (any `rm -rf`, whatever the path) | policy-unaware | HIGH |
-| `chmod_777` | chmod 777 | policy-unaware | med |
+| id | label | matches | axis | severity |
+|---|---|---|---|---|
+| `nvidia_smi_login` | nvidia-smi (pointless without a local GPU) | the command `nvidia-smi` | environment-unaware | low |
+| `nvcc_login` | nvcc compile on a login node | the command `nvcc` | environment-unaware | low |
+| `pip_install` | pip install on a login node | the command `pip` (`pip3`, `pip3.11`) with the word `install` | policy-unaware | med |
+| `conda_install` | conda/mamba install or create on login | the command `conda`, `mamba` or `micromamba` with the word `install` or `create` | policy-unaware | med |
+| `build_login` | compiler or make on a login node | the command `make`, `cmake`, `ninja`, `gcc`, `g++`, `clang`, `clang++`, `nvcc`, `cargo` or `go`, or one of them with a version (`gcc-12`) | policy-unaware | med |
+| `ssh_compute` | ssh straight into a compute node | the command `ssh`, the host it goes to matching `{{compute_hosts}}` | policy-unaware | med |
+| `server_on_login` | http.server / tensorboard / streamlit on login | `-m http.server`; the command `tensorboard` or `streamlit`; `jupyter lab`, `jupyter notebook` | policy-unaware | med |
+| `bulk_download` | wget/curl bulk download on login | the command `wget` or `curl` with `-o` or `-O` (alone, or among short flags: `-sSLO`) or `--output…` | policy-unaware | med |
+| `hf_download` | huggingface download on login | the command `huggingface-cli` or `hf` with the word `download` | policy-unaware | med |
+| `headless_browser` | headless browser swarm | `chromium`, `chrome` or `msedge` before `--headless` on a line; `playwright` or `puppeteer` as the command or a folder of a path | policy-unaware | low |
+| `git_force_push` | git push --force | the command `git`, subcommand `push`, with `--force` or `-f` (alone or among short flags); not `--force-with-lease` | policy-unaware | low |
+| `rm_rf_shared` | rm -rf against a shared path | the command `rm` with both `-r` (`-R`, `--recursive`) and `-f` (`--force`), together or apart: any `rm -rf`, whatever the path | policy-unaware | HIGH |
+| `chmod_777` | chmod 777 | the command `chmod` with the mode `777` | policy-unaware | med |
 
-Credentials -- matched against the arguments, case-sensitively:
+Credentials -- matched against the arguments (their first 4,096 characters), case-sensitively:
 
 | id | label | severity |
 |---|---|---|
@@ -186,8 +199,8 @@ Credentials -- matched against the arguments, case-sensitively:
 | `curl_userpass` | curl -u user:password | med |
 | `private_key_inline` | inline private key material | HIGH |
 
-The patterns themselves are in `rc_dashboard/reducers/risk.py` (`DANGEROUS`, `SECRETS`), with
-why each is shaped the way it is, and on the Risk tab under **Rules in effect** as resolved for
+The rules themselves are in `rc_dashboard/reducers/risk.py` (`DANGEROUS` and `_WORD_RULES`,
+`SECRETS`), with why each is shaped the way it is, and on the Risk tab under **Rules in effect** as resolved for
 this cluster. `tests/test_risk_rules.py` checks that every profile in this directory loads with
 no rejected rule and that this table names every built-in.
 
