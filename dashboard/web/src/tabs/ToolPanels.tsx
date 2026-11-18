@@ -20,6 +20,7 @@ import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { coveredBy, openIoCmds } from '../lib/iocmds';
 import type { IoQuery } from '../lib/iocmds';
+import { noShare, shareOf, wholeOf } from '../lib/shares';
 import { IoNum } from '../components/IoCmds';
 
 /* What each kind of tool looks like, so a bucket name is never a riddle. */
@@ -141,17 +142,33 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
   const [metric, setMetric] = useState<Metric>('calls');
   const s = useSort<string>();
   const get = (c: string, b: string) => byClass[c]?.rows?.find((r) => r.b === b);
-  const total = (b: string) => have.reduce((a, c) => a + (rowVal(get(c, b), metric) ?? 0), 0);
+  // a class with no row for a kind of tool ran none of it: 0; one whose row
+  // holds no value for the metric was not measured
+  const val = (c: string, b: string) => {
+    const r = get(c, b);
+    return r ? rowVal(r, metric) : 0;
+  };
+  // A row is out of every class the panel counted, `unlabeled` too, not the
+  // ones the chips show: turning the IDE off must not hand its share to the
+  // others (lib/shares.ts). The total is that whole.
+  const whole = (b: string) => wholeOf(Object.keys(byClass), (c) => val(c, b));
+  const total = (b: string) => whole(b).tot;
+  const share = (c: string, b: string) => shareOf(val(c, b), whole(b));
+  // the shown classes' own, which decides whether a kind of tool is listed
+  const shownSum = (b: string) => have.reduce((a, c) => a + (val(c, b) ?? 0), 0);
+  // the commands behind a row's total are the shown classes': only when they
+  // are every class counted is that the total
+  const allShown = Object.keys(byClass).every((c) => have.includes(c));
   // the taxonomy's order, the same in both readings and for every metric, until
   // a header is clicked (roadmap note 27): by name, by the total, or by a
   // class's share -- of the row, or of the class's work
   const rows = s.sort(
-    buckets.filter((b) => total(b) > 0),
+    buckets.filter((b) => shownSum(b) > 0),
     (b, k) => {
       if (k === 'kind') return b;
       if (k === 'total') return total(b);
       const c = k.slice(4);
-      if (k.startsWith('who:')) return total(b) ? (100 * (rowVal(get(c, b), metric) ?? 0)) / total(b) : null;
+      if (k.startsWith('who:')) return share(c, b);
       return rowPct(get(c, b), metric);
     },
   );
@@ -191,14 +208,15 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
             <tbody>
               {rows.map((b) => {
                 const tot = total(b);
+                const why = noShare(whole(b));
                 return (
                   <tr key={b}>
                     <td><Term tip={BUCKET_TIP[b]}>{b}</Term></td>
-                    <td className="whocell">
+                    <td className="whocell" data-tip={why ?? undefined}>
                       <span className="whobar">
                         {have.map((c) => {
-                          const v = rowVal(get(c, b), metric) ?? 0;
-                          const p = tot ? (100 * v) / tot : 0;
+                          const v = val(c, b) ?? 0;
+                          const p = share(c, b) ?? 0;
                           return p > 0 ? (
                             <i key={c} style={{ width: `${p}%`, background: CLS_COL[c] }}
                               data-tip={`${scope.lbl(c)}: ${pc(p)} (${fmtVal(v, metric)})`} />
@@ -207,19 +225,20 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
                       </span>
                       <span className="whopct">
                         {have.map((c) => {
-                          const v = rowVal(get(c, b), metric) ?? 0;
+                          const v = val(c, b) ?? 0;
+                          const p = share(c, b);
                           const io = ioSort(metric);
                           // an empty slot keeps each class's share in its own column, row to row
                           return v > 0 ? (
                             <span key={c}><i style={{ background: CLS_COL[c] }} />{io ? (
                               <IoNum q={{ title: `${METRICS.find((m) => m.k === metric)!.lbl} · ${b} · ${scope.lbl(c)}`,
-                                sort: io, bucket: [b], ...scope.ioq(c), ...coveredBy(tm) }}>{pc((100 * v) / tot)}</IoNum>
-                            ) : pc((100 * v) / tot)}</span>
+                                sort: io, bucket: [b], ...scope.ioq(c), ...coveredBy(tm) }}>{pc(p)}</IoNum>
+                            ) : pc(p)}</span>
                           ) : <span key={c} />;
                         })}
                       </span>
                     </td>
-                    <td className="num">{ioSort(metric) && !scope.note && have.every((c) => !scope.ioq(c).agent_type) ? (
+                    <td className="num">{ioSort(metric) && !scope.note && allShown && have.every((c) => !scope.ioq(c).agent_type) ? (
                       <IoNum q={{ title: `${METRICS.find((m) => m.k === metric)!.lbl} · ${b}`, sort: ioSort(metric)!,
                         bucket: [b], class: have, ...coveredBy(tm) }}>{fmtVal(tot, metric)}</IoNum>
                     ) : fmtVal(tot, metric)}</td>

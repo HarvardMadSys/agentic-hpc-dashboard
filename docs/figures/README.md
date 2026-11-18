@@ -440,7 +440,8 @@ charts that name the window.
 #### LV-4 agent processes exited
 
 - **Shows:** the agent processes that exited in the window, the other classes beside them, the
-  agent share of every process, and the agent types on hover.
+  agent share of every process -- out of every class counted, `unlabeled` too, whatever the class
+  chips show (`lib/shares.ts`) -- and the agent types on hover.
 - **Records:** `exit`: `_a3`, `agent_type`, `_eff`, `_command`, `_sid`, `pid`, `ppid`,
   `_shell_resolved`, `cpu_s`.
 - **Computation:** `ToolMixReducer.feed` counts an exit under its class, and an agent's also under
@@ -505,7 +506,10 @@ charts that name the window.
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
   `resources.by_class[c].top`), `trajectories.summary[c].sessions`, and `slurm.by_class[c]` `jobs`,
-  `gpus`, `gpu_h`; a cell is the class's share of its row over the classes shown. The processes and
+  `gpus`, `gpu_h`; a cell is the class's share of its row over every class that row's panel counted,
+  `unlabeled` too, not the classes shown, so a share does not move with the class chips; a class
+  counted with no reading of the row (null, as the network bytes of a class none of whose processes
+  carried them) leaves the row no share, a dash, and says why (`lib/shares.ts`). The processes and
   CPU rows are the tool mix's, after the shell-wrapper dedup. A byte cell opens IOCMDS for its
   class.
 - **Cost:** its reducers'.
@@ -924,7 +928,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 - **Computation:** `ToolMixReducer.feed` counts per (class, kind) and per (class, tool), and an
   agent's also per (agent type, ...), after the shell-wrapper dedup; `_rows` gives each kind's
   counts, sums and shares per class; a page filter to one agent type uses that type's own counters
-  (`by_agent_type`). The page computes a class's share of a row.
+  (`by_agent_type`). The page computes a class's share of a row, out of every class counted, not
+  the classes shown (`lib/shares.ts`); the total beside it is that whole.
 - **Cost:** as LV-4. A byte cell opens IOCMDS by kind and class, read from the JSONL unless the
   page is filtered by user.
 

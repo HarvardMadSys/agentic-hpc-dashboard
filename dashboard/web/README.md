@@ -91,6 +91,7 @@ npm run build        # tsc -b && vite build  ->  dist/
 npm run typecheck    # tsc -b, no emit
 npm run check:charts # node --test: the chart tick and width rules in src/charts/scale.ts
 npm run check:css    # node --test: every stylesheet closes its blocks, no rule nested in a rule
+npm run check:shares # node --test: a class's share is out of every class counted, whatever the chips show
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 

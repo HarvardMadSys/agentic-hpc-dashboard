@@ -16,7 +16,8 @@
     "check:phases": "node --test mock/check_phases.mjs",
     "check:charts": "node --test mock/check_charts.mjs",
     "check:figures": "node --test mock/check_figures.mjs",
-    "check:css": "node --test mock/check_css.mjs"
+    "check:css": "node --test mock/check_css.mjs",
+    "check:shares": "node --test mock/check_shares.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

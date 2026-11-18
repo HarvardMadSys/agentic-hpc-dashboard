@@ -28,6 +28,7 @@ import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/typ
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
+import { shareOf, wholeOf } from '../lib/shares';
 
 
 /** Who ran it, at a glance: one chip per agent type (a human's untagged
@@ -376,8 +377,12 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
   const secSort = (sc: RiskSection) =>
     sortOf(sc.id, sc.kind === 'login_compute' ? 'tool' : sc.kind === 'credentials' ? 'pattern' : 'command', 'asc');
 
-  const totRd = have.reduce((a, c) => a + (byClass[c]?.rd_mb ?? 0), 0);
-  const totWr = have.reduce((a, c) => a + (byClass[c]?.wr_mb ?? 0), 0);
+  // the agent's share of all disk reads and writes: out of every class the
+  // panel counted, whatever the chips show (lib/shares.ts)
+  const rdPct = cls.includes('agent')
+    ? shareOf(byClass.agent?.rd_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.rd_mb)) : null;
+  const wrPct = cls.includes('agent')
+    ? shareOf(byClass.agent?.wr_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.wr_mb)) : null;
 
   /* Disk bytes against requested bytes over time, one axis per direction,
    * MB/min. Solid is what reached the disk, dashed is what programs requested
@@ -506,14 +511,14 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
           total={cls.includes('agent') ? byClass.agent?.rd_mb ?? null : null}
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rd_mb ?? null]))}
           fmtFn={(n) => mb(n)}
-          note={totRd ? `${pc((100 * (byClass.agent?.rd_mb ?? 0)) / totRd)} of all disk reads` : undefined}
+          note={rdPct != null ? `${pc(rdPct)} of all disk reads` : undefined}
         />
         <Plate
           k="agent disk written"
           total={cls.includes('agent') ? byClass.agent?.wr_mb ?? null : null}
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.wr_mb ?? null]))}
           fmtFn={(n) => mb(n)}
-          note={totWr ? `${pc((100 * (byClass.agent?.wr_mb ?? 0)) / totWr)} of all disk writes` : undefined}
+          note={wrPct != null ? `${pc(wrPct)} of all disk writes` : undefined}
         />
         <Plate
           k="agent network sent"
