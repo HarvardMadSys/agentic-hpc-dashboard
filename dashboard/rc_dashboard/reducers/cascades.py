@@ -259,7 +259,8 @@ class CascadeReducer:
                 break
             seen.add(p)
             if (host, p) in live:
-                if users_conflict(n["user"], live[(host, p)]["user"]):
+                if users_conflict(n["user"], live[(host, p)]["user"]) \
+                        or not _running_when_started(live[(host, p)], n):
                     break               # a reused pid, not this process's parent
                 return p, "ancestor", path
             e = self.procs.get(host, p) if self.procs is not None else None
@@ -734,6 +735,23 @@ def _launch(n, approval, detail, version, surface=None, surface_detail=None):
         n["version"] = version
     if surface is not None and n["surface"] in (None, "unknown"):
         n["surface"], n["surface_detail"] = surface, surface_detail
+
+
+# Two readings of one process's start differ by up to the clock's granularity.
+START_SLACK_S = 1.0
+
+
+def _running_when_started(c, n):
+    """Whether node `c` was running when node `n` started, so could have
+    started it: `c` had started by then, and had not exited. A pid is reused,
+    and an agent that exited hours before is no parent of the process that
+    later holds its pid's child. Either end unknown is no evidence against."""
+    st = n["start"]
+    t = st if st is not None else n["first"]      # it started by its first record
+    if c["start"] is not None and t is not None and t < c["start"] - START_SLACK_S:
+        return False
+    return not (st is not None and c["exited"] and c["last"] is not None
+                and st > c["last"] + START_SLACK_S)
 
 
 def _home(n, acc):
