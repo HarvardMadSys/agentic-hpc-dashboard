@@ -203,7 +203,8 @@ class TestInstall(Rig):
 
     def test_a_venv_of_another_python_is_made_again(self):
         """DASH_PYTHON moved to a newer Python: a deploy that is not the first one makes
-        the venv again with it, and keeps the old one beside it."""
+        the venv again with it, keeps the old one beside it, and restarts the session,
+        whose dashboard would otherwise start its worker processes from the new venv."""
         venv_py = os.path.join(self.r, "venv", "bin", "python")
         self.python_stub(venv_py, "3.12")
         new = os.path.join(self.bin, "python3.14")
@@ -213,6 +214,7 @@ class TestInstall(Rig):
         self.assertIn("the venv is Python 3.12, DASH_PYTHON is 3.14: making it again", out)
         self.assertIn("python3.14 -m venv %s/venv" % self.r, self.calls())
         self.assertTrue(os.path.exists(os.path.join(self.r, "venv.old", "bin", "python")))
+        self.assertIn("systemctl --user restart rc-tmux.service", self.calls())
 
     def test_a_venv_of_the_same_python_is_kept(self):
         venv_py = os.path.join(self.r, "venv", "bin", "python")
@@ -222,6 +224,18 @@ class TestInstall(Rig):
         self.payload()
         self.install(py=same)
         self.assertNotIn("-m venv", self.calls())
+        self.assertFalse(os.path.exists(os.path.join(self.r, "venv.old")))
+        self.assertNotIn("restart", self.calls())
+
+    def test_a_venv_whose_python_does_not_answer_is_kept(self):
+        """Its version unknown, the venv is not taken for another Python's: no venv is
+        made, and nothing restarts."""
+        new = os.path.join(self.bin, "python3.14")
+        self.python_stub(new, "3.14")
+        self.payload()
+        self.install(py=new)
+        self.assertNotIn("-m venv", self.calls())
+        self.assertNotIn("restart", self.calls())
         self.assertFalse(os.path.exists(os.path.join(self.r, "venv.old")))
 
     def test_no_restart_without_the_flag(self):

@@ -275,6 +275,10 @@ class SandboxReducer:
     def carry(self):
         return {"below": self.below, "units": self.units, "n_units": self.n_units}
 
+    def carry_caps(self):
+        """What one pass holds the carried map to (`hours.combine_carries`)."""
+        return {"below": self.BELOW_CAP}
+
     @staticmethod
     def carry_done(c):
         """Keep only the units the (aged) `below` still names."""

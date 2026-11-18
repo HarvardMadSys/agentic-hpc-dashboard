@@ -43,19 +43,25 @@ fi
 
 # A venv made by another Python than DASH_PYTHON -- site.env moved to a newer one -- is
 # made again: its packages are built for its own version. The old one is kept beside it
-# (venv.old) until the next such move; the running dashboard keeps its interpreter until
-# the session restarts.
+# (venv.old) until the next such move, and the session restarts: the running dashboard's
+# packages are no longer where it found them, and a worker process it starts
+# (ingest.workers) would start from the new venv, not its own.
 want=$("$py" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)
 have=$("$R/venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)
-if [ "$first" = 1 ] || [ ! -x "$R/venv/bin/python" ] || { [ -n "$want" ] && [ "$want" != "$have" ]; }; then
+# Made again only when both versions are known and differ: a venv whose Python does not
+# answer is left as it was before this check existed.
+other=0
+if [ -n "$want" ] && [ -n "$have" ] && [ "$want" != "$have" ]; then other=1; fi
+if [ "$first" = 1 ] || [ ! -x "$R/venv/bin/python" ] || [ "$other" = 1 ]; then
   if ! "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
     echo "install-remote.sh: $py is not Python 3.11 or later; set DASH_PYTHON in site.env" >&2
     exit 1
   fi
-  if [ -x "$R/venv/bin/python" ] && [ -n "$want" ] && [ "$want" != "$have" ]; then
-    echo "the venv is Python ${have:-unknown}, DASH_PYTHON is $want: making it again"
+  if [ -x "$R/venv/bin/python" ] && [ "$other" = 1 ]; then
+    echo "the venv is Python $have, DASH_PYTHON is $want: making it again, and restarting"
     rm -rf "$R/venv.old"
     mv -T "$R/venv" "$R/venv.old"
+    restart=1
   fi
   "$py" -m venv "$R/venv"
   "$R/venv/bin/python" -m pip install --quiet --upgrade pip

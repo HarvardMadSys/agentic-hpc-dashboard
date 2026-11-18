@@ -7,6 +7,7 @@ thread (`WindowRegistry._build`), as in test_window_cache.
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import collections
 import gc
 import json
 import os
@@ -820,9 +821,84 @@ class NodeSplitTest(HourCase):
         saved = reg.hours._load_chain(hour)
         self.assertEqual(sorted(saved[1][hours.NODES]), ["h1", "h2"])
         # and a window installs them as one: its tail and live feed are one pass
+        node = carry[hours.NODES]
+        before = pickle.dumps(reg.hours.chain, protocol=pickle.HIGHEST_PROTOCOL)
         acc = reg.hours.fresh()
         self.assertTrue(reg.hours.install_carry(acc, hour))
-        self.assertNotIn(hours.NODES, reg.hours.chain[1][hours.NODES])
+        # the chain is the next hour's start: installing reads a copy of it
+        self.assertEqual(pickle.dumps(reg.hours.chain, protocol=pickle.HIGHEST_PROTOCOL), before)
+
+        def union(red, field):
+            return set(node["h1"][red][field]) | set(node["h2"][red][field])
+
+        traj = acc["trajectories"]
+        for field, held in (("reaped", traj.reaped), ("phase_calls", traj.calls_at),
+                            ("phase_exited", traj.exited)):
+            with self.subTest(field=field):
+                self.assertTrue(node["h1"]["trajectories"][field])
+                self.assertTrue(node["h2"]["trajectories"][field])
+                self.assertEqual(set(held), union("trajectories", field))
+                # each node's keys in its own order: the order its cap evicts in
+                for nd in ("h1", "h2"):
+                    mine = node[nd]["trajectories"][field]
+                    self.assertEqual([k for k in held if k in mine], list(mine))
+        self.assertEqual(set(acc["tool_mix"].child_tok), union("tool_mix", "child_tok"))
+        self.assertEqual(set(acc["_procs"].wanted), union("_procs", "wanted"))
+        sb = acc["sandbox"]
+        self.assertEqual(set(sb.below), union("sandbox", "below"))
+        self.assertEqual(sb.n_units, max(node[nd]["sandbox"]["n_units"] for nd in node))
+        self.assertGreater(len(node["h1"]["sandbox"]["units"]), 0)
+        self.assertEqual(set(sb.units), union("sandbox", "units"))
+
+    def test_an_installed_map_is_held_to_one_pass_cap(self):
+        # Two nodes' maps at their own caps would be twice one pass's: installed, the
+        # oldest of the two are dropped, each node keeping its newest keys.
+        reg, _view = self.built(2)
+        hour, carry, _ages = reg.hours.chain
+        node = carry[hours.NODES]
+        n1, n2 = (len(node[nd]["trajectories"]["reaped"]) for nd in ("h1", "h2"))
+        cap = (n1 + n2) // 2
+        acc = reg.hours.fresh()
+        caps = acc["trajectories"].carry_caps()
+        acc["trajectories"].carry_caps = lambda: dict(caps, reaped=cap)
+        self.assertTrue(reg.hours.install_carry(acc, hour))
+        held = acc["trajectories"].reaped
+        self.assertEqual(len(held), cap)
+        for nd in ("h1", "h2"):
+            own = node[nd]["trajectories"]["reaped"]
+            mine = [k for k in held if k in own]
+            self.assertEqual(mine, list(own)[len(own) - len(mine):])
+
+    def test_a_deploy_since_the_start_reduces_here_alike(self):
+        # The code a worker would start from is not this process's: no pool, and the
+        # nodes are reduced here, into the same hours.
+        _reg, want = self.built(2)
+        reg = self.registry(self.node_cfg(2, "deployed"))
+        self.addCleanup(reg.stop)
+        reg.hours._identity = "0" * 16
+        got = self.build(reg)
+        st = reg.hours.stats
+        self.assertEqual(st["node_workers"], 0)
+        self.assertGreater(st["node_in_process"], 0)
+        self.assertIn("until the service restarts", st["node_note"])
+        self.same(want, got)
+
+    def test_a_worker_started_after_a_deploy_reduces_nothing(self):
+        # The service's own check passes, but each worker finds it runs other code
+        # than the service: every task comes back undone, and is reduced here.
+        _reg, want = self.built(2)
+        with mock.patch.object(hours, "spawn_identity", return_value="feedfacefeedface"):
+            reg = self.registry(self.node_cfg(2, "late"))
+            self.addCleanup(reg.stop)
+            got = self.build(reg)
+        st = reg.hours.stats
+        self.assertEqual(st["node_workers"], 2)             # a pool was made...
+        self.assertGreater(st["node_in_process"], 0)        # ...and reduced nothing
+        self.assertEqual(st["node_tasks"], st["node_in_process"])
+        self.assertIn("a worker started now runs other code", st["node_note"])
+        self.assertIsNone(reg.hours._pool)
+        self.assertIsNone(reg.hours._node_pool(2))          # and none is made again
+        self.same(want, got)
 
     def test_a_window_merged_from_node_hours_counts_what_one_pass_counts(self):
         # The counts, sums, sets and sketches a merge adds are the same whatever
@@ -877,4 +953,44 @@ class CombineCarriesTest(unittest.TestCase):
         self.assertEqual(got["sandbox"]["n_units"], 7)
         self.assertEqual(got["trajectories"]["phase_exited_horizon"], 10.0)
         self.assertEqual(len(got["trajectories"]["reaped"]), 2)
+
+    def test_maps_interleave_by_the_hour_each_key_was_last_touched(self):
+        od = collections.OrderedDict
+        a = {"trajectories": {"reaped": od([(("h1", 1), 1), (("h1", 2), 2)])}}
+        b = {"trajectories": {"reaped": od([(("h2", 1), 1), (("h2", 2), 2)])}}
+        ages = {"h1": {"trajectories.reaped": {("h1", 1): 10, ("h1", 2): 12}},
+                "h2": {"trajectories.reaped": {("h2", 1): 11, ("h2", 2): 12}}}
+        got = hours.combine_carries({"h1": a, "h2": b}, ages)["trajectories"]["reaped"]
+        self.assertIsInstance(got, od)
+        self.assertEqual(list(got), [("h1", 1), ("h2", 1), ("h1", 2), ("h2", 2)])
+
+    def test_a_capped_map_drops_its_oldest_and_its_reducer_is_told(self):
+        from rc_dashboard.reducers.trajectories import TrajectoryReducer
+
+        class Red:
+            carry_trimmed = staticmethod(TrajectoryReducer.carry_trimmed)
+
+            @staticmethod
+            def carry_caps():
+                return {"phase_exited": 2}
+
+        od = collections.OrderedDict
+        a = {"trajectories": {"phase_exited": od([(("h1", 1), (0.0, 5.0, "lost", None)),
+                                                  (("h1", 2), (0.0, 9.0, "lost", None))]),
+                              "phase_exited_horizon": 1.0}}
+        b = {"trajectories": {"phase_exited": od([(("h2", 1), (0.0, 7.0, "lost", None))]),
+                              "phase_exited_horizon": 2.0}}
+        got = hours.combine_carries({"h1": a, "h2": b}, None,
+                                    {"trajectories": Red()})["trajectories"]
+        self.assertEqual(len(got["phase_exited"]), 2)
+        # no ages: each node's keys spread over the same span, h1's first the oldest
+        self.assertEqual(list(got["phase_exited"]), [("h2", 1), ("h1", 2)])
+        # and the latest end among those dropped is the horizon, as `_went` keeps it
+        self.assertEqual(got["phase_exited_horizon"], 5.0)
+
+    def test_a_field_with_no_rule_is_refused(self):
+        a = {"tools": {"odd": [1]}}
+        b = {"tools": {"odd": [2]}}
+        with self.assertRaises(TypeError):
+            hours.combine_carries({"h1": a, "h2": b})
 

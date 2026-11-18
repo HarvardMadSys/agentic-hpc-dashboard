@@ -75,6 +75,10 @@ the split is in the fingerprint, and switching to it or back reduces the
 hours afresh; the worker count itself is not (any count >= 2 makes the same
 states). Nodes proceed independently: a quiet node runs ahead of a busy one by
 at most `NODE_LOOKAHEAD_H` hours, so the hours waiting to be merged stay few.
+A worker runs the code and the Python this process does, or none does: a
+deploy that is not followed by a restart changes what a process spawned
+after it would import (`spawn_identity`), and from then on the nodes are
+reduced in this process until it restarts.
 
 A merge runs with the automatic garbage collector paused (`collector_paused`),
 so the states it loads do not set off a full collection each.
@@ -164,6 +168,38 @@ def code_digest():
         except OSError:
             h.update(b"(missing)")
     return h.hexdigest()
+
+
+def spawn_identity():
+    """What a process this one spawns now would run: the Python it is (`sys.version`, and
+    the file `sys.executable` resolves to), every module of this package as it is on disk,
+    and the third-party packages on the path. A spawned process starts from
+    `sys.executable` and the parent's `sys.path` as they are at that moment, so a deploy
+    after this process started -- a venv made again for another Python, `current` moved
+    to another release, a package upgraded -- changes it. The node workers check theirs
+    against the service's (`_node_init`)."""
+    h = hashlib.sha256(("%s\n" % sys.version).encode())
+    exe = os.path.realpath(sys.executable or "")
+    try:
+        st = os.stat(exe)
+        h.update(("%s %d %d %d\n" % (exe, st.st_ino, st.st_size, st.st_mtime_ns)).encode())
+    except OSError:
+        h.update(("%s (missing)\n" % exe).encode())
+    for p in sorted(glob.glob(os.path.join(PKG, "**", "*.py"), recursive=True)):
+        h.update(os.path.relpath(p, PKG).encode() + b"\0")
+        try:
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            h.update(b"(missing)")
+    for d in sys.path:
+        if os.path.basename(d) in ("site-packages", "dist-packages"):
+            try:
+                names = sorted(n for n in os.listdir(d) if n.endswith(".dist-info"))
+            except OSError:
+                names = ["(missing)"]
+            h.update(("%s %s\n" % (d, " ".join(names))).encode())
+    return h.hexdigest()[:16]
 
 
 def fingerprint(code, cfg, roots):
@@ -335,31 +371,82 @@ def age(red_cls, carry, ages, hour, keep_h=None):
 
 
 # ------------------------------------------------------------ the node split
-def combine_carries(by_node):
-    """One join state from a node-split chain's per-node ones, for a window
-    to install (`install_carry`). Every carried key is one node's -- `(host,
-    pid)`, a session's id, a root -- so each reducer's carried maps are unioned
-    in node order, and a carried number (a count of units, a horizon) is the
-    largest. `by_node` is consumed."""
+def _number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _by_age(d, age):
+    """`(hour, share, key, value)` for map `d`'s items in its own order: the hour
+    each key was last touched in (`age`, made non-decreasing along the map, which
+    is its eviction order), and its share of that hour's run of keys before it."""
+    hrs, top = [], None
+    for key in d:
+        h = age.get(key, -1)
+        top = h if top is None or h > top else top
+        hrs.append(top)
+    out, items, j = [], list(d.items()), 0
+    while j < len(hrs):
+        e = j
+        while e < len(hrs) and hrs[e] == hrs[j]:
+            e += 1
+        for m in range(j, e):
+            out.append((hrs[m], (m - j) / (e - j), items[m][0], items[m][1]))
+        j = e
+    return out
+
+
+def combine_carries(by_node, ages=None, red=None):
+    """One join state from a node-split chain's per-node ones, for a window to
+    install (`install_carry`): its tail and live feed are one pass over every
+    node. Every carried key is one node's -- `(host, pid)`, a session's id, a
+    root -- so the nodes' maps are put together, and a carried number (a count
+    of units, a horizon) is the largest. A field of any other type in two nodes'
+    carries is refused, not dropped.
+
+    A carried map is in the order its reducer evicts from, oldest first, and
+    some are capped (the reducer's `carry_caps`): one pass over every node holds
+    at most the cap. So the nodes' maps are interleaved by age -- each node's
+    own order kept, the hour each key was last touched in (`ages`, as `age`
+    keeps them, per node) placing it among the other nodes' keys, and within an
+    hour its share of that hour's keys before it -- and the oldest past the cap
+    are dropped, handed to the reducer's `carry_trimmed` (`red`: the window's
+    reducer set). `by_node` is consumed."""
+    nodes = sorted(by_node)
+    keys = list(dict.fromkeys(k for nd in nodes for k in (by_node[nd] or {})))
     out = {}
-    for node in sorted(by_node):
-        for k, c in (by_node[node] or {}).items():
-            if c is None:
-                continue
-            cur = out.get(k)
-            if cur is None:
-                out[k] = c
-                continue
-            for f, v in c.items():
-                have = cur.get(f)
-                if isinstance(have, dict) and isinstance(v, dict):
-                    for key, val in v.items():
-                        have.setdefault(key, val)
-                elif (isinstance(v, (int, float)) and not isinstance(v, bool)
-                      and isinstance(have, (int, float)) and not isinstance(have, bool)):
-                    cur[f] = max(have, v)
-                elif have is None:
-                    cur[f] = v
+    for k in keys:
+        parts = [(nd, by_node[nd][k]) for nd in nodes if (by_node[nd] or {}).get(k) is not None]
+        r = (red or {}).get(k)
+        caps = r.carry_caps() if callable(getattr(r, "carry_caps", None)) else {}
+        c, dropped = {}, {}
+        for f in dict.fromkeys(f for _nd, p in parts for f in p):
+            vals = [(nd, p[f]) for nd, p in parts if p.get(f) is not None]
+            if not vals:
+                c[f] = None
+            elif len(vals) == 1 and f not in caps:
+                c[f] = vals[0][1]
+            elif all(isinstance(v, dict) for _nd, v in vals):
+                runs = [_by_age(v, ((ages or {}).get(nd) or {}).get("%s.%s" % (k, f)) or {})
+                        for nd, v in vals]
+                kind = (collections.OrderedDict
+                        if any(isinstance(v, collections.OrderedDict) for _nd, v in vals) else dict)
+                seen, items = set(), []
+                for _h, _s, key, val in heapq.merge(*runs, key=itemgetter(0, 1)):
+                    if key not in seen:
+                        seen.add(key)
+                        items.append((key, val))
+                cut = max(0, len(items) - caps[f]) if caps.get(f) is not None else 0
+                if cut:
+                    dropped[f] = items[:cut]
+                c[f] = kind(items[cut:])
+            elif all(_number(v) for _nd, v in vals):
+                c[f] = max(v for _nd, v in vals)
+            else:
+                raise TypeError("carry %s.%s: no rule to combine %s across nodes" % (
+                    k, f, ", ".join(sorted({type(v).__name__ for _nd, v in vals}))))
+        if dropped and callable(getattr(r, "carry_trimmed", None)):
+            r.carry_trimmed(c, dropped)
+        out[k] = c
     return out
 
 
@@ -444,12 +531,22 @@ class NodeContext:
 
 
 _NODE_CTX = None
+_NODE_DRIFT = None
 
 
-def _node_init(fresh, cfg, events, as_of):
-    """A worker process's start: the clock pinned as the service's is (a
-    reducer reads `time.time()`; clock.install), then its context."""
-    global _NODE_CTX
+def _node_init(fresh, cfg, events, as_of, expect=None):
+    """A worker process's start: first, whether it runs what the service does
+    (`spawn_identity`, `expect` the service's): one that does not reduces
+    nothing, and says so to every task (`_node_task`). Then the clock, pinned
+    as the service's is (a reducer reads `time.time()`; clock.install), and
+    its context."""
+    global _NODE_CTX, _NODE_DRIFT
+    if expect is not None:
+        mine = spawn_identity()
+        if mine != expect:
+            _NODE_DRIFT = ("a worker started now runs other code or another Python than the "
+                           "service (%s, not %s): a deploy since it started" % (mine, expect))
+            return
     if as_of is not None:
         ns = int(as_of * 1e9)
         time.time = lambda: as_of
@@ -458,6 +555,8 @@ def _node_init(fresh, cfg, events, as_of):
 
 
 def _node_task(task):
+    if _NODE_DRIFT is not None:
+        return {"drift": _NODE_DRIFT}
     return reduce_node_hour(_NODE_CTX, task)
 
 
@@ -680,6 +779,9 @@ class HourStore:
         self._pool = None               # the worker processes, made on first use
         self._pool_size = 0
         self._ctx = None                # this process's NodeContext, when it reduces a node
+        # what a worker must run (`spawn_identity`), and why none can since a deploy
+        self._identity = spawn_identity() if self.split else None
+        self._drift = None
         # and each node's hour in this many processes, by reducer group (1 or 2)
         self.n_groups = reducer_group_count(cfg) if self.split else 1
         self._groups = None
@@ -1040,12 +1142,20 @@ class HourStore:
     # ------------------------------------------------------------ by node
     def _node_pool(self, want):
         """The worker processes, `want` of them at most, made on first use and
-        kept; None when they cannot be (the reducer factory does not pickle, or
-        processes cannot start), and the nodes are reduced in this process."""
+        kept; None when they cannot be (the reducer factory does not pickle,
+        processes cannot start, or a deploy since this process started means
+        they would not run its code: `spawn_identity`), and the nodes are
+        reduced in this process."""
+        if self._drift is not None:
+            return None
         n = max(1, min(self.workers, want))
         if self._pool is not None and self._pool_size >= n:
             return self._pool
         self.close()
+        if spawn_identity() != self._identity:
+            self._drifted("the code or the Python a worker would start from changed since "
+                          "the service started: a deploy")
+            return None
         try:
             pickle.dumps((self.fresh, self.cfg, self.events), protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as e:
@@ -1054,9 +1164,12 @@ class HourStore:
         from . import clock
         as_of = clock._state.get("as_of") if clock._state.get("pinned") else None
         try:
+            # Spawned on demand, so a worker may start well after this: each checks
+            # it runs what this process does (`_node_init`).
             self._pool = concurrent.futures.ProcessPoolExecutor(
                 max_workers=n, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_node_init, initargs=(self.fresh, self.cfg, self.events, as_of))
+                initializer=_node_init,
+                initargs=(self.fresh, self.cfg, self.events, as_of, self._identity))
         except (OSError, ValueError, ImportError) as e:
             self.stats["node_note"] = "reducing in this process: %s" % e
             return None
@@ -1069,6 +1182,13 @@ class HourStore:
         pool, self._pool, self._pool_size = self._pool, None, 0
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
+
+    def _drifted(self, why):
+        """No worker from here on: the nodes are reduced in this process until it
+        restarts. The hours stay the same; only the cores differ."""
+        self._drift = why
+        self.stats["node_note"] = ("reducing in this process until the service restarts: %s"
+                                   % why)
 
     def _run_node(self, pool, task):
         """A future for one node-hour: in a worker, or done here."""
@@ -1130,6 +1250,7 @@ class HourStore:
         prev = {u: prev0 for u in units}
         done = collections.defaultdict(dict)    # hour -> unit -> result
         running = {}                            # future -> unit
+        tasks = {}                              # future -> its task, to run here if need be
         h = a                                   # the oldest hour not yet saved
 
         def queue(u):
@@ -1141,7 +1262,8 @@ class HourStore:
             task = {"node": nd, "hour": hr, "files": by_node.get(nd, []), "prev": prev[u],
                     "carry": carries[u], "ages": ages_of[u],
                     "keys": groups[g] if len(groups) > 1 else None}
-            running[self._run_node(pool, task)] = u
+            fut = self._run_node(pool if self._drift is None else None, task)
+            running[fut], tasks[fut] = u, task
 
         try:
             for u in units:
@@ -1153,14 +1275,23 @@ class HourStore:
                 fin, _ = concurrent.futures.wait(list(running),
                                                  return_when=concurrent.futures.FIRST_COMPLETED)
                 for fut in fin:
-                    u = running.pop(fut)
+                    u, task = running.pop(fut), tasks.pop(fut)
                     try:
                         got = fut.result()
                     except BrokenProcessPool:
-                        # a worker died (a crash, the OOM killer): this run stops, and the
-                        # next one starts a fresh pool from the newest chain saved
+                        # a worker died (a crash, the OOM killer, or one started after a
+                        # deploy that could not load): this run stops, and the next one
+                        # starts a fresh pool from the newest chain saved
                         self.close()
                         raise
+                    if "drift" in got:
+                        # a worker started after a deploy: this task, and every one
+                        # after it, is reduced here (the pool goes once this run ends)
+                        if self._drift is None:
+                            self._drifted(got["drift"])
+                        fut = self._run_node(None, task)
+                        running[fut], tasks[fut] = u, task
+                        continue
                     carries[u], ages_of[u] = got["carry"], got["ages"]
                     prev[u] = {f["path"]: f for f in got["files"]}
                     done[got["hour"]][u] = got
@@ -1185,7 +1316,13 @@ class HourStore:
         except BaseException:
             for fut in running:
                 fut.cancel()
+            # A task already running cannot be cancelled. Waited for here, so the next
+            # run's tasks do not queue behind it, nor does a new pool start beside it.
+            concurrent.futures.wait(list(running))
             raise
+        finally:
+            if self._drift is not None:
+                self.close()
         return ({NODES: {nd: join_carries(carries[(nd, g)] for g in range(len(groups)))
                          for nd in nodes}},
                 {NODES: {nd: join_carries(ages_of[(nd, g)] for g in range(len(groups)))
@@ -1354,8 +1491,9 @@ class HourStore:
             return False
         carry = pickle.loads(pickle.dumps(self.chain[1], protocol=pickle.HIGHEST_PROTOCOL))
         if carry and NODES in carry:
-            # reduced by node: the window's tail and live feed are one pass over every node
-            carry = combine_carries(carry[NODES])
+            # reduced by node: the window's tail and live feed are one pass over every
+            # node, so its maps are interleaved by age and held to one pass's caps
+            carry = combine_carries(carry[NODES], (self.chain[2] or {}).get(NODES), acc)
         install(acc, carry)
         return True
 

@@ -554,11 +554,21 @@ that tie at a cap (the 200 Slurm sessions), and float sums in another order (the
 "first N" samples (the risk panel's instances, a Slurm rejection's example) keep the earliest in
 time. Counts, sums, sets and the quantile sketches are the same, and so is every panel for any
 worker count from 2 up (`tests/test_hours.py`, `NodeSplitTest`). The join caps (`REAPED_MAX` and
-the like) hold per node, so fewer pending joins are evicted. The split is in the hours'
+the like) hold per node, so fewer pending joins are evicted. A window takes the nodes' join
+states as one pass's, since its tail and live feed are one pass over every node
+(`hours.combine_carries`): each capped map is interleaved by the hour each key was last
+touched in, each node's own order kept, and held to one pass's cap, its oldest dropped. The
+split is in the hours'
 fingerprint and the count is not: going from 1 to more, or back, reduces the hours afresh;
 changing the count does not. The workers are spawned once and kept (`hours.status` reports
 `node_workers`, `node_cpu_by` per node, `node_merge_s`), and they count against the service's
-memory cap.
+memory cap. A worker runs the service's own code and Python, or nothing: a process spawned
+starts from `sys.executable` and the service's `sys.path` as they are then, so a deploy since
+the start (another release where the service imports from, a venv made again, a package
+upgraded) would have it reduce with other code (`hours.spawn_identity`). The service checks
+before it starts a pool, and each worker on its own start; after such a deploy the nodes are
+reduced in the service's own process, on one core and into the same hours, until it restarts
+(`node_note` says so). The fleet's install restarts the dashboard when it makes the venv again.
 
 **Preprocessing everything.** By default only the windows a reader asks for (and the cheap
 `panels.prewarm_min` ones) are built, and only the hours inside them are reduced, so the first

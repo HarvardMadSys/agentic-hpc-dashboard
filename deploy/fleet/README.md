@@ -53,7 +53,8 @@ stopping it, and a stalled dashboard answers nothing.
   (`DASH_PYTHON`; 3.14 reduces the hours about 10% faster than 3.12, with the same panels:
   `uv python install 3.14`, then `DASH_PYTHON=$(uv python find 3.14)`), and
   `/usr/bin/python3` for the stream. A deploy whose `DASH_PYTHON` is another version than the
-  venv's makes the venv again, and keeps the one before as `venv.old`. `ss`, `curl`, and `getfacl` for
+  venv's makes the venv again, keeps the one before as `venv.old`, and restarts the session.
+  `ss`, `curl`, and `getfacl` for
   the checks. Disk and memory: see [Memory and disk](#memory-and-disk).
 - **Each source node:** the collector ([`collector/`](../../collector), or the RPM), an
   account (`SOURCE_USER`) that can log in with an ssh key, and `/usr/bin/python3` 3.6 or
