@@ -1017,7 +1017,8 @@ and for how the page draws them
   (`_open_calls`), then `phase_segment.prepared`, `phase_tasks.task_spans` (tasks),
   `phase_segment.segment` (phases, cut at the tasks' boundaries), `phase_tasks.name_tasks` (labels,
   from the agent's own words or the names in its commands, and the headline) and
-  `phase_summary.summarize` (category, uses, summary). Cached per row (`_phase_cache`, 4,096 blocks)
+  `phase_summary.summarize` (category, uses, summary: the work weighed to the last phase's own calls,
+  `own_t1`, and a call's time past its phase to its own use, `ran_on`). Cached per row (`_phase_cache`, 4,096 blocks)
   and made again when the row's calls, records or pending entries change, so on each read of a
   session still at work. `running_now` reads the tree's newest census against its baseline, the
   least each command had over the session's ticks.

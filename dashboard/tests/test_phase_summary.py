@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import config as configmod                            # noqa: E402
+from rc_dashboard.reducers import phase_segment as SEG                  # noqa: E402
 from rc_dashboard.reducers import phase_summary as PS                   # noqa: E402
-from rc_dashboard.reducers.phase_log import TAGS                        # noqa: E402
+from rc_dashboard.reducers.phase_log import TAGS, PhaseLog              # noqa: E402
+from rc_dashboard.reducers.phase_rules import norm_hash                 # noqa: E402
 from test_sessions import reduce                                        # noqa: E402
 from test_traj_phases import bash8, root8, row_of, s8                   # noqa: E402
 from test_traj_tasks import (T1, around_midnight, day_rows, fed, reads)  # noqa: E402
@@ -58,6 +60,16 @@ def block(phases, n_calls=None, tasks=1, quoted=0, lone=0, hk=0):
 
 def kind(b, calls=(), params=None):
     return PS.summarize(b, list(calls), TAGSETS, params)
+
+
+def cut(rows):
+    """The block `phase_segment` cuts, with its tuned thresholds, from calls `(start, end, category,
+    text)`, and the calls as it sorts them: what a reducer hands the summary."""
+    previews = [None] + [text for *_, text in rows]
+    calls = [(float(a), float(b), cat, norm_hash(text), i + 1, 0, None, None, 0)
+             for i, (a, b, cat, text) in enumerate(rows)]
+    prep = SEG.prepared(calls, previews, SEG.DEFAULTS)
+    return SEG.segment(calls, PhaseLog(), previews, SEG.DEFAULTS, prepared=prep), prep[0]
 
 
 class CategoryTest(unittest.TestCase):
@@ -110,6 +122,49 @@ class CategoryTest(unittest.TestCase):
                               )["uses"][0][0], "explore")
         self.assertEqual(kind(block([ph("run", 0, 100, 1), ph("explore", 100, 200, 1)])
                               )["uses"][0][0], "explore")
+
+    def test_a_hung_call_is_running_and_not_the_last_phase_s_work(self):
+        # S1 of the review: `./linktest --all` hangs from 0 to 50,400 s, and six `sed -i` come at
+        # 300 to 351 s. The lane runs the edits' phase to 50,400 s; it was "Mostly changed files
+        # from the shell (99% of 14 h of work)" with develop 99.4, run 0.6.
+        b, calls = cut([(0, 50400, "run", "./linktest --all")]
+                       + [(300 + g, 301 + g, "edit", "sed -i s/a/b%d/ conf%d.txt" % (i, i))
+                          for i, g in enumerate([0, 7, 19, 26, 41, 50])])
+        got = PS.summarize(b, calls, TAGSETS)
+        self.assertEqual(got["category"], "run")
+        self.assertEqual(got["uses"], [["run", 99.9], ["develop", 0.1]])
+        self.assertEqual(got["summary"], "Only ran programs (14 h of work). 7 tool calls.")
+
+    def test_a_run_left_going_while_the_agent_reads_its_log_is_running_too(self):
+        # S2 of the review: `python train.py` runs for 3 h in the background, with 52 quick reads
+        # of its log meanwhile. It was "Mostly explored code and files (99% of 3.0 h of work)".
+        rows, t, k = [(0, 10800, "run", "python train.py")], 120, 0
+        while t < 10700:
+            rows.append((t, t + 1, "explore", "tail -n %d train.log" % (5 + k)))
+            t += 150 + (k * 37) % 120
+            k += 1
+        b, calls = cut(rows)
+        got = PS.summarize(b, calls, TAGSETS)
+        self.assertEqual(got["category"], "run")
+        self.assertEqual(got["uses"], [["run", 50.6], ["explore", 49.4]])
+        self.assertTrue(got["summary"].startswith(
+            "Mostly ran programs (51% of 5.9 h of work), then explored code and files (49%)."),
+            got["summary"])
+
+    def test_the_last_phase_is_weighed_to_its_own_calls_and_ran_on_time_to_its_call_s_use(self):
+        # by hand, as segment says it: 300 s of running, then 51 s of edits whose phase the lane
+        # runs to 50,400 s while the run's call goes on
+        got = kind(block([dict(ph("run", 0, 300, 1), own_t1=50400, ran_on=[["run", 50100.0]]),
+                          dict(ph("edit", 300, 50400, 6), own_t1=351, ran_on=None)]))
+        self.assertEqual(got["uses"], [["run", 99.9], ["develop", 0.1]])
+        # a command not recorded that ran on is time not recorded; a wait's is no use
+        unk = kind(block([dict(ph("explore", 0, 100, 3), own_t1=5000, ran_on=[["unknown", 4900.0]]),
+                          dict(ph("explore", 100, 5000, 3), own_t1=160)]))
+        self.assertEqual(unk["category"], "unknown")
+        waited = kind(block([dict(ph("explore", 0, 100, 3), own_t1=5000, ran_on=[["wait", 4900.0]]),
+                             dict(ph("explore", 100, 5000, 3), own_t1=160)]))
+        self.assertEqual((waited["category"], waited["uses"]), ("explore", [["explore", 100.0]]))
+        self.assertIn("(2.7 min of work)", waited["summary"])
 
     def test_commands_not_recorded_for_half_of_the_time_make_the_session_unknown(self):
         got = kind(block([ph("unknown", 0, 900, 5), ph("explore", 900, 1000, 3)]))

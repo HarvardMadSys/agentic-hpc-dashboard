@@ -19,10 +19,16 @@ does. A session with no use is `wait` when it only waited, `unknown` when its co
 recorded, and `none` when it made no tool call at all.
 
   Work. The time of the block's phases, each from its start to the next one's, but idle gaps,
-  waiting, and commands not recorded. A phase counts toward a use by its kind, as a task's verb
-  counts it (`phase_tasks._category`): an edit, a guessed edit, a test, and an edit-test loop are
-  `develop`, and a wait on Slurm is `hpc`, since a job is Slurm's work whether it is being submitted
-  or waited on. Any other wait is the agent waiting on something it started (a process, a file, a
+  waiting, and commands not recorded. The last phase's ends with its own calls (`own_t1`), not with
+  the lane, which runs on while a call of an earlier phase does; and the time a call, or a process
+  it left behind, ran on past the end of its phase counts toward the call's own use (`ran_on`,
+  `phase_segment`, Work). A call hung for 14 h beside a minute of edits is 14 h of running, not of
+  editing, and a training run left going for 3 h while the agent read its log is 3 h of running
+  beside the reading, so the work can be longer than the session. A phase that does not say
+  (a block from before, or one built by hand) is weighed from its start to its end. A phase
+  counts toward a use by its kind, as a task's verb counts it (`phase_tasks._category`): an edit, a
+  guessed edit, a test, and an edit-test loop are `develop`, and a wait on Slurm is `hpc`, since a
+  job is Slurm's work whether it is being submitted or waited on. Any other wait is the agent waiting on something it started (a process, a file, a
   fixed sleep), which is no use: it is said apart, in the summary, as `portraits.leverage` says a
   user's. So a session that submits a job and polls the queue for four hours is a Slurm session,
   and one that starts a script in the background and polls its log for four hours is whatever the
@@ -150,12 +156,18 @@ class _Weights:
 def _weigh(phases):
     w = _Weights()
     longest = {}
-    for ph in phases:
+    final = len(phases) - 1
+    for k, ph in enumerate(phases):
         kind = ph["kind"]
         if kind == "idle":
             continue
-        s = max(0.0, ph["t1"] - ph["t0"])
+        t1, own = ph["t1"], ph.get("own_t1")
+        if k == final and own is not None:
+            t1 = min(t1, own)           # the work ends with the last phase's own calls
+        s = max(0.0, t1 - ph["t0"])
         n = ph["n"]
+        for cat, ran in ph.get("ran_on") or ():
+            _ran_on(w, cat, ran)
         w.active += s
         if kind == "wait":
             on = ph.get("waits_on")
@@ -174,6 +186,15 @@ def _weigh(phases):
             w.calls[use] += n
             w.tested = w.tested or kind in _TESTS
     return w
+
+
+def _ran_on(w, cat, s):
+    """`s` seconds a call of category `cat` ran on past its phase, weighed to the call's own use:
+    a run's to `run`, a command not recorded to the unknown, a wait to none."""
+    if cat == "unknown":
+        w.unk_s += s
+    elif USE_OF.get(cat) is not None:
+        w.time[USE_OF[cat]] += s
 
 
 def _use_of(ph):

@@ -84,7 +84,7 @@ const textOf = (html) => html.replace(/<[^>]*>/g, '').replaceAll('&quot;', '"').
 const ph = (kind, t0, t1, o = {}) => ({
   kind, t0, t1, n: 1, mix: [], top: [], guess: null, slices: null, rounds: null,
   waits_on: null, every_s: null, times: null, every_cmd: null, open: false, seen: null, ran_past: null,
-  alive: null, task: 0, sid: null, ...o,
+  alive: null, own_t1: null, ran_on: null, task: 0, sid: null, ...o,
 });
 
 /** A task with every field a service sends, and the ones `o` names. */
