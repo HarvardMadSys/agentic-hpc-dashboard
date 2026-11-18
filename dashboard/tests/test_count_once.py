@@ -355,6 +355,26 @@ class LiveOwnIoTest(unittest.TestCase):
                 # nor held for a later holder of its pid
                 self.assertNotIn(("h1", 200), self.lv.io_given.reaped)
 
+    def test_a_parent_that_execs_just_after_the_tail_began_keeps_a_backfilled_child(self):
+        # bob's wrapper 300 forks `cat` 301, which reads 100 MB and ends at 90;
+        # carol's `ls` is the tail's first exit, at 100; the wrapper last execs
+        # at 110 and ends at 200 with the cat's 100 MB in its 120. Its recorded
+        # start is after the tail began, but within START_SLACK_S of it, so the
+        # cat the backfill reads is still its child to take back.
+        t = self.now - 800
+        cat = person("exit", t + 90, 301, 300, "cat", "cat big.bin", "bob",
+                     io=iob(100.0, 100.0), duration_s=5.0)
+        ls = person("exit", t + 100, 400, 1, "ls", "ls", "carol", io=iob(1.0, 1.0))
+        wrapper = person("exit", t + 200, 300, 1, "bash", "bash wrap.sh", "bob",
+                         io=iob(120.0, 120.0), duration_s=90.0)
+        for name, tail, back in (("in order", [cat, ls, wrapper], []),
+                                 ("tail, then backfill", [ls, wrapper], [cat])):
+            with self.subTest(name):
+                self.lv, self.norm = LiveReducer(cfg(), CLASSES), Normalizer(cfg())
+                self.feed(tail, older=False)
+                self.feed(back, older=True)
+                self.assertEqual(rd_of(self.lv, self.now), {"bob": 120.0, "carol": 1.0})
+
 
 def unreaped(t, child_cpu_s=0.0, parent_io=20.0):
     """bob's `python3` 300, which never waits: its `cat` 301 reads 100 MB and

@@ -473,14 +473,17 @@ class LiveReducer:
     def _io_note(self, rec, older, epoch, rd, wr, row):
         """Note a counted exit for the children the backfill has yet to read: any
         it met itself, and one the tail met that was running before the tail
-        began. `epoch` is the roster bin it was counted in, None when none."""
+        began, give or take START_SLACK_S: its recorded start is its last exec,
+        and a child it forked before that can have ended before the tail began.
+        `epoch` is the roster bin it was counted in, None when none."""
         io = rec.get("io")
         # one that says it reaped no child has none to give back (own_io.reaped_none)
         if not isinstance(io, dict) or io.get("scope") != "process" or not (rd or wr) \
                 or rec.get("_ts_epoch") is None or reaped_none(rec):
             return
         st = _start(rec)
-        if not older and (st is None or self.io_tail_from is None or st >= self.io_tail_from):
+        if not older and (st is None or self.io_tail_from is None
+                          or st >= self.io_tail_from + START_SLACK_S):
             return
         key = (rec.get("host"), rec.get("pid"))
         self._io_seq += 1
