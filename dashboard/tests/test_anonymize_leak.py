@@ -591,6 +591,9 @@ class ReaderTextTest(Served):
         filters = list(export.LIST_FIELDS + export.SCALARS)
 
         def check(where, status, body):
+            # turned away at the sign-in, a request reaches no route, and the walk
+            # would pass having read nothing
+            self.assertNotEqual(status, 401, where)
             if where[1] != "/":           # "frontend not built": no UI here, by design
                 self.assertLess(status, 500, where)
             for text in [body] + self.answers(where, status, body):
