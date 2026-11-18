@@ -64,6 +64,7 @@ HEAD = 64 << 10                # bytes of a file's start the hello fingerprints
 EXIT_UNSAFE = 3                # the receiver's base folder is not what it was
 MAX_HEADER = 1 << 20
 MAX_PAYLOAD = CHUNK + (1 << 16)    # deflate can grow incompressible input a little
+STDERR_LINE = 4096             # a transport's stderr line is kept up to this; the rest goes
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GZ = ".gz"
 GZ_LEVEL = 6                   # gzip's default, as the collector's `nice gzip -f` uses
@@ -911,12 +912,25 @@ class Mirror:
         return 0
 
     def _data(self, h, payload, inflater):
+        """A sender's data frame holds at most CHUNK plain bytes (send_plain, and
+        inflate_pieces' pieces). The size it states is checked first, and the
+        payload is inflated only up to one byte past it, so a small payload that
+        would inflate to gigabytes cannot. An honest sender never ends its zlib
+        stream; once one has ended, each later payload would pile up in the
+        inflater's `unused_data`."""
         day, name, is_gz = self.parse(h.get("path"))
         if is_gz:
             raise ProtocolError("plain data for a .gz path")
-        data = inflater.decompress(payload)
-        if len(data) != h.get("plain"):
-            raise ProtocolError("a data frame of %d bytes says %r" % (len(data), h.get("plain")))
+        plain = h.get("plain")
+        if type(plain) is not int or not 0 <= plain <= CHUNK:
+            raise ProtocolError("a data frame of %r plain bytes" % (plain,))
+        data = inflater.decompress(payload, plain + 1)
+        if len(data) > plain or inflater.unconsumed_tail:
+            raise ProtocolError("a data frame that inflates past the %d bytes it says" % plain)
+        if inflater.eof:
+            raise ProtocolError("a data frame that ends the zlib stream")
+        if len(data) != plain:
+            raise ProtocolError("a data frame of %d bytes says %r" % (len(data), plain))
         fd = self.base.open_append(self.rel(day, name))
         try:
             local = os.fstat(fd).st_size
@@ -1188,8 +1202,14 @@ class Link:
             delay = min(delay * 2, self.backoff[1])
 
     def _drain_stderr(self, pipe):
-        """Keep the transport's last stderr lines (ssh's own errors) and log them."""
-        for raw in iter(pipe.readline, b""):
+        """Keep the transport's last stderr lines (ssh's own errors) and log them. A
+        line is read at most STDERR_LINE bytes at a time and the rest of a longer one
+        is dropped, so a transport that writes without a newline cannot fill memory."""
+        rest = False                       # inside the dropped rest of a long line
+        for raw in iter(lambda: pipe.readline(STDERR_LINE), b""):
+            cut, rest = rest, not raw.endswith(b"\n")
+            if cut:
+                continue
             line = raw.decode("utf-8", "replace").strip()
             if line:
                 self.stderr_tail.append(line[:300])
