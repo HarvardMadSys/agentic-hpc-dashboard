@@ -416,6 +416,17 @@ def defaults():
                    # the port, which on a login node is every user of it. A demo
                    # serves made-up data and is open unless a hash is set.
                    "auth": {"password_hash": "", "session_days": 30, "open": False},
+                   # Who may connect (guard.py). A websocket opened by a page on
+                   # another site is refused, unless its origin is listed here
+                   # ("https://dash.example.org"): for a proxy that rewrites the
+                   # Host. A page from Vite's dev server on another loopback port
+                   # passes on its own.
+                   "allowed_origins": [],
+                   # With no password, a request is answered only under a
+                   # loopback name, `host` above, or a name listed here ("*": any):
+                   # another site's page cannot read the dashboard by pointing its
+                   # own name at 127.0.0.1 (DNS rebinding). Unused with a password.
+                   "allowed_hosts": [],
                    # Name the endpoints on the Network bytes panel by reverse
                    # DNS (endpoints.py): `workers` lookups at a time, from this
                    # host, off the request path, kept in <cache.dir>/rdns.json.
@@ -491,6 +502,8 @@ ENV_MAP = {
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
     "server.auth.open": ("RC_DASH_OPEN", _flag),
+    "server.allowed_origins": ("RC_DASH_ALLOWED_ORIGINS", _csv),
+    "server.allowed_hosts": ("RC_DASH_ALLOWED_HOSTS", _csv),
     "server.rdns.enabled": ("RC_DASH_RDNS", _flag),
     "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
 }
@@ -782,6 +795,14 @@ def load(args=None, config_path=None):
     if type(groups) is not int or groups not in (1, 2):
         raise SystemExit("ingest.reducer_groups: %r is not 1 or 2 (set by %s)" % (
             groups, origins.get("ingest.reducer_groups", "default")))
+
+    # Who may connect (guard.py): lists of names, or the service refuses to
+    # start rather than take a string for a list of its letters.
+    for key in ("server.allowed_origins", "server.allowed_hosts"):
+        val = _get(tree, key, [])
+        if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+            raise SystemExit("%s: %r is not a list of names (set by %s)" % (
+                key, val, origins.get(key, "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

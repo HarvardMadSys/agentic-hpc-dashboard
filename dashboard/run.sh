@@ -65,7 +65,10 @@ VITE_OUT=()
 [ "$RC_DASH_STATIC_DIR" != "$WEB/dist" ] && VITE_OUT=(--outDir "$RC_DASH_STATIC_DIR" --emptyOutDir)
 
 # Vite dev server (dev mode only). Set RC_DASH_UI_HOST=0.0.0.0 to reach it from
-# another machine instead of through a tunnel.
+# another machine instead of through a tunnel, and name the page's origin to the
+# backend, which refuses a websocket from any other site's page (guard.py):
+# RC_DASH_ALLOWED_ORIGINS=http://<this host>:5173. Through a tunnel to
+# 127.0.0.1:5173 nothing needs naming.
 RC_DASH_UI_PORT="${RC_DASH_UI_PORT:-5173}"
 RC_DASH_UI_HOST="${RC_DASH_UI_HOST:-127.0.0.1}"
 

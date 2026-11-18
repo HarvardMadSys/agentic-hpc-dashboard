@@ -142,6 +142,19 @@ class Flags(Case):
                 self.assertIn("anonymize.enabled", self.refused({"anonymize": {"enabled": bad}}))
 
 
+class WhoMayConnect(Case):
+    def test_names_and_origins_are_lists(self):
+        with mock.patch.dict(os.environ, {"RC_DASH_ALLOWED_HOSTS": "dash.example.org, *",
+                                          "RC_DASH_ALLOWED_ORIGINS": "https://dash.example.org"}):
+            cfg = configmod.load(None, None)
+        self.assertEqual(cfg.get("server.allowed_hosts"), ["dash.example.org", "*"])
+        self.assertEqual(cfg.get("server.allowed_origins"), ["https://dash.example.org"])
+        for key in ("allowed_hosts", "allowed_origins"):
+            with self.subTest(key=key):
+                self.assertIn("server.%s" % key, self.refused({"server": {key: "dash.example.org"}}))
+                self.assertIn("server.%s" % key, self.refused({"server": {key: [1]}}))
+
+
 class UnknownKeys(Case):
     def test_a_typo_where_it_would_fail_open_stops_it_naming_the_key_meant(self):
         for tree, typo, meant in (

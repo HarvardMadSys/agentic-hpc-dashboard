@@ -129,7 +129,11 @@ on that host, an ssh tunnel works. On your own machine:
 Then open http://localhost:8000 and sign in. Any free local port works in place of 8000.
 To serve the page at an address of its own, put a reverse proxy or a tunnel service on
 the host in front of `127.0.0.1:DASH_PORT`. When the proxy says the request came over
-https (`X-Forwarded-Proto`), the session cookie is Secure. See the dashboard's
+https (`X-Forwarded-Proto`), the session cookie is Secure. The dashboard refuses a
+websocket opened by a page on another site, by its `Origin`: a proxy that keeps the
+public name in the `Host` (cloudflared does) needs nothing more, and one that rewrites the
+`Host` to `127.0.0.1:DASH_PORT` needs the page's origin named, as a line
+`RC_DASH_ALLOWED_ORIGINS=https://<the public name>` in `etc/auth.env`. See the dashboard's
 [Password](../../dashboard/README.md#password) section for the sign-in, the cookie, and
 scripts.
 

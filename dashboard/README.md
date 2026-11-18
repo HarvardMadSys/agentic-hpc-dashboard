@@ -895,6 +895,26 @@ restart:
 `tests/test_auth.py` starts the app with a password, then reads every route, an asset, and the
 websocket, with and without it.
 
+**Who may connect** (`rc_dashboard/guard.py`), with a password or without:
+
+- **A websocket from another site's page is refused** before it is accepted (a 403): one whose
+  `Origin` names a host and port other than the request's `Host`. A browser lets any page open
+  a websocket to 127.0.0.1. A script sends no `Origin` and passes. So does the page from Vite's
+  dev server (`./run.sh` dev mode serves it on 127.0.0.1:5173 and proxies `/ws` with the Host
+  rewritten to the backend's): a loopback origin, to a loopback Host. A proxy that rewrites the
+  Host to `127.0.0.1:<port>` needs its public origin in `server.allowed_origins`
+  (`RC_DASH_ALLOWED_ORIGINS`, comma-separated: `https://dash.example.org`).
+- **With no password, a request under a name that is not this host's is refused** (a 403):
+  its `Host` must be a loopback name, the bind host (`server.host`), or one of
+  `server.allowed_hosts` (`RC_DASH_ALLOWED_HOSTS`; `*` for any). Otherwise a page on another
+  site could point its own name at 127.0.0.1 and read every route as its own (DNS rebinding).
+  With a password the cookie already stops that, and the check is off, so a tunnel that keeps
+  its public name in the Host needs no list. The demo image answers under any name
+  (`docker/demo/Dockerfile`): its data is made up.
+
+`tests/test_guard.py` sends the handshakes a browser, a script and Vite's proxy send, and
+starts the app open and behind a password.
+
 ## Network endpoints
 
 The Network bytes panel, in the I/O section of the Resources tab (under *Login nodes* in the

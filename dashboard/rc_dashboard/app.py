@@ -23,6 +23,7 @@ from starlette.datastructures import Headers
 from starlette.responses import Response
 
 from . import auth as authmod
+from . import guard as guardmod
 from . import history as historymod
 from . import feeds as feedmod
 from . import gcwatch
@@ -822,4 +823,12 @@ def create_app(cfg):
     if gate is not None:
         app.add_middleware(authmod.AuthMiddleware, gate=gate,
                            site=str(cfg.get("site.name") or ""))
+    # ------------------------------------------------------ who may connect
+    # Outside the sign-in, so what it refuses costs no password check: a
+    # websocket from another site's page, and with no password, a request
+    # under a name that is not this host's (guard.py).
+    app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
+                       bind_host=str(cfg.get("server.host") or ""),
+                       allowed_hosts=cfg.get("server.allowed_hosts") or (),
+                       allowed_origins=cfg.get("server.allowed_origins") or ())
     return app
