@@ -54,7 +54,8 @@ sandbox slice that `exited before it was checked` (key `denied`), a session whos
 attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
 reload — the middleware re-reads the file on every request. Delete a panel's key instead to
-see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels.
+see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels. Give a
+panel an `_error` string to see `<NotReduced>`, a panel whose reducer raised.
 
 The node tier, the day-by-day panel and the exit verdicts have theirs: a node whose probes are
 ten times the rest, an NFS hiccup in the same bins as the resources series' stall, a host whose
@@ -92,6 +93,7 @@ npm run typecheck    # tsc -b, no emit
 npm run check:charts # node --test: the chart tick and width rules in src/charts/scale.ts
 npm run check:css    # node --test: every stylesheet closes its blocks, no rule nested in a rule
 npm run check:shares # node --test: a class's share is out of every class counted, whatever the chips show
+npm run check:panels # node --test: a panel not reduced, waited for or building is never "none" or 0
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -257,7 +259,12 @@ Three rules it follows, all of them the same rule this page follows everywhere:
 - **The kinds of nothing stay apart.** A panel whose window is still being reduced
   renders `<Building>` — a solid frame and a percentage — not `none` (which would assert a
   measurement) and not the empty state (which would blame the feed). One the backend did
-  not return renders `<NotReturned>` (rule 4), never the empty state.
+  not return renders `<NotReturned>` (rule 4), never the empty state. One whose reducer
+  raised arrives as its envelope with `_error` and nothing else (`windows.materialize`): it
+  renders `<NotReduced>`, "the service could not reduce this panel" and what it said, and
+  `pick` hands it on as not present, so a plate reads a dash rather than a 0. A tab that
+  says `none` of a panel says it only of a body the service reduced (`hasBody`): while the
+  panel is waited for, building, or not reduced, the panel says which.
 
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.

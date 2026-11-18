@@ -173,6 +173,11 @@ export interface PanelEnvelope {
    *  or a request that failed), so the page made one up (lib/panels.ts
    *  `absent`): a fact about the response, not about the feed. */
   _unsent?: boolean;
+  /** The service could not reduce this panel: its reducer raised, and this is
+   *  what it said (`windows.materialize`). The body holds nothing else, so it
+   *  is neither "none" nor a 0: <Panel> says so, and `pick` hands it on as not
+   *  present, so no plate reads a number off it. */
+  _error?: string | null;
 }
 
 /* ---------------------------------------------------------------- window */

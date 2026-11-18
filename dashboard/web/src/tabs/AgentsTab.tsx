@@ -49,7 +49,7 @@ import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
 import { AGENT_TYPE_COL, AGENT_TYPE_LBL } from '../lib/classes';
 import { AP_LABEL, CALL_LABEL, SESSION_LABEL, label } from '../lib/sandbox';
-import { pick, winLabel } from '../lib/panels';
+import { hasBody, pick, winLabel } from '../lib/panels';
 import { coveredBy } from '../lib/iocmds';
 import type { IoQuery } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
@@ -1294,13 +1294,15 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
           </span>
         )}
       </div>
+      {/* "none" only of a body the service reduced: while it is waited for,
+          building, or could not be reduced, the panel below says which */}
       {stats.length ? (
         <TypeStrip stats={stats} />
-      ) : (
+      ) : hasBody(c) ? (
         <NoRows what={cls.includes('agent') ? 'no agent process in this window' : 'the agent class is filtered out'} />
-      )}
+      ) : null}
 
-      {stats.length > 0 && (
+      {(stats.length > 0 || !hasBody(c)) && (
         <div className="grid wide">
           <Panel
             title="Agents and their subagents"
