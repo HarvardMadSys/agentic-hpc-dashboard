@@ -157,12 +157,13 @@ class Verbatim(str):
 def verbatim(obj):
     """`obj` with every string in it `Verbatim`: the values of a dict (its keys
     are the service's), and the items of a list, tuple or set, which keep
-    their kind."""
+    their kind. Any other container -- a namedtuple, which no generator
+    builds -- goes as it is rather than fail a request."""
     if isinstance(obj, str):
         return obj if type(obj) is Verbatim else Verbatim(obj)
     if isinstance(obj, dict):
         return {k: verbatim(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set, frozenset)):
+    if type(obj) in (list, tuple, set, frozenset):
         return type(obj)(verbatim(v) for v in obj)
     return obj
 

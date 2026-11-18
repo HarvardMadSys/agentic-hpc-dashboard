@@ -2,6 +2,7 @@
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import collections
 import os
 import re
 import shutil
@@ -244,6 +245,10 @@ class VerbatimTest(unittest.TestCase):
         self.assertIs(type(got["a"][1]), tuple)
         self.assertEqual({type(s) for s in (got["a"][0], got["a"][1][0], *got["b"])},
                          {anonmod.Verbatim})
+        # a namedtuple is built from fields, not from one generator: as it is
+        point = collections.namedtuple("Point", "x y")("glen", "ana")
+        self.assertIs(anonmod.verbatim(point), point)
+        self.assertEqual(anonmod.verbatim([point]), [point])
 
     def test_no_such_account_is_never_learned_as_one(self):
         # A real name in a filter maps to UNKNOWN, echoed under `users`: it was
