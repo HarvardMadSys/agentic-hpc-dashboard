@@ -299,6 +299,40 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(anonmod.load_salt(self.cfg(enabled=True)), (salt, "file"), code)
             os.unlink(path)
 
+    def test_a_link_refused_for_room_or_an_io_error_is_raised_with_no_file_left(self):
+        # a full disk, a quota, EIO, too many links: no reason to write in place instead
+        for code in (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMLINK):
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused), \
+                    self.assertRaises(OSError) as cm:
+                anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(cm.exception.errno, code)
+            self.assertEqual(os.listdir(self.tmp), [], code)
+
+    def test_a_write_in_place_that_fails_leaves_no_salt_file(self):
+        # the review's case (the link refused for room, then the write in place failing),
+        # and the same write where the file system has no hard links
+        fdopen = os.fdopen
+        for code in (errno.ENOSPC, errno.EPERM):
+            calls = []
+
+            def full(fd, *a, **kw):
+                calls.append(fd)
+                if len(calls) > 1:                    # the file made in place
+                    os.close(fd)
+                    raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+                return fdopen(fd, *a, **kw)
+
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused), \
+                    mock.patch.object(anonmod.os, "fdopen", full), self.assertRaises(OSError):
+                anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(os.listdir(self.tmp), [], code)
+            self.assertEqual(anonmod.load_salt(self.cfg(enabled=True))[1], "generated", code)
+            os.unlink(os.path.join(self.tmp, "anonymize.salt"))
+
     def test_the_new_name_is_synced_and_a_directory_that_will_not_sync_is_let_be(self):
         # a power loss just after the first start must not leave the next one to make a
         # new salt, and with it new aliases

@@ -36,6 +36,7 @@ record. A real name typed into a filter finds nothing, so the page cannot be
 used to ask whether someone is here.
 """
 import bisect
+import errno
 import hashlib
 import hmac
 import os
@@ -526,6 +527,9 @@ class Anonymizer:
 
 # ---------------------------------------------------------------- set-up
 MIN_SALT = 16            # bytes: a shorter key lets a list of names be tried against it
+# What link(2) answers on a file system without hard links
+_NO_LINKS = frozenset(getattr(errno, n) for n in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV",
+                                                  "ENOSYS") if hasattr(errno, n))
 
 
 def load_salt(cfg):
@@ -538,7 +542,9 @@ def load_salt(cfg):
     file is never there half written -- a crash or a full disk mid-write leaves
     none, and the next start makes one -- and of two instances making one at
     once, the first link wins. Where the file system has no hard links it is
-    made in place instead."""
+    made in place instead, and removed if that write fails; there, of two
+    instances first started at the same moment, one can find the other's file
+    not yet written and stop. Started again, it reads the other's salt."""
     s = cfg.get("anonymize.salt") or ""
     if s:
         salt = str(s).encode()
@@ -574,17 +580,23 @@ def load_salt(cfg):
             os.link(tmp, path)
         except FileExistsError:       # another instance's, linked first and whole: use it
             return load_salt(cfg)
-        except OSError:
+        except OSError as e:
+            if e.errno not in _NO_LINKS:
+                raise                 # a full disk, a quota, an I/O error: not a mount without links
             # No hard links on this file system (some FUSE, SMB and object-store
             # mounts): made in place, which a crash mid-write can leave cut short.
             try:
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
                 return load_salt(cfg)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(salt.hex() + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(salt.hex() + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except BaseException:
+                os.unlink(path)       # none left, as on the link's way
+                raise
     finally:
         os.unlink(tmp)
     _sync_dir(d)                      # the new name, through a power loss
