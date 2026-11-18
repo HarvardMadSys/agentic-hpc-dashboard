@@ -462,8 +462,10 @@ class Annotator:
         self.slots = threading.BoundedSemaphore(max(1, int(cfg.get("annotate.max_concurrent", 1))))
         self._known = None
         self._complete = complete_fn or complete
-        # a command asked about by one job is not asked about again by another
-        self._inflight = set()
+        # a command asked about by one job is not asked about again by another:
+        # (label, command) -> the id of the job asking, which a later request
+        # for the same command follows instead
+        self._inflight = {}
 
     # ------------------------------------------------------------- cache
     def _path(self):
@@ -534,7 +536,8 @@ class Annotator:
     # -------------------------------------------------------------- jobs
     def submit(self, calls, agent_type=None, about=None):
         """Ask about every call not answered yet. Returns the job's view, or
-        None when every call is answered (or being answered) already."""
+        None when every call is answered or being answered already: the jobs
+        answering them are `following`'s."""
         info = describe(self.cfg)
         if not info["enabled"]:
             raise ValueError("annotation is turned off (annotate.enabled)")
@@ -548,9 +551,10 @@ class Annotator:
                     and (label, c["cmd"]) not in self._inflight]
             if not todo:
                 return None
+            jid = uuid.uuid4().hex[:12]
             for c in todo:
-                self._inflight.add((label, c["cmd"]))
-            job = {"id": uuid.uuid4().hex[:12], "state": "queued", "about": about,
+                self._inflight[(label, c["cmd"])] = jid
+            job = {"id": jid, "state": "queued", "about": about,
                    "provider": info["provider"], "model": info["model"], "label": label,
                    "total": len(todo), "done": 0, "unlabelled": 0,
                    "submitted": time.time(), "started": None, "finished": None,
@@ -561,6 +565,15 @@ class Annotator:
         threading.Thread(target=self._run, args=(job, todo, agent_type), daemon=True,
                          name="annotate-%s" % job["id"]).start()
         return self.view(job["id"])
+
+    def following(self, calls, exclude=None):
+        """The ids of the jobs still asking about any of `calls`, oldest first,
+        but `exclude`: a reader whose calls another request is already asking
+        about follows that request's job rather than seeing nothing."""
+        label = label_of(self.cfg)
+        with self.lock:
+            ids = {self._inflight.get((label, c["cmd"])) for c in calls}
+            return [j for j in self.jobs if j in ids and j != exclude]
 
     def view(self, jid):
         with self.lock:
@@ -590,7 +603,7 @@ class Annotator:
                     with self.lock:
                         table = self._table()
                         for j, c in enumerate(batch):
-                            self._inflight.discard((label, c["cmd"]))
+                            self._inflight.pop((label, c["cmd"]), None)
                             if j not in got:
                                 job["unlabelled"] += 1
                                 continue
@@ -609,4 +622,4 @@ class Annotator:
         finally:
             with self.lock:
                 for c in todo:
-                    self._inflight.discard((label, c["cmd"]))
+                    self._inflight.pop((label, c["cmd"]), None)

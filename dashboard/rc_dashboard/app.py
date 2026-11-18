@@ -505,7 +505,9 @@ def create_app(cfg):
     async def api_annotate(request: Request):
         """`{sid, window_min, from, to, order, run}`: the session's tool calls,
         what is already known of them, and -- with `run` -- a job asking about
-        the rest. The body is the tree's own text, masked once: it is sent as
+        the rest. Calls another request is already asking about are answered by
+        its job: `job` is that one when this request started none, and `also`
+        names any others, so every reader of the session gets the answers. The body is the tree's own text, masked once: it is sent as
         it is, so the page matches each call to its row exactly."""
         body = await request.json()
         sid = body.get("sid")
@@ -527,8 +529,13 @@ def create_app(cfg):
             if body.get("run") and info["enabled"]:
                 row = tree.get("row") if isinstance(tree.get("row"), dict) else {}
                 job = annotator.submit(calls, row.get("agent_type"), about=sid)
+            # calls another request is asking about already: their jobs, to follow
+            also = annotator.following(calls, job["id"] if job else None) \
+                if info["enabled"] else []
+            if job is None and also:
+                job = annotator.view(also.pop(0))
             return {"info": info, "calls": len(calls), "total": total,
-                    "known": known, "job": job}
+                    "known": known, "job": job, "also": also}
 
         try:
             out = await asyncio.to_thread(work)

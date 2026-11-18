@@ -60,13 +60,23 @@ export function useAnnotate(
     };
   }, []);
 
-  const poll = useCallback((j: AnnotateJob, ac: AbortController) => {
+  // jobs still followed: busy until the last of them ends
+  const pending = useRef(0);
+  const ended = useCallback(() => {
+    pending.current = Math.max(0, pending.current - 1);
+    if (!pending.current) setBusy(false);
+  }, []);
+
+  /** Follow a job to its end. `main` is the one the status line reports;
+   *  another request's job, followed alongside, only adds its answers. */
+  const poll = useCallback((j: AnnotateJob | string, ac: AbortController, main: boolean) => {
+    pending.current += 1;
     const step = (cur: AnnotateJob) => {
-      setJob(cur);
+      if (main) setJob(cur);
       setBy((b) => ({ ...b, ...cur.results }));
       if (cur.state === 'done' || cur.state === 'error') {
-        if (cur.state === 'error') setErr(cur.error);
-        setBusy(false);
+        if (cur.state === 'error' && main) setErr(cur.error);
+        ended();
         return;
       }
       setTimeout(() => {
@@ -75,19 +85,24 @@ export function useAnnotate(
           .then(step)
           .catch((e) => {
             if (ac.signal.aborted) return;
-            setErr(String(e?.message ?? e));
-            setBusy(false);
+            if (main) setErr(String(e?.message ?? e));
+            ended();
           });
       }, POLL_MS);
     };
-    step(j);
-  }, []);
+    if (typeof j === 'string') {
+      getAnnotateJob(j, ac.signal)
+        .then(step)
+        .catch(() => !ac.signal.aborted && ended());
+    } else step(j);
+  }, [ended]);
 
   const ask = useCallback(
     (run: boolean) => {
       live.current?.abort();
       const ac = new AbortController();
       live.current = ac;
+      pending.current = 0;
       setErr(null);
       if (run) setBusy(true);
       postAnnotate({ sid, window_min: win, from, to, order, run }, ac.signal)
@@ -96,9 +111,13 @@ export function useAnnotate(
           setInfo(r.info);
           setCounts({ calls: r.calls, total: r.total });
           setBy((b) => ({ ...b, ...r.known }));
-          if (r.job) {
+          // this request's job, or the one already asking about these calls,
+          // and any other asking about some of them: their answers reach
+          // this reader too
+          if (r.job || r.also?.length) {
             setBusy(true);
-            poll(r.job, ac);
+            if (r.job) poll(r.job, ac, true);
+            for (const id of r.also ?? []) poll(id, ac, !r.job);
           } else setBusy(false);
         })
         .catch((e) => {

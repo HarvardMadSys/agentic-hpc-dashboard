@@ -2306,7 +2306,10 @@ export interface AnnotateResponse {
   calls: number;
   total: number;
   known: AnnotateResults;
+  /** this request's job, or, when it started none, the one already asking about its calls */
   job: AnnotateJob | null;
+  /** other jobs already asking about some of its calls, to follow too */
+  also?: string[];
 }
 
 /** Part of one panel's data, as the service keys it: a window panel

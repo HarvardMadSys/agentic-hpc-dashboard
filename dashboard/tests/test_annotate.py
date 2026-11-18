@@ -300,6 +300,29 @@ class AnnotatorTest(unittest.TestCase):
         self.assertIsNone(b.submit(calls))
         self.assertEqual(len(self.asked), 2)
 
+    def test_a_second_request_follows_the_job_already_asking(self):
+        gate = threading.Event()
+
+        def slow(cfg, system, user, timeout):
+            gate.wait(10)
+            return answer_for(user)
+
+        a = annotate.Annotator(Cfg(), complete_fn=slow)
+        calls, _ = annotate.calls_in(TREE)
+        first = a.submit(calls[:2])
+        # the same calls again, and one more: a job for the new one, and the
+        # first job named to follow for the rest
+        second = a.submit(calls)
+        self.assertEqual(second["total"], 1)
+        self.assertEqual(a.following(calls, exclude=second["id"]), [first["id"]])
+        # nothing new: nothing started, and the first job is the one to follow
+        self.assertIsNone(a.submit(calls[:2]))
+        self.assertEqual(a.following(calls[:2]), [first["id"]])
+        gate.set()
+        self.assertEqual(wait(a, first["id"])["state"], "done")
+        wait(a, second["id"])
+        self.assertEqual(a.following(calls), [])
+
     def test_another_model_is_asked_afresh(self):
         cfg = Cfg()
         a = annotate.Annotator(cfg, complete_fn=self.fake)
