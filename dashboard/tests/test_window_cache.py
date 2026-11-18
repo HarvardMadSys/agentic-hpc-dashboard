@@ -610,6 +610,90 @@ class SeamTest(CacheCase):
         self.assertEqual(reads, [False])
         self.assertEqual([self.calls(v) for v in views], [23, 23])
 
+    def building(self, agg, before_plan=None, after_scan=None):
+        """A view built with `before_plan()` run as it plans its read and
+        `after_scan()` once it has read every file: what happens to the files
+        and the tail while the build is under way."""
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        plan, scan = windows.window_plan, windows.window_scan
+
+        def planned(*a, **k):
+            if before_plan:
+                before_plan()
+            return plan(*a, **k)
+
+        def scanned(*a, **k):
+            yield from scan(*a, **k)
+            if after_scan:
+                after_scan()
+        with mock.patch.object(windows, "window_plan", planned), \
+                mock.patch.object(windows, "window_scan", scanned):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        return view
+
+    def test_a_file_replaced_while_the_build_runs_is_counted_once(self):
+        # The review's case: the tail holds a record of the old file, then the
+        # file is replaced (another inode) and the tail reads the new one from
+        # its start; the build reads the new one. The old file's record, its
+        # inode not the seam's, took the seam with it, and the new file's
+        # records -- which the build had read -- were counted again: 9, not 5.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        p = self.path("h1.exits.jsonl")
+
+        def replace():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600, 200)])
+            self.assertEqual(agg.poll_once(), 1)
+            with open(p + ".new", "wb") as fh:
+                fh.write(b"".join(line(exit_rec(self.now - 60 + i, 500 + i)) for i in range(4)))
+            os.replace(p + ".new", p)               # a new inode under the name
+            self.assertEqual(agg.poll_once(), 4)
+        view = self.building(agg, before_plan=replace)
+        self.assertEqual(self.calls(view), 5)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 4)
+
+    def test_records_held_before_a_cut_the_build_read_are_not_counted_again(self):
+        # Held before the file was cut, read by the build, which read the file
+        # before the cut: they are what the seam is of, though the cut drops it.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+
+        def cut():
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+            self.assertEqual(agg.poll_once(), 3)
+        view = self.building(agg, before_plan=more, after_scan=cut)
+        self.assertEqual(self.calls(view), 28)          # 25 read, then 3 new
+        self.assertEqual(self.events(agg)["agent"], 28)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 5)
+
+    def test_records_held_before_a_cut_the_build_read_after_are_counted_once(self):
+        # Held before the file was cut and gone from it after; the build read
+        # what the cut left: they are another generation of the file than the
+        # one the seam is of, and must not take the seam with them.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more_then_cut():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+
+        def noticed():
+            self.assertEqual(agg.poll_once(), 3)
+        view = self.building(agg, before_plan=more_then_cut, after_scan=noticed)
+        self.assertEqual(self.calls(view), 8)           # the 3 it read, the 5 held
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
     def test_a_catch_up_from_before_the_window_is_left_out(self):
         # A scan now would leave out a record older than the window's start, so
         # the live feed does too, and says how many.

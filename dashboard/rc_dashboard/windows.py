@@ -398,6 +398,7 @@ class PanelView:
         self.live_records = 0
         self.live_through = None        # newest ts ingested LIVE since the build
         self._replay = None             # deque while a build is in flight
+        self._replaying = False         # feeding what was held, as the build installs
         # Where the reducers came from and what happened to the saved copy:
         # `source` is "scan" or "snapshot", `note` says why a snapshot was or
         # was not used, `saved_at` when this build was last written down.
@@ -409,10 +410,11 @@ class PanelView:
                       "restored": None, "panels_saved_at": None, "panels_note": None}
 
     # ------------------------------------------------------------------ feed
-    def feed(self, rec, at=None):
+    def feed(self, rec, at=None, unread=False):
         """Called under the aggregator's lock, once per live record. `at` is
         where the tail read it, `((path, st_dev, st_ino), end, ...)`, `end` the
-        offset just past its line (`tail.FileTailSource.poll_at`).
+        offset just past its line (`tail.FileTailSource.poll_at`). `unread`: a
+        record the build did not read, whatever the seam says (`replay`).
 
         During a build the record is buffered instead: the fresh reducers do not
         exist yet, and feeding the outgoing ones would only update state that is
@@ -432,7 +434,7 @@ class PanelView:
             return
         ts = rec.get("_ts_epoch")
         # Already counted: the build read the same line from disk.
-        if self._read_already(ts, at):
+        if not unread and self._read_already(ts, at):
             self.live_skipped["already_read"] += 1
             return
         # Not in the window: a scan now would pass it over, as the build did.
@@ -460,12 +462,16 @@ class PanelView:
         its time.
 
         Once the tail is past the build's end in a file, every line it reads
-        of it after is too: the file leaves `seam`, and so does one that is
-        another file under its name now. A day the collector compresses is the
-        same bytes at the same offsets under its other name, whichever of the
-        two the build read and the tail read it under (`tail.py`): the build
-        the plain file and the tail the `.gz` it was sealed into since, or the
-        tail the plain file while the build ran and the build the `.gz`."""
+        of it after is too: the file leaves `seam`. A record of another file
+        under its name (another inode) is not one the build read: live, the
+        file leaves `seam` with it, the tail being on the new file for good;
+        not as held records are replayed (`replay`), where a record of the file
+        the build read may come after it. A day the collector compresses is
+        the same bytes at the same offsets under its other name, whichever of
+        the two the build read and the tail read it under (`tail.py`): the
+        build the plain file and the tail the `.gz` it was sealed into since,
+        or the tail the plain file while the build ran and the build the
+        `.gz`."""
         if at is None:
             return ts is not None and self.consumed_through is not None \
                 and ts <= self.consumed_through
@@ -481,7 +487,11 @@ class PanelView:
             if got is None:
                 return False
         elif got[0] != dev or got[1] != ino:
-            del seam[key]
+            # Another file under its name: not one the build read. Held for
+            # replay, a record of the file the build read may come after it, so
+            # the seam stays; live, the tail is on the new file for good.
+            if not self._replaying:
+                del seam[key]
             return False
         if end <= got[2]:
             return True
@@ -506,18 +516,33 @@ class PanelView:
         if self._replay is not None:
             self._replay.append((None, path))
 
-    def replay(self, pending, held=()):
+    def replay(self, pending, held=None):
         """The records held while the build ran (`_replay`), fed now its seam is
-        in, and the tail's notices among them (`restarted`): one for a file in
-        `held` was checked against the seam before the lock was taken
-        (`WindowRegistry.restarts_checked`); one that came after drops its file.
-        Under the aggregator's lock."""
-        for rec, at in pending or ():
-            if rec is None:
-                if at not in held:
-                    self.restarted(at)
-            else:
-                self.feed(rec, at)
+        in, and the tail's notices among them (`restarted`), each where it came.
+
+        `held` says, of each file a notice was checked for before the lock was
+        taken (`WindowRegistry.restarts_checked`), whether the build read what
+        it holds now. If it did, what the tail read of it before its last notice
+        is another generation of the file, cut away before the build read it:
+        fed as unread, the seam left as it is, and the notice keeps it. If not,
+        what came before the notice is judged by the seam, which the notice then
+        drops; so does a notice that came after the check. Under the
+        aggregator's lock."""
+        held = held or {}
+        pending = list(pending or ())
+        last = {at: i for i, (rec, at) in enumerate(pending) if rec is None}
+        self._replaying = True
+        try:
+            for i, (rec, at) in enumerate(pending):
+                if rec is None:
+                    if not held.get(at):
+                        self.restarted(at)
+                elif at is not None and held.get(at[0][0]) and i < last.get(at[0][0], -1):
+                    self.feed(rec, at, unread=True)
+                else:
+                    self.feed(rec, at)
+        finally:
+            self._replaying = False
 
     @staticmethod
     def seam_of(files, end_key):
@@ -1247,20 +1272,19 @@ class WindowRegistry:
             view.restarted(path, look)
 
     def restarts_checked(self, view, seam):
-        """The files the tail went back to the start of while `view`'s build ran
-        -- the notices held for it -- each read now, outside the lock, and
-        checked against `seam`, the seam the build is about to install: an entry
-        its file no longer holds leaves it (`Look.holds`). Returns those files,
-        whose notices are answered (`PanelView.replay`)."""
+        """Of each file the tail went back to the start of while `view`'s build
+        ran -- the notices held for it -- whether the build read what it holds
+        now: read now, outside the lock, against `seam`, the seam the build is
+        about to install (`Look.holds`). `PanelView.replay` applies each where
+        its notice came, so what was held before it is judged as it was read."""
         with self.lock:
             paths = {at for rec, at in view._replay or () if rec is None}
+        out = {}
         for path in paths:
             keys = [k for k in (path, _twin(path)) if k in seam]
             look = Look(path, [seam[k][2] for k in keys])
-            for k in keys:
-                if not look.holds(seam[k]):
-                    del seam[k]
-        return paths
+            out[path] = bool(keys) and all(look.holds(seam[k]) for k in keys)
+        return out
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.
