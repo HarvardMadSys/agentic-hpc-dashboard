@@ -2266,6 +2266,56 @@ export interface AskInfo {
   error: string | null;
   timeout_s: number;
 }
+/* -------------------------------------------------------------- annotate */
+
+/** The model that labels tool calls with their purpose (rc_dashboard/annotate.py). */
+export interface AnnotateInfo {
+  enabled: boolean;
+  provider: string;
+  model: string | null;
+  /** where the command lines go, for an HTTP provider */
+  endpoint: string | null;
+  available: boolean;
+  error: string | null;
+  /** annotate a session as soon as it opens */
+  auto: boolean;
+  max_calls: number;
+  kinds: string[];
+  prompt_version: number;
+}
+/** command line, as the tree serves it -> [purpose, kind] */
+export type AnnotateResults = Record<string, [string, string]>;
+export interface AnnotateJob {
+  id: string;
+  state: 'queued' | 'running' | 'done' | 'error';
+  provider: string;
+  model: string | null;
+  /** `provider:model`, who wrote the answers */
+  label: string;
+  /** the session the job was started for */
+  about?: string | null;
+  /** calls asked about, answered so far, and left out by the model's answers */
+  total: number;
+  done: number;
+  unlabelled: number;
+  error: string | null;
+  elapsed_s: number;
+  results: AnnotateResults;
+}
+export interface AnnotateResponse {
+  info: AnnotateInfo;
+  /** distinct tool calls taken (at most info.max_calls), and how many there are */
+  calls: number;
+  total: number;
+  /** the calls taken, as the tree serves their command lines */
+  cmds?: string[];
+  known: AnnotateResults;
+  /** this request's job, or, when it started none, the one already asking about its calls */
+  job: AnnotateJob | null;
+  /** other jobs already asking about some of its calls, to follow too */
+  also?: string[];
+}
+
 /** Part of one panel's data, as the service keys it: a window panel
  * (`tool_mix`, `risk`, ...) or some of its fields, the live tier's small
  * sections (`live`: now, users, hosts, submits), or the ranked sessions
