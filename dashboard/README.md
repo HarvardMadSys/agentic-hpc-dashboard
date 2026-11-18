@@ -1369,7 +1369,8 @@ that, from the window's `slurm` reducer (`reducers/slurm.py`):
   a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
   no id, a non-zero exit and the scheduler's own error line, which is the reason shown
   (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
-  is not a refusal;
+  is not a refusal, nor is srun's own line saying so (`task 0: Exited with exit code 1`): an
+  srun or salloc is refused only when it cannot get the allocation;
 - queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
   gap, not 0.
 

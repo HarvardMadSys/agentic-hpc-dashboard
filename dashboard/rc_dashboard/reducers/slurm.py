@@ -12,8 +12,9 @@ jobs, 112 of them in one minute, and 79% of agent submissions asked for
   what came back: `job` (a job id), `dry_run` (`--test-only`, which never makes
   a job), `step` (`srun --jobid`/`--overlap` into an allocation already held),
   `rejected` (no job id, a non-zero exit, and the scheduler's own refusal --
-  sbatch's error, or an srun/salloc `error:` or allocation line; that line is
-  its reason) or `no_id` (no id read: it exited 0, or an srun ran and failed);
+  sbatch's error, or srun's or salloc's that it could not get the allocation;
+  that line is its reason) or `no_id` (no id read: it exited 0, or an srun
+  ran and failed);
 * **how it was asked**: `--parsable`, `--dependency`, `--wrap`, `--array`, and
   whether the request (partition, time, memory, GPUs) was on the command line
   at all -- a `#SBATCH` line in the script is invisible here (`req_src`);
@@ -53,12 +54,19 @@ FAIL_ROWS = 20
 _DIGITS = re.compile(rb"\d+")
 _NUM = re.compile(r"\d+")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b-\x1f\x7f]")
-# What the scheduler prints when it refuses. sbatch prints nothing else on a
-# failure; srun and salloc also relay the payload's own output, and a program
-# that ran and failed is not a refusal.
-_REFUSAL = re.compile(r"(?:sbatch|srun|salloc): error|submission failed|Unable to allocate"
-                      r"|allocation failure|violates|Invalid (?:account|partition|qos)"
-                      r"|not available|presently disabled|denied", re.I)
+# What the scheduler prints when it refuses, at the start of a line: any error
+# of sbatch's, which prints nothing else on a failure, and srun's and salloc's
+# about the allocation. Those two also relay the payload's own output, and say
+# how it ended in an error line of their own (`srun: error: holy7c24101: task
+# 0: Exited with exit code 1`): a program that ran and failed is not a
+# refusal, nor is a "denied" or "not available" it printed.
+_REFUSAL = re.compile(r"sbatch: error|(?:srun|salloc): error: (?:Unable to allocate"
+                      r"|Job submit/allocate failed|Unable to create step"
+                      r"|Unable to confirm allocation)", re.I)
+# A refusal's reason: the scheduler's first error line, which can say more than
+# the allocation line after it (QOSMaxSubmitJobPerUserLimit). A refused srun ran
+# no task, so none of its error lines is a task's.
+_ERROR = re.compile(r"(?:sbatch|srun|salloc): error", re.I)
 _ARRAY_PART = re.compile(r"^(\d+)(?:-(\d+)(?::(\d+))?)?$")
 
 FLAGS = (
@@ -81,19 +89,24 @@ def outcome(rec):
     ec = rec.get("exit_code")
     if ec not in (0, None) and (
             (rec.get("tool") or "").startswith("sbatch")
-            or _REFUSAL.search(rec.get("captured_tail") or "")):
+            or any(_REFUSAL.match(x) for x in _lines(rec))):
         return "rejected"
     return "no_id"
+
+
+def _lines(rec):
+    """The captured output's lines, escapes and control characters out."""
+    lines = [x.strip() for x in _ANSI.sub("", rec.get("captured_tail") or "").splitlines()]
+    return [x for x in lines if x]
 
 
 def reason(rec):
     """The last line the scheduler printed, with ids and node numbers masked --
     and credentials, since it is served as text of its own."""
-    lines = [x.strip() for x in _ANSI.sub("", rec.get("captured_tail") or "").splitlines()]
-    lines = [x for x in lines if x]
+    lines = _lines(rec)
     # the scheduler's own error line, else the last line printed: sbatch can
     # follow its error with an example script
-    pick = next((x for x in lines if _REFUSAL.search(x)), lines[-1] if lines else None)
+    pick = next((x for x in lines if _ERROR.match(x)), lines[-1] if lines else None)
     if pick:
         return _NUM.sub("N", redact(pick))[:160]
     ec, sig = rec.get("exit_code"), rec.get("signal")
