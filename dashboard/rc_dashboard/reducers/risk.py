@@ -141,10 +141,12 @@ def subst(pattern, vars_):
 # characters never seen before (`'/git '*n + 'push '*n`, `'/rm '*s + '-' + 'r'*m`).
 #
 # So a built-in rule reads the words: the command is the record's own program, never a folder of
-# a path; a flag is a word that begins with `-`, and short ones may stand together (`-rf`) or
-# apart (`-r -f`) up to `--`; and what a rule asks of an argument it asks of that argument (the
-# host an `ssh` goes to, the mode a `chmod` sets). Each rule reads each word once at most. Words
-# are compared case-folded, as the regexes were case-insensitive.
+# a path; a flag is a word that begins with `-`, read as getopt reads it (`_opts`): short ones may
+# stand together (`-rf`) or apart (`-r -f`) up to `--`, and what follows one that takes a value is
+# that value (`curl -XPOST`), not more flags; and what a rule asks of an argument it asks of that
+# argument (the host an `ssh` goes to, the mode a `chmod` sets). Each rule reads each word once at
+# most. Names and words are compared case-folded, as the regexes were case-insensitive, and
+# options as recorded, as the program reads them (curl's `-O` is not its `-o`).
 
 class _Line:
     """A command line as the built-in rules read it: `name`, the command's (case-folded); `words`,
@@ -168,26 +170,31 @@ class _Line:
         self.low = ("%s %s" % (ec, args)).casefold() if low is None else low
 
 
-def _flags(words):
-    """The option words of `words`, up to `--`."""
-    for w in words:
+def _opts(words, valued=""):
+    """The options in `words` (as recorded), up to `--`, as getopt reads them: a long option whole,
+    and each letter of a short-option word as `-x`, up to one in `valued`, which takes a value --
+    the rest of its word (`-XPOST`), or else the next word (`-X POST`). The value is no option."""
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        i += 1
         if w == "--":
             return
-        if len(w) > 1 and w[0] == "-":
+        if len(w) < 2 or w[0] != "-":
+            continue
+        if w[1] == "-":
             yield w
+            continue
+        for j, c in enumerate(w[1:], 1):
+            yield "-" + c
+            if c in valued:
+                if j == len(w) - 1:
+                    i += 1                      # its value is the next word
+                break
 
 
-def _short(w, letters, valued=""):
-    """Whether short-option word `w` (`-rf`) holds one of `letters`, before one that takes a
-    value."""
-    if w[1:2] in ("", "-"):
-        return False
-    for c in w[1:]:
-        if c in letters:
-            return True
-        if c in valued:
-            return False
-    return False
+# The short options that take a value: curl(1)'s and wget(1)'s. git push takes one, `-o`.
+_DOWNLOAD_VALUED = {"curl": "AbcCdDeEFHKmoPQrtTuUwxXyYz", "wget": "aABCDeiIlnoOPQRtTUwXY"}
 
 
 _SSH_VALUED = frozenset("BbcDEeFIiJLlmOoPpQRSWw")   # ssh(1)'s options that take a value
@@ -223,18 +230,15 @@ def _pip_install(line, _):
 def _rm_rf(line, _):
     if line.name != "rm":
         return False
-    r = f = False
-    for w in _flags(line.words):
-        r = r or w == "--recursive" or _short(w, "r")
-        f = f or w == "--force" or _short(w, "f")
-    return r and f
+    opts = set(_opts(line.raw))
+    return bool(opts & {"-r", "-R", "--recursive"}) and bool(opts & {"-f", "--force"})
 
 
 def _git_force_push(line, _):
     if line.name != "git":
         return False
-    sub, rest = _sub(line.words, _GIT_VALUED)
-    return sub == "push" and any(w == "--force" or _short(w, "f", "o") for w in _flags(rest))
+    sub, rest = _sub(line.raw, _GIT_VALUED)
+    return sub.casefold() == "push" and not {"-f", "--force"}.isdisjoint(_opts(rest, "o"))
 
 
 def _chmod_777(line, _):
@@ -259,8 +263,9 @@ def _server(line, _):
 
 
 def _download(line, _):
-    return line.name in ("wget", "curl") and any(
-        w.startswith("--output") or _short(w, "o") for w in _flags(line.words))
+    valued = _DOWNLOAD_VALUED.get(line.name)
+    return valued is not None and any(o in ("-o", "-O") or o.startswith("--output")
+                                      for o in _opts(line.raw, valued))
 
 
 def _headless(line, _):

@@ -49,7 +49,7 @@ MISFIRES = [                                 # the review's: none of them is wha
 HITS = [                                     # (command, argv, the rule it is)
     ("rm", "rm -rf /scratch/shared/old", "rm_rf_shared"), ("rm", "rm -fr x", "rm_rf_shared"),
     ("rm", "/bin/rm -Rf x", "rm_rf_shared"), ("rm", "rm -r -f x", "rm_rf_shared"),
-    ("rm", "rm --recursive --force x", "rm_rf_shared"), ("RM", "RM -RF /x", "rm_rf_shared"),
+    ("rm", "rm --recursive --force x", "rm_rf_shared"), ("RM", "RM -Rf /x", "rm_rf_shared"),
     ("git", "git push --force", "git_force_push"),
     ("git", "git push origin main -f", "git_force_push"),
     ("git", "git -C /w push -uf origin x", "git_force_push"),
@@ -67,6 +67,7 @@ HITS = [                                     # (command, argv, the rule it is)
                                                      "server_on_login"),
     ("jupyter", "jupyter lab --no-browser", "server_on_login"),
     ("curl", "curl -sSLO https://y", "bulk_download"),
+    ("curl", "curl -fo out.txt https://y", "bulk_download"),       # -f is --fail: no value
     ("wget", "wget -O out https://x", "bulk_download"),
     ("hf", "hf download m", "hf_download"),
     ("chrome", "/opt/google/chrome/chrome --headless --dump-dom x", "headless_browser"),
@@ -81,6 +82,11 @@ QUIET = [                                    # what the words say is not the rul
     ("ls", "ls /usr/lib/gcc/x86_64-linux-gnu"), ("ssh-keygen", "ssh-keygen -f node.key"),
     ("curl", "curl https://example.org/my-old-file"), ("chmod", "chmod 600 777"),
     ("ls", "ls /usr/bin/nvidia-smi"), ("jupyter", "jupyter kernelspec list"),
+    # a flag that takes a value: what follows it in the word is the value, not more flags
+    ("curl", "curl -XPOST https://example.com"), ("curl", "curl -Afoo https://example.com"),
+    ("curl", "curl -HOrigin:x https://example.com"),
+    ("curl", "curl -Fupload=@photo.jpg https://example.com/up"),     # -F, not -f: a value
+    ("wget", "wget -UMozilla/5.0 https://x/y"), ("git", "git push -ofoo origin x"),
 ]
 
 

@@ -75,13 +75,15 @@ An added rule:
 | `axis` | | `policy-unaware` | dangerous only: `policy-unaware` (it works, and the site asks you not to) or `environment-unaware` (it runs, and tells you nothing useful here) |
 | `gate` | | none | literals of which at least one appears in **every** line the pattern matches |
 
-**What a rule reads.** A built-in dangerous rule reads the words of the command line, case-
-insensitively: the command is the process's own program (or the script Python runs), never a
-folder of a path, so `ls /usr/local/go/bin` is no build; a flag is a word that begins with `-`,
-and short ones may stand together or apart (`-rf`, `-r -f`), up to `--`; and what a rule asks
-of an argument it asks of that argument alone -- the host an `ssh` goes to, not its remote
-command, and the mode a `chmod` sets, not a file name with `777` in it. The table below says
-what each one asks; the Risk tab shows the same under **Rules in effect**.
+**What a rule reads.** A built-in dangerous rule reads the words of the command line: the
+command is the process's own program (or the script Python runs), never a folder of a path, so
+`ls /usr/local/go/bin` is no build; a flag is a word that begins with `-`, read as the program
+reads it -- short ones may stand together or apart (`-rf`, `-r -f`), up to `--`, and what
+follows one that takes a value is that value, not more flags (`curl -XPOST` asks for no output
+file); and what a rule asks of an argument it asks of that argument alone -- the host an `ssh`
+goes to, not its remote command, and the mode a `chmod` sets, not a file name with `777` in it.
+Names are compared case-insensitively, flags as written (curl's `-O` is not its `-o`). The table
+below says what each one asks; the Risk tab shows the same under **Rules in effect**.
 
 A pattern a profile gives -- an `override` with a `pattern`, or an `add` -- is a regex over the
 command name and its arguments, `"<command> <args>"`, case-insensitively: `git push --force`
