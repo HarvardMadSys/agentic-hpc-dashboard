@@ -121,13 +121,23 @@ table.tj-table td .sub {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
-/* under it, what kind of session it was and the session in a few sentences */
+/* under it, what kind of session it was and the session in a few sentences: set off as a
+ * callout, ruled in its category's colour (`--cat`, set on the element), its figures in bold */
 .ins-gist {
   margin: 0;
-  font-size: 13.5px;
-  line-height: 1.45;
-  color: var(--ink-2);
+  padding: 7px 10px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--cat, var(--edge));
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
   overflow-wrap: anywhere;
+}
+.ins-gist b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .ins-gist .sess-cat {
   margin-right: 6px;
