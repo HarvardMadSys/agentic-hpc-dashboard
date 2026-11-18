@@ -526,6 +526,11 @@ class ReaderTextTest(Served):
             {"question": "q", "context": {"session": SENT, "title": SENT}},
         ],
         "/api/suggestions/done": [{"job": SENT, "index": 0}],
+        # a session's tool calls for the annotator: its sid is the reader's text
+        "/api/annotate": [
+            {"sid": SENT},
+            {"sid": SENT, "window_min": 1440, "order": SENT, "run": False},
+        ],
     }
 
     @classmethod
