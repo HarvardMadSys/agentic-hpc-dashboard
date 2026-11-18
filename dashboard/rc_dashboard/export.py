@@ -27,10 +27,11 @@ from .feedfile import (_MEMO_FILES, _MEMO_PROBES, _identity, _memo, _memo_lock, 
                        _memo_of, _probe, _probe_read, _remember, dated_dirs, feed_files)
 from .normalize import canonical_class, epoch_of
 from .redact import redact
+from .reducers.tools import verdict
 
 
 LIST_FIELDS = ("class", "agent_type", "user", "host", "tool", "purpose", "bucket",
-               "sandbox", "approval", "exit_code", "signal", "event")
+               "sandbox", "approval", "exit_code", "signal", "event", "outcome")
 SCALARS = ("from", "to", "session_key", "depth_min", "depth_max", "cpu_min",
            "duration_min", "q", "rd_min", "wr_min")
 
@@ -149,6 +150,10 @@ def make_predicate(f):
         if f.get("exit_code") and str(rec.get("exit_code")) not in f["exit_code"]:
             return False
         if f.get("signal") and str(rec.get("signal")) not in f["signal"]:
+            return False
+        # how it ended, as the tool mix's exit verdicts word it (`ok` for an
+        # exit 0): a click on a failure count finds the processes it counted
+        if f.get("outcome") and (verdict(rec, rec.get("_eff")) or "ok") not in f["outcome"]:
             return False
         if f.get("session_key") and rec.get("session_key") != f["session_key"]:
             return False

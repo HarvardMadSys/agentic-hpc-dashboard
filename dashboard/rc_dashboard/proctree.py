@@ -85,6 +85,7 @@ from .normalize import Normalizer, epoch_of
 from .where import AfterColon
 from .procindex import VIA
 from .redact import redact
+from .reducers import EXIT_ANSWERS
 from .reducers.trajectories import fold as fold_sessions
 
 NO_PARENT = (None, 0, 1)
@@ -127,8 +128,9 @@ RETYPE_QUICK = 10.0      # seconds: a failed try that ran longer was work, not a
 RETYPE_PAUSE = (0.5, 120.0)  # seconds the shell sat idle before a line a person typed,
                              # and at most from a failed try to the next line
 RETYPE_EDITS = (3, 5)    # edits a retyped line is from the try: 3, or a 5th of its length
-# Programs whose exit 1 is an answer, not a failure: no line matched, the files differ.
-ANSWERS = frozenset({"grep", "egrep", "fgrep", "zgrep", "rg", "ag", "diff", "cmp"})
+# Programs whose exit 1 is an answer, not a failure: no line matched, the files
+# differ. One list with the tool mix's exit verdicts (reducers.EXIT_ANSWERS).
+ANSWERS = EXIT_ANSWERS
 
 DEFAULTS = {
     # Matched exit records read before the scan stops and says where. At ~25 us a

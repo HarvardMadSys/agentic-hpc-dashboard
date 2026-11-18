@@ -17,6 +17,14 @@ Two conventions every reducer obeys:
 import collections
 import math
 
+# Programs whose exit 1 is an answer, not a failure: no line matched, the files
+# differ. Their 2 and up are still failures. One list, read by the tool mix's
+# exit verdicts and by the inspector's "hide typos" (proctree._slip).
+EXIT_ANSWERS = frozenset({"grep", "egrep", "fgrep", "zgrep", "rg", "ag", "diff", "cmp"})
+# What a process gets when the reader of its output has gone: `cmd | head` ends
+# `cmd` this way once head has its lines. The pipeline worked; nothing failed.
+SIGPIPE = 13
+
 
 class Reducer:
     EVENTS = ()

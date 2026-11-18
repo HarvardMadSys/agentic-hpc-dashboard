@@ -11,7 +11,7 @@
  * sampled while processes run, and its pill says that instead.
  */
 import { memo, useState } from 'react';
-import type { Accum, Cls, MaxProcess, Quant, Resources } from '../api/types';
+import type { Accum, Cls, LiveResponse, MaxProcess, Quant, Resources } from '../api/types';
 import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
@@ -23,6 +23,7 @@ import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import { InstanceTable, RiskIoTab } from './RiskIoTab';
+import { NodeHealth } from './NodeHealth';
 import type { ResourceInstance } from '../api/types';
 import type { Panels } from '../lib/panels';
 
@@ -311,10 +312,12 @@ export type { TimeLine, View };
  * question, so they sit on Internal (`part="internal"`), with the I/O panels
  * that are the same kind of table or repeat a Live chart. Same payloads, same
  * titles, so a citation lands on whichever tab draws the panel (lib/cites.ts). */
-export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main' }: {
+export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', live = null }: {
   P: Panels;
   cls: Cls[];
   part?: 'main' | 'internal';
+  /** the live frame: what the eBPF tier's D-state processes were blocked in */
+  live?: LiveResponse | null;
 }) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
   const byClass = r.by_class ?? {};
@@ -324,6 +327,12 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main' }
   if (part === 'main') {
     return (
       <>
+        {/* the node as a whole, before its processes: what the eBPF tier
+            cannot see (load, file servers, disks, accounts' limits) */}
+        <div className="grid wide">
+          <NodeHealth P={P} live={live} />
+        </div>
+        <div className="grid-gap" />
         <div className="grid wide">
           <WorstPanel r={r} />
         </div>

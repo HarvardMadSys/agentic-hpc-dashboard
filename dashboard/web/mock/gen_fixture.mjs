@@ -283,6 +283,65 @@ function toolMix() {
       rule: 'resolved shell dropped iff its captured direct child is the command it resolved to',
     },
     cpu_basis: 'self cpu_s, each process once; child_cpu_s NEVER added (it double-counts the tree)',
+    exits: exits(),
+  };
+}
+
+/* How the tool mix's processes ended (reducers/tools.py `exits`). The awkward
+ * states the panel has to word: a test runner failing most of its runs, a
+ * command not found (127), a timeout's SIGKILL, grep's exit 1 that is an
+ * answer, `| head`'s SIGPIPE, and records with no ending at all. */
+function exits() {
+  const row = (tool, bucket, calls, nonzero, answer = 0, signal = 0, pipe = 0, none = 0) =>
+    ({ tool, bucket, calls, nonzero, answer, signal, pipe, none });
+  const block = (tools, codes, signals) => {
+    const sum = (k) => tools.reduce((a, r) => a + r[k], 0);
+    const buckets = {};
+    for (const r of tools) {
+      const b = (buckets[r.bucket] ??= { b: r.bucket, calls: 0, nonzero: 0, answer: 0, signal: 0, pipe: 0, none: 0 });
+      for (const k of ['calls', 'nonzero', 'answer', 'signal', 'pipe', 'none']) b[k] += r[k];
+    }
+    return {
+      calls: sum('calls') * 9, nonzero: sum('nonzero'), answer: sum('answer'), signal: sum('signal'),
+      pipe: sum('pipe'), none: sum('none'), codes, signals,
+      tools: tools.filter((r) => r.nonzero + r.signal > 0),
+      buckets: Object.values(buckets),
+    };
+  };
+  const agent = [
+    row('pytest', 'interpreter', 41_884, 18_412, 0, 211),
+    row('python', 'interpreter', 188_442, 9_884, 0, 1_204, 0, 12),
+    row('make', 'build', 24_118, 6_114),
+    row('nvidia-smi', 'poll/probe', 4_118, 4_118),
+    row('timeout', 'other', 2_884, 0, 0, 1_942),
+    row('grep', 'search', 212_118, 1_884, 41_220, 0, 8_118),
+    row('git', 'git', 141_204, 4_212),
+    row('squeue', 'slurm-query', 88_412, 118, 0, 0, 0, 4),
+    row('cat', 'files', 302_118, 412, 0, 0, 21_884),
+  ];
+  const human = [
+    row('make', 'build', 8_118, 1_204),
+    row('python', 'interpreter', 12_884, 884, 0, 412),
+    row('grep', 'search', 21_412, 212, 6_118),
+    row('vim', 'files', 4_118, 12, 0, 88),
+  ];
+  const ide = [
+    row('node', 'runtime', 88_412, 1_204, 0, 2_118),
+    row('git', 'git', 41_118, 884),
+    row('rg', 'search', 64_118, 0, 18_442),
+  ];
+  return {
+    by_class: {
+      agent: block(agent, [[1, 29_412], [127, 4_206], [2, 6_118], [124, 1_118]], [[9, 2_412], [15, 941], [11, 4]]),
+      human: block(human, [[1, 1_412], [2, 818], [130, 88]], [[2, 412], [15, 88]]),
+      ide: block(ide, [[1, 2_088]], [[15, 2_118]]),
+    },
+    by_agent_type: {
+      claude_code: block(agent.slice(0, 6), [[1, 21_884], [127, 3_118], [2, 4_412]], [[9, 1_884], [15, 412]]),
+      codex: block(agent.slice(3), [[1, 7_528], [127, 1_088], [124, 1_118]], [[9, 528], [15, 529]]),
+    },
+    answers: ['ag', 'cmp', 'diff', 'egrep', 'fgrep', 'grep', 'rg', 'zgrep'],
+    basis: 'a process\'s own wait status, after the shell dedup above',
   };
 }
 
@@ -1866,6 +1925,149 @@ function users(nowEpoch, traj) {
   return { roster: { ...shared, users: rows, fleet, unattributed: 0 }, portraits };
 }
 
+/* The node tier right now, and over the window (rc_dashboard/nodehist.py).
+ * What it has to show: a slow node (its probes ten times the rest), an NFS
+ * hiccup in the same bins as the resources series' stall, a host whose
+ * snapshots stopped for 40 minutes (a hole, not a zero), a full /tmp and a
+ * /var out of file slots, an account held back at its CPU limit, one whose
+ * cgroup was made again, and processes stuck in NFS waits. */
+function nodePanel(nowEpoch) {
+  const BIN = 600;
+  const N = 144;
+  const start = Math.floor(nowEpoch / BIN) - N + 1;
+  const t = Array.from({ length: N }, (_, i) => (start + i) * BIN);
+  const hiccup = (i) => i > 70 && i < 76;
+  const holy = (h) => h.startsWith('holy');
+  const slow = 'boslogin01';
+  const r2 = (v) => Number(v.toFixed(2));
+  const series = { hosts: {} };
+  for (const [hi, h] of HOSTS.entries()) {
+    const gone = (i) => h === 'boslogin02' && i >= 40 && i < 44;
+    const f = (fn) => t.map((_, i) => (gone(i) ? null : fn(i)));
+    series.hosts[h] = {
+      fork_exec_ms: f((i) => r2((h === slow ? 14 : 1.4) * (1 + 0.3 * wob(i, 70 + hi)) * (hiccup(i) && holy(h) ? 9 : 1))),
+      stat_local_ms: f((i) => r2(0.02 + 0.01 * wob(i, 80 + hi))),
+      getent_ms: f((i) => r2((h === slow ? 220 : 4.2) * (1 + 0.4 * wob(i, 90 + hi)))),
+      load_1: f((i) => r2((4 + hi * 1.8) * diurnal(i * 10) * (1 + 0.5 * wob(i, 100 + hi)))),
+      iowait_pct: f((i) => r2((hiccup(i) && holy(h) ? 18 : 0.4) * (1 + wob(i, 110 + hi)))),
+      mem_used_pct: f((i) => r2(28 + hi * 6 + 8 * diurnal(i * 10))),
+      d_state: f((i) => (hiccup(i) && holy(h) ? 6 + hi : 0)),
+      nfs_rd_rtt_ms: f((i) => r2((hiccup(i) && holy(h) ? 140 : 1.2) * (1 + 0.5 * wob(i, 120 + hi)))),
+      nfs_wr_rtt_ms: f((i) => r2((hiccup(i) && holy(h) ? 310 : 5.1) * (1 + 0.5 * wob(i, 130 + hi)))),
+      nfs_retrans: f((i) => (hiccup(i) && holy(h) ? 2 + (i % 3) : 0)),
+      snapshots: f(() => 2),
+    };
+  }
+  const user = (u, cores, quota, held, mem, pids, extra = {}) => ({
+    user: u, uid: 20_000 + USERS.indexOf(u), cpu_delta_s: cores == null ? null : r2(cores * 300), gap_s: 300,
+    counter_reset: false, cpu_cores: cores, cpu_quota_cores: quota, throttled_delta_s: held,
+    mem_gb: mem, pids, pids_max: 4096, ...extra,
+  });
+  const hosts = HOSTS.map((h, i) => ({
+    host: h, ts: new Date((nowEpoch - 60 - i * 37) * 1000).toISOString().slice(0, 19).replace('T', ' '),
+    epoch: nowEpoch - 60 - i * 37, synthetic: false, privileged: true,
+    load_1: r2(6 + i * 2.1), load_5: r2(5.6 + i * 1.9), load_15: r2(5.1 + i * 1.7),
+    mem_total_gb: 503.4, mem_used_gb: r2(140 + i * 31), mem_used_pct: r2((100 * (140 + i * 31)) / 503.4),
+    mem_available_gb: r2(503.4 - 140 - i * 31 - 12), cpu_idle_pct: r2(88 - i * 6.2), cpu_iowait_pct: i === 2 ? 11.4 : 0.3,
+    procs_running: 4 + i, procs_blocked: i === 2 ? 14 : 0, btime: nowEpoch - 86_400 * (11 + i),
+    d_state_procs: i === 2 ? 14 : i === 4 ? 3 : 0,
+    d_state: i === 2
+      ? Array.from({ length: 14 }, (_, k) => ({
+          pid: 3_118_000 + k * 7, ppid: 3_117_990, user: USERS[k % 4],
+          wchan: k < 9 ? 'rpc_wait_bit_killable' : k < 12 ? 'nfs_wait_on_request' : '-',
+          kstack: k < 3 ? ['rpc_wait_bit_killable', '__rpc_execute', 'rpc_execute', 'nfs4_proc_getattr'] : null,
+          args: k % 2 ? 'python train.py --data /n/holyscratch01/lab/era5' : 'ls -la /n/holyscratch01/lab',
+        }))
+      : i === 4
+        ? [{ pid: 88_412, ppid: 1, user: 'rkoshy', wchan: 'folio_wait_bit_common', kstack: null, args: 'tar xzf data.tar.gz' }]
+        : [],
+    zombie: i === 3 ? 2 : 0,
+    fork_exec_ms: h === slow ? 18.4 : r2(1.3 + i * 0.1), stat_local_ms: 0.02, getent_ms: h === slow ? 241.8 : r2(4 + i * 0.2),
+    logged_in_users: 12 + i * 5, fds_allocated: 41_118 + i * 1_204, snapshots: 2,
+    per_user: i === 0
+      ? [user('thomwg11', 3.98, 4, 41.2, 18.4, 412), user('aparker', 0.41, 4, 0, 2.1, 38),
+         user('lzhang', null, 4, null, 0.4, 6, { counter_reset: true })]
+      : [user(USERS[(i + 2) % USERS.length], r2(0.2 + i * 0.3), 4, 0, r2(1.2 + i), 24 + i)],
+    per_user_resets: i === 0 ? 1 : 0,
+    throttled_users: i === 0 ? 1 : 0,
+  }));
+  const nfs = HOSTS.flatMap((h, i) => ['/n/home01', '/n/holyscratch01'].map((m, j) => ({
+    host: h, mount: m, fstype: 'nfs4', bad_xid: i === 2 && j ? 12 : 0, backlog_u: i === 2 && j ? 3.2 : 0,
+    rd_ops_total: 1_841_118 + i * 41_118, wr_ops_total: 412_118 + i * 8_118,
+    ops_s: r2(41 + i * 8 + j * 12), rd_kb_s: r2(840 + i * 120), wr_kb_s: r2(120 + i * 40),
+    // the home mount on the last host did no I/O in the sample: no round trip, not one of 0
+    rd_rtt_ms: i === 5 && !j ? null : i === 2 && j ? 141.2 : r2(1.1 + j * 0.4),
+    rd_exe_ms: i === 5 && !j ? null : i === 2 && j ? 188.4 : r2(1.4 + j * 0.4),
+    rd_retrans: i === 5 && !j ? null : i === 2 && j ? 3 : 0,
+    wr_rtt_ms: i === 5 && !j ? null : r2(4.8 + j * 1.2), wr_exe_ms: i === 5 && !j ? null : r2(5.9 + j * 1.2),
+    wr_retrans: i === 5 && !j ? null : 0,
+  })));
+  const disk = HOSTS.flatMap((h, i) => [
+    { host: h, mountpoint: '/', fstype: 'xfs', total_gb: 214.7, used_pct: r2(38 + i * 3.1), inode_used_pct: r2(6 + i) },
+    { host: h, mountpoint: '/tmp', fstype: 'xfs', total_gb: 858.9, used_pct: h === 'boslogin02' ? 96.4 : r2(12 + i * 4), inode_used_pct: r2(2 + i) },
+    { host: h, mountpoint: '/var', fstype: 'xfs', total_gb: 107.3, used_pct: r2(41 + i), inode_used_pct: h === 'holylogin02' ? 93.1 : r2(9 + i) },
+  ].map((d) => ({ ...d, full: d.used_pct >= 90 || d.inode_used_pct >= 90 })));
+  return {
+    ...ENV('ebpf_node', ['/var/log/ebpfm-login']),
+    hosts, nfs, disk,
+    thresholds: { disk_full_pct: 90, inode_full_pct: 90 },
+    series: {
+      bin_s: BIN, t, interval_s: 300,
+      fields: { fork_exec_ms: 'max', stat_local_ms: 'max', getent_ms: 'max', load_1: 'mean', iowait_pct: 'mean',
+                mem_used_pct: 'mean', d_state: 'max', nfs_rd_rtt_ms: 'max', nfs_wr_rtt_ms: 'max', nfs_retrans: 'max' },
+      hosts: series.hosts, state: 'ready', passes: 4, error: null,
+      read: { files: 12, lines: 6_912, bad: 0, bytes: 1_418_224_118 }, held_from: t[0] - 6 * 86_400, days: 8,
+    },
+    cpu_delta_basis: 'per_user_cgroup.cpu_usage_usec is CUMULATIVE; cpu_delta_s is the difference between the two newest snapshots',
+    privilege: 'cgroup v2 stats are readable by the slice owner and root',
+  };
+}
+
+/* Each class per day over retention (reducers/live.py `daily`): the oldest day
+ * cut where retention starts, a day the collector wrote nothing in (null, not
+ * 0), and today, still going. Dates in the generator's local time, like the
+ * live tab's clock strings. */
+function trendPanel(nowEpoch) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date(nowEpoch * 1000);
+  const days = [];
+  for (let k = 7; k >= 0; k--) {
+    const d0 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - k);
+    const d1 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - k + 1);
+    const a = d0.getTime() / 1000;
+    const b = d1.getTime() / 1000;
+    const lo = nowEpoch - 7 * 86_400;
+    const from = Math.max(a, lo);
+    const to = Math.min(b, nowEpoch);
+    const minutes = Math.floor((to - from) / 60);
+    const dark = k === 4;           // the collector wrote nothing that day
+    const held = dark ? 0 : Math.round(minutes * (k === 2 ? 0.92 : 0.99));
+    const grow = 1 + (7 - k) * 0.09;
+    const part = minutes / 1440;
+    const cell = (n, cpu, users) => (dark ? { n: null, cpu_s: null, users: null }
+      : { n: Math.round(n * grow * part), cpu_s: Number((cpu * grow * part).toFixed(1)), users });
+    days.push({
+      date: `${d0.getFullYear()}-${pad(d0.getMonth() + 1)}-${pad(d0.getDate())}`,
+      from, to, today: k === 0, cut: a < lo, minutes, held,
+      by_class: {
+        agent: cell(4_812_446 / 7, 91_244.8 / 7, 30 + (7 - k) * 2),
+        human: cell(384_902 / 7, 26_408.4 / 7, 128 - k),
+        ide: cell(1_964_118 / 7, 48_611.2 / 7, 58 + (k % 3)),
+      },
+      types: dark ? {} : {
+        claude_code: { users: 19 + (7 - k), n: Math.round((2_888_000 / 7) * grow * part), cpu_s: Number(((54_000 / 7) * grow * part).toFixed(1)) },
+        codex: { users: 11 + Math.floor((7 - k) / 2), n: Math.round((1_640_000 / 7) * grow * part), cpu_s: Number(((31_000 / 7) * grow * part).toFixed(1)) },
+        copilot: { users: 3, n: Math.round((284_446 / 7) * part), cpu_s: Number(((6_244 / 7) * part).toFixed(1)) },
+      },
+    });
+  }
+  return {
+    ...ENV('ebpfm', EBPFM_PATHS),
+    days, bin_s: 60, retention_minutes: 10_080, retained_from: nowEpoch - 7 * 86_400, tz: 'EDT',
+    basis: 'processes and CPU from the live tier\'s minute bins; users and agent types from its roster',
+  };
+}
+
 function build() {
   const nowEpoch = 1_789_400_000; // fixed: the fixture must be byte-stable
   const nowIso = new Date(nowEpoch * 1000).toISOString();
@@ -2030,6 +2232,8 @@ function build() {
     users: 18 + i * 7,
     tcp_open_ext: 88 + i * 24,
     by_class: { agent: 61 + i * 38, 'ide': 22 + i * 12, human: 35 + i * 11 },
+    // what the tracked D-state processes were blocked in (residency_totals)
+    d_stack_top: i === 2 ? { rpc_wait_bit_killable: 9, nfs_wait_on_request: 3, folio_wait_bit_common: 2 } : null,
   }));
 
   const submits = Array.from({ length: 14 }, (_, i) => ({
@@ -2090,6 +2294,8 @@ function build() {
         sandbox: sandbox(),
         trajectories: trajectories(nowEpoch),
         cascades: cascades(nowEpoch),
+        node: nodePanel(nowEpoch),
+        trend: trendPanel(nowEpoch),
         /* An absent panel, so <EmptyState> is verifiable without the backend. */
         gpu_duty: {
           _feed: 'dcgm',

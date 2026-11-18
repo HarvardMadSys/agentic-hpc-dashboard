@@ -19,6 +19,7 @@
  *   place that shows them is drawn in the dashed `inferred` style.
  */
 import { ToolPanels } from './ToolPanels';
+import { ExitsPanel } from './ExitsPanel';
 import { memo, useEffect, useRef, useState } from 'react';
 import type {
   Cls,
@@ -1377,6 +1378,12 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
           (roadmap notes 46 and 47). */}
       <div className="grid-gap" />
       <ToolPanels P={P} cls={cls} />
+
+      {/* how those processes ended: the tool mix's exit verdicts */}
+      <div className="grid-gap" />
+      <div className="grid wide">
+        <ExitsPanel P={P} cls={cls} />
+      </div>
     </>
   );
 });

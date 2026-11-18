@@ -481,7 +481,7 @@ export default function App() {
           />
         );
       case 'resources':
-        return <ResourcesTab P={P} cls={cls} />;
+        return <ResourcesTab P={P} cls={cls} live={live.live} />;
       case 'risk':
         return <RiskIoTab P={P} cls={cls} part="risk" />;
       case 'chat':

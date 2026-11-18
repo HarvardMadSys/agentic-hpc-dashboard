@@ -22,6 +22,8 @@ export function CountCost({
   costAxis = '% of CPU seconds',
   pctAxis = true,
   labelTop = true,
+  countFmt,
+  costFmt,
 }: {
   /** One group per category; `v` holds `${cls}` -> count and `cpu:${cls}` -> cost. */
   groups: BarGroup[];
@@ -37,10 +39,15 @@ export function CountCost({
   /** print each bar's value above it. On by default: a share near 0 draws a bar
    *  a pixel tall, and hover is not a reasonable way to read a number. */
   labelTop?: boolean;
+  /** how each chart writes a value and a tick when the axes are not shares */
+  countFmt?: (v: number) => string;
+  costFmt?: (v: number) => string;
 }) {
   const f = pctAxis
     ? { fmtVal: (v: number) => v.toFixed(1) + '%', tickFmt: (t: number) => t + '%' }
     : {};
+  const fCount = !pctAxis && countFmt ? { fmtVal: countFmt, tickFmt: countFmt } : f;
+  const fCost = !pctAxis && costFmt ? { fmtVal: costFmt, tickFmt: costFmt } : f;
   const costGroups: BarGroup[] = groups.map((g) => ({
     k: g.k,
     k2: g.k2,
@@ -63,7 +70,7 @@ export function CountCost({
         maxBar={maxBar}
         ylabel={countAxis}
         labelTop={labelTop}
-        {...f}
+        {...fCount}
       />
       <div className="eyebrow" style={{ marginTop: 6 }}>
         {costLabel}
@@ -76,7 +83,7 @@ export function CountCost({
         maxBar={maxBar}
         ylabel={costAxis}
         labelTop={labelTop}
-        {...f}
+        {...fCost}
       />
       <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
     </>

@@ -22,6 +22,8 @@ import { ActiveUsers, scrollToUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
 import { WindowCharts } from './LiveCharts';
+import { DayByDay } from './DayByDay';
+import { Attention } from './Attention';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
@@ -300,9 +302,21 @@ export const LiveTab = memo(function LiveTab({
         _notice: liveFeed?.notice ?? 'nothing has arrived on the live stream yet',
       } as const);
 
+  // what the service has flagged, first: it reads the window's panels and the
+  // feeds, not the live tier, so it is here with the live tier missing too
+  const attention = (
+    <>
+      <div className="grid wide">
+        <Attention P={P} cls={cls} feeds={feeds} />
+      </div>
+      <div className="grid-gap" />
+    </>
+  );
+
   if (envelope) {
     return (
       <>
+        {attention}
         <div className="grid wide">
           <Panel title="Live stream" span feed={envelope._feed}>
             <EmptyState
@@ -333,6 +347,7 @@ export const LiveTab = memo(function LiveTab({
 
   return (
     <>
+      {attention}
       {/* Two rows, each saying which span it counts: the same word ("sessions",
           "users") means a different span in each (roadmap note 1). */}
       <div className="rowlabel">right now</div>
@@ -444,6 +459,9 @@ export const LiveTab = memo(function LiveTab({
 
         {/* what happened, then who did it: the window's shares, in every unit */}
         {whoUses && <div className="span2">{whoUses}</div>}
+
+        {/* the same question over days: every day the service holds */}
+        <DayByDay P={P} cls={cls} who={who ?? null} />
 
         <WindowCharts P={P} cls={cls} />
 

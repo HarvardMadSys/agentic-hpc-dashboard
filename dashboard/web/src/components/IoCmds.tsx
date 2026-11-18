@@ -54,6 +54,7 @@ function params(q: IoQuery, win: number | null, who: Who, cls: Cls[]): URLSearch
   many('agent_type', q.agent_type ?? (q.unfiltered ? undefined : who.atypes));
   many('tool', q.tool);
   many('bucket', q.bucket);
+  many('outcome', q.outcome);
   if (q.host) p.set('host', q.host);
   if (q.apid?.length) p.set('apid', q.apid.join(','));
   if (q.cwd) p.set('cwd', q.cwd);
@@ -61,6 +62,16 @@ function params(q: IoQuery, win: number | null, who: Who, cls: Cls[]): URLSearch
   if (q.to != null) p.set('to', String(q.to));
   return p;
 }
+
+/** An exit verdict in the words the Non-zero exits panel uses. */
+const OUTCOME_WORDS: Record<string, string> = {
+  nonzero: 'exited non-zero',
+  signal: 'stopped by a signal',
+  answer: 'exit 1 that is an answer',
+  pipe: 'SIGPIPE',
+  none: 'no exit recorded',
+  ok: 'exit 0',
+};
 
 /** What the lookup was narrowed to, in words, for the drawer's head. */
 function narrowed(q: IoQuery, who: Who, cls: Cls[]): string[] {
@@ -73,6 +84,7 @@ function narrowed(q: IoQuery, who: Who, cls: Cls[]): string[] {
   if (a?.length) out.push(a.join(', '));
   if (q.tool?.length) out.push(`tool ${q.tool.join(', ')}`);
   if (q.bucket?.length) out.push(`kind ${q.bucket.join(', ')}`);
+  if (q.outcome?.length) out.push(q.outcome.map((o) => OUTCOME_WORDS[o] ?? o).join(' or '));
   if (q.apid?.length) out.push(`agent pid ${q.apid.length > 3 ? `${q.apid[0]} and ${q.apid.length - 1} subagents` : q.apid.join(', ')}${q.host ? ` on ${q.host}` : ''}`);
   if (q.cwd) out.push(`in ${q.cwd}`);
   return out;

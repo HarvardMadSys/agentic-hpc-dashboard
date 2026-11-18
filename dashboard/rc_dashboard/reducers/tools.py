@@ -18,12 +18,40 @@ conservative rule.
 """
 import collections
 
-from . import Reducer, add_counts, pct
+from . import EXIT_ANSWERS, SIGPIPE, Reducer, add_counts, pct
 from ..procindex import pop_oldest
 from ..tool_buckets import BUCKETS, bucket
 
 # The key prefix of an agent type's own counters, beside its class's.
 TYPE = "agent:"
+
+# How each counted process ended, apart from a plain exit 0 (`verdict`). Only
+# these are kept -- an exit 0 is the rest of a tool's calls -- so the maps stay
+# as sparse as the failures are.
+#   nonzero  a non-zero exit, other than an answer
+#   answer   exit 1 from a program whose 1 is an answer (EXIT_ANSWERS)
+#   signal   ended by a signal, other than SIGPIPE
+#   pipe     ended by SIGPIPE: what read its output had gone (`| head`)
+#   none     no verdict on the record
+VERDICTS = ("nonzero", "answer", "signal", "pipe", "none")
+# The exit codes and signals listed per class or agent type, the most first.
+CODES_N = 8
+
+
+def verdict(rec, tool):
+    """How a process ended: one of VERDICTS, or None for a plain exit 0.
+
+    The collector's `exit_code` is null exactly when a signal ended the process
+    (`signal` set) -- the shell's 128+N is not applied -- and both are null on a
+    record with no wait status."""
+    sig, code = rec.get("signal"), rec.get("exit_code")
+    if sig is not None:
+        return "pipe" if sig == SIGPIPE else "signal"
+    if code is None:
+        return "none"
+    if code == 0:
+        return None
+    return "answer" if code == 1 and tool in EXIT_ANSWERS else "nonzero"
 
 
 class ToolMixReducer(Reducer):
@@ -60,6 +88,13 @@ class ToolMixReducer(Reducer):
         # came from. Flat Counters, so a saved window pickles them as they are.
         self.at_calls = collections.Counter()
         self.at_cpu = collections.Counter()
+        # How the counted processes ended (VERDICTS), per class and agent type,
+        # by tool and by kind of tool; and which exit codes and signals the
+        # failures were. Same population as the calls: after the dedup.
+        self.x_tool = {v: collections.defaultdict(collections.Counter) for v in VERDICTS}
+        self.x_bucket = {v: collections.defaultdict(collections.Counter) for v in VERDICTS}
+        self.x_codes = collections.defaultdict(collections.Counter)
+        self.x_signals = collections.defaultdict(collections.Counter)
         self.child_tok = collections.OrderedDict()   # (sid, ppid) -> {child effective_comm}
         self.dropped = 0
         self.total = 0
@@ -97,7 +132,15 @@ class ToolMixReducer(Reducer):
         net = ((rec.get("net_tx_bytes") or 0) + (rec.get("net_rx_bytes") or 0)) / 1e6
         rss = rec.get("peak_rss_mb")
         atype = rec.get("agent_type")
+        how = verdict(rec, ec)
         for k in (cls, TYPE + atype) if cls == "agent" and atype else (cls,):
+            if how is not None:
+                self.x_tool[how][k][t] += 1
+                self.x_bucket[how][k][b] += 1
+                if how == "nonzero":
+                    self.x_codes[k][rec.get("exit_code")] += 1
+                elif how == "signal":
+                    self.x_signals[k][rec.get("signal")] += 1
             self.b_calls[k][b] += 1
             self.b_cpu[k][b] += cpu
             self.t_calls[k][t] += 1
@@ -143,7 +186,10 @@ class ToolMixReducer(Reducer):
                              (self.t_calls, o.t_calls), (self.t_cpu, o.t_cpu),
                              (self.b_io, o.b_io), (self.b_net, o.b_net), (self.b_mem, o.b_mem),
                              (self.t_io, o.t_io), (self.t_net, o.t_net),
-                             (self.t_mem, o.t_mem), (self.t_mem_n, o.t_mem_n)):
+                             (self.t_mem, o.t_mem), (self.t_mem_n, o.t_mem_n),
+                             (self.x_codes, o.x_codes), (self.x_signals, o.x_signals),
+                             *((self.x_tool[v], o.x_tool[v]) for v in VERDICTS),
+                             *((self.x_bucket[v], o.x_bucket[v]) for v in VERDICTS)):
             for cls, c in theirs.items():
                 add_counts(mine[cls], c)
         for cls, c in o.t_mem_max.items():
@@ -236,6 +282,32 @@ class ToolMixReducer(Reducer):
             "mem_max_mb": round(self.t_mem_max[k][t], 1) if t in self.t_mem_max[k] else None,
         } for t in pick]
 
+    def _exits(self, k):
+        """How one class's (or agent type's) processes ended: the totals, the
+        exit codes and signals of the failures, and per tool and kind of tool
+        the calls beside each verdict. The tools listed are the union of the
+        head_n with the most of each failing verdict, each row carrying all of
+        them; a tool that never failed is the rest of `calls`."""
+        def counts(store, key):
+            return {v: store[v][k].get(key, 0) for v in VERDICTS}
+
+        total = {v: sum(self.x_tool[v][k].values()) for v in VERDICTS}
+        pick = set()
+        for v in ("nonzero", "signal"):
+            pick.update(t for t, _n in self.x_tool[v][k].most_common(self.head_n))
+        return {
+            "calls": sum(self.t_calls[k].values()),
+            **total,
+            "codes": [[c, n] for c, n in self.x_codes[k].most_common(CODES_N)],
+            "signals": [[g, n] for g, n in self.x_signals[k].most_common(CODES_N)],
+            "tools": sorted(({"tool": t, "bucket": bucket(t if t != "(empty)" else ""),
+                              "calls": self.t_calls[k].get(t, 0), **counts(self.x_tool, t)}
+                             for t in pick),
+                            key=lambda r: (-(r["nonzero"] + r["signal"]), r["tool"])),
+            "buckets": [{"b": b, "calls": self.b_calls[k].get(b, 0), **counts(self.x_bucket, b)}
+                        for b in BUCKETS if self.b_calls[k].get(b)],
+        }
+
     def result(self):
         units = list(self.b_calls)
         classes = [k for k in units if not k.startswith(TYPE)]
@@ -253,6 +325,18 @@ class ToolMixReducer(Reducer):
             # untagged process (a person's shell) is the type ""
             "by_type": self._by_type(),
             "head": {k: self._head(k) for k in classes},
+            # how the processes ended, per class and per agent type (`_exits`)
+            "exits": {
+                "by_class": {k: self._exits(k) for k in classes},
+                "by_agent_type": {k[len(TYPE):]: self._exits(k) for k in types},
+                "answers": sorted(EXIT_ANSWERS),
+                "basis": "a process's own wait status, after the shell dedup above. "
+                         "exit_code is null exactly when a signal ended it; the "
+                         "shell's 128+N is not applied. An exit 1 from %s is an "
+                         "answer (no match, files differ), not a failure; SIGPIPE "
+                         "is a reader that went first (`| head`), not a failure."
+                         % ", ".join(sorted(EXIT_ANSWERS)),
+            },
             # how many different tools each class ran: the head shows only the top
             "n_tools": {k: len(self.t_calls[k]) for k in classes},
             "dedup": {"dropped": self.dropped,

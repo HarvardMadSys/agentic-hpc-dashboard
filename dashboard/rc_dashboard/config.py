@@ -100,6 +100,9 @@ def defaults():
                 "roots": _node_candidates(),
                 "days": 2,
                 "snapshots_per_host": 2,   # cpu_usage_usec is cumulative: need a delta
+                # day-dirs the node history reads (nodehist.py); 0 is enough
+                # for retention, whatever `days` above
+                "series_days": 0,
                 "max_age_s": 900,
                 "required": False,
             },
@@ -152,6 +155,9 @@ def defaults():
         # See clock.py.
         "clock": {"as_of": ""},
         "rebuild": {"interval_s": 900},
+        # The login-node health panel's lines (reducers.resources.NodeReducer):
+        # a local filesystem at or past either is flagged full.
+        "node": {"disk_full_pct": 90, "inode_full_pct": 90},
         # A cluster without Slurm turns this off and the Slurm tab goes away;
         # nothing else depends on it (the tool mix keeps its two scheduler
         # kinds, which simply stay empty there).

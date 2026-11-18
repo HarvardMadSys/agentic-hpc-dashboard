@@ -582,7 +582,9 @@ drawn one is counted under its parent in its place. The read goes on to the sess
 
 Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
 `from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox
-approval depth_min depth_max cpu_min duration_min exit_code signal q`.
+approval depth_min depth_max cpu_min duration_min exit_code signal outcome[] q`. `outcome` is
+how a process ended, in the words of [Commands that failed](#commands-that-failed): `ok`,
+`nonzero`, `answer`, `signal`, `pipe` or `none`.
 
 The export's first line is a `_meta` header (filters, window, feed paths, schema versions) and its last is a `_trailer` (row count, whether the cap truncated it).
 Body rows are the
@@ -838,6 +840,84 @@ made-up endpoints keep the host names its records give.
 
 `tests/test_endpoints.py` covers the names, the lookups, the grouping, the ranking, and the
 served payload, and `tests/test_io.py` covers the reducer.
+
+## Login node health
+
+The node tier is what the eBPF tier cannot see, because none of it is a process: the load and
+memory of the whole node, how quickly it answers, its NFS mounts, its local disks, and each
+account's cgroup. The `node` panel (`reducers/resources.py`, `NodeReducer`) is its newest two
+snapshots per host, and the Resources tab draws it first, as **Login node health**: one table at a
+time -- nodes, NFS mounts, local disks, accounts, stuck processes -- each choice with its count and
+the count of what is wrong in it.
+
+- **The service holds the lines.** A local filesystem at or past `node.disk_full_pct` (90) of its
+  space or `node.inode_full_pct` (90) of its file slots is `full`, and the panel says which line in
+  `thresholds`. Needs attention draws the same flag.
+- **An account held back** is one whose cgroup's `throttled_usec` grew between the two snapshots:
+  the kernel paused it at its CPU limit. Its CPU is a rate over the same gap, as cores in use
+  (`cpu_cores`), null with one snapshot, and `counter_reset` (no rate, not an idle one) when the
+  cgroup was made again in between.
+- **Stuck processes** are the snapshot's `d_state_procs`, up to 20 per host with the rest counted:
+  pid, account, the wait channel, the kernel stack's top frames where the collector could read it,
+  and the command line, masked here (`redact.py`) because this panel is served as built, not
+  through a window's redaction. The eBPF tier's `d_stack_top` -- what its tracked processes were
+  blocked in -- rides on the live frame's host rows, and the D-state count's hover shows both.
+
+### Over the window
+
+**Login node response**, on Live under the window's CPU chart and zoomed with it, draws four of
+the node tier's numbers per host over the window: the time to start a process and to look up an
+account (the collector's own probes), the slowest NFS mount's read round trip, and the load. A
+spike there under the agents' CPU above it is what "do agents make the node slow for people?"
+looks like.
+
+- **Read on its own thread** (`nodehist.py`). A snapshot is ~200 KB and comes every
+  `EBPFM_NODE_INTERVAL` (300 s), ~60 MB a host-day, so the first read of retention runs beside the
+  service, a 4 MB chunk at a time, and nothing waits for it: the panel says how far it has read.
+  After that it reads only what was appended, by inode and offset; a day sealed into its `.gz`
+  lands on the snapshots it already holds. It keeps ten numbers a snapshot for retention, and reads
+  `feeds.ebpf_node.series_days` day-dirs (0: enough for retention, whatever `feeds.ebpf_node.days`).
+- **No resolution the samples never had.** A bin is the window's own width or twice the interval
+  the snapshots come at, whichever is wider, so a snapshot that drifts over a bin edge leaves no
+  hole; a hole is a missing snapshot. A latency bin is the slowest probe in it, a load bin its mean.
+- **Hosts are not classes**, so their lines take hues no class owns. Past five, the five that stand
+  out most are named on every chart and the rest are one grey line, the slowest of them per bin.
+
+`tests/test_nodehist.py` covers the binning, the holes, the incremental read and the sealed day.
+
+## Day by day
+
+**Day by day**, on Live under *Who uses what*, is each class's processes, CPU and users per local
+day over everything the live tier holds -- retention, not the window -- from its own minute bins
+and roster (`LiveReducer.daily`), served in `/api/panels` as `trend`. It is not narrowed by the user
+or agent-type filter, and says so when one is set. Count and cost side by side, as every
+categorical panel, read as numbers or as each class's share of the day.
+
+- **Three kinds of day.** A day the collector wrote in has its numbers and `held`, the minutes of
+  it that held a record, against `minutes`, those the tier could hold; a day it wrote nothing in
+  has null counts and no bars, not a quiet day; today is still going, and the oldest day starts
+  where retention does (`cut`).
+- **Users are the roster's**: an account counts once a day in each class it ran something in. Its
+  bins are hours past the newest day, so a day boundary off the hour (a +5:30 zone) lands with the
+  hour it falls in.
+
+## Commands that failed
+
+**Commands that failed**, on the Agents tab under the tool panels, is how the Tool mix's processes
+ended (`tool_mix.exits`, `reducers/tools.py`): the same processes, after its shell dedup, per class
+and agent type, by tool and by kind of tool.
+
+- **A failure is a non-zero exit or a stop by a signal**, with two kept out because they are not
+  failures: an exit 1 from a program whose 1 is an answer (`EXIT_ANSWERS`: grep, rg, ag, diff, cmp,
+  and the grep family; shared with the inspector's "hide typos"), and SIGPIPE, which
+  `command | head` sends once head has its lines. Both are counted apart, as is a record with no
+  wait status at all; a rate is over the processes whose ending is known.
+- **The collector does not fold signals into codes**: its `exit_code` is null exactly when a signal
+  ended the process. The panel lists each row's commonest exit codes and signals, and says what
+  the conventional ones mean (127, command not found; SIGKILL, killed outright).
+- **Each count opens its commands**: the `/api/io/commands` lookup with `outcome=nonzero&outcome=signal`,
+  the same verdict rule the reducer counts with (`export.make_predicate`). The lookup reads records
+  before the dedup, so a shell that ran a failing command is listed beside it.
 
 ## Sessions: tasks, phases, and processes
 
@@ -1266,6 +1346,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/roles.py` | what a classifier-tagged process is: agent, tool-shell, probe, sandbox, infra, ... |
 | `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
+| `rc_dashboard/nodehist.py` | the node tier over time: every snapshot's probes, load and NFS round trips, read incrementally on its own thread and binned to a window ([Login node health](#login-node-health)) |
 | `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), live, node |
 | `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), and the names and the agent's own words the tasks are labeled from (`phase_names`) |
 | `rc_dashboard/phase_report.py` | the report the phase and task thresholds are tuned against |

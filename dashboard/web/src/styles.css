@@ -3279,3 +3279,59 @@ th.sortable:focus-visible {
     font-size: 16px !important;
   }
 }
+
+/* Needs attention (tabs/Attention.tsx): one line per flag, its split and its
+   detail under it, and the link to the panel at the line's end. */
+.attn {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.attn li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+}
+.attn li:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+.attn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  align-self: center;
+}
+.attn-dot.data {
+  background: var(--serious);
+}
+.attn-what {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attn-go {
+  white-space: nowrap;
+}
+.attn-note {
+  grid-column: 2 / 4;
+  color: var(--muted);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attn-foot {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Commands that failed (tabs/ExitsPanel.tsx): the codes and signals of a row,
+   wrapping between items, never inside one. */
+.exit-item {
+  white-space: nowrap;
+}

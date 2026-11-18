@@ -43,6 +43,7 @@ from .normalize import Normalizer, canonical_class
 from .procindex import users_conflict
 from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
+from .nodehist import NodeHistory
 from .tail import FileTailSource, read_back
 
 # Records per lock hold during the backfill.  Between batches the tail and the
@@ -122,6 +123,8 @@ class Aggregator:
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
+        # The node tier over time, read on its own thread (nodehist.py).
+        self.nodehist = NodeHistory(cfg)
         # each collector's own account of itself: start, heartbeat, stop
         self.health = CollectorHealth(cfg)
         self.asker = ask.Asker(cfg)
@@ -169,6 +172,7 @@ class Aggregator:
                 or self.cfg.get("feeds.ebpf.roots") or [])
 
     def start(self):
+        self.nodehist.start()
         reg = self.panels_by_window
         reg.start()
         pre = bool(self.cfg.get("panels.preprocess"))
@@ -200,6 +204,7 @@ class Aggregator:
 
     def stop(self):
         self.stopping = True
+        self.nodehist.stop()
         self.panels_by_window.stop()
         if self.rdns is not None:
             self.rdns.close()
@@ -529,6 +534,11 @@ class Aggregator:
         flt = flt or winmod.NO_FILTER
         view = self.panels_by_window.request(win["minutes"], flt)
         facets = self.facets(win["minutes"])
+        # Outside the lock: the node history keeps its own (nodehist.py).
+        try:
+            node_series = self.nodehist.series(win["minutes"] * 60)
+        except Exception as e:
+            node_series = {"_error": str(e)}
         with self.lock:
             ebpf = feedmod.panel_meta(self.reports["ebpf"])
             node = feedmod.panel_meta(self.reports["ebpf_node"])
@@ -561,7 +571,20 @@ class Aggregator:
             body = dict(self.node_result) if isinstance(self.node_result, dict) \
                 else {"rows": self.node_result}
             body.update(node)
+            # the window's probes, per host (nodehist.py): the snapshot above is
+            # now, this is the selected window
+            body["series"] = node_series
             out["node"] = body
+            # Day by day over everything the live tier holds: its own bins, so
+            # it is neither the selected window nor narrowed by the filter --
+            # `_filter` says the latter, and the page says both.
+            try:
+                trend = dict(self.live.daily())
+            except Exception as e:
+                trend = {"_error": str(e)}
+            trend.update(ebpf)
+            trend["_filter"] = None
+            out["trend"] = trend
             res = {"panels": out,
                    # The node tier is a snapshot of current state, not a window
                    # aggregate, so it keeps its own build stamp.

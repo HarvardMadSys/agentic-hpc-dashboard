@@ -185,7 +185,9 @@ PRIORITIES = ("high", "medium", "low")
 PANEL_TABS = {
     "live": ("live", "Live"), "live_now": ("live", "Live"),
     "live_now.users": ("live", "Active users"), "active users": ("live", "Active users"),
-    "live_now.hosts": ("live", "Login nodes right now"), "node": ("live", "Login nodes right now"),
+    "live_now.hosts": ("live", "Login nodes right now"),
+    "node": ("resources", "Login node health"), "login node health": ("resources", "Login node health"),
+    "trend": ("live", "Day by day"), "day by day": ("live", "Day by day"),
     "login nodes right now": ("live", "Login nodes right now"), "login nodes": ("live", "Login nodes right now"),
     # Overview is a section of Live now, and Trajectories and Risk & Warning are
     # Sessions and Risks: the old names still place a suggestion, under the new ones

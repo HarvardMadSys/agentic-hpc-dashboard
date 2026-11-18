@@ -137,6 +137,24 @@ export const GLOSS: Record<string, string> = {
   polling: 'polling: commands that only check on something (ps, pgrep, sleep, squeue, …)',
   exitcode: 'exit code: 0 means the command succeeded; anything else means it failed or was stopped',
 
+  // login-node health (the node tier)
+  load: 'load average: how many processes were running or waiting to run, averaged over the last 1, 5 and 15 minutes; compare it with the node’s cores',
+  iowait: 'I/O wait: the share of CPU time spent idle while waiting on disk or network storage; high while a file server is slow',
+  forkexec: 'start a process: how long the node took to start a tiny program, measured by the collector every snapshot; what a person feels as a sluggish shell',
+  statlocal: 'stat a local file: how long a local filesystem took to answer one lookup',
+  getent: 'look up an account: how long the node took to resolve a user name (getent); slow when the directory service is',
+  nfsrtt: 'NFS round trip: how long the file server took to answer, from request to reply, averaged over the collector’s short sample; the slowest mount is shown',
+  retrans: 'retransmissions: NFS requests sent again because the server did not answer in time, in the collector’s short sample',
+  badxid: 'bad replies: replies from the file server that matched no request, since the mount; a sign of a struggling server or network',
+  backlog: 'backlog: requests waiting to be sent to the file server',
+  inodes: 'inodes: the filesystem’s file slots; when they run out no new file can be made, however much space is left',
+  cgroupcpu: 'CPU in use: the account’s CPU time between the two newest snapshots, as cores busy on average',
+  quota: 'CPU limit: the most cores the account may use at once on this node; none set reads —',
+  throttled: 'held back: seconds the kernel paused the account’s processes because they had used their CPU limit, between the two newest snapshots',
+  pids: 'processes: the account’s processes and threads now, and the most it may have',
+  wchan: 'waiting in: the kernel function a stuck process is parked in; nfs and rpc names point at a file server. Another user’s reads “-” unless the collector runs as root',
+  zombie: 'zombie: a process that has finished but whose parent has not collected it; harmless in small numbers',
+
   // Slurm
   gpuh: 'GPU-hours asked: GPUs requested times the time limit requested, a ceiling rather than use',
   queuecheck: 'queue check: a command that asks the scheduler about jobs (squeue, sacct, sinfo, scontrol)',

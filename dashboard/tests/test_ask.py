@@ -363,7 +363,9 @@ class SuggestionsTest(unittest.TestCase):
     def test_a_panel_is_placed_on_its_tab_by_key_or_by_name(self):
         for name, want in (("panels.risk", ("risk", "Risks")),
                            ("live_now.users", ("live", "Active users")),
-                           ("node", ("live", "Login nodes right now")),
+                           ("live_now.hosts", ("live", "Login nodes right now")),
+                           ("node", ("resources", "Login node health")),
+                           ("panels.trend", ("live", "Day by day")),
                            ("Resources · I/O", ("resources", "Resources")),
                            ("Risk & Warning", ("risk", "Risks")),
                            ("Trajectories", ("trajectories", "Sessions")),

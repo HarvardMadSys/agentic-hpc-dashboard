@@ -384,6 +384,41 @@ export interface ToolMix extends PanelEnvelope {
   by_agent_type?: Record<string, ToolTypeBlock>;
   dedup: { dropped: number; dropped_pct: number | null; rule: string };
   cpu_basis: string;
+  /** how the counted processes ended (reducers/tools.py `exits`); absent on a
+   *  window reduced before they were counted */
+  exits?: ToolExits;
+}
+
+/** How a process ended, past a plain exit 0: a non-zero exit, an exit 1 that
+ *  is an answer (grep: no match), a signal other than SIGPIPE, SIGPIPE (its
+ *  reader went first, `| head`), or no verdict on the record. */
+export type ExitVerdict = 'nonzero' | 'answer' | 'signal' | 'pipe' | 'none';
+export interface ExitTally extends Record<ExitVerdict, number> {
+  /** processes counted, after the shell dedup: the tool mix's own */
+  calls: number;
+}
+export interface ExitToolRow extends ExitTally {
+  tool: string;
+  bucket: string;
+}
+export interface ExitBucketRow extends ExitTally {
+  b: string;
+}
+export interface ExitBlock extends ExitTally {
+  /** [exit code, processes] of the non-zero exits, the most first */
+  codes: [number, number][];
+  /** [signal, processes], SIGPIPE apart */
+  signals: [number, number][];
+  /** the tools with the most non-zero exits or signals, each with every verdict */
+  tools: ExitToolRow[];
+  buckets: ExitBucketRow[];
+}
+export interface ToolExits {
+  by_class: Record<string, ExitBlock>;
+  by_agent_type: Record<string, ExitBlock>;
+  /** programs whose exit 1 is an answer */
+  answers: string[];
+  basis: string;
 }
 
 /* ----------------------------------------------------------- io_process */
@@ -2407,4 +2442,162 @@ export interface ProcIo {
   wchar_mb: number;
   tx_mb: number;
   rx_mb: number;
+}
+
+/* ------------------------------------------------------------ node tier */
+
+/** A process in D state when the node tier looked, and what it waited in. */
+export interface NodeDState {
+  pid: number | null;
+  ppid: number | null;
+  user: string | null;
+  /** the kernel wait channel; `-` for another user's process when unprivileged */
+  wchan: string | null;
+  /** the kernel stack's top frames, where the collector could read it (root) */
+  kstack: string[] | null;
+  args: string;
+}
+/** One account's cgroup between the node tier's two newest snapshots. */
+export interface NodeUser {
+  user: string;
+  uid: number | null;
+  cpu_delta_s: number | null;
+  gap_s: number | null;
+  /** the cgroup was recreated between the snapshots: no rate, not an idle one */
+  counter_reset: boolean;
+  /** CPU over the gap as cores in use on average */
+  cpu_cores: number | null;
+  cpu_quota_cores: number | null;
+  /** seconds the kernel held the account back at its quota, over the gap */
+  throttled_delta_s: number | null;
+  mem_gb: number | null;
+  pids: number | null;
+  pids_max: number | null;
+}
+export interface NodeHost {
+  host: string;
+  ts: string | null;
+  epoch: number | null;
+  synthetic: boolean;
+  privileged: boolean | null;
+  load_1: number | null;
+  load_5: number | null;
+  load_15: number | null;
+  mem_total_gb: number | null;
+  mem_used_gb: number | null;
+  mem_used_pct: number | null;
+  mem_available_gb: number | null;
+  cpu_idle_pct: number | null;
+  cpu_iowait_pct: number | null;
+  procs_running: number | null;
+  procs_blocked: number | null;
+  d_state_procs: number;
+  d_state?: NodeDState[];
+  zombie: number | null;
+  fork_exec_ms: number | null;
+  stat_local_ms: number | null;
+  getent_ms: number | null;
+  logged_in_users: number;
+  fds_allocated: number | null;
+  snapshots: number;
+  per_user: NodeUser[];
+  per_user_resets: number;
+  /** accounts held back at their CPU quota; null without a second snapshot */
+  throttled_users?: number | null;
+}
+export interface NodeMount {
+  host: string;
+  mount: string;
+  fstype: string | null;
+  bad_xid: number | null;
+  backlog_u: number | null;
+  rd_ops_total: number | null;
+  wr_ops_total: number | null;
+  ops_s: number | null;
+  rd_kb_s: number | null;
+  rd_rtt_ms: number | null;
+  rd_exe_ms: number | null;
+  rd_retrans: number | null;
+  wr_kb_s: number | null;
+  wr_rtt_ms: number | null;
+  wr_exe_ms: number | null;
+  wr_retrans: number | null;
+}
+export interface NodeDisk {
+  host: string;
+  mountpoint: string;
+  fstype: string | null;
+  total_gb: number | null;
+  used_pct: number | null;
+  inode_used_pct: number | null;
+  /** at or past the service's line for space or inodes (`thresholds`) */
+  full?: boolean;
+}
+export type NodeField =
+  | 'fork_exec_ms' | 'stat_local_ms' | 'getent_ms' | 'load_1' | 'iowait_pct'
+  | 'mem_used_pct' | 'd_state' | 'nfs_rd_rtt_ms' | 'nfs_wr_rtt_ms' | 'nfs_retrans';
+/** The node tier over the window, per host (rc_dashboard/nodehist.py). */
+export interface NodeSeries {
+  bin_s: number;
+  /** epoch seconds at the start of each bin */
+  t: number[];
+  /** the usual gap between a host's snapshots */
+  interval_s: number | null;
+  /** how a bin of snapshots is read: a latency's worst, a level's mean */
+  fields: Record<NodeField, 'max' | 'mean'>;
+  hosts: Record<string, Record<NodeField | 'snapshots', (number | null)[]>>;
+  /** the thread reading the node tier's files: still on its first pass, or done */
+  state: 'idle' | 'reading' | 'ready';
+  passes: number;
+  error: string | null;
+  read: { files: number; lines: number; bad: number; bytes: number };
+  held_from: number | null;
+  days: number;
+  _error?: string;
+}
+export interface NodePanel extends PanelEnvelope {
+  hosts?: NodeHost[];
+  nfs?: NodeMount[];
+  disk?: NodeDisk[];
+  thresholds?: { disk_full_pct: number; inode_full_pct: number };
+  series?: NodeSeries;
+  cpu_delta_basis?: string;
+  privilege?: string;
+  _error?: string;
+}
+
+/* ---------------------------------------------------------------- trend */
+
+export interface TrendCell {
+  /** processes that exited; null on a day no minute of was held */
+  n: number | null;
+  cpu_s: number | null;
+  /** accounts that ran something in the class that day */
+  users: number | null;
+}
+export interface TrendDay {
+  date: string;
+  from: number;
+  to: number;
+  /** still going */
+  today: boolean;
+  /** starts where retention does, not at midnight */
+  cut: boolean;
+  /** minutes of the day the live tier could hold */
+  minutes: number;
+  /** minutes of it the collector wrote any exit in */
+  held: number;
+  by_class: Record<string, TrendCell>;
+  /** agent type -> accounts, processes and CPU that day */
+  types: Record<string, { users: number; n: number; cpu_s: number }>;
+}
+/** Each class per day, over everything the live tier holds (reducers/live.py `daily`). */
+export interface TrendPanel extends PanelEnvelope {
+  days?: TrendDay[];
+  bin_s?: number;
+  retention_minutes?: number;
+  retained_from?: number | null;
+  tz?: string;
+  basis?: string;
+  _error?: string;
 }
