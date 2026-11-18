@@ -28,6 +28,21 @@ PULL = os.path.join(FLEET, "pull-gz.sh")
 EXITS = "nodeA.cluster.example.org.exits.jsonl"
 SNAP = "nodeA.cluster.example.org.snapshot.jsonl"
 
+# seed_mirror.py run as its command line runs it, on a volume that reads 2 TB free of
+# 4 TB: it seeds nothing on a disk with less free than the receiver's floor (300 GB),
+# and the disk these tests run on may have less. The two tests of that floor call
+# seed() with a statvfs of their own.
+ROOMY = ("import runpy, sys; sys.path.insert(0, %r); import fleet_stream; "
+         "fleet_stream.SafeBase.free_bytes = lambda self: (2e12, 4e12); "
+         "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')" % FLEET)
+
+
+def run_seed(*args):
+    """`seed_mirror.py <args>` on that volume; its stdout and stderr together."""
+    return subprocess.run([sys.executable, "-c", ROOMY, SEED] + list(args),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True)
+
 
 def pull_patterns():
     """The file patterns pull-gz.sh's rsync takes: its `--include='<pattern>'`s but the
@@ -69,9 +84,7 @@ class Seeded(unittest.TestCase):
         shutil.rmtree(self.pull, ignore_errors=True)
 
     def seed(self, *extra):
-        return subprocess.run([sys.executable, SEED, self.pull, self.rig.basedir] + list(extra),
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              universal_newlines=True)
+        return run_seed(self.pull, self.rig.basedir, *extra)
 
     def sealed(self):
         """The sealed days' plain bytes, as the copy must hold them."""
@@ -199,8 +212,7 @@ class TestSeed(Seeded):
 
     def test_makes_a_missing_base_private(self):
         base = os.path.join(self.rig.basedir, "new")
-        p = subprocess.run([sys.executable, SEED, self.pull, base], stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, universal_newlines=True)
+        p = run_seed(self.pull, base)
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertEqual(stat.S_IMODE(os.stat(base).st_mode), 0o700)
 

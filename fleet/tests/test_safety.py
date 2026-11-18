@@ -22,6 +22,11 @@ from test_receiver import HOST, Rig, mirror_tree, source_tree  # noqa: E402
 SCRIPT = os.path.join(FLEET, "fleet_stream.py")
 
 
+def big_disk():
+    """(free, total) of a volume far over the receiver's free-space floor: 2 TB of 4 TB."""
+    return 2e12, 4e12
+
+
 def sender_argv(root):
     return [sys.executable, SCRIPT, "send", "--root", root,
             "--poll", "0.05", "--ping", "0.5", "--trailer-poll", "0.1"]
@@ -65,6 +70,21 @@ class TestBase(unittest.TestCase):
         os.chmod(p, 0o700)
         with self.assertRaises(fs.UnsafeBase):
             fs.SafeBase.open(p, uid=os.getuid() + 1)
+
+    def test_free_bytes_reads_the_base_folders_volume(self):
+        """What the free-space guard reads when no statvfs is given (the receivers in
+        these tests are given one): the volume of the folder opened, through its handle."""
+        p = os.path.join(self.tmp, "base")
+        os.mkdir(p)
+        os.chmod(p, 0o700)
+        b = fs.SafeBase.open(p)
+        try:
+            free, total = b.free_bytes()
+        finally:
+            b.close()
+        st = os.statvfs(p)
+        self.assertEqual(total, st.f_blocks * st.f_frsize)
+        self.assertTrue(0 <= free <= total, (free, total))
 
 
 class TestParents(unittest.TestCase):
@@ -169,6 +189,10 @@ class ReceiverCase(unittest.TestCase):
                "dashboard_unit": "rc-dashboard.scope", "backoff": [0.2, 1.0],
                "trip_marker": self.marker}
         cfg.update(cfg_extra or {})
+        # A disk with room to spare unless the test gives its own: below 300 GB free the
+        # receiver pauses every link, and the disk these tests run on may have less. The
+        # tests of that floor pass the statvfs they test.
+        kw.setdefault("statvfs", big_disk)
         self.receiver = fs.Receiver(cfg, **kw)
         self.thread = threading.Thread(target=lambda: self.result.append(self.receiver.run()),
                                        daemon=True)
