@@ -155,6 +155,21 @@ class WhoMayConnect(Case):
                 self.assertIn("server.%s" % key, self.refused({"server": {key: [1]}}))
 
 
+class Passthrough(Case):
+    def test_names_and_prefixes_for_the_agents_environment(self):
+        self.assertEqual(configmod.defaults()["ask"]["env_passthrough"], [])
+        with mock.patch.dict(os.environ, {"RC_DASH_ASK_ENV_PASSTHROUGH": "AWS_*, CLOUD_ML_REGION"}):
+            cfg = configmod.load(None, None)
+        self.assertEqual(cfg.get("ask.env_passthrough"), ["AWS_*", "CLOUD_ML_REGION"])
+        cfg, _ = self.load({"ask": {"env_passthrough": ["GOOGLE_APPLICATION_CREDENTIALS"]}})
+        self.assertEqual(cfg.get("ask.env_passthrough"), ["GOOGLE_APPLICATION_CREDENTIALS"])
+        for bad in (["*"], ["A B"], ["AWS_**"], ["*AWS"], ["X*Y"], [5], "AWS_*"):
+            with self.subTest(bad=bad):
+                self.assertIn("ask.env_passthrough", self.refused({"ask": {"env_passthrough": bad}}))
+        self.assertIn("the nearest is ask.env_passthrough",
+                      self.refused({"ask": {"env_passthru": ["AWS_*"]}}))
+
+
 class Secrets(Case):
     def test_what_can_hold_a_key_is_said_to_be_set_never_shown(self):
         key = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"

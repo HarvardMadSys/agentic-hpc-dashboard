@@ -221,6 +221,13 @@ def defaults():
             # {answer_file} the command's stdout is the answer
             "command": None,
             "model": "",               # empty: the agent's own default
+            # The agent gets only what a program needs of the service's
+            # environment (ask.AGENT_ENV) and these besides: variable names, or
+            # prefixes written NAME_*, for a provider reached through a cloud --
+            # ["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"].
+            # Never * alone, and never an RC_DASH_* one. Annotate's CLI
+            # providers get the same.
+            "env_passthrough": [],
             "timeout_s": 240,
             "max_concurrent": 1,       # a second question waits, not a second agent
             "context_kb": 120,         # the snapshot's size budget
@@ -530,6 +537,7 @@ ENV_MAP = {
     "ask.agent": ("RC_DASH_ASK_AGENT", str),
     "ask.model": ("RC_DASH_ASK_MODEL", str),
     "ask.command": ("RC_DASH_ASK_CMD", str),
+    "ask.env_passthrough": ("RC_DASH_ASK_ENV_PASSTHROUGH", _csv),
     "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
     "annotate.enabled": ("RC_DASH_ANNOTATE", _flag),
     "annotate.provider": ("RC_DASH_ANNOTATE_PROVIDER", str),
@@ -852,6 +860,15 @@ def load(args=None, config_path=None):
         if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
             raise SystemExit("%s: %r is not a list of names (set by %s)" % (
                 key, val, origins.get(key, "default")))
+    # What of the service's environment the agents get besides ask.AGENT_ENV:
+    # variable names, or prefixes written NAME_*, never * alone (all of it).
+    val = _get(tree, "ask.env_passthrough", [])
+    if not isinstance(val, list) or not all(
+            isinstance(x, str) and x.rstrip("*").isascii() and x.rstrip("*").isidentifier()
+            and x.count("*") <= 1 for x in val):
+        raise SystemExit("ask.env_passthrough: %r is not a list of variable names, or of "
+                         "prefixes written NAME_* (set by %s)" % (
+                             val, origins.get("ask.env_passthrough", "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

@@ -777,6 +777,33 @@ class FailClosedTest(unittest.TestCase):
                      "GITHUB_TOKEN", "RC_DASH_CACHE_DIR"):
             self.assertNotIn(name, seen)
 
+    def test_a_cloud_providers_credentials_pass_when_named(self):
+        env = {"AWS_ACCESS_KEY_ID": "a", "AWS_REGION": "us-east-1", "GOOGLE_APPLICATION_CREDENTIALS": "/c",
+               "CLOUD_ML_REGION": "r", "AZURE_OPENAI_KEY": "z", "PATH": "/bin",
+               "RC_DASH_PASSWORD_HASH": "scrypt$the-hash", "RC_DASH_X": "x"}
+        self.assertEqual(set(ask.agent_env(Cfg(), env)), {"PATH"})
+        cfg = Cfg(**{"ask.env_passthrough": ["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
+                                             "CLOUD_ML_REGION", "RC_DASH_*", "RC_DASH_X"]})
+        self.assertEqual(set(ask.agent_env(cfg, env)),
+                         {"PATH", "AWS_ACCESS_KEY_ID", "AWS_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
+                          "CLOUD_ML_REGION"})
+        # and the agent itself gets them
+        cmd = [PY, "-c", "import os, sys; sys.stdin.read(); print('env', *sorted(os.environ))"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd, "ask.env_passthrough": ["AWS_*"]}))
+        with mock.patch.dict(os.environ, env):
+            v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        seen = set(v["answer"].split()[1:])
+        self.assertTrue({"AWS_ACCESS_KEY_ID", "AWS_REGION"} <= seen, seen)
+        self.assertFalse(seen & {"AZURE_OPENAI_KEY", "RC_DASH_PASSWORD_HASH"})
+
+    def test_a_failed_agent_says_its_environment_is_short(self):
+        cmd = [PY, "-c", "import sys; sys.stdin.read(); sys.exit('no credentials found')"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "error")
+        self.assertIn("no credentials found", v["error"])
+        self.assertIn("ask.env_passthrough", v["error"])
+
     def test_its_directory_is_its_own_and_goes_when_it_answers(self):
         cmd = [PY, "-c", "import os, json, sys; sys.stdin.read(); "
                          "print('dir', json.dumps([os.getcwd(), os.stat('.').st_mode & 0o777]))"]

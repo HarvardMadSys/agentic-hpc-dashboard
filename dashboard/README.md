@@ -942,9 +942,13 @@ credentials. So:
   `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
   `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
   `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
-  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. The service's own settings, its
-  password hash among them, stay behind. A command that needs more sets it itself:
-  `env NAME=value cli ...`.
+  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
+  provider reached through a cloud, is named in `ask.env_passthrough`
+  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or prefixes written
+  `NAME_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION",
+  "ANTHROPIC_VERTEX_*", "AZURE_*"]` as the provider needs. The service's own `RC_DASH_*`
+  settings, its password hash among them, are never passed. An agent that fails says so, since
+  a credential left out fails it without a word about the environment.
 - **A directory of its own**, made 0700 in the system's temporary directory for each question
   and removed after, not under `cache.dir`, so the salt, the session key and the saved builds
   are not its neighbours.

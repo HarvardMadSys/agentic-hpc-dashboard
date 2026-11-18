@@ -27,7 +27,8 @@ Off unless `ask.enabled`, and refused while the service has no password
 (`check`): the question is the reader's own text in the agent's prompt, and
 the agent can read whatever the service's account can read -- its sandbox is
 read-only, not confined. So it runs with only the environment a program needs
-(`AGENT_ENV`), in a directory of its own in the system's temporary one, not
+(`AGENT_ENV`, and what `ask.env_passthrough` names), in a directory of its own
+in the system's temporary one, not
 beside the service's cache, and a question is at most MAX_QUESTION
 characters. Run the service as a dedicated account, not a person's.
 
@@ -77,9 +78,10 @@ NO_PASSWORD = ("this dashboard has no password, and Ask runs only behind one, si
 # What of the service's environment the agent is given: what a program needs to
 # run, to find its login, and to reach its provider through the site's proxy --
 # the presets' and the documented commands' own (CODEX_HOME, OPENAI_*,
-# ANTHROPIC_*, CLAUDE_*) -- and nothing else. The service's settings (its
-# password hash among them) and whatever else its environment holds stay
-# behind; a command that needs more sets it itself (`env NAME=value cli ...`).
+# ANTHROPIC_*, CLAUDE_*) -- and what `ask.env_passthrough` names besides: a
+# provider reached through a cloud (AWS_*, GOOGLE_APPLICATION_CREDENTIALS,
+# AZURE_*, ...). The service's own RC_DASH_* settings (its password hash among
+# them) are never passed, and nothing else its environment holds is.
 AGENT_ENV = frozenset((
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM",
     "LD_LIBRARY_PATH", "CODEX_HOME",
@@ -91,12 +93,22 @@ AGENT_ENV = frozenset((
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     "NODE_EXTRA_CA_CERTS"))
 AGENT_ENV_PREFIXES = ("LC_", "OPENAI_", "ANTHROPIC_", "CLAUDE_")
+# Said when an agent fails, since a missing credential fails it without a word
+# about the environment it was given.
+ENV_HINT = ("; it runs with only part of the service's environment (ask.AGENT_ENV): name any "
+            "other variable it needs, such as a cloud provider's credentials, in "
+            "ask.env_passthrough")
 
 
-def agent_env(environ=None):
-    """The agent's environment: the service's, kept to AGENT_ENV."""
+def agent_env(cfg=None, environ=None):
+    """The agent's environment: the service's, kept to AGENT_ENV and to the
+    names and NAME_* prefixes in `ask.env_passthrough`, never an RC_DASH_* one."""
     env = os.environ if environ is None else environ
-    return {k: v for k, v in env.items() if k in AGENT_ENV or k.startswith(AGENT_ENV_PREFIXES)}
+    extra = (cfg.get("ask.env_passthrough") if cfg is not None else None) or ()
+    names = {x for x in extra if not x.endswith("*")}
+    prefixes = AGENT_ENV_PREFIXES + tuple(x[:-1] for x in extra if x.endswith("*"))
+    return {k: v for k, v in env.items() if not k.startswith("RC_DASH_")
+            and (k in AGENT_ENV or k in names or k.startswith(prefixes))}
 
 # Bulky, per-row, or per-bin fields that cost the budget and answer little a
 # question about the window needs; the summaries beside them stay.
@@ -1145,7 +1157,7 @@ class Asker:
                 # Its own session, so a timeout can stop the agent and anything
                 # it started, not only the first process.
                 proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, cwd=work, env=agent_env(),
+                                        stderr=subprocess.PIPE, cwd=work, env=agent_env(self.cfg),
                                         text=True, start_new_session=True)
                 killer = threading.Timer(timeout, lambda: _kill(proc))
                 killer.start()
@@ -1175,7 +1187,8 @@ class Asker:
                 if code != 0 and not answer:
                     timed_out = code in (-signal.SIGKILL, -signal.SIGTERM)
                     raise RuntimeError("the agent timed out after %d s" % timeout if timed_out
-                                       else "the agent exited %d: %s" % (code, (err or "").strip()[-400:]))
+                                       else "the agent exited %d: %s%s" % (
+                                           code, (err or "").strip()[-400:], ENV_HINT))
                 answer = redact.redact(answer) if answer else "(no answer)"
                 self._set(job, state="done", answer=answer, progress=None, finished=time.time(),
                           suggestions=parse_suggestions(answer)
