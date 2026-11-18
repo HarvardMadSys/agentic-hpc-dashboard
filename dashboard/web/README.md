@@ -96,6 +96,7 @@ npm run check:shares # node --test: a class's share is out of every class counte
 npm run check:panels # node --test: a panel not reduced, waited for or building is never "none" or 0
 npm run check:live   # node --test: the live socket is retried for good, polled meanwhile, replaced when quiet
 npm run check:lookup # node --test: no outside string reads a table's prototype; a part that throws says so
+npm run check:procexit # node --test: a run's box says how it ended as the process table does
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
