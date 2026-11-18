@@ -3710,13 +3710,15 @@ def _base_identity(m, actor, attribution=None):
         # An honest denominator for "unresolvable" in the tool distribution: a
         # truncated shell payload was indistinguishable from a genuinely short
         # one. null (not false) when the raw length is unknown -- false would
-        # claim "measured and complete". Two things can cut it: the in-kernel
-        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, and
-        # the emit cap when one is set.
+        # claim "measured and complete". Three things can cut it: the in-kernel
+        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, the
+        # emit cap when one is set, and the masking, which reads 16 KB of a line
+        # (redact.TEXT_MAX) and writes [CUT] after them.
         'args_len': m.get('args_raw_len'),
         'args_truncated': (None if m.get('args_raw_len') is None
                            else bool(m.get('args_clamped'))
-                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)),
+                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)
+                           or 'cut' in (masked or ())),
         'cwd': m.get('cwd'),
         # sandbox = namespace isolation (ground truth); sandbox_ancestry = how it
         # got there. Their disagreement separates a bwrap PROBE from a real one.

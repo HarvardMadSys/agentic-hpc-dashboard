@@ -717,7 +717,7 @@ that made it worth keeping. **A process that talked to the network is never a no
 | `approval_mode`, `approval_src` | identity | unattended execution, split from confinement. `autonomous` is unchanged |
 | `env_flags` | identity | agent env variable names from `/proc/<pid>/environ`. **Gone in schema 7:** the collector no longer reads another process's environment |
 | `session_uuid` | identity | survives a collector restart, unlike the pid-based `session_key` |
-| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`) or an emit cap (`EBPFM_ARGS_MAXLEN`) cut it |
+| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`), an emit cap (`EBPFM_ARGS_MAXLEN`) or the masking's 16 KB cut (`args_redacted` names `cut`) cut it |
 | `partition`, `gpus`, `array`, `time_limit_s`, `mem`, `cpus_per_task`, `req_src` | `submit` | the resource request, parsed from the tool's argv |
 | `io` | `truncated` | processes alive at SIGTERM carried no I/O at all before |
 | `top_procs`, `state_counts`, `tcp_open_ext`, `tcp_open` | `residency` | live per-process rows, the zombie census, standing external connections per tree |

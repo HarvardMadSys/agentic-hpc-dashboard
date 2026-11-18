@@ -2301,6 +2301,21 @@ class ArgsTruncationTest(unittest.TestCase):
         self.assertEqual((len(i['args']), i['args_len']), (9000, 9000))
         self.assertFalse(i['args_truncated'])
 
+    def test_a_line_the_masking_cuts_is_truncated(self):
+        """The masking reads 16 KB of a line and writes [CUT] after them; a
+        longer /proc read was cut there and still said to be whole."""
+        saved = (T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS)
+        T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = frozenset(('keys', 'prompts')), True, True
+        try:
+            T.proc_add(706, 1, comm='sh', args='x ' * 10000, argv_source='proc')
+            T.proc[706]['args_raw_len'] = 20000
+            i = T._base_identity(T.proc[706], 'human', 'tty')
+        finally:
+            T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = saved
+        self.assertTrue(i['args'].endswith(' [CUT]'), i['args'][-20:])
+        self.assertEqual(i['args_redacted'], ['cut'])
+        self.assertTrue(i['args_truncated'])
+
     def test_an_emit_cap_still_applies_when_set(self):
         T.ARGS_MAXLEN = 2048
         T.proc_add(701, 1, comm='sh', args='x' * 9000, argv_source='proc')
