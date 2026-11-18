@@ -29,7 +29,7 @@ import collections
 import time
 
 from . import INSTANCE_CAP, Acc, Quant, add_counts, pct, top_by, who
-from .own_io import REAPED_MAX, OwnIo
+from .own_io import OwnIo
 from ..redact import redact
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
@@ -279,7 +279,10 @@ class ResourceReducer:
 
     def carry_caps(self):
         """What one pass holds the carried map to (`hours.combine_carries`)."""
-        return {"reaped": REAPED_MAX}
+        return self.own.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
 
     def seed(self, c):
         self.own.seed(c)

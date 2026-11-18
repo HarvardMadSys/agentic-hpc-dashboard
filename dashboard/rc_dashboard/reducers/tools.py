@@ -19,7 +19,7 @@ conservative rule.
 import collections
 
 from . import EXIT_ANSWERS, SIGPIPE, Reducer, add_counts, pct
-from .own_io import DISK, REAPED_MAX, OwnIo
+from .own_io import DISK, OwnIo
 from ..procindex import pop_oldest
 from ..tool_buckets import BUCKETS, bucket
 
@@ -184,7 +184,10 @@ class ToolMixReducer(Reducer):
 
     def carry_caps(self):
         """What one pass holds the carried map to (`hours.combine_carries`)."""
-        return {"child_tok": self.dedup_max, "reaped": REAPED_MAX}
+        return dict(self.own.carry_caps(), child_tok=self.dedup_max)
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
 
     def seed(self, c):
         self.child_tok = c["child_tok"]

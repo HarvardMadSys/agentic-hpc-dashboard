@@ -160,7 +160,7 @@ from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN
                             segment)
 from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
 from .phase_tasks import DEFAULTS as TASK_DEFAULTS, name_tasks, task_spans
-from .own_io import DISK, REAPED_MAX, OwnIo
+from .own_io import DISK, OwnIo
 
 RANKS = ("recent", "events", "cpu_s", "peak_rss_mb", "io_mb", "net_mb", "distinct_tools")
 RANK_MEANING = {
@@ -1542,11 +1542,17 @@ class TrajectoryReducer:
 
     def carry_caps(self):
         """What one pass holds each carried map to (`hours.combine_carries`)."""
-        return {"reaped": REAPED_MAX, "phase_pend": self.pend.cap,
-                "phase_calls": CALLS_AT_MAX, "phase_exited": EXITED_MAX}
+        return dict(self.own.carry_caps(), phase_pend=self.pend.cap,
+                    phase_calls=CALLS_AT_MAX, phase_exited=EXITED_MAX)
+
+    def carry_trimmed(self, c, dropped):
+        """What `hours.combine_carries` dropped past the caps: the join's parents
+        counted (own_io.py), and the exits as `exited_trimmed` keeps them."""
+        self.own.carry_trimmed(c, dropped)
+        self.exited_trimmed(c, dropped)
 
     @staticmethod
-    def carry_trimmed(c, dropped):
+    def exited_trimmed(c, dropped):
         """Exits dropped past the cap as `_went` drops them: the latest end among
         them is kept as the horizon."""
         for _key, x in dropped.get("phase_exited", ()):

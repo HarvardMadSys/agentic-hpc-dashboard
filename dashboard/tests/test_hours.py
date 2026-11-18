@@ -981,7 +981,7 @@ class CombineCarriesTest(unittest.TestCase):
         from rc_dashboard.reducers.trajectories import TrajectoryReducer
 
         class Red:
-            carry_trimmed = staticmethod(TrajectoryReducer.carry_trimmed)
+            carry_trimmed = staticmethod(TrajectoryReducer.exited_trimmed)
 
             @staticmethod
             def carry_caps():

@@ -61,7 +61,7 @@ import time
 
 from ..proctree import ran
 from ..redact import redact
-from .own_io import REAPED_MAX, OwnIo
+from .own_io import OwnIo
 
 R, W, D, N = 1, 2, 4, 8
 OPS = (("read", R), ("write", W), ("delete", D), ("named", N))
@@ -1184,7 +1184,10 @@ class WorkspaceReducer:
 
     def carry_caps(self):
         """What one pass holds the carried join to (`hours.combine_carries`)."""
-        return {"reaped": REAPED_MAX}
+        return self.own.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
 
     def seed(self, c):
         self.homes = dict(c["homes"])

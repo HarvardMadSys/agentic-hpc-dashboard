@@ -21,14 +21,16 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rc_dashboard import iocmds                                # noqa: E402
+from rc_dashboard import hours, iocmds                         # noqa: E402
 from rc_dashboard.export import parse_filters                  # noqa: E402
 from rc_dashboard.normalize import Normalizer                  # noqa: E402
 from rc_dashboard.proctree import TreeBuilder                  # noqa: E402
+from rc_dashboard.reducers import own_io                       # noqa: E402
 from rc_dashboard.reducers.live import LiveReducer             # noqa: E402
 from rc_dashboard.reducers.trajectories import TrajectoryReducer   # noqa: E402
 from rc_dashboard.windows import PanelView                     # noqa: E402
@@ -446,6 +448,71 @@ class PidReuseTest(unittest.TestCase):
                 person("exit", t + 300, 600, 1, "python", "python run.py", "carol",
                        io=iob(10.0, 10.0), duration_s=272.0)]
         self.assertEqual(self.by_user(recs), {"carol": 10.0})
+
+
+def shells(t, host="h1", base=0, n=5):
+    """`n` tool-call shells, each the parent of one `cat` that read 1 MB: every
+    shell's figure is its cat's, and its own is 0."""
+    out = []
+    for i in range(n):
+        out.append(raw("exit", t + i, 1000 + base + i, 900 + base + i, "cat", "cat f",
+                       host=host, agent_pid=900 + base + i, tree_root=100,
+                       io=iob(1.0, 1.0)))
+    return out + [raw("exit", t + 10 + i, 900 + base + i, None, "zsh", "zsh -c cat f",
+                      host=host, agent_pid=900 + base + i, tree_root=100, is_agent=True,
+                      io=iob(1.0, 1.0)) for i in range(n)]
+
+
+JOINS = ("io_process", "tool_mix", "resources", "workspace", "trajectories")
+
+
+def join_of(red):
+    return red.own
+
+
+class JoinBoundsTest(unittest.TestCase):
+    """What the join drops is counted, never silent: past a reducer's own cap,
+    and past one pass's where a window puts the nodes' joins together. REAPED_MAX
+    lowered to 3 for both."""
+
+    def test_the_reducer_s_own_cap(self):
+        with mock.patch.object(own_io, "REAPED_MAX", 3):
+            v = window(shells(time.time() - 900))
+        # five parents waiting, three held: the first two dropped, and their
+        # cats' bytes count again at their shells' exits
+        for k in JOINS:
+            with self.subTest(reducer=k):
+                self.assertEqual(join_of(v.reducers[k]).evicted, 2)
+        p = v.payload
+        self.assertEqual(p["io_process"]["by_class"]["agent"]["rd_mb"], 7.0)
+        self.assertEqual(p["io_process"]["own_io"]["evicted"], 2)
+        self.assertEqual(p["tool_mix"]["own_io"]["evicted"], 2)
+        self.assertEqual(p["resources"]["own_io"]["evicted"], 2)
+        self.assertEqual(p["workspace"]["own_io"]["evicted"], 2)
+        self.assertEqual(p["trajectories"]["buffer"]["reaped_evicted"], 2)
+
+    def test_one_pass_s_cap_where_a_window_puts_the_nodes_joins_together(self):
+        c = cfg()
+        fresh = lambda: PanelView(c, CLASSES, 1440).fresh_reducers()   # noqa: E731
+        kinds = {k: type(r) for k, r in fresh().items()}
+        t = time.time() - 900
+        carries, ages = {}, {}
+        for n, host in enumerate(("h1", "h2")):
+            red = hours.prepare(fresh())
+            # each node: two shells' cats exited, the shells not yet
+            recs = normalized(shells(t, host=host, base=10 * n, n=2)[:2])
+            hours.feed_all(red, ((r["_ts_epoch"], r) for r in recs))
+            carries[host], ages[host] = hours.age(kinds, hours.take_carry(red), {},
+                                                  int(t // HOUR))
+        acc = fresh()
+        with mock.patch.object(own_io, "REAPED_MAX", 3):
+            got = hours.combine_carries(carries, ages, acc)
+        for k in JOINS:
+            with self.subTest(reducer=k):
+                self.assertEqual(len(got[k]["reaped"]), 3)
+                self.assertEqual(join_of(acc[k]).evicted, 1)
+        hours.install(acc, got)
+        self.assertEqual(acc["io_process"].result()["own_io"]["evicted"], 1)
 
 
 class LookupTest(FeedCase):

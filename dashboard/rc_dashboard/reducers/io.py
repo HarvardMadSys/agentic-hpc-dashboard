@@ -34,7 +34,7 @@ import collections
 import heapq
 
 from . import Acc, Quant, add_counts, pct
-from .own_io import REAPED_MAX, OwnIo
+from .own_io import OwnIo
 
 IO_KEYS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # The losses a `net_endpoints` block states, beside its endpoints.
@@ -207,7 +207,10 @@ class IoReducer:
 
     def carry_caps(self):
         """What one pass holds the carried map to (`hours.combine_carries`)."""
-        return {"reaped": REAPED_MAX}
+        return self.own.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
 
     def seed(self, c):
         self.own.seed(c)

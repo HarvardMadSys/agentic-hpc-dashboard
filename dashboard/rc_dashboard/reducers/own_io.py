@@ -45,7 +45,9 @@ children it reaped in this one carried. So `reaped` is CARRIED into each hour's
 reduction and is not part of the saved hour (`hours`): a reducer's `carry`,
 `seed`, `strip` and `track` hand it on, its CARRY_AGED ages it with the rest of
 its join state, and its `carry_caps` hold it to REAPED_MAX parents, the oldest
-first out, counted (`evicted`).
+first out. Every parent dropped is counted (`evicted`): at the reducer's own
+cap, and at one pass's when a window puts the nodes' joins together
+(`carry_trimmed`); its children's bytes then count again at its exit.
 """
 import collections
 
@@ -79,7 +81,7 @@ class OwnIo:
         # (host, pid) -> what its exited children carried, for its own exit to
         # give back: a group per user (_G_*)
         self.reaped = collections.OrderedDict()
-        self.evicted = 0
+        self.evicted = 0            # parents dropped at either cap (`carry_trimmed`)
         self.rejected = 0           # groups a process could not have reaped: dropped
         self.touched = None         # the keys touched since `track`, for the ageing
 
@@ -193,6 +195,16 @@ class OwnIo:
         c.setdefault("touched", {})["reaped"] = self.touched or ()
         return c
 
+    def carry_caps(self):
+        """What one pass holds `reaped` to (`hours.combine_carries`)."""
+        return {"reaped": REAPED_MAX}
+
+    def carry_trimmed(self, c, dropped):
+        """The parents `hours.combine_carries` dropped past that cap, putting the
+        nodes' joins together for a window: counted, as the reducer's own cap
+        counts what it drops."""
+        self.evicted += len(dropped.get("reaped", ()))
+
     def seed(self, c):
         """Take the join's state from `c`, a reducer's carry."""
         x = c.get("reaped")
@@ -209,7 +221,7 @@ class OwnIo:
         self.rejected += o.rejected
 
     def status(self):
-        """What a panel says of its join: parents dropped at the cap, whose
-        reaped children's bytes then count again at their exit; and groups of
-        children a process could not have reaped, not taken off it."""
+        """What a panel says of its join: parents dropped at a cap, whose reaped
+        children's bytes then count again at their exit; and groups of children a
+        process could not have reaped, not taken off it."""
         return {"evicted": self.evicted, "rejected": self.rejected}
