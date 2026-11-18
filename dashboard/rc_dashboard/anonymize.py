@@ -41,6 +41,7 @@ import hmac
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 
@@ -532,44 +533,47 @@ def load_salt(cfg):
     `<cache.dir>/anonymize.salt`, made once (mode 0600) when missing. A salt
     file that exists but cannot be read is an error, as is a salt shorter than
     MIN_SALT bytes: serving with no salt, a guessable one, or a new one would
-    hand out aliases nobody asked for. An empty file is waited on for a moment
-    (another instance may have just made it), then is an error too."""
+    hand out aliases nobody asked for. A new salt is written whole under a name
+    of its own, synced, and linked into place: the file is never there half
+    written -- a crash or a full disk mid-write leaves none, and the next start
+    makes one -- and of two instances making one at once, the first link wins."""
     s = cfg.get("anonymize.salt") or ""
     if s:
         salt = str(s).encode()
         if len(salt) < MIN_SALT:
-            raise SystemExit("anonymize.salt is %d bytes; a salt must be at least %d"
-                             % (len(salt), MIN_SALT))
+            raise SystemExit("anonymize.salt is %d bytes; a salt must be at least %d, and a "
+                             "longer one gives every name a new alias" % (len(salt), MIN_SALT))
         return salt, "config"
     d = cfg.get("cache.dir") or "."
     path = os.path.join(d, "anonymize.salt")
-    for _ in range(20):
+    try:
+        with open(path) as fh:
+            got = fh.read().strip()
+    except FileNotFoundError:
+        got = None
+    if got is not None:
         try:
-            with open(path) as fh:
-                got = fh.read().strip()
-        except FileNotFoundError:
-            break
-        if got:
-            try:
-                salt = bytes.fromhex(got)
-            except ValueError:
-                salt = b""
-            if len(salt) < MIN_SALT:
-                raise SystemExit("%s is not a salt of %d bytes or more. Delete it and a new "
-                                 "one is made; every alias then changes." % (path, MIN_SALT))
-            return salt, "file"
-        time.sleep(0.05)              # made by another instance, still writing it
-    else:
-        raise SystemExit("%s is empty. Delete it and a new one is made; every alias then "
-                         "changes." % path)
+            salt = bytes.fromhex(got)
+        except ValueError:
+            salt = b""
+        if len(salt) < MIN_SALT:
+            raise SystemExit("%s is not a salt of %d bytes or more. Delete it and a new one "
+                             "is made, which gives every name a new alias." % (path, MIN_SALT))
+        return salt, "file"
     os.makedirs(d, exist_ok=True)
     salt = secrets.token_bytes(32)
+    fd, tmp = tempfile.mkstemp(prefix=".anonymize.salt.", dir=d)     # mode 0600
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:           # another instance won the race: use theirs
-        return load_salt(cfg)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(salt.hex() + "\n")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(salt.hex() + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:       # another instance's, linked first and whole: use it
+            return load_salt(cfg)
+    finally:
+        os.unlink(tmp)
     return salt, "generated"
 
 

@@ -809,8 +809,11 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
   account reads the same in every tab, window, and restart, and without the salt a list of
   candidate names does not turn an alias back. Changing the salt reshuffles every alias.
-  Neither `/api/config` nor `--print-config` shows it. A salt shorter than 16 bytes, or a
-  salt file that is empty or not hex, stops the service at start rather than serving under it.
+  Neither `/api/config` nor `--print-config` shows it. A configured salt shorter than 16 bytes
+  stops the service at start rather than serving under it, and a longer one gives every name
+  a new alias. The file is written whole and then linked into place, so a crash cannot leave
+  it half-written; one that is empty, not hex or shorter (edited by hand, or left by an older
+  version) stops the service too, and deleting it makes a new salt, with new aliases.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.

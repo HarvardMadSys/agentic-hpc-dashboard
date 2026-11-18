@@ -2,6 +2,7 @@
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import errno
 import os
 import re
 import shutil
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -263,20 +265,49 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(printed["anonymize"]["salt"]["_value"], "(hidden)")
 
     def test_an_empty_salt_file_stops_the_service(self):
-        # it used to recurse until the interpreter gave up
+        # it used to recurse until the interpreter gave up; this service never
+        # leaves one (below), so it was made by hand or by an older version
         open(os.path.join(self.tmp, "anonymize.salt"), "w").close()
         with self.assertRaises(SystemExit) as cm:
             anonmod.from_config(self.cfg(enabled=True))
-        self.assertIn("is empty", str(cm.exception))
+        self.assertIn("is not a salt", str(cm.exception))
+
+    def test_a_writer_that_dies_mid_write_leaves_no_salt_file(self):
+        # killed, or the disk full, between making the file and filling it: the
+        # next start must make a salt, not find an empty file and refuse to start
+        def dies(fd, *a, **kw):
+            os.close(fd)
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        with mock.patch.object(anonmod.os, "fdopen", dies), self.assertRaises(OSError):
+            anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual(os.listdir(self.tmp), [])
+        salt, source = anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual((len(salt), source), (32, "generated"))
+        self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])
+
+    def test_of_two_instances_making_a_salt_the_first_link_wins(self):
+        theirs, link = "ab" * 32, os.link
+
+        def second(src, dst):
+            with open(dst, "w") as fh:                # the other instance links first
+                fh.write(theirs + "\n")
+            return link(src, dst)
+        with mock.patch.object(anonmod.os, "link", second):
+            salt, source = anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual((salt.hex(), source), (theirs, "file"))
+        self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])     # its own file is gone
 
     def test_a_salt_too_short_to_keep_names_hidden_is_refused(self):
         for text in ("ab\n", "not hex at all\n"):
             with open(os.path.join(self.tmp, "anonymize.salt"), "w") as fh:
                 fh.write(text)
-            with self.assertRaises(SystemExit, msg=text):
+            with self.assertRaises(SystemExit, msg=text) as cm:
                 anonmod.from_config(self.cfg(enabled=True))
-        with self.assertRaises(SystemExit):
+            self.assertIn("alias", str(cm.exception))
+        # a deployment's own short salt: lengthening it changes every alias, and says so
+        with self.assertRaises(SystemExit) as cm:
             anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
+        self.assertIn("new alias", str(cm.exception))
 
     def test_the_accounts_the_filters_name_are_known_names(self):
         tree = configmod.defaults()
