@@ -79,6 +79,11 @@ jobs:
           own_base() {
             local trunk fork shared=no
             for trunk in origin/develop origin/main; do
+              # A trunk that is not there at all is a broken checkout (the
+              # fetch-depth: 0 above, or a renamed branch), not a branch of
+              # unrelated history: say so and stop rather than guess a base.
+              git rev-parse --verify -q "$trunk" > /dev/null ||
+                { echo "::error::$trunk was not fetched; this step needs both trunks"; exit 1; }
               fork="$(git merge-base HEAD "$trunk")" || continue
               shared=yes
               git diff --quiet "$fork" HEAD -- "${paths[@]}" && return 1
