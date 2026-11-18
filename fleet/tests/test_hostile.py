@@ -26,6 +26,8 @@ sys.path.insert(0, FLEET)
 sys.path.insert(0, HERE)
 
 import fleet_stream as fs                      # noqa: E402
+from fakecollector import FakeCollector        # noqa: E402
+from test_receiver import Rig                  # noqa: E402
 
 SCRIPT = os.path.join(FLEET, "fleet_stream.py")
 HOST = "nodeA"
@@ -337,11 +339,68 @@ class TestRetentionByDate(MirrorCase):
             os.close(self.base.open_append(self.m.part(day, "nodeA.exits.jsonl")))
             self.m.verified.add(day + "/nodeA.exits.jsonl")
         self.m._save_ledger()
+        r.links[0].live = kept[2]        # the node's day is this host's
         r.retention()
         self.assertEqual(self.m.days(), sorted(kept))
         self.assertEqual(self.base.listdir("staging/" + HOST), sorted(kept))
         self.assertEqual(sorted(fs.Mirror(self.base, HOST).verified),
                          sorted(d + "/nodeA.exits.jsonl" for d in kept))
+
+    def test_the_days_a_node_sends_are_kept_whichever_way_its_day_runs(self):
+        """1a1a11a's case: a sender's window starts `days` - 1 days before its own live
+        day, retention's before this host's today. For a node a day behind (its time
+        zone, folders named in UTC, around midnight) retention deleted the oldest day
+        it sends, and each connection sent that day again. Retention keeps from the
+        earlier of the two. A node a day ahead sends nothing before this host's window;
+        one whose live day is not known yet (no hello since a restart) counts as a day
+        behind."""
+        r = fs.Receiver({"base": self.basedir, "days": 3, "hosts": {}})
+        r.base = self.base
+        r.links = [fs.Link(HOST, ["true"], self.m, 3, r.counters, r.paused, r.stop)]
+        behind, ahead = days_from_today(-1, 1)
+        for live, kept in ((behind, days_from_today(-3, -2, -1, 0, 1)),
+                           (ahead, days_from_today(-2, -1, 0, 1)),
+                           (None, days_from_today(-3, -2, -1, 0, 1)),
+                           ("0001-01-01", days_from_today(-4, -3, -2, -1, 0, 1))):
+            for day in days_from_today(-4, -3, -2, -1, 0, 1):
+                os.close(self.base.open_append(self.m.rel(day, "nodeA.exits.jsonl")))
+                self.m.verified.add(day + "/nodeA.exits.jsonl")
+            r.links[0].live = live
+            r.retention()
+            self.assertEqual(self.m.days(), kept, live)
+            self.assertEqual(sorted(self.m.verified), [d + "/nodeA.exits.jsonl" for d in kept], live)
+
+
+class TestSkewedNode(unittest.TestCase):
+    def test_a_node_a_day_behind_is_not_sent_again_at_each_connection(self):
+        """The same, end to end: the oldest day such a node sends stays checked in the
+        copy through a retention pass, and the next connection sends none of it."""
+        rig = Rig(days=3)
+        try:
+            d = days_from_today(-3, -2, -1)      # the node's live day is this host's yesterday
+            c = FakeCollector(rig.src, day=d[0])
+            c.append("exits", b'{"d":0}\n' * 100)
+            c.roll(d[1], gzip=True)
+            c.append("exits", b'{"d":1}\n' * 100)
+            c.roll(d[2], gzip=True)
+            c.append("exits", b'{"d":2}\n')
+            rig.start()
+            sealed = [c.key(s, day) for day in d[:2] for s in ("exits", "snapshot")]
+            self.assertTrue(wait_for(lambda: all(k in rig.mirror.verified for k in sealed)
+                                     and rig.link.live == d[2]), rig.link.status())
+            r = fs.Receiver({"base": rig.basedir, "days": 3, "hosts": {}})
+            r.base, r.links = rig.base, [rig.link]
+            r.retention()
+            self.assertEqual(sorted(os.listdir(rig.mdir)), d)
+            gz = rig.counters.total(HOST, "gz")
+            rig.halt()
+            rig.start()
+            self.assertTrue(wait_for(lambda: rig.link.connected), rig.link.status())
+            time.sleep(1.0)
+            self.assertEqual(rig.counters.total(HOST, "gz"), gz)
+            self.assertIsNone(rig.link.last_error)
+        finally:
+            rig.cleanup()
 
 
 class LinkCase(MirrorCase):

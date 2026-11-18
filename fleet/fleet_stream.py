@@ -222,6 +222,18 @@ def tomorrow(today=None):
     return ((today or datetime.date.today()) + datetime.timedelta(days=1)).isoformat()
 
 
+def kept_from(days, live=None, today=None):
+    """The oldest day a copy keeps of a node, as `YYYY-MM-DD`: `days` - 1 days before
+    this host's today, or before the node's live day when that is earlier. A sender
+    sends the days before its own live day, and a node's day can run behind this
+    host's (its time zone, folders named in UTC, around midnight). A node whose live
+    day is not known yet (no hello since this receiver started) counts as a day behind."""
+    today = today or datetime.date.today()
+    live = day_date(live) if isinstance(live, str) else None
+    anchor = min(today, live) if live else today - datetime.timedelta(days=1)
+    return datetime.date.fromordinal(max(1, anchor.toordinal() - max(1, days) + 1)).isoformat()
+
+
 def stream_names(folder):
     """The plain name (`x.jsonl`) of every stream in a day folder (a path or a handle),
     plain or gzipped."""
@@ -1496,8 +1508,9 @@ class Receiver:
       volume), 300 GB and 10% unless the config says otherwise, every link pauses,
       and resumes once space returns;
     * retention: each host keeps the day folders dated within its last `days` days,
-      today included, and tomorrow (a node's clock may run a little ahead), by
-      date, so no folder a node names can push a day out. A frame that names a
+      counted back from today, or from its node's live day when that is earlier (a
+      node's day may run behind), and tomorrow (or ahead), by date, so no folder a
+      node names can push a day out. A frame that names a
       later day, or would reset, extend, or fetch again a verified file, is
       refused;
     * `stall_s` (default 300): a link whose sender sends nothing, not even its
@@ -1540,17 +1553,18 @@ class Receiver:
             self.paused.clear()
 
     def retention(self):
-        """Keep each host's day folders dated from `days` - 1 days before today to
-        tomorrow, in the copy and in staging; the ledger forgets the others. By date
-        relative to today, not by the order of whatever folders exist, so a node that
-        names days of its own cannot push the real ones out."""
+        """Keep each host's day folders dated from `days` - 1 days before today, or
+        before its node's live day when that is earlier (kept_from), to tomorrow, in
+        the copy and in staging; the ledger forgets the others. By date, not by the
+        order of whatever folders exist, so a node that names days of its own cannot
+        push the real ones out."""
         today = datetime.date.today()
-        first = (today - datetime.timedelta(days=max(1, self.days) - 1)).isoformat()
         last = tomorrow(today)
-
-        def kept(day):
-            return day_date(day) is not None and first <= day <= last
         for link in self.links:
+            first = kept_from(self.days, link.live, today)
+
+            def kept(day):
+                return day_date(day) is not None and first <= day <= last
             m = link.mirror
             for day in m.days():
                 if not kept(day):
