@@ -752,6 +752,14 @@ class ClassifyTest(unittest.TestCase):
         ('claude', 'claude_code'),
         (CLAUDE_VSCODE + ' --output-format stream-json', 'claude_code'),
         (HOME + '/.local/share/claude/versions/2.1.282 --session-id 08749fc1', 'claude_code'),
+        # each way Claude Code is installed: by its name wherever it is, the local
+        # installer's launcher, npm's bin link run through its #! line, the Agent
+        # SDK's own binary (tests/test_surfaces.py's shape)
+        (HOME + '/.claude/bin/claude', 'claude_code'),
+        (HOME + '/.claude/local/claude --resume', 'claude_code'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/claude --resume', 'claude_code'),
+        (HOME + '/kemp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude '
+         '--output-format stream-json', 'claude_code'),
         (HOME + '/.claude/remote/ccd-cli/2.1.286 --output-format stream-json', 'claude_code'),
         (CODEX_STANDALONE + ' app-server --listen unix://', 'codex'),
         (HOME + '/.codex/tmp/arg0/codex-arg0lL3/codex-linux-sandbox --sandbox-policy-cwd '
