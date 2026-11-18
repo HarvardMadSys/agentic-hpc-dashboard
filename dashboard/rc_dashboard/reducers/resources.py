@@ -123,7 +123,7 @@ class ResourceReducer:
         # its row is not made at all: nearly every exit waited for a CPU a little.
         self.floor = {"worst_stall": 0, "worst_fault": 0, "worst_wait": 0}
         # each process's own bytes for the I/O series (own_io.py)
-        self.own = OwnIo(cap=cap_of(cfg))
+        self.own = OwnIo(cap=cap_of(cfg), name="resources")
 
     def _bin(self, rec):
         """The bin a record lands in, or None when it has no usable time."""

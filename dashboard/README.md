@@ -762,14 +762,14 @@ already made once.
   in `rejected` (on four million records, one child in 2.7 M began a minute to an hour before
   its parent's recorded start). A figure short of what its children carried shows as 0, never
   below, and is counted too. Each join holds at most `reducers.own_io.max_parents` parents
-  (600), the one given to least recently dropped first and counted (`evicted`), its children's
-  bytes then counted again at its exit. A service holds some 35 joins (five in each held window,
-  five carried in the hours' chain, the live tier's two, an inspector read's and a lookup's) at
-  up to 2.5 KB a parent, so 600 is at worst ~48 MB; the live tier's notes add at most ~10 MB.
-  The repo's streams hold under 500 parents at once and lose nothing at 100; the bench's feed,
-  32 times the demo's records, sums 1.9% more than an uncapped join at 600 and the same from
-  800. A busy login node needs more: raise it while `evicted` grows, at up to 80 KB for each one
-  added.
+  (600), the one given to least recently dropped first, counted (`evicted`) and said on stderr
+  (the first time, then at most hourly a panel), its children's bytes then counted again at its
+  exit. A service holds some 35 joins (five in each held window, five carried in the hours'
+  chain, the live tier's two, an inspector read's and a lookup's) at up to 2.5 KB a parent, so
+  600 is at worst ~48 MB; the live tier's notes add at most ~10 MB. The repo's streams hold
+  under 500 parents at once and lose nothing at 100; the bench's feed, 32 times the demo's
+  records, sums 1.9% more than an uncapped join at 600 and the same from 800. A busy login node
+  needs more: raise it while `evicted` grows, at up to 80 KB for each one added.
 - **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a

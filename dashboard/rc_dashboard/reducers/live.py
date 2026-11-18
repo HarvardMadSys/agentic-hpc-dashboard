@@ -272,9 +272,9 @@ class LiveReducer:
         # was running before the tail began is noted too: the backfill may yet
         # read the children it reaped. Each pairing is held to what the shared
         # join allows: the same user, and a child begun after its parent.
-        self.io_join = OwnIo(DISK, cap_of(cfg))
+        self.io_join = OwnIo(DISK, cap_of(cfg), "live")
         self.io_booked = collections.OrderedDict()   # (host, pid) -> a note (_B_*)
-        self.io_given = OwnIo(DISK, cap_of(cfg))
+        self.io_given = OwnIo(DISK, cap_of(cfg), "live")
         self._io_starts = []         # (-start, note's number, key): the latest start first
         self._io_seq = 0
         self.io_tail_from = None     # when the first exit the tail read ended

@@ -64,8 +64,10 @@ reduction and is not part of the saved hour (`hours`): a reducer's `carry`,
 its join state, and its `carry_caps` hold it to the join's cap. Every parent
 dropped is counted (`evicted`): at the reducer's own cap, and at one pass's
 when a window puts the nodes' joins together (`carry_trimmed`); its children's
-bytes then count again at its exit. So is a figure short of what its children
-carried (`clamped`): shown as 0, never below.
+bytes then count again at its exit. And said on stderr, naming the panel and
+the setting, the first time and then at most hourly (`_say`). So is a figure
+short of what its children carried counted (`clamped`): shown as 0, never
+below.
 
 The cap is a setting, `reducers.own_io.max_parents` (`cap_of`; REAPED_MAX
 unless set), because a service holds some 35 joins at once -- five in each
@@ -77,6 +79,8 @@ to least recently goes first: a dead one whose orphans' bytes wait under its
 pid, or one that has stopped reaping, before one at work.
 """
 import collections
+import sys
+import time
 
 from ..procindex import pop_oldest, users_conflict
 
@@ -94,6 +98,16 @@ CLAMP_TOL_MB = 0.01
 # of them, the two of one user whose starts are closest merged past it.
 _G_USER, _G_START, _G_VALS = 0, 1, 2
 PER_PID = 8
+
+# A join that drops a parent at its cap says so on stderr, naming its panel and
+# the setting: the first time, then at most once in SAY_EVERY_S for that panel
+# (`OwnIo._say`). Otherwise only the panel's `own_io.evicted` shows it.
+SAY_EVERY_S = 3600.0
+_SAID = {}                  # panel -> when it last said so (`_now`)
+
+
+def _now():
+    return time.monotonic()
 
 
 def cap_of(cfg):
@@ -165,11 +179,13 @@ def _start(rec):
 class OwnIo:
     """One reducer's join (the module docstring): `take` every exit, in order."""
 
-    __slots__ = ("fields", "cap", "reaped", "evicted", "rejected", "clamped", "touched")
+    __slots__ = ("fields", "cap", "name", "reaped", "evicted", "rejected", "clamped",
+                 "touched")
 
-    def __init__(self, fields=FIELDS, cap=None):
+    def __init__(self, fields=FIELDS, cap=None, name="own_io"):
         self.fields = tuple(fields)
         self.cap = max(1, int(REAPED_MAX if cap is None else cap))
+        self.name = name            # the panel it serves, for what it says (`_say`)
         # (host, pid) -> what its exited children carried, for its own exit to
         # give back (_G_* entries), the one given to least recently first
         self.reaped = collections.OrderedDict()
@@ -238,6 +254,7 @@ class OwnIo:
             if len(self.reaped) >= self.cap:
                 pop_oldest(self.reaped)
                 self.evicted += 1
+                self._say(1)
             held = self.reaped[key] = []
         else:
             self.reaped.move_to_end(key)
@@ -307,9 +324,28 @@ class OwnIo:
 
     def carry_trimmed(self, c, dropped):
         """The parents `hours.combine_carries` dropped past that cap, putting the
-        nodes' joins together for a window: counted, as the reducer's own cap
-        counts what it drops."""
-        self.evicted += len(dropped.get("reaped", ()))
+        nodes' joins together for a window: counted, and said, as the reducer's
+        own cap counts and says what it drops."""
+        n = len(dropped.get("reaped", ()))
+        self.evicted += n
+        if n:
+            self._say(n)
+
+    def _say(self, n):
+        """Say on stderr that this join dropped `n` parents at its cap: the first
+        time, then at most once in SAY_EVERY_S for its panel."""
+        now = _now()
+        last = _SAID.get(self.name)
+        if last is not None and now - last < SAY_EVERY_S:
+            return
+        _SAID[self.name] = now
+        sys.stderr.write(
+            "warning: own_io: %s dropped %d parent%s held for %s own exit, at "
+            "reducers.own_io.max_parents (%d), %d so far: what %s reaped children carried "
+            "counts again at that exit. Raise the setting while this recurs (said at most "
+            "hourly)\n" % (self.name, n, "" if n == 1 else "s", "its" if n == 1 else "their",
+                           self.cap, self.evicted, "its" if n == 1 else "their"))
+        sys.stderr.flush()
 
     def seed(self, c):
         """Take the join's state from `c`, a reducer's carry."""

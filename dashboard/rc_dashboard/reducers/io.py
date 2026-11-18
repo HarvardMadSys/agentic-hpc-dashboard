@@ -103,7 +103,7 @@ class IoReducer:
         self.endpoints = collections.defaultdict(_endpoint)
         self.ep_cover = collections.defaultdict(_ep_cover)
         # each process's own bytes, its reaped children's taken off (own_io.py)
-        self.own = OwnIo(cap=cap_of(cfg))
+        self.own = OwnIo(cap=cap_of(cfg), name="io_process")
 
     def feed(self, rec):
         c = self.cls[rec["_a3"]]

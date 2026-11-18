@@ -1031,7 +1031,7 @@ class WorkspaceReducer:
         self._admitted = {}
         # each process's own bytes (own_io.py), over the records kept here: an
         # agent's process reaps only its agent's
-        self.own = OwnIo(cap=cap_of(cfg))
+        self.own = OwnIo(cap=cap_of(cfg), name="workspace")
 
     # ------------------------------------------------------------- feed
     def feed(self, rec):

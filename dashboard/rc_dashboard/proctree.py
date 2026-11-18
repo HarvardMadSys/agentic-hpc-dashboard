@@ -488,7 +488,7 @@ class TreeBuilder:
         # Each process's own disk and syscall bytes (reducers/own_io.py), over
         # the records this read takes: a child the read does not take (another
         # session's) is not taken off its parent.
-        self.own = OwnIo(cap=own_cap)
+        self.own = OwnIo(cap=own_cap, name="inspector")
 
     # ----------------------------------------------------------------- feed
     def feed(self, rec):

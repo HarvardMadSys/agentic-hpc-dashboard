@@ -101,7 +101,7 @@ class ToolMixReducer(Reducer):
         self.dropped = 0
         self.total = 0
         self.evicted = 0
-        self.own = OwnIo(DISK, cap_of(cfg))
+        self.own = OwnIo(DISK, cap_of(cfg), "tool_mix")
 
     def feed(self, rec):
         sid = rec.get("_sid")

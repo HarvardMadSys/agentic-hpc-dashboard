@@ -315,7 +315,7 @@ class IoCommands:
         groups = j.groups = {}
         tot = [0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0]
         st = j.stats
-        join = OwnIo(cap=cap_of(self.cfg))
+        join = OwnIo(cap=cap_of(self.cfg), name="lookup")
         # Files one after another, not merged on time: a sum has no order, and
         # a merge holds every file open to seed it. Each host's own day-files
         # come in date order (`day_files`), so a child is read before the

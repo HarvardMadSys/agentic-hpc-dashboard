@@ -17,6 +17,8 @@ Two ways the per-class totals counted one process's resources twice.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_count_once -q
 """
+import contextlib
+import io
 import sys
 import time
 import unittest
@@ -568,7 +570,15 @@ def capped(n):
 class JoinBoundsTest(unittest.TestCase):
     """What the join drops is counted, never silent: past a reducer's own cap,
     and past one pass's where a window puts the nodes' joins together. The cap
-    (`reducers.own_io.max_parents`) set to 3 for both."""
+    (`reducers.own_io.max_parents`) set to 3 for both. What a join says on
+    stderr when it drops one is caught, from a clean slate."""
+
+    def setUp(self):
+        self.err = self.enterContext(contextlib.redirect_stderr(io.StringIO()))
+        self.enterContext(mock.patch.dict(own_io._SAID, clear=True))
+
+    def said(self):
+        return self.err.getvalue().splitlines()
 
     def test_the_reducer_s_own_cap(self):
         v = window(shells(time.time() - 900), c=capped(3))
@@ -577,6 +587,10 @@ class JoinBoundsTest(unittest.TestCase):
         for k in JOINS:
             with self.subTest(reducer=k):
                 self.assertEqual(join_of(v.reducers[k]).evicted, 2)
+        # said once a panel, naming it and the setting
+        self.assertEqual(sorted(ln.split()[2] for ln in self.said()), sorted(JOINS))
+        for ln in self.said():
+            self.assertIn("at reducers.own_io.max_parents (3), 1 so far", ln)
         p = v.payload
         self.assertEqual(p["io_process"]["by_class"]["agent"]["rd_mb"], 7.0)
         self.assertEqual(p["io_process"]["own_io"]["evicted"], 2)
@@ -604,8 +618,37 @@ class JoinBoundsTest(unittest.TestCase):
             with self.subTest(reducer=k):
                 self.assertEqual(len(got[k]["reaped"]), 3)
                 self.assertEqual(join_of(acc[k]).evicted, 1)
+        self.assertEqual(sorted(ln.split()[2] for ln in self.said()), sorted(JOINS))
         hours.install(acc, got)
         self.assertEqual(acc["io_process"].result()["own_io"]["evicted"], 1)
+
+    def test_a_join_that_drops_a_parent_says_so_then_at_most_hourly(self):
+        clock = [5000.0]
+        self.enterContext(mock.patch.object(own_io, "_now", lambda: clock[0]))
+
+        def ex(t, pid, ppid):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": "alice",
+                    "_ts_epoch": t, "duration_s": 1.0, "io": iob(1.0, 1.0)}
+        t = time.time() - 600
+        j = own_io.OwnIo(own_io.DISK, cap=1, name="io_process")
+        for k in range(3):                      # two parents dropped: said once
+            j.take(ex(t + k, 100 + k, 10 + k))
+        clock[0] += own_io.SAY_EVERY_S - 1       # within the hour: not again
+        j.take(ex(t + 3, 103, 13))
+        clock[0] += 1                            # an hour on: said again
+        j.take(ex(t + 4, 104, 14))
+        self.assertEqual(j.evicted, 4)
+        said = self.said()
+        self.assertEqual(len(said), 2)
+        self.assertTrue(said[0].startswith("warning: own_io: io_process dropped 1 parent "))
+        self.assertIn("at reducers.own_io.max_parents (1), 1 so far", said[0])
+        self.assertIn("(1), 4 so far", said[1])
+        # another panel's join says so on its own clock
+        o = own_io.OwnIo(own_io.DISK, cap=1, name="tool_mix")
+        o.take(ex(t, 100, 10))
+        o.take(ex(t + 1, 101, 11))
+        self.assertEqual([ln.split()[2] for ln in self.said()],
+                         ["io_process", "io_process", "tool_mix"])
 
     def test_the_parent_given_to_least_recently_goes_first(self):
         # an agent at work, a shell that has stopped reaping, then a third
@@ -631,11 +674,13 @@ class JoinBoundsTest(unittest.TestCase):
         red = PanelView(c, CLASSES, 60).fresh_reducers()
         for k in JOINS:
             with self.subTest(reducer=k):
-                self.assertEqual(join_of(red[k]).cap, 7)
+                self.assertEqual((join_of(red[k]).cap, join_of(red[k]).name), (7, k))
                 self.assertEqual(red[k].carry_caps()["reaped"], 7)
         lv = LiveReducer(c, CLASSES)
-        self.assertEqual((lv.io_join.cap, lv.io_given.cap), (7, 7))
-        self.assertEqual(TreeBuilder(own_cap=own_io.cap_of(c)).own.cap, 7)
+        self.assertEqual([(j.cap, j.name) for j in (lv.io_join, lv.io_given)],
+                         [(7, "live"), (7, "live")])
+        own = TreeBuilder(own_cap=own_io.cap_of(c)).own
+        self.assertEqual((own.cap, own.name), (7, "inspector"))
 
 
 class ClampTest(unittest.TestCase):
@@ -696,7 +741,8 @@ class LookupTest(FeedCase):
         c.set("reducers.own_io.max_parents", 7, "test")
         with mock.patch.object(iocmds, "OwnIo", side_effect=own_io.OwnIo) as made:
             self.lookup(c)
-        self.assertEqual([k.get("cap") for _a, k in made.call_args_list], [7])
+        self.assertEqual([(k.get("cap"), k.get("name")) for _a, k in made.call_args_list],
+                         [(7, "lookup")])
 
     def test_a_lookup_sums_what_the_panels_sum(self):
         j = self.lookup(self.cfg())

@@ -786,7 +786,7 @@ class TrajectoryReducer:
         # (host, pid) -> [MB read, MB written] its exited children carried, for
         # its own exit to give back (`own_io`): the join every panel that sums
         # disk bytes holds one of (own_io.py), here over disk bytes alone.
-        self.own = OwnIo(DISK, cap_of(cfg))
+        self.own = OwnIo(DISK, cap_of(cfg), "trajectories")
         # Phases. The thresholds: the config's over phase_segment.DEFAULTS.
         self.phase_params = dict(PHASE_DEFAULTS, **(r.get("phases") or {}))
         # The tasks above them, likewise: the config's over phase_tasks.DEFAULTS.

@@ -290,7 +290,8 @@ def defaults():
             "io": {"top_n": 20},
             # Each process's own disk bytes (reducers/own_io.py): the parents
             # one join holds for their own exit, the one given to least
-            # recently dropped first and counted (a panel's `own_io.evicted`).
+            # recently dropped first, counted (a panel's `own_io.evicted`) and
+            # said on stderr, at most hourly a panel.
             # A service holds some 35 joins, at up to 2.5 KB a parent, so 600
             # is at worst ~48 MB. The repo's streams hold under 500 at once
             # and lose nothing at 100; a busy login node needs more, at up to
