@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -90,14 +91,26 @@ class Origin(unittest.TestCase):
                 self.assertEqual(call(guard, "websocket", host, "https://%s/" % host.upper()), "app")
                 self.assertEqual(call(guard, "websocket", host, None), "app")      # curl
 
-    def test_vites_dev_proxy_connects(self):
+    def test_vites_dev_proxy_connects_once_run_sh_names_it(self):
+        named = ["http://127.0.0.1:5173", "http://localhost:5173"]       # as run.sh names them
         for guard in (OPEN, SIGNED):
             with self.subTest(guard=guard):
-                self.assertEqual(call(guard, "websocket", VITE[1], VITE[0]), "app")
-                self.assertEqual(call(guard, "websocket", VITE[1], "http://localhost:5173"), "app")
-                self.assertEqual(call(guard, "websocket", VITE[1], "http://[::1]:5173"), "app")
-        # a loopback page passes only to a loopback Host
-        self.assertEqual(call(SIGNED, "websocket", "dash.example.org", VITE[0]), "closed")
+                self.assertEqual(call(guard, "websocket", VITE[1], VITE[0]), "closed")
+                listed = dict(guard, allowed_origins=named)
+                self.assertEqual(call(listed, "websocket", VITE[1], VITE[0]), "app")
+                self.assertEqual(call(listed, "websocket", VITE[1], "http://localhost:5173"), "app")
+                self.assertEqual(call(listed, "websocket", VITE[1], "http://localhost:5174"), "closed")
+
+    def test_another_port_of_the_readers_own_host_is_another_site(self):
+        # The cookie is SameSite=Lax, and a browser counts every port of a host as one
+        # site: a dev server, a notebook or another tunnel on the reader's localhost
+        # gets the cookie sent with its handshake. Its Origin is still not this one.
+        for guard in (OPEN, SIGNED):
+            for origin, host in (("http://localhost:8888", "localhost:8000"),
+                                 ("http://127.0.0.1:9999", "127.0.0.1:8124"),
+                                 ("http://[::1]:3000", "[::1]:8124")):
+                with self.subTest(guard=guard, origin=origin):
+                    self.assertEqual(call(guard, "websocket", host, origin), "closed")
 
     def test_a_listed_origin_passes_a_proxy_that_rewrites_the_host(self):
         guard = dict(SIGNED, allowed_origins=["https://Dash.example.org/", "ui.example.org:5173"])
@@ -240,8 +253,23 @@ class LiveOpen(Live):
     def test_another_sites_page_gets_no_websocket(self):
         self.assertEqual(self.ws("https://evil.example"), 403)
         self.assertEqual(self.ws("http://127.0.0.1:%d" % self.port), "live")
-        self.assertEqual(self.ws(VITE[0]), "live")           # a loopback Host, from Vite
+        self.assertEqual(self.ws(VITE[0]), 403)              # another port, not named
         self.assertEqual(self.ws(), "live")                  # a script
+
+    def test_another_origins_json_post_is_never_sent(self):
+        # The browser asks first (a CORS preflight) before a JSON POST from another
+        # origin, and is never told yes: the POST routes need no Origin check.
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        try:
+            c.request("OPTIONS", "/api/ask", headers={
+                "Origin": "http://localhost:8888", "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type"})
+            r = c.getresponse()
+            r.read()
+        finally:
+            c.close()
+        self.assertGreaterEqual(r.status, 400)
+        self.assertIsNone(r.getheader("access-control-allow-origin"))
 
     def test_ask_does_not_run_with_no_password(self):
         status, info = self.req("GET", "/api/ask")
@@ -293,6 +321,8 @@ class LiveSigned(Live):
 
     def test_another_sites_page_still_gets_no_websocket(self):
         self.assertEqual(self.ws("https://evil.example"), 403)
+        # signed in (a cookie another port of this host would be sent too), all the same
+        self.assertEqual(self.ws("http://127.0.0.1:%d" % (self.port + 1)), 403)
         self.assertEqual(self.ws("http://127.0.0.1:%d" % self.port), "live")
 
     def test_ask_runs_behind_the_password_and_takes_a_short_question(self):
@@ -308,6 +338,56 @@ class LiveSigned(Live):
         status, body = self.req("POST", "/api/ask", json.dumps({"question": "x" * 4001}), JSON)
         self.assertEqual(status, 400)
         self.assertIn("at most 4000 characters", body["detail"])
+
+
+@unittest.skipUnless(shutil.which("bash"), "run.sh is a bash script")
+class DevScript(unittest.TestCase):
+    """dashboard/run.sh names Vite's origins to the backend in dev mode, and
+    only then. `uv` (which starts the backend), `npm` and `npx` are stand-ins:
+    `uv` writes down the RC_DASH_ALLOWED_ORIGINS it was started with."""
+
+    RUN = str(Path(__file__).resolve().parents[1] / "run.sh")
+
+    def origins(self, mode, **env):
+        tmp = tempfile.mkdtemp(prefix="rc-run-sh-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        bin_dir, seen = os.path.join(tmp, "bin"), os.path.join(tmp, "seen")
+        os.makedirs(bin_dir)
+        # npm waits for the backend to have started: run.sh stops both when one ends
+        wait = "for i in $(seq 200); do [ -s %s ] && exit 0; sleep 0.05; done; exit 0" % seen
+        for name, body in (("uv", 'printf "%%s\\n" "${RC_DASH_ALLOWED_ORIGINS-unset}" >> %s' % seen),
+                           ("npm", wait), ("npx", "exit 0")):
+            path = os.path.join(bin_dir, name)
+            with open(path, "w") as fh:
+                fh.write("#!/bin/sh\n%s\n" % body)
+            os.chmod(path, 0o755)
+        dist = os.path.join(tmp, "dist")
+        os.makedirs(dist)
+        open(os.path.join(dist, "index.html"), "w").close()
+        e = {k: v for k, v in os.environ.items() if not k.startswith("RC_DASH_")}
+        e.update(PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), RC_DASH_STATIC_DIR=dist)
+        e.update(env)
+        subprocess.run(["bash", self.RUN, mode], env=e, timeout=60, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(seen) as fh:
+            got = set(fh.read().split())
+        self.assertEqual(len(got), 1, got)
+        return got.pop()
+
+    def test_dev_mode_names_vites_origins(self):
+        self.assertEqual(self.origins("dev"), "http://127.0.0.1:5173,http://localhost:5173")
+        self.assertEqual(self.origins("dev", RC_DASH_UI_PORT="6001"),
+                         "http://127.0.0.1:6001,http://localhost:6001")
+        self.assertEqual(self.origins("dev", RC_DASH_UI_HOST="dev.example.org"),
+                         "http://127.0.0.1:5173,http://localhost:5173,http://dev.example.org:5173")
+        # what the shell named already is kept
+        self.assertEqual(self.origins("dev", RC_DASH_ALLOWED_ORIGINS="https://dash.example.org"),
+                         "https://dash.example.org,http://127.0.0.1:5173,http://localhost:5173")
+
+    def test_without_vite_nothing_is_named(self):
+        for mode in ("build", "api"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.origins(mode), "unset")
 
 
 if __name__ == "__main__":

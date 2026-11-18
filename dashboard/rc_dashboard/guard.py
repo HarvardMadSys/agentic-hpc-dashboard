@@ -6,17 +6,19 @@ anywhere. A page on another site may open a websocket to 127.0.0.1:<port>
 (websockets are not held to the same-origin rule) and read every frame. And a
 page whose own site name its author points at 127.0.0.1 in DNS ("DNS
 rebinding") is, to the browser, on the dashboard's origin: it reads every
-route. A password defeats both, since the browser sends neither the session
-cookie nor a Basic header to another site. These checks cover the rest:
+route. A password stops the second, since the session cookie is sent only
+under the dashboard's own name, but not the first from a page on another port
+of the same host -- a dev server, a notebook, another tunnel: the cookie is
+SameSite=Lax, and a browser counts every port of a host as one site. These
+checks cover the rest:
 
-* **A websocket's Origin.** A handshake whose `Origin` names another site --
-  host and port other than the request's `Host`, and not in
-  `server.allowed_origins` -- is refused before it is accepted (uvicorn
-  answers 403). One with no Origin (curl, a script) is not a browser's and
-  passes. Vite's dev server (dashboard/run.sh) serves the page on
-  127.0.0.1:5173 and proxies /ws here with the Host rewritten to this
-  service's (`changeOrigin`): a loopback origin on another port passes when
-  the Host is loopback too.
+* **A websocket's Origin.** A handshake whose `Origin` is not the request's
+  own -- host and port other than its `Host`'s, a loopback one on another port
+  included -- and not in `server.allowed_origins` is refused before it is
+  accepted (uvicorn answers 403). One with no Origin (curl, a script) is not a
+  browser's and passes. Vite's dev server serves the page on its own port and
+  proxies /ws here, so dashboard/run.sh names its origins
+  (RC_DASH_ALLOWED_ORIGINS) in dev mode.
 * **The Host, with no password.** A request, HTTP or websocket, whose `Host`
   is not a loopback name (localhost, 127.0.0.0/8, ::1), the bind host
   (`server.host`), or one of `server.allowed_hosts` ("*" for any) gets a 403:
@@ -88,12 +90,7 @@ class SiteGuard:
             return o in self.origins     # "null": a sandboxed frame, a file
         if o in self.origins or parts.netloc in self.origins:
             return True
-        if host is None:
-            return False
-        if parts.netloc == host.strip().lower():
-            return True
-        # Vite's dev server: the page on 127.0.0.1:5173, /ws proxied to this port
-        return is_loopback(host_name(parts.netloc)) and is_loopback(host_name(host))
+        return host is not None and parts.netloc == host.strip().lower()
 
     async def __call__(self, scope, receive, send):
         kind = scope["type"]

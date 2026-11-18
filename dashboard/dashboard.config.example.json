@@ -289,7 +289,7 @@
   "//server7": "gil_switch_ms: how long one thread may hold the GIL while another waits for it",
   "//server8": "(Python's own: 5 ms). A build and the backfill keep it; the event loop gives it up at",
   "//server9": "every read and write. 1 keeps the page answering beside a build. 0 keeps Python's.",
-  "//server10": "allowed_origins: a websocket opened by a page on another site is refused; list here the",
+  "//server10": "allowed_origins: a websocket opened by a page on any other origin (another port too) is refused; list the",
   "//server11": "origins of a proxy that rewrites the Host (\"https://dash.example.org\"). allowed_hosts:",
   "//server12": "with no password, a request is answered only under a loopback name, `host`, or one of",
   "//server13": "these (\"*\": any), against DNS rebinding. Unused with a password.",

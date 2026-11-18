@@ -464,10 +464,10 @@ def defaults():
                    # serves made-up data and is open unless a hash is set.
                    "auth": {"password_hash": "", "session_days": 30, "open": False},
                    # Who may connect (guard.py). A websocket opened by a page on
-                   # another site is refused, unless its origin is listed here
-                   # ("https://dash.example.org"): for a proxy that rewrites the
-                   # Host. A page from Vite's dev server on another loopback port
-                   # passes on its own.
+                   # any origin but the dashboard's own -- another port of the
+                   # same host included -- is refused, unless its origin is
+                   # listed here ("https://dash.example.org"): for a proxy that
+                   # rewrites the Host. run.sh names Vite's in dev mode.
                    "allowed_origins": [],
                    # With no password, a request is answered only under a
                    # loopback name, `host` above, or a name listed here ("*": any):

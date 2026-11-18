@@ -65,12 +65,25 @@ VITE_OUT=()
 [ "$RC_DASH_STATIC_DIR" != "$WEB/dist" ] && VITE_OUT=(--outDir "$RC_DASH_STATIC_DIR" --emptyOutDir)
 
 # Vite dev server (dev mode only). Set RC_DASH_UI_HOST=0.0.0.0 to reach it from
-# another machine instead of through a tunnel, and name the page's origin to the
-# backend, which refuses a websocket from any other site's page (guard.py):
-# RC_DASH_ALLOWED_ORIGINS=http://<this host>:5173. Through a tunnel to
-# 127.0.0.1:5173 nothing needs naming.
+# another machine instead of through a tunnel.
 RC_DASH_UI_PORT="${RC_DASH_UI_PORT:-5173}"
 RC_DASH_UI_HOST="${RC_DASH_UI_HOST:-127.0.0.1}"
+# The backend refuses a websocket opened by a page on any origin but its own
+# (rc_dashboard/guard.py), another port of the same host included: a browser
+# sends that one the reader's cookie too. In dev mode the page is Vite's, on
+# its own port (--strictPort keeps it there), so its origins are named to the
+# backend, added to RC_DASH_ALLOWED_ORIGINS -- which, once set, stands for the
+# config file's server.allowed_origins, so name any of those there too.
+# Reached by a name of its own (RC_DASH_UI_HOST=0.0.0.0), add http://<name>:<port>.
+if [ "$MODE" = dev ]; then
+  ui="http://127.0.0.1:$RC_DASH_UI_PORT,http://localhost:$RC_DASH_UI_PORT"
+  case "$RC_DASH_UI_HOST" in
+    127.0.0.1|localhost|0.0.0.0|::) ;;
+    ::1) ui="$ui,http://[::1]:$RC_DASH_UI_PORT" ;;
+    *) ui="$ui,http://$RC_DASH_UI_HOST:$RC_DASH_UI_PORT" ;;
+  esac
+  export RC_DASH_ALLOWED_ORIGINS="${RC_DASH_ALLOWED_ORIGINS:+$RC_DASH_ALLOWED_ORIGINS,}$ui"
+fi
 
 # ---- Backend watch paths ---------------------------------------------
 # Only source trees belong here. The ebpf/node data roots used to be on this
