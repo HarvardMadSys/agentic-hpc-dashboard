@@ -123,9 +123,13 @@ build a view is fed every live record, so a live record is reduced once per held
 Their union (`windows.EVENTS`) is every record kind but `meta` and `stop`, so a build parses nearly
 every line it reads; the byte check on the event kind (`export.py:event_filter`) skips little.
 
-A process is counted once, at its `exit`: a `truncated` record is a process still running at a
-collector stop, with its whole life's counters so far, and its exit after the restart carries
-them all again, so it may name a running root, never add to a sum.
+Two rules hold for every sum below. A process is counted once, at its `exit`: a `truncated` record
+is a process still running at a collector stop, with its whole life's counters so far, and its exit
+after the restart carries them all again, so it may name a running root, never add to a sum. And
+disk and syscall bytes are each process's own: the collector's `io` is `task->signal->ioac`, which
+the kernel also credits with every child the process reaped, so each reducer that sums bytes holds
+a join (`reducers/own_io.py:OwnIo`) that takes the children's figures back off at the parent's
+exit, carried across hours as the sessions' always was.
 
 A view is built one of three ways:
 
@@ -220,7 +224,8 @@ user's exits on one sealed day, the week's 128 day-files planned, 222-444 s from
 
 `iocmds.py:IoCommands`: a click on an I/O number (`components/IoCmds.tsx:IoNum`) starts a job that
 reads the window's `exit` records again (`export.py:window_plan`, then
-`_window_stream` per file, one file after another), keeps those the click's filters pass
+`_window_stream` per file, one file after another), takes each one's own bytes off what it
+reaped (`OwnIo`, over every record the read parses), keeps those the click's filters pass
 (`/api/events`' own, plus agent pids, a host and a directory), and groups them by command line. Two
 jobs read at once; six finished ones are kept, and answer the same question again for 120 s on a
 live feed and for good on a pinned clock. A click carries its figure's filters, and the page's
@@ -354,7 +359,8 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
   CPU, users and when; sorted by the quantity clicked, 200 rows a page (up to 1,000), with totals
   and how far the read got.
 - **Records:** `exit`: `args` (else `_command`), `_eff`, `io.rd_mb`, `io.wr_mb`,
-  `io.rchar_mb`, `io.wchar_mb`, `net_tx_bytes`, `net_rx_bytes`, `cpu_s`, `user`, `_ts_epoch`, and
+  `io.rchar_mb`, `io.wchar_mb` (each process's own: `pid`, `ppid`, `host`, `io.scope` for the
+  join), `net_tx_bytes`, `net_rx_bytes`, `cpu_s`, `user`, `_ts_epoch`, and
   the fields the click filters on (`_a3`, `agent_type`, `_eff` or its bucket, `session_key` and
   `agent_pid`, `host`, `cwd`).
 - **Computation:** IOCMDS. Per record a byte check (the event kind, then user, agent pids,
@@ -429,7 +435,9 @@ charts that name the window.
 
 - **Shows:** the distinct accounts that ran something in the window or have a session running now,
   per class, and how many have an agent running.
-- **Records:** `exit`: `user`, `_a3`, `agent_type`, `cpu_s`, `io.rd_mb`, `io.wr_mb`,
+- **Records:** `exit`: `user`, `_a3`, `agent_type`, `cpu_s`, `io.rd_mb`, `io.wr_mb` (each
+  process's own, `LiveReducer._own_io`: the tail takes a parent's reaped children off at its exit;
+  the backfill, newest first, meets the parent first and takes each child off it as it comes),
   `net_tx_bytes`, `net_rx_bytes`, `_ts_epoch`; `residency` for what runs now.
 - **Computation:** `UserRoster.add` puts each exit in its account's slot of a 10-minute bin (an
   hourly one past a day); `UserRoster.totals` sums the window's closed bins, cached per window and
@@ -503,8 +511,8 @@ charts that name the window.
   disk read, disk written, network sent, network received, peak memory and sessions on the login
   nodes, and jobs, GPUs and GPU-hours asked of Slurm.
 - **Records:** those of the payloads it reads: `exit` (processes, CPU; LV-4), `exit`
-  `io` and network bytes (`IoReducer`), `residency_totals` (memory; LV-10), sessions (LV-5),
-  `submit` (`gpus`, `array`, `time_limit_s`; SL-3).
+  `io` (each process's own) and network bytes (`IoReducer`), `residency_totals` (memory; LV-10),
+  sessions (LV-5), `submit` (`gpus`, `array`, `time_limit_s`; SL-3).
 - **Computation:** none of its own. `OverviewTab` reads `tool_mix.by_class[c]` `calls` and `cpu_s`,
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
@@ -585,8 +593,9 @@ charts that name the window.
 - **Shows:** per class, the bytes that reached the disk (solid) against the bytes requested through
   `read()` or `write()` (dashed), per minute; the gap is the page cache. A point opens the commands
   of that class in that bin (IOCMDS).
-- **Records:** `exit`: `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`, `io.wchar_mb`; null for
-  another user's process, whose `/proc/<pid>/io` the collector could not read.
+- **Records:** `exit`: `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`, `io.wchar_mb`, each process's own
+  (`ResourceReducer`'s `OwnIo`); null for another user's process, whose `/proc/<pid>/io` the
+  collector could not read.
 - **Computation:** as LV-9.
 
 #### LV-17 network
@@ -652,7 +661,8 @@ charts that name the window.
 - **Shows:** the newest exited processes of every user on every host, newest first (the last 10, 25
   or 100), narrowed by the search, a host, the page filter and the class chips.
 - **Records:** `exit`: time, host, user, class, agent type, command and argv, purpose,
-  depth, pid, duration, CPU, peak memory, disk and network bytes, exit code, signal, sandbox,
+  depth, pid, duration, CPU, peak memory, disk bytes (its own, as LV-3), network bytes, exit
+  code, signal, sandbox,
   approval, session key.
 - **Computation:** `LiveReducer._exit` keeps a deque of `live.event_tail` (500) rows, newest first;
   `result` cuts it to the window and masks each row's argv once (`_served`). The page filters and
@@ -877,7 +887,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
   share that ran inside it, directories, the files its commands mention by read, write, delete and
   other (inferred), writes outside it, and the top-level places outside it reached.
 - **Records:** `exit` of agent-class processes keyed on an agent pid (`_kt` `apid`):
-  `cwd`, `cwd_source`, `io.rchar_mb`, `io.wchar_mb`, `io.rd_mb`, `io.wr_mb`, `args`, `argv_source`,
+  `cwd`, `cwd_source`, `io.rchar_mb`, `io.wchar_mb`, `io.rd_mb`, `io.wr_mb` (each process's own,
+  over these records: `WorkspaceReducer`'s `OwnIo`), `args`, `argv_source`,
   `fork_only`, `_role`, `user`, `_ts_epoch`, `tree_root_pid`.
 - **Computation:** `WorkspaceReducer.feed` per collector key: processes per `cwd` with their syscall
   and disk bytes (measured), and the paths each command line names, sorted by what the command does
@@ -926,7 +937,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
   `io.rd_mb`, `io.wr_mb`, `net_tx_bytes`, `net_rx_bytes`, `peak_rss_mb`, and the dedup's fields
   (LV-4).
 - **Computation:** `ToolMixReducer.feed` counts per (class, kind) and per (class, tool), and an
-  agent's also per (agent type, ...), after the shell-wrapper dedup; `_rows` gives each kind's
+  agent's also per (agent type, ...), after the shell-wrapper dedup; disk I/O is each process's own
+  (its `OwnIo`, fed every exit, a shell the dedup drops too); `_rows` gives each kind's
   counts, sums and shares per class; a page filter to one agent type uses that type's own counters
   (`by_agent_type`). The page computes a class's share of a row.
 - **Cost:** as LV-4. A byte cell opens IOCMDS by kind and class, read from the JSONL unless the
@@ -1087,7 +1099,10 @@ and for how the page draws them
   `cpu_s`, `io`, `net_tx_bytes`, `net_rx_bytes`, `exit_code`, `signal`, `_role`, `depth`, `_kv`;
   parents with no record from the window's process index and the cascades' nodes.
 - **Computation:** INSPECT. `TreeBuilder.feed` lets each process claim the children waiting for it
-  (a parent exits after its children), itemises up to `inspect_hold` processes and
+  (a parent exits after its children), takes its own disk and syscall bytes (its `OwnIo`, over the
+  records the read takes; a `truncated` one, running at a collector stop, less what its children
+  that exited carried so far), so a subtree's bytes add each process's own once, itemises up to
+  `inspect_hold` processes and
   `inspect_per_parent` childless ones of one command under one parent, and counts the rest under
   their parent (newest first, it keeps the newest instead); `resolve` attaches what is left by the
   index, the collector's depth or the fold, and draws parents with no record (at most 2,000);
@@ -1156,9 +1171,11 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 - **Shows:** the 14 tools that read the most from (wrote the most to) disk, as bars; the bytes
   requested and the cache hit on hover. Over every class: the class chips do not narrow it.
 - **Records:** `exit`: `_eff` or `_command`, `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`,
-  `io.wchar_mb`.
-- **Computation:** `IoReducer.feed` sums each tool's four byte counters, its processes and those with
-  an `io` block; `result` serves the union of the top `reducers.io.top_n` (20) tools on each counter
+  `io.wchar_mb`, and `pid`, `ppid`, `host`, `io.scope` for the join.
+- **Computation:** `IoReducer.feed` sums each tool's four byte counters, each process's own (its
+  `OwnIo` takes back what a parent's figure holds of the children it reaped), its processes and
+  those with an `io` block; `result` serves the union of the top `reducers.io.top_n` (20) tools on
+  each counter
   (`_heaviest`, up to 80 rows); the page ranks by disk bytes and draws 14. A bar opens IOCMDS for the
   tool, read from the JSONL unless the page is filtered by user.
 - **Cost:** a few adds a record; the tool map is unbounded; per read four `nlargest` passes.
@@ -1194,13 +1211,14 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 - **Shows:** per user, with the class of their newest record: processes, disk and requested bytes
   read and written, network received and sent, I/O coverage; a cell opens IOCMDS for the user, a
   lookup the replicas can answer.
-- **Computation:** `IoReducer.feed` per user; `result` serves the union of the top 20 users on each
-  of the four I/O counters. The class chips keep a user by that one class.
+- **Computation:** `IoReducer.feed` per user, each process's own bytes (RE-4); `result` serves the
+  union of the top 20 users on each of the four I/O counters. The class chips keep a user by that
+  one class.
 
 #### RE-9 I/O distributions
 
-- **Shows:** per class, quantiles of each process's bytes read requested, read from disk, written
-  requested and written to disk.
+- **Shows:** per class, quantiles of each process's own bytes read requested, read from disk,
+  written requested and written to disk (RE-4's join).
 - **Computation:** a `Quant` per counter and class (RE-1's sketch); a record with no `io` block is
   counted as not measured.
 

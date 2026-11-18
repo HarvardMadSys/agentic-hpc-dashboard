@@ -15,15 +15,25 @@ is better evidence than a census count.
 """
 import bisect
 import collections
+import heapq
 import itertools
 import time
 
 from ..buckets import RollingBuckets, _epoch_of
+from ..procindex import pop_oldest
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
+from .own_io import DISK, REAPED_MAX, OwnIo
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
+
+# Each process's own disk bytes, in both orders the live tier is fed in
+# (`LiveReducer._own_io`): parents noted for children the backfill has yet to
+# read, at most this many; and how far out of order a day-file's records are,
+# within a poll round.
+BOOKED_MAX = 200000
+BOOKED_SLACK_S = 300
 
 
 def _sum_or_none(vals):
@@ -173,6 +183,21 @@ def _full(tail):
     return tail is not None and tail.maxlen is not None and len(tail) >= tail.maxlen
 
 
+def _start(rec):
+    """When an exited process started, or None."""
+    e, d = rec.get("_ts_epoch"), rec.get("duration_s")
+    if isinstance(e, (int, float)) and isinstance(d, (int, float)) and d >= 0:
+        return e - d
+    return None
+
+
+# A noted parent (`LiveReducer.io_booked`): its note's number, when it started and
+# ended, the roster bin it was counted in (None when the roster does not hold it)
+# and as whose, the MB read and written of its figure not yet taken back, and its
+# row in the tails, if it has one.
+_B_SEQ, _B_START, _B_END, _B_EPOCH, _B_USER, _B_CLS, _B_TYPE, _B_RD, _B_WR, _B_ROW = range(10)
+
+
 class LiveReducer:
     # conn / netio are read for one thing: the identity block of a running agent
     # root, which carries its launch flags. Residency alone cannot give that -- its
@@ -231,6 +256,24 @@ class LiveReducer:
         # event tail's own dicts, shared, so a row costs memory once.
         self.user_tail_n = int(cfg.get("live.user_tail", 100))
         self.user_tails = {}     # user -> deque, newest first
+        # Each process's own disk bytes (own_io.py), in both orders this tier is
+        # fed in. The tail is oldest first: a parent's exit takes back what the
+        # children it reaped carried (`io_join`), as a window's reducers do. The
+        # backfill is newest first, so it meets a parent before its children:
+        # the parent is counted whole and noted (`io_booked`), and each child
+        # met later takes its figure back off the parent's roster bin and row. A
+        # child whose parent was not met -- one still running when the tail
+        # began, or gone before the child -- is held for that parent's exit
+        # (`io_given`: MB read, written, and the earliest start among them). And
+        # a process the tail meets that was running before the tail began is
+        # noted too: the backfill may yet read the children it reaped.
+        self.io_join = OwnIo(DISK)
+        self.io_booked = collections.OrderedDict()   # (host, pid) -> a note (_B_*)
+        self.io_given = collections.OrderedDict()    # (host, ppid) -> [rd, wr, start]
+        self._io_starts = []         # (-start, note's number, key): the latest start first
+        self._io_seq = 0
+        self.io_tail_from = None     # when the first exit the tail read ended
+        self.io_dropped = 0          # notes and held children dropped at their caps
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, older=False):
@@ -307,43 +350,159 @@ class LiveReducer:
                 k = (rec.get("host"), rec.get("_kt"), rec.get("_kv"))
                 if e > self.human_sessions.get(k, 0):
                     self.human_sessions[k] = e
-        io = rec.get("io") or {}
+        rd, wr = self._own_io(rec, older)
         tx, rx = _mb(rec.get("net_tx_bytes")), _mb(rec.get("net_rx_bytes"))
-        self.roster.add(_epoch_of(rec), rec.get("user"), rec["_a3"],
-                        rec.get("agent_type"), rec.get("cpu_s"),
-                        rd_mb=io.get("rd_mb"), wr_mb=io.get("wr_mb"), tx_mb=tx, rx_mb=rx)
+        now = time.time()
+        epoch = _epoch_of(rec)
+        held = self.roster.add(epoch, rec.get("user"), rec["_a3"],
+                               rec.get("agent_type"), rec.get("cpu_s"), now=now,
+                               rd_mb=rd, wr_mb=wr, tx_mb=tx, rx_mb=rx)
         u = rec.get("user")
-        if older and _full(self.event_tail) and (not u or _full(self.user_tails.get(u))):
-            # The backfill, past both tails' depth: newer rows hold every slot,
-            # and `_place` would drop this one -- so it is not made. Millions of
-            # a week's exits reach here.
+        row = None
+        # The backfill, past both tails' depth: newer rows hold every slot, and
+        # `_place` would drop this one -- so it is not made. Millions of a
+        # week's exits reach here.
+        if not (older and _full(self.event_tail) and (not u or _full(self.user_tails.get(u)))):
+            row = {
+                "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
+                "host": rec.get("host"), "user": rec.get("user"),
+                "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
+                "comm": rec.get("_command"), "tool": rec.get("_eff"),
+                # Raw, and private to this process: masked once, the first time
+                # the row is served (`result`), so the backfill's millions of rows
+                # that age out unseen never pay for it. Cut after masking, never
+                # before -- a cut can leave a token too short to recognise.
+                "_argv": rec.get("args") or "",
+                "purpose": rec.get("_purpose"), "depth": rec.get("depth"),
+                "pid": rec.get("pid"),
+                "duration_s": rec.get("duration_s"), "cpu_s": rec.get("cpu_s"),
+                "peak_rss_mb": rec.get("peak_rss_mb"),
+                "rd_mb": rd, "wr_mb": wr,
+                "net_tx_mb": tx, "net_rx_mb": rx,
+                "exit_code": rec.get("exit_code"), "signal": rec.get("signal"),
+                "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
+                "session_key": rec.get("session_key"),
+            }
+            self._place(self.event_tail, row, older)
+            if u:
+                tail = self.user_tails.get(u)
+                if tail is None:
+                    tail = self.user_tails[u] = collections.deque(maxlen=self.user_tail_n)
+                self._place(tail, row, older)
+        self._io_note(rec, older, min(epoch, now) if held else None, rd, wr, row)
+
+    # ---------------------------------------------------------- own disk bytes
+    def _own_io(self, rec, older):
+        """This exit's own disk MB, (read, written), each None where it has
+        none: its figure less what the children it reaped carried (own_io.py,
+        and `io_join` above for the two orders)."""
+        if not older:
+            if self.io_tail_from is None:
+                self.io_tail_from = rec.get("_ts_epoch")
+            own = self.io_join.take(rec)
+            if own is None:
+                return None, None
+            rd, wr = own
+            got = None
+            if rec["io"].get("scope") == "process":
+                got = self.io_given.pop((rec.get("host"), rec.get("pid")), None)
+            if got is not None:
+                # the children the backfill met before this exit: this one's only
+                # if they began while it ran (a pid is reused)
+                st = _start(rec)
+                if st is None or got[2] is None or st <= got[2] + 1:
+                    rd = None if rd is None else max(0.0, rd - got[0])
+                    wr = None if wr is None else max(0.0, wr - got[1])
+            return rd, wr
+        io = rec.get("io")
+        if not isinstance(io, dict):
+            return None, None
+        rd, wr = io.get("rd_mb"), io.get("wr_mb")
+        self._io_back(rec, io, rd, wr)
+        # Whole for now: the children it reaped are older, and the backfill
+        # meets them next; each takes its figure back off this one then.
+        return rd, wr
+
+    def _io_back(self, rec, io, rd, wr):
+        """A backfill exit, met before the children it reaped and after its parent:
+        it gives its figure back to the parent, or holds it for one still to come."""
+        host, end = rec.get("host"), rec.get("_ts_epoch")
+        if end is not None:
+            self._io_prune(end)
+        st = _start(rec)
+        # Children held for this pid that began while this process ran outlived
+        # it, and so were never reaped: its orphans, not any parent's to take.
+        key = (host, rec.get("pid"))
+        g = self.io_given.get(key)
+        if g is not None and g[2] is not None and end is not None and g[2] <= end + 1:
+            del self.io_given[key]
+        ppid = rec.get("ppid")
+        if io.get("scope") != "process" or ppid is None or not (rd or wr):
             return
-        row = {
-            "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
-            "host": rec.get("host"), "user": rec.get("user"),
-            "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
-            "comm": rec.get("_command"), "tool": rec.get("_eff"),
-            # Raw, and private to this process: masked once, the first time
-            # the row is served (`result`), so the backfill's millions of rows
-            # that age out unseen never pay for it. Cut after masking, never
-            # before -- a cut can leave a token too short to recognise.
-            "_argv": rec.get("args") or "",
-            "purpose": rec.get("_purpose"), "depth": rec.get("depth"),
-            "pid": rec.get("pid"),
-            "duration_s": rec.get("duration_s"), "cpu_s": rec.get("cpu_s"),
-            "peak_rss_mb": rec.get("peak_rss_mb"),
-            "rd_mb": io.get("rd_mb"), "wr_mb": io.get("wr_mb"),
-            "net_tx_mb": tx, "net_rx_mb": rx,
-            "exit_code": rec.get("exit_code"), "signal": rec.get("signal"),
-            "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
-            "session_key": rec.get("session_key"),
-        }
-        self._place(self.event_tail, row, older)
-        if u:
-            tail = self.user_tails.get(u)
-            if tail is None:
-                tail = self.user_tails[u] = collections.deque(maxlen=self.user_tail_n)
-            self._place(tail, row, older)
+        pkey = (host, ppid)
+        b = self.io_booked.get(pkey)
+        if b is not None and end is not None and end <= b[_B_END] + 1 \
+                and (b[_B_START] is None or b[_B_START] - 1 <= end):
+            self._take_back(b, rd or 0.0, wr or 0.0)
+            return
+        g = self.io_given.get(pkey)
+        if g is None:
+            if len(self.io_given) >= REAPED_MAX:
+                pop_oldest(self.io_given)
+                self.io_dropped += 1
+            g = self.io_given[pkey] = [0.0, 0.0, st]
+        g[0] += rd or 0.0
+        g[1] += wr or 0.0
+        if st is not None and (g[2] is None or st < g[2]):
+            g[2] = st
+
+    def _take_back(self, b, rd, wr):
+        """A child's whole figure off a noted parent's, as far as it goes."""
+        x, y = min(rd, b[_B_RD]), min(wr, b[_B_WR])
+        if not (x or y):
+            return
+        b[_B_RD] -= x
+        b[_B_WR] -= y
+        if b[_B_EPOCH] is not None:
+            self.roster.add(b[_B_EPOCH], b[_B_USER], b[_B_CLS], b[_B_TYPE], None,
+                            rd_mb=-x, wr_mb=-y, n=0)
+        row = b[_B_ROW]
+        if row is not None:
+            for k, v in (("rd_mb", x), ("wr_mb", y)):
+                if v and row.get(k) is not None:
+                    row[k] = round(max(0.0, row[k] - v), 3)
+
+    def _io_note(self, rec, older, epoch, rd, wr, row):
+        """Note a counted exit for the children the backfill has yet to read: any
+        it met itself, and one the tail met that was running before the tail
+        began. `epoch` is the roster bin it was counted in, None when none."""
+        io = rec.get("io")
+        if not isinstance(io, dict) or io.get("scope") != "process" or not (rd or wr) \
+                or rec.get("_ts_epoch") is None:
+            return
+        st = _start(rec)
+        if not older and (st is None or self.io_tail_from is None or st >= self.io_tail_from):
+            return
+        key = (rec.get("host"), rec.get("pid"))
+        self._io_seq += 1
+        self.io_booked[key] = [self._io_seq, st, rec.get("_ts_epoch"), epoch, rec.get("user"),
+                               rec["_a3"], rec.get("agent_type"), rd or 0.0, wr or 0.0, row]
+        self.io_booked.move_to_end(key)
+        if len(self.io_booked) > BOOKED_MAX:
+            pop_oldest(self.io_booked)
+            self.io_dropped += 1
+        if st is not None:
+            heapq.heappush(self._io_starts, (-st, self._io_seq, key))
+
+    def _io_prune(self, t):
+        """The backfill has read back to `t`: a noted process that started after
+        it has met every child it reaped."""
+        h, lim = self._io_starts, -(t + BOOKED_SLACK_S)
+        while h and h[0][0] < lim:
+            _st, seq, key = heapq.heappop(h)
+            b = self.io_booked.get(key)
+            if b is not None and b[_B_SEQ] == seq:
+                del self.io_booked[key]
 
     @staticmethod
     def _rss_tick(t, rss):
@@ -946,6 +1105,12 @@ class LiveReducer:
             "submits": [s for s in self.submit_tail if (s.get("epoch") or 0) >= cutoff],
             "skew_dropped": self.buckets.skew_dropped,
             "no_timestamp": self.buckets.no_ts,
+            # the disk bytes' join (`_own_io`): parents whose children's bytes
+            # wait for their exit, and what its caps dropped (those children's
+            # bytes then count twice)
+            "own_io": {"waiting": len(self.io_join.reaped) + len(self.io_given),
+                       "noted": len(self.io_booked),
+                       "dropped": self.io_join.evicted + self.io_dropped},
             "conn_unmatched_births": self.conn_unmatched_births,
             "unavailable": {
                 "running_jobs": "needs the slurm_jobs census feed (not configured)",

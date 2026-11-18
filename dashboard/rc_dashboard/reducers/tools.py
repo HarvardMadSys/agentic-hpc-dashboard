@@ -19,6 +19,7 @@ conservative rule.
 import collections
 
 from . import EXIT_ANSWERS, SIGPIPE, Reducer, add_counts, pct
+from .own_io import DISK, REAPED_MAX, OwnIo
 from ..procindex import pop_oldest
 from ..tool_buckets import BUCKETS, bucket
 
@@ -69,7 +70,8 @@ class ToolMixReducer(Reducer):
         self.t_cpu = collections.defaultdict(collections.Counter)
         # What else each kind of tool and each tool cost, so the tables can be
         # read by any one resource (roadmap notes 24 and 25): disk bytes read
-        # plus written, network bytes, and peak memory (summed: a kind of
+        # plus written, each process's own (its reaped children's taken off:
+        # own_io.py, `own`), network bytes, and peak memory (summed: a kind of
         # tool's share of every process's peak, and for a tool a mean over the
         # processes that reported one, and its max).
         #
@@ -99,6 +101,7 @@ class ToolMixReducer(Reducer):
         self.dropped = 0
         self.total = 0
         self.evicted = 0
+        self.own = OwnIo(DISK)
 
     def feed(self, rec):
         sid = rec.get("_sid")
@@ -107,6 +110,8 @@ class ToolMixReducer(Reducer):
         pid, ppid = rec.get("pid"), rec.get("ppid")
         cls = rec["_a3"]
         cpu = rec.get("cpu_s") or 0.0
+        # before the dedup: a shell it drops still gives its children back
+        own = self.own.take(rec)
 
         # remember what this process resolved to, for its parent's later exit
         if ppid is not None and ec:
@@ -127,8 +132,7 @@ class ToolMixReducer(Reducer):
 
         b = bucket(ec)
         t = ec or "(empty)"
-        io = rec.get("io") or {}
-        disk = (io.get("rd_mb") or 0.0) + (io.get("wr_mb") or 0.0)
+        disk = (own[0] or 0.0) + (own[1] or 0.0) if own else 0.0
         net = ((rec.get("net_tx_bytes") or 0) + (rec.get("net_rx_bytes") or 0)) / 1e6
         rss = rec.get("peak_rss_mb")
         atype = rec.get("agent_type")
@@ -163,29 +167,36 @@ class ToolMixReducer(Reducer):
         self.at_cpu[at] += cpu
 
     # ------------------------------------------------------------- merge
-    # A window is merged from saved hour states (`hours`). The dedup index is
-    # the one thing here that crosses an hour: a shell that exits in the next
-    # hour looks up the child it waited on in this one. So it is CARRIED from
-    # each hour into the next one's reduction -- the dedup decides exactly as
-    # one pass would -- and is not part of the saved hour, which holds only
-    # the counts that hour produced.
-    CARRY_AGED = ("child_tok",)
+    # A window is merged from saved hour states (`hours`). Two things here cross
+    # an hour: the dedup index -- a shell that exits in the next hour looks up
+    # the child it waited on in this one -- and the own-I/O join, where it
+    # gives back what that child carried. So both are CARRIED from each hour
+    # into the next one's reduction -- the dedup decides exactly as one pass
+    # would -- and are not part of the saved hour, which holds only the counts
+    # that hour produced.
+    CARRY_AGED = ("child_tok", "reaped")
+
+    def track(self):
+        self.own.track()
 
     def carry(self):
-        return {"child_tok": self.child_tok}
+        return self.own.carry({"child_tok": self.child_tok})
 
     def carry_caps(self):
         """What one pass holds the carried map to (`hours.combine_carries`)."""
-        return {"child_tok": self.dedup_max}
+        return {"child_tok": self.dedup_max, "reaped": REAPED_MAX}
 
     def seed(self, c):
         self.child_tok = c["child_tok"]
+        self.own.seed(c)
 
     def strip(self):
         self.child_tok = collections.OrderedDict()
+        self.own.strip()
 
     def merge(self, o):
         """Fold a LATER state's counts into this one. `o` is consumed."""
+        self.own.merge(o.own)
         for mine, theirs in ((self.b_calls, o.b_calls), (self.b_cpu, o.b_cpu),
                              (self.t_calls, o.t_calls), (self.t_cpu, o.t_cpu),
                              (self.b_io, o.b_io), (self.b_net, o.b_net), (self.b_mem, o.b_mem),
@@ -351,4 +362,8 @@ class ToolMixReducer(Reducer):
             "cpu_basis": "self cpu_s, each process once; child_cpu_s NEVER added "
                          "(analyze/common.py:364 -- the naive sum inflates login CPU "
                          "1.83x, unevenly by class)",
+            "io_basis": "disk bytes read and written, each process's own: the "
+                        "collector's figure also holds every child the process "
+                        "reaped, taken back off at its exit",
+            "own_io": self.own.status(),
         }

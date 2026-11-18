@@ -6,6 +6,11 @@ mostly page cache -- and that gap is the interesting agent-polling signal.  It i
 reported as an UPPER BOUND, not an exact figure, because rchar also counts pipes,
 sockets and procfs reads, which never had a device to miss.
 
+All four are each process's OWN: the collector's figure also holds every child
+the process reaped, which is taken back off at its exit (own_io.py), so a sum
+over a class, a tool or a user counts a command's bytes once, not once per shell
+above it. The join crosses hours, so it is carried (`carry`).
+
 `net_tx_bytes`/`net_rx_bytes`/`net_calls` are all-protocol per-process counters
 (this is what makes QUIC visible) and are null -- not zero -- when the netbytes
 BPF block was unavailable, so every total ships with its coverage.
@@ -29,6 +34,7 @@ import collections
 import heapq
 
 from . import Acc, Quant, add_counts, pct
+from .own_io import REAPED_MAX, OwnIo
 
 IO_KEYS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # The losses a `net_endpoints` block states, beside its endpoints.
@@ -96,6 +102,8 @@ class IoReducer:
         # (remote address, inbound) -> its calls and bytes per class
         self.endpoints = collections.defaultdict(_endpoint)
         self.ep_cover = collections.defaultdict(_ep_cover)
+        # each process's own bytes, its reaped children's taken off (own_io.py)
+        self.own = OwnIo()
 
     def feed(self, rec):
         c = self.cls[rec["_a3"]]
@@ -113,8 +121,9 @@ class IoReducer:
             t["with_io"] += 1
             u["with_io"] += 1
             c["scope"][io.get("scope") or "unknown"] += 1
+            own = dict(zip(self.own.fields, self.own.take(rec)))
             for k in IO_KEYS:
-                v = io.get(k)
+                v = own[k]
                 if v is not None:
                     c[k] += v
                     t[k] += v
@@ -183,8 +192,32 @@ class IoReducer:
                 cv["lost_tx"] += _count(lost.get("tx_bytes"))
                 cv["lost_rx"] += _count(lost.get("rx_bytes"))
 
+    # ------------------------------------------------------------- merge
+    # A window is merged from saved hour states (`hours`). The own-I/O join
+    # crosses an hour -- a shell that exits in the next hour gives back what the
+    # children it reaped in this one carried -- so it is CARRIED into each
+    # hour's reduction, and is not part of the saved hour.
+    CARRY_AGED = ("reaped",)
+
+    def track(self):
+        self.own.track()
+
+    def carry(self):
+        return self.own.carry({})
+
+    def carry_caps(self):
+        """What one pass holds the carried map to (`hours.combine_carries`)."""
+        return {"reaped": REAPED_MAX}
+
+    def seed(self, c):
+        self.own.seed(c)
+
+    def strip(self):
+        self.own.strip()
+
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed."""
+        self.own.merge(o.own)
         for cls, c in o.cls.items():
             m = self.cls[cls]
             for k in ("events", "io_seen", "net_seen", "rd_mb", "wr_mb", "rchar_mb",
@@ -279,7 +312,13 @@ class IoReducer:
             # is read (Aggregator.panels): it never leaves the service as it is.
             "endpoint_addrs": {"rows": self._endpoint_rows(),
                                "cover": {c: dict(v) for c, v in self.ep_cover.items()}},
+            # parents dropped at the join's cap (their children's bytes then count twice)
+            "own_io": self.own.status(),
             "notes": {
+                "own": "every byte figure is each process's OWN: the collector's io is "
+                       "task->signal->ioac, which also holds every child the process "
+                       "reaped, and those are taken back off at its exit. A child whose "
+                       "exit the window did not see is not taken off.",
                 "cache_served_mb": "max(0, rchar - rd). rchar counts ALL read() bytes "
                                    "including pipes, sockets and procfs, so this is an "
                                    "UPPER BOUND on the page-cache-served share.",

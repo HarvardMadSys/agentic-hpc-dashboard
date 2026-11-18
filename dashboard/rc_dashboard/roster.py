@@ -36,20 +36,21 @@ CACHE_MAX = 8
 W = 7
 
 
-def _bump(slot, user, kind, vals):
-    """Count one process of `kind` for `user`; `vals` are its CPU and I/O. A
-    record with no CPU or no I/O block still ran: it counts, and adds 0."""
+def _bump(slot, user, kind, vals, n=1):
+    """Count `n` processes of `kind` for `user` (one; none for a correction to
+    one already counted); `vals` are their CPU and I/O. A record with no CPU or
+    no I/O block still ran: it counts, and adds 0."""
     e = slot.get(user)
     if e is None:
-        slot[user] = [kind, 1, *vals]
+        slot[user] = [kind, n, *vals]
         return
     for j in range(0, len(e), W):
         if e[j] == kind:
-            e[j + 1] += 1
+            e[j + 1] += n
             for f, v in enumerate(vals, 2):
                 e[j + f] += v
             return
-    e.extend((kind, 1, *vals))
+    e.extend((kind, n, *vals))
 
 
 def _add_into(dst, e):
@@ -104,7 +105,11 @@ class UserRoster:
         return k
 
     def add(self, epoch, user, cls, atype, cpu_s, now=None, rd_mb=None, wr_mb=None,
-            tx_mb=None, rx_mb=None):
+            tx_mb=None, rx_mb=None, n=1):
+        """One process, in the bin of `epoch`; False when it is not held (no
+        time or user, too far ahead of the clock, or out of retention). `n=0`
+        corrects one already counted, in the same bin: the live tier's backfill
+        takes a child's disk bytes back off the parent it met first (live.py)."""
         if epoch is None or not user:
             return False
         now = time.time() if now is None else now
@@ -126,7 +131,7 @@ class UserRoster:
         if slot is None:
             slot = store[idx] = {}
         _bump(slot, user, k, (cpu_s or 0.0, rd_mb or 0.0, wr_mb or 0.0, tx_mb or 0.0,
-                              rx_mb or 0.0))
+                              rx_mb or 0.0), n)
         if epoch > self.last.get(user, 0):
             self.last[user] = epoch
         return True

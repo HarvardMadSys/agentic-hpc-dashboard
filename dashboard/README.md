@@ -746,9 +746,14 @@ already made once.
   no total.
 - **Disk I/O is each process's own.** The collector's `io` is `task->signal->ioac`, which the
   kernel also credits with every child the process reaped, so a shell's figure holds its
-  commands'. A session sums each process's figure less what its exited children carried
-  (`reducers/trajectories.py: own_io`, carried across hours like the other joins), so a
-  command's bytes count once, not once per shell above it.
+  commands' and an agent's every tool call's. Every figure that sums disk or syscall bytes -- the
+  I/O panel, the tool mix, the I/O series, the blast radius, the sessions, the live roster and its
+  rows, the inspector's subtree totals, the commands behind a number -- takes each process's
+  figure less what its exited children carried (`reducers/own_io.py`: one join per reducer,
+  carried across hours like the other joins; the live tier's backfill, which reads newest first,
+  takes each child off the parent it met first). So a command's bytes count once, not once per
+  process above it. A child whose exit was not read is not taken off: one outside the window, or
+  one a filter leaves out.
 - **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a

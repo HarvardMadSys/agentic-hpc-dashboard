@@ -12,7 +12,10 @@ they are not the same kind of evidence:
            (`io.rchar_mb` / `wchar_mb`, pipes and terminals included) and disk
            bytes (`rd_mb` / `wr_mb`) of the processes that ran in a directory,
            credited to where they RAN. A process in `./` that writes to
-           `/scratch` puts its bytes on `./`.
+           `/scratch` puts its bytes on `./`. Each process's own: the
+           collector's figure also holds every child it reaped, taken back off
+           at its exit (own_io.py), so a tool call's shell does not put its
+           command's bytes on its directory a second time.
   named    INFERRED from command lines: paths a command names, classified by
            what the command does with them -- `cat` reads, `>` and `cp`'s
            destination write, `rm` deletes, anything else path-like is just
@@ -58,6 +61,7 @@ import time
 
 from ..proctree import ran
 from ..redact import redact
+from .own_io import REAPED_MAX, OwnIo
 
 R, W, D, N = 1, 2, 4, 8
 OPS = (("read", R), ("write", W), ("delete", D), ("named", N))
@@ -1025,6 +1029,9 @@ class WorkspaceReducer:
         # Keys an earlier hour admitted (`seed`): a probe record of one of
         # those is not new, so it is kept, as one pass keeps it.
         self._admitted = {}
+        # each process's own bytes (own_io.py), over the records kept here: an
+        # agent's process reaps only its agent's
+        self.own = OwnIo()
 
     # ------------------------------------------------------------- feed
     def feed(self, rec):
@@ -1034,6 +1041,9 @@ class WorkspaceReducer:
         get = rec.get
         if get("_a3") != "agent" or get("_kt") != "apid":
             return
+        # before anything is skipped: a probe or a dropped key still gives back
+        # what its parent's figure holds of it
+        own = self.own.take(rec)
         key = (get("host"), get("_kv"))
         st = self.keys.get(key)
         if st is None:
@@ -1078,15 +1088,14 @@ class WorkspaceReducer:
                 d = self._entry(st, cwd)
             if d is not None:
                 d[0] += 1
-                io = get("io")
-                if io:
-                    rc = io.get("rchar_mb")
+                if own:
+                    rd, wr, rc, wc = own
                     if rc is not None:
                         d[1] += 1
                         d[2] += rc
-                        d[3] += io.get("wchar_mb") or 0.0
-                        d[4] += io.get("rd_mb") or 0.0
-                        d[5] += io.get("wr_mb") or 0.0
+                        d[3] += wc or 0.0
+                        d[4] += rd or 0.0
+                        d[5] += wr or 0.0
                 if e is not None:
                     if d[7] is None or e > d[7]:
                         d[7] = e
@@ -1156,29 +1165,41 @@ class WorkspaceReducer:
 
     # ------------------------------------------------------------ merge
     # A window is merged from saved hour states (`hours`). A key's processes
-    # merge key by key, as `feed` would have added them. Two things cross an
+    # merge key by key, as `feed` would have added them. Three things cross an
     # hour, and are carried into each hour's reduction: `homes`, since a home
-    # read off one hour's argv places the next hour's paths, and which keys
-    # are already admitted, since `feed` skips a probe only on a key's first
-    # record.
-    CARRY_AGED = ("keys",)
+    # read off one hour's argv places the next hour's paths, which keys are
+    # already admitted, since `feed` skips a probe only on a key's first
+    # record, and the own-I/O join (`reaped`), since a shell that exits in the
+    # next hour gives back what the children it reaped in this one carried.
+    CARRY_AGED = ("keys", "reaped")
+
+    def track(self):
+        self.own.track()
 
     def carry(self):
         keys = self._admitted
         keys.update(dict.fromkeys(self.keys))
-        return {"homes": self.homes, "keys": keys, "touched": {"keys": set(self.keys)}}
+        return self.own.carry({"homes": self.homes, "keys": keys,
+                               "touched": {"keys": set(self.keys)}})
+
+    def carry_caps(self):
+        """What one pass holds the carried join to (`hours.combine_carries`)."""
+        return {"reaped": REAPED_MAX}
 
     def seed(self, c):
         self.homes = dict(c["homes"])
         self._admitted = c.get("keys") or {}
+        self.own.seed(c)
 
     def strip(self):
         self._admitted = {}
+        self.own.strip()
 
     def install(self, c):
         for u, h in c["homes"].items():
             self.homes.setdefault(u, h)
         self._admitted = c.get("keys") or {}
+        self.own.seed(c)
 
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed.
@@ -1191,6 +1212,7 @@ class WorkspaceReducer:
         """
         for u, h in o.homes.items():
             self.homes.setdefault(u, h)
+        self.own.merge(o.own)
         for key, st in o.keys.items():
             cur = self.keys.get(key)
             if cur is None:
@@ -1497,7 +1519,7 @@ class WorkspaceReducer:
                 "parse_errors": self.parse_errors,
                 "capped_tokens": self.capped_tokens, "inherited_argv": self.inherited,
                 "probes_skipped": self.probes,
-                "fed": self.fed}
+                "fed": self.fed, "own_io": self.own.status()}
 
 
 SIBLINGS_MAX = 6            # subdirectory rows one directory keeps before folding
