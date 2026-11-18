@@ -405,8 +405,11 @@ class PanelView:
 
         Once the tail is past the build's end in a file, every line it reads
         of it after is too: the file leaves `seam`, and so does one that is
-        another file under its name now. A day compressed since is the same
-        bytes at the same offsets under its `.gz` name (`tail.py`)."""
+        another file under its name now. A day the collector compresses is the
+        same bytes at the same offsets under its other name, whichever of the
+        two the build read and the tail read it under (`tail.py`): the build
+        the plain file and the tail the `.gz` it was sealed into since, or the
+        tail the plain file while the build ran and the build the `.gz`."""
         if at is None:
             return ts is not None and self.consumed_through is not None \
                 and ts <= self.consumed_through
@@ -417,9 +420,7 @@ class PanelView:
         key = path
         got = seam.get(path)
         if got is None:
-            if not gz.is_gz(path):
-                return False
-            key = gz.plain_name(path)
+            key = gz.plain_name(path) if gz.is_gz(path) else path + gz.SUFFIX
             got = seam.get(key)
             if got is None:
                 return False

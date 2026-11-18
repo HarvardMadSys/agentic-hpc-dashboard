@@ -464,6 +464,28 @@ class SeamTest(CacheCase):
         st = view.status()
         self.assertEqual((st["live_records"], st["live_skipped"]["already_read"]), (20, 3))
 
+    def test_the_seam_holds_where_the_day_is_compressed_under_the_build(self):
+        # The other way round: the tail reads the plain file while the build
+        # runs (its records held for replay), the collector then seals the day,
+        # and the build lists and reads the `.gz` alone. Each held record was
+        # counted twice: its file was not one the seam named.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i) for i in range(5)])
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        real = windows.window_plan
+
+        def plan(*a, **k):
+            self.assertEqual(agg.poll_once(), 5)       # held: the build is under way
+            self.compress("h1.exits.jsonl")
+            return real(*a, **k)
+        with mock.patch.object(windows, "window_plan", plan):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(self.calls(view), 15)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 5)
+
     def test_a_catch_up_from_before_the_window_is_left_out(self):
         # A scan now would leave out a record older than the window's start, so
         # the live feed does too, and says how many.
