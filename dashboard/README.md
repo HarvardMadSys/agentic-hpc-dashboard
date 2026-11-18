@@ -58,6 +58,11 @@ never outranks the file.
   of an hour and a group of reducers each; 0 workers is one per CPU the service may use
   ([Hourly merge-reduce](#hourly-merge-reduce)). Going from 1 worker to more, or back,
   reduces the hours afresh; the count and the groups change no saved hour.
+- `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the
+  accounts it names, and `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only those classed
+  agent: the account a site's monitoring runs as, say. Neither names anyone by default;
+  `run.sh` sets these clusters' own (not the demo's). The ebpf feed's report counts what was
+  dropped (`excluded.users` in `/api/feeds`).
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's record
 is a JSON line; the retired builder's contract was `data.json`) and

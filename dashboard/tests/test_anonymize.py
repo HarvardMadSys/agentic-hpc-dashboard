@@ -261,9 +261,14 @@ class ConfigTest(unittest.TestCase):
         printed = self.cfg(enabled=True, salt="s3cret").as_dict(with_origins=True)
         self.assertEqual(printed["anonymize"]["salt"]["_value"], "(hidden)")
 
-    def test_the_operator_named_in_the_config_is_a_known_name(self):
-        a = anonmod.from_config(self.cfg(enabled=True))
-        self.assertIn("juncheng", a.users)          # filters.drop_global's default
+    def test_the_accounts_the_filters_name_are_known_names(self):
+        tree = configmod.defaults()
+        tree["cache"]["dir"] = self.tmp
+        tree["anonymize"]["enabled"] = True
+        tree["filters"].update(drop_global=["monitor"], drop_agent=["builder"])
+        a = anonmod.from_config(configmod.Config(tree, {}, None))
+        self.assertIn("monitor", a.users)
+        self.assertIn("builder", a.users)
 
 
 if __name__ == "__main__":

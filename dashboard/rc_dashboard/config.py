@@ -277,8 +277,13 @@ def defaults():
             "preprocess_wait_s": 0,
         },
         "filters": {
-            "drop_global": ["juncheng"],     # the monitoring operator
-            "drop_agent": ["flamraoui"],     # period3 agent build skew
+            # Accounts whose records are dropped, and counted (`dropped_users`):
+            # drop_global, every record of theirs (RC_DASH_DROP_USERS,
+            # comma-separated); drop_agent, only those classed agent
+            # (RC_DASH_DROP_AGENT_USERS). A site names its own -- the account its
+            # monitoring runs as, say -- and none is dropped by default.
+            "drop_global": [],
+            "drop_agent": [],
             "classes": ["agent", "human", "ide"],
             "unlabeled_class": "unlabeled",
             # the collector's own probes (node_snapshot's mpstat/iostat/sar/

@@ -72,6 +72,7 @@ in. Git ignores `site.env`. The example explains each key; in short:
 | `SENDER_DIR`, `SHARED_HOME` | Where the sender lives on the nodes, and whether their home is shared. |
 | `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`, `DASH_PYTHON`, `PRIVATE_TREE` | The dashboard's host, its folder, its port, the Python that makes its venv, and whether the folder stays private ([When the stream trips](#when-the-stream-trips)). |
 | `SITE_NAME`, `SITE_DESCRIPTION`, `RISK_PROFILE`, `ANONYMIZE`, `CODEX` | What the page calls itself, the risk rules, aliases for user names, and Ask. |
+| `DROP_USERS`, `DROP_AGENT_USERS` | Accounts whose records the dashboard drops: every record, or their agents' only. Empty, it drops only `SOURCE_USER`'s: the stream's own processes. |
 | `HISTORY_DAYS`, `MAX_WINDOWS`, `PREWARM_MIN`, `MAX_SESSIONS`, `DAY_CACHE`, `DASH_MEMORY_MAX`, `FREE_MIN_GB` | History, memory, and disk. A key you leave out takes the dashboard's default. |
 | `SSH_KEY`, `WORK_DIR`, `NODE_MODULES`, `SLACK_WEBHOOK_FILE` | This machine's key, work folder, bundle build, and the check's Slack posts. |
 
