@@ -392,10 +392,12 @@ and `/api/feeds` on the same beat, so a build that finishes still reaches the pa
 on the socket: it tries again after a wait that doubles from 1 s to 30 s, each wait spread
 over its upper half by a hash of when the page opened (`src/lib/backoff.ts`; no random
 number), and at once when the browser comes back online or the tab is shown again. Only a
-frame resets the wait and ends the polling, not the socket's opening: a proxy that accepts
-the upgrade and closes it would otherwise be knocked on every second. A socket that says
-nothing for 75 s -- the service sends a `feeds` frame every 30 s -- is closed and replaced,
-and the page stops saying `live`. The transport is always named in the rail
+socket that has stayed up for 75 s resets the wait and ends the polling, not its opening nor
+its first frames, which the service sends as soon as it connects: a proxy that accepts the
+upgrade and drops it soon after would otherwise be knocked on every second, and the polling
+stopped each time. A socket not open within 15 s (a proxy that takes the connection and never
+answers the upgrade), or that says nothing for 75 s once open -- the service sends a `feeds`
+frame every 30 s -- is closed and replaced, and the page stops saying `live`. The transport is always named in the rail
 (`transport ws` / `polling` / `down`), because a frozen chart that looks live is worse than
 a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels`; a
 `feeds` frame supersedes the REST feeds snapshot. The header's refresh asks for all of it

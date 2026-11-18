@@ -22,6 +22,16 @@ export const POLL_AFTER = 5;
 /** No frame of any kind for this long, and an open socket is taken for dead: two
  *  and a half of the service's 30 s `feeds` beats. */
 export const QUIET_MS = 75000;
+/** A socket not open this long after it was made has failed: a proxy that takes
+ *  the connection and never answers the upgrade would otherwise hold the page at
+ *  `connecting`, with no retry and no poll. */
+export const OPEN_MS = 15000;
+/** How long a socket must stay up before the page trusts it: only then does the
+ *  wait start over and the polling stop. The service sends its first frames as
+ *  soon as a socket connects, so one that delivers them and drops (a proxy's
+ *  timeout, a worker that dies after its hello) would otherwise reset the wait
+ *  every time, and be knocked on every second. One watchdog period. */
+export const STABLE_MS = QUIET_MS;
 
 /** The wait before try `n` of the socket (1 for the first after a failure):
  *  RETRY_BASE_MS doubled each time, capped at RETRY_CAP_MS, and placed in its

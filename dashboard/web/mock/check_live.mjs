@@ -199,17 +199,65 @@ test('while the socket is down the page polls the windows and the feeds too, and
   assert.equal(hook.value.buildNonce, nonce + 1, 'and only once');
 });
 
-test('only a frame starts the wait over: a socket that opens and closes at once backs off', async () => {
+test('only a socket that stays up starts the wait over: one that opens and closes at once backs off', async () => {
   await start();
   const waits = [];
   for (let i = 0; i < 7; i++) waits.push(await failAndWait({ opened: true }));
   // on develop: 1,000 ms every time, as each opening reset the count
   assert.ok(waits[6] >= 8000, `waits: ${waits}`);
-  // a socket that speaks resets it: the next failure is tried again within a second
+  // a socket that speaks, and stays up for a watchdog period, resets it: the next failure is
+  // tried again within a second
   last().open();
   last().frame({ type: 'live', payload: LIVE });
+  for (let i = 0; i < 3; i++) {
+    await advance(30000);
+    last().frame({ type: 'feeds', payload: FEEDS }); // the service's 30 s beat
+  }
   await settle();
   assert.ok((await failAndWait()) <= 1000);
+});
+
+test('a socket that sends its first frames and drops keeps backing off, and the page keeps polling', async () => {
+  const hook = await start();
+  for (let i = 0; i < 5; i++) await failAndWait();
+  assert.equal(hook.value.transport, 'polling');
+  const waits = [];
+  for (let i = 0; i < 4; i++) {
+    // the service's opening frames, then a proxy's timeout or a worker that dies after its hello
+    last().open();
+    last().frame({ type: 'live', payload: LIVE });
+    last().frame({ type: 'windows', payload: windowsOf('b1') });
+    await settle();
+    assert.equal(hook.value.transport, 'ws', 'live while its frames flow');
+    waits.push(await failAndWait());
+    // on 8c38a7d: "connecting", the polling stopped by the first frame
+    assert.equal(hook.value.transport, 'polling', `after drop ${i + 1}`);
+  }
+  // on 8c38a7d: 500 to 1,000 ms after every drop, as each first frame reset the count
+  assert.ok(waits.every((w) => w >= 8000), `waits: ${waits}`);
+  L.reads.length = 0;
+  await advance(15000);
+  assert.ok(L.reads.includes('windows'), `the polling goes on: ${L.reads}`);
+});
+
+test('a socket whose handshake never finishes is given up and tried again, and the page polls meanwhile', async () => {
+  const hook = await start();
+  for (let i = 1; i <= 5; i++) {
+    const n = L.sockets.length;
+    const t0 = clock.now;
+    // the newest is never opened, closed or failed: a proxy that took the connection and is silent
+    while (L.sockets.length === n && clock.now - t0 < 120000) await advance(250);
+    // on 8c38a7d: no new socket, ever, and no poll
+    assert.ok(L.sockets.length > n, `no new socket after stalled handshake ${i}`);
+    assert.equal(L.sockets[n - 1].closed, true, 'the stalled one was let go');
+    assert.ok(clock.now - t0 <= 15000 + 30000, `${clock.now - t0} ms`);
+  }
+  assert.equal(hook.value.transport, 'polling');
+  assert.ok(L.reads.includes('windows'), `reads: ${L.reads}`);
+  // and while the newest is opening, the browser back online waits for it rather than doubling it
+  const n = L.sockets.length;
+  window.fire('online');
+  assert.equal(L.sockets.length, n);
 });
 
 test('a socket that says nothing for 75 s is closed and replaced, and the page stops saying live', async () => {

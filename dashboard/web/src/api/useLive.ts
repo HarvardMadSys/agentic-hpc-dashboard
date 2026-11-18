@@ -9,9 +9,12 @@
  * report stays current. The socket is tried again meanwhile, for as long as the
  * page is open (lib/backoff.ts): at once when the browser comes back online or
  * the tab is shown again, else after a wait that doubles up to 30 s. Only a
- * frame resets that wait: a proxy that accepts the upgrade and closes it at once
- * would otherwise be knocked on every second. An open socket that says nothing
- * for QUIET_MS is closed and replaced, and the page stops saying `live`.
+ * socket that has stayed up for STABLE_MS resets that wait and ends the polling,
+ * not its opening nor its first frames: the service sends those at once, and a
+ * proxy that accepts the upgrade and drops it soon after would otherwise be
+ * knocked on every second. A socket that has not opened in OPEN_MS, or that says
+ * nothing for QUIET_MS once open, is closed and replaced, and the page stops
+ * saying `live`.
  *
  * Nothing here interpolates. Between frames the series simply does not move --
  * the retired viewer manufactured events between polls and that is the specific
@@ -26,7 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
 import { getFeeds, getLive, getWindows, wsUrl } from './client';
 import { setClockPinned, syncServerClock } from '../lib/clock';
-import { POLL_AFTER, QUIET_MS, readyKey, retryDelay, spreadOf } from '../lib/backoff';
+import { OPEN_MS, POLL_AFTER, QUIET_MS, STABLE_MS, readyKey, retryDelay, spreadOf } from '../lib/backoff';
 
 export type Transport = 'connecting' | 'ws' | 'polling' | 'down';
 
@@ -187,6 +190,7 @@ export function useLive(windowMin: number | null): LiveState {
     let retry: number | null = null;
     let quiet: number | null = null;
     let next: number | null = null;
+    let settle: number | null = null;
     let polling = false;
 
     const stopRetry = () => {
@@ -196,6 +200,10 @@ export function useLive(windowMin: number | null): LiveState {
     const stopQuiet = () => {
       if (quiet != null) window.clearTimeout(quiet);
       quiet = null;
+    };
+    const stopSettle = () => {
+      if (settle != null) window.clearTimeout(settle);
+      settle = null;
     };
     const stopPolling = () => {
       polling = false;
@@ -228,11 +236,14 @@ export function useLive(windowMin: number | null): LiveState {
     const lost = () => {
       sock.current = null;
       stopQuiet();
+      stopSettle();
       if (dead.current) return;
       reseed.current = true;
       attempts.current += 1;
       if (attempts.current >= POLL_AFTER) startPolling();
-      else if (!polling) setTransport('connecting');
+      // the socket is gone, whatever it said: the page polls, or tries it again
+      const polls = polling;
+      setTransport((t) => (!polls ? 'connecting' : t === 'down' ? t : 'polling'));
       stopRetry();
       retry = window.setTimeout(connect, retryDelay(attempts.current, spreadOf(seed, attempts.current)));
     };
@@ -249,19 +260,21 @@ export function useLive(windowMin: number | null): LiveState {
       }
       sock.current = ws;
       let heard = false;
-      // re-armed by every frame: a socket that says nothing for QUIET_MS is dead
-      const watch = () => {
+      // A socket that does not open within OPEN_MS, or once open says nothing
+      // for QUIET_MS, is dead: re-armed by the opening and by every frame.
+      const watch = (ms: number) => {
         stopQuiet();
         quiet = window.setTimeout(() => {
           quiet = null;
           if (sock.current !== ws) return;
           drop(ws);
           lost();
-        }, QUIET_MS);
+        }, ms);
       };
+      watch(OPEN_MS);
 
       ws.onopen = () => {
-        watch();
+        watch(QUIET_MS);
         // Tell the server which window this reader is on before anything else:
         // it sends one `live` frame per DISTINCT window, and until it hears
         // otherwise this socket is counted on the service default.
@@ -275,15 +288,22 @@ export function useLive(windowMin: number | null): LiveState {
       };
 
       ws.onmessage = (ev) => {
-        watch();
+        watch(QUIET_MS);
         if (!heard) {
-          // The socket works: its first frame, not its opening, starts the
-          // backoff over and ends the polling.
+          // Frames flow: the page is live. The wait starts over, and the
+          // polling stops, only once the socket has stayed up for STABLE_MS:
+          // the first frames come as soon as it connects, and one that drops
+          // soon after must go on backing off, and the polling go on with it.
           heard = true;
-          attempts.current = 0;
-          stopPolling();
           setTransport('ws');
           setError(null);
+          stopSettle();
+          settle = window.setTimeout(() => {
+            settle = null;
+            if (sock.current !== ws) return;
+            attempts.current = 0;
+            stopPolling();
+          }, STABLE_MS);
           // The socket may only push deltas; the view was seeded from the REST
           // snapshot as the page mounted, so a quiet cluster is not an empty
           // dashboard. A socket that came back after dropping seeds it again.
@@ -347,6 +367,7 @@ export function useLive(windowMin: number | null): LiveState {
       dead.current = true;
       stopRetry();
       stopQuiet();
+      stopSettle();
       stopPolling();
       window.removeEventListener('online', now);
       document.removeEventListener('visibilitychange', shown);
