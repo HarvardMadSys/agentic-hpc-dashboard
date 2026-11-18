@@ -18,7 +18,7 @@ does not exist. That is why the exit code is carried rather than just the count.
 import collections
 import re
 
-from . import INSTANCE_CAP, add_counts, pct, who
+from . import INSTANCE_CAP, add_counts, first_in_time, pct, who
 
 from ..tool_buckets import BUCKETS, bucket
 
@@ -569,10 +569,11 @@ class RiskReducer:
         """Fold a LATER state into this one. `o` is consumed.
 
         Per-tool and per-pattern counts add and their user and host sets union.
-        The instance samples are the FIRST few in time, so this state's come
-        before `o`'s; the heaviest processes are re-cut by the rule `feed`
-        cuts them by, which keeps the top of the list exactly what one pass
-        keeps.
+        The instance samples are the FIRST few in time: for a later hour,
+        this state's then `o`'s; for another node's state of the same hour
+        (hours.py, `ingest.workers`), the earliest of both (`first_in_time`).
+        The heaviest processes are re-cut by the rule `feed` cuts them by,
+        which keeps the top of the list exactly what one pass keeps.
         """
         for tool, e in o.lc.items():
             m = self.lc[tool]
@@ -601,14 +602,14 @@ class RiskReducer:
             m["hosts"] |= d["hosts"]
             add_counts(m["classes"], d["classes"])
             add_counts(m["types"], d["types"])
-            m["inst"].extend(d["inst"][:max(0, INSTANCE_CAP - len(m["inst"]))])
+            m["inst"] = first_in_time(m["inst"], d["inst"])
         for sid, v in o.sec.items():
             m = self.sec[sid]
             m["n"] += v["n"]
             m["users"] |= v["users"]
             for k in ("tools", "classes", "types"):
                 add_counts(m[k], v[k])
-            m["inst"].extend(v["inst"][:max(0, INSTANCE_CAP - len(m["inst"]))])
+            m["inst"] = first_in_time(m["inst"], v["inst"])
         self.args_seen += o.args_seen
         self.args_truncated += o.args_truncated
 

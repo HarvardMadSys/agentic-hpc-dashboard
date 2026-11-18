@@ -166,6 +166,8 @@ RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # Where the ebpf collected data reside
 RC_DASH_NODE_ROOTS=/var/log/ebpfm-login  # Where the other data reside (node-level)
 RC_DASH_HISTORY=1                        # keep every sealed (.jsonl.gz) day-file as Parquet too (0: off)
 RC_DASH_HISTORY_WORKERS=0                # processes converting in the background: 0 (default) = up to 8
+RC_DASH_INGEST_WORKERS=1                 # processes reducing the hours: 1 (default) = one pass; N = one node per process
+RC_DASH_INGEST_REDUCER_GROUPS=2          # with N >= 2: each node's hour in 2 processes, one per reducer group (1: one)
 ```
 See [History in Parquet](dashboard/README.md#history-in-parquet) for what the store holds,
 which reads it answers, and what it costs.

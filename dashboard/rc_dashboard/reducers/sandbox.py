@@ -229,9 +229,11 @@ class SandboxReducer:
                 failed, ok = False, True
             # Named by the exit itself, not by a counter: a window's edge and
             # the saved hour it overlaps reduce the same exit, and must call
-            # it the same unit (`merge`).
+            # it the same unit (`merge`). An unstamped one by the counter, under
+            # its host: hours reduced by node (hours.py, `ingest.workers`) count
+            # each node's units apart, and two nodes' counters meet in a merge.
             e = rec.get("_ts_epoch")
-            uid = (host, pid, e) if e is not None else ("n", self.n_units)
+            uid = (host, pid, e) if e is not None else ("n", host, self.n_units)
             self.n_units += 1
             self.units[uid] = [
                 "wrapper" if wrapper else "tool-shell", host, pid, rec.get("agent_pid"),
@@ -272,6 +274,10 @@ class SandboxReducer:
 
     def carry(self):
         return {"below": self.below, "units": self.units, "n_units": self.n_units}
+
+    def carry_caps(self):
+        """What one pass holds the carried map to (`hours.combine_carries`)."""
+        return {"below": self.BELOW_CAP}
 
     @staticmethod
     def carry_done(c):

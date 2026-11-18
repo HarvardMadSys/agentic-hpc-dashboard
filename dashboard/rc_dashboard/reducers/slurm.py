@@ -351,8 +351,14 @@ class SlurmReducer:
         for cls, q in o.time_limit.items():
             self.time_limit[cls].merge(q)
         add_counts(self.fail_rows, o.fail_rows)
+        # The first failure in time is the example, as `feed` keeps it: a
+        # later hour's never replaces this one's, and of two nodes' states of
+        # the same hour (hours.py, `ingest.workers`) the earlier one wins.
         for k, eg in o.fail_eg.items():
-            self.fail_eg.setdefault(k, eg)
+            cur = self.fail_eg.get(k)
+            if cur is None or (eg.get("ts") is not None
+                               and (cur.get("ts") is None or eg["ts"] < cur["ts"])):
+                self.fail_eg[k] = eg
 
     # ---------------------------------------------------------------- result
     def _owner(self, host, apid, root):

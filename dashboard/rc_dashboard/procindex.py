@@ -142,6 +142,10 @@ class ProcIndex:
         return {"entries": self.entries, "wanted": self.wanted,
                 "touched": {"entries": self.touched or ()}}
 
+    def carry_caps(self):
+        """What one pass holds the carried maps to (`hours.combine_carries`)."""
+        return {"entries": self.cap, "wanted": self.cap}
+
     def seed(self, c):
         self.entries = c["entries"]
         self.wanted = c["wanted"]

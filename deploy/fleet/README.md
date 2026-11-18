@@ -50,7 +50,11 @@ stopping it, and a stalled dashboard answers nothing.
   posts from the hourly check: `jq` and `curl`.
 - **The dashboard's host:** Linux with systemd, a user manager that you can keep running
   with `loginctl enable-linger`, and tmux. Python 3.11 or later for the dashboard's venv
-  (`DASH_PYTHON`), and `/usr/bin/python3` for the stream. `ss`, `curl`, and `getfacl` for
+  (`DASH_PYTHON`; 3.14 reduces the hours about 10% faster than 3.12, with the same panels:
+  `uv python install 3.14`, then `DASH_PYTHON=$(uv python find 3.14)`), and
+  `/usr/bin/python3` for the stream. A deploy whose `DASH_PYTHON` is another version than the
+  venv's makes the venv again, keeps the one before as `venv.old`, and restarts the session.
+  `ss`, `curl`, and `getfacl` for
   the checks. Disk and memory: see [Memory and disk](#memory-and-disk).
 - **Each source node:** the collector ([`collector/`](../../collector), or the RPM), an
   account (`SOURCE_USER`) that can log in with an ssh key, and `/usr/bin/python3` 3.6 or
@@ -218,6 +222,11 @@ for it: a day not converted yet is read from its `.gz`. On a deployment over the
 with a 32G cap, the first start after this store came in converted their 7 sealed days
 (18.4 GB of `.gz`, 182 M records) into 5.8 GB of Parquet in 12 minutes beside its refill,
 the service peaking at 19.1 GiB meanwhile and holding 12.5 GiB after.
+The hours are reduced meanwhile too, by `INGEST_WORKERS` processes (two per node unless
+set, 16 here) of about 0.5 GB each, plus about 1.7 GB in the service while it merges an
+hour: about 9 GB more at once, so a first start can come near 28 GiB of the 32G cap. On a
+lower cap, set `INGEST_WORKERS` to the node count (8 here: about 4 GB, and 80 to 90% of
+the speed of 16).
 
 For scale, one deployment that reads 8 busy login nodes, measured with the defaults and a
 32G cap:

@@ -1567,6 +1567,19 @@ class TrajectoryReducer:
                             "phase_calls": self._ctouched or (),
                             "phase_exited": self._xtouched or ()}}
 
+    def carry_caps(self):
+        """What one pass holds each carried map to (`hours.combine_carries`)."""
+        return {"reaped": REAPED_MAX, "phase_pend": self.pend.cap,
+                "phase_calls": CALLS_AT_MAX, "phase_exited": EXITED_MAX}
+
+    @staticmethod
+    def carry_trimmed(c, dropped):
+        """Exits dropped past the cap as `_went` drops them: the latest end among
+        them is kept as the horizon."""
+        for _key, x in dropped.get("phase_exited", ()):
+            if x[1] is not None and x[1] > (c.get("phase_exited_horizon") or 0.0):
+                c["phase_exited_horizon"] = x[1]
+
     def seed(self, c):
         self.reaped = c["reaped"]
         x = c.get("phase_calls")

@@ -174,6 +174,10 @@ class ToolMixReducer(Reducer):
     def carry(self):
         return {"child_tok": self.child_tok}
 
+    def carry_caps(self):
+        """What one pass holds the carried map to (`hours.combine_carries`)."""
+        return {"child_tok": self.dedup_max}
+
     def seed(self, c):
         self.child_tok = c["child_tok"]
 

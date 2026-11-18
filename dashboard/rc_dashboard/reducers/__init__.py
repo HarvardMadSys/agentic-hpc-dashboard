@@ -268,6 +268,24 @@ def who(rec, with_args=True):
     return w
 
 
+def _inst_t(w):
+    t = w.get("ts")
+    return (t is None, t or "")
+
+
+def first_in_time(mine, theirs, cap=INSTANCE_CAP):
+    """The first `cap` instances of two states' samples, by their `ts`.
+
+    What `feed` keeps is the first few in time. A later hour's are all later,
+    so for hours merged in order this is `mine` then `theirs`, as before (the
+    sort is stable). Two nodes' states of the same hour (hours.py,
+    `ingest.workers`) interleave in time, and this keeps the earliest of both
+    rather than whichever state came first. A sample with no `ts` goes last."""
+    if not theirs:
+        return mine
+    return sorted(mine + theirs, key=_inst_t)[:cap]
+
+
 def top_by(bucket, key, cap=INSTANCE_CAP, trim_at=None):
     """Keep a bounded list of the heaviest entries without holding them all."""
     trim_at = trim_at or cap * 20

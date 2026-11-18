@@ -10,6 +10,8 @@
  "//panels": "The day cache merges each finished day's hours into one saved state, so a wide window merges days, not hours. It holds a second day's state beside the built view, so a host short of memory can turn it off (DAY_CACHE).",
  "panels": {"max_windows": @MAX_WINDOWS@, "prewarm_min": @PREWARM_JSON@, "day_cache": @DAY_CACHE@},
  "reducers": {"trajectories": {"max_sessions": @MAX_SESSIONS@}},
+ "//ingest": "The hours are reduced by node and reducer group, a process each, this many at once; two per node by default (INGEST_WORKERS). 1 reduces them in one pass in the dashboard's own process.",
+ "ingest": {"workers": @INGEST_WORKERS@},
  "clock": {"as_of": ""},
  "risk": {"profile": @RISK_PROFILE_JSON@},
  "//filters": "The account that runs the senders on the nodes: its processes are the stream, not a user's work.",
