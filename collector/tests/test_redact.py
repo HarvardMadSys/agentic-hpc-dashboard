@@ -837,6 +837,23 @@ class CoverageTest(unittest.TestCase):
             self.hidden(['echo', tok], tok[4:])
             self.hidden(['tool', '--x=' + tok], tok[4:])
 
+    def test_an_option_however_far_from_its_program(self):
+        """The scan from a program to its -p or -a, and a command's span, were
+        cut at 400 or 2000 characters: a password past that went out as it
+        was. A quoted value is read whole, a `;` in it and all."""
+        opts = ['--opt%d=value%d' % (i, i) for i in range(60)]                # ~900 characters
+        for argv, secret in (
+                (['mysql', '-h', 'db1'] + opts + ['-phunter2zz', 'prod'], 'hunter2zz'),
+                (['redis-cli', '-h', 'r1'] + opts + ['-a', 'hunter2zz', 'ping'], 'hunter2zz'),
+                (['docker', 'login'] + opts + ['-p', 'hunter2zz', 'reg.x'], 'hunter2zz'),
+                (['wandb', 'login'] + opts + ['a1b2c3d4e5f6'], 'a1b2c3d4e5f6'),
+                (['aws', 'configure', 'set'] + opts * 3 + ['aws_secret_access_key', 'wJalrXUtnFEMI'],
+                 'wJalrXUtnFEMI')):
+            self.hidden(argv, secret)
+            self.hidden(['bash', '-c', 'cd /x && ' + ' '.join(argv)], secret)
+        self.assertEqual(R.redact_keys('aws configure set aws_session_token "IQoJ;b3Jp"'),
+                         ('aws configure set aws_session_token %s' % K, ['config_secret']))
+
     def test_ordinary_words_stay(self):
         """`PASSWD_FILE` names where a password is kept, not the password;
         `sort_key` and `bypass` in lower case are settings, and `-p` is a port or

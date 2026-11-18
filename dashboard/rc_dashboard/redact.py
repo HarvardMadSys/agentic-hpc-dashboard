@@ -83,6 +83,25 @@ def _each(rx, sub):
     return lambda m: m.group(1) + rx.sub(sub, m.group(2))
 
 
+def _until(start, chars=r"[^\n]"):
+    """What lies between a program and an option of its: read lazily, however
+    far, but only up to where the rule's own `start` next begins a command,
+    whose own match reads on from there. So each part of a line is read once,
+    and no option is out of reach: a bound on how far to read would leave a
+    password past it written as it was."""
+    return r"(?:(?!" + start + r")" + chars + r")*?"
+
+
+# A command's span for the rules that read every value in it: to the end of
+# the command, a quoted string whole, `;` in it and all.
+_SPAN = r"((?:\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z)|[^\n;&|<>\"'])*)"
+_DB = _CMD_START + r"(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh)\b"
+_REDIS = _CMD_START + r"redis-cli\b"
+_LOGIN = (_CMD_START + r"(?:(?:docker|podman|nerdctl|buildah|skopeo|oras|helm|apptainer"
+          r"|singularity)(?:\s+(?:registry|remote))?\s+login|az\s+login|twine\s+(?:upload|register)"
+          r"|mongo(?:sh|dump|restore|export|import|stat|top|files)?)\b")
+
+
 # A container's `--user 1000:1000` is a uid and a gid, not a user and password:
 # docker's, podman's, a wrapper of theirs (`podman-hpc`, a test's
 # `fake_podman.py`), lines continued with a backslash and all. The rule matches
@@ -211,36 +230,32 @@ RULES = (
         r"sig|signature|X-Amz-Signature|X-Amz-Credential|X-Goog-Signature)=)([^&\s\"'#]+)", re.I),
      lambda m: m.group(1) + MASK),
     # mysql -pSECRET (no space), redis-cli -a SECRET, sshpass -p SECRET. Not psql:
-    # its -p is the port. What lies between the program and its option is read
-    # 400 characters deep at most, so a line of `mysql mysql ...` is read once.
+    # its -p is the port. The option is looked for however far it is (_until).
     ("db_password", (("mysql", "mariadb", "mongo"), ("-p",)), re.compile(
-        r"(" + _CMD_START + r"(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh)\b"
-        r"[^\n]{0,400}?\s-p)(?=\S)([^\s\"']+)"),
+        r"(" + _DB + _until(_DB) + r"\s-p)(?=\S)([^\s\"']+)"),
      lambda m: m.group(1) + MASK),
     ("short_password", (("redis-cli", "sshpass"),), re.compile(
-        r"(" + _CMD_START + r"(?:redis-cli\b[^\n]{0,400}?\s-a|sshpass\s+-p)\s*)" + _NOT_A_REF
-        + r"([^\s\"']+)"),
+        r"(" + _CMD_START + r"(?:redis-cli\b" + _until(_REDIS) + r"\s-a|sshpass\s+-p)\s*)"
+        + _NOT_A_REF + r"([^\s\"']+)"),
      lambda m: m.group(1) + MASK),
     # A login's -p, spaced or not: a registry login's (docker, podman,
     # apptainer, singularity ...), az login's, twine upload's, the mongo
     # tools'. Not ssh's -p, a port, nor docker run's, a port mapping.
     ("login_password", (("login", "twine", "mongo"), ("-p",)), re.compile(
-        r"(" + _CMD_START + r"(?:(?:docker|podman|nerdctl|buildah|skopeo|oras|helm|apptainer"
-        r"|singularity)(?:\s+(?:registry|remote))?\s+login|az\s+login|twine\s+(?:upload|register)"
-        r"|mongo(?:sh|dump|restore|export|import|stat|top|files)?)\b[^\n;&|]{0,400}?\s-p"
-        r"(?:=|\s+)?)" + _NOT_A_REF + r"(?!-)" + _VALUE),
+        r"(" + _LOGIN + _until(_LOGIN, r"[^\n;&|]") + r"\s-p(?:=|\s+)?)" + _NOT_A_REF
+        + r"(?!-)" + _VALUE),
      lambda m: m.group(1) + MASK),
     # A key given as a command's own argument: `wandb login KEY` -- every word
     # after `login` but an option, a URL after `--host` and all.
     ("login_key", (("wandb",), ("login",)), re.compile(
-        r"(" + _CMD_START + r"wandb\s+login\b)([^\n;&|<>]{0,400})"),
+        r"(" + _CMD_START + r"wandb\s+login\b)" + _SPAN),
      _each(re.compile(r"(\s+)" + _NOT_A_REF + r"(?!-)" + _VALUE), lambda m: m.group(1) + MASK)),
     # A credential-named setting's value: `aws configure set
     # aws_secret_access_key VALUE`, `rclone config create REMOTE s3
     # secret_access_key VALUE pass VALUE ...`.
     ("config_secret", (("aws", "rclone"), ("config",)), re.compile(
         r"(" + _CMD_START + r"(?:aws\s+configure\s+set|rclone\s+config\s+(?:create|update))\b)"
-        r"([^\n;&|<>]{0,2000})"),
+        + _SPAN),
      _each(re.compile(r"(\s(?:[\w-]+\.)*(?:" + _SECRET_NAME + r"|pass|key)\s+)" + _NOT_A_REF
                       + r"(?!-)" + _VALUE, re.I), lambda m: m.group(1) + MASK)),
     # Token shapes that are secrets wherever they appear, flag or not. A JWT
