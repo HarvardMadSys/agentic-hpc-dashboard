@@ -3031,34 +3031,54 @@ def resolve(pid, m=None):
     attached to its agent's tree is still known to be one (_sandbox_type).
 
     `m` is the entry itself when the caller holds it: an exit record is written
-    after a hold, and by then the pid may name a newer process."""
+    after a hold, and by then the pid may name a newer process.
+
+    A loop, not a recursion: it walks up past every ancestor not resolved yet,
+    then attributes them on the way back down. A chain is as deep as a user
+    makes it -- a script that runs itself -- and one recursion per ancestor
+    raised RecursionError at about 1,000, out of the seed and every tick. A
+    parent already on the walk (pids that loop back on themselves) ends it, as
+    no parent does."""
     if m is None:
         m = proc.get(pid)
     if m is None:
         return False
     if m['attributed'] is not None:
         return m['attributed']
-    own_args = m['args'] if m.get('argv_source') != 'inherit' else None
-    tag = classify(own_args) if own_args else None
-    m['tag'] = tag
-    if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
-        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
-        return True
-    ppid = m['ppid']
-    pm = proc.get(ppid) if ppid and ppid != pid else None
-    if pm is not None and _born_after(pm, m.get('fork_ktime')):
-        pm = None             # the pid was recycled since: a newer process holds it
-    if pm is not None and resolve(ppid, pm):
-        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
-                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
-        return True
-    if tag is not None:
-        # outside any agent tree: its own root, as every tagged process was
-        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
-        return True
-    # Cleared, not left over from an earlier image: an exec re-resolves a process
-    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
-    return False
+    walk, seen, above = [], set(), None     # above: the resolved entry over walk[-1]
+    while True:
+        seen.add(id(m))
+        own_args = m['args'] if m.get('argv_source') != 'inherit' else None
+        tag = classify(own_args) if own_args else None
+        m['tag'] = tag
+        if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
+            m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+            above = m
+            break
+        walk.append((pid, m, tag))
+        ppid = m['ppid']
+        pm = proc.get(ppid) if ppid and ppid != pid else None
+        if pm is not None and _born_after(pm, m.get('fork_ktime')):
+            pm = None         # the pid was recycled since: a newer process holds it
+        if pm is None or id(pm) in seen:
+            break
+        if pm['attributed'] is not None:
+            above = pm
+            break
+        pid, m = ppid, pm
+    for pid, m, tag in reversed(walk):
+        if above is not None and above['attributed']:
+            m.update(attributed=True, is_agent=False, agent_pid=above['agent_pid'],
+                     agent_type=above['agent_type'], depth=(above['depth'] or 0) + 1)
+        elif tag is not None:
+            # outside any agent tree: its own root, as every tagged process was
+            m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        else:
+            # Cleared, not left over from an earlier image: an exec re-resolves a process
+            m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None,
+                     depth=None)
+        above = m
+    return above['attributed']
 
 
 def _born_after(pm, kt):
@@ -3185,8 +3205,12 @@ def seed_existing(poll=None):
                 if c:
                     m['cwd'] = c
     # Only once the whole table is in: attribution needs every parent present.
+    # One process that cannot be read is counted; it must not stop the start.
     for m in list(proc.values()):
-        _ask_hosts(m)
+        try:
+            _ask_hosts(m)
+        except Exception:
+            _count_error('seed_existing')
 
 
 def _inherit(m, key):
@@ -5131,13 +5155,17 @@ def residency_tick(b=None):
     trees, totals, by_type = {}, {}, {}
     stacks_read = 0
     global_frames = {}
-    for m in live:
+
+    def tick_one(m):
+        # One live process's share of the tick, apart so that a process that
+        # cannot be read is counted and skipped, not the end of the tick.
+        nonlocal stacks_read
         actor, _attr = actor_of(m)
         if actor is None:
-            continue
+            return
         st = read_stat(m['pid'])
         if st is None:
-            continue                          # gone; reconcile_proc() retires it
+            return                          # gone; reconcile_proc() retires it
         if m.get('start_ep') is None:
             m['start_ep'] = start_epoch(st['starttime'])
         if m.get('start_ticks') is None:
@@ -5150,7 +5178,7 @@ def residency_tick(b=None):
             pid = m['pid']
             _replace(m)
             _ingest_proc(pid)
-            continue
+            return
         rss_kb = _read_vmrss_kb(m['pid']) or 0
         cpu_s = st['cpu_ticks'] / float(CLK_TCK)
         in_d = st['state'] == 'D'
@@ -5188,7 +5216,7 @@ def residency_tick(b=None):
         if m.get('user'):
             t['users'].add(m['user'])
         if actor != 'agent' or m.get('agent_pid') is None:
-            continue
+            return
         # item 7: per-agent-type totals, mirroring the census's totals_by_type
         at = m.get('agent_type') or '?'
         bt = by_type.setdefault(at, {'trees': set(), 'n_procs': 0, 'threads': 0,
@@ -5230,6 +5258,11 @@ def residency_tick(b=None):
                             'state': st['state'], 'threads': st['threads']})
         if frames:
             tr['frames'][frames[0]] = tr['frames'].get(frames[0], 0) + 1
+    for m in live:
+        try:
+            tick_one(m)
+        except Exception:
+            _count_error('residency_proc')
     # Computed before the emit loop so the per-tree counts are available to it,
     # but the records themselves are written AFTER, below, so the file's record
     # order is byte-for-byte what v4 produced. The process table is already
@@ -5417,15 +5450,18 @@ def flush_live(b, features):
             pass
     n = 0
     now = time.time()
-    for m in list(proc.values()):
+
+    def flush_one(m):
+        # 1 for a record written. Apart so that a process that cannot be read
+        # is counted and skipped, and the others are still flushed.
         if m['exited']:
-            continue
+            return 0
         actor, attribution = actor_of(m)
         if actor is None:
-            continue
+            return 0
         st = read_stat(m['pid'])
         if st is None:
-            continue
+            return 0
         pid = m['pid']
         d_total, d_max, d_cnt = ds.get(pid, (None, None, None))
         tx, rx, calls = nb.get(pid, (None, None, None))
@@ -5465,8 +5501,24 @@ def flush_live(b, features):
         })
         writer.write(rec)
         m['emitted'] = True
-        n += 1
+        return 1
+    for m in list(proc.values()):
+        try:
+            n += flush_one(m)
+        except Exception:
+            _count_error('flush_live')
     return n
+
+
+def _flush_at_stop(b, features):
+    """The stop record's `truncated`: how many records flush_live() wrote, or
+    None when it did not finish -- an unknown count, which 0 would state as
+    none written."""
+    try:
+        return flush_live(b, features)
+    except Exception:
+        _count_error('flush_live')
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -5842,12 +5894,7 @@ def main():
         netio_final_live()
     except Exception:
         _count_error('netpeer_read')
-    n_trunc = 0
-    if FLUSH_ON_EXIT:
-        try:
-            n_trunc = flush_live(b, feats)
-        except Exception:
-            n_trunc = 0
+    n_trunc = _flush_at_stop(b, feats) if FLUSH_ON_EXIT else 0
     # NB: `_stop` is the module-global shutdown flag read below -- do not shadow it.
     stop_rec = _envelope('stop')
     stop_rec.update({'uptime_s': round(time.time() - start, 1), 'records': writer.n,

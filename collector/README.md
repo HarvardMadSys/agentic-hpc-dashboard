@@ -330,7 +330,7 @@ started".
 | `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate`, the endpoint table's counters, and (schema 8) the run's `perf_seen`/`perf_lost`, `handler_errors`, `proc_entries`, `proc_vanished`, `thread_acc`, `netpeer_kernel` |
 | `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir`, `captured_tail` (masked; null for `--pty`) |
 | `truncated` | SIGTERM | one per live tracked process, with accumulated counters |
-| `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (`jsonl`: records, bytes, `write(2)`s and errors up to this record; `ebr`: null) |
+| `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated` (null when the flush did not finish), `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (`jsonl`: records, bytes, `write(2)`s and errors up to this record; `ebr`: null) |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
 `ts` is local, naive and second-granular — fine for reading one host's file, useless for
@@ -798,7 +798,10 @@ filesystem**, so it cannot hang on the mount being diagnosed. Replaces the
 **Drains the D-state and `netbytes` hashes first**, so the record carries real
 accumulated counters rather than only what `/proc` shows at that instant — strictly
 better than the poller's version. SIGKILL is unrecoverable; a missing `stop` record
-already signals a truncated file.
+already signals a truncated file. A process that cannot be read is skipped and counted
+in the stop record's `handler_errors` (`flush_live`); a flush that fails as a whole
+leaves `truncated` null, not 0. The residency tick does the same per process
+(`residency_proc`).
 
 **6. Unattributed user processes** — **`EBPFM_MIN_UID` is the discriminator, not the
 cgroup.** The cgroup cannot be trusted: tty-attached human processes sat in
