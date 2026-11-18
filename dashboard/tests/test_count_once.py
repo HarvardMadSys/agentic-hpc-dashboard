@@ -579,19 +579,25 @@ class PassRed:
     def carry_trimmed(self, c, dropped):
         self.own.carry_trimmed(c, dropped)
 
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
+
 
 def pass_cap(nodes, cap, hours_of=None):
-    """Each node's carried map from `nodes` (host -> [(pid, runtime?)], least
-    recently given first), put together at one pass's `cap`. Returns what is
-    kept, as (host, pid, "R" for a runtime, else "p"), in order, and the join."""
-    by_node = {}
+    """Each node's carried map from `nodes` (host -> [(pid, runtime?[, hour
+    last touched])], least recently given first), put together at one pass's
+    `cap`; a node's keys without an hour take `hours_of[host]`, or none.
+    Returns what is kept, as (host, pid, "R" for a runtime, else "p"), in
+    order, and the join."""
+    by_node, ages = {}, {}
     for host, held in nodes.items():
         h = own_io.Held()
-        for pid, rt in held:
-            h[(host, pid)] = (own_io.AgentHeld if rt else list)([["u", None, 1.0, 0.0]])
+        for e in held:
+            h[(host, e[0])] = (own_io.AgentHeld if e[1] else list)([["u", None, 1.0, 0.0]])
         by_node[host] = {"r": {"reaped": h.carried(), "touched": {}}}
-    ages = {host: {"r.reaped": {(host, pid): hr for pid, _rt in nodes[host]}}
-            for host, hr in (hours_of or {}).items()}
+        hrs = {(host, e[0]): e[2] if len(e) > 2 else (hours_of or {}).get(host)
+               for e in held}
+        ages[host] = {"r.reaped": {k: v for k, v in hrs.items() if v is not None}}
     red = PassRed(cap)
     got = hours.combine_carries(by_node, ages, {"r": red})["r"]["reaped"]
     return ([(k[0], k[1], "R" if type(v) is own_io.AgentHeld else "p") for k, v in got.items()],
@@ -788,6 +794,62 @@ class JoinBoundsTest(unittest.TestCase):
             with self.subTest(trial=trial):
                 self.assertEqual(list(d), list(j.reaped.carried()))
 
+    def test_each_kind_is_ranked_by_its_own_hours_across_nodes(self):
+        # the review's case, at a cap of three: n1 a plain parent given to at
+        # hour 100 and two runtimes idle since hour 80, n2 two runtimes given
+        # to at hour 99. n1's runtimes are not as new as its plain parent
+        kept, own = pass_cap({"n1": [(1, False, 100), (901, True, 80), (902, True, 80)],
+                              "n2": [(911, True, 99), (912, True, 99)]}, 3)
+        self.assertEqual(kept, [("n1", 1, "p"), ("n2", 911, "R"), ("n2", 912, "R")])
+        self.assertEqual(own.evicted, 2)
+
+    def test_a_node_s_runtimes_do_not_age_its_other_parents(self):
+        # three plain parents on each node, all of hour 100, and twelve runtimes
+        # of that hour on n1, at a cap of four: two runtimes and two plain
+        # parents stay, the newest of each node's, not both of n2's
+        kept, _own = pass_cap({"n1": [(1, False), (2, False), (3, False)]
+                               + [(901 + i, True) for i in range(12)],
+                               "n2": [(11, False), (12, False), (13, False)]}, 4,
+                              hours_of={"n1": 100, "n2": 100})
+        self.assertEqual(kept, [("n1", 3, "p"), ("n2", 13, "p"),
+                                ("n1", 911, "R"), ("n1", 912, "R")])
+
+    def test_a_pass_keeps_each_kind_s_newest_and_their_shares(self):
+        # several nodes, each kind's hours rising along each node's map, at
+        # random caps: of each kind no dropped parent was given to later than a
+        # kept one, and the kinds keep min(R, max(cap // 2, cap - P)) runtimes
+        rng = random.Random(11)
+        for trial in range(300):
+            nodes, hour_of = {}, {}
+            for n in range(rng.randint(2, 4)):
+                host = "n%d" % n
+                held = []
+                for rt in (False, True):
+                    hr = rng.randint(0, 5)
+                    for i in range(rng.randint(0, 6)):
+                        hr += rng.choice((0, 0, 1, 3))
+                        pid = (900 if rt else 100) + i
+                        held.append((pid, rt, hr))
+                        hour_of[(host, pid)] = hr
+                nodes[host] = held
+            every = {(h, e[0]): e[1] for h, held in nodes.items() for e in held}
+            if len(every) < 2:
+                continue
+            cap = rng.randint(1, len(every) - 1)
+            kept, _own = pass_cap(nodes, cap)
+            got = {(h, pid) for h, pid, _k in kept}
+            R = sum(1 for rt in every.values() if rt)
+            want_rt = min(R, max(cap // 2, cap - (len(every) - R)))
+            with self.subTest(trial=trial):
+                self.assertEqual(sum(1 for k in kept if k[2] == "R"), want_rt)
+                self.assertEqual(len(kept), cap)
+                for rt in (False, True):
+                    mine = [k for k, r in every.items() if r is rt]
+                    gone = [hour_of[k] for k in mine if k not in got]
+                    stay = [hour_of[k] for k in mine if k in got]
+                    if gone and stay:
+                        self.assertLessEqual(max(gone), min(stay))
+
     def test_one_pass_s_cap_holds_runtimes_to_their_share(self):
         # two nodes, each five plain parents and five runtimes, at a pass's cap
         # of ten: the newest five of each kind stay, the runtimes last
@@ -905,6 +967,9 @@ class JoinBoundsTest(unittest.TestCase):
             with self.subTest(reducer=k):
                 self.assertEqual((join_of(red[k]).cap, join_of(red[k]).name), (7, k))
                 self.assertEqual(red[k].carry_caps()["reaped"], 7)
+                # and ranks a runtime apart from the rest where a pass puts nodes together
+                self.assertEqual((red[k].carry_tier("reaped", own_io.AgentHeld()),
+                                  red[k].carry_tier("reaped", [])), (True, False))
         lv = LiveReducer(c, CLASSES)
         self.assertEqual([(j.cap, j.name) for j in (lv.io_join, lv.io_given)],
                          [(7, "live"), (7, "live")])

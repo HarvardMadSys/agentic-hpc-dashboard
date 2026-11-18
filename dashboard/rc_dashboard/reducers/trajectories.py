@@ -1551,6 +1551,9 @@ class TrajectoryReducer:
         self.own.carry_trimmed(c, dropped)
         self.exited_trimmed(c, dropped)
 
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
+
     @staticmethod
     def exited_trimmed(c, dropped):
         """Exits dropped past the cap as `_went` drops them: the latest end among

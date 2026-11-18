@@ -1189,6 +1189,9 @@ class WorkspaceReducer:
     def carry_trimmed(self, c, dropped):
         self.own.carry_trimmed(c, dropped)
 
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
+
     def seed(self, c):
         self.homes = dict(c["homes"])
         self._admitted = c.get("keys") or {}

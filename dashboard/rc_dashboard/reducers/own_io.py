@@ -87,8 +87,9 @@ reader does while other parents reap, and its tool calls' bytes, or a whole
 session's, are the most a parent holds; the half is for the ones that never
 exit, a login shell that outlives the feed, which would otherwise crowd
 every other parent out. Carried, the two are one map, the runtimes last, and
-a pass's cap keeps the same share of it (`carry_trimmed`). The hours' chain
-still ages one out after `hours.CARRY_KEEP_H` untouched.
+a pass's cap keeps the same share of it (`carry_trimmed`), ranking each kind
+by its own hours (`carry_tier`). The hours' chain still ages one out after
+`hours.CARRY_KEEP_H` untouched.
 """
 import collections
 import itertools
@@ -434,13 +435,22 @@ class OwnIo:
         """What one pass holds `reaped` to (`hours.combine_carries`)."""
         return {"reaped": self.cap}
 
+    def carry_tier(self, field, value):
+        """The run of a carried map `value` is ranked in (`hours.combine_carries`):
+        a runtime's apart from the rest, so each kind's age is its own and not
+        that of the last parent before it in its node's map."""
+        return field == "reaped" and type(value) is AgentHeld
+
     def carry_trimmed(self, c, dropped):
         """The parents `hours.combine_carries` dropped past that cap, putting the
         nodes' joins together for a window. The cut went by age alone, so what
-        stays is chosen again from all it saw, as the reducer's own cap would
-        leave it (`Held.pop_least_recent`): runtimes up to `runtime_share`, or
-        more where fewer others fill the cap, the others the rest, the most
-        recently given of each, the runtimes last. The older ones past that
+        stays is chosen again from all it saw by the share rule of the
+        reducer's own cap (`Held.pop_least_recent`): runtimes up to
+        `runtime_share`, or more where fewer others fill the cap, the others
+        the rest, the newest of each kind by its own hours (`carry_tier`), the
+        runtimes last. For one node, in the order it gave them, that is what
+        its own cap would have kept; across nodes, ranked by the hour each was
+        last touched in, it can differ within an hour. The older past that
         stay dropped, counted and said as at the reducer's own cap."""
         gone = dropped.get("reaped") or ()
         d = c.get("reaped")
