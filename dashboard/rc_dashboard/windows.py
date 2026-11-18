@@ -516,26 +516,29 @@ class PanelView:
         if self._replay is not None:
             self._replay.append((None, path))
 
-    def replay(self, pending, held=None):
+    def replay(self, pending, held=None, checked=0):
         """The records held while the build ran (`_replay`), fed now its seam is
         in, and the tail's notices among them (`restarted`), each where it came.
 
-        `held` says, of each file a notice was checked for before the lock was
-        taken (`WindowRegistry.restarts_checked`), whether the build read what
-        it holds now. If it did, what the tail read of it before its last notice
-        is another generation of the file, cut away before the build read it:
-        fed as unread, the seam left as it is, and the notice keeps it. If not,
-        what came before the notice is judged by the seam, which the notice then
-        drops; so does a notice that came after the check. Under the
-        aggregator's lock."""
+        The first `checked` of `pending` were looked at before the lock was
+        taken (`WindowRegistry.restarts_checked`), and `held` says, of each file
+        a notice among them was for, whether the build read what it holds now.
+        If it did, what the tail read of it before its last notice among them is
+        another generation of the file, cut away before the build read it: fed
+        as unread, the seam left as it is, and those notices keep it. If not,
+        what came before a notice is judged by the seam, which the notice then
+        drops. A notice past the first `checked` -- the file cut again after the
+        check, whatever was decided for it there -- drops the seam, and what
+        came between it and the last checked notice is judged by the seam.
+        Under the aggregator's lock."""
         held = held or {}
         pending = list(pending or ())
-        last = {at: i for i, (rec, at) in enumerate(pending) if rec is None}
+        last = {at: i for i, (rec, at) in enumerate(pending[:checked]) if rec is None}
         self._replaying = True
         try:
             for i, (rec, at) in enumerate(pending):
                 if rec is None:
-                    if not held.get(at):
+                    if not (i < checked and held.get(at)):
                         self.restarted(at)
                 elif at is not None and held.get(at[0][0]) and i < last.get(at[0][0], -1):
                     self.feed(rec, at, unread=True)
@@ -1016,7 +1019,7 @@ class WindowRegistry:
                 blob = snapshots.capture(reducers)
             except Exception as e:
                 unsaved = "not saved: %s" % e
-        held = self.restarts_checked(view, seam)
+        held, checked = self.restarts_checked(view, seam)
 
         with self.lock:
             view.reducers = reducers
@@ -1041,7 +1044,7 @@ class WindowRegistry:
             elif unsaved:
                 view.cache["note"] = unsaved
             pending, view._replay = view._replay, None
-            view.replay(pending, held)
+            view.replay(pending, held, checked)
         # The panels, a reducer per hold; the view says it is ready once they are in,
         # and until then shows what it showed while it was building.
         view.materialize_stepwise(self.lock)
@@ -1272,19 +1275,23 @@ class WindowRegistry:
             view.restarted(path, look)
 
     def restarts_checked(self, view, seam):
-        """Of each file the tail went back to the start of while `view`'s build
-        ran -- the notices held for it -- whether the build read what it holds
-        now: read now, outside the lock, against `seam`, the seam the build is
-        about to install (`Look.holds`). `PanelView.replay` applies each where
-        its notice came, so what was held before it is judged as it was read."""
+        """`(held, checked)`: of each file the tail went back to the start of
+        while `view`'s build ran -- the notices held for it -- whether the build
+        read what it holds now, read now, outside the lock, against `seam`, the
+        seam the build is about to install (`Look.holds`); and how many of the
+        held entries that covers. A notice held after them, for a file cut
+        again since, was not checked. `PanelView.replay` applies each decision
+        where its notice came, so what was held before it is judged as it was
+        read."""
         with self.lock:
-            paths = {at for rec, at in view._replay or () if rec is None}
+            looked = list(view._replay or ())
+        paths = {at for rec, at in looked if rec is None}
         out = {}
         for path in paths:
             keys = [k for k in (path, _twin(path)) if k in seam]
             look = Look(path, [seam[k][2] for k in keys])
             out[path] = bool(keys) and all(look.holds(seam[k]) for k in keys)
-        return out
+        return out, len(looked)
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.

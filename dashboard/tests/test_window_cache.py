@@ -610,13 +610,14 @@ class SeamTest(CacheCase):
         self.assertEqual(reads, [False])
         self.assertEqual([self.calls(v) for v in views], [23, 23])
 
-    def building(self, agg, before_plan=None, after_scan=None):
-        """A view built with `before_plan()` run as it plans its read and
-        `after_scan()` once it has read every file: what happens to the files
-        and the tail while the build is under way."""
+    def building(self, agg, before_plan=None, after_scan=None, after_check=None):
+        """A view built with `before_plan()` run as it plans its read,
+        `after_scan()` once it has read every file, and `after_check()` once it
+        has checked the restart notices held for it (`restarts_checked`): what
+        happens to the files and the tail while the build is under way."""
         reg = agg.panels_by_window
         view = reg.request(WIN)
-        plan, scan = windows.window_plan, windows.window_scan
+        plan, scan, check = windows.window_plan, windows.window_scan, reg.restarts_checked
 
         def planned(*a, **k):
             if before_plan:
@@ -627,8 +628,15 @@ class SeamTest(CacheCase):
             yield from scan(*a, **k)
             if after_scan:
                 after_scan()
+
+        def checked(*a, **k):
+            out = check(*a, **k)
+            if after_check:
+                after_check()
+            return out
         with mock.patch.object(windows, "window_plan", planned), \
-                mock.patch.object(windows, "window_scan", scanned):
+                mock.patch.object(windows, "window_scan", scanned), \
+                mock.patch.object(reg, "restarts_checked", checked):
             reg._build(view)
         self.assertEqual((view.state, view.error), ("ready", None))
         return view
@@ -692,6 +700,34 @@ class SeamTest(CacheCase):
             self.assertEqual(agg.poll_once(), 3)
         view = self.building(agg, before_plan=more_then_cut, after_scan=noticed)
         self.assertEqual(self.calls(view), 8)           # the 3 it read, the 5 held
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
+    def test_a_file_cut_again_after_its_notices_were_checked_is_counted_once(self):
+        # The review's case: the setup above, then the file cut again, to 2 new
+        # records, after the notices held for the build were checked and before
+        # it installs. The second notice took the first's decision: it kept a
+        # seam that no longer describes the file, the 2 new records were skipped
+        # against it, and the 3 the build read were fed as unread: 11, not 10.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more_then_cut():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+
+        def noticed():
+            self.assertEqual(agg.poll_once(), 3)
+
+        def cut_again():
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 30 + i, 700 + i)
+                                              for i in range(2)])
+            self.assertEqual(agg.poll_once(), 2)
+        view = self.building(agg, before_plan=more_then_cut, after_scan=noticed,
+                             after_check=cut_again)
+        self.assertEqual(self.calls(view), 10)          # the 3 read, the 5 held, the 2 new
         self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
 
     def test_a_catch_up_from_before_the_window_is_left_out(self):

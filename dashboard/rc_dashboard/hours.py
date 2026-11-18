@@ -1729,7 +1729,7 @@ def build(reg, view):
         if newest is None:
             newest = store.newest_of(range(h_lo, h_hi))
         dispatch = view.build_dispatch(acc)
-        held = reg.restarts_checked(view, seam)
+        held, checked = reg.restarts_checked(view, seam)
         with reg.lock:
             view.reducers = acc
             view.dispatch = dispatch
@@ -1754,7 +1754,7 @@ def build(reg, view):
                            "" if joined else "; the newest hour's join state was not at "
                            "hand, so the open hour joins only within itself"))
             pending, view._replay = view._replay, None
-            view.replay(pending, held)
+            view.replay(pending, held, checked)
         # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
         # with no collection running; ready once they are in.
         view.materialize_stepwise(reg.lock)
