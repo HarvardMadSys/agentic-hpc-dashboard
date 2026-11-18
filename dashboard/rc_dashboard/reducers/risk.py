@@ -152,9 +152,9 @@ class _Line:
     """A command line as the built-in rules read it: `name`, the command's (case-folded); `words`,
     the words after it, case-folded, and `raw`, the same as recorded; `low`, the whole line,
     folded. The command's words follow the word that names it -- argv[0], or the script after its
-    interpreter (`/usr/bin/python3 /usr/bin/pip install x`) -- else argv[0]. A script Python is
-    given by path is the command, as the kernel makes it one run by its `#!`
-    (`python3 ~/.local/bin/pip install x` is pip's)."""
+    interpreter (`/usr/bin/python3 /usr/bin/pip install x`) -- else argv[0]. The script Python is
+    given, past its options (`_python_script`), is the command, as the kernel makes it one run by
+    its `#!` (`python3 -u ~/.local/bin/pip install x` is pip's)."""
 
     __slots__ = ("name", "words", "raw", "low")
 
@@ -164,10 +164,39 @@ class _Line:
         name = (ec or "").casefold() or (words[0].rsplit("/", 1)[-1] if words else "")
         at = next((i for i, w in enumerate(words) if w.rsplit("/", 1)[-1] == name), 0)
         words, raw = words[at + 1:], raw[at + 1:]
-        if _PYTHON.match(name) and words and words[0][:1] != "-":
-            name, words, raw = words[0].rsplit("/", 1)[-1], words[1:], raw[1:]
+        k = _python_script(raw) if _PYTHON.match(name) else None
+        if k is not None:
+            name, words, raw = words[k].rsplit("/", 1)[-1], words[k + 1:], raw[k + 1:]
         self.name, self.words, self.raw = name, words, raw
         self.low = ("%s %s" % (ec, args)).casefold() if low is None else low
+
+
+def _python_script(raw):
+    """The index in `raw`, a Python interpreter's arguments as recorded, of the script it runs, or
+    None: past its options -- flags alone or grouped (`-u`, `-uB`, `-OO`), and `-W`, `-X` and
+    `--check-hash-based-pycs` with their values, attached or in the next word. `-c` and `-m` end
+    the options with code or a module, and `-` with standard input: no script."""
+    i, n = 0, len(raw)
+    while i < n:
+        w = raw[i]
+        if w == "--":
+            return i + 1 if i + 1 < n else None
+        if w[:1] != "-":
+            return i
+        if w == "-":
+            return None
+        if w[1] == "-":
+            i += 2 if w == "--check-hash-based-pycs" else 1     # with its value, or alone
+            continue
+        for j, c in enumerate(w[1:], 1):
+            if c in "cm":
+                return None
+            if c in "WX":
+                if j == len(w) - 1:
+                    i += 1                      # its value is the next word
+                break
+        i += 1
+    return None
 
 
 def _opts(words, valued=""):

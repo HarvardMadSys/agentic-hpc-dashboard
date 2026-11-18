@@ -109,6 +109,23 @@ class WordsTest(unittest.TestCase):
         for ec, args in QUIET:
             self.assertEqual(fired(ec, args), [], args)
 
+    def test_the_script_python_runs_is_read_past_pythons_options(self):
+        """Python's flags, alone or grouped, and the values of `-W`, `-X` and
+        `--check-hash-based-pycs`, attached or in the next word, come before the script."""
+        for args in ("python3 -u /usr/bin/pip install torch", "python3 -uB /x/pip install y",
+                     "python3 -E -s -I /x/pip install y", "python3 -OO /x/pip install y",
+                     "python3 -W ignore /x/pip install y", "python3 -Wignore /x/pip install y",
+                     "python3 -X dev /x/pip install y", "python3 -Xdev -u /x/pip install y",
+                     "python3 --check-hash-based-pycs always /x/pip install y",
+                     "python3 -- /x/pip install y"):
+            self.assertEqual(fired("python3", args), ["pip_install"], args)
+        self.assertEqual(fired("python3", "python3 -u /opt/venv/bin/tensorboard"),
+                         ["server_on_login"])
+        # `-c` and `-m` end the options: what follows is code or a module, and no script
+        self.assertEqual(fired("python3", "python3 -u -m http.server 8000"), ["server_on_login"])
+        self.assertEqual(fired("python3", "python3 -c /x/pip install y"), [])
+        self.assertEqual(fired("python3", "python3 -m pip install torch"), [])   # as on develop
+
     def test_rm_rf_needs_both_flags(self):
         self.assertEqual(fired("rm", "rm --force -v x"), [])
         self.assertEqual(fired("rm", "rm -v -R x --force"), ["rm_rf_shared"])
