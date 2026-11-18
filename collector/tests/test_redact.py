@@ -837,6 +837,38 @@ class CoverageTest(unittest.TestCase):
             self.hidden(['echo', tok], tok[4:])
             self.hidden(['tool', '--x=' + tok], tok[4:])
 
+    def test_a_backslash_in_a_quoted_credential(self):
+        """A quoted header's value stopped at a backslash, and the rest of the
+        credential went out: `Token [REDACTED]\\private-secret`. A backslash
+        escapes the character after it; it ends nothing."""
+        for line, want in (
+                ("curl -H 'Authorization: Token abc\\private-secret' https://x",
+                 "curl -H 'Authorization: Token %s' https://x" % K),
+                ('curl -H "Authorization: Bearer abc\\"private-secret" https://x',
+                 'curl -H "Authorization: Bearer %s" https://x' % K),
+                ("curl -H 'Authorization: Basic abc\\\\def-secret' https://x",
+                 "curl -H 'Authorization: Basic %s' https://x" % K),
+                # opened by a quote escaped inside a "..." string, the next one ends it
+                ('bash -c "curl -H \\"Authorization: Bearer abc\\" https://x"',
+                 'bash -c "curl -H \\"Authorization: Bearer %s\\" https://x"' % K),
+                ('claude mcp add-json s "{\\"headers\\":{\\"Authorization\\":\\"ApiKey a\\\\\\\\b\\"}}"',
+                 'claude mcp add-json s "{\\"headers\\":{\\"Authorization\\":\\"%s\\"}}"' % K),
+                # a flag's, a JSON key's and a setting's quoted value read the same way
+                ('mysql --password "abc\\"private-secret"', 'mysql --password %s' % K),
+                ('{"password": "abc\\"private-secret"}', '{"password": %s}' % K),
+                ('aws configure set aws_session_token "abc\\";private-secret"',
+                 'aws configure set aws_session_token %s' % K),
+                ('bash -c "export HF_TOKEN=\\"abc123\\" && python run.py"',
+                 'bash -c "export HF_TOKEN=%s && python run.py"' % K)):
+            self.assertEqual(R.redact_keys(line)[0], want, line)
+            self.assertEqual(R.redact_line(line)[0], want, line)
+            self.assertEqual(R.redact_keys(want), (want, []), line)      # and on a second pass
+        # the tracer has the header as curl's own argument, its quotes and all
+        for scheme, cred in (('Token', 'abc\\private-secret'), ('Bearer', 'abc"private-secret'),
+                             ('Basic', 'abc\\\\def-secret')):
+            self.assertEqual(red(['curl', '-H', 'Authorization: %s %s' % (scheme, cred), 'https://x']),
+                             'curl -H Authorization: %s %s https://x' % (scheme, K))
+
     def test_an_option_however_far_from_its_program(self):
         """The scan from a program to its -p or -a, and a command's span, were
         cut at 400 or 2000 characters: a password past that went out as it

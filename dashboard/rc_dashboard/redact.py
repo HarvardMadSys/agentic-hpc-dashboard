@@ -38,10 +38,14 @@ MASK = "[REDACTED]"
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
 _NOT_CODE = (r"(?!(?:os\.)?(?:environ\b|getenv\()|Path\("
              r"|(?:None|True|False|%s|\{\})(?=[\s)\],;}\"']|$))")
-# A value: a word, or a quoted string whole. One whose closing quote is not in
-# the text -- cut there at TEXT_MAX, or by the kernel's read -- runs to the
-# text's end, so no part of it is written.
-_VALUE = r"(\\?\"[^\"]*(?:\"|\Z)|\\?'[^']*(?:'|\Z)|[^\s\"']+)"
+# A value: a word, or a quoted string whole. In "...", read as sh reads it, a
+# backslash escapes the character after it, so neither it nor \" ends the
+# value; one opened by \" -- a quote escaped inside a "..." string -- ends at
+# the next \", or at a bare ", that string's own end. One whose closing quote
+# is not in the text -- cut there at TEXT_MAX, or by the kernel's read -- runs
+# to the text's end, so no part of it is written.
+_VALUE = (r"(\\\"(?:[^\"\\]|\\[^\"])*(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+          r"|\\?'[^']*(?:'|\Z)|[^\s\"']+)")
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
 # on the END of the name: `HF_TOKEN`, `db_password`, `AWS_SECRET_ACCESS_KEY`,
@@ -97,8 +101,9 @@ def _until(start, chars=r"[^\n]"):
 
 
 # A command's span for the rules that read every value in it: to the end of
-# the command, a quoted string whole, `;` in it and all.
-_SPAN = r"((?:\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z)|[^\n;&|<>\"'])*)"
+# the command, a quoted string whole, as _VALUE reads one, `;` in it and all.
+_SPAN = (r"((?:\\\"(?:[^\"\\]|\\[^\"])*(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+         r"|'[^']*(?:'|\Z)|[^\n;&|<>\"'])*)")
 _DB = _CMD_START + r"(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh)\b"
 _REDIS = _CMD_START + r"redis-cli\b"
 _LOGIN = (_CMD_START + r"(?:(?:docker|podman|nerdctl|buildah|skopeo|oras|helm|apptainer"
@@ -135,8 +140,21 @@ def _not_a_uid_gid(m):
 
 
 # A word on a joined line, where a backslash escapes the character after it:
-# `Authorization:\ Bearer\ KEY` is one word, as the shell reads it.
-_WORD = r"(?:\\.|[^\s\"'\\])+"
+# `Authorization:\ Bearer\ KEY` is one word, as the shell reads it, and a quote
+# is part of it (an argument `Bearer abc"def` holds the quote).
+_WORD = r"(?:\\.|[^\s\\])+"
+
+
+def _quoted(quote, escaped):
+    """A quoted value from its first character to its closing quote: `quote`
+    names the group that holds the opening quote, `escaped` the one that holds
+    a backslash before it. Opened by a bare quote, a backslash escapes the
+    character after it, so neither it nor an escaped quote ends the value, but
+    the same quote does; opened by an escaped one (a \\" inside a "..."
+    string), the next escaped quote ends it, or a bare one. With no closing
+    quote in the text, the value runs to the text's end."""
+    return (r"(?!\s)(?(" + escaped + r")(?:(?!" + quote + r")[^\\]|\\(?!" + quote + r")[\s\S])+"
+            r"|(?:(?!" + quote + r")[^\\]|\\[\s\S])+)")
 
 # A credential header's name: an API key, a token (`X-Auth-Token`,
 # `X-Vault-Token`, GitLab's `PRIVATE-TOKEN`), a secret, a session's cookie, an
@@ -160,15 +178,16 @@ RULES = (
     # a scheme it knows. `Bearer $TOKEN` names a secret without holding one.
     # Any other scheme (`ApiKey`, `Negotiate`, AWS's) cannot be told from a
     # token, so it is masked with what follows it: to the closing quote of a
-    # quoted header; else its first two words -- but an option or a URL as the
-    # second, or a reference (`ApiKey $KEY`) -- and each word after a comma
-    # (`Credential=..., Signature=...`).
+    # quoted header (_quoted: a backslash in it ends nothing); else its first
+    # two words -- but an option or a URL as the second, or a reference
+    # (`ApiKey $KEY`) -- and each word after a comma (`Credential=...,
+    # Signature=...`).
     ("auth_header", (("authorization",),), re.compile(
-        r"(([\"'])?(?:Proxy-)?Authorization\s*:\s*((?:Bearer|Basic|Token|Digest|Bot)\s+)?)"
+        r"(((\\)?([\"']))?(?:Proxy-)?Authorization\s*:\s*((?:Bearer|Basic|Token|Digest|Bot)\s+)?)"
         + _NOT_A_REF + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)"
-        r"(?(3)|(?!\[|" + _WORD + r"\s+[\"']?\$))"
-        r"((?(2)[^\s\"'\\][^\"'\\]*|" + _WORD
-        + r"(?(3)|(?:\s+(?![-;&|<>]|\S*://)" + _WORD + r")?(?:(?<=,)\s+" + _WORD + r")*)))",
+        r"(?(5)|(?!\[|" + _WORD + r"\s+[\"']?\$))"
+        r"((?(2)" + _quoted(r"\4", "3") + r"|" + _WORD
+        + r"(?(5)|(?:\s+(?![-;&|<>]|\S*://)" + _WORD + r")?(?:(?<=,)\s+" + _WORD + r")*)))",
         re.I),
      lambda m: m.group(1) + MASK),
     # Nor is a shell default that is empty or another variable a header --
@@ -208,17 +227,18 @@ RULES = (
      lambda m: m.group(1) + MASK),
     # The same names as JSON keys: curl -d '{"password": "..."}'.
     ("secret_json", ((":",), _NAME_WORDS), re.compile(
-        r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z))", re.I),
+        r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+        r"|'(?:[^'\\]|\\[\s\S])*(?:'|\\?\Z))", re.I),
      lambda m: m.group(1) + MASK),
     # Credential headers as JSON or TOML keys, escaped or not: an MCP server's
     # `"headers": {"Authorization": "Bearer ..."}`, codex's `http_headers=
-    # {"X-Api-Key"="..."}`. The value is masked to its closing quote, but for a
-    # scheme it knows.
+    # {"X-Api-Key"="..."}`. The value is masked to its closing quote
+    # (_quoted), but for a scheme it knows.
     ("header_json", (("\"", "'"), ("authorization", "api-key", "apikey", "api_key", "-token",
                                    "secret", "cookie", "subscription-key")), re.compile(
-        r"(\\?[\"'](?:(?:Proxy-)?Authorization|" + _HEADER_NAME + r")\\?[\"']\s*[:=]\s*\\?[\"']"
+        r"(\\?[\"'](?:(?:Proxy-)?Authorization|" + _HEADER_NAME + r")\\?[\"']\s*[:=]\s*(\\)?([\"'])"
         r"(?:(?:Bearer|Basic|Token|Digest|Bot)\s+)?)(?!\$)(?!(?:Bearer|Basic|Token|Digest|Bot)\s)"
-        r"([^\s\"'\\][^\"'\\]*)", re.I),
+        r"(" + _quoted(r"\3", "2") + r")", re.I),
      lambda m: m.group(1) + MASK),
     # A credential flag and its value as items of a JSON list: an MCP server's
     # `"args": ["--api-key", "..."]`.

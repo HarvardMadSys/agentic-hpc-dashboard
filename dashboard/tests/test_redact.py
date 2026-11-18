@@ -76,6 +76,13 @@ MASKED = [
     ("curl -H 'X-Vault-Token: hvs.CAESIabcdef' https://v", "CAESIabcdef", "X-Vault-Token:"),
     ("curl -H 'Cookie: sessionid=abcdef0123456789' https://x", "abcdef0123456789", "Cookie:"),
     ("echo gsk_" + "a1" * 26, "gsk_a1a1", "echo"),
+    # a backslash in a quoted credential escapes, it does not end it
+    ("curl -H 'Authorization: Token abc\\private-secret' https://x", "private-secret",
+     "'Authorization: Token " + MASK + "' https://x"),
+    ('curl -H "Authorization: Bearer abc\\"private-secret" https://x', "private-secret",
+     '"Authorization: Bearer ' + MASK + '" https://x'),
+    ("curl -H 'Authorization: Basic abc\\\\def-secret' https://x", "def-secret",
+     "'Authorization: Basic " + MASK + "' https://x"),
 ]
 
 # Real command lines, from real login-node feeds, that must come back as they were.
