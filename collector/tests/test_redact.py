@@ -701,6 +701,201 @@ class LeakReviewTest(unittest.TestCase):
             self.hidden(R.redact_keys(line)[0], 'QUJDQUJD')
 
 
+# Claude Code's Bash tool runs each command as `bash -c -l "source SNAPSHOT &&
+# eval 'CMD' < /dev/null && pwd -P >| CWDFILE"`.
+TOOL = ("source /home/u/.claude/shell-snapshots/snapshot-bash-1.sh && eval '%s' "
+        "\\< /dev/null && pwd -P >| /tmp/claude-a1b2-cwd")
+
+
+class CoverageTest(unittest.TestCase):
+    """Shapes a second review found written unmasked: credentials, each through
+    the eBPF tier's separate arguments and the node tier's joined line, and
+    ordinary words that must stay. Made-up values."""
+
+    def hidden(self, argv, *secrets):
+        for out in (red(argv), R.redact_line(' '.join(argv))[0]):
+            for s in secrets:
+                self.assertNotIn(s, out, argv)
+            self.assertTrue(K in out or P in out, (argv, out))
+            self.assertEqual(R.redact_keys(out), (out, []), argv)   # the dashboard's pass: no change
+
+    def same(self, argv):
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None), argv)
+        self.assertEqual(R.redact_line(' '.join(argv)), (' '.join(argv), None), argv)
+
+    def test_an_authorization_header_with_a_scheme_it_does_not_know(self):
+        """Only the scheme was masked, and the credential after it written."""
+        for scheme, cred in (('ApiKey', 'VnVhQ2ZHY0JDZGJrSecretValue99'), ('Negotiate', 'YIIZtAYGKwYB'),
+                             ('Key', '0123456789abcdef0123'), ('Splunk', '12345678-90ab-cdef')):
+            argv = ['curl', '-H', 'Authorization: %s %s' % (scheme, cred), 'https://api.example.org/v1']
+            self.hidden(argv, cred)
+            self.assertEqual(red(argv), 'curl -H Authorization: %s https://api.example.org/v1' % K)
+        # AWS's: words after a comma go with it; quoted, all of it to the quote
+        self.hidden(['curl', '-H', 'Authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/2026/s3, '
+                     'SignedHeaders=host, Signature=fe5f80f77d5fa3beca038a248ff027', 'https://s3'],
+                    'AKIDEXAMPLE', 'fe5f80f77d5f')
+        self.assertEqual(red(['bash', '-c', "curl -H 'Authorization: ApiKey a1b2 c3d4' https://x"]),
+                         "bash -c curl -H 'Authorization: %s' https://x" % K)
+        self.assertEqual(red(['bash', '-c', 'curl -H Authorization:\\ ApiKey\\ a1b2c3d4 https://x']),
+                         'bash -c curl -H Authorization:%s https://x' % K)
+        # a known scheme is kept, and a reference is no credential
+        self.assertEqual(red(['curl', '-H', 'Authorization: Basic dXNlcjpwYXNz', 'https://x']),
+                         'curl -H Authorization: Basic %s https://x' % K)
+        for line in ('curl -H "Authorization: ApiKey $API_KEY" https://x',
+                     'curl -H "Authorization: Bearer ${TOKEN}" https://x'):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+        self.hidden(['claude', 'mcp', 'add-json', 'srv',
+                     '{"headers": {"Authorization": "ApiKey a1b2c3d4e5"}}'], 'a1b2c3d4e5')
+
+    def test_a_password_in_a_command_the_agents_tool_runs(self):
+        """A program's name was looked for only after a space or a slash, so
+        `cd /x;mysql -p...` and `eval 'mysql -p...'` were never read. Each rule,
+        inside the tool's command string, and after a `;`."""
+        for cmd, secret in (('mysql -uroot -phunter2zz prod', 'hunter2zz'),
+                            ('sshpass -p hunter2zz ssh db1 uptime', 'hunter2zz'),
+                            ('redis-cli -h r1 -a hunter2zz ping', 'hunter2zz'),
+                            ('mongosh -u alice -p hunter2zz db1/prod', 'hunter2zz'),
+                            ('podman login -u alice -p hunter2zz nvcr.io', 'hunter2zz'),
+                            ('wandb login 0123456789abcdef0123', '0123456789abcdef'),
+                            ('aws configure set aws_secret_access_key wJalrXUtnFEMI', 'wJalrXUtnFEMI'),
+                            ('curl -u alice:hunter2zz https://x', 'hunter2zz'),
+                            ('curl -H "Authorization: ApiKey hunter2zz" https://x', 'hunter2zz'),
+                            ('curl -H "X-Api-Key: hunter2zz" https://x', 'hunter2zz'),
+                            ('python train.py --api_key hunter2zz', 'hunter2zz'),
+                            ('export KAGGLE_KEY=hunter2zz', 'hunter2zz'),
+                            ('git clone https://alice:hunter2zz@git.x/r', 'hunter2zz'),
+                            ("curl 'https://x/?token=hunter2zz'", 'hunter2zz'),
+                            ('echo nvapi-' + 'a' * 40, 'a' * 40)):
+            for argv in (['/bin/bash', '-c', '-l', TOOL % cmd], ['bash', '-c', 'cd /data;' + cmd],
+                         ['bash', '-c', 'x=$(%s)' % cmd]):
+                self.hidden(argv, secret)
+
+    def test_flag_names_with_underscores(self):
+        for flag in ('--api_key', '--db_password', '--wandb_api_key', '--auth_token', '--hf_token',
+                     '--secret_access_key'):
+            self.hidden(['python', 'train.py', flag, 'abc123secretvalue'], 'abc123secretvalue')
+            self.hidden(['python', 'train.py', flag + '=abc123secretvalue'], 'abc123secretvalue')
+
+    def test_logins(self):
+        nv = 'nvapi-AbCdEf0123456789AbCdEf0123456789'
+        for argv, secret in (
+                (['podman', 'login', '-u', 'alice', '-p', 'hunter2zz', 'nvcr.io'], 'hunter2zz'),
+                (['docker', 'login', 'nvcr.io', '-u', '$oauthtoken', '-p', nv], 'AbCdEf0123'),
+                (['docker', 'login', '-phunter2zz', 'reg.x'], 'hunter2zz'),
+                (['apptainer', 'registry', 'login', '-u', 'a', '-p', 'hunter2zz', 'docker://r'],
+                 'hunter2zz'),
+                (['singularity', 'remote', 'login', '-u', 'a', '-p', 'hunter2zz'], 'hunter2zz'),
+                (['az', 'login', '--service-principal', '-u', 'app-id', '-p', 'client~Secret.8Q',
+                  '--tenant', 't'], 'client~Secret'),
+                (['twine', 'upload', '-u', '__token__', '-p', 'pypi-AgEIcHlwaS5vcmc', 'dist/x.whl'],
+                 'AgEIcHlw'),
+                (['mongodump', '--host', 'db1', '-u', 'alice', '-p', 'hunter2zz'], 'hunter2zz'),
+                (['wandb', 'login', '0123456789abcdef0123456789abcdef01234567'], '0123456789abcdef'),
+                (['wandb', 'login', '--relogin', '--host', 'https://wandb.x', 'a1b2c3d4e5f6'],
+                 'a1b2c3d4e5f6'),
+                (['aws', 'configure', 'set', 'aws_secret_access_key', 'wJalrXUtnFEMI/K7MDENG'],
+                 'wJalrXUtnFEMI'),
+                (['aws', 'configure', 'set', 'profile.dev.aws_session_token', 'IQoJb3JpZ2lu'],
+                 'IQoJb3JpZ2lu'),
+                (['rclone', 'config', 'create', 'r', 's3', 'access_key_id', 'AKIAIOSFODNN7EXAMPLE',
+                  'secret_access_key', 'wJalrXUtnFEMIK7MDENG', 'session_token', 'IQoJb3JpZ2lu'],
+                 'wJalrXUtnFEMIK7MDENG'),
+                (['rclone', 'config', 'create', 'r', 'sftp', 'host', 'h', 'user', 'u', 'pass',
+                  'hunter2zz'], 'hunter2zz')):
+            self.hidden(argv, secret)
+        self.assertEqual(red(['rclone', 'config', 'create', 'r', 's3', 'region', 'us-east-1',
+                              'secret_access_key', 'wJalrXUtnFEMIK7MDENG', 'session_token', 'IQoJ0']),
+                         'rclone config create r s3 region us-east-1 secret_access_key %s '
+                         'session_token %s' % (K, K))
+
+    def test_names_of_variables(self):
+        self.hidden(['env', 'KAGGLE_KEY=0123456789abcdef', 'AZURE_STORAGE_KEY=Zm9vYmFyYmF6',
+                     'SSHPASS=hunter2zz', 'REDISCLI_AUTH=hunter3zz', './run.sh'],
+                    '0123456789abcdef', 'Zm9vYmFyYmF6', 'hunter2zz', 'hunter3zz')
+        self.hidden(['spark-submit', '--conf', 'spark.hadoop.fs.s3a.secret.key=wJalrXUtnFEMIK7MDENG',
+                     'job.py'], 'wJalrXUtnFEMIK7MDENG')
+
+    def test_headers(self):
+        self.hidden(['curl', '-H', 'Cookie: sessionid=abcdef0123456789; csrftoken=fedcba9876543210',
+                     'https://x'], 'abcdef0123456789', 'fedcba9876543210')
+        self.hidden(['curl', '-H', 'X-Vault-Token: hvs.CAESIabcdef', 'https://x'], 'CAESIabcdef')
+        self.hidden(['curl', '-H', 'Ocp-Apim-Subscription-Key: 0123456789abcdef', 'https://x'],
+                    '0123456789abcdef')
+        self.hidden(['curl', '-H', 'X-Amz-Security-Token: IQoJb3JpZ2lu', 'https://x'], 'IQoJb3JpZ2lu')
+        self.hidden(['claude', 'mcp', 'add-json', 's', '{"headers":{"X-Vault-Token":"hvs.CAESIabcdef"}}'],
+                    'CAESIabcdef')
+
+    def test_token_prefixes(self):
+        for tok in ('nvapi-' + 'Ab0_' * 16, 'gsk_' + 'a1' * 26, 'r8_' + 'a1' * 18 + 'b',
+                    'pplx-' + 'a1' * 24, 'xai-' + 'a1' * 40, 'ya29.a0AfH6SMB' + 'c' * 30,
+                    'sk_live_' + 'a1' * 12, 'rk_test_' + 'a1' * 12,
+                    'SG.' + 'a' * 22 + '.' + 'b' * 43, 'dop_v1_' + '0a' * 32,
+                    'hvs.CAESI' + 'b' * 30, 'pypi-AgEIcHlwaS5vcmc' + 'c' * 40):
+            self.hidden(['echo', tok], tok[4:])
+            self.hidden(['tool', '--x=' + tok], tok[4:])
+
+    def test_ordinary_words_stay(self):
+        """`PASSWD_FILE` names where a password is kept, not the password;
+        `sort_key` and `bypass` in lower case are settings, and `-p` is a port or
+        a plugin anywhere but a login."""
+        for argv in (['python', 'x.py', '--keyboard', 'us'], ['ssh', '-p', '22', 'host'],
+                     ['git', 'log', '-p'], ['python', '-m', 'pytest', '-p', 'no:cacheprovider'],
+                     ['docker', 'run', '-p', '8080:80', 'img'],
+                     ['docker', 'run', '--name', 'login', '-p', '8080:80', 'img'],
+                     ['env', 'KEYBOARD_LAYOUT=us', './x'], ['env', 'PASSWD_FILE=/etc/passwd', './x'],
+                     ['sort', '-k2', 'f.txt'], ['python', 'x.py', '--sort_key=name', 'bypass=true'],
+                     ['python', 'x.py', '--max_tokens', '100', '--secret_key_file', '/run/k'],
+                     ['wandb', 'login', '--relogin'], ['aws', 'configure', 'set', 'region', 'us-east-1'],
+                     ['mongod', '--port', '27017'], ['curl', '-H', 'Accept: application/json', 'https://x'],
+                     ['grep', '-rn', 'X-Request-Id: abc', 'logs/']):
+            self.same(argv)
+
+
+class WorstCaseTest(unittest.TestCase):
+    """Crafted lines that took the rules seconds -- an idle process with such an
+    argv stalled every node-tier snapshot, and each such exec the tracer's one
+    drain thread. Each bound is many times what the rules now take on a busy
+    node and a small part of what they took (in the comment, on a quiet one)."""
+
+    def test_each_rule_reads_a_crafted_line_in_linear_time(self):
+        """The rules alone, no cut, at a size where each took seconds."""
+        d = 4096 // 14
+        for name, text in (
+                ('-u N:N after many docker', ('docker ' * d + ';' + ' -u 1:1' * d)[:4096]),  # 3.3 s
+                ('a run of X-', 'curl -H :secret ' + 'X-' * 8180),                 # 16 KB: 4.6 s
+                ('redis-cli without -a', 'echo' + ' redis-cli' * 6553),            # 64 KB: 2.9 s
+                ('mysql without -p', 'echo' + ' mysql' * 10922 + ' -p'),           # 64 KB: 4.8 s
+                ('JWTs after a hyphen', 'echo ' + ('eyJ' + 'a' * 11 + '-') * 8738)):  # 128 KB: 1.2 s
+            started = time.perf_counter()
+            R._keys(text)
+            self.assertLess(time.perf_counter() - started, 0.5, name)
+
+    def test_a_crafted_line_is_masked_quickly(self):
+        d = 4096 // 14
+        line = ('docker ' * d + ';' + ' -u 1:1' * d)[:4096]
+        started = time.perf_counter()
+        self.assertEqual(R.redact_line(line)[1], ['user_password'])        # was 3.3 s
+        self.assertLess(time.perf_counter() - started, 0.25)
+
+    def test_a_line_longer_than_the_rules_read_is_cut_and_marked(self):
+        line = 'tool --token tok123secret ' + 'echo redis-cli ' * 70000      # ~1 MB
+        started = time.perf_counter()
+        out, what = R.redact_line(line)
+        self.assertLess(time.perf_counter() - started, 0.5)
+        self.assertTrue(out.startswith('tool --token %s echo redis-cli' % K), out[:60])
+        self.assertTrue(out.endswith(' ' + R.CUT), out[-30:])
+        self.assertLessEqual(len(out), R.TEXT_MAX + 1 + len(R.CUT))
+        self.assertEqual(what, ['cut', 'secret_flag'])
+        # A word the cut falls in is dropped whole: a token cut short would no
+        # longer read as one, and its first characters would be written.
+        token = 'sk-' + 'k' * 40
+        line = 'x' * (R.TEXT_MAX - 20) + ' ' + token
+        self.assertEqual(R.redact_line(line), ('x' * (R.TEXT_MAX - 20) + ' ' + R.CUT, ['cut']))
+        argv = ['bash', '-c', 'claude -p "' + 'the secret plan ' * 2000 + '"']
+        out, what = R.redact_argv(argv)
+        self.assertEqual((out, what), ('bash -c claude %s %s' % (P, R.CUT), ['cut', 'prompt']))
+
+
 class NodeTierTest(unittest.TestCase):
     """The node tier has ps's joined lines; it masks each from the process's own
     arguments while /proc still has them."""
@@ -743,6 +938,12 @@ class DashboardSyncTest(unittest.TestCase):
         self.assertEqual(mod.MASK, R.MASK)
         self.assertEqual([(n, g, rx.pattern, rx.flags) for n, g, rx, _s in mod.RULES],
                          [(n, g, rx.pattern, rx.flags) for n, g, rx, _s in R.RULES])
+        # and the helpers the rules call, word for word: from `_NOT_A_REF` to RULES' end
+        def span(path):
+            src = path.read_text(encoding='utf-8')
+            a = src.index('# A value that only refers to a secret is not one:')
+            return src[a:src.index('\n)\n', src.index('\nRULES = (\n', a)) + 3]
+        self.assertEqual(span(dash), span(_ROOT / 'lib' / 'redact.py'))
 
 
 class _ArgvT(ctypes.Structure):

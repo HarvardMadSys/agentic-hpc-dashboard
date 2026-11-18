@@ -59,6 +59,23 @@ MASKED = [
      '"Authorization":"Bearer '),
     ("DB_PASSWORD=None-of-yours run", "None-of-yours", "DB_PASSWORD="),
     ("xrdcp 'root://eos.x//eos/f?authz=zteos64:" + "QUJD" * 20 + "' .", "QUJD" * 20, "?authz="),
+    # any Authorization scheme; a program after `;` or a quote; `_` in a flag; logins; names
+    ("curl -H 'Authorization: ApiKey VnVhQ2ZHY0JD' https://api.x", "VnVhQ2ZHY0JD", "Authorization:"),
+    ("bash -c 'cd /data;mysql -uroot -phunter2zz prod'", "hunter2zz", "mysql -uroot -p"),
+    ("bash -c -l \"eval 'sshpass -p hunter2zz ssh db1'\"", "hunter2zz", "sshpass -p"),
+    ("python train.py --api_key abc123secret", "abc123secret", "--api_key"),
+    ("podman login -u alice -p hunter2zz nvcr.io", "hunter2zz", "podman login -u alice -p"),
+    ("wandb login 0123456789abcdef0123456789abcdef01234567", "0123456789abcdef", "wandb login"),
+    ("aws configure set aws_secret_access_key wJalrXUtnFEMI", "wJalrXUtnFEMI",
+     "aws_secret_access_key"),
+    ("rclone config create r s3 secret_access_key wJalrXUtnFEMIK7", "wJalrXUtnFEMIK7",
+     "secret_access_key"),
+    ("env KAGGLE_KEY=0123456789abcdef SSHPASS=hunter2zz ./run.sh", "0123456789abcdef", "KAGGLE_KEY="),
+    ("spark-submit --conf spark.hadoop.fs.s3a.secret.key=wJalrXUtnFEMIK7 x.py", "wJalrXUtnFEMIK7",
+     "secret.key="),
+    ("curl -H 'X-Vault-Token: hvs.CAESIabcdef' https://v", "CAESIabcdef", "X-Vault-Token:"),
+    ("curl -H 'Cookie: sessionid=abcdef0123456789' https://x", "abcdef0123456789", "Cookie:"),
+    ("echo gsk_" + "a1" * 26, "gsk_a1a1", "echo"),
 ]
 
 # Real command lines, from real login-node feeds, that must come back as they were.
@@ -86,6 +103,10 @@ UNCHANGED = [
     "python -c 'y = x -u[:, 0]'",
     "echo ${OPENAI_API_KEY:-$FALLBACK_KEY}",
     ": ${OPENAI_API_KEY:?set it first}",
+    # a port, a patch, a plugin, a port mapping, a sort key; where a password is kept
+    "ssh -p 22 host", "git log -p", "python -m pytest -p no:cacheprovider",
+    "docker run -p 8080:80 img", "sort -k2 f.txt", "python x.py --keyboard us --sort_key=name",
+    "KEYBOARD_LAYOUT=us ./x", "PASSWD_FILE=/etc/passwd ./x",
 ]
 
 
@@ -149,6 +170,28 @@ class RuleTest(unittest.TestCase):
         for line in lines:
             redact.redact(line)
         self.assertLess((time.perf_counter() - t) / len(lines), 2e-3)
+
+    def test_a_crafted_command_line_costs_little(self):
+        # Each took seconds on its own: a container's uid:gid check rescanned the
+        # line for every `-u N:N` (over 30 s at 16 KB), and a run of `X-` was
+        # tried as a header's prefix at every one (4.6 s). Now ~5 ms each.
+        d = 16384 // 14
+        for name, line in (("-u N:N", ("docker " * d + ";" + " -u 1:1" * d)[:16384]),
+                           ("X-", "curl -H :secret " + "X-" * 8180)):
+            started = time.perf_counter()
+            redact.redact(line)
+            self.assertLess(time.perf_counter() - started, 0.5, name)
+
+    def test_a_text_past_what_is_read_is_cut_and_marked(self):
+        from rc_dashboard.reducers.phase_rules import _MAX_TEXT
+        # nothing the phase rules read is cut away
+        self.assertGreaterEqual(redact.READ_MAX, _MAX_TEXT)
+        line = "deploy --password hunter2pw " + "echo x " * 50000
+        out = redact.redact(line)
+        self.assertTrue(out.startswith("deploy --password " + MASK + " echo x"), out[:40])
+        self.assertTrue(out.endswith(" " + redact.CUT))
+        self.assertLessEqual(len(out), redact.READ_MAX + 1 + len(redact.CUT))
+        self.assertEqual(redact.redact(out[:1000]), out[:1000])
 
 
 class ExitTest(unittest.TestCase):
