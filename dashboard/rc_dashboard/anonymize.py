@@ -524,23 +524,44 @@ class Anonymizer:
 
 
 # ---------------------------------------------------------------- set-up
+MIN_SALT = 16            # bytes: a shorter key lets a list of names be tried against it
+
+
 def load_salt(cfg):
     """`(salt bytes, source)`. `anonymize.salt` when set; else the hex in
     `<cache.dir>/anonymize.salt`, made once (mode 0600) when missing. A salt
-    file that exists but cannot be read is an error: serving with no salt, or a
-    new one, would hand out aliases nobody asked for."""
+    file that exists but cannot be read is an error, as is a salt shorter than
+    MIN_SALT bytes: serving with no salt, a guessable one, or a new one would
+    hand out aliases nobody asked for. An empty file is waited on for a moment
+    (another instance may have just made it), then is an error too."""
     s = cfg.get("anonymize.salt") or ""
     if s:
-        return str(s).encode(), "config"
+        salt = str(s).encode()
+        if len(salt) < MIN_SALT:
+            raise SystemExit("anonymize.salt is %d bytes; a salt must be at least %d"
+                             % (len(salt), MIN_SALT))
+        return salt, "config"
     d = cfg.get("cache.dir") or "."
     path = os.path.join(d, "anonymize.salt")
-    try:
-        with open(path) as fh:
-            got = fh.read().strip()
+    for _ in range(20):
+        try:
+            with open(path) as fh:
+                got = fh.read().strip()
+        except FileNotFoundError:
+            break
         if got:
-            return bytes.fromhex(got), "file"
-    except FileNotFoundError:
-        pass
+            try:
+                salt = bytes.fromhex(got)
+            except ValueError:
+                salt = b""
+            if len(salt) < MIN_SALT:
+                raise SystemExit("%s is not a salt of %d bytes or more. Delete it and a new "
+                                 "one is made; every alias then changes." % (path, MIN_SALT))
+            return salt, "file"
+        time.sleep(0.05)              # made by another instance, still writing it
+    else:
+        raise SystemExit("%s is empty. Delete it and a new one is made; every alias then "
+                         "changes." % path)
     os.makedirs(d, exist_ok=True)
     salt = secrets.token_bytes(32)
     try:

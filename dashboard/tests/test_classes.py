@@ -69,6 +69,21 @@ class DropTest(unittest.TestCase):
         self.assertEqual(c.get("filters.drop_agent"), ["builder"])
 
 
+class CpuShareTest(unittest.TestCase):
+    """An exit's CPU over its wall time: a measured 0 s of CPU is 0%; only an
+    unmeasured CPU, or a duration too short to divide by, is null."""
+
+    def pct(self, cpu_s, duration_s):
+        return norm().normalize(dict(rec("agent", "claude_code", "git status"), cpu_s=cpu_s,
+                                     duration_s=duration_s))["_cpu_pct"]
+
+    def test_zero_is_zero_and_missing_is_missing(self):
+        self.assertEqual(self.pct(0.5, 1.0), 50.0)
+        self.assertEqual(self.pct(0.0, 1.0), 0.0)
+        self.assertIsNone(self.pct(None, 1.0))
+        self.assertIsNone(self.pct(0.0, 0.0))
+
+
 class IdeClassTest(unittest.TestCase):
 
     def test_the_collectors_vscode_class_is_the_ide_class(self):

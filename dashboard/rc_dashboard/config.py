@@ -352,9 +352,10 @@ def defaults():
         # numeric user ID in what the service sends out with a stable alias
         # (anonymize.py). Off by default: a deployment for the cluster's own
         # staff shows real names unless told otherwise. `salt` empty: one is
-        # generated into <cache.dir>/anonymize.salt and reused; changing it
-        # reshuffles every alias. The patterns name where homes and lab trees
-        # sit on this cluster -- see anonymize.HOME_PATTERNS for the defaults.
+        # generated into <cache.dir>/anonymize.salt and reused; set, it is 16
+        # bytes or more. Changing it reshuffles every alias. The patterns name
+        # where homes and lab trees sit on this cluster -- see
+        # anonymize.HOME_PATTERNS for the defaults.
         # What the page opens on, before a reader changes it. Nothing here
         # changes a number, so the saved builds ignore the section.
         # user_columns: the Active users table's columns (agents, ides, running,

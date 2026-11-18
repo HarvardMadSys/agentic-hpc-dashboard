@@ -256,10 +256,27 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(first.user_alias("glen"), again.user_alias("glen"))
 
     def test_a_configured_salt_wins_and_is_never_printed(self):
-        a = anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
+        salt = "s3cret-of-this-site"
+        a = anonmod.from_config(self.cfg(enabled=True, salt=salt))
         self.assertEqual(a.salt_source, "config")
-        printed = self.cfg(enabled=True, salt="s3cret").as_dict(with_origins=True)
+        printed = self.cfg(enabled=True, salt=salt).as_dict(with_origins=True)
         self.assertEqual(printed["anonymize"]["salt"]["_value"], "(hidden)")
+
+    def test_an_empty_salt_file_stops_the_service(self):
+        # it used to recurse until the interpreter gave up
+        open(os.path.join(self.tmp, "anonymize.salt"), "w").close()
+        with self.assertRaises(SystemExit) as cm:
+            anonmod.from_config(self.cfg(enabled=True))
+        self.assertIn("is empty", str(cm.exception))
+
+    def test_a_salt_too_short_to_keep_names_hidden_is_refused(self):
+        for text in ("ab\n", "not hex at all\n"):
+            with open(os.path.join(self.tmp, "anonymize.salt"), "w") as fh:
+                fh.write(text)
+            with self.assertRaises(SystemExit, msg=text):
+                anonmod.from_config(self.cfg(enabled=True))
+        with self.assertRaises(SystemExit):
+            anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
 
     def test_the_accounts_the_filters_name_are_known_names(self):
         tree = configmod.defaults()
