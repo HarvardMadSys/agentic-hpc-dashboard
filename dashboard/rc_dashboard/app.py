@@ -512,8 +512,12 @@ def create_app(cfg):
         what is already known of them, and -- with `run` -- a job asking about
         the rest. Calls another request is already asking about are answered by
         its job: `job` is that one when this request started none, and `also`
-        names any others, so every reader of the session gets the answers. The body is the tree's own text, masked once: it is sent as
-        it is, so the page matches each call to its row exactly."""
+        names any others, so every reader of the session gets the answers. The
+        body goes out through the anonymizer, as the tree did: the model's words
+        are masked like everything else -- an answer kept from a run without
+        masking, or written by an agent on this host that read the raw feeds,
+        can hold a name -- and the command lines, masked with the tree, come out
+        as they went in, so the page matches each call to its row exactly."""
         body = await request.json()
         sid = body.get("sid")
         if not isinstance(sid, str) or not sid:
@@ -533,7 +537,7 @@ def create_app(cfg):
             job = None
             if body.get("run") and info["enabled"]:
                 row = tree.get("row") if isinstance(tree.get("row"), dict) else {}
-                job = annotator.submit(calls, row.get("agent_type"), about=sid)
+                job = annotator.submit(calls, row.get("agent_type"), about=Verbatim(sid))
             # calls another request is asking about already: their jobs, to follow
             also = annotator.following(calls, job["id"] if job else None) \
                 if info["enabled"] else []
@@ -541,9 +545,9 @@ def create_app(cfg):
                 job = annotator.view(also.pop(0))
             # the calls themselves, so the page keeps only their answers out of
             # a followed job that another session started
-            return {"info": info, "calls": len(calls), "total": total,
-                    "cmds": [c["cmd"] for c in calls],
-                    "known": known, "job": job, "also": also}
+            return masked({"info": info, "calls": len(calls), "total": total,
+                           "cmds": [c["cmd"] for c in calls],
+                           "known": known, "job": job, "also": also}, "annotate")
 
         try:
             out = await asyncio.to_thread(work)
@@ -556,7 +560,7 @@ def create_app(cfg):
         j = annotator.view(jid)
         if j is None:
             raise HTTPException(404, "no such annotation job")
-        return jsonout.response(j, request)
+        return respond(j, "annotate", request)
 
     @app.get("/api/collectors")
     def api_collectors(request: Request):

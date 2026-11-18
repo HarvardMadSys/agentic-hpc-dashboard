@@ -1234,7 +1234,10 @@ what the page shows: each distinct tool call's command line (what a Claude Code 
 Codex sandbox ran), masked by `redact.py` and -- with [anonymized names](#anonymized-names) on
 -- by the anonymizer, and the folder it ran in. The service takes them from its own read of
 the session; the page posts only the session's name, so the endpoint cannot be used to send a
-model anything else. The first `annotate.max_calls` (400) distinct calls are asked about,
+model anything else. The answers come back through the anonymizer too: one kept from a run
+without it, or written by an agent on this host that read the raw feeds, may hold a name. The
+reader's text reaches no model here, so that rewrite translates nothing they chose. The first
+`annotate.max_calls` (400) distinct calls are asked about,
 `annotate.batch_size` (40) to a request.
 
 Each answer is kept in `<cache.dir>/annotate/purposes.jsonl`, keyed by the provider and model,

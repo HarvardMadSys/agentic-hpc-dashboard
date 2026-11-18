@@ -101,7 +101,24 @@ def feed(now):
                  "by_actor3": {"agent": {"n_procs": 3, "threads": 5, "rss_mb": 120.0,
                                          "d_state": 0, "users": 1}},
                  "by_agent_type": {}, "trees": 1, "tracked_live": 3})
+    # a Bash tool call of alice's agent: the command it ran is what the
+    # annotator is asked about (proctree.ran)
+    recs.append(exit_rec(now - 90, 5100, "alice",
+                         "/bin/zsh -c -l source /home/alice/.claude/shell-snapshots/snapshot-zsh-1.sh"
+                         " && eval 'python train.py --data /n/home03/carol/data' < /dev/null"))
     return recs
+
+
+# A stand-in for the annotator's model: it keeps each prompt it is sent, and
+# labels every call with real names, as an answer kept from a run without
+# masking may, or an agent on this host that read the raw feeds.
+ANNOTATOR = r'''
+import json, os, re, sys, uuid
+d, t = sys.argv[1], sys.stdin.read()
+open(os.path.join(d, uuid.uuid4().hex), "w").write(t)
+print(json.dumps({i: {"purpose": "reads /n/home03/carol/notes for alice and bob.smith",
+                      "kind": "explore"} for i in re.findall(r'"id": "(\d+)"', t)}))
+'''
 
 
 class Served(unittest.TestCase):
@@ -146,6 +163,10 @@ class Served(unittest.TestCase):
         tree["anonymize"]["enabled"] = True
         # these questions are asked with names masked: answers as the agent wrote them
         tree["ask"]["unmasked_answers"] = True
+        cls.annotated = os.path.join(cls.tmp, "annotated")
+        os.makedirs(cls.annotated)
+        tree["annotate"].update(enabled=True, provider="command",
+                                command=[sys.executable, "-c", ANNOTATOR, cls.annotated])
         cls.configure(tree)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
@@ -221,6 +242,21 @@ class Served(unittest.TestCase):
     def assertClean(self, where, body):
         for s in SECRETS:
             self.assertNotIn(s, body, "%s leaks %r" % (where, s))
+
+    def annotated_job(self, sid):
+        """`(POST answer, finished job's answer)`: one session annotated."""
+        status, first = self.post("/api/annotate", {"sid": sid, "run": True})
+        self.assertEqual(status, 200, first)
+        job = json.loads(first)["job"]
+        self.assertTrue(job, first)
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.05)
+            text = self.get("/api/annotate/%s" % job["id"])[1]
+            job = json.loads(text)
+        self.assertEqual(job["state"], "done", job)
+        return first, text
 
 
 class LeakTest(Served):
@@ -360,6 +396,27 @@ class LeakTest(Served):
                     {"session": "h|2026-01-01|agent|apid:1"}):
             status, _ = self.post("/api/ask", {"question": "q", "context": ctx})
             self.assertEqual(status, 400, ctx)
+
+    def test_annotations_go_to_the_model_and_come_back_masked(self):
+        # The model is given the calls as the page shows them, and what it
+        # answers -- names, here -- comes back masked too: /api/annotate sent
+        # its answers out past the anonymizer.
+        alice = self.anon.user_alias("alice")
+        sid = (json.loads(self.get("/api/trajectories")[1])["ranks"].get("events") or [None])[0]
+        before = set(os.listdir(self.annotated))
+        first, done = self.annotated_job(sid)
+        self.assertIn(alice, json.loads(done)["results"][self.anon.text(
+            "python train.py --data /n/home03/carol/data")][0])
+        again = self.post("/api/annotate", {"sid": sid})[1]     # the kept answers, now known
+        self.assertTrue(json.loads(again)["known"])
+        for where, body in (("POST", first), ("GET job", done), ("POST known", again)):
+            self.assertClean("/api/annotate " + where, body)
+        sent = [open(os.path.join(self.annotated, n)).read()
+                for n in set(os.listdir(self.annotated)) - before]
+        self.assertTrue(sent)
+        for prompt in sent:
+            self.assertClean("the annotator's prompt", prompt)
+            self.assertIn(alice, prompt)             # the call's folder, her home
 
     def test_health_says_it_is_on_without_naming_anyone(self):
         h = json.loads(self.get("/api/health")[1])["anonymize"]
@@ -584,11 +641,14 @@ class ReaderTextTest(Served):
         self.assertIn("dave", self.anon.users)
         day = time.strftime("%Y-%m-%d", time.localtime(self.now - 3 * 3600))
         names = ("dave", "/home/dave", "h1|%s|human|usr:dave" % day)
-        sid = next(iter(json.loads(self.get("/api/trajectories")[1])["ranks"]["recent"]))
+        ranks = json.loads(self.get("/api/trajectories")[1])["ranks"]
+        sid = next(iter(ranks["recent"]))
         # a lookup and a question to name, made when their route is reached:
         # the walk's own lookups push older ones out
         made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"],
-                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"]}
+                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"],
+                "/api/annotate/{jid}": lambda: json.loads(self.annotated_job(next(
+                    s for s in ranks["events"] if "|agent|" in s))[1])["id"]}
         fill = {"name": self.alias("alice"), "sid": sid}
         filters = list(export.LIST_FIELDS + export.SCALARS)
 
