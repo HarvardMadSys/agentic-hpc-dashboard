@@ -567,6 +567,49 @@ class SeamTest(CacheCase):
         self.assertEqual(self.calls(view), 3)
         self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
 
+    def test_a_file_cut_and_grown_back_past_the_build_with_its_first_bytes_is_counted(self):
+        # Cut short after the build and written again past where the build read
+        # to, its first 4 KB as they were: the size and the head said "the file
+        # the build read", so the tail's read of it from its start was skipped
+        # as read up to the build's end -- though the bytes there are new. The
+        # file was still in the seam: what the tail read past the build's end
+        # was no record the view takes, and the tail noticed the cut because
+        # the file was shorter than where it had read to.
+        first = [exit_rec(self.now - 900 + i, 100 + i) for i in range(40)]
+        self.append("h1.exits.jsonl", first)
+        agg = self.aggregator()
+        view = self.built(agg)
+        end = os.path.getsize(self.path("h1.exits.jsonl"))
+        self.assertGreater(len(b"".join(map(line, first[:20]))), 4096)
+        self.append("h1.exits.jsonl", [skipped_rec(self.now - 500 + i) for i in range(40)])
+        agg.poll_once()
+        self.assertIn(self.path("h1.exits.jsonl"), view.seam)
+        self.cut_short("h1.exits.jsonl", first[:20] + [exit_rec(self.now - 60 + i, 500 + i)
+                                                       for i in range(30)])
+        self.assertGreater(os.path.getsize(self.path("h1.exits.jsonl")), end)
+        self.assertEqual(agg.poll_once(), 50)
+        self.assertEqual(agg.source.stats["resets"], 1)
+        self.assertEqual(self.calls(view), 90)          # as the live tier counts them
+        self.assertEqual(self.events(agg)["agent"], 90)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
+
+    def test_a_restart_reads_each_file_once_and_outside_the_lock(self):
+        # What a restarted file holds now was read under the aggregator's lock,
+        # by each view, while every reader waited.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        views = [self.built(agg), self.built(agg, 60)]
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        reads, real = [], windows.Look
+
+        def look(*a, **k):
+            reads.append(agg.lock._is_owned())
+            return real(*a, **k)
+        with mock.patch.object(windows, "Look", look):
+            self.assertEqual(agg.poll_once(), 3)
+        self.assertEqual(reads, [False])
+        self.assertEqual([self.calls(v) for v in views], [23, 23])
+
     def test_a_catch_up_from_before_the_window_is_left_out(self):
         # A scan now would leave out a record older than the window's start, so
         # the live feed does too, and says how many.

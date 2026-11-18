@@ -364,25 +364,33 @@ class Aggregator:
             if not items:
                 break
             recs, at = normalized_at(self._poll_norm, items)
+            self._restarted(self.source.take_restarted())
             with self.lock:
-                self._restarted()
                 self._fold(self._poll_norm)
                 n += self.dispatch(recs, at=at)
                 self.stats["polled_at"] = time.time()
             # Hand the lock over: this thread keeps the GIL otherwise (see the backfill).
             time.sleep(0)
+        self._restarted(self.source.take_restarted())
         with self.lock:
-            self._restarted()
             self.source.prune_state()
             self.stats["last_poll"] = self.stats["polled_at"] = time.time()
         return n
 
-    def _restarted(self):
-        """Tell the views of each file the tail went back to the start of,
-        before it hands over what it read there (`PanelView.restarted`). Under
-        the lock."""
-        for path in self.source.take_restarted():
-            self.panels_by_window.restarted(path)
+    def _restarted(self, paths):
+        """Tell the views of each of `paths`, which the tail went back to the
+        start of, before it hands over what it read there (`PanelView.restarted`).
+        What each file holds now is read here once, outside the lock
+        (`windows.Look`), at the places the views' builds stopped reading it;
+        under the lock the views only compare. Not under the lock."""
+        if not paths:
+            return
+        with self.lock:
+            ends = self.panels_by_window.seam_ends(paths)
+        looks = {p: winmod.Look(p, ends.get(p, ())) for p in paths}
+        with self.lock:
+            for p in paths:
+                self.panels_by_window.restarted(p, looks[p])
 
     def backfill_now(self):
         """Position the tail, then fill RETENTION behind it.  The one expensive read.

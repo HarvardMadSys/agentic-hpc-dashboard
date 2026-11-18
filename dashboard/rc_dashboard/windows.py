@@ -68,7 +68,7 @@ import time
 from . import gz, hours as hourmod, payloads, redact, snapshots
 from .export import (UNTAGGED, agent_type_token, agent_type_want, agent_type_where,
                      parse_filters, resume_plan, window_plan, window_scan)
-from .feedfile import head_digest
+from .feedfile import HEAD_BYTES
 from .normalize import Normalizer
 from .procindex import ProcIndex
 from .reducers.cascades import CascadeReducer
@@ -117,6 +117,61 @@ _PLAIN = re.compile(r"^[A-Za-z0-9._@+-]+$")
 
 def _newest(a, b):
     return b if a is None else a if b is None else max(a, b)
+
+
+# How much of what a build read just before where it stopped in a plain
+# day-file its seam keeps a digest of, beside its first bytes' (`seam_of`).
+TAIL_BYTES = 4096
+
+
+def _twin(path):
+    """The stream's other name: its `.gz` once sealed, or its plain file."""
+    return gz.plain_name(path) if gz.is_gz(path) else path + gz.SUFFIX
+
+
+class Look:
+    """What a day-file holds now, read once and outside the aggregator's lock,
+    for the views' seams to compare with when the tail went back to its start
+    (`PanelView.restarted`): its size, its first HEAD_BYTES and, for a plain
+    file, the TAIL_BYTES before each of `ends`, where builds stopped reading."""
+
+    def __init__(self, path, ends=()):
+        self.size = None
+        self.first = b""
+        self.before = {}
+        try:
+            with gz.open_feed(path) as fh:
+                size = gz.fstat(fh).st_size
+                self.first = fh.read(HEAD_BYTES)
+                if not gz.is_gz(path):
+                    for end in set(ends):
+                        if end <= size:
+                            n = min(TAIL_BYTES, end)
+                            fh.seek(end - n)
+                            self.before[end] = fh.read(n)
+                self.size = size
+        except OSError:
+            pass
+
+    def holds(self, got):
+        """Whether the file still holds what a build read of it (`got`, its seam
+        entry): at least as many bytes as it read, the same first ones, and, in
+        a plain file, the same TAIL_BYTES before where it stopped.
+
+        Detected: a file cut short below where the build stopped; one written
+        again with other first bytes; a plain file written again past where the
+        build stopped with its first bytes as they were, its bytes before that
+        point not. Not: a change elsewhere between the two, nor, in a `.gz`
+        (read past its head only by inflating it), past its first bytes -- a
+        sealed day is not cut short in place."""
+        _dev, _ino, end, head_n, head, tail = got
+        if self.size is None or self.size < end \
+                or hashlib.sha1(self.first[:head_n]).hexdigest() != head:
+            return False
+        if tail is None:
+            return True                 # a `.gz`: its first bytes stand for it
+        before = self.before.get(end)
+        return before is not None and hashlib.sha1(before).hexdigest() == tail
 
 
 def label(minutes):
@@ -433,36 +488,60 @@ class PanelView:
         del seam[key]
         return False
 
-    def restarted(self, path):
+    def restarted(self, path, look=None):
         """The tail went back to the start of `path`: it was cut short in place,
         its inode the same. A build that read it before that read what is gone,
         so the file leaves the seam and nothing of it is skipped as read; one
         that read it after read what the tail now reads again, and keeps it.
-        Which, the file itself says (`_read_now`): the tail notices a cut only
-        at its next poll, after a build may have read the file. Under the
+        Which, `look` says (`Look.holds`: what the file holds now, read outside
+        the lock); without one, the file leaves the seam. The tail notices a cut
+        only at its next poll, after a build may have read the file. Under the
         aggregator's lock, before the tail hands over what it read there. A
         build under way installs a seam of its own, so it is told too, in order
-        with the records held for it (`_replay`)."""
-        for key in (path, gz.plain_name(path) if gz.is_gz(path) else path + gz.SUFFIX):
+        with the records held for it (`_replay`, `replay`)."""
+        for key in (path, _twin(path)):
             got = self.seam.get(key)
-            if got is not None and not self._read_now(path, got):
+            if got is not None and (look is None or not look.holds(got)):
                 del self.seam[key]
         if self._replay is not None:
             self._replay.append((None, path))
 
+    def replay(self, pending, held=()):
+        """The records held while the build ran (`_replay`), fed now its seam is
+        in, and the tail's notices among them (`restarted`): one for a file in
+        `held` was checked against the seam before the lock was taken
+        (`WindowRegistry.restarts_checked`); one that came after drops its file.
+        Under the aggregator's lock."""
+        for rec, at in pending or ():
+            if rec is None:
+                if at not in held:
+                    self.restarted(at)
+            else:
+                self.feed(rec, at)
+
     @staticmethod
-    def _read_now(path, got):
-        """Whether file `path` holds what a build read of it (`got`, its seam
-        entry): at least as many bytes as it read, and the same first ones
-        (`feedfile.head_digest`, as the build took it). Cut short after the
-        build read it, the file is shorter than the build's read, or starts
-        otherwise."""
-        _dev, _ino, end, head_n, head = got
-        try:
-            with gz.open_feed(path) as fh:
-                return gz.fstat(fh).st_size >= end and head_digest(fh, head_n) == head
-        except OSError:
-            return False
+    def seam_of(files, end_key):
+        """The seam of a build that read `files` -- each its `path`, `dev`,
+        `ino`, `head_n` and `head`, and where the read stopped under `end_key`:
+        path -> (dev, ino, end, head_n, head, tail). `tail` is the digest of the
+        TAIL_BYTES of a plain file before `end`, read back here as the build
+        ends (`Look.holds`), or "" when it cannot be; a `.gz` has None, as it
+        would be inflated up to `end` for it. Outside the aggregator's lock."""
+        seam = {}
+        for f in files:
+            end, tail = f[end_key], None
+            if not gz.is_gz(f["path"]):
+                n, tail = min(TAIL_BYTES, end), ""
+                try:
+                    with open(f["path"], "rb") as fh:
+                        fh.seek(end - n)
+                        got = fh.read(n)
+                    if len(got) == n:
+                        tail = hashlib.sha1(got).hexdigest()
+                except OSError:
+                    pass
+            seam[f["path"]] = (f["dev"], f["ino"], end, f["head_n"], f["head"], tail)
+        return seam
 
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
@@ -902,8 +981,7 @@ class WindowRegistry:
                          for e in plan if "ino" in e]
         # How far this read went in each file: the live feed's records up to
         # there are its own (`PanelView.feed`).
-        seam = {f["path"]: (f["dev"], f["ino"], f["end"], f["head_n"], f["head"])
-                for f in meta["files"]}
+        seam = PanelView.seam_of(meta["files"], "end")
         # Serialised now, before the swap: after it the live feed mutates these
         # reducers under the lock, and pickling them there would stall every
         # read for as long as it takes.
@@ -913,6 +991,7 @@ class WindowRegistry:
                 blob = snapshots.capture(reducers)
             except Exception as e:
                 unsaved = "not saved: %s" % e
+        held = self.restarts_checked(view, seam)
 
         with self.lock:
             view.reducers = reducers
@@ -937,11 +1016,7 @@ class WindowRegistry:
             elif unsaved:
                 view.cache["note"] = unsaved
             pending, view._replay = view._replay, None
-            for rec, at in pending or ():
-                if rec is None:
-                    view.restarted(at)      # a file the tail went back to the start of
-                else:
-                    view.feed(rec, at)
+            view.replay(pending, held)
         # The panels, a reducer per hold; the view says it is ready once they are in,
         # and until then shows what it showed while it was building.
         view.materialize_stepwise(self.lock)
@@ -1152,10 +1227,40 @@ class WindowRegistry:
         for view in list(self.views.values()):
             view.feed(rec, at)
 
-    def restarted(self, path):
-        """The tail went back to the start of `path` (`PanelView.restarted`)."""
+    def seam_ends(self, paths):
+        """Where each view's build stopped reading each of `paths`, under either
+        of its names: what `Look` reads the bytes before. Under the
+        aggregator's lock."""
+        out = {}
         for view in list(self.views.values()):
-            view.restarted(path)
+            for path in paths:
+                for key in (path, _twin(path)):
+                    got = view.seam.get(key)
+                    if got is not None:
+                        out.setdefault(path, set()).add(got[2])
+        return out
+
+    def restarted(self, path, look=None):
+        """The tail went back to the start of `path`; `look` is what it holds
+        now (`PanelView.restarted`). Under the aggregator's lock."""
+        for view in list(self.views.values()):
+            view.restarted(path, look)
+
+    def restarts_checked(self, view, seam):
+        """The files the tail went back to the start of while `view`'s build ran
+        -- the notices held for it -- each read now, outside the lock, and
+        checked against `seam`, the seam the build is about to install: an entry
+        its file no longer holds leaves it (`Look.holds`). Returns those files,
+        whose notices are answered (`PanelView.replay`)."""
+        with self.lock:
+            paths = {at for rec, at in view._replay or () if rec is None}
+        for path in paths:
+            keys = [k for k in (path, _twin(path)) if k in seam]
+            look = Look(path, [seam[k][2] for k in keys])
+            for k in keys:
+                if not look.holds(seam[k]):
+                    del seam[k]
+        return paths
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.

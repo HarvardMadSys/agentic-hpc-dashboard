@@ -1720,8 +1720,7 @@ def build(reg, view):
             # size, which may cut a line still being written: the live feed
             # skips a line by where it ENDS (`PanelView.feed`), so that one is
             # counted when it is whole.
-            seam = {e["path"]: (e["dev"], e["ino"], e["stop"], e["head_n"], e["head"])
-                    for e in tail_plan}
+            seam = view.seam_of(tail_plan, "stop")
         except Exception as e:
             with reg.lock:
                 view._replay = None
@@ -1730,6 +1729,7 @@ def build(reg, view):
         if newest is None:
             newest = store.newest_of(range(h_lo, h_hi))
         dispatch = view.build_dispatch(acc)
+        held = reg.restarts_checked(view, seam)
         with reg.lock:
             view.reducers = acc
             view.dispatch = dispatch
@@ -1754,11 +1754,7 @@ def build(reg, view):
                            "" if joined else "; the newest hour's join state was not at "
                            "hand, so the open hour joins only within itself"))
             pending, view._replay = view._replay, None
-            for rec, at in pending or ():
-                if rec is None:
-                    view.restarted(at)      # a file the tail went back to the start of
-                else:
-                    view.feed(rec, at)
+            view.replay(pending, held)
         # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
         # with no collection running; ready once they are in.
         view.materialize_stepwise(reg.lock)

@@ -420,9 +420,12 @@ Three things a rebuild reports rather than assumes:
   window's start is left out, as a scan would leave it; the status counts both
   (`live_skipped`: `already_read`, `before_window`). A day-file cut short in place (its inode the
   same), which the tail then reads from its start again, leaves the seam when the build read it
-  before the cut -- the file is then shorter than the build's read, or starts otherwise -- and
-  is counted as the tail reads it, as the live tier counts it; a build that read it after the
-  cut, which the tail notices only at its next poll, keeps it.
+  before the cut -- the file is then shorter than the build's read, starts otherwise, or (a
+  plain file) holds other bytes in the 4 KB before where the build stopped -- and is counted as
+  the tail reads it, as the live tier counts it; a build that read it after the cut, which the
+  tail notices only at its next poll, keeps it. The file is read for this once, outside the
+  lock the readers wait on. A `.gz` is checked by its first bytes only (a sealed day is not cut
+  short in place, and reading past its head means inflating it).
 
 One pre-existing inconsistency had to be fixed for the control to mean anything: trajectory
 sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the panel's own
