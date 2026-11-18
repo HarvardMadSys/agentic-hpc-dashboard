@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
+from rc_dashboard.reducers.own_io import AgentHeld  # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
 from test_ingest import DAY, FeedCase             # noqa: E402
 import test_merge as TM                           # noqa: E402
@@ -865,7 +866,9 @@ class NodeSplitTest(HourCase):
 
     def test_an_installed_map_is_held_to_one_pass_cap(self):
         # Two nodes' maps at their own caps would be twice one pass's: installed, the
-        # oldest of the two are dropped, each node keeping its newest keys.
+        # oldest of the two are dropped, each node keeping its newest keys -- but for
+        # what is held for an agent runtime, kept in place of the oldest of the rest
+        # (own_io.py).
         reg, _view = self.built(2)
         hour, carry, _ages = reg.hours.chain
         node = carry[hours.NODES]
@@ -879,8 +882,12 @@ class NodeSplitTest(HourCase):
         self.assertEqual(len(held), cap)
         for nd in ("h1", "h2"):
             own = node[nd]["trajectories"]["reaped"]
-            mine = [k for k in held if k in own]
-            self.assertEqual(mine, list(own)[len(own) - len(mine):])
+            agents = [k for k, v in own.items() if type(v) is AgentHeld]
+            rest = [k for k in own if k not in agents]
+            mine = [k for k in held if k in rest]
+            self.assertTrue(agents)
+            self.assertEqual(mine, rest[len(rest) - len(mine):])
+            self.assertEqual([k for k in agents if k not in held], [])
 
     def test_a_deploy_since_the_start_reduces_here_alike(self):
         # The code a worker would start from is not this process's: no pool, and the

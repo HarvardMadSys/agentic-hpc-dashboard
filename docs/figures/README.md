@@ -130,7 +130,8 @@ disk and syscall bytes are each process's own: the collector's `io` is `task->si
 the kernel also credits with every child the process reaped, so each reducer that sums bytes holds
 a join (`reducers/own_io.py:OwnIo`) that takes the children's figures back off at the parent's
 exit, carried across hours as the sessions' always was, and held to `reducers.own_io.max_parents`
-parents (a parent dropped is counted, `own_io.evicted`).
+parents (a parent dropped is counted, `own_io.evicted`, and said on stderr; what is held for an
+agent runtime, or for what started one, is passed over).
 
 A view is built one of three ways:
 

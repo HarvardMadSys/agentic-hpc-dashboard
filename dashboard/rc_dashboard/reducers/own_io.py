@@ -72,13 +72,20 @@ below.
 The cap is a setting, `reducers.own_io.max_parents` (`cap_of`; REAPED_MAX
 unless set), because a service holds some 35 joins at once -- five in each
 held window, five carried in the hours' chain, the live tier's two, an
-inspector read's and a lookup's -- and each holds its parents apart. A parent costs about 0.5 KB with one
-entry and up to 2.5 KB with PER_PID, so the default is at worst some 48 MB
-over all of them (README, "Disk I/O is each process's own"). The parent given
-to least recently goes first: a dead one whose orphans' bytes wait under its
-pid, or one that has stopped reaping, before one at work.
+inspector read's and a lookup's -- and each holds its parents apart. A parent
+costs about 0.5 KB with one entry and up to 2.5 KB with PER_PID: the default
+is some 39 MB over all of them at one entry a parent, 159 MB at worst
+(README, "Disk I/O is each process's own"). The parent given to least
+recently goes first: a dead one whose orphans' bytes wait under its pid, or
+one that has stopped reaping, before one at work. Passed over, looking
+RUNTIME_PASS deep, is what is held for an agent runtime or for the process
+that started one (`_runtime`, by the collector's `tree_root_pid`): an agent
+sits idle as long as its reader does while other parents reap, and its tool
+calls' bytes, or a whole session's, are the most a parent holds. The hours'
+chain still ages it out after `hours.CARRY_KEEP_H` untouched.
 """
 import collections
+import itertools
 import sys
 import time
 
@@ -86,7 +93,7 @@ from ..procindex import pop_oldest, users_conflict
 
 FIELDS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb")
 DISK = ("rd_mb", "wr_mb")
-REAPED_MAX = 600            # parents held for their own exit, unless the setting says (`cap_of`)
+REAPED_MAX = 2000           # parents held for their own exit, unless the setting says (`cap_of`)
 START_SLACK_S = 60.0        # how long before a process's recorded start its child may begin
 # A figure short of what its children carried by more than the collector's
 # rounding (MB to three places, per child) is counted when it is shown as 0.
@@ -98,6 +105,35 @@ CLAMP_TOL_MB = 0.01
 # of them, the two of one user whose starts are closest merged past it.
 _G_USER, _G_START, _G_VALS = 0, 1, 2
 PER_PID = 8
+
+# What is held for an agent runtime or what started one (`_runtime`) is passed
+# over at the cap, looking this deep for another to drop (`pop_least_recent`).
+RUNTIME_PASS = 64
+
+
+class AgentHeld(list):
+    """What is held for a pid that is an agent runtime, or started one."""
+    __slots__ = ()
+
+
+def _runtime(rec):
+    """Whether `rec`'s parent is an agent runtime (`rec` one of its tool calls)
+    or started one (`rec` the runtime itself): the root of an agent's tree,
+    `tree_root_pid`, which every schema puts on each process in it, where
+    schema 7 gave each tool call an `agent_pid` of its own."""
+    r = rec.get("tree_root_pid")
+    return r is not None and (rec.get("ppid") == r or rec.get("pid") == r)
+
+
+def pop_least_recent(d):
+    """Drop the least recently given of `d`, an OrderedDict kept in that order,
+    that is not held for an agent runtime, looking RUNTIME_PASS deep; past
+    that, the least recently given of all."""
+    for k, v in itertools.islice(d.items(), RUNTIME_PASS):
+        if type(v) is not AgentHeld:
+            del d[k]
+            return
+    pop_oldest(d)
 
 # A join that drops a parent at its cap says so on stderr, naming its panel and
 # the setting: the first time, then at most once in SAY_EVERY_S for that panel
@@ -252,12 +288,14 @@ class OwnIo:
         held = self.reaped.get(key)
         if held is None:
             if len(self.reaped) >= self.cap:
-                pop_oldest(self.reaped)
+                pop_least_recent(self.reaped)
                 self.evicted += 1
                 self._say(1)
-            held = self.reaped[key] = []
+            held = self.reaped[key] = AgentHeld() if _runtime(rec) else []
         else:
             self.reaped.move_to_end(key)
+            if type(held) is list and _runtime(rec):
+                held = self.reaped[key] = AgentHeld(held)
         user, st = rec.get("user") or None, _start(rec)
         g = _entry_for(held, user, st)
         if g is None:
@@ -324,12 +362,22 @@ class OwnIo:
 
     def carry_trimmed(self, c, dropped):
         """The parents `hours.combine_carries` dropped past that cap, putting the
-        nodes' joins together for a window: counted, and said, as the reducer's
-        own cap counts and says what it drops."""
-        n = len(dropped.get("reaped", ()))
-        self.evicted += n
-        if n:
-            self._say(n)
+        nodes' joins together for a window: what is held for an agent runtime
+        is put back in place of the oldest of the rest, and the dropped are
+        counted and said, as at the reducer's own cap."""
+        gone = dropped.get("reaped") or ()
+        d = c.get("reaped")
+        back = [kv for kv in gone if type(kv[1]) is AgentHeld]
+        if back and isinstance(d, collections.OrderedDict):
+            out = [k for k, v in d.items() if type(v) is not AgentHeld][:len(back)]
+            for k in out:
+                del d[k]
+            for k, v in reversed(back[len(back) - len(out):]):
+                d[k] = v
+                d.move_to_end(k, last=False)
+        self.evicted += len(gone)
+        if gone:
+            self._say(len(gone))
 
     def _say(self, n):
         """Say on stderr that this join dropped `n` parents at its cap: the first

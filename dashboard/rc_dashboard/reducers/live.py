@@ -20,11 +20,12 @@ import itertools
 import time
 
 from ..buckets import RollingBuckets, _epoch_of
-from ..procindex import pop_oldest, users_conflict
+from ..procindex import users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
-from .own_io import CLAMP_TOL_MB, DISK, START_SLACK_S, OwnIo, cap_of
+from .own_io import (CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, OwnIo, cap_of,
+                     pop_least_recent)
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
@@ -482,11 +483,14 @@ class LiveReducer:
             return
         key = (rec.get("host"), rec.get("pid"))
         self._io_seq += 1
-        self.io_booked[key] = [self._io_seq, st, rec.get("_ts_epoch"), epoch, rec.get("user"),
-                               rec["_a3"], rec.get("agent_type"), rd or 0.0, wr or 0.0, row]
+        note = [self._io_seq, st, rec.get("_ts_epoch"), epoch, rec.get("user"),
+                rec["_a3"], rec.get("agent_type"), rd or 0.0, wr or 0.0, row]
+        # an agent runtime's note waits for every tool call it made: passed
+        # over at the cap, as the joins pass it over (own_io._runtime)
+        self.io_booked[key] = AgentHeld(note) if key[1] == rec.get("tree_root_pid") else note
         self.io_booked.move_to_end(key)
         if len(self.io_booked) > BOOKED_MAX:
-            pop_oldest(self.io_booked)
+            pop_least_recent(self.io_booked)
             self.io_dropped += 1
         if st is not None:
             heapq.heappush(self._io_starts, (-st, self._io_seq, key))

@@ -32,6 +32,7 @@ from rc_dashboard import hours, iocmds                         # noqa: E402
 from rc_dashboard.export import parse_filters                  # noqa: E402
 from rc_dashboard.normalize import Normalizer                  # noqa: E402
 from rc_dashboard.proctree import TreeBuilder                  # noqa: E402
+from rc_dashboard.reducers import live as livemod              # noqa: E402
 from rc_dashboard.reducers import own_io                       # noqa: E402
 from rc_dashboard.reducers.live import LiveReducer             # noqa: E402
 from rc_dashboard.reducers.trajectories import TrajectoryReducer   # noqa: E402
@@ -666,6 +667,71 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual(list(j.reaped), [("h1", 10), ("h1", 30)])
         self.assertEqual(j.evicted, 1)
         self.assertEqual(j.take(ex(t + 4, 10, 1, 5.0)), (3.0, 0.0))
+
+    def test_an_agent_runtime_and_what_started_it_are_passed_over_at_the_cap(self):
+        # claude 100, started from alice's login bash 50, makes a tool call and
+        # sits idle while three other parents reap past a cap of two: they go,
+        # it stays; and so, once it has exited, does the bash
+        def ex(t, pid, ppid, rd, dur=1.0, root=None):
+            return {"event": "exit", "host": "h1", "pid": pid, "ppid": ppid, "user": "alice",
+                    "_ts_epoch": t, "duration_s": dur, "io": iob(rd, rd),
+                    "agent_pid": pid if root else None, "tree_root_pid": root}
+        t = time.time() - 600
+        j = own_io.OwnIo(own_io.DISK, cap=2)
+        j.take(ex(t, 110, 100, 3.0, root=100))
+        for k in range(3):
+            j.take(ex(t + 1 + k, 201 + k, 200 + k, 1.0))
+        self.assertIn(("h1", 100), j.reaped)
+        self.assertEqual(j.take(ex(t + 10, 100, 50, 5.0, dur=20.0, root=100)), (2.0, 0.0))
+        for k in range(3):
+            j.take(ex(t + 11 + k, 301 + k, 300 + k, 1.0))
+        self.assertIn(("h1", 50), j.reaped)
+        self.assertEqual(j.take(ex(t + 20, 50, 1, 6.0, dur=3600.0)), (1.0, 0.0))
+        self.assertEqual(j.evicted, 5)
+
+    def test_so_are_they_where_a_window_puts_the_nodes_joins_together(self):
+        # h1 holds claude 100's tool call from the hour before; h2 two shells
+        # of another agent, this hour: past one pass's cap of two, a shell goes
+        c = capped(2)
+        fresh = lambda: PanelView(c, CLASSES, 1440).fresh_reducers()   # noqa: E731
+        kinds = {k: type(r) for k, r in fresh().items()}
+        t = time.time() - 900
+        h = int(t // HOUR)
+        by_node = {
+            "h1": (h - 1, [raw("exit", t - HOUR, 110, 100, "zsh", "zsh -c ls", host="h1",
+                               agent_pid=100, tree_root=100, io=iob(3.0, 3.0))]),
+            "h2": (h, [raw("exit", t + k, 311 + 10 * k, 310 + 10 * k, "cat", "cat f",
+                           host="h2", agent_pid=900, tree_root=900, depth=2,
+                           io=iob(1.0, 1.0)) for k in range(2)])}
+        carries, ages = {}, {}
+        for host, (hour, recs) in by_node.items():
+            red = hours.prepare(fresh())
+            recs = normalized(recs)
+            hours.feed_all(red, ((r["_ts_epoch"], r) for r in recs))
+            carries[host], ages[host] = hours.age(kinds, hours.take_carry(red), {}, hour)
+        acc = fresh()
+        got = hours.combine_carries(carries, ages, acc)
+        for k in JOINS:
+            with self.subTest(reducer=k):
+                self.assertEqual(list(got[k]["reaped"]), [("h1", 100), ("h2", 320)])
+                self.assertEqual(join_of(acc[k]).evicted, 1)
+
+    def test_and_so_is_an_agent_runtime_s_note_in_the_live_tier_s_backfill(self):
+        # newest first: claude 100 is noted, then three of bob's processes past
+        # a cap of two notes; its tool call, met last, still finds it
+        self.enterContext(mock.patch.object(livemod, "BOOKED_MAX", 2))
+        now = time.time()
+        t = now - 900
+        recs = [raw("exit", t + 10, 110, 100, "zsh", "zsh -c ls", agent_pid=100,
+                    tree_root=100, io=iob(3.0, 3.0), duration_s=5.0)]
+        recs += [person("exit", t + 20 + k, 400 + k, 300 + k, "sleep", "sleep 1", "bob",
+                        io=iob(1.0, 1.0)) for k in range(3)]
+        recs.append(raw("exit", t + 100, 100, 50, "claude", "claude", is_agent=True,
+                        agent_pid=100, tree_root=100, io=iob(5.0, 5.0), duration_s=200.0))
+        lv = live(list(reversed(recs)), older=True)
+        # bob's three notes and the tool call's own dropped in turn, not claude's
+        self.assertEqual(lv.io_dropped, 3)
+        self.assertEqual(rd_of(lv, now)["alice"], 5.0)
 
     def test_every_join_is_held_to_the_setting(self):
         self.assertEqual(own_io.cap_of(cfg()), own_io.REAPED_MAX)
