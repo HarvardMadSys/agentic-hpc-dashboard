@@ -927,5 +927,5 @@ def create_app(cfg):
     app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
                        bind_host=str(cfg.get("server.host") or ""),
                        allowed_hosts=cfg.get("server.allowed_hosts") or (),
-                       allowed_origins=cfg.get("server.allowed_origins") or ())
+                       allowed_origins=guardmod.allowed_origins(cfg))
     return app

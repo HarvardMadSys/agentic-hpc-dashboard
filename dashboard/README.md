@@ -907,11 +907,14 @@ websocket, with and without it.
   another port included. A browser lets any page open a websocket to 127.0.0.1, and to a page
   on another port of the same host -- a dev server, a notebook, another tunnel -- it sends the
   reader's cookie too: the cookie is SameSite=Lax, and every port of a host is one site. A
-  script sends no `Origin` and passes. The page from Vite's dev server (`./run.sh` dev mode,
-  on `RC_DASH_UI_PORT`, 5173) is on another origin, so `run.sh` names it, as
-  `http://127.0.0.1:5173` and `http://localhost:5173`, in `RC_DASH_ALLOWED_ORIGINS`. A proxy
-  that rewrites the Host to `127.0.0.1:<port>` needs its public origin there too
-  (`server.allowed_origins`, comma-separated in the variable: `https://dash.example.org`).
+  script sends no `Origin` and passes. A proxy that rewrites the Host to `127.0.0.1:<port>`
+  needs its public origin in `server.allowed_origins` (`RC_DASH_ALLOWED_ORIGINS`,
+  comma-separated: `https://dash.example.org`). The page from Vite's dev server (`./run.sh`
+  dev mode, on `RC_DASH_UI_PORT`, 5173) is on another origin too, so `run.sh` names it, as
+  `http://127.0.0.1:5173` and `http://localhost:5173`, in `server.dev_origins`
+  (`RC_DASH_DEV_ORIGINS`), which adds to `allowed_origins` rather than replacing them. A Vite
+  dev server started any other way needs its origin named the same way
+  ([web/README.md](web/README.md)).
 - **With no password, a request under a name that is not this host's is refused** (a 403):
   its `Host` must be a loopback name, the bind host (`server.host`), or one of
   `server.allowed_hosts` (`RC_DASH_ALLOWED_HOSTS`; `*` for any). Otherwise a page on another

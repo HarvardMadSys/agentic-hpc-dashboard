@@ -467,8 +467,12 @@ def defaults():
                    # any origin but the dashboard's own -- another port of the
                    # same host included -- is refused, unless its origin is
                    # listed here ("https://dash.example.org"): for a proxy that
-                   # rewrites the Host. run.sh names Vite's in dev mode.
+                   # rewrites the Host.
                    "allowed_origins": [],
+                   # The origins of a dev server whose page proxies /ws here, added
+                   # to allowed_origins, never in their place: dashboard/run.sh sets
+                   # it (RC_DASH_DEV_ORIGINS) to Vite's in dev mode.
+                   "dev_origins": [],
                    # With no password, a request is answered only under a
                    # loopback name, `host` above, or a name listed here ("*": any):
                    # another site's page cannot read the dashboard by pointing its
@@ -558,6 +562,7 @@ ENV_MAP = {
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
     "server.auth.open": ("RC_DASH_OPEN", _flag),
     "server.allowed_origins": ("RC_DASH_ALLOWED_ORIGINS", _csv),
+    "server.dev_origins": ("RC_DASH_DEV_ORIGINS", _csv),
     "server.allowed_hosts": ("RC_DASH_ALLOWED_HOSTS", _csv),
     "server.rdns.enabled": ("RC_DASH_RDNS", _flag),
     "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
@@ -857,7 +862,7 @@ def load(args=None, config_path=None):
 
     # Who may connect (guard.py): lists of names, or the service refuses to
     # start rather than take a string for a list of its letters.
-    for key in ("server.allowed_origins", "server.allowed_hosts"):
+    for key in ("server.allowed_origins", "server.dev_origins", "server.allowed_hosts"):
         val = _get(tree, key, [])
         if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
             raise SystemExit("%s: %r is not a list of names (set by %s)" % (

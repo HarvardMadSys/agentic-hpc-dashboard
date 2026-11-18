@@ -343,19 +343,33 @@ class LiveSigned(Live):
 @unittest.skipUnless(shutil.which("bash"), "run.sh is a bash script")
 class DevScript(unittest.TestCase):
     """dashboard/run.sh names Vite's origins to the backend in dev mode, and
-    only then. `uv` (which starts the backend), `npm` and `npx` are stand-ins:
-    `uv` writes down the RC_DASH_ALLOWED_ORIGINS it was started with."""
+    only then, beside the configured ones. `uv` (which starts the backend),
+    `npm` and `npx` are stand-ins: `uv` loads the config the backend would and
+    writes down the origins the guard would let in (guard.allowed_origins)."""
 
     RUN = str(Path(__file__).resolve().parents[1] / "run.sh")
+    PROBE = ("import json, os, sys\n"
+             "sys.path.insert(0, %r)\n"
+             "from rc_dashboard import config, guard\n"
+             "print(json.dumps({'env': os.environ.get('RC_DASH_ALLOWED_ORIGINS'),\n"
+             "                  'guard': guard.allowed_origins(config.load())}))\n"
+             % str(Path(__file__).resolve().parents[1]))
+    VITE = ["http://127.0.0.1:5173", "http://localhost:5173"]
+    PROXY = {"server": {"allowed_origins": ["https://dash.example.org"]}}
 
-    def origins(self, mode, **env):
+    def origins(self, mode, config=None, **env):
         tmp = tempfile.mkdtemp(prefix="rc-run-sh-")
         self.addCleanup(shutil.rmtree, tmp, True)
         bin_dir, seen = os.path.join(tmp, "bin"), os.path.join(tmp, "seen")
         os.makedirs(bin_dir)
+        probe, conf = os.path.join(tmp, "probe.py"), os.path.join(tmp, "config.json")
+        with open(probe, "w") as fh:
+            fh.write(self.PROBE)
+        with open(conf, "w") as fh:
+            json.dump(config or {}, fh)
         # npm waits for the backend to have started: run.sh stops both when one ends
         wait = "for i in $(seq 200); do [ -s %s ] && exit 0; sleep 0.05; done; exit 0" % seen
-        for name, body in (("uv", 'printf "%%s\\n" "${RC_DASH_ALLOWED_ORIGINS-unset}" >> %s' % seen),
+        for name, body in (("uv", "%s %s >> %s" % (sys.executable, probe, seen)),
                            ("npm", wait), ("npx", "exit 0")):
             path = os.path.join(bin_dir, name)
             with open(path, "w") as fh:
@@ -365,29 +379,36 @@ class DevScript(unittest.TestCase):
         os.makedirs(dist)
         open(os.path.join(dist, "index.html"), "w").close()
         e = {k: v for k, v in os.environ.items() if not k.startswith("RC_DASH_")}
-        e.update(PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), RC_DASH_STATIC_DIR=dist)
+        e.update(PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), RC_DASH_STATIC_DIR=dist,
+                 RC_DASH_CONFIG=conf)
         e.update(env)
         subprocess.run(["bash", self.RUN, mode], env=e, timeout=60, stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with open(seen) as fh:
-            got = set(fh.read().split())
+            got = {line for line in fh.read().splitlines() if line}
         self.assertEqual(len(got), 1, got)
-        return got.pop()
+        return json.loads(got.pop())
 
-    def test_dev_mode_names_vites_origins(self):
-        self.assertEqual(self.origins("dev"), "http://127.0.0.1:5173,http://localhost:5173")
-        self.assertEqual(self.origins("dev", RC_DASH_UI_PORT="6001"),
-                         "http://127.0.0.1:6001,http://localhost:6001")
-        self.assertEqual(self.origins("dev", RC_DASH_UI_HOST="dev.example.org"),
-                         "http://127.0.0.1:5173,http://localhost:5173,http://dev.example.org:5173")
-        # what the shell named already is kept
-        self.assertEqual(self.origins("dev", RC_DASH_ALLOWED_ORIGINS="https://dash.example.org"),
-                         "https://dash.example.org,http://127.0.0.1:5173,http://localhost:5173")
+    def test_dev_mode_adds_vites_origins_to_the_configured_ones(self):
+        got = self.origins("dev", self.PROXY)
+        self.assertEqual(got["guard"], ["https://dash.example.org"] + self.VITE)
+        self.assertIsNone(got["env"])                  # the config's list stands
+        self.assertEqual(self.origins("dev")["guard"], self.VITE)
+        self.assertEqual(self.origins("dev", RC_DASH_UI_PORT="6001")["guard"],
+                         ["http://127.0.0.1:6001", "http://localhost:6001"])
+        self.assertEqual(self.origins("dev", RC_DASH_UI_HOST="dev.example.org")["guard"],
+                         self.VITE + ["http://dev.example.org:5173"])
+        # what the shell named is kept, in either variable
+        got = self.origins("dev", RC_DASH_ALLOWED_ORIGINS="https://a.example.org",
+                           RC_DASH_DEV_ORIGINS="http://ui.example.org:5173")
+        self.assertEqual(got["guard"], ["https://a.example.org", "http://ui.example.org:5173"]
+                         + self.VITE)
 
-    def test_without_vite_nothing_is_named(self):
+    def test_without_vite_only_the_configured_ones(self):
         for mode in ("build", "api"):
             with self.subTest(mode=mode):
-                self.assertEqual(self.origins(mode), "unset")
+                self.assertEqual(self.origins(mode, self.PROXY)["guard"],
+                                 ["https://dash.example.org"])
 
 
 if __name__ == "__main__":

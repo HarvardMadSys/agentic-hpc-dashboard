@@ -149,7 +149,7 @@ class WhoMayConnect(Case):
             cfg = configmod.load(None, None)
         self.assertEqual(cfg.get("server.allowed_hosts"), ["dash.example.org", "*"])
         self.assertEqual(cfg.get("server.allowed_origins"), ["https://dash.example.org"])
-        for key in ("allowed_hosts", "allowed_origins"):
+        for key in ("allowed_hosts", "allowed_origins", "dev_origins"):
             with self.subTest(key=key):
                 self.assertIn("server.%s" % key, self.refused({"server": {key: "dash.example.org"}}))
                 self.assertIn("server.%s" % key, self.refused({"server": {key: [1]}}))

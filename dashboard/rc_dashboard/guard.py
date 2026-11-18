@@ -17,8 +17,8 @@ checks cover the rest:
   included -- and not in `server.allowed_origins` is refused before it is
   accepted (uvicorn answers 403). One with no Origin (curl, a script) is not a
   browser's and passes. Vite's dev server serves the page on its own port and
-  proxies /ws here, so dashboard/run.sh names its origins
-  (RC_DASH_ALLOWED_ORIGINS) in dev mode.
+  proxies /ws here, so dashboard/run.sh names its origins in dev mode, in
+  `server.dev_origins` (RC_DASH_DEV_ORIGINS), which adds to the configured list.
 * **The Host, with no password.** A request, HTTP or websocket, whose `Host`
   is not a loopback name (localhost, 127.0.0.0/8, ::1), the bind host
   (`server.host`), or one of `server.allowed_hosts` ("*" for any) gets a 403:
@@ -40,6 +40,13 @@ import urllib.parse
 from starlette.responses import JSONResponse
 
 NO_STORE = {"cache-control": "no-store"}
+
+
+def allowed_origins(cfg):
+    """The origins a websocket may come from besides the request's own:
+    `server.allowed_origins`, and a dev server's (`server.dev_origins`, which
+    dashboard/run.sh sets) added to them, never in their place."""
+    return list(cfg.get("server.allowed_origins") or ()) + list(cfg.get("server.dev_origins") or ())
 
 
 def host_name(hostport):

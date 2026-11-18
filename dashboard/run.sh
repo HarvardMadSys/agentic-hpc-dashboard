@@ -72,9 +72,9 @@ RC_DASH_UI_HOST="${RC_DASH_UI_HOST:-127.0.0.1}"
 # (rc_dashboard/guard.py), another port of the same host included: a browser
 # sends that one the reader's cookie too. In dev mode the page is Vite's, on
 # its own port (--strictPort keeps it there), so its origins are named to the
-# backend, added to RC_DASH_ALLOWED_ORIGINS -- which, once set, stands for the
-# config file's server.allowed_origins, so name any of those there too.
-# Reached by a name of its own (RC_DASH_UI_HOST=0.0.0.0), add http://<name>:<port>.
+# backend in RC_DASH_DEV_ORIGINS (server.dev_origins), which adds to the config's
+# server.allowed_origins rather than standing in for them. Reached by a name of
+# its own (RC_DASH_UI_HOST=0.0.0.0), add http://<name>:<port> there.
 if [ "$MODE" = dev ]; then
   ui="http://127.0.0.1:$RC_DASH_UI_PORT,http://localhost:$RC_DASH_UI_PORT"
   case "$RC_DASH_UI_HOST" in
@@ -82,7 +82,7 @@ if [ "$MODE" = dev ]; then
     ::1) ui="$ui,http://[::1]:$RC_DASH_UI_PORT" ;;
     *) ui="$ui,http://$RC_DASH_UI_HOST:$RC_DASH_UI_PORT" ;;
   esac
-  export RC_DASH_ALLOWED_ORIGINS="${RC_DASH_ALLOWED_ORIGINS:+$RC_DASH_ALLOWED_ORIGINS,}$ui"
+  export RC_DASH_DEV_ORIGINS="${RC_DASH_DEV_ORIGINS:+$RC_DASH_DEV_ORIGINS,}$ui"
 fi
 
 # ---- Backend watch paths ---------------------------------------------

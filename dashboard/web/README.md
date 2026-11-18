@@ -35,6 +35,13 @@ npm run dev -- --mode real          # same thing
 RC_MOCK=0 npm run dev               # same thing
 ```
 
+The backend refuses a websocket opened by a page on any origin but its own, another port of
+the same host included (`rc_dashboard/guard.py`), and Vite's page is on its own port. `../run.sh`
+names it to the backend for you; a backend started any other way needs it named, as the
+browser will write it: `RC_DASH_DEV_ORIGINS=http://127.0.0.1:5173,http://localhost:5173`
+(`server.dev_origins`, added to `server.allowed_origins`), or the page's `/ws` gets a 403 and
+the Live tab does not move.
+
 Regenerate the fixture after changing its shape (deterministic — no RNG, byte-stable):
 
 ```bash
