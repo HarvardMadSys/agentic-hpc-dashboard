@@ -4650,6 +4650,15 @@ class SubmitCaptureTest(unittest.TestCase):
         self.assertNotIn('hf_abcdefghij', r['captured_tail'])
         self.assertIn('HF_TOKEN=[REDACTED]', r['captured_tail'])
 
+    def test_the_tail_is_masked_before_it_is_cut(self):
+        """Cut to its last 300 characters first, the password's name lost its
+        first letters to the cut, and `SWORD=hunter2secret` was written."""
+        out = b'Submitted batch job 9\n' + b'a' * 100 + b'\n+ export DB_PASSWORD=hunter2secret\n' \
+            + b'b' * 280
+        r = self._submit('sbatch run.sh', out)
+        self.assertNotIn('hunter2secret', r['captured_tail'])
+        self.assertEqual(r['captured_tail'], 'PASSWORD=[REDACTED]\n' + 'b' * 280)
+
     def test_the_kernel_spends_a_budget_and_forgets_an_exec_into_anything_else(self):
         txt = T.build_bpf_text({'submit'}, offs=FAKE_OFFS)
         # LLVM may prove the last clamp redundant and drop it; 4.18 needs it
