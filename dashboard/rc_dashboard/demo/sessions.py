@@ -20,6 +20,9 @@ from collections import defaultdict
 from . import cast
 from .records import Proc, costs, endpoint, envelope, exit_record, line, logu
 
+# The I/O figures a parent's exit holds of the children it reaped.
+_IO = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb")
+
 # How long a session of each kind runs, seconds (log-uniform).
 DURATION = {
     "claude_terminal": (2400, 4 * 3600), "claude_nested": (3600, 3 * 3600),
@@ -84,6 +87,10 @@ class Builder:
         self.pdir = cast.project_dir(self.p)
         self.scope = "/user.slice/user-%d.slice/session-%d.scope" % (
             self.uid, 100 + (spec.idx or 0) * 7 + self.rng.randint(0, 6))
+        # pid -> the I/O its exited children carried, for its own exit (`exit`);
+        # and the pids whose exit is written, until a new process takes one
+        self._reaped = {}
+        self._written = set()
 
     # ------------------------------------------------------------ plumbing
     def pid(self):
@@ -94,6 +101,8 @@ class Builder:
         self._pid += self.rng.randint(1, 2)
         if self._pid >= self.spec.pid_base + PID_BLOCK - 10:
             self._pid = self.spec.pid_base + 100 + (self._pid % 997)
+        self._written.discard(self._pid)
+        self._reaped.pop(self._pid, None)
         return self._pid
 
     def emit(self, t, stream, rec):
@@ -103,7 +112,23 @@ class Builder:
         return self.hf.collector_pid(t)
 
     def exit(self, p):
-        self.emit(p.end, "exits", exit_record(p, self.host, self.cpid(p.end), self.rng))
+        """`p`'s exit. Its I/O is the kernel's figure, `task->signal->ioac`: its own
+        and every child it reaped -- each child whose exit was written before its
+        own, which is every one it waited for. One that outlived it was reaped by
+        init. The dashboard takes them back off (reducers/own_io.py)."""
+        rec = exit_record(p, self.host, self.cpid(p.end), self.rng)
+        io = rec.get("io")
+        kids = self._reaped.pop(p.pid, None)
+        if io is not None:
+            if kids:
+                for k, v in zip(_IO, kids):
+                    io[k] = round(io[k] + v, 3)
+            if p.ppid not in self._written:
+                acc = self._reaped.setdefault(p.ppid, [0.0] * len(_IO))
+                for i, k in enumerate(_IO):
+                    acc[i] += io[k]
+        self._written.add(p.pid)
+        self.emit(p.end, "exits", rec)
 
     def child(self, parent, t, command, args, *, dur=None, scale=1.0, cwd=None, **kw):
         """A process `parent` started at `t`: it inherits who it is, and gets its
