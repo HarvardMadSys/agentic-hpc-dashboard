@@ -56,7 +56,7 @@ def newest_record(roots):
     Read from each file's end; a compressed file is indexed to get there, which
     the tail would do moments later anyway.
     """
-    import json
+    from . import fastjson
     best = (None, None)
     for root in roots:
         days = dated_dirs(root, 1)
@@ -72,8 +72,8 @@ def newest_record(roots):
                 if not line.strip():
                     continue
                 try:
-                    ts = epoch_of(json.loads(line))
-                except ValueError:
+                    ts = epoch_of(fastjson.record(line))
+                except ValueError:                  # a line that is no record
                     continue
                 if ts is not None:
                     if best[0] is None or ts > best[0]:

@@ -267,7 +267,7 @@ def _matching(path, norm, pred, newest_first, stats):
         if wanted is not None and wanted(line) is None:
             continue
         try:
-            raw = fastjson.loads(line)
+            raw = fastjson.record(line)
         except ValueError:
             continue
         stats["scanned"] += 1
@@ -600,7 +600,7 @@ def _window_stream(entry, norm, since, until, stats, wanted=None, find=None, kin
                 continue
             stats["scanned"] += 1
             try:
-                raw = fastjson.loads(line)
+                raw = fastjson.record(line)
             except ValueError:
                 stats["parse_errors"] += 1
                 continue

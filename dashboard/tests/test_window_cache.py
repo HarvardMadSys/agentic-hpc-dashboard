@@ -25,10 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_dashboard import feedparquet as fp         # noqa: E402
 from rc_dashboard import history, replica, snapshots, windows   # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
-from rc_dashboard.export import window_plan, window_scan   # noqa: E402
+from rc_dashboard.export import (make_predicate, parse_filters, scan,   # noqa: E402
+                                 window_plan, window_scan)
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
-from test_ingest import FeedCase, exit_rec, stamp    # noqa: E402
+from test_ingest import FeedCase, exit_rec, line, stamp    # noqa: E402
 
 WIN = 1440
 # Enough variety that every reducer holds state worth getting wrong: a shell
@@ -113,6 +114,26 @@ class ScanTest(CacheCase):
         self.assertEqual(got, [5000, 5001, 5002])
         # The saved offset stops before the fragment, so a resume reads it whole.
         self.assertEqual(plan[0]["end"], os.path.getsize(self.path("h1.exits.jsonl")) - 25)
+
+    def test_lines_and_records_no_reader_can_read_fail_no_build_or_query(self):
+        # `null`, `[]` and `0` lines and an exit whose `args` is a list: a
+        # window's build raised at each, on every retry, and so did an events
+        # query that met one.
+        recs = [varied_exit(self.now - 3600 + 60 * i, i) for i in range(12)]
+        bad = varied_exit(self.now - 3600 + 60 * 6, 90)
+        bad["args"] = ["make", "all"]
+        with mock.patch("time.time", return_value=self.now):
+            self.write_raw("h1.exits.jsonl", b"".join(map(line, recs)))
+            want = self.build(self.registry()).payload["tool_mix"]
+            os.unlink(self.path("h1.exits.jsonl"))
+            self.write_raw("h1.exits.jsonl", b"".join(map(line, recs[:6])) + b"null\n[]\n0\n"
+                           + line(bad) + b"".join(map(line, recs[6:])))
+            self.assertEqual(self.build(self.registry()).payload["tool_mix"], want)
+        pred = make_predicate(parse_filters({"event": ["exit"]}))
+        for newest_first in (True, False):
+            got = [r["pid"] for r, _s, _m in scan([self.root], Normalizer(self.cfg()), pred,
+                                                  newest_first=newest_first)]
+            self.assertEqual(sorted(got), sorted(r["pid"] for r in recs))
 
 
 class PrewarmTest(CacheCase):

@@ -34,8 +34,9 @@ against the JSONL, line by line and probe by probe).
 A replica stands in for its file only while it describes it exactly: the manifest
 names the file as it is on disk (`feedfile` identity: name, size, mtime, inode), and
 the file holds no line a JSONL reader would read differently -- a last line with no
-newline (still being written) or a line that is JSON but not an object (a JSONL time
-search raises on it). Such a file is read as JSONL, as every file was before. Nor
+newline (still being written) or a line that is JSON but not an object (which the
+JSONL readers count as a line that does not parse, and no table keeps). Such a file
+is read as JSONL, as every file was before. Nor
 does a replica stand in once a table its manifest names is gone, or is not the size
 it was written at (`feedparquet.tables_whole`). A read that raises all the same --
 a table damaged with its size intact, or gone since the replica was taken -- goes

@@ -671,7 +671,7 @@ def _stream(e, norm, lo, hi, wanted, stats, strays):
             if wanted is not None and wanted(line) is None:
                 continue
             try:
-                raw = fastjson.loads(line)
+                raw = fastjson.record(line)
             except ValueError:
                 stats["parse_errors"] += 1
                 continue

@@ -217,7 +217,7 @@ class FileTailSource(IngestSource):
             if not line.strip():
                 continue
             try:
-                raw = fastjson.loads(line)
+                raw = fastjson.record(line)
             except ValueError:
                 self.stats["parse_errors"] += 1
                 continue
@@ -284,7 +284,7 @@ def _read_back_one(entry, stats):
     for line in iter_lines_reverse(path, start=entry["start"], end=entry["end"]):
         stats["bytes"] += len(line) + 1
         try:
-            raw = fastjson.loads(line)
+            raw = fastjson.record(line)
         except ValueError:
             stats["parse_errors"] += 1
             continue

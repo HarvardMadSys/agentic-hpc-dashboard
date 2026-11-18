@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import config as configmod      # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
-from rc_dashboard import tail                     # noqa: E402
+from rc_dashboard import clock, feedfile, tail    # noqa: E402
 
 TS = "%Y-%m-%d %H:%M:%S"
 DAY = "2026-09-25"
@@ -347,6 +347,90 @@ class BackfillTest(FeedCase):
         self.append("h1.exits.jsonl", [exit_rec(time.time() - 1, pid=9)])
         agg.poll_once()
         self.assertEqual(self.events(agg), dict(NONE, agent=1))
+
+
+class NonObjectTest(FeedCase):
+    """A line that is JSON but no object, and a record with a field of a type
+    no collector writes: each passed over and counted, and nothing else lost
+    or counted twice. The review's r1, r1b, r1c and r12."""
+
+    def size(self, name):
+        return os.path.getsize(self.path(name))
+
+    def test_a_line_that_is_no_object_is_a_parse_error_and_the_tail_goes_on(self):
+        # One `null` among host a's records made every poll raise: the offsets
+        # stayed put, host b was never read, and the live count grew by the
+        # first batch at every poll (258, 514, 770 ... against 905 on disk).
+        self.append("a.exits.jsonl", [exit_rec(self.now - 600, 1, host="a")])
+        self.append("b.exits.jsonl", [exit_rec(self.now - 600, 2, host="b")])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        self.append("a.exits.jsonl", [exit_rec(self.now - 300 + i * 0.01, 1000 + i, host="a")
+                                      for i in range(300)], raw=b"null\n0\n")
+        self.append("a.exits.jsonl", [exit_rec(self.now - 200 + i * 0.01, 5000 + i, host="a")
+                                      for i in range(600)], raw=b'[]\n"x"\n')
+        self.append("b.exits.jsonl", [exit_rec(self.now - 100 + i, 9000 + i, host="b")
+                                      for i in range(3)])
+        self.assertEqual(agg.poll_once(), 903)
+        self.assertEqual(agg.poll_once(), 0)
+        self.assertEqual(self.events(agg)["agent"], 905)
+        self.assertEqual(agg.source.stats["parse_errors"], 4)
+        for name in ("a.exits.jsonl", "b.exits.jsonl"):
+            self.assertEqual(agg.source.state[self.path(name)]["offset"], self.size(name))
+        self.assertEqual(agg.refresh_feeds()["ebpf"]["tail"]["parse_errors"], 4)
+        # the newest line of a file, as the feed report and the clock read it
+        self.assertIsNotNone(agg.reports["ebpf"]["newest_record_ts"])
+        self.assertAlmostEqual(clock.newest_record([self.root])[0], self.now - 98, delta=1)
+
+    def test_a_record_the_normalizer_cannot_read_is_counted_and_passed_over(self):
+        # Each raised out of `normalize`, so out of the poll, as the `null` did.
+        bad = [exit_rec(self.now - 250, 10), exit_rec(self.now - 250, 11),
+               exit_rec(self.now - 250, 12), exit_rec(self.now - 250, 13),
+               exit_rec(self.now - 250, 14), exit_rec(self.now - 250, 15)]
+        bad[0]["args"] = ["git", "status"]
+        bad[1]["ts"] = self.now - 250
+        bad[2]["session_key"] = 123
+        bad[3]["duration_s"] = "1.0"
+        bad[4].update(cgroup=5, session_key=None, agent_pid=None)
+        bad[5]["event"] = ["exit"]
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600, 1)])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 300, 2)] + bad +
+                    [exit_rec(self.now - 200, 3)])
+        self.assertEqual(agg.poll_once(), 2)
+        self.assertEqual(agg.poll_once(), 0)
+        self.assertEqual(self.events(agg)["agent"], 3)
+        tail = agg.refresh_feeds()["ebpf"]["tail"]
+        self.assertEqual((tail["malformed"], tail["parse_errors"], tail["feed_errors"]),
+                         (6, 0, 0))
+
+    def test_a_line_that_is_no_object_does_not_stop_the_backfill(self):
+        # A `[]` already in a file at start: the read back raised at it, and the
+        # backfill ended in `error` with 512 of 1180 records.
+        for h in ("a", "b"):
+            self.append("%s.exits.jsonl" % h, [exit_rec(self.now - 7000 + 10 * i, i, host=h)
+                                               for i in range(300)],
+                        raw=b"[]\n" if h == "a" else b"")
+            self.append("%s.exits.jsonl" % h, [exit_rec(self.now - 3000 + 10 * i, 1000 + i,
+                                                        host=h) for i in range(290)])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        agg.poll_once()
+        b = agg.backfill
+        self.assertEqual((b["state"], b["records"], b["parse_errors"]), ("done", 1180, 1))
+        self.assertEqual(self.events(agg)["agent"], 1180)
+
+    def test_a_time_search_steps_over_lines_that_are_no_object(self):
+        recs = [exit_rec(self.now - 1000 + 10 * i, i) for i in range(100)]
+        self.write_raw("h1.exits.jsonl", b"".join(line(r) + b"[]\n" for r in recs))
+        with open(self.path("h1.exits.jsonl"), "rb") as fh:
+            size = os.path.getsize(self.path("h1.exits.jsonl"))
+            at = feedfile.seek_to_epoch(fh, self.now - 500, size)
+            fh.seek(at)
+            first = next(r for r in map(json.loads, fh) if isinstance(r, dict))
+        self.assertEqual(first["pid"], 50)          # the first at or after the time
+        self.assertLess(at, size)
 
 
 class ConcurrencyTest(FeedCase):

@@ -72,11 +72,13 @@ def newest_record_ts(path, ts_field="ts"):
                 rec = json.loads(line)
             except ValueError:
                 continue                # half-written final line: try the one before
+            if not isinstance(rec, dict):
+                continue                # JSON, but no record (`0`, `null`, `[]`)
             ts = rec.get(ts_field) or rec.get("timestamp")
             if ts:
                 try:
                     return datetime.strptime(ts, TS_FORMAT)
-                except ValueError:
+                except (TypeError, ValueError):     # a `ts` that is not a string, too
                     return None
         if start == 0 or window > 256 * 1024 * 1024:
             return None

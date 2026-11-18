@@ -163,7 +163,7 @@ class Aggregator:
         self.node_built_at = None
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
-        self.stats = {"records": 0, "last_poll": None}
+        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0}
         # Bumped by every batch dispatched to the live tier: a live frame made since
         # the last bump is the frame a new one would be (`live_frame`).
         self.dispatched = 0
@@ -255,7 +255,13 @@ class Aggregator:
             if not older:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
-                feed(rec, place)
+                # One record a view cannot take is counted and passed over: raised
+                # out of here it would end the poll, and the tail, its offsets not
+                # moved, would hand the whole batch over again at the next one.
+                try:
+                    feed(rec, place)
+                except Exception:
+                    self.stats["feed_errors"] += 1
         self.stats["records"] += len(recs)
         self.dispatched += 1
         return len(recs)
@@ -472,9 +478,16 @@ class Aggregator:
                         "self_observation": self.norm.stats["dropped_self_observation"],
                     }
                     rep["backfill"] = dict(self.backfill)
-                    # what the tail met in the files it follows
+                    # what the tail met in the files it follows: `parse_errors` the
+                    # lines that are no JSON object; `malformed` the records read
+                    # from them, the backfill's too, that the normalizer could not
+                    # read (a field of a type no collector writes); `feed_errors`
+                    # those a view could not take -- each passed over, never
+                    # stopping the tail
                     rep["tail"] = {k: self.source.stats.get(k, 0) for k in (
                         "partial_holds", "parse_errors", "resets")}
+                    rep["tail"].update(malformed=self.norm.stats.get("malformed", 0),
+                                       feed_errors=self.stats["feed_errors"])
                     # written by the demo (rc_dashboard/demo), not measured: the
                     # header says so whenever any host's records do
                     rep["synthetic_hosts"] = self.health.synthetic_hosts()

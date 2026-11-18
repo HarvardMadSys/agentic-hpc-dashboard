@@ -237,6 +237,28 @@ class SeamTest(HourCase):
                          (20, {"already_read": 0, "before_window": 0}))
 
 
+class MalformedLineTest(HourCase):
+
+    def test_lines_and_records_no_reader_can_read_fail_no_hour(self):
+        # A `null` line, and an exit whose `args` is a list: an hour's read
+        # raised at each, and so did every build of the window that held it.
+        recs = gen(SINCE + 1, NOW - 30)
+        half = len(recs) // 2
+        self.write(recs[:half])
+        t = recs[half]["ts_epoch"]
+        for host in sorted({r["host"] for r in recs}):
+            bad = TM.plain("exit", t, 990000, 1, "make", ["make", "all"], host=host)
+            self.append("%s.jsonl" % host, [bad], raw=b"null\n[]\n")
+        self.write(recs[half:])
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        view = self.build(self.registry(self.cfg()))
+        self.assertEqual(view.cache["source"], "hours")
+        got = self.payload(view)
+        for key in sorted(want):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(want[key], got[key]), [])
+
+
 class SeekOvershootTest(HourCase):
     """`seek_to_epoch` is a binary search that probes one line a step. A probe that lands on a
     record far older than its neighbours (a late one, written in time order with newer ones)

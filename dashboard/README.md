@@ -1474,6 +1474,16 @@ yields only complete lines, and **advances its stored offset only that far** —
 re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup hand-off obeys the
 same rule, so a line still being written belongs to the tail, never to the read-back.
 
+**One bad line stops nothing.** A line that is JSON but not an object (`0`, `null`, `[]`) is
+counted with the lines that do not parse, by every reader of the day-files (`fastjson.record`);
+a record the normalizer cannot read -- a field of a type no collector writes, a list `args` or
+`event`, a number for `ts` -- is passed over and counted, and so is one a held view cannot take.
+`/api/feeds` says how many, in the eBPF tier's `tail`: `parse_errors`, `malformed`,
+`feed_errors`. One `null` used to make every poll raise: the tail's offsets stayed put, the
+other hosts were never read, and the batch already handed over was counted again at every
+poll; a `[]` already in a file stopped the backfill, and such a record failed every build of a
+window that held it.
+
 Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
 rather than silently seeked past its end. A file first seen after startup — a new date
 directory, a new host — is read from byte 0, at most 64 MB per poll.
