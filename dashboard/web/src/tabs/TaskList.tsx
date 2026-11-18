@@ -8,6 +8,9 @@
  *   A quoted label is in quotation marks and says where the agent's words came from (`commit`, `PR #235`, or `log`); a built
  *   label has neither. A task a call in which is still running, or one that may be missing calls the log was too full to
  *   keep, says so under its label, in the words the chart's hover and the phase list use for them (`taskState`).
+ * - Under a closed task's row, a line names its phases in order, each with the chip of its colour (`TaskSeq`), so the list
+ *   says what each task was made of without a click: `explore → edit? → test 40 min → run`. It is no click of its own, and
+ *   it goes when the task is opened, which lists the same phases as rows.
  * - A GAP of an hour or more, in which the agent waited on nothing, is a muted line before the task it parts from the one
  *   before: `2.1 h with no new calls`, and the call it moved past that was still running, where one was.
  * - A LONE stretch, a few calls hours from other work, is a quiet line of its own, with no number: `3 calls at 10:41:24 ·
@@ -33,7 +36,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Phase, PhaseBlock, Task, TrajRunning } from '../api/types';
 import { clock } from '../lib/format';
-import { commandLine, cutNote, phaseLbl, zoomTip } from '../lib/phases';
+import { commandLine, cutNote, phaseLbl, sequenceParts, zoomTip } from '../lib/phases';
 import {
   gapLine,
   loneLine,
@@ -46,7 +49,7 @@ import {
   taskWhat,
 } from '../lib/tasks';
 import { useClockPinned } from '../lib/useNow';
-import { EdgeRow, PhaseRow } from './PhaseList';
+import { EdgeRow, PhaseChip, PhaseRow } from './PhaseList';
 
 /** The button under a phase's commands: what it does is what a click on the phase does. */
 const SHOW_CALLS = 'show its tool calls in the tree';
@@ -82,6 +85,29 @@ export function PhaseCalls({ p, onPick }: { p: Phase; onPick: (p: Phase) => void
       <button type="button" className="linkish tl-tree" onClick={() => onPick(p)}>
         {SHOW_CALLS}
       </button>
+    </div>
+  );
+}
+
+/** The line under a closed task's row: its phases in order, each with the chip of its colour, as the map above the list draws
+ *  them, so a reader sees what the task was made of without opening it: `explore → edit? → test 40 min → run`. The parts are
+ *  the row line's (`sequenceParts`): a phase a quarter of the task or more says how long, and past nine phases the middle
+ *  is a `…`. It is the phases the task's row counts (`taskPhases`), so it names no gap the gap line names. Opened, the task
+ *  lists the same phases as rows, and the line goes. It is no click: the row above it is. */
+function TaskSeq({ phases }: { phases: Phase[] }) {
+  const parts = sequenceParts(phases);
+  if (!parts.length) return null;
+  return (
+    <div className="tl-seq">
+      {parts.map((s, j) => (
+        <Fragment key={j}>
+          {j > 0 && <span className="tl-seq-to" aria-hidden="true">{' → '}</span>}
+          <span className="tl-seq-ph">
+            {s.p && <PhaseChip kind={s.p.kind} />}
+            {s.text}
+          </span>
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -133,6 +159,8 @@ export function TaskList({
         const open = chose.get(t.t0) ?? i === held;
         const source = taskSource(t);
         const state = taskState(t, block).join(' · ');
+        // the phases its row counts: the line under it while it is closed, and its rows once it is open
+        const phases = taskPhases(t, block);
         const what = lone ? `the lone stretch at ${clock(t.t0)}` : `task ${numbers[i]}`;
         return (
           <Fragment key={t.t0}>
@@ -164,9 +192,10 @@ export function TaskList({
                 {state && <span className="tl-state">{state}</span>}
               </button>
             </div>
+            {!open && !lone && <TaskSeq phases={phases} />}
             {open && (
               <div className="tl-phases" role="group" aria-label={`the phases of ${what}`}>
-                {taskPhases(t, block).map((p) => {
+                {phases.map((p) => {
                   const opened = seen.has(p.t0);
                   return (
                     <Fragment key={p.t0}>

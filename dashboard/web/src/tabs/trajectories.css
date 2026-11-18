@@ -143,6 +143,58 @@ table.tj-table td .sub {
   margin-right: 6px;
   vertical-align: 1px;
 }
+/* The inspector's two parts under the session's overview (TrajectoryInspector.tsx): what the agent did, its tasks and
+   phases over the whole session, and then its processes, the tree that backs them with what the read of it covers. Each
+   opens over a rule with a heading and a line saying what it holds, so the story and the process tree read apart */
+.ins-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+.ins-sec-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+}
+.ins-sec-h h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.ins-sec-h p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+/* an agent of a type whose commands are not read: said where what it did would be */
+.ins-unread {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+/* the purpose ribbon, the tool runs, and the key to the purposes, at the head of the Processes part */
+.ins-mix {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+/* the process tree's own controls, on a line of their own right above its find bar */
+.ins-tree-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
 /* A bound the read hit. It changes what the tree means, so it is not a tooltip. */
 .ins-bound {
   border: 1px solid var(--warn);
@@ -698,6 +750,46 @@ details.ins-limits > summary .eyebrow {
 }
 .tn-hk-tick {
   fill: var(--muted);
+}
+/* The map of the whole session (SessionMap.tsx): its tasks and its phases on the session's own clock, captioned in the
+   navigator's gutter (`--tn-gut`, set on `.sm`) with the navigator's captions (`.tn-plot`, `.tn-lane-cap`). A task's block
+   is the lane's (`.tn-task`) and a phase's band the chart's tint (`.tn-band`) with a rule of its full colour along its foot.
+   It is drawn at its box's own width, so its words are the chart's size at any width. A block or a band under the pointer
+   is outlined in the ink, which is how the map says it takes a click */
+.sm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.sm .tn-svg.sm-svg {
+  height: auto;
+  overflow: visible;
+}
+.sm-pick {
+  cursor: pointer;
+}
+.sm-hl {
+  fill: none;
+  stroke: none;
+  pointer-events: none;
+}
+.sm-pick:hover > .sm-hl {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+.sm-num {
+  font-weight: 600;
+  fill: var(--ink);
+}
+.sm-tick {
+  stroke: var(--edge);
+  stroke-width: 1;
+}
+.sm-key {
+  flex: none;
+  box-sizing: content-box;
+  border: 1px solid var(--rule);
 }
 /* a line of caption under the chart */
 .tn-note {
@@ -1278,6 +1370,33 @@ svg:has(> g.pickable:focus-visible) {
 .tl-row.lone .tl-state {
   display: block;
 }
+/* under a closed task's row, its phases in order, each with the chip of its colour (`TaskSeq`): set in under the label, as
+   the row's content, and in `--ink-2`, since it is what the task was made of and not a footnote. It wraps between phases,
+   never inside one */
+.tl-seq {
+  flex: none;
+  padding: 0 4px 6px 182px;
+  margin-top: -2px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.tl-seq-ph {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.tl-seq .pl-chip {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-top: 0;
+}
+.tl-seq-to {
+  color: var(--muted);
+}
 /* what is under an open task: its phases, each a chevron and the phase list's row, set in under the task's own chevron */
 .tl-phases {
   flex: none;
@@ -1337,6 +1456,10 @@ svg:has(> g.pickable:focus-visible) {
   }
   .tl-state {
     grid-column: 2 / -1;
+  }
+  /* the line of phases stays under the label, which here starts after the number */
+  .tl-seq {
+    padding-left: 46px;
   }
 }
 /* a session whose agent is running now */
