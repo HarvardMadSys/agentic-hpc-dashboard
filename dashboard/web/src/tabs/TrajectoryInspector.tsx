@@ -55,7 +55,7 @@
  */
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { sessionName } from '../lib/sessions';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useTrajectory } from '../api/hooks';
 import type { OwnerVia, Phase, PhaseDay, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
 import { PROC_LINKS } from '../api/types';
@@ -85,7 +85,7 @@ import { serverNow } from '../lib/clock';
 import { useNow } from '../lib/useNow';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
-import { isBlock, phaseLbl } from '../lib/phases';
+import { categoryOf, isBlock, phaseLbl } from '../lib/phases';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
 import { otherDay, taskLabel } from '../lib/tasks';
@@ -436,6 +436,29 @@ function ReadLine({
 }
 
 /** A failure's exit, as the tree's exit column says it. */
+/** A figure in a session's summary -- a count, a share, a length (`79%`, `41 min`, `30`) -- and not a digit
+ *  inside a name. */
+const FIGURE = /(?<![\w.])\d[\d,]*(?:\.\d+)?(?:%| (?:ms|s|min|h|d)\b)?/g;
+
+/** A session's summary with its figures set in bold, so the numbers it rests on are what the eye lands on. */
+function Figures({ text }: { text: string }) {
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(FIGURE)) {
+    if (m.index > at) out.push(text.slice(at, m.index));
+    out.push(<b key={m.index}>{m[0]}</b>);
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return <>{out}</>;
+}
+
+/** The colour of the gist's rule: its category's, and the plain edge for one with no colour of its own. */
+const gistColour = (c: string | null | undefined) => {
+  const col = c ? categoryOf(c)[2] : 'none';
+  return col === 'none' ? 'var(--edge)' : col;
+};
+
 const failWhat = (f: [number | null, number | null, number | null, string | null, number | null, number | null]) =>
   `${f[3] ?? '?'} · ${f[5] != null ? `signal ${f[5]}` : `exit ${f[4]}`}`;
 
@@ -1004,10 +1027,13 @@ export function TrajectoryInspector({
           </div>
         )}
         {d?.found && axis && block?.summary && (
-          <p className="ins-gist">
+          <p
+            className="ins-gist"
+            style={{ '--cat': gistColour(block.category) } as CSSProperties}
+          >
             <CategoryChip of={block} />
             <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
-              {block.summary}
+              <Figures text={block.summary} />
             </span>
           </p>
         )}
