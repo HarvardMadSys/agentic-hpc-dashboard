@@ -1754,7 +1754,10 @@ def build(reg, view):
                            "hand, so the open hour joins only within itself"))
             pending, view._replay = view._replay, None
             for rec, at in pending or ():
-                view.feed(rec, at)
+                if rec is None:
+                    view.restarted(at)      # a file the tail went back to the start of
+                else:
+                    view.feed(rec, at)
         # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
         # with no collection running; ready once they are in.
         view.materialize_stepwise(reg.lock)

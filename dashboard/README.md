@@ -418,7 +418,9 @@ Three things a rebuild reports rather than assumes:
   stream lagged when the view was built had its catch-up dropped from the view until the next
   re-scan (6 h for the 24 h view) while the live tier counted it. A live record older than the
   window's start is left out, as a scan would leave it; the status counts both
-  (`live_skipped`: `already_read`, `before_window`).
+  (`live_skipped`: `already_read`, `before_window`). A day-file cut short in place (its inode the
+  same), which the tail then reads from its start again, leaves the seam: what it holds now is
+  not what the build read, and is counted as the tail reads it, as the live tier counts it.
 
 One pre-existing inconsistency had to be fixed for the control to mean anything: trajectory
 sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the panel's own

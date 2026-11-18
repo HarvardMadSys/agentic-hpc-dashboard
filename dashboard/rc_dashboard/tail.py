@@ -84,6 +84,7 @@ class FileTailSource(IngestSource):
         self.state = {}          # path -> offset record; this process only
         self.stats = {"files": 0, "bytes_read": 0, "partial_holds": 0,
                       "parse_errors": 0, "resets": 0}
+        self.restarted = []      # files gone back to the start of (`take_restarted`)
 
     # ------------------------------------------------------------------ state
     def prune_state(self):
@@ -191,6 +192,7 @@ class FileTailSource(IngestSource):
                 if st.st_size < offset:
                     offset = 0                     # truncated or rewritten
                     self.stats["resets"] += 1
+                    self.restarted.append(path)
             elif rec:
                 self.stats["resets"] += 1          # replaced: different inode
             if offset >= st.st_size:
@@ -226,6 +228,14 @@ class FileTailSource(IngestSource):
         # The inode that was read, not the path's now: a day compressed since
         # has no plain file left to stat, and its `.gz` takes up from here.
         self._remember(path, st, offset + consumed, disk)
+
+    def take_restarted(self):
+        """The files this tail went back to the start of since the last call:
+        each was cut short in place, its inode the same, so what it holds from
+        its start now is not what anyone read of it before
+        (`windows.PanelView.restarted`)."""
+        out, self.restarted = self.restarted, []
+        return out
 
     def _compressed(self, path, st):
         """The offset record of `.gz` file `path` if this tail followed it under

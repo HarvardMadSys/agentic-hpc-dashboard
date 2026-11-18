@@ -432,6 +432,18 @@ class PanelView:
         del seam[key]
         return False
 
+    def restarted(self, path):
+        """The tail went back to the start of `path`: it was cut short in place,
+        its inode the same, so what it holds from its start now is not what a
+        build read of it, and nothing of it is skipped as read. Under the
+        aggregator's lock, before the tail hands over what it read there. A
+        build under way installs a seam of its own, so it is told too, in order
+        with the records held for it (`_replay`)."""
+        self.seam.pop(path, None)
+        self.seam.pop(gz.plain_name(path) if gz.is_gz(path) else path + gz.SUFFIX, None)
+        if self._replay is not None:
+            self._replay.append((None, path))
+
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
         red = {r.KEY: r(self.cfg, self.classes) for r in HIST_REDUCERS
@@ -905,7 +917,10 @@ class WindowRegistry:
                 view.cache["note"] = unsaved
             pending, view._replay = view._replay, None
             for rec, at in pending or ():
-                view.feed(rec, at)
+                if rec is None:
+                    view.restarted(at)      # a file the tail went back to the start of
+                else:
+                    view.feed(rec, at)
         # The panels, a reducer per hold; the view says it is ready once they are in,
         # and until then shows what it showed while it was building.
         view.materialize_stepwise(self.lock)
@@ -1115,6 +1130,11 @@ class WindowRegistry:
             self.hours.saw(rec.get("_ts_epoch"))
         for view in list(self.views.values()):
             view.feed(rec, at)
+
+    def restarted(self, path):
+        """The tail went back to the start of `path` (`PanelView.restarted`)."""
+        for view in list(self.views.values()):
+            view.restarted(path)
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.

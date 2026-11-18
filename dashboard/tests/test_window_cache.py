@@ -486,6 +486,53 @@ class SeamTest(CacheCase):
         self.assertEqual(self.calls(view), 15)
         self.assertEqual(view.status()["live_skipped"]["already_read"], 5)
 
+    def cut_short(self, name, recs):
+        """The day-file truncated and written again in place: its inode the same."""
+        p = self.path(name)
+        ino = os.stat(p).st_ino
+        with open(p, "r+b") as fh:
+            fh.truncate(0)
+            fh.write(b"".join(map(line, recs)))
+        self.assertEqual(os.stat(p).st_ino, ino)
+
+    def test_a_file_cut_short_in_place_after_the_build_is_counted_as_the_tail_reads_it(self):
+        # The tail goes back to its start; the view held it as the file its build
+        # read, so each record ending before the build's end there was taken as
+        # read -- dropped from the view until the file grew past it, or a rebuild.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 20)
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        self.assertEqual(agg.poll_once(), 3)
+        self.assertEqual(agg.source.stats["resets"], 1)
+        self.assertEqual(self.calls(view), 23)          # as the live tier counts them
+        self.assertEqual(self.events(agg)["agent"], 23)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
+
+    def test_a_file_cut_short_while_the_build_reads_it_is_counted_as_the_tail_reads_it(self):
+        # The same, told to a build under way in order with the records held for
+        # it: the seam it installs does not hold the file either.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        real = windows.window_scan
+
+        def scan(*a, **k):
+            for got in real(*a, **k):
+                yield got
+            # the build has read the file whole; then it is cut short, and the
+            # tail reads it from its start again
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+            self.assertEqual(agg.poll_once(), 3)
+        with mock.patch.object(windows, "window_scan", scan):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(self.calls(view), 23)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
+
     def test_a_catch_up_from_before_the_window_is_left_out(self):
         # A scan now would leave out a record older than the window's start, so
         # the live feed does too, and says how many.
