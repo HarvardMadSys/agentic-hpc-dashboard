@@ -62,6 +62,7 @@ import threading
 import time
 
 from . import hours as hourmod, payloads, redact, snapshots
+from .anonymize import Verbatim
 from .export import (UNTAGGED, agent_type_token, agent_type_want, agent_type_where,
                      parse_filters, resume_plan, window_plan, window_scan)
 from .normalize import Normalizer
@@ -220,7 +221,9 @@ class ViewFilter:
 
     def __init__(self, users=(), agent_types=()):
         self.users = tuple(sorted({str(u) for u in users or () if u not in (None, "")}))
-        self.agent_types = tuple(sorted(agent_type_want(
+        # The reader's own text, so every filter block and window status echoes
+        # it as sent: rewritten as a name, `alice` came back as her alias.
+        self.agent_types = tuple(sorted(Verbatim(t) for t in agent_type_want(
             str(t) for t in agent_types or () if t not in (None, ""))))
         self._u = frozenset(self.users)
         self._t = frozenset(self.agent_types)

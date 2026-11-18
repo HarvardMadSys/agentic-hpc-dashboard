@@ -709,7 +709,8 @@ class Aggregator:
             extra["risk_who"] = ask.risk_who(panels.get("risk"))
             extra["done"] = self.asker.done_for_prompt()
             extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
-                             "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                             "classes_shown": anonymize.verbatim(
+                                 [c for c in classes if isinstance(c, str)][:8])
                              if isinstance(classes, list) else None}
             scope.update({"about": "suggestions for the operator", "parse": "suggestions",
                           "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE})
@@ -799,11 +800,12 @@ class Aggregator:
         """What a question was asked over, as the page's own URL keys, so a
         citation in its answer opens the page on the data the model saw: the
         window, the filter (none is no filter, not "whatever is on screen"),
-        the classes shown, and the session."""
+        the classes shown, and the session. The classes and agent types are
+        the reader's own text, kept as sent (`anonymize.Verbatim`)."""
         flt = flt or winmod.NO_FILTER
         return {"window_min": win["minutes"], "users": list(flt.users),
                 "atypes": list(flt.agent_types),
-                "cls": [c for c in classes if isinstance(c, str)][:8]
+                "cls": anonymize.verbatim([c for c in classes if isinstance(c, str)][:8])
                 if isinstance(classes, list) else None,
                 "sid": sid}
 
@@ -877,7 +879,8 @@ class Aggregator:
             panels = self._cascade_hints(panels, self._agent_sessions(self.trajectories(window_min, flt)))
         classes = ctx.get("classes")
         extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
-                         "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                         "classes_shown": anonymize.verbatim(
+                             [c for c in classes if isinstance(c, str)][:8])
                          if isinstance(classes, list) else None}
         title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
         scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),

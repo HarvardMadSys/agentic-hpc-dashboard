@@ -105,6 +105,9 @@ def feed(now):
 class Served(unittest.TestCase):
     """The real app on a free local port over `records`, with names masked."""
 
+    # what the stand-in agent below answers, Python run with the prompt as `t`
+    ANSWER = "print('ok')"
+
     @classmethod
     def records(cls, now):
         return feed(now)
@@ -136,7 +139,7 @@ class Served(unittest.TestCase):
         tree["ask"]["command"] = [
             sys.executable, "-c",
             "import os,sys,uuid; d=sys.argv[1]; t=sys.stdin.read();"
-            "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); print('ok')",
+            "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); " + cls.ANSWER,
             cls.prompts]
         tree["anonymize"]["enabled"] = True
         cls.configure(tree)
@@ -394,6 +397,9 @@ class ReaderTextTest(Served):
     """What a reader sends, with real names in it, over `named_later`."""
 
     records = staticmethod(named_later)
+    # an agent that answers with all it was told but the data -- the question,
+    # earlier turns, the panel's title -- as a model asked to repeat it would
+    ANSWER = "print(t.split('<snapshot>')[0])"
 
     @classmethod
     def configure(cls, tree):
@@ -462,6 +468,48 @@ class ReaderTextTest(Served):
             body = json.loads(self.get("/api/trajectory?sid=" + urllib.parse.quote(
                 "h1|%s|human|usr:frank" % day))[1])
             self.assertFalse(body["found"], body)
+
+    def answered(self, body, query=""):
+        """A question's job, once the agent has answered."""
+        status, got = self.post("/api/ask" + query, body)
+        self.assertEqual(status, 200, got)
+        job = json.loads(got)
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.1)
+            job = json.loads(self.get("/api/ask/%s" % job["id"])[1])
+        self.assertEqual(job["state"], "done", job)
+        return job
+
+    def test_what_a_reader_sends_comes_back_as_sent(self):
+        # Rewritten on the way out, each of these turned a name the reader
+        # typed into its alias -- alice's here -- and left `zed9`, no account,
+        # as it was: a table of names to aliases for anyone with a guess.
+        alice, quote = self.alias("alice"), urllib.parse.quote
+        head = json.loads(self.get("/api/export?from=9999999999&host=alice,zed9,bob.smith&tool="
+                                   + quote("/home/mallory"))[1].splitlines()[0])
+        self.assertEqual({k: head["_meta"]["filters"][k] for k in ("host", "tool")},
+                         {"host": ["alice", "bob.smith", "zed9"], "tool": ["/home/mallory"]})
+        self.assertEqual(json.loads(self.get("/api/panels?agent_type=alice")[1])["filter"]
+                         ["agent_types"], ["alice"])
+        # and the filtered view's status, which every reader's /api/windows lists
+        windows = self.get("/api/windows")[1]
+        self.assertIn('"agent_types":["alice"]', windows.replace(" ", ""))
+        job = self.lookup("host=alice&cwd=" + quote("/home/alice"))
+        self.assertEqual(job["query"], {"host": "alice", "cwd": "/home/alice"})
+        self.assertEqual(json.loads(self.get("/api/io/commands/%s?sort=alice" % job["id"])[1])
+                         ["sort"], "alice")
+        self.assertEqual(json.loads(self.get("/api/trajectory?sid=alice")[1])["sid"], "alice")
+        said = "alice bob.smith /home/mallory"
+        job = self.answered({"question": said, "context": {
+            "parts": [{"panel": "risk"}], "title": "alice", "classes": ["alice"]}})
+        self.assertEqual((job["question"], job["about"], job["view"]["cls"]),
+                         (said, "alice", ["alice"]))
+        self.assertIn("Question: " + said, job["answer"])
+        self.assertIn('"alice"', job["answer"])          # the title, in the panel's guide
+        for body in (windows, json.dumps(job)):
+            self.assertNotIn(alice, body)
 
 
 if __name__ == "__main__":

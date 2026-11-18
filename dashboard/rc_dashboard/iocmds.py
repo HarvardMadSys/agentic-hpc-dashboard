@@ -29,6 +29,7 @@ import time
 import uuid
 
 from . import clock, export
+from .anonymize import verbatim
 from .where import Prefix
 from .proctree import _trie
 from .normalize import Normalizer
@@ -187,8 +188,12 @@ class Job:
 
     def status(self):
         el = self.elapsed if self.elapsed is not None else time.monotonic() - self.t0
+        # The query as the reader sent it, never rewritten as names
+        # (`anonymize.Verbatim`) -- but `user`, the account behind the alias
+        # they sent (app.py `dealias`), which goes back as that alias.
+        query = {k: v if k == "user" else verbatim(v) for k, v in self.query.items()}
         out = {"id": self.id, "state": self.state, "error": self.error,
-               "query": self.query, "from": _stamp(self.since), "to": _stamp(self.until),
+               "query": query, "from": _stamp(self.since), "to": _stamp(self.until),
                "bytes": self.stats["bytes"], "total_bytes": self.total_bytes,
                "scanned": self.stats["scanned"], "matched": self.stats["matched"],
                "elapsed_s": round(el, 1)}

@@ -214,6 +214,45 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(out, {"by_class": {"agent": 1}, "glen_total": 2})
 
 
+class VerbatimTest(unittest.TestCase):
+    """What a reader sent goes back as they sent it: rewritten, a name they
+    typed came back as its alias."""
+
+    def test_it_goes_back_as_sent_and_the_data_beside_it_does_not(self):
+        a = anon("glen", "bob.smith")
+        sent = anonmod.verbatim({"host": ["glen", "zed9"], "q": "/home/mallory",
+                                 "user": "bob.smith"})
+        body = {"filters": sent, "rows": [{"user": "glen", "args": "ls /home/glen"}]}
+        once = a.payload(body)
+        self.assertEqual(once["filters"], {"host": ["glen", "zed9"], "q": "/home/mallory",
+                                           "user": "bob.smith"})
+        self.assertEqual(once["rows"][0]["user"], a.user_alias("glen"))
+        # still marked: a second pass (a job stored, then served) leaves it too
+        self.assertEqual(a.payload(once), once)
+        self.assertIs(type(a.payload(once)["filters"]["q"]), anonmod.Verbatim)
+
+    def test_it_teaches_nothing(self):
+        a = anon()
+        a.payload(anonmod.verbatim({"user": "zed9", "uid": 5, "users": ["ana"],
+                                    "cmd": "sbatch -A sham_lab x"}))
+        self.assertEqual((a.users, a.labs, a.system), ({}, {}, set()))
+
+    def test_every_string_is_marked_and_every_shape_kept(self):
+        got = anonmod.verbatim({"a": ["x", ("y", 1)], "b": {"z"}, "c": None, "d": 2.5})
+        self.assertEqual(got, {"a": ["x", ("y", 1)], "b": {"z"}, "c": None, "d": 2.5})
+        self.assertIs(type(got["a"][1]), tuple)
+        self.assertEqual({type(s) for s in (got["a"][0], got["a"][1][0], *got["b"])},
+                         {anonmod.Verbatim})
+
+    def test_no_such_account_is_never_learned_as_one(self):
+        # A real name in a filter maps to UNKNOWN, echoed under `users`: it was
+        # learned as an account there, and shown as an alias of no one.
+        a = anon()
+        self.assertEqual(a.payload({"users": [UNKNOWN], "user": UNKNOWN}),
+                         {"users": [UNKNOWN], "user": UNKNOWN})
+        self.assertEqual(a.users, {})
+
+
 class RequestTest(unittest.TestCase):
 
     def test_an_alias_maps_back_and_anything_else_maps_to_nothing(self):

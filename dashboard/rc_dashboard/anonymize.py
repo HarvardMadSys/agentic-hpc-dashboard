@@ -38,6 +38,12 @@ host, tool or directory filter, is matched on the record as they see it -- the
 record's own account learned first (`learn_record`), then masked -- so a real
 name typed there finds nothing either. The aliases in such text are turned
 back into accounts only to find the records to test (`dealias_text`).
+
+And what a reader sends never goes through the rewrite on its way back: an
+echoed filter, search, question or session id is `Verbatim`, which `payload`
+passes through untouched and learns nothing from. Rewritten, it made the
+service a translator: send `alice`, get back her alias, and get back a name
+that is no account unchanged.
 """
 import bisect
 import hashlib
@@ -133,6 +139,30 @@ MEMO_LEN = 2000
 _ALIAS_IN = re.compile(r"(?<![A-Za-z0-9])user-[0-9a-f]{8}(?![0-9a-f])")
 
 
+class Verbatim(str):
+    """Text a reader sent, on its way back to them as they sent it.
+
+    `payload` leaves it as it is and learns nothing from it. Rewritten like
+    the data around it, an echoed filter or question turned a name the reader
+    typed into its alias and left a word that is no account unchanged -- a
+    lookup table from names to aliases for anyone with a list of candidates.
+    """
+    __slots__ = ()
+
+
+def verbatim(obj):
+    """`obj` with every string in it `Verbatim`: the values of a dict (its keys
+    are the service's), and the items of a list, tuple or set, which keep
+    their kind."""
+    if isinstance(obj, str):
+        return obj if type(obj) is Verbatim else Verbatim(obj)
+    if isinstance(obj, dict):
+        return {k: verbatim(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return type(obj)(verbatim(v) for v in obj)
+    return obj
+
+
 class Anonymizer:
     """The registry of names seen, and the rewrite every exit applies.
 
@@ -184,6 +214,8 @@ class Anonymizer:
 
     # ----------------------------------------------------------- learning
     def learn_user(self, name, uid=None):
+        if type(name) is Verbatim or name == UNKNOWN:
+            return                # a reader's text, or this module's "no such account"
         system = isinstance(uid, int) and 0 <= uid < 1000
         if not system and isinstance(name, str) and name in self.users:
             return                # known: every payload names its users again
@@ -251,8 +283,9 @@ class Anonymizer:
 
     def learn_text(self, s):
         """Learn the labs the patterns capture in `s`. Names they capture are
-        masked where they stand (`_in_place`), not learned."""
-        if not s or not isinstance(s, str) or s in self._learned:
+        masked where they stand (`_in_place`), not learned. A reader's own text
+        (`Verbatim`) teaches nothing."""
+        if not s or not isinstance(s, str) or type(s) is Verbatim or s in self._learned:
             return
         for gate, pats in ((_PATTERN_GATES[0], self._home), (_PATTERN_GATES[1], self._labp)):
             if not pats or not any(g in s for g in gate):
@@ -485,7 +518,9 @@ class Anonymizer:
 
     def _walk(self, o):
         if isinstance(o, str):
-            return self._rw(o)
+            # what a reader sent goes back as they sent it, still marked, so a
+            # second pass over the same object leaves it too (`Verbatim`)
+            return o if type(o) is Verbatim else self._rw(o)
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():

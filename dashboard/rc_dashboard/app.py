@@ -33,6 +33,7 @@ from . import redact
 from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
+from .anonymize import Verbatim, verbatim
 from .export import make_predicate, meta_header, parse_filters, scan
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
@@ -590,8 +591,11 @@ def create_app(cfg):
         that launched a filtered-to-Claude-Code session would cut the tree at
         its root rather than narrow it.
         """
-        body = masked(redacted(proctree.serve(agg, dealias_sid(sid, anon), window_min,
-                                              frm, to, order)), "trajectory")
+        body = redacted(proctree.serve(agg, dealias_sid(sid, anon), window_min, frm, to, order))
+        if anon is not None:
+            # the id as the page sent it: what it read is the account behind it
+            body["sid"] = Verbatim(sid)
+        body = masked(body, "trajectory")
         # serialized as it always was (`default=str`), with orjson, here on the worker
         return jsonout.response(body, request, headers={"vary": "Accept-Encoding"},
                                 encode=jsonout.dumps_str)
@@ -652,7 +656,8 @@ def create_app(cfg):
         out = j.status()
         if j.state == "done":
             out.update(rows=j.page(sort, dir != "asc", offset, limit),
-                       offset=offset, limit=limit, sort=sort, dir="asc" if dir == "asc" else "desc")
+                       offset=offset, limit=limit, sort=Verbatim(sort),
+                       dir="asc" if dir == "asc" else "desc")
         return respond(out, request=request)
 
     # The filters a reader types text into, by the record field each tests
@@ -777,8 +782,10 @@ def create_app(cfg):
 
         def stream():
             # a cheap pre-pass is not worth a second full scan, so the header
-            # declares the cap and the filters and leaves `rows` to the trailer
-            head = meta_header(dict(f, q=qv) if qv else f, reports, cfg, None, None, 0.0)
+            # declares the cap and the filters and leaves `rows` to the trailer;
+            # the filters as the reader sent them, never rewritten (`Verbatim`)
+            head = meta_header(verbatim(dict(sent, event=f["event"])), reports, cfg,
+                               None, None, 0.0)
             head["_meta"]["rows"] = "see _trailer"
             yield json.dumps(masked(head), default=str) + "\n"
             n = 0

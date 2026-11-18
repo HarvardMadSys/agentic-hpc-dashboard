@@ -46,6 +46,7 @@ import time
 import uuid
 
 from . import redact
+from .anonymize import verbatim
 
 # Argv for each preset. The prompt is piped on stdin (`-`), the agent's last
 # message is written to {answer_file}, and --json streams its events so the
@@ -969,9 +970,11 @@ class Asker:
             json.dump({"version": 1, "items": self._done}, fh)
         os.replace(tmp, path)
 
+    # A suggestion is the agent's words: what the reader sees of one, and what
+    # the next prompt is told, is never rewritten as names (`view`).
     def done_list(self):
         with self.lock:
-            return {"items": list(self._done_items())}
+            return {"items": verbatim(list(self._done_items()))}
 
     def mark_done(self, jid, index):
         """Suggestion `index` of job `jid`'s answer, marked done."""
@@ -989,7 +992,7 @@ class Asker:
                                     window=job.get("window"), done_at=time.time()))
                 del done[self.DONE_KEEP:]
                 self._done_save()
-            return {"items": list(done)}
+            return {"items": verbatim(list(done))}
 
     def undo_done(self, did):
         with self.lock:
@@ -999,17 +1002,18 @@ class Asker:
                 raise LookupError("that suggestion is not marked done")
             done[:] = keep
             self._done_save()
-            return {"items": list(done)}
+            return {"items": verbatim(list(done))}
 
     def done_for_prompt(self, keep=50):
         """What the model is told the operator already dealt with, without the
         citations it was suggested with: they named another snapshot's rows."""
         with self.lock:
-            return [{"title": x.get("title"),
-                     "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
-                     "users": x.get("users") or [], "panel": x.get("panel"),
-                     "marked_done": _clock(x.get("done_at"))}
-                    for x in self._done_items()[:keep]]
+            items = [{"title": x.get("title"),
+                      "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
+                      "users": x.get("users") or [], "panel": x.get("panel"),
+                      "marked_done": _clock(x.get("done_at"))}
+                     for x in self._done_items()[:keep]]
+        return verbatim(items)
 
     def submit(self, question, panels, live, window_label, history=(), extra=None,
                scope=None):
@@ -1067,6 +1071,14 @@ class Asker:
             out = {k: v for k, v in j.items() if not k.startswith("_")}
         end = out["finished"] or time.time()
         out["elapsed_s"] = round(end - (out["started"] or out["submitted"]), 1)
+        # The reader's question and the agent's words go back as they are,
+        # never rewritten as names (`anonymize.Verbatim`): rewritten, "repeat
+        # after me: alice" was answered with her alias. What a job holds of
+        # the data -- `view`, and what `cites` shows -- was aliased before the
+        # agent saw it (Aggregator.ask).
+        for k in ("question", "about", "answer", "progress", "error", "suggestions", "cites"):
+            if k in out:
+                out[k] = verbatim(out[k])
         return out
 
     def _set(self, job, **kv):
