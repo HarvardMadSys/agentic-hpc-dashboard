@@ -350,19 +350,24 @@ class TestRetentionByDate(MirrorCase):
         """1a1a11a's case: a sender's window starts `days` - 1 days before its own live
         day, retention's before this host's today. For a node a day behind (its time
         zone, folders named in UTC, around midnight) retention deleted the oldest day
-        it sends, and each connection sent that day again. Retention keeps from the
-        earlier of the two. A node a day ahead sends nothing before this host's window;
-        one whose live day is not known yet (no hello since a restart) counts as a day
-        behind."""
+        it sends, and each connection sent that day again. Retention keeps one day
+        more for a node behind; a node a day ahead sends nothing before this host's
+        window. A live day not known yet (no hello since a restart), further back, or
+        no date counts as a day behind, no more: a hello cannot turn retention off."""
         r = fs.Receiver({"base": self.basedir, "days": 3, "hosts": {}})
         r.base = self.base
         r.links = [fs.Link(HOST, ["true"], self.m, 3, r.counters, r.paused, r.stop)]
-        behind, ahead = days_from_today(-1, 1)
-        for live, kept in ((behind, days_from_today(-3, -2, -1, 0, 1)),
+        behind, behind2, ahead = days_from_today(-1, -2, 1)
+        a_day_behind = days_from_today(-3, -2, -1, 0, 1)
+        for live, kept in ((behind, a_day_behind),
                            (ahead, days_from_today(-2, -1, 0, 1)),
-                           (None, days_from_today(-3, -2, -1, 0, 1)),
-                           ("0001-01-01", days_from_today(-4, -3, -2, -1, 0, 1))):
-            for day in days_from_today(-4, -3, -2, -1, 0, 1):
+                           (None, a_day_behind),
+                           (behind2, a_day_behind),
+                           ("2000-01-01", a_day_behind),
+                           ("0001-01-01", a_day_behind),
+                           ("no day", a_day_behind),
+                           (5, a_day_behind)):
+            for day in days_from_today(-4, -3, -2, -1, 0, 1) + ["2000-01-01"]:
                 os.close(self.base.open_append(self.m.rel(day, "nodeA.exits.jsonl")))
                 self.m.verified.add(day + "/nodeA.exits.jsonl")
             r.links[0].live = live
