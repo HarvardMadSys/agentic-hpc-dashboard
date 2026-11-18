@@ -632,6 +632,8 @@ class ReaderTextTest(Served):
         holds MARK). His records are older than the live roster and past the
         first page of anything unfiltered, so only a filter or a search could
         reach them, and only a translation of his name could produce his alias.
+        Nor may any carry the feed's other names (SECRETS), which its records --
+        alice's tool call among them, read by the annotator -- hold everywhere.
         The routes are the app's own; a POST route needs its body in BODIES."""
         dave, quote = self.alias("dave"), urllib.parse.quote
         # A reader with his alias finds him, and the service has learned his
@@ -661,6 +663,7 @@ class ReaderTextTest(Served):
             for text in [body] + self.answers(where, status, body):
                 self.assertNotIn(dave, text, where)
                 self.assertNotIn(MARK, text, where)
+                self.assertClean(where, text)
 
         swept, seen = [], set()
         for r in self.app.routes:
