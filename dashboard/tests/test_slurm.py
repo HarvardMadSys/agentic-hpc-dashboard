@@ -57,6 +57,11 @@ class Outcomes(unittest.TestCase):
                      "srun: error: holy7c24101: tasks 0-3: Killed\n",
                      "PermissionError: [Errno 13] Permission denied: '/n/x'\n"
                      "CUDA not available\n"
+                     "srun: error: holy7c24101: task 0: Exited with exit code 1\n",
+                     # the tail's first line cut (it keeps 300 characters): numpy's
+                     # words, which a refusal phrase matched anywhere would take
+                     "ryMemoryError: Unable to allocate 2.00 GiB for an array with shape "
+                     "(100000, 2680) and data type float64\n"
                      "srun: error: holy7c24101: task 0: Exited with exit code 1\n"):
             r = sub(0, "srun -p test python x.py", exit_code=1, captured_tail=tail)
             self.assertEqual(outcome(r), "no_id", tail)
@@ -71,7 +76,23 @@ class Outcomes(unittest.TestCase):
                  "srun: error: QOSMaxSubmitJobPerUserLimit"),
                 ("salloc -p nope", "salloc: error: Job submit/allocate failed: Invalid "
                  "partition name specified\n", "salloc: error: Job submit/allocate failed: "
-                 "Invalid partition name specified")):
+                 "Invalid partition name specified"),
+                # an older salloc's words for the same
+                ("salloc -p gpu", "salloc: error: Failed to allocate resources: Requested node "
+                 "configuration is not available\n", "salloc: error: Failed to allocate "
+                 "resources: Requested node configuration is not available"),
+                ("salloc --immediate=30 -p gpu", "salloc: Pending job allocation 4242\n"
+                 "salloc: job 4242 queued and waiting for resources\n"
+                 "salloc: error: Unable to allocate resources: Requested nodes are busy\n",
+                 "salloc: error: Unable to allocate resources: Requested nodes are busy"),
+                # srun inside an allocation, SLURM_JOB_ID from the environment
+                ("srun -n 64 python x.py", "srun: error: Unable to create step for job 4242: "
+                 "More processors requested than permitted\n", "srun: error: Unable to create "
+                 "step for job N: More processors requested than permitted"),
+                ("srun python x.py", "srun: error: Unable to confirm allocation for job 4242: "
+                 "Invalid job id specified\nsrun: Check SLURM_JOB_ID environment variable. "
+                 "Expired or invalid job 4242\n", "srun: error: Unable to confirm allocation "
+                 "for job N: Invalid job id specified")):
             r = sub(0, args, exit_code=1, captured_tail=tail)
             self.assertEqual(outcome(r), "rejected", tail)
             self.assertEqual(reason(r), why)

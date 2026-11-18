@@ -56,12 +56,20 @@ _NUM = re.compile(r"\d+")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b-\x1f\x7f]")
 # What the scheduler prints when it refuses, at the start of a line: any error
 # of sbatch's, which prints nothing else on a failure, and srun's and salloc's
-# about the allocation. Those two also relay the payload's own output, and say
-# how it ended in an error line of their own (`srun: error: holy7c24101: task
-# 0: Exited with exit code 1`): a program that ran and failed is not a
-# refusal, nor is a "denied" or "not available" it printed.
+# about the allocation -- "Unable to allocate resources" (srun, and salloc
+# --immediate), "Job submit/allocate failed" (salloc; "Failed to allocate
+# resources" in older Slurm), "Unable to create step" and "Unable to confirm
+# allocation" (srun inside one). Those two also relay the payload's own output,
+# and say how it ended in an error line of their own (`srun: error: holy7c24101:
+# task 0: Exited with exit code 1`): a program that ran and failed is not a
+# refusal, nor is a "denied" or "not available" it printed. The line's start is
+# required, prefix and all: numpy's MemoryError says "Unable to allocate 2.00
+# GiB for an array". So `rejected` is a lower bound: a submission keeps its
+# last 300 characters (`captured_tail`), and a refusal line cut at its start
+# there is missed -- which takes a reason of some 200 characters, as Slurm
+# prints that line last.
 _REFUSAL = re.compile(r"sbatch: error|(?:srun|salloc): error: (?:Unable to allocate"
-                      r"|Job submit/allocate failed|Unable to create step"
+                      r"|Job submit/allocate failed|Failed to allocate|Unable to create step"
                       r"|Unable to confirm allocation)", re.I)
 # A refusal's reason: the scheduler's first error line, which can say more than
 # the allocation line after it (QOSMaxSubmitJobPerUserLimit). A refused srun ran
