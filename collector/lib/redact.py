@@ -1414,6 +1414,78 @@ def _key_values(text):
     return [v for v in found if len(v) >= 4]
 
 
+# A redirection's operator: it and the word after it are no argument of their
+# command, wherever they stand in it.
+_REDIRECT = re.compile(r'(?:&>>?|<<<?|<>|>>|[<>]&|>\||[<>])\Z')
+_ECHO_FLAGS = re.compile(r'-[neE]+\Z')
+# a variable expanded, `$P` or `${P}`; a value that is nothing but another's
+_REF = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)')
+_ALIAS = re.compile(r'"?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})"?\Z')
+
+
+def _piped_text(cmd, data):
+    """The edits that mask what the command `cmd` pipes into an agent, as its
+    prompt: `echo`'s or `printf`'s arguments, or the heredoc or here-string
+    `cat` is given (`data`)."""
+    argv = [w[0] for w in cmd]
+    k = _program_at(argv)[0]
+    if k is None:
+        return []
+    base = _basename(argv[k])
+    if base == 'cat':
+        return list(data)
+    if base not in ('echo', 'printf'):
+        return []
+    j = k + 1
+    while base == 'echo' and j < len(argv) and _ECHO_FLAGS.match(argv[j]):
+        j += 1
+    return [(cmd[j][2], cmd[-1][3], PROMPT_MASK)] if j < len(cmd) else []
+
+
+def _changed(old, new):
+    """The part of `old` that an edit to `new` replaced: their common start and
+    end taken off."""
+    p, n = 0, min(len(old), len(new))
+    while p < n and old[p] == new[p]:
+        p += 1
+    q = 0
+    while q < n - p and old[-1 - q] == new[-1 - q]:
+        q += 1
+    return old[p:len(old) - q]
+
+
+def _mask_assigned(s, toks, edits):
+    """A variable set in `s` and expanded where a prompt was masked holds the
+    prompt (`P="..."; claude -p "$P"`): its value is masked too, and so on along
+    a chain of them. A value that is only another variable (`P="$Q"`) stays, and
+    the one it names is followed. Edits go into `edits`."""
+    assigns = {}
+    for t in toks:
+        m = None if t[1] else _ENV_ASSIGN.match(t[0])
+        if m:
+            name = t[0][:m.end() - 1]
+            if s.startswith(name + '=', t[2]):
+                assigns.setdefault(name, []).append((t[2] + len(name) + 1, t[3]))
+    if not assigns:
+        return
+    names = set()
+    for a, b, text in edits:
+        if PROMPT_MASK in text:
+            names.update(_REF.findall(_changed(s[a:b], text)))
+    seen = set()
+    while names:
+        name = names.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for a, b in assigns.get(name, ()):
+            value = s[a:b]
+            names.update(_REF.findall(value))
+            if value and not _ALIAS.match(value) and not any(x < b and a < y
+                                                             for x, y, _t in edits):
+                edits.append((a, b, PROMPT_MASK))
+
+
 def _redact_shell(s, depth, exact=True):
     """A shell command string with every agent prompt in it masked; (str, a
     prompt masked?). Only the masked words change -- the rest of the string,
@@ -1437,23 +1509,43 @@ def _redact_shell(s, depth, exact=True):
             return s, False
         return s[:m.end(1)] + ' ' + PROMPT_MASK, True
     bodies = dict((op, (a, b)) for op, a, b in heredocs)
-    edits, cmd = [], []
+    edits, cmd, data = [], [], []
+    redirect = piped = None
     for k, t in enumerate(toks + [None]):
         if t is not None and not t[1]:
             nxt = toks[k + 1] if k + 1 < len(toks) else None
             if (nxt is not None and nxt[1] and nxt[2] == t[3] and nxt[0][:1] in '<>'
                     and s[t[2]:t[3]].isdigit()):
                 continue                    # `2>&1`: a file descriptor, no argument
+            if redirect is not None:
+                # the word a redirection takes, no argument of the command: a
+                # file, a heredoc's delimiter, or a here-string -- its input
+                if redirect == '<<<':
+                    data.append((t[2], t[3], PROMPT_MASK))
+                redirect = None
+                continue
             # `do claude ...`: a command after a reserved word
             if cmd or not (t[0] in _LEADING_WORDS and s[t[2]:t[3]] == t[0]):
                 cmd.append(t)
             continue
-        if cmd and t is not None and t[2] in bodies:
-            a, b = bodies[t[2]]
-            if s[a:b].strip() and find_cli([w[0] for w in cmd])[1] is not None:
-                edits.append((a, b, PROMPT_MASK + '\n'))    # `claude -p <<'EOF'`: its prompt
+        if t is not None and _REDIRECT.match(t[0]):
+            # A redirection stands anywhere in its command (`claude -p > out
+            # "..."`); a heredoc's body, after the line, is that command's input.
+            if t[2] in bodies and s[bodies[t[2]][0]:bodies[t[2]][1]].strip():
+                data.append(bodies[t[2]] + (PROMPT_MASK + '\n',))
+            redirect = t[0]
+            continue
+        redirect = None
         if cmd:
             argv = [w[0] for w in cmd]
+            if find_cli(argv)[1] is not None:
+                # What an agent reads on its input is its prompt: a heredoc or a
+                # here-string of its own (`claude -p <<'EOF'`), and what `echo`,
+                # `printf` or `cat` pipes straight into it.
+                edits.extend(data)
+                if piped is not None:
+                    edits.extend(_piped_text(*piped))
+            piped = (cmd, data) if t is not None and t[0] in ('|', '|&') else None
             res, _f = _mask_argv(argv, depth, exact)
             k = 0
             while k < len(cmd):
@@ -1469,7 +1561,9 @@ def _redact_shell(s, depth, exact=True):
                     a, b = cmd[k][2], cmd[k][3]
                     edits.append((a, b, _requote(s[a:b], res[k])))
                     k += 1
-            cmd = []
+        else:
+            piped = None
+        cmd, data = [], []
     for a, b in substs:
         # `out="$(claude -p ...)"`: a command inside a quoted word, unless the
         # word itself went
@@ -1477,6 +1571,7 @@ def _redact_shell(s, depth, exact=True):
             red = _redact_string(s[a:b], depth, exact)
             if red != s[a:b]:
                 edits.append((a, b, red))
+    _mask_assigned(s, toks, edits)
     fired = any(PROMPT_MASK in e[2] for e in edits)
     for a, b in comments:
         # A comment beside a masked prompt may be the prompt's own words, which
@@ -1620,6 +1715,13 @@ def _mask_argv(argv, depth=0, exact=True):
     if name is not None:
         spec = CLIS[name]
         res[i + 1:] = _walk(spec, argv[i + 1:], exact)[0]
+        for j in range(i):
+            # an environment the agent is started with that says a sentence:
+            # `env 'PROMPT=...' claude -p`, `TASK="..." codex exec`
+            if _ENV_ASSIGN.match(argv[j]):
+                key, _eq, val = argv[j].partition('=')
+                if _says(val):
+                    res[j] = key + '=' + PROMPT_MASK
         k = _inner_command(spec, argv, i + 1)
         if k is not None:
             inner = _mask_argv(argv[k:], depth, exact)[0]

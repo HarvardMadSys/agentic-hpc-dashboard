@@ -851,6 +851,73 @@ class CoverageTest(unittest.TestCase):
             self.same(argv)
 
 
+class PromptOnInputTest(unittest.TestCase):
+    """A prompt handed to an agent on its input, or through a variable, went out
+    as written: `claude -p <<< "..."`, `echo "..." | claude -p`, `P="...";
+    claude -p "$P"`. Masked in the string as the tracer has it and as the node
+    tier joins it."""
+
+    def check(self, argv, want):
+        self.assertEqual(R.redact_argv(argv), (want, ['prompt']), argv)
+        self.assertEqual(R.redact_line(' '.join(argv)), (want, ['prompt']), argv)
+
+    def same(self, argv):
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None), argv)
+
+    def test_a_here_string(self):
+        self.check(['bash', '-c', 'claude -p <<< "the secret plan"'],
+                   'bash -c claude -p <<< %s' % P)
+        self.check(['bash', '-c', "codex exec - <<< 'the secret plan' && echo done"],
+                   'bash -c codex exec - <<< %s && echo done' % P)
+        self.same(['bash', '-c', 'grep plan <<< "the secret plan"; claude --version'])
+
+    def test_what_is_piped_straight_into_an_agent(self):
+        self.check(['bash', '-c', 'echo "the secret plan" | claude -p'],
+                   'bash -c echo %s | claude -p' % P)
+        self.check(['bash', '-c', 'echo -n the secret plan |& claude -p'],
+                   'bash -c echo -n %s |& claude -p' % P)
+        self.check(['bash', '-c', 'printf "%s" "the secret plan" | codex exec -'],
+                   'bash -c printf %s | codex exec -' % P)
+        self.check(['bash', '-c', "cat <<'EOF' | claude -p\nthe secret plan\nEOF"],
+                   "bash -c cat <<'EOF' | claude -p\n%s\nEOF" % P)
+        # into anything else, it is no prompt
+        self.same(['bash', '-c', 'echo "the secret plan" | grep plan; claude --version'])
+        self.same(['bash', '-c', 'cat notes.txt | claude -p'])
+
+    def test_a_variable_expanded_where_a_prompt_was(self):
+        self.check(['bash', '-c', 'P="the secret plan"; claude -p "$P"'],
+                   'bash -c P=%s; claude -p %s' % (P, P))
+        self.check(['bash', '-c', 'export P="the secret plan"; claude -p <<< "${P}"'],
+                   'bash -c export P=%s; claude -p <<< %s' % (P, P))
+        self.check(['bash', '-c', 'P="the secret plan"; out="$(claude -p "$P")"'],
+                   'bash -c P=%s; out="$(claude -p %s)"' % (P, P))
+        # along a chain of them, keeping one that only names another
+        self.check(['bash', '-c', 'A="the secret plan"; B="$A"; echo "$B" | claude -p'],
+                   'bash -c A=%s; B="$A"; echo %s | claude -p' % (P, P))
+        # a variable no masked word expands is no prompt
+        self.same(['bash', '-c', 'D="/data/run 1"; cd "$D" && claude --version'])
+
+    def test_a_redirection_stands_anywhere_in_its_command(self):
+        """It ended the command, and an agent's prompt after it was no argument."""
+        self.check(['bash', '-c', 'claude -p > out.txt "the secret plan"'],
+                   'bash -c claude -p > out.txt %s' % P)
+        self.check(['bash', '-c', '> out.txt claude -p "the secret plan"'],
+                   'bash -c > out.txt claude -p %s' % P)
+        self.check(['bash', '-c', 'claude -p 2>&1 "the secret plan" | tee log'],
+                   'bash -c claude -p 2>&1 %s | tee log' % P)
+
+    def test_an_environment_that_says_a_sentence(self):
+        """`env` executes the agent at once, so the tracer is what sees this; a
+        joined line cannot tell where the value ends and the program begins."""
+        self.assertEqual(R.redact_argv(['env', 'PROMPT=the secret plan', 'claude', '-p']),
+                         ('env PROMPT=%s claude -p' % P, ['prompt']))
+        self.check(['bash', '-c', 'TASK="fix the secret plan" codex exec'],
+                   'bash -c TASK=%s codex exec' % P)
+        self.same(['env', 'NODE_OPTIONS=--max-old-space-size=4096 --no-warnings', 'claude',
+                   '--model', 'opus'])
+        self.same(['env', 'GIT_AUTHOR_NAME=Jane Doe', 'claude', '--model', 'opus'])
+
+
 class WorstCaseTest(unittest.TestCase):
     """Crafted lines that took the rules seconds -- an idle process with such an
     argv stalled every node-tier snapshot, and each such exec the tracer's one
