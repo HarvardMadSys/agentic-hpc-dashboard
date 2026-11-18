@@ -8,6 +8,7 @@ through the calls `app.py` makes.
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
 import gzip
+import io
 import json
 import os
 import shutil
@@ -17,6 +18,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -420,6 +422,29 @@ class NonObjectTest(FeedCase):
         b = agg.backfill
         self.assertEqual((b["state"], b["records"], b["parse_errors"]), ("done", 1180, 1))
         self.assertEqual(self.events(agg)["agent"], 1180)
+
+    def test_a_view_that_takes_no_record_is_logged_once_and_counted_by_the_batch(self):
+        # A bug in one view raised at every record, counted, and written nowhere.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600, 1)])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        reg = agg.panels_by_window
+        view = reg.request(1440)
+        reg._build(view)
+        log = io.StringIO()
+        with mock.patch.object(view, "feed", side_effect=RuntimeError("a bug in one view")), \
+                mock.patch("sys.stderr", log):
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 300 + i * 0.01, 100 + i)
+                                           for i in range(600)])
+            self.assertEqual(agg.poll_once(), 600)
+        self.assertEqual(log.getvalue().count("view feed: RuntimeError: a bug in one view"), 1)
+        self.assertEqual(agg.stats["feed_errors"], 600)
+        self.assertEqual(agg.stats["feed_error_streak"], 3)    # three batches, each with one
+        self.assertEqual(self.events(agg)["agent"], 601)        # the live tier, all the same
+        # a batch every view takes ends the streak
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 100, 900)])
+        self.assertEqual(agg.poll_once(), 1)
+        self.assertEqual(agg.stats["feed_error_streak"], 0)
 
     def test_a_time_search_steps_over_lines_that_are_no_object(self):
         recs = [exit_rec(self.now - 1000 + 10 * i, i) for i in range(100)]

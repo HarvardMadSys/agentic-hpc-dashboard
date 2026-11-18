@@ -108,10 +108,15 @@ def memo_status():
 # sent is dropped, and no more than WS_MAX_CLIENTS are served at once.
 WS_SEND_TIMEOUT_S = 5.0
 WS_MAX_CLIENTS = 64
-# `/api/health` says `ok` false once the tail has not moved -- no poll ended, no
-# batch handed over -- for STALE_POLLS poll intervals, and STALE_MIN_S at least.
+# `/api/health` says `ok` false, and why (`api_health`): once the tail has not
+# moved -- no poll ended, no batch handed over -- for STALE_POLLS poll intervals,
+# and STALE_MIN_S at least; once a background loop's last LOOP_FAILS rounds all
+# raised; once a view could not take a record in FEED_FAILS of the tail's
+# batches in a row.
 STALE_POLLS = 5
 STALE_MIN_S = 5.0
+LOOP_FAILS = 3
+FEED_FAILS = 3
 
 
 class Reader:
@@ -380,8 +385,10 @@ def create_app(cfg):
     # Each background loop's last error, and how many, for /api/health: kept and
     # logged, never passed over. A loop whose every round raised went unseen,
     # and /api/health said nothing was wrong.
+    # `streak` is its rounds in a row that raised, which a round that does not
+    # ends: `ok` goes false at LOOP_FAILS.
     loops = app.state.loops = {name: {"started": None, "errors": 0, "error": None,
-                                      "error_at": None}
+                                      "error_at": None, "streak": 0}
                                for name in ("ingest", "windows", "feeds", "rebuild")}
     logged = {}
 
@@ -392,10 +399,15 @@ def create_app(cfg):
         st = loops[name]
         msg = "%s: %s" % (type(e).__name__, e)
         st["errors"] += 1
+        st["streak"] += 1
         if msg != st["error"] or now - logged.get(name, 0.0) >= 60:
             print("%s loop: %s" % (name, msg), file=sys.stderr, flush=True)
             logged[name] = now
         st["error"], st["error_at"] = msg, now
+
+    def went(name):
+        """A round of loop `name` ended without an error."""
+        loops[name]["streak"] = 0
 
     async def ingest_loop():
         loop = asyncio.get_running_loop()
@@ -420,6 +432,7 @@ def create_app(cfg):
                     # While the backfill runs the bins move every cycle, new
                     # records or not.
                     await broadcast_live()
+                went("ingest")
             except Exception as e:
                 failed("ingest", e)
             await asyncio.sleep(interval)
@@ -460,6 +473,7 @@ def create_app(cfg):
                 if key != last:
                     last = key
                     await broadcast("windows", st)
+                went("windows")
             except Exception as e:
                 failed("windows", e)
 
@@ -471,6 +485,7 @@ def create_app(cfg):
             try:
                 await loop.run_in_executor(None, agg.refresh_feeds)
                 await broadcast("feeds", agg.reports)
+                went("feeds")
             except Exception as e:
                 failed("feeds", e)
 
@@ -488,6 +503,7 @@ def create_app(cfg):
                 await broadcast("rebuilt", {
                     "node_built_at": agg.node_built_at,
                     "windows": [w["minutes"] for w in st["held"]]})
+                went("rebuild")
             except Exception as e:
                 failed("rebuild", e)
 
@@ -758,13 +774,45 @@ def create_app(cfg):
         stale = max(STALE_MIN_S, STALE_POLLS * interval)
         at = agg.stats.get("polled_at") or loops["ingest"]["started"] or now
         age = max(0.0, now - at)
-        return {"ok": age <= stale, "age_s": round(age, 1), "stale_after_s": round(stale, 1)}
+        return {"ok": age <= stale, "age_s": round(age, 1), "stale_after_s": round(stale, 1),
+                "feed_errors": agg.stats["feed_errors"],
+                "feed_error_streak": agg.stats["feed_error_streak"],
+                "feed_error": agg.stats["feed_error"]}
+
+    def unwell(ingest):
+        """Why the service is not well, or nothing (`api_health`)."""
+        why = []
+        if not ingest["ok"]:
+            why.append("the tail has not moved for %.0f s" % ingest["age_s"])
+        for name, st in loops.items():
+            if st["streak"] >= LOOP_FAILS:
+                why.append("the %s loop failed its last %d rounds: %s"
+                           % (name, st["streak"], st["error"]))
+        if ingest["feed_error_streak"] >= FEED_FAILS:
+            why.append("a view could not take a record in %d of the tail's batches in a "
+                       "row: %s" % (ingest["feed_error_streak"], ingest["feed_error"]))
+        return why
 
     @app.get("/api/health")
     def api_health(request: Request):
+        """`ok` false, and `why`, when the service is not doing its work:
+
+        - the tail has not moved -- no poll ended, no batch handed over -- for
+          STALE_POLLS poll intervals, and STALE_MIN_S at least (5 s by default);
+        - a background loop's last LOOP_FAILS (3) rounds all raised: the ingest
+          loop's after 3 polls, the windows loop's after 6 s, the feeds loop's
+          after 90 s, the rebuild loop's after 3 rebuild intervals;
+        - a view could not take a record in FEED_FAILS (3) of the tail's batches
+          in a row.
+
+        One error alone flips nothing: a round that goes through ends a loop's
+        streak, and a batch every view took ends the views' (each is reported,
+        in `loops` and `ingest`, all the same). It said `ok` whatever the loops
+        and the views met."""
         now = time.time()
         ingest = ingest_health(now)
-        return respond({"ok": ingest["ok"], "ingest": ingest,
+        why = unwell(ingest)
+        return respond({"ok": not why, "why": why, "ingest": ingest,
                         # each background loop's last error, and how many
                         "loops": {k: dict(v) for k, v in loops.items()},
                         "websocket": dict(ws_stats, readers=len(app.state.clients),

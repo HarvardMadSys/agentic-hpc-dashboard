@@ -24,6 +24,7 @@ import collections
 import itertools
 import json
 import re
+import sys
 import threading
 import time
 
@@ -164,8 +165,12 @@ class Aggregator:
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
         # `polled_at`: when a poll last ended, or handed a batch over -- whether
-        # the tail is moving, which /api/health's `ok` is judged by
-        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0, "polled_at": None}
+        # the tail is moving, which /api/health's `ok` is judged by; and the
+        # records a view could not take (`_feed_failed`)
+        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0, "polled_at": None,
+                      "feed_error": None, "feed_error_streak": 0}
+        self._batch_failed = False
+        self._feed_logged = 0.0
         # Bumped by every batch dispatched to the live tier: a live frame made since
         # the last bump is the frame a new one would be (`live_frame`).
         self.dispatched = 0
@@ -262,11 +267,31 @@ class Aggregator:
                 # moved, would hand the whole batch over again at the next one.
                 try:
                     feed(rec, place)
-                except Exception:
-                    self.stats["feed_errors"] += 1
+                except Exception as e:
+                    self._feed_failed(e)
+        if not older and recs:
+            # the tail's batches in a row a view could not take a record of:
+            # /api/health's `ok` goes false at FEED_FAILS (app.py)
+            self.stats["feed_error_streak"] = (
+                self.stats["feed_error_streak"] + 1 if self._batch_failed else 0)
+            self._batch_failed = False
         self.stats["records"] += len(recs)
         self.dispatched += 1
         return len(recs)
+
+    def _feed_failed(self, e):
+        """A record a view could not take: counted, its error kept, and logged
+        when it changes and once a minute while it repeats -- a view that raises
+        at every record shows as more than a count, and floods no log. Under
+        the lock."""
+        now = time.time()
+        msg = ("%s: %s" % (type(e).__name__, e))[:300]
+        self.stats["feed_errors"] += 1
+        self._batch_failed = True
+        if msg != self.stats["feed_error"] or now - self._feed_logged >= 60:
+            print("view feed: %s" % msg, file=sys.stderr, flush=True)
+            self._feed_logged = now
+        self.stats["feed_error"] = msg
 
     def _fold(self, norm):
         """Add a private normalizer's counters to the shared one's, and zero them.

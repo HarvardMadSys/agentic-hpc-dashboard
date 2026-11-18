@@ -282,6 +282,81 @@ class ServiceTest(unittest.TestCase):
                       log.getvalue())
         _until("ok again", lambda: _health(self.port)["ok"])
 
+    def windows_loop_fails(self, rounds):
+        """The windows loop's read of the builds' states raises, `rounds` times
+        (None: every time). The loops read in the event loop's executor; the
+        health route's own read, on one of AnyIO's workers, goes through."""
+        real = self.agg.panels_by_window.status
+        left = {"n": rounds}
+
+        def status(*a, **k):
+            if not threading.current_thread().name.startswith("AnyIO") \
+                    and (left["n"] is None or left["n"] > 0):
+                if left["n"] is not None:
+                    left["n"] -= 1
+                raise RuntimeError("the builds' states could not be read")
+            return real(*a, **k)
+        return mock.patch.object(self.agg.panels_by_window, "status", status)
+
+    def test_one_failed_round_of_a_loop_leaves_ok(self):
+        loops = self.app.state.loops
+        errors = loops["windows"]["errors"]
+        with self.windows_loop_fails(1), mock.patch("sys.stderr", io.StringIO()):
+            _until("the round that failed", lambda: loops["windows"]["errors"] > errors)
+            body = _health(self.port)
+            self.assertTrue(body["ok"], body["why"])
+            _until("a round through", lambda: loops["windows"]["streak"] == 0)
+        self.assertTrue(_health(self.port)["ok"])
+
+    def test_a_loop_that_fails_round_after_round_turns_ok_false_and_says_why(self):
+        with self.windows_loop_fails(None), mock.patch("sys.stderr", io.StringIO()):
+            body = _until("ok false", lambda: (lambda b: None if b["ok"] else b)(
+                _health(self.port)))
+        self.assertEqual(body["why"], ["the windows loop failed its last 3 rounds: "
+                                       "RuntimeError: the builds' states could not be read"])
+        _until("ok again", lambda: _health(self.port)["ok"])
+
+    def default_view(self):
+        return _until("the default window", lambda: (lambda v: v if v is not None and
+                                                      v.state == "ready" else None)(
+            self.agg.panels_by_window.peek(1440)))
+
+    def test_one_record_a_view_could_not_take_leaves_ok(self):
+        self.feeding()
+        view = self.default_view()
+        real, left = view.feed, {"n": 1}
+
+        def feed(rec, at=None):
+            if left["n"]:
+                left["n"] -= 1
+                raise RuntimeError("the view could not take this one")
+            return real(rec, at)
+        errors = self.agg.stats["feed_errors"]
+        with mock.patch.object(view, "feed", feed), mock.patch("sys.stderr", io.StringIO()):
+            _until("the record", lambda: self.agg.stats["feed_errors"] > errors)
+            body = _health(self.port)
+            self.assertTrue(body["ok"], body["why"])
+            _until("a batch through", lambda: self.agg.stats["feed_error_streak"] == 0)
+        self.assertTrue(_health(self.port)["ok"])
+
+    def test_a_view_that_takes_no_record_turns_ok_false_and_is_logged_once(self):
+        self.feeding()
+        view = self.default_view()
+        log = io.StringIO()
+        with mock.patch.object(view, "feed", side_effect=RuntimeError("the view takes none")), \
+                mock.patch("sys.stderr", log):
+            body = _until("ok false", lambda: (lambda b: None if b["ok"] else b)(
+                _health(self.port)))
+            errors = self.agg.stats["feed_errors"]
+            _until("more records it could not take",
+                   lambda: self.agg.stats["feed_errors"] >= errors + 5)
+        self.assertEqual(len(body["why"]), 1)
+        self.assertTrue(body["why"][0].startswith("a view could not take a record in "),
+                        body["why"])
+        self.assertTrue(body["why"][0].endswith(": RuntimeError: the view takes none"))
+        self.assertEqual(log.getvalue().count("view feed: RuntimeError: the view takes none"), 1)
+        _until("ok again", lambda: _health(self.port)["ok"])
+
     def test_a_reader_past_the_cap_is_turned_away(self):
         _until("no readers", lambda: not self.app.state.clients)
         with mock.patch.object(appmod, "WS_MAX_CLIENTS", 1):
