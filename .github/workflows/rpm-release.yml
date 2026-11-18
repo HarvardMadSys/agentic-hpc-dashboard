@@ -52,7 +52,7 @@ jobs:
       - name: Compute version and release
         id: ver
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             # Strip the leading v: v1.2.3 -> 1.2.3
             version="${GITHUB_REF_NAME#v}"
             release="1"
@@ -66,8 +66,13 @@ jobs:
           echo "release=${release}" >> "$GITHUB_OUTPUT"
           echo "Building ebpfm-collector ${version}-${release}"
 
+      # The version is the tag's name, text whoever pushed it chose: it reaches the
+      # script as data, not pasted into it.
       - name: Build RPM
         id: build
+        env:
+          EBPFM_VERSION: ${{ steps.ver.outputs.version }}
+          EBPFM_RELEASE: ${{ steps.ver.outputs.release }}
         run: |
           set -euo pipefail
           topdir="$(pwd)/rpmbuild"
@@ -81,8 +86,8 @@ jobs:
           cp packaging/rpm/ebpfm-collector.spec "$topdir/SPECS/"
           rpmbuild \
             --define "_topdir $topdir" \
-            --define "_ebpfm_version ${{ steps.ver.outputs.version }}" \
-            --define "_ebpfm_release ${{ steps.ver.outputs.release }}" \
+            --define "_ebpfm_version ${EBPFM_VERSION}" \
+            --define "_ebpfm_release ${EBPFM_RELEASE}" \
             -bb "$topdir/SPECS/ebpfm-collector.spec"
           rpm_path="$(find "$topdir/RPMS" -name '*.rpm' | head -n1)"
           echo "rpm_path=${rpm_path}" >> "$GITHUB_OUTPUT"

@@ -53,19 +53,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The ref's type and name come from the runner's environment, never pasted
+      # into the script: a branch name is text whoever pushes it chose.
       - name: Resolve base image tag
         id: base
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             base_tag="latest"
-          elif [ "${{ github.ref_name }}" = "main" ]; then
+          elif [ "$GITHUB_REF_NAME" = "main" ]; then
             base_tag="edge"
           else
             # Slugify the branch the same way docker/metadata-action does for
-            # type=ref,event=branch (slashes -> dashes).
-            base_tag="$(echo '${{ github.ref_name }}' | sed 's#[/]#-#g')"
+            # type=ref,event=branch: each run of characters a tag cannot hold
+            # (slashes among them) becomes one dash.
+            base_tag="$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
           fi
-          image="${REGISTRY}/${BASE_IMAGE_NAME}:${base_tag}"
+          # A repository path must be lowercase, and github.repository keeps the
+          # owner's capitals (HarvardMadSys), which docker refuses outright.
+          # metadata-action lowercases the images it names, so base-image.yml
+          # publishes ghcr.io/harvardmadsys/...; the tag keeps its case there too.
+          image="${REGISTRY,,}/${BASE_IMAGE_NAME,,}:${base_tag}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "Using base image: ${image}"
 
@@ -74,18 +81,26 @@ jobs:
         # docker/base, so the base tag may not exist yet. Poll the registry
         # manifest for up to ~10 min before giving up, rather than failing on a
         # race we expect to resolve. If docker/base was unchanged, the tag
-        # already exists from a prior run and this returns immediately.
+        # already exists from a prior run and this returns immediately. Only
+        # "not found" is waited out: any other error (a malformed reference, a
+        # refused login) will not go away, and stops the job at once, saying what
+        # it was.
+        env:
+          IMAGE: ${{ steps.base.outputs.image }}
         run: |
-          image="${{ steps.base.outputs.image }}"
           for i in $(seq 1 60); do
-            if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
-              echo "Base image available: $image"
+            if err=$(docker buildx imagetools inspect "$IMAGE" 2>&1 >/dev/null); then
+              echo "Base image available: $IMAGE"
               exit 0
             fi
-            echo "Attempt $i/60: $image not yet available; waiting 10s..."
+            case "$err" in
+              *"not found"*) ;;
+              *) echo "::error::Cannot read base image $IMAGE: $err"; exit 1 ;;
+            esac
+            echo "Attempt $i/60: $IMAGE not found yet; waiting 10s..."
             sleep 10
           done
-          echo "::error::Base image $image did not become available in time"
+          echo "::error::Base image $IMAGE did not become available in time: $err"
           exit 1
 
       - name: Derive image metadata
