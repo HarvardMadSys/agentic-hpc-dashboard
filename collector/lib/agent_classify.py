@@ -36,19 +36,22 @@ _AGENT_PATTERNS = [
                                r'|(?:^|/|\s)codex(?:\s|$|@)', re.I)),
     ('copilot',     re.compile(r'github\.copilot|/copilot(?:\s|$)', re.I)),
     ('cursor',      re.compile(r'\.cursor-server|\.cursor/', re.I)),
-    ('windsurf',    re.compile(r'\.windsurf-server|\.codeium/windsurf', re.I)),
+    ('windsurf',    re.compile(r'\.windsurf-server|\.codeium/windsurf|(?:^|/)windsurf-terminal',
+                               re.I)),
     ('vscode',      re.compile(r'\.vscode-server|\.vscode/cli', re.I)),
     ('bwrap',       re.compile(r'(?:^|/)bwrap(?:\s|$)')),
 ]
 
-# Runtime artifacts: what only an agent's runtime writes on a command line, read
-# anywhere on it, in the order above. Cursor's and Windsurf's sandbox and terminal
-# markers; and Claude Code's tool-call shell, a shell that sources a snapshot of
-# the user's own (`zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-1.sh &&
-# eval '...'`, also behind the sandbox runtime's `exec 3<&- ...;`).
+# Runtime artifacts: what only an agent's runtime writes on a command line, in the
+# order above, and only where it writes it. Cursor's and Windsurf's environment
+# markers as they are set -- an assignment, or bwrap's `--setenv NAME` -- never as
+# a word that names one (`grep -r CURSOR_SANDBOX .`); Windsurf's terminal is a
+# program, above. And Claude Code's tool-call shell, a shell that sources a
+# snapshot of the user's own (`zsh -c source ~/.claude/shell-snapshots/
+# snapshot-zsh-1.sh && eval '...'`, also behind the sandbox runtime's `exec 3<&- ...;`).
 _MARKERS = {
-    'cursor':   re.compile(r'CURSOR_SANDBOX', re.I),
-    'windsurf': re.compile(r'windsurf-terminal|WINDSURF_STATE', re.I),
+    'cursor':   re.compile(r'(?:^|\s)CURSOR_SANDBOX=|--setenv\s+CURSOR_SANDBOX(?:\s|$)'),
+    'windsurf': re.compile(r'(?:^|\s)WINDSURF_STATE=|--setenv\s+WINDSURF_STATE(?:\s|$)'),
 }
 _TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'))

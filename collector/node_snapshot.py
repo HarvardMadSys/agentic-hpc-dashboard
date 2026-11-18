@@ -565,13 +565,14 @@ _AGENT_PATTERNS = [
                                r'|(?:^|/|\s)codex(?:\s|$|@)', re.I)),
     ('copilot',     re.compile(r'github\.copilot|/copilot(?:\s|$)', re.I)),
     ('cursor',      re.compile(r'\.cursor-server|\.cursor/', re.I)),
-    ('windsurf',    re.compile(r'\.windsurf-server|\.codeium/windsurf', re.I)),
+    ('windsurf',    re.compile(r'\.windsurf-server|\.codeium/windsurf|(?:^|/)windsurf-terminal',
+                               re.I)),
     ('vscode',      re.compile(r'\.vscode-server|\.vscode/cli', re.I)),
     ('bwrap',       re.compile(r'(?:^|/)bwrap(?:\s|$)')),
 ]
 _MARKERS = {
-    'cursor':   re.compile(r'CURSOR_SANDBOX', re.I),
-    'windsurf': re.compile(r'windsurf-terminal|WINDSURF_STATE', re.I),
+    'cursor':   re.compile(r'(?:^|\s)CURSOR_SANDBOX=|--setenv\s+CURSOR_SANDBOX(?:\s|$)'),
+    'windsurf': re.compile(r'(?:^|\s)WINDSURF_STATE=|--setenv\s+WINDSURF_STATE(?:\s|$)'),
 }
 _TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'))

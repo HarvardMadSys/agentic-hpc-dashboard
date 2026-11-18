@@ -372,10 +372,12 @@ The program is:
 - the first word of a shell's `-c` command (`sh -c exec claude …`);
 - for a `bwrap`, every word: a sandbox is tagged by what it confines, as before.
 
-Beside the program, the artifacts only an agent's runtime writes count anywhere on the
-line: Claude Code's tool-call shell (a shell sourcing `~/.claude/shell-snapshots/…`), and
-Cursor's and Windsurf's `CURSOR_SANDBOX`, `WINDSURF_STATE` and `windsurf-terminal`.
-`ClassifyTest` pins both lists, and that the node tier's copy agrees.
+Beside the program, the artifacts only an agent's runtime writes count, where it writes
+them: Claude Code's tool-call shell (a shell sourcing `~/.claude/shell-snapshots/…`), and
+Cursor's and Windsurf's `CURSOR_SANDBOX` and `WINDSURF_STATE` set as an environment
+assignment (`CURSOR_SANDBOX=1`, or bwrap's `--setenv CURSOR_SANDBOX`), never a word that
+only names one (`grep -r CURSOR_SANDBOX .`). Windsurf's `windsurf-terminal` counts as a
+program. `ClassifyTest` pins both lists, and that the node tier's copy agrees.
 
 What moves:
 

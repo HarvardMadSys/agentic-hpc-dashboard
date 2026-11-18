@@ -723,6 +723,10 @@ class ClassifyTest(unittest.TestCase):
         'rm -rf ' + HOME + '/.cursor-server',
         'vim ' + HOME + '/.cursor/mcp.json',
         'ls /usr/bin/bwrap',
+        # a runtime's marker named, not set
+        'grep -r CURSOR_SANDBOX .',
+        'rg WINDSURF_STATE ' + HOME + '/notes',
+        'less ' + HOME + '/windsurf-terminal.log',
         # a project's own program in a Claude worktree: a venv's console script
         HOME + '/repo/.claude/worktrees/fix-1/.venv/bin/python3 ' + HOME
         + '/repo/.claude/worktrees/fix-1/.venv/bin/pytest -q',
@@ -766,6 +770,10 @@ class ClassifyTest(unittest.TestCase):
         ('bash -c exec 3<&- || exit 126; source ' + HOME + '/.claude/shell-snapshots/'
          "snapshot-bash-1.sh && eval 'ls'", 'claude_code'),
         ('env CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('bash -c CURSOR_SANDBOX=1 make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 --ro-bind / / /bin/bash -c make', 'cursor'),
+        ('env WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        (HOME + '/.local/bin/windsurf-terminal --pty', 'windsurf'),
         # a bwrap, by what it confines
         ('bwrap --ro-bind / / /bin/true', 'bwrap'),
         ('bwrap --ro-bind / / claude', 'claude_code'),
