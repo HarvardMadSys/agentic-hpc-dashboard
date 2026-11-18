@@ -42,9 +42,11 @@ import {
   CALL_KNOWN,
   CALL_LABEL,
   CALL_ORDER,
+  SANDBOX_KNOWN,
   SANDBOX_ORDER,
   SB_COL,
   SB_LABEL,
+  SESSION_KNOWN,
   SESSION_LABEL,
   SESSION_ORDER,
   label,
@@ -66,17 +68,25 @@ const SRC_LBL: Record<string, string> = table({
 
 type ByClass = Record<string, Record<string, number>> | undefined;
 
-function AxisBlock({ by, have, order, col, lbl, grain }: {
+/** One axis's states by class. A state the axis can judge (`known`) is a share of the class's
+ *  judged ones; the others -- unknown, no tool calls, exited before it was checked, not an agent --
+ *  are counts, and the coverage under each class says how many were judged at all (lib/sandbox.ts).
+ *  Dividing by every state made the bypass share 10.0% (2 of 20) under a plate of 11.8% (2 of 17). */
+function AxisBlock({ by, have, order, col, lbl, grain, known }: {
   by: ByClass;
   have: string[];
   order: string[];
   col: Record<string, string>;
   lbl: Record<string, string>;
   grain: string;
+  known: string[];
 }) {
   const sort = useSort<string>();
   if (!by) return null;
   const tot = (c: string) => Object.values(by[c] ?? {}).reduce((a, b) => a + b, 0);
+  const share = (c: string, st: string) => shareOfKnown(by[c], st, known);
+  /** the class's judged ones, and their coverage */
+  const judged = (c: string) => shareOfKnown(by[c], known, known);
   const cols = have.filter((c) => tot(c) > 0);
   if (!cols.length) return null;
   // every state in the canonical order, zero included -- "isolated: 0%" is
@@ -91,10 +101,11 @@ function AxisBlock({ by, have, order, col, lbl, grain }: {
           <tr>
             <SortTh s={sort} k="state" first="asc">state</SortTh>
             {cols.map((c) => (
-              <SortTh key={c} s={sort} k={c} className="cls">
+              <SortTh key={c} s={sort} k={c} className="cls"
+                tip={`the shares are of the ${fint(judged(c).known)} of ${fint(tot(c))} ${grain} whose state is known; the rest are counted below them`}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
                 <div className="sub">
-                  {fint(tot(c))} {grain}
+                  {fint(tot(c))} {grain} <Coverage pct={judged(c).coverage} />
                 </div>
               </SortTh>
             ))}
@@ -102,7 +113,7 @@ function AxisBlock({ by, have, order, col, lbl, grain }: {
         </thead>
         <tbody>
           {sort.sort([...order, ...extra], (st, k) =>
-            k === 'state' ? label(lbl, st) : tot(k) ? (by[k]?.[st] ?? 0) / tot(k) : null,
+            k === 'state' ? label(lbl, st) : known.includes(st) ? share(k, st).pct : null,
           ).map((s) => (
             <tr key={s}>
               <td>
@@ -113,7 +124,14 @@ function AxisBlock({ by, have, order, col, lbl, grain }: {
                 const v = by[c]?.[s] ?? 0;
                 return (
                   <td key={c}>
-                    <ShareCell pct={(100 * v) / tot(c)} sub={fint(v)} c={legendCol(col[s] ?? 'var(--sg)')} />
+                    {known.includes(s) ? (
+                      <ShareCell pct={share(c, s).pct} sub={fint(v)} c={legendCol(col[s] ?? 'var(--sg)')} />
+                    ) : (
+                      // not judged: a count, never a share of the judged ones
+                      <span className="nm" data-tip={`${fint(v)} of ${fint(tot(c))} ${grain}: not in the shares above`}>
+                        {fint(v)}
+                      </span>
+                    )}
                   </td>
                 );
               })}
@@ -320,7 +338,7 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           }
         >
           <div className="eyebrow">tool calls, by outcome</div>
-          <AxisBlock by={sb.tool_calls} have={tcHave} order={CALL_ORDER} col={SB_COL} lbl={CALL_LABEL} grain="tool calls" />
+          <AxisBlock by={sb.tool_calls} have={tcHave} order={CALL_ORDER} col={SB_COL} lbl={CALL_LABEL} grain="tool calls" known={callKnown} />
           <div className="eyebrow" style={{ marginTop: 10 }}>
             sessions that made tool calls{sb.sessions_total > sessions.length ? ` · busiest ${sessions.length} of ${fint(sb.sessions_total)}` : ''}
           </div>
@@ -350,11 +368,11 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           }
         >
           <div className="eyebrow">per process</div>
-          <AxisBlock by={sb.by_class_events} have={evHave} order={SANDBOX_ORDER} col={SB_COL} lbl={SB_LABEL} grain="processes" />
+          <AxisBlock by={sb.by_class_events} have={evHave} order={SANDBOX_ORDER} col={SB_COL} lbl={SB_LABEL} grain="processes" known={st.sandbox_known ?? SANDBOX_KNOWN} />
           <div className="eyebrow" style={{ marginTop: 8 }}>
             per session
           </div>
-          <AxisBlock by={sb.by_class_sessions} have={seHave} order={SESSION_ORDER} col={SB_COL} lbl={SESSION_LABEL} grain="sessions" />
+          <AxisBlock by={sb.by_class_sessions} have={seHave} order={SESSION_ORDER} col={SB_COL} lbl={SESSION_LABEL} grain="sessions" known={st.session_known ?? SESSION_KNOWN} />
         </Panel>
 
         <Panel
@@ -372,11 +390,11 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           }
         >
           <div className="eyebrow">per session</div>
-          <AxisBlock by={sb.approval_by_class_sessions} have={apSeHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="sessions" />
+          <AxisBlock by={sb.approval_by_class_sessions} have={apSeHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="sessions" known={apKnown} />
           <div className="eyebrow" style={{ marginTop: 8 }}>
             per process
           </div>
-          <AxisBlock by={sb.approval_by_class_events} have={apEvHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="processes" />
+          <AxisBlock by={sb.approval_by_class_events} have={apEvHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="processes" known={apKnown} />
           {modes.length > 0 && (
             <div className="scroller" style={{ marginTop: 8 }}>
               <table>

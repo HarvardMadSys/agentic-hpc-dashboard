@@ -125,3 +125,37 @@ test('the Disk plates: the agent’s share of all disk reads is the same whateve
   assert.match(await draw(ALL), new RegExp(`${want}% of all disk reads`));
   assert.match(await draw(['agent']), new RegExp(`${want}% of all disk reads`));
 });
+
+/** The cells of the first row reading `state` after `from` in some markup: the share-cell's number, or the count. */
+function stateRow(html, from, state) {
+  const row = html.slice(html.indexOf(from)).split('<tr').find((r) => r.includes(`>${state}<`));
+  assert.ok(row, `a row for ${state} after ${from}`);
+  return [...row.matchAll(/<td[^>]*>(.*?)<\/td>/g)].slice(1).map(([, td]) => {
+    const share = td.match(/<b>([^<]*)<\/b>/);
+    return share ? share[1] : textOf(td);
+  });
+}
+
+test('the Sandbox tables: a state is a share of the judged ones, as the plates above them say', async () => {
+  const html = await ui.render('tabs/SandboxTab.tsx', 'SandboxTab', { P: FIX, cls: ALL });
+  const s = FIX.sandbox.approval_by_class_sessions.agent;
+  assert.equal(s.bypassed + s.auto + s.supervised, 17);
+  // the plate: 2 of the 17 sessions whose launch flags are readable, 11.8%
+  assert.match(textOf(html), /agent sessions launched with a bypass flag \? 12% of 17/);
+  // on develop the table under it said 10% (2 of 20)
+  assert.deepEqual(stateRow(html, 'Approval at launch', 'bypass flag'), ['12%']);
+  // tool calls: 41 of 778 judged (on develop 5.2%, of 785)
+  assert.deepEqual(stateRow(html, 'did they run sandboxed', 'sandboxed'), ['5.3%']);
+  // sessions: 1 of the 10 whose tool calls were judged (on develop 5.0%, of 20)
+  assert.deepEqual(stateRow(html, 'per session', 'all tool calls sandboxed'), ['10%']);
+});
+
+test('the Sandbox tables: unknown, no tool calls and exited-before-checked are counts, with the coverage beside the class', async () => {
+  const html = await ui.render('tabs/SandboxTab.tsx', 'SandboxTab', { P: FIX, cls: ALL });
+  // on develop: shares of every state, 5.0% and 45%
+  assert.deepEqual(stateRow(html, 'Approval at launch', 'unknown'), ['1']);
+  assert.deepEqual(stateRow(html, 'per session', 'no tool calls seen'), ['9']);
+  assert.deepEqual(stateRow(html, 'per process', 'exited before it was checked'), ['412', '5', '0']);
+  // 17 of 20 sessions judged
+  assert.match(textOf(html.slice(html.indexOf('Approval at launch'))), /agent 20 sessions cov 85%/);
+});

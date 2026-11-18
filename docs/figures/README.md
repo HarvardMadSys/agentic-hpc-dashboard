@@ -1455,7 +1455,10 @@ launch (`_approval`, `_approval_detail`).
 #### IN-3 sandboxed, per process and per session
 
 - **Shows:** per class, the processes in each of the four namespace states, and the sessions in each
-  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls).
+  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls). As in IN-2 and IN-4, a state
+  the axis can judge is a share of the class's judged ones, and the rest (exited before it was checked,
+  unknown, no calls, not an agent session, can't tell) are counts, with the coverage under the class
+  (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`): the share a plate above prints.
 - **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
   IN-2.
 
