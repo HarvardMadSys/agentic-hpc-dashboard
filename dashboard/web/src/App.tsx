@@ -261,6 +261,17 @@ export default function App() {
     if (rebuild > 0) reloadPanels();
   }, [rebuild, reloadPanels]);
 
+  // The refresh button and command: everything on the page asked for again --
+  // the live frame, the windows and the feeds (`live.refresh`), the panels and
+  // the sessions -- not only the live frame.
+  const refreshLive = live.refresh;
+  const reloadTraj = traj.reload;
+  const refresh = useCallback(() => {
+    refreshLive();
+    reloadPanels();
+    reloadTraj();
+  }, [refreshLive, reloadPanels, reloadTraj]);
+
   // A `feeds` frame supersedes the REST snapshot.
   const wsFeeds = live.feeds;
   const mergeFeeds = feeds.merge;
@@ -591,7 +602,7 @@ export default function App() {
       label: 'Refresh the data',
       icon: 'refresh',
       keywords: 'reload update',
-      run: live.refresh,
+      run: refresh,
     },
     {
       id: 'act:rail',
@@ -869,7 +880,7 @@ export default function App() {
               <Icon name="hosts" size={14} />
               <b>{fint(live.live?.hosts?.length ?? null)}</b> {(live.live?.hosts?.length ?? 0) === 1 ? nodes.one : nodes.many}
             </span>
-            <button className="btn" onClick={live.refresh} data-tip="ask the service for everything on this page again">
+            <button className="btn" onClick={refresh} data-tip="ask the service for everything on this page again">
               <Icon name="refresh" size={14} />
               refresh
             </button>

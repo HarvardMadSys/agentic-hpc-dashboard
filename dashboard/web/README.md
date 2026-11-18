@@ -94,6 +94,7 @@ npm run check:charts # node --test: the chart tick and width rules in src/charts
 npm run check:css    # node --test: every stylesheet closes its blocks, no rule nested in a rule
 npm run check:shares # node --test: a class's share is out of every class counted, whatever the chips show
 npm run check:panels # node --test: a panel not reduced, waited for or building is never "none" or 0
+npm run check:live   # node --test: the live socket is retried for good, polled meanwhile, replaced when quiet
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -372,11 +373,21 @@ table, the chart, and the list say one thing.
 
 ### Live transport
 
-`src/api/useLive.ts` prefers the websocket and falls back to polling `GET /api/live` every
-15 s after four failed socket attempts. The transport is always named in the rail
+`src/api/useLive.ts` prefers the websocket. After five failed socket attempts in a row it
+also polls, every 15 s, what the socket would have sent: `GET /api/live`, and `/api/windows`
+and `/api/feeds` on the same beat, so a build that finishes still reaches the panels
+(`buildNonce`, from the ready windows) and the feeds report stays current. It never gives up
+on the socket: it tries again after a wait that doubles from 1 s to 30 s, each wait spread
+over its upper half by a hash of when the page opened (`src/lib/backoff.ts`; no random
+number), and at once when the browser comes back online or the tab is shown again. Only a
+frame resets the wait and ends the polling, not the socket's opening: a proxy that accepts
+the upgrade and closes it would otherwise be knocked on every second. A socket that says
+nothing for 75 s -- the service sends a `feeds` frame every 30 s -- is closed and replaced,
+and the page stops saying `live`. The transport is always named in the rail
 (`transport ws` / `polling` / `down`), because a frozen chart that looks live is worse than
 a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels`; a
-`feeds` frame supersedes the REST feeds snapshot.
+`feeds` frame supersedes the REST feeds snapshot. The header's refresh asks for all of it
+again: the live frame, the windows, the feeds, the panels and the sessions.
 
 ### Filters, URL state and export
 

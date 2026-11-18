@@ -18,7 +18,8 @@
     "check:figures": "node --test mock/check_figures.mjs",
     "check:css": "node --test mock/check_css.mjs",
     "check:shares": "node --test mock/check_shares.mjs",
-    "check:panels": "node --test mock/check_panels.mjs"
+    "check:panels": "node --test mock/check_panels.mjs",
+    "check:live": "node --test mock/check_live.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
