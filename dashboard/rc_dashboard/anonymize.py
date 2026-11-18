@@ -534,9 +534,11 @@ def load_salt(cfg):
     file that exists but cannot be read is an error, as is a salt shorter than
     MIN_SALT bytes: serving with no salt, a guessable one, or a new one would
     hand out aliases nobody asked for. A new salt is written whole under a name
-    of its own, synced, and linked into place: the file is never there half
-    written -- a crash or a full disk mid-write leaves none, and the next start
-    makes one -- and of two instances making one at once, the first link wins."""
+    of its own, synced, and linked into place, and the directory synced: the
+    file is never there half written -- a crash or a full disk mid-write leaves
+    none, and the next start makes one -- and of two instances making one at
+    once, the first link wins. Where the file system has no hard links it is
+    made in place instead."""
     s = cfg.get("anonymize.salt") or ""
     if s:
         salt = str(s).encode()
@@ -572,9 +574,36 @@ def load_salt(cfg):
             os.link(tmp, path)
         except FileExistsError:       # another instance's, linked first and whole: use it
             return load_salt(cfg)
+        except OSError:
+            # No hard links on this file system (some FUSE, SMB and object-store
+            # mounts): made in place, which a crash mid-write can leave cut short.
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return load_salt(cfg)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(salt.hex() + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
     finally:
         os.unlink(tmp)
+    _sync_dir(d)                      # the new name, through a power loss
     return salt, "generated"
+
+
+def _sync_dir(d):
+    """fsync directory `d`, so a name just made in it is on disk; a file system
+    that will not sync a directory is left as it is."""
+    try:
+        fd = os.open(d, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def from_config(cfg, roster=None):

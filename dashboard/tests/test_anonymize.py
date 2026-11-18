@@ -285,6 +285,39 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual((len(salt), source), (32, "generated"))
         self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])
 
+    def test_a_file_system_without_hard_links_still_gets_a_salt(self):
+        # some FUSE, SMB and object-store mounts refuse link(2): the file is made in place
+        for code in (errno.EPERM, errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused):
+                salt, source = anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual((len(salt), source), (32, "generated"), code)
+            path = os.path.join(self.tmp, "anonymize.salt")
+            self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"], code)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, code)
+            self.assertEqual(anonmod.load_salt(self.cfg(enabled=True)), (salt, "file"), code)
+            os.unlink(path)
+
+    def test_the_new_name_is_synced_and_a_directory_that_will_not_sync_is_let_be(self):
+        # a power loss just after the first start must not leave the next one to make a
+        # new salt, and with it new aliases
+        fsync = os.fsync
+        for refuse in (False, True):
+            synced = []
+
+            def sync(fd):
+                is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+                synced.append(is_dir)
+                if is_dir and refuse:
+                    raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+                return fsync(fd)
+            with mock.patch.object(anonmod.os, "fsync", sync):
+                salt, source = anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(source, "generated")
+            self.assertEqual(synced, [False, True], "the file's bytes, then its name")
+            os.unlink(os.path.join(self.tmp, "anonymize.salt"))
+
     def test_of_two_instances_making_a_salt_the_first_link_wins(self):
         theirs, link = "ab" * 32, os.link
 

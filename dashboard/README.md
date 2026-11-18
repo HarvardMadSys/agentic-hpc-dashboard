@@ -812,8 +812,9 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   Neither `/api/config` nor `--print-config` shows it. A configured salt shorter than 16 bytes
   stops the service at start rather than serving under it, and a longer one gives every name
   a new alias. The file is written whole and then linked into place, so a crash cannot leave
-  it half-written; one that is empty, not hex or shorter (edited by hand, or left by an older
-  version) stops the service too, and deleting it makes a new salt, with new aliases.
+  it half-written (on a file system without hard links it is made in place, which can). One
+  that is empty, not hex or shorter (edited by hand, a crash there, or an older version) stops
+  the service too: delete it, and the next start makes a new salt, with new aliases.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
