@@ -35,6 +35,7 @@ from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
 from .anonymize import Verbatim, verbatim
+from .ask import unmasked_refusal
 from .export import make_predicate, meta_header, parse_filters, scan
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
@@ -468,12 +469,21 @@ def create_app(cfg):
     # The operator's suggestions marked done: kept by the service for everyone
     # until undone, and left out of the next "suggest actions" (ask.Asker). A
     # mark names a job and an index; the text is the service's own.
+    def kept_answers():
+        """The suggestions marked done are Ask's answers, kept: refused as Ask
+        is while names are anonymized and `ask.unmasked_answers` is off."""
+        why = unmasked_refusal(cfg)
+        if why:
+            raise HTTPException(400, why)
+
     @app.get("/api/suggestions/done")
     def api_done():
+        kept_answers()
         return agg.asker.done_list()
 
     @app.post("/api/suggestions/done")
     async def api_mark_done(request: Request):
+        kept_answers()
         body = await request.json()
         try:
             return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
@@ -484,6 +494,7 @@ def create_app(cfg):
 
     @app.delete("/api/suggestions/done/{did}")
     def api_undo_done(did: str):
+        kept_answers()
         try:
             return agg.asker.undo_done(did)
         except LookupError as e:

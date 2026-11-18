@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import ask                                         # noqa: E402
+from rc_dashboard.anonymize import Verbatim                          # noqa: E402
 from rc_dashboard import config as configmod                         # noqa: E402
 from rc_dashboard import hours, snapshots                            # noqa: E402
 from rc_dashboard.aggregator import Aggregator                       # noqa: E402
@@ -493,6 +494,23 @@ class DoneTest(unittest.TestCase):
                  "evidence": "188 runs [c4]"}]}))}
         self.a.mark_done("j2", 0)
         self.assertEqual(self.a.done_for_prompt()[0]["action"], "email them now")
+
+    def test_only_what_was_written_under_this_masking_goes_as_written(self):
+        # A suggestion is the agent's words: written under the masking in use,
+        # it goes out as written (rewritten, a name a reader planted would come
+        # back as its alias). Kept from before -- names shown, or another salt
+        # -- it holds the data's names, and goes through the masking like them.
+        self.a.masked_by = "salt-a"
+        self.a.mark_done("j1", 0)
+        self.assertNotIn("masked_by", self.a.done_list()["items"][0])
+        for masked_by, written_here in (("salt-a", True), ("salt-b", False), (None, False)):
+            self.a.masked_by = masked_by
+            for got in (self.a.done_list()["items"][0], self.a.mark_done("j1", 0)["items"][0],
+                        self.a.done_for_prompt()[0]):
+                self.assertEqual(type(got["title"]) is Verbatim, written_here, masked_by)
+                self.assertNotIn("masked_by", got)
+        with open(self.a._done_path()) as fh:
+            self.assertEqual(json.load(fh)["items"][0]["masked_by"], "salt-a")
 
 
 class SessionDigestTest(unittest.TestCase):

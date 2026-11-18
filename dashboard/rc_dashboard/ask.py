@@ -894,6 +894,14 @@ UNMASKED = ("names are anonymized here (anonymize.enabled), and an answer is sho
             "there would be shown. Set ask.unmasked_answers to allow Ask anyway.")
 
 
+def unmasked_refusal(cfg):
+    """`UNMASKED` while names are anonymized and `ask.unmasked_answers` is off,
+    else None: Ask is refused then, and so are the suggestions it keeps."""
+    if cfg.get("anonymize.enabled") and not cfg.get("ask.unmasked_answers"):
+        return UNMASKED
+    return None
+
+
 def describe(cfg):
     """What the page shows about the agent, and whether it can run here. A
     command of one's own is named by the program it runs, as a preset is."""
@@ -903,8 +911,7 @@ def describe(cfg):
         err = None if exe else "%s was not found on the service's PATH" % (argv[0] if argv else "?")
     except ValueError as e:
         argv, exe, err = [], None, str(e)
-    if cfg.get("anonymize.enabled") and not cfg.get("ask.unmasked_answers"):
-        err = UNMASKED
+    err = unmasked_refusal(cfg) or err
     return {"enabled": bool(cfg.get("ask.enabled", True)),
             "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")
             else _program(argv) or "custom",
@@ -949,6 +956,10 @@ class Asker:
         self.lock = threading.Lock()
         self.slots = threading.BoundedSemaphore(max(1, int(cfg.get("ask.max_concurrent", 1))))
         self._done = None
+        # The masking names are under (`Anonymizer.ident`), None while they are
+        # shown: a suggestion marked done keeps it, to say what it was written
+        # under (`_as_written`).
+        self.masked_by = None
 
     # ----------------------------------------------------------------- done
     # A suggestion marked done is kept by the service, for everyone who opens
@@ -981,11 +992,25 @@ class Asker:
             json.dump({"version": 1, "items": self._done}, fh)
         os.replace(tmp, path)
 
-    # A suggestion is the agent's words: what the reader sees of one, and what
-    # the next prompt is told, is never rewritten as names (`view`).
+    def _written_here(self, item):
+        """Whether a kept suggestion was written under the masking in use."""
+        return self.masked_by is not None and item.get("masked_by") == self.masked_by
+
+    def _as_written(self, items):
+        """Kept suggestions on their way out. One written under the masking in
+        use is the agent's words about aliases, and goes as written, never
+        rewritten as names (`view`). One kept from before -- names shown, or
+        another salt -- holds the names of the data it was written from, and
+        goes through the masking as that data would."""
+        out = []
+        for x in items:
+            shown = {k: v for k, v in x.items() if k != "masked_by"}
+            out.append(verbatim(shown) if self._written_here(x) else shown)
+        return out
+
     def done_list(self):
         with self.lock:
-            return {"items": verbatim(list(self._done_items()))}
+            return {"items": self._as_written(self._done_items())}
 
     def mark_done(self, jid, index):
         """Suggestion `index` of job `jid`'s answer, marked done."""
@@ -1000,10 +1025,11 @@ class Asker:
             done = self._done_items()
             if not any(x.get("job") == jid and x.get("index") == index for x in done):
                 done.insert(0, dict(items[index], id=uuid.uuid4().hex[:12], job=jid, index=index,
-                                    window=job.get("window"), done_at=time.time()))
+                                    window=job.get("window"), done_at=time.time(),
+                                    masked_by=self.masked_by))
                 del done[self.DONE_KEEP:]
                 self._done_save()
-            return {"items": verbatim(list(done))}
+            return {"items": self._as_written(done)}
 
     def undo_done(self, did):
         with self.lock:
@@ -1013,18 +1039,19 @@ class Asker:
                 raise LookupError("that suggestion is not marked done")
             done[:] = keep
             self._done_save()
-            return {"items": verbatim(list(done))}
+            return {"items": self._as_written(done)}
 
     def done_for_prompt(self, keep=50):
         """What the model is told the operator already dealt with, without the
         citations it was suggested with: they named another snapshot's rows."""
         with self.lock:
-            items = [{"title": x.get("title"),
-                      "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
-                      "users": x.get("users") or [], "panel": x.get("panel"),
-                      "marked_done": _clock(x.get("done_at"))}
-                     for x in self._done_items()[:keep]]
-        return verbatim(items)
+            kept = self._done_items()[:keep]
+        return self._as_written([
+            {"title": x.get("title"),
+             "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
+             "users": x.get("users") or [], "panel": x.get("panel"),
+             "marked_done": _clock(x.get("done_at")), "masked_by": x.get("masked_by")}
+            for x in kept])
 
     def submit(self, question, panels, live, window_label, history=(), extra=None,
                scope=None):

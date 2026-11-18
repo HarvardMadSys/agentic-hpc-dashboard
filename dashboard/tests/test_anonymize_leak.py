@@ -397,6 +397,52 @@ class LeakTest(Served):
             status, _ = self.post("/api/ask", {"question": "q", "context": ctx})
             self.assertEqual(status, 400, ctx)
 
+    def test_a_suggestion_kept_from_before_names_were_masked_is_served_masked(self):
+        # Marked done while the service showed names, so its text holds them.
+        # The list is read from disk once: read again, as after the restart
+        # that turned masking on.
+        asker, cfg = self.app.state.agg.asker, self.app.state.cfg
+        path = os.path.join(cfg.get("cache.dir"), "ask", "done.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump({"version": 1, "items": [{
+                "id": "kept", "job": "j0", "index": 0, "priority": "high",
+                "title": "Ask alice about polling", "action": "mail me@fas.harvard.edu",
+                "evidence": "/n/home03/carol/notes", "users": ["alice", "bob.smith"],
+                "panel": None, "tab": None, "window": "24h", "done_at": 1.0}]}, fh)
+        with asker.lock:
+            asker._done = None
+
+        def send(method, path, body=None):
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d%s" % (self.port, path), method=method,
+                data=None if body is None else json.dumps(body).encode(),
+                headers={"content-type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.status, r.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+        try:
+            listed = self.get("/api/suggestions/done")[1]
+            self.assertClean("/api/suggestions/done", listed)
+            self.assertIn(self.anon.user_alias("alice"), listed)
+            self.assertClean("the next suggestions' prompt", self.asked({"suggest": True}))
+            # while Ask is refused (no ask.unmasked_answers), so is what it kept
+            cfg.set("ask.unmasked_answers", False, "test")
+            try:
+                for method, where, body in (("GET", "/api/suggestions/done", None),
+                                            ("POST", "/api/suggestions/done",
+                                             {"job": "j0", "index": 0}),
+                                            ("DELETE", "/api/suggestions/done/kept", None)):
+                    status, got = send(method, where, body)
+                    self.assertEqual(status, 400, (method, got))
+                    self.assertIn("ask.unmasked_answers", got)
+            finally:
+                cfg.set("ask.unmasked_answers", True, "test")
+        finally:
+            send("DELETE", "/api/suggestions/done/kept")
+
     def test_annotations_go_to_the_model_and_come_back_masked(self):
         # The model is given the calls as the page shows them, and what it
         # answers -- names, here -- comes back masked too: /api/annotate sent

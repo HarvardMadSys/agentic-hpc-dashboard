@@ -210,10 +210,11 @@ def defaults():
             # every row the model is given carries a ref it cites after each
             # figure, and the page links each to its row (ask.CITE_GUIDE)
             "citations": True,
-            # With anonymize.enabled, Ask is refused unless this is set: an
-            # answer is shown as the agent writes it (rewritten, a name typed
-            # into a question came back as its alias), and the agent can read
-            # what the service's account can, the raw feeds included.
+            # With anonymize.enabled, Ask -- and the suggestions it keeps marked
+            # done -- is refused unless this is set: an answer is shown as the
+            # agent writes it (rewritten, a name typed into a question came back
+            # as its alias), and the agent can read what the service's account
+            # can, the raw feeds included.
             "unmasked_answers": False,
         },
         # What each tool call in a session was for, in a model's words (annotate.py):

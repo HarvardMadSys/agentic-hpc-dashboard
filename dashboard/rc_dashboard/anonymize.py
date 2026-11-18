@@ -211,6 +211,11 @@ class Anonymizer:
         return hmac.new(self._salt, ("%s:%s" % (kind, name)).encode(),
                         hashlib.sha256).hexdigest()[:8]
 
+    def ident(self):
+        """Which masking this is -- a digest of the salt that does not give it
+        away -- for text kept on disk to say what it was written under."""
+        return hmac.new(self._salt, b"ident", hashlib.sha256).hexdigest()[:16]
+
     def user_alias(self, name):
         """The alias of one account, learning it if new; reserved names stay."""
         a = self.users.get(name)

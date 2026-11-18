@@ -132,6 +132,7 @@ class Aggregator:
         # It learns accounts from the roster, so an alias a reader pastes into a
         # filter maps back even for someone the page has not shown yet.
         self.anon = anonymize.from_config(cfg, roster=self._accounts)
+        self.asker.masked_by = self.anon.ident() if self.anon is not None else None
         # Names for the Network bytes panel's endpoints, looked up in the
         # background and applied when the panel is read; None when off.
         self.rdns = endpoints.from_config(cfg)
