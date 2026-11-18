@@ -2855,6 +2855,12 @@ _ROLE_IDE_SERVER = re.compile(
     r'bootstrap-fork|server-main\.js|--type=extensionHost|--connection-token'
     r'|\.(?:vscode|cursor|windsurf)-server/cli/servers/[^ ]*/server/(?:node|bin/code-server)(?:\s|$)')
 _ROLE_IDE_EXE = re.compile(r'^code-[0-9a-f]{6,}')
+# Cursor's and Windsurf's servers carry their IDE's own type, which their AI
+# features' processes share: for those two types the server's directory tells the
+# IDE's processes apart. An agent tagged by its own type is that agent wherever it
+# is installed: Claude Code from Cursor's extension is a session, as from VS Code's.
+_ROLE_IDE_DIR_TYPES = frozenset({'cursor', 'windsurf'})
+_ROLE_IDE_DIRS = ('.cursor-server', '.windsurf-server')
 _ROLE_SHELLS = frozenset({'sh', 'bash', 'zsh', 'dash', 'fish'})
 _ROLE_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 # The agent binary run as a helper of its own, picked by its first argument alone:
@@ -2970,7 +2976,8 @@ def agent_role(agent_type, command, args):
     if agent_type == 'bwrap' or command.startswith(_ROLE_SANDBOX_PREFIX) \
             or argv0 in ('bwrap', 'codex-linux-sandbox'):
         return 'sandbox'
-    if agent_type == 'vscode' or '.cursor-server' in args or '.windsurf-server' in args:
+    if agent_type == 'vscode' or (agent_type in _ROLE_IDE_DIR_TYPES
+                                  and any(d in args for d in _ROLE_IDE_DIRS)):
         return 'ide' if (_ROLE_IDE_EXE.match(command) or _ROLE_IDE_SERVER.search(args)) \
             else 'helper'
     if command.startswith(_ROLE_INFRA_PREFIX):

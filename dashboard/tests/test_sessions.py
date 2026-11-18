@@ -255,6 +255,37 @@ class RoleTest(unittest.TestCase):
         self.assertEqual(role_of("claude_code", "claude",
                                  "claude -p what is --claude-in-chrome-mcp"), "agent")
 
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_that_agent(self):
+        """The collector tags Claude Code and Codex by their own type wherever they
+        are installed, and Cursor's and Windsurf's servers by theirs. A path
+        under ~/.cursor-server/ or ~/.windsurf-server/ made any tagged process
+        the IDE's own, so a session the IDE's extension started was a `helper`:
+        no session, no agent node, approval `na`. The IDE's own processes keep
+        their roles."""
+        ext = "/extensions/anthropic.claude-code-2.1.300-linux-x64/resources/native-binary/claude"
+        for ide in ("cursor", "windsurf"):
+            srv = "%s/.%s-server" % (HOME, ide)
+            for agent_type, command, args, want in (
+                    ("claude_code", "claude", srv + ext + " --output-format stream-json --verbose "
+                     "--input-format stream-json", "agent"),
+                    ("claude_code", "claude", srv + ext + " auth status --json", "probe"),
+                    ("claude_code", "claude", srv + ext + " --claude-in-chrome-mcp", "helper"),
+                    ("codex", "codex", srv + "/extensions/openai.chatgpt-26.1007.21434-linux-x64/bin/"
+                     "linux-x86_64/codex app-server --analytics-default-enabled", "agent"),
+                    # a session started from the IDE's terminal that only names its directory
+                    ("claude_code", "claude", "claude --add-dir " + srv + "/data "
+                     "--dangerously-skip-permissions", "agent"),
+                    # the IDE's own server, extension host and helper script
+                    (ide, "node", srv + "/bin/4fe60c8b/node " + srv + "/bin/4fe60c8b/out/"
+                     "server-main.js --connection-token=x", "ide"),
+                    (ide, "node", srv + "/cli/servers/Stable-07f/server/node --dns-result-order="
+                     "ipv4first " + srv + "/cli/servers/Stable-07f/server/out/bootstrap-fork "
+                     "--type=extensionHost", "ide"),
+                    (ide, "cpuUsage.sh", "/bin/bash " + srv + "/cli/servers/Stable-a44/server/out/"
+                     "vs/base/node/cpuUsage.sh 123", "helper")):
+                with self.subTest(ide=ide, args=args[len(HOME):70]):
+                    self.assertEqual(role_of(agent_type, command, args), want)
+
 
 class SessionizeTest(unittest.TestCase):
     def setUp(self):

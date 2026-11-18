@@ -677,7 +677,9 @@ already made once.
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
   editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
-  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  CLI started in an IDE terminal, or by an IDE's extension, keeps its own agent type and stays
+  `agent`: its role is read from that type, not from the IDE's directory in its path
+  (`roles.py`). Folding the IDE
   class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
   silently empty the IDE class.

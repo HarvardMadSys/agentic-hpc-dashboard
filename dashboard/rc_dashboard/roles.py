@@ -80,6 +80,14 @@ _IDE_SERVER = re.compile(
     r"|\.(?:vscode|cursor|windsurf)-server/cli/servers/[^ ]*/server/(?:node|bin/code-server)(?:\s|$)")
 _IDE_EXE = re.compile(r"^code-[0-9a-f]{6,}")
 _IDE_TYPES = frozenset({"vscode"})
+# Cursor's and Windsurf's servers carry their IDE's own type, which their AI
+# features' processes share (a CURSOR_SANDBOX wrapper, `cursor-agent`): for those
+# two types the server's directory tells the IDE's processes apart. The collector
+# tags an agent by its own type wherever it is installed, so Claude Code or Codex
+# from one of these IDEs' extensions (`~/.cursor-server/extensions/
+# anthropic.claude-code-*/...`) is that agent, as it is from VS Code's.
+_IDE_DIR_TYPES = frozenset({"cursor", "windsurf"})
+_IDE_DIRS = (".cursor-server", ".windsurf-server")
 
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "fish"})
 _TOOL_SHELL = re.compile(r"/\.claude/shell-snapshots/")
@@ -226,8 +234,8 @@ def _role_of(agent_type, command, args):
     if agent_type == "bwrap" or command.startswith(_SANDBOX_PREFIX) \
             or argv0 in ("bwrap", "codex-linux-sandbox"):
         return "sandbox"
-    if agent_type in _IDE_TYPES or ".cursor-server" in (args or "") \
-            or ".windsurf-server" in (args or ""):
+    if agent_type in _IDE_TYPES or (agent_type in _IDE_DIR_TYPES
+                                    and any(d in (args or "") for d in _IDE_DIRS)):
         return "ide" if (_IDE_EXE.match(command) or _IDE_SERVER.search(args or "")) \
             else "helper"
     if command.startswith(_INFRA_PREFIX):

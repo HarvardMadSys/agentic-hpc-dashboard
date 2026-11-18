@@ -839,6 +839,31 @@ class AgentRoleTest(unittest.TestCase):
         self.assertEqual(T.agent_role('claude_code', 'claude',
                                       'claude -p what is --claude-in-chrome-mcp'), 'agent')
 
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_that_agent(self):
+        """As the dashboard's roles.py (tests/test_sessions.py): the tag decides,
+        not a path under ~/.cursor-server/ or ~/.windsurf-server/, which made
+        an extension's session the IDE's `helper`. The IDE's own processes keep
+        their roles."""
+        ext = '/extensions/anthropic.claude-code-2.1.300-linux-x64/resources/native-binary/claude'
+        for ide in ('cursor', 'windsurf'):
+            srv = '%s/.%s-server' % (HOME, ide)
+            for agent_type, command, args, want in (
+                    ('claude_code', 'claude', srv + ext + ' --output-format stream-json', 'agent'),
+                    ('claude_code', 'claude', srv + ext + ' auth status --json', 'probe'),
+                    ('codex', 'codex', srv + '/extensions/openai.chatgpt-26.1007.21434-linux-x64/bin/'
+                     'linux-x86_64/codex app-server --analytics-default-enabled', 'agent'),
+                    ('claude_code', 'claude', 'claude --add-dir ' + srv + '/data '
+                     '--dangerously-skip-permissions', 'agent'),
+                    (ide, 'node', srv + '/bin/4fe60c8b/node ' + srv + '/bin/4fe60c8b/out/'
+                     'server-main.js --connection-token=x', 'ide'),
+                    (ide, 'node', srv + '/cli/servers/Stable-07f/server/node --dns-result-order='
+                     'ipv4first ' + srv + '/cli/servers/Stable-07f/server/out/bootstrap-fork '
+                     '--type=extensionHost', 'ide'),
+                    (ide, 'cpuUsage.sh', '/bin/bash ' + srv + '/cli/servers/Stable-a44/server/out/'
+                     'vs/base/node/cpuUsage.sh 123', 'helper')):
+                with self.subTest(ide=ide, args=args[len(HOME):70]):
+                    self.assertEqual(T.agent_role(agent_type, command, args), want)
+
 
 class AgentRootTest(unittest.TestCase):
     """Schema 8. Through schema 7 every process whose own argv the classifier
@@ -984,6 +1009,30 @@ class AgentRootTest(unittest.TestCase):
                          'human-vscode')
         self.assertEqual(self.who(703), (703, 0, True))
         self.assertEqual(T._base_identity(T.proc[703], 'agent', 'ancestry')['actor3'], 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_its_own_root(self):
+        """As from VS Code's (703 above). Its path under ~/.cursor-server/ made
+        agent_role() call it the IDE's helper, so the session joined the IDE's
+        tree: agent_type `cursor` on it and on every tool call it ran, which the
+        dashboard counts as IDE work."""
+        for base, ide in ((800, 'cursor'), (900, 'windsurf')):
+            srv = '%s/.%s-server/cli/servers/Stable-07f/server/' % (HOME, ide)
+            self.add(base, 1, 'node', srv + 'node ' + srv + 'out/server-main.js '
+                     '--connection-token=x', user='v', uid=1001)
+            self.add(base + 1, base, 'node', srv + 'node --dns-result-order=ipv4first ' + srv
+                     + 'out/bootstrap-fork --type=extensionHost', user='v', uid=1001)
+            self.add(base + 2, base + 1, 'claude', '%s/.%s-server/extensions/anthropic.claude-code-'
+                     '2.1.300-linux-x64/resources/native-binary/claude --output-format stream-json'
+                     % (HOME, ide), user='v', uid=1001)
+            self.add(base + 3, base + 2, 'git', 'git status', user='v', uid=1001)
+            with self.subTest(ide=ide):
+                self.assertEqual(self.who(base + 1), (base, 1, False))
+                self.assertEqual(T.proc[base + 1]['agent_type'], ide)
+                self.assertEqual(self.who(base + 2), (base + 2, 0, True))
+                self.assertEqual(self.who(base + 3), (base + 2, 1, False))
+                ident = T._base_identity(T.proc[base + 3], 'agent', 'ancestry')
+                self.assertEqual((ident['agent_type'], ident['session_key']),
+                                 ('claude_code', 'apid:%d' % (base + 2)))
 
     def test_a_bwrap_in_an_agent_tree_still_reads_as_bwrap(self):
         """bwrap takes its agent's tree and agent_type, and sandbox_ancestry,
