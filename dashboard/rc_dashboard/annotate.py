@@ -560,8 +560,14 @@ class Annotator:
                    "submitted": time.time(), "started": None, "finished": None,
                    "error": None, "results": {}}
             self.jobs[job["id"]] = job
-            while len(self.jobs) > self.KEEP_JOBS:
-                self.jobs.popitem(last=False)
+            # Only an ended job is let go: a queued or running one is what its
+            # readers poll and what `following` names, however many are waiting.
+            over = len(self.jobs) - self.KEEP_JOBS
+            for jid in [j for j, v in self.jobs.items() if v["state"] in ("done", "error")]:
+                if over <= 0:
+                    break
+                del self.jobs[jid]
+                over -= 1
         threading.Thread(target=self._run, args=(job, todo, agent_type), daemon=True,
                          name="annotate-%s" % job["id"]).start()
         return self.view(job["id"])

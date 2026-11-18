@@ -323,6 +323,28 @@ class AnnotatorTest(unittest.TestCase):
         wait(a, second["id"])
         self.assertEqual(a.following(calls), [])
 
+    def test_a_job_still_running_is_kept_however_many_wait(self):
+        gate = threading.Event()
+
+        def slow(cfg, system, user, timeout):
+            gate.wait(10)
+            return answer_for(user)
+
+        a = annotate.Annotator(Cfg(), complete_fn=slow)
+        first = a.submit([{"cmd": "cmd-0"}])
+        for i in range(1, annotate.Annotator.KEEP_JOBS + 5):
+            a.submit([{"cmd": "cmd-%d" % i}])
+        self.assertIsNotNone(a.view(first["id"]))
+        self.assertEqual(a.following([{"cmd": "cmd-0"}]), [first["id"]])
+        gate.set()
+        self.assertEqual(wait(a, first["id"])["state"], "done")
+        # once ended, the oldest go as new ones come
+        for jid in list(a.jobs):
+            wait(a, jid)
+        a.submit([{"cmd": "one-more"}])
+        self.assertLessEqual(len(a.jobs), annotate.Annotator.KEEP_JOBS)
+        self.assertIsNone(a.view(first["id"]))
+
     def test_another_model_is_asked_afresh(self):
         cfg = Cfg()
         a = annotate.Annotator(cfg, complete_fn=self.fake)
