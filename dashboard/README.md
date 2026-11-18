@@ -1152,7 +1152,11 @@ the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
 that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
+said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
+phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
+the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
 2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them

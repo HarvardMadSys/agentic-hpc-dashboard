@@ -64,10 +64,11 @@ def kind(b, calls=(), params=None):
 
 def cut(rows):
     """The block `phase_segment` cuts, with its tuned thresholds, from calls `(start, end, category,
-    text)`, and the calls as it sorts them: what a reducer hands the summary."""
-    previews = [None] + [text for *_, text in rows]
-    calls = [(float(a), float(b), cat, norm_hash(text), i + 1, 0, None, None, 0)
-             for i, (a, b, cat, text) in enumerate(rows)]
+    text)`, or `(..., past)` for one whose process outlived it, and the calls as it sorts them: what a
+    reducer hands the summary."""
+    previews = [None] + [r[3] for r in rows]
+    calls = [(float(r[0]), float(r[1]), r[2], norm_hash(r[3]), i + 1, 0, None,
+              r[4] if len(r) > 4 else None, 0) for i, r in enumerate(rows)]
     prep = SEG.prepared(calls, previews, SEG.DEFAULTS)
     return SEG.segment(calls, PhaseLog(), previews, SEG.DEFAULTS, prepared=prep), prep[0]
 
@@ -147,8 +148,10 @@ class CategoryTest(unittest.TestCase):
         got = PS.summarize(b, calls, TAGSETS)
         self.assertEqual(got["category"], "run")
         self.assertEqual(got["uses"], [["run", 50.6], ["explore", 49.4]])
+        # the run counts beside the reading, so the work is longer than the 3 h it was done in, and
+        # says so: "5.9 h of work" alone reads as the session's length
         self.assertTrue(got["summary"].startswith(
-            "Mostly ran programs (51% of 5.9 h of work), then explored code and files (49%)."),
+            "Mostly ran programs (51% of 5.9 h of work in 3.0 h), then explored code and files (49%)."),
             got["summary"])
 
     def test_the_last_phase_is_weighed_to_its_own_calls_and_ran_on_time_to_its_call_s_use(self):
@@ -165,6 +168,46 @@ class CategoryTest(unittest.TestCase):
                              dict(ph("explore", 100, 5000, 3), own_t1=160)]))
         self.assertEqual((waited["category"], waited["uses"]), ("explore", [["explore", 100.0]]))
         self.assertIn("(2.7 min of work)", waited["summary"])
+
+    def test_a_test_whose_process_ran_on_is_testing_not_changing_files(self):
+        # quick reads around a short pytest whose child runs until 10,000 s: the pytest is taken in by
+        # the reads' phase, and its time past it is develop's (`ran_on`). Nothing was edited, and it
+        # said "Mostly changed files from the shell (99% of 2.8 h of work)".
+        b, calls = cut([(10 * i, 10 * i + 1, "explore", "cat src/f%d.py" % i) for i in range(3)]
+                       + [(35, 37, "test", "pytest -q tests/test_a.py", 10000.0)]
+                       + [(40 + 10 * i, 41 + 10 * i, "explore", "cat src/g%d.py" % i) for i in range(3)])
+        self.assertEqual([p["kind"] for p in b["list"]], ["explore"])
+        got = PS.summarize(b, calls, TAGSETS)
+        self.assertEqual(got["uses"], [["develop", 99.4], ["explore", 0.6]])
+        self.assertEqual(got["summary"], "Mostly tested code (99% of 2.8 h of work). 7 tool calls.")
+
+    def test_develop_is_said_by_what_it_held(self):
+        # tests alone: no edit anywhere
+        self.assertEqual(kind(block([ph("test", 0, 600, 5)]))["summary"],
+                         "Only tested code (10 min of work). 5 tool calls.")
+        # a test's time past its phase is testing, an edit's editing, as their phases would be
+        ran_on = lambda cat: block([dict(ph("explore", 0, 60, 3), own_t1=6000, ran_on=[[cat, 5940.0]]),
+                                    dict(ph("explore", 60, 6000, 3), own_t1=120)])
+        self.assertTrue(kind(ran_on("test"))["summary"].startswith("Mostly tested code (98% of"))
+        self.assertTrue(kind(ran_on("edit"))["summary"].startswith("Mostly changed files from the shell"))
+        # a test with an edit the reads' phase took in, or a guessed edit, edited and tested
+        edit = [0] * (TAGS + 1)
+        edit[2] = "edit"
+        self.assertTrue(kind(block([ph("explore", 0, 100, 4), ph("test", 100, 700, 5)]), [tuple(edit)]
+                             )["summary"].startswith("Mostly edited and tested code"))
+        self.assertTrue(kind(block([dict(ph("test", 0, 600, 5), slices=[[10.0, 40.0]])])
+                             )["summary"].startswith("Only edited and tested code"))
+
+    def test_the_work_s_length_is_never_read_as_the_session_s(self):
+        # with nothing run on, the work is the phases' time and is said alone
+        alone = kind(block([ph("run", 0, 600, 3), ph("explore", 600, 1000, 20)]))
+        self.assertIn("(60% of 17 min of work)", alone["summary"])
+        # a mix whose work ran side by side says the time it was done in
+        side = kind(block([dict(ph("run", 0, 600, 1), own_t1=3600, ran_on=[["run", 3000.0]]),
+                           dict(ph("explore", 600, 3600, 30), own_t1=2400),
+                           dict(ph("idle", 3600, 9000, 0)),
+                           dict(ph("build", 9000, 12600, 4), own_t1=12600)]))
+        self.assertTrue(side["summary"].startswith("Mixed work (2.8 h in 2.0 h): "), side["summary"])
 
     def test_commands_not_recorded_for_half_of_the_time_make_the_session_unknown(self):
         got = kind(block([ph("unknown", 0, 900, 5), ph("explore", 900, 1000, 3)]))
