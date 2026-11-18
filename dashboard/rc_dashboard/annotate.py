@@ -493,11 +493,24 @@ class Annotator:
                             continue
             except OSError:
                 pass
-            if len(self._known) > cap:
-                for k in list(self._known)[:len(self._known) - cap]:
-                    del self._known[k]
-                self._rewrite()
+            self._bound()
         return self._known
+
+    # Past the cap, the oldest answers go down to this share of it, and the
+    # file is written anew: once per tenth of the cap, not on every batch.
+    CACHE_SLACK = 0.9
+
+    def _bound(self):
+        """Hold the table (and the file) within `annotate.cache_max`, the
+        oldest answers going first. Lock held."""
+        cap = max(1, int(self.cfg.get("annotate.cache_max", 200000)))
+        if len(self._known) <= cap:
+            return
+        keep = max(1, int(cap * self.CACHE_SLACK))
+        for k in list(self._known)[:len(self._known) - keep]:
+            del self._known[k]
+        if self.cfg.get("annotate.cache", True):
+            self._rewrite()
 
     def _rewrite(self):
         path = self._path()
@@ -620,6 +633,7 @@ class Annotator:
                             job["results"][c["cmd"]] = [p, k]
                         job["done"] += len(batch)
                         self._keep(rows)
+                        self._bound()
             with self.lock:
                 job.update(state="done", finished=time.time())
         except Exception as e:

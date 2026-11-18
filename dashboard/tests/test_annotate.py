@@ -345,6 +345,20 @@ class AnnotatorTest(unittest.TestCase):
         self.assertLessEqual(len(a.jobs), annotate.Annotator.KEEP_JOBS)
         self.assertIsNone(a.view(first["id"]))
 
+    def test_the_cache_stays_within_its_cap_as_answers_come(self):
+        cfg = Cfg(**{"annotate.cache_max": 10, "annotate.batch_size": 4})
+        a = annotate.Annotator(cfg, complete_fn=self.fake)
+        calls = [{"cmd": "cmd-%d" % i} for i in range(25)]
+        wait(a, a.submit(calls)["id"])
+        self.assertLessEqual(len(a._known), 10)
+        with open(a._path(), encoding="utf-8") as fh:
+            self.assertLessEqual(sum(1 for _ in fh), 10)
+        # the newest are the ones kept, in memory and on disk
+        self.assertEqual(a.known(["cmd-24", "cmd-0"]), {"cmd-24": ["do cmd-24", "other"]})
+        b = annotate.Annotator(cfg, complete_fn=self.fake)
+        self.assertIn("cmd-24", b.known(["cmd-24"]))
+        self.assertLessEqual(len(b._table()), 10)
+
     def test_another_model_is_asked_afresh(self):
         cfg = Cfg()
         a = annotate.Annotator(cfg, complete_fn=self.fake)
