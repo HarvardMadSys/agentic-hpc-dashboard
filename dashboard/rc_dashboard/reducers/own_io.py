@@ -60,15 +60,23 @@ calls wait(), so the child is a zombie until the parent's own exit and init
 (or a subreaper) reaps it, or the parent ignores SIGCHLD and the kernel reaps
 it unasked -- never reaches the parent's `signal->ioac`. The kernel says so on
 the parent's own exit: the `wait_task_zombie` that adds a child's I/O to its
-reaper's also adds its CPU to the reaper's `cutime`/`cstime`, which the
-collector reads in ns and writes as `child_cpu_s`, to 0.1 ms. An exit whose
-`child_cpu_s` is 0 reaped no child that ran an exec -- one costs far more
-than 0.05 ms; a bare fork may not, and does next to no I/O -- so it takes none
-off (`reaped_none`): what is held for its pid is dropped and counted
-(`rejected`). One that reaped some of its children and not others
-still has them all taken off -- the record does not say which -- and comes out
-short by the ones it did not reap: seen where that passes its whole figure
-(`clamped`), not otherwise.
+reaper's also adds its CPU to the reaper's `cutime`/`cstime`. The eBPF
+collector, the only one that writes schema 4 or later, reads the two in ns
+at `sched_process_exit` and writes their sum on the `exit` record as
+`child_cpu_s`, to 0.1 ms (`ebpf_trace.py`), or null when its `signal` block
+is off (`null_if_off`). An exit whose `child_cpu_s` is 0 reaped no child that
+ran an exec -- one costs far more than 0.05 ms; a bare fork may not, and does
+next to no I/O -- so it takes none off (`reaped_none`): what is held for its
+pid is dropped and counted apart (`unreaped`), not with the start rule's
+refusals (`rejected`). A coarser figure would not do: /proc's, in clock
+ticks, reads 0 for a parent of a few short children. The pre-v4 tracer and
+the /proc poller wrote 0 there for "not measured", which normalize.py makes
+None (`NULLABLE_V4_ONLY`), and the collector's own /proc reads go on
+`truncated` records, which `reaped_none` passes over; a producer that wrote
+an exit's from ticks would have this drop children it did reap. One that
+reaped some of its children and not others still has them all taken off --
+the record does not say which -- and comes out short by the ones it did not
+reap: seen where that passes its whole figure (`clamped`), not otherwise.
 
 Each reducer that sums bytes holds its own join, over the fields it sums (the
 record's names: `rd_mb`, `wr_mb`, `rchar_mb`, `wchar_mb`), and feeds it every
@@ -313,7 +321,7 @@ class OwnIo:
     """One reducer's join (the module docstring): `take` every exit, in order."""
 
     __slots__ = ("fields", "cap", "name", "reaped", "evicted", "rejected", "clamped",
-                 "crowded", "touched")
+                 "crowded", "unreaped", "touched")
 
     def __init__(self, fields=FIELDS, cap=None, name="own_io"):
         self.fields = tuple(fields)
@@ -326,6 +334,7 @@ class OwnIo:
         self.rejected = 0           # groups a process could not have reaped: dropped
         self.clamped = 0            # processes whose figure fell short of their children's
         self.crowded = 0            # groups dropped from a pid past PER_PID
+        self.unreaped = 0           # groups held for an exit that says it reaped none
         self.touched = None         # the keys touched since `track`, for the ageing
 
     def take(self, rec):
@@ -421,7 +430,7 @@ class OwnIo:
         if not groups:
             return None
         if reaped_none(rec):
-            self.rejected += len(groups)
+            self.unreaped += len(groups)
             return None
         return self._reaped_by(rec, groups)
 
@@ -530,13 +539,15 @@ class OwnIo:
         self.rejected += o.rejected
         self.clamped += o.clamped
         self.crowded += o.crowded
+        self.unreaped += o.unreaped
 
     def status(self):
         """What a panel says of its join: parents dropped at a cap, whose reaped
         children's bytes then count again at their exit; groups of children a
         process could not have reaped, not taken off it; processes whose figure
-        fell short of what their children carried, shown as 0; and groups
+        fell short of what their children carried, shown as 0; groups
         dropped from a pid holding PER_PID others' already, which also count
-        again at its exit."""
+        again at its exit; and groups held for a process whose exit says it
+        reaped no child (`reaped_none`), not taken off it."""
         return {"evicted": self.evicted, "rejected": self.rejected, "clamped": self.clamped,
-                "crowded": self.crowded}
+                "crowded": self.crowded, "unreaped": self.unreaped}

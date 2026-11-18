@@ -764,7 +764,7 @@ already made once.
   its parent but was never waited for by it (the parent never calls wait(), or ignores SIGCHLD)
   is not in the parent's figure. A parent that reaped none at all says so -- its `child_cpu_s`,
   the CPU the kernel credits a reaper with in the same step as the bytes, is 0 -- and takes none
-  off, counted in `rejected`; one that reaped some of its children and not others still has
+  off, counted apart (`unreaped`); one that reaped some of its children and not others still has
   them all taken off, and comes out short by the rest. A figure short of what its children
   carried shows as 0, never below, and is counted too. Each join holds at most
   `reducers.own_io.max_parents` parents (2000; below 1 the service refuses to start), the one

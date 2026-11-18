@@ -2100,6 +2100,8 @@ class TrajectoryReducer:
                        "reaped_clamped": self.own.clamped,
                        # groups dropped from a pid past own_io.PER_PID
                        "reaped_crowded": self.own.crowded,
+                       # groups held for an exit that says it reaped none
+                       "reaped_unreaped": self.own.unreaped,
                        # the phases' joins and bounds, every one counted
                        "phase_pending": len(self.pend.entries),
                        "phase_pending_evicted": self.pend.evicted,

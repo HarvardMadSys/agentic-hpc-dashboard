@@ -375,16 +375,57 @@ class LiveOwnIoTest(unittest.TestCase):
                 self.feed(back, older=True)
                 self.assertEqual(rd_of(self.lv, self.now), {"bob": 120.0, "carol": 1.0})
 
+    def test_past_the_slack_the_live_tier_refuses_a_child_as_a_window_s_join_does(self):
+        # The cat is not the wrapper's to take back in two ways, read alike in
+        # order, tail-then-backfill and by a window's join: the wrapper last
+        # execs exactly START_SLACK_S after the tail's first exit, so it is not
+        # noted, and a backfilled child began too early for it anyway; or it is
+        # noted, and the cat began more than START_SLACK_S before its exec. The
+        # cat's bytes then stay in the wrapper's figure too: bob's 220.
+        t = int(self.now) - 800          # whole seconds, so the edge is exact
+        ls = person("exit", t + 100, 400, 1, "ls", "ls", "carol", io=iob(1.0, 1.0))
+        edge = 200 - (100 + own_io.START_SLACK_S)    # starts at the tail's + the slack
+        cases = {
+            "at the edge": (5.0, edge),
+            "noted, the cat too early": (50.0, 90.0),
+        }
+        for name, (cat_s, wrap_s) in cases.items():
+            cat = person("exit", t + 90, 301, 300, "cat", "cat big.bin", "bob",
+                         io=iob(100.0, 100.0), duration_s=cat_s)
+            wrapper = person("exit", t + 200, 300, 1, "bash", "bash wrap.sh", "bob",
+                             io=iob(120.0, 120.0), duration_s=wrap_s)
+            for order, tail, back in (("in order", [cat, ls, wrapper], []),
+                                      ("tail, then backfill", [ls, wrapper], [cat])):
+                with self.subTest(name, order=order):
+                    self.lv, self.norm = LiveReducer(cfg(), CLASSES), Normalizer(cfg())
+                    self.feed(tail, older=False)
+                    self.feed(back, older=True)
+                    self.assertEqual(rd_of(self.lv, self.now), {"bob": 220.0, "carol": 1.0})
+            with self.subTest(name, order="a window's join"):
+                p = window([cat, ls, wrapper]).payload["io_process"]
+                self.assertEqual({u["user"]: u["rd_mb"] for u in p["by_user"]},
+                                 {"bob": 220.0, "carol": 1.0})
+                self.assertEqual(p["own_io"]["rejected"], 1)
 
-def unreaped(t, child_cpu_s=0.0, parent_io=20.0):
+
+def unreaped(t, child_cpu_s=0.0, parent_io=20.0, parent_at=10.0):
     """bob's `python3` 300, which never waits: its `cat` 301 reads 100 MB and
-    ends first, a zombie until python3 exits and init reaps it. So python3's
-    figure is its own 20 MB alone, and the kernel credited it no child's CPU
-    (`child_cpu_s` 0). With `parent_io=120.0` and a `child_cpu_s` it did reap."""
+    ends first, a zombie until python3 exits `parent_at` later and init reaps
+    it. So python3's figure is its own 20 MB alone, and the kernel credited it
+    no child's CPU (`child_cpu_s` 0). With `parent_io=120.0` and a
+    `child_cpu_s`, one that did reap it."""
     return [person("exit", t, 301, 300, "cat", "cat big.bin", "bob", io=iob(100.0, 100.0),
                    child_cpu_s=0.0),
-            person("exit", t + 10, 300, 1, "python3", "python3 spawn.py", "bob",
-                   io=iob(parent_io, parent_io), duration_s=60.0, child_cpu_s=child_cpu_s)]
+            person("exit", t + parent_at, 300, 1, "python3", "python3 spawn.py", "bob",
+                   io=iob(parent_io, parent_io), duration_s=parent_at + 50.0,
+                   child_cpu_s=child_cpu_s)]
+
+
+def exit_of(host, pid, ppid, t, duration, rd, **kw):
+    """A normalised exit as a join reads it, with its disk read figure."""
+    return dict({"event": "exit", "host": host, "pid": pid, "ppid": ppid, "user": "bob",
+                 "_ts_epoch": t, "duration_s": duration,
+                 "io": {"rd_mb": rd, "wr_mb": 0.0, "scope": "process"}}, **kw)
 
 
 class UnreapedChildTest(unittest.TestCase):
@@ -399,18 +440,22 @@ class UnreapedChildTest(unittest.TestCase):
         return ({t["tool"]: t["rd_mb"] for t in p["by_tool"]},
                 {u["user"]: u["rd_mb"] for u in p["by_user"]}, p["own_io"])
 
+    def counts(self, own):
+        return {k: own[k] for k in ("unreaped", "rejected", "clamped")}
+
     def test_a_parent_that_reaped_no_child_takes_none_off(self):
         tools, users, own = self.by_tool(unreaped(self.now - 800))
         self.assertEqual(tools, {"cat": 100.0, "python3": 20.0})
         self.assertEqual(users, {"bob": 120.0})
-        self.assertEqual((own["rejected"], own["clamped"]), (1, 0))
+        # counted apart from the start rule's refusals
+        self.assertEqual(self.counts(own), {"unreaped": 1, "rejected": 0, "clamped": 0})
 
     def test_one_that_reaped_it_takes_it_off_as_before(self):
         tools, users, own = self.by_tool(unreaped(self.now - 800, child_cpu_s=0.25,
                                                   parent_io=120.0))
         self.assertEqual(tools, {"cat": 100.0, "python3": 20.0})
         self.assertEqual(users, {"bob": 120.0})
-        self.assertEqual((own["rejected"], own["clamped"]), (0, 0))
+        self.assertEqual(self.counts(own), {"unreaped": 0, "rejected": 0, "clamped": 0})
 
     def test_an_unmeasured_child_cpu_says_nothing(self):
         # the collector's `signal` feature off: no evidence either way, so the
@@ -418,7 +463,42 @@ class UnreapedChildTest(unittest.TestCase):
         tools, _users, own = self.by_tool(unreaped(self.now - 800, child_cpu_s=None,
                                                    parent_io=120.0))
         self.assertEqual(tools, {"cat": 100.0, "python3": 20.0})
-        self.assertEqual(own["rejected"], 0)
+        self.assertEqual(self.counts(own), {"unreaped": 0, "rejected": 0, "clamped": 0})
+
+    def test_across_an_hour_seam(self):
+        # the cat in one hour, python3's exit in the next: what is held for it
+        # crosses the seam in the carry, and its exit still takes none of it off
+        seam = (int(NOW // HOUR) - 1) * HOUR
+        recs = normalized(unreaped(seam - 30, parent_at=60.0))
+        want = materialize(one_pass(recs))
+        saved, carry, fresh = hour_states(recs)
+        self.assertGreaterEqual(len(saved), 2)
+        got = materialize(merged(saved, fresh, carry))
+        for name, p in (("one pass", want), ("merged from hours", got)):
+            with self.subTest(name):
+                io = p["io_process"]
+                self.assertEqual({u["user"]: u["rd_mb"] for u in io["by_user"]}, {"bob": 120.0})
+                self.assertEqual(self.counts(io["own_io"]),
+                                 {"unreaped": 1, "rejected": 0, "clamped": 0})
+                self.assertEqual(p["trajectories"]["buffer"]["reaped_unreaped"], 1)
+
+    def test_after_two_nodes_carries_are_put_together(self):
+        # each node holds a 100 MB child for its pid 300; a window puts the two
+        # carries together, and the two parents' exits come after
+        carries = {}
+        for host in ("n1", "n2"):
+            j = own_io.OwnIo(own_io.DISK, cap=10, name="t")
+            j.take(exit_of(host, 301, 300, 1000.0, 1.0, 100.0))
+            carries[host] = {"r": j.carry({})}
+        out = hours.combine_carries(carries, None, {"r": PassRed(10)})
+        j = own_io.OwnIo(own_io.DISK, cap=10, name="t")
+        j.seed(out["r"])
+        # n1's parent never waited for its child; n2's did
+        self.assertEqual(j.take(exit_of("n1", 300, 1, 1010.0, 60.0, 20.0, child_cpu_s=0.0)),
+                         (20.0, 0.0))
+        self.assertEqual(j.take(exit_of("n2", 300, 1, 1010.0, 60.0, 120.0, child_cpu_s=0.3)),
+                         (20.0, 0.0))
+        self.assertEqual((j.unreaped, j.rejected, j.clamped), (1, 0, 0))
 
     def test_the_live_tier_in_either_order(self):
         recs = unreaped(self.now - 800)
@@ -809,7 +889,8 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual((j.crowded, j.evicted, self.said()), (1, 0, []))
         j.take(ex(t + 20, 200, 2, "alice"))
         j.take(ex(t + 21, 300, 3, "alice"))
-        self.assertEqual(j.status(), {"evicted": 1, "rejected": 0, "clamped": 0, "crowded": 1})
+        self.assertEqual(j.status(), {"evicted": 1, "rejected": 0, "clamped": 0, "crowded": 1,
+                                      "unreaped": 0})
         self.assertEqual(len(self.said()), 1)
         self.assertIn("at reducers.own_io.max_parents (2), 1 so far", self.said()[0])
 

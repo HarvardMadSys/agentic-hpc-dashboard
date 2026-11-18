@@ -1119,7 +1119,8 @@ class LiveReducer:
                        "rejected": self.io_join.rejected + self.io_given.rejected,
                        "clamped": (self.io_join.clamped + self.io_given.clamped
                                    + self.io_clamped),
-                       "crowded": self.io_join.crowded + self.io_given.crowded},
+                       "crowded": self.io_join.crowded + self.io_given.crowded,
+                       "unreaped": self.io_join.unreaped + self.io_given.unreaped},
             "conn_unmatched_births": self.conn_unmatched_births,
             "unavailable": {
                 "running_jobs": "needs the slurm_jobs census feed (not configured)",
