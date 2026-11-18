@@ -951,12 +951,13 @@ and for how the page draws them
 | SE-1 | plates: agent sessions, processes per session, session length, processes spent waiting | BUILD on read | `trajectories.summary` | `reducers/trajectories.py:TrajectoryReducer.summary` · `tabs/TrajectoriesTab.tsx:TrajectoriesTab` |
 | SE-2 | sessions, ranked (list) | BUILD on read; LIVE for running | `trajectories.ranks`, `rows`; `rows[].running` | `TrajectoryReducer.feed`, `result`, `folded`, `_row`; `Aggregator._running_rows` · `tabs/TrajectoriesTab.tsx:SessionItem` |
 | SE-3 | a row's phase band, task line and category chip; else its purpose ribbon | BUILD on read; LIVE for the live edge | `rows[].phases`, `purpose_rle`, `running.now` | `TrajectoryReducer._phases`, `_build_block`; `reducers/live.py:running_now` · `tabs/TrajectoriesTab.tsx:RowRibbon`, `components/PhaseBand.tsx:PhaseBand`, `components/CategoryChip.tsx:CategoryChip` |
-| SE-4 | inspector: facts, purpose ribbon, tool tokens | BUILD | `row` | `TrajectoryReducer._row`; `proctree.py:lookup` · `tabs/TrajectoryInspector.tsx:Facts`, `ToolTokens` |
+| SE-4 | inspector: facts; purpose ribbon and tool tokens | BUILD | `row` | `TrajectoryReducer._row`; `proctree.py:lookup` · `tabs/TrajectoryInspector.tsx:Facts`, `ProcessMix`, `ToolTokens` |
 | SE-5 | inspector: what was read, and its limits | INSPECT | `scan`, `bounds`, `links` | `proctree.py:_inspect` · `tabs/TrajectoryInspector.tsx:ReadLine` |
 | SE-6 | inspector: headline, category, summary | BUILD | `row.phases.headline`, `category`, `summary` | `reducers/phase_tasks.py:name_tasks`, `reducers/phase_summary.py:summarize` · `tabs/TrajectoryInspector.tsx:TrajectoryInspector` |
 | SE-7 | inspector: navigator | INSPECT; BUILD for tasks and phases | `nav`, `span`, `scan`; `row.phases` | `proctree.py:TreeBuilder._note`, `nav` · `tabs/TrajectoryNav.tsx:TrajectoryNav` |
 | SE-8 | inspector: task list, or phase list | BUILD | `row.phases.tasks`, `list` | `phase_tasks.py:task_spans`, `name_tasks`; `phase_segment.py:segment` · `tabs/TaskList.tsx:TaskList`, `tabs/PhaseList.tsx:PhaseList` |
 | SE-9 | inspector: process tree (tree or table) and its pop-out | INSPECT | `tree`, `timeline` | `proctree.py:TreeBuilder.feed`, `resolve`, `render` · `components/ProcDiagram.tsx:ProcDiagram`, `components/ProcTree.tsx:ProcTree`, `tabs/TreePopout.tsx` |
+| SE-10 | inspector: map of the whole session, its tasks over its phases | BUILD; LIVE for the live edge | `row.phases`, `row.first`, `running.now` | `TrajectoryReducer._phases`, `_build_block`; `reducers/live.py:running_now` · `tabs/SessionMap.tsx:SessionMap`, `lib/phases.ts:bandAxis` |
 
 #### SE-1 plates
 
@@ -1026,11 +1027,13 @@ and for how the page draws them
   block for every session of a week on eight login nodes takes minutes (README), which is why the
   plates count no category.
 
-#### SE-4 inspector: facts, purpose ribbon, tool tokens
+#### SE-4 inspector: facts; purpose ribbon and tool tokens
 
-- **Shows:** the row's processes, CPU, length, distinct tools, pieces (keys folded and how the least
-  certain was attributed), sandbox and approval; its purpose ribbon and tool tokens, each run opening
-  the tree at its first record.
+- **Shows:** at the head of the inspector, the row's first and last record, its length, its tool calls
+  where the agent's commands are read, processes, CPU, distinct tools, pieces (keys folded and how the
+  least certain was attributed: said only where there is more than one, or the least certain was placed
+  by a weaker rule than the agent itself or an ancestor), sandbox and approval. At the head of its
+  Processes part, its purpose ribbon and tool tokens, each run opening the tree at its first record.
 - **Computation:** SE-2's row (`tool_rle` cut to 60 runs, `purpose_rle` to 80, with their start
   times). The inspector's own copy is made under the lock by `_inspect`, whose `lookup` folds only
   the keys sharing the row's prefix when the window's fold is stale; the agent's other days come
@@ -1069,8 +1072,9 @@ and for how the page draws them
 #### SE-8 inspector: task list, or phase list
 
 - **Shows:** each task, opened into its phases, each phase into the commands that ran most in it
-  (`top_commands`, 3); lone stretches and cutting gaps as lines of their own. A block with no task
-  lists its phases alone.
+  (`top_commands`, 3); under a closed task, its phases in order on one line, with the chip of each
+  and the length of any that holds a quarter of the task (`sequenceParts`); lone stretches and
+  cutting gaps as lines of their own. A block with no task lists its phases alone.
 - **Computation:** the block's `tasks` and `list` (SE-3).
 
 #### SE-9 inspector: process tree
@@ -1094,6 +1098,19 @@ and for how the page draws them
 - **Cost:** INSPECT's: one read at a time, up to 150,000 records or 6 GiB. Building a record costs
   about 44 µs on FAS, in the `inspect_workers` processes, and feeding it to the tree about 6 µs, in
   the service's own: a 150,000-record read 2.5-2.7 s. Cached 600 s.
+
+#### SE-10 inspector: map of the whole session
+
+- **Shows:** under the session's gist, before any process is read, the tasks as a lane of blocks over
+  the phases as a band, on the session's own clock: from its first record, or its first phase where
+  that begins earlier, to its last phase's end, and on to now for a session running now, where its
+  live edge ends it. A task is numbered and labelled as the list under it has it, where that fits; a
+  phase is tinted as the navigator tints it, with a rule of its full colour along its foot, and named
+  where its name fits; a guess is hatched and idle is a dashed outline. A click picks the task or the
+  phase as its row in the list does.
+- **Computation:** none of its own: the row's block (SE-3) on the axis the row's band is drawn on
+  (`bandAxis`), so it covers the whole session whatever the read reached, which SE-7 cannot.
+- **Cost:** none on the service.
 
 ## Login nodes › Resources
 

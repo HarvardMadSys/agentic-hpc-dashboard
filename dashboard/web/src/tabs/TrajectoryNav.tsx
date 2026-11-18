@@ -107,7 +107,7 @@ const slotOf = (p: string) => (SLOT.has(p) ? p : 'other');
 /** Tick steps, seconds: a label every ~100 px. */
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
 
-function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }[] {
+export function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }[] {
   const step = STEPS.find((s) => (v1 - v0) / s <= room) ?? STEPS[STEPS.length - 1];
   // On the local clock: an hour tick is a local hour, whatever the offset.
   const off = -new Date(v0 * 1000).getTimezoneOffset() * 60;
@@ -190,7 +190,7 @@ export interface Quick {
 
 /** The width of a box's content in px as it is laid out (its own width less its padding), kept as the box is
  *  resized; `fallback` before it is first measured. `which` names the box the ref is on, where that can change. */
-function useWidth(on: boolean, fallback: number, which = ''): [RefObject<HTMLDivElement | null>, number] {
+export function useWidth(on: boolean, fallback: number, which = ''): [RefObject<HTMLDivElement | null>, number] {
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(fallback);
   useLayoutEffect(() => {

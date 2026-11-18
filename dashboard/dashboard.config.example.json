@@ -48,6 +48,38 @@
     "citations": true
   },
 
+  "//annotate": "The session inspector's 'annotate purposes': what each tool call was for, asked of a",
+  "//annotate1": "model. OFF by default: it sends each call's command line (masked, as the page shows it)",
+  "//annotate2": "and its folder to the provider. provider: anthropic | openai (any OpenAI-compatible",
+  "//annotate3": "endpoint: set base_url for vLLM, Ollama, LiteLLM, ...) | codex | claude (the CLIs, with",
+  "//annotate4": "this user's login) | ask (the chat's agent) | command (prompt on stdin, JSON on stdout or",
+  "//annotate5": "in {answer_file}). model empty: the provider's default (anthropic: claude-opus-5-5;",
+  "//annotate6": "openai has none). The key: the env var api_key_env names (empty: ANTHROPIC_API_KEY or",
+  "//annotate7": "OPENAI_API_KEY), else api_key_file, else api_key (never shown by /api/config). effort:",
+  "//annotate8": "anthropic's output_config.effort, empty to leave it out. Answers are kept in",
+  "//annotate9": "<cache.dir>/annotate/purposes.jsonl, so a command is asked about once per model.",
+  "annotate": {
+    "enabled": false,
+    "provider": "anthropic",
+    "model": "",
+    "base_url": "",
+    "api_key_env": "",
+    "api_key_file": "",
+    "api_key": "",
+    "effort": "low",
+    "max_tokens": 8000,
+    "command": null,
+    "timeout_s": 120,
+    "batch_size": 40,
+    "max_calls": 400,
+    "max_concurrent": 1,
+    "auto": false,
+    "system_prompt": "",
+    "system_prompt_file": "",
+    "cache": true,
+    "cache_max": 200000
+  },
+
   "site": { "name": "", "description": "" },
 
   "//ui": "What the page opens on before a reader changes it; ignored by the saved builds.",

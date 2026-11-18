@@ -12,6 +12,9 @@ import type {
   FeedsResponse,
   LiveResponse,
   LiveUserDetail,
+  AnnotateInfo,
+  AnnotateJob,
+  AnnotateResponse,
   AskContext,
   AskInfo,
   AskJob,
@@ -139,6 +142,37 @@ export async function postAsk(
   }
   return (await r.json()) as AskJob;
 }
+
+/** The model that labels tool calls with their purpose, and whether it can run. */
+export const getAnnotateInfo = (s?: AbortSignal) => get<AnnotateInfo>('/annotate', { signal: s });
+/** One session's tool calls and what is known of their purposes; `run` asks the
+ *  model about the rest, a job polled with getAnnotateJob. The session is read
+ *  as /trajectory reads it, so the calls are the rows on screen. */
+export async function postAnnotate(
+  q: { sid: string; window_min?: number | null; from?: number | null; to?: number | null; order?: TrajOrder; run?: boolean },
+  s?: AbortSignal,
+): Promise<AnnotateResponse> {
+  const url = API_BASE + '/annotate';
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(q),
+    signal: s,
+  });
+  if (!r.ok) {
+    signInAgain(r.status);
+    let detail = r.statusText;
+    try {
+      detail = ((await r.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      /* not JSON: the status is the message */
+    }
+    throw new ApiError(url, r.status, detail);
+  }
+  return (await r.json()) as AnnotateResponse;
+}
+export const getAnnotateJob = (id: string, s?: AbortSignal) =>
+  get<AnnotateJob>(`/annotate/${encodeURIComponent(id)}`, { signal: s });
 
 /** The operator's suggestions marked done: the service keeps them for
  *  everyone, until undone. A mark names an answer and a suggestion in it.
