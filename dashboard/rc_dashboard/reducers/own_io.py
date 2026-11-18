@@ -40,6 +40,18 @@ next holder's start is taken off that holder, and past PER_PID entries for
 one pid the closest two merge, so an orphan whose start is nearer a holder's
 child than any two of its children are to each other goes with them.
 
+A known limit: the record has no fork time apart from that exec (the
+collector writes the exec's when it saw one, the fork's only when it did not:
+`ebpf_trace._duration_and_start`, `duration_src`). So a launcher that forks a
+child, runs on for over START_SLACK_S and only then execs -- a wrapper that
+starts a helper early and `exec`s the real program late -- is refused that
+child: its bytes stay in the launcher's figure as well as at the child's own
+exit, and the refusal is counted in `rejected`, which is the signal (the live
+tier's backfill, which meets the launcher first, holds the child as
+`waiting`). phase_log.py measured the gap on four million records: of 2.7 M
+children, 0.62% began a second to a minute before their parent's recorded
+start, and one a minute to an hour before.
+
 Each reducer that sums bytes holds its own join, over the fields it sums (the
 record's names: `rd_mb`, `wr_mb`, `rchar_mb`, `wchar_mb`), and feeds it every
 exit it reads, in order. A field the record lacks is None in what `take` gives

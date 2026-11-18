@@ -498,6 +498,45 @@ class PidReuseTest(unittest.TestCase):
                        io=iob(10.0, 10.0), duration_s=272.0)]
         self.assertEqual(self.by_user(recs), {"carol": 10.0})
 
+    def launcher(self, before):
+        """carol's `python` 600, its last exec at t + 28, exits at t + 300 with
+        10 MB read; its child `lmod` 601, which read 3 MB, began `before`
+        seconds ahead of that exec."""
+        t = self.now - 600
+        return [person("exit", t + 30 - before, 601, 600, "lmod", "lmod load x", "carol",
+                       io=iob(3.0, 3.0), duration_s=2.0),
+                person("exit", t + 300, 600, 1, "python", "python run.py", "carol",
+                       io=iob(10.0, 10.0), duration_s=272.0)]
+
+    def test_a_child_begun_just_inside_the_slack_is_taken_off(self):
+        recs = self.launcher(own_io.START_SLACK_S - 1)
+        p = window(recs).payload
+        self.assertEqual({u["user"]: u["rd_mb"] for u in p["io_process"]["by_user"]},
+                         {"carol": 10.0})
+        self.assertEqual(p["io_process"]["own_io"]["rejected"], 0)
+        for older in (False, True):
+            with self.subTest(older=older):
+                self.assertEqual(self.live_rd(recs, older), {"carol": 10.0})
+
+    def test_a_child_begun_just_past_it_is_refused_and_counted(self):
+        # A launcher that forks, runs on over a minute and then execs: the
+        # record has no fork time apart from the exec, so the child is refused,
+        # and its bytes count twice, at its exit and in the launcher's figure
+        # (own_io.py, a known limit). The refusal is the signal.
+        recs = self.launcher(own_io.START_SLACK_S + 1)
+        p = window(recs).payload
+        self.assertEqual({u["user"]: u["rd_mb"] for u in p["io_process"]["by_user"]},
+                         {"carol": 13.0})
+        for k in ("io_process", "tool_mix", "resources"):
+            with self.subTest(panel=k):
+                self.assertEqual(p[k]["own_io"]["rejected"], 1)
+        self.assertEqual(p["trajectories"]["buffer"]["reaped_rejected"], 1)
+        for older, signal in ((False, "rejected"), (True, "waiting")):
+            with self.subTest(older=older):
+                lv = live(recs, older=older)
+                self.assertEqual(rd_of(lv, self.now), {"carol": 13.0})
+                self.assertEqual(lv.result()["own_io"][signal], 1)
+
 
 def shells(t, host="h1", base=0, n=5):
     """`n` tool-call shells, each the parent of one `cat` that read 1 MB: every
