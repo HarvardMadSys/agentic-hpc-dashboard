@@ -952,7 +952,10 @@ credentials. So:
   without the browser asking first; a body past 1 MB is a 413, and a malformed one a 400.
 
 `ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, `{workdir}`,
-`{answer_file}` and `{model}` filled in, the prompt on stdin. `tests/test_ask.py` checks the
+`{answer_file}` and `{model}` filled in, the prompt on stdin. A command, or the instructions in
+`ask.system_prompt`, may hold a provider's key, so `/api/config` and `--print-config` show both
+as `(hidden)` when set, and `GET /api/ask` names only the program a command runs (`claude` for
+`env ANTHROPIC_API_KEY=... claude -p`). `tests/test_ask.py` checks the
 refusals, the environment and the directory, and `tests/test_guard.py` the routes.
 
 ## Network endpoints

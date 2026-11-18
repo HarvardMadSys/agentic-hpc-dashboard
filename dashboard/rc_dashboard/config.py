@@ -514,7 +514,9 @@ ENV_MAP = {
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
-HIDDEN = ("anonymize.salt", "server.auth.password_hash")
+# The agent's command and its instructions can carry a provider's key
+# (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
+HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt")
 
 # retired names still honoured, with a one-line warning
 ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
@@ -679,7 +681,8 @@ class Config:
             entry = {"_value": val, "_origin": self.origin(path)}
             if path in HIDDEN and val:
                 # With the salt, a list of candidate names turns every alias
-                # back. The password hash is no use to a reader either.
+                # back. The password hash is no use to a reader either, and the
+                # agent's command or prompt may hold a key.
                 entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
                 cand = val if isinstance(val, list) else [val]

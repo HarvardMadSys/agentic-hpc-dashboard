@@ -155,6 +155,23 @@ class WhoMayConnect(Case):
                 self.assertIn("server.%s" % key, self.refused({"server": {key: [1]}}))
 
 
+class Secrets(Case):
+    def test_what_can_hold_a_key_is_said_to_be_set_never_shown(self):
+        key = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
+        for env in ({}, {"RC_DASH_ASK_CMD": "env ANTHROPIC_API_KEY=%s claude -p" % key}):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                cfg, _ = self.load({"ask": {"command": ["env", "OPENAI_API_KEY=%s" % key, "codex"],
+                                            "system_prompt": "token %s" % key}})
+                tree = cfg.as_dict(with_origins=True)
+                self.assertEqual(tree["ask"]["command"]["_value"], "(hidden)")
+                self.assertEqual(tree["ask"]["system_prompt"]["_value"], "(hidden)")
+                self.assertNotIn(key, json.dumps(tree))
+        # unset stays as it is, so the page can tell the two apart
+        tree = configmod.load(None, None).as_dict(with_origins=True)
+        self.assertIsNone(tree["ask"]["command"]["_value"])
+        self.assertEqual(tree["ask"]["system_prompt"]["_value"], "")
+
+
 class UnknownKeys(Case):
     def test_a_typo_where_it_would_fail_open_stops_it_naming_the_key_meant(self):
         for tree, typo, meant in (

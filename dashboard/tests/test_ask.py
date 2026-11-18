@@ -157,6 +157,16 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(ask.describe(Cfg())["agent"], "codex")         # the preset, by name
         self.assertEqual(ask.describe(Cfg(**{"ask.command": "env"}))["agent"], "custom")
 
+    def test_the_page_is_told_the_program_and_nothing_else_of_the_command(self):
+        key = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
+        for cmd in ("env ANTHROPIC_API_KEY=%s claude -p" % key,
+                    ["env", "ANTHROPIC_API_KEY=%s" % key, "/opt/bin/claude", "-p"]):
+            with self.subTest(cmd=cmd):
+                d = ask.describe(Cfg(**{"ask.command": cmd}))
+                self.assertEqual((d["agent"], d["command"]), ("claude", "claude"))
+                self.assertNotIn(key, json.dumps(d))
+        self.assertEqual(ask.describe(Cfg())["command"], "codex")
+
 
 class AskSettingsTest(unittest.TestCase):
     """An ask setting changes the questions, never what a saved window holds:

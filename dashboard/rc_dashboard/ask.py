@@ -927,7 +927,8 @@ def _program(argv):
 
 def describe(cfg):
     """What the page shows about the agent, and whether it can run here. A
-    command of one's own is named by the program it runs, as a preset is."""
+    command of one's own is named by the program it runs, as a preset is, and
+    nothing more of it is shown: the rest can hold a key (`env KEY=... cli`)."""
     try:
         argv = argv_for(cfg, "<workdir>", "<answer>")
         exe = shutil.which(argv[0]) if argv else None
@@ -940,7 +941,7 @@ def describe(cfg):
             "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")
             else _program(argv) or "custom",
             "model": cfg.get("ask.model") or None,
-            "command": " ".join(argv[:3]) + (" ..." if len(argv) > 3 else ""),
+            "command": _program(argv) or "",
             "available": bool(exe) and not err, "error": err,
             "system_prompt": ("file" if cfg.get("ask.system_prompt_file")
                               else "config" if cfg.get("ask.system_prompt") else "built-in"),
