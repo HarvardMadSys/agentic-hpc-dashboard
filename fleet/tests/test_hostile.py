@@ -72,10 +72,10 @@ def hello(live=DAY):
     return {"t": "hello", "v": 1, "host": HOST, "live": live}, b""
 
 
-def run_sender(root, hello_line, wait=1.0, ping_s=30.0):
+def run_sender(root, hello_line, wait=1.0, ping_s=30.0, during=None):
     """(exit status, [(header, plain or raw payload)]) of a sender run in this process
     over `root`, given `hello_line` (bytes, or a dict sent as JSON), until its stdin
-    closes `wait` seconds later."""
+    closes `wait` seconds later, after `during()` if given."""
     if isinstance(hello_line, dict):
         hello_line = (json.dumps(hello_line) + "\n").encode("utf-8")
     r, w = os.pipe()
@@ -87,6 +87,8 @@ def run_sender(root, hello_line, wait=1.0, ping_s=30.0):
         os.write(w, hello_line)
     except BrokenPipeError:              # it stopped reading, as it should have
         pass
+    if during is not None:
+        during()
     time.sleep(wait)
     os.close(w)
     t.join(10)
@@ -448,6 +450,78 @@ class TestSenderPings(unittest.TestCase):
         self.assertEqual([h["t"] for h, _ in frames[:first]], ["hello", "ping", "ping"])
         self.assertEqual(frames[first][0]["off"], len(body) - 10)
         self.assertEqual(frames[first][1], body[-10:])
+
+
+def append(path, data):
+    with open(path, "ab") as fh:
+        fh.write(data)
+
+
+def data_for(frames, key):
+    return b"".join(p for h, p in frames if h["t"] == "data" and h["path"] == key)
+
+
+class TestSenderDays(unittest.TestCase):
+    """Which day folders on the node the sender follows and sends."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="fleet-src-")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def plain(self, day, body=b""):
+        path = os.path.join(self.root, day, "nodeA.exits.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        append(path, body)
+        return path
+
+    def sealed(self, day, body):
+        os.makedirs(os.path.join(self.root, day))
+        with open(os.path.join(self.root, day, "nodeA.exits.jsonl.gz"), "wb") as fh:
+            fh.write(gzip.compress(body))
+
+    def test_a_folder_dated_later_does_not_take_the_live_stream(self):
+        """The review's case: an empty `2036-01-01` folder beside today's made the hello
+        say live=2036-01-01, and today's appends stopped crossing. The live day is the
+        newest real date no later than the node's own tomorrow; a name that ends in a
+        newline, or that is no date, is no day."""
+        today, later = days_from_today(0, 2)
+        f = self.plain(today, b'{"line":1}\n')
+        for name in ("2036-01-01", later, today + "\n"):
+            os.mkdir(os.path.join(self.root, name))
+        self.plain("2026-02-30", b'{"no":"date"}\n')
+
+        def more():
+            for i in (2, 3):
+                time.sleep(0.4)
+                append(f, b'{"line":%d}\n' % i)
+        _, frames = run_sender(self.root, {"v": 1, "days": 8, "have": {}}, during=more)
+        self.assertEqual(frames[0][0]["live"], today)
+        key = today + "/nodeA.exits.jsonl"
+        self.assertEqual(data_for(frames, key), b'{"line":1}\n{"line":2}\n{"line":3}\n')
+        self.assertEqual(set(h["path"] for h, _ in frames if "path" in h), {key})
+
+    def test_sealed_days_are_sent_within_days_of_the_live_one(self):
+        """The receiver keeps days by date. A node with a gap in its folders has old
+        days among its newest `days`; sent, they would be dropped there and sent again
+        at each connection."""
+        old, yesterday, today = days_from_today(-10, -1, 0)
+        self.sealed(old, b'{"old":1}\n')
+        self.sealed(yesterday, b'{"y":1}\n')
+        self.plain(today, b'{"t":1}\n')
+        _, frames = run_sender(self.root, {"v": 1, "days": 3, "have": {}})
+        days = set(h["path"].split("/")[0] for h, _ in frames if "path" in h)
+        self.assertEqual(days, {yesterday, today})
+
+    def test_a_live_file_the_copy_holds_verified_is_not_sent(self):
+        """The receiver refuses to change a verified file, so the sender never sends one,
+        live day or not."""
+        today = days_from_today(0)[0]
+        self.plain(today, b'{"t":1}\n')
+        key = today + "/nodeA.exits.jsonl"
+        _, frames = run_sender(self.root, {"v": 1, "days": 3, "have": {key: {"verified": True}}})
+        self.assertEqual([h["t"] for h, _ in frames if h["t"] != "ping"], ["hello"])
 
 
 if __name__ == "__main__":

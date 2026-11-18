@@ -39,7 +39,9 @@ is one JSON line on the sender's stdin:
     error    {msg}                   the sender exits 1 right after
 
 Only `.jsonl` day-files (and their `.gz`) are sent; any other file in a day folder stays
-on the node, and a hello's other keys are ignored.
+on the node, and a hello's other keys are ignored. The live day is the newest day folder
+dated no later than the node's own tomorrow; of the sealed days, those among the `days`
+newest that are within `days` days of the live one are sent.
 
 The receiver refuses a frame no sender writes, and reconnects: a data frame of more
 than CHUNK plain bytes, or one that ends the zlib stream; a day that is not a real
@@ -72,7 +74,7 @@ MAX_HEADER = 1 << 20
 MAX_PAYLOAD = CHUNK + (1 << 16)    # deflate can grow incompressible input a little
 STDERR_LINE = 4096             # a transport's stderr line is kept up to this; the rest goes
 STALL_S = 300.0                # a receiver's read with nothing from the sender this long ends it
-DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 GZ = ".gz"
 GZ_LEVEL = 6                   # gzip's default, as the collector's `nice gzip -f` uses
 
@@ -373,8 +375,9 @@ class Sender:
             return
         for name in names:
             key = "%s/%s" % (self.live, name)
-            if key in self.files:
-                continue
+            have = self.have.get(key)
+            if key in self.files or (have and have.get("verified")):
+                continue                   # the receiver refuses to change a verified file
             path = os.path.join(folder, name)
             try:
                 fh = open(path, "rb")
@@ -447,6 +450,14 @@ class Sender:
                 del self.awaiting[key]
 
     # ---- the loop
+    def days(self):
+        """The day folders under --root that are real dates no later than this node's
+        own tomorrow, oldest first; the live day is the newest. A folder dated later
+        (a stray `2036-01-01`) is left alone: it would freeze today's stream as the
+        live day, and the receiver refuses it. Raises OSError."""
+        last = tomorrow()
+        return [d for d in list_days(self.root) if day_date(d) and d <= last]
+
     def read_hello(self):
         buf = b""
         while b"\n" not in buf:
@@ -472,15 +483,20 @@ class Sender:
         self.have = hello.get("have") or {}
         keep = max(1, int(hello.get("days", 1)))
         try:
-            days = list_days(self.root)
+            days = self.days()
         except OSError as e:
             self.emit({"t": "error", "msg": "cannot read %s: %s" % (self.root, e.strerror)})
             return 1
         self.live = days[-1] if days else None
         self.emit({"t": "hello", "v": PROTOCOL, "host": socket.gethostname().split(".")[0],
                    "live": self.live})
+        # The sealed days among the `keep` newest that are within `keep` days of the live
+        # one: the receiver keeps days by date, so an older one (a gap in the node's
+        # folders) would only be dropped there, and sent again at each connection.
+        first = day_date(self.live).toordinal() - keep + 1 if self.live else 0
         for day in days[-keep:-1]:
-            self.catch_up_sealed(day)
+            if day_date(day).toordinal() >= first:
+                self.catch_up_sealed(day)
         if self.live:
             self.scan_live()
             self.follow_live()
@@ -489,7 +505,7 @@ class Sender:
             if ready and not os.read(self.in_fd, 65536):
                 return 0                   # the receiver closed its end
             try:
-                days = list_days(self.root)
+                days = self.days()
             except OSError as e:
                 self.emit({"t": "error", "msg": "cannot read %s: %s" % (self.root, e.strerror)})
                 return 1
