@@ -9,9 +9,10 @@ name: collector-image
 #
 # The base image is pinned per-ref so a push that rebuilds both stays
 # consistent: a tag build consumes base:latest, a main build consumes base:edge,
-# a branch that changed docker/base since it left main consumes
-# base:<branch-slug> (built by base-image.yml on the push that changed it), and
-# any other branch consumes base:edge, as base-image.yml builds it no base.
+# a branch whose own commits changed docker/base (since it left develop and
+# main) consumes base:<branch-slug>, which base-image.yml built on the push that
+# changed it, and any other branch consumes base:edge: nothing builds it a base
+# of its own. A push that rebuilds the base it consumes waits for that build.
 
 on:
   push:
@@ -44,8 +45,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # main's history too: which base a branch builds on depends on whether
-          # it changed docker/base since it left main
+          # every branch's history (develop's and main's among them): which base
+          # a branch builds on depends on what it changed since it left them
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -62,25 +63,54 @@ jobs:
       # into the script: a branch name is text whoever pushes it chose.
       - name: Resolve base image tag
         id: base
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
+          # base-image.yml publishes latest on each v*.*.* tag push, edge from
+          # main, nothing from develop, and base:<slug> from any other branch, on
+          # a push that changes what it builds from: its `paths:`.
+          paths=(docker/base .github/workflows/base-image.yml)
+          # This branch's own commits changed those paths, measured from where
+          # it left develop and from where it left main: a change it took in
+          # from either is not its own, and builds it no base.
+          own_base() {
+            local trunk fork
+            for trunk in origin/develop origin/main; do
+              fork="$(git merge-base HEAD "$trunk")" ||
+                { echo "::error::$GITHUB_REF_NAME shares no history with $trunk"; exit 1; }
+              git diff --quiet "$fork" HEAD -- "${paths[@]}" && return 1
+            done
+            return 0
+          }
+          # This push changed them, so base-image.yml is rebuilding this ref's
+          # tag now: its path filter, a diff from the ref's commit before the
+          # push. BEFORE is 40 zeros for a new branch, which pushes its own
+          # commits, and empty for a run by hand, which rebuilds nothing.
+          rebuilt_now() {
+            case "$BEFORE" in
+              "") return 1 ;;
+              0000000000000000000000000000000000000000) own_base ;;
+              *) git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
+                   git fetch --quiet --no-tags origin "$BEFORE" || return 1
+                 ! git diff --quiet "$BEFORE" HEAD -- "${paths[@]}" ;;
+            esac
+          }
+          want=""   # when this push rebuilds the tag: the commit it is rebuilt from
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             base_tag="latest"
+            [ -n "$BEFORE" ] && want="$GITHUB_SHA"
           elif [ "$GITHUB_REF_NAME" = "main" ]; then
             base_tag="edge"
-          else
+            rebuilt_now && want="$GITHUB_SHA"
+          elif own_base; then
             # Slugify the branch the same way docker/metadata-action does for
             # type=ref,event=branch: each run of characters a tag cannot hold
             # (slashes among them) becomes one dash.
-            slug="$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
-            # base-image.yml builds a branch a base of its own only on a push
-            # that changes docker/base. A branch that has not changed it since
-            # it left main has none, and builds on main's.
-            fork="$(git merge-base HEAD origin/main)"
-            if git diff --quiet "$fork" HEAD -- docker/base; then
-              base_tag="edge"
-            else
-              base_tag="$slug"
-            fi
+            base_tag="$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
+            rebuilt_now && want="$GITHUB_SHA"
+          else
+            # No base of its own, so none is built for it: main's.
+            base_tag="edge"
           fi
           # A repository path must be lowercase, and github.repository keeps the
           # owner's capitals (HarvardMadSys), which docker refuses outright.
@@ -88,30 +118,39 @@ jobs:
           # publishes ghcr.io/harvardmadsys/...; the tag keeps its case there too.
           image="${REGISTRY,,}/${BASE_IMAGE_NAME,,}:${base_tag}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
-          echo "Using base image: ${image}"
+          echo "revision=${want}" >> "$GITHUB_OUTPUT"
+          echo "Using base image: ${image}${want:+, once rebuilt from $want}"
 
       - name: Wait for base image to be available
         # base-image.yml and this workflow start in parallel when a push touches
-        # docker/base, so the base tag may not exist yet. Poll the registry
-        # manifest for up to ~10 min before giving up, rather than failing on a
-        # race we expect to resolve. If docker/base was unchanged, the tag
-        # already exists from a prior run and this returns immediately. Only
-        # "not found" is waited out: any other error (a malformed reference, a
-        # refused login) will not go away, and stops the job at once, saying what
-        # it was.
+        # docker/base, so the base tag may not exist yet, or may still be the
+        # build of an earlier commit. Each base records the commit it was built
+        # from (org.opencontainers.image.revision, set by metadata-action): when
+        # this push rebuilds the tag, only the build of this commit will do.
+        # Poll the registry for up to ~10 min before giving up, rather than
+        # failing on a race we expect to resolve. Only "not found" and an earlier
+        # build are waited out: any other error (a malformed reference, a refused
+        # login) will not go away, and stops the job at once, saying what it was.
         env:
           IMAGE: ${{ steps.base.outputs.image }}
+          WANT: ${{ steps.base.outputs.revision }}
         run: |
           for i in $(seq 1 60); do
-            if err=$(docker buildx imagetools inspect "$IMAGE" 2>&1 >/dev/null); then
-              echo "Base image available: $IMAGE"
-              exit 0
+            if out=$(docker buildx imagetools inspect "$IMAGE" \
+                       --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}' 2>&1); then
+              if [ -z "$WANT" ] || [ "$out" = "$WANT" ]; then
+                echo "Base image available: $IMAGE, built from ${out:-an unrecorded commit}"
+                exit 0
+              fi
+              err="$IMAGE is the build of ${out:-an unrecorded commit}, not yet of $WANT"
+            else
+              err=$out
+              case "$err" in
+                *"not found"*) ;;
+                *) echo "::error::Cannot read base image $IMAGE: $err"; exit 1 ;;
+              esac
             fi
-            case "$err" in
-              *"not found"*) ;;
-              *) echo "::error::Cannot read base image $IMAGE: $err"; exit 1 ;;
-            esac
-            echo "Attempt $i/60: $IMAGE not found yet; waiting 10s..."
+            echo "Attempt $i/60: $err; waiting 10s..."
             sleep 10
           done
           echo "::error::Base image $IMAGE did not become available in time: $err"
