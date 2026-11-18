@@ -2085,6 +2085,8 @@ class TrajectoryReducer:
             "summary": self.summary(live),
             "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
                        "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
+                       # children a parent could not have reaped (own_io.py): dropped
+                       "reaped_rejected": self.own.rejected,
                        # the phases' joins and bounds, every one counted
                        "phase_pending": len(self.pend.entries),
                        "phase_pending_evicted": self.pend.evicted,

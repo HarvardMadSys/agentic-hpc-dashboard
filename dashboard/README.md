@@ -753,7 +753,10 @@ already made once.
   carried across hours like the other joins; the live tier's backfill, which reads newest first,
   takes each child off the parent it met first). So a command's bytes count once, not once per
   process above it. A child whose exit was not read is not taken off: one outside the window, or
-  one a filter leaves out.
+  one a filter leaves out. Nor is one its parent cannot have reaped: a child that outlives its
+  parent still names it, and a later process may get that pid, so a process takes off only its
+  own user's children (root aside) that began no more than a minute before it did (its recorded
+  start is its last exec); the rest were counted at their own exits and are dropped, counted.
 - **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a

@@ -342,7 +342,7 @@ class LiveOwnIoTest(unittest.TestCase):
                 self.feed(order, older)
                 self.assertEqual(rd_of(self.lv, self.now), {"bob": 10.0})
                 # nor held for a later holder of its pid
-                self.assertNotIn(("h1", 200), self.lv.io_given)
+                self.assertNotIn(("h1", 200), self.lv.io_given.reaped)
 
 
 class HourSeamTest(unittest.TestCase):
@@ -380,6 +380,72 @@ class HourSeamTest(unittest.TestCase):
                 self.assertIn("reaped", r.carry_caps())
                 self.assertIn("reaped", r.carry())
         self.assertEqual(TrajectoryReducer.CARRY_AGED[0], "reaped")
+
+
+class PidReuseTest(unittest.TestCase):
+    """A child that outlives its parent keeps naming it (the collector holds the
+    parent a process was forked by), so its exit leaves its bytes under a pid
+    that is free, and a later process may take that pid. alice's `bash` 500
+    exits; its `rsync` 501, started under it, runs on and exits with 100 MB;
+    then 500 is another process's, which reads 20 MB, 5 of them through its
+    own child 502. Nothing it reaped is the rsync's."""
+
+    def setUp(self):
+        self.now = time.time()
+
+    def recs(self, user, child=True):
+        t = self.now - 1200
+        out = [person("exit", t, 500, 1, "bash", "bash sync.sh", "alice", io=iob(7.0, 7.0),
+                      duration_s=60.0),
+               person("exit", t + 60, 501, 500, "rsync", "rsync -a src/ dst/", "alice",
+                      io=iob(100.0, 100.0), duration_s=65.0)]
+        if child:
+            out.append(person("exit", t + 650, 502, 500, "cat", "cat f", user,
+                              io=iob(5.0, 5.0), duration_s=40.0))
+        out.append(person("exit", t + 700, 500, 1, "python", "python job.py", user,
+                          io=iob(25.0 if child else 20.0, 25.0 if child else 20.0),
+                          duration_s=100.0))
+        return out
+
+    def by_user(self, recs):
+        return {u["user"]: u["rd_mb"]
+                for u in window(recs).payload["io_process"]["by_user"]}
+
+    def test_another_user_s_process_on_the_pid_keeps_its_bytes(self):
+        self.assertEqual(self.by_user(self.recs("bob", child=False)),
+                         {"alice": 107.0, "bob": 20.0})
+
+    def test_a_later_process_of_the_same_user_keeps_its_bytes(self):
+        # started ten minutes after the rsync did: none of what is held is its
+        self.assertEqual(self.by_user(self.recs("alice", child=False)), {"alice": 127.0})
+
+    def test_what_it_reaped_itself_is_still_taken_off(self):
+        self.assertEqual(self.by_user(self.recs("bob")), {"alice": 107.0, "bob": 25.0})
+        rows = {(r["actor3"], r["user"]): r["io_rd_mb"]
+                for r in window(self.recs("bob")).payload["trajectories"]["rows"].values()}
+        self.assertEqual(rows[("human", "bob")], 25.0)
+
+    def test_the_live_tier_in_either_order(self):
+        for older in (False, True):
+            with self.subTest(older=older):
+                lv, norm = LiveReducer(cfg(), CLASSES), Normalizer(cfg())
+                recs = self.recs("bob")
+                for r in (reversed(recs) if older else recs):
+                    lv.feed(norm.normalize(dict(r)), older=older)
+                self.assertEqual(rd_of(lv, self.now), {"alice": 107.0, "bob": 25.0})
+                self.assertEqual({(e["pid"], e["user"]): e["rd_mb"] for e in lv.event_tail},
+                                 {(500, "alice"): 7.0, (501, "alice"): 100.0,
+                                  (502, "bob"): 5.0, (500, "bob"): 20.0})
+
+    def test_a_child_forked_before_its_parent_s_last_exec_is_still_its(self):
+        # `bash -lc` reads a profile, then execs the command: the record's start
+        # is that exec, 30 s after the profile's own child began
+        t = self.now - 600
+        recs = [person("exit", t, 601, 600, "lmod", "lmod load x", "carol",
+                       io=iob(3.0, 3.0), duration_s=2.0),
+                person("exit", t + 300, 600, 1, "python", "python run.py", "carol",
+                       io=iob(10.0, 10.0), duration_s=272.0)]
+        self.assertEqual(self.by_user(recs), {"carol": 10.0})
 
 
 class LookupTest(FeedCase):

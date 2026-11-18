@@ -20,11 +20,11 @@ import itertools
 import time
 
 from ..buckets import RollingBuckets, _epoch_of
-from ..procindex import pop_oldest
+from ..procindex import pop_oldest, users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
-from .own_io import DISK, REAPED_MAX, OwnIo
+from .own_io import DISK, START_SLACK_S, OwnIo
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
@@ -264,16 +264,17 @@ class LiveReducer:
         # met later takes its figure back off the parent's roster bin and row. A
         # child whose parent was not met -- one still running when the tail
         # began, or gone before the child -- is held for that parent's exit
-        # (`io_given`: MB read, written, and the earliest start among them). And
-        # a process the tail meets that was running before the tail began is
-        # noted too: the backfill may yet read the children it reaped.
+        # (`io_given`, a join of its own). And a process the tail meets that
+        # was running before the tail began is noted too: the backfill may yet
+        # read the children it reaped. Each pairing is held to what the shared
+        # join allows: the same user, and a child begun after its parent.
         self.io_join = OwnIo(DISK)
         self.io_booked = collections.OrderedDict()   # (host, pid) -> a note (_B_*)
-        self.io_given = collections.OrderedDict()    # (host, ppid) -> [rd, wr, start]
+        self.io_given = OwnIo(DISK)
         self._io_starts = []         # (-start, note's number, key): the latest start first
         self._io_seq = 0
         self.io_tail_from = None     # when the first exit the tail read ended
-        self.io_dropped = 0          # notes and held children dropped at their caps
+        self.io_dropped = 0          # notes dropped at their cap
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, older=False):
@@ -403,16 +404,13 @@ class LiveReducer:
             if own is None:
                 return None, None
             rd, wr = own
-            got = None
-            if rec["io"].get("scope") == "process":
-                got = self.io_given.pop((rec.get("host"), rec.get("pid")), None)
-            if got is not None:
-                # the children the backfill met before this exit: this one's only
-                # if they began while it ran (a pid is reused)
-                st = _start(rec)
-                if st is None or got[2] is None or st <= got[2] + 1:
-                    rd = None if rd is None else max(0.0, rd - got[0])
-                    wr = None if wr is None else max(0.0, wr - got[1])
+            # and the children the backfill met before this exit, those it can
+            # have reaped (a pid is reused)
+            got = (self.io_given.pop_reaped(rec)
+                   if rec["io"].get("scope") == "process" else None)
+            if got:
+                rd = None if rd is None else max(0.0, rd - got[0])
+                wr = None if wr is None else max(0.0, wr - got[1])
             return rd, wr
         io = rec.get("io")
         if not isinstance(io, dict):
@@ -429,32 +427,19 @@ class LiveReducer:
         host, end = rec.get("host"), rec.get("_ts_epoch")
         if end is not None:
             self._io_prune(end)
-        st = _start(rec)
         # Children held for this pid that began while this process ran outlived
         # it, and so were never reaped: its orphans, not any parent's to take.
-        key = (host, rec.get("pid"))
-        g = self.io_given.get(key)
-        if g is not None and g[2] is not None and end is not None and g[2] <= end + 1:
-            del self.io_given[key]
+        self.io_given.forget_outlived(host, rec.get("pid"), end)
         ppid = rec.get("ppid")
         if io.get("scope") != "process" or ppid is None or not (rd or wr):
             return
-        pkey = (host, ppid)
-        b = self.io_booked.get(pkey)
+        b = self.io_booked.get((host, ppid))
         if b is not None and end is not None and end <= b[_B_END] + 1 \
-                and (b[_B_START] is None or b[_B_START] - 1 <= end):
+                and (b[_B_START] is None or b[_B_START] - START_SLACK_S <= end) \
+                and not users_conflict(rec.get("user"), b[_B_USER]):
             self._take_back(b, rd or 0.0, wr or 0.0)
             return
-        g = self.io_given.get(pkey)
-        if g is None:
-            if len(self.io_given) >= REAPED_MAX:
-                pop_oldest(self.io_given)
-                self.io_dropped += 1
-            g = self.io_given[pkey] = [0.0, 0.0, st]
-        g[0] += rd or 0.0
-        g[1] += wr or 0.0
-        if st is not None and (g[2] is None or st < g[2]):
-            g[2] = st
+        self.io_given.give(rec)
 
     def _take_back(self, b, rd, wr):
         """A child's whole figure off a noted parent's, as far as it goes."""
@@ -1108,9 +1093,10 @@ class LiveReducer:
             # the disk bytes' join (`_own_io`): parents whose children's bytes
             # wait for their exit, and what its caps dropped (those children's
             # bytes then count twice)
-            "own_io": {"waiting": len(self.io_join.reaped) + len(self.io_given),
+            "own_io": {"waiting": len(self.io_join.reaped) + len(self.io_given.reaped),
                        "noted": len(self.io_booked),
-                       "dropped": self.io_join.evicted + self.io_dropped},
+                       "dropped": self.io_join.evicted + self.io_given.evicted + self.io_dropped,
+                       "rejected": self.io_join.rejected + self.io_given.rejected},
             "conn_unmatched_births": self.conn_unmatched_births,
             "unavailable": {
                 "running_jobs": "needs the slurm_jobs census feed (not configured)",
