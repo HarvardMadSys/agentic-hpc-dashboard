@@ -47,6 +47,7 @@ import './tabs/users.css';
 import { TabBoundary, lazyTab, preloadTabs } from './lib/lazyTab';
 import { NodeNounCtx, nodeWords } from './lib/nodes';
 import { feedLabel } from './lib/feeds';
+import { table } from './lib/lookup';
 
 /* Live is the first paint, with the shell; every other tab loads its code
  * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). Search &
@@ -94,7 +95,7 @@ const TABS: Tab[] = [
  *  login-node use, not the cluster's (README, "Scope is stated"). */
 const NODES_EYEBROW = 'what runs on them, what should not, and what they ask of the scheduler';
 /** A link to a tab that folded into another lands on the part it became. */
-const LANDS_ON: Record<string, string> = { overview: 'sec-who-uses-what' };
+const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what' });
 /** The tab the page was opened on, read once, before the link is rewritten
  *  (an effect can run twice on mount, and the second saw the rewritten link). */
 const OPENED_ON = new URLSearchParams(window.location.search).get('tab') ?? '';

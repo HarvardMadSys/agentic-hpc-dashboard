@@ -27,6 +27,7 @@ import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
 import { hiders, isHidden, shortPath, typoLabel, typoTip } from './ProcDiagram';
 import type { Hide } from './ProcDiagram';
+import { table } from '../lib/lookup';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
 interface Rest {
@@ -46,7 +47,7 @@ export interface Row {
   kids: number;
 }
 
-export const ROLE_TAG: Record<string, string> = {
+export const ROLE_TAG: Record<string, string> = table({
   'tool-shell': 'tool call',
   sandbox: 'sandbox',
   'embedded-tool': 'embedded',
@@ -55,25 +56,25 @@ export const ROLE_TAG: Record<string, string> = {
   infra: 'infra',
   client: 'client',
   ide: 'ide',
-};
+});
 
-export const LINK_LBL: Record<ProcLink, string> = {
+export const LINK_LBL: Record<ProcLink, string> = table({
   ppid: 'its own ppid',
   index: 'parent from index',
   depth: 'placed by depth',
   fold: 'no process link',
-};
+});
 
-export const LINK_TIP: Record<ProcLink, string> = {
+export const LINK_TIP: Record<ProcLink, string> = table({
   ppid: "its own record names this parent, and the parent's exit came after it",
   index:
     "its parent left no exit record in this read; the window's process index (or the agent's residency ticks) names it",
   depth:
     "no record read names its parent; the collector's depth below its session key places it there",
   fold: 'nothing read links it to a process here; it hangs from the agent because the session fold put its key there',
-};
+});
 
-const SIG: Record<string, string> = {
+const SIG: Record<string, string> = table({
   '1': 'SIGHUP',
   '2': 'SIGINT',
   '3': 'SIGQUIT',
@@ -84,7 +85,7 @@ const SIG: Record<string, string> = {
   '13': 'SIGPIPE',
   '14': 'SIGALRM',
   '15': 'SIGTERM',
-};
+});
 export const sigName = (s: number | string) => SIG[String(s)] ?? `signal ${s}`;
 
 function children(e: Item): Item[] {

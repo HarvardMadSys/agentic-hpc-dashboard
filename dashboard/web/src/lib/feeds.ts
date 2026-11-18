@@ -7,7 +7,8 @@
  * everywhere else -- the URL, the Feeds tab, `--check-feeds` -- so it stays one
  * hover away rather than being dropped.
  */
-export const FEED_LBL: Record<string, string> = {
+import { table } from './lookup';
+export const FEED_LBL: Record<string, string> = table({
   ebpf: 'process tracer',
   ebpfm: 'process tracer',
   ebpf_node: 'node metrics',
@@ -16,6 +17,6 @@ export const FEED_LBL: Record<string, string> = {
   domains: 'domain mapping',
   user_actor: 'user labels',
   live: 'live stream',
-};
+});
 
 export const feedLabel = (f: string): string => FEED_LBL[f] ?? f;

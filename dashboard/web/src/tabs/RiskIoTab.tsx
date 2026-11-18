@@ -29,6 +29,7 @@ import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
 import { shareOf, wholeOf } from '../lib/shares';
+import { table } from '../lib/lookup';
 
 
 /** Who ran it, at a glance: one chip per agent type (a human's untagged
@@ -68,7 +69,7 @@ function WhoChips({ r, cls }: {
 }
 
 /** The login-compute categories, in the legend's words. */
-const LC_KIND: Record<string, string> = { compute: 'compute', transfer: 'bulk transfer' };
+const LC_KIND: Record<string, string> = table({ compute: 'compute', transfer: 'bulk transfer' });
 
 function Caret({ on, show }: { on: boolean; show: boolean }) {
   return <span className="u-caret" style={show ? undefined : { visibility: 'hidden' }}>{on ? '▾' : '▸'}</span>;
@@ -187,10 +188,10 @@ const QUANT_SORT: Record<string, IoSort | undefined> = {
   net_tx_mb: 'tx_mb', net_rx_mb: 'rx_mb',
 };
 /** A per-process counter in the page's words; its raw name is on hover. */
-const QUANT_LBL: Record<string, string> = {
+const QUANT_LBL: Record<string, string> = table({
   rd_mb: 'disk read (MB)', wr_mb: 'disk written (MB)', rchar_mb: 'read requested (MB)', wchar_mb: 'write requested (MB)',
   net_tx_mb: 'sent (MB)', net_rx_mb: 'received (MB)',
-};
+});
 const quantLbl = (k: string) => QUANT_LBL[k] ?? k;
 
 /* A tool is not a class. A row the service split by class wears its class's

@@ -20,6 +20,7 @@ import type { ReactNode } from 'react';
 import type { FeedStatus, PanelEnvelope, WindowStatus } from '../api/types';
 import { AskBox, canAsk, useAskScope } from './Ask';
 import type { AskRef } from './Ask';
+import { Boundary } from './Boundary';
 
 export function StatusPill({
   status,
@@ -277,7 +278,11 @@ export function Panel({
       ) : empty ? (
         <NoRows what={emptyWhat} />
       ) : (
-        children
+        // a body that throws as it is drawn says so, and the rest of the tab stays;
+        // new data for the panel draws it afresh
+        <Boundary what="this panel" resetOn={p}>
+          {children}
+        </Boundary>
       )}
       {/* A basis handed over as bare text is a paragraph of method notes; the
           reader asked for none of those under a panel. Only <Basis>, which is

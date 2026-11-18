@@ -94,6 +94,7 @@ import { TaskList } from './TaskList';
 import { SPAN_MIN, TrajectoryNav } from './TrajectoryNav';
 import type { Quick } from './TrajectoryNav';
 import './trajectories.css';
+import { table } from '../lib/lookup';
 
 /** A moment to go to, from wherever it was picked. */
 export interface Pending extends JumpReq {
@@ -151,14 +152,14 @@ export function runTip(t: number | null | undefined, where: string): string {
 }
 
 /* What each attribution means, for the keys column and the fold table. */
-export const VIA_TIP: Record<OwnerVia, string> = {
+export const VIA_TIP: Record<OwnerVia, string> = table({
   self: 'the key process is itself the agent',
   ancestor: 'walked up the process tree to the nearest agent',
   parent: 'the parent of a tool-call shell, embedded tool or Codex sandbox, never itself seen',
   tree_root: 'fell back to the top-most agent the collector recorded for the tree',
   root: 'not an agent, with nothing above it to fold into',
   unknown: 'the key process was never seen in the window, so it is left as its own session',
-};
+});
 
 /** `pgrep x120 > git > rg x3 ...` -- the tool tokens as text, bounded. With
  *  `onPick`, each token is a button for the run it stands for. */

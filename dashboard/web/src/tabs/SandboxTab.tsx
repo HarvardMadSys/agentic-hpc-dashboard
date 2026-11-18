@@ -52,16 +52,17 @@ import {
   shareOfKnown,
 } from '../lib/sandbox';
 import type { Share } from '../lib/sandbox';
+import { table } from '../lib/lookup';
 
 /** When the collector read a process's namespaces, in the page's words; the
  *  collector's own name for it is on hover. */
-const SRC_LBL: Record<string, string> = {
+const SRC_LBL: Record<string, string> = table({
   'none:tick': 'census',
   'none:exec': 'at start',
   'userns:exec': 'at start, user namespace',
   inherit: 'from its parent',
   denied: SB_LABEL.denied,
-};
+});
 
 type ByClass = Record<string, Record<string, number>> | undefined;
 

@@ -22,9 +22,10 @@ import { coveredBy, openIoCmds } from '../lib/iocmds';
 import type { IoQuery } from '../lib/iocmds';
 import { noShare, shareOf, wholeOf } from '../lib/shares';
 import { IoNum } from '../components/IoCmds';
+import { table } from '../lib/lookup';
 
 /* What each kind of tool looks like, so a bucket name is never a riddle. */
-const BUCKET_TIP: Record<string, string> = {
+const BUCKET_TIP: Record<string, string> = table({
   'poll/probe': 'checking on things: ps, pgrep, top, sleep, uname, lsb_release, nvidia-smi',
   'slurm-submit': 'putting work on the cluster: sbatch, srun, salloc, scancel',
   'slurm-query': 'asking the scheduler: squeue, sacct, sinfo, scontrol',
@@ -37,7 +38,7 @@ const BUCKET_TIP: Record<string, string> = {
   'net/data': 'moving data: rsync, wget, curl, scp, aws',
   files: 'reading and editing files: cat, ls, head, sed, awk, vim',
   other: 'everything the taxonomy does not name',
-};
+});
 
 /** A share as a short inline bar with its value beside it. */
 function MiniBar({ pct: v, c, faint }: { pct: number | null | undefined; c: string; faint?: boolean }) {

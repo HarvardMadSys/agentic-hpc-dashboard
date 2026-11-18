@@ -95,6 +95,7 @@ npm run check:css    # node --test: every stylesheet closes its blocks, no rule 
 npm run check:shares # node --test: a class's share is out of every class counted, whatever the chips show
 npm run check:panels # node --test: a panel not reduced, waited for or building is never "none" or 0
 npm run check:live   # node --test: the live socket is retried for good, polled meanwhile, replaced when quiet
+npm run check:lookup # node --test: no outside string reads a table's prototype; a part that throws says so
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -190,6 +191,16 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    narrow plot the ticks thin out (`tickTarget`) rather than overprint. On a touch screen a
    tap shows a `data-tip`, controls are a fingertip high, and form fields are 16px so iOS
    does not zoom into them. Above 900px, with a mouse, the page is as it was.
+9. **No outside string reads a prototype** — a key that comes from the URL, the service or
+   the collector indexes only a table made by `table()` (`src/lib/lookup.ts`), which has no
+   prototype, or is read with `own()`: `?atype=__proto__` once handed the filter's label
+   `Object.prototype`, which React cannot draw, and the page went white.
+10. **A part that throws says so** — one boundary around the page (`src/main.tsx`), one per
+   tab (`TabBoundary`, `src/lib/lazyTab.tsx`), one per panel's body (`<Panel>`), each from
+   `src/components/Boundary.tsx`: "this tab could not be drawn: … · reload" in the frame of
+   the missing family, and the rest of the page stays. A tab's code that would not load (a
+   deploy replaced it under an open page) is one such failure. A panel handed new data tries
+   again.
 
 Two more that the payloads force:
 
