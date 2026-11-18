@@ -14,7 +14,15 @@ otherwise silently outrank the config file.
 Path defaults are CANDIDATE LISTS, probed in order against the filesystem.  A
 feed reports what it looked for as well as what it found, which is what the UI's
 empty states name.
+
+Nothing here falls back to a default quietly where that would leave names
+unmasked, the page open, or the agent on: a config file named by `--config` or
+RC_DASH_CONFIG must exist, a yes/no setting must read as yes or no (`_flag`),
+and an unknown key under `server`, `anonymize` or `ask` stops the service
+(`check_file`).
 """
+import difflib
+import fnmatch
 import json
 import os
 
@@ -42,6 +50,19 @@ def _pathsep(v):
 
 def _csv(v):
     return [p.strip() for p in (v or "").split(",") if p.strip()]
+
+
+def _flag(v):
+    """A yes/no setting written as text -- an env var, or a string in the
+    config file: 1/0, true/false, yes/no or on/off, in any case, with spaces
+    around. Anything else is refused rather than read as yes: `RC_DASH_ASK=False`
+    once left Ask on."""
+    s = v.strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    raise ValueError("%r is not one of 1/0, true/false, yes/no, on/off" % v)
 
 
 # ---------------------------------------------------------------- defaults
@@ -433,16 +454,12 @@ ENV_MAP = {
     "panels.max_windows": ("RC_DASH_MAX_WINDOWS", int),
     "panels.prewarm_min": ("RC_DASH_PREWARM", lambda v: [int(x) for x in _csv(v)]),
     "panels.max_drift_pct": ("RC_DASH_MAX_DRIFT_PCT", int),
-    "panels.cache_windows": ("RC_DASH_CACHE_WINDOWS",
-                             lambda v: v not in ("0", "false", "no")),
-    "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE",
-                            lambda v: v not in ("0", "false", "no")),
-    "panels.preprocess": ("RC_DASH_PREPROCESS",
-                          lambda v: v not in ("0", "false", "no", "off", "")),
+    "panels.cache_windows": ("RC_DASH_CACHE_WINDOWS", _flag),
+    "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE", _flag),
+    "panels.preprocess": ("RC_DASH_PREPROCESS", _flag),
     "panels.preprocess_wait_s": ("RC_DASH_PREPROCESS_WAIT_S", float),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
-    "history.enabled": ("RC_DASH_HISTORY",
-                        lambda v: v.strip().lower() not in ("0", "false", "no", "off")),
+    "history.enabled": ("RC_DASH_HISTORY", _flag),
     "history.dir": ("RC_DASH_HISTORY_DIR", str),
     "history.workers": ("RC_DASH_HISTORY_WORKERS", int),
     "history.days": ("RC_DASH_HISTORY_DAYS", int),
@@ -452,14 +469,12 @@ ENV_MAP = {
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
     "filters.drop_agent": ("RC_DASH_DROP_AGENT_USERS", _csv),
-    "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS",
-                                      lambda v: v not in ("0", "false", "no")),
+    "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS", _flag),
     "export.max_rows": ("RC_DASH_EXPORT_MAX_ROWS", int),
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
-    "slurm.enabled": ("RC_DASH_SLURM", lambda v: v not in ("0", "false", "no", "off")),
-    "ask.enabled": ("RC_DASH_ASK", lambda v: v not in ("0", "false", "no", "off")),
-    "anonymize.enabled": ("RC_DASH_ANONYMIZE",
-                          lambda v: v not in ("0", "false", "no", "off")),
+    "slurm.enabled": ("RC_DASH_SLURM", _flag),
+    "ask.enabled": ("RC_DASH_ASK", _flag),
+    "anonymize.enabled": ("RC_DASH_ANONYMIZE", _flag),
     "ask.agent": ("RC_DASH_ASK_AGENT", str),
     "ask.model": ("RC_DASH_ASK_MODEL", str),
     "ask.command": ("RC_DASH_ASK_CMD", str),
@@ -472,7 +487,7 @@ ENV_MAP = {
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
-    "server.rdns.enabled": ("RC_DASH_RDNS", lambda v: v not in ("0", "false", "no", "off")),
+    "server.rdns.enabled": ("RC_DASH_RDNS", _flag),
     "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
 }
 
@@ -532,6 +547,71 @@ def _deep_merge(base, over):
         else:
             base[k] = v
     return base
+
+
+# Sections where an unknown key stops the service instead of being ignored: a
+# misspelt key there would leave names unmasked, the page open, or the agent on.
+STRICT = ("server", "anonymize", "ask")
+# Keys the code reads with a default of its own, so not in defaults(): known,
+# never warned about. Shell patterns over dotted paths; a key that matches is
+# known with everything under it.
+CODE_KEYS = ("live.user_*", "reducers.cascades", "reducers.workspace", "reducers.sessions",
+             "reducers.trajectories.inspect_*", "risk.vars")
+
+
+def _code_key(path):
+    return any(fnmatch.fnmatchcase(path, pat) or path.startswith(pat + ".") for pat in CODE_KEYS)
+
+
+def check_file(filetree, where):
+    """The config file's tree checked against the settings there are, in place:
+    a yes/no setting written as a string is read by `_flag` (`"false"` was
+    true), or as 0 or 1.
+
+    An unknown key under `server`, `anonymize` or `ask` -- or a top-level key
+    one slip away from one of them, `anonymise` -- stops the service, naming
+    the nearest key there is, as does a section there given as a single value
+    (`"anonymize": true`): each would leave names unmasked, the page open or
+    the agent on, without a word. Elsewhere an unknown key is a warning, since
+    an old file may carry the keys of a feature since removed. Returns the
+    warnings; raises SystemExit with every error."""
+    errors, warnings = [], []
+
+    def walk(node, dflt, prefix):
+        for k in list(node):
+            v, path = node[k], prefix + k
+            strict = path.split(".")[0] in STRICT
+            if k not in dflt:
+                if _code_key(path):
+                    continue
+                if not prefix:
+                    strict = strict or bool(difflib.get_close_matches(k, STRICT, 1, 0.7))
+                near = difflib.get_close_matches(k, list(dflt), 1, 0.0 if strict else 0.6)
+                (errors if strict else warnings).append("%s is not a setting%s" % (
+                    path, "; the nearest is %s%s" % (prefix, near[0]) if near else ""))
+                continue
+            d = dflt[k]
+            if isinstance(d, dict) and d:
+                if isinstance(v, dict):
+                    walk(v, d, path + ".")
+                elif strict:
+                    errors.append("%s: %s is not an object of its settings (%s)" % (
+                        path, json.dumps(v), ", ".join(sorted(d))))
+            elif isinstance(d, bool) and not isinstance(v, bool):
+                if isinstance(v, str):
+                    try:
+                        node[k] = _flag(v)
+                    except ValueError as e:
+                        errors.append("%s: %s" % (path, e))
+                elif type(v) is int and v in (0, 1):
+                    node[k] = bool(v)
+                else:
+                    errors.append("%s: %s is not true or false" % (path, json.dumps(v)))
+
+    walk(filetree, defaults(), "")
+    if errors:
+        raise SystemExit("config file %s:\n  %s" % (where, "\n  ".join(errors)))
+    return warnings
 
 
 class Config:
@@ -610,9 +690,21 @@ def load(args=None, config_path=None):
     origins = {}
 
     path = find_config_file(config_path)
-    if path and os.path.exists(path):
-        with open(path) as fh:
-            filetree = strip_comments(json.load(fh))
+    if path and not os.path.exists(path):
+        # Only a file someone named gets here (the default is used when it
+        # exists): starting on the defaults instead would not be what they asked.
+        raise SystemExit("config file %s, named by %s, does not exist" % (
+            path, "--config" if config_path else "RC_DASH_CONFIG"))
+    if path:
+        try:
+            with open(path) as fh:
+                filetree = strip_comments(json.load(fh))
+        except (OSError, ValueError) as e:
+            raise SystemExit("config file %s: %s" % (path, e))
+        if not isinstance(filetree, dict):
+            raise SystemExit("config file %s: not a JSON object" % path)
+        for w in check_file(filetree, path):
+            sys.stderr.write("warning: config file %s: %s; it is ignored\n" % (path, w))
         # relative paths in the file resolve against the repo, absolute stand
         flat = {}
 
@@ -636,7 +728,11 @@ def load(args=None, config_path=None):
     for dotted, (var, coerce) in ENV_MAP.items():
         raw = os.environ.get(var)
         if raw:
-            _set(tree, dotted, coerce(raw))
+            try:
+                val = coerce(raw)
+            except (TypeError, ValueError) as e:
+                raise SystemExit("%s: %s" % (var, e))
+            _set(tree, dotted, val)
             origins[dotted] = "env:%s" % var
 
     if args is not None:

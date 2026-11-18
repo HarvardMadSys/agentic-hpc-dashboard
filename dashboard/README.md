@@ -49,6 +49,13 @@ never outranks the file.
   *that*" is never a guess.
 - Path defaults are **candidate lists**, probed against the filesystem. `--check-feeds` shows
   every candidate and which one won.
+- **A mistake stops the service rather than loosening it.** A config file named by `--config`
+  or `RC_DASH_CONFIG` must exist. A yes/no setting, as an `RC_DASH_*` variable or as a string
+  in the file, is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off` in any case; anything else
+  (`RC_DASH_ASK=n`) stops it. An unknown key under `server`, `anonymize` or `ask`, or a
+  top-level key one slip from one of them (`anonymise`), stops it and names the nearest key
+  there is. An unknown key anywhere else, such as an old file's `feeds.ebpf.prefer` from the
+  EBR format, is a warning.
 - `history` (`RC_DASH_HISTORY`, `RC_DASH_HISTORY_DIR`, `_WORKERS`, `_DAYS`) keeps every
   sealed day-file as Parquet too, made in the background, and answers a selective read of one
   from that copy ([History in Parquet](#history-in-parquet)); `RC_DASH_HISTORY=0` reads every
