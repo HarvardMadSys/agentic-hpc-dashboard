@@ -1138,8 +1138,9 @@ class DeepAncestryTest(unittest.TestCase):
         returned from them."""
         T.proc_add(2001, 2002, comm='ls', args='ls', user='u', uid=1000)
         T.proc_add(2002, 2003, comm='sh', args='sh -c ls', user='u', uid=1000)
-        T.proc_add(2003, 2002, comm='chmod', args='chmod 700 ' + HOME + '/.claude/remote',
-                   user='u', uid=1000)
+        # tagged without being an agent runtime: a probe, its own root outside any
+        # tree (a mention such as `chmod ~/.claude/...` is no longer tagged at all)
+        T.proc_add(2003, 2002, comm='claude', args='claude --version', user='u', uid=1000)
         self.assertTrue(T.resolve(2001))
         # the loop's last process, tagged, is the root its descendants attach to
         self.assertEqual([(T.proc[p]['agent_pid'], T.proc[p]['depth']) for p in (2001, 2002, 2003)],
