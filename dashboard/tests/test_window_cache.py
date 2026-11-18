@@ -533,6 +533,40 @@ class SeamTest(CacheCase):
         self.assertEqual(self.calls(view), 23)
         self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
 
+    def test_a_file_cut_short_before_the_build_read_it_is_not_counted_again(self):
+        # Cut short before the build read it, the tail noticing only after: the
+        # seam is the build's read of what the file holds now, and the tail's
+        # read of it from its start again is what the build counted.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 3)
+        self.assertEqual(agg.poll_once(), 3)
+        self.assertEqual(agg.source.stats["resets"], 1)
+        self.assertEqual(self.calls(view), 3)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
+    def test_a_restart_held_before_the_build_read_the_file_is_not_counted_again(self):
+        # The same, the tail noticing while the build is under way, before it
+        # reads the file: the notice is held with the records, and the seam the
+        # build installs is of what it read, which is what the file holds now.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        real = windows.window_plan
+
+        def plan(*a, **k):
+            self.assertEqual(agg.poll_once(), 3)       # held: the build is under way
+            return real(*a, **k)
+        with mock.patch.object(windows, "window_plan", plan):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(self.calls(view), 3)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
     def test_a_catch_up_from_before_the_window_is_left_out(self):
         # A scan now would leave out a record older than the window's start, so
         # the live feed does too, and says how many.

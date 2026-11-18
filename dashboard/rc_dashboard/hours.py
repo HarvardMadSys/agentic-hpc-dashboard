@@ -1720,7 +1720,8 @@ def build(reg, view):
             # size, which may cut a line still being written: the live feed
             # skips a line by where it ENDS (`PanelView.feed`), so that one is
             # counted when it is whole.
-            seam = {e["path"]: (e["dev"], e["ino"], e["stop"]) for e in tail_plan}
+            seam = {e["path"]: (e["dev"], e["ino"], e["stop"], e["head_n"], e["head"])
+                    for e in tail_plan}
         except Exception as e:
             with reg.lock:
                 view._replay = None

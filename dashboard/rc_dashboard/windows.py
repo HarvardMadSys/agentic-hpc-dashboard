@@ -68,6 +68,7 @@ import time
 from . import gz, hours as hourmod, payloads, redact, snapshots
 from .export import (UNTAGGED, agent_type_token, agent_type_want, agent_type_where,
                      parse_filters, resume_plan, window_plan, window_scan)
+from .feedfile import head_digest
 from .normalize import Normalizer
 from .procindex import ProcIndex
 from .reducers.cascades import CascadeReducer
@@ -434,15 +435,34 @@ class PanelView:
 
     def restarted(self, path):
         """The tail went back to the start of `path`: it was cut short in place,
-        its inode the same, so what it holds from its start now is not what a
-        build read of it, and nothing of it is skipped as read. Under the
+        its inode the same. A build that read it before that read what is gone,
+        so the file leaves the seam and nothing of it is skipped as read; one
+        that read it after read what the tail now reads again, and keeps it.
+        Which, the file itself says (`_read_now`): the tail notices a cut only
+        at its next poll, after a build may have read the file. Under the
         aggregator's lock, before the tail hands over what it read there. A
         build under way installs a seam of its own, so it is told too, in order
         with the records held for it (`_replay`)."""
-        self.seam.pop(path, None)
-        self.seam.pop(gz.plain_name(path) if gz.is_gz(path) else path + gz.SUFFIX, None)
+        for key in (path, gz.plain_name(path) if gz.is_gz(path) else path + gz.SUFFIX):
+            got = self.seam.get(key)
+            if got is not None and not self._read_now(path, got):
+                del self.seam[key]
         if self._replay is not None:
             self._replay.append((None, path))
+
+    @staticmethod
+    def _read_now(path, got):
+        """Whether file `path` holds what a build read of it (`got`, its seam
+        entry): at least as many bytes as it read, and the same first ones
+        (`feedfile.head_digest`, as the build took it). Cut short after the
+        build read it, the file is shorter than the build's read, or starts
+        otherwise."""
+        _dev, _ino, end, head_n, head = got
+        try:
+            with gz.open_feed(path) as fh:
+                return gz.fstat(fh).st_size >= end and head_digest(fh, head_n) == head
+        except OSError:
+            return False
 
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
@@ -882,7 +902,8 @@ class WindowRegistry:
                          for e in plan if "ino" in e]
         # How far this read went in each file: the live feed's records up to
         # there are its own (`PanelView.feed`).
-        seam = {f["path"]: (f["dev"], f["ino"], f["end"]) for f in meta["files"]}
+        seam = {f["path"]: (f["dev"], f["ino"], f["end"], f["head_n"], f["head"])
+                for f in meta["files"]}
         # Serialised now, before the swap: after it the live feed mutates these
         # reducers under the lock, and pickling them there would stall every
         # read for as long as it takes.
