@@ -3772,6 +3772,98 @@ class ArgvHostResolverTest(unittest.TestCase):
         self.assertEqual(T._HOST_WANT.qsize(), 0)
 
 
+class ArgvHostnamesCostTest(unittest.TestCase):
+    """Finding names stays linear in an argv any user writes. One regex tried
+    at every letter read a run of scheme characters again from each of them: a
+    run of 32,000 before a ` ://` took 0.7 s, against 0.1 ms for a benign 4 KB
+    line, on every exec and every record of the process, and argv read from
+    /proc at the seed has no length cap."""
+
+    OLD = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
+                     r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T._argv_hostnames, T.MIN_UID)
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        T._argv_hostnames, T.MIN_UID = self._saved
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def timed(self, fn, *args):
+        t0 = time.time()
+        out = fn(*args)
+        return time.time() - t0, out
+
+    def test_the_urls_found_are_the_regexs(self):
+        import random
+        cases = ['curl https://a.example.org/x http://B.example.org:8/y',
+                 'git clone https://u:pw@github.com/x/y.git ssh://git@h.example.org/r',
+                 'x http://a.b+git://c.example.org/ ://nope 9://nope a1+.-://ok.example.org',
+                 'http://[2001:db8::a]/ http://[::1 ftp://-x/ s3://bucket.name/k',
+                 'http://host-x://y http://h:// a@b://c d://@e f://g@@h',
+                 'x://' + 'y' * 50 + ' ' + 'z' * 31 + '://w.example.org',
+                 'http://' + 'a.' * 30 + 'org', '://', 'a://', 'a:// b', '']
+        rnd = random.Random(3)
+        alphabet = 'aZ1+.-:/@ []hx'
+        cases += [''.join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 40)))
+                  for _ in range(20000)]
+        for s in cases:
+            self.assertEqual(T._url_hosts(s), self.OLD.findall(s), s)
+
+    def test_a_scheme_is_read_from_its_last_32_characters(self):
+        """The one difference: a scheme of more than 32 characters whose last
+        32 hold no letter is none."""
+        self.assertEqual(T._url_hosts('a' + '1' * 31 + '://h.example.org'), ['h.example.org'])
+        self.assertEqual(T._url_hosts('a' + '1' * 32 + '://h.example.org'), [])
+
+    def test_a_long_run_before_a_url_marker_costs_nothing(self):
+        dt, out = self.timed(T._argv_hostnames, 'x ' + 'a' * 64000 + ' ://', 'x')
+        self.assertLess(dt, 0.25)                # the regex: over 2 s
+        dt, out = self.timed(T._url_hosts, 'x ' + 'a' * 64000 + ' ://')
+        self.assertEqual(out, [])
+        self.assertLess(dt, 0.25)
+
+    def test_only_the_first_4096_characters_are_read_and_never_half_a_name(self):
+        pad = 'x ' * 2000
+        self.assertEqual(T._argv_hostnames(pad + 'https://a.example.org/x', 'curl'),
+                         ['a.example.org'])
+        self.assertEqual(T._argv_hostnames(pad + 'x' * 75 + ' https://api.example.org/v1', 'curl'),
+                         [])                     # the cut falls inside the name
+        self.assertEqual(T._argv_hostnames(pad * 3 + 'https://a.example.org/x', 'curl'), [])
+
+    def test_an_argv_is_read_once(self):
+        calls = []
+        real = T._argv_hostnames
+
+        def counting(args, command=None):
+            calls.append(args)
+            return real(args, command)
+        T._argv_hostnames = counting
+        m = T.proc_add(100, 1, comm='curl', args='curl https://a.example.org/x', user='u',
+                       uid=1000, tty='pts/1')
+        T._ask_hosts(m)
+        for _ in range(3):
+            T._hosts_for(m)
+        self.assertEqual(len(calls), 1)
+        m['args'] = 'curl https://b.example.org/x'          # a new image's argv
+        T._ask_hosts(m)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(T._HOST_WANT.qsize(), 2)
+
+    def test_a_process_that_will_not_be_reported_is_not_read(self):
+        calls = []
+        T._argv_hostnames = lambda args, command=None: calls.append(args) or []
+        T.MIN_UID = 1000
+        m = T.proc_add(900, 1, comm='curl', args='curl https://updates.example.org/x',
+                       user='root', uid=0)
+        T._ask_hosts(m)
+        self.assertEqual(calls, [])
+
+
 class NetEndpointsExitTest(_NetpeerCase):
     def test_the_exit_record_carries_the_endpoint_list(self):
         self.K.put(101, '104.18.0.1', 443, tx=1500, rx=9000, calls=12)

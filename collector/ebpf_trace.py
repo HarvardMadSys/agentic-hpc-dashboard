@@ -4814,9 +4814,18 @@ def _netp_lifetime(m):
 # other addresses (a CDN rotating them) leaves `host` null. Only hostnames are
 # taken -- a URL's credentials never are -- only for a process that is reported,
 # and nothing is read from the traffic itself.
+#
+# Every path here stays linear in the argv, which any user writes: a URL is
+# found from its `://`, with its scheme looked for in the _URL_SCHEME_MAX
+# characters before it, and only the first _ARGV_HOSTS_TEXT characters of an
+# argv are read. One regex tried at every letter (`[A-Za-z][A-Za-z0-9+.-]*://`)
+# read a run of scheme characters again from each of them: a run of 32,000
+# before a ` ://` took 0.7 s, for every exec and every record of the process.
 
-_URL_HOST = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
-                       r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_URL_SCHEME = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.-'
+_URL_SCHEME_MAX = 32                                    # characters of a scheme looked at
+_URL_AUTHORITY = re.compile(r'(?:[^\s/@]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_ARGV_HOSTS_TEXT = 4096                                 # the in-kernel argv read's default
 _SSH_COMMANDS = {'ssh', 'autossh', 'sftp', 'mosh'}     # destination: first non-option
 _HOSTPATH_COMMANDS = {'scp', 'rsync'}                   # [user@]host:path arguments
 _SSH_OPT_ARG = set('BbcDEeFIiJLlmOoPpQRSWw')          # ssh(1) options that take a value
@@ -4848,14 +4857,40 @@ def _ssh_destination(toks):
     return None
 
 
+def _url_hosts(text):
+    """The host of every URL in `text`, in order: what findall() of
+    `[A-Za-z][A-Za-z0-9+.-]*://(?:[^\\s/@]*@)?(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9._-]+)`
+    gives, in one pass from `://` to `://`. A scheme is the run of scheme
+    characters just before its `://`, from its first letter; only the last
+    _URL_SCHEME_MAX characters of the run are looked at, and none before where
+    the previous URL ended."""
+    out, i, end = [], 0, 0
+    while True:
+        q = text.find('://', i)
+        if q < 0:
+            return out
+        i = q + 3
+        run = text[max(end, q - _URL_SCHEME_MAX):q]
+        if not any(c.isalpha() for c in run[len(run.rstrip(_URL_SCHEME)):]):
+            continue                            # no scheme: not a URL
+        m = _URL_AUTHORITY.match(text, i)
+        if m:
+            out.append(m.group(1))
+            i = end = m.end()
+
+
 def _argv_hostnames(args, command=None):
     """The hostnames `args` names, in order, without repeats: every URL's host,
     and the destination of an ssh/sftp/scp/rsync. Address literals and localhost
     need no name and are left out, and an ordinary argument -- a file name, an
-    email address -- is never taken for one."""
+    email address -- is never taken for one. Only the first _ARGV_HOSTS_TEXT
+    characters are read, cut before the word the cut may have split (as
+    decode_argv() cuts a truncated argv), so half a name is never one."""
     if not args:
         return []
-    found = _URL_HOST.findall(args) if '://' in args else []
+    if len(args) > _ARGV_HOSTS_TEXT:
+        args = args[:args.rfind(' ', 0, _ARGV_HOSTS_TEXT + 1) + 1]
+    found = _url_hosts(args) if '://' in args else []
     if command in _SSH_COMMANDS:
         dest = _ssh_destination(args.split(' ')[1:])
         mt = dest and (_SSH_DEST.match(dest) or _HOST_PATH.match(dest))
@@ -4940,16 +4975,33 @@ def _host_worker():
         _resolve_host(_HOST_WANT.get())
 
 
+def _names_of(m):
+    """_argv_hostnames() of m's argv, read once per argv: kept on the entry
+    against the very string and command it was read from, as _emit_args() keeps
+    the masking, for the exec that asks and every record that labels."""
+    args, command = m.get('args'), _command_of(m)
+    c = m.get('argv_names')
+    if c is None or c[0] is not args or c[1] != command:
+        c = m['argv_names'] = (args, command, _argv_hostnames(args, command))
+    return c[2]
+
+
 def _ask_hosts(m):
     """Queue the names m's argv gives, for a process that will be reported.
-    Not callable while seeding: actor_of() memoizes, and a parent not ingested
-    yet would pin the child as unattributed."""
+    Whether it will be is asked before the argv is read for names, and only of
+    an argv that could name one (a `://`, or an ssh/scp/rsync). Not callable
+    while seeding: actor_of() memoizes, and a parent not ingested yet would pin
+    the child as unattributed."""
     if not WANT_ARGV_HOSTS:
         return
-    names = _argv_hostnames(m.get('args'), _command_of(m))
-    if names and actor_of(m)[0] is not None:
-        for n in names:
-            _want_host(n)
+    args, command = m.get('args') or '', _command_of(m)
+    if (args.find('://', 0, _ARGV_HOSTS_TEXT) < 0 and command not in _SSH_COMMANDS
+            and command not in _HOSTPATH_COMMANDS):
+        return
+    if actor_of(m)[0] is None:
+        return
+    for n in _names_of(m):
+        _want_host(n)
 
 
 def _hosts_for(m):
@@ -4957,7 +5009,7 @@ def _hosts_for(m):
     if not WANT_ARGV_HOSTS:
         return {}
     out = {}
-    for name in _argv_hostnames(m.get('args'), _command_of(m)):
+    for name in _names_of(m):
         for ip in _host_ips(name) or ():
             out.setdefault(ip, name)
     return out

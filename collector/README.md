@@ -593,7 +593,11 @@ to, so `host` is null rather than a guess when:
 
 The collector takes only the hostname, never a URL's credentials. It skips address
 literals and `localhost`, and never treats a file name or an email address as a
-hostname. It looks names up only for processes it reports anyway. `stop.argv_hosts`
+hostname. It looks names up only for processes it reports anyway, and reads an argv for
+them once. It reads the first 4,096 characters of argv (the in-kernel read's default; an
+argv read from `/proc` at start has no cap), never half a word, and a URL's scheme from at
+most the 32 characters before its `://`, so the cost stays linear in what any user can
+put on a command line. `stop.argv_hosts`
 counts lookups resolved, failed, and dropped because the queue was full; each dropped
 one may be a missing `host`. `EBPFM_ARGV_HOSTS=0` turns this off.
 
