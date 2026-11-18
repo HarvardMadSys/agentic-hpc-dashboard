@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -63,8 +64,12 @@ class DropTest(unittest.TestCase):
 
     def test_the_lists_come_from_the_environment(self):
         env = {"RC_DASH_DROP_USERS": "monitor, ops", "RC_DASH_DROP_AGENT_USERS": "builder"}
-        with mock.patch.dict(os.environ, env):
-            c = configmod.load(config_path=os.path.join(HOME, "no-such-config.json"))
+        # a config file that sets nothing, so the lists can only come from the environment
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env):
+            path = os.path.join(d, "config.json")
+            with open(path, "w") as fh:
+                fh.write("{}")
+            c = configmod.load(config_path=path)
         self.assertEqual(c.get("filters.drop_global"), ["monitor", "ops"])
         self.assertEqual(c.get("filters.drop_agent"), ["builder"])
 
