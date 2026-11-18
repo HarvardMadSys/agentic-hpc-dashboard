@@ -9,8 +9,9 @@ name: collector-image
 #
 # The base image is pinned per-ref so a push that rebuilds both stays
 # consistent: a tag build consumes base:latest, a main build consumes base:edge,
-# and any other branch consumes base:<branch-slug> (built by base-image.yml on
-# the same push when docker/base changed, otherwise the branch's last base).
+# a branch that changed docker/base since it left main consumes
+# base:<branch-slug> (built by base-image.yml on the push that changed it), and
+# any other branch consumes base:edge, as base-image.yml builds it no base.
 
 on:
   push:
@@ -42,6 +43,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # main's history too: which base a branch builds on depends on whether
+          # it changed docker/base since it left main
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -66,7 +71,16 @@ jobs:
             # Slugify the branch the same way docker/metadata-action does for
             # type=ref,event=branch: each run of characters a tag cannot hold
             # (slashes among them) becomes one dash.
-            base_tag="$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
+            slug="$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
+            # base-image.yml builds a branch a base of its own only on a push
+            # that changes docker/base. A branch that has not changed it since
+            # it left main has none, and builds on main's.
+            fork="$(git merge-base HEAD origin/main)"
+            if git diff --quiet "$fork" HEAD -- docker/base; then
+              base_tag="edge"
+            else
+              base_tag="$slug"
+            fi
           fi
           # A repository path must be lowercase, and github.repository keeps the
           # owner's capitals (HarvardMadSys), which docker refuses outright.
