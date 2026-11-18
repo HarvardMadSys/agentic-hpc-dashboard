@@ -54,6 +54,22 @@ tier's backfill, which meets the launcher first, holds the child as
 children, 0.62% began a second to a minute before their parent's recorded
 start, and one a minute to an hour before.
 
+Nor has the record a reaping event: exit order stands in for one. A child
+that ends before its parent but is never waited for by it -- the parent never
+calls wait(), so the child is a zombie until the parent's own exit and init
+(or a subreaper) reaps it, or the parent ignores SIGCHLD and the kernel reaps
+it unasked -- never reaches the parent's `signal->ioac`. The kernel says so on
+the parent's own exit: the `wait_task_zombie` that adds a child's I/O to its
+reaper's also adds its CPU to the reaper's `cutime`/`cstime`, which the
+collector reads in ns and writes as `child_cpu_s`, to 0.1 ms. An exit whose
+`child_cpu_s` is 0 reaped no child that ran an exec -- one costs far more
+than 0.05 ms; a bare fork may not, and does next to no I/O -- so it takes none
+off (`reaped_none`): what is held for its pid is dropped and counted
+(`rejected`). One that reaped some of its children and not others
+still has them all taken off -- the record does not say which -- and comes out
+short by the ones it did not reap: seen where that passes its whole figure
+(`clamped`), not otherwise.
+
 Each reducer that sums bytes holds its own join, over the fields it sums (the
 record's names: `rd_mb`, `wr_mb`, `rchar_mb`, `wchar_mb`), and feeds it every
 exit it reads, in order. A field the record lacks is None in what `take` gives
@@ -131,6 +147,16 @@ def runtime_share(cap):
     """How much of a cap of `cap` runtimes keep while other parents want it:
     half. With fewer others they keep the rest of it, and with none, all."""
     return cap // 2
+
+
+def reaped_none(rec):
+    """Whether the exit `rec` says it reaped no child: its `child_cpu_s`, the
+    kernel's `cutime + cstime`, measured and 0 (the module docstring). Only an
+    exit's says so: a `truncated` record's is read from /proc in clock ticks.
+    None -- the collector's `signal` feature off, or a record from before v4,
+    whose 0 placeholder normalize.py makes None -- says nothing."""
+    c = rec.get("child_cpu_s")
+    return rec.get("event") == "exit" and type(c) in (int, float) and c == 0
 
 
 class Held:
@@ -388,9 +414,16 @@ class OwnIo:
 
     def pop_reaped(self, rec):
         """What is held for `rec`'s pid that it can have reaped, summed per field
-        (None when nothing), the rest dropped (the module docstring)."""
+        (None when nothing), the rest dropped (the module docstring). An exit
+        that says it reaped no child takes none (`reaped_none`): another
+        process, or the kernel, reaped what is held for its pid."""
         groups = self.reaped.pop((rec.get("host"), rec.get("pid")), None)
-        return self._reaped_by(rec, groups) if groups else None
+        if not groups:
+            return None
+        if reaped_none(rec):
+            self.rejected += len(groups)
+            return None
+        return self._reaped_by(rec, groups)
 
     def forget_outlived(self, host, pid, end):
         """A process with this pid that ended at `end`, met after the children

@@ -25,7 +25,7 @@ from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
 from .own_io import (CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, Held, OwnIo, cap_of,
-                     runtime_share)
+                     reaped_none, runtime_share)
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
@@ -475,8 +475,9 @@ class LiveReducer:
         it met itself, and one the tail met that was running before the tail
         began. `epoch` is the roster bin it was counted in, None when none."""
         io = rec.get("io")
+        # one that says it reaped no child has none to give back (own_io.reaped_none)
         if not isinstance(io, dict) or io.get("scope") != "process" or not (rd or wr) \
-                or rec.get("_ts_epoch") is None:
+                or rec.get("_ts_epoch") is None or reaped_none(rec):
             return
         st = _start(rec)
         if not older and (st is None or self.io_tail_from is None or st >= self.io_tail_from):

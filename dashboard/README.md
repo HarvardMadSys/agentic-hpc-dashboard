@@ -760,9 +760,15 @@ already made once.
   The record has no fork time apart from that exec, so a launcher that forks a child and execs
   over a minute later is refused it: that child's bytes count twice, and the refusal is counted
   in `rejected` (on four million records, one child in 2.7 M began a minute to an hour before
-  its parent's recorded start). A figure short of what its children carried shows as 0, never
-  below, and is counted too. Each join holds at most `reducers.own_io.max_parents` parents
-  (2000; below 1 the service refuses to start), the one given to least recently dropped first,
+  its parent's recorded start). Nor has the record a reaping event: a child that ended before
+  its parent but was never waited for by it (the parent never calls wait(), or ignores SIGCHLD)
+  is not in the parent's figure. A parent that reaped none at all says so -- its `child_cpu_s`,
+  the CPU the kernel credits a reaper with in the same step as the bytes, is 0 -- and takes none
+  off, counted in `rejected`; one that reaped some of its children and not others still has
+  them all taken off, and comes out short by the rest. A figure short of what its children
+  carried shows as 0, never below, and is counted too. Each join holds at most
+  `reducers.own_io.max_parents` parents (2000; below 1 the service refuses to start), the one
+  given to least recently dropped first,
   counted (`evicted`) and said on stderr (the first time, then at most hourly a panel in each
   process, so each of the hours' workers says it too), its children's bytes then counted again
   at its exit. What is held for an agent runtime, or for the process that started one, goes

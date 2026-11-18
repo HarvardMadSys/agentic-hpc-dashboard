@@ -356,6 +356,70 @@ class LiveOwnIoTest(unittest.TestCase):
                 self.assertNotIn(("h1", 200), self.lv.io_given.reaped)
 
 
+def unreaped(t, child_cpu_s=0.0, parent_io=20.0):
+    """bob's `python3` 300, which never waits: its `cat` 301 reads 100 MB and
+    ends first, a zombie until python3 exits and init reaps it. So python3's
+    figure is its own 20 MB alone, and the kernel credited it no child's CPU
+    (`child_cpu_s` 0). With `parent_io=120.0` and a `child_cpu_s` it did reap."""
+    return [person("exit", t, 301, 300, "cat", "cat big.bin", "bob", io=iob(100.0, 100.0),
+                   child_cpu_s=0.0),
+            person("exit", t + 10, 300, 1, "python3", "python3 spawn.py", "bob",
+                   io=iob(parent_io, parent_io), duration_s=60.0, child_cpu_s=child_cpu_s)]
+
+
+class UnreapedChildTest(unittest.TestCase):
+    """A child that ended before its parent, which never reaped it: its bytes are
+    not in the parent's figure, and the parent's `child_cpu_s` says so."""
+
+    def setUp(self):
+        self.now = time.time()
+
+    def by_tool(self, recs):
+        p = window(recs).payload["io_process"]
+        return ({t["tool"]: t["rd_mb"] for t in p["by_tool"]},
+                {u["user"]: u["rd_mb"] for u in p["by_user"]}, p["own_io"])
+
+    def test_a_parent_that_reaped_no_child_takes_none_off(self):
+        tools, users, own = self.by_tool(unreaped(self.now - 800))
+        self.assertEqual(tools, {"cat": 100.0, "python3": 20.0})
+        self.assertEqual(users, {"bob": 120.0})
+        self.assertEqual((own["rejected"], own["clamped"]), (1, 0))
+
+    def test_one_that_reaped_it_takes_it_off_as_before(self):
+        tools, users, own = self.by_tool(unreaped(self.now - 800, child_cpu_s=0.25,
+                                                  parent_io=120.0))
+        self.assertEqual(tools, {"cat": 100.0, "python3": 20.0})
+        self.assertEqual(users, {"bob": 120.0})
+        self.assertEqual((own["rejected"], own["clamped"]), (0, 0))
+
+    def test_an_unmeasured_child_cpu_says_nothing(self):
+        # the collector's `signal` feature off: no evidence either way, so the
+        # child is taken off as exit order says
+        tools, _users, own = self.by_tool(unreaped(self.now - 800, child_cpu_s=None,
+                                                   parent_io=120.0))
+        self.assertEqual(tools, {"cat": 100.0, "python3": 20.0})
+        self.assertEqual(own["rejected"], 0)
+
+    def test_the_live_tier_in_either_order(self):
+        recs = unreaped(self.now - 800)
+        for older, order in ((False, recs), (True, recs[::-1])):
+            with self.subTest(older=older):
+                self.assertEqual(rd_of(live(order, older=older), self.now), {"bob": 120.0})
+
+    def test_only_an_exit_s_measured_zero_says_it(self):
+        say = own_io.reaped_none
+        self.assertTrue(say({"event": "exit", "child_cpu_s": 0.0}))
+        self.assertTrue(say({"event": "exit", "child_cpu_s": 0}))
+        for rec in ({"event": "exit", "child_cpu_s": 0.0001},
+                    {"event": "exit", "child_cpu_s": None},
+                    {"event": "exit"},
+                    {"event": "exit", "child_cpu_s": False},
+                    # read from /proc in clock ticks: a few short children show 0
+                    {"event": "truncated", "child_cpu_s": 0.0}):
+            with self.subTest(rec=rec):
+                self.assertFalse(say(rec))
+
+
 class HourSeamTest(unittest.TestCase):
     """`cat` exits in one hour and the shell that reaped it in the next: the
     join is carried, as the sessions' always was."""
