@@ -24,8 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
+from rc_dashboard.aggregator import Aggregator     # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
-from test_ingest import DAY, FeedCase             # noqa: E402
+from test_ingest import DAY, FeedCase, exit_rec   # noqa: E402
 import test_merge as TM                           # noqa: E402
 
 HOUR = 3600
@@ -201,6 +202,39 @@ class LateRecordTest(HourCase):
         for key in ("facets", "io_process", "risk", "resources", "tool_mix"):
             with self.subTest(reducer=key):
                 self.assertEqual(TM.diff(want[key], got[key]), [])
+
+
+class SeamTest(HourCase):
+    """test_window_cache's SeamTest, the window merged from saved hours: the
+    live feed counts what the open hour's read did not reach, whatever its
+    time (`hours.build`, `PanelView.seam`)."""
+
+    def test_a_host_that_lagged_when_the_view_was_merged_is_counted_as_it_catches_up(self):
+        # The review's r2, merged: host b's newest exit is 5 s old, host a's 21
+        # minutes; then host a's 20 exits of the last 20 minutes arrive.
+        for h in ("a", "b"):
+            self.append("%s.exits.jsonl" % h, [exit_rec(NOW - 1800 + 60 * i, 100 + i, host=h)
+                                               for i in range(10)])
+        self.append("b.exits.jsonl", [exit_rec(NOW - 5, 999, host="b")])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        reg = agg.panels_by_window
+        view = reg.request(1440)
+        reg._build(view)
+        self.assertEqual((view.state, view.error, view.cache["source"]),
+                         ("ready", None, "hours"))
+
+        def calls():
+            view.materialize()
+            return view.payload["tool_mix"]["by_class"]["agent"]["calls"]
+        self.assertEqual(calls(), 21)
+        self.append("a.exits.jsonl", [exit_rec(NOW - 1200 + 60 * i, 200 + i, host="a")
+                                      for i in range(20)])
+        self.assertEqual(agg.poll_once(), 20)
+        self.assertEqual(calls(), 41)
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]),
+                         (20, {"already_read": 0, "before_window": 0}))
 
 
 class SeekOvershootTest(HourCase):

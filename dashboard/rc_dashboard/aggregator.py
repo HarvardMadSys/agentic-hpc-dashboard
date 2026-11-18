@@ -69,6 +69,19 @@ def normalized(norm, raws):
     return out
 
 
+def normalized_at(norm, items):
+    """The tail's `(src, end, raw)` items (`FileTailSource.poll_at`) through
+    `norm`: `(recs, at)`, the records it keeps in order, and beside each the
+    item it came from, which says where the tail read it."""
+    recs, at = [], []
+    for item in items:
+        rec = norm.normalize(item[2])
+        if rec is not None:
+            recs.append(rec)
+            at.append(item)
+    return recs, at
+
+
 def last_lines(path, n, window=1 << 20):
     """The last `n` lines of a day-file, as `readlines()[-n:]` gives them (a final
     line with no newline yet counts as one), without reading the rest: a node
@@ -219,11 +232,15 @@ class Aggregator:
         """
         return self.dispatch(normalized(self.norm, records), older)
 
-    def dispatch(self, recs, older=False):
+    def dispatch(self, recs, older=False, at=None):
         """Hand records `normalized` already to the live tier, the collectors'
-        health and, unless `older`, every held view. Under the lock."""
+        health and, unless `older`, every held view. Under the lock.
+
+        `at`, beside `recs`, is where the tail read each (`normalized_at`): a
+        view skips a record its build already read by it, byte for byte."""
         live_ev, health_ev = LiveReducer.EVENTS, CollectorHealth.EVENTS
-        for rec in recs:
+        feed = self.panels_by_window.feed
+        for rec, place in zip(recs, itertools.repeat(None) if at is None else at):
             ev = rec.get("event")
             if ev in live_ev:
                 try:
@@ -238,7 +255,7 @@ class Aggregator:
             if not older:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
-                self.panels_by_window.feed(rec)
+                feed(rec, place)
         self.stats["records"] += len(recs)
         self.dispatched += 1
         return len(recs)
@@ -306,16 +323,16 @@ class Aggregator:
         """
         if not self.positioned.is_set():
             return 0
-        it = self.source.poll()
+        it = self.source.poll_at()
         n = 0
         while True:
-            raws = list(itertools.islice(it, BACKFILL_BATCH))
-            if not raws:
+            items = list(itertools.islice(it, BACKFILL_BATCH))
+            if not items:
                 break
-            recs = normalized(self._poll_norm, raws)
+            recs, at = normalized_at(self._poll_norm, items)
             with self.lock:
                 self._fold(self._poll_norm)
-                n += self.dispatch(recs)
+                n += self.dispatch(recs, at=at)
             # Hand the lock over: this thread keeps the GIL otherwise (see the backfill).
             time.sleep(0)
         with self.lock:

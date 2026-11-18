@@ -206,13 +206,22 @@ class FileTailSource(IngestSource):
         complete, consumed = data[:cut + 1], cut + 1
         self.stats["bytes_read"] += consumed
 
+        # Each record with where it was read: the file, and the offset just
+        # past its line. A view built while this tail was behind in a file
+        # tells by these a line its build already read from one it never saw
+        # (`windows.PanelView.feed`).
+        src = (path, st.st_dev, st.st_ino)
+        end = offset
         for line in complete.split(b"\n"):
+            end += len(line) + 1
             if not line.strip():
                 continue
             try:
-                yield fastjson.loads(line)
+                raw = fastjson.loads(line)
             except ValueError:
                 self.stats["parse_errors"] += 1
+                continue
+            yield src, end, raw
 
         # The inode that was read, not the path's now: a day compressed since
         # has no plain file left to stat, and its `.gz` takes up from here.
@@ -235,6 +244,13 @@ class FileTailSource(IngestSource):
 
     def poll(self):
         """Yield every complete record appended since the last call."""
+        for _src, _end, raw in self.poll_at():
+            yield raw
+
+    def poll_at(self):
+        """`poll`, each record as `(src, end, raw)`: `src` the file it was read
+        from, `(path, st_dev, st_ino)`, and `end` the offset just past its line
+        (uncompressed, in a `.gz`)."""
         paths = self.files()
         self.stats["files"] = len(paths)
         for p in paths:

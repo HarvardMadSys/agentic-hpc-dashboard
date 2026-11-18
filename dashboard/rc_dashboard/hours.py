@@ -1710,10 +1710,17 @@ def build(reg, view):
                 step(0.1)
             joined = store.install_carry(acc, h_hi - 1)
             stats = new_stats()
-            stream, _plan, stats = read_span(files, norm, h_hi * HOUR, None, store.events,
-                                             stats=stats)
+            stream, tail_plan, stats = read_span(files, norm, h_hi * HOUR, None, store.events,
+                                                 stats=stats)
             n_tail, newest = feed_all(acc, stream)
             step(1, n_tail, stats["bytes"])
+            # Where this read stopped in each file, the stream spent: every whole
+            # line before it is in the view, from a saved hour or from the read.
+            # A file it found nothing new in stopped where it starts, at its
+            # size, which may cut a line still being written: the live feed
+            # skips a line by where it ENDS (`PanelView.feed`), so that one is
+            # counted when it is whole.
+            seam = {e["path"]: (e["dev"], e["ino"], e["stop"]) for e in tail_plan}
         except Exception as e:
             with reg.lock:
                 view._replay = None
@@ -1733,6 +1740,8 @@ def build(reg, view):
             view.consumed_through = newest
             view.live_through = None
             view.live_records = 0
+            view.seam = seam
+            view.live_skipped = {"already_read": 0, "before_window": 0}
             days = sum(1 for k, _ in parts if k == "d")
             view.cache["source"] = "hours"
             view.cache["saved_at"] = None
@@ -1744,8 +1753,8 @@ def build(reg, view):
                            "" if joined else "; the newest hour's join state was not at "
                            "hand, so the open hour joins only within itself"))
             pending, view._replay = view._replay, None
-            for rec in pending or ():
-                view.feed(rec)
+            for rec, at in pending or ():
+                view.feed(rec, at)
         # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
         # with no collection running; ready once they are in.
         view.materialize_stepwise(reg.lock)

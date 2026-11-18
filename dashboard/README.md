@@ -401,7 +401,14 @@ Three things a rebuild reports rather than assumes:
   proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively.
 - **The seam.** A build reads the day-files while the tailer is also advancing through them.
   Rows landing in that seam are buffered and replayed; if the buffer overflows the count is
-  published as `replay_dropped` rather than quietly going missing.
+  published as `replay_dropped` rather than quietly going missing. The seam is drawn per file,
+  in bytes: the build keeps where it stopped reading each day-file, the tail says where each
+  record's line ends, and a live record is skipped only when the build had read that line.
+  It was a timestamp -- the newest record the build read, from any host -- so a host whose
+  stream lagged when the view was built had its catch-up dropped from the view until the next
+  re-scan (6 h for the 24 h view) while the live tier counted it. A live record older than the
+  window's start is left out, as a scan would leave it; the status counts both
+  (`live_skipped`: `already_read`, `before_window`).
 
 One pre-existing inconsistency had to be fixed for the control to mean anything: trajectory
 sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the panel's own

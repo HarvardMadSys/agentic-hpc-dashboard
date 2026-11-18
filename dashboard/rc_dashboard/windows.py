@@ -32,6 +32,10 @@ service:
   day-files while the tailer is also advancing through them; the handful of rows
   landing in that seam are buffered and replayed, and if the buffer overflows
   the count is published as `replay_dropped` instead of quietly going missing.
+  The seam is drawn in bytes, not in time: a live record is one the build
+  already read when its line ends where the build stopped reading that file, or
+  before (`PanelView.seam`). Hosts lag one another, so a record older than the
+  newest one the build read can still be one it never saw.
 
 A user or agent-type filter is the same kind of thing as a window: a different
 set of records, so a different set of reducers, not a mask over the default
@@ -61,7 +65,7 @@ import re
 import threading
 import time
 
-from . import hours as hourmod, payloads, redact, snapshots
+from . import gz, hours as hourmod, payloads, redact, snapshots
 from .export import (UNTAGGED, agent_type_token, agent_type_want, agent_type_where,
                      parse_filters, resume_plan, window_plan, window_scan)
 from .normalize import Normalizer
@@ -320,6 +324,14 @@ class PanelView:
         self.covers_from = None
         self.covers_to = None
         self.consumed_through = None    # newest ts the build ingested
+        # Where the build read each day-file to: path -> (st_dev, st_ino, the
+        # offset just past the last whole line it read). A live record whose
+        # line ends there or before is one the build already counted.
+        self.seam = {}
+        # Live records not counted: the build had read them already, or they
+        # are older than the window's start (a host catching up on records
+        # from before it).
+        self.live_skipped = {"already_read": 0, "before_window": 0}
         self.reducers = {}              # key -> reducer, live-fed after the swap
         self.dispatch = {}              # event -> [reducer]
         self.payload = {}               # materialised result(), per reducer key
@@ -341,8 +353,10 @@ class PanelView:
                       "restored": None, "panels_saved_at": None, "panels_note": None}
 
     # ------------------------------------------------------------------ feed
-    def feed(self, rec):
-        """Called under the aggregator's lock, once per live record.
+    def feed(self, rec, at=None):
+        """Called under the aggregator's lock, once per live record. `at` is
+        where the tail read it, `((path, st_dev, st_ino), end, ...)`, `end` the
+        offset just past its line (`tail.FileTailSource.poll_at`).
 
         During a build the record is buffered instead: the fresh reducers do not
         exist yet, and feeding the outgoing ones would only update state that is
@@ -356,14 +370,18 @@ class PanelView:
             if len(self._replay) >= REPLAY_CAP:
                 self.replay_dropped += 1
             else:
-                self._replay.append(rec)
+                self._replay.append((rec, at))
             return
         if not self.dispatch:
             return
         ts = rec.get("_ts_epoch")
-        # Already counted by the scan: the build read the same rows from disk.
-        if ts is not None and self.consumed_through is not None \
-                and ts <= self.consumed_through:
+        # Already counted: the build read the same line from disk.
+        if self._read_already(ts, at):
+            self.live_skipped["already_read"] += 1
+            return
+        # Not in the window: a scan now would pass it over, as the build did.
+        if ts is not None and self.covers_from is not None and ts < self.covers_from:
+            self.live_skipped["before_window"] += 1
             return
         self.live_records += 1
         if ts is not None and (self.live_through is None or ts > self.live_through):
@@ -373,6 +391,45 @@ class PanelView:
                 r.feed(rec)
             except Exception:
                 pass                    # one bad record must never stop the stream
+
+    def _read_already(self, ts, at):
+        """Whether the build already read the live record read at `at`: its line
+        ends where the build stopped reading its file, or before (`seam`).
+
+        By its place, not its time. `consumed_through` is the newest record the
+        build read from ANY file, and a host whose records lagged the others'
+        when the view was built writes its catch-up older than that: by time,
+        all of it was dropped until the next re-scan, while the live tier
+        counted it. A record that does not say where it was read falls back to
+        its time.
+
+        Once the tail is past the build's end in a file, every line it reads
+        of it after is too: the file leaves `seam`, and so does one that is
+        another file under its name now. A day compressed since is the same
+        bytes at the same offsets under its `.gz` name (`tail.py`)."""
+        if at is None:
+            return ts is not None and self.consumed_through is not None \
+                and ts <= self.consumed_through
+        seam = self.seam
+        if not seam:
+            return False
+        (path, dev, ino), end = at[0], at[1]
+        key = path
+        got = seam.get(path)
+        if got is None:
+            if not gz.is_gz(path):
+                return False
+            key = gz.plain_name(path)
+            got = seam.get(key)
+            if got is None:
+                return False
+        elif got[0] != dev or got[1] != ino:
+            del seam[key]
+            return False
+        if end <= got[2]:
+            return True
+        del seam[key]
+        return False
 
     # ----------------------------------------------------------------- build
     def fresh_reducers(self):
@@ -573,6 +630,8 @@ class PanelView:
             "drift_s": round(drift, 1) if drift is not None else None,
             "drift_budget_s": round(budget, 1),
             "live_records": self.live_records,
+            # what the live feed handed this view and it did not count, and why
+            "live_skipped": dict(self.live_skipped),
             "replay_dropped": self.replay_dropped,
             "cache": dict(self.cache),
         }
@@ -808,6 +867,9 @@ class WindowRegistry:
         meta["files"] = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head",
                                             "end")}
                          for e in plan if "ino" in e]
+        # How far this read went in each file: the live feed's records up to
+        # there are its own (`PanelView.feed`).
+        seam = {f["path"]: (f["dev"], f["ino"], f["end"]) for f in meta["files"]}
         # Serialised now, before the swap: after it the live feed mutates these
         # reducers under the lock, and pickling them there would stall every
         # read for as long as it takes.
@@ -827,6 +889,8 @@ class WindowRegistry:
             for k in ("covers_from", "covers_to", "built_at", "consumed_through",
                       "live_through", "live_records"):
                 setattr(view, k, meta[k])
+            view.seam = seam
+            view.live_skipped = {"already_read": 0, "before_window": 0}
             view.cache["source"] = "snapshot" if saved else "scan"
             if saved:
                 view.cache["note"] = (
@@ -839,8 +903,8 @@ class WindowRegistry:
             elif unsaved:
                 view.cache["note"] = unsaved
             pending, view._replay = view._replay, None
-            for rec in pending or ():
-                view.feed(rec)
+            for rec, at in pending or ():
+                view.feed(rec, at)
         # The panels, a reducer per hold; the view says it is ready once they are in,
         # and until then shows what it showed while it was building.
         view.materialize_stepwise(self.lock)
@@ -1045,11 +1109,11 @@ class WindowRegistry:
                     pass
 
     # ----------------------------------------------------------------- ticks
-    def feed(self, rec):
+    def feed(self, rec, at=None):
         if self.hours is not None:
             self.hours.saw(rec.get("_ts_epoch"))
         for view in list(self.views.values()):
-            view.feed(rec)
+            view.feed(rec, at)
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.

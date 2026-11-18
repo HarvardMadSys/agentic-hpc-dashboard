@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import snapshots, windows        # noqa: E402
+from rc_dashboard.aggregator import Aggregator     # noqa: E402
 from rc_dashboard.export import window_plan, window_scan   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
@@ -354,6 +355,104 @@ class RoundTripTest(CacheCase):
         with mock.patch("time.time", return_value=self.now):
             for key, r in view.reducers.items():
                 self.assertEqual(restored[key].result(), r.result(), key)
+
+
+class SeamTest(CacheCase):
+    """The live feed and a view's build split each day-file where the build
+    stopped reading it, byte for byte (`PanelView.seam`): the tail, positioned
+    at start-up, hands the view every record, and the view counts those its
+    build did not read -- whatever their time."""
+
+    def aggregator(self):
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()                  # the tail is handed each file at its end
+        return agg
+
+    def built(self, agg, minutes=WIN):
+        reg = agg.panels_by_window
+        view = reg.request(minutes)
+        reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        return view
+
+    @staticmethod
+    def calls(view):
+        view.materialize()
+        return view.payload["tool_mix"]["by_class"]["agent"]["calls"]
+
+    def lagging(self):
+        """Two hosts, ten exits each 30..21 minutes ago; then one more from
+        host b 5 s ago. Host a's link is down: nothing from it since."""
+        for h in ("a", "b"):
+            self.append("%s.exits.jsonl" % h, [exit_rec(self.now - 1800 + 60 * i, 100 + i,
+                                                         host=h) for i in range(10)])
+        self.append("b.exits.jsonl", [exit_rec(self.now - 5, 999, host="b")])
+
+    def catch_up(self):
+        """Host a's link is back: its 20 exits of the last 20 minutes arrive,
+        each older than host b's newest, which the build read."""
+        self.append("a.exits.jsonl", [exit_rec(self.now - 1200 + 60 * i, 200 + i, host="a")
+                                      for i in range(20)])
+
+    def test_a_host_that_lagged_when_the_view_was_built_is_counted_as_it_catches_up(self):
+        # The review's r2: the view stayed at 21 while the live tier and the
+        # disk said 41, until the next re-scan -- 6 h for the 24-hour view.
+        self.lagging()
+        agg = self.aggregator()
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 21)
+        self.catch_up()
+        self.assertEqual(agg.poll_once(), 20)
+        self.assertEqual(self.events(agg)["agent"], 41)          # the live tier
+        self.assertEqual(self.calls(view), 41)                   # and the view
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]),
+                         (20, {"already_read": 0, "before_window": 0}))
+        self.assertEqual(st["drift_s"], 0.0)       # all of it older than host b's newest
+
+    def test_a_line_the_build_read_is_not_counted_again_when_the_tail_reaches_it(self):
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        # Written after the tail was positioned and before the build: the build
+        # reads them, and the tail hands them over after it.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 300 + i, 300 + i) for i in range(5)])
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 15)
+        # Written after the build: the tail's alone.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 200 + i, 400 + i) for i in range(3)])
+        self.assertEqual(agg.poll_once(), 8)
+        self.assertEqual(self.calls(view), 18)
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]["already_read"]), (3, 5))
+
+    def test_the_seam_holds_where_the_day_is_compressed_under_the_tail(self):
+        # The build read host a's plain file; the tail, behind in it, meets the
+        # rest in the `.gz` the collector sealed the day into -- the same bytes
+        # at the same offsets, under another name and inode.
+        self.lagging()
+        agg = self.aggregator()
+        early = [exit_rec(self.now - 1250 + i, 150 + i, host="a") for i in range(3)]
+        self.append("a.exits.jsonl", early)              # the build reads these
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 24)
+        self.catch_up()                                  # these it never saw
+        self.compress("a.exits.jsonl")
+        self.assertEqual(agg.poll_once(), 23)
+        self.assertEqual(self.calls(view), 44)
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]["already_read"]), (20, 3))
+
+    def test_a_catch_up_from_before_the_window_is_left_out(self):
+        # A scan now would leave out a record older than the window's start, so
+        # the live feed does too, and says how many.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        view = self.built(agg, 60)
+        self.append("h2.exits.jsonl", [exit_rec(self.now - 7200 + i, 500 + i, host="h2")
+                                       for i in range(4)] + [exit_rec(self.now - 30, 600, host="h2")])
+        self.assertEqual(agg.poll_once(), 5)
+        self.assertEqual(self.calls(view), 11)
+        self.assertEqual(view.status()["live_skipped"], {"already_read": 0, "before_window": 4})
 
 
 def _imports(path):
