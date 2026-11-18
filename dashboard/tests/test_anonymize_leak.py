@@ -7,6 +7,9 @@ the export stream, the event search and the first websocket frames, and looks
 for any of those names in any byte. It also checks the aliases DO arrive, so
 the test cannot pass by serving nothing.
 
+`ReaderTextTest` sends real names instead: a real name a reader types finds
+nothing, even for an account no response has named yet.
+
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
 import json
@@ -34,6 +37,7 @@ from websockets.sync.client import connect         # noqa: E402
 from rc_dashboard import app as appmod             # noqa: E402
 from rc_dashboard import ask as ask_mod            # noqa: E402
 from rc_dashboard import config as configmod       # noqa: E402
+from rc_dashboard.anonymize import Anonymizer      # noqa: E402
 from test_ingest import DAY, line, stamp           # noqa: E402
 
 SECRETS = ("alice", "bob.smith", "bob-smith", "carol", "tambe", "kempner_grads",
@@ -98,16 +102,25 @@ def feed(now):
     return recs
 
 
-class LeakTest(unittest.TestCase):
+class Served(unittest.TestCase):
+    """The real app on a free local port over `records`, with names masked."""
+
+    @classmethod
+    def records(cls, now):
+        return feed(now)
+
+    @classmethod
+    def configure(cls, tree):
+        """Changes to the config before the app is made."""
 
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="rc_anon_leak_")
         root = os.path.join(cls.tmp, "ebpf")
         os.makedirs(os.path.join(root, DAY))
-        now = time.time()
+        cls.now = now = time.time()
         with open(os.path.join(root, DAY, "h1.exits.jsonl"), "wb") as fh:
-            for r in feed(now):
+            for r in cls.records(now):
                 fh.write(line(r))
         tree = configmod.defaults()
         tree["feeds"]["ebpf"]["roots"] = [root]
@@ -126,6 +139,7 @@ class LeakTest(unittest.TestCase):
             "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); print('ok')",
             cls.prompts]
         tree["anonymize"]["enabled"] = True
+        cls.configure(tree)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)    # on_event
@@ -200,6 +214,9 @@ class LeakTest(unittest.TestCase):
     def assertClean(self, where, body):
         for s in SECRETS:
             self.assertNotIn(s, body, "%s leaks %r" % (where, s))
+
+
+class LeakTest(Served):
 
     def test_no_route_serves_a_real_name(self):
         alice = self.anon.user_alias("alice")
@@ -342,6 +359,109 @@ class LeakTest(unittest.TestCase):
         self.assertTrue(h["enabled"])
         self.assertGreaterEqual(h["users_known"], 2)
         self.assertEqual(h["alias_collisions"], 0)
+
+
+SALT = "reader-text"
+MARK = "zq7mark"        # in dave's command lines only: his rows wherever they are served
+
+
+def named_later(now):
+    """`feed`, and accounts no response has named: `dave` and `erin` ran things
+    three hours ago, past the hour the live roster holds here but in the
+    day-file a search or a filter reads. `frank`'s tool and directory carry
+    his name, and his processes are keyed by his account alone (`usr:`). Enough
+    newer exits that the old ones are past /api/events' first page and the
+    export's cap (`ReaderTextTest.configure`)."""
+    recs = feed(now)
+    for i in range(3):
+        recs.append(exit_rec(now - 3 * 3600 + i, 9000 + i, "dave",
+                             "rsync -a /scratch/dave/run%d remote: %s" % (i, MARK), "human",
+                             cwd="/scratch/dave"))
+        recs.append(exit_rec(now - 3 * 3600 + 30 + i, 9100 + i, "erin",
+                             "rsync -a /scratch/erin/out%d remote:" % i, "human",
+                             cwd="/scratch/erin"))
+        frank = exit_rec(now - 900 + i, 9200 + i, "frank", "/home/frank/bin/frank_sync --go",
+                         "human", cwd="/scratch/frank/run")
+        del frank["session_key"]
+        recs.append(frank)
+    for i in range(170):
+        recs.append(exit_rec(now - 2400 + 12 * i, 6000 + i, ("alice", "bob.smith")[i % 2],
+                             "git status", ("agent", "human")[i % 2]))
+    return sorted(recs, key=lambda r: r["ts_epoch"])
+
+
+class ReaderTextTest(Served):
+    """What a reader sends, with real names in it, over `named_later`."""
+
+    records = staticmethod(named_later)
+
+    @classmethod
+    def configure(cls, tree):
+        tree["live"].update(retention_min=60, window_min=60, backfill_hours=1,
+                            window_presets_min=[60])
+        tree["export"]["max_rows"] = 100
+        tree["anonymize"]["salt"] = SALT
+
+    @staticmethod
+    def alias(name):
+        """`name`'s alias, worked out without teaching the service the name."""
+        return Anonymizer(SALT).user_alias(name)
+
+    def rows(self, query, route="/api/events"):
+        """The records a query returns: /api/events' rows, or the export's lines."""
+        status, body = self.get(route + "?" + query)
+        self.assertEqual(status, 200, body)
+        if route == "/api/export":
+            return [json.loads(x) for x in body.splitlines()[1:-1]]
+        return json.loads(body)["rows"]
+
+    def lookup(self, query):
+        """A finished /api/io/commands lookup."""
+        job = json.loads(self.get("/api/io/commands?" + query)[1])
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.1)
+            job = json.loads(self.get("/api/io/commands/%s" % job["id"])[1])
+        self.assertEqual(job["state"], "done", job)
+        return job
+
+    def test_a_first_search_finds_no_account_by_its_real_name(self):
+        # No response has named erin, so her name was still in her records'
+        # text when the first search masked it: `q=erin` found her rows, then
+        # served them under her alias.
+        self.assertNotIn("erin", self.anon.users)
+        for route in ("/api/events", "/api/export"):
+            for q in ("erin", "/scratch/erin"):
+                self.assertEqual(self.rows("q=" + urllib.parse.quote(q), route), [], (route, q))
+        erin = self.alias("erin")
+        for route in ("/api/events", "/api/export"):
+            got = self.rows("q=" + erin, route)
+            self.assertEqual(({r["user"] for r in got}, len(got)), ({erin}, 3), route)
+
+    def test_a_real_name_in_a_tool_or_a_directory_finds_nothing(self):
+        frank, alice = self.alias("frank"), self.alias("alice")
+        real, shown = "/home/frank/bin/frank_sync", "/home/%s/bin/%s_sync" % (frank, frank)
+        for route in ("/api/events", "/api/export"):
+            self.assertEqual(self.rows("tool=" + urllib.parse.quote(real), route), [], route)
+            got = self.rows("tool=" + urllib.parse.quote(shown), route)
+            self.assertEqual(({r["user"] for r in got}, len(got)), ({frank}, 3), route)
+        for query, n in (("tool=" + urllib.parse.quote(real), 0),
+                         ("tool=" + urllib.parse.quote(shown), 3),
+                         ("cwd=/scratch/frank", 0),
+                         ("cwd=" + urllib.parse.quote("/scratch/" + frank), 3),
+                         ("cwd=/home/alice", 0)):
+            self.assertEqual(self.lookup(query)["matched"], n, query)
+        self.assertGreater(self.lookup("cwd=" + urllib.parse.quote("/home/" + alice))["matched"], 0)
+
+    def test_a_real_name_in_a_session_id_names_no_session(self):
+        # frank's processes are keyed by his account (`usr:frank`); the
+        # mapping itself is pinned in test_anonymize (dealias_sid)
+        day = time.strftime("%Y-%m-%d", time.localtime(self.now - 900))
+        for _ in range(3):
+            body = json.loads(self.get("/api/trajectory?sid=" + urllib.parse.quote(
+                "h1|%s|human|usr:frank" % day))[1])
+            self.assertFalse(body["found"], body)
 
 
 if __name__ == "__main__":

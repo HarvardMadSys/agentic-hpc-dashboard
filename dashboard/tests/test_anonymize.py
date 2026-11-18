@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import anonymize as anonmod        # noqa: E402
+from rc_dashboard import app as appmod               # noqa: E402
 from rc_dashboard import config as configmod         # noqa: E402
 from rc_dashboard.anonymize import (AMBIGUOUS, EMAIL_MASK, UID_MASK, UNKNOWN,   # noqa: E402
                                     Anonymizer)
@@ -227,6 +228,44 @@ class RequestTest(unittest.TestCase):
         roster.append("ana")
         alias = Anonymizer(b"salt").user_alias("ana")
         self.assertEqual(a.dealias_user(alias), "ana")
+        roster.append("bo")
+        bo = Anonymizer(b"salt").user_alias("bo")
+        self.assertEqual(a.dealias_text("/scratch/%s/x" % bo), "/scratch/bo/x")
+
+    def test_an_alias_in_a_path_or_a_word_maps_back_and_nothing_else_does(self):
+        a = anon("glen", "bob.smith")
+        g, b = a.user_alias("glen"), a.user_alias("bob.smith")
+        self.assertEqual(a.dealias_text("/scratch/%s/run" % g), "/scratch/glen/run")
+        self.assertEqual(a.dealias_text("/home/%s/bin/%s_sync" % (b, g)),
+                         "/home/bob.smith/bin/glen_sync")
+        # a real name stays a real name: what it finds is tested as shown
+        for s in ("/scratch/glen/run", "/home/user-0123abcd/x", "lab-1b2c3d4e", "x" + g,
+                  g + "0", "", None):
+            self.assertEqual(a.dealias_text(s), s)
+
+    def test_a_record_teaches_its_own_account_before_its_text_is_masked(self):
+        # A scan meets accounts no response has named; a search masks a
+        # record's text with its owner learned, or the real name is still there.
+        a = anon()
+        self.assertEqual(a.text("rsync /scratch/dave/run"), "rsync /scratch/dave/run")
+        a.learn_record({"user": "dave", "uid": 2004, "args": "rsync /scratch/dave/run"})
+        self.assertEqual(a.text("rsync /scratch/dave/run"),
+                         "rsync /scratch/%s/run" % a.user_alias("dave"))
+        a.learn_record({"user": "gdm", "uid": 120})       # a system account stays visible
+        a.learn_record({"pid": 7})                        # a record of no one teaches nothing
+        self.assertEqual(sorted(a.users), ["dave"])
+
+    def test_a_session_id_takes_its_accounts_alias_and_a_real_name_names_none(self):
+        a = anon("glen")
+        g = a.user_alias("glen")
+        head = "h1|2026-11-18|human|"
+        for sent, want in ((head + "tty:%s@pts/3" % g, head + "tty:glen@pts/3"),
+                           (head + "usr:%s" % g, head + "usr:glen"),
+                           (head + "tty:glen@pts/3", head + "tty:%s@pts/3" % UNKNOWN),
+                           (head + "usr:glen", head + "usr:" + UNKNOWN),
+                           (head + "apid:4242", head + "apid:4242")):
+            self.assertEqual(appmod.dealias_sid(sent, a), want)
+        self.assertEqual(appmod.dealias_sid(head + "usr:glen", None), head + "usr:glen")
 
 
 class ConfigTest(unittest.TestCase):

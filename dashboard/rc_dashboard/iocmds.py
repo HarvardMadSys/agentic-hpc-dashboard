@@ -18,7 +18,9 @@ Nothing here is part of a window build, so changing it rebuilds no window
 (`snapshots.CODE_FILES`). The filters are `/api/events`' own
 (`export.parse_filters` and `make_predicate`), plus the two a blast-radius row
 needs: `apid` (the agent pids whose processes count, on one `host`) and `cwd`
-(a directory: processes that ran in it or below it).
+(a directory: processes that ran in it or below it). With names masked, a host,
+tool or directory is matched as the reader sees the records (`_as_seen`), so
+a real name in one finds nothing.
 """
 import json
 import re
@@ -230,9 +232,11 @@ def _row(cmd, g):
 class IoCommands:
     """The lookups: started, polled, paged, and the finished ones kept."""
 
-    def __init__(self, cfg, roots):
+    def __init__(self, cfg, roots, anon=None):
         self.cfg = cfg
         self.roots = roots
+        # the service's anonymizer when names are masked (`_as_seen`)
+        self.anon = anon
         self.jobs = {}             # id -> Job, every one still held
         self.lock = threading.Lock()
         self.gate = threading.Semaphore(WORKERS)
@@ -294,9 +298,36 @@ class IoCommands:
                 with self.lock:
                     self._trim()
 
+    def _as_seen(self, f, host, cwd):
+        """With names masked (anonymize.py): `(f, host, cwd, seen)`, the host,
+        tool and directory the reader typed with each alias in them turned back
+        into its account, which the files are read for, and `seen(rec)`,
+        whether the record, as the reader sees it -- its account learned, those
+        fields masked -- holds what they typed (`predicate`'s own tests). A
+        real name typed in finds that account's records, which then read as
+        its alias: nothing matches. `seen` is None when none was typed."""
+        a = self.anon
+        typed = {k: f[k] for k in ("host", "tool") if f.get(k)}
+        if not (typed or host or cwd):
+            return f, host, cwd, None
+        test = predicate(typed, None, host, cwd)
+
+        def seen(rec):
+            a.learn_record(rec)
+            shown = dict(rec)
+            for k in ("host", "_eff", "cwd"):
+                if isinstance(rec.get(k), str):
+                    shown[k] = a.text(rec[k])
+            return test(shown)
+        f = dict(f, **{k: {a.dealias_text(v) for v in vals} for k, vals in typed.items()})
+        return f, a.dealias_text(host), a.dealias_text(cwd), seen
+
     def _read(self, j, f, apid, host, cwd):
         plan, j.total_bytes = export.window_plan(self.roots(), j.since)
         norm = Normalizer(self.cfg)
+        seen = None
+        if self.anon is not None:
+            f, host, cwd, seen = self._as_seen(f, host, cwd)
         ok = predicate(f, apid, host, cwd)
         by_event = export.event_filter(EVENTS)
         match = prefilter(f, apid, host, cwd)
@@ -312,7 +343,8 @@ class IoCommands:
         for entry in plan:
             for _ts, rec in export._window_stream(entry, norm, j.since, j.until, st, wanted,
                                                   kinds=EVENTS, where=where):
-                if rec.get("event") not in EVENTS or not ok(rec):
+                if rec.get("event") not in EVENTS or not ok(rec) \
+                        or (seen is not None and not seen(rec)):
                     continue
                 st["matched"] += 1
                 cmd = rec.get("args") or rec.get("_command") or ""

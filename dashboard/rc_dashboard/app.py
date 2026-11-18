@@ -61,13 +61,17 @@ def dealias(params, anon):
 
 def dealias_sid(sid, anon):
     """A session id as the service keys it. A terminal's (`tty:<user>@<tty>`)
-    carries its account, which the page only ever saw as an alias."""
+    and an account's own (`usr:<user>`, the key of last resort,
+    `normalize.session_key_of`) carry the account, which the page only ever
+    saw as an alias: a real name there names no session."""
     if anon is None or not isinstance(sid, str):
         return sid
     head, sep, key = sid.rpartition("|")
     if sep and key.startswith("tty:") and "@" in key:
         who, _, tty = key[4:].partition("@")
         return "%s|tty:%s@%s" % (head, anon.dealias_user(who), tty)
+    if sep and key.startswith("usr:"):
+        return "%s|usr:%s" % (head, anon.dealias_user(key[4:]))
     return sid
 
 
@@ -609,7 +613,7 @@ def create_app(cfg):
 
     _roots = agg.roots
     # which twin of a stream written in both formats the event views read
-    iocmds = IoCommands(cfg, _roots)
+    iocmds = IoCommands(cfg, _roots, anon)
 
     # Every command behind an I/O number (iocmds.py): a lookup the page starts
     # with the number's filters -- /api/events' own, plus `apid`, `host` and
@@ -621,9 +625,6 @@ def create_app(cfg):
         f = parse_filters(dealias(query_lists(request), anon))
         f.pop("q", None)
         f["event"] = None                 # exits and truncations: iocmds.EVENTS
-        if cwd and anon is not None:
-            # a path the page showed carries aliases where names were
-            cwd = "/".join(anon.back.get(s, s) for s in cwd.split("/"))
         minutes = agg.window(window_min)["minutes"]
         pids = [p for p in (apid or "").split(",") if p.strip().isdigit()]
         if pids and host:
@@ -632,7 +633,12 @@ def create_app(cfg):
             with agg.lock:
                 view = agg.panels_by_window.peek(minutes, flt) or \
                     agg.panels_by_window.peek(minutes)
-                pids = sorted(agent_keys(view, host, pids))
+                pids = sorted(agent_keys(view, host if anon is None else anon.dealias_text(host),
+                                         pids))
+        # The host, tool and directory as the reader sent them: with names
+        # masked, a path the page showed carries aliases where names were, and
+        # `iocmds` reads for the accounts behind them, then keeps the records
+        # that read as sent -- a real name in its place finds nothing.
         j = iocmds.start(f, minutes, pids, host, cwd)
         return respond(j.status(), request=request)
 
@@ -649,36 +655,68 @@ def create_app(cfg):
                        offset=offset, limit=limit, sort=sort, dir="asc" if dir == "asc" else "desc")
         return respond(out, request=request)
 
-    def search(pred, qv):
-        """`q` over the command text the reader sees -- aliases, not names -- so
-        a real name typed in finds nothing. A raw miss is a miss (masking only
-        swaps names for aliases), unless the query could only match an alias or
-        a mask; only those, and raw hits, pay for the rewrite."""
-        aliasish = any(w in qv for w in ("user-", "lab-", "[email", "[uid")) \
-            or re.fullmatch(r"[0-9a-f-]+", qv) is not None
+    # The filters a reader types text into, by the record field each tests
+    # (`export.make_predicate`): matched as the reader sees the record when
+    # names are masked (`search`).
+    TYPED = (("host", "host"), ("tool", "_eff"))
+
+    def search(pred, qv, sent):
+        """`pred`, with what the reader typed matched on the text they see --
+        aliases, not names: `q` within the command text, and a `host` or `tool`
+        filter against that field. The record's own account is learned before
+        its text is masked (`learn_record`): a scan reaches accounts no response
+        has named yet, older than the live roster, and the first search over
+        them found each one's rows by its real name. So a real name typed in
+        finds nothing. A raw miss of `q` is a miss (masking only swaps names for
+        aliases), unless it could only match an alias or a mask; only those,
+        and raw hits, pay for the rewrite. `pred` itself when there is nothing
+        to test or no names are masked."""
+        typed = [(field, sent[k]) for k, field in TYPED if sent.get(k)]
+        if anon is None or (not qv and not typed):
+            return pred
+        aliasish = bool(qv) and (any(w in qv for w in ("user-", "lab-", "[email", "[uid"))
+                                 or re.fullmatch(r"[0-9a-f-]+", qv) is not None)
 
         def ok(rec):
+            anon.learn_record(rec)
             if not pred(rec):
                 return False
+            for field, want in typed:
+                if anon.text(str(rec.get(field))) not in want:
+                    return False
+            if not qv:
+                return True
             hay = "%s %s" % (rec.get("_command") or "", redact.redact(rec.get("args") or ""))
             if not aliasish and qv not in hay.lower():
                 return False
             return qv in anon.text(hay).lower()
+        # what `scan` reads off `pred` -- its time bounds, event types, and the
+        # fields a sealed file's replica tests -- holds for this stricter test
+        ok.bounds, ok.events, ok.where = pred.bounds, pred.events, pred.where
         return ok
 
     def event_filters(request):
-        """`/api/events`' and `/api/export`'s filters, and the `q` this module
-        searches itself when names are masked (None otherwise)."""
-        f = parse_filters(dealias(query_lists(request), anon))
+        """`/api/events`' and `/api/export`'s filters, the `q` this module
+        searches itself when names are masked (None otherwise), and the filters
+        as the reader sent them. A `user` alias becomes its account (`dealias`),
+        and so does an alias in a `host` or `tool`, to find the records it was
+        shown from; `search` then tests the latter as the reader sees them."""
+        params = query_lists(request)
+        sent = parse_filters(params)
+        f = parse_filters(dealias(params, anon))
         qv = f.pop("q", None) if anon is not None else None
-        return f, qv
+        if anon is not None:
+            for k, _ in TYPED:
+                if f.get(k):
+                    f[k] = {anon.dealias_text(v) for v in f[k]}
+        return f, qv, sent
 
     @app.get("/api/events")
     def api_events(request: Request,
                    limit: int = Query(200, le=5000),
                    cursor: int = Query(0, ge=0),
                    order: str = Query("desc")):
-        f, qv = event_filters(request)
+        f, qv, sent = event_filters(request)
         pred = make_predicate(f)
         norm = Normalizer(cfg)
         newest = order != "asc"
@@ -692,8 +730,7 @@ def create_app(cfg):
         if default_event:
             f["event"] = {"exit"}
             pred = make_predicate(f)
-        if qv:
-            pred = search(pred, qv)
+        pred = search(pred, qv, sent)
         rows, scanned, matched = [], 0, 0
         for rec, scanned, matched in scan(_roots(), norm, pred, limit=limit,
                                           offset=cursor, newest_first=newest):
@@ -712,14 +749,12 @@ def create_app(cfg):
 
     @app.get("/api/export")
     def api_export(request: Request, order: str = Query("desc")):
-        f, qv = event_filters(request)
+        f, qv, sent = event_filters(request)
         # same default as /api/events, so "the download is the view" holds
         export_default_event = not f.get("event")
         if export_default_event:
             f["event"] = {"exit"}
-        pred = make_predicate(f)
-        if qv:
-            pred = search(pred, qv)
+        pred = search(make_predicate(f), qv, sent)
         norm = Normalizer(cfg)
         cap = int(cfg.get("export.max_rows", 5000000))
         reports = agg.reports

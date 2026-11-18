@@ -33,7 +33,11 @@ clip command lines at 160-400 characters) is matched by its prefix.
 Requests are anonymous too: `dealias_user` maps an alias back to its account,
 and anything that is not a known alias maps to `UNKNOWN`, which matches no
 record. A real name typed into a filter finds nothing, so the page cannot be
-used to ask whether someone is here.
+used to ask whether someone is here. Text a reader types into a search, or a
+host, tool or directory filter, is matched on the record as they see it -- the
+record's own account learned first (`learn_record`), then masked -- so a real
+name typed there finds nothing either. The aliases in such text are turned
+back into accounts only to find the records to test (`dealias_text`).
 """
 import bisect
 import hashlib
@@ -125,6 +129,8 @@ ROSTER_EVERY_S = 2.0
 # a string longer than `MEMO_LEN` is rewritten every time.
 MEMO_MAX = 50000
 MEMO_LEN = 2000
+# An alias inside a longer string: a path or a word the page showed with one.
+_ALIAS_IN = re.compile(r"(?<![A-Za-z0-9])user-[0-9a-f]{8}(?![0-9a-f])")
 
 
 class Anonymizer:
@@ -262,6 +268,17 @@ class Anonymizer:
             if len(self._learned) >= MEMO_MAX:
                 self._learned = set()
             self._learned.add(s)
+
+    def learn_record(self, rec):
+        """Learn the account one raw record is of, as `payload` would before
+        masking it. A test of what a reader typed against the record as they
+        see it must find that account's name masked, and a scan meets accounts
+        no response has named yet -- older than the live roster -- whose real
+        name would otherwise still be there to match."""
+        u = rec.get("user")
+        if isinstance(u, str):
+            uid = rec.get("uid")
+            self.learn_user(u, uid if isinstance(uid, int) else None)
 
     # ----------------------------------------------------------- rewriting
     def _special_names(self):
@@ -512,6 +529,18 @@ class Anonymizer:
             self.refresh(force=True)
             n = self.back.get(v)
         return n if n is not None else UNKNOWN
+
+    def dealias_text(self, s):
+        """`s` -- a path or a word the page showed -- with each alias in it
+        turned back into its account, so the records it was shown from can be
+        found. Anything else stays as it is, a real name included: what this
+        finds must then be tested as the reader sees it (`learn_record`,
+        `text`), where that name reads as its alias and matches nothing."""
+        if not isinstance(s, str) or "user-" not in s:
+            return s
+        if any(a not in self.back for a in _ALIAS_IN.findall(s)):
+            self.refresh(force=True)      # an account the roster took on since
+        return _ALIAS_IN.sub(lambda m: self.back.get(m.group(0), m.group(0)), s)
 
     def status(self):
         """For /api/health: counts only, never a name."""
