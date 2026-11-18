@@ -24,7 +24,7 @@ from ..procindex import pop_oldest, users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
-from .own_io import DISK, START_SLACK_S, OwnIo
+from .own_io import CLAMP_TOL_MB, DISK, START_SLACK_S, OwnIo
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
 
@@ -275,6 +275,7 @@ class LiveReducer:
         self._io_seq = 0
         self.io_tail_from = None     # when the first exit the tail read ended
         self.io_dropped = 0          # notes dropped at their cap
+        self.io_clamped = 0          # noted parents a child's figure took past 0
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, older=False):
@@ -409,8 +410,7 @@ class LiveReducer:
             got = (self.io_given.pop_reaped(rec)
                    if rec["io"].get("scope") == "process" else None)
             if got:
-                rd = None if rd is None else max(0.0, rd - got[0])
-                wr = None if wr is None else max(0.0, wr - got[1])
+                rd, wr = self.io_given.less((rd, wr), got)
             return rd, wr
         io = rec.get("io")
         if not isinstance(io, dict):
@@ -442,7 +442,10 @@ class LiveReducer:
         self.io_given.give(rec)
 
     def _take_back(self, b, rd, wr):
-        """A child's whole figure off a noted parent's, as far as it goes."""
+        """A child's whole figure off a noted parent's, as far as it goes: a
+        parent left short of it is counted, as `OwnIo.less` counts one."""
+        if rd - b[_B_RD] > CLAMP_TOL_MB or wr - b[_B_WR] > CLAMP_TOL_MB:
+            self.io_clamped += 1
         x, y = min(rd, b[_B_RD]), min(wr, b[_B_WR])
         if not (x or y):
             return
@@ -1096,7 +1099,9 @@ class LiveReducer:
             "own_io": {"waiting": len(self.io_join.reaped) + len(self.io_given.reaped),
                        "noted": len(self.io_booked),
                        "dropped": self.io_join.evicted + self.io_given.evicted + self.io_dropped,
-                       "rejected": self.io_join.rejected + self.io_given.rejected},
+                       "rejected": self.io_join.rejected + self.io_given.rejected,
+                       "clamped": (self.io_join.clamped + self.io_given.clamped
+                                   + self.io_clamped)},
             "conn_unmatched_births": self.conn_unmatched_births,
             "unavailable": {
                 "running_jobs": "needs the slurm_jobs census feed (not configured)",

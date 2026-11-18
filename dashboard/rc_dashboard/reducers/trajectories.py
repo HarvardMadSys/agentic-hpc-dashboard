@@ -2093,6 +2093,8 @@ class TrajectoryReducer:
                        "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
                        # children a parent could not have reaped (own_io.py): dropped
                        "reaped_rejected": self.own.rejected,
+                       # figures short of their children's, shown as 0
+                       "reaped_clamped": self.own.clamped,
                        # the phases' joins and bounds, every one counted
                        "phase_pending": len(self.pend.entries),
                        "phase_pending_evicted": self.pend.evicted,

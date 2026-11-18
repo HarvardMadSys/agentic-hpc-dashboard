@@ -47,7 +47,8 @@ reduction and is not part of the saved hour (`hours`): a reducer's `carry`,
 its join state, and its `carry_caps` hold it to REAPED_MAX parents, the oldest
 first out. Every parent dropped is counted (`evicted`): at the reducer's own
 cap, and at one pass's when a window puts the nodes' joins together
-(`carry_trimmed`); its children's bytes then count again at its exit.
+(`carry_trimmed`); its children's bytes then count again at its exit. So is a
+figure short of what its children carried (`clamped`): shown as 0, never below.
 """
 import collections
 
@@ -57,6 +58,9 @@ FIELDS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb")
 DISK = ("rd_mb", "wr_mb")
 REAPED_MAX = 200000         # parents with exited children held for their own exit
 START_SLACK_S = 60.0        # how long before a process's recorded start its child may begin
+# A figure short of what its children carried by more than the collector's
+# rounding (MB to three places, per child) is counted when it is shown as 0.
+CLAMP_TOL_MB = 0.01
 
 # What is held for a pid: a group per user of its children, each
 # [user, earliest start (None: none known), MB per field...].
@@ -74,7 +78,7 @@ def _start(rec):
 class OwnIo:
     """One reducer's join (the module docstring): `take` every exit, in order."""
 
-    __slots__ = ("fields", "reaped", "evicted", "rejected", "touched")
+    __slots__ = ("fields", "reaped", "evicted", "rejected", "clamped", "touched")
 
     def __init__(self, fields=FIELDS):
         self.fields = tuple(fields)
@@ -83,6 +87,7 @@ class OwnIo:
         self.reaped = collections.OrderedDict()
         self.evicted = 0            # parents dropped at either cap (`carry_trimmed`)
         self.rejected = 0           # groups a process could not have reaped: dropped
+        self.clamped = 0            # processes whose figure fell short of their children's
         self.touched = None         # the keys touched since `track`, for the ageing
 
     def take(self, rec):
@@ -96,9 +101,21 @@ class OwnIo:
             return vals
         got = self.pop_reaped(rec)
         self.give(rec, vals)
-        if got:
-            vals = tuple(v if v is None else max(0.0, v - k) for v, k in zip(vals, got))
-        return vals
+        return self.less(vals, got) if got else vals
+
+    def less(self, vals, got, count=True):
+        """`vals` less what the children carried (`got`), field by field: never
+        below 0, and a figure short by more than rounding is counted."""
+        out, short = [], False
+        for v, k in zip(vals, got):
+            if v is None:
+                out.append(None)
+                continue
+            short = short or k - v > CLAMP_TOL_MB
+            out.append(max(0.0, v - k))
+        if short and count:
+            self.clamped += 1
+        return tuple(out)
 
     def peek(self, rec):
         """A process still running at a collector stop: its `truncated` figures
@@ -114,9 +131,7 @@ class OwnIo:
             return vals
         groups = self.reaped.get((rec.get("host"), rec.get("pid")))
         got = self._reaped_by(rec, groups, count=False) if groups else None
-        if got:
-            vals = tuple(v if v is None else max(0.0, v - k) for v, k in zip(vals, got))
-        return vals
+        return self.less(vals, got, count=False) if got else vals
 
     def give(self, rec, vals=None):
         """Hand an exit's whole figure (`vals`, else its record's) to its parent's
@@ -219,9 +234,11 @@ class OwnIo:
         """A LATER state's counts: the map itself is carried, never merged."""
         self.evicted += o.evicted
         self.rejected += o.rejected
+        self.clamped += o.clamped
 
     def status(self):
         """What a panel says of its join: parents dropped at a cap, whose reaped
-        children's bytes then count again at their exit; and groups of children a
-        process could not have reaped, not taken off it."""
-        return {"evicted": self.evicted, "rejected": self.rejected}
+        children's bytes then count again at their exit; groups of children a
+        process could not have reaped, not taken off it; and processes whose
+        figure fell short of what their children carried, shown as 0."""
+        return {"evicted": self.evicted, "rejected": self.rejected, "clamped": self.clamped}

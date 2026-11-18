@@ -515,6 +515,38 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual(acc["io_process"].result()["own_io"]["evicted"], 1)
 
 
+class ClampTest(unittest.TestCase):
+    """A figure short of what its children carried shows as 0, never below, and
+    is counted; short by the collector's rounding alone, it is not."""
+
+    def setUp(self):
+        t = time.time() - 900
+        kw = dict(agent_pid=100, tree_root=100)
+        self.recs = [
+            raw("exit", t, 111, 110, "cat", "cat big", io=iob(10.0, 10.0), **kw),
+            raw("exit", t + 1, 110, 100, "zsh", "zsh -c cat big", io=iob(4.0, 10.5), **kw),
+            raw("exit", t + 2, 121, 120, "cat", "cat f", io=iob(2.0, 2.0), **kw),
+            raw("exit", t + 3, 120, 100, "zsh", "zsh -c cat f", io=iob(1.996, 2.0), **kw)]
+
+    def test_the_panels(self):
+        p = window(self.recs).payload
+        self.assertEqual(p["io_process"]["by_class"]["agent"]["rd_mb"], 12.0)
+        for k in ("io_process", "tool_mix", "resources", "workspace"):
+            with self.subTest(panel=k):
+                self.assertEqual(p[k]["own_io"]["clamped"], 1)
+        self.assertEqual(p["trajectories"]["buffer"]["reaped_clamped"], 1)
+
+    def test_the_live_tier_in_either_order(self):
+        for older in (False, True):
+            with self.subTest(older=older):
+                lv, norm = LiveReducer(cfg(), CLASSES), Normalizer(cfg())
+                for r in (reversed(self.recs) if older else self.recs):
+                    lv.feed(norm.normalize(dict(r)), older=older)
+                self.assertEqual(lv.result()["own_io"]["clamped"], 1)
+                self.assertEqual({e["pid"]: e["rd_mb"] for e in lv.event_tail},
+                                 {111: 10.0, 110: 0.0, 121: 2.0, 120: 0.0})
+
+
 class LookupTest(FeedCase):
     """The commands behind a number: the same own bytes, and exits only."""
 

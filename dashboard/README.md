@@ -756,7 +756,8 @@ already made once.
   one a filter leaves out. Nor is one its parent cannot have reaped: a child that outlives its
   parent still names it, and a later process may get that pid, so a process takes off only its
   own user's children (root aside) that began no more than a minute before it did (its recorded
-  start is its last exec); the rest were counted at their own exits and are dropped, counted.
+  start is its last exec); the rest were counted at their own exits and are dropped, counted. A
+  figure short of what its children carried shows as 0, never below, and is counted too.
 - **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a
