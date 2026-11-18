@@ -41,7 +41,10 @@ is one JSON line on the sender's stdin:
 Only `.jsonl` day-files (and their `.gz`) are sent; any other file in a day folder stays
 on the node, and a hello's other keys are ignored. The live day is the newest day folder
 dated no later than the node's own tomorrow; of the sealed days, those among the `days`
-newest that are within `days` days of the live one are sent.
+newest that are within `days` days of the live one are sent. Under `--root` the sender
+follows no link and reads regular files only, it takes the hello's counts as no less
+than 0 (and `head_n` as no more than HEAD), and a hello longer than MAX_HELLO is an
+error.
 
 The receiver refuses a frame no sender writes, and reconnects: a data frame of more
 than CHUNK plain bytes, or one that ends the zlib stream; a day that is not a real
@@ -71,6 +74,7 @@ CHUNK = 4 << 20                # most plain (data) or raw (gz) bytes in one fram
 HEAD = 64 << 10                # bytes of a file's start the hello fingerprints
 EXIT_UNSAFE = 3                # the receiver's base folder is not what it was
 MAX_HEADER = 1 << 20
+MAX_HELLO = 4 << 20            # the receiver's hello line; a real one is a few KB
 MAX_PAYLOAD = CHUNK + (1 << 16)    # deflate can grow incompressible input a little
 STDERR_LINE = 4096             # a transport's stderr line is kept up to this; the rest goes
 STALL_S = 300.0                # a receiver's read with nothing from the sender this long ends it
@@ -140,9 +144,58 @@ def read_frame(inp):
 # ---------------------------------------------------------------- day folders
 
 def list_days(root):
-    """The `YYYY-MM-DD` folders under `root`, oldest first. Raises OSError."""
-    return sorted(d for d in os.listdir(root)
-                  if DAY_RE.match(d) and os.path.isdir(os.path.join(root, d)))
+    """The `YYYY-MM-DD` folders under `root`, oldest first: real folders, not links to
+    one. Raises OSError."""
+    with os.scandir(root) as it:
+        return sorted(e.name for e in it
+                      if DAY_RE.match(e.name) and e.is_dir(follow_symlinks=False))
+
+
+# The sender reaches each day folder under --root through a handle opened without
+# following a link, and each file in it the same way, as the receiver's SafeBase does:
+# a link put there points at what the sending account can read, not at the capture.
+# --root itself may be a link; nothing under it is followed.
+
+def open_day(root, day):
+    """A handle on the day folder `root/day`; OSError if it is gone or not a real folder."""
+    return os.open(os.path.join(root, day), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def open_file(dfd, name):
+    """`name` in the folder `dfd`, open to read, or None when it is not there or is not a
+    regular file. A link is not followed; a FIFO is opened without waiting for a writer,
+    then left. Any other OSError (a file it may not read) is raised."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ELOOP, errno.ENXIO):
+            return None
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return None
+        os.set_blocking(fd, True)
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def entry(dfd, name):
+    """`name`'s own stat in the folder `dfd` (a link's, not its target's), or None."""
+    try:
+        return os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def have_count(have, field, most=None):
+    """A count the receiver's hello gives for a file, as an int no less than 0 (and no
+    more than `most`): a head_n of -1 read a whole file, and one of 10**12 ran out of
+    memory."""
+    n = max(0, int((have or {}).get(field, 0)))
+    return n if most is None else min(n, most)
 
 
 def day_date(day):
@@ -162,7 +215,8 @@ def tomorrow(today=None):
 
 
 def stream_names(folder):
-    """The plain name (`x.jsonl`) of every stream in a day folder, plain or gzipped."""
+    """The plain name (`x.jsonl`) of every stream in a day folder (a path or a handle),
+    plain or gzipped."""
     names = set()
     for n in os.listdir(folder):
         if n.endswith(".jsonl"):
@@ -172,11 +226,11 @@ def stream_names(folder):
     return sorted(names)
 
 
-def gz_trailer(path):
-    """(crc32, size mod 2**32) of the uncompressed data, from a gzip file's last 8 bytes."""
-    with open(path, "rb") as fh:
-        fh.seek(-8, os.SEEK_END)
-        return struct.unpack("<II", fh.read(8))
+def gz_trailer(fh):
+    """(crc32, size mod 2**32) of the uncompressed data, from an open gzip file's last
+    8 bytes."""
+    fh.seek(-8, os.SEEK_END)
+    return struct.unpack("<II", fh.read(8))
 
 
 def inflate_pieces(fh):
@@ -246,7 +300,7 @@ class Sender:
         have = self.have.get(key) or {}
         if "head" not in have:
             return False
-        n = int(have.get("head_n", 0))
+        n = have_count(have, "head_n", HEAD)
         fh.seek(0)
         buf = fh.read(n)
         return len(buf) < n or (zlib.crc32(buf) & 0xffffffff) != have["head"]
@@ -273,148 +327,161 @@ class Sender:
             off += len(data)
         return off
 
-    def send_inflated(self, key, gz_path, skip):
-        """Send a `.gz` file's plain bytes from `skip` on; returns the plain size."""
+    def send_inflated(self, key, fh, skip):
+        """Send an open `.gz` file's plain bytes from `skip` on; returns the plain size."""
         have = self.have.get(key) or {}
-        head_n = int(have.get("head_n", 0)) if "head" in have else 0
+        head_n = have_count(have, "head_n", HEAD) if "head" in have else 0
         head_crc, checked = 0, not head_n
         pos = 0
-        with open(gz_path, "rb") as fh:
-            for piece in inflate_pieces(fh):
-                start, pos = pos, pos + len(piece)
-                if not checked:            # head_n <= skip, so this ends before any send
-                    head_crc = zlib.crc32(piece[:max(0, head_n - start)], head_crc)
-                    if pos >= head_n:
-                        checked = True
-                        if (head_crc & 0xffffffff) != have["head"]:
-                            self.reset(key, "the file was replaced while the link was down")
-                            return self.send_inflated(key, gz_path, 0)
-                if pos <= skip:
-                    self.ping_if_quiet()   # minutes, for a big day the copy mostly has
-                    continue
-                if start < skip:
-                    piece, start = piece[skip - start:], skip
-                payload = self.z.compress(piece) + self.z.flush(zlib.Z_SYNC_FLUSH)
-                self.emit({"t": "data", "path": key, "off": start, "plain": len(piece)}, payload)
+        fh.seek(0)
+        for piece in inflate_pieces(fh):
+            start, pos = pos, pos + len(piece)
+            if not checked:                # head_n <= skip, so this ends before any send
+                head_crc = zlib.crc32(piece[:max(0, head_n - start)], head_crc)
+                if pos >= head_n:
+                    checked = True
+                    if (head_crc & 0xffffffff) != have["head"]:
+                        self.reset(key, "the file was replaced while the link was down")
+                        return self.send_inflated(key, fh, 0)
+            if pos <= skip:
+                self.ping_if_quiet()       # minutes, for a big day the copy mostly has
+                continue
+            if start < skip:
+                piece, start = piece[skip - start:], skip
+            payload = self.z.compress(piece) + self.z.flush(zlib.Z_SYNC_FLUSH)
+            self.emit({"t": "data", "path": key, "off": start, "plain": len(piece)}, payload)
         if pos < skip:                     # the copy is longer than the source
             self.reset(key, "the source is shorter than the copy")
-            return self.send_inflated(key, gz_path, 0)
+            return self.send_inflated(key, fh, 0)
         return pos
 
-    def send_gz(self, gz_key, gz_path, off):
-        size = os.path.getsize(gz_path)
+    def send_gz(self, gz_key, fh, off):
+        size = os.fstat(fh.fileno()).st_size
         if off > size:
             self.reset(gz_key, "the source is shorter than the staged copy")
             off = 0
-        with open(gz_path, "rb") as fh:
-            while True:                    # at least one frame: a whole staged part
-                fh.seek(off)               # still needs one to be inflated
-                raw = fh.read(min(CHUNK, size - off))
-                self.emit({"t": "gz", "path": gz_key, "off": off, "size": size}, raw)
-                off += len(raw)
-                if off >= size or not raw:
-                    break
+        while True:                        # at least one frame: a whole staged part
+            fh.seek(off)                   # still needs one to be inflated
+            raw = fh.read(min(CHUNK, size - off))
+            self.emit({"t": "gz", "path": gz_key, "off": off, "size": size}, raw)
+            off += len(raw)
+            if off >= size or not raw:
+                break
 
-    def send_trailer(self, key, gz_path):
-        crc, isize = gz_trailer(gz_path)
+    def send_trailer(self, key, fh):
+        crc, isize = gz_trailer(fh)
         self.emit({"t": "trailer", "path": key, "crc": crc, "isize": isize})
 
     # ---- sealed days
-    def seal_plain(self, key, plain, gz_path, off):
+    def seal_plain(self, key, fh, off):
         """A sealed day's plain file still exists: send the rest, seal, await gzip."""
-        with open(plain, "rb") as fh:
-            size = os.fstat(fh.fileno()).st_size
-            if size < off:
-                self.reset(key, "the source is shorter than the copy")
-                off = 0
-            elif off and self.head_differs(key, fh):
-                self.reset(key, "the file was replaced while the link was down")
-                off = 0
-            if size == 0:
-                self.announce(key)
-            self.send_plain(key, fh, off, size)
+        size = os.fstat(fh.fileno()).st_size
+        if size < off:
+            self.reset(key, "the source is shorter than the copy")
+            off = 0
+        elif off and self.head_differs(key, fh):
+            self.reset(key, "the file was replaced while the link was down")
+            off = 0
+        if size == 0:
+            self.announce(key)
+        self.send_plain(key, fh, off, size)
         self.emit({"t": "sealed", "path": key, "size": size})
-        self.awaiting[key] = gz_path
+        self.awaiting[key] = tuple(key.split("/", 1))
         self.done.add(key)
 
     def catch_up_sealed(self, day):
-        folder = os.path.join(self.root, day)
-        for name in stream_names(folder):
-            key = "%s/%s" % (day, name)
-            if key in self.done:
-                continue
-            have = self.have.get(key)
-            if have and have.get("verified"):
-                continue
-            plain = os.path.join(folder, name)
-            gz_path = plain + GZ
-            if os.path.isfile(plain):
-                try:
-                    self.seal_plain(key, plain, gz_path, int(have["size"]) if have else 0)
+        try:
+            dfd = open_day(self.root, day)
+        except OSError:
+            return                         # gone, or not a real folder
+        try:
+            for name in stream_names(dfd):
+                key = "%s/%s" % (day, name)
+                if key in self.done:
                     continue
-                except FileNotFoundError:   # gzip finished just now
-                    pass
-            if not os.path.isfile(gz_path):
-                continue
-            if have:
-                size = self.send_inflated(key, gz_path, int(have.get("size", 0)))
-                self.emit({"t": "sealed", "path": key, "size": size})
-            else:
-                staged = self.have.get(key + GZ) or {}
-                self.send_gz(key + GZ, gz_path, int(staged.get("size", 0)))
-            self.send_trailer(key, gz_path)
-            self.done.add(key)
+                have = self.have.get(key)
+                if have and have.get("verified"):
+                    continue
+                fh = open_file(dfd, name)  # None once gzip is done with it
+                if fh is not None:
+                    with fh:
+                        self.seal_plain(key, fh, have_count(have, "size"))
+                    continue
+                fh = open_file(dfd, name + GZ)
+                if fh is None:
+                    continue
+                with fh:
+                    if have:
+                        size = self.send_inflated(key, fh, have_count(have, "size"))
+                        self.emit({"t": "sealed", "path": key, "size": size})
+                    else:
+                        self.send_gz(key + GZ, fh, have_count(self.have.get(key + GZ), "size"))
+                    self.send_trailer(key, fh)
+                self.done.add(key)
+        finally:
+            os.close(dfd)
 
     # ---- the live day
     def scan_live(self):
         """Open the live day's files not yet open, at the receiver's size."""
-        folder = os.path.join(self.root, self.live)
         try:
-            names = sorted(n for n in os.listdir(folder) if n.endswith(".jsonl"))
-        except FileNotFoundError:
+            dfd = open_day(self.root, self.live)
+        except OSError:
             return
-        for name in names:
-            key = "%s/%s" % (self.live, name)
-            have = self.have.get(key)
-            if key in self.files or (have and have.get("verified")):
-                continue                   # the receiver refuses to change a verified file
-            path = os.path.join(folder, name)
-            try:
-                fh = open(path, "rb")
-            except FileNotFoundError:
-                continue
-            st = os.fstat(fh.fileno())
-            off = int((self.have.get(key) or {}).get("size", 0))
-            if st.st_size < off:
-                self.reset(key, "the source is shorter than the copy")
-                off = 0
-            elif off and self.head_differs(key, fh):
-                self.reset(key, "the file was replaced while the link was down")
-                off = 0
-            self.announce(key)             # before follow_live sends any file's bytes
-            self.files[key] = {"fh": fh, "ino": st.st_ino, "off": off, "path": path}
+        try:
+            names = sorted(n for n in os.listdir(dfd) if n.endswith(".jsonl"))
+            for name in names:
+                key = "%s/%s" % (self.live, name)
+                have = self.have.get(key)
+                if key in self.files or (have and have.get("verified")):
+                    continue               # the receiver refuses to change a verified file
+                fh = open_file(dfd, name)
+                if fh is None:
+                    continue
+                st = os.fstat(fh.fileno())
+                off = have_count(have, "size")
+                if st.st_size < off:
+                    self.reset(key, "the source is shorter than the copy")
+                    off = 0
+                elif off and self.head_differs(key, fh):
+                    self.reset(key, "the file was replaced while the link was down")
+                    off = 0
+                self.announce(key)         # before follow_live sends any file's bytes
+                self.files[key] = {"fh": fh, "ino": st.st_ino, "off": off, "name": name}
+        finally:
+            os.close(dfd)
 
     def follow_live(self):
-        for key in sorted(self.files):
-            f = self.files[key]
-            try:
-                by_path = os.stat(f["path"])
-            except FileNotFoundError:
-                by_path = None             # gzipped away; the handle still reads it
-            st = os.fstat(f["fh"].fileno())
-            if by_path is not None and by_path.st_ino != f["ino"]:
-                self.reset(key, "the file was replaced")
-                f["fh"].close()
-                f["fh"] = open(f["path"], "rb")
+        try:
+            dfd = open_day(self.root, self.live)
+        except OSError:
+            dfd = None                     # gone; the handles still read their files
+        try:
+            for key in sorted(self.files):
+                f = self.files[key]
+                # None once gzipped away: the handle still reads it
+                by_name = entry(dfd, f["name"]) if dfd is not None else None
                 st = os.fstat(f["fh"].fileno())
-                f["ino"], f["off"] = st.st_ino, 0
-            elif st.st_size < f["off"]:
-                self.reset(key, "the file shrank")
-                f["off"] = 0
-            if st.st_size == 0 and f["off"] == 0:
-                self.announce(key)
-            if st.st_size > f["off"]:
-                f["off"] = self.send_plain(key, f["fh"], f["off"], st.st_size)
+                if by_name is not None and by_name.st_ino != f["ino"]:
+                    # Replaced. A link or a FIFO in its place is not opened, and the
+                    # handle reads on: the collector may still be writing through its own.
+                    fh = open_file(dfd, f["name"])
+                    if fh is not None:
+                        self.reset(key, "the file was replaced")
+                        f["fh"].close()
+                        f["fh"] = fh
+                        st = os.fstat(fh.fileno())
+                        f["ino"], f["off"] = st.st_ino, 0
+                elif st.st_size < f["off"]:
+                    self.reset(key, "the file shrank")
+                    f["off"] = 0
+                if st.st_size == 0 and f["off"] == 0:
+                    self.announce(key)
+                if st.st_size > f["off"]:
+                    f["off"] = self.send_plain(key, f["fh"], f["off"], st.st_size)
+        finally:
+            if dfd is not None:
+                os.close(dfd)
 
     def check_rollover(self, days):
         """A newer day folder means the live day is sealed: drain it, seal it, move on."""
@@ -429,7 +496,7 @@ class Sender:
                 f["off"] = self.send_plain(key, f["fh"], f["off"], size)
             f["fh"].close()
             self.emit({"t": "sealed", "path": key, "size": f["off"]})
-            self.awaiting[key] = f["path"] + GZ
+            self.awaiting[key] = (old, f["name"])
             self.done.add(key)
         self.files = {}
         for day in days:                   # late files of the old day, and skipped days
@@ -444,10 +511,22 @@ class Sender:
             return
         self.next_trailer = now + self.trailer_poll_s
         for key in sorted(self.awaiting):
-            gz_path = self.awaiting[key]
-            if os.path.isfile(gz_path) and not os.path.exists(gz_path[:-len(GZ)]):
-                self.send_trailer(key, gz_path)
+            day, name = self.awaiting[key]
+            try:
+                dfd = open_day(self.root, day)
+            except OSError:
+                continue
+            try:
+                if entry(dfd, name) is not None:
+                    continue               # gzip is not done with it
+                fh = open_file(dfd, name + GZ)
+                if fh is None:
+                    continue
+                with fh:
+                    self.send_trailer(key, fh)
                 del self.awaiting[key]
+            finally:
+                os.close(dfd)
 
     # ---- the loop
     def days(self):
@@ -459,13 +538,20 @@ class Sender:
         return [d for d in list_days(self.root) if day_date(d) and d <= last]
 
     def read_hello(self):
-        buf = b""
-        while b"\n" not in buf:
+        """The receiver's hello line, without its newline, or None at the end of input.
+        One longer than MAX_HELLO raises ProtocolError before more of it is read."""
+        parts, n = [], 0
+        while True:
             chunk = os.read(self.in_fd, 65536)
             if not chunk:
                 return None
-            buf += chunk
-        return buf.split(b"\n", 1)[0]
+            end = chunk.find(b"\n")
+            parts.append(chunk if end < 0 else chunk[:end])
+            n += len(parts[-1])
+            if n > MAX_HELLO:
+                raise ProtocolError("a hello longer than %d bytes" % MAX_HELLO)
+            if end >= 0:
+                return b"".join(parts)
 
     def run(self):
         line = self.read_hello()

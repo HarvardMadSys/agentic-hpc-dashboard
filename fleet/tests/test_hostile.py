@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -26,6 +27,7 @@ sys.path.insert(0, HERE)
 
 import fleet_stream as fs                      # noqa: E402
 
+SCRIPT = os.path.join(FLEET, "fleet_stream.py")
 HOST = "nodeA"
 DAY = "2026-11-10"
 KEY = DAY + "/nodeA.exits.jsonl"
@@ -522,6 +524,121 @@ class TestSenderDays(unittest.TestCase):
         key = today + "/nodeA.exits.jsonl"
         _, frames = run_sender(self.root, {"v": 1, "days": 3, "have": {key: {"verified": True}}})
         self.assertEqual([h["t"] for h, _ in frames if h["t"] != "ping"], ["hello"])
+
+
+class TestSenderReadsOnlyTheCapture(unittest.TestCase):
+    """What the sender reads under --root, and what it takes from the receiver's hello."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fleet-src-")
+        self.root = os.path.join(self.tmp, "root")
+        self.outside = os.path.join(self.tmp, "outside")
+        os.mkdir(self.root)
+        os.mkdir(self.outside)
+        self.fifo = None
+
+    def tearDown(self):
+        if self.fifo:                    # a sender stuck opening it to read is let go
+            try:
+                os.close(os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_links_and_fifos_under_root_are_not_followed(self):
+        """The review's case: a link in the live day and one in a sealed day, both to a
+        file outside --root, and a day folder that was itself a link to another
+        folder: the sender sent all three. A live file swapped for a link was opened
+        through it too, and a FIFO named like a day-file would hold the sender up."""
+        before, yesterday, today = days_from_today(-2, -1, 0)
+        secret = os.path.join(self.outside, "secret.txt")
+        append(secret, b"SECRET-OUTSIDE-ROOT\n")
+        other = os.path.join(self.outside, "other")
+        os.mkdir(other)
+        append(os.path.join(other, "z.jsonl"), b"FROM-A-LINKED-FOLDER\n")
+        for day in (yesterday, today):
+            os.mkdir(os.path.join(self.root, day))
+        live = os.path.join(self.root, today, "nodeA.exits.jsonl")
+        append(live, b'{"real":1}\n')
+        os.symlink(secret, os.path.join(self.root, today, "leak.jsonl"))
+        os.symlink(secret, os.path.join(self.root, yesterday, "leak.jsonl"))
+        os.symlink(other, os.path.join(self.root, before))
+        self.fifo = os.path.join(self.root, today, "fifo.jsonl")
+        os.mkfifo(self.fifo)
+
+        def swap():                      # the live file, swapped for a link
+            time.sleep(0.4)
+            os.symlink(secret, live + ".tmp")
+            os.replace(live + ".tmp", live)
+        res, frames = run_sender(self.root, {"v": 1, "days": 5, "have": {}}, during=swap)
+        sent = b"".join(p for h, p in frames if h["t"] in ("data", "gz"))
+        self.assertNotIn(b"SECRET", sent)
+        self.assertNotIn(b"FROM-A-LINKED", sent)
+        key = today + "/nodeA.exits.jsonl"
+        self.assertEqual(set(h["path"] for h, _ in frames if "path" in h), {key})
+        self.assertEqual(data_for(frames, key), b'{"real":1}\n')
+        self.assertEqual(res, 0)
+
+    def test_head_n_from_the_hello_is_kept_to_head(self):
+        """The review's case: head_n=-1 read a whole 64 MiB file, and head_n=10**12 ran
+        out of memory. It is taken as no less than 0 and no more than HEAD."""
+        class File(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.asked = []
+
+            def read(self, n=-1):
+                self.asked.append(n)
+                return super().read(n)
+        with open(os.devnull, "rb") as inp:
+            s = fs.Sender(self.root, inp, io.BytesIO())
+            for head_n in (-1, 10 ** 12, 100):
+                fh = File(b"x" * (2 * fs.HEAD))
+                s.have = {"k": {"size": 5, "head": 0, "head_n": head_n}}
+                s.head_differs("k", fh)
+                self.assertTrue(fh.asked)
+                self.assertTrue(all(0 <= n <= fs.HEAD for n in fh.asked), (head_n, fh.asked))
+
+    def test_a_size_below_zero_is_taken_as_zero(self):
+        """The review's case: a size of -5 in the hello made the sender seek to -5, and
+        it stopped with an error."""
+        today = days_from_today(0)[0]
+        os.mkdir(os.path.join(self.root, today))
+        append(os.path.join(self.root, today, "nodeA.exits.jsonl"), b'{"a":1}\n')
+        key = today + "/nodeA.exits.jsonl"
+        res, frames = run_sender(self.root, {"v": 1, "days": 3,
+                                             "have": {key: {"size": -5, "verified": False}}})
+        self.assertEqual([h for h, _ in frames if h["t"] == "error"], [])
+        self.assertEqual(data_for(frames, key), b'{"a":1}\n')
+
+    def test_a_hello_line_is_capped(self):
+        """The hello was read whole, however long, before the sender answered. Past
+        MAX_HELLO bytes it now answers with an error and stops reading."""
+        p = subprocess.Popen([sys.executable, SCRIPT, "send", "--root", self.root],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        stopped, chunk = False, b"x" * (1 << 16)
+        try:
+            for _ in range(2 * fs.MAX_HELLO // len(chunk)):
+                p.stdin.write(chunk)
+                p.stdin.flush()
+        except BrokenPipeError:
+            stopped = True
+        try:
+            p.stdin.close()              # the end of the input, where it still reads
+        except BrokenPipeError:
+            pass
+        try:
+            f = fs.read_frame(p.stdout)
+            code = p.wait(10)
+        finally:
+            p.stdout.close()
+            if p.poll() is None:
+                p.kill()
+                p.wait(5)
+        self.assertTrue(stopped)
+        self.assertEqual(code, 1)
+        self.assertEqual(f[0]["t"], "error")
+        self.assertIn("hello longer", f[0]["msg"])
 
 
 if __name__ == "__main__":
