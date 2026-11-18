@@ -73,20 +73,28 @@ jobs:
           paths=(docker/base .github/workflows/base-image.yml)
           # This branch's own commits changed those paths, measured from where
           # it left develop and from where it left main: a change it took in
-          # from either is not its own, and builds it no base.
+          # from either is not its own, and builds it no base. A trunk it shares
+          # no history with gives nothing to measure from and is skipped; a
+          # branch that shares none with either builds on edge, with a warning.
           own_base() {
-            local trunk fork
+            local trunk fork shared=no
             for trunk in origin/develop origin/main; do
-              fork="$(git merge-base HEAD "$trunk")" ||
-                { echo "::error::$GITHUB_REF_NAME shares no history with $trunk"; exit 1; }
+              fork="$(git merge-base HEAD "$trunk")" || continue
+              shared=yes
               git diff --quiet "$fork" HEAD -- "${paths[@]}" && return 1
             done
+            if [ "$shared" = no ]; then
+              echo "::warning::$GITHUB_REF_NAME shares no history with develop or main; it builds on base:edge"
+              return 1
+            fi
             return 0
           }
           # This push changed them, so base-image.yml is rebuilding this ref's
           # tag now: its path filter, a diff from the ref's commit before the
           # push. BEFORE is 40 zeros for a new branch, which pushes its own
-          # commits, and empty for a run by hand, which rebuilds nothing.
+          # commits, and empty for a run by hand, which rebuilds nothing. A
+          # BEFORE that cannot be fetched (a force-push left it unreachable)
+          # counts as no change: that push builds on whatever the tag holds.
           rebuilt_now() {
             case "$BEFORE" in
               "") return 1 ;;
