@@ -19,8 +19,14 @@ nothing, by design and by CI-able assertion (`npm run check:no-random`).
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds     # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..      # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password      # once: prints the hash for dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+
+`serve` starts only behind a password ([Password](#password)): put the hash `new-password`
+prints in `dashboard.config.json` as `"server": {"auth": {"password_hash": "..."}}`. Without
+one it says so and exits, since on a login node every user can reach a port on 127.0.0.1.
+`--open` (`RC_DASH_OPEN=1`) serves without one, for a machine only you can log in to.
 
 Off-cluster, `--check-feeds` exits 1 because the eBPF feed is `required` and absent. That is
 the point: point it at a collector root first.
@@ -192,7 +198,10 @@ as EBR reads again once converted to JSONL, by the last `ebr.py` there was:
 | `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
 Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
-(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `site.name` (`RC_DASH_SITE_NAME`) is
+(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `run-dev.sh` and
+`run-fasrc.sh` (and `run.sh` itself) start only with a password hash in
+`dashboard.config.json` ([Password](#password)); without one the backend prints how to make
+one and exits. `run-demo.sh` needs none. `site.name` (`RC_DASH_SITE_NAME`) is
 shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
 side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
 Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
@@ -248,8 +257,9 @@ cluster's feed roots, and a demo must never read them: both feed roots (the demo
 demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
 saved builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
 `live.backfill_hours` (the history written), `panels.preprocess` and `panels.preprocess_wait_s`
-(every window built before the port opens, so a visitor never lands on a *merging* bar), and
-`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
+(every window built before the port opens, so a visitor never lands on a *merging* bar),
+`site.name`/`site.description`, and `server.auth.open` (a demo serves its made-up data with no
+password unless one is set). Each reads `demo` as its origin in `--print-config`.
 `--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
 
 | flag | env | default | |
@@ -845,7 +855,10 @@ and the websocket. No byte may carry one.
 
 `server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`) puts the whole service behind one
 password: the page, its assets, every `/api` route (Ask LLM included), and the websocket. It is
-empty by default, which leaves the page open to anyone who reaches the port.
+empty by default, and then `serve` refuses to start: on a shared host "bound to 127.0.0.1"
+means "readable by every local user". `server.auth.open` (`--open`, `RC_DASH_OPEN=1`) serves
+without one anyway, to anyone who reaches the port; a [demo](#demo-mode) is open unless a
+password is set.
 
 ```bash
 cd dashboard && .venv/bin/python -m rc_dashboard new-password --netrc-host dash.example.org

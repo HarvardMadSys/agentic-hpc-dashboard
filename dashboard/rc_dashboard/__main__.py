@@ -32,6 +32,10 @@ def build_parser():
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--static-dir", default=None)
+    # Serve with no password (server.auth.open, RC_DASH_OPEN): without it,
+    # `serve` refuses to start until server.auth.password_hash is set.
+    ap.add_argument("--open", action="store_true", default=None,
+                    help="serve without a password, to anyone who reaches the port")
     ap.add_argument("--print-config", action="store_true")
     ap.add_argument("--check-feeds", action="store_true")
     # `demo`: the service over a synthetic feed it writes itself (demo/__init__.py).
@@ -55,6 +59,28 @@ def build_parser():
     ap.add_argument("--netrc-host", action="append", default=None)
     ap.add_argument("--force", action="store_true")
     return ap
+
+
+# What `serve` says when it will not start open (`refusal`).
+NO_PASSWORD = """\
+refusing to serve: there is no password (server.auth.password_hash is empty), so
+anyone who reaches port %(port)s -- on a login node, every user of it -- would read
+every user's commands. Either:
+  - make one: `python -m rc_dashboard new-password` writes it to a file only you can
+    read and prints its hash. Put the hash in dashboard.config.json as
+    "server": {"auth": {"password_hash": "<hash>"}} (or in RC_DASH_PASSWORD_HASH),
+    then start again; or
+  - serve it open anyway, on a machine only you can reach: --open (RC_DASH_OPEN=1,
+    or "server": {"auth": {"open": true}}).
+"""
+
+
+def refusal(cfg):
+    """Why the service must not start, or None. With no password it starts only
+    when told to (`server.auth.open`); a demo is (demo.configure)."""
+    if str(cfg.get("server.auth.password_hash") or "").strip() or cfg.get("server.auth.open"):
+        return None
+    return NO_PASSWORD % {"port": cfg.get("server.port")}
 
 
 def new_password(args):
@@ -111,6 +137,11 @@ def main(argv=None):
             print(line)
         return code
 
+    why = refusal(cfg)
+    if why:
+        sys.stderr.write(why)
+        return 2
+
     import uvicorn
     from . import clock
     from .app import create_app
@@ -130,8 +161,9 @@ def main(argv=None):
         sys.stderr.write("sign-in on: server.auth.password_hash is set; a session lasts %g days\n"
                          % (app.state.auth.lifetime_s / 86400))
     else:
-        sys.stderr.write("sign-in off: server.auth.password_hash is empty, so anyone who "
-                         "reaches port %s reads the page\n" % cfg.get("server.port"))
+        sys.stderr.write("sign-in off (server.auth.open, set by %s): anyone who reaches port "
+                         "%s reads the page\n" % (cfg.origin("server.auth.open"),
+                                                  cfg.get("server.port")))
     # An open websocket (every page holds one) must not hold a restart hostage.
     try:
         uvicorn.run(app, host=cfg.get("server.host"), port=int(cfg.get("server.port")),

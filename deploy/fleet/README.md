@@ -96,8 +96,9 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
    On the host, `ip route get <a node's address>` shows the address the nodes see. The
    stream accepts each node's host key on its first connection
    (`StrictHostKeyChecking=accept-new`).
-4. Make the password. The dashboard's loop does not start without one, so the page is
-   never open. On this machine, in the repository:
+4. Make the password. The dashboard's loop does not start without one (`check-local.sh
+   --auth-set`), nor does `rc_dashboard serve` itself, so the page is never open. On this
+   machine, in the repository:
 
        cd dashboard && uv run python -m rc_dashboard new-password
 

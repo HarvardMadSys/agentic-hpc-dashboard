@@ -53,6 +53,10 @@ export RC_DASH_PORT="${RC_DASH_PORT:-8124}"
 export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
 # What the backend runs: `serve`, or `demo` for the service over a synthetic
 # feed it writes itself (run-demo.sh, rc_dashboard/demo).
+# `serve` starts only with a password: server.auth.password_hash in
+# dashboard.config.json (`uv run python -m rc_dashboard new-password` makes one and
+# prints its hash), or RC_DASH_PASSWORD_HASH. RC_DASH_OPEN=1 serves without one,
+# to anyone who reaches the port. A demo needs neither.
 RC_DASH_COMMAND="${RC_DASH_COMMAND:-serve}"
 # A bundle built anywhere but web/dist is passed to vite as its outDir: a second
 # instance must not share the first one's watcher output, which vite empties

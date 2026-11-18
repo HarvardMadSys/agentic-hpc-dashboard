@@ -242,8 +242,9 @@
   "cache":  { "dir": "dashboard/.cache", "reducer_version": 3 },
   "//server": "auth.password_hash: a salted scrypt hash of the one password readers sign in with.",
   "//server1": "`python -m rc_dashboard new-password` makes the password, writes it to a file only you",
-  "//server2": "can read, and prints the hash. Empty: no sign-in, and the page is open to anyone who",
-  "//server3": "reaches the port. A session lasts auth.session_days. A new password signs everyone out.",
+  "//server2": "can read, and prints the hash. Empty: `serve` refuses to start, unless auth.open (--open,",
+  "//server3": "RC_DASH_OPEN=1) serves the page with no sign-in to anyone who reaches the port. A session",
+  "//server3a": "lasts auth.session_days. A new password signs everyone out.",
   "//server4": "rdns: name the Network bytes panel's endpoints by reverse DNS from this host, `workers`",
   "//server5": "lookups at a time, off the request path, kept in <cache.dir>/rdns.json. Off: names come",
   "//server6": "only from the records' command lines. A restart, never a rebuild.",
@@ -251,7 +252,7 @@
   "//server8": "(Python's own: 5 ms). A build and the backfill keep it; the event loop gives it up at",
   "//server9": "every read and write. 1 keeps the page answering beside a build. 0 keeps Python's.",
   "server": { "host": "127.0.0.1", "port": 8080, "static_dir": "dashboard/web/dist",
-              "auth": { "password_hash": "", "session_days": 30 },
+              "auth": { "password_hash": "", "session_days": 30, "open": false },
               "rdns": { "enabled": true, "workers": 4 },
               "gil_switch_ms": 1.0 }
 }

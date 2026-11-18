@@ -410,9 +410,12 @@ def defaults():
                    "static_dir": os.path.join(HERE, "web", "dist"),
                    # Sign-in (auth.py): a salted scrypt hash of the one password
                    # readers sign in with, made by `python -m rc_dashboard
-                   # new-password`. Empty leaves the page open to anyone who
-                   # reaches the port. A session lasts `session_days`.
-                   "auth": {"password_hash": "", "session_days": 30},
+                   # new-password`. A session lasts `session_days`. With no
+                   # hash, `serve` refuses to start unless `open` (--open,
+                   # RC_DASH_OPEN): an open page is read by anyone who reaches
+                   # the port, which on a login node is every user of it. A demo
+                   # serves made-up data and is open unless a hash is set.
+                   "auth": {"password_hash": "", "session_days": 30, "open": False},
                    # Name the endpoints on the Network bytes panel by reverse
                    # DNS (endpoints.py): `workers` lookups at a time, from this
                    # host, off the request path, kept in <cache.dir>/rdns.json.
@@ -487,6 +490,7 @@ ENV_MAP = {
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
+    "server.auth.open": ("RC_DASH_OPEN", _flag),
     "server.rdns.enabled": ("RC_DASH_RDNS", _flag),
     "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
 }
@@ -511,6 +515,7 @@ CLI_MAP = {
     "port": "server.port",
     "host": "server.host",
     "static_dir": "server.static_dir",
+    "open": "server.auth.open",
 }
 
 
