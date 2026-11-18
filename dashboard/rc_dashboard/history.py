@@ -321,7 +321,7 @@ class HistoryStore:
             self.state = "idle"
             return 0
         self.state = "converting"
-        t0 = time.time()
+        t0 = time.monotonic()
         with self._lock:
             self.progress = {"todo": len(todo), "done": 0, "failed": 0, "records": 0,
                              "bytes_in": sum(os.path.getsize(p) for _d, p, _o in todo
@@ -354,7 +354,7 @@ class HistoryStore:
 
     def _finish(self, path, res, t0):
         with self._lock:
-            self.progress["elapsed_s"] = round(time.time() - t0, 1)
+            self.progress["elapsed_s"] = round(time.monotonic() - t0, 1)
             if isinstance(res, BaseException):
                 self.progress["failed"] += 1
                 self.errors.append({"file": path, "error": "%s: %s" % (type(res).__name__, res),

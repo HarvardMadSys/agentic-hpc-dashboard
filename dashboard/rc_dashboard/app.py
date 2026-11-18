@@ -412,12 +412,12 @@ def create_app(cfg):
         # loops above run meanwhile (`panels.preprocess_wait_s`).
         wait = float(cfg.get("panels.preprocess_wait_s") or 0)
         if cfg.get("panels.preprocess") and wait > 0:
-            t0 = time.time()
+            t0 = time.monotonic()
             done = await asyncio.get_running_loop().run_in_executor(
                 None, agg.wait_preprocessed, wait)
             print("preprocess: %s in %.1f s; listening" % (
                 "every window built" if done else
-                "not finished, the builds carry on", time.time() - t0), flush=True)
+                "not finished, the builds carry on", time.monotonic() - t0), flush=True)
 
     @app.on_event("shutdown")
     async def _shutdown():
@@ -723,7 +723,7 @@ def create_app(cfg):
         norm = Normalizer(cfg)
         cap = int(cfg.get("export.max_rows", 5000000))
         reports = agg.reports
-        t0 = time.time()
+        t0 = time.monotonic()
 
         def gen():
             matched = 0
@@ -752,7 +752,7 @@ def create_app(cfg):
                 yield chunk
             yield json.dumps({"_trailer": {
                 "rows": n, "truncated": n >= cap,
-                "elapsed_s": round(time.time() - t0, 2)}}) + "\n"
+                "elapsed_s": round(time.monotonic() - t0, 2)}}) + "\n"
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         return StreamingResponse(

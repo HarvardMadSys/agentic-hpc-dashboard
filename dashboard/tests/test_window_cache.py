@@ -112,6 +112,21 @@ class ScanTest(CacheCase):
         # The saved offset stops before the fragment, so a resume reads it whole.
         self.assertEqual(plan[0]["end"], os.path.getsize(self.path("h1.exits.jsonl")) - 25)
 
+    def test_on_a_pinned_clock_a_build_is_still_timed(self):
+        # `clock.as_of` freezes time.time: a build's elapsed runs on a clock that moves
+        self.feed(30, 10)
+        scan = windows.window_scan
+
+        def slow(*a, **kw):
+            time.sleep(0.25)
+            yield from scan(*a, **kw)
+        reg = self.registry()
+        with mock.patch("time.time", return_value=self.now), \
+                mock.patch.object(windows, "window_scan", slow):
+            view = self.build(reg)
+        self.assertEqual(view.progress["records"], 10)
+        self.assertGreaterEqual(view.progress["elapsed_s"], 0.2)
+
 
 class PrewarmTest(CacheCase):
 

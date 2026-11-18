@@ -56,7 +56,8 @@ PLAIN_CHUNKS = 2         # a plain file's CHUNKs to a part
 PRIME = 2                # parts handed out for each file when the read is planned
 AHEAD = 2                # parts in flight past the workers, for the file being read
 CHECK_EVERY = 256        # records between a part's looks at whether its read was cancelled
-IDLE_S = 300             # seconds unused after which the workers are let go
+IDLE_S = 300             # seconds unused after which the workers are let go, timed on
+                         # the monotonic clock: a pinned one (`clock.as_of`) never moves
 
 
 def compact(rec):
@@ -200,7 +201,7 @@ def _executor(n):
                 n, mp_context=ctx, initializer=_init_worker, initargs=(cancel,))
             _pool["n"], _pool["cancel"] = n, cancel
             cancel.value = _pool["dropped"]      # what was cancelled stays so
-        _pool["used"] = time.time()
+        _pool["used"] = time.monotonic()
         if _pool["reaper"] is None:
             _pool["reaper"] = threading.Thread(target=_reap, name="keysearch-reaper",
                                                daemon=True)
@@ -215,7 +216,7 @@ def _reap():
         time.sleep(30)
         with _pool_lock:
             ex = _pool["ex"]
-            if ex is not None and not _pool["busy"] and time.time() - _pool["used"] > IDLE_S:
+            if ex is not None and not _pool["busy"] and time.monotonic() - _pool["used"] > IDLE_S:
                 ex.shutdown(wait=False, cancel_futures=True)
                 _pool["ex"] = None
 
@@ -383,7 +384,7 @@ def _replay(ex, todo, ahead, workers, stats, start, end, chunk):
         submit()
         while ahead:
             got = ahead.popleft().result()
-            _pool["used"] = time.time()
+            _pool["used"] = time.monotonic()
             if got is None:             # its read was cancelled: nothing more is read
                 return
             submit()
@@ -411,4 +412,4 @@ def _replay(ex, todo, ahead, workers, stats, start, end, chunk):
             f.cancel()
         with _pool_lock:
             _pool["busy"] -= 1
-            _pool["used"] = time.time()
+            _pool["used"] = time.monotonic()

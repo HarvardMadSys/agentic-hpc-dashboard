@@ -212,6 +212,19 @@ class JobTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             a.submit("q", {}, None, "w")
 
+    def test_on_a_pinned_clock_the_agent_is_still_timed(self):
+        # `clock.as_of` freezes time.time: the job is timed on a clock that moves
+        cmd = [PY, "-c", "import sys,time; sys.stdin.read(); time.sleep(0.4); print('ok')"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        with mock.patch("time.time", return_value=time.time()):
+            jid = a.submit("q", {}, None, "w")["id"]
+            end = time.monotonic() + 20
+            while a.view(jid)["state"] not in ("done", "error") and time.monotonic() < end:
+                time.sleep(0.05)
+            v = a.view(jid)
+        self.assertEqual(v["state"], "done", v)
+        self.assertGreaterEqual(v["elapsed_s"], 0.4)
+
     def test_one_at_a_time(self):
         cmd = [PY, "-c", "import sys,time; sys.stdin.read(); time.sleep(0.6); print('ok')"]
         a = ask.Asker(Cfg(**{"ask.command": cmd, "ask.max_concurrent": 1}))

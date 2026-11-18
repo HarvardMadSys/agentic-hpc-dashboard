@@ -1816,7 +1816,7 @@ def _remember(key, body):
     """Keep a built tree, least recently opened out first, within the bounds."""
     size = len(json.dumps(body, default=str, separators=(",", ":")))
     with _cache_lock:
-        _cache[key] = (time.time() + CACHE_TTL, body, size)
+        _cache[key] = (time.monotonic() + CACHE_TTL, body, size)
         _cache.move_to_end(key)
         while len(_cache) > 1 and (len(_cache) > CACHE_KEEP or
                                    sum(v[2] for v in _cache.values()) > CACHE_BYTES):
@@ -1831,7 +1831,9 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     page uses `frm` to continue past a read that stopped at its budget. One
     read runs at a time -- a second request waits rather than doubling the I/O.
     A built tree is served again for CACHE_TTL seconds, the last CACHE_KEEP of
-    them, until the window is rebuilt (`installed_at` is in the key).
+    them, until the window is rebuilt (`installed_at` is in the key). The TTL
+    runs on the monotonic clock (`now`, for tests, is a reading of it): a
+    pinned one (`clock.as_of`) never moves.
 
     `order` is one of ORDERS, anything else the first: which end of the
     session the tree lists first, and draws in full (see the module's notes).
@@ -1840,7 +1842,7 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     scan, gives way mid-read to anyone who opens a session, and returns None
     when it did.
     """
-    now = now or time.time()
+    now = now or time.monotonic()
     order = order if order in ORDERS else ORDERS[0]
     key = (sid, view.minutes, view.installed_at, frm, to, order)
     hit = _cached(key, now)
@@ -1858,7 +1860,7 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
             with _cache_lock:
                 _waiting[0] -= 1
     try:
-        hit = _cached(key, time.time())
+        hit = _cached(key, time.monotonic())
         if hit is not None:
             return hit
         try:
@@ -1900,7 +1902,8 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
             if kt == "apid" and kv.isdigit():
                 keys.add(int(kv))
 
-    t0 = time.time()
+    t0 = time.time()                # the present: it bounds the read
+    m0 = time.monotonic()           # and this times it
     if first is None:
         return {"sid": sid, "found": False, "_window": status, "row": row,
                 "why": "the session's records carry no timestamp, so they cannot "
@@ -1950,7 +1953,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     close = getattr(records, "close", None)
     if close is not None:
         close()
-    elapsed = time.time() - t0
+    elapsed = time.monotonic() - m0
 
     with lock:
         procs = red.get("_procs")
@@ -2062,7 +2065,7 @@ def response(body, accept_encoding):
 
 def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     """`/api/trajectory`: `inspect` over the aggregator's view of that window."""
-    _warm["last_open"] = time.time()
+    _warm["last_open"] = time.monotonic()
     if _warm["thread"] is None:
         _warm["thread"] = threading.Thread(target=_warm_loop, args=(agg,),
                                            name="proctree-warm", daemon=True)
@@ -2086,7 +2089,7 @@ def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     return body
 
 
-WARM_IDLE = 1800         # seconds without an open after which the warmer rests
+WARM_IDLE = 1800         # seconds without an open after which the warmer rests (monotonic)
 
 
 def _warm_loop(agg):
@@ -2105,7 +2108,7 @@ def _warm_loop(agg):
 
     while not getattr(agg, "stopping", False):
         time.sleep(WARM_EVERY)
-        if time.time() - _warm["last_open"] > WARM_IDLE:
+        if time.monotonic() - _warm["last_open"] > WARM_IDLE:
             continue
         try:
             reg = agg.panels_by_window
