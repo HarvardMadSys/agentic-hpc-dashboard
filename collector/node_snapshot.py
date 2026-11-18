@@ -572,8 +572,8 @@ _AGENT_PATTERNS = [
     ('bwrap',       re.compile(r'(?:^|/)bwrap(?:\s|$)')),
 ]
 _MARKERS = {
-    'cursor':   re.compile(r'(?:^|\s)CURSOR_SANDBOX=|--setenv\s+CURSOR_SANDBOX(?:\s|$)'),
-    'windsurf': re.compile(r'(?:^|\s)WINDSURF_STATE=|--setenv\s+WINDSURF_STATE(?:\s|$)'),
+    'cursor':   re.compile(r'CURSOR_SANDBOX='),
+    'windsurf': re.compile(r'WINDSURF_STATE='),
 }
 _TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'))
@@ -614,20 +614,24 @@ def _past_options(words, i, values):
 
 
 def _program_words(words):
-    """argv[0]; past a wrapper or a VAR=value, the word run; a package runner's
-    package; an interpreter's script; the first word of a shell's -c command.
-    Every word of a bwrap's."""
-    out = []
+    """(program words, environment). argv[0]; past a wrapper or a VAR=value, the
+    word run; a package runner's package; an interpreter's script; the first
+    word of a shell's -c command. Every word of a bwrap's. The environment: the
+    VAR=value words before a program word, and a bwrap's `--setenv VAR value`."""
+    out, env = [], []
     i, n = 0, len(words)
     while i < n:
         word = words[i]
         if _ASSIGN.match(word):
+            env.append(word)
             i += 1
             continue
         out.append(word)
         name = _program_name(word)
         if name == 'bwrap':
-            return words
+            env.extend(words[j + 1] + '=' + (words[j + 2] if j + 2 < n else '')
+                       for j in range(i + 1, n - 1) if words[j] == '--setenv')
+            return words, env
         if name in _WRAPPERS:
             values, before = _WRAPPERS[name]
             i = _past_options(words, i + 1, values) + before
@@ -644,25 +648,25 @@ def _program_words(words):
                     i += 1
                     break
                 if not shell and opt in _INLINE:
-                    return out
+                    return out, env
                 i += 2 if opt in values else 1
         else:
             break
-    return out
+    return out, env
 
 
 def classify_agent(args):
     """Tag a command line as a coding agent / IDE / sandbox, else None."""
     if not args:
         return None
-    words = _program_words(args.split())
+    words, env = _program_words(args.split())
     if _TOOL_SHELL.search(args) and any(_program_name(w) in _SHELLS for w in words):
         return 'claude_code'
     for name, rx in _AGENT_PATTERNS:
         if any(rx.search(w) for w in words):
             return name
         marker = _MARKERS.get(name)
-        if marker is not None and marker.search(args):
+        if marker is not None and any(marker.match(a) for a in env):
             return name
     return None
 

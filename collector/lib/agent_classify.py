@@ -48,14 +48,16 @@ _AGENT_PATTERNS = [
 
 # Runtime artifacts: what only an agent's runtime writes on a command line, in the
 # order above, and only where it writes it. Cursor's and Windsurf's environment
-# markers as they are set -- an assignment, or bwrap's `--setenv NAME` -- never as
-# a word that names one (`grep -r CURSOR_SANDBOX .`); Windsurf's terminal is a
-# program, above. And Claude Code's tool-call shell, a shell that sources a
-# snapshot of the user's own (`zsh -c source ~/.claude/shell-snapshots/
-# snapshot-zsh-1.sh && eval '...'`, also behind the sandbox runtime's `exec 3<&- ...;`).
+# markers in the environment a program is run with (_program_words: the VAR=value
+# words before it, `env`'s, a bwrap's `--setenv`), never a word that names or
+# prints one (`grep -r CURSOR_SANDBOX .`, `echo CURSOR_SANDBOX=1`); a variable's
+# name is case-sensitive. Windsurf's terminal is a program, above. And Claude
+# Code's tool-call shell, a shell that sources a snapshot of the user's own (`zsh
+# -c source ~/.claude/shell-snapshots/snapshot-zsh-1.sh && eval '...'`, also
+# behind the sandbox runtime's `exec 3<&- ...;`).
 _MARKERS = {
-    'cursor':   re.compile(r'(?:^|\s)CURSOR_SANDBOX=|--setenv\s+CURSOR_SANDBOX(?:\s|$)'),
-    'windsurf': re.compile(r'(?:^|\s)WINDSURF_STATE=|--setenv\s+WINDSURF_STATE(?:\s|$)'),
+    'cursor':   re.compile(r'CURSOR_SANDBOX='),
+    'windsurf': re.compile(r'WINDSURF_STATE='),
 }
 _TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'))
@@ -169,21 +171,27 @@ def _past_options(words, i, values):
 
 
 def _program_words(words):
-    """The words of a command line that name the program it runs: argv[0]; past
-    a wrapper or a VAR=value, the word run; a package runner's package; an
-    interpreter's script; the first word of a shell's -c command. Every word of
-    a bwrap's, which is tagged by what it confines, as every command line was."""
-    out = []
+    """(the words of a command line that name the program it runs, the
+    environment it runs it with). The program: argv[0]; past a wrapper or a
+    VAR=value, the word run; a package runner's package; an interpreter's
+    script; the first word of a shell's -c command. Every word of a bwrap's,
+    which is tagged by what it confines, as every command line was. The
+    environment: the VAR=value words before a program word, `env`'s among them,
+    and a bwrap's `--setenv VAR value`, as VAR=value."""
+    out, env = [], []
     i, n = 0, len(words)
     while i < n:
         word = words[i]
         if _ASSIGN.match(word):
+            env.append(word)
             i += 1
             continue
         out.append(word)
         name = _program_name(word)
         if name == 'bwrap':
-            return words
+            env.extend(words[j + 1] + '=' + (words[j + 2] if j + 2 < n else '')
+                       for j in range(i + 1, n - 1) if words[j] == '--setenv')
+            return words, env
         if name in _WRAPPERS:
             values, before = _WRAPPERS[name]
             i = _past_options(words, i + 1, values) + before
@@ -200,13 +208,13 @@ def _program_words(words):
                     i += 1
                     break
                 if not shell and opt in _INLINE:
-                    return out
+                    return out, env
                 i += 2 if opt in values else 1
             # the next word is the script, or for a shell's -c the command's first
             # word: a program in its turn (`node /usr/bin/npx`, `sh -c exec claude`)
         else:
             break
-    return out
+    return out, env
 
 
 def classify(args):
@@ -217,7 +225,7 @@ def classify(args):
     agent. So do the runtime artifacts (_MARKERS, _TOOL_SHELL)."""
     if not args:
         return None
-    words = _program_words(args.split())
+    words, env = _program_words(args.split())
     # claude_code comes first in _AGENT_PATTERNS, so its tool-call shell can be
     # tried before them
     if _TOOL_SHELL.search(args) and any(_program_name(w) in _SHELLS for w in words):
@@ -226,7 +234,7 @@ def classify(args):
         if any(rx.search(w) for w in words):
             return name
         marker = _MARKERS.get(name)
-        if marker is not None and marker.search(args):
+        if marker is not None and any(marker.match(a) for a in env):
             return name
     return None
 

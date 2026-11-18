@@ -723,10 +723,18 @@ class ClassifyTest(unittest.TestCase):
         'rm -rf ' + HOME + '/.cursor-server',
         'vim ' + HOME + '/.cursor/mcp.json',
         'ls /usr/bin/bwrap',
-        # a runtime's marker named, not set
+        # a runtime's marker named or printed, not set in the program's environment
         'grep -r CURSOR_SANDBOX .',
         'rg WINDSURF_STATE ' + HOME + '/notes',
         'less ' + HOME + '/windsurf-terminal.log',
+        'echo CURSOR_SANDBOX=1',
+        'grep CURSOR_SANDBOX=1 f',
+        'env FOO=1 grep CURSOR_SANDBOX=1 f',
+        'echo WINDSURF_STATE=x',
+        'grep WINDSURF_STATE=1 f',
+        'env FOO=1 grep WINDSURF_STATE=1 f',
+        # another variable: names are case-sensitive
+        'cursor_sandbox=1 bash -c make',
         # the user's own scripts under ~/.claude/, run by hand
         'python3 ' + HOME + '/.claude/statusline.py',
         'bash ' + HOME + '/.claude/hooks/check.sh',
@@ -776,10 +784,13 @@ class ClassifyTest(unittest.TestCase):
          "&& eval 'make'", 'claude_code'),
         ('bash -c exec 3<&- || exit 126; source ' + HOME + '/.claude/shell-snapshots/'
          "snapshot-bash-1.sh && eval 'ls'", 'claude_code'),
+        ('CURSOR_SANDBOX=1 bash -c make', 'cursor'),
         ('env CURSOR_SANDBOX=1 bash -c make', 'cursor'),
         ('bash -c CURSOR_SANDBOX=1 make', 'cursor'),
         ('bwrap --setenv CURSOR_SANDBOX 1 --ro-bind / / /bin/bash -c make', 'cursor'),
+        ('WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
         ('env WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('bwrap --setenv WINDSURF_STATE /tmp/ws --ro-bind / / /bin/bash', 'windsurf'),
         (HOME + '/.local/bin/windsurf-terminal --pty', 'windsurf'),
         # a bwrap, by what it confines
         ('bwrap --ro-bind / / /bin/true', 'bwrap'),

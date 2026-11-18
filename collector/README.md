@@ -374,10 +374,11 @@ The program is:
 
 Beside the program, the artifacts only an agent's runtime writes count, where it writes
 them: Claude Code's tool-call shell (a shell sourcing `~/.claude/shell-snapshots/…`), and
-Cursor's and Windsurf's `CURSOR_SANDBOX` and `WINDSURF_STATE` set as an environment
-assignment (`CURSOR_SANDBOX=1`, or bwrap's `--setenv CURSOR_SANDBOX`), never a word that
-only names one (`grep -r CURSOR_SANDBOX .`). Windsurf's `windsurf-terminal` counts as a
-program. `ClassifyTest` pins both lists, and that the node tier's copy agrees.
+Cursor's and Windsurf's `CURSOR_SANDBOX` and `WINDSURF_STATE` set in the environment a
+program is run with (`CURSOR_SANDBOX=1 bash …`, `env CURSOR_SANDBOX=1 …`, a bwrap's
+`--setenv CURSOR_SANDBOX 1`), never a word that names or prints one (`grep -r
+CURSOR_SANDBOX .`, `echo CURSOR_SANDBOX=1`); the names are case-sensitive, as a
+variable's is. Windsurf's `windsurf-terminal` counts as a program. `ClassifyTest` pins both lists, and that the node tier's copy agrees.
 
 What moves:
 
