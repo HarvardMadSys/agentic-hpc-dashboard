@@ -244,7 +244,10 @@ class LiveReducer:
         """
         ev = rec.get("event")
         self._root(rec, ev, older)
-        if ev in ("exit", "truncated"):
+        # Exits only: a `truncated` record is a process still running at a
+        # collector stop, with its whole life's CPU and I/O so far, and its exit
+        # after the restart carries them again. It still speaks for a root.
+        if ev == "exit":
             self._exit(rec, older)
         elif ev == "residency":
             self._residency(rec, older)

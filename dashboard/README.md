@@ -738,6 +738,12 @@ already made once.
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
   regression in that basis is visible on the page.
+- **A process is counted once, at its exit.** At each stop the collector writes a `truncated`
+  record for every process it tracks that is still running, with its whole life's CPU and I/O so
+  far, and that process's exit after the restart carries them all again. So every count and sum
+  takes `exit` records only. A `truncated` one still names a running agent root (its launch, its
+  approval), and the session inspector draws it as alive at the collector's stop, but it adds to
+  no total.
 - **Disk I/O is each process's own.** The collector's `io` is `task->signal->ioac`, which the
   kernel also credits with every child the process reaped, so a shell's figure holds its
   commands'. A session sums each process's figure less what its exited children carried

@@ -32,7 +32,9 @@ from .proctree import _trie
 from .normalize import Normalizer
 from .redact import redact
 
-EVENTS = frozenset({"exit", "truncated"})
+# Exits, as every panel's sums take them: a `truncated` record is a process still
+# running at a collector stop, which its exit after the restart counts again.
+EVENTS = frozenset({"exit"})
 
 # what a page can be sorted by, and the row field each reads
 SORT = ("cmd", "tool", "n", "rd_mb", "wr_mb", "rchar_mb", "wchar_mb",

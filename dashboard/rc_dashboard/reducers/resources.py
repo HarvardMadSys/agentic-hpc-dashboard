@@ -71,7 +71,11 @@ def bin_for(window_s):
 
 
 class ResourceReducer:
-    EVENTS = ("exit", "truncated", "residency_totals")
+    # Exits, not `truncated`: a process running at a collector stop is written
+    # then with its whole life's counters so far, and again at its exit after
+    # the restart, so summing both counted it twice -- "once per process" is the
+    # exit's alone.
+    EVENTS = ("exit", "residency_totals")
     KEY = "resources"
 
     def __init__(self, cfg, classes, window_s=86400):

@@ -61,7 +61,9 @@ from ..redact import redact
 
 R, W, D, N = 1, 2, 4, 8
 OPS = (("read", R), ("write", W), ("delete", D), ("named", N))
-_EV = ("exit", "truncated")
+# Exits only: a process running at a collector stop is written then as
+# `truncated`, and again at its exit after the restart -- one process, counted once.
+_EV = ("exit",)
 
 # Roles whose argv is the agent launching itself: a version probe, a daemon, a
 # client, an IDE server. Their paths are the agent's own install, not its work.

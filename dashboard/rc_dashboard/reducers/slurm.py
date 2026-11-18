@@ -199,7 +199,9 @@ class _Key:
 
 
 class SlurmReducer:
-    EVENTS = ("exit", "truncated", "submit")
+    # Exits, not `truncated`: an `srun --pty` still running at a collector stop
+    # is written then, and again at its exit after the restart -- one run.
+    EVENTS = ("exit", "submit")
     KEY = "slurm"
 
     def __init__(self, cfg, classes, window_s=86400, procs=None):

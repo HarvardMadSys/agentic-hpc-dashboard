@@ -70,7 +70,10 @@ def _heaviest(rows, n):
 
 
 class IoReducer:
-    EVENTS = ("exit", "truncated")
+    # Exits only: a `truncated` record is a process still running at a collector
+    # stop, with its whole life's counters so far, and its exit after the
+    # restart carries them all again.
+    EVENTS = ("exit",)
     KEY = "io_process"
 
     def __init__(self, cfg, classes):

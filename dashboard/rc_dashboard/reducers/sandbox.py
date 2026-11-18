@@ -126,8 +126,10 @@ def _reading(anc, kind, sb):
 
 class SandboxReducer:
     EVENTS = ("exit", "truncated", "residency", "conn", "netio")
-    # Only these are counted; the tick records are read for the root's identity.
-    COUNTED = ("exit", "truncated")
+    # Only exits are counted; the other records are read for the root's
+    # identity. A `truncated` one is a process still running at a collector
+    # stop, which its exit after the restart counts again.
+    COUNTED = ("exit",)
     KEY = "sandbox"
     # Bounds the parent-keyed map of what children reported. An entry lives until
     # its parent's own record arrives, so this only fills with parents that never
