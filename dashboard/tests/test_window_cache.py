@@ -22,7 +22,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rc_dashboard import snapshots, windows        # noqa: E402
+from rc_dashboard import feedparquet as fp         # noqa: E402
+from rc_dashboard import history, replica, snapshots, windows   # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
 from rc_dashboard.export import window_plan, window_scan   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
@@ -453,6 +454,75 @@ class SeamTest(CacheCase):
         self.assertEqual(agg.poll_once(), 5)
         self.assertEqual(self.calls(view), 11)
         self.assertEqual(view.status()["live_skipped"], {"already_read": 0, "before_window": 4})
+
+
+class SealedDayTest(CacheCase):
+    """A window reads a sealed day from its replica (`history.py`): one whose
+    table is gone or damaged must not stand in for the day. The review's r3:
+    a filtered 24 h view built `ready` with 5 agent calls where the window held
+    105, or failed on every retry."""
+
+    SEALED = "2026-09-24"
+
+    def setUp(self):
+        super().setUp()
+        recs = []
+        for i in range(100):                    # 20 h ago, alice's and bob's
+            r = exit_rec(self.now - 20 * 3600 + i, 100 + i)
+            r["user"] = "alice" if i % 2 else "bob"
+            recs.append(r)
+        self.append("h1.exits.jsonl", recs, day=self.SEALED)
+        self.compress("h1.exits.jsonl", day=self.SEALED)
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 900 + i) for i in range(5)])
+        self.store = history.HistoryStore(self.cfg())
+        self.assertEqual(self.store.run_once(), 1)
+        replica.install(self.store.replica_for, self.store.replica_failed)
+        self.addCleanup(replica.install, None)
+        self.table = fp.out_path(self.store.roots[os.path.abspath(self.root)], "exit",
+                                 self.SEALED, "h1.exits")
+
+    def calls(self):
+        reg = self.registry()
+        view = reg.request(WIN, ViewFilter(["alice", "bob"]))
+        reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        return view.payload["tool_mix"]["by_class"]["agent"]["calls"]
+
+    def damage(self, cut):
+        with open(self.table, "rb") as fh:
+            whole = fh.read()
+        if cut is None:
+            os.unlink(self.table)
+        else:
+            with open(self.table, "wb") as fh:
+                fh.write(whole[:cut])
+
+    def test_the_whole_window_through_an_intact_replica(self):
+        self.assertEqual(self.calls(), 105)
+        self.assertGreater(self.store.status()["lookups"]["replica"], 0)
+
+    def test_a_table_gone_is_read_around(self):
+        self.damage(None)
+        self.assertEqual(self.calls(), 105)
+
+    def test_a_table_cut_short_is_read_around(self):
+        self.damage(os.path.getsize(self.table) // 2)
+        self.assertEqual(self.calls(), 105)
+
+    def test_a_table_emptied_is_read_around(self):
+        self.damage(0)
+        self.assertEqual(self.calls(), 105)
+
+    def test_a_table_damaged_under_a_replica_taken_already_is_read_around(self):
+        gz_path = self.path("h1.exits.jsonl.gz", day=self.SEALED)
+        self.assertIsNotNone(replica.for_path(gz_path))       # taken, and held
+        size = os.path.getsize(self.table)
+        with open(self.table, "r+b") as fh:
+            fh.write(b"\0" * size)                           # its size intact
+        self.assertEqual(self.calls(), 105)
+        st = self.store.status()
+        self.assertEqual([e["file"] for e in st["errors"]], [gz_path])
+        self.assertEqual(st["read_failures"], 1)
 
 
 def _imports(path):

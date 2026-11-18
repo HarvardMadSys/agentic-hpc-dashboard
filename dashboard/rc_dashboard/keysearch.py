@@ -269,20 +269,26 @@ def stream(entry, cfg, since, until, stats, pats, events, kinds, where, workers,
     path = entry["path"]
     rep = replica.for_path(path) if where is not None else None
     if rep is not None:
-        size = rep.size
-        start = entry["start"]
-        if size <= start:
-            return iter(())
-        end = rep.end_at(until + proctree.UNTIL_SLACK, size) if until is not None else size
-        end = rep.prev_boundary(max(start, end))
-        if end <= start:
-            return iter(())
+        try:
+            size = rep.size
+            start = entry["start"]
+            if size <= start:
+                return iter(())
+            end = rep.end_at(until + proctree.UNTIL_SLACK, size) if until is not None else size
+            end = rep.prev_boundary(max(start, end))
+            if end <= start:
+                return iter(())
 
-        def chunk(pos):
-            return min(rep.next_boundary(min(pos + proctree.CHUNK, end)), end)
-        base = {"kind": "replica", "rep": (rep.out, rep.man), "kinds": kinds,
-                "where": where}
-        jobs = [dict(base, range=r) for r in _replica_ranges(rep, start, end, kinds)]
+            def chunk(pos):
+                return min(rep.next_boundary(min(pos + proctree.CHUNK, end)), end)
+            base = {"kind": "replica", "rep": (rep.out, rep.man), "kinds": kinds,
+                    "where": where}
+            jobs = [dict(base, range=r) for r in _replica_ranges(rep, start, end, kinds)]
+        except Exception as e:
+            # The replica cannot be read: the file is read in this process
+            # (`proctree._key_stream`), and the store told (`replica.failed`).
+            replica.failed(path, rep, e)
+            return None
     elif gz.is_gz(path) or pats is None:
         return None
     else:
@@ -326,7 +332,36 @@ def stream(entry, cfg, since, until, stats, pats, events, kinds, where, workers,
         primed.append(ex.submit(part, job))
         if len(primed) >= PRIME:
             break
-    return _replay(ex, todo, primed, workers, stats, start, end, chunk)
+    if rep is None:
+        return _replay(ex, todo, primed, workers, stats, start, end, chunk)
+    seen = {}
+    return _or_file(entry, rep, _replay(ex, todo, primed, workers, stats, start, end, chunk,
+                                        seen),
+                    seen, cfg, since, until, stats, pats, events)
+
+
+def _or_file(entry, rep, replayed, seen, cfg, since, until, stats, pats, events):
+    """`replayed`, a sealed file's key search from its replica's parts; should a
+    part raise, the store is told (`replica.failed`) and the rest is read here,
+    from the `.gz` itself, from the line after the last record handed on
+    (`seen["off"]`), as the one-process read would read it."""
+    from . import proctree
+    from .export import event_filter
+    try:
+        yield from replayed
+        return
+    except Exception as e:
+        replica.failed(entry["path"], rep, e)
+    start = entry["start"]
+    if "off" in seen:
+        try:
+            with gz.open_feed(entry["path"]) as fh:
+                fh.seek(seen["off"])
+                start = seen["off"] + len(fh.readline())
+        except OSError:
+            return
+    yield from proctree._key_stream_gz(dict(entry, start=start), _normalizer(cfg), since,
+                                       until, stats, pats, event_filter(events))
 
 
 def _index(stops, pos):
@@ -359,7 +394,10 @@ def _replica_ranges(rep, start, end, kinds):
     return [(a, b) for a, b in zip(bounds, bounds[1:]) if a < b]
 
 
-def _replay(ex, todo, ahead, workers, stats, start, end, chunk):
+def _replay(ex, todo, ahead, workers, stats, start, end, chunk, seen=None):
+    """The parts' records in file order, `stats` counted as the one-process read
+    counts them. `seen["off"]`, when given, is the offset of the last one handed
+    on."""
     keys = ("skipped", "scanned", "parse_errors", "no_ts")
     with _pool_lock:
         _pool["busy"] += 1
@@ -394,6 +432,8 @@ def _replay(ex, todo, ahead, workers, stats, start, end, chunk):
                     stats["bytes"] += stop - pos
                 gain([a + b for a, b in zip(pending, d)])
                 pending = [0, 0, 0, 0]
+                if seen is not None:
+                    seen["off"] = off
                 yield ts, rec
             pending = [a + b for a, b in zip(pending, tail)]
             if halt is not None:

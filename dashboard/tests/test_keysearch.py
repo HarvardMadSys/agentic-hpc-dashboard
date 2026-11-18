@@ -10,6 +10,7 @@ same stop past `until`. And the tree built from the records it sends back
 
     cd dashboard && uv run python -m unittest tests.test_keysearch -q
 """
+import bisect
 import gzip
 import json
 import os
@@ -153,6 +154,65 @@ class KeySearchTest(unittest.TestCase):
             self.assertIsNotNone(keysearch.part(job), "a live read is read")
             flag.value = read
             self.assertIsNone(keysearch.part(job), "a cancelled one is not")
+
+    def test_a_replica_its_workers_cannot_read_is_read_here_from_the_gz(self):
+        """A part whose replica raises in a worker -- a table gone under it --
+        does not end the read: the rest is the one-process read of the `.gz`,
+        and the store is told (`replica.failed`)."""
+        members = {"h|%s|agent|apid:101" % DAY, "h|%s|agent|apid:303" % DAY}
+        rp.install(None)
+        want = self.read(self.sealed, 0, T0 - 1, None, 1, members)
+        rep = rp.Replica(self.rep.out, self.rep.man)
+        # This process reads its tables; the copy a worker builds names none.
+        rep.man = dict(rep.man, stem="gone")
+        failures = []
+        rp.install(lambda p: rep if p == self.sealed else None,
+                   lambda p, r, e: failures.append(p))
+        self.addCleanup(rp.install, None)
+        with mock.patch.object(proctree, "CHUNK", 700), \
+                mock.patch.object(keysearch, "PRIME", 1), \
+                mock.patch.object(keysearch, "AHEAD", 0):
+            got = self.read(self.sealed, 0, T0 - 1, None, 3, members)
+        self.assertGreater(len(want), 100)
+        self.assertEqual([r for r, _st in got[:-1]], [r for r, _st in want[:-1]])
+        self.assertEqual(failures, [self.sealed])
+
+    def test_after_a_part_fails_the_gz_goes_on_from_the_last_record_handed_on(self):
+        """`_or_file` once some parts were handed on: the `.gz` from the line
+        after the last of them, each record once."""
+        members = {"h|%s|agent|apid:101" % DAY, "h|%s|agent|apid:303" % DAY}
+        pats, where = proctree.key_patterns(members), proctree.key_where(members)
+        ev, kinds = proctree.event_filter(proctree.EVENTS), frozenset(proctree.EVENTS)
+
+        def stats():
+            return {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0, "no_ts": 0}
+        want = [(ts, keysearch.compact(r)) for ts, r in proctree._key_stream_gz(
+            {"path": self.sealed, "start": 0}, Normalizer(self.cfg), T0 - 1, None, stats(),
+            pats, ev)]
+        self.assertGreater(len(want), 100)
+        failures = []
+        rp.install(None, lambda p, r, e: failures.append(p))
+        self.addCleanup(rp.install, None)
+        for fail_at in (1, 40, len(want) - 1):
+            got_next, seen = {}, {}
+            healthy = proctree._key_stream_replica(
+                {"path": self.sealed, "start": 0}, self.rep, Normalizer(self.cfg), T0 - 1,
+                None, stats(), kinds, where, got_next)
+
+            def replayed():
+                # the parts' records, as `_replay` hands them on, then a part raises
+                for i, (ts, rec) in enumerate(healthy):
+                    if i == fail_at:
+                        raise OSError("a part's table cut short")
+                    # the record's own line: the one before the line after it
+                    seen["off"] = self.starts[bisect.bisect_left(self.starts,
+                                                                 got_next["next"]) - 1]
+                    yield ts, rec
+            got = [(ts, keysearch.compact(r)) for ts, r in keysearch._or_file(
+                {"path": self.sealed, "start": 0}, self.rep, replayed(), seen,
+                keysearch.cfg_spec(self.cfg), T0 - 1, None, stats(), pats, proctree.EVENTS)]
+            self.assertEqual(got, want, fail_at)
+        self.assertEqual(failures, [self.sealed] * 3)
 
     def test_the_tree_from_the_records_sent_back_is_the_whole_records_tree(self):
         members = {"h|%s|agent|apid:101" % DAY, "h|%s|agent|apid:202" % DAY}

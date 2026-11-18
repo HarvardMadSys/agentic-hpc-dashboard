@@ -102,8 +102,15 @@ day-file, at the file's own offsets. Which reads take it:
 
 A file with no replica yet -- not converted, or no longer the file its manifest names (its name,
 size, mtime and inode) -- is read as JSONL, and so is one holding a line a JSONL reader would
-read differently: a last line with no newline, or a line that is JSON but not an object. Nothing
-waits for the store.
+read differently: a last line with no newline, or a line that is JSON but not an object. So is
+one whose manifest names a table that is gone, or not the byte size it was written at (the
+store cleaned up in part, a crash before the data reached the disk): it is converted again. A
+replica a read finds broken all the same -- a table damaged with its size intact -- is let go:
+that read goes on from the file, from where the replica left it, the file is read as JSONL
+until it is converted again, and the error is in the store's `errors` (the Feeds tab). Before,
+a replica was trusted on its manifest alone: with its table deleted, a window's plan left the
+sealed day out as if it held nothing in the window, and cut short, every build of the window
+failed. Nothing waits for the store.
 
 **The same answers.** A replica reads as its file does: the same records in the same order, key
 for key and type for type, at the same offsets; a time search probe for probe; and a filtered
@@ -133,9 +140,11 @@ It is a Hive-partitioned dataset as well, for a query of your own:
 
 **Conversion.** In the background, `history.workers` processes (`RC_DASH_HISTORY_WORKERS`; 0, the
 default, is up to 8, as the CPUs the service may run on allow) convert every sealed file with no
-current replica, the biggest first, at startup and then every minute as days are sealed. A
-replica whose source is gone is removed, and so is one older than the newest `history.days` dated
-dirs when that is set. The node tier is never sealed, so it is never converted.
+current replica, the biggest first, at startup and then every minute as days are sealed. Each
+table is flushed to the disk before it is renamed into place, and the manifest, which names
+them, last. A replica whose source is gone is removed, and so is one older than the newest
+`history.days` dated dirs when that is set. The node tier is never sealed, so it is never
+converted.
 
 **What it costs and buys**, on FAS RC's mirror: 8 login nodes, the 7 sealed days 2026-11-10 to
 2026-11-16 (112 day-files, 18.4 GB of `.gz`, 182 M records). Converting them took 12 minutes in 8
@@ -166,8 +175,9 @@ The eBPF tier's entry in `/api/feeds` carries `history`: `enabled` and `state` (
 files), `converted` (since the service started), `lookups` (sealed files a reader asked for since
 then: answered from a `replica`, or read as `jsonl` for want of one), `held` (the replicas held
 between reads, and the `bytes` their indexes take), `swept` (half-written files a killed
-conversion left, removed at startup), `progress` (the current round: `todo`, `done`, `failed`,
-`records`, `bytes_in`, `elapsed_s`) and the latest `errors`.
+conversion left, removed at startup), `read_failures` (reads a replica failed since then, each
+finished from the file), `progress` (the current round: `todo`, `done`, `failed`, `records`,
+`bytes_in`, `elapsed_s`) and the latest `errors`.
 `--check-feeds` says how many sealed files have a current replica and how much is left to
 convert.
 

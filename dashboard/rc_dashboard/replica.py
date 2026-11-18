@@ -35,7 +35,13 @@ A replica stands in for its file only while it describes it exactly: the manifes
 names the file as it is on disk (`feedfile` identity: name, size, mtime, inode), and
 the file holds no line a JSONL reader would read differently -- a last line with no
 newline (still being written) or a line that is JSON but not an object (a JSONL time
-search raises on it). Such a file is read as JSONL, as every file was before.
+search raises on it). Such a file is read as JSONL, as every file was before. Nor
+does a replica stand in once a table its manifest names is gone, or is not the size
+it was written at (`feedparquet.tables_whole`). A read that raises all the same --
+a table damaged with its size intact, or gone since the replica was taken -- goes
+on from the file itself, from where the replica left it, and the store is told
+(`failed`): it lets the replica go, says so on the Feeds tab, and converts the file
+again.
 """
 import base64
 import hashlib
@@ -53,13 +59,29 @@ WANT_MAX = 4                 # event-kind sets whose line masks a replica keeps 
 _TIME_KEYS = ("ts_epoch", "ts", "timestamp")
 
 _lookup = None               # path -> Replica or None, set by the history store
+_failed = None               # (path, Replica, exception): a read of one raised
 
 
-def install(fn):
-    """Name the function the readers ask for a sealed file's replica (`for_path`);
-    None turns replicas off."""
-    global _lookup
+def install(fn, failed=None):
+    """Name the function the readers ask for a sealed file's replica (`for_path`),
+    and the one they tell when a read of one raises (`failed`); None turns
+    replicas off."""
+    global _lookup, _failed
     _lookup = fn
+    _failed = failed
+
+
+def failed(path, rep, exc):
+    """A read of `path`'s replica `rep` raised `exc` -- a table gone or damaged
+    since the replica was taken. The reader goes on from the file itself; this
+    tells the store, which lets the replica go and says so
+    (`history.HistoryStore.replica_failed`)."""
+    fn = _failed
+    if fn is not None:
+        try:
+            fn(path, rep, exc)
+        except Exception:
+            pass
 
 
 def for_path(path):

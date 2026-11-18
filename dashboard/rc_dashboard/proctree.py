@@ -1577,11 +1577,21 @@ def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=No
     A sealed file with a replica is read from it (`_key_stream_replica`), the
     replica rejecting by the keys' `where` (`key_where`) on its columns before a
     record is built: the session's few records of a day are found without
-    inflating the `.gz` to search it."""
+    inflating the `.gz` to search it. Should the replica raise, the read goes on
+    in the `.gz`, from where it left off."""
     rep = replica.for_path(entry["path"]) if where is not None else None
     if rep is not None:
-        yield from _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where)
-        return
+        got = {}
+        try:
+            yield from _key_stream_replica(entry, rep, norm, since, until, stats, kinds,
+                                           where, got)
+            return
+        except Exception as e:
+            # The replica stopped answering part way: the rest of the read from
+            # the file, from the line after the last one it read (`replica.failed`).
+            replica.failed(entry["path"], rep, e)
+            if "next" in got:
+                entry = dict(entry, start=got["next"])
     if gz.is_gz(entry["path"]):
         yield from _key_stream_gz(entry, norm, since, until, stats, pats, ev)
         return
@@ -1633,7 +1643,7 @@ def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=No
             mm.close()
 
 
-def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
+def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where, got=None):
     """`_key_stream_gz` over a sealed file's replica, read and counted as that
     reads and counts the file: the same end (the read's end and its slack, to a
     line's end), `bytes` a CHUNK at a time -- each chunk ending at a line's end,
@@ -1641,7 +1651,10 @@ def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
     keys of an event not asked for. So `inspect_max_bytes` stops a read at the
     same record either way. The records on the keys are found by `where` on the
     replica's columns rather than by the patterns, and a line that does not
-    parse, which no column describes, is not looked at."""
+    parse, which no column describes, is not looked at. `got["next"]` keeps
+    where a read of the file would go on from: the line after the last record
+    read."""
+    got = {} if got is None else got
     size = rep.size
     start = entry["start"]
     if size <= start:
@@ -1656,6 +1669,7 @@ def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
     pos, stop = start, chunk(start)
     stats["bytes"] += stop - pos
     for off, _n, raw in rep.records(start, end, where=where):
+        got["next"] = off + _n
         while off >= stop:
             pos, stop = stop, chunk(stop)
             stats["bytes"] += stop - pos

@@ -293,6 +293,98 @@ class ReplicaTest(unittest.TestCase):
             rp.install(None)
         self.assertGreater(reads, 20, "the reads found records")
 
+    def broken(self, path, rep, after):
+        """`rep` installed for `path`, its ranged reads raising once `after`
+        records are handed on, as a table damaged part way through does; and
+        the list each `replica.failed` lands in."""
+        real = rep.records
+
+        def records(*a, **kw):
+            for i, item in enumerate(real(*a, **kw)):
+                if i >= after:
+                    raise OSError("a table cut short under the read")
+                yield item
+        rep.records = records
+        failures = []
+        rp.install(lambda p: rep if p == path else None,
+                   lambda p, r, e: failures.append((p, r, str(e))))
+        self.addCleanup(rp.install, None)
+        return failures
+
+    def test_a_build_or_an_events_read_its_replica_fails_part_way_goes_on_from_the_file(self):
+        """A table that raises in the middle of a read -- damaged with its size
+        intact, or gone since the replica was taken -- costs the read nothing:
+        it goes on from the file, from where the replica left it, the records
+        the same as a read of the file alone, each once; and the store is told.
+        Before, it raised out of the window build or the events query, on every
+        retry."""
+        from rc_dashboard import export
+        path, rep = self.make(feed_lines(13, n=600))
+        cfg = configmod.Config(configmod.defaults(), {}, None)
+        rp.install(None)                    # what to compare with: the file read alone
+
+        # a filtered view's build (`export.window_scan`)
+        def window():
+            entry = {"path": path, "start": 0}
+            got = [(r["pid"], r["_ts_epoch"]) for r, _st in export.window_scan(
+                [entry], Normalizer(cfg), T0 - 1, events={"exit", "truncated", "residency"},
+                where={"user": frozenset({"ann"})})
+                if r.get("user") == "ann"]          # the view's own test (`windows._build`)
+            return got, entry["end"]
+        want = window()
+        self.assertGreater(len(want[0]), 20)
+        for after in (0, 1, 7, len(want[0]) // 2):
+            failures = self.broken(path, rp.Replica(self.out, rep.man), after)
+            self.assertEqual(window(), want, after)
+            self.assertEqual([p for p, _r, _e in failures], [path], after)
+
+        # an events query (`export._matching`), either way through the file
+        pred = export.make_predicate({"event": {"exit"}, "user": {"ann"}})
+        for newest_first in (True, False):
+            rp.install(None)
+            want = list(export._matching(path, Normalizer(cfg), pred, newest_first,
+                                         {"scanned": 0}))
+            self.assertGreater(len(want), 10)
+            for after in (0, 3, len(want) // 2):
+                failures = self.broken(path, rp.Replica(self.out, rep.man), after)
+                got = list(export._matching(path, Normalizer(cfg), pred, newest_first,
+                                            {"scanned": 0}))
+                self.assertEqual([(ts, r["pid"]) for ts, r in got],
+                                 [(ts, r["pid"]) for ts, r in want], (newest_first, after))
+                self.assertEqual(len(failures), 1)
+
+    def test_a_key_search_its_replica_fails_part_way_goes_on_in_the_gz(self):
+        """The inspector's key search in this process (`proctree._key_stream`):
+        the replica raising part way, the rest is the `.gz` search's."""
+        rng = random.Random(14)
+        lines = []
+        for i in range(400):
+            rec = full(rng.choice(("exit", "exit", "residency", "conn")), i)
+            pid = rng.choice((101, 202, 303))
+            rec["agent_pid"] = pid
+            rec["session_key"] = rng.choice(("claude:%d" % pid, str(pid)))
+            rec["ts_epoch"] = T0 + 10 * i
+            lines.append(json.dumps(rec))
+        path, rep = self.make(lines)
+        cfg = configmod.Config(configmod.defaults(), {}, None)
+        members = ["h1|%s|agent|apid:101" % DAY, "h1|%s|agent|apid:303" % DAY]
+        pats, where = proctree.key_patterns(members), proctree.key_where(members)
+        ev, kinds = proctree.event_filter(proctree.EVENTS), frozenset(proctree.EVENTS)
+
+        def read(stream):
+            st = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0, "no_ts": 0}
+            return [(ts, r["pid"], r["_ts_epoch"]) for ts, r in stream(st)]
+        want = read(lambda st: proctree._key_stream_gz(
+            {"path": path, "start": 0}, Normalizer(cfg), T0 - 1, None, st, pats, ev))
+        self.assertGreater(len(want), 100)
+        for after in (0, 2, len(want) // 2):
+            failures = self.broken(path, rp.Replica(self.out, rep.man), after)
+            got = read(lambda st: proctree._key_stream(
+                {"path": path, "start": 0}, Normalizer(cfg), T0 - 1, None, st, pats, ev,
+                kinds, where))
+            self.assertEqual(got, want, after)
+            self.assertEqual(len(failures), 1)
+
     def test_what_a_replica_cannot_stand_in_for(self):
         path = os.path.join(self.root, DAY, "h2.exits.jsonl.gz")
         with gzip.open(path, "wb") as fh:
