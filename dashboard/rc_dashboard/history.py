@@ -243,14 +243,19 @@ class HistoryStore:
         except OSError:
             return None
         ident = (st.st_size, st.st_mtime_ns, st.st_ino)
+        src, day, stem = loc
+        out = self.roots[src]
         with self._lock:
             hit = self._cache.get(path)
-            if hit is not None and hit[0] == ident:
+            # The source unchanged is not enough: `history.days` prunes a copy
+            # whose source is still there, and its tables go with its manifest.
+            if hit is not None and hit[0] == ident \
+                    and os.path.exists(fp.manifest_path(out, day, stem)):
                 self._cache.move_to_end(path)
                 self._trim()
                 return hit[1]
-        src, day, stem = loc
-        out = self.roots[src]
+            if hit is not None:
+                self._cache.pop(path, None)
         man = fp.read_manifest(out, day, stem)
         if not fp.current(man, path) or not replica.exact(man):
             return None
@@ -259,6 +264,16 @@ class HistoryStore:
             self._cache[path] = (ident, rep)
             self._trim()
         return rep
+
+    def _forget(self, gone):
+        """Let go of the held replicas of `gone` (out, day, stem): their tables
+        are about to be removed, and a reader handed one would open none."""
+        gone = set(gone)
+        with self._lock:
+            for path in list(self._cache):
+                loc = self._locate(path)
+                if loc is not None and (self.roots.get(loc[0]), loc[1], loc[2]) in gone:
+                    del self._cache[path]
 
     def _trim(self):
         """Let the least recently used replicas go while more than REPLICAS_MAX are
@@ -314,6 +329,8 @@ class HistoryStore:
         if not self.enabled:
             return 0
         todo, prune = self.discover()
+        if prune:
+            self._forget(prune)
         for out, day, stem in prune:
             fp.drop_source(out, day, stem)
             _rmdirs(out, day)
