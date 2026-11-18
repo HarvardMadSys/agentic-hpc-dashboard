@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import test_merge as TM                                              # noqa: E402
 from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
-from test_sandbox import CODEX_APP, codex_failed_call, root_tick     # noqa: E402
+from test_sandbox import (CODEX_APP, codex_failed_call, reused_agent_pid,   # noqa: E402
+                          root_tick)
 
 PROJ = HOME + "/proj"
 
@@ -398,6 +399,28 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual((s["trees"], s["agents"], s["nested"], s["max_agent_depth"]),
                          (2, 2, 0, 1))
         self.assertIsNone(node(tree_of(p, 600), 600)["parent"])
+
+    def test_a_later_process_on_a_pid_is_never_merged_into_its_node(self):
+        """bob's bypassed Claude, given the pid alice's had, merged into her node:
+        her user and argv, his approval and its flag -- and a bypass, once read,
+        stands. Now her node is hers, and his process is counted, not drawn."""
+        p = reduce(reused_agent_pid(time.time() - 7000))
+        n = node(tree_of(p, 4242), 4242)
+        self.assertEqual((n["user"], n["args"], n["approval"], n["approval_detail"]),
+                         ("alice", "claude", "supervised", "no launch flag"))
+        c = p["cascades"]
+        self.assertEqual((c["summary"]["agents"], c["buffer"]["reused"]), (1, 1))
+
+    def test_a_later_process_on_a_pid_is_held_apart_in_a_merged_window(self):
+        recs = TM.normalized(reused_agent_pid(time.time() - 7000))
+        one = TM.one_pass(recs).reducers["cascades"]
+        a, b = TM.one_pass(recs[:3]).reducers["cascades"], TM.one_pass(recs[3:]).reducers["cascades"]
+        a.merge(b)
+        for c in (one, a):
+            n = c.nodes[("h1", 4242)]
+            self.assertEqual((n["user"], n["approval"]), ("alice", "supervised"))
+            self.assertEqual([(m["user"], m["approval"]) for m in c.later[("h1", 4242)]],
+                             [("bob", "bypassed")])
 
     def test_a_parent_still_running_when_its_child_started_is_its_parent(self):
         t0 = self.t0

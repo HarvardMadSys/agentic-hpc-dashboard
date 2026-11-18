@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import test_merge as TM                            # noqa: E402
 import test_sessions as TS                         # noqa: E402
 from rc_dashboard.normalize import (Normalizer, approval_of, bypass_flag_of,   # noqa: E402
                                     sandbox_of)
@@ -47,6 +48,21 @@ def bypassed_claude_session(t0, root=100):
             agent_pid=200, tree_root=root, is_agent=True),
         rec("exit", t0 + 60, root, 50, "claude", VSCODE_CLAUDE + "--permission-mode bypassPermissions",
             agent_pid=root, tree_root=root, is_agent=True),
+    ]
+
+
+def reused_agent_pid(t0, pid=4242):
+    """alice's Claude on pid 4242 makes two Bash calls and exits; after the pids
+    wrap, bob's bypassed Claude is given 4242."""
+    return [
+        rec("exit", t0 + 10, 5001, pid, "zsh", SNAP + "'ls'", agent_pid=5001, tree_root=pid,
+            is_agent=True),
+        rec("exit", t0 + 20, 5002, pid, "zsh", SNAP + "'make'", agent_pid=5002, tree_root=pid,
+            is_agent=True),
+        rec("exit", t0 + 60, pid, 3000, "claude", "claude", agent_pid=pid, tree_root=pid,
+            is_agent=True, duration_s=100.0),
+        rec("exit", t0 + 6000, pid, 3100, "claude", "claude --dangerously-skip-permissions",
+            agent_pid=pid, tree_root=pid, is_agent=True, user="bob", duration_s=50.0),
     ]
 
 
@@ -276,6 +292,31 @@ class ToolCallTest(unittest.TestCase):
                     agent_type="bwrap", agent_pid=300, tree_root=100, is_agent=True, exit_code=1)]
         sb = reduce(recs)["sandbox"]
         self.assertEqual(sb["tool_calls"]["agent"], {"failed": 1})
+
+    def test_two_processes_on_one_pid_are_two_sessions(self):
+        """alice's Claude on pid 4242 and, after the pids wrap, bob's bypassed one.
+        Each root record overwrote the last, so there was one session -- bob's,
+        bypassed -- holding alice's two calls (sessions_total 1)."""
+        sb = reduce(reused_agent_pid(time.time() - 7000))["sandbox"]
+        self.assertEqual(sorted((r["pid"], r["user"], r["approval"], r["state"], r["calls"])
+                                for r in sb["sessions"]),
+                         [(4242, "alice", "supervised", "unsandboxed", {"not_isolated": 2}),
+                          (4242, "bob", "bypassed", "no_calls", {})])
+        self.assertEqual(sb["sessions_total"], 2)
+        self.assertEqual(sb["approval_by_class_sessions"]["agent"],
+                         {"supervised": 1, "bypassed": 1})
+
+    def test_two_processes_on_one_pid_stay_two_sessions_in_a_merged_window(self):
+        recs = TM.normalized(reused_agent_pid(time.time() - 7000))
+        one = TM.one_pass(recs).reducers
+        a, b = TM.one_pass(recs[:3]).reducers, TM.one_pass(recs[3:]).reducers
+        a["_procs"].merge(b["_procs"])
+        a["sandbox"].merge(b["sandbox"])
+        for red in (one, a):
+            self.assertEqual(sorted((r["user"], r["approval"], r["calls"])
+                                    for r in red["sandbox"].result()["sessions"]),
+                             [("alice", "supervised", {"not_isolated": 2}),
+                              ("bob", "bypassed", {})])
 
     def test_the_wrapper_reading_is_not_called_a_probe(self):
         recs = [root_tick(self.t0, 100)] + bwrap_call(self.t0, 100, 300)
