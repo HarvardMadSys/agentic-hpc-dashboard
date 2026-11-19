@@ -440,7 +440,8 @@ charts that name the window.
 #### LV-4 agent processes exited
 
 - **Shows:** the agent processes that exited in the window, the other classes beside them, the
-  agent share of every process, and the agent types on hover.
+  agent share of every process -- out of every class counted, `unlabeled` too, whatever the class
+  chips show (`lib/shares.ts`) -- and the agent types on hover.
 - **Records:** `exit`: `_a3`, `agent_type`, `_eff`, `_command`, `_sid`, `pid`, `ppid`,
   `_shell_resolved`, `cpu_s`.
 - **Computation:** `ToolMixReducer.feed` counts an exit under its class, and an agent's also under
@@ -505,7 +506,10 @@ charts that name the window.
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
   `resources.by_class[c].top`), `trajectories.summary[c].sessions`, and `slurm.by_class[c]` `jobs`,
-  `gpus`, `gpu_h`; a cell is the class's share of its row over the classes shown. The processes and
+  `gpus`, `gpu_h`; a cell is the class's share of its row over every class that row's panel counted,
+  `unlabeled` too, not the classes shown, so a share does not move with the class chips; a class
+  counted with no reading of the row (null, as the network bytes of a class none of whose processes
+  carried them) leaves the row no share, a dash, and says why (`lib/shares.ts`). The processes and
   CPU rows are the tool mix's, after the shell-wrapper dedup. A byte cell opens IOCMDS for its
   class.
 - **Cost:** its reducers'.
@@ -924,7 +928,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 - **Computation:** `ToolMixReducer.feed` counts per (class, kind) and per (class, tool), and an
   agent's also per (agent type, ...), after the shell-wrapper dedup; `_rows` gives each kind's
   counts, sums and shares per class; a page filter to one agent type uses that type's own counters
-  (`by_agent_type`). The page computes a class's share of a row.
+  (`by_agent_type`). The page computes a class's share of a row, out of every class counted, not
+  the classes shown (`lib/shares.ts`); the total beside it is that whole.
 - **Cost:** as LV-4. A byte cell opens IOCMDS by kind and class, read from the JSONL unless the
   page is filtered by user.
 
@@ -949,12 +954,13 @@ and for how the page draws them
 | SE-1 | plates: agent sessions, processes per session, session length, processes spent waiting | BUILD on read | `trajectories.summary` | `reducers/trajectories.py:TrajectoryReducer.summary` · `tabs/TrajectoriesTab.tsx:TrajectoriesTab` |
 | SE-2 | sessions, ranked (list) | BUILD on read; LIVE for running | `trajectories.ranks`, `rows`; `rows[].running` | `TrajectoryReducer.feed`, `result`, `folded`, `_row`; `Aggregator._running_rows` · `tabs/TrajectoriesTab.tsx:SessionItem` |
 | SE-3 | a row's phase band, task line and category chip; else its purpose ribbon | BUILD on read; LIVE for the live edge | `rows[].phases`, `purpose_rle`, `running.now` | `TrajectoryReducer._phases`, `_build_block`; `reducers/live.py:running_now` · `tabs/TrajectoriesTab.tsx:RowRibbon`, `components/PhaseBand.tsx:PhaseBand`, `components/CategoryChip.tsx:CategoryChip` |
-| SE-4 | inspector: facts, purpose ribbon, tool tokens | BUILD | `row` | `TrajectoryReducer._row`; `proctree.py:lookup` · `tabs/TrajectoryInspector.tsx:Facts`, `ToolTokens` |
+| SE-4 | inspector: facts; purpose ribbon and tool tokens | BUILD | `row` | `TrajectoryReducer._row`; `proctree.py:lookup` · `tabs/TrajectoryInspector.tsx:Facts`, `ProcessMix`, `ToolTokens` |
 | SE-5 | inspector: what was read, and its limits | INSPECT | `scan`, `bounds`, `links` | `proctree.py:_inspect` · `tabs/TrajectoryInspector.tsx:ReadLine` |
 | SE-6 | inspector: headline, category, summary | BUILD | `row.phases.headline`, `category`, `summary` | `reducers/phase_tasks.py:name_tasks`, `reducers/phase_summary.py:summarize` · `tabs/TrajectoryInspector.tsx:TrajectoryInspector` |
 | SE-7 | inspector: navigator | INSPECT; BUILD for tasks and phases | `nav`, `span`, `scan`; `row.phases` | `proctree.py:TreeBuilder._note`, `nav` · `tabs/TrajectoryNav.tsx:TrajectoryNav` |
 | SE-8 | inspector: task list, or phase list | BUILD | `row.phases.tasks`, `list` | `phase_tasks.py:task_spans`, `name_tasks`; `phase_segment.py:segment` · `tabs/TaskList.tsx:TaskList`, `tabs/PhaseList.tsx:PhaseList` |
 | SE-9 | inspector: process tree (tree or table) and its pop-out | INSPECT | `tree`, `timeline` | `proctree.py:TreeBuilder.feed`, `resolve`, `render` · `components/ProcDiagram.tsx:ProcDiagram`, `components/ProcTree.tsx:ProcTree`, `tabs/TreePopout.tsx` |
+| SE-10 | inspector: map of the whole session, its tasks over its phases | BUILD; LIVE for the live edge | `row.phases`, `row.first`, `running.now` | `TrajectoryReducer._phases`, `_build_block`; `reducers/live.py:running_now` · `tabs/SessionMap.tsx:SessionMap`, `lib/phases.ts:bandAxis` |
 
 #### SE-1 plates
 
@@ -1012,7 +1018,8 @@ and for how the page draws them
   (`_open_calls`), then `phase_segment.prepared`, `phase_tasks.task_spans` (tasks),
   `phase_segment.segment` (phases, cut at the tasks' boundaries), `phase_tasks.name_tasks` (labels,
   from the agent's own words or the names in its commands, and the headline) and
-  `phase_summary.summarize` (category, uses, summary). Cached per row (`_phase_cache`, 4,096 blocks)
+  `phase_summary.summarize` (category, uses, summary: the work weighed to the last phase's own calls,
+  `own_t1`, and a call's time past its phase to its own use, `ran_on`). Cached per row (`_phase_cache`, 4,096 blocks)
   and made again when the row's calls, records or pending entries change, so on each read of a
   session still at work. `running_now` reads the tree's newest census against its baseline, the
   least each command had over the session's ticks.
@@ -1024,11 +1031,13 @@ and for how the page draws them
   block for every session of a week on eight login nodes takes minutes (README), which is why the
   plates count no category.
 
-#### SE-4 inspector: facts, purpose ribbon, tool tokens
+#### SE-4 inspector: facts; purpose ribbon and tool tokens
 
-- **Shows:** the row's processes, CPU, length, distinct tools, pieces (keys folded and how the least
-  certain was attributed), sandbox and approval; its purpose ribbon and tool tokens, each run opening
-  the tree at its first record.
+- **Shows:** at the head of the inspector, the row's first and last record, its length, its tool calls
+  where the agent's commands are read, processes, CPU, distinct tools, pieces (keys folded and how the
+  least certain was attributed: said only where there is more than one, or the least certain was placed
+  by a weaker rule than the agent itself or an ancestor), sandbox and approval. At the head of its
+  Processes part, its purpose ribbon and tool tokens, each run opening the tree at its first record.
 - **Computation:** SE-2's row (`tool_rle` cut to 60 runs, `purpose_rle` to 80, with their start
   times). The inspector's own copy is made under the lock by `_inspect`, whose `lookup` folds only
   the keys sharing the row's prefix when the window's fold is stale; the agent's other days come
@@ -1067,8 +1076,9 @@ and for how the page draws them
 #### SE-8 inspector: task list, or phase list
 
 - **Shows:** each task, opened into its phases, each phase into the commands that ran most in it
-  (`top_commands`, 3); lone stretches and cutting gaps as lines of their own. A block with no task
-  lists its phases alone.
+  (`top_commands`, 3); under a closed task, its phases in order on one line, with the chip of each
+  and the length of any that holds a quarter of the task (`sequenceParts`); lone stretches and
+  cutting gaps as lines of their own. A block with no task lists its phases alone.
 - **Computation:** the block's `tasks` and `list` (SE-3).
 
 #### SE-9 inspector: process tree
@@ -1092,6 +1102,19 @@ and for how the page draws them
 - **Cost:** INSPECT's: one read at a time, up to 150,000 records or 6 GiB. Building a record costs
   about 44 µs on FAS, in the `inspect_workers` processes, and feeding it to the tree about 6 µs, in
   the service's own: a 150,000-record read 2.5-2.7 s. Cached 600 s.
+
+#### SE-10 inspector: map of the whole session
+
+- **Shows:** under the session's gist, before any process is read, the tasks as a lane of blocks over
+  the phases as a band, on the session's own clock: from its first record, or its first phase where
+  that begins earlier, to its last phase's end, and on to now for a session running now, where its
+  live edge ends it. A task is numbered and labelled as the list under it has it, where that fits; a
+  phase is tinted as the navigator tints it, with a rule of its full colour along its foot, and named
+  where its name fits; a guess is hatched and idle is a dashed outline. A click picks the task or the
+  phase as its row in the list does.
+- **Computation:** none of its own: the row's block (SE-3) on the axis the row's band is drawn on
+  (`bandAxis`), so it covers the whole session whatever the read reached, which SE-7 cannot.
+- **Cost:** none on the service.
 
 ## Login nodes › Resources
 
@@ -1449,7 +1472,10 @@ launch (`_approval`, `_approval_detail`).
 #### IN-3 sandboxed, per process and per session
 
 - **Shows:** per class, the processes in each of the four namespace states, and the sessions in each
-  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls).
+  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls). As in IN-2 and IN-4, a state
+  the axis can judge is a share of the class's judged ones, and the rest (exited before it was checked,
+  unknown, no calls, not an agent session, can't tell) are counts, with the coverage under the class
+  (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`): the share a plate above prints.
 - **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
   IN-2.
 

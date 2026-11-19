@@ -569,25 +569,124 @@ def parse_d_state_procs(s):
 # analyze/agent_lib.py for offline use). Order matters: an agent running inside
 # an IDE host (e.g. Claude Code under .vscode-server) is tagged as the agent, and
 # a Cursor-tagged bwrap is told apart from a generic sandbox probe.
+# A copy of lib/agent_classify.py's classify() as classify_agent(), which reads
+# the program a command line runs, not every word of it (VENDORED.md);
+# tests/test_ebpfm.py's ClassifyTest holds the two equal.
 _AGENT_PATTERNS = [
     ('claude_code', re.compile(r'anthropic\.claude-code|native-binary/claude'
-                               r'|/\.claude/|claude-agent-sdk|(?:^|/|\s)claude(?:\s|$)', re.I)),
+                               r'|/\.claude/(?:local|remote)/|/\.claude/cli\.[cm]?js$'
+                               r'|claude-agent-sdk'
+                               r'|(?:^|/|\s)claude(?:\s|$)'
+                               r'|/claude/versions/|@anthropic-ai/claude-code'
+                               r'|claude-code/cli\.[cm]?js$', re.I)),
     ('codex',       re.compile(r'@openai/codex|openai\.chatgpt|codex[ -]app-server'
                                r'|/\.codex/|codex-linux-sandbox|codex-bin|codex-homes'
                                r'|(?:^|/|\s)codex(?:\s|$|@)', re.I)),
     ('copilot',     re.compile(r'github\.copilot|/copilot(?:\s|$)', re.I)),
-    ('cursor',      re.compile(r'CURSOR_SANDBOX|\.cursor-server|\.cursor/', re.I)),
-    ('windsurf',    re.compile(r'windsurf-terminal|WINDSURF_STATE|\.windsurf-server'
-                               r'|\.codeium/windsurf', re.I)),
+    ('cursor',      re.compile(r'\.cursor-server|\.cursor/', re.I)),
+    ('windsurf',    re.compile(r'\.windsurf-server|\.codeium/windsurf|(?:^|/)windsurf-terminal',
+                               re.I)),
     ('vscode',      re.compile(r'\.vscode-server|\.vscode/cli', re.I)),
     ('bwrap',       re.compile(r'(?:^|/)bwrap(?:\s|$)')),
 ]
+_MARKERS = {
+    'cursor':   re.compile(r'CURSOR_SANDBOX='),
+    'windsurf': re.compile(r'WINDSURF_STATE='),
+}
+_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
+_SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'))
+_WRAPPERS = {
+    'env': (('-u', '--unset', '-C', '--chdir'), 0),
+    'exec': (('-a',), 0),
+    'nohup': ((), 0),
+    'setsid': ((), 0),
+    'nice': (('-n', '--adjustment'), 0),
+    'timeout': (('-s', '--signal', '-k', '--kill-after'), 1),
+}
+_RUNNERS = {'npx': (), 'npx-cli': (), 'pnpx': (), 'bunx': (),
+            'npm': ('exec', 'x'), 'npm-cli': ('exec', 'x'), 'pnpm': ('exec', 'dlx'),
+            'yarn': ('exec', 'dlx'), 'bun': ('x',)}
+_RUNNER_VALUES = ('-p', '--package', '-c', '--call', '--cache')
+_INTERPRETER = re.compile(r'^(?:node|nodejs|bun|deno|python(?:\d+(?:\.\d+)*)?|pypy3?)$')
+_INTERPRETER_VALUES = ('-r', '--require', '--import', '--loader', '--experimental-loader',
+                       '--title', '-W', '-X')
+_SHELL_VALUES = ('-o', '-O', '--rcfile', '--init-file')
+_INLINE = ('-c', '-e', '--eval', '-p', '--print', '-m')
+_ASSIGN = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+
+
+def _program_name(word):
+    name = word.rsplit('/', 1)[-1]
+    for ext in ('.js', '.mjs', '.cjs'):
+        if name.endswith(ext):
+            return name[:-len(ext)]
+    return name
+
+
+def _past_options(words, i, values):
+    while i < len(words) and len(words[i]) > 1 and words[i][0] == '-':
+        if words[i] == '--':
+            return i + 1
+        i += 2 if words[i] in values else 1
+    return i
+
+
+def _program_words(words):
+    """(program words, environment). argv[0]; past a wrapper or a VAR=value, the
+    word run; a package runner's package; an interpreter's script; the first
+    word of a shell's -c command. Every word of a bwrap's. The environment: the
+    VAR=value words before a program word, and a bwrap's `--setenv VAR value`
+    before the `--` that ends its options."""
+    out, env = [], []
+    i, n = 0, len(words)
+    while i < n:
+        word = words[i]
+        if _ASSIGN.match(word):
+            env.append(word)
+            i += 1
+            continue
+        out.append(word)
+        name = _program_name(word)
+        if name == 'bwrap':
+            end = words.index('--', i + 1) if '--' in words[i + 1:] else n
+            env.extend(words[j + 1] + '=' + (words[j + 2] if j + 2 < n else '')
+                       for j in range(i + 1, end - 1) if words[j] == '--setenv')
+            return words, env
+        if name in _WRAPPERS:
+            values, before = _WRAPPERS[name]
+            i = _past_options(words, i + 1, values) + before
+        elif name in _RUNNERS and (not _RUNNERS[name]
+                                   or (i + 1 < n and words[i + 1] in _RUNNERS[name])):
+            i = _past_options(words, i + (2 if _RUNNERS[name] else 1), _RUNNER_VALUES)
+        elif name in _SHELLS or _INTERPRETER.match(name):
+            shell = name in _SHELLS
+            values = _SHELL_VALUES if shell else _INTERPRETER_VALUES
+            i += 2 if name in ('bun', 'deno') and words[i + 1:i + 2] == ['run'] else 1
+            while i < n and len(words[i]) > 1 and words[i][0] == '-':
+                opt = words[i]
+                if opt == '--':
+                    i += 1
+                    break
+                if not shell and opt in _INLINE:
+                    return out, env
+                i += 2 if opt in values else 1
+        else:
+            break
+    return out, env
 
 
 def classify_agent(args):
     """Tag a command line as a coding agent / IDE / sandbox, else None."""
+    if not args:
+        return None
+    words, env = _program_words(args.split())
+    if _TOOL_SHELL.search(args) and any(_program_name(w) in _SHELLS for w in words):
+        return 'claude_code'
     for name, rx in _AGENT_PATTERNS:
-        if rx.search(args):
+        if any(rx.search(w) for w in words):
+            return name
+        marker = _MARKERS.get(name)
+        if marker is not None and any(marker.match(a) for a in env):
             return name
     return None
 

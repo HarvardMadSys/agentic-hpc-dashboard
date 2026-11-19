@@ -2814,13 +2814,16 @@ def proc_del(pid):
 # ---------------------------------------------------------------------------
 # agent roles: which classifier-tagged processes are an agent session
 # ---------------------------------------------------------------------------
-# classify() answers "which agent's tree is this?" and matches any argv that
-# mentions ~/.claude/, ~/.codex/ or ~/.vscode-server/. Most processes it tags are
-# not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/shell-snapshots/
-# ...`, its native binary re-executed as rg/ugrep/bfs, codex-linux-sandbox and
-# bwrap, --version and `auth status` probes, Codex's self-update script, VS Code's
-# server and its helpers. agent_role() says which one a tagged process is, from
-# its own argv, and resolve() lets only an `agent` start a session inside a tree.
+# classify() answers "which agent's tree is this?" from the program a command line
+# runs and the artifacts only an agent's runtime writes on it. Most processes it
+# tags are not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/
+# shell-snapshots/...`, codex-linux-sandbox and bwrap, --version and `auth status`
+# probes, VS Code's server and its helpers. Until it read the program alone it
+# matched any argv that mentioned ~/.claude/, ~/.codex/ or ~/.vscode-server/, so
+# it also tagged the native binary re-executed as rg/ugrep/bfs, Codex's
+# self-update script and a human's `vim ~/.claude/CLAUDE.md`. agent_role() says
+# which one a tagged process is, from its own argv, and resolve() lets only an
+# `agent` start a session inside a tree.
 #
 # A port of dashboard/rc_dashboard/roles.py, which applies the same rules to
 # schema <= 7 records at read time; keep the two in sync. It is a heuristic over
@@ -2835,9 +2838,10 @@ def proc_del(pid):
 #   infra          hosts sessions without being one (claude daemon, bg-pty-host, remote server)
 #   agent          an agent session runtime: the thing that talks to the model and runs tools
 #   tool-shell     the shell a Claude Code Bash tool call runs in
-#   helper         tagged only because its argv mentions an agent path, or the agent
-#                  binary run as a helper of its own (Codex's fs helper, Claude's
-#                  Chrome MCP server)
+#   helper         tagged for an agent's name or path without being its runtime (a
+#                  wrapper or test double named after it; in older records, any
+#                  argv that mentioned an agent path), or the agent binary run
+#                  as a helper of its own (Codex's fs helper, Claude's Chrome MCP server)
 
 # The agent executables. Claude's native binary is installed as its version
 # (`~/.local/share/claude/versions/2.1.291`), so its comm is a version string.
@@ -2855,6 +2859,12 @@ _ROLE_IDE_SERVER = re.compile(
     r'bootstrap-fork|server-main\.js|--type=extensionHost|--connection-token'
     r'|\.(?:vscode|cursor|windsurf)-server/cli/servers/[^ ]*/server/(?:node|bin/code-server)(?:\s|$)')
 _ROLE_IDE_EXE = re.compile(r'^code-[0-9a-f]{6,}')
+# Cursor's and Windsurf's servers carry their IDE's own type, which their AI
+# features' processes share: for those two types the server's directory tells the
+# IDE's processes apart. An agent tagged by its own type is that agent wherever it
+# is installed: Claude Code from Cursor's extension is a session, as from VS Code's.
+_ROLE_IDE_DIR_TYPES = frozenset({'cursor', 'windsurf'})
+_ROLE_IDE_DIRS = ('.cursor-server', '.windsurf-server')
 _ROLE_SHELLS = frozenset({'sh', 'bash', 'zsh', 'dash', 'fish'})
 _ROLE_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 # The agent binary run as a helper of its own, picked by its first argument alone:
@@ -2970,7 +2980,8 @@ def agent_role(agent_type, command, args):
     if agent_type == 'bwrap' or command.startswith(_ROLE_SANDBOX_PREFIX) \
             or argv0 in ('bwrap', 'codex-linux-sandbox'):
         return 'sandbox'
-    if agent_type == 'vscode' or '.cursor-server' in args or '.windsurf-server' in args:
+    if agent_type == 'vscode' or (agent_type in _ROLE_IDE_DIR_TYPES
+                                  and any(d in args for d in _ROLE_IDE_DIRS)):
         return 'ide' if (_ROLE_IDE_EXE.match(command) or _ROLE_IDE_SERVER.search(args)) \
             else 'helper'
     if command.startswith(_ROLE_INFRA_PREFIX):
@@ -3031,34 +3042,54 @@ def resolve(pid, m=None):
     attached to its agent's tree is still known to be one (_sandbox_type).
 
     `m` is the entry itself when the caller holds it: an exit record is written
-    after a hold, and by then the pid may name a newer process."""
+    after a hold, and by then the pid may name a newer process.
+
+    A loop, not a recursion: it walks up past every ancestor not resolved yet,
+    then attributes them on the way back down. A chain is as deep as a user
+    makes it -- a script that runs itself -- and one recursion per ancestor
+    raised RecursionError at about 1,000, out of the seed and every tick. A
+    parent already on the walk (pids that loop back on themselves) ends it, as
+    no parent does."""
     if m is None:
         m = proc.get(pid)
     if m is None:
         return False
     if m['attributed'] is not None:
         return m['attributed']
-    own_args = m['args'] if m.get('argv_source') != 'inherit' else None
-    tag = classify(own_args) if own_args else None
-    m['tag'] = tag
-    if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
-        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
-        return True
-    ppid = m['ppid']
-    pm = proc.get(ppid) if ppid and ppid != pid else None
-    if pm is not None and _born_after(pm, m.get('fork_ktime')):
-        pm = None             # the pid was recycled since: a newer process holds it
-    if pm is not None and resolve(ppid, pm):
-        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
-                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
-        return True
-    if tag is not None:
-        # outside any agent tree: its own root, as every tagged process was
-        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
-        return True
-    # Cleared, not left over from an earlier image: an exec re-resolves a process
-    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
-    return False
+    walk, seen, above = [], set(), None     # above: the resolved entry over walk[-1]
+    while True:
+        seen.add(id(m))
+        own_args = m['args'] if m.get('argv_source') != 'inherit' else None
+        tag = classify(own_args) if own_args else None
+        m['tag'] = tag
+        if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
+            m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+            above = m
+            break
+        walk.append((pid, m, tag))
+        ppid = m['ppid']
+        pm = proc.get(ppid) if ppid and ppid != pid else None
+        if pm is not None and _born_after(pm, m.get('fork_ktime')):
+            pm = None         # the pid was recycled since: a newer process holds it
+        if pm is None or id(pm) in seen:
+            break
+        if pm['attributed'] is not None:
+            above = pm
+            break
+        pid, m = ppid, pm
+    for pid, m, tag in reversed(walk):
+        if above is not None and above['attributed']:
+            m.update(attributed=True, is_agent=False, agent_pid=above['agent_pid'],
+                     agent_type=above['agent_type'], depth=(above['depth'] or 0) + 1)
+        elif tag is not None:
+            # outside any agent tree: its own root, as every tagged process was
+            m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        else:
+            # Cleared, not left over from an earlier image: an exec re-resolves a process
+            m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None,
+                     depth=None)
+        above = m
+    return above['attributed']
 
 
 def _born_after(pm, kt):
@@ -3185,8 +3216,12 @@ def seed_existing(poll=None):
                 if c:
                     m['cwd'] = c
     # Only once the whole table is in: attribution needs every parent present.
+    # One process that cannot be read is counted; it must not stop the start.
     for m in list(proc.values()):
-        _ask_hosts(m)
+        try:
+            _ask_hosts(m)
+        except Exception:
+            _count_error('seed_existing')
 
 
 def _inherit(m, key):
@@ -4801,9 +4836,18 @@ def _netp_lifetime(m):
 # other addresses (a CDN rotating them) leaves `host` null. Only hostnames are
 # taken -- a URL's credentials never are -- only for a process that is reported,
 # and nothing is read from the traffic itself.
+#
+# Every path here stays linear in the argv, which any user writes: a URL is
+# found from its `://`, with its scheme looked for in the _URL_SCHEME_MAX
+# characters before it, and only the first _ARGV_HOSTS_TEXT characters of an
+# argv are read. One regex tried at every letter (`[A-Za-z][A-Za-z0-9+.-]*://`)
+# read a run of scheme characters again from each of them: a run of 32,000
+# before a ` ://` took 0.7 s, for every exec and every record of the process.
 
-_URL_HOST = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
-                       r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_URL_SCHEME = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.-'
+_URL_SCHEME_MAX = 32                                    # characters of a scheme looked at
+_URL_AUTHORITY = re.compile(r'(?:[^\s/@]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_ARGV_HOSTS_TEXT = 4096                                 # the in-kernel argv read's default
 _SSH_COMMANDS = {'ssh', 'autossh', 'sftp', 'mosh'}     # destination: first non-option
 _HOSTPATH_COMMANDS = {'scp', 'rsync'}                   # [user@]host:path arguments
 _SSH_OPT_ARG = set('BbcDEeFIiJLlmOoPpQRSWw')          # ssh(1) options that take a value
@@ -4835,14 +4879,40 @@ def _ssh_destination(toks):
     return None
 
 
+def _url_hosts(text):
+    """The host of every URL in `text`, in order: what findall() of
+    `[A-Za-z][A-Za-z0-9+.-]*://(?:[^\\s/@]*@)?(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9._-]+)`
+    gives, in one pass from `://` to `://`. A scheme is the run of scheme
+    characters just before its `://`, from its first letter; only the last
+    _URL_SCHEME_MAX characters of the run are looked at, and none before where
+    the previous URL ended."""
+    out, i, end = [], 0, 0
+    while True:
+        q = text.find('://', i)
+        if q < 0:
+            return out
+        i = q + 3
+        run = text[max(end, q - _URL_SCHEME_MAX):q]
+        if not any(c.isalpha() for c in run[len(run.rstrip(_URL_SCHEME)):]):
+            continue                            # no scheme: not a URL
+        m = _URL_AUTHORITY.match(text, i)
+        if m:
+            out.append(m.group(1))
+            i = end = m.end()
+
+
 def _argv_hostnames(args, command=None):
     """The hostnames `args` names, in order, without repeats: every URL's host,
     and the destination of an ssh/sftp/scp/rsync. Address literals and localhost
     need no name and are left out, and an ordinary argument -- a file name, an
-    email address -- is never taken for one."""
+    email address -- is never taken for one. Only the first _ARGV_HOSTS_TEXT
+    characters are read, cut before the word the cut may have split (as
+    decode_argv() cuts a truncated argv), so half a name is never one."""
     if not args:
         return []
-    found = _URL_HOST.findall(args) if '://' in args else []
+    if len(args) > _ARGV_HOSTS_TEXT:
+        args = args[:args.rfind(' ', 0, _ARGV_HOSTS_TEXT + 1) + 1]
+    found = _url_hosts(args) if '://' in args else []
     if command in _SSH_COMMANDS:
         dest = _ssh_destination(args.split(' ')[1:])
         mt = dest and (_SSH_DEST.match(dest) or _HOST_PATH.match(dest))
@@ -4927,16 +4997,33 @@ def _host_worker():
         _resolve_host(_HOST_WANT.get())
 
 
+def _names_of(m):
+    """_argv_hostnames() of m's argv, read once per argv: kept on the entry
+    against the very string and command it was read from, as _emit_args() keeps
+    the masking, for the exec that asks and every record that labels."""
+    args, command = m.get('args'), _command_of(m)
+    c = m.get('argv_names')
+    if c is None or c[0] is not args or c[1] != command:
+        c = m['argv_names'] = (args, command, _argv_hostnames(args, command))
+    return c[2]
+
+
 def _ask_hosts(m):
     """Queue the names m's argv gives, for a process that will be reported.
-    Not callable while seeding: actor_of() memoizes, and a parent not ingested
-    yet would pin the child as unattributed."""
+    Whether it will be is asked before the argv is read for names, and only of
+    an argv that could name one (a `://`, or an ssh/scp/rsync). Not callable
+    while seeding: actor_of() memoizes, and a parent not ingested yet would pin
+    the child as unattributed."""
     if not WANT_ARGV_HOSTS:
         return
-    names = _argv_hostnames(m.get('args'), _command_of(m))
-    if names and actor_of(m)[0] is not None:
-        for n in names:
-            _want_host(n)
+    args, command = m.get('args') or '', _command_of(m)
+    if (args.find('://', 0, _ARGV_HOSTS_TEXT) < 0 and command not in _SSH_COMMANDS
+            and command not in _HOSTPATH_COMMANDS):
+        return
+    if actor_of(m)[0] is None:
+        return
+    for n in _names_of(m):
+        _want_host(n)
 
 
 def _hosts_for(m):
@@ -4944,7 +5031,7 @@ def _hosts_for(m):
     if not WANT_ARGV_HOSTS:
         return {}
     out = {}
-    for name in _argv_hostnames(m.get('args'), _command_of(m)):
+    for name in _names_of(m):
         for ip in _host_ips(name) or ():
             out.setdefault(ip, name)
     return out
@@ -5142,13 +5229,17 @@ def residency_tick(b=None):
     trees, totals, by_type = {}, {}, {}
     stacks_read = 0
     global_frames = {}
-    for m in live:
+
+    def tick_one(m):
+        # One live process's share of the tick, apart so that a process that
+        # cannot be read is counted and skipped, not the end of the tick.
+        nonlocal stacks_read
         actor, _attr = actor_of(m)
         if actor is None:
-            continue
+            return
         st = read_stat(m['pid'])
         if st is None:
-            continue                          # gone; reconcile_proc() retires it
+            return                          # gone; reconcile_proc() retires it
         if m.get('start_ep') is None:
             m['start_ep'] = start_epoch(st['starttime'])
         if m.get('start_ticks') is None:
@@ -5161,7 +5252,7 @@ def residency_tick(b=None):
             pid = m['pid']
             _replace(m)
             _ingest_proc(pid)
-            continue
+            return
         rss_kb = _read_vmrss_kb(m['pid']) or 0
         cpu_s = st['cpu_ticks'] / float(CLK_TCK)
         in_d = st['state'] == 'D'
@@ -5199,7 +5290,7 @@ def residency_tick(b=None):
         if m.get('user'):
             t['users'].add(m['user'])
         if actor != 'agent' or m.get('agent_pid') is None:
-            continue
+            return
         # item 7: per-agent-type totals, mirroring the census's totals_by_type
         at = m.get('agent_type') or '?'
         bt = by_type.setdefault(at, {'trees': set(), 'n_procs': 0, 'threads': 0,
@@ -5241,6 +5332,11 @@ def residency_tick(b=None):
                             'state': st['state'], 'threads': st['threads']})
         if frames:
             tr['frames'][frames[0]] = tr['frames'].get(frames[0], 0) + 1
+    for m in live:
+        try:
+            tick_one(m)
+        except Exception:
+            _count_error('residency_proc')
     # Computed before the emit loop so the per-tree counts are available to it,
     # but the records themselves are written AFTER, below, so the file's record
     # order is byte-for-byte what v4 produced. The process table is already
@@ -5428,15 +5524,18 @@ def flush_live(b, features):
             pass
     n = 0
     now = time.time()
-    for m in list(proc.values()):
+
+    def flush_one(m):
+        # 1 for a record written. Apart so that a process that cannot be read
+        # is counted and skipped, and the others are still flushed.
         if m['exited']:
-            continue
+            return 0
         actor, attribution = actor_of(m)
         if actor is None:
-            continue
+            return 0
         st = read_stat(m['pid'])
         if st is None:
-            continue
+            return 0
         pid = m['pid']
         d_total, d_max, d_cnt = ds.get(pid, (None, None, None))
         tx, rx, calls = nb.get(pid, (None, None, None))
@@ -5476,8 +5575,24 @@ def flush_live(b, features):
         })
         writer.write(rec)
         m['emitted'] = True
-        n += 1
+        return 1
+    for m in list(proc.values()):
+        try:
+            n += flush_one(m)
+        except Exception:
+            _count_error('flush_live')
     return n
+
+
+def _flush_at_stop(b, features):
+    """The stop record's `truncated`: how many records flush_live() wrote, or
+    None when it did not finish -- an unknown count, which 0 would state as
+    none written."""
+    try:
+        return flush_live(b, features)
+    except Exception:
+        _count_error('flush_live')
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -5853,12 +5968,7 @@ def main():
         netio_final_live()
     except Exception:
         _count_error('netpeer_read')
-    n_trunc = 0
-    if FLUSH_ON_EXIT:
-        try:
-            n_trunc = flush_live(b, feats)
-        except Exception:
-            n_trunc = 0
+    n_trunc = _flush_at_stop(b, feats) if FLUSH_ON_EXIT else 0
     # NB: `_stop` is the module-global shutdown flag read below -- do not shadow it.
     stop_rec = _envelope('stop')
     stop_rec.update({'uptime_s': round(time.time() - start, 1), 'records': writer.n,

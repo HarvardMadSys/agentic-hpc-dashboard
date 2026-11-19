@@ -204,6 +204,23 @@ class DailyTest(unittest.TestCase):
         self.assertIsNone(before["by_class"]["agent"]["n"])
         self.assertEqual(before["types"], {})
 
+    def test_a_pinned_clock_does_not_keep_a_reading_for_good(self):
+        # clock.as_of freezes time.time(): a reading taken before the backfill
+        # read anything must still give way once the records are in
+        from unittest import mock
+        r = LiveReducer(cfg(), CLASSES)
+        now = time.time()
+        t0 = int((now - 600) // 60) * 60
+        day = time.strftime("%Y-%m-%d", time.localtime(t0))
+        empty = {d["date"]: d for d in r.daily(now)["days"]}
+        self.assertEqual(empty.get(day, {}).get("held", 0), 0)
+        r.feed(exit_rec(t0, user="ann"))
+        # within the reuse span, by both clocks: the same reading
+        self.assertIs(r.daily(now), r.daily(now))
+        with mock.patch("time.monotonic", return_value=time.monotonic() + LiveReducer.DAILY_REUSE_S + 1):
+            days = {d["date"]: d for d in r.daily(now)["days"]}
+        self.assertEqual(days[day]["held"], 1)
+
 
 def tool_rec(tool, code=0, sig=None, cls="agent", pid=1):
     return {"event": "exit", "_a3": cls, "agent_type": "codex" if cls == "agent" else None,

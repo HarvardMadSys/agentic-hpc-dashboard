@@ -49,18 +49,19 @@ import { GLOSS } from '../lib/glossary';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
 import { AGENT_TYPE_COL, AGENT_TYPE_LBL } from '../lib/classes';
 import { AP_LABEL, CALL_LABEL, SESSION_LABEL, label } from '../lib/sandbox';
-import { pick, winLabel } from '../lib/panels';
+import { hasBody, pick, winLabel } from '../lib/panels';
 import { coveredBy } from '../lib/iocmds';
 import type { IoQuery } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
 import type { Panels } from '../lib/panels';
 import { stickyTop } from '../lib/sticky';
 import './agents.css';
+import { table } from '../lib/lookup';
 
-const HOME_TIP: Record<HomeSrc, string> = {
+const HOME_TIP: Record<HomeSrc, string> = table({
   agent: "the agent process's own cwd: the directory it was started in",
   first_call: 'it was started at `/` (IDE-hosted), so its first tool call’s directory off the root stands in',
-};
+});
 
 /* Directory rows an opened agent shows before "show all". */
 
@@ -136,12 +137,12 @@ function OutsideWrites({ n, tip }: { n: number | null | undefined; tip?: string 
 const typeLbl = (t: string | null | undefined) => AGENT_TYPE_LBL[t ?? ''] ?? t ?? 'agent';
 const typeCol = (t: string | null | undefined) => AGENT_TYPE_COL[t ?? ''] ?? 'var(--sg)';
 
-const PARENT_LBL: Record<string, string> = {
+const PARENT_LBL: Record<string, string> = table({
   same: "in its parent agent's directory",
   inside: "inside its parent agent's directory",
   above: "above its parent agent's directory",
   outside: "outside its parent agent's directory",
-};
+});
 
 /* ---------------------------------------------------------- blast radius */
 
@@ -1294,13 +1295,15 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
           </span>
         )}
       </div>
+      {/* "none" only of a body the service reduced: while it is waited for,
+          building, or could not be reduced, the panel below says which */}
       {stats.length ? (
         <TypeStrip stats={stats} />
-      ) : (
+      ) : hasBody(c) ? (
         <NoRows what={cls.includes('agent') ? 'no agent process in this window' : 'the agent class is filtered out'} />
-      )}
+      ) : null}
 
-      {stats.length > 0 && (
+      {(stats.length > 0 || !hasBody(c)) && (
         <div className="grid wide">
           <Panel
             title="Agents and their subagents"
