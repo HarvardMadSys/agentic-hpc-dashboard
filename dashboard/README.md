@@ -564,7 +564,9 @@ hours, a reader is now handed the span another reader of the same file inflated 
 either side of midnight, and never fewer than 16 (`hours.shared_files`) -- held while the run lasts,
 of 8 to 12 MB each: 32 at most on 8 nodes, what the hour's own readers, two spans each, hold while
 it reads. An hour searches every file before it reads any, so a block that held fewer files than
-that would lose each one's span to the searches after it. A node-split worker holds at most 4
+that would lose each one's span to the searches after it; and past 64 files (`SHARED_FILES_MAX`,
+16 nodes, 768 MB at most) the run opens none, and shares nothing, rather than hold a block that
+grows with the fleet. A node-split worker holds at most 4
 (`hours.NODE_SHARED_FILES`), for one node-hour. What this saves depends on how an hour of a file compares with a span. On a
 6-node bench feed (`bench/amplify.py --days 2 --hosts 3 --host-clones 2 --density 8
 --gzip-sealed`), whose files grow 1 to 3 MB an hour, a 24 h window's hours inflated 132 spans

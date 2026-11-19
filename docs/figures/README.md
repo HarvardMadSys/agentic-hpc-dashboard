@@ -142,8 +142,8 @@ A view is built one of three ways:
   yet is reduced first, in order (`HourStore.ensure`), once ever. Replicas: no -- the edge, the
   hours and the tail read the JSONL and search the `.gz` by time. In a run of hours, a reader of a
   sealed file is handed the span another reader of it inflated last, kept for every file an hour
-  reads (`gz.shared_spans`, `hours.shared_files`), so an hour's search, its read and the next
-  hour's search do not each inflate it again. With a worker for every unit of the node split, each unit's hours run in one
+  reads up to 64 files (`gz.shared_spans`, `hours.shared_files`), so an hour's search, its read
+  and the next hour's search do not each inflate it again. With a worker for every unit of the node split, each unit's hours run in one
   worker (`hours.UnitPool`), which keeps at most 4 such spans for one hour and indexes only its
   own node's files.
 - **scan** -- an unfiltered view with no closed hour inside it, or any view with

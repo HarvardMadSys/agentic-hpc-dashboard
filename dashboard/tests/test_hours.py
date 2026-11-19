@@ -1039,6 +1039,15 @@ class SharedFilesTest(unittest.TestCase):
         self.assertEqual(hours.shared_files(files[:4]), hours.gz.SHARED_FILES)
         self.assertEqual(hours.shared_files([]), hours.gz.SHARED_FILES)
 
+    def test_past_the_cap_it_shares_nothing(self):
+        # A block smaller than the files an hour searches keeps none of their
+        # spans, so past the cap there is no block at all, not a capped one.
+        def fleet(nodes):
+            return ["/feed/2026-11-01/h%d.%s.jsonl" % (h, s)
+                    for h in range(nodes) for s in ("exits", "snapshot")]
+        self.assertEqual(hours.shared_files(fleet(16)), hours.SHARED_FILES_MAX)
+        self.assertEqual(hours.shared_files(fleet(17)), 0)
+
 
 class UnitPoolTest(unittest.TestCase):
     """`UnitPool` sends every task of a unit -- a node, or a node and a reducer

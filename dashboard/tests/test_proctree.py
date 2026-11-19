@@ -177,6 +177,20 @@ class LinkTest(unittest.TestCase):
         self.assertAlmostEqual(middle["t0"], T0 + 40)
         self.assertAlmostEqual(middle["t1"], T0 + 40, msg="401 names it: it forked 401")
 
+    def test_a_start_bound_is_never_later_than_last_seen(self):
+        # 300 was last seen alive at T0+10. What depth places under it started
+        # at T0+40, through a process the read never saw that outlived it. 300
+        # started no later than it was last seen, the tighter of the two, and a
+        # bound later than its own end would draw its bar backwards.
+        index = {300: {"ppid": AGENT, "cmd": "zsh", "role": "tool-shell", "owner": AGENT,
+                       "last": T0 + 10}}
+        _, tree, _ = build([ex(T0 + 50, 401, 400, "python", kv=300, depth=2, dur=10.0)],
+                           keys=(AGENT, 300), index=index.get)
+        key = find(tree, 300)
+        self.assertEqual(find(tree, 400)["link"], "depth")
+        self.assertAlmostEqual(key["end"], T0 + 10)
+        self.assertAlmostEqual(key["t0"], T0 + 10)
+
     def test_the_agent_is_bounded_only_by_what_descends_from_it(self):
         # A process the fold alone hangs from the agent may not be its own: it
         # bounds neither the agent's start nor its end.

@@ -29,7 +29,9 @@ What it costs, measured on boslogin06's 2026-10-08 exits file (66 MB -> 1.49 GB)
   readers inflated last, for the last `n` files read (`SHARED_FILES`, 16, or
   more where the caller reads more): at most `n` spans, held until the block
   ends, each `SPAN` to `SPAN` + `_STEP` bytes (8 to 12 MB) -- a checkpoint
-  falls at the first inflate step past `SPAN`. The hourly reduction opens
+  falls at the first inflate step past `SPAN`. The hourly reduction's `n` is
+  at most `hours.SHARED_FILES_MAX`, 64, so 768 MB, and past that it opens no
+  block at all. The hourly reduction opens
   each file a few times an hour -- a time search, then the records, and the
   next hour's search lands near where they ended -- and each open inflated
   the same span again: 455 spans over a 6-node bench feed's 24 hours, 132

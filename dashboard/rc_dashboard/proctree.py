@@ -1284,6 +1284,9 @@ def _bounds(n, parent):
     or the index or the collector's depth place them under it -- and a process
     exists before what it forks. The session root's `fold` children are only
     the session's, so they, and the counts that may hold them, are left out.
+    Nor later than it was last seen alive (`end`): what depth places under it
+    can have started after that, through a process the read never saw that
+    outlived it, and a bound past its own end would draw its bar backwards.
 
     t1, when no exit was read: it was running when its last child started --
     the premise `_alive_at` already links a child to an exited parent by. A
@@ -1306,6 +1309,8 @@ def _bounds(n, parent):
         else:
             lo = min((k.t0 for k in n.kids if k.link != "fold" and k.t0 is not None),
                      default=None)
+        if lo is not None and n.end is not None and lo > n.end:
+            lo = n.end
     if n.ev is None:
         hi = max((k.start for k in n.kids if k.link in ("ppid", "index") and k.start is not None),
                  default=None)
