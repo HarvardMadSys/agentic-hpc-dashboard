@@ -128,7 +128,7 @@ same rules:
 ## Tests
 
 ```bash
-cd collector && python3 -m unittest discover -s tests -q    # 278 tests, no root, no BPF needed
+cd collector && python3 -m unittest discover -s tests -q    # no root, no BPF needed
 cd dashboard && uv run python -m unittest discover -s tests -q   # ingest: restarts, the hand-off, backfill order
 cd dashboard/web && npm run typecheck && npm run check:no-random
 python3 -m unittest discover -s fleet/tests -q          # the fleet stream, over a fake collector
@@ -155,6 +155,7 @@ carry them.
 - **Collector**: Linux with BCC (`python3-bpfcc`) and kernel headers for the eBPF tier;
   developed against 6.8 and 6.17, with a 4.18 path for D-state dwell. The node tier is
   pure `/proc` and needs neither. `bootstrap` installs the rest.
-- **Dashboard**: Python ≥ 3.11 (`fastapi`, `uvicorn` — that is all), Node for the
+- **Dashboard**: Python ≥ 3.11 with what `dashboard/pyproject.toml` lists (`fastapi`,
+  `uvicorn`, `numpy`, `orjson`, `pyarrow`; `uv sync` installs them), Node for the
   frontend build (`react`, `react-dom` at runtime; no charting library, every chart is
   hand-rolled SVG).

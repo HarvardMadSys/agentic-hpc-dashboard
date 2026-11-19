@@ -2,8 +2,19 @@
  *
  * The socket is authoritative. If it cannot be established (no websocket route,
  * a proxy that drops upgrades, the dev mock server) the hook degrades to polling
- * `GET /api/live` and says so through `transport`, because a frozen chart that
- * looks live is worse than a chart labelled `polling`.
+ * and says so through `transport`, because a frozen chart that looks live is
+ * worse than a chart labelled `polling`. Polling reads what the socket would
+ * have sent: `/api/live`, and `/api/windows` and `/api/feeds` on the same beat,
+ * so a finished build still reaches the panels (`buildNonce`) and the feeds
+ * report stays current. The socket is tried again meanwhile, for as long as the
+ * page is open (lib/backoff.ts): at once when the browser comes back online or
+ * the tab is shown again, else after a wait that doubles up to 30 s. Only a
+ * socket that has stayed up for STABLE_MS resets that wait and ends the polling,
+ * not its opening nor its first frames: the service sends those at once, and a
+ * proxy that accepts the upgrade and drops it soon after would otherwise be
+ * knocked on every second. A socket that has not opened in OPEN_MS, or that says
+ * nothing for QUIET_MS once open, is closed and replaced, and the page stops
+ * saying `live`.
  *
  * Nothing here interpolates. Between frames the series simply does not move --
  * the retired viewer manufactured events between polls and that is the specific
@@ -16,15 +27,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FeedsResponse, LiveResponse, WindowsResponse, WsFrame } from './types';
-import { getLive, wsUrl } from './client';
+import { getFeeds, getLive, getWindows, wsUrl } from './client';
 import { setClockPinned, syncServerClock } from '../lib/clock';
+import { OPEN_MS, POLL_AFTER, QUIET_MS, STABLE_MS, readyKey, retryDelay, spreadOf } from '../lib/backoff';
 
 export type Transport = 'connecting' | 'ws' | 'polling' | 'down';
 
 const POLL_MS = 15000;
-const WS_RETRY_MS = [1000, 2000, 5000, 10000, 20000];
-/** After this many failed socket attempts, stop retrying and just poll. */
-const WS_GIVE_UP = 4;
 
 export interface LiveState {
   live: LiveResponse | null;
@@ -40,6 +49,7 @@ export interface LiveState {
   windows: WindowsResponse | null;
   /** Bumps when the window this page is viewing finishes a (re)build. */
   buildNonce: number;
+  /** Read the live frame, the windows and the feeds again, now. */
   refresh: () => void;
 }
 
@@ -55,7 +65,7 @@ export function useLive(windowMin: number | null): LiveState {
   const [buildNonce, setBuildNonce] = useState(0);
 
   const sock = useRef<WebSocket | null>(null);
-  const timer = useRef<number | null>(null);
+  /** failed socket attempts since the last frame */
   const attempts = useRef(0);
   const dead = useRef(false);
   /* The window lives in a ref as well as in state so `poll` stays referentially
@@ -110,10 +120,8 @@ export function useLive(windowMin: number | null): LiveState {
         // not just `built_at`: a window resumed from a saved build keeps that
         // build's stamp, so across a service restart `built_at` alone would
         // match the key from before it and the page would never re-fetch.
-        const key = (frame.payload.held ?? [])
-          .filter((w) => w.state === 'ready')
-          .map((w) => `${w.minutes}:${w.built_at}:${w.installed_at ?? ''}`)
-          .join('|');
+        // A poll's `/api/windows` answer comes this way too.
+        const key = readyKey(frame.payload.held);
         if (key && key !== builtKey.current) {
           builtKey.current = key;
           setBuildNonce((n) => n + 1);
@@ -151,57 +159,122 @@ export function useLive(windowMin: number | null): LiveState {
     return () => document.removeEventListener('visibilitychange', shown);
   }, [apply]);
 
-  const poll = useCallback(async () => {
+  /** `/api/live`; with `all`, `/api/windows` and `/api/feeds` too, as the frames
+   *  the socket would have sent. A failed read says `down` unless the socket is up. */
+  const poll = useCallback(async (all = false) => {
+    const more = all ? Promise.allSettled([getWindows(), getFeeds()]) : null;
     try {
       take({ type: 'live', payload: await getLive(win.current) });
       setTransport((t) => (t === 'ws' ? t : 'polling'));
     } catch (e) {
-      setTransport('down');
+      setTransport((t) => (t === 'ws' ? t : 'down'));
       setError(e instanceof Error ? e.message : String(e));
+    }
+    if (more) {
+      const [w, f] = await more;
+      if (dead.current) return;
+      if (w.status === 'fulfilled') take({ type: 'windows', payload: w.value });
+      if (f.status === 'fulfilled') take({ type: 'feeds', payload: f.value });
     }
   }, [take]);
 
-  /* one-shot manual refresh, used by the header button */
+  /* one-shot manual refresh, used by the header button: everything the socket sends */
   const refresh = useCallback(() => {
-    void poll();
+    void poll(true);
   }, [poll]);
 
   useEffect(() => {
     dead.current = false;
+    // what spreads this page's waits from another's: when it opened
+    const seed = typeof performance !== 'undefined' ? performance.timeOrigin : 0;
+    let retry: number | null = null;
+    let quiet: number | null = null;
+    let next: number | null = null;
+    let settle: number | null = null;
+    let polling = false;
 
-    const clear = () => {
-      if (timer.current != null) {
-        clearTimeout(timer.current);
-        timer.current = null;
-      }
+    const stopRetry = () => {
+      if (retry != null) window.clearTimeout(retry);
+      retry = null;
     };
-
+    const stopQuiet = () => {
+      if (quiet != null) window.clearTimeout(quiet);
+      quiet = null;
+    };
+    const stopSettle = () => {
+      if (settle != null) window.clearTimeout(settle);
+      settle = null;
+    };
+    const stopPolling = () => {
+      polling = false;
+      if (next != null) window.clearTimeout(next);
+      next = null;
+    };
     const startPolling = () => {
-      clear();
+      if (polling) return;
+      polling = true;
       const loop = async () => {
-        if (dead.current) return;
-        await poll();
-        if (!dead.current) timer.current = window.setTimeout(loop, POLL_MS);
+        next = null;
+        if (dead.current || !polling) return;
+        await poll(true);
+        if (!dead.current && polling) next = window.setTimeout(loop, POLL_MS);
       };
       void loop();
     };
+    /** a socket let go: no handler of it runs again */
+    const drop = (ws: WebSocket) => {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+    };
+
+    /** The socket closed, would not open, or went quiet: poll once it has
+     *  failed POLL_AFTER times in a row, and try it again after a wait. */
+    const lost = () => {
+      sock.current = null;
+      stopQuiet();
+      stopSettle();
+      if (dead.current) return;
+      reseed.current = true;
+      attempts.current += 1;
+      if (attempts.current >= POLL_AFTER) startPolling();
+      // the socket is gone, whatever it said: the page polls, or tries it again
+      const polls = polling;
+      setTransport((t) => (!polls ? 'connecting' : t === 'down' ? t : 'polling'));
+      stopRetry();
+      retry = window.setTimeout(connect, retryDelay(attempts.current, spreadOf(seed, attempts.current)));
+    };
 
     const connect = () => {
-      if (dead.current) return;
+      retry = null;
+      if (dead.current || sock.current) return;
       let ws: WebSocket;
       try {
         ws = new WebSocket(wsUrl());
       } catch {
-        startPolling();
+        lost();
         return;
       }
       sock.current = ws;
+      let heard = false;
+      // A socket that does not open within OPEN_MS, or once open says nothing
+      // for QUIET_MS, is dead: re-armed by the opening and by every frame.
+      const watch = (ms: number) => {
+        stopQuiet();
+        quiet = window.setTimeout(() => {
+          quiet = null;
+          if (sock.current !== ws) return;
+          drop(ws);
+          lost();
+        }, ms);
+      };
+      watch(OPEN_MS);
 
       ws.onopen = () => {
-        attempts.current = 0;
-        clear();
-        setTransport('ws');
-        setError(null);
+        watch(QUIET_MS);
         // Tell the server which window this reader is on before anything else:
         // it sends one `live` frame per DISTINCT window, and until it hears
         // otherwise this socket is counted on the service default.
@@ -212,16 +285,33 @@ export function useLive(windowMin: number | null): LiveState {
             /* the frame is re-sent by the window effect once the socket settles */
           }
         }
-        // The socket may only push deltas; the view was seeded from the REST
-        // snapshot as the page mounted, so a quiet cluster is not an empty
-        // dashboard. A socket that came back after dropping seeds it again.
-        if (reseed.current) {
-          reseed.current = false;
-          void poll();
-        }
       };
 
       ws.onmessage = (ev) => {
+        watch(QUIET_MS);
+        if (!heard) {
+          // Frames flow: the page is live. The wait starts over, and the
+          // polling stops, only once the socket has stayed up for STABLE_MS:
+          // the first frames come as soon as it connects, and one that drops
+          // soon after must go on backing off, and the polling go on with it.
+          heard = true;
+          setTransport('ws');
+          setError(null);
+          stopSettle();
+          settle = window.setTimeout(() => {
+            settle = null;
+            if (sock.current !== ws) return;
+            attempts.current = 0;
+            stopPolling();
+          }, STABLE_MS);
+          // The socket may only push deltas; the view was seeded from the REST
+          // snapshot as the page mounted, so a quiet cluster is not an empty
+          // dashboard. A socket that came back after dropping seeds it again.
+          if (reseed.current) {
+            reseed.current = false;
+            void poll();
+          }
+        }
         let frame: WsFrame;
         try {
           frame = JSON.parse(ev.data as string) as WsFrame;
@@ -240,23 +330,29 @@ export function useLive(windowMin: number | null): LiveState {
       };
 
       ws.onclose = () => {
-        sock.current = null;
-        if (dead.current) return;
-        reseed.current = true;
-        attempts.current += 1;
-        if (attempts.current > WS_GIVE_UP) {
-          startPolling();
-          return;
-        }
-        setTransport('connecting');
-        const wait = WS_RETRY_MS[Math.min(attempts.current - 1, WS_RETRY_MS.length - 1)];
-        timer.current = window.setTimeout(connect, wait);
+        if (sock.current !== ws) return;
+        drop(ws);
+        lost();
       };
 
       ws.onerror = () => {
         /* onclose always follows; the retry/backoff decision lives there. */
       };
     };
+
+    /** Try the socket now, rather than at the end of its wait: the browser is
+     *  back online, or the tab is on screen again. Not while one is open or
+     *  opening. */
+    const now = () => {
+      if (dead.current || sock.current) return;
+      stopRetry();
+      connect();
+    };
+    const shown = () => {
+      if (document.visibilityState !== 'hidden') now();
+    };
+    window.addEventListener('online', now);
+    document.addEventListener('visibilitychange', shown);
 
     connect();
     // Seed immediately so the first paint is data, not a spinner, even if the
@@ -269,15 +365,17 @@ export function useLive(windowMin: number | null): LiveState {
 
     return () => {
       dead.current = true;
-      clear();
+      stopRetry();
+      stopQuiet();
+      stopSettle();
+      stopPolling();
+      window.removeEventListener('online', now);
+      document.removeEventListener('visibilitychange', shown);
       const s = sock.current;
       sock.current = null;
-      if (s) {
-        s.onclose = null;
-        s.close();
-      }
+      if (s) drop(s);
     };
-  }, [poll]);
+  }, [poll, take]);
 
   /* A window change re-uses the open socket. The server answers with a frame
    * for the new window immediately, so the chart never keeps showing the old

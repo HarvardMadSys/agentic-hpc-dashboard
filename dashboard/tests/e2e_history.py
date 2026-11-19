@@ -105,7 +105,7 @@ GROW_MAX = 899
 # store itself, on in one service only.
 IGNORE = (
     # -- timings
-    ("*elapsed_s", "*", "a duration: the pinned clock's (0) or a monotonic one"),
+    ("*elapsed_s", "*", "a duration, timed on the monotonic clock"),
     ("*behind_wall_s", "*", "the wall clock less the pinned one: when the request ran"),
     ("_meta/generated_at", "export", "the export header's wall-clock stamp"),
     ("*/compressed/index_s", "feeds", "how long indexing the .gz files took"),

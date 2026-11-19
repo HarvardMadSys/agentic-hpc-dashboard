@@ -71,6 +71,11 @@ never outranks the file.
   of an hour and a group of reducers each; 0 workers is one per CPU the service may use
   ([Hourly merge-reduce](#hourly-merge-reduce)). Going from 1 worker to more, or back,
   reduces the hours afresh; the count and the groups change no saved hour.
+- `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the
+  accounts it names, and `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only those classed
+  agent: the account a site's monitoring runs as, say. Neither names anyone by default;
+  `run.sh` sets these clusters' own (not the demo's). The ebpf feed's report counts what was
+  dropped (`excluded.users` in `/api/feeds`).
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's record
 is a JSON line; the retired builder's contract was `data.json`) and
@@ -115,8 +120,15 @@ day-file, at the file's own offsets. Which reads take it:
 
 A file with no replica yet -- not converted, or no longer the file its manifest names (its name,
 size, mtime and inode) -- is read as JSONL, and so is one holding a line a JSONL reader would
-read differently: a last line with no newline, or a line that is JSON but not an object. Nothing
-waits for the store.
+read differently: a last line with no newline, or a line that is JSON but not an object. So is
+one whose manifest names a table that is gone, or not the byte size it was written at (the
+store cleaned up in part, a crash before the data reached the disk): it is converted again. A
+replica a read finds broken all the same -- a table damaged with its size intact -- is let go:
+that read goes on from the file, from where the replica left it, the file is read as JSONL
+until it is converted again, and the error is in the store's `errors` (the Feeds tab). Before,
+a replica was trusted on its manifest alone: with its table deleted, a window's plan left the
+sealed day out as if it held nothing in the window, and cut short, every build of the window
+failed. Nothing waits for the store.
 
 **The same answers.** A replica reads as its file does: the same records in the same order, key
 for key and type for type, at the same offsets; a time search probe for probe; and a filtered
@@ -146,9 +158,11 @@ It is a Hive-partitioned dataset as well, for a query of your own:
 
 **Conversion.** In the background, `history.workers` processes (`RC_DASH_HISTORY_WORKERS`; 0, the
 default, is up to 8, as the CPUs the service may run on allow) convert every sealed file with no
-current replica, the biggest first, at startup and then every minute as days are sealed. A
-replica whose source is gone is removed, and so is one older than the newest `history.days` dated
-dirs when that is set. The node tier is never sealed, so it is never converted.
+current replica, the biggest first, at startup and then every minute as days are sealed. Each
+table is flushed to the disk before it is renamed into place, and the manifest, which names
+them, last. A replica whose source is gone is removed, and so is one older than the newest
+`history.days` dated dirs when that is set. The node tier is never sealed, so it is never
+converted.
 
 **What it costs and buys**, on FAS RC's mirror: 8 login nodes, the 7 sealed days 2026-11-10 to
 2026-11-16 (112 day-files, 18.4 GB of `.gz`, 182 M records). Converting them took 12 minutes in 8
@@ -179,8 +193,9 @@ The eBPF tier's entry in `/api/feeds` carries `history`: `enabled` and `state` (
 files), `converted` (since the service started), `lookups` (sealed files a reader asked for since
 then: answered from a `replica`, or read as `jsonl` for want of one), `held` (the replicas held
 between reads, and the `bytes` their indexes take), `swept` (half-written files a killed
-conversion left, removed at startup), `progress` (the current round: `todo`, `done`, `failed`,
-`records`, `bytes_in`, `elapsed_s`) and the latest `errors`.
+conversion left, removed at startup), `read_failures` (reads a replica failed since then, each
+finished from the file), `progress` (the current round: `todo`, `done`, `failed`, `records`,
+`bytes_in`, `elapsed_s`) and the latest `errors`.
 `--check-feeds` says how many sealed files have a current replica and how much is left to
 convert.
 
@@ -418,7 +433,21 @@ Three things a rebuild reports rather than assumes:
   proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively.
 - **The seam.** A build reads the day-files while the tailer is also advancing through them.
   Rows landing in that seam are buffered and replayed; if the buffer overflows the count is
-  published as `replay_dropped` rather than quietly going missing.
+  published as `replay_dropped` rather than quietly going missing. The seam is drawn per file,
+  in bytes: the build keeps where it stopped reading each day-file, the tail says where each
+  record's line ends, and a live record is skipped only when the build had read that line.
+  It was a timestamp -- the newest record the build read, from any host -- so a host whose
+  stream lagged when the view was built had its catch-up dropped from the view until the next
+  re-scan (6 h for the 24 h view) while the live tier counted it. A live record older than the
+  window's start is left out, as a scan would leave it; the status counts both
+  (`live_skipped`: `already_read`, `before_window`). A day-file cut short in place (its inode the
+  same), which the tail then reads from its start again, leaves the seam when the build read it
+  before the cut -- the file is then shorter than the build's read, starts otherwise, or (a
+  plain file) holds other bytes in the 4 KB before where the build stopped -- and is counted as
+  the tail reads it, as the live tier counts it; a build that read it after the cut, which the
+  tail notices only at its next poll, keeps it. The file is read for this once, outside the
+  lock the readers wait on. A `.gz` is checked by its first bytes only (a sealed day is not cut
+  short in place, and reading past its head means inflating it).
 
 One pre-existing inconsistency had to be fixed for the control to mean anything: trajectory
 sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the panel's own
@@ -618,7 +647,8 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
-| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
+| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a reader that stops reading holds up neither the tail nor the other readers (one did, for as long as it stayed); one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
+| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved -- no poll ended, no batch handed over -- for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row (the ingest loop's 3 polls, the windows loop's 6 s, the feeds loop's 90 s, the rebuild loop's 3 rebuild intervals); or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing: a round that goes through, or a batch every view takes, ends the streak. It said `ok` with a `last_poll` two minutes old, and whatever the loops and the views met. `ingest` (`age_s`, `stale_after_s`, `feed_errors`, `feed_error_streak`, `feed_error`), each loop's last error, how many and its `streak` (`loops`), the readers (`websocket`: `readers`, `dropped`, `refused`, `last_drop`), the backfill, the windows, the memos. A loop's error and a view's are also logged to stderr, when they change and once a minute while they repeat |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
@@ -688,7 +718,10 @@ line are replaced by `[REDACTED]` on every way out (built panels, the live frame
 `/api/events`, `/api/export`, and the `q` search, which matches the masked text), keeping the
 flag or variable name so a reader can see what was there. Records stay raw in memory, because
 the secrets, sandbox and approval detectors need to read them. The rules and their measured cost
-are in `rc_dashboard/redact.py`.
+are in `rc_dashboard/redact.py`, word for word the collector's: a deny-list, so a secret in a
+shape they do not know is shown as it is (`collector/README.md` lists the shapes). Each reads a
+text in linear time, and one past 100,000 characters, as far as the phase rules read a command,
+is cut there and marked `[CUT]`.
 
 ## Conventions the panels obey
 
@@ -699,7 +732,9 @@ already made once.
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
   editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
-  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  CLI started in an IDE terminal, or by an IDE's extension, keeps its own agent type and stays
+  `agent`: its role is read from that type, not from the IDE's directory in its path
+  (`roles.py`). Folding the IDE
   class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
   silently empty the IDE class.
@@ -826,7 +861,14 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
   account reads the same in every tab, window, and restart, and without the salt a list of
   candidate names does not turn an alias back. Changing the salt reshuffles every alias.
-  Neither `/api/config` nor `--print-config` shows it.
+  Neither `/api/config` nor `--print-config` shows it. A configured salt shorter than 16 bytes
+  stops the service at start rather than serving under it, and a longer one gives every name
+  a new alias. The file is written whole and then linked into place, so a crash cannot leave
+  it half-written (on a file system without hard links it is made in place, which can; and two
+  instances started there at the same moment for the first time can stop one of them, which
+  started again reads the other's salt). One that is empty, not hex or shorter (edited by hand,
+  a crash there, or an older version) stops the service too: delete it, and the next start
+  makes a new salt, with new aliases.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
@@ -1215,12 +1257,15 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
-  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
-  to what the agent started most recently, so it does not take the time of the work that follows it. A gap
-  that begins while it runs lists it (`alive`), and once it ends, its time past the phase it began in is
-  said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The session's last phase
-  ends at the latest end of all the session's calls, or of a process one of them left running, whichever is
-  later, so the lane does not end while anything the agent started still runs.
+  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. On the
+  lane, time goes to what the agent started most recently, so it does not take the time of the work that
+  follows it. A gap that begins while it runs lists it (`alive`), and once it ends, its time past the phase
+  it began in is said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The
+  session's last phase ends at the latest end of all the session's calls, or of a process one of them left
+  running, whichever is later, so the lane does not end while anything the agent started still runs. That
+  is the lane, not the work: each phase also says where its own calls ended (`own_t1`) and how long its
+  calls, or what they left running, went on past it, by the call's category (`ran_on`), and the summary
+  weighs the work by those (below).
 - **A session across midnight is one block.** A row is one local day, since its session id carries the day,
   so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
   the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
@@ -1233,8 +1278,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 `category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
 files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
 programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
-is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
-wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded, the
+last phase's only to the end of its own calls (`own_t1`); and the time a call, or a process it left running,
+went on past its phase counts toward the call's own use (`ran_on`). A call hung for 14 h beside a minute of
+edits is then a session of running, not of changing files (it was "Mostly changed files from the shell (99% of
+14 h of work)"), and a training run left going for 3 h while the agent read its log is 3 h of running beside
+the reading, so the work can be longer than the session. A wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
 being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
 apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
 the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
@@ -1248,7 +1297,11 @@ the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
 that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
+said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
+phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
+the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
 2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
@@ -1521,7 +1574,10 @@ that, from the window's `slurm` reducer (`reducers/slurm.py`):
   a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
   no id, a non-zero exit and the scheduler's own error line, which is the reason shown
   (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
-  is not a refusal;
+  is not a refusal, nor is srun's own line saying so (`task 0: Exited with exit code 1`): an
+  srun or salloc is refused only when it cannot get the allocation. The count of refusals is a
+  lower bound: a submission keeps its last 300 characters, and a refusal line cut at its start
+  there (a reason of some 200 characters: Slurm prints that line last) is not counted;
 - queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
   gap, not 0.
 
@@ -1535,9 +1591,10 @@ only jobs with GPUs and a time limit on the command line, and say how many those
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
 - **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
-  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
+  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). The dashboard decides what each tagged process
   really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
   trajectory rows say how many keys they fold and how the least certain one was
   attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a
@@ -1613,6 +1670,16 @@ is not atomic against a concurrent reader. So the tailer reads to EOF, finds the
 yields only complete lines, and **advances its stored offset only that far** — trailing bytes are
 re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup hand-off obeys the
 same rule, so a line still being written belongs to the tail, never to the read-back.
+
+**One bad line stops nothing.** A line that is JSON but not an object (`0`, `null`, `[]`) is
+counted with the lines that do not parse, by every reader of the day-files (`fastjson.record`);
+a record the normalizer cannot read -- a field of a type no collector writes, a list `args` or
+`event`, a number for `ts` -- is passed over and counted, and so is one a held view cannot take.
+`/api/feeds` says how many, in the eBPF tier's `tail`: `parse_errors`, `malformed`,
+`feed_errors`. One `null` used to make every poll raise: the tail's offsets stayed put, the
+other hosts were never read, and the batch already handed over was counted again at every
+poll; a `[]` already in a file stopped the backfill, and such a record failed every build of a
+window that held it.
 
 Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
 rather than silently seeked past its end. A file first seen after startup — a new date

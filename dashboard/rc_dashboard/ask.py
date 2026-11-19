@@ -1107,6 +1107,9 @@ class Asker:
                "parse": scope.get("parse"), "suggestions": None,
                "agent": info["agent"], "model": info["model"],
                "submitted": time.time(), "started": None, "finished": None,
+               # the same three on the monotonic clock, which `elapsed_s` is timed on:
+               # a pinned one (`clock.as_of`) never moves
+               "_submitted_m": time.monotonic(), "_started_m": None, "_finished_m": None,
                "progress": "waiting for a free agent", "answer": None, "error": None,
                "snapshot_kb": round(len(snap) / 1024, 1),
                "view": scope.get("view"), "cites": None, "_refs": refs}
@@ -1133,8 +1136,9 @@ class Asker:
             if j is None:
                 return None
             out = {k: v for k, v in j.items() if not k.startswith("_")}
-        end = out["finished"] or time.time()
-        out["elapsed_s"] = round(end - (out["started"] or out["submitted"]), 1)
+            since = j["_submitted_m"] if j["_started_m"] is None else j["_started_m"]
+            end = j["_finished_m"]
+        out["elapsed_s"] = round((time.monotonic() if end is None else end) - since, 1)
         return out
 
     def _set(self, job, **kv):
@@ -1143,7 +1147,8 @@ class Asker:
 
     def _run(self, job, text):
         with self.slots:
-            self._set(job, state="running", started=time.time(), progress="starting the agent")
+            self._set(job, state="running", started=time.time(), _started_m=time.monotonic(),
+                      progress="starting the agent")
             # In the system's temporary directory, not under cache.dir: the
             # salt, the session key and the saved builds are not its
             # neighbours. Mode 0700 (mkdtemp), and removed once it has answered.
@@ -1192,11 +1197,13 @@ class Asker:
                                            code, (err or "").strip()[-400:], ENV_HINT))
                 answer = redact.redact(answer) if answer else "(no answer)"
                 self._set(job, state="done", answer=answer, progress=None, finished=time.time(),
+                          _finished_m=time.monotonic(),
                           suggestions=parse_suggestions(answer)
                           if job.get("parse") == "suggestions" else None,
                           cites=self._cites(job, answer))
             except Exception as e:
-                self._set(job, state="error", error=str(e), progress=None, finished=time.time())
+                self._set(job, state="error", error=str(e), progress=None, finished=time.time(),
+                          _finished_m=time.monotonic())
             finally:
                 # the whole table is let go once the answer has said what it cites
                 self._set(job, _refs=None)

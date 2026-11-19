@@ -9,8 +9,10 @@ name: collector-image
 #
 # The base image is pinned per-ref so a push that rebuilds both stays
 # consistent: a tag build consumes base:latest, a main build consumes base:edge,
-# and any other branch consumes base:<branch-slug> (built by base-image.yml on
-# the same push when docker/base changed, otherwise the branch's last base).
+# a branch whose own commits changed docker/base (since it left develop and
+# main) consumes base:<branch-slug>, which base-image.yml built on the push that
+# changed it, and any other branch consumes base:edge: nothing builds it a base
+# of its own. A push that rebuilds the base it consumes waits for that build.
 
 on:
   push:
@@ -40,57 +42,137 @@ jobs:
       contents: read
       packages: write
     steps:
+      # Actions pinned to a commit, not a tag, since this job can write packages.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # every branch's history (develop's and main's among them): which base
+          # a branch builds on depends on what it changed since it left them
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The ref's type and name come from the runner's environment, never pasted
+      # into the script: a branch name is text whoever pushes it chose.
       - name: Resolve base image tag
         id: base
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          # base-image.yml publishes latest on each v*.*.* tag push, edge from
+          # main, nothing from develop, and base:<slug> from any other branch, on
+          # a push that changes what it builds from: its `paths:`.
+          paths=(docker/base .github/workflows/base-image.yml)
+          # This branch's own commits changed those paths, measured from where
+          # it left develop and from where it left main: a change it took in
+          # from either is not its own, and builds it no base. A trunk it shares
+          # no history with gives nothing to measure from and is skipped; a
+          # branch that shares none with either builds on edge, with a warning.
+          own_base() {
+            local trunk fork shared=no
+            for trunk in origin/develop origin/main; do
+              # A trunk that is not there at all is a broken checkout (the
+              # fetch-depth: 0 above, or a renamed branch), not a branch of
+              # unrelated history: say so and stop rather than guess a base.
+              git rev-parse --verify -q "$trunk" > /dev/null ||
+                { echo "::error::$trunk was not fetched; this step needs both trunks"; exit 1; }
+              fork="$(git merge-base HEAD "$trunk")" || continue
+              shared=yes
+              git diff --quiet "$fork" HEAD -- "${paths[@]}" && return 1
+            done
+            if [ "$shared" = no ]; then
+              echo "::warning::$GITHUB_REF_NAME shares no history with develop or main; it builds on base:edge"
+              return 1
+            fi
+            return 0
+          }
+          # This push changed them, so base-image.yml is rebuilding this ref's
+          # tag now: its path filter, a diff from the ref's commit before the
+          # push. BEFORE is 40 zeros for a new branch, which pushes its own
+          # commits, and empty for a run by hand, which rebuilds nothing. A
+          # BEFORE that cannot be fetched (a force-push left it unreachable)
+          # counts as no change: that push builds on whatever the tag holds.
+          rebuilt_now() {
+            case "$BEFORE" in
+              "") return 1 ;;
+              0000000000000000000000000000000000000000) own_base ;;
+              *) git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
+                   git fetch --quiet --no-tags origin "$BEFORE" || return 1
+                 ! git diff --quiet "$BEFORE" HEAD -- "${paths[@]}" ;;
+            esac
+          }
+          want=""   # when this push rebuilds the tag: the commit it is rebuilt from
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             base_tag="latest"
-          elif [ "${{ github.ref_name }}" = "main" ]; then
+            [ -n "$BEFORE" ] && want="$GITHUB_SHA"
+          elif [ "$GITHUB_REF_NAME" = "main" ]; then
             base_tag="edge"
-          else
+            rebuilt_now && want="$GITHUB_SHA"
+          elif own_base; then
             # Slugify the branch the same way docker/metadata-action does for
-            # type=ref,event=branch (slashes -> dashes).
-            base_tag="$(echo '${{ github.ref_name }}' | sed 's#[/]#-#g')"
+            # type=ref,event=branch: each run of characters a tag cannot hold
+            # (slashes among them) becomes one dash.
+            base_tag="$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
+            rebuilt_now && want="$GITHUB_SHA"
+          else
+            # No base of its own, so none is built for it: main's.
+            base_tag="edge"
           fi
-          image="${REGISTRY}/${BASE_IMAGE_NAME}:${base_tag}"
+          # A repository path must be lowercase, and github.repository keeps the
+          # owner's capitals (HarvardMadSys), which docker refuses outright.
+          # metadata-action lowercases the images it names, so base-image.yml
+          # publishes ghcr.io/harvardmadsys/...; the tag keeps its case there too.
+          image="${REGISTRY,,}/${BASE_IMAGE_NAME,,}:${base_tag}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
-          echo "Using base image: ${image}"
+          echo "revision=${want}" >> "$GITHUB_OUTPUT"
+          echo "Using base image: ${image}${want:+, once rebuilt from $want}"
 
       - name: Wait for base image to be available
         # base-image.yml and this workflow start in parallel when a push touches
-        # docker/base, so the base tag may not exist yet. Poll the registry
-        # manifest for up to ~10 min before giving up, rather than failing on a
-        # race we expect to resolve. If docker/base was unchanged, the tag
-        # already exists from a prior run and this returns immediately.
+        # docker/base, so the base tag may not exist yet, or may still be the
+        # build of an earlier commit. Each base records the commit it was built
+        # from (org.opencontainers.image.revision, set by metadata-action): when
+        # this push rebuilds the tag, only the build of this commit will do.
+        # Poll the registry for up to ~10 min before giving up, rather than
+        # failing on a race we expect to resolve. Only "not found" and an earlier
+        # build are waited out: any other error (a malformed reference, a refused
+        # login) will not go away, and stops the job at once, saying what it was.
+        env:
+          IMAGE: ${{ steps.base.outputs.image }}
+          WANT: ${{ steps.base.outputs.revision }}
         run: |
-          image="${{ steps.base.outputs.image }}"
           for i in $(seq 1 60); do
-            if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
-              echo "Base image available: $image"
-              exit 0
+            if out=$(docker buildx imagetools inspect "$IMAGE" \
+                       --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}' 2>&1); then
+              if [ -z "$WANT" ] || [ "$out" = "$WANT" ]; then
+                echo "Base image available: $IMAGE, built from ${out:-an unrecorded commit}"
+                exit 0
+              fi
+              err="$IMAGE is the build of ${out:-an unrecorded commit}, not yet of $WANT"
+            else
+              err=$out
+              case "$err" in
+                *"not found"*) ;;
+                *) echo "::error::Cannot read base image $IMAGE: $err"; exit 1 ;;
+              esac
             fi
-            echo "Attempt $i/60: $image not yet available; waiting 10s..."
+            echo "Attempt $i/60: $err; waiting 10s..."
             sleep 10
           done
-          echo "::error::Base image $image did not become available in time"
+          echo "::error::Base image $IMAGE did not become available in time: $err"
           exit 1
 
       - name: Derive image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -102,7 +184,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: docker/collector/Dockerfile

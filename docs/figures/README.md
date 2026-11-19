@@ -442,7 +442,8 @@ charts that name the window.
 #### LV-4 agent processes exited
 
 - **Shows:** the agent processes that exited in the window, the other classes beside them, the
-  agent share of every process, and the agent types on hover.
+  agent share of every process -- out of every class counted, `unlabeled` too, whatever the class
+  chips show (`lib/shares.ts`) -- and the agent types on hover.
 - **Records:** `exit`: `_a3`, `agent_type`, `_eff`, `_command`, `_sid`, `pid`, `ppid`,
   `_shell_resolved`, `cpu_s`.
 - **Computation:** `ToolMixReducer.feed` counts an exit under its class, and an agent's also under
@@ -507,7 +508,10 @@ charts that name the window.
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
   `resources.by_class[c].top`), `trajectories.summary[c].sessions`, and `slurm.by_class[c]` `jobs`,
-  `gpus`, `gpu_h`; a cell is the class's share of its row over the classes shown. The processes and
+  `gpus`, `gpu_h`; a cell is the class's share of its row over every class that row's panel counted,
+  `unlabeled` too, not the classes shown, so a share does not move with the class chips; a class
+  counted with no reading of the row (null, as the network bytes of a class none of whose processes
+  carried them) leaves the row no share, a dash, and says why (`lib/shares.ts`). The processes and
   CPU rows are the tool mix's, after the shell-wrapper dedup. A byte cell opens IOCMDS for its
   class.
 - **Cost:** its reducers'.
@@ -926,7 +930,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 - **Computation:** `ToolMixReducer.feed` counts per (class, kind) and per (class, tool), and an
   agent's also per (agent type, ...), after the shell-wrapper dedup; `_rows` gives each kind's
   counts, sums and shares per class; a page filter to one agent type uses that type's own counters
-  (`by_agent_type`). The page computes a class's share of a row.
+  (`by_agent_type`). The page computes a class's share of a row, out of every class counted, not
+  the classes shown (`lib/shares.ts`); the total beside it is that whole.
 - **Cost:** as LV-4. A byte cell opens IOCMDS by kind and class, read from the JSONL unless the
   page is filtered by user.
 
@@ -1015,7 +1020,8 @@ and for how the page draws them
   (`_open_calls`), then `phase_segment.prepared`, `phase_tasks.task_spans` (tasks),
   `phase_segment.segment` (phases, cut at the tasks' boundaries), `phase_tasks.name_tasks` (labels,
   from the agent's own words or the names in its commands, and the headline) and
-  `phase_summary.summarize` (category, uses, summary). Cached per row (`_phase_cache`, 4,096 blocks)
+  `phase_summary.summarize` (category, uses, summary: the work weighed to the last phase's own calls,
+  `own_t1`, and a call's time past its phase to its own use, `ran_on`). Cached per row (`_phase_cache`, 4,096 blocks)
   and made again when the row's calls, records or pending entries change, so on each read of a
   session still at work. `running_now` reads the tree's newest census against its baseline, the
   least each command had over the session's ticks.
@@ -1468,7 +1474,10 @@ launch (`_approval`, `_approval_detail`).
 #### IN-3 sandboxed, per process and per session
 
 - **Shows:** per class, the processes in each of the four namespace states, and the sessions in each
-  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls).
+  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls). As in IN-2 and IN-4, a state
+  the axis can judge is a share of the class's judged ones, and the rest (exited before it was checked,
+  unknown, no calls, not an agent session, can't tell) are counts, with the coverage under the class
+  (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`): the share a plate above prints.
 - **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
   IN-2.
 

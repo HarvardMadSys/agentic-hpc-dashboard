@@ -14,6 +14,7 @@ import { dur, fint } from './format';
 import { phaseCol } from './phases';
 import { APPROVAL_KNOWN, shareOfKnown } from './sandbox';
 import { SURFACE_LBL } from './surfaces';
+import { table } from './lookup';
 
 /** The call categories, in the order the service lists them, with the words a
  *  share of calls says them in, and the colour of the phase of the same name. */
@@ -30,7 +31,7 @@ export const CALL_CATS: [CallCat, string][] = [
 ];
 const CAT_LBL = Object.fromEntries(CALL_CATS);
 /** What a category's calls do, for a tooltip. */
-export const CAT_TIP: Record<CallCat, string> = {
+export const CAT_TIP: Record<CallCat, string> = table({
   explore: 'read and search: ls, cat, rg, grep, find, sed -n, head, …',
   edit: 'change files from the shell: cp, mv, rm, mkdir, sed -i, a heredoc into a file, …',
   build: 'build, compile, or install: make, cmake, gcc, pip install, …',
@@ -40,7 +41,7 @@ export const CAT_TIP: Record<CallCat, string> = {
   wait: 'only wait: sleep, ps, pgrep, watch, …',
   git: 'git and gh',
   unknown: 'a tool call whose command was not recorded',
-};
+});
 export const catLbl = (c: string): string => CAT_LBL[c] ?? c;
 export const catCol = (c: string): string => phaseCol(c);
 
@@ -161,32 +162,32 @@ const MODE_WORDS: Record<Leverage['mode']['id'], string> = {
 };
 
 /** A use, after "to": what the agents' actions are for. */
-export const USE_VERB: Record<UseKind, string> = {
+export const USE_VERB: Record<UseKind, string> = table({
   explore: 'explore code and files',
   develop: 'edit and test code',
   build: 'build and install software',
   run: 'run programs',
   hpc: 'run jobs on Slurm',
   git: 'manage code in git',
-};
+});
 /** The same use, as a noun: `a mix of uses led by exploring code and running programs`. */
-const USE_NOUN: Record<UseKind, string> = {
+const USE_NOUN: Record<UseKind, string> = table({
   explore: 'exploring code',
   develop: 'editing and testing',
   build: 'building',
   run: 'running programs',
   hpc: 'Slurm jobs',
   git: 'git',
-};
+});
 /** What each use counts, for a tooltip. */
-export const USE_TIP: Record<UseKind, string> = {
+export const USE_TIP: Record<UseKind, string> = table({
   explore: 'tool calls that read and search: ls, cat, rg, grep, find, sed -n, …',
   develop: 'tool calls that change files from the shell, and tool calls that run tests. The agent’s own Edit tool runs no command, so edits made with it are not here',
   build: 'tool calls that build, compile or install: make, gcc, pip install, …',
   run: 'tool calls that run a program: python train.py, a script, …',
   hpc: 'tool calls to the scheduler: sbatch, srun, squeue, sacct, scancel, …',
   git: 'tool calls to git and gh',
-};
+});
 
 /** The one-sentence summary of how a user leverages their agents: the roster's line
  *  under them, and the head of their portrait. */

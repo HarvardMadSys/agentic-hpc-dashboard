@@ -244,10 +244,12 @@
   "history": { "enabled": true, "dir": "", "workers": 0, "days": 0 },
   "rebuild": { "interval_s": 900 },
 
-  "//21": "Standard repo exclusions -- see analyze/tool_calls_distribution.py:53.",
+  "//21": "Accounts whose records are dropped (counted, never silent): drop_global every record,",
+  "//21a": "drop_agent those classed agent (RC_DASH_DROP_USERS, RC_DASH_DROP_AGENT_USERS). Name your",
+  "//21b": "own, such as the account your monitoring runs as; none by default.",
   "filters": {
-    "drop_global": ["juncheng"],
-    "drop_agent": ["flamraoui"],
+    "drop_global": [],
+    "drop_agent": [],
     "classes": ["agent", "human-vscode", "human"],
     "unlabeled_class": "unlabeled"
   },

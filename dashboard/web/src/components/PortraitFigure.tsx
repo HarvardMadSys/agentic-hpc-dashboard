@@ -42,6 +42,7 @@ import { AGENT_TYPE_COL } from '../lib/classes';
 import { fint } from '../lib/format';
 import { USE_VERB, agentLbl, apportion, busiestHour, catCol, hourSpan, leverageHeadline, pctWords, plural, ranked, ruleOf } from '../lib/portraits';
 import { SURFACE_LBL } from '../lib/surfaces';
+import { table } from '../lib/lookup';
 
 export const FIG_W = 300;
 export const FIG_H = 146;
@@ -56,14 +57,14 @@ const P_DESK = 128;
 const typeCol = (t: string | null | undefined): string => (t && AGENT_TYPE_COL[t]) || 'var(--s1)';
 
 /** Each use's icon colour: the phase of the same name, as the call bars colour it. */
-const USE_COL: Record<UseKind, string> = {
+const USE_COL: Record<UseKind, string> = table({
   explore: catCol('explore'),
   develop: catCol('edit'),
   build: catCol('build'),
   run: catCol('run'),
   hpc: catCol('slurm'),
   git: catCol('git'),
-};
+});
 
 /** Where the robots float, the nearest the person first: three a side, rising away
  *  from them, clear of the window, the clock and what stands on the desk. */

@@ -209,6 +209,18 @@ class LiveTest(NoonCase):
         v.materialize_key("trajectories", 0)          # nothing new since: kept
         self.assertIs(v.payload["trajectories"], after)
 
+    def test_on_a_pinned_clock_the_ranking_still_ages(self):
+        # NoonCase freezes time.time, as `clock.as_of` does, and the view still takes
+        # records from a feed that grows past its pin: their age is a duration
+        t0 = time.time() - 600
+        v, norm = self.view(session(t0))
+        before = v.payload["trajectories"]
+        v.feed(norm.normalize(rec("exit", t0 + 60, 1099, 100, "ls", "ls", agent_pid=100,
+                                  tree_root=100, net_tx_bytes=5_000_000)))
+        time.sleep(0.2)
+        v.materialize_key("trajectories", 0.05)
+        self.assertTrue(v.payload["trajectories"] is not before, "the ranking was not read again")
+
     def running(self, recs, rows, now):
         live = LiveReducer(cfg(), ["agent", "human", "ide"])
         norm = Normalizer(cfg())

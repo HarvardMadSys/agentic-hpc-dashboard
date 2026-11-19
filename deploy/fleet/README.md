@@ -54,7 +54,7 @@ stopping it, and a stalled dashboard answers nothing.
   `uv python install 3.14`, then `DASH_PYTHON=$(uv python find 3.14)`), and
   `/usr/bin/python3` for the stream. A deploy whose `DASH_PYTHON` is another version than the
   venv's makes the venv again, keeps the one before as `venv.old`, and restarts the session.
-  `ss`, `curl`, and `getfacl` for
+  `ss` (without it, the port checks read `/proc/net/tcp`), `curl`, and `getfacl` for
   the checks. Disk and memory: see [Memory and disk](#memory-and-disk).
 - **Each source node:** the collector ([`collector/`](../../collector), or the RPM), an
   account (`SOURCE_USER`) that can log in with an ssh key, and `/usr/bin/python3` 3.6 or
@@ -72,6 +72,7 @@ in. Git ignores `site.env`. The example explains each key; in short:
 | `SENDER_DIR`, `SHARED_HOME` | Where the sender lives on the nodes, and whether their home is shared. |
 | `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`, `DASH_PYTHON`, `PRIVATE_TREE` | The dashboard's host, its folder, its port, the Python that makes its venv, and whether the folder stays private ([When the stream trips](#when-the-stream-trips)). |
 | `SITE_NAME`, `SITE_DESCRIPTION`, `RISK_PROFILE`, `ANONYMIZE`, `CODEX` | What the page calls itself, the risk rules, aliases for user names, and Ask. |
+| `DROP_USERS`, `DROP_AGENT_USERS` | Accounts whose records the dashboard drops: every record, or their agents' only. Empty, it drops only `SOURCE_USER`'s: the stream's own processes. |
 | `HISTORY_DAYS`, `MAX_WINDOWS`, `PREWARM_MIN`, `MAX_SESSIONS`, `DAY_CACHE`, `DASH_MEMORY_MAX`, `FREE_MIN_GB` | History, memory, and disk. A key you leave out takes the dashboard's default. |
 | `SSH_KEY`, `WORK_DIR`, `NODE_MODULES`, `SLACK_WEBHOOK_FILE` | This machine's key, work folder, bundle build, and the check's Slack posts. |
 
@@ -274,10 +275,14 @@ a reboot. It starts the session if it is down, starts again a window whose proce
 stopped (a start limit, or Ctrl-C), and makes a missing window. It restarts a dashboard
 that listens, has run 20 minutes, and twice gives no answer at all (a 401 without the
 password counts as an answer), and one that has not listened after 2 hours. It reports a
-node whose link has been down for more than an hour. It checks that the listener on the
-port is the dashboard's own and, with `PRIVATE_TREE=true`, audits that nothing in
-`DASH_ROOT` is readable by anyone else. It prints `OK`, or one line of findings with an
-exit code; anything but `OK` goes to Slack when `SLACK_WEBHOOK_FILE` names a webhook.
+node whose link has been down for more than an hour, and one connected with nothing from
+it for an hour (`STREAM ... stale`). The stream itself closes a link whose node has sent
+nothing, not even its pings, for 5 minutes (a `stall_s` in `stream.json` changes that):
+the link shows as down, and stays down while its node only says hello or sends what the
+stream refuses. It checks that the listener on the port is the dashboard's own and, with
+`PRIVATE_TREE=true`, audits that nothing in `DASH_ROOT` is readable by anyone else. It
+prints `OK`, or one line of findings with an exit code; anything but `OK` goes to Slack
+when `SLACK_WEBHOOK_FILE` names a webhook.
 
 ## When the stream trips
 

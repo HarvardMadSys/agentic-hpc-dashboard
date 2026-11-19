@@ -34,6 +34,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import type { ProcCount, ProcEntry, ProcGroup, ProcIo, ProcNode } from '../api/types';
 import { ioBrief, ioTip } from '../lib/procio';
+import { groupEndWords } from '../lib/procexit';
 import { DASH, clock, dur, fint } from '../lib/format';
 import { pcol } from '../lib/purposes';
 import { llmPurpose, useLlmPurposes } from '../lib/annotate';
@@ -395,7 +396,6 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean, up:
     };
   }
   if (e.k === 'g') {
-    const fails = Object.entries(e.exits).filter(([k]) => k !== '0').reduce((a, [, n]) => a + n, 0);
     return {
       kind: 'g',
       title: `${e.motif.join(' › ')} ×${fint(e.reps)}`,
@@ -406,7 +406,8 @@ export function boxText(e: Item, open: boolean, kids: number, root: boolean, up:
       lines: [
         [[`${fint(e.n)} processes${e.sub_cpu != null ? ` · CPU ${dur(e.sub_cpu)}` : ''}`, false]],
         [
-          fails ? [`${fint(fails)} failed`, true] : ['all exit 0', false],
+          // a signal, then a non-zero exit, then "all exit 0" only when every one did, as the table reads it
+          groupEndWords(e),
           [e.distinct > 1 ? ` · ${fint(e.distinct)} distinct` : '', false],
         ],
         ...ioLine(e.sub_io, true),

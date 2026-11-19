@@ -61,7 +61,8 @@ sandbox slice that `exited before it was checked` (key `denied`), a session whos
 attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
 reload — the middleware re-reads the file on every request. Delete a panel's key instead to
-see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels.
+see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels. Give a
+panel an `_error` string to see `<NotReduced>`, a panel whose reducer raised.
 
 The node tier, the day-by-day panel and the exit verdicts have theirs: a node whose probes are
 ten times the rest, an NFS hiccup in the same bins as the resources series' stall, a host whose
@@ -98,6 +99,11 @@ npm run build        # tsc -b && vite build  ->  dist/
 npm run typecheck    # tsc -b, no emit
 npm run check:charts # node --test: the chart tick and width rules in src/charts/scale.ts
 npm run check:css    # node --test: every stylesheet closes its blocks, no rule nested in a rule
+npm run check:shares # node --test: a class's share is out of every class counted, whatever the chips show
+npm run check:panels # node --test: a panel not reduced, waited for or building is never "none" or 0
+npm run check:live   # node --test: the live socket is retried for good, polled meanwhile, replaced when quiet
+npm run check:lookup # node --test: no outside string reads a table's prototype; a part that throws says so
+npm run check:procexit # node --test: a run's box says how it ended as the process table does
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
@@ -193,6 +199,16 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    narrow plot the ticks thin out (`tickTarget`) rather than overprint. On a touch screen a
    tap shows a `data-tip`, controls are a fingertip high, and form fields are 16px so iOS
    does not zoom into them. Above 900px, with a mouse, the page is as it was.
+9. **No outside string reads a prototype** — a key that comes from the URL, the service or
+   the collector indexes only a table made by `table()` (`src/lib/lookup.ts`), which has no
+   prototype, or is read with `own()`: `?atype=__proto__` once handed the filter's label
+   `Object.prototype`, which React cannot draw, and the page went white.
+10. **A part that throws says so** — one boundary around the page (`src/main.tsx`), one per
+   tab (`TabBoundary`, `src/lib/lazyTab.tsx`), one per panel's body (`<Panel>`), each from
+   `src/components/Boundary.tsx`: "this tab could not be drawn: … · reload" in the frame of
+   the missing family, and the rest of the page stays. A tab's code that would not load (a
+   deploy replaced it under an open page) is one such failure. A panel handed new data tries
+   again.
 
 Two more that the payloads force:
 
@@ -263,7 +279,12 @@ Three rules it follows, all of them the same rule this page follows everywhere:
 - **The kinds of nothing stay apart.** A panel whose window is still being reduced
   renders `<Building>` — a solid frame and a percentage — not `none` (which would assert a
   measurement) and not the empty state (which would blame the feed). One the backend did
-  not return renders `<NotReturned>` (rule 4), never the empty state.
+  not return renders `<NotReturned>` (rule 4), never the empty state. One whose reducer
+  raised arrives as its envelope with `_error` and nothing else (`windows.materialize`): it
+  renders `<NotReduced>`, "the service could not reduce this panel" and what it said, and
+  `pick` hands it on as not present, so a plate reads a dash rather than a 0. A tab that
+  says `none` of a panel says it only of a body the service reduced (`hasBody`): while the
+  panel is waited for, building, or not reduced, the panel says which.
 
 Plate labels read the window off the **panel's own envelope** (`winLabel`), not off the
 picker: during a rebuild those genuinely differ, and the plate is the one that must be right.
@@ -392,11 +413,23 @@ table, the chart, and the list say one thing.
 
 ### Live transport
 
-`src/api/useLive.ts` prefers the websocket and falls back to polling `GET /api/live` every
-15 s after four failed socket attempts. The transport is always named in the rail
+`src/api/useLive.ts` prefers the websocket. After five failed socket attempts in a row it
+also polls, every 15 s, what the socket would have sent: `GET /api/live`, and `/api/windows`
+and `/api/feeds` on the same beat, so a build that finishes still reaches the panels
+(`buildNonce`, from the ready windows) and the feeds report stays current. It never gives up
+on the socket: it tries again after a wait that doubles from 1 s to 30 s, each wait spread
+over its upper half by a hash of when the page opened (`src/lib/backoff.ts`; no random
+number), and at once when the browser comes back online or the tab is shown again. Only a
+socket that has stayed up for 75 s resets the wait and ends the polling, not its opening nor
+its first frames, which the service sends as soon as it connects: a proxy that accepts the
+upgrade and drops it soon after would otherwise be knocked on every second, and the polling
+stopped each time. A socket not open within 15 s (a proxy that takes the connection and never
+answers the upgrade), or that says nothing for 75 s once open -- the service sends a `feeds`
+frame every 30 s -- is closed and replaced, and the page stops saying `live`. The transport is always named in the rail
 (`transport ws` / `polling` / `down`), because a frozen chart that looks live is worse than
 a chart labelled `polling`. A `rebuilt` frame triggers a re-read of `/api/panels`; a
-`feeds` frame supersedes the REST feeds snapshot.
+`feeds` frame supersedes the REST feeds snapshot. The header's refresh asks for all of it
+again: the live frame, the windows, the feeds, the panels and the sessions.
 
 ### Filters, URL state and export
 

@@ -22,6 +22,7 @@ import type {
 } from '../api/types';
 import { clockPinned } from './clock';
 import { clock, dur, fint } from './format';
+import { own } from './lookup';
 
 export const PHASES: [kind: PhaseKind, label: string, short: string, colour: string][] = [
   ['explore', 'Exploring', 'explore', 'var(--s3)'],
@@ -142,8 +143,7 @@ const namedBy = (top: [string, number][], n: number | null): string | null => {
 };
 
 /** `table[key]` for a key the table holds, and never one off `Object.prototype`: keys come from the service. */
-const lookup = (table: Record<string, string>, key: string): string | undefined =>
-  Object.hasOwn(table, key) ? table[key] : undefined;
+const lookup = (table: Record<string, string>, key: string): string | undefined => own(table, key);
 
 /** The category names a mixed phase is made of, as the phase labels say them. */
 const MIX_WORD: Record<string, string> = {
