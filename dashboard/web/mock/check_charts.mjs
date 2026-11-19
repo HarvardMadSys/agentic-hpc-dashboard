@@ -29,6 +29,23 @@ test('an axis writes every tick alike: one unit, one number of decimals, and 0 a
   assert.deepEqual(labels(7000), ['0', '2,000', '4,000', '6,000', '8,000']);
 });
 
+test('a small axis keeps its labels apart: four decimals, then powers of ten', () => {
+  // with three decimals at most these read 0 · 0.001 · 0.001 · 0.002 · 0.002 and 0 · 0.000 · 0.001 · 0.001 · 0.001
+  assert.deepEqual(labels(0.002), ['0', '0.0005', '0.0010', '0.0015', '0.0020']);
+  assert.deepEqual(labels(0.0009), ['0', '2.5e-4', '5.0e-4', '7.5e-4', '1.0e-3']);
+  assert.deepEqual(labels(0.00003), ['0', '1e-5', '2e-5', '3e-5']);
+});
+
+test('at any scale, an axis has no two labels alike and none wider than its margin holds', () => {
+  for (const max of [3e-5, 1.1e-4, 2e-4, 4e-4, 9e-4, 1.1e-3, 2e-3, 4e-3, 8e-3, 0.03, 0.7, 3, 9, 18, 95, 240, 950,
+    4000, 9000, 19000, 95000, 240000, 1.4e6, 9e6, 2.4e7, 9e8, 4e9]) {
+    const l = labels(max);
+    assert.equal(new Set(l).size, l.length, `a max of ${max}: ${l.join(' · ')}`);
+    // the left margin holds six characters of a tick; an svg cuts the rest from the left
+    for (const s of l) assert.ok(s.length <= 6, `a max of ${max}: ${s} is wider than six characters`);
+  }
+});
+
 test('ticks are multiples of the step, never a running sum of it', () => {
   assert.deepEqual(niceTicks(0.3), [0, 0.1, 0.2, 0.3]);
   assert.deepEqual(niceTicks(0.7), [0, 0.2, 0.4, 0.6, 0.8]);

@@ -17,18 +17,33 @@ export function niceTicks(max: number, n?: number, integer = false): number[] {
   return out;
 }
 
+/** The fewest decimals, at most `max`, that write `s` exactly; null when more
+ * would be needed. */
+function decimals(s: number, max: number): number | null {
+  for (let d = 0; d <= max; d++) if (Math.abs(s * 10 ** d - Math.round(s * 10 ** d)) <= 1e-6) return d;
+  return null;
+}
+
 /** The labels of one axis, written alike: one unit (k, M, B) and one number of
  * decimals for every tick, the fewest that write its step exactly (25 → none,
- * 2.5 → one, 0.25 → two). Each tick written by itself (`fmt`) gave one axis
- * `0.00 · 25.0 · 100`, or `0.00 · 5,000 · 10k`. The baseline is `0`. Ticks
- * only: a value read off a bar or a hover keeps its own precision. */
+ * 2.5 → one, 0.25 → two, 0.0005 → four). Each tick written by itself (`fmt`)
+ * gave one axis `0.00 · 25.0 · 100`, or `0.00 · 5,000 · 10k`. The baseline is
+ * `0`. Ticks only: a value read off a bar or a hover keeps its own precision.
+ *
+ * Every label stays within six characters, the room the charts' left margin
+ * gives it (an svg cuts what passes its edge: `0.000025` would show as
+ * `000025`). A step finer than 0.0001 would need more, so that axis is written
+ * in powers of ten instead, its mantissas alike: `2.5e-4 · 5.0e-4 · 1.0e-3`. */
 export function axisFmt(ticks: number[]): (v: number) => string {
   const top = ticks.reduce((a, t) => Math.max(a, Math.abs(t)), 0);
   const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : top || 1;
   const [div, unit] = top >= 1e9 ? [1e9, 'B'] : top >= 1e6 ? [1e6, 'M'] : top >= 1e4 ? [1e3, 'k'] : [1, ''];
-  const s = step / div;
-  let d = 0;
-  while (d < 3 && Math.abs(s * 10 ** d - Math.round(s * 10 ** d)) > 1e-6) d++;
+  const d = decimals(step / div, 4);
+  if (d === null) {
+    const mantissa = (t: number) => t / 10 ** Math.floor(Math.log10(Math.abs(t)));
+    const k = Math.max(0, ...ticks.filter((t) => t !== 0).map((t) => decimals(mantissa(t), 2) ?? 2));
+    return (v: number) => (v === 0 ? '0' : v.toExponential(k));
+  }
   return (v: number) => {
     if (v === 0) return '0';
     const x = v / div;
