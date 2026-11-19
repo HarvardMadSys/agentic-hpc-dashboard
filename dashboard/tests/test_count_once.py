@@ -375,6 +375,21 @@ class LiveOwnIoTest(unittest.TestCase):
                 self.feed(back, older=True)
                 self.assertEqual(rd_of(self.lv, self.now), {"bob": 120.0, "carol": 1.0})
 
+    def test_the_notes_starts_stay_bounded_by_the_notes_held(self):
+        # Day-long processes the backfill notes, newest first, at a BOOKED_MAX of
+        # 2: each note dropped at the cap left its start behind, and the backfill
+        # never read past a start a day back to let it go.
+        t = self.now - 800
+        with mock.patch.object(livemod, "BOOKED_MAX", 2):
+            self.feed([person("exit", t - 0.1 * i, 10000 + i, 1, "sleep", "sleep 86400", "bob",
+                              io=iob(1.0, 1.0), duration_s=86400.0) for i in range(3000)],
+                      older=True)
+        self.assertEqual(len(self.lv.io_booked), 2)
+        self.assertLessEqual(len(self.lv._io_starts), 2 * 2 + 64)
+        # and every note still held keeps its entry, for the prune to find
+        held = {(b[livemod._B_SEQ], key) for key, b in self.lv.io_booked.items()}
+        self.assertLessEqual(held, {(seq, key) for _st, seq, key in self.lv._io_starts})
+
     def test_past_the_slack_the_live_tier_refuses_a_child_as_a_window_s_join_does(self):
         # The cat is not the wrapper's to take back in two ways, read alike in
         # order, tail-then-backfill and by a window's join: the wrapper last

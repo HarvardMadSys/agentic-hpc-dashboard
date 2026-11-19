@@ -498,6 +498,18 @@ class LiveReducer:
             self.io_dropped += 1
         if st is not None:
             heapq.heappush(self._io_starts, (-st, self._io_seq, key))
+            # A note dropped at BOOKED_MAX, or noted again, leaves its entry here
+            # until the backfill reads past its start -- for a process that ran
+            # for days, perhaps never. Past twice the notes held, keep only the
+            # entries of notes still held: O(1) a note, amortized.
+            if len(self._io_starts) > 2 * len(self.io_booked) + 64:
+                self._io_starts = [e for e in self._io_starts if self._io_held(e)]
+                heapq.heapify(self._io_starts)
+
+    def _io_held(self, entry):
+        """Whether `_io_starts`' entry is the note `io_booked` holds for its key."""
+        b = self.io_booked.get(entry[2])
+        return b is not None and b[_B_SEQ] == entry[1]
 
     def _io_prune(self, t):
         """The backfill has read back to `t`: a noted process that started after
