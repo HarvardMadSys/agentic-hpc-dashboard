@@ -1248,6 +1248,7 @@ function trajectoryDetail(nowEpoch, traj) {
   const group = (motif, members, reps, items, extra = {}) => ({
     k: 'g', motif, period: motif.length, reps, count: motif.length * reps,
     n: motif.length * reps, start: members[0].start, end: members[members.length - 1].end,
+    last: members[members.length - 1].start,
     cpu: Number((members.reduce((a, m) => a + (m.cpu ?? 0), 0) * (reps * motif.length / members.length)).toFixed(3)),
     sub_cpu: null, dur_max: Math.max(...members.map((m) => m.dur ?? 0)), exits: { 0: motif.length * reps },
     signals: {}, alive: null, distinct: 1, samples: [{ args: members[0].args, n: motif.length * reps }],
@@ -1303,6 +1304,18 @@ function trajectoryDetail(nowEpoch, traj) {
     e.n = (e.ev ? 1 : 0) + kids.reduce((a, k) => a + (k.n ?? 0), 0);
     const c = [e.ev ? e.cpu : null, ...kids.map((k) => k.sub_cpu)].filter((v) => v != null);
     e.sub_cpu = c.length ? Number(c.reduce((a, v) => a + v, 0).toFixed(3)) : null;
+    // Bounds, as the backend serves them (proctree._bounds): with no start, the
+    // earliest time of anything below it (t0); with no exit, when its last
+    // child started (t1), past its last tick. A group's last member started at
+    // its `last`; a count says nothing of when its last one started.
+    const lows = kids.map((k) => (k.k === 'p' ? (k.start ?? k.t0) : k.start)).filter((v) => v != null);
+    const forks = kids
+      .filter((k) => k.k === 'g' || (k.k === 'p' && (k.link === 'ppid' || k.link === 'index')))
+      .map((k) => (k.k === 'g' ? k.last : k.start))
+      .filter((v) => v != null);
+    if (e.start == null && e.pid != null && lows.length) e.t0 = Math.min(...lows);
+    const hi = forks.length ? Math.max(...forks) : null;
+    if (!e.ev && e.pid != null && hi != null && (e.end == null || hi > e.end)) e.t1 = hi;
     return e;
   };
   fin(tree);

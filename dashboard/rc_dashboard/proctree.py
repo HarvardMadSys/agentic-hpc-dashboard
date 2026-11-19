@@ -1274,6 +1274,46 @@ def _entries(node, newest=False):
     return out
 
 
+def _bounds(n, parent):
+    """(t0, t1): what the processes below a process say of a start and an end
+    the read did not give it -- a parent that left no record, chiefly. Bounds,
+    not times: the page draws them as `≤` and `≥`.
+
+    t0, when it has no start: it started no later than anything below it did.
+    Everything below it descends from it -- its children's records name it,
+    or the index or the collector's depth place them under it -- and a process
+    exists before what it forks. The session root's `fold` children are only
+    the session's, so they, and the counts that may hold them, are left out.
+
+    t1, when no exit was read: it was running when its last child started --
+    the premise `_alive_at` already links a child to an exited parent by. A
+    start is the child's last exec, so a background child that execs again
+    after its parent is gone (`sh -c 'sleep 60; exec x' &`) breaks it, as it
+    breaks that link. Not when that child exited: the collector keeps the
+    process that forked a child as its ppid, so a child that outlived it
+    (`nohup cmd &`) still names it, and its exit says nothing of its parent's.
+    A child placed by depth may have any process between them for a parent,
+    and says nothing either. Served only when later than `end`, its last tick.
+    """
+    if n.pid is None:
+        return None, None       # the virtual root of a session with no agent pid
+    lo = hi = None
+    if n.start is None:
+        if parent is not None:
+            # Below the root nothing is folded: every child, and every count,
+            # descends from it, and `t0` is the earliest time among them.
+            lo = n.t0
+        else:
+            lo = min((k.t0 for k in n.kids if k.link != "fold" and k.t0 is not None),
+                     default=None)
+    if n.ev is None:
+        hi = max((k.start for k in n.kids if k.link in ("ppid", "index") and k.start is not None),
+                 default=None)
+        if hi is not None and n.end is not None and hi <= n.end:
+            hi = None
+    return lo, hi
+
+
 def _proc_dict(n, parent, memo=None):
     d = {"k": "p", "pid": n.pid, "cmd": n.cmd,
          "start": _r(n.start), "end": _r(n.end), "dur": _r(n.dur, 4), "cpu": _r(n.cpu),
@@ -1290,6 +1330,11 @@ def _proc_dict(n, parent, memo=None):
                  ("sub_io", _io_out(n.sub_io) if n.sub_io != n.io else None)):
         if v is not None:
             d[k] = v
+    lo, hi = _bounds(n, parent)
+    if lo is not None:
+        d["t0"] = _r(lo)
+    if hi is not None:
+        d["t1"] = _r(hi)
     if n.core:
         d["core"] = True
     if n.orphan:

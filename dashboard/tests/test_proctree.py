@@ -134,6 +134,79 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(shell["link"], "index")
         self.assertEqual(kids(shell)[0]["pid"], 201)
 
+    def test_a_parent_with_no_record_is_bounded_by_what_ran_below_it(self):
+        # The index knows no start, and no exit was read: it started no later
+        # than its first child, and was running when its last one started.
+        index = {200: {"ppid": AGENT, "cmd": "bash", "role": "tool-shell", "owner": AGENT}}
+        _, tree, _ = build([
+            ex(T0 + 4, 201, 200, "python", depth=1, kv=200, dur=3.0),
+            ex(T0 + 9, 202, 200, "make", depth=1, kv=200, dur=2.0),
+        ], keys=(AGENT, 200), index=index.get)
+        shell = find(tree, 200)
+        self.assertIsNone(shell["start"], "a bound is not served as its start")
+        self.assertIsNone(shell["end"])
+        self.assertAlmostEqual(shell["t0"], T0 + 1)
+        self.assertAlmostEqual(shell["t1"], T0 + 7, msg="its last child's start, not its exit")
+        # A process with its own record carries no bounds.
+        self.assertNotIn("t0", find(tree, 201))
+        self.assertNotIn("t1", find(tree, 201))
+
+    def test_a_child_that_outlived_its_parent_says_nothing_of_the_parents_end(self):
+        # `nohup sleep 600 &`: the collector keeps the shell that forked it as
+        # its ppid, so its exit, ten minutes on, still names the shell.
+        index = {200: {"ppid": AGENT, "cmd": "bash", "role": "tool-shell", "owner": AGENT}}
+        _, tree, _ = build([
+            ex(T0 + 2, 201, 200, "git", depth=1, kv=200, dur=1.0),
+            ex(T0 + 603, 202, 200, "sleep", depth=1, kv=200, dur=600.0),
+        ], keys=(AGENT, 200), index=index.get)
+        self.assertAlmostEqual(find(tree, 200)["t1"], T0 + 3)
+
+    def test_a_placed_child_bounds_a_start_but_not_an_end(self):
+        # 401's parent 400 left no record and no index entry: depth places
+        # 400 under its key 300, with one level between them never recorded.
+        # 401 descends from 300, so 300 started before it; but whatever forked
+        # 401 may have outlived 300, so it says nothing of 300's end.
+        index = {300: {"ppid": AGENT, "cmd": "zsh", "role": "tool-shell", "owner": AGENT}}
+        _, tree, _ = build([ex(T0 + 50, 401, 400, "python", kv=300, depth=2, dur=10.0)],
+                           keys=(AGENT, 300), index=index.get)
+        key = find(tree, 300)
+        self.assertEqual(find(tree, 400)["link"], "depth")
+        self.assertAlmostEqual(key["t0"], T0 + 40)
+        self.assertNotIn("t1", key)
+        middle = find(tree, 400)
+        self.assertAlmostEqual(middle["t0"], T0 + 40)
+        self.assertAlmostEqual(middle["t1"], T0 + 40, msg="401 names it: it forked 401")
+
+    def test_the_agent_is_bounded_only_by_what_descends_from_it(self):
+        # A process the fold alone hangs from the agent may not be its own: it
+        # bounds neither the agent's start nor its end.
+        _, tree, _ = build([
+            ex(T0 + 5, 900, 1, "cron-job", depth=None, dur=4.0),
+            ex(T0 + 30, 201, AGENT, "git", dur=1.0),
+        ])
+        self.assertEqual(find(tree, 900)["link"], "fold")
+        self.assertIsNone(tree["start"])
+        self.assertAlmostEqual(tree["t0"], T0 + 29)
+        self.assertAlmostEqual(tree["t1"], T0 + 29)
+
+    def test_a_session_with_no_agent_process_has_no_bounds(self):
+        # A virtual root is not a process: it has no start to bound.
+        _, tree, _ = build([ex(T0 + 4, 201, 1, "python", depth=None, dur=3.0)],
+                           owner=None, keys=())
+        self.assertIsNone(tree["pid"])
+        self.assertNotIn("t0", tree)
+        self.assertNotIn("t1", tree)
+
+    def test_a_known_start_or_a_later_last_seen_is_not_replaced_by_a_bound(self):
+        index = {200: {"ppid": AGENT, "cmd": "bash", "role": "tool-shell", "owner": AGENT,
+                       "start": T0, "last": T0 + 20}}
+        _, tree, _ = build([ex(T0 + 4, 201, 200, "python", depth=1, kv=200, dur=3.0)],
+                           keys=(AGENT, 200), index=index.get)
+        shell = find(tree, 200)
+        self.assertAlmostEqual(shell["start"], T0)
+        self.assertNotIn("t0", shell)
+        self.assertNotIn("t1", shell, "last seen is already the later of the two")
+
     def test_an_unrecorded_middle_parent_is_placed_under_its_key_by_depth(self):
         # rtx6000a, 2026-10-10: 1.59 M `python` under pid 561706, which exited
         # the next day; its children's depth 2 below key 561705 places it.

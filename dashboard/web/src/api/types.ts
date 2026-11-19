@@ -1077,6 +1077,13 @@ export interface ProcNode {
   start: number | null;
   /** exit time; for a process with no exit (`ev` null), when it was last seen */
   end: number | null;
+  /** no start in the read (`start` null): the earliest time of anything
+   *  below it, so it started no later than this. A bound, drawn `≤` */
+  t0?: number;
+  /** no exit read (`ev` null): when its last child started, when later than
+   *  `end`, so it was running then. A bound: a child's exit is not one, since
+   *  a child keeps naming the parent it outlived */
+  t1?: number;
   dur: number | null;
   /** own cpu_s; null is unmeasured */
   cpu: number | null;

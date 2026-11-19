@@ -2262,9 +2262,10 @@ test("the inspector's table, all open: a row has a column under each header, its
     const kinds = [...served.values()].map((e) => e.k);
     // every kind of row: processes, groups, a group's members past the first few, and both kinds of count
     for (const k of ['p', 'g', 'rest', 'agg', 'more']) assert.ok(kinds.includes(k), `the fixture has a ${k} row`);
-    // A row's bar is where it ran. A group's members past the first few are in the group's own bar, on the row above, and a row with no
-    // time read for it (a parent only the collector's depth places) has nowhere to be drawn.
-    const barred = (e) => e.k !== 'rest' && (e.start != null || e.end != null);
+    // A row's bar is where it ran. A group's members past the first few are in the group's own bar, on the row above. A parent that left
+    // no record runs from the bound below it (`t0`, no later than anything below it started) to its last child's start (`t1`); one
+    // with no time read for it and none below it has nowhere to be drawn.
+    const barred = (e) => e.k !== 'rest' && (e.start != null || e.end != null || e.t0 != null || e.t1 != null);
     const span = timeline.hi - timeline.lo;
     for (const view of [null, [timeline.lo + span / 4, timeline.lo + span / 2]]) {
       const [lo, hi] = view ?? [timeline.lo, timeline.hi];
@@ -2292,7 +2293,7 @@ test("the inspector's table, all open: a row has a column under each header, its
         bars += drawn.length;
         if (e.k === 'p' && drawn.length) {
           const left = Number(/left:([\d.]+)%/.exec(drawn[0])?.[1]);
-          const want = Math.max(0, Math.min(1, ((e.start ?? lo) - lo) / (hi - lo))) * 100;
+          const want = Math.max(0, Math.min(1, ((e.start ?? e.t0 ?? lo) - lo) / (hi - lo))) * 100;
           assert.ok(Math.abs(left - want) < 0.001, `${where}: its bar starts at ${left}%, and it started at ${want}%`);
         }
         const x = r.cols[exit];
@@ -2302,6 +2303,40 @@ test("the inspector's table, all open: a row has a column under each header, its
       }
       assert.equal(bars, [...served.values()].filter(barred).length, `${what}: a bar on every row with a time, but a group's rest`);
       assert.equal((html.match(/class="pt-bar\b/g) ?? []).length, bars, `${what}: every bar is in a row's timeline column`);
+    }
+  } finally {
+    await ui.close();
+  }
+});
+
+test("the inspector's table: a parent that left no record is drawn by its bounds, started no later than and took at least, never as a time it has", async () => {
+  const ui = await renderer();
+  try {
+    const PT = await ui.load('components/ProcTree.tsx');
+    const { tree, timeline } = api.trajectory_detail;
+    const served = new Map(PT.spots(tree).map((s) => [s.id, s.e]));
+    const bounded = [...served].filter(([, e]) => e.k === 'p' && e.start == null && e.t0 != null);
+    assert.ok(bounded.length, 'the fixture has a parent with no start and a bound below it');
+    const html = await ui.render('components/ProcTree.tsx', 'ProcTree', { root: tree, open: PT.allOpen(tree), setOpen() {}, timeline });
+    const [head, ...rows] = gridOf(html);
+    const names = head.cols.map((c) => textOf(c.html));
+    const started = names.findIndex((n) => n.startsWith('started'));
+    const took = names.indexOf('took');
+    for (const [id, e] of bounded) {
+      const r = rows.find((x) => x.id === id);
+      const where = `row ${id} (pid ${e.pid})`;
+      assert.match(textOf(r.cols[started].html), /^≤ \d\d:\d\d:\d\d$/, `${where}: started no later than its bound`);
+      assert.match(r.cols[started].html, /data-tip="its start is not in the read/, `${where}: the cell says it is a bound`);
+      assert.equal(PT.ranSpan(e).a, e.t0, `${where}: the bound is t0`);
+      const t = textOf(r.cols[took].html);
+      if (e.ev == null && e.t1 != null && e.t1 > e.t0) assert.match(t, /^≥ /, `${where}: took at least, up to its last child's start`);
+      else assert.equal(t, '—', `${where}: nothing to say how long it took`);
+    }
+    // A process with a start of its own never shows a bound.
+    for (const [id, e] of served) {
+      if (e.k !== 'p' || e.start == null) continue;
+      const r = rows.find((x) => x.id === id);
+      assert.doesNotMatch(textOf(r.cols[started].html), /≤/, `row ${id}: a start of its own, not a bound`);
     }
   } finally {
     await ui.close();
