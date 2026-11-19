@@ -976,7 +976,8 @@ class BoundsAndMaskingTest(unittest.TestCase):
     def test_a_name_or_words_past_the_cut_of_a_long_text_are_not_read(self):
         # `phase_rules` reads a text up to its last line before `_MAX_TEXT` characters
         pad = "# " + "x" * 97 + "\n"                      # a comment of 100 characters
-        before = "cat first.py\n" + pad * 990 + "cat inside.py\ngit commit -q -m 'Inside'\n"
+        before = ("cat first.py\n" + pad * (_MAX_TEXT // 100 - 1)
+                  + "cat inside.py\ngit commit -q -m 'Inside'\n")
         past = "cat past.py\ngit commit -q -m 'Past'\n"
         text = before + pad * 20 + past
         self.assertLess(len(before), _MAX_TEXT)
@@ -988,7 +989,7 @@ class BoundsAndMaskingTest(unittest.TestCase):
                          ((("read", "first.py"), ("read", "past.py")), ("commit", "Past", "")))
 
     def test_a_long_run_of_braces_is_read_in_linear_time(self):
-        braces = "{" * 30000
+        braces = "{" * (_MAX_TEXT - 100)                 # read whole: under the cut
         cases = (("read", "cat %sa}.py" % braces, ["{" * 79 + "…"]),     # a close, and no comma
                  ("dir", "mkdir -p %sa}" % braces, ["{" * 79 + "…"]),
                  ("cd", "cd %sa}" % braces, ["{" * 79 + "…"]),
