@@ -236,13 +236,15 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
   state and the history store's (`history.py:HistoryStore.status`). `/api/collectors` adds the
   health the live tier folded (`CollectorHealth.report`).
 - **CONFIG**: `/api/config` serves the resolved configuration with each key's origin.
-- **ASK**: `Aggregator.ask` builds a snapshot from the window's `/api/panels` payload, the live
+- **ASK** (off unless `ask.enabled`, and refused while the service has no password; a refused
+  question reads nothing): `Aggregator.ask` builds a snapshot from the window's `/api/panels` payload, the live
   payload's `now`, `users`, `hosts` and `window`, and the ranked sessions -- or one panel's keys, or
   one session's process tree read by INSPECT -- compacts it to `ask.context_kb` (120 KB;
   `ask.py:snapshot` cuts the largest section's lists and strings a step at a time, and drops bulky
   keys such as series and tails, `DROP_KEYS`), and runs the configured agent CLI (`codex exec` by
   default) as the service's user, `ask.max_concurrent` (1) at a time, for at most `ask.timeout_s`
-  (240 s).
+  (240 s), with a short environment (`ask.AGENT_ENV`) in a directory of its own under the system's
+  temporary one.
 
 ## Every tab: the header, the rail and the controls
 

@@ -19,8 +19,14 @@ nothing, by design and by CI-able assertion (`npm run check:no-random`).
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds     # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..      # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password      # once: prints the hash for dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+
+`serve` starts only behind a password ([Password](#password)): put the hash `new-password`
+prints in `dashboard.config.json` as `"server": {"auth": {"password_hash": "..."}}`. Without
+one it says so and exits, since on a login node every user can reach a port on 127.0.0.1.
+`--open` (`RC_DASH_OPEN=1`) serves without one, for a machine only you can log in to.
 
 Off-cluster, `--check-feeds` exits 1 because the eBPF feed is `required` and absent. That is
 the point: point it at a collector root first.
@@ -49,6 +55,13 @@ never outranks the file.
   *that*" is never a guess.
 - Path defaults are **candidate lists**, probed against the filesystem. `--check-feeds` shows
   every candidate and which one won.
+- **A mistake stops the service rather than loosening it.** A config file named by `--config`
+  or `RC_DASH_CONFIG` must exist. A yes/no setting, as an `RC_DASH_*` variable or as a string
+  in the file, is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off` in any case; anything else
+  (`RC_DASH_ASK=n`) stops it. An unknown key under `server`, `anonymize` or `ask`, or a
+  top-level key one slip from one of them (`anonymise`), stops it and names the nearest key
+  there is. An unknown key anywhere else, such as an old file's `feeds.ebpf.prefer` from the
+  EBR format, is a warning.
 - `history` (`RC_DASH_HISTORY`, `RC_DASH_HISTORY_DIR`, `_WORKERS`, `_DAYS`) keeps every
   sealed day-file as Parquet too, made in the background, and answers a selective read of one
   from that copy ([History in Parquet](#history-in-parquet)); `RC_DASH_HISTORY=0` reads every
@@ -200,7 +213,10 @@ as EBR reads again once converted to JSONL, by the last `ebr.py` there was:
 | `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
 Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
-(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `site.name` (`RC_DASH_SITE_NAME`) is
+(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `run-dev.sh` and
+`run-fasrc.sh` (and `run.sh` itself) start only with a password hash in
+`dashboard.config.json` ([Password](#password)); without one the backend prints how to make
+one and exits. `run-demo.sh` needs none. `site.name` (`RC_DASH_SITE_NAME`) is
 shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
 side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
 Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
@@ -256,8 +272,9 @@ cluster's feed roots, and a demo must never read them: both feed roots (the demo
 demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
 saved builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
 `live.backfill_hours` (the history written), `panels.preprocess` and `panels.preprocess_wait_s`
-(every window built before the port opens, so a visitor never lands on a *merging* bar), and
-`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
+(every window built before the port opens, so a visitor never lands on a *merging* bar),
+`site.name`/`site.description`, and `server.auth.open` (a demo serves its made-up data with no
+password unless one is set). Each reads `demo` as its origin in `--print-config`.
 `--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
 
 | flag | env | default | |
@@ -635,7 +652,9 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
-With a password set, every route above asks for it ([Password](#password)).
+With a password set, every route above asks for it ([Password](#password)). `POST /api/ask`,
+`GET /api/ask` and `/api/suggestions/done` are [Ask LLM](#ask-llm)'s; every route under `/api`
+that is not a GET or HEAD takes a JSON body only (a 415 otherwise).
 
 `window_min` is optional everywhere and omitting it is `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -883,7 +902,10 @@ and the websocket. No byte may carry one.
 
 `server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`) puts the whole service behind one
 password: the page, its assets, every `/api` route (Ask LLM included), and the websocket. It is
-empty by default, which leaves the page open to anyone who reaches the port.
+empty by default, and then `serve` refuses to start: on a shared host "bound to 127.0.0.1"
+means "readable by every local user". `server.auth.open` (`--open`, `RC_DASH_OPEN=1`) serves
+without one anyway, to anyone who reaches the port; a [demo](#demo-mode) is open unless a
+password is set.
 
 ```bash
 cd dashboard && .venv/bin/python -m rc_dashboard new-password --netrc-host dash.example.org
@@ -919,6 +941,84 @@ restart:
 
 `tests/test_auth.py` starts the app with a password, then reads every route, an asset, and the
 websocket, with and without it.
+
+**Who may connect** (`rc_dashboard/guard.py`), with a password or without:
+
+- **A websocket from any other page's origin is refused** before it is accepted (a 403): one
+  whose `Origin` names a host and port other than the request's `Host`, a loopback one on
+  another port included. A browser lets any page open a websocket to 127.0.0.1, and to a page
+  on another port of the same host -- a dev server, a notebook, another tunnel -- it sends the
+  reader's cookie too: the cookie is SameSite=Lax, and every port of a host is one site. A
+  script sends no `Origin` and passes. A proxy that rewrites the Host to `127.0.0.1:<port>`
+  needs its public origin in `server.allowed_origins` (`RC_DASH_ALLOWED_ORIGINS`,
+  comma-separated: `https://dash.example.org`). The page from Vite's dev server (`./run.sh`
+  dev mode, on `RC_DASH_UI_PORT`, 5173) is on another origin too, so `run.sh` names it, as
+  `http://127.0.0.1:5173` and `http://localhost:5173`, in `server.dev_origins`
+  (`RC_DASH_DEV_ORIGINS`), which adds to `allowed_origins` rather than replacing them. A Vite
+  dev server started any other way needs its origin named the same way
+  ([web/README.md](web/README.md)).
+- **With no password, a request under a name that is not this host's is refused** (a 403):
+  its `Host` must be a loopback name, the bind host (`server.host`), or one of
+  `server.allowed_hosts` (`RC_DASH_ALLOWED_HOSTS`; `*` for any). Otherwise a page on another
+  site could point its own name at 127.0.0.1 and read every route as its own (DNS rebinding).
+  With a password the cookie already stops that, and the check is off, so a tunnel that keeps
+  its public name in the Host needs no list. The demo image answers under any name
+  (`docker/demo/Dockerfile`): its data is made up.
+
+`tests/test_guard.py` sends the handshakes a browser, a script and Vite's proxy send, and
+starts the app open and behind a password.
+
+## Ask LLM
+
+The Ask LLM tab, and the *ask* button on a panel or a session, run an agent CLI on this host
+(`rc_dashboard/ask.py`): by default `codex exec --sandbox read-only`, as the service's account
+and with its Codex login, given the question and a compact, masked snapshot of the window. The
+snapshot leaves the host, for the agent's provider.
+
+**The agent can read whatever the service's account can read.** Its sandbox is read-only, not
+confined: the collector's files, the service's cache (the anonymize salt and the session key
+among them), and that account's home are all within its reach, and the question it is given is
+a reader's own text. Run the service as a dedicated account, not a person's, that holds no other
+credentials. So:
+
+- **Off by default.** `ask.enabled` (`RC_DASH_ASK=1`) turns it on.
+- **Never without a password.** While `server.auth.password_hash` is empty, Ask is refused,
+  even when turned on: `GET /api/ask` says why, and a question gets a 400 saying so. A refused
+  question reads nothing.
+- **A short environment.** The agent gets what a program needs to run, to find its login and
+  to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV`): `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
+  `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
+  `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
+  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
+  provider reached through a cloud, is named in `ask.env_passthrough`
+  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix,
+  three characters or more and then `_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_*", "AZURE_*"]` as the provider needs. A shorter prefix,
+  or one without the `_` (`S*`), would take in whatever else begins so, and is refused at
+  start; such a variable is named whole. The service's own `RC_DASH_*` settings, its password
+  hash among them, are never passed. An agent that fails says so, since a credential left out
+  fails it without a word about the environment.
+  **The proxy variables are passed as they are**: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+  `NO_PROXY` and their lower-case forms, so the agent reaches its provider through the site's
+  proxy. A proxy URL often carries a user and password (`http://user:pass@proxy:3128`), and
+  then the agent can read them -- an agent whose prompt holds other users' command lines. For
+  the service's account, prefer a proxy that needs no password in the URL.
+- **A directory of its own**, made 0700 in the system's temporary directory for each question
+  and removed after, not under `cache.dir`, so the salt, the session key and the saved builds
+  are not its neighbours.
+- **A short question.** At most 4 000 characters (a 400 past that); the prompt carries the last
+  three earlier turns, cut to 600 and 1 500 characters a side.
+- **JSON only.** `POST /api/ask`, and `POST`/`DELETE /api/suggestions/done`, take
+  `Content-Type: application/json` (a 415 otherwise), which another site's page cannot send
+  without the browser asking first; a body past 1 MB is a 413, and a malformed one a 400.
+
+`ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, `{workdir}`,
+`{answer_file}` and `{model}` filled in, the prompt on stdin. A command, or the instructions in
+`ask.system_prompt`, may hold a provider's key, so `/api/config` and `--print-config` show both
+as `(hidden)` when set, and `GET /api/ask` names only the program a command runs (`claude` for
+`env ANTHROPIC_API_KEY=... claude -p`). `tests/test_ask.py` checks the
+refusals, the environment and the directory, and `tests/test_guard.py` the routes.
 
 ## Network endpoints
 
@@ -1284,9 +1384,16 @@ Set it up under `annotate` (every key: `dashboard.config.example.json`):
 | `ask` | whatever agent the chat (`ask`) runs | the agent's own |
 | `command` | any command: the prompt on stdin, a JSON answer on stdout or in `{answer_file}` | -- |
 
+A CLI provider (`codex`, `claude`, `ask`, `command`) runs an agent on this host over other
+users' command lines, so it keeps [Ask LLM](#ask-llm)'s rules: refused while the service has no
+password, and run with only part of the service's environment (`ask.env_passthrough` names
+more) in a directory of its own in the system's temporary one. An HTTP provider runs nothing
+here: the model gets the masked text the page shows, with no tools, and its answer is read only
+as a label and a kind, so it is not refused for want of a password.
+
 The key is read from the variable `api_key_env` names (empty: the one above), else from
 `api_key_file`, else from `api_key` -- which `/api/config` and `--print-config` show only as
-set or not. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
+set or not, as they do `command` and `system_prompt`. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
 `auto: true` asks as soon as a session opens instead of on the button. The environment can set
 `RC_DASH_ANNOTATE=1`, `RC_DASH_ANNOTATE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_KEY_ENV`,
 `_KEY_FILE` and `_CMD`. For example, a local model:

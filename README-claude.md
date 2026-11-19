@@ -57,8 +57,12 @@ filesystem space or interface counters at all.
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+
+`serve` starts only behind a password, or with `--open` (`RC_DASH_OPEN=1`) on a machine only
+you can reach: on a login node every user can reach 127.0.0.1.
 
 Off-cluster, `--check-feeds` exits 1 — the eBPF feed is `required` and absent. Point it at
 a collector root first:

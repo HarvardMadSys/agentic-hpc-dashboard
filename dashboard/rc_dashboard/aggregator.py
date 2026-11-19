@@ -749,6 +749,10 @@ class Aggregator:
         page's own filter (`flt`). `context.session` makes it about one session,
         given as a digest of its process tree. `context.title` and `.tab` are
         what the page calls the panel, for the prompt."""
+        # Refused before anything is read for it -- Ask off, no password, no
+        # agent, a question too long (ask.check): a question that cannot run
+        # must not make the service build a window or re-read a day first.
+        ask.check(self.cfg, question)
         context = context if isinstance(context, dict) else {}
         if context.get("session") is not None:
             return self._ask_session(question, window_min, history, context)
@@ -969,12 +973,6 @@ class Aggregator:
         sid = ctx.get("session")
         if not isinstance(sid, str) or not sid or len(sid) > 400:
             raise ValueError("context.session: a session id")
-        # Refused before the read: a question that cannot run must not make
-        # the service re-read a day of records first.
-        info = ask.describe(self.cfg)
-        if not info["enabled"] or not info["available"]:
-            raise ValueError("chat is turned off (ask.enabled)" if not info["enabled"]
-                             else info["error"] or "the agent cannot run here")
         win = self.window(window_min)
         body = proctree.serve(self, sid, window_min)
         if body.get("found") is None:

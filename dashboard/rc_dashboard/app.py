@@ -24,6 +24,7 @@ from starlette.responses import Response
 
 from . import annotate as annotatemod
 from . import auth as authmod
+from . import guard as guardmod
 from . import history as historymod
 from . import feeds as feedmod
 from . import gcwatch
@@ -78,6 +79,33 @@ def view_filter(request, anon=None):
         return winmod.ViewFilter.from_params(dealias(query_lists(request), anon))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# The largest body a route that changes something reads: a question, the last
+# turns with their answers, and what it is about.
+MAX_BODY = 1 << 20
+
+
+async def json_body(request, limit=MAX_BODY):
+    """The request's body as a JSON object (guard.JsonOnly has seen it say it is
+    JSON): a 413 past `limit` bytes, before they are all read, and a 400 for
+    anything that is not an object -- never a 500."""
+    size = request.headers.get("content-length") or ""
+    if size.isdigit() and int(size) > limit:
+        raise HTTPException(413, "the body is over %d bytes" % limit)
+    chunks, n = [], 0
+    async for chunk in request.stream():
+        n += len(chunk)
+        if n > limit:
+            raise HTTPException(413, "the body is over %d bytes" % limit)
+        chunks.append(chunk)
+    try:
+        body = json.loads(b"".join(chunks))
+    except (ValueError, RecursionError):
+        raise HTTPException(400, "the body is not JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "the body is not a JSON object")
+    return body
 
 
 # The per-record memos (each a pure function of its text, memoized up to a
@@ -558,16 +586,21 @@ def create_app(cfg):
     # /api/panels, so a panel's question reads the view the reader is looking at.
     @app.post("/api/ask")
     async def api_ask(request: Request):
-        body = await request.json()
+        body = await json_body(request)
+        question, minutes, ctx = body.get("question"), body.get("window_min"), body.get("context")
+        history = body.get("history") or []
+        turns = [h for h in history if isinstance(h, dict)][-3:] if isinstance(history, list) else None
+        text = (str, type(None))
+        if (not isinstance(question, text) or type(minutes) not in (int, type(None))
+                or turns is None or not isinstance(ctx, (dict, type(None)))
+                or any(not isinstance(h.get(k), text) for h in turns for k in ("q", "a"))):
+            raise HTTPException(400, "question is text, window_min a number of minutes, "
+                                     "history a list of {q, a} texts, and context an object")
         flt = view_filter(request, anon)
-        ctx = body.get("context")
-        if isinstance(ctx, dict) and ctx.get("session") is not None:
+        if ctx is not None and ctx.get("session") is not None:
             ctx = dict(ctx, session=dealias_sid(ctx["session"], anon))
         try:
-            return await asyncio.to_thread(
-                agg.ask, str(body.get("question") or ""), body.get("window_min"),
-                [h for h in (body.get("history") or []) if isinstance(h, dict)][-3:],
-                ctx if isinstance(ctx, dict) else None, flt)
+            return await asyncio.to_thread(agg.ask, question or "", minutes, turns, ctx, flt)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -580,7 +613,7 @@ def create_app(cfg):
 
     @app.post("/api/suggestions/done")
     async def api_mark_done(request: Request):
-        body = await request.json()
+        body = await json_body(request)
         try:
             return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
         except LookupError as e:
@@ -620,7 +653,7 @@ def create_app(cfg):
         its job: `job` is that one when this request started none, and `also`
         names any others, so every reader of the session gets the answers. The body is the tree's own text, masked once: it is sent as
         it is, so the page matches each call to its row exactly."""
-        body = await request.json()
+        body = await json_body(request)
         sid = body.get("sid")
         if not isinstance(sid, str) or not sid:
             raise HTTPException(400, "name a session (sid)")
@@ -1065,8 +1098,24 @@ def create_app(cfg):
 
     # -------------------------------------------------------------- sign-in
     # Around every route above and the static mount, so a route added later is
-    # covered without anyone remembering to be (auth.py).
+    # covered without anyone remembering to be (auth.py). Inside it, what may
+    # change something takes a JSON body only (guard.JsonOnly).
+    app.add_middleware(guardmod.JsonOnly)
     if gate is not None:
         app.add_middleware(authmod.AuthMiddleware, gate=gate,
                            site=str(cfg.get("site.name") or ""))
+    # ------------------------------------------------------ who may connect
+    # Outside the sign-in, so what it refuses costs no password check: a
+    # websocket from another site's page, and with no password, a request
+    # under a name that is not this host's (guard.py).
+    origins = guardmod.allowed_origins(cfg)
+    app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
+                       bind_host=str(cfg.get("server.host") or ""),
+                       allowed_hosts=cfg.get("server.allowed_hosts") or (),
+                       allowed_origins=origins)
+    # Said at start, beside the sign-in (__main__.py): run.sh, or the
+    # environment, may have added a dev server's origins to the configured ones.
+    named = list(dict.fromkeys(o.strip() for o in origins if o.strip()))
+    sys.stderr.write("origins: a websocket is accepted from the service's own origin %s\n" % (
+        ("and from " + ", ".join(named)) if named else "only"))
     return app

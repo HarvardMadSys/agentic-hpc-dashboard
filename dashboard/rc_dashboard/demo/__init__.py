@@ -36,6 +36,8 @@ exports the cluster's feed roots, and a demo must never read them):
     server.rdns.enabled                       off: the Network bytes panel names its
                                               endpoints by the records' own host names,
                                               and a demo asks no DNS server about them
+    server.auth.open                          on: a demo serves with no password unless
+                                              server.auth.password_hash is set
 
 The feed is a pure function of the seed, the host count and the clock
 (`world.World`): the same window over the same seed is the same bytes, and a
@@ -109,7 +111,10 @@ def configure(cfg, opts):
             ("panels.preprocess_wait_s", 300),
             ("site.name", SITE_NAME),
             ("site.description", SITE_DESC),
-            ("server.rdns.enabled", False)):
+            ("server.rdns.enabled", False),
+            # Made-up data: served with no password unless one is set. `serve`
+            # refuses to start open unless told to.
+            ("server.auth.open", True)):
         cfg.set(key, val, "demo")
     return cfg
 

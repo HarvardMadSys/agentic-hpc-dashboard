@@ -165,6 +165,9 @@ class DescribeTest(unittest.TestCase):
 
     def test_the_api_key_is_hidden_from_the_printed_config(self):
         self.assertIn("annotate.api_key", configmod.HIDDEN)
+        # and, as Ask's, what can hold a key: the command and the prompt
+        self.assertIn("annotate.command", configmod.HIDDEN)
+        self.assertIn("annotate.system_prompt", configmod.HIDDEN)
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -258,14 +261,63 @@ print(json.dumps(out))
 
 
 class CliProviderTest(unittest.TestCase):
+    """A CLI provider runs an agent here, so only behind the service's password."""
+
+    HASH = "scrypt$16$1$1$c2FsdHNhbHQ=$a2V5a2V5a2V5a2V5a2V5a2V5"
+
+    def cfg(self, **kv):
+        return Cfg(**dict({"annotate.provider": "command", "server.auth.password_hash": self.HASH},
+                          **kv))
+
     def test_a_command_gets_the_prompt_on_stdin_and_answers_on_stdout(self):
         f = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
         f.write(STAND_IN)
         f.close()
-        cfg = Cfg(**{"annotate.provider": "command", "annotate.command": [PY, f.name]})
+        cfg = self.cfg(**{"annotate.command": [PY, f.name]})
         self.assertTrue(annotate.describe(cfg)["available"])
         text = annotate.complete(cfg, "sys", annotate.prompt_for([{"cmd": "ls -la"}]), 10)
         self.assertEqual(annotate.parse(text, 1), {0: ("cli ls -la", "run")})
+
+    def test_no_password_no_cli(self):
+        mark = os.path.join(tempfile.mkdtemp(), "ran")
+        cmd = [PY, "-c", "open(%r, 'w')" % mark]
+        for p, extra in (("command", {"annotate.command": cmd}), ("ask", {"ask.command": cmd}),
+                         ("codex", {}), ("claude", {})):
+            with self.subTest(provider=p):
+                cfg = self.cfg(**dict({"annotate.provider": p, "server.auth.password_hash": ""},
+                                      **extra))
+                d = annotate.describe(cfg)
+                self.assertFalse(d["available"])
+                self.assertIn("no password", d["error"])
+                with self.assertRaisesRegex(ValueError, "no password"):
+                    annotate.Annotator(cfg).submit([{"cmd": "x"}])
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_an_http_provider_runs_nothing_here_so_needs_no_password(self):
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k"}):
+            d = annotate.describe(Cfg(**{"server.auth.password_hash": ""}))
+        self.assertTrue(d["available"], d["error"])
+
+    def test_a_short_environment_and_a_directory_of_its_own(self):
+        prog = ("import os, sys; sys.stdin.read(); "
+                "print(os.getcwd(), os.stat('.').st_mode & 0o777, *sorted(os.environ))")
+        cfg = self.cfg(**{"annotate.command": [PY, "-c", prog], "ask.env_passthrough": ["AWS_*"]})
+        env = {"RC_DASH_PASSWORD_HASH": "scrypt$the-hash", "SLACK_WEBHOOK": "https://hooks/x",
+               "AWS_PROFILE": "p", "OPENAI_API_KEY": "k"}
+        with mock.patch.dict(os.environ, env):
+            cwd, mode, *names = annotate.complete(cfg, "sys", "user", 10).split()
+        self.assertEqual(os.path.dirname(cwd), os.path.realpath(tempfile.gettempdir()))
+        self.assertTrue(os.path.basename(cwd).startswith("rc-dash-annotate-"))
+        self.assertEqual(int(mode), 0o700)
+        self.assertFalse(os.path.exists(cwd))
+        self.assertTrue({"PATH", "AWS_PROFILE", "OPENAI_API_KEY"} <= set(names), names)
+        self.assertFalse({"RC_DASH_PASSWORD_HASH", "SLACK_WEBHOOK"} & set(names))
+
+    def test_a_failed_cli_says_its_environment_is_short(self):
+        cfg = self.cfg(**{"annotate.command": [PY, "-c", "import sys; sys.exit('no login')"]})
+        with self.assertRaisesRegex(annotate.ProviderError, "no login.*ask.env_passthrough"):
+            annotate.complete(cfg, "sys", "user", 10)
 
 
 class AnnotatorTest(unittest.TestCase):

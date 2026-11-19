@@ -141,8 +141,11 @@ Step-by-step
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+`serve` starts only behind a password, or with `--open` on a machine only you can reach
+([`dashboard/README.md`](dashboard/README.md#password)).
 
 Bash script bundling
 ```bash
