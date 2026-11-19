@@ -63,6 +63,11 @@ def exit_rec(epoch, pid, user, args, actor3="agent", cwd=None):
                    "scope": "process"}}
 
 
+# How long before `now` alice's agent ran the tool call the annotator is asked
+# about (`feed`, `Served.called_sid`).
+CALL_AGO = 90
+
+
 def feed(now):
     recs = []
     cmds = [("alice", "python /home/alice/proj/train.py", "agent"),
@@ -103,7 +108,7 @@ def feed(now):
                  "by_agent_type": {}, "trees": 1, "tracked_live": 3})
     # a Bash tool call of alice's agent: the command it ran is what the
     # annotator is asked about (proctree.ran)
-    recs.append(exit_rec(now - 90, 5100, "alice",
+    recs.append(exit_rec(now - CALL_AGO, 5100, "alice",
                          "/bin/zsh -c -l source /home/alice/.claude/shell-snapshots/snapshot-zsh-1.sh"
                          " && eval 'python train.py --data /n/home03/carol/data' < /dev/null"))
     return recs
@@ -242,6 +247,13 @@ class Served(unittest.TestCase):
     def assertClean(self, where, body):
         for s in SECRETS:
             self.assertNotIn(s, body, "%s leaks %r" % (where, s))
+
+    def called_sid(self, ranks):
+        """The agent's row of the day its annotated tool call ran in (CALL_AGO):
+        a session's rows are split by day, and in the first forty minutes after
+        midnight the busiest is the day before's, which holds none of the calls."""
+        day = time.strftime("%Y-%m-%d", time.localtime(self.now - CALL_AGO))
+        return next(s for s in ranks.get("events") or [] if "|%s|agent|" % day in s)
 
     def annotated_job(self, sid):
         """`(POST answer, finished job's answer)`: one session annotated."""
@@ -448,7 +460,7 @@ class LeakTest(Served):
         # answers -- names, here -- comes back masked too: /api/annotate sent
         # its answers out past the anonymizer.
         alice = self.anon.user_alias("alice")
-        sid = (json.loads(self.get("/api/trajectories")[1])["ranks"].get("events") or [None])[0]
+        sid = self.called_sid(json.loads(self.get("/api/trajectories")[1])["ranks"])
         before = set(os.listdir(self.annotated))
         first, done = self.annotated_job(sid)
         self.assertIn(alice, json.loads(done)["results"][self.anon.text(
@@ -695,8 +707,8 @@ class ReaderTextTest(Served):
         # the walk's own lookups push older ones out
         made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"],
                 "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"],
-                "/api/annotate/{jid}": lambda: json.loads(self.annotated_job(next(
-                    s for s in ranks["events"] if "|agent|" in s))[1])["id"]}
+                "/api/annotate/{jid}": lambda: json.loads(
+                    self.annotated_job(self.called_sid(ranks))[1])["id"]}
         fill = {"name": self.alias("alice"), "sid": sid}
         filters = list(export.LIST_FIELDS + export.SCALARS)
 
