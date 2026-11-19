@@ -234,8 +234,21 @@ cmd_bootstrap() {
     fi
 
     _set_sysctls
+    _forget_features
     echo "== re-checking"
     cmd_check
+}
+
+_forget_features() {
+    # What bootstrap installs (BCC, kernel headers, bpftool) can load blocks the
+    # last probe could not, so the next start probes every block afresh rather
+    # than taking the feature cache's word for them.
+    local f n=0
+    for f in "$OUTPUT_DIR"/.features_*.json; do
+        [ -e "$f" ] || continue
+        rm -f "$f" && n=$((n+1))
+    done
+    ok "feature cache" "$n file(s) removed: the next start probes every block"
 }
 
 _bootstrap_apt() {

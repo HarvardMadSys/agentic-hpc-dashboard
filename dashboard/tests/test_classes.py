@@ -2,10 +2,13 @@
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -33,6 +36,57 @@ def rec(actor3, agent_type=None, args="bash", schema=7, actor=None):
 
 def a3(r):
     return norm().normalize(r)["_a3"]
+
+
+class DropTest(unittest.TestCase):
+    """The accounts whose records are dropped: those a site names, and none by
+    default, so no site loses an account's records to another site's list."""
+
+    def norm(self, **filters):
+        tree = configmod.defaults()
+        tree["filters"].update(filters)
+        return Normalizer(configmod.Config(tree, {}, None))
+
+    def test_no_account_is_dropped_by_default(self):
+        f = configmod.defaults()["filters"]
+        self.assertEqual((f["drop_global"], f["drop_agent"]), ([], []))
+        n = self.norm()
+        for who in ("monitor", "builder"):
+            self.assertIsNotNone(n.normalize(dict(rec("agent", "claude_code", "claude"), user=who)))
+        self.assertEqual(n.stats["dropped_users"], 0)
+
+    def test_a_named_account_is_dropped_and_counted(self):
+        n = self.norm(drop_global=["monitor"], drop_agent=["builder"])
+        self.assertIsNone(n.normalize(dict(rec("human"), user="monitor")))
+        self.assertIsNone(n.normalize(dict(rec("agent", "claude_code", "claude"), user="builder")))
+        self.assertIsNotNone(n.normalize(dict(rec("human"), user="builder")))   # agents only
+        self.assertEqual(n.stats["dropped_users"], 2)
+
+    def test_the_lists_come_from_the_environment(self):
+        env = {"RC_DASH_DROP_USERS": "monitor, ops", "RC_DASH_DROP_AGENT_USERS": "builder"}
+        # a config file that sets nothing, so the lists can only come from the environment
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env):
+            path = os.path.join(d, "config.json")
+            with open(path, "w") as fh:
+                fh.write("{}")
+            c = configmod.load(config_path=path)
+        self.assertEqual(c.get("filters.drop_global"), ["monitor", "ops"])
+        self.assertEqual(c.get("filters.drop_agent"), ["builder"])
+
+
+class CpuShareTest(unittest.TestCase):
+    """An exit's CPU over its wall time: a measured 0 s of CPU is 0%; only an
+    unmeasured CPU, or a duration too short to divide by, is null."""
+
+    def pct(self, cpu_s, duration_s):
+        return norm().normalize(dict(rec("agent", "claude_code", "git status"), cpu_s=cpu_s,
+                                     duration_s=duration_s))["_cpu_pct"]
+
+    def test_zero_is_zero_and_missing_is_missing(self):
+        self.assertEqual(self.pct(0.5, 1.0), 50.0)
+        self.assertEqual(self.pct(0.0, 1.0), 0.0)
+        self.assertIsNone(self.pct(None, 1.0))
+        self.assertIsNone(self.pct(0.0, 0.0))
 
 
 class IdeClassTest(unittest.TestCase):

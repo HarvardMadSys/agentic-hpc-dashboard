@@ -58,6 +58,11 @@ never outranks the file.
   of an hour and a group of reducers each; 0 workers is one per CPU the service may use
   ([Hourly merge-reduce](#hourly-merge-reduce)). Going from 1 worker to more, or back,
   reduces the hours afresh; the count and the groups change no saved hour.
+- `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the
+  accounts it names, and `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only those classed
+  agent: the account a site's monitoring runs as, say. Neither names anyone by default;
+  `run.sh` sets these clusters' own (not the demo's). The ebpf feed's report counts what was
+  dropped (`excluded.users` in `/api/feeds`).
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's record
 is a JSON line; the retired builder's contract was `data.json`) and
@@ -812,7 +817,14 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
   account reads the same in every tab, window, and restart, and without the salt a list of
   candidate names does not turn an alias back. Changing the salt reshuffles every alias.
-  Neither `/api/config` nor `--print-config` shows it.
+  Neither `/api/config` nor `--print-config` shows it. A configured salt shorter than 16 bytes
+  stops the service at start rather than serving under it, and a longer one gives every name
+  a new alias. The file is written whole and then linked into place, so a crash cannot leave
+  it half-written (on a file system without hard links it is made in place, which can; and two
+  instances started there at the same moment for the first time can stop one of them, which
+  started again reads the other's salt). One that is empty, not hex or shorter (edited by hand,
+  a crash there, or an older version) stops the service too: delete it, and the next start
+  makes a new salt, with new aliases.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
@@ -1430,7 +1442,10 @@ that, from the window's `slurm` reducer (`reducers/slurm.py`):
   a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
   no id, a non-zero exit and the scheduler's own error line, which is the reason shown
   (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
-  is not a refusal;
+  is not a refusal, nor is srun's own line saying so (`task 0: Exited with exit code 1`): an
+  srun or salloc is refused only when it cannot get the allocation. The count of refusals is a
+  lower bound: a submission keeps its last 300 characters, and a refusal line cut at its start
+  there (a reason of some 200 characters: Slurm prints that line last) is not counted;
 - queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
   gap, not 0.
 

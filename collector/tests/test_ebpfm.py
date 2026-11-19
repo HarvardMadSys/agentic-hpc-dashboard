@@ -14,6 +14,7 @@ import gzip
 import io
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -2064,6 +2065,39 @@ class FlushPolicyTest(unittest.TestCase):
             if mode == 'poll':
                 self.assertEqual(old, w.flushes - 1, 'the old count missed the exits flush')
 
+    def _restart_on(self, content):
+        """A day's snapshot file holding `content`, then a start that writes its
+        meta record: the file's bytes after, and the writer."""
+        os.makedirs(os.path.dirname(self._path('snapshot')))
+        with open(self._path('snapshot'), 'wb') as f:
+            f.write(content)
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'meta', 'schema_version': 8, 'ts': 'x', 'ts_epoch': 1.0})
+        w.flush()
+        w.close()
+        with open(self._path('snapshot'), 'rb') as f:
+            return f.read(), w
+
+    def test_a_line_cut_short_is_ended_before_the_next_start_writes(self):
+        """SIGKILL, a power cut or a full disk can leave the file ending in half a
+        line; appended to, it would swallow the next start's meta record:
+        `...partial li{"event": "meta", ...}`, neither line parseable."""
+        whole = b'{"event": "residency", "ts": "x"}\n'
+        got, w = self._restart_on(whole + b'{"event": "residency", "partial li')
+        lines = got.split(b'\n')
+        self.assertEqual(lines[:2], [whole[:-1], b'{"event": "residency", "partial li'])
+        self.assertEqual(json.loads(lines[2].decode())['event'], 'meta')
+        self.assertEqual(lines[3:], [b''])
+        self.assertEqual(w.output_stats()['jsonl']['writes'], 1, 'in the same write(2)')
+
+    def test_a_file_that_ends_its_lines_gets_nothing_more(self):
+        meta = (json.dumps({'event': 'meta', 'schema_version': 8, 'ts': 'x',
+                            'ts_epoch': 1.0}) + '\n').encode()
+        for before in (b'', b'{"event": "residency", "ts": "x"}\n'):
+            got, _w = self._restart_on(before)
+            self.assertEqual(got, before + meta)
+            shutil.rmtree(os.path.join(self.dir, self.day))
+
     def test_errors_are_the_callers_and_a_failed_write_is_retried(self):
         """A record json.dumps refuses raises, as it always did, and none of it
         is written. A write that fails (ENOSPC) raises too and keeps its bytes:
@@ -3477,9 +3511,12 @@ class NetEndpointBlockTest(unittest.TestCase):
 
 
 class FeatureCacheTest(unittest.TestCase):
-    """The feature cache is keyed by kernel release. A collector that gained
-    blocks since the cache was written must probe them: loading the old set
-    would never try the new ones, on every host that ran an older collector."""
+    """The feature cache is keyed by kernel release, and holds only for the block
+    list and `_feature_key` it was probed under: a collector that gained blocks,
+    or runs another BCC or other compiled-in settings, probes afresh. A start
+    takes from it only what is final -- a block that loaded on top of the same
+    blocks, one superseded, one missing a block it requires -- and probes again
+    what a load or BTF error refused: a refusal of a moment's is not kept."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_cache_')
@@ -3495,28 +3532,82 @@ class FeatureCacheTest(unittest.TestCase):
         with open(T._feature_cache_path(), 'w') as f:
             json.dump(kw, f)
 
-    def _probe(self):
+    def _probe(self, refuse=()):
+        """One start: (accepted, rejected, programs loaded), the stand-in BCC
+        loading any program that holds none of the `refuse` strings."""
+        loads = []
+
         class FakeBPF(object):
             def __init__(self, text=None, cflags=None):
-                pass
+                loads.append(text)
+                for r in refuse:
+                    if r in text:
+                        raise Exception('cannot attach %s' % r)
 
             def cleanup(self):
                 pass
-        return T.probe_features(FakeBPF, verbose=False)[1]
+        _b, accepted, rejected = T.probe_features(FakeBPF, verbose=False)
+        return accepted, rejected, len(loads)
+
+    def _fresh(self, refuse=()):
+        """What a start with no cache makes of `refuse`."""
+        saved, T.FEATURE_CACHE = T.FEATURE_CACHE, False
+        try:
+            return self._probe(refuse)
+        finally:
+            T.FEATURE_CACHE = saved
 
     def test_a_cache_written_before_a_block_existed_is_reprobed(self):
         self._cache(kernel='k', features=['netbytes', 'tcp_btf'])
-        self.assertIn('netpeer_btf', self._probe())
+        accepted, _rejected, loads = self._probe()
+        self.assertIn('netpeer_btf', accepted)
+        self.assertEqual(loads, self._fresh()[2])
 
-    def test_a_current_cache_is_used_as_is(self):
-        self._cache(kernel='k', features=['netbytes'], blocks=list(T.BLOCK_NAMES))
-        self.assertEqual(self._probe(), {'netbytes'})
-
-    def test_a_fresh_probe_writes_a_cache_that_the_next_start_uses(self):
+    def test_a_cache_whose_refusals_are_final_costs_one_load(self):
         first = self._probe()
+        self.assertTrue(all(r.startswith('superseded') for r in first[1].values()), first[1])
         with open(T._feature_cache_path()) as f:
-            self.assertEqual(json.load(f)['blocks'], list(T.BLOCK_NAMES))
-        self.assertEqual(self._probe(), first)
+            saved = json.load(f)
+        self.assertEqual((saved['blocks'], saved['key']), (list(T.BLOCK_NAMES), T._feature_key()))
+        self.assertEqual(self._probe(), first[:2] + (1,))
+
+    def test_a_block_refused_once_is_probed_again_with_the_blocks_that_need_it(self):
+        acc, rej, _ = self._probe(refuse=('kretprobe__tcp_sendmsg',))
+        self.assertNotIn('netbytes', acc)
+        self.assertTrue(rej['netpeer_btf'].startswith('requires'))
+        acc, rej, _ = self._probe()                     # the refusal is gone
+        self.assertTrue({'netbytes', 'netbytes_udp6', 'netbytes_page', 'netpeer_btf'} <= acc)
+        self.assertEqual((acc, rej), self._fresh()[:2])
+
+    def test_a_block_refused_every_time_costs_one_load_more(self):
+        first = self._probe(refuse=('udpv6_sendmsg',))
+        self.assertNotIn('netbytes_udp6', first[0])
+        self.assertEqual(self._probe(refuse=('udpv6_sendmsg',)), first[:2] + (2,))
+
+    def test_a_cache_made_under_another_key_is_probed_afresh(self):
+        every = self._probe()[2]
+        with mock.patch.object(T, 'SUBMIT_BUDGET', T.SUBMIT_BUDGET * 2):   # compiled in
+            self.assertEqual(self._probe()[2], every)
+        with mock.patch.object(T, '_bcc_version', lambda: 'another'):
+            self.assertEqual(self._probe()[2], every)
+
+    def test_a_cached_set_that_no_longer_loads_is_probed_afresh(self):
+        self._probe()
+        got = self._probe(refuse=('kretprobe__tcp_sendmsg',))
+        self.assertNotIn('netbytes', got[0])
+        self.assertEqual(got[:2], self._fresh(refuse=('kretprobe__tcp_sendmsg',))[:2])
+
+    def test_a_start_from_the_cache_ends_where_a_fresh_probe_does(self):
+        refusable = ('kretprobe__tcp_sendmsg', 'udpv6_sendmsg', 'tcp_sendpage', 'inet_csk_accept',
+                     'sum_block_runtime', 'bpf_probe_read_user', 'run_delay', 'cgroup_id',
+                     'tcp_set_state')
+        rng = random.Random(11)
+        for _ in range(16):
+            before = rng.sample(refusable, rng.randint(0, 3))
+            now = rng.sample(refusable, rng.randint(0, 3))
+            self._probe(refuse=before)
+            self.assertEqual(self._probe(refuse=now)[:2], self._fresh(refuse=now)[:2],
+                             (before, now))
 
 
 class SelfRecordTest(unittest.TestCase):
@@ -5358,6 +5449,23 @@ class WrapperTest(unittest.TestCase):
                 f.write('MASK = "[REDACTED]"\n\n\ndef redact_line(line, **kw):\n'
                         '    return line, None\n')
             self.assertEqual(verdict(), ['bad redact'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_bootstrap_forgets_the_feature_cache(self):
+        """What bootstrap installs can load blocks the last probe could not: the
+        next start probes every block rather than taking the cache's word."""
+        self.assertIn('_forget_features', self._fn('cmd_bootstrap'))
+        d = tempfile.mkdtemp(prefix='ebpfm_wrap_')
+        try:
+            for name in ('.features_6.8.0-90-generic.json', '.features_4.18.0.json', 'node7.log'):
+                open(os.path.join(d, name), 'w').close()
+            script = ('OUTPUT_DIR=%s\nok() { echo "ok $*"; }\n' % d
+                      + self._fn('_forget_features') + '_forget_features\n')
+            rc, out, err = self._bash(script)
+            self.assertEqual((rc, err), (0, ''))
+            self.assertIn('2 file(s) removed', out)
+            self.assertEqual(os.listdir(d), ['node7.log'])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

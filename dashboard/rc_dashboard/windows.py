@@ -422,7 +422,8 @@ class PanelView:
         # leaves for the API without its credentials masked (`redact`).
         self.payload = redact.payload(out)
         self.materialized_at = time.time()
-        self._fresh = {k: (self.materialized_at, self.live_records) for k in out}
+        now = time.monotonic()
+        self._fresh = {k: (now, self.live_records) for k in out}
         # These panels are the view's own: any it showed from a saved copy are gone.
         self.cache["restored"] = None
         return self.payload
@@ -458,7 +459,7 @@ class PanelView:
                 except Exception as e:
                     res = {"_error": str(e)}
                 out[key] = redact.payload(res)
-                fresh[key] = (time.time(), self.live_records)
+                fresh[key] = (time.monotonic(), self.live_records)
             time.sleep(0)               # a waiter's turn at the lock
         with lock:
             if self.reducers is not reds:
@@ -473,12 +474,13 @@ class PanelView:
     def materialize_key(self, key, max_age_s):
         """Re-materialise one reducer's payload when it is older than
         `max_age_s` and the view has ingested since. The rest wait for the
-        next `refresh`: this is for a panel read live, between rebuilds."""
+        next `refresh`: this is for a panel read live, between rebuilds. Its
+        age is on the monotonic clock: a pinned one (`clock.as_of`) never moves."""
         r = self.reducers.get(key)
         if r is None or self._replay is not None:
             return
-        at, seen = self._fresh.get(key, (0.0, None))
-        now = time.time()
+        at, seen = self._fresh.get(key, (float("-inf"), None))
+        now = time.monotonic()
         if now - at < max_age_s or seen == self.live_records:
             return
         try:
@@ -729,7 +731,8 @@ class WindowRegistry:
         if self.hours is not None and not view.flt and hourmod.build(self, view):
             self._save_panels(view)
             return
-        t0 = time.time()
+        t0 = time.time()                # the present: the window's end
+        m0 = time.monotonic()           # and this times the build
         view.state = "building"
         view.error = None
         # Buffer live records from here, so the seam between "the scan reached
@@ -785,7 +788,7 @@ class WindowRegistry:
                 view.progress.update(
                     records=n, bytes=stats["bytes"],
                     pct=min(99, int(100 * stats["bytes"] / total)) if total else 99,
-                    elapsed_s=round(time.time() - t0, 1))
+                    elapsed_s=round(time.monotonic() - m0, 1))
 
         if saved:
             # The saved build's own span, and the catch-up as what it is:
@@ -848,7 +851,7 @@ class WindowRegistry:
             view.state = "ready"
             view.installed_at = time.time()
             view.progress.update(records=n, pct=100, bytes=scanned.get("bytes", 0),
-                                 elapsed_s=round(time.time() - t0, 1))
+                                 elapsed_s=round(time.monotonic() - m0, 1))
 
         if blob is not None:
             try:

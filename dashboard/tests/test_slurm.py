@@ -50,10 +50,57 @@ class Outcomes(unittest.TestCase):
         self.assertEqual(reason(refused), "sbatch: error: QOSMaxSubmitJobPerUserLimit")
 
     def test_a_program_that_ran_and_failed_is_not_a_refusal(self):
-        r = sub(0, "srun -p test python x.py", exit_code=1,
+        # srun relays the program's output, then says how it ended in an error
+        # line of its own; words of the program's are not the scheduler's either
+        for tail in ("\x1b[1;31mTraceback\x1b[0m\nValueError: 3 is not 4\n"
+                     "srun: error: holy7c24101: task 0: Exited with exit code 1\n",
+                     "srun: error: holy7c24101: tasks 0-3: Killed\n",
+                     "PermissionError: [Errno 13] Permission denied: '/n/x'\n"
+                     "CUDA not available\n"
+                     "srun: error: holy7c24101: task 0: Exited with exit code 1\n",
+                     # the tail's first line cut (it keeps 300 characters): numpy's
+                     # words, which a refusal phrase matched anywhere would take
+                     "ryMemoryError: Unable to allocate 2.00 GiB for an array with shape "
+                     "(100000, 2680) and data type float64\n"
+                     "srun: error: holy7c24101: task 0: Exited with exit code 1\n"):
+            r = sub(0, "srun -p test python x.py", exit_code=1, captured_tail=tail)
+            self.assertEqual(outcome(r), "no_id", tail)
+
+    def test_an_srun_or_salloc_that_got_no_allocation_was_refused(self):
+        # its reason the scheduler's first error line, as sbatch's is
+        for args, tail, why in (
+                ("srun -p gpu -A x python x.py",
+                 "srun: error: QOSMaxSubmitJobPerUserLimit\n"
+                 "srun: error: Unable to allocate resources: Job violates accounting/QOS "
+                 "policy (job submit limit, user's size and/or time limits)\n",
+                 "srun: error: QOSMaxSubmitJobPerUserLimit"),
+                ("salloc -p nope", "salloc: error: Job submit/allocate failed: Invalid "
+                 "partition name specified\n", "salloc: error: Job submit/allocate failed: "
+                 "Invalid partition name specified"),
+                # an older salloc's words for the same
+                ("salloc -p gpu", "salloc: error: Failed to allocate resources: Requested node "
+                 "configuration is not available\n", "salloc: error: Failed to allocate "
+                 "resources: Requested node configuration is not available"),
+                ("salloc --immediate=30 -p gpu", "salloc: Pending job allocation 4242\n"
+                 "salloc: job 4242 queued and waiting for resources\n"
+                 "salloc: error: Unable to allocate resources: Requested nodes are busy\n",
+                 "salloc: error: Unable to allocate resources: Requested nodes are busy"),
+                # srun inside an allocation, SLURM_JOB_ID from the environment
+                ("srun -n 64 python x.py", "srun: error: Unable to create step for job 4242: "
+                 "More processors requested than permitted\n", "srun: error: Unable to create "
+                 "step for job N: More processors requested than permitted"),
+                ("srun python x.py", "srun: error: Unable to confirm allocation for job 4242: "
+                 "Invalid job id specified\nsrun: Check SLURM_JOB_ID environment variable. "
+                 "Expired or invalid job 4242\n", "srun: error: Unable to confirm allocation "
+                 "for job N: Invalid job id specified")):
+            r = sub(0, args, exit_code=1, captured_tail=tail)
+            self.assertEqual(outcome(r), "rejected", tail)
+            self.assertEqual(reason(r), why)
+
+    def test_a_reason_has_no_escapes_and_no_numbers(self):
+        r = sub(0, "sbatch x.sh", exit_code=1,
                 captured_tail="\x1b[1;31mTraceback\x1b[0m\nValueError: 3 is not 4\n")
-        self.assertEqual(outcome(r), "no_id")
-        self.assertEqual(reason(r), "ValueError: N is not N")   # escapes gone, numbers masked
+        self.assertEqual(reason(r), "ValueError: N is not N")
 
     def test_reason_is_masked(self):
         r = sub(0, "sbatch x.sh", exit_code=1,
@@ -120,6 +167,18 @@ class Sessions(unittest.TestCase):
         self.assertIn(redact.MASK, row["args"])
         self.assertEqual([f["eg"]["args"] for f in out["rejections"]], [row["args"]])
         self.assertNotIn("sk-k", repr(redact.payload(out)))
+
+    def test_a_failed_program_is_no_refusal_in_the_class_rates(self):
+        tail = ("Traceback (most recent call last):\nValueError: 3 is not 4\n"
+                "srun: error: holy7c24101: task 0: Exited with exit code 1\n")
+        out = self.run_reducer([
+            sub(T0, "srun -p test python x.py", user="erin", cls="human", exit_code=1,
+                captured_tail=tail),
+            sub(T0 + 5, "sbatch --array=0-99 job.sh", user="erin", cls="human",
+                job_id=5, job_ids=[5])])
+        h = out["by_class"]["human"]
+        self.assertEqual((h["asked"], h["rejected"], h["rejected_pct"]), (2, 0, 0.0))
+        self.assertEqual(out["rejections"], [])
 
     def test_without_the_fold_each_key_is_its_own_row(self):
         recs = [sub(T0, "sbatch a.sh", apid=100, job_id=1, job_ids=[1]),

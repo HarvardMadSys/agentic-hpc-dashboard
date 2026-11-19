@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import config as configmod      # noqa: E402
+from rc_dashboard import feeds as feedmod         # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
 from rc_dashboard import tail                     # noqa: E402
 
@@ -398,6 +399,46 @@ class PanelsTest(FeedCase):
                              (20, 10))
         finally:
             agg.stop()
+
+
+class _Zone:
+    """Run under the time zone `tz`, and put the process's own back after."""
+
+    def __init__(self, tz):
+        self.tz = tz
+
+    def __enter__(self):
+        self.was = os.environ.get("TZ")
+        os.environ["TZ"] = self.tz
+        time.tzset()
+
+    def __exit__(self, *exc):
+        if self.was is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self.was
+        time.tzset()
+
+
+class FeedLagTest(FeedCase):
+    """How old a feed's newest record is, wherever the dashboard reads it: the
+    collector stamps `ts` in its node's time zone, which need not be this one's."""
+
+    def test_the_lag_is_the_same_in_every_time_zone(self):
+        with _Zone("America/New_York"):
+            rec = exit_rec(self.now - 2, 1)          # 2 s old, stamped in New York
+        self.append("h1.exits.jsonl", [rec])
+        for tz in ("America/New_York", "UTC", "America/Los_Angeles"):
+            with _Zone(tz):
+                rep = feedmod.resolve_dated("ebpf", self.cfg())
+            self.assertEqual(rep["newest_record_ts"], rec["ts"], tz)
+            self.assertTrue(2 <= rep["lag_s"] < 60, (tz, rep["lag_s"]))
+            self.assertEqual(rep["status"], "ok", tz)
+
+    def test_a_record_stamped_ahead_of_this_clock_is_no_lag(self):
+        self.append("h1.exits.jsonl", [exit_rec(self.now + 120, 1)])    # its node runs fast
+        rep = feedmod.resolve_dated("ebpf", self.cfg())
+        self.assertEqual((rep["lag_s"], rep["lag"], rep["status"]), (0.0, "0s", "ok"))
 
 
 if __name__ == "__main__":

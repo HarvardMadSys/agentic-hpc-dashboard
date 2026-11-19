@@ -54,6 +54,14 @@ export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
 # What the backend runs: `serve`, or `demo` for the service over a synthetic
 # feed it writes itself (run-demo.sh, rc_dashboard/demo).
 RC_DASH_COMMAND="${RC_DASH_COMMAND:-serve}"
+# These clusters' accounts whose records are dropped (filters.drop_global and
+# filters.drop_agent, none by default): the monitoring operator's, and one
+# account's agent records (period3 agent build skew). Not the demo's, whose
+# users are made up. Either set empty leaves it to the config file.
+if [ "$RC_DASH_COMMAND" != demo ]; then
+  export RC_DASH_DROP_USERS="${RC_DASH_DROP_USERS-juncheng}"
+  export RC_DASH_DROP_AGENT_USERS="${RC_DASH_DROP_AGENT_USERS-flamraoui}"
+fi
 # A bundle built anywhere but web/dist is passed to vite as its outDir: a second
 # instance must not share the first one's watcher output, which vite empties
 # on every rebuild.

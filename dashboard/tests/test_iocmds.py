@@ -6,6 +6,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -121,6 +122,16 @@ class Lookup(FeedCase):
         self.assertIs(a, b)
         c = self.run_job({"user": "alice"})
         self.assertIsNot(a, c)
+
+    def test_a_finished_lookup_ages_on_a_clock_that_only_moves_on(self):
+        # TTL_LIVE is a duration: a wall clock set back an hour meanwhile (NTP, a
+        # resumed VM) must not keep a live feed's lookup for that hour more
+        with mock.patch.object(iocmds, "TTL_LIVE", 0.1):
+            a = self.run_job({"user": "bob"})
+            with mock.patch("time.time", return_value=time.time() - 3600):
+                time.sleep(0.3)
+                b = self.run_job({"user": "bob"})
+        self.assertIsNot(a, b)
 
     def test_secrets_masked(self):
         self.append("h1.jsonl", [rec(self.now - 50, 30, "curl -H 'Authorization: Bearer abc123def'")])
