@@ -311,10 +311,11 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(os.listdir(self.tmp), [], code)
 
     def test_a_write_in_place_that_fails_leaves_no_salt_file(self):
-        # the review's case (the link refused for room, then the write in place failing),
-        # and the same write where the file system has no hard links
+        # where the file system has no hard links the salt is made in place, and that
+        # write failing for room leaves no salt file (a link refused for room, an I/O
+        # error or a quota never comes here: the test above)
         fdopen = os.fdopen
-        for code in (errno.ENOSPC, errno.EPERM):
+        for code in (errno.EPERM, errno.EXDEV):
             calls = []
 
             def full(fd, *a, **kw):
@@ -329,6 +330,7 @@ class ConfigTest(unittest.TestCase):
             with mock.patch.object(anonmod.os, "link", refused), \
                     mock.patch.object(anonmod.os, "fdopen", full), self.assertRaises(OSError):
                 anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(len(calls), 2, code)       # the temporary file, then in place
             self.assertEqual(os.listdir(self.tmp), [], code)
             self.assertEqual(anonmod.load_salt(self.cfg(enabled=True))[1], "generated", code)
             os.unlink(os.path.join(self.tmp, "anonymize.salt"))
