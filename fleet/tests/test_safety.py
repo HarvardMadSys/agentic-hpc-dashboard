@@ -1,5 +1,6 @@
 """The receiver's guards: the base folder checks, the watchdog, owner-only modes,
 retention, the free-space pause, and a disk that fills mid-write."""
+import datetime
 import errno
 import os
 import shutil
@@ -290,25 +291,28 @@ class TestModes(unittest.TestCase):
 
 class TestRetentionAndSpace(ReceiverCase):
     def test_retention_keeps_days(self):
-        c = FakeCollector(self.src, day="2026-11-09")
+        """Days are kept by date: with days=2, yesterday and today. The day before goes
+        from the copy, not from the source."""
+        today = datetime.date.today()
+        d = [(today - datetime.timedelta(days=n)).isoformat() for n in (2, 1, 0)]
+        c = FakeCollector(self.src, day=d[0])
         c.append("exits", b'{"r":9}\n')
-        c.roll("2026-11-10", gzip=True)
+        c.roll(d[1], gzip=True)
         c.append("exits", b'{"r":10}\n')
-        c.roll("2026-11-11", gzip=True)
+        c.roll(d[2], gzip=True)
         c.append("exits", b'{"r":11}\n')
-        old = os.path.join(self.mdir, "2026-11-09")
+        self.start(days=2)
+        self.assertTrue(wait_for(lambda: os.path.isdir(self.mdir)
+                                 and sorted(os.listdir(self.mdir)) == d[1:]
+                                 and len(os.listdir(os.path.join(self.mdir, d[2]))) == 2
+                                 and self.receiver.links[0].mirror.verified))
+        old = os.path.join(self.mdir, d[0])
         os.makedirs(old, 0o700)
-        os.chmod(os.path.join(self.basedir, "mirror"), 0o700)
-        os.chmod(self.mdir, 0o700)
         with open(os.path.join(old, "%s.exits.jsonl" % c.host), "wb") as fh:
             fh.write(b'{"r":9}\n')
-        self.start(days=2)
-        self.assertTrue(wait_for(lambda: sorted(os.listdir(self.mdir)) == ["2026-11-09", "2026-11-10", "2026-11-11"]
-                                 and len(os.listdir(os.path.join(self.mdir, "2026-11-11"))) == 2
-                                 and self.receiver.links[0].mirror.verified))
         self.receiver.retention()
-        self.assertEqual(sorted(os.listdir(self.mdir)), ["2026-11-10", "2026-11-11"])
-        self.assertEqual(sorted(os.listdir(self.src)), ["2026-11-09", "2026-11-10", "2026-11-11"])
+        self.assertEqual(sorted(os.listdir(self.mdir)), d[1:])
+        self.assertEqual(sorted(os.listdir(self.src)), d)
 
     def test_free_space_pauses_and_resumes(self):
         c = FakeCollector(self.src)

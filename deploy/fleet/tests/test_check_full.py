@@ -223,6 +223,19 @@ class TestFullRun(Rig):
         self.assertIn("Host key verification failed", out)
         self.assertNotIn("node01", out)
 
+    def test_connected_but_silent_alerts(self):
+        """The review's case: connected, lag_s 86403, and nothing printed. The stream
+        closes a link silent for minutes, so a connected one silent for an hour is stuck."""
+        self.listeners(OURS)
+        self.write_status({"node01": {"connected": True, "down_since": None, "last_error": None,
+                                      "lag_s": 86403.0},
+                           "node02": {"connected": True, "down_since": None, "last_error": None,
+                                      "lag_s": 12.5}})
+        code, out, calls = self.run_check()
+        self.assertEqual(code, 16)
+        self.assertIn("STREAM node01 stale", out)
+        self.assertNotIn("node02", out)
+
     def test_stale_status_alerts(self):
         self.listeners(OURS)
         self.write_status({"node01": {"connected": True, "down_since": None, "last_error": None}},

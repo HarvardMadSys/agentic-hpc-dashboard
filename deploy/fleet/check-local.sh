@@ -26,9 +26,10 @@
 # swapped base folder; nothing is restarted), 13 UNSAFE (a folder is not this account's
 # 700 folder), 14 PORT (someone else listens on the port, or who listens cannot be
 # told), 15 AUTH (no password hash, or a start failed), 16 STREAM (a source node down
-# over an hour, or a stale status), 12 AUDIT (files readable by others, or extended
-# ACLs), 10 RESTARTED, FROZEN, or LINGER (something was started or restarted, or linger
-# was turned back on), 0 OK; 2 for a usage error, or no RC_DASH_ROOT.
+# over an hour, one connected with nothing from it for an hour, or a stale status), 12
+# AUDIT (files readable by others, or extended ACLs), 10 RESTARTED, FROZEN, or LINGER
+# (something was started or restarted, or linger was turned back on), 0 OK; 2 for a
+# usage error, or no RC_DASH_ROOT.
 set -u
 umask 077
 me=$(id -un)
@@ -52,7 +53,7 @@ WINDOWS="stream dashboard"
 KEEP=$(dirname "$0")/keep-running.sh
 CGROUP_ROOT=${RC_CGROUP_ROOT:-/sys/fs/cgroup}
 PROC_NET=${RC_PROC_NET:-/proc/net}
-DOWN_ALERT_S=3600          # a source node down longer than this is reported
+DOWN_ALERT_S=3600          # a source node down, or silent while connected, this long is reported
 STALE_ALERT_S=600          # a status file older than this, with the stream running, too
 FROZEN_AFTER_S=1200        # a listening dashboard this old must answer
 NEVER_LISTENED_S=7200      # one not listening yet gets this long: a start on a busy core is slow
@@ -295,6 +296,9 @@ for host, s in sorted((st.get("hosts") or {}).items()):
     if not s.get("connected") and since and now - since > down_s:
         err = (s.get("last_error") or "no error recorded")[:160]
         print("STREAM %s down %.1f h: %s" % (host, (now - since) / 3600, err))
+    lag = s.get("lag_s")
+    if s.get("connected") and isinstance(lag, (int, float)) and lag > down_s:
+        print("STREAM %s stale: connected, nothing from it for %.1f h" % (host, lag / 3600))
 PYEOF
   )
   while IFS= read -r l; do
