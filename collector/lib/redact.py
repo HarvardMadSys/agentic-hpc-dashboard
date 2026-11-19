@@ -8,7 +8,10 @@ Two kinds, both on by default (EBPFM_REDACT, see ebpf_trace.py):
            the dashboard's, copied from dashboard/rc_dashboard/redact.py because
            this folder runs standalone; a test holds the two copies equal
            whenever both are present. Same mask, so the dashboard's own pass
-           over a collector-masked line changes nothing.
+           over a collector-masked line changes nothing. A deny-list, and best
+           effort: a secret in a shape no rule knows is written as it is
+           (collector/README.md lists the shapes). Past TEXT_MAX a line is cut,
+           and CUT written where the rest was.
   prompts  the free text a coding agent is handed on its command line:
            `claude -p "..."`, `codex exec "..."`, `gemini -p "..."` and the
            like, run directly, through node/npx/uvx, under a wrapper
@@ -45,30 +48,138 @@ PROMPT_MASK = "[REDACTED-PROMPT]"
 _NOT_A_REF = r"(?!\$|\"\$|'\$)"
 _NOT_CODE = (r"(?!(?:os\.)?(?:environ\b|getenv\()|Path\("
              r"|(?:None|True|False|%s|\{\})(?=[\s)\],;}\"']|$))")
-_VALUE = r"(\\?\"[^\"]*\"|\\?'[^']*'|[^\s\"']+)"
+# The inside of a value opened by \" -- a quote escaped inside a "..." string,
+# one level down: there \\ is a backslash, which escapes what follows it
+# (\\\" is an escaped quote, \\\\ a backslash), so only a \" not so escaped
+# ends the value, or a bare ", the outer string's own end. Deeper nesting is
+# read the same way, which may end such a value early.
+_IN_ESCAPED = r"(?:\\\\\\[\s\S]|\\\\[^\\\"]|\\[^\\\"]|[^\\\"])*"
+# A value: a word, or a quoted string whole. In "...", read as sh reads it, a
+# backslash escapes the character after it, so neither it nor \" ends the
+# value; one opened by \" ends as _IN_ESCAPED says. One whose closing quote is
+# not in the text -- cut there at TEXT_MAX, or by the kernel's read -- runs to
+# the text's end, so no part of it is written.
+_VALUE = (r"(\\\"" + _IN_ESCAPED + r"(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+          r"|\\?'[^']*(?:'|\Z)|[^\s\"']+)")
 
 # Names that hold a credential, as an env var, a kwarg or a query key. Matched
-# on the END of the name: `HF_TOKEN`, `db_password`, `AWS_SECRET_ACCESS_KEY`.
-# `max_tokens` ends in an S and is left alone; `PWD` alone is the cwd.
+# on the END of the name: `HF_TOKEN`, `db_password`, `AWS_SECRET_ACCESS_KEY`,
+# Spark's `fs.s3a.secret.key`. `max_tokens` ends in an S and is left alone;
+# `PWD` alone is the cwd. An env var's name, in capitals, may also end in _KEY,
+# PASS or _AUTH -- `KAGGLE_KEY`, `SSHPASS`, `REDISCLI_AUTH` -- where in lower
+# case the same ending is a setting's (`sort_key=`, `bypass=`). `PASSWD_FILE`
+# names where a password is kept, not the password.
 _SECRET_NAME = (r"[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|_PASS|_PWD|"
-                r"API_?KEY|ACCESS_?KEY|SECRET_?KEY|PRIVATE_?KEY|AUTH_?KEY|CREDENTIALS?)")
+                r"(?:API|ACCESS|SECRET|PRIVATE|AUTH)[._]?KEY|CREDENTIALS?"
+                r"|(?-i:_KEY|(?<!BY)PASS|_AUTH))")
 
-_NAME_WORDS = ("token", "secret", "password", "passwd", "passphrase", "_pass", "_pwd", "key",
-               "credential")
+_NAME_WORDS = ("token", "secret", "pass", "_pwd", "key", "credential", "_auth")
+
+# Where a program's name begins: the line's start, a space or a path's slash,
+# or a quote, a backtick, ; | & ( or = just before it -- `bash -c 'cd
+# /x;mysql ...'`, and Claude Code's tool calls, `eval 'mysql ...'`.
+_CMD_START = r"(?:^|[\s/'\"`;|&(=])"
+
+# Every rule reads a text in time linear in its length; past TEXT_MAX
+# characters a text is cut -- at the last space before the limit, so no word is
+# written in part, and a quoted value the cut falls in is read to the text's
+# end (_VALUE) -- and CUT is written after what was read. The rest is neither
+# read nor written: a command line can be as long as the kernel allows, and
+# every one is masked.
+TEXT_MAX = 16384
+CUT = "[CUT]"
+
+
+def cut_text(text, limit=TEXT_MAX):
+    """(`text` cut to at most `limit` characters at a space, tab or newline,
+    whether it was cut). CUT is the caller's to write after the masked text."""
+    if len(text) <= limit:
+        return text, False
+    k = max(text.rfind(" ", 0, limit + 1), text.rfind("\t", 0, limit + 1),
+            text.rfind("\n", 0, limit + 1))
+    return text[:max(k, 0)], True
+
+
+def _each(rx, sub):
+    """A substitution that keeps what a rule's first group matched and applies
+    `rx` -> `sub` to what its second did: each value in one command's span."""
+    return lambda m: m.group(1) + rx.sub(sub, m.group(2))
+
+
+def _until(start, chars=r"[^\n]"):
+    """What lies between a program and an option of its: read lazily, however
+    far, but only up to where the rule's own `start` next begins a command,
+    whose own match reads on from there. So each part of a line is read once,
+    and no option is out of reach: a bound on how far to read would leave a
+    password past it written as it was."""
+    return r"(?:(?!" + start + r")" + chars + r")*?"
+
+
+# A command's span for the rules that read every value in it: to the end of
+# the command, a quoted string whole, as _VALUE reads one, `;` in it and all.
+_SPAN = (r"((?:\\\"" + _IN_ESCAPED + r"(?:\\\")?|\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+         r"|'[^']*(?:'|\Z)|[^\n;&|<>\"'])*)")
+_DB = _CMD_START + r"(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh)\b"
+_REDIS = _CMD_START + r"redis-cli\b"
+_LOGIN = (_CMD_START + r"(?:(?:docker|podman|nerdctl|buildah|skopeo|oras|helm|apptainer"
+          r"|singularity)(?:\s+(?:registry|remote))?\s+login|az\s+login|twine\s+(?:upload|register)"
+          r"|mongo(?:sh|dump|restore|export|import|stat|top|files)?)\b")
+
+
+# A word on a joined line, where a backslash escapes the character after it:
+# `Authorization:\ Bearer\ KEY` is one word, as the shell reads it, and a quote
+# is part of it (an argument `Bearer abc"def` holds the quote).
+_WORD = r"(?:\\.|[^\s\\])+"
+
+
+def _quoted(quote, escaped):
+    """A quoted value from its first character to its closing quote: `quote`
+    names the group that holds the opening quote, `escaped` the one that holds
+    a backslash before it. Opened by a bare quote, a backslash escapes the
+    character after it, so neither it nor an escaped quote ends the value, but
+    the same quote does; opened by an escaped one (a \\" inside a "..."
+    string), as _IN_ESCAPED reads one. With no closing quote in the text, the
+    value runs to the text's end."""
+    return (r"(?!\s)(?(" + escaped + r")(?:\\\\\\[\s\S]|\\\\(?!\\|" + quote + r")[\s\S]"
+            r"|\\(?!\\|" + quote + r")[\s\S]|(?!" + quote + r")[^\\])+"
+            r"|(?:(?!" + quote + r")[^\\]|\\[\s\S])+)")
+
 
 # A container's `--user 1000:1000` is a uid and a gid, not a user and password:
 # docker's, podman's, a wrapper of theirs (`podman-hpc`, a test's
-# `fake_podman.py`), lines continued with a backslash and all.
+# `fake_podman.py`), lines continued with a backslash and all. The rule matches
+# such a command whole, from the program's name to the command's end, and masks
+# what in it is not a uid:gid; so each part of a line is read once, however
+# many `-u` it holds. A quoted `user:password` has its password read to the
+# closing quote (_quoted).
 _UID_GID = re.compile(r"\d+:\d+\Z")
-_CONTAINER_RUN = re.compile(r"(?:^|[\s/;&|(_-])(?:docker|podman|nerdctl|buildah|enroot|kubectl|"
-                            r"crictl|ctr)\b(?:\\\n|[^;&|\n])*\Z")
+_CONTAINER_RUN = (r"(?:^|[\s/;&|(_-])(?:docker|podman|nerdctl|buildah|enroot|kubectl|"
+                  r"crictl|ctr)\b(?:\\\n|[^;&|\n])*")
+_USER_PASSWORD = re.compile(
+    r"((?:^|\s)(?:-u|--user|--proxy-user)(?:=|\s*)((\\)?([\"']))?)(?![+\[])([^\s:\"']+:)(?!\$)"
+    r"((?(2)" + _quoted(r"\4", "3") + r"|[^\s\"']+))")
 
 
 def _user_password(m):
-    """`-u user:` kept and the password masked, but for a container's uid:gid."""
-    if _UID_GID.match(m.group(2) + m.group(3)) and _CONTAINER_RUN.search(m.string, 0, m.start()):
+    """`-u user:` kept and the password masked; in a container's command, all
+    but a uid:gid."""
+    if m.group(1) is None:
+        return _USER_PASSWORD.sub(_not_a_uid_gid, m.group(0))
+    return m.group(1) + m.group(5) + MASK
+
+
+def _not_a_uid_gid(m):
+    if _UID_GID.match(m.group(5) + m.group(6)):
         return m.group(0)
-    return m.group(1) + m.group(2) + MASK
+    return m.group(1) + m.group(5) + MASK
+
+
+# A credential header's name: an API key, a token (`X-Auth-Token`,
+# `X-Vault-Token`, GitLab's `PRIVATE-TOKEN`), a secret, a session's cookie, an
+# API gateway's subscription key. An `X-` is read only where a name begins, so
+# a run of them is read once, not once for each.
+_HEADER_NAME = (r"(?:(?<![A-Za-z-])X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token"
+                r"|Private-?Token|(?<=-)Token|Secret|Cookie|Subscription-Key)")
 
 
 # (name, gate, pattern, substitution). The gate is cheap substring tests on the
@@ -82,18 +193,29 @@ RULES = (
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
      lambda m: MASK),
     # Credential headers, inside -H "..." or anywhere: keep the header name and
-    # scheme. `Bearer $TOKEN` names a secret without holding one.
+    # a scheme it knows. `Bearer $TOKEN` names a secret without holding one.
+    # Any other scheme (`ApiKey`, `Negotiate`, AWS's) cannot be told from a
+    # token, so it is masked with what follows it: to the closing quote of a
+    # quoted header (_quoted: a backslash in it ends nothing); else its first
+    # two words -- but an option or a URL as the second, or a reference
+    # (`ApiKey $KEY`) -- and each word after a comma (`Credential=...,
+    # Signature=...`).
     ("auth_header", (("authorization",),), re.compile(
-        r"((?:Proxy-)?Authorization\s*:\s*(?:Bearer|Basic|Token|Digest|Bot)?\s*)" + _NOT_A_REF
-        + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)([^\s\"']+)", re.I),
+        r"(((\\)?([\"']))?(?:Proxy-)?Authorization\s*:\s*((?:Bearer|Basic|Token|Digest|Bot)\s+)?)"
+        + _NOT_A_REF + r"(?!(?:Bearer|Basic|Token|Digest|Bot)\s)"
+        r"(?(5)|(?!\[|" + _WORD + r"\s+[\"']?\$))"
+        r"((?(2)" + _quoted(r"\4", "3") + r"|" + _WORD
+        + r"(?(5)|(?:\s+(?![-;&|<>]|\S*://)" + _WORD + r")?(?:(?<=,)\s+" + _WORD + r")*)))",
+        re.I),
      lambda m: m.group(1) + MASK),
     # Nor is a shell default that is empty or another variable a header --
     # `${OPENAI_API_KEY:-}`, `${OPENAI_API_KEY:-$KEY}`, `${OPENAI_API_KEY:?unset}`
-    # -- while a default written out is the key itself.
-    ("key_header", ((":",), ("api-key", "apikey", "api_key", "auth-token", "access-token",
-                             "private-token", "secret")), re.compile(
-        r"((?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token|Secret)"
-        r"\s*:(?![-=+]?\}|[-=+][\"']?\$|\?)\s*)" + _NOT_A_REF + r"([^\s\"']+)", re.I),
+    # -- while a default written out is the key itself. A cookie's pairs go on
+    # after a `;`.
+    ("key_header", ((":",), ("api-key", "apikey", "api_key", "-token", "secret", "cookie",
+                             "subscription-key")), re.compile(
+        r"(" + _HEADER_NAME + r"\s*:(?![-=+]?\}|[-=+][\"']?\$|\?)\s*)" + _NOT_A_REF
+        + r"([^\s\"']+(?:(?<=;)\s+[^\s\"']+)*)", re.I),
      lambda m: m.group(1) + MASK),
     # scheme://user:password@host -- keep the user; a long user alone is a token.
     # Anchored on the literal `://`, not on the scheme, which would be tried at
@@ -106,15 +228,14 @@ RULES = (
     # too. Not `date -u +%H:%M`, numpy's `-u[:, 0]`, a container's `--user
     # 1000:1000` (_user_password), nor a password that is a variable's.
     ("user_password", (("-u", "--user", "--proxy-user"), (":",)), re.compile(
-        r"((?:^|\s)(?:-u|--user|--proxy-user)(?:=|\s*)[\"']?)(?![+\[])([^\s:\"']+:)(?!\$)"
-        r"([^\s\"']+)"),
+        r"(?:" + _CONTAINER_RUN + r")|" + _USER_PASSWORD.pattern),
      _user_password),
-    # --token X, --hf-token=X, --api-key X, --password X, --secret X ... A flag
+    # --token X, --hf-token=X, --api_key X, --password X, --secret X ... A flag
     # starts an argument: the `-credential` inside `git-credential` is not one.
     ("secret_flag", (("-",), _NAME_WORDS), re.compile(
-        r"((?<![^\s\"'=])--?[A-Za-z0-9-]*(?:token|secret|password|passwd|passphrase|api-?key|"
-        r"apikey|access-?key|private-?key|auth-?key|credentials?)(?:=|\s+))" + _NOT_A_REF + r"(?!-)"
-        + _VALUE, re.I),
+        r"((?<![^\s\"'=])--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|passphrase|api[-_]?key|"
+        r"access[-_]?key|private[-_]?key|auth[-_]?key|credentials?)(?:=|\s+))" + _NOT_A_REF
+        + r"(?!-)" + _VALUE, re.I),
      lambda m: m.group(1) + MASK),
     # NAME=value for a credential-named variable: env prefix, export, kwarg. No
     # spaces around `=` -- that is how a shell or a kwarg writes it, while
@@ -124,24 +245,25 @@ RULES = (
      lambda m: m.group(1) + MASK),
     # The same names as JSON keys: curl -d '{"password": "..."}'.
     ("secret_json", ((":",), _NAME_WORDS), re.compile(
-        r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"[^\"]*\"|'[^']*')", re.I),
+        r"([\"']" + _SECRET_NAME + r"[\"']\s*:\s*)(\"(?:[^\"\\]|\\[\s\S])*(?:\"|\\?\Z)"
+        r"|'(?:[^'\\]|\\[\s\S])*(?:'|\\?\Z))", re.I),
      lambda m: m.group(1) + MASK),
     # Credential headers as JSON or TOML keys, escaped or not: an MCP server's
     # `"headers": {"Authorization": "Bearer ..."}`, codex's `http_headers=
-    # {"X-Api-Key"="..."}`.
-    ("header_json", (("\"", "'"), ("authorization", "api-key", "apikey", "api_key", "auth-token",
-                                   "access-token", "private-token")), re.compile(
-        r"(\\?[\"'](?:(?:Proxy-)?Authorization\\?[\"']\s*[:=]\s*\\?[\"']"
-        r"(?:(?:Bearer|Basic|Token|Digest|Bot)\s+)?"
-        r"|(?:X-[A-Za-z-]*)?(?:Api[-_]?Key|Auth-?Token|Access-?Token|Private-?Token)"
-        r"\\?[\"']\s*[:=]\s*\\?[\"']))(?!\$)([^\s\"'\\]+)", re.I),
+    # {"X-Api-Key"="..."}`. The value is masked to its closing quote
+    # (_quoted), but for a scheme it knows.
+    ("header_json", (("\"", "'"), ("authorization", "api-key", "apikey", "api_key", "-token",
+                                   "secret", "cookie", "subscription-key")), re.compile(
+        r"(\\?[\"'](?:(?:Proxy-)?Authorization|" + _HEADER_NAME + r")\\?[\"']\s*[:=]\s*(\\)?([\"'])"
+        r"(?:(?:Bearer|Basic|Token|Digest|Bot)\s+)?)(?!\$)(?!(?:Bearer|Basic|Token|Digest|Bot)\s)"
+        r"(" + _quoted(r"\3", "2") + r")", re.I),
      lambda m: m.group(1) + MASK),
     # A credential flag and its value as items of a JSON list: an MCP server's
     # `"args": ["--api-key", "..."]`.
     ("secret_flag_json", (("\"", "'"), _NAME_WORDS), re.compile(
-        r"(\\?[\"']--?[A-Za-z0-9-]*(?:token|secret|password|passwd|passphrase|api-?key|apikey|"
-        r"access-?key|private-?key|auth-?key|credentials?)\\?[\"']\s*,\s*\\?[\"'])(?!\$)"
-        r"([^\"'\\]+)", re.I),
+        r"(\\?[\"']--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|passphrase|api[-_]?key|"
+        r"access[-_]?key|private[-_]?key|auth[-_]?key|credentials?)\\?[\"']\s*,\s*\\?[\"'])"
+        r"(?!\$)([^\"'\\]+)", re.I),
      lambda m: m.group(1) + MASK),
     # ?access_token=...&key=...: query-string credentials, including signed URLs
     # and EOS's `?authz=`.
@@ -150,17 +272,41 @@ RULES = (
         r"sig|signature|X-Amz-Signature|X-Amz-Credential|X-Goog-Signature)=)([^&\s\"'#]+)", re.I),
      lambda m: m.group(1) + MASK),
     # mysql -pSECRET (no space), redis-cli -a SECRET, sshpass -p SECRET. Not psql:
-    # its -p is the port.
+    # its -p is the port. The option is looked for however far it is (_until),
+    # and a quoted value read whole (_VALUE): `-p"se cret"`, `-p\"se cret\"`.
     ("db_password", (("mysql", "mariadb", "mongo"), ("-p",)), re.compile(
-        r"((?:^|[\s/])(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh)\b[^\n]*?\s-p)(?=\S)"
-        r"([^\s\"']+)"),
+        r"(" + _DB + _until(_DB) + r"\s-p)(?=\S)" + _VALUE),
      lambda m: m.group(1) + MASK),
     ("short_password", (("redis-cli", "sshpass"),), re.compile(
-        r"((?:^|[\s/])(?:redis-cli\b[^\n]*?\s-a|sshpass\s+-p)\s*)" + _NOT_A_REF + r"([^\s\"']+)"),
+        r"(" + _CMD_START + r"(?:redis-cli\b" + _until(_REDIS) + r"\s-a|sshpass\s+-p)\s*)"
+        + _NOT_A_REF + _VALUE),
      lambda m: m.group(1) + MASK),
-    # Token shapes that are secrets wherever they appear, flag or not.
+    # A login's -p, spaced or not: a registry login's (docker, podman,
+    # apptainer, singularity ...), az login's, twine upload's, the mongo
+    # tools'. Not ssh's -p, a port, nor docker run's, a port mapping.
+    ("login_password", (("login", "twine", "mongo"), ("-p",)), re.compile(
+        r"(" + _LOGIN + _until(_LOGIN, r"[^\n;&|]") + r"\s-p(?:=|\s+)?)" + _NOT_A_REF
+        + r"(?!-)" + _VALUE),
+     lambda m: m.group(1) + MASK),
+    # A key given as a command's own argument: `wandb login KEY` -- every word
+    # after `login` but an option, a URL after `--host` and all.
+    ("login_key", (("wandb",), ("login",)), re.compile(
+        r"(" + _CMD_START + r"wandb\s+login\b)" + _SPAN),
+     _each(re.compile(r"(\s+)" + _NOT_A_REF + r"(?!-)" + _VALUE), lambda m: m.group(1) + MASK)),
+    # A credential-named setting's value: `aws configure set
+    # aws_secret_access_key VALUE`, `rclone config create REMOTE s3
+    # secret_access_key VALUE pass VALUE ...`.
+    ("config_secret", (("aws", "rclone"), ("config",)), re.compile(
+        r"(" + _CMD_START + r"(?:aws\s+configure\s+set|rclone\s+config\s+(?:create|update))\b)"
+        + _SPAN),
+     _each(re.compile(r"(\s(?:[\w-]+\.)*(?:" + _SECRET_NAME + r"|pass|key)\s+)" + _NOT_A_REF
+                      + r"(?!-)" + _VALUE, re.I), lambda m: m.group(1) + MASK)),
+    # Token shapes that are secrets wherever they appear, flag or not. A JWT
+    # starts a word: after a hyphen, `eyJ` is the middle of one.
     ("token_shape", (("sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-",
-                      "hf_", "akia", "asia", "xox", "aiza", "npm_", "eyj", "zteos64"),), re.compile(
+                      "hf_", "akia", "asia", "xox", "aiza", "npm_", "eyj", "zteos64", "nvapi-",
+                      "gsk_", "r8_", "pplx-", "xai-", "ya29.", "k_live_", "k_test_", "sg.",
+                      "_v1_", "hvs.", "hvb.", "hvr.", "pypi-age"),), re.compile(
         r"\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}"
         r"|zteos64:[A-Za-z0-9+/=_%\-]{20,}"
         r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
@@ -170,16 +316,40 @@ RULES = (
         r"|xox[abprs]-[A-Za-z0-9-]{10,}"
         r"|AIza[0-9A-Za-z_\-]{35}"
         r"|npm_[A-Za-z0-9]{36}"
-        r"|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"),
+        r"|nvapi-[A-Za-z0-9_\-]{20,}"                  # NVIDIA
+        r"|gsk_[A-Za-z0-9]{20,}"                       # Groq
+        r"|r8_[A-Za-z0-9]{30,}"                        # Replicate
+        r"|pplx-[A-Za-z0-9]{20,}"                      # Perplexity
+        r"|xai-[A-Za-z0-9]{20,}"                       # xAI
+        r"|ya29\.[A-Za-z0-9_\-]{20,}"                  # a Google OAuth access token
+        r"|[rs]k_(?:live|test)_[A-Za-z0-9]{20,}"       # Stripe
+        r"|SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}"   # SendGrid
+        r"|do[por]_v1_[a-f0-9]{40,}"                   # DigitalOcean
+        r"|hv[sbr]\.[A-Za-z0-9_\-]{20,}"               # a Vault token
+        r"|pypi-AgE[A-Za-z0-9_\-]{40,}"                # PyPI
+        r"|(?<![\w-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"),
      lambda m: MASK),
 )
 
 
 def redact_keys(text):
     """(`text` with every credential value masked, names of the rules that
-    masked something). MASK itself matches no rule, so a second pass is a no-op."""
+    masked something). MASK itself matches no rule, so a second pass is a no-op.
+    A text longer than TEXT_MAX is cut first, CUT written after it, and 'cut'
+    named with the rules."""
     if not text:
         return text, []
+    text, cut = cut_text(text)
+    text, fired = _keys(text)
+    return (_marked(text), fired + ['cut']) if cut else (text, fired)
+
+
+def _marked(text):
+    """A cut text, masked, with CUT where the rest was."""
+    return text + ' ' + CUT if text else CUT
+
+
+def _keys(text):
     fired = []
     low = text.lower()
     for name, gate, rx, sub in RULES:
@@ -1295,6 +1465,78 @@ def _key_values(text):
     return [v for v in found if len(v) >= 4]
 
 
+# A redirection's operator: it and the word after it are no argument of their
+# command, wherever they stand in it.
+_REDIRECT = re.compile(r'(?:&>>?|<<<?|<>|>>|[<>]&|>\||[<>])\Z')
+_ECHO_FLAGS = re.compile(r'-[neE]+\Z')
+# a variable expanded, `$P` or `${P}`; a value that is nothing but another's
+_REF = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)')
+_ALIAS = re.compile(r'"?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})"?\Z')
+
+
+def _piped_text(cmd, data):
+    """The edits that mask what the command `cmd` pipes into an agent, as its
+    prompt: `echo`'s or `printf`'s arguments, or the heredoc or here-string
+    `cat` is given (`data`)."""
+    argv = [w[0] for w in cmd]
+    k = _program_at(argv)[0]
+    if k is None:
+        return []
+    base = _basename(argv[k])
+    if base == 'cat':
+        return list(data)
+    if base not in ('echo', 'printf'):
+        return []
+    j = k + 1
+    while base == 'echo' and j < len(argv) and _ECHO_FLAGS.match(argv[j]):
+        j += 1
+    return [(cmd[j][2], cmd[-1][3], PROMPT_MASK)] if j < len(cmd) else []
+
+
+def _changed(old, new):
+    """The part of `old` that an edit to `new` replaced: their common start and
+    end taken off."""
+    p, n = 0, min(len(old), len(new))
+    while p < n and old[p] == new[p]:
+        p += 1
+    q = 0
+    while q < n - p and old[-1 - q] == new[-1 - q]:
+        q += 1
+    return old[p:len(old) - q]
+
+
+def _mask_assigned(s, toks, edits):
+    """A variable set in `s` and expanded where a prompt was masked holds the
+    prompt (`P="..."; claude -p "$P"`): its value is masked too, and so on along
+    a chain of them. A value that is only another variable (`P="$Q"`) stays, and
+    the one it names is followed. Edits go into `edits`."""
+    assigns = {}
+    for t in toks:
+        m = None if t[1] else _ENV_ASSIGN.match(t[0])
+        if m:
+            name = t[0][:m.end() - 1]
+            if s.startswith(name + '=', t[2]):
+                assigns.setdefault(name, []).append((t[2] + len(name) + 1, t[3]))
+    if not assigns:
+        return
+    names = set()
+    for a, b, text in edits:
+        if PROMPT_MASK in text:
+            names.update(_REF.findall(_changed(s[a:b], text)))
+    seen = set()
+    while names:
+        name = names.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for a, b in assigns.get(name, ()):
+            value = s[a:b]
+            names.update(_REF.findall(value))
+            if value and not _ALIAS.match(value) and not any(x < b and a < y
+                                                             for x, y, _t in edits):
+                edits.append((a, b, PROMPT_MASK))
+
+
 def _redact_shell(s, depth, exact=True):
     """A shell command string with every agent prompt in it masked; (str, a
     prompt masked?). Only the masked words change -- the rest of the string,
@@ -1318,23 +1560,43 @@ def _redact_shell(s, depth, exact=True):
             return s, False
         return s[:m.end(1)] + ' ' + PROMPT_MASK, True
     bodies = dict((op, (a, b)) for op, a, b in heredocs)
-    edits, cmd = [], []
+    edits, cmd, data = [], [], []
+    redirect = piped = None
     for k, t in enumerate(toks + [None]):
         if t is not None and not t[1]:
             nxt = toks[k + 1] if k + 1 < len(toks) else None
             if (nxt is not None and nxt[1] and nxt[2] == t[3] and nxt[0][:1] in '<>'
                     and s[t[2]:t[3]].isdigit()):
                 continue                    # `2>&1`: a file descriptor, no argument
+            if redirect is not None:
+                # the word a redirection takes, no argument of the command: a
+                # file, a heredoc's delimiter, or a here-string -- its input
+                if redirect == '<<<':
+                    data.append((t[2], t[3], PROMPT_MASK))
+                redirect = None
+                continue
             # `do claude ...`: a command after a reserved word
             if cmd or not (t[0] in _LEADING_WORDS and s[t[2]:t[3]] == t[0]):
                 cmd.append(t)
             continue
-        if cmd and t is not None and t[2] in bodies:
-            a, b = bodies[t[2]]
-            if s[a:b].strip() and find_cli([w[0] for w in cmd])[1] is not None:
-                edits.append((a, b, PROMPT_MASK + '\n'))    # `claude -p <<'EOF'`: its prompt
+        if t is not None and _REDIRECT.match(t[0]):
+            # A redirection stands anywhere in its command (`claude -p > out
+            # "..."`); a heredoc's body, after the line, is that command's input.
+            if t[2] in bodies and s[bodies[t[2]][0]:bodies[t[2]][1]].strip():
+                data.append(bodies[t[2]] + (PROMPT_MASK + '\n',))
+            redirect = t[0]
+            continue
+        redirect = None
         if cmd:
             argv = [w[0] for w in cmd]
+            if find_cli(argv)[1] is not None:
+                # What an agent reads on its input is its prompt: a heredoc or a
+                # here-string of its own (`claude -p <<'EOF'`), and what `echo`,
+                # `printf` or `cat` pipes straight into it.
+                edits.extend(data)
+                if piped is not None:
+                    edits.extend(_piped_text(*piped))
+            piped = (cmd, data) if t is not None and t[0] in ('|', '|&') else None
             res, _f = _mask_argv(argv, depth, exact)
             k = 0
             while k < len(cmd):
@@ -1350,7 +1612,9 @@ def _redact_shell(s, depth, exact=True):
                     a, b = cmd[k][2], cmd[k][3]
                     edits.append((a, b, _requote(s[a:b], res[k])))
                     k += 1
-            cmd = []
+        else:
+            piped = None
+        cmd, data = [], []
     for a, b in substs:
         # `out="$(claude -p ...)"`: a command inside a quoted word, unless the
         # word itself went
@@ -1358,6 +1622,7 @@ def _redact_shell(s, depth, exact=True):
             red = _redact_string(s[a:b], depth, exact)
             if red != s[a:b]:
                 edits.append((a, b, red))
+    _mask_assigned(s, toks, edits)
     fired = any(PROMPT_MASK in e[2] for e in edits)
     for a, b in comments:
         # A comment beside a masked prompt may be the prompt's own words, which
@@ -1501,6 +1766,13 @@ def _mask_argv(argv, depth=0, exact=True):
     if name is not None:
         spec = CLIS[name]
         res[i + 1:] = _walk(spec, argv[i + 1:], exact)[0]
+        for j in range(i):
+            # an environment the agent is started with that says a sentence:
+            # `env 'PROMPT=...' claude -p`, `TASK="..." codex exec`
+            if _ENV_ASSIGN.match(argv[j]):
+                key, _eq, val = argv[j].partition('=')
+                if _says(val):
+                    res[j] = key + '=' + PROMPT_MASK
         k = _inner_command(spec, argv, i + 1)
         if k is not None:
             inner = _mask_argv(argv[k:], depth, exact)[0]
@@ -1585,18 +1857,40 @@ def needs_argv(line):
     return bool(line) and _names_cli(line)
 
 
+def _cut_argv(argv):
+    """(argv cut where cut_text() cuts the line it joins to, whether it was):
+    the arguments past the cut dropped, the one it falls in cut at a space."""
+    head, cut = cut_text(' '.join(argv))
+    if not cut:
+        return argv, False
+    out, at = [], 0
+    for a in argv:
+        if at + len(a) > len(head):
+            if len(head) > at:
+                out.append(a[:len(head) - at])
+            break
+        out.append(a)
+        at += len(a) + 1
+    return out, True
+
+
 def redact_argv(argv, keys=True, prompts=True, exact=True):
     """(command line as the collector writes it, sorted names of what was
-    masked, or None) from a command line's separate arguments."""
+    masked, or None) from a command line's separate arguments. One longer than
+    TEXT_MAX joined is cut first, CUT written after it, and 'cut' named."""
     what = []
+    argv, cut = _cut_argv(argv)
     if prompts:
         argv, fired = redact_prompt_argv(argv, 0, exact)
         if fired:
             what.append('prompt')
     line = ' '.join(argv).strip()
     if keys:
-        line, names = redact_keys(line)
+        line, names = _keys(line)
         what.extend(names)
+    if cut:
+        line = _marked(line)
+        what.append('cut')
     return line, (sorted(set(what)) or None)
 
 

@@ -3745,13 +3745,15 @@ def _base_identity(m, actor, attribution=None):
         # An honest denominator for "unresolvable" in the tool distribution: a
         # truncated shell payload was indistinguishable from a genuinely short
         # one. null (not false) when the raw length is unknown -- false would
-        # claim "measured and complete". Two things can cut it: the in-kernel
-        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, and
-        # the emit cap when one is set.
+        # claim "measured and complete". Three things can cut it: the in-kernel
+        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, the
+        # emit cap when one is set, and the masking, which reads 16 KB of a line
+        # (redact.TEXT_MAX) and writes [CUT] after them.
         'args_len': m.get('args_raw_len'),
         'args_truncated': (None if m.get('args_raw_len') is None
                            else bool(m.get('args_clamped'))
-                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)),
+                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)
+                           or 'cut' in (masked or ())),
         'cwd': m.get('cwd'),
         # sandbox = namespace isolation (ground truth); sandbox_ancestry = how it
         # got there. Their disagreement separates a bwrap PROBE from a real one.
@@ -4227,10 +4229,17 @@ def _interactive_submit(m):
     return '--pty' in (m.get('args') or '').split(' ')
 
 
+# The most of a submit tool's output masked for its captured tail: all of it
+# at the default budget. Masked, and only then cut to its last 300 characters,
+# so a credential the cut falls in is still read whole; cut first, `export
+# DB_PASSWORD=...` was written as `SWORD=...`, which no rule reads as a name.
+_SUBMIT_MASKED = 8192
+
+
 def _emit_submit(m, exit_rec):
     text = (m.get('submit_buf') or b'').decode('utf-8', 'replace')
     jobs = parse_job_ids(text)
-    tail = text[-300:] if text else None
+    tail = text[-_SUBMIT_MASKED:] if text else None
     if tail and _interactive_submit(m):
         tail = None
     elif tail and REDACT_KEYS:
@@ -4239,6 +4248,8 @@ def _emit_submit(m, exit_rec):
         except Exception:
             _count_error('redact')
             tail = None
+    if tail:
+        tail = tail[-300:]
     rec = _envelope('submit')
     rec.update(_base_identity(m, exit_rec['actor'], exit_rec.get('attribution')))
     req = parse_submit_args(m.get('args'))
@@ -4253,7 +4264,7 @@ def _emit_submit(m, exit_rec):
         'exit_code': exit_rec['exit_code'], 'signal': exit_rec['signal'],
         'start': exit_rec['start'], 'duration_s': exit_rec['duration_s'],
         'captured_bytes': len(text),
-        # the last 300 characters, credentials masked; null for an interactive
+        # the last 300 characters, credentials masked first; null for an interactive
         # (--pty) session, whose output is the user's own terminal
         'captured_tail': tail,
     })

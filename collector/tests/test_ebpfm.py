@@ -2733,6 +2733,21 @@ class ArgsTruncationTest(unittest.TestCase):
         self.assertEqual((len(i['args']), i['args_len']), (9000, 9000))
         self.assertFalse(i['args_truncated'])
 
+    def test_a_line_the_masking_cuts_is_truncated(self):
+        """The masking reads 16 KB of a line and writes [CUT] after them; a
+        longer /proc read was cut there and still said to be whole."""
+        saved = (T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS)
+        T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = frozenset(('keys', 'prompts')), True, True
+        try:
+            T.proc_add(706, 1, comm='sh', args='x ' * 10000, argv_source='proc')
+            T.proc[706]['args_raw_len'] = 20000
+            i = T._base_identity(T.proc[706], 'human', 'tty')
+        finally:
+            T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = saved
+        self.assertTrue(i['args'].endswith(' [CUT]'), i['args'][-20:])
+        self.assertEqual(i['args_redacted'], ['cut'])
+        self.assertTrue(i['args_truncated'])
+
     def test_an_emit_cap_still_applies_when_set(self):
         T.ARGS_MAXLEN = 2048
         T.proc_add(701, 1, comm='sh', args='x' * 9000, argv_source='proc')
@@ -5174,6 +5189,15 @@ class SubmitCaptureTest(unittest.TestCase):
         self.assertNotIn('hf_abcdefghij', r['captured_tail'])
         self.assertIn('HF_TOKEN=[REDACTED]', r['captured_tail'])
 
+    def test_the_tail_is_masked_before_it_is_cut(self):
+        """Cut to its last 300 characters first, the password's name lost its
+        first letters to the cut, and `SWORD=hunter2secret` was written."""
+        out = b'Submitted batch job 9\n' + b'a' * 100 + b'\n+ export DB_PASSWORD=hunter2secret\n' \
+            + b'b' * 280
+        r = self._submit('sbatch run.sh', out)
+        self.assertNotIn('hunter2secret', r['captured_tail'])
+        self.assertEqual(r['captured_tail'], 'PASSWORD=[REDACTED]\n' + 'b' * 280)
+
     def test_the_kernel_spends_a_budget_and_forgets_an_exec_into_anything_else(self):
         txt = T.build_bpf_text({'submit'}, offs=FAKE_OFFS)
         # LLVM may prove the last clamp redundant and drop it; 4.18 needs it
@@ -5310,6 +5334,32 @@ class WrapperTest(unittest.TestCase):
 
     def test_a_node_snapshot_is_bounded(self):
         self.assertIn('$(_node_timeout) python3 "$NODE_SNAPSHOT"', self.src)
+
+    def test_check_masks_a_credential_through_the_node_tiers_lib(self):
+        """It only compiled node_snapshot.py: a lib/redact.py it could not
+        import, or that masked nothing, passed."""
+        d = tempfile.mkdtemp(prefix='ebpfm_check_')
+        try:
+            os.mkdir(os.path.join(d, 'lib'))
+            snap = os.path.join(d, 'node_snapshot.py')
+            shutil.copy(str(_ROOT / 'node_snapshot.py'), snap)
+            script = ('ok() { echo "ok $1"; }; warn() { echo "warn $1"; }; bad() { echo "bad $1"; }\n'
+                      '_node_mode() { echo node; }; want_ebpf() { return 1; }\n'
+                      'NODE_SNAPSHOT=%s; NODE_OUTPUT_DIR=%s/out\n' % (snap, d)
+                      + self._fn('_check_node_tier') + '_check_node_tier\n')
+
+            def verdict():
+                rc, out, err = self._bash(script)
+                return [l for l in out.splitlines() if l.split()[1:] == ['redact']]
+            self.assertEqual(verdict(), ['bad redact'])               # no lib/redact.py
+            shutil.copy(str(_ROOT / 'lib' / 'redact.py'), os.path.join(d, 'lib'))
+            self.assertEqual(verdict(), ['ok redact'])
+            with open(os.path.join(d, 'lib', 'redact.py'), 'w') as f:  # one that masks nothing
+                f.write('MASK = "[REDACTED]"\n\n\ndef redact_line(line, **kw):\n'
+                        '    return line, None\n')
+            self.assertEqual(verdict(), ['bad redact'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
     # --- run for real ------------------------------------------------------
     def _bash(self, script, env=None):

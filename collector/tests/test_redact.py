@@ -7,10 +7,13 @@ import contextlib
 import ctypes
 import importlib.util
 import io
+import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -701,6 +704,370 @@ class LeakReviewTest(unittest.TestCase):
             self.hidden(R.redact_keys(line)[0], 'QUJDQUJD')
 
 
+# Claude Code's Bash tool runs each command as `bash -c -l "source SNAPSHOT &&
+# eval 'CMD' < /dev/null && pwd -P >| CWDFILE"`.
+TOOL = ("source /home/u/.claude/shell-snapshots/snapshot-bash-1.sh && eval '%s' "
+        "\\< /dev/null && pwd -P >| /tmp/claude-a1b2-cwd")
+
+
+class CoverageTest(unittest.TestCase):
+    """Shapes a second review found written unmasked: credentials, each through
+    the eBPF tier's separate arguments and the node tier's joined line, and
+    ordinary words that must stay. Made-up values."""
+
+    def hidden(self, argv, *secrets):
+        for out in (red(argv), R.redact_line(' '.join(argv))[0]):
+            for s in secrets:
+                self.assertNotIn(s, out, argv)
+            self.assertTrue(K in out or P in out, (argv, out))
+            self.assertEqual(R.redact_keys(out), (out, []), argv)   # the dashboard's pass: no change
+
+    def same(self, argv):
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None), argv)
+        self.assertEqual(R.redact_line(' '.join(argv)), (' '.join(argv), None), argv)
+
+    def test_an_authorization_header_with_a_scheme_it_does_not_know(self):
+        """Only the scheme was masked, and the credential after it written."""
+        for scheme, cred in (('ApiKey', 'VnVhQ2ZHY0JDZGJrSecretValue99'), ('Negotiate', 'YIIZtAYGKwYB'),
+                             ('Key', '0123456789abcdef0123'), ('Splunk', '12345678-90ab-cdef')):
+            argv = ['curl', '-H', 'Authorization: %s %s' % (scheme, cred), 'https://api.example.org/v1']
+            self.hidden(argv, cred)
+            self.assertEqual(red(argv), 'curl -H Authorization: %s https://api.example.org/v1' % K)
+        # AWS's: words after a comma go with it; quoted, all of it to the quote
+        self.hidden(['curl', '-H', 'Authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/2026/s3, '
+                     'SignedHeaders=host, Signature=fe5f80f77d5fa3beca038a248ff027', 'https://s3'],
+                    'AKIDEXAMPLE', 'fe5f80f77d5f')
+        self.assertEqual(red(['bash', '-c', "curl -H 'Authorization: ApiKey a1b2 c3d4' https://x"]),
+                         "bash -c curl -H 'Authorization: %s' https://x" % K)
+        self.assertEqual(red(['bash', '-c', 'curl -H Authorization:\\ ApiKey\\ a1b2c3d4 https://x']),
+                         'bash -c curl -H Authorization:%s https://x' % K)
+        # a known scheme is kept, and a reference is no credential
+        self.assertEqual(red(['curl', '-H', 'Authorization: Basic dXNlcjpwYXNz', 'https://x']),
+                         'curl -H Authorization: Basic %s https://x' % K)
+        for line in ('curl -H "Authorization: ApiKey $API_KEY" https://x',
+                     'curl -H "Authorization: Bearer ${TOKEN}" https://x'):
+            self.assertEqual(R.redact_keys(line), (line, []), line)
+        self.hidden(['claude', 'mcp', 'add-json', 'srv',
+                     '{"headers": {"Authorization": "ApiKey a1b2c3d4e5"}}'], 'a1b2c3d4e5')
+
+    def test_a_password_in_a_command_the_agents_tool_runs(self):
+        """A program's name was looked for only after a space or a slash, so
+        `cd /x;mysql -p...` and `eval 'mysql -p...'` were never read. Each rule,
+        inside the tool's command string, and after a `;`."""
+        for cmd, secret in (('mysql -uroot -phunter2zz prod', 'hunter2zz'),
+                            ('sshpass -p hunter2zz ssh db1 uptime', 'hunter2zz'),
+                            ('redis-cli -h r1 -a hunter2zz ping', 'hunter2zz'),
+                            ('mongosh -u alice -p hunter2zz db1/prod', 'hunter2zz'),
+                            ('podman login -u alice -p hunter2zz nvcr.io', 'hunter2zz'),
+                            ('wandb login 0123456789abcdef0123', '0123456789abcdef'),
+                            ('aws configure set aws_secret_access_key wJalrXUtnFEMI', 'wJalrXUtnFEMI'),
+                            ('curl -u alice:hunter2zz https://x', 'hunter2zz'),
+                            ('curl -H "Authorization: ApiKey hunter2zz" https://x', 'hunter2zz'),
+                            ('curl -H "X-Api-Key: hunter2zz" https://x', 'hunter2zz'),
+                            ('python train.py --api_key hunter2zz', 'hunter2zz'),
+                            ('export KAGGLE_KEY=hunter2zz', 'hunter2zz'),
+                            ('git clone https://alice:hunter2zz@git.x/r', 'hunter2zz'),
+                            ("curl 'https://x/?token=hunter2zz'", 'hunter2zz'),
+                            ('echo nvapi-' + 'a' * 40, 'a' * 40)):
+            for argv in (['/bin/bash', '-c', '-l', TOOL % cmd], ['bash', '-c', 'cd /data;' + cmd],
+                         ['bash', '-c', 'x=$(%s)' % cmd]):
+                self.hidden(argv, secret)
+
+    def test_flag_names_with_underscores(self):
+        for flag in ('--api_key', '--db_password', '--wandb_api_key', '--auth_token', '--hf_token',
+                     '--secret_access_key'):
+            self.hidden(['python', 'train.py', flag, 'abc123secretvalue'], 'abc123secretvalue')
+            self.hidden(['python', 'train.py', flag + '=abc123secretvalue'], 'abc123secretvalue')
+
+    def test_logins(self):
+        nv = 'nvapi-AbCdEf0123456789AbCdEf0123456789'
+        for argv, secret in (
+                (['podman', 'login', '-u', 'alice', '-p', 'hunter2zz', 'nvcr.io'], 'hunter2zz'),
+                (['docker', 'login', 'nvcr.io', '-u', '$oauthtoken', '-p', nv], 'AbCdEf0123'),
+                (['docker', 'login', '-phunter2zz', 'reg.x'], 'hunter2zz'),
+                (['apptainer', 'registry', 'login', '-u', 'a', '-p', 'hunter2zz', 'docker://r'],
+                 'hunter2zz'),
+                (['singularity', 'remote', 'login', '-u', 'a', '-p', 'hunter2zz'], 'hunter2zz'),
+                (['az', 'login', '--service-principal', '-u', 'app-id', '-p', 'client~Secret.8Q',
+                  '--tenant', 't'], 'client~Secret'),
+                (['twine', 'upload', '-u', '__token__', '-p', 'pypi-AgEIcHlwaS5vcmc', 'dist/x.whl'],
+                 'AgEIcHlw'),
+                (['mongodump', '--host', 'db1', '-u', 'alice', '-p', 'hunter2zz'], 'hunter2zz'),
+                (['wandb', 'login', '0123456789abcdef0123456789abcdef01234567'], '0123456789abcdef'),
+                (['wandb', 'login', '--relogin', '--host', 'https://wandb.x', 'a1b2c3d4e5f6'],
+                 'a1b2c3d4e5f6'),
+                (['aws', 'configure', 'set', 'aws_secret_access_key', 'wJalrXUtnFEMI/K7MDENG'],
+                 'wJalrXUtnFEMI'),
+                (['aws', 'configure', 'set', 'profile.dev.aws_session_token', 'IQoJb3JpZ2lu'],
+                 'IQoJb3JpZ2lu'),
+                (['rclone', 'config', 'create', 'r', 's3', 'access_key_id', 'AKIAIOSFODNN7EXAMPLE',
+                  'secret_access_key', 'wJalrXUtnFEMIK7MDENG', 'session_token', 'IQoJb3JpZ2lu'],
+                 'wJalrXUtnFEMIK7MDENG'),
+                (['rclone', 'config', 'create', 'r', 'sftp', 'host', 'h', 'user', 'u', 'pass',
+                  'hunter2zz'], 'hunter2zz')):
+            self.hidden(argv, secret)
+        self.assertEqual(red(['rclone', 'config', 'create', 'r', 's3', 'region', 'us-east-1',
+                              'secret_access_key', 'wJalrXUtnFEMIK7MDENG', 'session_token', 'IQoJ0']),
+                         'rclone config create r s3 region us-east-1 secret_access_key %s '
+                         'session_token %s' % (K, K))
+
+    def test_names_of_variables(self):
+        self.hidden(['env', 'KAGGLE_KEY=0123456789abcdef', 'AZURE_STORAGE_KEY=Zm9vYmFyYmF6',
+                     'SSHPASS=hunter2zz', 'REDISCLI_AUTH=hunter3zz', './run.sh'],
+                    '0123456789abcdef', 'Zm9vYmFyYmF6', 'hunter2zz', 'hunter3zz')
+        self.hidden(['spark-submit', '--conf', 'spark.hadoop.fs.s3a.secret.key=wJalrXUtnFEMIK7MDENG',
+                     'job.py'], 'wJalrXUtnFEMIK7MDENG')
+
+    def test_headers(self):
+        self.hidden(['curl', '-H', 'Cookie: sessionid=abcdef0123456789; csrftoken=fedcba9876543210',
+                     'https://x'], 'abcdef0123456789', 'fedcba9876543210')
+        self.hidden(['curl', '-H', 'X-Vault-Token: hvs.CAESIabcdef', 'https://x'], 'CAESIabcdef')
+        self.hidden(['curl', '-H', 'Ocp-Apim-Subscription-Key: 0123456789abcdef', 'https://x'],
+                    '0123456789abcdef')
+        self.hidden(['curl', '-H', 'X-Amz-Security-Token: IQoJb3JpZ2lu', 'https://x'], 'IQoJb3JpZ2lu')
+        self.hidden(['claude', 'mcp', 'add-json', 's', '{"headers":{"X-Vault-Token":"hvs.CAESIabcdef"}}'],
+                    'CAESIabcdef')
+
+    def test_token_prefixes(self):
+        for tok in ('nvapi-' + 'Ab0_' * 16, 'gsk_' + 'a1' * 26, 'r8_' + 'a1' * 18 + 'b',
+                    'pplx-' + 'a1' * 24, 'xai-' + 'a1' * 40, 'ya29.a0AfH6SMB' + 'c' * 30,
+                    'sk_live_' + 'a1' * 12, 'rk_test_' + 'a1' * 12,
+                    'SG.' + 'a' * 22 + '.' + 'b' * 43, 'dop_v1_' + '0a' * 32,
+                    'hvs.CAESI' + 'b' * 30, 'pypi-AgEIcHlwaS5vcmc' + 'c' * 40):
+            self.hidden(['echo', tok], tok[4:])
+            self.hidden(['tool', '--x=' + tok], tok[4:])
+
+    def test_a_backslash_in_a_quoted_credential(self):
+        """A quoted header's value stopped at a backslash, and the rest of the
+        credential went out: `Token [REDACTED]\\private-secret`. A backslash
+        escapes the character after it; it ends nothing."""
+        for line, want in (
+                ("curl -H 'Authorization: Token abc\\private-secret' https://x",
+                 "curl -H 'Authorization: Token %s' https://x" % K),
+                ('curl -H "Authorization: Bearer abc\\"private-secret" https://x',
+                 'curl -H "Authorization: Bearer %s" https://x' % K),
+                ("curl -H 'Authorization: Basic abc\\\\def-secret' https://x",
+                 "curl -H 'Authorization: Basic %s' https://x" % K),
+                # opened by a quote escaped inside a "..." string, the next one ends it
+                ('bash -c "curl -H \\"Authorization: Bearer abc\\" https://x"',
+                 'bash -c "curl -H \\"Authorization: Bearer %s\\" https://x"' % K),
+                ('claude mcp add-json s "{\\"headers\\":{\\"Authorization\\":\\"ApiKey a\\\\\\\\b\\"}}"',
+                 'claude mcp add-json s "{\\"headers\\":{\\"Authorization\\":\\"%s\\"}}"' % K),
+                # a flag's, a JSON key's and a setting's quoted value read the same way
+                ('mysql --password "abc\\"private-secret"', 'mysql --password %s' % K),
+                ('{"password": "abc\\"private-secret"}', '{"password": %s}' % K),
+                ('aws configure set aws_session_token "abc\\";private-secret"',
+                 'aws configure set aws_session_token %s' % K),
+                ('bash -c "export HF_TOKEN=\\"abc123\\" && python run.py"',
+                 'bash -c "export HF_TOKEN=%s && python run.py"' % K)):
+            self.assertEqual(R.redact_keys(line)[0], want, line)
+            self.assertEqual(R.redact_line(line)[0], want, line)
+            self.assertEqual(R.redact_keys(want), (want, []), line)      # and on a second pass
+        # the tracer has the header as curl's own argument, its quotes and all
+        for scheme, cred in (('Token', 'abc\\private-secret'), ('Bearer', 'abc"private-secret'),
+                             ('Basic', 'abc\\\\def-secret')):
+            self.assertEqual(red(['curl', '-H', 'Authorization: %s %s' % (scheme, cred), 'https://x']),
+                             'curl -H Authorization: %s %s https://x' % (scheme, K))
+
+    def test_a_quoted_value_one_level_down_is_read_whole(self):
+        """Inside a "..." string a quoted value is written \\"...\\". mysql's
+        attached -p took the backslash alone for its value, and wrote the
+        password: `-p[REDACTED]\\"se cret\\"`. A \\\\ in such a value -- a JSON
+        escape, one level down -- ended it early: `[REDACTED]\\"def\\"`."""
+        for line, want in (
+                ('sh -c "mysql -p\\"se cret\\" db"', 'sh -c "mysql -p%s db"' % K),
+                ('mysql -p"se cret" db', 'mysql -p%s db' % K),
+                ("mysql -p'se cret' db", 'mysql -p%s db' % K),
+                ('sh -c "redis-cli -h r1 -a \\"se cret\\" ping"',
+                 'sh -c "redis-cli -h r1 -a %s ping"' % K),
+                ('sh -c "sshpass -p\\"se cret\\" ssh h"', 'sh -c "sshpass -p%s ssh h"' % K),
+                ('sh -c "docker login -u a -p\\"se cret\\" reg"',
+                 'sh -c "docker login -u a -p%s reg"' % K),
+                ('sh -c "tool --password=\\"se cret\\" x"', 'sh -c "tool --password=%s x"' % K),
+                ('curl -u "alice:se cret" https://x', 'curl -u "alice:%s" https://x' % K),
+                ('sh -c "curl -u \\"alice:se cret\\" https://x"',
+                 'sh -c "curl -u \\"alice:%s\\" https://x"' % K),
+                ('echo "{\\"Authorization\\": \\"Bearer abc\\\\\\"def\\"}"',
+                 'echo "{\\"Authorization\\": \\"Bearer %s\\"}"' % K),
+                ('echo "{\\"X-Api-Key\\": \\"abc\\\\\\\\def\\"}"', 'echo "{\\"X-Api-Key\\": \\"%s\\"}"' % K),
+                ('bash -c "export TOKEN=\\"abc\\\\\\"def\\" && x"', 'bash -c "export TOKEN=%s && x"' % K),
+                ('bash -c "curl -H \\"Authorization: Bearer abc\\\\\\"def\\" https://x"',
+                 'bash -c "curl -H \\"Authorization: Bearer %s\\" https://x"' % K)):
+            out = R.redact_keys(line)[0]
+            self.assertEqual(out, want, line)
+            self.assertNotRegex(out, r'\bse\b|cret|def', line)
+            self.assertEqual(R.redact_line(line)[0], want, line)
+            self.assertEqual(R.redact_keys(want), (want, []), line)      # and on a second pass
+        # a container's quoted uid:gid stays
+        self.assertEqual(R.redact_keys('docker run -u "1000:1000" img'),
+                         ('docker run -u "1000:1000" img', []))
+
+    def test_an_option_however_far_from_its_program(self):
+        """The scan from a program to its -p or -a, and a command's span, were
+        cut at 400 or 2000 characters: a password past that went out as it
+        was. A quoted value is read whole, a `;` in it and all."""
+        opts = ['--opt%d=value%d' % (i, i) for i in range(60)]                # ~900 characters
+        for argv, secret in (
+                (['mysql', '-h', 'db1'] + opts + ['-phunter2zz', 'prod'], 'hunter2zz'),
+                (['redis-cli', '-h', 'r1'] + opts + ['-a', 'hunter2zz', 'ping'], 'hunter2zz'),
+                (['docker', 'login'] + opts + ['-p', 'hunter2zz', 'reg.x'], 'hunter2zz'),
+                (['wandb', 'login'] + opts + ['a1b2c3d4e5f6'], 'a1b2c3d4e5f6'),
+                (['aws', 'configure', 'set'] + opts * 3 + ['aws_secret_access_key', 'wJalrXUtnFEMI'],
+                 'wJalrXUtnFEMI')):
+            self.hidden(argv, secret)
+            self.hidden(['bash', '-c', 'cd /x && ' + ' '.join(argv)], secret)
+        self.assertEqual(R.redact_keys('aws configure set aws_session_token "IQoJ;b3Jp"'),
+                         ('aws configure set aws_session_token %s' % K, ['config_secret']))
+
+    def test_ordinary_words_stay(self):
+        """`PASSWD_FILE` names where a password is kept, not the password;
+        `sort_key` and `bypass` in lower case are settings, and `-p` is a port or
+        a plugin anywhere but a login."""
+        for argv in (['python', 'x.py', '--keyboard', 'us'], ['ssh', '-p', '22', 'host'],
+                     ['git', 'log', '-p'], ['python', '-m', 'pytest', '-p', 'no:cacheprovider'],
+                     ['docker', 'run', '-p', '8080:80', 'img'],
+                     ['docker', 'run', '--name', 'login', '-p', '8080:80', 'img'],
+                     ['env', 'KEYBOARD_LAYOUT=us', './x'], ['env', 'PASSWD_FILE=/etc/passwd', './x'],
+                     ['sort', '-k2', 'f.txt'], ['python', 'x.py', '--sort_key=name', 'bypass=true'],
+                     ['python', 'x.py', '--max_tokens', '100', '--secret_key_file', '/run/k'],
+                     ['wandb', 'login', '--relogin'], ['aws', 'configure', 'set', 'region', 'us-east-1'],
+                     ['mongod', '--port', '27017'], ['curl', '-H', 'Accept: application/json', 'https://x'],
+                     ['grep', '-rn', 'X-Request-Id: abc', 'logs/']):
+            self.same(argv)
+
+
+class PromptOnInputTest(unittest.TestCase):
+    """A prompt handed to an agent on its input, or through a variable, went out
+    as written: `claude -p <<< "..."`, `echo "..." | claude -p`, `P="...";
+    claude -p "$P"`. Masked in the string as the tracer has it and as the node
+    tier joins it."""
+
+    def check(self, argv, want):
+        self.assertEqual(R.redact_argv(argv), (want, ['prompt']), argv)
+        self.assertEqual(R.redact_line(' '.join(argv)), (want, ['prompt']), argv)
+
+    def same(self, argv):
+        self.assertEqual(R.redact_argv(argv), (' '.join(argv), None), argv)
+
+    def test_a_here_string(self):
+        self.check(['bash', '-c', 'claude -p <<< "the secret plan"'],
+                   'bash -c claude -p <<< %s' % P)
+        self.check(['bash', '-c', "codex exec - <<< 'the secret plan' && echo done"],
+                   'bash -c codex exec - <<< %s && echo done' % P)
+        self.same(['bash', '-c', 'grep plan <<< "the secret plan"; claude --version'])
+
+    def test_what_is_piped_straight_into_an_agent(self):
+        self.check(['bash', '-c', 'echo "the secret plan" | claude -p'],
+                   'bash -c echo %s | claude -p' % P)
+        self.check(['bash', '-c', 'echo -n the secret plan |& claude -p'],
+                   'bash -c echo -n %s |& claude -p' % P)
+        self.check(['bash', '-c', 'printf "%s" "the secret plan" | codex exec -'],
+                   'bash -c printf %s | codex exec -' % P)
+        self.check(['bash', '-c', "cat <<'EOF' | claude -p\nthe secret plan\nEOF"],
+                   "bash -c cat <<'EOF' | claude -p\n%s\nEOF" % P)
+        # into anything else, it is no prompt
+        self.same(['bash', '-c', 'echo "the secret plan" | grep plan; claude --version'])
+        self.same(['bash', '-c', 'cat notes.txt | claude -p'])
+
+    def test_a_variable_expanded_where_a_prompt_was(self):
+        self.check(['bash', '-c', 'P="the secret plan"; claude -p "$P"'],
+                   'bash -c P=%s; claude -p %s' % (P, P))
+        self.check(['bash', '-c', 'export P="the secret plan"; claude -p <<< "${P}"'],
+                   'bash -c export P=%s; claude -p <<< %s' % (P, P))
+        self.check(['bash', '-c', 'P="the secret plan"; out="$(claude -p "$P")"'],
+                   'bash -c P=%s; out="$(claude -p %s)"' % (P, P))
+        # along a chain of them, keeping one that only names another
+        self.check(['bash', '-c', 'A="the secret plan"; B="$A"; echo "$B" | claude -p'],
+                   'bash -c A=%s; B="$A"; echo %s | claude -p' % (P, P))
+        # a variable no masked word expands is no prompt
+        self.same(['bash', '-c', 'D="/data/run 1"; cd "$D" && claude --version'])
+
+    def test_a_redirection_stands_anywhere_in_its_command(self):
+        """It ended the command, and an agent's prompt after it was no argument."""
+        self.check(['bash', '-c', 'claude -p > out.txt "the secret plan"'],
+                   'bash -c claude -p > out.txt %s' % P)
+        self.check(['bash', '-c', '> out.txt claude -p "the secret plan"'],
+                   'bash -c > out.txt claude -p %s' % P)
+        self.check(['bash', '-c', 'claude -p 2>&1 "the secret plan" | tee log'],
+                   'bash -c claude -p 2>&1 %s | tee log' % P)
+
+    def test_an_environment_that_says_a_sentence(self):
+        """`env` executes the agent at once, so the tracer is what sees this; a
+        joined line cannot tell where the value ends and the program begins."""
+        self.assertEqual(R.redact_argv(['env', 'PROMPT=the secret plan', 'claude', '-p']),
+                         ('env PROMPT=%s claude -p' % P, ['prompt']))
+        self.check(['bash', '-c', 'TASK="fix the secret plan" codex exec'],
+                   'bash -c TASK=%s codex exec' % P)
+        self.same(['env', 'NODE_OPTIONS=--max-old-space-size=4096 --no-warnings', 'claude',
+                   '--model', 'opus'])
+        self.same(['env', 'GIT_AUTHOR_NAME=Jane Doe', 'claude', '--model', 'opus'])
+
+
+class WorstCaseTest(unittest.TestCase):
+    """Crafted lines that took the rules seconds -- an idle process with such an
+    argv stalled every node-tier snapshot, and each such exec the tracer's one
+    drain thread. Each bound is many times what the rules now take on a busy
+    node and a small part of what they took (in the comment, on a quiet one)."""
+
+    def test_each_rule_reads_a_crafted_line_in_linear_time(self):
+        """The rules alone, no cut, at a size where each took seconds."""
+        d = 4096 // 14
+        for name, text in (
+                ('-u N:N after many docker', ('docker ' * d + ';' + ' -u 1:1' * d)[:4096]),  # 3.3 s
+                ('a run of X-', 'curl -H :secret ' + 'X-' * 8180),                 # 16 KB: 4.6 s
+                ('redis-cli without -a', 'echo' + ' redis-cli' * 6553),            # 64 KB: 2.9 s
+                ('mysql without -p', 'echo' + ' mysql' * 10922 + ' -p'),           # 64 KB: 4.8 s
+                ('JWTs after a hyphen', 'echo ' + ('eyJ' + 'a' * 11 + '-') * 8738)):  # 128 KB: 1.2 s
+            started = time.perf_counter()
+            R._keys(text)
+            self.assertLess(time.perf_counter() - started, 0.5, name)
+
+    def test_a_crafted_line_is_masked_quickly(self):
+        d = 4096 // 14
+        line = ('docker ' * d + ';' + ' -u 1:1' * d)[:4096]
+        started = time.perf_counter()
+        self.assertEqual(R.redact_line(line)[1], ['user_password'])        # was 3.3 s
+        self.assertLess(time.perf_counter() - started, 0.25)
+
+    def test_a_line_longer_than_the_rules_read_is_cut_and_marked(self):
+        line = 'tool --token tok123secret ' + 'echo redis-cli ' * 70000      # ~1 MB
+        started = time.perf_counter()
+        out, what = R.redact_line(line)
+        self.assertLess(time.perf_counter() - started, 0.5)
+        self.assertTrue(out.startswith('tool --token %s echo redis-cli' % K), out[:60])
+        self.assertTrue(out.endswith(' ' + R.CUT), out[-30:])
+        self.assertLessEqual(len(out), R.TEXT_MAX + 1 + len(R.CUT))
+        self.assertEqual(what, ['cut', 'secret_flag'])
+        # A word the cut falls in is dropped whole: a token cut short would no
+        # longer read as one, and its first characters would be written.
+        token = 'sk-' + 'k' * 40
+        line = 'x' * (R.TEXT_MAX - 20) + ' ' + token
+        self.assertEqual(R.redact_line(line), ('x' * (R.TEXT_MAX - 20) + ' ' + R.CUT, ['cut']))
+        argv = ['bash', '-c', 'claude -p "' + 'the secret plan ' * 2000 + '"']
+        out, what = R.redact_argv(argv)
+        self.assertEqual((out, what), ('bash -c claude %s %s' % (P, R.CUT), ['cut', 'prompt']))
+
+    def test_a_cut_inside_a_quoted_credential_writes_none_of_it(self):
+        """The cut falls at a space; inside a quoted value it left the quote
+        open, which no value was read as, and the words before the cut went
+        out: `--password "private credential phrase [CUT]`."""
+        pad = 'tool ' + 'x ' * 8170
+        secret = 'private credential phrase that crosses boundary'
+        for tail in ('--password "%s"' % secret, '{"password": "%s"}' % secret,
+                     "export DB_PASSWORD='%s'" % secret):
+            for out in (R.redact_keys(pad + tail)[0], R.redact_line(pad + tail)[0],
+                        red(['bash', '-c', pad + tail])):
+                self.assertTrue(out.endswith(K + ' ' + R.CUT), (tail, out[-60:]))
+                self.hidden_words(out, secret)
+        # and a value whose closing quote the kernel's read cut off
+        self.assertEqual(R.redact_keys('mysql --password "hunter2 zz'),
+                         ('mysql --password %s' % K, ['secret_flag']))
+
+    def hidden_words(self, out, secret):
+        for w in secret.split():
+            self.assertNotIn(w, out)
+
+
 class NodeTierTest(unittest.TestCase):
     """The node tier has ps's joined lines; it masks each from the process's own
     arguments while /proc still has them."""
@@ -732,6 +1099,84 @@ class NodeTierTest(unittest.TestCase):
         self.assertEqual(R.redact_ps_line(self.line, 2 ** 22 + 7), R.redact_line(self.line))
 
 
+class NodeSnapshotTest(unittest.TestCase):
+    """node_snapshot.py run whole from a copy, its lib/ as each test makes it,
+    beside a process whose argv holds a password."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.decoy = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)',
+                                      '--password=hunter2decoy'])
+        for _ in range(200):                    # until the child has exec'd
+            with open('/proc/%d/cmdline' % cls.decoy.pid, 'rb') as f:
+                if b'hunter2decoy' in f.read():
+                    break
+            time.sleep(0.01)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.decoy.kill()
+        cls.decoy.wait()
+
+    def snapshot(self, lib, **env):
+        d = tempfile.mkdtemp(prefix='ebpfm_node_')
+        try:
+            shutil.copy(str(_ROOT / 'node_snapshot.py'), d)
+            os.mkdir(os.path.join(d, 'lib'))
+            if lib is not None:
+                with open(os.path.join(d, 'lib', 'redact.py'), 'w') as f:
+                    f.write(lib)
+            e = dict(os.environ, SNAPSHOT_MODE='node', SNAPSHOT_PROC_TREE='0')
+            e.pop('EBPFM_REDACT', None)
+            e.update(env)
+            r = subprocess.run([sys.executable, '-B', os.path.join(d, 'node_snapshot.py'), 'testhost',
+                                '100000'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=e,
+                               universal_newlines=True, timeout=120)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        snap = json.loads(r.stdout)
+        rows = [p['args'] for p in snap['top_cpu_processes'] + snap['top_rss_processes']
+                if p['pid'] == self.decoy.pid]
+        self.assertTrue(rows)
+        return snap, set(rows), r.stdout
+
+    def test_without_its_masking_it_writes_no_command_line(self):
+        """It wrote them raw, with `redact: []`, when lib/redact.py was missing."""
+        for lib in (None, 'def redact_line(:\n'):       # missing, or not Python
+            snap, rows, out = self.snapshot(lib)
+            self.assertEqual(snap['redact'], ['error'])
+            self.assertEqual(rows, {'[REDACTED]'})
+            self.assertNotIn('hunter2decoy', out)
+        # switched off, they are written as they are
+        snap, rows, out = self.snapshot(None, EBPFM_REDACT='0')
+        self.assertEqual(snap['redact'], [])
+        self.assertIn('--password=hunter2decoy', rows.pop())
+
+    def test_with_it_the_password_is_masked(self):
+        snap, rows, out = self.snapshot((_ROOT / 'lib' / 'redact.py').read_text(encoding='utf-8'))
+        self.assertEqual(snap['redact'], ['keys', 'prompts'])
+        self.assertNotIn('hunter2decoy', out)
+        self.assertIn('--password=' + K, rows.pop())
+
+    def test_only_the_ps_rows_it_keeps_are_masked(self):
+        """Every row was masked and all but top_n dropped, twice a snapshot."""
+        src = (_ROOT / 'node_snapshot.py').read_text(encoding='utf-8')
+        head = src.split('\nwith ThreadPoolExecutor(max_workers=8) as ex:')[0]
+        ns = {'__file__': str(_ROOT / 'node_snapshot.py'), '__name__': 'node_snapshot_head'}
+        argv, sys.argv = sys.argv, ['node_snapshot.py', 'testhost', '5']
+        try:
+            exec(compile(head, 'node_snapshot.py', 'exec'), ns)
+        finally:
+            sys.argv = argv
+        masked = []
+        ns['_mask'] = lambda cmd, pid=None: masked.append(pid) or cmd
+        ps = ''.join('%d 1 u 0.0 0.1 100 S 10:00 0:00 tool --token t%d\n' % (1000 + i, i)
+                     for i in range(50))
+        self.assertEqual([r['pid'] for r in ns['parse_ps'](ps, 5)], [1000, 1001, 1002, 1003, 1004])
+        self.assertEqual(masked, [1000, 1001, 1002, 1003, 1004])
+
+
 class DashboardSyncTest(unittest.TestCase):
     def test_the_credential_rules_are_the_dashboards(self):
         dash = _ROOT.parent / 'dashboard' / 'rc_dashboard' / 'redact.py'
@@ -743,6 +1188,12 @@ class DashboardSyncTest(unittest.TestCase):
         self.assertEqual(mod.MASK, R.MASK)
         self.assertEqual([(n, g, rx.pattern, rx.flags) for n, g, rx, _s in mod.RULES],
                          [(n, g, rx.pattern, rx.flags) for n, g, rx, _s in R.RULES])
+        # and the helpers the rules call, word for word: from `_NOT_A_REF` to RULES' end
+        def span(path):
+            src = path.read_text(encoding='utf-8')
+            a = src.index('# A value that only refers to a secret is not one:')
+            return src[a:src.index('\n)\n', src.index('\nRULES = (\n', a)) + 3]
+        self.assertEqual(span(dash), span(_ROOT / 'lib' / 'redact.py'))
 
 
 class _ArgvT(ctypes.Structure):

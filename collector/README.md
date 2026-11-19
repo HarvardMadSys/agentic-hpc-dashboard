@@ -531,6 +531,47 @@ Schema 8 is the fix for each; every point below changes what a field holds.
   pid, is masked from the space-joined line, as is a process gone before `/proc` is
   read, an argument `ps` prints `?` in, and a multi-line script; there a session name's
   later words read as a prompt's.
+
+  Masking is a deny-list, and best effort: it masks the shapes below, and a secret in
+  a shape it does not know is written as it is. Credentials:
+  - a PEM private key; an `Authorization` header's credential (a scheme it knows --
+    Bearer, Basic, Token, Digest, Bot -- is kept; any other goes with it: to the closing
+    quote, or unquoted two words and each after a comma); a key, token, secret, cookie
+    or subscription-key header (`X-Api-Key`, `X-Auth-Token`, `X-Vault-Token`,
+    `PRIVATE-TOKEN`, `Cookie`, `Ocp-Apim-Subscription-Key`), also as a JSON or TOML key;
+  - a URL's password, or a user long enough to be a token; `-u`/`--user`/`--proxy-user`
+    `user:PASS`, but a container's uid:gid; a query string's `token`, `key`, `secret`,
+    `password`, `sig` and the like;
+  - a credential-named flag's value (`--token`, `--api-key`, `--api_key`, `--password`,
+    `--secret`, `--access-key`, `--credentials`, ...), also as a JSON list's items; a
+    credential-named variable, kwarg or JSON key, by how its name ends (`TOKEN`,
+    `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `_PASS`, `_PWD`, `API_KEY`,
+    `ACCESS_KEY`, `SECRET_KEY` and Spark's `secret.key`, `CREDENTIALS`, and in capitals
+    `_KEY`, `PASS`, `_AUTH`; `PASSWD_FILE` names where a password is, and stays);
+  - what a program takes as one: mysql's and mariadb's `-pPASS`, the mongo tools' `-p`,
+    redis-cli's `-a`, sshpass's `-p`, a registry login's `-p` (docker, podman, apptainer,
+    singularity, ...), `az login -p`, `twine upload -p`, `wandb login KEY`, and a
+    credential-named setting in `aws configure set` and `rclone config create`. The
+    program is found after a space, a slash, a quote, a backtick, `;` `|` `&` `(` or
+    `=`, so inside `bash -c '...'` and Claude Code's `eval '...'` too;
+  - token shapes wherever they stand: `sk-` (OpenAI, Anthropic, OpenRouter), GitHub's
+    `ghp_` and kin, `glpat-`, `hf_`, `AKIA`/`ASIA`, `xox?-`, `AIza`, `ya29.`, `npm_`, a
+    JWT, EOS's `zteos64:`, `nvapi-`, `gsk_`, `r8_`, `pplx-`, `xai-`, Stripe's
+    `sk_live_`/`rk_live_`, SendGrid's `SG.`, `dop_v1_`, Vault's `hvs.`, PyPI's tokens.
+
+  Prompts: an agent's prompt arguments and options, as above; in a command string,
+  its here-string or heredoc, what `echo`, `printf` or `cat` pipes straight into it,
+  and a variable set in the same string and expanded where a prompt was masked; and an
+  environment it is started with whose value says a sentence (`env 'PROMPT=...'`).
+
+  Every rule reads a line in time linear in its length. Past 16 KB a line is cut at a
+  space, the rest neither read nor written, and `[CUT]` written after the masked part
+  (a quoted credential the cut falls in is masked whole, as is one whose quote never closes);
+  `args_redacted` names `cut` and `args_truncated` is true. A submit record's
+  `captured_tail` is masked whole and then cut to its last 300 characters. The node
+  tier fails closed: if it cannot import `lib/redact.py` it writes every command line
+  as `[REDACTED]` and its `redact` field reads `["error"]` (unless `EBPFM_REDACT=0`),
+  and `ebpfm.sh check` masks a made-up credential through it.
 - **Kernel-socket traffic is no process's network I/O.** The NFS client sends its RPCs
   from the calling process's context, so every `ls` on an NFS path was an endpoint:
   95% of the table. A socket with no file behind it is now counted per node in
@@ -668,7 +709,8 @@ carry them.
 **`args` is no longer capped by default** (`EBPFM_ARGS_MAXLEN=0`; it was 2048). What limits
 it now is how much argv the collector can read: the in-kernel read at exec stops at
 `EBPFM_ARGV_KMAX` (4096 bytes), while a `/proc` read, used for processes seeded at
-startup, is whole. `args_truncated` now also reports the in-kernel cut. Before, it
+startup, is whole up to the 16 KB the masking reads (*masked text*, above). `args_truncated` now also
+reports the in-kernel cut. Before, it
 compared only against the emit cap, so with no cap a clipped command line would have
 read as complete. The cost is width: identity, and so `args`, rides on every record
 about a process, including each tick's `residency`, `conn` and `netio`, so one long
@@ -775,7 +817,7 @@ that made it worth keeping. **A process that talked to the network is never a no
 | `approval_mode`, `approval_src` | identity | unattended execution, split from confinement. `autonomous` is unchanged |
 | `env_flags` | identity | agent env variable names from `/proc/<pid>/environ`. **Gone in schema 7:** the collector no longer reads another process's environment |
 | `session_uuid` | identity | survives a collector restart, unlike the pid-based `session_key` |
-| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`) or an emit cap (`EBPFM_ARGS_MAXLEN`) cut it |
+| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`), an emit cap (`EBPFM_ARGS_MAXLEN`) or the masking's 16 KB cut (`args_redacted` names `cut`) cut it |
 | `partition`, `gpus`, `array`, `time_limit_s`, `mem`, `cpus_per_task`, `req_src` | `submit` | the resource request, parsed from the tool's argv |
 | `io` | `truncated` | processes alive at SIGTERM carried no I/O at all before |
 | `top_procs`, `state_counts`, `tcp_open_ext`, `tcp_open` | `residency` | live per-process rows, the zombie census, standing external connections per tree |

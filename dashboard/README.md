@@ -669,7 +669,10 @@ line are replaced by `[REDACTED]` on every way out (built panels, the live frame
 `/api/events`, `/api/export`, and the `q` search, which matches the masked text), keeping the
 flag or variable name so a reader can see what was there. Records stay raw in memory, because
 the secrets, sandbox and approval detectors need to read them. The rules and their measured cost
-are in `rc_dashboard/redact.py`.
+are in `rc_dashboard/redact.py`, word for word the collector's: a deny-list, so a secret in a
+shape they do not know is shown as it is (`collector/README.md` lists the shapes). Each reads a
+text in linear time, and one past 100,000 characters, as far as the phase rules read a command,
+is cut there and marked `[CUT]`.
 
 ## Conventions the panels obey
 
