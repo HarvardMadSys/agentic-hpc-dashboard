@@ -39,8 +39,9 @@ jobs:
     steps:
       - name: Install build tooling
         run: |
-          # python3 is EL8's 3.6, what the collector runs on, for its tests below
-          dnf -y install rpm-build rpmdevtools git-core python3
+          # python3 is EL8's 3.6, what the collector runs on, for its tests below;
+          # procps-ng for the ps those tests' node snapshots read (the image has none)
+          dnf -y install rpm-build rpmdevtools git-core python3 procps-ng
 
       # Actions pinned to a commit, not a tag, since this job can write releases.
       - name: Checkout

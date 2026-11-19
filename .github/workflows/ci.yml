@@ -41,8 +41,10 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
-      - name: Install Python 3.6, gcc and git
-        run: dnf -y install python3 gcc git-core
+      # procps-ng for ps: the image has none, and node_snapshot.py reads its
+      # process tables from ps, as on the login nodes.
+      - name: Install Python 3.6, gcc, git and ps
+        run: dnf -y install python3 gcc git-core procps-ng
 
       # The same commits demo-deploy.yml pins.
       - name: Checkout

@@ -1099,6 +1099,7 @@ class NodeTierTest(unittest.TestCase):
         self.assertEqual(R.redact_ps_line(self.line, 2 ** 22 + 7), R.redact_line(self.line))
 
 
+@unittest.skipUnless(shutil.which('ps'), 'needs ps (procps-ng): node_snapshot.py reads processes from it')
 class NodeSnapshotTest(unittest.TestCase):
     """node_snapshot.py run whole from a copy, its lib/ as each test makes it,
     beside a process whose argv holds a password."""
