@@ -177,7 +177,9 @@ def _program_words(words):
     script; the first word of a shell's -c command. Every word of a bwrap's,
     which is tagged by what it confines, as every command line was. The
     environment: the VAR=value words before a program word, `env`'s among them,
-    and a bwrap's `--setenv VAR value`, as VAR=value."""
+    and a bwrap's `--setenv VAR value`, as VAR=value, before the `--` that ends
+    its options: past it, a `--setenv` is its command's argument, as grep's in
+    `bwrap --ro-bind / / -- grep -r --setenv CURSOR_SANDBOX .`."""
     out, env = [], []
     i, n = 0, len(words)
     while i < n:
@@ -189,8 +191,9 @@ def _program_words(words):
         out.append(word)
         name = _program_name(word)
         if name == 'bwrap':
+            end = words.index('--', i + 1) if '--' in words[i + 1:] else n
             env.extend(words[j + 1] + '=' + (words[j + 2] if j + 2 < n else '')
-                       for j in range(i + 1, n - 1) if words[j] == '--setenv')
+                       for j in range(i + 1, end - 1) if words[j] == '--setenv')
             return words, env
         if name in _WRAPPERS:
             values, before = _WRAPPERS[name]

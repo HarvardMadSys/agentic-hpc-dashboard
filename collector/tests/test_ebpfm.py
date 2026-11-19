@@ -796,13 +796,16 @@ class ClassifyTest(unittest.TestCase):
         ('env CURSOR_SANDBOX=1 bash -c make', 'cursor'),
         ('bash -c CURSOR_SANDBOX=1 make', 'cursor'),
         ('bwrap --setenv CURSOR_SANDBOX 1 --ro-bind / / /bin/bash -c make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 -- /bin/bash -c make', 'cursor'),
         ('WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
         ('env WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
         ('bwrap --setenv WINDSURF_STATE /tmp/ws --ro-bind / / /bin/bash', 'windsurf'),
         (HOME + '/.local/bin/windsurf-terminal --pty', 'windsurf'),
-        # a bwrap, by what it confines
+        # a bwrap, by what it confines; past the `--` that ends its options, a
+        # --setenv is its command's argument (grep's here), not a Cursor sandbox
         ('bwrap --ro-bind / / /bin/true', 'bwrap'),
         ('bwrap --ro-bind / / claude', 'claude_code'),
+        ('bwrap --ro-bind / / -- grep -r --setenv CURSOR_SANDBOX .', 'bwrap'),
     )
 
     def test_a_command_that_only_names_an_agent_is_untagged(self):

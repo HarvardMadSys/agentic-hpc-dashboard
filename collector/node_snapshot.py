@@ -617,7 +617,8 @@ def _program_words(words):
     """(program words, environment). argv[0]; past a wrapper or a VAR=value, the
     word run; a package runner's package; an interpreter's script; the first
     word of a shell's -c command. Every word of a bwrap's. The environment: the
-    VAR=value words before a program word, and a bwrap's `--setenv VAR value`."""
+    VAR=value words before a program word, and a bwrap's `--setenv VAR value`
+    before the `--` that ends its options."""
     out, env = [], []
     i, n = 0, len(words)
     while i < n:
@@ -629,8 +630,9 @@ def _program_words(words):
         out.append(word)
         name = _program_name(word)
         if name == 'bwrap':
+            end = words.index('--', i + 1) if '--' in words[i + 1:] else n
             env.extend(words[j + 1] + '=' + (words[j + 2] if j + 2 < n else '')
-                       for j in range(i + 1, n - 1) if words[j] == '--setenv')
+                       for j in range(i + 1, end - 1) if words[j] == '--setenv')
             return words, env
         if name in _WRAPPERS:
             values, before = _WRAPPERS[name]
