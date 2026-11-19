@@ -842,8 +842,13 @@ class LiveReducer:
         retention does. A day no minute was held in has null counts, not 0.
         """
         now = now or time.time()
+        # Its age by the monotonic clock as well as by `now`: with `clock.as_of`
+        # set, time.time() stands still, and a reading taken mid-backfill would
+        # otherwise be reused for good.
+        mono = time.monotonic()
         hit = getattr(self, "_daily", None)
-        if hit is not None and 0 <= now - hit[0] < self.DAILY_REUSE_S:
+        if hit is not None and 0 <= now - hit[0] < self.DAILY_REUSE_S \
+                and mono - hit[2] < self.DAILY_REUSE_S:
             return hit[1]
         self.buckets.evict(now)
         bin_s = self.buckets.bin_s
@@ -940,7 +945,7 @@ class LiveReducer:
                      "day, so a day boundary off the hour lands with the hour it is in). "
                      "`held` is the minutes of the day the collector wrote any exit in.",
         }
-        self._daily = (now, body)
+        self._daily = (now, body, mono)
         return body
 
     def result(self, now=None, window_s=None):

@@ -143,6 +143,11 @@ class CascadeReducer:
         self.ws = ws
         self.sb = sb
         self.nodes = {}                          # (host, pid) -> dict
+        # (host, pid) -> [dict]: the later processes on a pid `nodes` holds (a pid is
+        # reused), held apart and counted, not drawn: a node pairs with its session,
+        # workspace and calls by host and pid, so a second one would take the first's
+        self.later = {}
+        self.n_held = 0
         self.dropped = 0
         self.census = collections.Counter()      # (agent_type, role) -> exits
         self.census_cpu = collections.Counter()
@@ -161,13 +166,13 @@ class CascadeReducer:
             return
         e = rec.get("_ts_epoch")
         key = (rec.get("host"), rec["pid"])
-        n = self.nodes.get(key)
+        n = self._held(key, rec.get("user"), _start(rec), e)
         if n is None:
-            if len(self.nodes) >= self.max_nodes:
+            if self.n_held >= self.max_nodes:
                 self.dropped += 1                # counted, never silent
                 return
             args = rec.get("args") or ""
-            n = self.nodes[key] = {
+            n = {
                 "host": key[0], "pid": key[1], "ppid": rec.get("ppid"), "role": role,
                 "agent_type": rec.get("agent_type"), "user": rec.get("user"),
                 # Masked BEFORE the cut: the payload is masked again on the
@@ -190,6 +195,7 @@ class CascadeReducer:
                 "approval": None, "approval_detail": None, "version": None,
                 "surface": None, "surface_detail": None,
             }
+            self._hold(key, n)
         if role == "agent":
             _launch(n, rec.get("_approval"), rec.get("_approval_detail"),
                     agent_version(rec.get("_command"), rec.get("args")),
@@ -222,14 +228,15 @@ class CascadeReducer:
 
         A node keeps what it was first seen with and takes what `feed` would
         have filled in from the later records: a parent, cwd, user or tree root
-        it lacked, the widened first/last and start, and its exit."""
-        for key, n in o.nodes.items():
-            cur = self.nodes.get(key)
+        it lacked, the widened first/last and start, and its exit. A node of
+        another process on a pid held here is held apart, as `feed` holds it."""
+        for key, n in o._all_held():
+            cur = self._held(key, n["user"], n["start"], n["first"])
             if cur is None:
-                if len(self.nodes) >= self.max_nodes:
+                if self.n_held >= self.max_nodes:
                     self.dropped += 1            # counted, never silent
                     continue
-                self.nodes[key] = n
+                self._hold(key, n)
                 continue
             for f, pick in (("first", min_of), ("last", max_of), ("start", min_of)):
                 cur[f] = pick(cur[f], n[f])
@@ -246,6 +253,30 @@ class CascadeReducer:
         add_counts(self.census, o.census)
         add_counts(self.census_cpu, o.census_cpu)
 
+    def _held(self, key, user, start, t):
+        """The held node of the process a record (its user, start and time) is
+        of: the first on its pid, else a later one; None if it is not held."""
+        n = self.nodes.get(key)
+        if n is None or _same_process(n, user, start, t):
+            return n
+        for m in reversed(self.later.get(key, ())):
+            if _same_process(m, user, start, t):
+                return m
+        return None
+
+    def _hold(self, key, n):
+        if key in self.nodes:
+            self.later.setdefault(key, []).append(n)
+        else:
+            self.nodes[key] = n
+        self.n_held += 1
+
+    def _all_held(self):
+        for key, n in self.nodes.items():
+            yield key, n
+            for m in self.later.get(key, ()):
+                yield key, m
+
     # ------------------------------------------------------------- resolve
     def _parent(self, n, live, daemons):
         if n["daemon"]:
@@ -261,7 +292,8 @@ class CascadeReducer:
                 break
             seen.add(p)
             if (host, p) in live:
-                if users_conflict(n["user"], live[(host, p)]["user"]):
+                if users_conflict(n["user"], live[(host, p)]["user"]) \
+                        or not _running_when_started(live[(host, p)], n):
                     break               # a reused pid, not this process's parent
                 return p, "ancestor", path
             e = self.procs.get(host, p) if self.procs is not None else None
@@ -437,8 +469,11 @@ class CascadeReducer:
                  "cpu_s": round(self.census_cpu[(at, role)], 2),
                  "pct": pct(k, sum(self.census.values()))}
                 for (at, role), k in self.census.most_common()],
-            "buffer": {"nodes": len(self.nodes), "cap": self.max_nodes,
-                       "dropped": self.dropped},
+            "buffer": {"nodes": self.n_held, "cap": self.max_nodes,
+                       "dropped": self.dropped,
+                       # later processes on a pid a node holds, not drawn (basis.reused)
+                       "reused": sum(1 for v in self.later.values() for m in v
+                                     if (m["last"] or 0) >= cutoff)},
             "workspace": self._workspace(live, kids, folded, homes, views),
             "basis": {
                 "node": "a process whose role is agent, infra or client (roles.py); "
@@ -462,6 +497,10 @@ class CascadeReducer:
                               "was claimed, and is the agent it became",
                 "subagent": "an agent started, through any number of steps, beneath "
                             "another agent",
+                "reused": "a pid is reused: a process on a pid that already has a node -- "
+                          "another user's, or one started after that node's process exited "
+                          "-- is never merged into it, and is counted in buffer.reused, not "
+                          "drawn. A node is the first process on its pid in the window",
                 "invisible": "in-process subagents (Claude Code's Task tool, workflow "
                              "agents) share their parent's process and do not appear; "
                              "their commands are counted in their parent's",
@@ -736,6 +775,34 @@ def _launch(n, approval, detail, version, surface=None, surface_detail=None):
         n["version"] = version
     if surface is not None and n["surface"] in (None, "unknown"):
         n["surface"], n["surface_detail"] = surface, surface_detail
+
+
+# Two readings of one process's start differ by up to the clock's granularity.
+START_SLACK_S = 1.0
+
+
+def _running_when_started(c, n):
+    """Whether node `c` was running when node `n` started, so could have
+    started it: `c` had started by then, and had not exited. A pid is reused,
+    and an agent that exited hours before is no parent of the process that
+    later holds its pid's child. Either end unknown is no evidence against."""
+    st = n["start"]
+    t = st if st is not None else n["first"]      # it started by its first record
+    if c["start"] is not None and t is not None and t < c["start"] - START_SLACK_S:
+        return False
+    return not (st is not None and c["exited"] and c["last"] is not None
+                and st > c["last"] + START_SLACK_S)
+
+
+def _same_process(n, user, start, t):
+    """Whether a record -- its user, and its start, else its own time -- is of
+    node `n`'s process. A pid is reused: a record of another user, or of a
+    process that started after `n`'s exited, is another process's."""
+    if users_conflict(n["user"], user):
+        return False
+    at = start if start is not None else t
+    return not (n["exited"] and at is not None and n["last"] is not None
+                and at > n["last"] + START_SLACK_S)
 
 
 def _home(n, acc):

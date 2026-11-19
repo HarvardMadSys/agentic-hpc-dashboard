@@ -105,7 +105,7 @@ GROW_MAX = 899
 # store itself, on in one service only.
 IGNORE = (
     # -- timings
-    ("*elapsed_s", "*", "a duration: the pinned clock's (0) or a monotonic one"),
+    ("*elapsed_s", "*", "a duration, timed on the monotonic clock"),
     ("*behind_wall_s", "*", "the wall clock less the pinned one: when the request ran"),
     ("_meta/generated_at", "export", "the export header's wall-clock stamp"),
     ("*/compressed/index_s", "feeds", "how long indexing the .gz files took"),
@@ -946,6 +946,8 @@ def run(a, tmp, days, hosts, services):
         "RC_DASH_MAX_WINDOWS": "8",
         "RC_DASH_MERGE_REDUCE": "0" if a.scan else "1",
         "RC_DASH_ASK": "0",
+        # no password: two services on 127.0.0.1 over a demo feed
+        "RC_DASH_OPEN": "1",
         # names come from the records' own host names, as in a demo: a lookup's
         # answer depends on when it landed, which no store decides
         "RC_DASH_RDNS": "0",

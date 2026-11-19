@@ -39,7 +39,8 @@
  *                                                            not: data source, tier, provenance
  *   fake data                  the demo's made-up records    not: synthetic data
  */
-export const GLOSS: Record<string, string> = {
+import { table } from './lookup';
+export const GLOSS: Record<string, string> = table({
   // what is counted
   running: 'running: a process alive right now, as seen in the collector’s census of live processes (taken every 60 s)',
   exited: 'exited: a process that finished; each one leaves one record when it exits, so “processes exited” counts what ran',
@@ -173,6 +174,6 @@ export const GLOSS: Record<string, string> = {
   wall: 'length: elapsed time from the session’s first process to its last',
   sigmacpu: 'Σ CPU: CPU of the process and everything below it',
   procs: 'procs: processes in the subtree',
-};
+});
 
 export const gloss = (k: string | undefined): string | undefined => (k ? GLOSS[k] : undefined);

@@ -6,9 +6,11 @@
 # (nfsiostat) and procps-ng (free/uptime/w); missing ones only blank individual
 # sections, but a login-node image should carry them.
 #
-# BASE_IMAGE is overridden by CI to pin an immutable base tag; the default lets
-# `docker build` work locally against the latest base.
-ARG BASE_IMAGE=ghcr.io/fasrc/agentic-hpc-dashboard/base:latest
+# BASE_IMAGE is overridden by CI to pin an immutable base tag; the default is the
+# newest release's base, which the first vX.Y.Z tag publishes. Until then, build
+# locally with --build-arg BASE_IMAGE=ghcr.io/harvardmadsys/agentic-hpc-dashboard/base:edge
+# (main's newest).
+ARG BASE_IMAGE=ghcr.io/harvardmadsys/agentic-hpc-dashboard/base:latest
 FROM ${BASE_IMAGE}
 
 RUN dnf -y install \

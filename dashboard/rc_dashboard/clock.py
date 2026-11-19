@@ -21,10 +21,11 @@ would move the windows off the end of the capture a minute per minute, and
 which dates every saved window build in the future (`windows._resume`) and
 re-scans the window instead of resuming it. Frozen, every restart computes the
 same windows over the same bytes, so a saved build resumes, and the page is
-the same page each time it is opened -- which is what a test needs. The cost:
-durations the service measures with this clock read 0 s (a build's elapsed,
-the inspector's read time), and its caches never age out, which over a capture
-that cannot change is correct.
+the same page each time it is opened -- which is what a test needs. A frozen
+clock measures no duration, so none is measured on it: a build's elapsed, the
+inspector's read time, how long the key search's workers or the inspector's
+warmer have been idle, and a cached tree's age are all timed on
+`time.monotonic()`, which the pin leaves alone.
 
 It is applied by replacing `time.time` and `time.time_ns` for the whole
 process rather than by threading a clock through every call site: there are
@@ -56,7 +57,7 @@ def newest_record(roots):
     Read from each file's end; a compressed file is indexed to get there, which
     the tail would do moments later anyway.
     """
-    import json
+    from . import fastjson
     best = (None, None)
     for root in roots:
         days = dated_dirs(root, 1)
@@ -72,8 +73,8 @@ def newest_record(roots):
                 if not line.strip():
                     continue
                 try:
-                    ts = epoch_of(json.loads(line))
-                except ValueError:
+                    ts = epoch_of(fastjson.record(line))
+                except ValueError:                  # a line that is no record
                     continue
                 if ts is not None:
                     if best[0] is None or ts > best[0]:

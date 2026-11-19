@@ -1,0 +1,168 @@
+name: ci
+
+# Every test suite in the repository, on each pull request and each push to develop
+# and main:
+#   collector-el8   the collector's tests on EL8's own Python 3.6, the one the login
+#                   nodes run, in the Rocky 8.10 image rpm-release.yml builds in. gcc
+#                   lets the tests that compile and run the generated probes run. The
+#                   fleet sender runs on the same nodes, so it must compile there too.
+#   python          the collector, fleet and deploy-kit tests on the runner's Python 3
+#   dashboard       the service's tests with the dependencies uv.lock pins, on 3.11
+#                   (pyproject's minimum) and 3.13 (what the demo image runs)
+#   web             the page: its types, its check:* scripts, and its build
+#
+# demo-deploy.yml runs this workflow first (workflow_call) and deploys only if it
+# passes. Nothing here reads a secret or writes anything.
+
+on:
+  pull_request:
+  push:
+    branches: ["develop", "main"]
+  workflow_dispatch:
+  workflow_call:
+
+# One run per ref: a new push to a pull request cancels the run it replaces, and a run
+# on develop or main is never cut short. Called from demo-deploy.yml, github.workflow
+# is the caller's name, so that run and this workflow's own run of the same push
+# neither wait on nor cancel each other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  collector-el8:
+    name: Collector on EL8 (Python 3.6)
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:8.10
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # procps-ng for ps: the image has none, and node_snapshot.py reads its
+      # process tables from ps, as on the login nodes.
+      - name: Install Python 3.6, gcc, git and ps
+        run: dnf -y install python3 gcc git-core procps-ng
+
+      # The same commits demo-deploy.yml pins.
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Collector tests
+        run: |
+          python3 --version
+          python3 -m unittest discover -s collector/tests -q
+
+      - name: The fleet sender compiles on Python 3.6
+        run: python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py
+
+  python:
+    name: Collector, fleet and deploy kit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Collector tests
+        run: |
+          python3 --version
+          python3 -m unittest discover -s collector/tests -q
+
+      - name: Fleet tests
+        run: python3 -m unittest discover -s fleet/tests -q
+
+      - name: Deploy kit tests
+        run: python3 -m unittest discover -s deploy/fleet/tests -q
+
+  dashboard:
+    name: Dashboard (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # The uv docker/demo/Dockerfile pins, from PyPI, in a venv of its own: the
+      # runner's system Python refuses `pip install --user` (PEP 668).
+      - name: Install uv
+        working-directory: .
+        run: |
+          python3 -m venv "$RUNNER_TEMP/uv"
+          "$RUNNER_TEMP/uv/bin/python" -m pip install --quiet --disable-pip-version-check uv==0.11.32
+          echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
+
+      - name: Install the locked dependencies
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: uv sync --frozen --python "$PYTHON_VERSION"
+
+      - name: Dashboard tests
+        run: |
+          uv run --no-sync python --version
+          uv run --no-sync python -m unittest discover -s tests -q
+
+  web:
+    name: Web page
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dashboard/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/web/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: "check: no Math.random"
+        run: npm run check:no-random
+
+      - name: "check: phases"
+        run: npm run check:phases
+
+      - name: "check: charts"
+        run: npm run check:charts
+
+      - name: "check: figures"
+        run: npm run check:figures
+
+      - name: "check: css"
+        run: npm run check:css
+
+      - name: Build
+        run: npm run build

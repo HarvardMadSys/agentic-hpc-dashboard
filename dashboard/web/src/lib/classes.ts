@@ -10,18 +10,19 @@
  * and is never merged into them.
  */
 import type { Cls } from '../api/types';
+import { table } from './lookup';
 
 export const CLS: Cls[] = ['agent', 'human', 'ide'];
 
-export const CLS_LBL: Record<string, string> = {
+export const CLS_LBL: Record<string, string> = table({
   agent: 'agent',
   human: 'human',
   ide: 'IDE',
   unlabeled: 'unlabeled',
-};
+});
 
 /** Crimson is RESERVED for `agent`. Do not reuse it for any other series. */
-export const CLS_COL: Record<string, string> = {
+export const CLS_COL: Record<string, string> = table({
   agent: 'var(--s1)',
   human: 'var(--s3)',
   ide: 'var(--s2)',
@@ -30,21 +31,21 @@ export const CLS_COL: Record<string, string> = {
   unknown: 'var(--sg)',
   job: 'var(--s4)',
   other: 'var(--sg)',
-};
+});
 
 /** Each agent or editor type's own colour, inside the agent class's crimson:
  * a tree can hold more than one type, so each box says which by colour too. */
-export const AGENT_TYPE_COL: Record<string, string> = {
+export const AGENT_TYPE_COL: Record<string, string> = table({
   claude_code: 'var(--s6)',
   codex: 'var(--s4)',
   copilot: 'var(--s8)',
   cursor: 'var(--s2)',
   windsurf: 'var(--s2)',
   vscode: 'var(--s2)',
-};
+});
 
 /** The agent or editor a process belongs to, as people call it. */
-export const AGENT_TYPE_LBL: Record<string, string> = {
+export const AGENT_TYPE_LBL: Record<string, string> = table({
   claude_code: 'Claude Code',
   codex: 'Codex',
   copilot: 'Copilot',
@@ -53,4 +54,4 @@ export const AGENT_TYPE_LBL: Record<string, string> = {
   vscode: 'VS Code',
   bwrap: 'sandbox wrapper',
   '': 'untagged',
-};
+});

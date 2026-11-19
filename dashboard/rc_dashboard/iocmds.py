@@ -184,7 +184,7 @@ class Job:
                       "no_ts": 0, "matched": 0}
         self.t0 = time.monotonic()
         self.elapsed = None
-        self.done_at = None        # wall clock, for TTL_LIVE
+        self.done_at = None        # monotonic, for TTL_LIVE
         self.groups = None         # cmd -> slots, while reading
         self.rows = None           # [(cmd, slots)], done
         self.orders = {}           # (sort, dir) -> rows in that order
@@ -268,7 +268,7 @@ class IoCommands:
             for j in self.jobs.values():
                 if j.key != key or j.state == "error":
                     continue
-                if j.state != "done" or pinned or now - j.done_at < TTL_LIVE:
+                if j.state != "done" or pinned or time.monotonic() - j.done_at < TTL_LIVE:
                     return j
             j = Job(key, query, since, until)
             self.jobs[j.id] = j
@@ -298,7 +298,7 @@ class IoCommands:
                 j.state = "error"
             finally:
                 j.elapsed = time.monotonic() - j.t0
-                j.done_at = time.time()
+                j.done_at = time.monotonic()
                 with self.lock:
                     self._trim()
 

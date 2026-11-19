@@ -73,6 +73,7 @@ import { SURFACE_LBL, SURFACE_ORDER } from '../lib/surfaces';
 import { taskLabel, taskSource } from '../lib/tasks';
 import { useSort } from '../lib/useSort';
 import './users.css';
+import { table } from '../lib/lookup';
 
 /** How often the roster and an open portrait are read again while on screen. */
 const EVERY_MS = 15_000;
@@ -83,17 +84,17 @@ const typeCol = (t: string | null | undefined): string => (t && AGENT_TYPE_COL[t
 const TONE_RANK: Record<Trait['tone'], number> = { crit: 0, warn: 1, ok: 2, '': 3 };
 
 /** The sandbox verdicts, short enough for a share row; SESSION_LABEL is on hover. */
-const SESSION_SHORT: Record<string, string> = {
+const SESSION_SHORT: Record<string, string> = table({
   sandboxed: 'all sandboxed',
   partial: 'some sandboxed',
   failed: 'failed to start',
   unsandboxed: 'not sandboxed',
   unknown: 'unreadable',
   no_calls: 'no tool calls',
-};
+});
 
 /** A phase's short name (lib/phases.ts), as a band's segment says it. */
-const PHASE_SHORT: Record<string, string> = Object.fromEntries(PHASES.map(([k, , short]) => [k, short]));
+const PHASE_SHORT: Record<string, string> = table(Object.fromEntries(PHASES.map(([k, , short]) => [k, short])));
 
 /** Before the first answer: the service is starting or busy, which is no fact about the feed. */
 const WAITING = { ...absent('ebpfm', 'waiting for the dashboard service…'), _waiting: true };

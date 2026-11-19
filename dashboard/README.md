@@ -19,8 +19,14 @@ nothing, by design and by CI-able assertion (`npm run check:no-random`).
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds     # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..      # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password      # once: prints the hash for dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+
+`serve` starts only behind a password ([Password](#password)): put the hash `new-password`
+prints in `dashboard.config.json` as `"server": {"auth": {"password_hash": "..."}}`. Without
+one it says so and exits, since on a login node every user can reach a port on 127.0.0.1.
+`--open` (`RC_DASH_OPEN=1`) serves without one, for a machine only you can log in to.
 
 Off-cluster, `--check-feeds` exits 1 because the eBPF feed is `required` and absent. That is
 the point: point it at a collector root first.
@@ -49,6 +55,13 @@ never outranks the file.
   *that*" is never a guess.
 - Path defaults are **candidate lists**, probed against the filesystem. `--check-feeds` shows
   every candidate and which one won.
+- **A mistake stops the service rather than loosening it.** A config file named by `--config`
+  or `RC_DASH_CONFIG` must exist. A yes/no setting, as an `RC_DASH_*` variable or as a string
+  in the file, is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off` in any case; anything else
+  (`RC_DASH_ASK=n`) stops it. An unknown key under `server`, `anonymize` or `ask`, or a
+  top-level key one slip from one of them (`anonymise`), stops it and names the nearest key
+  there is. An unknown key anywhere else, such as an old file's `feeds.ebpf.prefer` from the
+  EBR format, is a warning.
 - `history` (`RC_DASH_HISTORY`, `RC_DASH_HISTORY_DIR`, `_WORKERS`, `_DAYS`) keeps every
   sealed day-file as Parquet too, made in the background, and answers a selective read of one
   from that copy ([History in Parquet](#history-in-parquet)); `RC_DASH_HISTORY=0` reads every
@@ -58,6 +71,11 @@ never outranks the file.
   of an hour and a group of reducers each; 0 workers is one per CPU the service may use
   ([Hourly merge-reduce](#hourly-merge-reduce)). Going from 1 worker to more, or back,
   reduces the hours afresh; the count and the groups change no saved hour.
+- `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the
+  accounts it names, and `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only those classed
+  agent: the account a site's monitoring runs as, say. Neither names anyone by default;
+  `run.sh` sets these clusters' own (not the demo's). The ebpf feed's report counts what was
+  dropped (`excluded.users` in `/api/feeds`).
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's record
 is a JSON line; the retired builder's contract was `data.json`) and
@@ -102,8 +120,15 @@ day-file, at the file's own offsets. Which reads take it:
 
 A file with no replica yet -- not converted, or no longer the file its manifest names (its name,
 size, mtime and inode) -- is read as JSONL, and so is one holding a line a JSONL reader would
-read differently: a last line with no newline, or a line that is JSON but not an object. Nothing
-waits for the store.
+read differently: a last line with no newline, or a line that is JSON but not an object. So is
+one whose manifest names a table that is gone, or not the byte size it was written at (the
+store cleaned up in part, a crash before the data reached the disk): it is converted again. A
+replica a read finds broken all the same -- a table damaged with its size intact -- is let go:
+that read goes on from the file, from where the replica left it, the file is read as JSONL
+until it is converted again, and the error is in the store's `errors` (the Feeds tab). Before,
+a replica was trusted on its manifest alone: with its table deleted, a window's plan left the
+sealed day out as if it held nothing in the window, and cut short, every build of the window
+failed. Nothing waits for the store.
 
 **The same answers.** A replica reads as its file does: the same records in the same order, key
 for key and type for type, at the same offsets; a time search probe for probe; and a filtered
@@ -133,9 +158,11 @@ It is a Hive-partitioned dataset as well, for a query of your own:
 
 **Conversion.** In the background, `history.workers` processes (`RC_DASH_HISTORY_WORKERS`; 0, the
 default, is up to 8, as the CPUs the service may run on allow) convert every sealed file with no
-current replica, the biggest first, at startup and then every minute as days are sealed. A
-replica whose source is gone is removed, and so is one older than the newest `history.days` dated
-dirs when that is set. The node tier is never sealed, so it is never converted.
+current replica, the biggest first, at startup and then every minute as days are sealed. Each
+table is flushed to the disk before it is renamed into place, and the manifest, which names
+them, last. A replica whose source is gone is removed, and so is one older than the newest
+`history.days` dated dirs when that is set. The node tier is never sealed, so it is never
+converted.
 
 **What it costs and buys**, on FAS RC's mirror: 8 login nodes, the 7 sealed days 2026-11-10 to
 2026-11-16 (112 day-files, 18.4 GB of `.gz`, 182 M records). Converting them took 12 minutes in 8
@@ -166,8 +193,9 @@ The eBPF tier's entry in `/api/feeds` carries `history`: `enabled` and `state` (
 files), `converted` (since the service started), `lookups` (sealed files a reader asked for since
 then: answered from a `replica`, or read as `jsonl` for want of one), `held` (the replicas held
 between reads, and the `bytes` their indexes take), `swept` (half-written files a killed
-conversion left, removed at startup), `progress` (the current round: `todo`, `done`, `failed`,
-`records`, `bytes_in`, `elapsed_s`) and the latest `errors`.
+conversion left, removed at startup), `read_failures` (reads a replica failed since then, each
+finished from the file), `progress` (the current round: `todo`, `done`, `failed`, `records`,
+`bytes_in`, `elapsed_s`) and the latest `errors`.
 `--check-feeds` says how many sealed files have a current replica and how much is left to
 convert.
 
@@ -185,7 +213,10 @@ as EBR reads again once converted to JSONL, by the last `ebr.py` there was:
 | `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
 Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
-(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `site.name` (`RC_DASH_SITE_NAME`) is
+(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `run-dev.sh` and
+`run-fasrc.sh` (and `run.sh` itself) start only with a password hash in
+`dashboard.config.json` ([Password](#password)); without one the backend prints how to make
+one and exits. `run-demo.sh` needs none. `site.name` (`RC_DASH_SITE_NAME`) is
 shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
 side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
 Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
@@ -241,8 +272,9 @@ cluster's feed roots, and a demo must never read them: both feed roots (the demo
 demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
 saved builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
 `live.backfill_hours` (the history written), `panels.preprocess` and `panels.preprocess_wait_s`
-(every window built before the port opens, so a visitor never lands on a *merging* bar), and
-`site.name`/`site.description`. Each reads `demo` as its origin in `--print-config`.
+(every window built before the port opens, so a visitor never lands on a *merging* bar),
+`site.name`/`site.description`, and `server.auth.open` (a demo serves its made-up data with no
+password unless one is set). Each reads `demo` as its origin in `--print-config`.
 `--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
 
 | flag | env | default | |
@@ -401,7 +433,21 @@ Three things a rebuild reports rather than assumes:
   proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively.
 - **The seam.** A build reads the day-files while the tailer is also advancing through them.
   Rows landing in that seam are buffered and replayed; if the buffer overflows the count is
-  published as `replay_dropped` rather than quietly going missing.
+  published as `replay_dropped` rather than quietly going missing. The seam is drawn per file,
+  in bytes: the build keeps where it stopped reading each day-file, the tail says where each
+  record's line ends, and a live record is skipped only when the build had read that line.
+  It was a timestamp -- the newest record the build read, from any host -- so a host whose
+  stream lagged when the view was built had its catch-up dropped from the view until the next
+  re-scan (6 h for the 24 h view) while the live tier counted it. A live record older than the
+  window's start is left out, as a scan would leave it; the status counts both
+  (`live_skipped`: `already_read`, `before_window`). A day-file cut short in place (its inode the
+  same), which the tail then reads from its start again, leaves the seam when the build read it
+  before the cut -- the file is then shorter than the build's read, starts otherwise, or (a
+  plain file) holds other bytes in the 4 KB before where the build stopped -- and is counted as
+  the tail reads it, as the live tier counts it; a build that read it after the cut, which the
+  tail notices only at its next poll, keeps it. The file is read for this once, outside the
+  lock the readers wait on. A `.gz` is checked by its first bytes only (a sealed day is not cut
+  short in place, and reading past its head means inflating it).
 
 One pre-existing inconsistency had to be fixed for the control to mean anything: trajectory
 sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the panel's own
@@ -594,15 +640,21 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
+| `GET /api/annotate` | the model that labels tool calls with their purpose: provider, model, endpoint, whether it can run here ([below](#tool-call-purposes-from-a-model)) |
+| `POST /api/annotate` `{sid, window_min, from, to, order, run}` | one session's tool calls and the purposes already known; `run` starts a job asking the model about the rest |
+| `GET /api/annotate/{job}` | that job's progress and its answers so far |
 | `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
-| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
+| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a reader that stops reading holds up neither the tail nor the other readers (one did, for as long as it stayed); one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
+| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved -- no poll ended, no batch handed over -- for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row (the ingest loop's 3 polls, the windows loop's 6 s, the feeds loop's 90 s, the rebuild loop's 3 rebuild intervals); or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing: a round that goes through, or a batch every view takes, ends the streak. It said `ok` with a `last_poll` two minutes old, and whatever the loops and the views met. `ingest` (`age_s`, `stale_after_s`, `feed_errors`, `feed_error_streak`, `feed_error`), each loop's last error, how many and its `streak` (`loops`), the readers (`websocket`: `readers`, `dropped`, `refused`, `last_drop`), the backfill, the windows, the memos. A loop's error and a view's are also logged to stderr, when they change and once a minute while they repeat |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
-With a password set, every route above asks for it ([Password](#password)).
+With a password set, every route above asks for it ([Password](#password)). `POST /api/ask`,
+`GET /api/ask` and `/api/suggestions/done` are [Ask LLM](#ask-llm)'s; every route under `/api`
+that is not a GET or HEAD takes a JSON body only (a 415 otherwise).
 
 `window_min` is optional everywhere and omitting it is `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -666,7 +718,10 @@ line are replaced by `[REDACTED]` on every way out (built panels, the live frame
 `/api/events`, `/api/export`, and the `q` search, which matches the masked text), keeping the
 flag or variable name so a reader can see what was there. Records stay raw in memory, because
 the secrets, sandbox and approval detectors need to read them. The rules and their measured cost
-are in `rc_dashboard/redact.py`.
+are in `rc_dashboard/redact.py`, word for word the collector's: a deny-list, so a secret in a
+shape they do not know is shown as it is (`collector/README.md` lists the shapes). Each reads a
+text in linear time, and one past 100,000 characters, as far as the phase rules read a command,
+is cut there and marked `[CUT]`.
 
 ## Conventions the panels obey
 
@@ -677,7 +732,9 @@ already made once.
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
   editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
-  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  CLI started in an IDE terminal, or by an IDE's extension, keeps its own agent type and stays
+  `agent`: its role is read from that type, not from the IDE's directory in its path
+  (`roles.py`). Folding the IDE
   class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
   silently empty the IDE class.
@@ -845,7 +902,14 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
   account reads the same in every tab, window, and restart, and without the salt a list of
   candidate names does not turn an alias back. Changing the salt reshuffles every alias.
-  Neither `/api/config` nor `--print-config` shows it.
+  Neither `/api/config` nor `--print-config` shows it. A configured salt shorter than 16 bytes
+  stops the service at start rather than serving under it, and a longer one gives every name
+  a new alias. The file is written whole and then linked into place, so a crash cannot leave
+  it half-written (on a file system without hard links it is made in place, which can; and two
+  instances started there at the same moment for the first time can stop one of them, which
+  started again reads the other's salt). One that is empty, not hex or shorter (edited by hand,
+  a crash there, or an older version) stops the service too: delete it, and the next start
+  makes a new salt, with new aliases.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
@@ -879,7 +943,10 @@ and the websocket. No byte may carry one.
 
 `server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`) puts the whole service behind one
 password: the page, its assets, every `/api` route (Ask LLM included), and the websocket. It is
-empty by default, which leaves the page open to anyone who reaches the port.
+empty by default, and then `serve` refuses to start: on a shared host "bound to 127.0.0.1"
+means "readable by every local user". `server.auth.open` (`--open`, `RC_DASH_OPEN=1`) serves
+without one anyway, to anyone who reaches the port; a [demo](#demo-mode) is open unless a
+password is set.
 
 ```bash
 cd dashboard && .venv/bin/python -m rc_dashboard new-password --netrc-host dash.example.org
@@ -915,6 +982,84 @@ restart:
 
 `tests/test_auth.py` starts the app with a password, then reads every route, an asset, and the
 websocket, with and without it.
+
+**Who may connect** (`rc_dashboard/guard.py`), with a password or without:
+
+- **A websocket from any other page's origin is refused** before it is accepted (a 403): one
+  whose `Origin` names a host and port other than the request's `Host`, a loopback one on
+  another port included. A browser lets any page open a websocket to 127.0.0.1, and to a page
+  on another port of the same host -- a dev server, a notebook, another tunnel -- it sends the
+  reader's cookie too: the cookie is SameSite=Lax, and every port of a host is one site. A
+  script sends no `Origin` and passes. A proxy that rewrites the Host to `127.0.0.1:<port>`
+  needs its public origin in `server.allowed_origins` (`RC_DASH_ALLOWED_ORIGINS`,
+  comma-separated: `https://dash.example.org`). The page from Vite's dev server (`./run.sh`
+  dev mode, on `RC_DASH_UI_PORT`, 5173) is on another origin too, so `run.sh` names it, as
+  `http://127.0.0.1:5173` and `http://localhost:5173`, in `server.dev_origins`
+  (`RC_DASH_DEV_ORIGINS`), which adds to `allowed_origins` rather than replacing them. A Vite
+  dev server started any other way needs its origin named the same way
+  ([web/README.md](web/README.md)).
+- **With no password, a request under a name that is not this host's is refused** (a 403):
+  its `Host` must be a loopback name, the bind host (`server.host`), or one of
+  `server.allowed_hosts` (`RC_DASH_ALLOWED_HOSTS`; `*` for any). Otherwise a page on another
+  site could point its own name at 127.0.0.1 and read every route as its own (DNS rebinding).
+  With a password the cookie already stops that, and the check is off, so a tunnel that keeps
+  its public name in the Host needs no list. The demo image answers under any name
+  (`docker/demo/Dockerfile`): its data is made up.
+
+`tests/test_guard.py` sends the handshakes a browser, a script and Vite's proxy send, and
+starts the app open and behind a password.
+
+## Ask LLM
+
+The Ask LLM tab, and the *ask* button on a panel or a session, run an agent CLI on this host
+(`rc_dashboard/ask.py`): by default `codex exec --sandbox read-only`, as the service's account
+and with its Codex login, given the question and a compact, masked snapshot of the window. The
+snapshot leaves the host, for the agent's provider.
+
+**The agent can read whatever the service's account can read.** Its sandbox is read-only, not
+confined: the collector's files, the service's cache (the anonymize salt and the session key
+among them), and that account's home are all within its reach, and the question it is given is
+a reader's own text. Run the service as a dedicated account, not a person's, that holds no other
+credentials. So:
+
+- **Off by default.** `ask.enabled` (`RC_DASH_ASK=1`) turns it on.
+- **Never without a password.** While `server.auth.password_hash` is empty, Ask is refused,
+  even when turned on: `GET /api/ask` says why, and a question gets a 400 saying so. A refused
+  question reads nothing.
+- **A short environment.** The agent gets what a program needs to run, to find its login and
+  to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV`): `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
+  `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
+  `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
+  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
+  provider reached through a cloud, is named in `ask.env_passthrough`
+  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix,
+  three characters or more and then `_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_*", "AZURE_*"]` as the provider needs. A shorter prefix,
+  or one without the `_` (`S*`), would take in whatever else begins so, and is refused at
+  start; such a variable is named whole. The service's own `RC_DASH_*` settings, its password
+  hash among them, are never passed. An agent that fails says so, since a credential left out
+  fails it without a word about the environment.
+  **The proxy variables are passed as they are**: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+  `NO_PROXY` and their lower-case forms, so the agent reaches its provider through the site's
+  proxy. A proxy URL often carries a user and password (`http://user:pass@proxy:3128`), and
+  then the agent can read them -- an agent whose prompt holds other users' command lines. For
+  the service's account, prefer a proxy that needs no password in the URL.
+- **A directory of its own**, made 0700 in the system's temporary directory for each question
+  and removed after, not under `cache.dir`, so the salt, the session key and the saved builds
+  are not its neighbours.
+- **A short question.** At most 4 000 characters (a 400 past that); the prompt carries the last
+  three earlier turns, cut to 600 and 1 500 characters a side.
+- **JSON only.** `POST /api/ask`, and `POST`/`DELETE /api/suggestions/done`, take
+  `Content-Type: application/json` (a 415 otherwise), which another site's page cannot send
+  without the browser asking first; a body past 1 MB is a 413, and a malformed one a 400.
+
+`ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, `{workdir}`,
+`{answer_file}` and `{model}` filled in, the prompt on stdin. A command, or the instructions in
+`ask.system_prompt`, may hold a provider's key, so `/api/config` and `--print-config` show both
+as `(hidden)` when set, and `GET /api/ask` names only the program a command runs (`claude` for
+`env ANTHROPIC_API_KEY=... claude -p`). `tests/test_ask.py` checks the
+refusals, the environment and the directory, and `tests/test_guard.py` the routes.
 
 ## Network endpoints
 
@@ -1153,12 +1298,15 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
-  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
-  to what the agent started most recently, so it does not take the time of the work that follows it. A gap
-  that begins while it runs lists it (`alive`), and once it ends, its time past the phase it began in is
-  said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The session's last phase
-  ends at the latest end of all the session's calls, or of a process one of them left running, whichever is
-  later, so the lane does not end while anything the agent started still runs.
+  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. On the
+  lane, time goes to what the agent started most recently, so it does not take the time of the work that
+  follows it. A gap that begins while it runs lists it (`alive`), and once it ends, its time past the phase
+  it began in is said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The
+  session's last phase ends at the latest end of all the session's calls, or of a process one of them left
+  running, whichever is later, so the lane does not end while anything the agent started still runs. That
+  is the lane, not the work: each phase also says where its own calls ended (`own_t1`) and how long its
+  calls, or what they left running, went on past it, by the call's category (`ran_on`), and the summary
+  weighs the work by those (below).
 - **A session across midnight is one block.** A row is one local day, since its session id carries the day,
   so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
   the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
@@ -1171,8 +1319,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 `category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
 files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
 programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
-is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
-wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded, the
+last phase's only to the end of its own calls (`own_t1`); and the time a call, or a process it left running,
+went on past its phase counts toward the call's own use (`ran_on`). A call hung for 14 h beside a minute of
+edits is then a session of running, not of changing files (it was "Mostly changed files from the shell (99% of
+14 h of work)"), and a training run left going for 3 h while the agent read its log is 3 h of running beside
+the reading, so the work can be longer than the session. A wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
 being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
 apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
 the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
@@ -1186,7 +1338,11 @@ the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
 that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
+said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
+phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
+the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
 2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
@@ -1233,6 +1389,60 @@ category.
 | `min_calls` | 5 | a task with fewer calls than this merges into a neighbor |
 | `cap` | 10 | the number of tasks a local day is merged down toward |
 | `headline_names` | 3 | the names the headline lists after the project |
+
+## Tool-call purposes from a model
+
+The rule-based `purpose` (git, build, compute, ...) says what kind of program a call ran, not
+why. The session inspector's **✦ annotate purposes** asks a language model instead: what each
+of the session's tool calls was for, in a few words ("check which CUDA version the node has"),
+and one of a fixed set of kinds (explore, edit, build, test, run, debug, hpc, git, data, env,
+monitor, other). It is the one place where a model writes onto a row, so its answer is kept
+apart from everything measured: a dashed, purple ✦ tag beside the command in the table, a ✦
+beside the box's name in the tree, the model named in every hover, and never counted anywhere.
+
+It is **off by default**, because it sends command lines off the host. What goes is exactly
+what the page shows: each distinct tool call's command line (what a Claude Code Bash call or a
+Codex sandbox ran), masked by `redact.py` and -- with [anonymized names](#anonymized-names) on
+-- by the anonymizer, and the folder it ran in. The service takes them from its own read of
+the session; the page posts only the session's name, so the endpoint cannot be used to send a
+model anything else. The first `annotate.max_calls` (400) distinct calls are asked about,
+`annotate.batch_size` (40) to a request.
+
+Each answer is kept in `<cache.dir>/annotate/purposes.jsonl`, keyed by the provider and model,
+the prompt it was asked with and the command line: a command asked about once is known to every
+reader of every session that runs it, and opening a session shows what is known at once, asking
+nothing. A different model, or a changed prompt -- a new built-in version, or an edit to
+`annotate.system_prompt` or its file -- asks afresh. A call the model's answer
+leaves out stays unlabelled and is counted as such; nothing is filled in for it.
+
+Set it up under `annotate` (every key: `dashboard.config.example.json`):
+
+| `provider` | what it calls | the key |
+|---|---|---|
+| `anthropic` (default) | the Claude Messages API; `model` defaults to `claude-opus-5-5`, `effort` (`low`) is sent as `output_config.effort`; `base_url` for a gateway | `ANTHROPIC_API_KEY` |
+| `openai` | any OpenAI-compatible `/chat/completions`: OpenAI, or with `base_url` vLLM, Ollama, LiteLLM, OpenRouter, ...; `model` is required | `OPENAI_API_KEY`; none for a local `base_url` |
+| `codex`, `claude` | the Codex or Claude Code CLI on this host, as the service's user, with that user's login | the CLI's own |
+| `ask` | whatever agent the chat (`ask`) runs | the agent's own |
+| `command` | any command: the prompt on stdin, a JSON answer on stdout or in `{answer_file}` | -- |
+
+A CLI provider (`codex`, `claude`, `ask`, `command`) runs an agent on this host over other
+users' command lines, so it keeps [Ask LLM](#ask-llm)'s rules: refused while the service has no
+password, and run with only part of the service's environment (`ask.env_passthrough` names
+more) in a directory of its own in the system's temporary one. An HTTP provider runs nothing
+here: the model gets the masked text the page shows, with no tools, and its answer is read only
+as a label and a kind, so it is not refused for want of a password.
+
+The key is read from the variable `api_key_env` names (empty: the one above), else from
+`api_key_file`, else from `api_key` -- which `/api/config` and `--print-config` show only as
+set or not, as they do `command` and `system_prompt`. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
+`auto: true` asks as soon as a session opens instead of on the button. The environment can set
+`RC_DASH_ANNOTATE=1`, `RC_DASH_ANNOTATE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_KEY_ENV`,
+`_KEY_FILE` and `_CMD`. For example, a local model:
+
+```json
+"annotate": { "enabled": true, "provider": "openai", "model": "qwen2.5-coder:7b",
+              "base_url": "http://127.0.0.1:11434/v1" }
+```
 
 ## Agents: subagents and blast radius
 
@@ -1405,7 +1615,10 @@ that, from the window's `slurm` reducer (`reducers/slurm.py`):
   a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
   no id, a non-zero exit and the scheduler's own error line, which is the reason shown
   (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
-  is not a refusal;
+  is not a refusal, nor is srun's own line saying so (`task 0: Exited with exit code 1`): an
+  srun or salloc is refused only when it cannot get the allocation. The count of refusals is a
+  lower bound: a submission keeps its last 300 characters, and a refusal line cut at its start
+  there (a reason of some 200 characters: Slurm prints that line last) is not counted;
 - queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
   gap, not 0.
 
@@ -1419,9 +1632,10 @@ only jobs with GPUs and a time limit on the command line, and say how many those
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
 - **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
-  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
+  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). The dashboard decides what each tagged process
   really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
   trajectory rows say how many keys they fold and how the least certain one was
   attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a
@@ -1497,6 +1711,16 @@ is not atomic against a concurrent reader. So the tailer reads to EOF, finds the
 yields only complete lines, and **advances its stored offset only that far** — trailing bytes are
 re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup hand-off obeys the
 same rule, so a line still being written belongs to the tail, never to the read-back.
+
+**One bad line stops nothing.** A line that is JSON but not an object (`0`, `null`, `[]`) is
+counted with the lines that do not parse, by every reader of the day-files (`fastjson.record`);
+a record the normalizer cannot read -- a field of a type no collector writes, a list `args` or
+`event`, a number for `ts` -- is passed over and counted, and so is one a held view cannot take.
+`/api/feeds` says how many, in the eBPF tier's `tail`: `parse_errors`, `malformed`,
+`feed_errors`. One `null` used to make every poll raise: the tail's offsets stayed put, the
+other hosts were never read, and the batch already handed over was counted again at every
+poll; a `[]` already in a file stopped the backfill, and such a record failed every build of a
+window that held it.
 
 Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
 rather than silently seeked past its end. A file first seen after startup — a new date

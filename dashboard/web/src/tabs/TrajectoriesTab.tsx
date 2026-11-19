@@ -62,7 +62,7 @@ import { sessionName } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
 import { serverNow } from '../lib/clock';
 import { useClockPinned, useNow } from '../lib/useNow';
-import { isBlock, sequenceLine } from '../lib/phases';
+import { bandAxis, isBlock, phasesUnread, sequenceLine } from '../lib/phases';
 import { pcol, plbl } from '../lib/purposes';
 import { dayInWindow, taskSequence, windowStart } from '../lib/tasks';
 import { surfaceSplit } from '../lib/surfaces';
@@ -136,9 +136,6 @@ function liveTip(r: TrajRow): string {
   return parts.join('\n');
 }
 
-/** What the service says of an agent whose commands it does not read; these words if it says none. */
-const PHASES_UNAVAILABLE = 'phases not available for this agent type';
-
 /** The purpose ribbon's size, which the phase band stands in for. */
 const BAND_W = 290;
 const BAND_H = 7;
@@ -163,10 +160,11 @@ const BAND_H = 7;
 function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
   const ph = r.phases;
   const block = isBlock(ph) ? ph : null;
-  if (block?.list.length) {
+  // the session's own axis, which the inspector's map of the whole session is drawn on too (`bandAxis`)
+  const axis = block ? bandAxis(block.list, r.first, r.running?.now ? nowS : null) : null;
+  if (block?.list.length && axis) {
     const { list } = block;
     const edge = r.running?.now ?? null;
-    const last = list[list.length - 1].t1;
     // its tasks, and where the block names none, its phases: `taskSequence` is empty for a block with no task
     const line = taskSequence(block) || sequenceLine(list, edge);
     return (
@@ -174,11 +172,10 @@ function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
         <PhaseBand
           list={list}
           tasks={block.tasks}
-          // A call is stamped when it exited and a phase when it began, so a first call can begin before the
-          // session's first record: the band starts at the earlier, and never cuts a phase.
-          t0={Math.min(r.first ?? list[0].t0, list[0].t0)}
-          // the last phase's end is the latest end over every call, so a call never runs off the band
-          t1={edge ? Math.max(nowS, last) : last}
+          // from the first record or the first phase, whichever is earlier, to the last call's end, and on to now for a
+          // session running now: a phase is never cut and a call never runs off the band
+          t0={axis[0]}
+          t1={axis[1]}
           W={BAND_W}
           H={BAND_H}
           now={edge}
@@ -191,10 +188,7 @@ function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
       </>
     );
   }
-  const why =
-    r.actor3 === 'agent' && ph && !isBlock(ph) && typeof ph.unavailable === 'string'
-      ? ph.unavailable || PHASES_UNAVAILABLE
-      : null;
+  const why = phasesUnread(r);
   return (
     <>
       {r.purpose_rle?.length ? (

@@ -1591,11 +1591,21 @@ def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=No
     A sealed file with a replica is read from it (`_key_stream_replica`), the
     replica rejecting by the keys' `where` (`key_where`) on its columns before a
     record is built: the session's few records of a day are found without
-    inflating the `.gz` to search it."""
+    inflating the `.gz` to search it. Should the replica raise, the read goes on
+    in the `.gz`, from where it left off."""
     rep = replica.for_path(entry["path"]) if where is not None else None
     if rep is not None:
-        yield from _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where)
-        return
+        got = {}
+        try:
+            yield from _key_stream_replica(entry, rep, norm, since, until, stats, kinds,
+                                           where, got)
+            return
+        except Exception as e:
+            # The replica stopped answering part way: the rest of the read from
+            # the file, from the line after the last one it read (`replica.failed`).
+            replica.failed(entry["path"], rep, e)
+            if "next" in got:
+                entry = dict(entry, start=got["next"])
     if gz.is_gz(entry["path"]):
         yield from _key_stream_gz(entry, norm, since, until, stats, pats, ev)
         return
@@ -1647,7 +1657,7 @@ def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=No
             mm.close()
 
 
-def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
+def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where, got=None):
     """`_key_stream_gz` over a sealed file's replica, read and counted as that
     reads and counts the file: the same end (the read's end and its slack, to a
     line's end), `bytes` a CHUNK at a time -- each chunk ending at a line's end,
@@ -1655,7 +1665,10 @@ def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
     keys of an event not asked for. So `inspect_max_bytes` stops a read at the
     same record either way. The records on the keys are found by `where` on the
     replica's columns rather than by the patterns, and a line that does not
-    parse, which no column describes, is not looked at."""
+    parse, which no column describes, is not looked at. `got["next"]` keeps
+    where a read of the file would go on from: the line after the last record
+    read."""
+    got = {} if got is None else got
     size = rep.size
     start = entry["start"]
     if size <= start:
@@ -1670,6 +1683,7 @@ def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where):
     pos, stop = start, chunk(start)
     stats["bytes"] += stop - pos
     for off, _n, raw in rep.records(start, end, where=where):
+        got["next"] = off + _n
         while off >= stop:
             pos, stop = stop, chunk(stop)
             stats["bytes"] += stop - pos
@@ -1830,7 +1844,7 @@ def _remember(key, body):
     """Keep a built tree, least recently opened out first, within the bounds."""
     size = len(json.dumps(body, default=str, separators=(",", ":")))
     with _cache_lock:
-        _cache[key] = (time.time() + CACHE_TTL, body, size)
+        _cache[key] = (time.monotonic() + CACHE_TTL, body, size)
         _cache.move_to_end(key)
         while len(_cache) > 1 and (len(_cache) > CACHE_KEEP or
                                    sum(v[2] for v in _cache.values()) > CACHE_BYTES):
@@ -1845,7 +1859,9 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     page uses `frm` to continue past a read that stopped at its budget. One
     read runs at a time -- a second request waits rather than doubling the I/O.
     A built tree is served again for CACHE_TTL seconds, the last CACHE_KEEP of
-    them, until the window is rebuilt (`installed_at` is in the key).
+    them, until the window is rebuilt (`installed_at` is in the key). The TTL
+    runs on the monotonic clock (`now`, for tests, is a reading of it): a
+    pinned one (`clock.as_of`) never moves.
 
     `order` is one of ORDERS, anything else the first: which end of the
     session the tree lists first, and draws in full (see the module's notes).
@@ -1854,7 +1870,7 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     scan, gives way mid-read to anyone who opens a session, and returns None
     when it did.
     """
-    now = now or time.time()
+    now = now or time.monotonic()
     order = order if order in ORDERS else ORDERS[0]
     key = (sid, view.minutes, view.installed_at, frm, to, order)
     hit = _cached(key, now)
@@ -1872,7 +1888,7 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
             with _cache_lock:
                 _waiting[0] -= 1
     try:
-        hit = _cached(key, time.time())
+        hit = _cached(key, time.monotonic())
         if hit is not None:
             return hit
         try:
@@ -1914,7 +1930,8 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
             if kt == "apid" and kv.isdigit():
                 keys.add(int(kv))
 
-    t0 = time.time()
+    t0 = time.time()                # the present: it bounds the read
+    m0 = time.monotonic()           # and this times it
     if first is None:
         return {"sid": sid, "found": False, "_window": status, "row": row,
                 "why": "the session's records carry no timestamp, so they cannot "
@@ -1965,7 +1982,7 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     close = getattr(records, "close", None)
     if close is not None:
         close()
-    elapsed = time.time() - t0
+    elapsed = time.monotonic() - m0
 
     with lock:
         procs = red.get("_procs")
@@ -2077,7 +2094,7 @@ def response(body, accept_encoding):
 
 def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     """`/api/trajectory`: `inspect` over the aggregator's view of that window."""
-    _warm["last_open"] = time.time()
+    _warm["last_open"] = time.monotonic()
     if _warm["thread"] is None:
         _warm["thread"] = threading.Thread(target=_warm_loop, args=(agg,),
                                            name="proctree-warm", daemon=True)
@@ -2101,7 +2118,7 @@ def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     return body
 
 
-WARM_IDLE = 1800         # seconds without an open after which the warmer rests
+WARM_IDLE = 1800         # seconds without an open after which the warmer rests (monotonic)
 
 
 def _warm_loop(agg):
@@ -2120,7 +2137,7 @@ def _warm_loop(agg):
 
     while not getattr(agg, "stopping", False):
         time.sleep(WARM_EVERY)
-        if time.time() - _warm["last_open"] > WARM_IDLE:
+        if time.monotonic() - _warm["last_open"] > WARM_IDLE:
             continue
         try:
             reg = agg.panels_by_window

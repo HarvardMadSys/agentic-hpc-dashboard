@@ -99,7 +99,7 @@ class KeepGz(Base):
         self.wait_same()
         self.rig.halt()
         gz_before = self.rig.counters.total(HOST, "gz")
-        have = fs.Mirror(self.rig.base, HOST).inventory(3)
+        have = fs.Mirror(self.rig.base, HOST).inventory()
         self.assertEqual(have[c.key("exits", "2026-11-10")], {"verified": True})
         self.assertNotIn(c.key("exits", "2026-11-10") + ".gz", have)
         c.append("exits", b'{"z":1}\n' * 10)

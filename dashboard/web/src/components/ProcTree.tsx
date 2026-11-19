@@ -26,7 +26,10 @@ import { ioTip, ioTotal } from '../lib/procio';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
 import { hiders, isHidden, shortPath, typoLabel, typoTip } from './ProcDiagram';
+import { llmPurpose, llmTip, useLlmPurposes } from '../lib/annotate';
+import type { LlmPurposeSet } from '../lib/annotate';
 import type { Hide } from './ProcDiagram';
+import { table } from '../lib/lookup';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
 interface Rest {
@@ -46,7 +49,7 @@ export interface Row {
   kids: number;
 }
 
-export const ROLE_TAG: Record<string, string> = {
+export const ROLE_TAG: Record<string, string> = table({
   'tool-shell': 'tool call',
   sandbox: 'sandbox',
   'embedded-tool': 'embedded',
@@ -55,25 +58,25 @@ export const ROLE_TAG: Record<string, string> = {
   infra: 'infra',
   client: 'client',
   ide: 'ide',
-};
+});
 
-export const LINK_LBL: Record<ProcLink, string> = {
+export const LINK_LBL: Record<ProcLink, string> = table({
   ppid: 'its own ppid',
   index: 'parent from index',
   depth: 'placed by depth',
   fold: 'no process link',
-};
+});
 
-export const LINK_TIP: Record<ProcLink, string> = {
+export const LINK_TIP: Record<ProcLink, string> = table({
   ppid: "its own record names this parent, and the parent's exit came after it",
   index:
     "its parent left no exit record in this read; the window's process index (or the agent's residency ticks) names it",
   depth:
     "no record read names its parent; the collector's depth below its session key places it there",
   fold: 'nothing read links it to a process here; it hangs from the agent because the session fold put its key there',
-};
+});
 
-const SIG: Record<string, string> = {
+const SIG: Record<string, string> = table({
   '1': 'SIGHUP',
   '2': 'SIGINT',
   '3': 'SIGQUIT',
@@ -84,7 +87,7 @@ const SIG: Record<string, string> = {
   '13': 'SIGPIPE',
   '14': 'SIGALRM',
   '15': 'SIGTERM',
-};
+});
 export const sigName = (s: number | string) => SIG[String(s)] ?? `signal ${s}`;
 
 function children(e: Item): Item[] {
@@ -305,10 +308,12 @@ function IoCell({ io }: { io: ProcIo | null | undefined }) {
   return <span data-tip={ioTip(io, 'with everything below it') ?? 'nothing read or written, or not measured'}>{v ? mb(v) : DASH}</span>;
 }
 
-function procTip(n: ProcNode): string {
+function procTip(n: ProcNode, llm: LlmPurposeSet | null = null): string {
+  const lp = llmPurpose(llm, n.cmdline);
   return [
     `pid ${n.pid ?? DASH}${n.ppid != null ? ' · ppid ' + n.ppid : ''}${n.user ? ' · ' + n.user : ''}`,
     n.cmdline ? `ran  ${n.cmdline}` : null,
+    lp && llm ? `why  ${lp[0]}  (${lp[1]}; written by ${llm.model}, not measured)` : null,
     n.args ? `argv ${n.args}` : null,
     n.cwd ? `cwd  ${n.cwd}` : null,
     n.role ? `role ${n.role}` : null,
@@ -389,6 +394,17 @@ function Bar({ t0, t1, cls, tl, tip }: { t0: number | null; t1: number | null; c
   );
 }
 
+/** A model's purpose for a tool call: its own colour and a mark, so it never
+ *  reads as something the collector measured. */
+function LlmTag({ p, set }: { p: [string, string]; set: LlmPurposeSet }) {
+  return (
+    <span className={`pt-llm k-${p[1]}`} data-tip={llmTip(set, p)}>
+      <i aria-hidden="true">✦</i>
+      {p[0]}
+    </span>
+  );
+}
+
 /* -------------------------------------------------------------------- row */
 
 /** When a row's processes ran, for marking the rows inside a zoomed range. */
@@ -429,6 +445,7 @@ const RowView = memo(function RowView({
 }) {
   const e = r.e;
   const lo = tl?.lo ?? null;
+  const llm = useLlmPurposes();
   const tog = r.kids ? (
     <button
       className="pt-tog"
@@ -448,7 +465,8 @@ const RowView = memo(function RowView({
   if (e.k === 'p') {
     const isAgent = e.role === 'agent' || r.depth === 0;
     const text = e.cmdline ?? (e.args && e.args !== e.cmd ? e.args : null);
-    tip = procTip(e);
+    const lp = llmPurpose(llm, e.cmdline);
+    tip = procTip(e, llm);
     rowCls = r.depth === 0 ? ' root' : '';
     body = (
       <>
@@ -486,6 +504,7 @@ const RowView = memo(function RowView({
             {`cwd ${shortPath(e.cwd)}`}
           </span>
         )}
+        {lp && llm && <LlmTag p={lp} set={llm} />}
         {text && <span className="pt-arg">{text}</span>}
       </>
     );
@@ -507,12 +526,17 @@ const RowView = memo(function RowView({
   } else if (e.k === 'g') {
     const sample = e.samples[0];
     const sampleText = sample ? sample.cmdline ?? sample.args : null;
+    const lp = llmPurpose(llm, sample?.cmdline);
     tip = [
       `${fint(e.count)} consecutive siblings of one shape${e.period > 1 ? ` — a ${e.period}-step cycle repeated ${fint(e.reps)} times` : ''}`,
       `${fint(e.n)} processes in them and below them`,
       e.dur_max != null ? `longest single run ${dur(e.dur_max)}` : null,
       e.distinct > 1 ? `${fint(e.distinct)} distinct command lines, most common:` : 'command line:',
-      ...e.samples.map((s) => `  ${fint(s.n)} × ${s.cmdline ?? s.args ?? ''}`),
+      ...e.samples.map((s) => {
+        const sp = llmPurpose(llm, s.cmdline);
+        return `  ${fint(s.n)} × ${s.cmdline ?? s.args ?? ''}${sp ? `\n      why: ${sp[0]}` : ''}`;
+      }),
+      e.samples.some((s) => llmPurpose(llm, s.cmdline)) && llm ? `why: written by ${llm.model}, not measured` : null,
     ]
       .filter(Boolean)
       .join('\n');
@@ -522,6 +546,7 @@ const RowView = memo(function RowView({
         {/* `›` is parent › child in a label, so a cycle's steps are listed with commas */}
         <span className="pt-cmd">{e.period > 1 ? `↻ ${e.motif.join(', ')}` : e.motif[0]}</span>
         {e.distinct > 1 && <span className="pt-tag">{`${fint(e.distinct)} distinct`}</span>}
+        {lp && llm && <LlmTag p={lp} set={llm} />}
         {sampleText && <span className="pt-arg">{sampleText}</span>}
       </>
     );

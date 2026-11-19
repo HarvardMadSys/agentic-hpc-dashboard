@@ -53,7 +53,19 @@ export RC_DASH_PORT="${RC_DASH_PORT:-8124}"
 export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
 # What the backend runs: `serve`, or `demo` for the service over a synthetic
 # feed it writes itself (run-demo.sh, rc_dashboard/demo).
+# `serve` starts only with a password: server.auth.password_hash in
+# dashboard.config.json (`uv run python -m rc_dashboard new-password` makes one and
+# prints its hash), or RC_DASH_PASSWORD_HASH. RC_DASH_OPEN=1 serves without one,
+# to anyone who reaches the port. A demo needs neither.
 RC_DASH_COMMAND="${RC_DASH_COMMAND:-serve}"
+# These clusters' accounts whose records are dropped (filters.drop_global and
+# filters.drop_agent, none by default): the monitoring operator's, and one
+# account's agent records (period3 agent build skew). Not the demo's, whose
+# users are made up. Either set empty leaves it to the config file.
+if [ "$RC_DASH_COMMAND" != demo ]; then
+  export RC_DASH_DROP_USERS="${RC_DASH_DROP_USERS-juncheng}"
+  export RC_DASH_DROP_AGENT_USERS="${RC_DASH_DROP_AGENT_USERS-flamraoui}"
+fi
 # A bundle built anywhere but web/dist is passed to vite as its outDir: a second
 # instance must not share the first one's watcher output, which vite empties
 # on every rebuild.
@@ -64,6 +76,22 @@ VITE_OUT=()
 # another machine instead of through a tunnel.
 RC_DASH_UI_PORT="${RC_DASH_UI_PORT:-5173}"
 RC_DASH_UI_HOST="${RC_DASH_UI_HOST:-127.0.0.1}"
+# The backend refuses a websocket opened by a page on any origin but its own
+# (rc_dashboard/guard.py), another port of the same host included: a browser
+# sends that one the reader's cookie too. In dev mode the page is Vite's, on
+# its own port (--strictPort keeps it there), so its origins are named to the
+# backend in RC_DASH_DEV_ORIGINS (server.dev_origins), which adds to the config's
+# server.allowed_origins rather than standing in for them. Reached by a name of
+# its own (RC_DASH_UI_HOST=0.0.0.0), add http://<name>:<port> there.
+if [ "$MODE" = dev ]; then
+  ui="http://127.0.0.1:$RC_DASH_UI_PORT,http://localhost:$RC_DASH_UI_PORT"
+  case "$RC_DASH_UI_HOST" in
+    127.0.0.1|localhost|0.0.0.0|::) ;;
+    ::1) ui="$ui,http://[::1]:$RC_DASH_UI_PORT" ;;
+    *) ui="$ui,http://$RC_DASH_UI_HOST:$RC_DASH_UI_PORT" ;;
+  esac
+  export RC_DASH_DEV_ORIGINS="${RC_DASH_DEV_ORIGINS:+$RC_DASH_DEV_ORIGINS,}$ui"
+fi
 
 # ---- Backend watch paths ---------------------------------------------
 # Only source trees belong here. The ebpf/node data roots used to be on this

@@ -213,9 +213,11 @@ class ConfigKeys(unittest.TestCase):
         tree["server"]["auth"].update(auth_keys)
         return configmod.Config(tree, {}, None)
 
-    def test_open_by_default(self):
+    def test_no_password_and_not_open_by_default(self):
+        # An app built with no hash has no gate; `serve` refuses to start so
+        # unless `open` is set (test_serve.py).
         self.assertEqual(configmod.defaults()["server"]["auth"],
-                         {"password_hash": "", "session_days": 30})
+                         {"password_hash": "", "session_days": 30, "open": False})
         self.assertIsNone(auth.from_config(self.cfg()))
 
     def test_env_sets_the_hash(self):

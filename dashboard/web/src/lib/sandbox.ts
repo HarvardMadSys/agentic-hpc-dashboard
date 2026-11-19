@@ -21,50 +21,51 @@
  * folding it into "not isolated" would.
  */
 import { fint } from './format';
+import { own, table } from './lookup';
 
-export const SB_LABEL: Record<string, string> = {
+export const SB_LABEL: Record<string, string> = table({
   sandboxed: 'sandboxed',
   unsandboxed: 'not sandboxed',
   denied: 'exited before it was checked',
   unknown: 'unknown',
-};
+});
 
 /** Session grain: the outcome of a session's tool calls, not its root's own verdict. */
-export const SESSION_LABEL: Record<string, string> = {
+export const SESSION_LABEL: Record<string, string> = table({
   sandboxed: 'all tool calls sandboxed',
   partial: 'some tool calls sandboxed',
   failed: 'sandbox failed to start',
   unsandboxed: 'tool calls not sandboxed',
   unknown: 'tool calls unreadable',
   no_calls: 'no tool calls seen',
-};
+});
 
-export const CALL_LABEL: Record<string, string> = {
+export const CALL_LABEL: Record<string, string> = table({
   isolated: 'sandboxed',
   not_isolated: 'not sandboxed',
   failed: 'sandbox failed to start',
   no_payload: 'wrapper ran nothing (a probe)',
   unknown: 'wrapped command unreadable',
-};
+});
 
-export const AP_LABEL: Record<string, string> = {
+export const AP_LABEL: Record<string, string> = table({
   bypassed: 'bypass flag',
   auto: 'auto mode (a classifier approves)',
   supervised: 'no bypass flag',
   unobservable: 'can’t tell from its command line',
   na: 'not an agent session',
   unknown: 'unknown',
-};
+});
 
 /** The same states, short enough for a table cell; the full label goes in its tooltip. */
-export const AP_SHORT: Record<string, string> = {
+export const AP_SHORT: Record<string, string> = table({
   bypassed: 'bypass flag',
   auto: 'auto mode',
   supervised: 'no bypass flag',
   unobservable: 'can’t tell',
   na: 'n/a',
   unknown: 'unknown',
-};
+});
 
 /** The agent sessions a plate should worry about, as one line under its
  *  number: launched with a bypass flag, in auto mode, and (where it was
@@ -88,7 +89,7 @@ const HATCH_UNKNOWN = 'url(#hatchUnknown)';
 const HATCH_DENIED = 'url(#hatchDenied)';
 
 /** Fills for charts; the legend twin uses a flat colour for the hatched ones. */
-export const SB_COL: Record<string, string> = {
+export const SB_COL: Record<string, string> = table({
   sandboxed: 'var(--s5)',
   unsandboxed: 'var(--s6)',
   denied: HATCH_DENIED,
@@ -99,15 +100,15 @@ export const SB_COL: Record<string, string> = {
   isolated: 'var(--s5)',
   not_isolated: 'var(--s6)',
   no_payload: 'var(--muted)',
-};
-export const AP_COL: Record<string, string> = {
+});
+export const AP_COL: Record<string, string> = table({
   bypassed: 'var(--crit)',
   auto: 'var(--warn)',
   supervised: 'var(--s2)',
   unobservable: 'var(--sg)',
   na: 'var(--muted)',
   unknown: HATCH_UNKNOWN,
-};
+});
 
 /** A legend swatch cannot show a pattern, so the hatched states get their base hue. */
 export function legendCol(c: string | undefined): string {
@@ -117,7 +118,7 @@ export function legendCol(c: string | undefined): string {
 }
 
 export function label(map: Record<string, string>, k: string): string {
-  return map[k] ?? k;
+  return own(map, k) ?? k;
 }
 
 export interface Share {
