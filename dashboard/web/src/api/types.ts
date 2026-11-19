@@ -644,6 +644,9 @@ export interface AncestryRow {
 export interface SandboxSessionRow {
   host: string;
   pid: number | null;
+  /** Which of the processes that held this pid one after another: 0 the first,
+   *  null a session whose calls found no root. A row's key with host and pid. */
+  gen: number | null;
   user: string | null;
   actor3: string | null;
   agent_type: string | null;

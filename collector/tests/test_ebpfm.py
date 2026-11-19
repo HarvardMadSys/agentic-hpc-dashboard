@@ -681,6 +681,160 @@ CLAUDE_VSCODE = (HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.30
                  'resources/native-binary/claude')
 
 
+def _node_tier_classify():
+    """node_snapshot.py's own copy of classify(), loaded by itself: importing the
+    module takes a snapshot. The copy runs from `_AGENT_PATTERNS` to the function
+    after `classify_agent`."""
+    path = _ROOT / 'node_snapshot.py'
+    src = path.read_text(encoding='utf-8')
+    body = ast.parse(src).body
+    start = next(n.lineno for n in body if isinstance(n, ast.Assign)
+                 and any(getattr(t, 'id', None) == '_AGENT_PATTERNS' for t in n.targets))
+    end = next(n.lineno for n in body if isinstance(n, ast.FunctionDef)
+               and n.name == 'parse_proc_tree')
+    ns = {'re': re}
+    exec(compile(''.join(src.splitlines(True)[start - 1:end - 1]), str(path), 'exec'), ns)
+    return ns['classify_agent']
+
+
+class ClassifyTest(unittest.TestCase):
+    """The classifier reads the program a command line runs, and the runtime
+    artifacts only an agent writes. It matched every word, so on a login node
+    a human's command that named an agent became an agent root of its own."""
+
+    NOT_AGENTS = (
+        # the review's six, each an agent root at a human's prompt
+        'grep claude notes.txt',
+        'vim ' + HOME + '/.claude/CLAUDE.md',
+        'cat ' + HOME + '/.claude/settings.json',
+        'git commit -m ask claude about this',
+        'git clone https://github.com/openai/codex',
+        'pip install claude-agent-sdk',
+        # a multiplexer named after its agent: the server holding every pane
+        'tmux new-session -s claude',
+        'screen -S codex',
+        # the agent run elsewhere, installed, or its files read
+        'srun --pty claude',
+        'npm install -g @openai/codex',
+        'python3 -m pip install claude-agent-sdk',
+        'cat ' + HOME + '/.claude/shell-snapshots/snapshot-zsh-1.sh',
+        'sh -c grep -r claude ' + HOME + '/notes',
+        'ls ' + HOME + '/.vscode-server',
+        'rm -rf ' + HOME + '/.cursor-server',
+        'vim ' + HOME + '/.cursor/mcp.json',
+        'ls /usr/bin/bwrap',
+        # a runtime's marker named or printed, not set in the program's environment
+        'grep -r CURSOR_SANDBOX .',
+        'rg WINDSURF_STATE ' + HOME + '/notes',
+        'less ' + HOME + '/windsurf-terminal.log',
+        'echo CURSOR_SANDBOX=1',
+        'grep CURSOR_SANDBOX=1 f',
+        'env FOO=1 grep CURSOR_SANDBOX=1 f',
+        'echo WINDSURF_STATE=x',
+        'grep WINDSURF_STATE=1 f',
+        'env FOO=1 grep WINDSURF_STATE=1 f',
+        # another variable: names are case-sensitive
+        'cursor_sandbox=1 bash -c make',
+        # the user's own scripts under ~/.claude/, run by hand
+        'python3 ' + HOME + '/.claude/statusline.py',
+        'bash ' + HOME + '/.claude/hooks/check.sh',
+        '/bin/bash ' + HOME + '/.claude/hooks/command-guard.sh',
+        'node ' + HOME + '/.claude/plugins/cache/x/server/index.js',
+        # a project's own program in a Claude worktree: a venv's console script
+        HOME + '/repo/.claude/worktrees/fix-1/.venv/bin/python3 ' + HOME
+        + '/repo/.claude/worktrees/fix-1/.venv/bin/pytest -q',
+        '-bash',
+        '',
+    )
+
+    AGENTS = (
+        # argv[0], by name or by where it is installed
+        ('claude', 'claude_code'),
+        (CLAUDE_VSCODE + ' --output-format stream-json', 'claude_code'),
+        (HOME + '/.local/share/claude/versions/2.1.282 --session-id 08749fc1', 'claude_code'),
+        # each way Claude Code is installed: by its name wherever it is, the local
+        # installer's launcher, npm's bin link run through its #! line, the Agent
+        # SDK's own binary (tests/test_surfaces.py's shape)
+        (HOME + '/.claude/bin/claude', 'claude_code'),
+        (HOME + '/.claude/local/claude --resume', 'claude_code'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/claude --resume', 'claude_code'),
+        (HOME + '/kemp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude '
+         '--output-format stream-json', 'claude_code'),
+        (HOME + '/.claude/remote/ccd-cli/2.1.286 --output-format stream-json', 'claude_code'),
+        (CODEX_STANDALONE + ' app-server --listen unix://', 'codex'),
+        (HOME + '/.codex/tmp/arg0/codex-arg0lL3/codex-linux-sandbox --sandbox-policy-cwd '
+         + HOME + '/w', 'codex'),
+        (HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 --cli-data-dir x', 'vscode'),
+        # an interpreter's script
+        ('node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js', 'claude_code'),
+        ('node ' + HOME + '/.nvm/versions/node/v22.22.0/bin/codex exec fix it', 'codex'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/copilot', 'copilot'),
+        ('/bin/bash ' + HOME + '/stubs/claude -p x', 'claude_code'),
+        (HOME + '/proj/.venv/bin/python -I /tmp/tmp8vrbdxsm/bin/claude -p', 'claude_code'),
+        ('python3 -O -W ignore /tmp/tmp8vrbdxsm/bin/codex exec', 'codex'),
+        ('deno run -A ' + HOME + '/.claude/local/cli.js', 'claude_code'),
+        ('node /x/.claude/cli.js', 'claude_code'),
+        (HOME + '/.claude/remote/srv/89cb/server --serve --socket x.sock', 'claude_code'),
+        # through a wrapper, a package runner, a shell's -c command
+        ('env FOO=1 claude --resume', 'claude_code'),
+        ('nohup codex exec fix it', 'codex'),
+        ('timeout -s KILL 600 claude -p x', 'claude_code'),
+        ('npx -y @anthropic-ai/claude-code -p x', 'claude_code'),
+        ('npm exec -- @openai/codex', 'codex'),
+        ('node /usr/bin/npx @openai/codex', 'codex'),
+        ('sh -c exec claude --resume', 'claude_code'),
+        ('bash -lc codex exec fix it', 'codex'),
+        ('bash -o pipefail -c claude -p x', 'claude_code'),
+        # runtime artifacts: Claude Code's tool-call shell, bare and behind the
+        # sandbox runtime's prologue, and Cursor's sandbox marker
+        (SNAP + "'git status'", 'claude_code'),
+        ('/bin/bash -c -l source ' + HOME + '/.claude/shell-snapshots/snapshot-bash-1.sh '
+         "&& eval 'make'", 'claude_code'),
+        ('bash -c exec 3<&- || exit 126; source ' + HOME + '/.claude/shell-snapshots/'
+         "snapshot-bash-1.sh && eval 'ls'", 'claude_code'),
+        ('CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('env CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('bash -c CURSOR_SANDBOX=1 make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 --ro-bind / / /bin/bash -c make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 -- /bin/bash -c make', 'cursor'),
+        ('WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('env WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('bwrap --setenv WINDSURF_STATE /tmp/ws --ro-bind / / /bin/bash', 'windsurf'),
+        (HOME + '/.local/bin/windsurf-terminal --pty', 'windsurf'),
+        # a bwrap, by what it confines; past the `--` that ends its options, a
+        # --setenv is its command's argument (grep's here), not a Cursor sandbox
+        ('bwrap --ro-bind / / /bin/true', 'bwrap'),
+        ('bwrap --ro-bind / / claude', 'claude_code'),
+        ('bwrap --ro-bind / / -- grep -r --setenv CURSOR_SANDBOX .', 'bwrap'),
+    )
+
+    def test_a_command_that_only_names_an_agent_is_untagged(self):
+        for args in self.NOT_AGENTS:
+            with self.subTest(args=args[:70]):
+                self.assertIsNone(C.classify(args))
+
+    def test_the_program_or_a_runtime_artifact_is_tagged(self):
+        for args, want in self.AGENTS:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(C.classify(args), want)
+
+    def test_an_agent_inside_an_ide_host_is_the_agent(self):
+        self.assertEqual(C.classify('node ' + HOME + '/.vscode-server/extensions/'
+                                    'anthropic.claude-code-2.0.1/cli.js'), 'claude_code')
+        self.assertEqual(C.classify(HOME + '/.cursor-server/extensions/openai.chatgpt-26.1.0/bin/'
+                                    'linux-x86_64/codex app-server'), 'codex')
+
+    def test_the_node_tiers_copy_agrees(self):
+        """node_snapshot.py keeps a copy of its own (VENDORED.md), which tags
+        the pids of proc_tree.agents."""
+        classify_agent = _node_tier_classify()
+        lines = ([args for _t, _c, args, _r in AgentRoleTest.CASES] + list(self.NOT_AGENTS)
+                 + [args for args, _want in self.AGENTS])
+        for args in lines:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(classify_agent(args), C.classify(args))
+
+
 class AgentRoleTest(unittest.TestCase):
     """What a classifier-tagged process is, on argv shapes seen on madsys-gpu1
     from 2026-09-20 to 10-07 and on the FAS login nodes from 2026-10-20 to 10-28.
@@ -804,15 +958,29 @@ class AgentRoleTest(unittest.TestCase):
             with self.subTest(args=args[:70]):
                 self.assertEqual(T.agent_role(agent_type, command, args), want)
 
+    # Shapes the classifier tagged only for an agent's path among their arguments,
+    # until it read the program alone: the agent binary run as rg or ugrep, which
+    # only its comm (a version) says, and a shell or a command on an agent's files.
+    # Records from before carry them, and the dashboard's roles.py reads those. In a
+    # tree each is its tree's process now, as any untagged child is.
+    UNTAGGED = frozenset((
+        'rg --no-config --files --hidden ' + HOME + '/.claude/plugins',
+        'ugrep -G --ignore-files --hidden -I -rn foo',
+        'sh -c ls -1 ' + HOME + '/.claude/projects/x',
+        'chmod 700 ' + HOME + '/.claude/remote',
+        'mkdir -p ' + HOME + '/.codex/packages/app-server-daemon',
+        "sh -c printf '%b' " + HOME + '/.codex/x',
+    ))
+
     def test_each_shape_is_one_the_classifier_tags(self):
         """agent_role() is only asked about tagged processes, so a shape here
-        that the classifier would not tag tests nothing. `ugrep -G ...` names no
-        agent path: it is tagged only when its pattern or path does."""
+        that the classifier would not tag tests nothing, but for UNTAGGED."""
         for _agent_type, _command, args, _want in self.CASES:
-            if args.startswith('ugrep'):
-                continue
             with self.subTest(args=args[:70]):
-                self.assertIsNotNone(C.classify(args))
+                if args in self.UNTAGGED:
+                    self.assertIsNone(C.classify(args))
+                else:
+                    self.assertIsNotNone(C.classify(args))
 
     def test_a_comm_the_kernel_cut_still_matches(self):
         self.assertEqual(T.agent_role('codex', 'codex-linux-san', 'x'), 'sandbox')
@@ -838,6 +1006,31 @@ class AgentRoleTest(unittest.TestCase):
                          'agent')
         self.assertEqual(T.agent_role('claude_code', 'claude',
                                       'claude -p what is --claude-in-chrome-mcp'), 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_that_agent(self):
+        """As the dashboard's roles.py (tests/test_sessions.py): the tag decides,
+        not a path under ~/.cursor-server/ or ~/.windsurf-server/, which made
+        an extension's session the IDE's `helper`. The IDE's own processes keep
+        their roles."""
+        ext = '/extensions/anthropic.claude-code-2.1.300-linux-x64/resources/native-binary/claude'
+        for ide in ('cursor', 'windsurf'):
+            srv = '%s/.%s-server' % (HOME, ide)
+            for agent_type, command, args, want in (
+                    ('claude_code', 'claude', srv + ext + ' --output-format stream-json', 'agent'),
+                    ('claude_code', 'claude', srv + ext + ' auth status --json', 'probe'),
+                    ('codex', 'codex', srv + '/extensions/openai.chatgpt-26.1007.21434-linux-x64/bin/'
+                     'linux-x86_64/codex app-server --analytics-default-enabled', 'agent'),
+                    ('claude_code', 'claude', 'claude --add-dir ' + srv + '/data '
+                     '--dangerously-skip-permissions', 'agent'),
+                    (ide, 'node', srv + '/bin/4fe60c8b/node ' + srv + '/bin/4fe60c8b/out/'
+                     'server-main.js --connection-token=x', 'ide'),
+                    (ide, 'node', srv + '/cli/servers/Stable-07f/server/node --dns-result-order='
+                     'ipv4first ' + srv + '/cli/servers/Stable-07f/server/out/bootstrap-fork '
+                     '--type=extensionHost', 'ide'),
+                    (ide, 'cpuUsage.sh', '/bin/bash ' + srv + '/cli/servers/Stable-a44/server/out/'
+                     'vs/base/node/cpuUsage.sh 123', 'helper')):
+                with self.subTest(ide=ide, args=args[len(HOME):70]):
+                    self.assertEqual(T.agent_role(agent_type, command, args), want)
 
 
 class AgentRootTest(unittest.TestCase):
@@ -959,19 +1152,40 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(T.tree_root(501), 500)
 
     def test_outside_any_tree_a_tagged_process_is_still_a_root(self):
-        """A human's `claude --version`, or chmod on ~/.claude/, at a prompt:
-        nothing above it is in an agent tree, so it is attributed exactly as
-        before (actor, actor3, its own session)."""
-        for pid, comm, args in ((60, 'claude', 'claude --version'),
-                                (61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')):
-            self.add(pid, 50, comm, args, tty='pts/1')
-            self.assertEqual(self.who(pid), (pid, 0, True))
-            m = T.proc[pid]
-            self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
-            ident = T._base_identity(m, 'agent', 'ancestry')
-            self.assertEqual(ident['actor3'], 'agent')
-            self.assertEqual(ident['agent_type'], 'claude_code')
-            self.assertEqual(ident['session_key'], 'apid:%d' % pid)
+        """A human's `claude --version` at a prompt: nothing above it is in an
+        agent tree, so it is attributed exactly as before (actor, actor3, its own
+        session)."""
+        self.add(60, 50, 'claude', 'claude --version', tty='pts/1')
+        self.assertEqual(self.who(60), (60, 0, True))
+        m = T.proc[60]
+        self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
+        ident = T._base_identity(m, 'agent', 'ancestry')
+        self.assertEqual(ident['actor3'], 'agent')
+        self.assertEqual(ident['agent_type'], 'claude_code')
+        self.assertEqual(ident['session_key'], 'apid:60')
+
+    def test_a_command_that_only_mentions_an_agent_is_the_humans(self):
+        """At a human's prompt a command whose arguments name an agent, or an
+        agent's files, runs no agent. The classifier matched every word, so each
+        was an agent root of its own: actor ('agent', 'ancestry'), is_agent,
+        depth 0, a session apiece. Inside an agent's tree the same command is
+        the agent's, as any untagged child."""
+        for pid, comm, args in ((61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote'),
+                                (62, 'grep', 'grep claude notes.txt'),
+                                (63, 'vim', 'vim ' + HOME + '/.claude/CLAUDE.md'),
+                                (64, 'cat', 'cat ' + HOME + '/.claude/settings.json'),
+                                (65, 'git', 'git commit -m ask claude about this'),
+                                (66, 'git', 'git clone https://github.com/openai/codex'),
+                                (67, 'pip', 'pip install claude-agent-sdk')):
+            with self.subTest(args=args):
+                self.add(pid, 50, comm, args, tty='pts/1')
+                self.assertFalse(T.resolve(pid))
+                m = T.proc[pid]
+                self.assertEqual((m['is_agent'], m['agent_pid'], m['depth']), (False, None, None))
+                self.assertEqual(T.actor_of(m), ('human', 'tty'))
+                self.assertEqual(T._base_identity(m, 'human', 'tty')['actor3'], 'human')
+                self.add(pid + 1000, 200, comm, args)       # under a Bash tool call
+                self.assertEqual(self.who(pid + 1000), (100, 2, False))
 
     def test_an_ide_probe_is_in_the_ide_tree_and_its_agent_is_not(self):
         """The extension host runs `claude auth status` every few minutes. It is
@@ -984,6 +1198,30 @@ class AgentRootTest(unittest.TestCase):
                          'human-vscode')
         self.assertEqual(self.who(703), (703, 0, True))
         self.assertEqual(T._base_identity(T.proc[703], 'agent', 'ancestry')['actor3'], 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_its_own_root(self):
+        """As from VS Code's (703 above). Its path under ~/.cursor-server/ made
+        agent_role() call it the IDE's helper, so the session joined the IDE's
+        tree: agent_type `cursor` on it and on every tool call it ran, which the
+        dashboard counts as IDE work."""
+        for base, ide in ((800, 'cursor'), (900, 'windsurf')):
+            srv = '%s/.%s-server/cli/servers/Stable-07f/server/' % (HOME, ide)
+            self.add(base, 1, 'node', srv + 'node ' + srv + 'out/server-main.js '
+                     '--connection-token=x', user='v', uid=1001)
+            self.add(base + 1, base, 'node', srv + 'node --dns-result-order=ipv4first ' + srv
+                     + 'out/bootstrap-fork --type=extensionHost', user='v', uid=1001)
+            self.add(base + 2, base + 1, 'claude', '%s/.%s-server/extensions/anthropic.claude-code-'
+                     '2.1.300-linux-x64/resources/native-binary/claude --output-format stream-json'
+                     % (HOME, ide), user='v', uid=1001)
+            self.add(base + 3, base + 2, 'git', 'git status', user='v', uid=1001)
+            with self.subTest(ide=ide):
+                self.assertEqual(self.who(base + 1), (base, 1, False))
+                self.assertEqual(T.proc[base + 1]['agent_type'], ide)
+                self.assertEqual(self.who(base + 2), (base + 2, 0, True))
+                self.assertEqual(self.who(base + 3), (base + 2, 1, False))
+                ident = T._base_identity(T.proc[base + 3], 'agent', 'ancestry')
+                self.assertEqual((ident['agent_type'], ident['session_key']),
+                                 ('claude_code', 'apid:%d' % (base + 2)))
 
     def test_a_bwrap_in_an_agent_tree_still_reads_as_bwrap(self):
         """bwrap takes its agent's tree and agent_type, and sandbox_ancestry,
@@ -1008,7 +1246,7 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(self.who(242), (100, 3, False))
 
     def test_an_exec_out_of_any_tree_clears_the_old_attribution(self):
-        self.add(62, 1, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')
+        self.add(62, 1, 'claude', 'claude --version')
         self.assertEqual(self.who(62), (62, 0, True))
         T.proc[62].update(comm='sleep', args='sleep 1')
         T._invalidate_attribution(62)

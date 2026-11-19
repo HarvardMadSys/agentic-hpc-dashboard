@@ -49,6 +49,16 @@ class IdeClassTest(unittest.TestCase):
         args = "node %s/.cursor-server/extensions/claude-code/cli.js" % HOME
         self.assertEqual(a3(rec("agent", "claude_code", args)), "agent")
 
+    def test_an_agent_root_inside_an_ide_server_is_an_agent_session(self):
+        """Its role as well as its class: the path under ~/.cursor-server/ made
+        it the IDE's `helper`, so no session."""
+        for ide in ("cursor", "windsurf"):
+            r = rec("agent", "claude_code",
+                    "node %s/.%s-server/extensions/claude-code/cli.js" % (HOME, ide))
+            r["is_agent"] = True
+            out = norm().normalize(r)
+            self.assertEqual((out["_a3"], out["_role"]), ("agent", "agent"), ide)
+
     def test_an_untagged_editor_server_is_an_ide_by_its_own_path(self):
         for args in (HOME + "/.zed_server/zed-remote-server-stable proxy",
                      HOME + "/.cache/JetBrains/RemoteDev/dist/x/bin/remote-dev-server.sh run",

@@ -51,8 +51,9 @@ first, and children always do.
 """
 import collections
 
-from . import add_counts, pct
+from . import add_counts, min_of, pct
 from ..normalize import APPROVAL_STATES, SANDBOX_STATES
+from ..procindex import _start as process_start, users_conflict
 
 # The kernel cuts comm at 15 characters, so schema <= 6 carries
 # `codex-linux-san`; matching the prefix covers both.
@@ -69,7 +70,21 @@ APPROVAL_KNOWN = ("bypassed", "auto", "supervised")
 _PAYLOAD, _ISO, _UNK, _START, _UNITS = range(5)
 # units[uid] slots
 (_U_KIND, _U_HOST, _U_PID, _U_APID, _U_ROOT, _U_CLS, _U_TYPE, _U_USER, _U_CMD,
- _U_ISO, _U_PAYLOAD, _U_UNK, _U_FAILED, _U_OK, _U_ABSORBED) = range(15)
+ _U_ISO, _U_PAYLOAD, _U_UNK, _U_FAILED, _U_OK, _U_ABSORBED, _U_START) = range(16)
+# roots[(host, pid)] slots, after cls, agent_type, approval, detail: the user, the
+# earliest time the process is known at (its start, else its first record), its exit
+_R_USER, _R_START, _R_END = 4, 5, 6
+_SLACK_S = 1.0          # two readings of one process's start differ by this much
+
+
+def _in_root(r, user, t):
+    """Whether a record or tool call of `user` at time `t` (a record's start,
+    else its own time; a call's start) can be of root r's process. A pid is
+    reused: another user's, or one from after the root exited, is another
+    process's. `_root_gen` picks among the roots it can be of."""
+    if users_conflict(r[_R_USER], user):
+        return False
+    return not (t is not None and r[_R_END] is not None and t > r[_R_END] + _SLACK_S)
 
 
 def _start(rec):
@@ -148,7 +163,10 @@ class SandboxReducer:
         self.src = collections.Counter()
         self.detail = collections.Counter()
         self.agents_only = collections.defaultdict(collections.Counter)
-        self.roots = {}       # (host, pid) -> [cls, agent_type, approval, detail, user]
+        # (host, pid) -> [cls, agent_type, approval, detail, user, start, exit]: the
+        # first root on a pid; `later_roots` holds those after it (a pid is reused)
+        self.roots = {}
+        self.later_roots = {}
         self.below = {}       # (host, ppid) -> [payload, iso, unk, earliest start, [uid]]
         self.units = {}       # (host, pid, exit epoch) -> unit (see the _U_ slots)
         self.n_units = 0
@@ -164,9 +182,12 @@ class SandboxReducer:
         pid = rec.get("pid")
         if rec.get("_role") == "agent" and rec.get("_a3") == "agent" \
                 and pid is not None and pid == rec.get("agent_pid"):
-            self.roots[(rec.get("host"), pid)] = [
+            st, t = process_start(rec), rec.get("_ts_epoch")
+            at = st if st is not None else t
+            self._take_root((rec.get("host"), pid), [
                 rec.get("_a3"), rec.get("agent_type"), rec.get("_approval") or "unknown",
-                rec.get("_approval_detail"), rec.get("user")]
+                rec.get("_approval_detail"), rec.get("user"), at,
+                t if ev == "exit" else None], at)
         if ev not in self.COUNTED:
             return
         cls = rec["_a3"]
@@ -238,7 +259,7 @@ class SandboxReducer:
             self.units[uid] = [
                 "wrapper" if wrapper else "tool-shell", host, pid, rec.get("agent_pid"),
                 rec.get("tree_root_pid"), rec["_a3"], rec.get("agent_type"), rec.get("user"),
-                (rec.get("_command") or "")[:24], iso, payload, unk, failed, ok, False]
+                (rec.get("_command") or "")[:24], iso, payload, unk, failed, ok, False, start]
             up.append(uid)
         if role == "agent":
             up = []             # a session root: its calls are final, nothing above absorbs them
@@ -262,6 +283,53 @@ class SandboxReducer:
             cur[_START] = start
         if up:
             cur[_UNITS].extend(up)
+
+    def _all_roots(self):
+        """((host, pid), generation, root): the first root on a pid is 0."""
+        for key, r in self.roots.items():
+            yield key, 0, r
+            for i, m in enumerate(self.later_roots.get(key, ()), 1):
+                yield key, i, m
+
+    def _root_gen(self, key, user, t):
+        """(generation, root) of the root on `key` that a record or a tool call
+        of `user` at time `t` is of, or (None, None). Of its user's roots that
+        had not exited by `t`, the last to have started by then. When none had,
+        the first of them: a start known only from a later record (a tick with
+        no age) or read late is after the true one, and lifetimes on a pid
+        follow one another, so the first root still running after `t` is the
+        one that followed the last exit before it. A time not known takes the
+        first of its user's roots."""
+        r0 = self.roots.get(key)
+        if r0 is None:
+            return None, None
+        live = [(g, r) for g, r in enumerate([r0] + self.later_roots.get(key, []))
+                if _in_root(r, user, t)]
+        if not live or t is None:
+            return live[0] if live else (None, None)
+        started = [(g, r) for g, r in live
+                   if r[_R_START] is not None and r[_R_START] <= t + _SLACK_S]
+        if started:
+            return max(started, key=lambda gr: gr[1][_R_START])
+        return min(live, key=lambda gr: (gr[1][_R_START] is None, gr[1][_R_START] or 0.0))
+
+    def _take_root(self, key, r, at):
+        """A root's record (`feed`), or a later state's root (`merge`), as of
+        time `at`. The newest record of a root wins, as its approval reads the
+        same on each; its earliest time is kept and its exit the one seen. Of
+        another process on the pid (_in_root), it is a root of its own."""
+        _gen, cur = self._root_gen(key, r[_R_USER], at)
+        if cur is None:
+            if key in self.roots:
+                self.later_roots.setdefault(key, []).append(r)
+            else:
+                self.roots[key] = r
+            return
+        start = min_of(cur[_R_START], r[_R_START])
+        cur[:_R_START] = r[:_R_START]
+        cur[_R_START] = start
+        if r[_R_END] is not None:
+            cur[_R_END] = r[_R_END]
 
     # ----------------------------------------------------------------- merge
     # A window is merged from saved hour states (`hours`). What crosses an
@@ -323,7 +391,8 @@ class SandboxReducer:
                              (self.matrix_dseen, o.matrix_dseen), (self.src, o.src),
                              (self.detail, o.detail)):
             add_counts(mine, theirs)
-        self.roots.update(o.roots)          # the newest record of a root wins, as in `feed`
+        for key, _gen, r in o._all_roots():   # the newest record of a root wins, as in `feed`
+            self._take_root(key, r, r[_R_START])
         for uid, u in o.units.items():
             self.units.setdefault(uid, u)   # the same exit twice is one unit
         for uid in o.absorbed_prior:
@@ -343,23 +412,30 @@ class SandboxReducer:
             return apid
 
     def _sessions(self):
-        """(host, owner pid) -> session dict: every agent-role root in the window,
-        plus the owner of any tool call whose root was never seen."""
+        """(host, owner pid, root generation) -> session dict: every agent-role
+        root in the window, a pid's later ones apart (a pid is reused), plus the
+        owner of any tool call whose root was never seen (generation None)."""
         out = {}
-        for key, (cls, at, ap, det, user) in self.roots.items():
-            out[key] = {"cls": cls, "agent_type": at, "approval": ap, "detail": det,
-                        "user": user, "calls": collections.Counter()}
+        for (host, pid), gen, r in self._all_roots():
+            out[(host, pid, gen)] = {"cls": r[0], "agent_type": r[1], "approval": r[2],
+                                     "detail": r[3], "user": r[_R_USER],
+                                     "calls": collections.Counter(), "root": True}
         attempts = collections.Counter()
         for u in self.units.values():
             if u[_U_ABSORBED]:
                 continue
             oc = _outcome(u)
-            key = (u[_U_HOST], self._owner(u[_U_HOST], u[_U_APID], u[_U_ROOT]))
+            host = u[_U_HOST]
+            owner = self._owner(host, u[_U_APID], u[_U_ROOT])
+            # by when the call started, which its agent was running at: a
+            # background call's shell can exit after its agent has
+            gen, _r = self._root_gen((host, owner), u[_U_USER], u[_U_START])
+            key = (host, owner, gen)
             s = out.get(key)
             if s is None:
                 s = out[key] = {"cls": u[_U_CLS], "agent_type": u[_U_TYPE],
                                 "approval": "unknown", "detail": None, "user": u[_U_USER],
-                                "calls": collections.Counter()}
+                                "calls": collections.Counter(), "root": False}
             s["calls"][oc] += 1
             if u[_U_KIND] == "wrapper":
                 w = ("codex-linux-sandbox" if u[_U_CMD].startswith("codex-linux-san")
@@ -369,8 +445,14 @@ class SandboxReducer:
 
     def agent_calls(self):
         """(host, owner pid) -> its tool calls' outcomes, for every session that
-        made one: what the agent trees tag an agent with (session_state)."""
-        return {k: dict(s["calls"]) for k, s in self._sessions()[0].items() if s["calls"]}
+        made one: what the agent trees tag an agent with (session_state). The
+        trees draw the first process on a pid: its root's calls, or where no
+        root was seen, the calls of none."""
+        out = {}
+        for (host, pid, gen), s in self._sessions()[0].items():
+            if s["calls"] and (gen == 0 or (gen is None and (host, pid) not in self.roots)):
+                out[(host, pid)] = dict(s["calls"])
+        return out
 
     def result(self):
         sessions, attempts = self._sessions()
@@ -378,14 +460,14 @@ class SandboxReducer:
         sess_ap = collections.defaultdict(collections.Counter)
         calls = collections.defaultdict(collections.Counter)
         modes = collections.Counter()
-        for (host, pid), s in sessions.items():
+        for s in sessions.values():
             cls = s["cls"] or "unlabeled"
             state = session_state(s["calls"])
             s["state"] = state
             sess_sb[cls][state] += 1
             sess_ap[cls][s["approval"]] += 1
             calls[cls].update(s["calls"])
-            if (host, pid) in self.roots:
+            if s["root"]:
                 modes[(s["agent_type"], s["approval"], s["detail"])] += 1
 
         def _share(d):
@@ -411,11 +493,14 @@ class SandboxReducer:
             return sum(c.get(k, 0) for k in CALL_KNOWN)
 
         table = []
-        for (host, pid), s in sessions.items():
+        for (host, pid, gen), s in sessions.items():
             c = s["calls"]
             known = _calls_known(c)
             table.append({
-                "host": host, "pid": pid, "user": s["user"], "actor3": s["cls"],
+                # `gen` tells apart the sessions of processes that held the same
+                # pid one after another (`_all_roots`: 0 the first, None a call
+                # with no root found): host and pid alone are not a row's key
+                "host": host, "pid": pid, "gen": gen, "user": s["user"], "actor3": s["cls"],
                 "agent_type": s["agent_type"], "approval": s["approval"],
                 "approval_detail": s["detail"], "state": s["state"],
                 "calls": dict(c), "calls_known": known,
@@ -469,7 +554,10 @@ class SandboxReducer:
                            "(sandbox_src=inherit), not read on that pid; namespaces are "
                            "inherited across fork, so this is exact unless a pid was reused.",
                 "sessions": "a session is an agent-role root (roles.py) seen in the window, "
-                            "plus the owner of any tool call whose root was not seen. Whether "
+                            "plus the owner of any tool call whose root was not seen. A pid is "
+                            "reused: a root of another user, or one started after the held root "
+                            "exited, is a session of its own, and a call goes to the root of "
+                            "its user that was running when it started. Whether "
                             "it ran sandboxed is the outcome of its TOOL CALLS -- the agent "
                             "process itself is outside its own sandbox by design.",
                 "tool_calls": "a tool call is a sandbox wrapper invocation (bwrap, "

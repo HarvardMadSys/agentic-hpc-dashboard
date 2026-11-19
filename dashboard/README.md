@@ -680,7 +680,9 @@ already made once.
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
   editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
-  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  CLI started in an IDE terminal, or by an IDE's extension, keeps its own agent type and stays
+  `agent`: its role is read from that type, not from the IDE's directory in its path
+  (`roles.py`). Folding the IDE
   class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
   silently empty the IDE class.
@@ -1439,9 +1441,10 @@ only jobs with GPUs and a time limit on the command line, and say how many those
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
 - **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
-  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
+  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). The dashboard decides what each tagged process
   really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
   trajectory rows say how many keys they fold and how the least certain one was
   attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a
