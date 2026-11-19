@@ -379,9 +379,9 @@ def defaults():
             # one join holds for their own exit, the one given to least
             # recently dropped first (an agent runtime, or what started one,
             # passed over), counted (a panel's `own_io.evicted`) and said on
-            # stderr, at most hourly a panel. A service holds some 35 joins:
-            # at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at worst
-            # (eight, ~2.5 KB) 159 MB. The repo's streams hold under 500 at
+            # stderr, at most hourly a panel. A service holds some 36 joins:
+            # at one entry a parent (~0.5 KB) 2000 is ~40 MB in all, at worst
+            # (eight, ~2.5 KB) 164 MB. The repo's streams hold under 500 at
             # once; a busy login node may need more, at 19 to 80 KB for each
             # one added (README, "Disk I/O is each process's own"). A count of
             # one or more: 0 is refused at start, as is anything not a count.

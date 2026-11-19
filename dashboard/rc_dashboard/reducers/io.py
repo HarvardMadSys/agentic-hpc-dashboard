@@ -323,10 +323,13 @@ class IoReducer:
             "notes": {
                 "own": "every byte figure is each process's OWN: the collector's io is "
                        "task->signal->ioac, which also holds every child the process "
-                       "reaped, and those are taken back off at its exit. A child whose "
-                       "exit the window did not see -- outside it, or left out by the "
-                       "view's filter, which the read applies as it goes -- is not "
-                       "taken off.",
+                       "reaped, and those are taken back off at its exit. With the hours "
+                       "kept (panels.merge_reduce), an exit of a closed hour takes the "
+                       "figure they worked out over every record, so a child before the "
+                       "window, or one the view's filter leaves out, is taken off too, "
+                       "and a process reads the same in any view. In the hour still open, "
+                       "and without the hours, a view takes off the children it read: "
+                       "one its filter leaves out, the read never sees.",
                 "cache_served_mb": "max(0, rchar - rd). rchar counts ALL read() bytes "
                                    "including pipes, sockets and procfs, so this is an "
                                    "UPPER BOUND on the page-cache-served share.",
