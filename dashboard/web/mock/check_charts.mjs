@@ -34,11 +34,14 @@ test('a small axis keeps its labels apart: four decimals, then powers of ten', (
   assert.deepEqual(labels(0.002), ['0', '0.0005', '0.0010', '0.0015', '0.0020']);
   assert.deepEqual(labels(0.0009), ['0', '2.5e-4', '5.0e-4', '7.5e-4', '1.0e-3']);
   assert.deepEqual(labels(0.00003), ['0', '1e-5', '2e-5', '3e-5']);
+  // a step of 1e-6 or less is within the tolerance of 0: these read 0 · 0 · 0 · 0 · 0
+  assert.deepEqual(labels(4e-6), ['0', '1e-6', '2e-6', '3e-6', '4e-6']);
+  assert.deepEqual(labels(9e-7), ['0', '2.5e-7', '5.0e-7', '7.5e-7', '1.0e-6']);
 });
 
 test('at any scale, an axis has no two labels alike and none wider than its margin holds', () => {
-  for (const max of [3e-5, 1.1e-4, 2e-4, 4e-4, 9e-4, 1.1e-3, 2e-3, 4e-3, 8e-3, 0.03, 0.7, 3, 9, 18, 95, 240, 950,
-    4000, 9000, 19000, 95000, 240000, 1.4e6, 9e6, 2.4e7, 9e8, 4e9]) {
+  for (const max of [1e-7, 9e-7, 1e-6, 4e-6, 3e-5, 1.1e-4, 2e-4, 4e-4, 9e-4, 1.1e-3, 2e-3, 4e-3, 8e-3, 0.03, 0.7,
+    3, 9, 18, 95, 240, 950, 4000, 9000, 19000, 95000, 240000, 1.4e6, 9e6, 2.4e7, 9e8, 4e9]) {
     const l = labels(max);
     assert.equal(new Set(l).size, l.length, `a max of ${max}: ${l.join(' · ')}`);
     // the left margin holds six characters of a tick; an svg cuts the rest from the left

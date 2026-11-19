@@ -17,10 +17,14 @@ export function niceTicks(max: number, n?: number, integer = false): number[] {
   return out;
 }
 
-/** The fewest decimals, at most `max`, that write `s` exactly; null when more
- * would be needed. */
+/** The fewest decimals, at most `max`, that write `s` (above 0) exactly; null
+ * when more would be needed. A rounding to 0 never writes it: a step of 1e-6
+ * is within the tolerance of 0, and was written as 0 at every tick. */
 function decimals(s: number, max: number): number | null {
-  for (let d = 0; d <= max; d++) if (Math.abs(s * 10 ** d - Math.round(s * 10 ** d)) <= 1e-6) return d;
+  for (let d = 0; d <= max; d++) {
+    const r = Math.round(s * 10 ** d);
+    if (r !== 0 && Math.abs(s * 10 ** d - r) <= 1e-6) return d;
+  }
   return null;
 }
 
@@ -33,7 +37,10 @@ function decimals(s: number, max: number): number | null {
  * Every label stays within six characters, the room the charts' left margin
  * gives it (an svg cuts what passes its edge: `0.000025` would show as
  * `000025`). A step finer than 0.0001 would need more, so that axis is written
- * in powers of ten instead, its mantissas alike: `2.5e-4 · 5.0e-4 · 1.0e-3`. */
+ * in powers of ten instead, its mantissas alike: `2.5e-4 · 5.0e-4 · 1.0e-3`.
+ * That bound is for the ticks the charts ask `niceTicks` for (`n` = 4): with
+ * more steps, a 2.5 step reaches 12.5, and the mantissas take two decimals
+ * (`1.25e-4`, seven characters). */
 export function axisFmt(ticks: number[]): (v: number) => string {
   const top = ticks.reduce((a, t) => Math.max(a, Math.abs(t)), 0);
   const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : top || 1;
