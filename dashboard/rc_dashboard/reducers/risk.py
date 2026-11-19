@@ -52,7 +52,7 @@ DANGEROUS = [
     ("nvcc_login", "nvcc compile on a login node", "environment-unaware", "low",
      "the command nvcc"),
     ("pip_install", "pip install on a login node", "policy-unaware", "med",
-     "the command pip, pip3 or pip3.N, with the word install"),
+     "the command pip, pip3 or pip3.N, or python -m pip, with the word install"),
     ("conda_install", "conda/mamba install or create on login", "policy-unaware", "med",
      "the command conda, mamba or micromamba, with the word install or create"),
     ("build_login", "compiler or make on a login node", "policy-unaware", "med",
@@ -153,8 +153,9 @@ class _Line:
     the words after it, case-folded, and `raw`, the same as recorded; `low`, the whole line,
     folded. The command's words follow the word that names it -- argv[0], or the script after its
     interpreter (`/usr/bin/python3 /usr/bin/pip install x`) -- else argv[0]. The script Python is
-    given, past its options (`_python_script`), is the command, as the kernel makes it one run by
-    its `#!` (`python3 -u ~/.local/bin/pip install x` is pip's)."""
+    given, past its options (`_python_command`), is the command, as the kernel makes it one run by
+    its `#!` (`python3 -u ~/.local/bin/pip install x` is pip's); so is pip run as a module
+    (`python3 -u -m pip install x`)."""
 
     __slots__ = ("name", "words", "raw", "low")
 
@@ -164,39 +165,53 @@ class _Line:
         name = (ec or "").casefold() or (words[0].rsplit("/", 1)[-1] if words else "")
         at = next((i for i, w in enumerate(words) if w.rsplit("/", 1)[-1] == name), 0)
         words, raw = words[at + 1:], raw[at + 1:]
-        k = _python_script(raw) if _PYTHON.match(name) else None
-        if k is not None:
-            name, words, raw = words[k].rsplit("/", 1)[-1], words[k + 1:], raw[k + 1:]
+        run = _python_command(raw) if _PYTHON.match(name) else None
+        if run is not None:
+            k, name = run
+            words, raw = words[k + 1:], raw[k + 1:]
         self.name, self.words, self.raw = name, words, raw
         self.low = ("%s %s" % (ec, args)).casefold() if low is None else low
 
 
-def _python_script(raw):
-    """The index in `raw`, a Python interpreter's arguments as recorded, of the script it runs, or
-    None: past its options -- flags alone or grouped (`-u`, `-uB`, `-OO`), and `-W`, `-X` and
-    `--check-hash-based-pycs` with their values, attached or in the next word. `-c` and `-m` end
-    the options with code or a module, and `-` with standard input: no script."""
+def _python_command(raw):
+    """The command a Python interpreter runs, given its arguments as recorded: `(k, name)`, the
+    index in `raw` of the word that names it and the name, folded; or None. Past the interpreter's
+    options -- flags alone or grouped (`-u`, `-uB`, `-OO`), and `-W`, `-X` and
+    `--check-hash-based-pycs` with their values, attached or in the next word -- it is the script,
+    named by its file; or pip run as a module, which runs what the script pip runs, the module
+    named in the next word or the rest of the word (`-m pip`, `-mpip3`). `-c` ends the options
+    with code, `-m` with any other module, and `-` with standard input: no command."""
     i, n = 0, len(raw)
     while i < n:
         w = raw[i]
         if w == "--":
-            return i + 1 if i + 1 < n else None
+            i += 1
+            break
         if w[:1] != "-":
-            return i
+            break
         if w == "-":
             return None
         if w[1] == "-":
             i += 2 if w == "--check-hash-based-pycs" else 1     # with its value, or alone
             continue
         for j, c in enumerate(w[1:], 1):
-            if c in "cm":
+            if c == "c":
                 return None
+            if c == "m":
+                if j < len(w) - 1:
+                    k, mod = i, w[j + 1:]       # the module is the rest of the word,
+                elif i + 1 < n:
+                    k, mod = i + 1, raw[i + 1]  # or the next
+                else:
+                    return None
+                mod = mod.casefold()
+                return (k, mod) if _PIP.match(mod) else None
             if c in "WX":
                 if j == len(w) - 1:
                     i += 1                      # its value is the next word
                 break
         i += 1
-    return None
+    return (i, raw[i].casefold().rsplit("/", 1)[-1]) if i < n else None
 
 
 def _opts(words, valued=""):

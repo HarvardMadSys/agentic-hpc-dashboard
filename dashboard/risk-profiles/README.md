@@ -171,7 +171,7 @@ Dangerous commands -- read by word (above), case-insensitively:
 |---|---|---|---|---|
 | `nvidia_smi_login` | nvidia-smi (pointless without a local GPU) | the command `nvidia-smi` | environment-unaware | low |
 | `nvcc_login` | nvcc compile on a login node | the command `nvcc` | environment-unaware | low |
-| `pip_install` | pip install on a login node | the command `pip` (`pip3`, `pip3.11`) with the word `install` | policy-unaware | med |
+| `pip_install` | pip install on a login node | the command `pip` (`pip3`, `pip3.11`), or `python -m pip`, with the word `install` | policy-unaware | med |
 | `conda_install` | conda/mamba install or create on login | the command `conda`, `mamba` or `micromamba` with the word `install` or `create` | policy-unaware | med |
 | `build_login` | compiler or make on a login node | the command `make`, `cmake`, `ninja`, `gcc`, `g++`, `clang`, `clang++`, `nvcc`, `cargo` or `go`, or one of them with a version (`gcc-12`) | policy-unaware | med |
 | `ssh_compute` | ssh straight into a compute node | the command `ssh`, the host it goes to matching `{{compute_hosts}}` | policy-unaware | med |

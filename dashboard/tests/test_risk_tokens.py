@@ -121,10 +121,23 @@ class WordsTest(unittest.TestCase):
             self.assertEqual(fired("python3", args), ["pip_install"], args)
         self.assertEqual(fired("python3", "python3 -u /opt/venv/bin/tensorboard"),
                          ["server_on_login"])
-        # `-c` and `-m` end the options: what follows is code or a module, and no script
+        # `-c` and `-m` end the options: what follows is code or a module, and no script (pip's
+        # module is pip all the same: test_pip_run_as_a_module_is_pip)
         self.assertEqual(fired("python3", "python3 -u -m http.server 8000"), ["server_on_login"])
         self.assertEqual(fired("python3", "python3 -c /x/pip install y"), [])
-        self.assertEqual(fired("python3", "python3 -m pip install torch"), [])   # as on develop
+        self.assertEqual(fired("python3", "python3 -m pip install torch"), ["pip_install"])
+
+    def test_pip_run_as_a_module_is_pip(self):
+        """`python -m pip` runs what the script pip runs: pip named by `-m`, in the next word or
+        the rest of its word, past the interpreter's options. After the script, or `-c` and its
+        code, `-m pip` is theirs; and pipx is another tool."""
+        for args in ("python -m pip install x", "python3 -m pip3 install x",
+                     "python3 -u -m pip install x", "python -I -m pip install x",
+                     "python3 -mpip install x"):
+            self.assertEqual(fired(args.split()[0], args), ["pip_install"], args)
+        for args in ("python -m pipx install x", "python run.py -m pip install x",
+                     'python -c "import pip" -m pip install x'):
+            self.assertEqual(fired("python", args), [], args)
 
     def test_rm_rf_needs_both_flags(self):
         self.assertEqual(fired("rm", "rm --force -v x"), [])
