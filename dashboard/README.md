@@ -346,6 +346,10 @@ is what makes a capture useful as a test, at four levels:
 | cross-check | a few totals counted straight from the `.gz` by an independent script (exits per class per hour, distinct users, agent sessions) against `/api/live` and `/api/panels` at the pinned clock | proposed |
 | replay | the live path the frozen view never runs -- the tail following appends, WebSocket pushes, drift re-builds, the build/tail seam -- by writing the capture into a plain staging root at N x speed while the service's clock runs from the replay's start | proposed |
 
+With no capture at hand, the bench ([bench/README.md](bench/README.md)) writes a synthetic feed at
+fleet density, times the service over it, and compares every response the page reads before and
+after a change.
+
 ## The feed as Parquet tables
 
 `rc_dashboard/feedparquet.py` writes day-files as Parquet: a typed table per record kind (`exit`,
@@ -554,11 +558,22 @@ filling the hours the first time costs about what one scan does. A week of hours
 disk. A view filtered to users or agent types is still scanned.
 
 On a sealed day, an hour's time search and its read each open the `.gz`, and the next hour's
-search lands where that read ended; each open inflated the same 8 MB span again. A run of hours
-now shares the spans its readers inflate (`gz.shared_spans`, up to 32 held while it runs), so
-each is inflated once: on a 6-node bench feed (`bench/amplify.py --days 2 --hosts 3
---host-clones 2 --density 8 --gzip-sealed`), a 24 h window's hours inflated 76 spans where they
-inflated 454, and were reduced in 17.0 s where they took 21.1 s.
+search lands near where that read ended; each open inflated the same 8 MB span again. In a run of
+hours, a reader is now handed the span another reader of the same file inflated last
+(`gz.shared_spans`): one span for each file an hour reads -- every host and stream, on the two days
+either side of midnight, and never fewer than 16 (`hours.shared_files`) -- held while the run lasts,
+of 8 to 12 MB each: 32 at most on 8 nodes, what the hour's own readers, two spans each, hold while
+it reads. An hour searches every file before it reads any, so a block that held fewer files than
+that would lose each one's span to the searches after it; and past 64 files (`SHARED_FILES_MAX`,
+16 nodes, 768 MB at most) the run opens none, and shares nothing, rather than hold a block that
+grows with the fleet. A node-split worker holds at most 4
+(`hours.NODE_SHARED_FILES`), for one node-hour. What this saves depends on how an hour of a file compares with a span. On a
+6-node bench feed (`bench/amplify.py --days 2 --hosts 3 --host-clones 2 --density 8
+--gzip-sealed`), whose files grow 1 to 3 MB an hour, a 24 h window's hours inflated 132 spans
+where they inflated 455, and were reduced in 22.8 s where they took 26.3 s, holding 152 MB at
+most. A FAS login node's file grows about 140 MB (17 spans) an hour, and the records between
+where one hour's read stops and the next one's starts (twice `SCAN_SLACK_S`, 240 s) run over a
+span or two, so there it saves about one span a file an hour.
 
 **Reducing by node, in parallel (`ingest.workers`).** A reducer is pure Python and holds the
 GIL, so the service's threads share one core: one pass over an hour of the eight FAS login nodes
@@ -593,7 +608,10 @@ service's own process); the spike hours by boslogin07, whose records cost more t
 reduce, so its second read buys less. Two workers per node -- one per node and group -- is the
 most that helps; each is ~0.5 GB (16 of them ~7.4 GB, plus ~1.7 GB in the service while it
 merges), and they count against the service's memory cap. The FAS deployment uses that
-(`INGEST_WORKERS` in `deploy/fleet/site.env`, empty for two per node).
+(`INGEST_WORKERS` in `deploy/fleet/site.env`, empty for two per node). The table was measured
+with one pool that every worker took any unit's next hour from; with a worker for every unit, as
+in the 16 (2) column, each unit now keeps to its own (`hours.UnitPool`, below), which this feed
+has not been measured with.
 
 **Python 3.14.** The same reductions run 5-10% faster on CPython 3.14 than on 3.12, and every
 panel is the same (compared field by field on a real slice); the test suite passes on both. Its
@@ -1703,12 +1721,15 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/feedfile.py` | the collector's day-files: listing them (a plain file before its `.gz`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line ends, the head digest |
+| `rc_dashboard/fastjson.py` | the one JSON parser for every line read off the collector's files |
 | `rc_dashboard/history.py` | the history store: every sealed day-file kept as Parquet, converted in the background ([History in Parquet](#history-in-parquet)) |
 | `rc_dashboard/keysearch.py` | the session inspector's key search with its records built in worker processes, replayed with the one-process read's counters |
 | `rc_dashboard/replica.py` | a sealed day-file read from its Parquet tables as the file itself: its offsets, time searches and records |
 | `rc_dashboard/where.py` | the filters a replica rejects records by before it builds them |
 | `rc_dashboard/feedparquet.py` | the Parquet schema, the converter and its verifier ([The feed as Parquet tables](#the-feed-as-parquet-tables)) |
 | `rc_dashboard/tail.py` | `IngestSource`; the file tail, and the newest-first read-back that refills retention on every start (a push source drops in here) |
+| `rc_dashboard/aggregator.py` | one streaming pass, many reducers: the live feed's dispatch by event type, and the background tasks that feed it |
+| `rc_dashboard/roster.py` | the live tier's per-user roster: who ran what, cheap at any number of users |
 | `rc_dashboard/gz.py` | a `.jsonl.gz` day-file read in place, seekable by uncompressed offset through a per-process inflater index |
 | `rc_dashboard/health.py` | each collector's verdict, from its own meta / heartbeat / stop records |
 | `rc_dashboard/clock.py` | the service's present; `clock.as_of` pins (and freezes) it for a captured feed |
@@ -1717,17 +1738,32 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
 | `rc_dashboard/nodehist.py` | the node tier over time: every snapshot's probes, load and NFS round trips, read incrementally on its own thread and binned to a window ([Login node health](#login-node-health)) |
-| `rc_dashboard/reducers/` | tools, io, resources, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), live, node |
-| `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), and the names and the agent's own words the tasks are labeled from (`phase_names`) |
+| `rc_dashboard/reducers/` | tools, io, resources, risk, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), facets (the page filters' choices), own_io (each process's own disk bytes, its reaped children's taken off), live |
+| `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), the names and the agent's own words the tasks are labeled from (`phase_names`), and a session at a glance, its kind of work and a few sentences (`phase_summary`) |
+| `rc_dashboard/tool_buckets.py` | the kinds of tool a command is bucketed into, vendored from the measurement repo's `analyze/tool_bucket_lib.py` |
 | `rc_dashboard/phase_report.py` | the report the phase and task thresholds are tuned against |
 | `rc_dashboard/portraits.py` | the Users tab: each user's portrait, composed from a view's trajectories, sandbox and Slurm reducers when read; the traits and their rules |
 | `rc_dashboard/windows.py` | window clamp rule, per-window reducer sets, the LRU + build worker |
+| `rc_dashboard/hours.py` | hourly merge-reduce: each record reduced once into its hour's saved state, a window merged from them, and the node split's worker processes ([Hourly merge-reduce](#hourly-merge-reduce)) |
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
+| `rc_dashboard/payloads.py` | each window's panels as last served, saved so a new view can show them at once |
+| `rc_dashboard/proctree.py` | one session as a process tree, read on demand: what the session inspector draws |
+| `rc_dashboard/annotate.py` | what each tool call was for, in a model's words: the inspector's "annotate purposes" |
+| `rc_dashboard/iocmds.py` | every command behind an I/O figure, looked up when it is clicked |
+| `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
 | `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (over `feedfile.py`, whose names it re-exports) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
+| `rc_dashboard/auth.py` | sign-in for the whole service: one password, kept as a salted scrypt hash ([Password](#password)) |
+| `rc_dashboard/guard.py` | who may talk to the service at all: a websocket's Origin, and every request's Host while it has no password |
+| `rc_dashboard/redact.py` | credentials masked in command lines before anything is served |
+| `rc_dashboard/anonymize.py` | stable aliases for the names in everything the service sends out ([Anonymized names](#anonymized-names)) |
+| `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it |
+| `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short |
+| `rc_dashboard/ask.py` | a question about the window on screen, answered by an agent CLI on this host ([Ask LLM](#ask-llm)) |
 | `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
+| `bench/` | a synthetic feed at fleet density, timers, a profiler, and the guard that every served answer stayed the same ([bench/README.md](bench/README.md)) |
 
 ## Ingestion, precisely
 

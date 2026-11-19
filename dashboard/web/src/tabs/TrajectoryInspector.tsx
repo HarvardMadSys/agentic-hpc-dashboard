@@ -79,6 +79,7 @@ import {
   defaultOpen,
   hiddenAt,
   locate,
+  ranSpan,
   spots,
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
@@ -927,8 +928,11 @@ export function TrajectoryInspector({
     if (!treeView) return null;
     let k = 0;
     for (const { e } of index) {
-      if (e.k !== 'p' || e.start == null) continue;
-      if (e.start <= treeView[1] && (e.end ?? e.start) >= treeView[0]) k++;
+      if (e.k !== 'p') continue;
+      // as the rows are marked: over what it is known to have run through
+      const { a, b } = ranSpan(e);
+      if (a == null) continue;
+      if (a <= treeView[1] && (b ?? a) >= treeView[0]) k++;
     }
     return k;
   }, [index, treeView]);

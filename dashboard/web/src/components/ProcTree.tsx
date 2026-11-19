@@ -295,6 +295,25 @@ function when(t: number | null | undefined, lo: number | null): string {
   return clock(t);
 }
 
+/** When a process ran, as far as the read knows. With no start in the read,
+ *  `a` is the bound below it serves (`early`: it started no later); with no
+ *  exit, `b` is the later of its last tick and its last child's start. It ran
+ *  through all of [a, b]: it began by `a` and was still running at `b`. */
+export function ranSpan(e: ProcNode): { a: number | null; b: number | null; early: boolean } {
+  const a = e.start ?? e.t0 ?? null;
+  const b = e.ev == null ? (e.t1 ?? e.end) : e.end;
+  return { a, b, early: e.start == null && a != null };
+}
+
+export const EARLY_TIP = 'its start is not in the read: it started no later than this, the earliest time of anything below it';
+
+/** How long it took; with no exit, `≥` how long it is known to have run. */
+export function tookText(e: ProcNode): string {
+  if (e.dur != null) return dur(e.dur);
+  const { a, b } = ranSpan(e);
+  return e.ev == null && a != null && b != null && b > a ? `≥ ${dur(b - a)}` : DASH;
+}
+
 function stamp(t: number | null | undefined): string {
   if (t == null) return DASH;
   const d = new Date(t * 1000);
@@ -318,12 +337,16 @@ function procTip(n: ProcNode, llm: LlmPurposeSet | null = null): string {
     n.cwd ? `cwd  ${n.cwd}` : null,
     n.role ? `role ${n.role}` : null,
     n.purpose ? `purpose ${n.purpose}` : null,
-    `started ${stamp(n.start)}`,
+    n.start == null && n.t0 != null
+      ? `started no later than ${stamp(n.t0)}, the earliest time of anything below it`
+      : `started ${stamp(n.start)}`,
     n.ev === 'exit'
       ? `exited ${stamp(n.end)}`
       : n.ev === 'truncated'
         ? `alive when the collector stopped, ${stamp(n.end)}`
-        : `no exit record in this read${n.end != null ? '; last seen ' + stamp(n.end) : ''}`,
+        : `no exit record in this read${n.end != null ? '; last seen ' + stamp(n.end) : ''}${
+            n.t1 != null ? `; running at ${stamp(n.t1)}, when its last child started` : ''
+          }`,
     n.link ? `parent: ${LINK_TIP[n.link]}` : null,
     n.gap ? `${n.gap} level(s) between it and that parent were never recorded` : null,
     n.orphan ? 'its record names init: it outlived its parent and was reparented' : null,
@@ -409,7 +432,10 @@ function LlmTag({ p, set }: { p: [string, string]; set: LlmPurposeSet }) {
 
 /** When a row's processes ran, for marking the rows inside a zoomed range. */
 function ranOf(e: Item, newest: boolean): [number | null, number | null] {
-  if (e.k === 'p') return [e.start, e.end ?? e.start];
+  if (e.k === 'p') {
+    const { a, b } = ranSpan(e);
+    return [a, b ?? a];
+  }
   if (e.k === 'rest') {
     if (newest) {
       // older than the last one drawn: from the group's first start to its end
@@ -508,11 +534,16 @@ const RowView = memo(function RowView({
         {text && <span className="pt-arg">{text}</span>}
       </>
     );
-    const alive = e.ev == null && e.start != null && e.end != null;
+    const span = ranSpan(e);
+    const alive = e.dur == null && e.ev == null && span.a != null && span.b != null && span.b > span.a;
     cells = [
-      when(e.start, lo),
+      span.early ? (
+        <span key="s" className="dim" data-tip={EARLY_TIP}>{`≤ ${when(span.a, lo)}`}</span>
+      ) : (
+        when(e.start, lo)
+      ),
       <span key="d" className={alive ? 'dim' : undefined} data-tip={alive ? 'no exit: alive at least this long' : undefined}>
-        {e.dur != null ? dur(e.dur) : alive ? `≥ ${dur((e.end as number) - (e.start as number))}` : DASH}
+        {tookText(e)}
       </span>,
       e.ev ? fmt(e.cpu) : DASH,
       fmt(e.sub_cpu),
@@ -522,7 +553,7 @@ const RowView = memo(function RowView({
     ];
     const barCls =
       e.ev == null ? 'open' : e.signal != null ? 'sig' : e.exit_code ? 'bad' : '';
-    cells.push(<Bar key="b" t0={e.start} t1={e.ev == null ? (e.end ?? null) : e.end} cls={barCls} tl={tl} />);
+    cells.push(<Bar key="b" t0={span.a} t1={span.b} cls={barCls} tl={tl} />);
   } else if (e.k === 'g') {
     const sample = e.samples[0];
     const sampleText = sample ? sample.cmdline ?? sample.args : null;

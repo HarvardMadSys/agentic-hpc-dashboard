@@ -31,7 +31,7 @@ import {
   unhidNote,
 } from '../components/ProcDiagram';
 import type { Hide, PNode } from '../components/ProcDiagram';
-import { LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, sigName } from '../components/ProcTree';
+import { EARLY_TIP, LINK_LBL, LINK_TIP, ROLE_TAG, allOpen, ranSpan, sigName, tookText } from '../components/ProcTree';
 import { treeGeometry } from '../components/TreeDiagram';
 import type { TreeGeo } from '../components/TreeDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
@@ -284,16 +284,23 @@ function Cmd({ text }: { text: string }) {
 
 /** `dir`: the folder it ran in, its own or its parent's. */
 function ProcDetails({ e, dir }: { e: ProcNode; dir: string | null }) {
-  const alive = e.ev == null && e.start != null && e.end != null;
+  const span = ranSpan(e);
   return (
     <>
       <dl>
         <Pair k="pid">{e.pid ?? DASH}</Pair>
         <Pair k="parent pid">{e.ppid ?? DASH}</Pair>
         {e.user && <Pair k="user">{e.user}</Pair>}
-        <Pair k="started">{stamp(e.start)}</Pair>
+        <Pair k="started" tip={span.early ? EARLY_TIP : undefined}>
+          {span.early ? `≤ ${stamp(span.a)}` : stamp(e.start)}
+        </Pair>
         <Pair k={e.ev === 'exit' ? 'exited' : e.ev === 'truncated' ? 'alive at stop' : 'last seen'}>{stamp(e.end)}</Pair>
-        <Pair k="took">{e.dur != null ? dur(e.dur) : alive ? `≥ ${dur((e.end as number) - (e.start as number))}` : DASH}</Pair>
+        {e.t1 != null && (
+          <Pair k="running at" tip="no exit read: its last child started then, so it was still running">
+            {stamp(e.t1)}
+          </Pair>
+        )}
+        <Pair k="took">{tookText(e)}</Pair>
         <Pair k="own CPU" tip="the process's own cpu_s">
           {e.ev ? (e.cpu != null ? `${fmt(e.cpu)} s` : 'not measured') : DASH}
         </Pair>

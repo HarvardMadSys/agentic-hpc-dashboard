@@ -31,6 +31,9 @@ VOLATILE = frozenset((
     "last_poll", "compressed", "elapsed_ms", "took_s", "scan_s",
     # the wall clock, which a pinned clock leaves running beside it
     "generated_at", "behind_wall_s",
+    # how many times the node history's thread has read the node tier, once a
+    # minute (`nodehist.IDLE_S`): how long the service had been up when asked
+    "passes",
 ))
 
 

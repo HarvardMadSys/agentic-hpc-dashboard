@@ -1028,6 +1028,27 @@ class NodeSplitTest(HourCase):
                     configmod.load(None, None)
 
 
+class SharedFilesTest(unittest.TestCase):
+    """`shared_files`: a run of hours keeps a span for every file an hour reads,
+    each host and stream on two days, and never fewer than `gz.SHARED_FILES`."""
+
+    def test_two_days_of_every_host_and_stream(self):
+        files = ["/feed/2026-11-%02d/h%d.%s.jsonl%s" % (d, h, s, ".gz" if d < 3 else "")
+                 for d in (1, 2, 3) for h in range(10) for s in ("exits", "snapshot")]
+        self.assertEqual(hours.shared_files(files), 40)      # a sealed day is the same file
+        self.assertEqual(hours.shared_files(files[:4]), hours.gz.SHARED_FILES)
+        self.assertEqual(hours.shared_files([]), hours.gz.SHARED_FILES)
+
+    def test_past_the_cap_it_shares_nothing(self):
+        # A block smaller than the files an hour searches keeps none of their
+        # spans, so past the cap there is no block at all, not a capped one.
+        def fleet(nodes):
+            return ["/feed/2026-11-01/h%d.%s.jsonl" % (h, s)
+                    for h in range(nodes) for s in ("exits", "snapshot")]
+        self.assertEqual(hours.shared_files(fleet(16)), hours.SHARED_FILES_MAX)
+        self.assertEqual(hours.shared_files(fleet(17)), 0)
+
+
 class UnitPoolTest(unittest.TestCase):
     """`UnitPool` sends every task of a unit -- a node, or a node and a reducer
     group -- to one worker; a unit it has not seen takes a worker no unit

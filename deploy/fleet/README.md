@@ -232,7 +232,9 @@ The hours are reduced meanwhile too, by `INGEST_WORKERS` processes (two per node
 set, 16 here) of about 0.5 GB each, plus about 1.7 GB in the service while it merges an
 hour: about 9 GB more at once, so a first start can come near 28 GiB of the 32G cap. On a
 lower cap, set `INGEST_WORKERS` to the node count (8 here: about 4 GB, and 80 to 90% of
-the speed of 16).
+the speed of 16). Each worker reads only its own node's files, and keeps the last span it
+inflated of each sealed one for the next read of it in the same node-hour: at most 4 spans
+of 8 to 12 MB (`NODE_SHARED_FILES` in `hours.py`), let go when that hour is done.
 
 For scale, one deployment that reads 8 busy login nodes, measured with the defaults and a
 32G cap:

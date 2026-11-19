@@ -315,6 +315,8 @@ function nodeTip(e: ProcNode, dir: string | null): string {
     e.cmdline || e.args || e.cmd || '(no record)',
     `pid ${e.pid ?? '?'}${e.ppid != null ? ` · parent ${e.ppid}` : ''}`,
     e.start != null ? `started ${clock(e.start)}${e.end != null ? `, ${e.ev ? 'exited' : 'last seen'} ${clock(e.end)}` : ''}` : null,
+    e.start == null && e.t0 != null ? `started no later than ${clock(e.t0)}, the earliest time below it` : null,
+    e.t1 != null ? `running at ${clock(e.t1)}, when its last child started` : null,
     e.cwd ? `in ${e.cwd}` : dir ? `in ${dir}, where its parent ran` : null,
     e.n > 1 ? `${fint(e.n)} processes in its subtree` : null,
     e.ev == null ? 'no exit in the read: it outlived it, or left no record' : null,
