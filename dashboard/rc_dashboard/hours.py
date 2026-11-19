@@ -671,7 +671,7 @@ def _stream(e, norm, lo, hi, wanted, stats, strays):
             if wanted is not None and wanted(line) is None:
                 continue
             try:
-                raw = fastjson.loads(line)
+                raw = fastjson.record(line)
             except ValueError:
                 stats["parse_errors"] += 1
                 continue
@@ -1711,10 +1711,17 @@ def build(reg, view):
                 step(0.1)
             joined = store.install_carry(acc, h_hi - 1)
             stats = new_stats()
-            stream, _plan, stats = read_span(files, norm, h_hi * HOUR, None, store.events,
-                                             stats=stats)
+            stream, tail_plan, stats = read_span(files, norm, h_hi * HOUR, None, store.events,
+                                                 stats=stats)
             n_tail, newest = feed_all(acc, stream)
             step(1, n_tail, stats["bytes"])
+            # Where this read stopped in each file, the stream spent: every whole
+            # line before it is in the view, from a saved hour or from the read.
+            # A file it found nothing new in stopped where it starts, at its
+            # size, which may cut a line still being written: the live feed
+            # skips a line by where it ENDS (`PanelView.feed`), so that one is
+            # counted when it is whole.
+            seam = view.seam_of(tail_plan, "stop")
         except Exception as e:
             with reg.lock:
                 view._replay = None
@@ -1723,6 +1730,7 @@ def build(reg, view):
         if newest is None:
             newest = store.newest_of(range(h_lo, h_hi))
         dispatch = view.build_dispatch(acc)
+        held, checked = reg.restarts_checked(view, seam)
         with reg.lock:
             view.reducers = acc
             view.dispatch = dispatch
@@ -1734,6 +1742,8 @@ def build(reg, view):
             view.consumed_through = newest
             view.live_through = None
             view.live_records = 0
+            view.seam = seam
+            view.live_skipped = {"already_read": 0, "before_window": 0}
             days = sum(1 for k, _ in parts if k == "d")
             view.cache["source"] = "hours"
             view.cache["saved_at"] = None
@@ -1745,8 +1755,7 @@ def build(reg, view):
                            "" if joined else "; the newest hour's join state was not at "
                            "hand, so the open hour joins only within itself"))
             pending, view._replay = view._replay, None
-            for rec in pending or ():
-                view.feed(rec)
+            view.replay(pending, held, checked)
         # The panels, a reducer per hold (`PanelView.materialize_stepwise`), still
         # with no collection running; ready once they are in.
         view.materialize_stepwise(reg.lock)

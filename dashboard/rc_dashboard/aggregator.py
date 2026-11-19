@@ -24,6 +24,7 @@ import collections
 import itertools
 import json
 import re
+import sys
 import threading
 import time
 
@@ -67,6 +68,19 @@ def normalized(norm, raws):
         if rec is not None:
             out.append(rec)
     return out
+
+
+def normalized_at(norm, items):
+    """The tail's `(src, end, raw)` items (`FileTailSource.poll_at`) through
+    `norm`: `(recs, at)`, the records it keeps in order, and beside each the
+    item it came from, which says where the tail read it."""
+    recs, at = [], []
+    for item in items:
+        rec = norm.normalize(item[2])
+        if rec is not None:
+            recs.append(rec)
+            at.append(item)
+    return recs, at
 
 
 def last_lines(path, n, window=1 << 20):
@@ -150,7 +164,13 @@ class Aggregator:
         self.node_built_at = None
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
-        self.stats = {"records": 0, "last_poll": None}
+        # `polled_at`: when a poll last ended, or handed a batch over -- whether
+        # the tail is moving, which /api/health's `ok` is judged by; and the
+        # records a view could not take (`_feed_failed`)
+        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0, "polled_at": None,
+                      "feed_error": None, "feed_error_streak": 0}
+        self._batch_failed = False
+        self._feed_logged = 0.0
         # Bumped by every batch dispatched to the live tier: a live frame made since
         # the last bump is the frame a new one would be (`live_frame`).
         self.dispatched = 0
@@ -219,11 +239,15 @@ class Aggregator:
         """
         return self.dispatch(normalized(self.norm, records), older)
 
-    def dispatch(self, recs, older=False):
+    def dispatch(self, recs, older=False, at=None):
         """Hand records `normalized` already to the live tier, the collectors'
-        health and, unless `older`, every held view. Under the lock."""
+        health and, unless `older`, every held view. Under the lock.
+
+        `at`, beside `recs`, is where the tail read each (`normalized_at`): a
+        view skips a record its build already read by it, byte for byte."""
         live_ev, health_ev = LiveReducer.EVENTS, CollectorHealth.EVENTS
-        for rec in recs:
+        feed = self.panels_by_window.feed
+        for rec, place in zip(recs, itertools.repeat(None) if at is None else at):
             ev = rec.get("event")
             if ev in live_ev:
                 try:
@@ -238,10 +262,36 @@ class Aggregator:
             if not older:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
-                self.panels_by_window.feed(rec)
+                # One record a view cannot take is counted and passed over: raised
+                # out of here it would end the poll, and the tail, its offsets not
+                # moved, would hand the whole batch over again at the next one.
+                try:
+                    feed(rec, place)
+                except Exception as e:
+                    self._feed_failed(e)
+        if not older and recs:
+            # the tail's batches in a row a view could not take a record of:
+            # /api/health's `ok` goes false at FEED_FAILS (app.py)
+            self.stats["feed_error_streak"] = (
+                self.stats["feed_error_streak"] + 1 if self._batch_failed else 0)
+            self._batch_failed = False
         self.stats["records"] += len(recs)
         self.dispatched += 1
         return len(recs)
+
+    def _feed_failed(self, e):
+        """A record a view could not take: counted, its error kept, and logged
+        when it changes and once a minute while it repeats -- a view that raises
+        at every record shows as more than a count, and floods no log. Under
+        the lock."""
+        now = time.time()
+        msg = ("%s: %s" % (type(e).__name__, e))[:300]
+        self.stats["feed_errors"] += 1
+        self._batch_failed = True
+        if msg != self.stats["feed_error"] or now - self._feed_logged >= 60:
+            print("view feed: %s" % msg, file=sys.stderr, flush=True)
+            self._feed_logged = now
+        self.stats["feed_error"] = msg
 
     def _fold(self, norm):
         """Add a private normalizer's counters to the shared one's, and zero them.
@@ -305,23 +355,42 @@ class Aggregator:
         -- while every read of the views and of the live tier waited.
         """
         if not self.positioned.is_set():
+            self.stats["polled_at"] = time.time()
             return 0
-        it = self.source.poll()
+        it = self.source.poll_at()
         n = 0
         while True:
-            raws = list(itertools.islice(it, BACKFILL_BATCH))
-            if not raws:
+            items = list(itertools.islice(it, BACKFILL_BATCH))
+            if not items:
                 break
-            recs = normalized(self._poll_norm, raws)
+            recs, at = normalized_at(self._poll_norm, items)
+            self._restarted(self.source.take_restarted())
             with self.lock:
                 self._fold(self._poll_norm)
-                n += self.dispatch(recs)
+                n += self.dispatch(recs, at=at)
+                self.stats["polled_at"] = time.time()
             # Hand the lock over: this thread keeps the GIL otherwise (see the backfill).
             time.sleep(0)
+        self._restarted(self.source.take_restarted())
         with self.lock:
             self.source.prune_state()
-            self.stats["last_poll"] = time.time()
+            self.stats["last_poll"] = self.stats["polled_at"] = time.time()
         return n
+
+    def _restarted(self, paths):
+        """Tell the views of each of `paths`, which the tail went back to the
+        start of, before it hands over what it read there (`PanelView.restarted`).
+        What each file holds now is read here once, outside the lock
+        (`windows.Look`), at the places the views' builds stopped reading it;
+        under the lock the views only compare. Not under the lock."""
+        if not paths:
+            return
+        with self.lock:
+            ends = self.panels_by_window.seam_ends(paths)
+        looks = {p: winmod.Look(p, ends.get(p, ())) for p in paths}
+        with self.lock:
+            for p in paths:
+                self.panels_by_window.restarted(p, looks[p])
 
     def backfill_now(self):
         """Position the tail, then fill RETENTION behind it.  The one expensive read.
@@ -455,9 +524,16 @@ class Aggregator:
                         "self_observation": self.norm.stats["dropped_self_observation"],
                     }
                     rep["backfill"] = dict(self.backfill)
-                    # what the tail met in the files it follows
+                    # what the tail met in the files it follows: `parse_errors` the
+                    # lines that are no JSON object; `malformed` the records read
+                    # from them, the backfill's too, that the normalizer could not
+                    # read (a field of a type no collector writes); `feed_errors`
+                    # those a view could not take -- each passed over, never
+                    # stopping the tail
                     rep["tail"] = {k: self.source.stats.get(k, 0) for k in (
                         "partial_holds", "parse_errors", "resets")}
+                    rep["tail"].update(malformed=self.norm.stats.get("malformed", 0),
+                                       feed_errors=self.stats["feed_errors"])
                     # written by the demo (rc_dashboard/demo), not measured: the
                     # header says so whenever any host's records do
                     rep["synthetic_hosts"] = self.health.synthetic_hosts()

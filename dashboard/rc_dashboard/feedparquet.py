@@ -884,13 +884,52 @@ def read_manifest(out, day, stem):
         return None
 
 
-def current(man, path):
-    """Whether manifest `man` describes `path` as it is now, in this version."""
+def current(man, path, out=None):
+    """Whether manifest `man` describes `path` as it is now, in this version --
+    and, given the store root `out` it was written under, whether every table
+    it names is there as it was written (`tables_whole`)."""
     try:
         return (man is not None and man.get("parquet_version") == PARQUET_VERSION
-                and man.get("source") == identity(path))
+                and man.get("source") == identity(path)
+                and (out is None or tables_whole(man, out)))
     except OSError:
         return False
+
+
+def tables_whole(man, out):
+    """Whether each table manifest `man` names records in is a file under store
+    root `out` of the byte size the conversion wrote (`bytes`). A table gone,
+    cut short or emptied -- the store cleaned up in part, a crash before its
+    data reached the disk -- leaves a manifest that names a replica there is
+    not: the file is read as JSONL, and converted again."""
+    sizes = man.get("bytes")
+    if not isinstance(sizes, dict):
+        return False
+    for name, n in (man.get("records") or {}).items():
+        if not n:
+            continue
+        want = sizes.get(name)
+        try:
+            got = os.path.getsize(out_path(out, name, man["day"], man["stem"]))
+        except (OSError, KeyError, TypeError):
+            return False
+        if want is None or got != want:
+            return False
+    return True
+
+
+def _fsync(path, directory=False):
+    """`path`'s data on the disk, or (`directory`) its entries: a rename names
+    the new file only once the file itself is there. A directory's flush is as
+    far as the filesystem allows: some refuse one, and it then goes without."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    except OSError:
+        if not directory:
+            raise
+    finally:
+        os.close(fd)
 
 
 def writer_options(table, level=ZSTD_LEVEL):
@@ -906,8 +945,9 @@ def writer_options(table, level=ZSTD_LEVEL):
 def convert_source(day, path, out, level=ZSTD_LEVEL,
                    row_group_rows=ROW_GROUP_ROWS, batch_rows=BATCH_ROWS):
     """Write the tables of one day-file, then its manifest. Files are written
-    beside their final names and renamed into place, the manifest last, so a
-    manifest names only files that are whole."""
+    beside their final names, flushed to the disk and renamed into place, the
+    manifest last, so a manifest names only files that are whole -- after a
+    crash or a power loss too."""
     pa = _pa()
     pq = pa.parquet
     t0 = time.monotonic()
@@ -955,10 +995,16 @@ def convert_source(day, path, out, level=ZSTD_LEVEL,
             flush(name, final=True)
         for name, w in writers.items():
             w.close()
+        # Each table on the disk before its name, and every name before the
+        # manifest that points at them: renamed with nothing flushed, a power
+        # loss could leave a manifest naming tables that were never written.
         for name in writers:
             p = out_path(out, name, day, stem)
             os.chmod(p + tmp_tag, FILE_MODE)
+            _fsync(p + tmp_tag)
             os.replace(p + tmp_tag, p)
+        for d in sorted({os.path.dirname(out_path(out, n, day, stem)) for n in writers}):
+            _fsync(d, directory=True)
     except BaseException:
         for name, w in writers.items():
             try:
@@ -989,8 +1035,11 @@ def convert_source(day, path, out, level=ZSTD_LEVEL,
     _makedirs(os.path.dirname(mp))
     with open(mp + tmp_tag, "w") as fh:
         json.dump(man, fh, indent=1, sort_keys=True)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.chmod(mp + tmp_tag, FILE_MODE)
     os.replace(mp + tmp_tag, mp)
+    _fsync(os.path.dirname(mp), directory=True)
     return man
 
 
@@ -1212,7 +1261,7 @@ def main(argv=None):
     if a.cmd == "convert":
         if not a.force:
             todo = [(d, p) for d, p in todo
-                    if not current(read_manifest(a.out, d, stem_of(p)), p)]
+                    if not current(read_manifest(a.out, d, stem_of(p)), p, a.out)]
         # the biggest first, so the longest conversion does not start last
         todo.sort(key=lambda t: -os.path.getsize(t[1]))
         opts = {"level": a.zstd_level, "row_group_rows": a.row_group_rows}

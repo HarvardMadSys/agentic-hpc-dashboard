@@ -107,8 +107,15 @@ day-file, at the file's own offsets. Which reads take it:
 
 A file with no replica yet -- not converted, or no longer the file its manifest names (its name,
 size, mtime and inode) -- is read as JSONL, and so is one holding a line a JSONL reader would
-read differently: a last line with no newline, or a line that is JSON but not an object. Nothing
-waits for the store.
+read differently: a last line with no newline, or a line that is JSON but not an object. So is
+one whose manifest names a table that is gone, or not the byte size it was written at (the
+store cleaned up in part, a crash before the data reached the disk): it is converted again. A
+replica a read finds broken all the same -- a table damaged with its size intact -- is let go:
+that read goes on from the file, from where the replica left it, the file is read as JSONL
+until it is converted again, and the error is in the store's `errors` (the Feeds tab). Before,
+a replica was trusted on its manifest alone: with its table deleted, a window's plan left the
+sealed day out as if it held nothing in the window, and cut short, every build of the window
+failed. Nothing waits for the store.
 
 **The same answers.** A replica reads as its file does: the same records in the same order, key
 for key and type for type, at the same offsets; a time search probe for probe; and a filtered
@@ -138,9 +145,11 @@ It is a Hive-partitioned dataset as well, for a query of your own:
 
 **Conversion.** In the background, `history.workers` processes (`RC_DASH_HISTORY_WORKERS`; 0, the
 default, is up to 8, as the CPUs the service may run on allow) convert every sealed file with no
-current replica, the biggest first, at startup and then every minute as days are sealed. A
-replica whose source is gone is removed, and so is one older than the newest `history.days` dated
-dirs when that is set. The node tier is never sealed, so it is never converted.
+current replica, the biggest first, at startup and then every minute as days are sealed. Each
+table is flushed to the disk before it is renamed into place, and the manifest, which names
+them, last. A replica whose source is gone is removed, and so is one older than the newest
+`history.days` dated dirs when that is set. The node tier is never sealed, so it is never
+converted.
 
 **What it costs and buys**, on FAS RC's mirror: 8 login nodes, the 7 sealed days 2026-11-10 to
 2026-11-16 (112 day-files, 18.4 GB of `.gz`, 182 M records). Converting them took 12 minutes in 8
@@ -171,8 +180,9 @@ The eBPF tier's entry in `/api/feeds` carries `history`: `enabled` and `state` (
 files), `converted` (since the service started), `lookups` (sealed files a reader asked for since
 then: answered from a `replica`, or read as `jsonl` for want of one), `held` (the replicas held
 between reads, and the `bytes` their indexes take), `swept` (half-written files a killed
-conversion left, removed at startup), `progress` (the current round: `todo`, `done`, `failed`,
-`records`, `bytes_in`, `elapsed_s`) and the latest `errors`.
+conversion left, removed at startup), `read_failures` (reads a replica failed since then, each
+finished from the file), `progress` (the current round: `todo`, `done`, `failed`, `records`,
+`bytes_in`, `elapsed_s`) and the latest `errors`.
 `--check-feeds` says how many sealed files have a current replica and how much is left to
 convert.
 
@@ -406,7 +416,21 @@ Three things a rebuild reports rather than assumes:
   proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively.
 - **The seam.** A build reads the day-files while the tailer is also advancing through them.
   Rows landing in that seam are buffered and replayed; if the buffer overflows the count is
-  published as `replay_dropped` rather than quietly going missing.
+  published as `replay_dropped` rather than quietly going missing. The seam is drawn per file,
+  in bytes: the build keeps where it stopped reading each day-file, the tail says where each
+  record's line ends, and a live record is skipped only when the build had read that line.
+  It was a timestamp -- the newest record the build read, from any host -- so a host whose
+  stream lagged when the view was built had its catch-up dropped from the view until the next
+  re-scan (6 h for the 24 h view) while the live tier counted it. A live record older than the
+  window's start is left out, as a scan would leave it; the status counts both
+  (`live_skipped`: `already_read`, `before_window`). A day-file cut short in place (its inode the
+  same), which the tail then reads from its start again, leaves the seam when the build read it
+  before the cut -- the file is then shorter than the build's read, starts otherwise, or (a
+  plain file) holds other bytes in the 4 KB before where the build stopped -- and is counted as
+  the tail reads it, as the live tier counts it; a build that read it after the cut, which the
+  tail notices only at its next poll, keeps it. The file is read for this once, outside the
+  lock the readers wait on. A `.gz` is checked by its first bytes only (a sealed day is not cut
+  short in place, and reading past its head means inflating it).
 
 One pre-existing inconsistency had to be fixed for the control to mean anything: trajectory
 sessions were evicted at `reducers.trajectories.idle_evict_s` (2 h) while the panel's own
@@ -606,7 +630,8 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
-| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}` |
+| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a reader that stops reading holds up neither the tail nor the other readers (one did, for as long as it stayed); one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
+| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved -- no poll ended, no batch handed over -- for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row (the ingest loop's 3 polls, the windows loop's 6 s, the feeds loop's 90 s, the rebuild loop's 3 rebuild intervals); or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing: a round that goes through, or a batch every view takes, ends the streak. It said `ok` with a `last_poll` two minutes old, and whatever the loops and the views met. `ingest` (`age_s`, `stale_after_s`, `feed_errors`, `feed_error_streak`, `feed_error`), each loop's last error, how many and its `streak` (`loops`), the readers (`websocket`: `readers`, `dropped`, `refused`, `last_drop`), the backfill, the windows, the memos. A loop's error and a view's are also logged to stderr, when they change and once a minute while they repeat |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
@@ -1538,6 +1563,16 @@ is not atomic against a concurrent reader. So the tailer reads to EOF, finds the
 yields only complete lines, and **advances its stored offset only that far** — trailing bytes are
 re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup hand-off obeys the
 same rule, so a line still being written belongs to the tail, never to the read-back.
+
+**One bad line stops nothing.** A line that is JSON but not an object (`0`, `null`, `[]`) is
+counted with the lines that do not parse, by every reader of the day-files (`fastjson.record`);
+a record the normalizer cannot read -- a field of a type no collector writes, a list `args` or
+`event`, a number for `ts` -- is passed over and counted, and so is one a held view cannot take.
+`/api/feeds` says how many, in the eBPF tier's `tail`: `parse_errors`, `malformed`,
+`feed_errors`. One `null` used to make every poll raise: the tail's offsets stayed put, the
+other hosts were never read, and the batch already handed over was counted again at every
+poll; a `[]` already in a file stopped the backfill, and such a record failed every build of a
+window that held it.
 
 Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
 rather than silently seeked past its end. A file first seen after startup — a new date

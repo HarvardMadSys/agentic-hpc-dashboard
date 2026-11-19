@@ -19,17 +19,23 @@ Whole-range reads (the backfill, an hour's reduction) read the JSONL, which orjs
 turns into records faster than Arrow does.
 
 Nothing waits for the store. It converts in the background, in `history.workers`
-processes, every file it has no current replica of -- missing, or its source no
-longer the file the manifest names -- the biggest first, at startup and then every
-DISCOVER_S as days are sealed; a file not converted yet is read as JSONL. A replica
-whose source is gone goes too, and so does one older than the newest `history.days`
+processes, every file it has no current replica of -- missing, its source no
+longer the file the manifest names, or a table the manifest names gone or not the
+size it was written at -- the biggest first, at startup and then every DISCOVER_S
+as days are sealed; a file not converted yet is read as JSONL. A replica whose
+source is gone goes too, and so does one older than the newest `history.days`
 dated dirs when that is set. The store is the service's own: each store root is
 made 0700, as its other caches are, since it holds every user's command lines.
 
-A conversion writes beside each final name (`.tmp-<pid>`) and renames into place,
-the manifest last. A worker stopped by SIGTERM (systemd stopping the service)
-removes what it was writing, as on any error; what a SIGKILL leaves is swept the
-next time the service starts, once its process is gone.
+A replica a read finds broken all the same (`replica.failed`) is let go: the read
+goes on from the file, the file is read as JSONL from then on and converted again,
+and the error is kept with the store's others, which the Feeds tab shows.
+
+A conversion writes beside each final name (`.tmp-<pid>`), flushes each file to
+the disk and renames it into place, the manifest last. A worker stopped by SIGTERM
+(systemd stopping the service) removes what it was writing, as on any error; what
+a SIGKILL leaves is swept the next time the service starts, once its process is
+gone.
 """
 import collections
 import concurrent.futures
@@ -177,6 +183,10 @@ class HistoryStore:
         # sealed files a reader asked for, since start: answered from a replica,
         # or left to the JSONL (no current replica yet)
         self.lookups = {"replica": 0, "jsonl": 0}
+        # Sealed files whose replica a read found broken (`replica_failed`): read
+        # as JSONL until they are converted again. And how many reads did, since start.
+        self._failed = set()
+        self.read_failures = 0
         self._lock = threading.Lock()
         self._cache = collections.OrderedDict()   # path -> (ident, Replica)
         self._stop = threading.Event()
@@ -246,6 +256,8 @@ class HistoryStore:
         src, day, stem = loc
         out = self.roots[src]
         with self._lock:
+            if path in self._failed:
+                return None
             hit = self._cache.get(path)
             # The source unchanged is not enough: `history.days` prunes a copy
             # whose source is still there, and its tables go with its manifest.
@@ -257,13 +269,34 @@ class HistoryStore:
             if hit is not None:
                 self._cache.pop(path, None)
         man = fp.read_manifest(out, day, stem)
-        if not fp.current(man, path) or not replica.exact(man):
+        # Its tables too, not the manifest alone: one deleted or cut short
+        # under it raised in the middle of a read, or was taken for a file
+        # with nothing in the window.
+        if not fp.current(man, path, out) or not replica.exact(man):
             return None
         rep = replica.Replica(out, man)
         with self._lock:
             self._cache[path] = (ident, rep)
             self._trim()
         return rep
+
+    def replica_failed(self, path, rep, exc):
+        """A read of `path`'s replica `rep` raised `exc` (`replica.failed`); the
+        reader went on from the file. The replica stands in no more -- the
+        readers take the file as JSONL -- until the file is converted again,
+        which the next round does (`discover`), and the error is kept with the
+        store's others, which the Feeds tab shows."""
+        with self._lock:
+            hit = self._cache.get(path)
+            if hit is not None and hit[1] is rep:
+                del self._cache[path]
+            self.read_failures += 1
+            if path in self._failed:
+                return                          # said already
+            self._failed.add(path)
+            self.errors.append({"file": path, "at": time.time(),
+                                "error": "replica unreadable, read as JSONL until converted "
+                                         "again: %s: %s" % (type(exc).__name__, exc)})
 
     def _forget(self, gone):
         """Let go of the held replicas of `gone` (out, day, stem): their tables
@@ -308,7 +341,8 @@ class HistoryStore:
                     if not p.endswith(".jsonl.gz"):
                         continue
                     have.add((day, fp.stem_of(p)))
-                    if not fp.current(fp.read_manifest(out, day, fp.stem_of(p)), p):
+                    if p in self._failed or not fp.current(
+                            fp.read_manifest(out, day, fp.stem_of(p)), p, out):
                         try:
                             size = os.path.getsize(p)
                         except OSError:
@@ -381,13 +415,15 @@ class HistoryStore:
             self.progress["records"] += sum(res.get("records", {}).values())
             self.converted += 1
             self._cache.pop(path, None)
+            self._failed.discard(path)
             return 1
 
     # ------------------------------------------------------------- the thread
     def start(self):
         """Convert in the background and keep converting as days are sealed;
         the readers find replicas through `replica.for_path` from now on."""
-        replica.install(self.replica_for if self.enabled else None)
+        replica.install(self.replica_for if self.enabled else None,
+                        self.replica_failed if self.enabled else None)
         if not self.enabled or self._thread is not None:
             return
         self._thread = threading.Thread(target=self._loop, name="history", daemon=True)
@@ -413,6 +449,7 @@ class HistoryStore:
             prog = dict(self.progress)
             errors = list(self.errors)
             lookups = dict(self.lookups)
+            failures = self.read_failures
             held = {"replicas": len(self._cache), "bytes": self.held_bytes()}
         replicas = files = 0
         size = 0
@@ -433,6 +470,8 @@ class HistoryStore:
                 "source_roots": sorted(self.roots), "store_roots": sorted(self.roots.values()),
                 "replicas": replicas, "files": files, "bytes": size,
                 "converted": self.converted, "swept": self.swept, "lookups": lookups,
+                # reads a replica failed, since start; each went on from the file
+                "read_failures": failures,
                 "held": held,
                 "progress": prog, "errors": errors[-5:]}
 
@@ -457,7 +496,7 @@ def describe(cfg):
                 if not p.endswith(".jsonl.gz"):
                     continue
                 sealed += 1
-                if fp.current(fp.read_manifest(out, day, fp.stem_of(p)), p):
+                if fp.current(fp.read_manifest(out, day, fp.stem_of(p)), p, out):
                     current += 1
                 else:
                     try:

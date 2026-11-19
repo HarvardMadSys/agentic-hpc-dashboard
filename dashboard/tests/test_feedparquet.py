@@ -20,6 +20,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -334,6 +335,63 @@ class Layout(Base):
         fp.drop_source(self.out, DAY, EXITS)
         self.assertIsNone(fp.read_manifest(self.out, DAY, EXITS))
         self.assertFalse(os.path.exists(fp.out_path(self.out, "exit", DAY, EXITS)))
+
+    def test_a_table_gone_or_cut_short_leaves_no_current_replica(self):
+        # The manifest alone said "current" with its table deleted, and a
+        # reader took the replica of a file it then could not read.
+        path = self.write_day([full("exit", 0), full("conn", 1)])
+        fp.main(["convert", "--out", self.out, "--jobs", "1", self.root])
+        table = fp.out_path(self.out, "conn", DAY, EXITS)
+        with open(table, "rb") as fh:
+            whole = fh.read()
+        for cut in (None, len(whole) // 2, 0):
+            with self.subTest(cut=cut):
+                if cut is None:
+                    os.unlink(table)
+                else:
+                    with open(table, "wb") as fh:
+                        fh.write(whole[:cut])
+                man = fp.read_manifest(self.out, DAY, EXITS)
+                self.assertTrue(fp.current(man, path))            # the manifest alone
+                self.assertFalse(fp.current(man, path, self.out))
+                fp.main(["convert", "--out", self.out, "--jobs", "1", self.root])
+                self.assertTrue(fp.current(fp.read_manifest(self.out, DAY, EXITS), path,
+                                           self.out))
+                with open(table, "rb") as fh:
+                    whole = fh.read()
+
+    def test_a_manifest_names_its_tables_only_once_they_are_on_the_disk(self):
+        """Each table flushed before it is renamed into place, its directory
+        after, all of it before the manifest's rename; and the manifest's own
+        directory once it is in. Renamed with nothing flushed, a power loss could
+        leave a manifest naming tables that never reached the disk."""
+        path = self.write_day([full("exit", 0), full("conn", 1)])
+        done = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            done.append(("fsync", os.path.realpath(os.readlink("/proc/self/fd/%d" % fd))))
+            return real_fsync(fd)
+
+        def replace(src, dst):
+            done.append(("replace", os.path.realpath(dst)))
+            return real_replace(src, dst)
+        with mock.patch.object(fp.os, "fsync", fsync), \
+                mock.patch.object(fp.os, "replace", replace):
+            fp.convert_source(DAY, path, self.out)
+        tables = [os.path.realpath(fp.out_path(self.out, t, DAY, EXITS)) for t in ("exit", "conn")]
+        man = os.path.realpath(fp.manifest_path(self.out, DAY, EXITS))
+        at = {e: i for i, e in enumerate(done)}
+        for t in tables:
+            tmp = [i for (k, p), i in at.items() if k == "fsync" and p.startswith(t + ".tmp-")]
+            self.assertEqual(len(tmp), 1, done)
+            self.assertLess(tmp[0], at[("replace", t)])
+            self.assertLess(at[("replace", t)], at[("fsync", os.path.dirname(t))])
+            self.assertLess(at[("fsync", os.path.dirname(t))], at[("replace", man)])
+        tmp = [i for (k, p), i in at.items() if k == "fsync" and p.startswith(man + ".tmp-")]
+        self.assertEqual(len(tmp), 1, done)
+        self.assertLess(tmp[0], at[("replace", man)])
+        self.assertLess(at[("replace", man)], at[("fsync", os.path.dirname(man))])
 
     def test_today_waits_unless_asked(self):
         today = time.strftime("%Y-%m-%d")

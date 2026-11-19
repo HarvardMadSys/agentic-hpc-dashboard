@@ -236,12 +236,20 @@ def _matching(path, norm, pred, newest_first, stats):
     hi = None if hi is None else hi + SCAN_SLACK_S
     where = getattr(pred, "where", None)
     rep = replica.for_path(path) if where is not None else None
-    if rep is not None:
-        yield from _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where)
-        return
-    edge = hi if newest_first else lo
     at = None
-    if edge is not None:
+    if rep is not None:
+        resume = {}
+        try:
+            yield from _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where,
+                                         resume)
+            return
+        except Exception as e:
+            # The replica stopped answering part way: the rest of the read from
+            # the file, past the last record it read (`replica.failed`).
+            replica.failed(path, rep, e)
+            at = resume.get("at")
+    edge = hi if newest_first else lo
+    if at is None and edge is not None:
         try:
             with gz.open_feed(path) as fh:
                 at = seek_to_epoch(fh, edge, gz.fstat(fh).st_size)
@@ -259,7 +267,7 @@ def _matching(path, norm, pred, newest_first, stats):
         if wanted is not None and wanted(line) is None:
             continue
         try:
-            raw = fastjson.loads(line)
+            raw = fastjson.record(line)
         except ValueError:
             continue
         stats["scanned"] += 1
@@ -274,14 +282,15 @@ def _matching(path, norm, pred, newest_first, stats):
         yield (NO_TS if ts is None else ts), rec
 
 
-def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where):
+def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where, resume=None):
     """`_matching` over a sealed file's replica, for a predicate that tests the
     records' own fields: the same read -- from the same edge (the replica's time
     search answers as the file's), stopping at the same record past the far
     bound, `scanned` counting the same records by each one handed on
     (`Replica.line_read`) -- with only the records the predicate's event types
     and fields could keep built (`replica.records`), the same rule deciding
-    each."""
+    each. `resume["at"]` keeps where a read of the file would go on from: past
+    the last record read, in the read's direction."""
     edge = hi if newest_first else lo
     at = None if edge is None else rep.seek_to_epoch(edge)
     kinds = getattr(pred, "events", None)
@@ -289,9 +298,11 @@ def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where):
         at = rep.complete_end if newest_first else 0
     start, end, count, total = rep.line_read(at, kinds, lo if newest_first else hi,
                                              reverse=newest_first)
+    resume = {} if resume is None else resume
     done = 0
     for off, _n, raw in rep.records(start, end, reverse=newest_first, kinds=kinds,
                                     where=where):
+        resume["at"] = off if newest_first else off + _n
         rec = norm.normalize(raw)
         if rec is None or not pred(rec):
             continue
@@ -357,10 +368,16 @@ def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True):
 def _place(p, since):
     """`(start, size)` of day-file `p` for a read from epoch `since`: its first
     in-range offset and its size. A sealed file's replica answers both as the
-    file would, without the `.gz` being inflated to search it."""
+    file would, without the `.gz` being inflated to search it. One that raises
+    -- a table gone or damaged -- is let go (`replica.failed`) and the file
+    answers: its error is not the file's, and must not leave the file out of a
+    plan as if it held nothing in the window."""
     rep = replica.for_path(p)
     if rep is not None:
-        return rep.seek_to_epoch(since), rep.size
+        try:
+            return rep.seek_to_epoch(since), rep.size
+        except Exception as e:
+            replica.failed(p, rep, e)
     with gz.open_feed(p) as fh:
         size = gz.fstat(fh).st_size
         return seek_to_epoch(fh, since, size), size
@@ -419,11 +436,17 @@ def resume_plan(roots, since, files, days=0):
                 return None
             rep = replica.for_path(q)
             if rep is not None:
-                size = rep.size
-                if size < f["end"] or rep.head_digest(f["head_n"]) != f["head"] \
-                        or not rep.is_boundary(f["end"]):
-                    return None
-            else:
+                try:
+                    size = rep.size
+                    same = size >= f["end"] and rep.head_digest(f["head_n"]) == f["head"] \
+                        and rep.is_boundary(f["end"])
+                except Exception as e:      # the replica, not the file: ask the file
+                    replica.failed(q, rep, e)
+                    rep = None
+                else:
+                    if not same:
+                        return None
+            if rep is None:
                 with gz.open_feed(q) as fh:
                     size = gz.fstat(fh).st_size
                     if size < f["end"] or head_digest(fh, f["head_n"]) != f["head"] \
@@ -534,12 +557,21 @@ def _window_stream(entry, norm, since, until, stats, wanted=None, find=None, kin
     A sealed file read with a `where` -- one session's, one user's, the commands
     behind one figure -- is read from its replica when it has one
     (`_window_stream_replica`), `kinds` and `where` deciding there which records
-    are built, where `wanted` and `find` are a line's byte checks here.
+    are built, where `wanted` and `find` are a line's byte checks here. Should the
+    replica raise, the read goes on here, from where it left off.
     """
     rep = replica.for_path(entry["path"]) if where is not None else None
+    start = entry["start"]
     if rep is not None:
-        yield from _window_stream_replica(entry, rep, norm, since, until, stats, kinds, where)
-        return
+        try:
+            yield from _window_stream_replica(entry, rep, norm, since, until, stats, kinds,
+                                              where)
+            return
+        except Exception as e:
+            # The replica stopped answering part way: the rest of the read from
+            # the file, from the end of the last record it read (`replica.failed`).
+            replica.failed(entry["path"], rep, e)
+            start = entry.get("end", start)
     try:
         fh = gz.open_feed(entry["path"])
     except OSError:
@@ -549,7 +581,7 @@ def _window_stream(entry, norm, since, until, stats, wanted=None, find=None, kin
         entry["dev"], entry["ino"] = st.st_dev, st.st_ino
         entry["head_n"] = min(HEAD_BYTES, st.st_size)
         entry["head"] = head_digest(fh, entry["head_n"])
-        pos = entry["end"] = entry["start"]
+        pos = entry["end"] = start
         fh.seek(pos)
         # `find`: only the lines it hits come through (`_found`), each still
         # judged by `wanted` below, with the reading's end and bytes kept there.
@@ -568,7 +600,7 @@ def _window_stream(entry, norm, since, until, stats, wanted=None, find=None, kin
                 continue
             stats["scanned"] += 1
             try:
-                raw = fastjson.loads(line)
+                raw = fastjson.record(line)
             except ValueError:
                 stats["parse_errors"] += 1
                 continue
