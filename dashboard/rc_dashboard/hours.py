@@ -572,6 +572,52 @@ def _node_task(task):
     return reduce_node_hour(_NODE_CTX, task)
 
 
+class UnitPool:
+    """The worker processes when there is one for every unit of the node split,
+    each unit's hours reduced in the same one: the files a worker opens are
+    its own node's, and what it learned of them -- each sealed file's gzip
+    index, the answers of its time searches -- serves the hour after.
+
+    One shared pool hands a unit's next hour to whichever worker is free, so
+    every worker came to open every node's files: each built and held its own
+    index of every sealed one, which inflates the whole file. On a 6-node
+    bench feed's 12 units over 24 hours, 280 indexes were built where 48 do,
+    and the workers spent 44 s of CPU where they now spend 26 s. A unit has
+    one hour in flight at a time, so with a worker each no unit waits on
+    another's either way. A unit the pool has not seen takes a worker no unit
+    holds, else the one used least recently."""
+
+    def __init__(self, n, **kw):
+        # made now, so a pool that cannot be fails where a shared one would;
+        # each starts its process on its first task
+        self.slots = []
+        try:
+            for _ in range(max(1, n)):
+                self.slots.append(concurrent.futures.ProcessPoolExecutor(max_workers=1, **kw))
+        except BaseException:
+            self.shutdown(wait=False)
+            raise
+        self.home = collections.OrderedDict()      # unit -> slot, least recent first
+
+    @staticmethod
+    def unit(task):
+        return task["node"], tuple(task.get("keys") or ())
+
+    def submit(self, fn, task):
+        u = self.unit(task)
+        slot = self.home.pop(u, None)
+        if slot is None:
+            held = set(self.home.values())
+            free = [i for i in range(len(self.slots)) if i not in held]
+            slot = free[0] if free else self.home.popitem(last=False)[1]
+        self.home[u] = slot
+        return self.slots[slot].submit(fn, task)
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        for ex in self.slots:
+            ex.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+
 def reduce_node_hour(ctx, task):
     """One node's records of one hour, reduced as `_reduce_run` reduces a whole
     hour: seeded with the join state that node's previous hour ended with,
@@ -589,9 +635,11 @@ def reduce_node_hour(ctx, task):
         seed(red, carry)
     prev = task["prev"]
     strays = [] if prev is not None else None
-    stream, plan, stats = read_span(task["files"], ctx.norm, h * HOUR, (h + 1) * HOUR,
-                                    ctx.events, prev, strays, new_stats())
-    n, newest = feed_all(red, stream)
+    # the time search and the read open each file in turn: one inflation of a span serves both
+    with gz.shared_spans():
+        stream, plan, stats = read_span(task["files"], ctx.norm, h * HOUR, (h + 1) * HOUR,
+                                        ctx.events, prev, strays, new_stats())
+        n, newest = feed_all(red, stream)
     carry = take_carry(red)
     strip(red)
     files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop", "resume")}
@@ -1102,6 +1150,14 @@ class HourStore:
         last one ended with."""
         if self.split:
             return self._reduce_nodes(files, a, b, carry, ages, tick)
+        # An hour's time search and its read open each file in turn, and the next
+        # hour's search lands where that read ended: one inflation of a span
+        # serves them all.
+        with gz.shared_spans():
+            return self._reduce_here(files, a, b, carry, ages, tick)
+
+    def _reduce_here(self, files, a, b, carry, ages, tick=None):
+        """`_reduce_run` in this process."""
         norm = Normalizer(self.cfg)
         pm = self.meta(a - 1)
         # With no read of the hour before to go by, a record from before this
@@ -1154,14 +1210,18 @@ class HourStore:
     # ------------------------------------------------------------ by node
     def _node_pool(self, want):
         """The worker processes, `want` of them at most, made on first use and
-        kept; None when they cannot be (the reducer factory does not pickle,
-        processes cannot start, or a deploy since this process started means
-        they would not run its code: `spawn_identity`), and the nodes are
-        reduced in this process."""
+        kept -- one for each of the `want` units when there are that many
+        (`UnitPool`), else a pool they share; None when they cannot be (the
+        reducer factory does not pickle, processes cannot start, or a deploy
+        since this process started means they would not run its code:
+        `spawn_identity`), and the nodes are reduced in this process."""
         if self._drift is not None:
             return None
         n = max(1, min(self.workers, want))
-        if self._pool is not None and self._pool_size >= n:
+        # a worker for every unit: each keeps to its own (`UnitPool`)
+        per_unit = self.workers >= want
+        if self._pool is not None and self._pool_size >= n \
+                and isinstance(self._pool, UnitPool) == per_unit:
             return self._pool
         self.close()
         if spawn_identity() != self._identity:
@@ -1178,10 +1238,10 @@ class HourStore:
         try:
             # Spawned on demand, so a worker may start well after this: each checks
             # it runs what this process does (`_node_init`).
-            self._pool = concurrent.futures.ProcessPoolExecutor(
-                max_workers=n, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_node_init,
-                initargs=(self.fresh, self.cfg, self.events, as_of, self._identity))
+            kw = dict(mp_context=multiprocessing.get_context("spawn"), initializer=_node_init,
+                      initargs=(self.fresh, self.cfg, self.events, as_of, self._identity))
+            self._pool = (UnitPool(n, **kw) if per_unit
+                          else concurrent.futures.ProcessPoolExecutor(max_workers=n, **kw))
         except (OSError, ValueError, ImportError) as e:
             self.stats["node_note"] = "reducing in this process: %s" % e
             return None

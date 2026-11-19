@@ -553,6 +553,13 @@ next hour's read and merged into its hour's saved state, not lost. On one login 
 filling the hours the first time costs about what one scan does. A week of hours is ~38 MB on
 disk. A view filtered to users or agent types is still scanned.
 
+On a sealed day, an hour's time search and its read each open the `.gz`, and the next hour's
+search lands where that read ended; each open inflated the same 8 MB span again. A run of hours
+now shares the spans its readers inflate (`gz.shared_spans`, up to 32 held while it runs), so
+each is inflated once: on a 6-node bench feed (`bench/amplify.py --days 2 --hosts 3
+--host-clones 2 --density 8 --gzip-sealed`), a 24 h window's hours inflated 76 spans where they
+inflated 454, and were reduced in 17.0 s where they took 21.1 s.
+
 **Reducing by node, in parallel (`ingest.workers`).** A reducer is pure Python and holds the
 GIL, so the service's threads share one core: one pass over an hour of the eight FAS login nodes
 (1.45 M records, 2.7 GB of JSONL) takes ~95 s of it, and decoding the records is under 10% of that
@@ -610,7 +617,13 @@ split is in the hours'
 fingerprint and the count is not: going from 1 to more, or back, reduces the hours afresh;
 changing the count does not. The workers are spawned once and kept (`hours.status` reports
 `node_workers`, `node_cpu_by` per node, `node_merge_s`), and they count against the service's
-memory cap. A worker runs the service's own code and Python, or nothing: a process spawned
+memory cap. With a worker for every unit -- the fleet's two per node -- each unit's hours are
+reduced in the same one (`hours.UnitPool`), so a worker opens only its own node's files and
+builds and holds the gzip index of only its node's sealed ones; with fewer workers than units
+they share one pool, and each comes to index every node's files (on the bench feed above, 12
+workers for its 12 units built 280 indexes where 48 do, and spent 44 s of CPU on a 24 h window's
+hours where they now spend 26 s). A worker runs the service's own code and Python, or nothing: a
+process spawned
 starts from `sys.executable` and the service's `sys.path` as they are then, so a deploy since
 the start (another release where the service imports from, a venv made again, a package
 upgraded) would have it reduce with other code (`hours.spawn_identity`). The service checks

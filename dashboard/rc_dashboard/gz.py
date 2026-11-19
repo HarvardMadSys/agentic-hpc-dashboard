@@ -25,6 +25,12 @@ What it costs, measured on boslogin06's 2026-10-08 exits file (66 MB -> 1.49 GB)
   an 8 MB span, and lives only in this process -- an inflater's state cannot be
   pickled -- so a restart indexes again;
 * each open reader holds the two spans it last inflated, 2 x `SPAN` bytes;
+* inside `shared_spans`, the readers of one thread share the spans they
+  inflate, the last `SHARED_SPANS` used held until the block ends, at most
+  32 x `SPAN` bytes. The hourly reduction opens each file a few times an
+  hour -- a time search, then the records, and the next hour's search lands
+  where they ended -- and each open inflated the same span again: 454 spans
+  for 73 distinct over a 6-node bench feed's 24 hours, 4 s of a 21 s run;
 * the process keeps the indexes of the last `_KEEP` files read, and drops
   the index of a file that is gone or that no reader used for `_IDLE_S`,
   looked for at every build and at an open once a `_SWEEP_S`. A copy that
@@ -38,6 +44,7 @@ which the line readers already treat as a last line still being written.
 """
 import bisect
 import collections
+import contextlib
 import io
 import os
 import threading
@@ -52,6 +59,7 @@ _MAGIC = b"\x1f\x8b"
 _KEEP = 256               # indexes held, least recently used dropped first
 _IDLE_S = 1800.0          # an index no reader used for this long is dropped
 _SWEEP_S = 60.0           # how often an open looks for gone or idle indexes
+SHARED_SPANS = 32         # spans held between a thread's readers (`shared_spans`)
 
 SUFFIX = ".gz"
 
@@ -246,6 +254,50 @@ def index_for(fh, path):
         return idx
 
 
+_shared = threading.local()        # `.spans`: this thread's `_Shared`, inside the block
+
+
+class _Shared:
+    """The spans a thread's readers inflated inside `shared_spans`, by index
+    and checkpoint, the `n` used last kept. A span is the same bytes whichever
+    reader inflates it, so a reader handed one another inflated reads what it
+    would have inflated itself."""
+
+    def __init__(self, n):
+        self.n = max(1, int(n))
+        self.held = collections.OrderedDict()      # (Index, i) -> bytes
+
+    def span(self, index, fh, i):
+        key = (index, i)
+        data = self.held.get(key)
+        if data is not None:
+            self.held.move_to_end(key)
+            index.used = time.monotonic()
+            return data
+        data = self.held[key] = index.span(fh, i)
+        while len(self.held) > self.n:
+            self.held.popitem(last=False)
+        return data
+
+
+@contextlib.contextmanager
+def shared_spans(n=SHARED_SPANS):
+    """Inside the block, the readers of this thread share the spans they
+    inflate, the `n` used last held until it ends: a file opened again, as a
+    time search and then a read of what it found open it, is not inflated
+    again where another reader already was. Only how a reader gets a span
+    changes, never what it reads. A block inside another is the outer one's."""
+    if getattr(_shared, "spans", None) is not None:
+        yield _shared.spans
+        return
+    _shared.spans = held = _Shared(n)
+    try:
+        yield held
+    finally:
+        _shared.spans = None
+        held.held.clear()
+
+
 class GzipRaw(io.RawIOBase):
     """A compressed file read through its index: seekable, by uncompressed offset."""
 
@@ -305,7 +357,10 @@ class GzipRaw(io.RawIOBase):
             if self._prev[0] == at:
                 self._span_at, self._span = self._prev
             else:
-                self._span_at, self._span = at, memoryview(self.index.span(self._fh, i))
+                shared = getattr(_shared, "spans", None)
+                data = (self.index.span(self._fh, i) if shared is None
+                        else shared.span(self.index, self._fh, i))
+                self._span_at, self._span = at, memoryview(data)
             self._prev = prev
             if not (self._span_at <= pos < self._span_at + len(self._span)):
                 return 0                            # past what the stream holds

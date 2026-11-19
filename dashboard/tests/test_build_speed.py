@@ -4,7 +4,8 @@ Each speed-up of the build, the hourly reduction, the inspector's read and the
 live tier is checked here against the path it replaced:
 
 * a filtered scan that finds its lines a block at a time (`export._found`) yields
-  the records, the resume offset and the bytes the line-by-line scan did;
+  the records, the resume offset and the bytes the line-by-line scan did, and
+  leaves out of its skipped count the blank lines matching everywhere did;
 * a memoized probe or head digest answers as a fresh read, and never for a file
   that has changed since;
 * `heapq.nlargest` ranks the sessions `sorted(...)[:n]` ranked, ties included;
@@ -155,6 +156,21 @@ class FoundTest(Scratch):
         self.assertTrue(want[0]["skipped"])
         for block in (None, 512, 4096):
             self.assertEqual(counters(True, block), want, block)
+
+    def test_lines_passed_over_leave_out_the_blank_ones_the_regex_left_out(self):
+        # `_passed` counts blank lines only where one could begin; it must
+        # leave out what matching `_BLANK` across the whole range left out.
+        rnd = random.Random(5)
+        parts = [b'{"event": "exit"}', b"", b" ", b"\t", b"\r", b"\x0b", b"\x0c", b" {}", b"x"]
+        for _ in range(400):
+            body = b"".join(b"".join(rnd.choice(parts) for _ in range(rnd.randint(0, 3)))
+                            + rnd.choice([b"\n", b"\r\n"]) for _ in range(rnd.randint(0, 10)))
+            starts = [0] + [i + 1 for i, c in enumerate(body) if c == 10]
+            for i, a in enumerate(starts):
+                for b in starts[i:]:
+                    n = body.count(b"\n", a, b)
+                    want = n - len(export._BLANK.findall(body, a, b)) if n else 0
+                    self.assertEqual(export._passed(body, a, b), want, (body, a, b))
 
     def test_until_stops_where_the_line_scan_stops(self):
         p = self.write("h1.exits.jsonl", self.recs(), compact=True)

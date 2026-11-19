@@ -16,6 +16,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -176,6 +177,104 @@ class IndexCache(unittest.TestCase):
                 self.assertIn(a, gz._indexes)
         finally:
             gz.SPAN, gz._STEP, gz._CHUNK = saved
+
+
+class SharedSpans(unittest.TestCase):
+    """Inside `shared_spans` a thread's readers share the spans they inflate: each
+    reads what it would have read alone, a span is inflated once however many
+    readers ask for it, at most `n` are held, and none once the block ends."""
+
+    def setUp(self):
+        self.saved = gz.SPAN, gz._STEP, gz._CHUNK
+        gz.SPAN, gz._STEP, gz._CHUNK = 997, 311, 101
+        gz._indexes.clear()
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="rc_gz_")
+        self.plain = payload(400, 6)
+        self.path = os.path.join(self.dir, "h1.exits.jsonl.gz")
+        with open(self.path, "wb") as fh:
+            fh.write(gzip.compress(self.plain))
+
+    def tearDown(self):
+        gz.SPAN, gz._STEP, gz._CHUNK = self.saved
+        gz._indexes.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def counted(self):
+        """`Index.span` counting the spans it inflates, by checkpoint."""
+        seen = []
+        real = gz.Index.span
+
+        def span(index, fh, i):
+            seen.append(i)
+            return real(index, fh, i)
+        return seen, mock.patch.object(gz.Index, "span", span)
+
+    def test_readers_inside_read_what_readers_outside_read(self):
+        rnd = random.Random(8)
+        with gz.shared_spans(4):
+            a, b = gz.open_feed(self.path, buffering=64), gz.open_feed(self.path, buffering=64)
+            with a, b:
+                for _ in range(300):
+                    fh = rnd.choice((a, b))
+                    at, n = rnd.randrange(0, len(self.plain) + 5), rnd.randrange(0, 3000)
+                    fh.seek(at)
+                    self.assertEqual(fh.read(n), self.plain[at:at + n], (at, n))
+            with gz.open_feed(self.path) as fh:
+                self.assertEqual(list(fh), self.plain.splitlines(True))
+
+    def test_a_span_is_inflated_once_however_many_readers_ask(self):
+        seen, patch = self.counted()
+        with patch:
+            with gz.open_feed(self.path) as fh:       # indexed, outside the block
+                fh.read()
+            n_spans = len(seen)
+            del seen[:]
+            for _ in range(3):
+                with gz.open_feed(self.path) as fh:
+                    self.assertEqual(fh.read(), self.plain)
+            self.assertEqual(len(seen), 3 * n_spans)  # alone, each reader inflates them all
+            del seen[:]
+            with gz.shared_spans(n_spans):
+                for _ in range(3):
+                    with gz.open_feed(self.path) as fh:
+                        self.assertEqual(fh.read(), self.plain)
+            self.assertEqual(sorted(seen), list(range(n_spans)))
+
+    def test_at_most_n_are_held_and_none_once_the_block_ends(self):
+        with gz.shared_spans(3) as held:
+            with gz.open_feed(self.path) as fh:
+                self.assertEqual(fh.read(), self.plain)
+            self.assertEqual(len(held.held), 3)
+        self.assertEqual(len(held.held), 0)
+        self.assertIsNone(getattr(gz._shared, "spans", None))
+
+    def test_a_block_inside_another_is_the_outer_one(self):
+        with gz.shared_spans(5) as outer:
+            with gz.shared_spans(2) as inner:
+                self.assertIs(inner, outer)
+            self.assertIs(gz._shared.spans, outer)  # still in force after the inner one
+        self.assertIsNone(getattr(gz._shared, "spans", None))
+
+    def test_another_thread_shares_nothing(self):
+        import threading
+        seen, patch = self.counted()
+        got = {}
+        with patch, gz.shared_spans(64):
+            with gz.open_feed(self.path) as fh:
+                fh.read()
+            mine = len(seen)
+
+            def other():
+                got["spans"] = getattr(gz._shared, "spans", None)
+                with gz.open_feed(self.path) as fh:
+                    got["read"] = fh.read()
+            t = threading.Thread(target=other)
+            t.start()
+            t.join()
+        self.assertIsNone(got["spans"])
+        self.assertEqual(got["read"], self.plain)
+        self.assertEqual(len(seen), 2 * mine)         # it inflated every span itself
 
 
 class CompressedFeed(FeedCase):

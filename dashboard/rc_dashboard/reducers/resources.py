@@ -155,18 +155,31 @@ class ResourceReducer:
         b = self._bin(rec)
         if b is None:
             return
-        slot = self.bins.setdefault(b, {}).setdefault(
-            rec["_a3"], {"n": 0, "sum": {}, "has": {}})
+        by = self.bins.get(b)
+        if by is None:
+            by = self.bins[b] = {}
+        a3 = rec["_a3"]
+        slot = by.get(a3)
+        if slot is None:
+            slot = by[a3] = {"n": 0, "sum": {}, "has": {}}
         slot["n"] += 1
         io = dict(zip(self.own.fields, own)) if own else {}
-        for k, v in [(k, rec.get(k)) for k in SERIES_FIELDS] + \
-                [(k, io.get(k)) for k in IO_SERIES_FIELDS] + \
-                [(k, rec[f] / 1e6 if isinstance(rec.get(f), (int, float)) else None)
-                 for k, f in NET_SERIES_FIELDS]:
-            if v is None:
-                continue
-            slot["sum"][k] = slot["sum"].get(k, 0) + v
-            slot["has"][k] = slot["has"].get(k, 0) + 1
+        sums, has = slot["sum"], slot["has"]
+        for k in SERIES_FIELDS:
+            v = rec.get(k)
+            if v is not None:
+                sums[k] = sums.get(k, 0) + v
+                has[k] = has.get(k, 0) + 1
+        for k in IO_SERIES_FIELDS:
+            v = io.get(k)
+            if v is not None:
+                sums[k] = sums.get(k, 0) + v
+                has[k] = has.get(k, 0) + 1
+        for k, f in NET_SERIES_FIELDS:
+            v = rec.get(f)
+            if isinstance(v, (int, float)):
+                sums[k] = sums.get(k, 0) + v / 1e6
+                has[k] = has.get(k, 0) + 1
         dw = rec.get("dstate_wait_s")
         if dw:
             tool = rec.get("_eff") or rec.get("_command") or "(empty)"
@@ -186,19 +199,21 @@ class ResourceReducer:
         cpu = rec.get("cpu_s")
         dur = rec.get("duration_s")
         run = rec.get("sched_run_s")
+        sw = rec.get("sched_wait_s")
+        rss = rec.get("peak_rss_mb")
+        if rss is None:
+            rss = rec.get("rss_mb")
         if cpu is not None:
             c["cpu_s"] += cpu
         c["sched_run"].add(run)
-        c["sched_wait"].add(rec.get("sched_wait_s"))
+        c["sched_wait"].add(sw)
         c["q_cpu"].add(cpu)
-        c["q_rss"].add(rec.get("peak_rss_mb") if rec.get("peak_rss_mb") is not None
-                       else rec.get("rss_mb"))
-        rss = rec.get("peak_rss_mb") if rec.get("peak_rss_mb") is not None else rec.get("rss_mb")
-        c["q_wait"].add(rec.get("sched_wait_s"))
+        c["q_rss"].add(rss)
+        c["q_wait"].add(sw)
         c["q_dur"].add(dur)
         top = c["top"]
         for metric, v in (("cpu_s", cpu), ("peak_rss_mb", rss),
-                          ("sched_wait_s", rec.get("sched_wait_s")), ("duration_s", dur)):
+                          ("sched_wait_s", sw), ("duration_s", dur)):
             if v is not None and (metric not in top or v > top[metric][0]):
                 top[metric] = [v, who(rec)]
         # The on-CPU share is run time over lifetime. A lifetime measured from
@@ -214,22 +229,23 @@ class ResourceReducer:
                 c["q_oncpu"].add(min(1.0, run / dur))
         if cpu and cpu > 1.0 and run:
             c["ratio"].append(cpu / run)
+        faults = c["faults"]
         for k in FAULT_FIELDS:
-            c["faults"][k].add(rec.get(k))
+            faults[k].add(rec.get(k))
         mf = rec.get("maj_flt")
         if mf and mf >= self.floor["worst_fault"]:
             w = who(rec)
             for k in FAULT_FIELDS:
                 w[k] = rec.get(k)
             self._keep_worst("worst_fault", "maj_flt", w)
-        sw = rec.get("sched_wait_s")
         if sw and sw >= self.floor["worst_wait"]:
             w = who(rec)
             w["sched_wait_s"] = sw
-            w["sched_run_s"] = rec.get("sched_run_s")
+            w["sched_run_s"] = run
             self._keep_worst("worst_wait", "sched_wait_s", w)
+        delays = c["delays"]
         for k in DELAY_FIELDS:
-            c["delays"][k].add(rec.get(k))
+            delays[k].add(rec.get(k))
 
         d = c["dstate"]
         dw = rec.get("dstate_wait_s")
