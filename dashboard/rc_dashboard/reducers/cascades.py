@@ -96,7 +96,7 @@ WORKSPACE_BASIS = {
                 "home), are folded into that ancestor and counted as `deeper`",
     "subagents": "with subagents adds every agent started beneath this one (see "
                  "Agent trees), judged against THIS agent's start folder",
-    "scope": "exit and truncated records of agent-class processes that carry a "
+    "scope": "exit records of agent-class processes that carry a "
              "session key, folded into their agent through the process index as "
              "session rows are; a fork that never exec'd inherits its parent's "
              "argv and is not read twice; ~ is the user's home as their agent's own "
@@ -156,7 +156,9 @@ class CascadeReducer:
         role = rec.get("_role")
         if role is None:
             return
-        if rec.get("event") in ("exit", "truncated"):
+        # exits: a `truncated` record is a process still running at a collector
+        # stop, which its exit after the restart counts again
+        if rec.get("event") == "exit":
             k = (rec.get("agent_type"), role)
             self.census[k] += 1
             self.census_cpu[k] += rec.get("cpu_s") or 0.0

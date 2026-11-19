@@ -29,6 +29,7 @@ import collections
 import time
 
 from . import INSTANCE_CAP, Acc, Quant, add_counts, pct, top_by, who
+from .own_io import OwnIo, cap_of
 from ..redact import redact
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
@@ -40,8 +41,9 @@ NFS_IO_FIELDS = ("ops_s", "rd_kb_s", "rd_rtt_ms", "rd_exe_ms", "rd_retrans",
 # count: a bin whose records all lacked schedstat is null, not 0 s of wait.
 SERIES_FIELDS = ("cpu_s", "sched_wait_s", "dstate_wait_s", "maj_flt")
 # The same, from the record's `io` block: bytes through read()/write() and bytes
-# that reached the disk. Null for another user's process (/proc/<pid>/io is
-# theirs), so a bin can have calls and no I/O measured.
+# that reached the disk, each process's own (its reaped children's taken off:
+# own_io.py). Null for another user's process (/proc/<pid>/io is theirs), so a
+# bin can have calls and no I/O measured.
 IO_SERIES_FIELDS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # Network bytes sent and received, from the record's own TCP accounting, in MB
 # (Live's picker: "every time series on Live", roadmap note 23). Null where the
@@ -71,7 +73,11 @@ def bin_for(window_s):
 
 
 class ResourceReducer:
-    EVENTS = ("exit", "truncated", "residency_totals")
+    # Exits, not `truncated`: a process running at a collector stop is written
+    # then with its whole life's counters so far, and again at its exit after
+    # the restart, so summing both counted it twice -- "once per process" is the
+    # exit's alone.
+    EVENTS = ("exit", "residency_totals")
     KEY = "resources"
 
     def __init__(self, cfg, classes, window_s=86400):
@@ -116,6 +122,8 @@ class ResourceReducer:
         # INSTANCE_CAP by value, ties in arrival order, whenever the trims ran -- so
         # its row is not made at all: nearly every exit waited for a CPU a little.
         self.floor = {"worst_stall": 0, "worst_fault": 0, "worst_wait": 0}
+        # each process's own bytes for the I/O series (own_io.py)
+        self.own = OwnIo(cap=cap_of(cfg), name="resources")
 
     def _bin(self, rec):
         """The bin a record lands in, or None when it has no usable time."""
@@ -143,14 +151,14 @@ class ResourceReducer:
                 if isinstance(v, (int, float)):
                     slot[k] = slot.get(k, 0) + v
 
-    def _series_add(self, rec):
+    def _series_add(self, rec, own):
         b = self._bin(rec)
         if b is None:
             return
         slot = self.bins.setdefault(b, {}).setdefault(
             rec["_a3"], {"n": 0, "sum": {}, "has": {}})
         slot["n"] += 1
-        io = rec.get("io") or {}
+        io = dict(zip(self.own.fields, own)) if own else {}
         for k, v in [(k, rec.get(k)) for k in SERIES_FIELDS] + \
                 [(k, io.get(k)) for k in IO_SERIES_FIELDS] + \
                 [(k, rec[f] / 1e6 if isinstance(rec.get(f), (int, float)) else None)
@@ -169,7 +177,8 @@ class ResourceReducer:
         if rec.get("event") == "residency_totals":
             self._tick(rec)
             return
-        self._series_add(rec)
+        # every exit joins, binned or not: its parent's own figure needs it
+        self._series_add(rec, self.own.take(rec))
         for k in rec.get("_impossible") or ():
             self.impossible[rec["_a3"]][k] += 1
         c = self.cls[rec["_a3"]]
@@ -257,6 +266,33 @@ class ResourceReducer:
             self.floor[attr] = lst[-1].get(field) or 0
 
     # ----------------------------------------------------------------- merge
+    # The own-I/O join crosses an hour -- a shell that exits in the next hour
+    # gives back what the children it reaped in this one carried -- so it is
+    # CARRIED into each hour's reduction, and is not part of the saved hour.
+    CARRY_AGED = ("reaped",)
+
+    def track(self):
+        self.own.track()
+
+    def carry(self):
+        return self.own.carry({})
+
+    def carry_caps(self):
+        """What one pass holds the carried map to (`hours.combine_carries`)."""
+        return self.own.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
+
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
+
+    def seed(self, c):
+        self.own.seed(c)
+
+    def strip(self):
+        self.own.strip()
+
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed.
 
@@ -268,6 +304,7 @@ class ResourceReducer:
         """
         if self.bin_s % o.bin_s:
             raise ValueError("cannot merge %d s bins into %d s bins" % (o.bin_s, self.bin_s))
+        self.own.merge(o.own)
         f = self.bin_s // o.bin_s
         for b, row in o.bins.items():
             dst = self.bins.setdefault(b // f, {})
@@ -375,6 +412,10 @@ class ResourceReducer:
             "scope": "login nodes only -- the eBPF tier runs on login nodes, so this is "
                      "login-node resource use, not cluster resource use",
             "cpu_basis": "sum(cpu_s), self, once per process; child_cpu_s NEVER added",
+            "io_basis": "each process's own bytes, once per process: the collector's "
+                        "io also holds every child the process reaped, taken back off "
+                        "at its exit",
+            "own_io": self.own.status(),
             "series": series,
             "impossible_waits": {c: dict(v) for c, v in self.impossible.items()},
             "impossible_basis": "a wait longer than the process lived is not a "

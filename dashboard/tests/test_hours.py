@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
+from rc_dashboard.reducers.own_io import AgentHeld  # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
 from test_ingest import DAY, FeedCase, exit_rec   # noqa: E402
 import test_merge as TM                           # noqa: E402
@@ -40,6 +41,19 @@ def gen(t0, t1, seed=7):
     bounds = [h * HOUR for h in range(int(t0 // HOUR) + 1, int(t1 // HOUR) + 1)]
     with mock.patch.multiple(TM, T0=t0, T1=t1, BOUNDS=bounds):
         return TM.stream(seed)
+
+
+def leader_io(recs):
+    """`recs` with every I/O figure the leader thread's alone, which holds no
+    reaped child and so joins nothing (reducers/own_io.py). For a window a scan
+    reads from its first second, compared with the same window merged from
+    hours whose first is reduced whole: the merge's joins know the children
+    that exited before the window began, the scan's cannot, and a parent's own
+    bytes differ by them -- as the sessions' always did."""
+    for r in recs:
+        if isinstance(r.get("io"), dict):
+            r["io"]["scope"] = "leader"
+    return recs
 
 
 class HourCase(FeedCase):
@@ -176,14 +190,14 @@ class LateRecordTest(HourCase):
     def test_a_record_for_a_closed_hour_is_merged_into_it(self):
         # Hours are reduced through the newest closed one; then a host writes a
         # record dated two hours back, and the feed moves on an hour.
-        early = gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR)
+        early = leader_io(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR))
         self.write(early)
         reg = self.registry(self.cfg())
         self.assertEqual(self.build(reg, 300).cache["source"], "hours")
         late_t = NOW - 3 * HOUR + 120
         late = TM.plain("exit", late_t, 999999, 1, "pip", "pip install late",
                         user="erin")
-        self.write([late] + gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9))
+        self.write([late] + leader_io(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9)))
         view = self.build(reg, 300)
         h = int(late_t // HOUR)
         self.assertEqual(reg.hours.meta(h)["stragglers"], 1)
@@ -319,12 +333,12 @@ class CompressedDayTest(HourCase):
     def test_a_day_compressed_between_two_hours_is_counted_once(self):
         # Hours reduced through the newest closed one from the plain files;
         # then midnight: the day is compressed, the next day's files go on.
-        self.write(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR))
+        self.write(leader_io(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR)))
         reg = self.registry(self.cfg())
         self.assertEqual(self.build(reg, 300).cache["source"], "hours")
         last = reg.hours.chain[0]
         self.compress_day()
-        self.write(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9), day=self.NEXT)
+        self.write(leader_io(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9)), day=self.NEXT)
         view = self.build(reg, 300)
         self.assertGreater(reg.hours.chain[0], last)
         # The next hour's read starts SCAN_SLACK_S early, in records the hour
@@ -888,7 +902,7 @@ class NodeSplitTest(HourCase):
             return set(node["h1"][red][field]) | set(node["h2"][red][field])
 
         traj = acc["trajectories"]
-        for field, held in (("reaped", traj.reaped), ("phase_calls", traj.calls_at),
+        for field, held in (("reaped", traj.own.reaped), ("phase_calls", traj.calls_at),
                             ("phase_exited", traj.exited)):
             with self.subTest(field=field):
                 self.assertTrue(node["h1"]["trajectories"][field])
@@ -908,7 +922,9 @@ class NodeSplitTest(HourCase):
 
     def test_an_installed_map_is_held_to_one_pass_cap(self):
         # Two nodes' maps at their own caps would be twice one pass's: installed, the
-        # oldest of the two are dropped, each node keeping its newest keys.
+        # oldest of the two are dropped, each node keeping its newest keys -- but for
+        # what is held for an agent runtime, kept in place of the oldest of the rest
+        # (own_io.py).
         reg, _view = self.built(2)
         hour, carry, _ages = reg.hours.chain
         node = carry[hours.NODES]
@@ -918,12 +934,16 @@ class NodeSplitTest(HourCase):
         caps = acc["trajectories"].carry_caps()
         acc["trajectories"].carry_caps = lambda: dict(caps, reaped=cap)
         self.assertTrue(reg.hours.install_carry(acc, hour))
-        held = acc["trajectories"].reaped
+        held = acc["trajectories"].own.reaped
         self.assertEqual(len(held), cap)
         for nd in ("h1", "h2"):
             own = node[nd]["trajectories"]["reaped"]
-            mine = [k for k in held if k in own]
-            self.assertEqual(mine, list(own)[len(own) - len(mine):])
+            agents = [k for k, v in own.items() if type(v) is AgentHeld]
+            rest = [k for k in own if k not in agents]
+            mine = [k for k in held if k in rest]
+            self.assertTrue(agents)
+            self.assertEqual(mine, rest[len(rest) - len(mine):])
+            self.assertEqual([k for k in agents if k not in held], [])
 
     def test_a_deploy_since_the_start_reduces_here_alike(self):
         # The code a worker would start from is not this process's: no pool, and the
@@ -1024,7 +1044,7 @@ class CombineCarriesTest(unittest.TestCase):
         from rc_dashboard.reducers.trajectories import TrajectoryReducer
 
         class Red:
-            carry_trimmed = staticmethod(TrajectoryReducer.carry_trimmed)
+            carry_trimmed = staticmethod(TrajectoryReducer.exited_trimmed)
 
             @staticmethod
             def carry_caps():

@@ -42,6 +42,10 @@ INGEST_REDUCER_GROUPS = 2
 # three characters or more and then `_*`.
 PASSTHROUGH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[A-Za-z][A-Za-z0-9_]{2,}_\*")
 
+# `reducers.own_io.max_parents`: the parents each own-I/O join holds
+# (reducers/own_io.py, whose REAPED_MAX a test holds equal).
+OWN_IO_MAX_PARENTS = 2000
+
 
 def _env(name, default=None):
     v = os.environ.get(name)
@@ -365,6 +369,17 @@ def defaults():
         "reducers": {
             "tool_mix": {"head_n": 12, "dedup_sessions_max": 200000},
             "io": {"top_n": 20},
+            # Each process's own disk bytes (reducers/own_io.py): the parents
+            # one join holds for their own exit, the one given to least
+            # recently dropped first (an agent runtime, or what started one,
+            # passed over), counted (a panel's `own_io.evicted`) and said on
+            # stderr, at most hourly a panel. A service holds some 35 joins:
+            # at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at worst
+            # (eight, ~2.5 KB) 159 MB. The repo's streams hold under 500 at
+            # once; a busy login node may need more, at 19 to 80 KB for each
+            # one added (README, "Disk I/O is each process's own"). A count of
+            # one or more: 0 is refused at start, as is anything not a count.
+            "own_io": {"max_parents": OWN_IO_MAX_PARENTS},
             # `live_s`: how stale the ranked sessions may get while the view
             # is fed live -- the panel re-reads them that often, and they are
             # re-ranked on the read, not only at the next rebuild.
@@ -888,6 +903,16 @@ def load(args=None, config_path=None):
                          "family's prefix written NAME_* with three characters or more before "
                          "the _* (AWS_*) (set by %s)" % (
                              val, origins.get("ask.env_passthrough", "default")))
+    # The parents each own-I/O join holds (reducers/own_io.py): a count of one
+    # or more, or the service refuses to start rather than guess -- 0 is neither
+    # "unbounded" nor "no join". Null is the default.
+    key = "reducers.own_io.max_parents"
+    cap = _get(tree, key, OWN_IO_MAX_PARENTS)
+    if cap is None:
+        _set(tree, key, OWN_IO_MAX_PARENTS)
+    elif type(cap) is not int or cap < 1:
+        raise SystemExit("%s: %r is not a count of parents, 1 or more (set by %s)" % (
+            key, cap, origins.get(key, "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

@@ -697,9 +697,13 @@ def _by_type(c):
     return out
 
 class RiskReducer:
-    """`login_compute`, `dangerous` and `secrets` in one pass over `exit`."""
+    """`login_compute`, `dangerous` and `secrets` in one pass over `exit`.
 
-    EVENTS = ("exit", "truncated")
+    Exits only: a process running at a collector stop is written then as
+    `truncated`, and again at its exit after the restart; each is one process,
+    counted once, at its exit."""
+
+    EVENTS = ("exit",)
     KEY = "risk"
 
     # the rule set is the config's, rebuilt by every fresh instance -- never saved

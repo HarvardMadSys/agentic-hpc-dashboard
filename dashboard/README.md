@@ -601,7 +601,7 @@ I/O panel), a home learned from one node's argv no longer places another node's 
 that tie at a cap (the 200 Slurm sessions), and float sums in another order (the last digit). The
 "first N" samples (the risk panel's instances, a Slurm rejection's example) keep the earliest in
 time. Counts, sums, sets and the quantile sketches are the same, and so is every panel for any
-worker count from 2 up (`tests/test_hours.py`, `NodeSplitTest`). The join caps (`REAPED_MAX` and
+worker count from 2 up (`tests/test_hours.py`, `NodeSplitTest`). The join caps (`max_parents` and
 the like) hold per node, so fewer pending joins are evicted. A window takes the nodes' join
 states as one pass's, since its tail and live feed are one pass over every node
 (`hours.combine_carries`): each capped map is interleaved by the hour each key was last
@@ -795,11 +795,52 @@ already made once.
   `analyze/common.py:364` measures the naive sum inflating login CPU 1.83× and *unevenly by
   class*, which would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so a
   regression in that basis is visible on the page.
+- **A process is counted once, at its exit.** At each stop the collector writes a `truncated`
+  record for every process it tracks that is still running, with its whole life's CPU and I/O so
+  far, and that process's exit after the restart carries them all again. So every count and sum
+  takes `exit` records only. A `truncated` one still names a running agent root (its launch, its
+  approval), and the session inspector draws it as alive at the collector's stop, but it adds to
+  no total.
 - **Disk I/O is each process's own.** The collector's `io` is `task->signal->ioac`, which the
   kernel also credits with every child the process reaped, so a shell's figure holds its
-  commands'. A session sums each process's figure less what its exited children carried
-  (`reducers/trajectories.py: own_io`, carried across hours like the other joins), so a
-  command's bytes count once, not once per shell above it.
+  commands' and an agent's every tool call's. Every figure that sums disk or syscall bytes -- the
+  I/O panel, the tool mix, the I/O series, the blast radius, the sessions, the live roster and its
+  rows, the inspector's subtree totals, the commands behind a number -- takes each process's
+  figure less what its exited children carried (`reducers/own_io.py`: one join per reducer,
+  carried across hours like the other joins; the live tier's backfill, which reads newest first,
+  takes each child off the parent it met first). So a command's bytes count once, not once per
+  process above it. A child whose exit was not read is not taken off: one outside the window, or
+  one a filter leaves out. Nor is one its parent cannot have reaped: a child that outlives its
+  parent still names it, and a later process may get that pid, so a process takes off only its
+  own user's children (root aside) that began no more than a minute before it did (its recorded
+  start is its last exec); the rest were counted at their own exits and are dropped, counted.
+  The record has no fork time apart from that exec, so a launcher that forks a child and execs
+  over a minute later is refused it: that child's bytes count twice, and the refusal is counted
+  in `rejected` (on four million records, one child in 2.7 M began a minute to an hour before
+  its parent's recorded start). Nor has the record a reaping event: a child that ended before
+  its parent but was never waited for by it (the parent never calls wait(), or ignores SIGCHLD)
+  is not in the parent's figure. A parent that reaped none at all says so -- its `child_cpu_s`,
+  the CPU the kernel credits a reaper with in the same step as the bytes, is 0 -- and takes none
+  off, counted apart (`unreaped`); one that reaped some of its children and not others still has
+  them all taken off, and comes out short by the rest. A figure short of what its children
+  carried shows as 0, never below, and is counted too. Each join holds at most
+  `reducers.own_io.max_parents` parents (2000; below 1 the service refuses to start), the one
+  given to least recently dropped first,
+  counted (`evicted`) and said on stderr (the first time, then at most hourly a panel in each
+  process, so each of the hours' workers says it too), its children's bytes then counted again
+  at its exit. What is held for an agent runtime, or for the process that started one, goes
+  only after every other parent, unless such parents hold over half the cap: an agent sits idle
+  as long as its reader does while other parents reap, and its tool calls' bytes are the most a
+  parent holds, but a login shell the feed never sees exit would otherwise crowd the rest out.
+  A pid whose children's groups pass PER_PID (eight) with no two of one user to merge drops the
+  earliest begun, counted apart (`crowded`): the cap does not bear on it. A service holds some
+  35 joins (five in each held window, five carried in the hours' chain, the live tier's two, an
+  inspector read's and a lookup's): at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at
+  the demo's 2.8 ~69 MB, at worst (eight, ~2.5 KB) 159 MB; the live tier's notes add at most
+  ~10 MB. The repo's streams hold under 500 parents at once, and the bench's feed, 32 times the
+  demo's records, drops none at 2000. A busy login node may need more -- over one real day an
+  uncapped join of agent children alone ended holding 177,411 parents, most of them stale
+  (`reducers/phase_log.py`): raise it while `evicted` grows, at 19 to 80 KB for each one added.
 - **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only: a

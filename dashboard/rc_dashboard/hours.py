@@ -410,7 +410,10 @@ def combine_carries(by_node, ages=None, red=None):
     keeps them, per node) placing it among the other nodes' keys, and within an
     hour its share of that hour's keys before it -- and the oldest past the cap
     are dropped, handed to the reducer's `carry_trimmed` (`red`: the window's
-    reducer set). `by_node` is consumed."""
+    reducer set). A reducer whose map holds kinds kept apart, each in its own
+    eviction order (own_io's runtimes and the rest), names each value's kind
+    (`carry_tier`), and each kind of each node is then a run of its own, its
+    hours and shares its own. `by_node` is consumed."""
     nodes = sorted(by_node)
     keys = list(dict.fromkeys(k for nd in nodes for k in (by_node[nd] or {})))
     out = {}
@@ -426,8 +429,17 @@ def combine_carries(by_node, ages=None, red=None):
             elif len(vals) == 1 and f not in caps:
                 c[f] = vals[0][1]
             elif all(isinstance(v, dict) for _nd, v in vals):
-                runs = [_by_age(v, ((ages or {}).get(nd) or {}).get("%s.%s" % (k, f)) or {})
-                        for nd, v in vals]
+                tier = getattr(r, "carry_tier", None)
+                runs = []
+                for nd, v in vals:
+                    age_of = ((ages or {}).get(nd) or {}).get("%s.%s" % (k, f)) or {}
+                    if not callable(tier):
+                        runs.append(_by_age(v, age_of))
+                        continue
+                    kinds = {}
+                    for key, val in v.items():
+                        kinds.setdefault(tier(f, val), {})[key] = val
+                    runs += [_by_age(part, age_of) for part in kinds.values()]
                 kind = (collections.OrderedDict
                         if any(isinstance(v, collections.OrderedDict) for _nd, v in vals) else dict)
                 seen, items = set(), []

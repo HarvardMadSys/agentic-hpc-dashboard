@@ -241,10 +241,13 @@ class BlastRadiusTest(unittest.TestCase):
         t0 = self.t0
         io = {"rchar_mb": 2.0, "wchar_mb": 1.0, "rd_mb": 0.5, "wr_mb": 0.25,
               "scope": "process"}
+        # the shell's figure is the kernel's: as much again of its own, and the
+        # child it reaped
+        shell = dict(io, rchar_mb=4.0, wchar_mb=2.0, rd_mb=1.0, wr_mb=0.5)
         w = workspace([
             agent(t0),
             child(t0 + 1, 201, 200, "python", "python train.py", io=io),
-            call(t0 + 2, 200, "python train.py > out/log.txt", io=io),
+            call(t0 + 2, 200, "python train.py > out/log.txt", io=shell),
         ])
         a = agent_row(w, 100)
         self.assertEqual((a["home"], a["home_src"], a["home_shown"]), (PROJ, "agent", "~/proj"))

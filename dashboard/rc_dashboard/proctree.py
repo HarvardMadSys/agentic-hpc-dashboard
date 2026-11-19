@@ -86,6 +86,7 @@ from .where import AfterColon
 from .procindex import VIA
 from .redact import redact
 from .reducers import EXIT_ANSWERS
+from .reducers.own_io import OwnIo, cap_of
 from .reducers.trajectories import fold as fold_sessions
 
 NO_PARENT = (None, 0, 1)
@@ -219,17 +220,21 @@ def _add(a, b):
 # A process's I/O, from its exit record: disk bytes, syscall bytes (pipes and
 # terminals included) and network bytes, in MB. None when the record carries
 # none of them -- unmeasured, as `cpu` None is -- and summed up a subtree the
-# way `sub_cpu` is, so a session's tree says which commands did the I/O.
+# way `sub_cpu` is, so a session's tree says which commands did the I/O. The
+# disk and syscall bytes are the process's own (`own`, from the read's join,
+# reducers/own_io.py): the collector's figure also holds every child the process
+# reaped, and those are drawn, and summed, as the children's own.
 IO_KEYS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb", "tx_mb", "rx_mb")
 
 
-def _io_of(rec):
+def _io_of(rec, own=None):
     io = rec.get("io") or {}
     tx, rx = rec.get("net_tx_bytes"), rec.get("net_rx_bytes")
     if io.get("rchar_mb") is None and io.get("rd_mb") is None and tx is None and rx is None:
         return None
-    return (io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0, io.get("rchar_mb") or 0.0,
-            io.get("wchar_mb") or 0.0, (tx or 0) / 1e6, (rx or 0) / 1e6)
+    rd, wr, rc, wc = own if own is not None else (
+        io.get("rd_mb"), io.get("wr_mb"), io.get("rchar_mb"), io.get("wchar_mb"))
+    return (rd or 0.0, wr or 0.0, rc or 0.0, wc or 0.0, (tx or 0) / 1e6, (rx or 0) / 1e6)
 
 
 def _io_add(a, b):
@@ -352,7 +357,8 @@ class Proc:
         self.tries = 0
 
     @classmethod
-    def from_record(cls, rec, start, ts):
+    def from_record(cls, rec, start, ts, io):
+        """`io`: its own I/O, as `_io_of` gives it."""
         p = cls(rec.get("pid"))
         p.ppid = rec.get("ppid")
         p.cmd = rec.get("_command")
@@ -366,7 +372,7 @@ class Proc:
         p.purpose = rec.get("_purpose")
         p.start, p.end = start, ts
         p.dur, p.cpu = rec.get("duration_s"), rec.get("cpu_s")
-        p.io = _io_of(rec)
+        p.io = io
         p.code, p.sig = rec.get("exit_code"), rec.get("signal")
         p.core = bool(rec.get("core_dumped"))
         # A fork that never exec'd: a shell's subshell, so a `zsh /bin/zsh -i`
@@ -446,7 +452,7 @@ class TreeBuilder:
     """
 
     def __init__(self, hold=DEFAULTS["inspect_hold"],
-                 per_parent=DEFAULTS["inspect_per_parent"], newest=False):
+                 per_parent=DEFAULTS["inspect_per_parent"], newest=False, own_cap=None):
         self.hold = max(1, int(hold))
         self.hard = self.hold + self.hold // 2
         self.per_parent = max(1, int(per_parent))
@@ -479,6 +485,10 @@ class TreeBuilder:
         self.first_tool = self.first_any = None
         self.longest = []           # the few longest, longest first
         self.fails, self.n_fails = [], 0
+        # Each process's own disk and syscall bytes (reducers/own_io.py), over
+        # the records this read takes: a child the read does not take (another
+        # session's) is not taken off its parent.
+        self.own = OwnIo(cap=own_cap, name="inspector")
 
     # ----------------------------------------------------------------- feed
     def feed(self, rec):
@@ -489,6 +499,9 @@ class TreeBuilder:
         if ev not in ("exit", "truncated"):
             return
         self.matched += 1
+        # before any budget applies: a process only counted still gives its
+        # children back, and is counted with its own bytes
+        io = _io_of(rec, self.own.take(rec) if ev == "exit" else self.own.peek(rec))
         ts = rec.get("_ts_epoch")
         if ts is not None:
             self.first = ts if self.first is None else min(self.first, ts)
@@ -527,9 +540,9 @@ class TreeBuilder:
         drawn = self.itemised - self.absorbed if self.newest else self.itemised
         if (drawn >= (self.hold if leaf else self.hard)
                 or (leaf and self.leaves[lk] >= self.per_parent)):
-            self._count(rec, ppid, st, ts, kids, agg, par)
+            self._count(rec, ppid, st, ts, kids, agg, par, io)
             return
-        p = Proc.from_record(rec, st, ts)
+        p = Proc.from_record(rec, st, ts, io)
         self.itemised += 1
         if leaf:
             self.leaves[lk] += 1
@@ -638,8 +651,9 @@ class TreeBuilder:
                                      for f in fails]}
         return out
 
-    def _count(self, rec, ppid, st, ts, kids, agg, par=None):
-        """Past the hold budget: this process, and what waited on it, as a count."""
+    def _count(self, rec, ppid, st, ts, kids, agg, par=None, io=None):
+        """Past the hold budget: this process, and what waited on it, as a count.
+        `io`: its own I/O (`_io_of`)."""
         self.aggregated += 1
         if par is not None:
             if par.agg is None:
@@ -649,7 +663,7 @@ class TreeBuilder:
             table, key = ((self.orphan_agg, rec.get("_kv")) if ppid in NO_PARENT
                           else (self.pending_agg, ppid))
             a = self._agg_at(table, key, rec.get("_kv"), rec.get("depth"))
-        a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, _io_of(rec))
+        a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, io)
         for k in kids or ():
             self.absorbed += a.absorb(k)
             self._drop(k)
@@ -1940,7 +1954,8 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     if not plan:
         plan, total = window_plan(roots, since, days)
 
-    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
+    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest,
+                    own_cap=cap_of(cfg))
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
