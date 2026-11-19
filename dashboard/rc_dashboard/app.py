@@ -924,8 +924,14 @@ def create_app(cfg):
     # Outside the sign-in, so what it refuses costs no password check: a
     # websocket from another site's page, and with no password, a request
     # under a name that is not this host's (guard.py).
+    origins = guardmod.allowed_origins(cfg)
     app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
                        bind_host=str(cfg.get("server.host") or ""),
                        allowed_hosts=cfg.get("server.allowed_hosts") or (),
-                       allowed_origins=guardmod.allowed_origins(cfg))
+                       allowed_origins=origins)
+    # Said at start, beside the sign-in (__main__.py): run.sh, or the
+    # environment, may have added a dev server's origins to the configured ones.
+    named = list(dict.fromkeys(o.strip() for o in origins if o.strip()))
+    sys.stderr.write("origins: a websocket is accepted from the service's own origin %s\n" % (
+        ("and from " + ", ".join(named)) if named else "only"))
     return app

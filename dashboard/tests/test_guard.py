@@ -11,6 +11,7 @@ as test_auth does, open and behind a password.
 import asyncio
 import base64
 import http.client
+import io
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ import threading
 import time
 import unittest
 import warnings
+from contextlib import redirect_stderr
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -338,6 +340,43 @@ class LiveSigned(Live):
         status, body = self.req("POST", "/api/ask", json.dumps({"question": "x" * 4001}), JSON)
         self.assertEqual(status, 400)
         self.assertIn("at most 4000 characters", body["detail"])
+
+
+class SaidAtStart(unittest.TestCase):
+    """Creating the app says, in one line on stderr, which origins a websocket
+    may come from besides the service's own: run.sh, or the environment, may
+    have added a dev server's to the configured ones."""
+
+    def said(self, **server):
+        """The lines creating the app wrote to stderr."""
+        tmp = tempfile.mkdtemp(prefix="rc-guard-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        tree = configmod.defaults()
+        tree["feeds"]["ebpf"]["roots"] = [os.path.join(tmp, "ebpf")]
+        tree["feeds"]["ebpf_node"]["roots"] = [os.path.join(tmp, "node")]
+        tree["cache"]["dir"] = os.path.join(tmp, "cache")
+        tree["server"]["static_dir"] = os.path.join(tmp, "no-ui")
+        tree["server"]["rdns"]["enabled"] = False
+        tree["server"].update(server)
+        err = io.StringIO()
+        with warnings.catch_warnings(), redirect_stderr(err):
+            warnings.simplefilter("ignore", DeprecationWarning)    # on_event
+            appmod.create_app(configmod.Config(tree, {}, None))
+        return err.getvalue().splitlines()
+
+    def test_the_configured_and_the_dev_servers_origins_are_named(self):
+        lines = self.said(allowed_origins=["https://dash.example.org"],
+                          dev_origins=["http://127.0.0.1:5173"])
+        named = [line for line in lines
+                 if "https://dash.example.org" in line and "http://127.0.0.1:5173" in line]
+        self.assertEqual(len(named), 1, lines)
+        self.assertNotIn("only", named[0])
+
+    def test_with_none_listed_only_its_own_origin(self):
+        lines = self.said()
+        own = [line for line in lines if "own origin only" in line]
+        self.assertEqual(len(own), 1, lines)
+        self.assertNotIn("http", own[0])
 
 
 @unittest.skipUnless(shutil.which("bash"), "run.sh is a bash script")
