@@ -57,21 +57,25 @@ export function Plate({
         {k}
         {tip && <sup className="qm" aria-hidden="true">?</sup>}
       </div>
-      <div className="v">
-        {total == null ? DASH : fmtFn(total)}
-        {unit && total != null && <small> {unit}</small>}
-      </div>
-      {by && (
-        <div className="cls3">
-          {classes.map((c) => (
-            <span key={c} data-tip={CLS_LBL[c]}>
-              <i style={{ background: CLS_COL[c] }} />
-              <b>{c in by ? fmtFn(by[c]) : DASH}</b>
-            </span>
-          ))}
+      {/* under the label, in one piece: the plates of a row share the label's
+          height (styles.css), so their numbers start on one line */}
+      <div className="under">
+        <div className="v">
+          {total == null ? DASH : fmtFn(total)}
+          {unit && total != null && <small> {unit}</small>}
         </div>
-      )}
-      {note && <div className="n">{note}</div>}
+        {by && (
+          <div className="cls3">
+            {classes.map((c) => (
+              <span key={c} data-tip={CLS_LBL[c]}>
+                <i style={{ background: CLS_COL[c] }} />
+                <b>{c in by ? fmtFn(by[c]) : DASH}</b>
+              </span>
+            ))}
+          </div>
+        )}
+        {note && <div className="n">{note}</div>}
+      </div>
     </div>
   );
 }

@@ -17,10 +17,15 @@ export function SortTh<K extends string>({
   colSpan,
   rowSpan,
   style,
+  sub,
 }: {
   s: Sorter<K>;
   k: K;
   children: ReactNode;
+  /** a second line under the label and its arrow: a class column's count. As
+   *  part of `children` it is a block the arrow can only follow, on a line of
+   *  its own. */
+  sub?: ReactNode;
   /** a number column: right-aligned */
   num?: boolean;
   /** the direction of the first click: largest first for numbers, A to Z for text */
@@ -60,6 +65,7 @@ export function SortTh<K extends string>({
         {'\u2060'}
         {on ? (s.dir === 'asc' ? '▲' : '▼') : '↕'}
       </span>
+      {sub != null && <div className="sub">{sub}</div>}
     </th>
   );
 }

@@ -102,11 +102,9 @@ function AxisBlock({ by, have, order, col, lbl, grain, known }: {
             <SortTh s={sort} k="state" first="asc">state</SortTh>
             {cols.map((c) => (
               <SortTh key={c} s={sort} k={c} className="cls"
-                tip={`the shares are of the ${fint(judged(c).known)} of ${fint(tot(c))} ${grain} whose state is known; the rest are counted below them`}>
+                tip={`the shares are of the ${fint(judged(c).known)} of ${fint(tot(c))} ${grain} whose state is known; the rest are counted below them`}
+                sub={<>{fint(tot(c))} {grain} <Coverage pct={judged(c).coverage} /></>}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
-                <div className="sub">
-                  {fint(tot(c))} {grain} <Coverage pct={judged(c).coverage} />
-                </div>
               </SortTh>
             ))}
           </tr>
@@ -318,7 +316,7 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
         />
       </div>
 
-      <div className="grid wide">
+      <div className="grid wider">
         <Panel
           id="sec-tool-calls-did-they-run-namespace-isolated"
           title="Tool calls — did they run sandboxed?"

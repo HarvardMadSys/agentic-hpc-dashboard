@@ -1,4 +1,4 @@
-/* A self-check for the chart sizing rules in `src/charts/scale.ts`.
+/* A self-check for the chart tick and sizing rules in `src/charts/scale.ts`.
  *
  *   npm run check:charts        (node --test mock/check_charts.mjs)
  *
@@ -6,11 +6,44 @@
  * and nothing under `src/` imports it. It loads the real module (node strips the
  * types). It pins the claim the fluid charts make: a chart drawn at its natural
  * width keeps the ticks it had before it was fluid, a wider one gains none, and a
- * narrow one thins them rather than overprinting them.
+ * narrow one thins them rather than overprinting them. And the value axis: every
+ * tick of one axis written alike, and a count axis in whole steps.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { tickTarget, timeTicks } from '../src/charts/scale.ts';
+import { axisFmt, niceTicks, tickTarget, timeTicks } from '../src/charts/scale.ts';
+
+/** an axis's labels, as the charts write them when no formatter is given */
+const labels = (max, integer = false) => {
+  const t = niceTicks(max, 4, integer);
+  return t.map(axisFmt(t));
+};
+
+test('an axis writes every tick alike: one unit, one number of decimals, and 0 at the base', () => {
+  assert.deepEqual(labels(95), ['0', '25', '50', '75', '100']); // was 0.00 · 25.0 · … · 100
+  assert.deepEqual(labels(18), ['0', '5', '10', '15', '20']); // was 0.00 · 5.0 · 10.0
+  assert.deepEqual(labels(0.8), ['0', '0.2', '0.4', '0.6', '0.8']); // step 0.2: one decimal
+  assert.deepEqual(labels(1), ['0', '0.25', '0.50', '0.75', '1.00']); // was 0.00 · … · 1.0
+  assert.deepEqual(labels(1.4e6), ['0', '0.5M', '1.0M', '1.5M']); // was 0 · 500k · 1.00M · 1.50M
+  assert.deepEqual(labels(1.9e4), ['0', '5k', '10k', '15k', '20k']); // was 0.00 · 5,000 · 10k
+  assert.deepEqual(labels(7000), ['0', '2,000', '4,000', '6,000', '8,000']);
+});
+
+test('ticks are multiples of the step, never a running sum of it', () => {
+  assert.deepEqual(niceTicks(0.3), [0, 0.1, 0.2, 0.3]);
+  assert.deepEqual(niceTicks(0.7), [0, 0.2, 0.4, 0.6, 0.8]);
+});
+
+test('a count axis steps in whole numbers, so no gridline is labelled with a value it is not', () => {
+  // with fint over the old ticks these read 0 · 1 · 1 · 2 · 2 and 0 · 0 · 1 · 1 · 1
+  assert.deepEqual(labels(2, true), ['0', '1', '2']);
+  assert.deepEqual(labels(1, true), ['0', '1']);
+  assert.deepEqual(labels(9, true), ['0', '5', '10']); // not 2.5 · 5 · 7.5
+  assert.deepEqual(labels(90, true), ['0', '25', '50', '75', '100']); // 25 is whole
+  for (const max of [1, 2, 3, 5, 7, 9, 13, 40, 99, 250]) {
+    for (const t of niceTicks(max, 4, true)) assert.ok(Number.isInteger(t), `${t} in the ticks for ${max}`);
+  }
+});
 
 test('a chart at its natural width keeps the ticks it was drawn with', () => {
   assert.equal(tickTarget(520, 7), 7); // TimeChart
