@@ -1359,13 +1359,13 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
                 <div>
                   <div className="eyebrow" data-tip="trees by the longest chain of agents in them, every type">how deep agents nest</div>
                   {depthGroups.length ? (
-                    <GroupBars groups={depthGroups} series={depthSeries} W={480} H={190} maxBar={44} ylabel="trees" fmtVal={fint} tickFmt={fint} labelTop />
+                    <GroupBars groups={depthGroups} series={depthSeries} W={480} H={190} maxBar={44} ylabel="trees" fmtVal={fint} integer labelTop />
                   ) : <NoRows what="no tree in the window" />}
                 </div>
                 <div>
                   <div className="eyebrow" data-tip={GLOSS.fanout}>fan-out: agents each one started directly</div>
                   {fanGroups.length ? (
-                    <GroupBars groups={fanGroups} series={fanSeries} W={480} H={190} maxBar={44} ylabel="agents or roots" fmtVal={fint} tickFmt={fint} labelTop />
+                    <GroupBars groups={fanGroups} series={fanSeries} W={480} H={190} maxBar={44} ylabel="agents or roots" fmtVal={fint} integer labelTop />
                   ) : <NoRows what="no agent started another" />}
                 </div>
               </div>

@@ -90,11 +90,8 @@ function AxisBlock({ by, have, order, col, lbl, grain }: {
           <tr>
             <SortTh s={sort} k="state" first="asc">state</SortTh>
             {cols.map((c) => (
-              <SortTh key={c} s={sort} k={c} className="cls">
+              <SortTh key={c} s={sort} k={c} className="cls" sub={`${fint(tot(c))} ${grain}`}>
                 <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
-                <div className="sub">
-                  {fint(tot(c))} {grain}
-                </div>
               </SortTh>
             ))}
           </tr>
@@ -299,7 +296,7 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
         />
       </div>
 
-      <div className="grid wide">
+      <div className="grid wider">
         <Panel
           id="sec-tool-calls-did-they-run-namespace-isolated"
           title="Tool calls — did they run sandboxed?"

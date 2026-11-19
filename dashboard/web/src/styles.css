@@ -625,8 +625,13 @@ main {
   border-bottom: 0;
   margin-bottom: 0;
 }
+/* The title takes the room the status leaves it, and its line under the name
+ * wraps there: sized to that line, a long one (the login nodes') pushed the
+ * status onto a row of its own, so the status moved between tabs. Past 360px
+ * of title it is the status that wraps, under it. */
 .head-title {
   display: flex;
+  flex: 1 1 360px;
   align-items: center;
   gap: 14px;
   min-width: 0;
@@ -931,6 +936,12 @@ html {
 .grid.wide {
   grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
 }
+/* Panels whose tables set every class beside a label column: two to a row only
+   where each can show all three. Half of a 1440px page, the IDE column went
+   past the panel's edge, to be scrolled to. */
+.grid.wider {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 700px), 1fr));
+}
 .span2 {
   grid-column: 1 / -1;
 }
@@ -984,8 +995,12 @@ html {
 .plates {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  /* Rows of plates are spaced by each plate's own margin, not a row gap: a
+     plate's label and body sit on this grid's rows (below), and a row gap
+     would open between them too. 4px here and 14px on the plate make the 18px
+     below. */
+  column-gap: 14px;
+  margin-bottom: 4px;
 }
 @media (min-width: 1040px) {
   .plates {
@@ -1007,9 +1022,29 @@ html {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  margin-bottom: 14px;
   box-shadow:
     0 1px 2px rgba(30, 30, 30, 0.04),
     0 4px 10px -6px rgba(30, 30, 30, 0.06);
+}
+/* The plates of a row share their label's height: a label that wraps to two
+ * lines lowers every number in the row with it, so the numbers still read
+ * across on one line. Only the label: the number, its class split and its note
+ * stay one piece under it (.plate-body), so a note never drifts from its own
+ * numbers to line up with a longer split next door. */
+@supports (grid-template-rows: subgrid) {
+  .plate {
+    display: grid;
+    grid-row: span 2;
+    grid-template-rows: subgrid;
+    row-gap: 0;
+  }
+  .plate .k {
+    grid-row: 1;
+  }
+  .plate .plate-body {
+    grid-row: 2;
+  }
 }
 /* No colour of its own (components/Plate.tsx): only a count that is a problem
  * gets an edge, and it is red. */
@@ -2116,7 +2151,8 @@ details.basis .body b {
     font-size: 21px;
   }
   .grid,
-  .grid.wide {
+  .grid.wide,
+  .grid.wider {
     grid-template-columns: minmax(0, 1fr);
   }
 }

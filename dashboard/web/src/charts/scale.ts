@@ -1,14 +1,40 @@
 /* Axis maths, ported from the archived template. */
 
-export function niceTicks(max: number, n?: number): number[] {
+/** Round ticks from 0 up to at least `max`, about `n` steps. `integer`: a count
+ * axis, whose steps are whole numbers -- a gridline at 0.5 trees marks nothing,
+ * and labelled with a rounded count it reads as a value it is not. Each tick is
+ * `i * step`, not a running sum, so 0.1 + 0.2 never makes 0.30000000000000004. */
+export function niceTicks(max: number, n?: number, integer = false): number[] {
   if (!(max > 0)) return [0, 1];
   const raw = max / (n || 4);
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || 10 * mag;
+  const steps = [1, 2, 2.5, 5, 10].map((m) => m * mag).filter((s) => !integer || Number.isInteger(s));
+  const step = integer && raw <= 1 ? 1 : steps.find((s) => s >= raw) || 10 * mag;
+  const at = (i: number) => +(i * step).toPrecision(12);
   const out: number[] = [];
-  for (let v = 0; v <= max * 1.0001; v += step) out.push(v);
-  if (out[out.length - 1] < max) out.push(out[out.length - 1] + step);
+  for (let i = 0; at(i) <= max * 1.0001; i++) out.push(at(i));
+  if (out[out.length - 1] < max) out.push(at(out.length));
   return out;
+}
+
+/** The labels of one axis, written alike: one unit (k, M, B) and one number of
+ * decimals for every tick, the fewest that write its step exactly (25 → none,
+ * 2.5 → one, 0.25 → two). Each tick written by itself (`fmt`) gave one axis
+ * `0.00 · 25.0 · 100`, or `0.00 · 5,000 · 10k`. The baseline is `0`. Ticks
+ * only: a value read off a bar or a hover keeps its own precision. */
+export function axisFmt(ticks: number[]): (v: number) => string {
+  const top = ticks.reduce((a, t) => Math.max(a, Math.abs(t)), 0);
+  const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : top || 1;
+  const [div, unit] = top >= 1e9 ? [1e9, 'B'] : top >= 1e6 ? [1e6, 'M'] : top >= 1e4 ? [1e3, 'k'] : [1, ''];
+  const s = step / div;
+  let d = 0;
+  while (d < 3 && Math.abs(s * 10 ** d - Math.round(s * 10 ** d)) > 1e-6) d++;
+  return (v: number) => {
+    if (v === 0) return '0';
+    const x = v / div;
+    // under 10,000 and whole, with the thousands separator `fmt` writes too
+    return (d || unit ? x.toFixed(d) : Math.round(x).toLocaleString()) + unit;
+  };
 }
 
 /* Time axis in epoch seconds: ticks on LOCAL wall-clock multiples of a round
