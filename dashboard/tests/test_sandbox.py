@@ -302,6 +302,9 @@ class ToolCallTest(unittest.TestCase):
                                 for r in sb["sessions"]),
                          [(4242, "alice", "supervised", "unsandboxed", {"not_isolated": 2}),
                           (4242, "bob", "bypassed", "no_calls", {})])
+        # each row says which of the pid's processes it is: the page keys rows on it
+        self.assertEqual(sorted((r["user"], r["gen"]) for r in sb["sessions"]),
+                         [("alice", 0), ("bob", 1)])
         self.assertEqual(sb["sessions_total"], 2)
         self.assertEqual(sb["approval_by_class_sessions"]["agent"],
                          {"supervised": 1, "bypassed": 1})

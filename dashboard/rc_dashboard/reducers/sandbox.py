@@ -493,11 +493,14 @@ class SandboxReducer:
             return sum(c.get(k, 0) for k in CALL_KNOWN)
 
         table = []
-        for (host, pid, _gen), s in sessions.items():
+        for (host, pid, gen), s in sessions.items():
             c = s["calls"]
             known = _calls_known(c)
             table.append({
-                "host": host, "pid": pid, "user": s["user"], "actor3": s["cls"],
+                # `gen` tells apart the sessions of processes that held the same
+                # pid one after another (`_all_roots`: 0 the first, None a call
+                # with no root found): host and pid alone are not a row's key
+                "host": host, "pid": pid, "gen": gen, "user": s["user"], "actor3": s["cls"],
                 "agent_type": s["agent_type"], "approval": s["approval"],
                 "approval_detail": s["detail"], "state": s["state"],
                 "calls": dict(c), "calls_known": known,

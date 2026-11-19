@@ -219,7 +219,7 @@ function SessionRows({ rows, multiHost, withUser }: { rows: SandboxSessionRow[];
             const n = callsOf(r);
             const flags = r.approval_detail && r.approval_detail !== 'no launch flag' ? r.approval_detail : null;
             return (
-              <tr key={`${r.host}:${r.pid}`}>
+              <tr key={`${r.host}:${r.pid}:${r.gen ?? '-'}`}>
                 {withUser && <td className="mono">{r.user ?? DASH}</td>}
                 <td>{AGENT_TYPE_LBL[r.agent_type ?? ''] ?? r.agent_type ?? DASH}</td>
                 {multiHost && <td className="mono nm">{r.host}</td>}
