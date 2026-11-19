@@ -94,6 +94,17 @@ them); the reducer passes the configured ones.
   child's, no command of its own, so the phase says it is still running and lists the programs
   seen under it instead (`seen`, R65).
 
+  Work. The lane is not the agent's work: its last phase runs on while a call of an earlier one
+  does, and a call that ran past its phase ran beside the phases after it. So a phase also says,
+  for the summary that weighs the work (`phase_summary`), where its own calls ended (`own_t1`:
+  the latest end among them, a call still running at its edge so far, a process one left behind
+  not counted; None in a phase that holds none), and how long its calls, or the processes they
+  left behind, ran on past the end the work is weighed to -- the phase's `t1`, the last phase's
+  `own_t1` -- by more than PAST_SLACK_S, summed by the category each call is named for
+  (`ran_on`: `[[category, seconds]]`, the longest first; None when none did, and never a call
+  still running). A call hung for 14 h beside a minute of edits is then 14 h of running, not of
+  editing.
+
   Names. A phase is named for its dominant category, by calls, ties broken by summed duration
   and then by rule order, when its run is first formed; loop, edit_guess, and idle keep their own,
   and a run absorbed takes its absorber's (Absorption). When its own kind holds under half its
@@ -611,7 +622,8 @@ def _phases(head, cs, cats, previews, poll, top_n):
             t1 = starts[k + 1]
         else:
             t1 = max(last, starts[k])
-        out.append(_phase(r, starts[k], t1, cs, cats, previews, poll, top_n))
+        out.append(_phase(r, starts[k], t1, cs, cats, previews, poll, top_n,
+                          last_one=k + 1 == len(runs)))
     return out
 
 
@@ -625,18 +637,20 @@ def _ran_past(c, t1):
     return max(over) if over else None
 
 
-def _phase(r, t0, t1, cs, cats, previews, poll, top_n):
+def _phase(r, t0, t1, cs, cats, previews, poll, top_n, last_one=False):
     """One phase's dict. A call still running is counted in `n` and its kind, and is never named
     by its first child's text (R65): not in `top`, never in `ran_past` (the phase says it is still
     running instead), and `seen` lists the programs seen under the open calls, up to SEEN_SHOWN
     names (None in a phase with none). `every_cmd` is the command a wait's pace is named for.
     An idle phase lists the calls running as it began (`alive`): `[preview, since]` for each, the
     earliest start first. An open call's preview is None, as it is never named by its first
-    child's text. Every other phase, and an idle one with nothing running, has None."""
+    child's text. Every other phase, and an idle one with nothing running, has None. `own_t1`
+    and `ran_on` are the phase's work (Work); `last_one` says it is the session's last phase,
+    whose work ends with its own calls."""
     p = {"kind": r.kind, "t0": round(t0, 3), "t1": round(t1, 3), "n": _n(r),
          "mix": [], "top": [], "guess": None, "slices": None, "rounds": None,
          "waits_on": None, "every_s": None, "times": None, "every_cmd": None, "open": False,
-         "seen": None, "ran_past": None, "alive": None}
+         "seen": None, "ran_past": None, "alive": None, "own_t1": None, "ran_on": None}
     if r.kind == "idle":
         p["alive"] = [[None if _open(cs[i]) else _preview(previews, cs[i][PREV]),
                        round(cs[i][S], 3)] for i in r.alive] or None
@@ -687,7 +701,24 @@ def _phase(r, t0, t1, cs, cats, previews, poll, top_n):
         if s is not None:
             ran.append([_preview(previews, c[PREV]), round(s, 1)])
     p["ran_past"] = ran or None
+    p["own_t1"], p["ran_on"] = _work(r, t1, cs, cats, last_one)
     return p
+
+
+def _work(r, t1, cs, cats, last_one):
+    """`(own_t1, ran_on)` of a run that holds calls, its phase ending at `t1` (Work)."""
+    own = max(cs[i][E] for i in range(r.lo, r.hi))
+    to = min(t1, own) if last_one else t1
+    on = {}
+    for i in range(r.lo, r.hi):
+        c = cs[i]
+        if _open(c):
+            continue
+        over = (c[E] if c[PAST] is None else max(c[E], c[PAST])) - to
+        if over > PAST_SLACK_S:
+            on[cats[i]] = on.get(cats[i], 0.0) + over
+    ranked = sorted(on.items(), key=lambda kv: (-kv[1], _rank(kv[0])))
+    return round(own, 3), [[cat, round(s, 1)] for cat, s in ranked] or None
 
 
 def _waits(r, cs, cats, previews, poll):

@@ -59,7 +59,7 @@ export function Plate({
       </div>
       {/* under the label, in one piece: the plates of a row share the label's
           height (styles.css), so their numbers start on one line */}
-      <div className="plate-body">
+      <div className="under">
         <div className="v">
           {total == null ? DASH : fmtFn(total)}
           {unit && total != null && <small> {unit}</small>}

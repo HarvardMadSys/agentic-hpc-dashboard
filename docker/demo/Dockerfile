@@ -42,8 +42,12 @@ RUN useradd --create-home --uid 10001 demo \
  && mkdir -p /tmp/demo \
  && chown demo /tmp/demo
 USER demo
+# A demo serves with no password, and so answers only under a loopback name
+# unless told otherwise (rc_dashboard/guard.py). The image answers under any:
+# its data is made up, and deploy/cloudflare's Worker sends the public name.
 ENV RC_DASH_HOST=0.0.0.0 \
     RC_DASH_PORT=8080 \
+    RC_DASH_ALLOWED_HOSTS=* \
     RC_DASH_DEMO_DIR=/tmp/demo \
     RC_DASH_DEMO_DAYS=2 \
     RC_DASH_ASK=0

@@ -33,14 +33,26 @@ clip command lines at 160-400 characters) is matched by its prefix.
 Requests are anonymous too: `dealias_user` maps an alias back to its account,
 and anything that is not a known alias maps to `UNKNOWN`, which matches no
 record. A real name typed into a filter finds nothing, so the page cannot be
-used to ask whether someone is here.
+used to ask whether someone is here. Text a reader types into a search, or a
+host, tool or directory filter, is matched on the record as they see it -- the
+record's own account learned first (`learn_record`), then masked -- so a real
+name typed there finds nothing either. The aliases in such text are turned
+back into accounts only to find the records to test (`dealias_text`).
+
+And what a reader sends never goes through the rewrite on its way back: an
+echoed filter, search, question or session id is `Verbatim`, which `payload`
+passes through untouched and learns nothing from. Rewritten, it made the
+service a translator: send `alice`, get back her alias, and get back a name
+that is no account unchanged.
 """
 import bisect
+import errno
 import hashlib
 import hmac
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 
@@ -118,6 +130,10 @@ _ALIAS = re.compile(r"(?:user|lab)-[0-9a-f]{8}")
 _NAME_OK = re.compile(r"(?=[^A-Za-z]*[A-Za-z])[A-Za-z0-9_][A-Za-z0-9._-]{1,63}")
 CLIPPED_MIN = 100                 # the shortest string a clipped name is looked for in
 ROSTER_EVERY_S = 2.0
+# A re-read forced by an alias the service does not know (`dealias_user`,
+# `dealias_text`): any reader can send one, and each copies the roster under
+# the aggregator's lock, so however many arrive, one this often at most.
+FORCED_EVERY_S = 1.0
 # What `_rewrite` made of each string, and the strings `learn_text` has read, kept
 # while no name is learned or forgotten (`generation`). A payload's strings repeat
 # (class names, hosts, the same command in every frame), and the rewrite is a few
@@ -125,6 +141,35 @@ ROSTER_EVERY_S = 2.0
 # a string longer than `MEMO_LEN` is rewritten every time.
 MEMO_MAX = 50000
 MEMO_LEN = 2000
+# An alias inside a longer string: a path or a word the page showed with one.
+_ALIAS_IN = re.compile(r"(?<![A-Za-z0-9])user-[0-9a-f]{8}(?![0-9a-f])")
+
+
+class Verbatim(str):
+    """Text a reader sent, on its way back to them as they sent it.
+
+    `payload` leaves it as it is and learns nothing from it. Rewritten like
+    the data around it, an echoed filter or question turned a name the reader
+    typed into its alias and left a word that is no account unchanged -- a
+    lookup table from names to aliases for anyone with a list of candidates.
+    """
+    __slots__ = ()
+
+
+def verbatim(obj):
+    """`obj` with every string in it `Verbatim`: the values of a plain dict (its
+    keys are the service's), and the items of a plain list, tuple or set,
+    which keep their kind. Any other container -- a namedtuple, which no
+    generator builds, or a subclass of dict, list or tuple -- goes as it is,
+    unmarked: its strings are masked like any other rather than kept as
+    written, and the request does not fail on it."""
+    if isinstance(obj, str):
+        return obj if type(obj) is Verbatim else Verbatim(obj)
+    if type(obj) is dict:
+        return {k: verbatim(v) for k, v in obj.items()}
+    if type(obj) in (list, tuple, set, frozenset):
+        return type(obj)(verbatim(v) for v in obj)
+    return obj
 
 
 class Anonymizer:
@@ -147,6 +192,8 @@ class Anonymizer:
         self._roster = roster
         self._roster_n = -1
         self._roster_at = 0.0
+        self._forced_at = None
+        self._forced_lock = threading.Lock()
         self._lock = threading.RLock()
         self.users = {}           # account -> alias
         self.labs = {}            # lab -> alias
@@ -168,6 +215,11 @@ class Anonymizer:
         return hmac.new(self._salt, ("%s:%s" % (kind, name)).encode(),
                         hashlib.sha256).hexdigest()[:8]
 
+    def ident(self):
+        """Which masking this is -- a digest of the salt that does not give it
+        away -- for text kept on disk to say what it was written under."""
+        return hmac.new(self._salt, b"ident", hashlib.sha256).hexdigest()[:16]
+
     def user_alias(self, name):
         """The alias of one account, learning it if new; reserved names stay."""
         a = self.users.get(name)
@@ -178,6 +230,8 @@ class Anonymizer:
 
     # ----------------------------------------------------------- learning
     def learn_user(self, name, uid=None):
+        if type(name) is Verbatim or name == UNKNOWN:
+            return                # a reader's text, or this module's "no such account"
         system = isinstance(uid, int) and 0 <= uid < 1000
         if not system and isinstance(name, str) and name in self.users:
             return                # known: every payload names its users again
@@ -226,10 +280,17 @@ class Anonymizer:
             self._special = self._sorted = None
 
     def refresh(self, force=False):
-        """Learn every account the live roster holds, at most every 2 s."""
+        """Learn every account the live roster holds, at most every 2 s; when
+        forced, at most once a second (`FORCED_EVERY_S`)."""
         if self._roster is None:
             return
         now = time.monotonic()
+        if force:
+            with self._forced_lock:
+                if self._forced_at is not None and now - self._forced_at < FORCED_EVERY_S:
+                    force = False
+                else:
+                    self._forced_at = now
         if not force and now - self._roster_at < ROSTER_EVERY_S:
             return
         self._roster_at = now
@@ -245,8 +306,9 @@ class Anonymizer:
 
     def learn_text(self, s):
         """Learn the labs the patterns capture in `s`. Names they capture are
-        masked where they stand (`_in_place`), not learned."""
-        if not s or not isinstance(s, str) or s in self._learned:
+        masked where they stand (`_in_place`), not learned. A reader's own text
+        (`Verbatim`) teaches nothing."""
+        if not s or not isinstance(s, str) or type(s) is Verbatim or s in self._learned:
             return
         for gate, pats in ((_PATTERN_GATES[0], self._home), (_PATTERN_GATES[1], self._labp)):
             if not pats or not any(g in s for g in gate):
@@ -262,6 +324,17 @@ class Anonymizer:
             if len(self._learned) >= MEMO_MAX:
                 self._learned = set()
             self._learned.add(s)
+
+    def learn_record(self, rec):
+        """Learn the account one raw record is of, as `payload` would before
+        masking it. A test of what a reader typed against the record as they
+        see it must find that account's name masked, and a scan meets accounts
+        no response has named yet -- older than the live roster -- whose real
+        name would otherwise still be there to match."""
+        u = rec.get("user")
+        if isinstance(u, str):
+            uid = rec.get("uid")
+            self.learn_user(u, uid if isinstance(uid, int) else None)
 
     # ----------------------------------------------------------- rewriting
     def _special_names(self):
@@ -468,7 +541,9 @@ class Anonymizer:
 
     def _walk(self, o):
         if isinstance(o, str):
-            return self._rw(o)
+            # what a reader sent goes back as they sent it, still marked, so a
+            # second pass over the same object leaves it too (`Verbatim`)
+            return o if type(o) is Verbatim else self._rw(o)
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():
@@ -513,6 +588,18 @@ class Anonymizer:
             n = self.back.get(v)
         return n if n is not None else UNKNOWN
 
+    def dealias_text(self, s):
+        """`s` -- a path or a word the page showed -- with each alias in it
+        turned back into its account, so the records it was shown from can be
+        found. Anything else stays as it is, a real name included: what this
+        finds must then be tested as the reader sees it (`learn_record`,
+        `text`), where that name reads as its alias and matches nothing."""
+        if not isinstance(s, str) or "user-" not in s:
+            return s
+        if any(a not in self.back for a in _ALIAS_IN.findall(s)):
+            self.refresh(force=True)      # an account the roster took on since
+        return _ALIAS_IN.sub(lambda m: self.back.get(m.group(0), m.group(0)), s)
+
     def status(self):
         """For /api/health: counts only, never a name."""
         return {"enabled": True, "salt_source": self.salt_source,
@@ -524,32 +611,96 @@ class Anonymizer:
 
 
 # ---------------------------------------------------------------- set-up
+MIN_SALT = 16            # bytes: a shorter key lets a list of names be tried against it
+# What link(2) answers on a file system without hard links
+_NO_LINKS = frozenset(getattr(errno, n) for n in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV",
+                                                  "ENOSYS") if hasattr(errno, n))
+
+
 def load_salt(cfg):
     """`(salt bytes, source)`. `anonymize.salt` when set; else the hex in
     `<cache.dir>/anonymize.salt`, made once (mode 0600) when missing. A salt
-    file that exists but cannot be read is an error: serving with no salt, or a
-    new one, would hand out aliases nobody asked for."""
+    file that exists but cannot be read is an error, as is a salt shorter than
+    MIN_SALT bytes: serving with no salt, a guessable one, or a new one would
+    hand out aliases nobody asked for. A new salt is written whole under a name
+    of its own, synced, and linked into place, and the directory synced: the
+    file is never there half written -- a crash or a full disk mid-write leaves
+    none, and the next start makes one -- and of two instances making one at
+    once, the first link wins. Where the file system has no hard links it is
+    made in place instead, and removed if that write fails; there, of two
+    instances first started at the same moment, one can find the other's file
+    not yet written and stop. Started again, it reads the other's salt."""
     s = cfg.get("anonymize.salt") or ""
     if s:
-        return str(s).encode(), "config"
+        salt = str(s).encode()
+        if len(salt) < MIN_SALT:
+            raise SystemExit("anonymize.salt is %d bytes; a salt must be at least %d, and a "
+                             "longer one gives every name a new alias" % (len(salt), MIN_SALT))
+        return salt, "config"
     d = cfg.get("cache.dir") or "."
     path = os.path.join(d, "anonymize.salt")
     try:
         with open(path) as fh:
             got = fh.read().strip()
-        if got:
-            return bytes.fromhex(got), "file"
     except FileNotFoundError:
-        pass
+        got = None
+    if got is not None:
+        try:
+            salt = bytes.fromhex(got)
+        except ValueError:
+            salt = b""
+        if len(salt) < MIN_SALT:
+            raise SystemExit("%s is not a salt of %d bytes or more. Delete it and a new one "
+                             "is made, which gives every name a new alias." % (path, MIN_SALT))
+        return salt, "file"
     os.makedirs(d, exist_ok=True)
     salt = secrets.token_bytes(32)
+    fd, tmp = tempfile.mkstemp(prefix=".anonymize.salt.", dir=d)     # mode 0600
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:           # another instance won the race: use theirs
-        return load_salt(cfg)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(salt.hex() + "\n")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(salt.hex() + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:       # another instance's, linked first and whole: use it
+            return load_salt(cfg)
+        except OSError as e:
+            if e.errno not in _NO_LINKS:
+                raise                 # a full disk, a quota, an I/O error: not a mount without links
+            # No hard links on this file system (some FUSE, SMB and object-store
+            # mounts): made in place, which a crash mid-write can leave cut short.
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return load_salt(cfg)
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(salt.hex() + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except BaseException:
+                os.unlink(path)       # none left, as on the link's way
+                raise
+    finally:
+        os.unlink(tmp)
+    _sync_dir(d)                      # the new name, through a power loss
     return salt, "generated"
+
+
+def _sync_dir(d):
+    """fsync directory `d`, so a name just made in it is on disk; a file system
+    that will not sync a directory is left as it is."""
+    try:
+        fd = os.open(d, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def from_config(cfg, roster=None):

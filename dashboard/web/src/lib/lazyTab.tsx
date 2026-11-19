@@ -13,8 +13,9 @@
  * imported the tab, so the page's one stylesheet holds the same rules in the
  * same order, and no rule can win or lose by arriving later.
  */
-import { Component, createElement, lazy, memo, useState } from 'react';
+import { createElement, lazy, memo, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
+import { Boundary } from '../components/Boundary';
 
 const loads: (() => Promise<unknown>)[] = [];
 
@@ -33,30 +34,15 @@ export function lazyTab<P extends object>(load: () => Promise<ComponentType<P>>)
 }
 
 /** Fetch every lazy tab's code ahead of its first use. One that fails stays failed (as React.lazy and
- *  the browser's module map keep it), and its tab is left blank by `TabBoundary`. */
+ *  the browser's module map keep it), and its tab says so (`TabBoundary`). */
 export function preloadTabs(): void {
   for (const f of loads) f().catch(() => {});
 }
 
-/** A chunk that would not load: the module script's fetch failed (each engine words it its own way). */
-const chunkFailed = (e: unknown): boolean =>
-  e instanceof Error && /dynamically imported module|module script failed|error loading dynamically|Loading chunk/i.test(e.message);
-
-/** A tab whose code could not be fetched (a deploy replaced it under a page
- *  opened just before) is left blank, rather than taking the whole page down:
- *  the page itself never fetched code after it loaded until the tabs were
- *  split. Any other error goes on up, as it always did. */
-export class TabBoundary extends Component<{ children: ReactNode }, { error: unknown }> {
-  state: { error: unknown } = { error: null };
-
-  static getDerivedStateFromError(error: unknown) {
-    return { error };
-  }
-
-  render() {
-    const { error } = this.state;
-    if (error == null) return this.props.children;
-    if (!chunkFailed(error)) throw error;
-    return null;
-  }
+/** A tab that throws while it is drawn says so in its place -- "this tab could not be drawn: <why>
+ *  · reload" -- and the shell around it stays. Its code that would not load (a deploy replaced it
+ *  under a page opened just before; reload fetches the new) is one such error; a value it could not
+ *  draw is another, and once took the whole page down, as nothing above App caught it. */
+export function TabBoundary({ children }: { children: ReactNode }) {
+  return <Boundary what="this tab">{children}</Boundary>;
 }

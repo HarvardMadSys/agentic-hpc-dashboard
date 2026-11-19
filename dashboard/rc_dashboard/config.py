@@ -14,9 +14,18 @@ otherwise silently outrank the config file.
 Path defaults are CANDIDATE LISTS, probed in order against the filesystem.  A
 feed reports what it looked for as well as what it found, which is what the UI's
 empty states name.
+
+Nothing here falls back to a default quietly where that would leave names
+unmasked, the page open, or the agent on: a config file named by `--config` or
+RC_DASH_CONFIG must exist, a yes/no setting must read as yes or no (`_flag`),
+and an unknown key under `server`, `anonymize` or `ask` stops the service
+(`check_file`).
 """
+import difflib
+import fnmatch
 import json
 import os
+import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,6 +38,13 @@ HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 INGEST_WORKERS = 1
 # `ingest.reducer_groups`: processes per node's hour, one per reducer group (1 or 2).
 INGEST_REDUCER_GROUPS = 2
+# An entry of `ask.env_passthrough`: a variable's name, or a family's prefix,
+# three characters or more and then `_*`.
+PASSTHROUGH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[A-Za-z][A-Za-z0-9_]{2,}_\*")
+
+# `reducers.own_io.max_parents`: the parents each own-I/O join holds
+# (reducers/own_io.py, whose REAPED_MAX a test holds equal).
+OWN_IO_MAX_PARENTS = 2000
 
 
 def _env(name, default=None):
@@ -42,6 +58,19 @@ def _pathsep(v):
 
 def _csv(v):
     return [p.strip() for p in (v or "").split(",") if p.strip()]
+
+
+def _flag(v):
+    """A yes/no setting written as text -- an env var, or a string in the
+    config file: 1/0, true/false, yes/no or on/off, in any case, with spaces
+    around. Anything else is refused rather than read as yes: `RC_DASH_ASK=False`
+    once left Ask on."""
+    s = v.strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    raise ValueError("%r is not one of 1/0, true/false, yes/no, on/off" % v)
 
 
 # ---------------------------------------------------------------- defaults
@@ -187,14 +216,26 @@ def defaults():
         # runs the agent CLI on this host as the service's user -- the preset
         # `codex` uses that user's own Codex login -- with a compact, masked
         # snapshot of the window's panels. That snapshot leaves the host.
+        # Off unless turned on, and refused while the service has no password.
+        # The agent can read whatever the service's account can read (its
+        # sandbox is read-only, not confined): the collector's files, the
+        # cache, that account's home. Run the service as a dedicated account,
+        # not a person's.
         "ask": {
-            "enabled": True,
+            "enabled": False,
             "agent": "codex",          # a preset (ask.PRESETS), or set `command`
             # argv, or one shell-style string; {workdir} {answer_file} {model}
             # are filled in, the prompt arrives on stdin, and with no
             # {answer_file} the command's stdout is the answer
             "command": None,
             "model": "",               # empty: the agent's own default
+            # The agent gets only what a program needs of the service's
+            # environment (ask.AGENT_ENV) and these besides: variable names, or
+            # a family's prefix -- three characters or more, then _* -- for a
+            # provider reached through a cloud: ["AWS_*",
+            # "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"]. Never an
+            # RC_DASH_* one. Annotate's CLI providers get the same.
+            "env_passthrough": [],
             "timeout_s": 240,
             "max_concurrent": 1,       # a second question waits, not a second agent
             "context_kb": 120,         # the snapshot's size budget
@@ -210,6 +251,47 @@ def defaults():
             # every row the model is given carries a ref it cites after each
             # figure, and the page links each to its row (ask.CITE_GUIDE)
             "citations": True,
+            # With anonymize.enabled, Ask -- and the suggestions it keeps marked
+            # done -- is refused unless this is set: an answer is shown as the
+            # agent writes it (rewritten, a name typed into a question came back
+            # as its alias), and the agent can read what the service's account
+            # can, the raw feeds included.
+            "unmasked_answers": False,
+        },
+        # What each tool call in a session was for, in a model's words (annotate.py):
+        # the session inspector's "annotate purposes". Off by default: it sends
+        # the session's tool-call command lines -- masked, as the page shows
+        # them -- and the folders they ran in to the provider below. A CLI
+        # provider runs an agent on this host, as Ask does: only behind a
+        # password, with ask.env_passthrough's part of the environment.
+        "annotate": {
+            "enabled": False,
+            # anthropic | openai (any OpenAI-compatible endpoint) | codex | claude
+            # (the CLIs, with this user's own login) | ask (the chat's agent) | command
+            "provider": "anthropic",
+            "model": "",               # empty: the provider's default (anthropic: claude-opus-5-5)
+            "base_url": "",            # empty: the provider's own API; set for a proxy, vLLM, Ollama, ...
+            # The key: the variable named here (empty: ANTHROPIC_API_KEY or
+            # OPENAI_API_KEY), else a file, else `api_key` (never shown by /api/config).
+            "api_key_env": "",
+            "api_key_file": "",
+            "api_key": "",
+            "effort": "low",           # anthropic only: output_config.effort; empty leaves it out
+            "max_tokens": 8000,
+            # `command`: argv or one shell-style string; prompt on stdin, answer on
+            # stdout or in {answer_file}; {workdir} {answer_file} {model} filled in
+            "command": None,
+            "timeout_s": 120,
+            "batch_size": 40,          # calls per request
+            "max_calls": 400,          # distinct calls asked about per session, oldest first
+            "max_concurrent": 1,
+            # annotate a session as soon as it opens, rather than on the button
+            "auto": False,
+            "system_prompt": "",
+            "system_prompt_file": "",
+            # answers kept in <cache.dir>/annotate/purposes.jsonl, so a command is asked about once
+            "cache": True,
+            "cache_max": 200000,
         },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
@@ -277,8 +359,13 @@ def defaults():
             "preprocess_wait_s": 0,
         },
         "filters": {
-            "drop_global": ["juncheng"],     # the monitoring operator
-            "drop_agent": ["flamraoui"],     # period3 agent build skew
+            # Accounts whose records are dropped, and counted (`dropped_users`):
+            # drop_global, every record of theirs (RC_DASH_DROP_USERS,
+            # comma-separated); drop_agent, only those classed agent
+            # (RC_DASH_DROP_AGENT_USERS). A site names its own -- the account its
+            # monitoring runs as, say -- and none is dropped by default.
+            "drop_global": [],
+            "drop_agent": [],
             "classes": ["agent", "human", "ide"],
             "unlabeled_class": "unlabeled",
             # the collector's own probes (node_snapshot's mpstat/iostat/sar/
@@ -288,6 +375,17 @@ def defaults():
         "reducers": {
             "tool_mix": {"head_n": 12, "dedup_sessions_max": 200000},
             "io": {"top_n": 20},
+            # Each process's own disk bytes (reducers/own_io.py): the parents
+            # one join holds for their own exit, the one given to least
+            # recently dropped first (an agent runtime, or what started one,
+            # passed over), counted (a panel's `own_io.evicted`) and said on
+            # stderr, at most hourly a panel. A service holds some 35 joins:
+            # at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at worst
+            # (eight, ~2.5 KB) 159 MB. The repo's streams hold under 500 at
+            # once; a busy login node may need more, at 19 to 80 KB for each
+            # one added (README, "Disk I/O is each process's own"). A count of
+            # one or more: 0 is refused at start, as is anything not a count.
+            "own_io": {"max_parents": OWN_IO_MAX_PARENTS},
             # `live_s`: how stale the ranked sessions may get while the view
             # is fed live -- the panel re-reads them that often, and they are
             # re-ranked on the read, not only at the next rebuild.
@@ -347,9 +445,10 @@ def defaults():
         # numeric user ID in what the service sends out with a stable alias
         # (anonymize.py). Off by default: a deployment for the cluster's own
         # staff shows real names unless told otherwise. `salt` empty: one is
-        # generated into <cache.dir>/anonymize.salt and reused; changing it
-        # reshuffles every alias. The patterns name where homes and lab trees
-        # sit on this cluster -- see anonymize.HOME_PATTERNS for the defaults.
+        # generated into <cache.dir>/anonymize.salt and reused; set, it is 16
+        # bytes or more. Changing it reshuffles every alias. The patterns name
+        # where homes and lab trees sit on this cluster -- see
+        # anonymize.HOME_PATTERNS for the defaults.
         # What the page opens on, before a reader changes it. Nothing here
         # changes a number, so the saved builds ignore the section.
         # user_columns: the Active users table's columns (agents, ides, running,
@@ -389,9 +488,27 @@ def defaults():
                    "static_dir": os.path.join(HERE, "web", "dist"),
                    # Sign-in (auth.py): a salted scrypt hash of the one password
                    # readers sign in with, made by `python -m rc_dashboard
-                   # new-password`. Empty leaves the page open to anyone who
-                   # reaches the port. A session lasts `session_days`.
-                   "auth": {"password_hash": "", "session_days": 30},
+                   # new-password`. A session lasts `session_days`. With no
+                   # hash, `serve` refuses to start unless `open` (--open,
+                   # RC_DASH_OPEN): an open page is read by anyone who reaches
+                   # the port, which on a login node is every user of it. A demo
+                   # serves made-up data and is open unless a hash is set.
+                   "auth": {"password_hash": "", "session_days": 30, "open": False},
+                   # Who may connect (guard.py). A websocket opened by a page on
+                   # any origin but the dashboard's own -- another port of the
+                   # same host included -- is refused, unless its origin is
+                   # listed here ("https://dash.example.org"): for a proxy that
+                   # rewrites the Host.
+                   "allowed_origins": [],
+                   # The origins of a dev server whose page proxies /ws here, added
+                   # to allowed_origins, never in their place: dashboard/run.sh sets
+                   # it (RC_DASH_DEV_ORIGINS) to Vite's in dev mode.
+                   "dev_origins": [],
+                   # With no password, a request is answered only under a
+                   # loopback name, `host` above, or a name listed here ("*": any):
+                   # another site's page cannot read the dashboard by pointing its
+                   # own name at 127.0.0.1 (DNS rebinding). Unused with a password.
+                   "allowed_hosts": [],
                    # Name the endpoints on the Network bytes panel by reverse
                    # DNS (endpoints.py): `workers` lookups at a time, from this
                    # host, off the request path, kept in <cache.dir>/rdns.json.
@@ -433,16 +550,12 @@ ENV_MAP = {
     "panels.max_windows": ("RC_DASH_MAX_WINDOWS", int),
     "panels.prewarm_min": ("RC_DASH_PREWARM", lambda v: [int(x) for x in _csv(v)]),
     "panels.max_drift_pct": ("RC_DASH_MAX_DRIFT_PCT", int),
-    "panels.cache_windows": ("RC_DASH_CACHE_WINDOWS",
-                             lambda v: v not in ("0", "false", "no")),
-    "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE",
-                            lambda v: v not in ("0", "false", "no")),
-    "panels.preprocess": ("RC_DASH_PREPROCESS",
-                          lambda v: v not in ("0", "false", "no", "off", "")),
+    "panels.cache_windows": ("RC_DASH_CACHE_WINDOWS", _flag),
+    "panels.merge_reduce": ("RC_DASH_MERGE_REDUCE", _flag),
+    "panels.preprocess": ("RC_DASH_PREPROCESS", _flag),
     "panels.preprocess_wait_s": ("RC_DASH_PREPROCESS_WAIT_S", float),
     "ingest.poll_ms": ("RC_DASH_POLL_MS", int),
-    "history.enabled": ("RC_DASH_HISTORY",
-                        lambda v: v.strip().lower() not in ("0", "false", "no", "off")),
+    "history.enabled": ("RC_DASH_HISTORY", _flag),
     "history.dir": ("RC_DASH_HISTORY_DIR", str),
     "history.workers": ("RC_DASH_HISTORY_WORKERS", int),
     "history.days": ("RC_DASH_HISTORY_DAYS", int),
@@ -452,18 +565,24 @@ ENV_MAP = {
     "rebuild.interval_s": ("RC_DASH_REBUILD_S", int),
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
     "filters.drop_agent": ("RC_DASH_DROP_AGENT_USERS", _csv),
-    "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS",
-                                      lambda v: v not in ("0", "false", "no")),
+    "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS", _flag),
     "export.max_rows": ("RC_DASH_EXPORT_MAX_ROWS", int),
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
-    "slurm.enabled": ("RC_DASH_SLURM", lambda v: v not in ("0", "false", "no", "off")),
-    "ask.enabled": ("RC_DASH_ASK", lambda v: v not in ("0", "false", "no", "off")),
-    "anonymize.enabled": ("RC_DASH_ANONYMIZE",
-                          lambda v: v not in ("0", "false", "no", "off")),
+    "slurm.enabled": ("RC_DASH_SLURM", _flag),
+    "ask.enabled": ("RC_DASH_ASK", _flag),
+    "anonymize.enabled": ("RC_DASH_ANONYMIZE", _flag),
     "ask.agent": ("RC_DASH_ASK_AGENT", str),
     "ask.model": ("RC_DASH_ASK_MODEL", str),
     "ask.command": ("RC_DASH_ASK_CMD", str),
+    "ask.env_passthrough": ("RC_DASH_ASK_ENV_PASSTHROUGH", _csv),
     "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
+    "annotate.enabled": ("RC_DASH_ANNOTATE", _flag),
+    "annotate.provider": ("RC_DASH_ANNOTATE_PROVIDER", str),
+    "annotate.model": ("RC_DASH_ANNOTATE_MODEL", str),
+    "annotate.base_url": ("RC_DASH_ANNOTATE_BASE_URL", str),
+    "annotate.api_key_env": ("RC_DASH_ANNOTATE_KEY_ENV", str),
+    "annotate.api_key_file": ("RC_DASH_ANNOTATE_KEY_FILE", str),
+    "annotate.command": ("RC_DASH_ANNOTATE_CMD", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
     "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
@@ -472,12 +591,19 @@ ENV_MAP = {
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
-    "server.rdns.enabled": ("RC_DASH_RDNS", lambda v: v not in ("0", "false", "no", "off")),
+    "server.auth.open": ("RC_DASH_OPEN", _flag),
+    "server.allowed_origins": ("RC_DASH_ALLOWED_ORIGINS", _csv),
+    "server.dev_origins": ("RC_DASH_DEV_ORIGINS", _csv),
+    "server.allowed_hosts": ("RC_DASH_ALLOWED_HOSTS", _csv),
+    "server.rdns.enabled": ("RC_DASH_RDNS", _flag),
     "server.gil_switch_ms": ("RC_DASH_GIL_SWITCH_MS", float),
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
-HIDDEN = ("anonymize.salt", "server.auth.password_hash")
+# An agent's command and its instructions can carry a provider's key
+# (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
+HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt",
+          "annotate.api_key", "annotate.command", "annotate.system_prompt")
 
 # retired names still honoured, with a one-line warning
 ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
@@ -496,6 +622,7 @@ CLI_MAP = {
     "port": "server.port",
     "host": "server.host",
     "static_dir": "server.static_dir",
+    "open": "server.auth.open",
 }
 
 
@@ -532,6 +659,71 @@ def _deep_merge(base, over):
         else:
             base[k] = v
     return base
+
+
+# Sections where an unknown key stops the service instead of being ignored: a
+# misspelt key there would leave names unmasked, the page open, or the agent on.
+STRICT = ("server", "anonymize", "ask")
+# Keys the code reads with a default of its own, so not in defaults(): known,
+# never warned about. Shell patterns over dotted paths; a key that matches is
+# known with everything under it.
+CODE_KEYS = ("live.user_*", "reducers.cascades", "reducers.workspace", "reducers.sessions",
+             "reducers.trajectories.inspect_*", "risk.vars")
+
+
+def _code_key(path):
+    return any(fnmatch.fnmatchcase(path, pat) or path.startswith(pat + ".") for pat in CODE_KEYS)
+
+
+def check_file(filetree, where):
+    """The config file's tree checked against the settings there are, in place:
+    a yes/no setting written as a string is read by `_flag` (`"false"` was
+    true), or as 0 or 1.
+
+    An unknown key under `server`, `anonymize` or `ask` -- or a top-level key
+    one slip away from one of them, `anonymise` -- stops the service, naming
+    the nearest key there is, as does a section there given as a single value
+    (`"anonymize": true`): each would leave names unmasked, the page open or
+    the agent on, without a word. Elsewhere an unknown key is a warning, since
+    an old file may carry the keys of a feature since removed. Returns the
+    warnings; raises SystemExit with every error."""
+    errors, warnings = [], []
+
+    def walk(node, dflt, prefix):
+        for k in list(node):
+            v, path = node[k], prefix + k
+            strict = path.split(".")[0] in STRICT
+            if k not in dflt:
+                if _code_key(path):
+                    continue
+                if not prefix:
+                    strict = strict or bool(difflib.get_close_matches(k, STRICT, 1, 0.7))
+                near = difflib.get_close_matches(k, list(dflt), 1, 0.0 if strict else 0.6)
+                (errors if strict else warnings).append("%s is not a setting%s" % (
+                    path, "; the nearest is %s%s" % (prefix, near[0]) if near else ""))
+                continue
+            d = dflt[k]
+            if isinstance(d, dict) and d:
+                if isinstance(v, dict):
+                    walk(v, d, path + ".")
+                elif strict:
+                    errors.append("%s: %s is not an object of its settings (%s)" % (
+                        path, json.dumps(v), ", ".join(sorted(d))))
+            elif isinstance(d, bool) and not isinstance(v, bool):
+                if isinstance(v, str):
+                    try:
+                        node[k] = _flag(v)
+                    except ValueError as e:
+                        errors.append("%s: %s" % (path, e))
+                elif type(v) is int and v in (0, 1):
+                    node[k] = bool(v)
+                else:
+                    errors.append("%s: %s is not true or false" % (path, json.dumps(v)))
+
+    walk(filetree, defaults(), "")
+    if errors:
+        raise SystemExit("config file %s:\n  %s" % (where, "\n  ".join(errors)))
+    return warnings
 
 
 class Config:
@@ -576,7 +768,8 @@ class Config:
             entry = {"_value": val, "_origin": self.origin(path)}
             if path in HIDDEN and val:
                 # With the salt, a list of candidate names turns every alias
-                # back. The password hash is no use to a reader either.
+                # back. The password hash is no use to a reader either, and the
+                # agent's command or prompt may hold a key.
                 entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
                 cand = val if isinstance(val, list) else [val]
@@ -610,9 +803,21 @@ def load(args=None, config_path=None):
     origins = {}
 
     path = find_config_file(config_path)
-    if path and os.path.exists(path):
-        with open(path) as fh:
-            filetree = strip_comments(json.load(fh))
+    if path and not os.path.exists(path):
+        # Only a file someone named gets here (the default is used when it
+        # exists): starting on the defaults instead would not be what they asked.
+        raise SystemExit("config file %s, named by %s, does not exist" % (
+            path, "--config" if config_path else "RC_DASH_CONFIG"))
+    if path:
+        try:
+            with open(path) as fh:
+                filetree = strip_comments(json.load(fh))
+        except (OSError, ValueError) as e:
+            raise SystemExit("config file %s: %s" % (path, e))
+        if not isinstance(filetree, dict):
+            raise SystemExit("config file %s: not a JSON object" % path)
+        for w in check_file(filetree, path):
+            sys.stderr.write("warning: config file %s: %s; it is ignored\n" % (path, w))
         # relative paths in the file resolve against the repo, absolute stand
         flat = {}
 
@@ -636,7 +841,11 @@ def load(args=None, config_path=None):
     for dotted, (var, coerce) in ENV_MAP.items():
         raw = os.environ.get(var)
         if raw:
-            _set(tree, dotted, coerce(raw))
+            try:
+                val = coerce(raw)
+            except (TypeError, ValueError) as e:
+                raise SystemExit("%s: %s" % (var, e))
+            _set(tree, dotted, val)
             origins[dotted] = "env:%s" % var
 
     if args is not None:
@@ -681,6 +890,35 @@ def load(args=None, config_path=None):
     if type(groups) is not int or groups not in (1, 2):
         raise SystemExit("ingest.reducer_groups: %r is not 1 or 2 (set by %s)" % (
             groups, origins.get("ingest.reducer_groups", "default")))
+
+    # Who may connect (guard.py): lists of names, or the service refuses to
+    # start rather than take a string for a list of its letters.
+    for key in ("server.allowed_origins", "server.dev_origins", "server.allowed_hosts"):
+        val = _get(tree, key, [])
+        if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+            raise SystemExit("%s: %r is not a list of names (set by %s)" % (
+                key, val, origins.get(key, "default")))
+    # What of the service's environment the agents get besides ask.AGENT_ENV:
+    # variable names, or a family's prefix -- three characters or more, then
+    # `_*` (AWS_*). A shorter one, or one with no `_` (S*), takes in whatever
+    # else begins so; such a variable is named whole instead.
+    val = _get(tree, "ask.env_passthrough", [])
+    if not isinstance(val, list) or not all(
+            isinstance(x, str) and PASSTHROUGH.fullmatch(x) for x in val):
+        raise SystemExit("ask.env_passthrough: %r is not a list of variable names, or of a "
+                         "family's prefix written NAME_* with three characters or more before "
+                         "the _* (AWS_*) (set by %s)" % (
+                             val, origins.get("ask.env_passthrough", "default")))
+    # The parents each own-I/O join holds (reducers/own_io.py): a count of one
+    # or more, or the service refuses to start rather than guess -- 0 is neither
+    # "unbounded" nor "no join". Null is the default.
+    key = "reducers.own_io.max_parents"
+    cap = _get(tree, key, OWN_IO_MAX_PARENTS)
+    if cap is None:
+        _set(tree, key, OWN_IO_MAX_PARENTS)
+    elif type(cap) is not int or cap < 1:
+        raise SystemExit("%s: %r is not a count of parents, 1 or more (set by %s)" % (
+            key, cap, origins.get(key, "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

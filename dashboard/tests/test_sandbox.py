@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import test_merge as TM                            # noqa: E402
 import test_sessions as TS                         # noqa: E402
 from rc_dashboard.normalize import (Normalizer, approval_of, bypass_flag_of,   # noqa: E402
                                     sandbox_of)
@@ -47,6 +48,21 @@ def bypassed_claude_session(t0, root=100):
             agent_pid=200, tree_root=root, is_agent=True),
         rec("exit", t0 + 60, root, 50, "claude", VSCODE_CLAUDE + "--permission-mode bypassPermissions",
             agent_pid=root, tree_root=root, is_agent=True),
+    ]
+
+
+def reused_agent_pid(t0, pid=4242):
+    """alice's Claude on pid 4242 makes two Bash calls and exits; after the pids
+    wrap, bob's bypassed Claude is given 4242."""
+    return [
+        rec("exit", t0 + 10, 5001, pid, "zsh", SNAP + "'ls'", agent_pid=5001, tree_root=pid,
+            is_agent=True),
+        rec("exit", t0 + 20, 5002, pid, "zsh", SNAP + "'make'", agent_pid=5002, tree_root=pid,
+            is_agent=True),
+        rec("exit", t0 + 60, pid, 3000, "claude", "claude", agent_pid=pid, tree_root=pid,
+            is_agent=True, duration_s=100.0),
+        rec("exit", t0 + 6000, pid, 3100, "claude", "claude --dangerously-skip-permissions",
+            agent_pid=pid, tree_root=pid, is_agent=True, user="bob", duration_s=50.0),
     ]
 
 
@@ -276,6 +292,94 @@ class ToolCallTest(unittest.TestCase):
                     agent_type="bwrap", agent_pid=300, tree_root=100, is_agent=True, exit_code=1)]
         sb = reduce(recs)["sandbox"]
         self.assertEqual(sb["tool_calls"]["agent"], {"failed": 1})
+
+    def test_two_processes_on_one_pid_are_two_sessions(self):
+        """alice's Claude on pid 4242 and, after the pids wrap, bob's bypassed one.
+        Each root record overwrote the last, so there was one session -- bob's,
+        bypassed -- holding alice's two calls (sessions_total 1)."""
+        sb = reduce(reused_agent_pid(time.time() - 7000))["sandbox"]
+        self.assertEqual(sorted((r["pid"], r["user"], r["approval"], r["state"], r["calls"])
+                                for r in sb["sessions"]),
+                         [(4242, "alice", "supervised", "unsandboxed", {"not_isolated": 2}),
+                          (4242, "bob", "bypassed", "no_calls", {})])
+        # each row says which of the pid's processes it is: the page keys rows on it
+        self.assertEqual(sorted((r["user"], r["gen"]) for r in sb["sessions"]),
+                         [("alice", 0), ("bob", 1)])
+        self.assertEqual(sb["sessions_total"], 2)
+        self.assertEqual(sb["approval_by_class_sessions"]["agent"],
+                         {"supervised": 1, "bypassed": 1})
+
+    def test_two_processes_on_one_pid_stay_two_sessions_in_a_merged_window(self):
+        recs = TM.normalized(reused_agent_pid(time.time() - 7000))
+        one = TM.one_pass(recs).reducers
+        a, b = TM.one_pass(recs[:3]).reducers, TM.one_pass(recs[3:]).reducers
+        a["_procs"].merge(b["_procs"])
+        a["sandbox"].merge(b["sandbox"])
+        for red in (one, a):
+            self.assertEqual(sorted((r["user"], r["approval"], r["calls"])
+                                    for r in red["sandbox"].result()["sessions"]),
+                             [("alice", "supervised", {"not_isolated": 2}),
+                              ("bob", "bypassed", {})])
+
+    def test_a_call_that_outlives_its_agent_is_still_its_agents(self):
+        """A background Bash call's shell can exit after its agent. Matched by its
+        exit, it was another process's: a session of its own with approval
+        unknown, beside the agent's with no calls -- or, once a later root of the
+        same user had the pid, that root's. A call starts while its agent runs."""
+        t0 = time.time() - 7000
+        agent = rec("exit", t0 + 60, 4242, 3000, "claude", "claude", agent_pid=4242,
+                    tree_root=4242, is_agent=True, duration_s=60.0)
+        shell = rec("exit", t0 + 90, 5010, 4242, "zsh", SNAP + "'sleep 80'", agent_pid=5010,
+                    tree_root=4242, is_agent=True, duration_s=80.0)
+        later = rec("exit", t0 + 200, 4242, 3100, "claude", "claude --dangerously-skip-permissions",
+                    agent_pid=4242, tree_root=4242, is_agent=True, duration_s=115.0)
+        for recs, want in (
+                ([agent, shell], [("supervised", {"not_isolated": 1})]),
+                ([agent, shell, later], [("bypassed", {}), ("supervised", {"not_isolated": 1})])):
+            with self.subTest(n=len(recs)):
+                sb = reduce(recs)["sandbox"]
+                self.assertEqual(sorted((r["approval"], r["calls"]) for r in sb["sessions"]), want)
+
+    def three_lifetimes(self, t0, middle):
+        """alice's three agents on pid 4242, one after another: [0, 60] supervised,
+        `middle` bypassed, and [300, 400] in auto mode."""
+        def root(t, args, **kw):
+            return rec("exit", t, 4242, 3000, "claude", args, agent_pid=4242, tree_root=4242,
+                       is_agent=True, **kw)
+        return ([root(t0 + 60, "claude", duration_s=60.0)] + middle(root)
+                + [root(t0 + 400, "claude --permission-mode auto", duration_s=100.0)])
+
+    def call(self, t0, start):
+        return rec("exit", t0 + start + 10, 5010, 4242, "zsh", SNAP + "'make'", agent_pid=5010,
+                   tree_root=4242, is_agent=True, duration_s=10.0)
+
+    def sessions(self, recs):
+        return sorted((r["approval"], r["calls"]) for r in reduce(recs)["sandbox"]["sessions"])
+
+    def test_a_call_goes_to_the_lifetime_it_started_in(self):
+        """A call at 150 is the [100, 200] agent's: of the roots that had not
+        exited by then, the last to have started. Read by the exit alone, it
+        went to the newest, [300, 400]."""
+        t0 = time.time() - 7000
+        recs = self.three_lifetimes(t0, lambda root: [
+            self.call(t0, 150),
+            root(t0 + 200, "claude --dangerously-skip-permissions", duration_s=100.0)])
+        self.assertEqual(self.sessions(recs), [("auto", {}), ("bypassed", {"not_isolated": 1}),
+                                               ("supervised", {})])
+
+    def test_a_call_before_a_roots_first_record_goes_to_the_first_still_running(self):
+        """The middle agent's start was never read: it is known from a tick at
+        120 and an exit with no duration. A call at 90, after the first agent
+        exited, is before every start known, so it goes to the first root still
+        running -- the middle one, which had started by its first record."""
+        t0 = time.time() - 7000
+        recs = self.three_lifetimes(t0, lambda root: [
+            rec("conn", t0 + 120, 4242, 3000, "claude", "claude --dangerously-skip-permissions",
+                agent_pid=4242, tree_root=4242, is_agent=True),
+            self.call(t0, 90),
+            root(t0 + 200, "claude --dangerously-skip-permissions", duration_s=None)])
+        self.assertEqual(self.sessions(recs), [("auto", {}), ("bypassed", {"not_isolated": 1}),
+                                               ("supervised", {})])
 
     def test_the_wrapper_reading_is_not_called_a_probe(self):
         recs = [root_tick(self.t0, 100)] + bwrap_call(self.t0, 100, 300)

@@ -109,19 +109,29 @@ build a view is fed every live record, so a live record is reduced once per held
 | payload key | reducer | subscribes to |
 |---|---|---|
 | `tool_mix` | `reducers/tools.py:ToolMixReducer` | `exit` |
-| `io_process` | `reducers/io.py:IoReducer` | `exit`, `truncated` |
-| `resources` | `reducers/resources.py:ResourceReducer` | `exit`, `truncated`, `residency_totals` |
-| `risk` | `reducers/risk.py:RiskReducer` | `exit`, `truncated` |
-| `sandbox` | `reducers/sandbox.py:SandboxReducer` | `exit`, `truncated`; `residency`, `conn`, `netio` for the roots' launch |
-| `slurm` | `reducers/slurm.py:SlurmReducer`; absent with `slurm.enabled` off | `exit`, `truncated`, `submit` |
+| `io_process` | `reducers/io.py:IoReducer` | `exit` |
+| `resources` | `reducers/resources.py:ResourceReducer` | `exit`, `residency_totals` |
+| `risk` | `reducers/risk.py:RiskReducer` | `exit` |
+| `sandbox` | `reducers/sandbox.py:SandboxReducer` | `exit`; `truncated`, `residency`, `conn`, `netio` for the roots' launch |
+| `slurm` | `reducers/slurm.py:SlurmReducer`; absent with `slurm.enabled` off | `exit`, `submit` |
 | `trajectories` | `reducers/trajectories.py:TrajectoryReducer` | `exit`; `residency`, `conn`, `netio` for the roots' launch (`truncated` is subscribed to and not counted) |
-| `workspace` | `reducers/workspace.py:WorkspaceReducer` | `exit`, `truncated` |
-| `cascades` | `reducers/cascades.py:CascadeReducer` | `exit`, `truncated`, `residency`, `conn`, `netio`, `submit` |
+| `workspace` | `reducers/workspace.py:WorkspaceReducer` | `exit` |
+| `cascades` | `reducers/cascades.py:CascadeReducer` | `exit` (the role census); `exit`, `truncated`, `residency`, `conn`, `netio`, `submit` for its nodes |
 | `facets` | `reducers/facets.py:FacetReducer` | `exit` |
 | `_procs` | `procindex.py:ProcIndex`, the process index the session reducers fold keys through | `exit`, `truncated`, `residency`, `conn`, `netio`, `submit` |
 
 Their union (`windows.EVENTS`) is every record kind but `meta` and `stop`, so a build parses nearly
 every line it reads; the byte check on the event kind (`export.py:event_filter`) skips little.
+
+Two rules hold for every sum below. A process is counted once, at its `exit`: a `truncated` record
+is a process still running at a collector stop, with its whole life's counters so far, and its exit
+after the restart carries them all again, so it may name a running root, never add to a sum. And
+disk and syscall bytes are each process's own: the collector's `io` is `task->signal->ioac`, which
+the kernel also credits with every child the process reaped, so each reducer that sums bytes holds
+a join (`reducers/own_io.py:OwnIo`) that takes the children's figures back off at the parent's
+exit, carried across hours as the sessions' always was, and held to `reducers.own_io.max_parents`
+parents (a parent dropped is counted, `own_io.evicted`, and said on stderr; what is held for an
+agent runtime, or for what started one, goes last, unless such parents hold over half the cap).
 
 A view is built one of three ways:
 
@@ -215,8 +225,9 @@ user's exits on one sealed day, the week's 128 day-files planned, 222-444 s from
 ### IOCMDS: the commands behind an I/O number
 
 `iocmds.py:IoCommands`: a click on an I/O number (`components/IoCmds.tsx:IoNum`) starts a job that
-reads the window's `exit` and `truncated` records again (`export.py:window_plan`, then
-`_window_stream` per file, one file after another), keeps those the click's filters pass
+reads the window's `exit` records again (`export.py:window_plan`, then
+`_window_stream` per file, one file after another), takes each one's own bytes off what it
+reaped (`OwnIo`, over every record the read parses), keeps those the click's filters pass
 (`/api/events`' own, plus agent pids, a host and a directory), and groups them by command line. Two
 jobs read at once; six finished ones are kept, and answer the same question again for 120 s on a
 live feed and for good on a pinned clock. A click carries its figure's filters, and the page's
@@ -236,13 +247,15 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
   state and the history store's (`history.py:HistoryStore.status`). `/api/collectors` adds the
   health the live tier folded (`CollectorHealth.report`).
 - **CONFIG**: `/api/config` serves the resolved configuration with each key's origin.
-- **ASK**: `Aggregator.ask` builds a snapshot from the window's `/api/panels` payload, the live
+- **ASK** (off unless `ask.enabled`, and refused while the service has no password; a refused
+  question reads nothing): `Aggregator.ask` builds a snapshot from the window's `/api/panels` payload, the live
   payload's `now`, `users`, `hosts` and `window`, and the ranked sessions -- or one panel's keys, or
   one session's process tree read by INSPECT -- compacts it to `ask.context_kb` (120 KB;
   `ask.py:snapshot` cuts the largest section's lists and strings a step at a time, and drops bulky
   keys such as series and tails, `DROP_KEYS`), and runs the configured agent CLI (`codex exec` by
   default) as the service's user, `ask.max_concurrent` (1) at a time, for at most `ask.timeout_s`
-  (240 s).
+  (240 s), with a short environment (`ask.AGENT_ENV`) in a directory of its own under the system's
+  temporary one.
 
 ## Every tab: the header, the rail and the controls
 
@@ -349,8 +362,9 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
   bytes read and written, bytes requested through `read()` and `write()`, bytes sent and received,
   CPU, users and when; sorted by the quantity clicked, 200 rows a page (up to 1,000), with totals
   and how far the read got.
-- **Records:** `exit`, `truncated`: `args` (else `_command`), `_eff`, `io.rd_mb`, `io.wr_mb`,
-  `io.rchar_mb`, `io.wchar_mb`, `net_tx_bytes`, `net_rx_bytes`, `cpu_s`, `user`, `_ts_epoch`, and
+- **Records:** `exit`: `args` (else `_command`), `_eff`, `io.rd_mb`, `io.wr_mb`,
+  `io.rchar_mb`, `io.wchar_mb` (each process's own: `pid`, `ppid`, `host`, `io.scope` for the
+  join), `net_tx_bytes`, `net_rx_bytes`, `cpu_s`, `user`, `_ts_epoch`, and
   the fields the click filters on (`_a3`, `agent_type`, `_eff` or its bucket, `session_key` and
   `agent_pid`, `host`, `cwd`).
 - **Computation:** IOCMDS. Per record a byte check (the event kind, then user, agent pids,
@@ -394,7 +408,7 @@ charts that name the window.
 #### LV-1 processes exited / min
 
 - **Shows:** the processes that exited in the last finished minute, by class, and the agent share.
-- **Records:** `exit`, `truncated`: `_a3`, `_ts_epoch`.
+- **Records:** `exit`: `_a3`, `_ts_epoch`.
 - **Computation:** `LiveReducer._exit` adds each exit to its minute's bin by class
   (`RollingBuckets.add`); `result` reads the minute before the current one
   (`RollingBuckets.last_complete_bin`). A minute no record landed in is null for every class; in a
@@ -425,7 +439,9 @@ charts that name the window.
 
 - **Shows:** the distinct accounts that ran something in the window or have a session running now,
   per class, and how many have an agent running.
-- **Records:** `exit`, `truncated`: `user`, `_a3`, `agent_type`, `cpu_s`, `io.rd_mb`, `io.wr_mb`,
+- **Records:** `exit`: `user`, `_a3`, `agent_type`, `cpu_s`, `io.rd_mb`, `io.wr_mb` (each
+  process's own, `LiveReducer._own_io`: the tail takes a parent's reaped children off at its exit;
+  the backfill, newest first, meets the parent first and takes each child off it as it comes),
   `net_tx_bytes`, `net_rx_bytes`, `_ts_epoch`; `residency` for what runs now.
 - **Computation:** `UserRoster.add` puts each exit in its account's slot of a 10-minute bin (an
   hourly one past a day); `UserRoster.totals` sums the window's closed bins, cached per window and
@@ -440,7 +456,8 @@ charts that name the window.
 #### LV-4 agent processes exited
 
 - **Shows:** the agent processes that exited in the window, the other classes beside them, the
-  agent share of every process, and the agent types on hover.
+  agent share of every process -- out of every class counted, `unlabeled` too, whatever the class
+  chips show (`lib/shares.ts`) -- and the agent types on hover.
 - **Records:** `exit`: `_a3`, `agent_type`, `_eff`, `_command`, `_sid`, `pid`, `ppid`,
   `_shell_resolved`, `cpu_s`.
 - **Computation:** `ToolMixReducer.feed` counts an exit under its class, and an agent's also under
@@ -472,7 +489,7 @@ charts that name the window.
 - **Shows:** the processes whose command line matched a dangerous-command rule plus the credentials
   found on command lines, by class; under it each count, and the share of agent tool calls that ran
   sandboxed and how many sandboxes failed to start.
-- **Records:** `exit`, `truncated`: `_eff` or `_command`, `args`, `_a3`, `user`, `host`,
+- **Records:** `exit`: `_eff` or `_command`, `args`, `_a3`, `user`, `host`,
   `agent_type`, `cpu_s`, `exit_code`, `signal`.
 - **Computation:** `RiskReducer.feed` tests `"<tool> <args>"` against every rule a section shows
   (`_matches`: a literal gate first, then the regex; the verdict cached per tool and argv); the
@@ -486,7 +503,7 @@ charts that name the window.
 
 - **Shows:** the processes that exited each minute of the window, a line per class; a minute with no
   record is a hole in the line.
-- **Records:** `exit`, `truncated`: `_a3`, `_ts_epoch`.
+- **Records:** `exit`: `_a3`, `_ts_epoch`.
 - **Computation:** as LV-1; `RollingBuckets.series` gives a row per minute of the window, oldest
   first, sliced from the same bins for any window. A row is made again only when a record landed in
   its bin since (`_rows`, keyed on each bin's version).
@@ -498,14 +515,17 @@ charts that name the window.
 - **Shows:** each class's share of the window in eleven units side by side: processes, CPU time,
   disk read, disk written, network sent, network received, peak memory and sessions on the login
   nodes, and jobs, GPUs and GPU-hours asked of Slurm.
-- **Records:** those of the payloads it reads: `exit` (processes, CPU; LV-4), `exit`/`truncated`
-  `io` and network bytes (`IoReducer`), `residency_totals` (memory; LV-10), sessions (LV-5),
-  `submit` (`gpus`, `array`, `time_limit_s`; SL-3).
+- **Records:** those of the payloads it reads: `exit` (processes, CPU; LV-4), `exit`
+  `io` (each process's own) and network bytes (`IoReducer`), `residency_totals` (memory; LV-10),
+  sessions (LV-5), `submit` (`gpus`, `array`, `time_limit_s`; SL-3).
 - **Computation:** none of its own. `OverviewTab` reads `tool_mix.by_class[c]` `calls` and `cpu_s`,
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
   `resources.by_class[c].top`), `trajectories.summary[c].sessions`, and `slurm.by_class[c]` `jobs`,
-  `gpus`, `gpu_h`; a cell is the class's share of its row over the classes shown. The processes and
+  `gpus`, `gpu_h`; a cell is the class's share of its row over every class that row's panel counted,
+  `unlabeled` too, not the classes shown, so a share does not move with the class chips; a class
+  counted with no reading of the row (null, as the network bytes of a class none of whose processes
+  carried them) leaves the row no share, a dash, and says why (`lib/shares.ts`). The processes and
   CPU rows are the tool mix's, after the shell-wrapper dedup. A byte cell opens IOCMDS for its
   class.
 - **Cost:** its reducers'.
@@ -514,7 +534,7 @@ charts that name the window.
 
 - **Shows:** CPU seconds per minute by class over the window, summed by exit time: a process's
   whole-life CPU lands in the bin it exited in.
-- **Records:** `exit`, `truncated`: `_a3`, `_ts_epoch`, `cpu_s`.
+- **Records:** `exit`: `_a3`, `_ts_epoch`, `cpu_s`.
 - **Computation:** `ResourceReducer._series_add` counts the record in its bin by class and adds each
   of its ten series fields (CPU, runqueue wait, D-state wait, major faults, four `io` byte counts,
   network sent and received), with a count of the records that had the field, so a bin whose
@@ -552,7 +572,7 @@ charts that name the window.
 
 - **Shows:** seconds spent waiting for a CPU per minute, by class; a table of each class's run time,
   wait time and their ratio.
-- **Records:** `exit`, `truncated`: `sched_wait_s`, `sched_run_s`, `cpu_s`.
+- **Records:** `exit`: `sched_wait_s`, `sched_run_s`, `cpu_s`.
 - **Computation:** the series as LV-9; the table is an accumulator per class
   (`reducers/__init__.py:Acc`: sum, present count, coverage) of `sched_run_s` and `sched_wait_s`,
   and `schedstat_ratio`, the median of `cpu_s / sched_run_s` over the processes with more than 1 s
@@ -564,7 +584,7 @@ charts that name the window.
 - **Shows:** seconds in uninterruptible sleep per minute, a line for each of the six tools that
   stalled longest and one for the rest; a table, titled "every tool that stalled", of the 20 that
   stalled longest (processes, time, stalls, longest).
-- **Records:** `exit`, `truncated`: `dstate_wait_s`, `dstate_episodes`, `dstate_max_s`, `_eff` or
+- **Records:** `exit`: `dstate_wait_s`, `dstate_episodes`, `dstate_max_s`, `_eff` or
   `_command`.
 - **Computation:** `_series_add` adds each record's `dstate_wait_s` to its bin by tool; `feed`
   counts each tool's stalled processes, time, stalls and longest; `result` ranks the tools by time
@@ -581,15 +601,16 @@ charts that name the window.
 - **Shows:** per class, the bytes that reached the disk (solid) against the bytes requested through
   `read()` or `write()` (dashed), per minute; the gap is the page cache. A point opens the commands
   of that class in that bin (IOCMDS).
-- **Records:** `exit`, `truncated`: `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`, `io.wchar_mb`; null for
-  another user's process, whose `/proc/<pid>/io` the collector could not read.
+- **Records:** `exit`: `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`, `io.wchar_mb`, each process's own
+  (`ResourceReducer`'s `OwnIo`); null for another user's process, whose `/proc/<pid>/io` the
+  collector could not read.
 - **Computation:** as LV-9.
 
 #### LV-17 network
 
 - **Shows:** per class, bytes sent (solid) and received (dashed) per minute by the processes that
   exited; a point opens IOCMDS.
-- **Records:** `exit`, `truncated`: `net_tx_bytes`, `net_rx_bytes` (null where the collector kept no
+- **Records:** `exit`: `net_tx_bytes`, `net_rx_bytes` (null where the collector kept no
   count).
 - **Computation:** as LV-9, in MB.
 
@@ -597,7 +618,7 @@ charts that name the window.
 
 - **Shows:** per class, the scheduler queries and the jobs submitted per bin; offered only when the
   window holds Slurm records.
-- **Records:** `submit` (an outcome of `job`); `exit`, `truncated` of a scheduler query command
+- **Records:** `submit` (an outcome of `job`); `exit` of a scheduler query command
   (`tool_buckets.SLURM_Q`: `squeue`, `sacct`, `scontrol`, `sinfo`, ...).
 - **Computation:** `SlurmReducer._bin` counts each job and each query in its bin by class, at the
   resources' width; `_series` makes a bin no class has a Slurm record in null (a gap) and a class
@@ -647,8 +668,9 @@ charts that name the window.
 
 - **Shows:** the newest exited processes of every user on every host, newest first (the last 10, 25
   or 100), narrowed by the search, a host, the page filter and the class chips.
-- **Records:** `exit`, `truncated`: time, host, user, class, agent type, command and argv, purpose,
-  depth, pid, duration, CPU, peak memory, disk and network bytes, exit code, signal, sandbox,
+- **Records:** `exit`: time, host, user, class, agent type, command and argv, purpose,
+  depth, pid, duration, CPU, peak memory, disk bytes (its own, as LV-3), network bytes, exit
+  code, signal, sandbox,
   approval, session key.
 - **Computation:** `LiveReducer._exit` keeps a deque of `live.event_tail` (500) rows, newest first;
   `result` cuts it to the window and masks each row's argv once (`_served`). The page filters and
@@ -872,8 +894,9 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 - **Shows:** for the picked agent, alone or with its subagents: its start folder, processes and the
   share that ran inside it, directories, the files its commands mention by read, write, delete and
   other (inferred), writes outside it, and the top-level places outside it reached.
-- **Records:** `exit`, `truncated` of agent-class processes keyed on an agent pid (`_kt` `apid`):
-  `cwd`, `cwd_source`, `io.rchar_mb`, `io.wchar_mb`, `io.rd_mb`, `io.wr_mb`, `args`, `argv_source`,
+- **Records:** `exit` of agent-class processes keyed on an agent pid (`_kt` `apid`):
+  `cwd`, `cwd_source`, `io.rchar_mb`, `io.wchar_mb`, `io.rd_mb`, `io.wr_mb` (each process's own,
+  over these records: `WorkspaceReducer`'s `OwnIo`), `args`, `argv_source`,
   `fork_only`, `_role`, `user`, `_ts_epoch`, `tree_root_pid`.
 - **Computation:** `WorkspaceReducer.feed` per collector key: processes per `cwd` with their syscall
   and disk bytes (measured), and the paths each command line names, sorted by what the command does
@@ -922,9 +945,11 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
   `io.rd_mb`, `io.wr_mb`, `net_tx_bytes`, `net_rx_bytes`, `peak_rss_mb`, and the dedup's fields
   (LV-4).
 - **Computation:** `ToolMixReducer.feed` counts per (class, kind) and per (class, tool), and an
-  agent's also per (agent type, ...), after the shell-wrapper dedup; `_rows` gives each kind's
+  agent's also per (agent type, ...), after the shell-wrapper dedup; disk I/O is each process's own
+  (its `OwnIo`, fed every exit, a shell the dedup drops too); `_rows` gives each kind's
   counts, sums and shares per class; a page filter to one agent type uses that type's own counters
-  (`by_agent_type`). The page computes a class's share of a row.
+  (`by_agent_type`). The page computes a class's share of a row, out of every class counted, not
+  the classes shown (`lib/shares.ts`); the total beside it is that whole.
 - **Cost:** as LV-4. A byte cell opens IOCMDS by kind and class, read from the JSONL unless the
   page is filtered by user.
 
@@ -949,12 +974,13 @@ and for how the page draws them
 | SE-1 | plates: agent sessions, processes per session, session length, processes spent waiting | BUILD on read | `trajectories.summary` | `reducers/trajectories.py:TrajectoryReducer.summary` · `tabs/TrajectoriesTab.tsx:TrajectoriesTab` |
 | SE-2 | sessions, ranked (list) | BUILD on read; LIVE for running | `trajectories.ranks`, `rows`; `rows[].running` | `TrajectoryReducer.feed`, `result`, `folded`, `_row`; `Aggregator._running_rows` · `tabs/TrajectoriesTab.tsx:SessionItem` |
 | SE-3 | a row's phase band, task line and category chip; else its purpose ribbon | BUILD on read; LIVE for the live edge | `rows[].phases`, `purpose_rle`, `running.now` | `TrajectoryReducer._phases`, `_build_block`; `reducers/live.py:running_now` · `tabs/TrajectoriesTab.tsx:RowRibbon`, `components/PhaseBand.tsx:PhaseBand`, `components/CategoryChip.tsx:CategoryChip` |
-| SE-4 | inspector: facts, purpose ribbon, tool tokens | BUILD | `row` | `TrajectoryReducer._row`; `proctree.py:lookup` · `tabs/TrajectoryInspector.tsx:Facts`, `ToolTokens` |
+| SE-4 | inspector: facts; purpose ribbon and tool tokens | BUILD | `row` | `TrajectoryReducer._row`; `proctree.py:lookup` · `tabs/TrajectoryInspector.tsx:Facts`, `ProcessMix`, `ToolTokens` |
 | SE-5 | inspector: what was read, and its limits | INSPECT | `scan`, `bounds`, `links` | `proctree.py:_inspect` · `tabs/TrajectoryInspector.tsx:ReadLine` |
 | SE-6 | inspector: headline, category, summary | BUILD | `row.phases.headline`, `category`, `summary` | `reducers/phase_tasks.py:name_tasks`, `reducers/phase_summary.py:summarize` · `tabs/TrajectoryInspector.tsx:TrajectoryInspector` |
 | SE-7 | inspector: navigator | INSPECT; BUILD for tasks and phases | `nav`, `span`, `scan`; `row.phases` | `proctree.py:TreeBuilder._note`, `nav` · `tabs/TrajectoryNav.tsx:TrajectoryNav` |
 | SE-8 | inspector: task list, or phase list | BUILD | `row.phases.tasks`, `list` | `phase_tasks.py:task_spans`, `name_tasks`; `phase_segment.py:segment` · `tabs/TaskList.tsx:TaskList`, `tabs/PhaseList.tsx:PhaseList` |
 | SE-9 | inspector: process tree (tree or table) and its pop-out | INSPECT | `tree`, `timeline` | `proctree.py:TreeBuilder.feed`, `resolve`, `render` · `components/ProcDiagram.tsx:ProcDiagram`, `components/ProcTree.tsx:ProcTree`, `tabs/TreePopout.tsx` |
+| SE-10 | inspector: map of the whole session, its tasks over its phases | BUILD; LIVE for the live edge | `row.phases`, `row.first`, `running.now` | `TrajectoryReducer._phases`, `_build_block`; `reducers/live.py:running_now` · `tabs/SessionMap.tsx:SessionMap`, `lib/phases.ts:bandAxis` |
 
 #### SE-1 plates
 
@@ -1012,7 +1038,8 @@ and for how the page draws them
   (`_open_calls`), then `phase_segment.prepared`, `phase_tasks.task_spans` (tasks),
   `phase_segment.segment` (phases, cut at the tasks' boundaries), `phase_tasks.name_tasks` (labels,
   from the agent's own words or the names in its commands, and the headline) and
-  `phase_summary.summarize` (category, uses, summary). Cached per row (`_phase_cache`, 4,096 blocks)
+  `phase_summary.summarize` (category, uses, summary: the work weighed to the last phase's own calls,
+  `own_t1`, and a call's time past its phase to its own use, `ran_on`). Cached per row (`_phase_cache`, 4,096 blocks)
   and made again when the row's calls, records or pending entries change, so on each read of a
   session still at work. `running_now` reads the tree's newest census against its baseline, the
   least each command had over the session's ticks.
@@ -1024,11 +1051,13 @@ and for how the page draws them
   block for every session of a week on eight login nodes takes minutes (README), which is why the
   plates count no category.
 
-#### SE-4 inspector: facts, purpose ribbon, tool tokens
+#### SE-4 inspector: facts; purpose ribbon and tool tokens
 
-- **Shows:** the row's processes, CPU, length, distinct tools, pieces (keys folded and how the least
-  certain was attributed), sandbox and approval; its purpose ribbon and tool tokens, each run opening
-  the tree at its first record.
+- **Shows:** at the head of the inspector, the row's first and last record, its length, its tool calls
+  where the agent's commands are read, processes, CPU, distinct tools, pieces (keys folded and how the
+  least certain was attributed: said only where there is more than one, or the least certain was placed
+  by a weaker rule than the agent itself or an ancestor), sandbox and approval. At the head of its
+  Processes part, its purpose ribbon and tool tokens, each run opening the tree at its first record.
 - **Computation:** SE-2's row (`tool_rle` cut to 60 runs, `purpose_rle` to 80, with their start
   times). The inspector's own copy is made under the lock by `_inspect`, whose `lookup` folds only
   the keys sharing the row's prefix when the window's fold is stale; the agent's other days come
@@ -1067,8 +1096,9 @@ and for how the page draws them
 #### SE-8 inspector: task list, or phase list
 
 - **Shows:** each task, opened into its phases, each phase into the commands that ran most in it
-  (`top_commands`, 3); lone stretches and cutting gaps as lines of their own. A block with no task
-  lists its phases alone.
+  (`top_commands`, 3); under a closed task, its phases in order on one line, with the chip of each
+  and the length of any that holds a quarter of the task (`sequenceParts`); lone stretches and
+  cutting gaps as lines of their own. A block with no task lists its phases alone.
 - **Computation:** the block's `tasks` and `list` (SE-3).
 
 #### SE-9 inspector: process tree
@@ -1083,7 +1113,10 @@ and for how the page draws them
   `cpu_s`, `io`, `net_tx_bytes`, `net_rx_bytes`, `exit_code`, `signal`, `_role`, `depth`, `_kv`;
   parents with no record from the window's process index and the cascades' nodes.
 - **Computation:** INSPECT. `TreeBuilder.feed` lets each process claim the children waiting for it
-  (a parent exits after its children), itemises up to `inspect_hold` processes and
+  (a parent exits after its children), takes its own disk and syscall bytes (its `OwnIo`, over the
+  records the read takes; a `truncated` one, running at a collector stop, less what its children
+  that exited carried so far), so a subtree's bytes add each process's own once, itemises up to
+  `inspect_hold` processes and
   `inspect_per_parent` childless ones of one command under one parent, and counts the rest under
   their parent (newest first, it keeps the newest instead); `resolve` attaches what is left by the
   index, the collector's depth or the fold, and draws parents with no record (at most 2,000);
@@ -1092,6 +1125,19 @@ and for how the page draws them
 - **Cost:** INSPECT's: one read at a time, up to 150,000 records or 6 GiB. Building a record costs
   about 44 µs on FAS, in the `inspect_workers` processes, and feeding it to the tree about 6 µs, in
   the service's own: a 150,000-record read 2.5-2.7 s. Cached 600 s.
+
+#### SE-10 inspector: map of the whole session
+
+- **Shows:** under the session's gist, before any process is read, the tasks as a lane of blocks over
+  the phases as a band, on the session's own clock: from its first record, or its first phase where
+  that begins earlier, to its last phase's end, and on to now for a session running now, where its
+  live edge ends it. A task is numbered and labelled as the list under it has it, where that fits; a
+  phase is tinted as the navigator tints it, with a rule of its full colour along its foot, and named
+  where its name fits; a guess is hatched and idle is a dashed outline. A click picks the task or the
+  phase as its row in the list does.
+- **Computation:** none of its own: the row's block (SE-3) on the axis the row's band is drawn on
+  (`bandAxis`), so it covers the whole session whatever the read reached, which SE-7 cannot.
+- **Cost:** none on the service.
 
 ## Login nodes › Resources
 
@@ -1115,7 +1161,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 - **Shows:** per class, the mean, min, p1, p10, median, p90, p99 and max of five measures of a
   process: CPU time, lifetime, the share of its lifetime on a CPU, runqueue wait, peak memory; the
   max names its process on hover.
-- **Records:** `exit`, `truncated`: `cpu_s`, `duration_s`, `sched_run_s`, `sched_wait_s`,
+- **Records:** `exit`: `cpu_s`, `duration_s`, `sched_run_s`, `sched_wait_s`,
   `peak_rss_mb` (else `rss_mb`), and the identity fields of the process behind each max
   (`reducers/__init__.py:who`).
 - **Computation:** each value goes into a `Quant`, a DDSketch of every value with 1% relative error
@@ -1133,7 +1179,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
   (major ones in reaped children too), voluntary and involuntary context switches, block-I/O,
   swap-in and memory-reclaim delays, and D-state (processes that stalled, time, stalls, the longest),
   each with its coverage; values longer than the process lived are left out and counted.
-- **Records:** `exit`, `truncated`: `min_flt`, `maj_flt`, `cmaj_flt`, `nvcsw`, `nivcsw`,
+- **Records:** `exit`: `min_flt`, `maj_flt`, `cmaj_flt`, `nvcsw`, `nivcsw`,
   `blkio_wait_s`, `swapin_wait_s`, `freepages_wait_s`, `dstate_wait_s`, `dstate_episodes`,
   `dstate_max_s`, `dstate_src`, and `_impossible` (the normalizer's list of waits it voided).
 - **Computation:** an `Acc` (sum, present count, records seen) per field and class; the page divides.
@@ -1151,10 +1197,12 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 
 - **Shows:** the 14 tools that read the most from (wrote the most to) disk, as bars; the bytes
   requested and the cache hit on hover. Over every class: the class chips do not narrow it.
-- **Records:** `exit`, `truncated`: `_eff` or `_command`, `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`,
-  `io.wchar_mb`.
-- **Computation:** `IoReducer.feed` sums each tool's four byte counters, its processes and those with
-  an `io` block; `result` serves the union of the top `reducers.io.top_n` (20) tools on each counter
+- **Records:** `exit`: `_eff` or `_command`, `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`,
+  `io.wchar_mb`, and `pid`, `ppid`, `host`, `io.scope` for the join.
+- **Computation:** `IoReducer.feed` sums each tool's four byte counters, each process's own (its
+  `OwnIo` takes back what a parent's figure holds of the children it reaped), its processes and
+  those with an `io` block; `result` serves the union of the top `reducers.io.top_n` (20) tools on
+  each counter
   (`_heaviest`, up to 80 rows); the page ranks by disk bytes and draws 14. A bar opens IOCMDS for the
   tool, read from the JSONL unless the page is filtered by user.
 - **Cost:** a few adds a record; the tool map is unbounded; per read four `nlargest` passes.
@@ -1163,7 +1211,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 
 - **Shows:** per class, bytes sent and received, and the network calls, with coverage; a cell opens
   IOCMDS.
-- **Records:** `exit`, `truncated`: `net_tx_bytes`, `net_rx_bytes`, `net_calls`, each null when the
+- **Records:** `exit`: `net_tx_bytes`, `net_rx_bytes`, `net_calls`, each null when the
   collector's netbytes block was dropped.
 - **Computation:** an `Acc` per class and counter.
 
@@ -1173,7 +1221,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
   shown, each row split by class; a name by reverse DNS, else by a command line, else the address;
   the share of the bars' bytes whose endpoint is known
   ([Network endpoints](../../dashboard/README.md#network-endpoints)).
-- **Records:** `exit`, `truncated`: `net_endpoints` (schema 7): per endpoint `addr`, `inbound`,
+- **Records:** `exit`: `net_endpoints` (schema 7): per endpoint `addr`, `inbound`,
   `calls`, `tx_bytes`, `rx_bytes`, `proto`, `port`, `host`, `external`, `provider`; and its
   `unattributed`, `overflow`, `unaccounted` losses.
 - **Computation:** `IoReducer._feed_endpoints` adds each address's calls and bytes per class; every
@@ -1190,13 +1238,14 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 - **Shows:** per user, with the class of their newest record: processes, disk and requested bytes
   read and written, network received and sent, I/O coverage; a cell opens IOCMDS for the user, a
   lookup the replicas can answer.
-- **Computation:** `IoReducer.feed` per user; `result` serves the union of the top 20 users on each
-  of the four I/O counters. The class chips keep a user by that one class.
+- **Computation:** `IoReducer.feed` per user, each process's own bytes (RE-4); `result` serves the
+  union of the top 20 users on each of the four I/O counters. The class chips keep a user by that
+  one class.
 
 #### RE-9 I/O distributions
 
-- **Shows:** per class, quantiles of each process's bytes read requested, read from disk, written
-  requested and written to disk.
+- **Shows:** per class, quantiles of each process's own bytes read requested, read from disk,
+  written requested and written to disk (RE-4's join).
 - **Computation:** a `Quant` per counter and class (RE-1's sketch); a record with no `io` block is
   counted as not measured.
 
@@ -1226,7 +1275,7 @@ section the cluster's profile leaves out is neither computed nor drawn.
 - **Shows:** CPU in the tools of the compute kinds (build, interpreter) and of the transfer kind
   (`net/data`), by tool, with processes, users and hosts; per class CPU-hours; the 24 heaviest
   processes.
-- **Records:** `exit`, `truncated`: `_eff` or `_command` (its kind), `cpu_s`, `user`, `host`, `_a3`.
+- **Records:** `exit`: `_eff` or `_command` (its kind), `cpu_s`, `user`, `host`, `_a3`.
 - **Computation:** `RiskReducer.feed` adds each exit whose kind is a compute or transfer kind
   (`risk.login_compute`) to its tool; a compute exit also joins a heaviest list (cut to 200 at 400)
   and its class's CPU; `result` ranks the tools by CPU (25 rows) and gives the compute CPU's share of
@@ -1285,7 +1334,7 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
   request on the command line, GPUs and GPU-hours, refusal reasons, the latest command.
 - **Records:** `submit`: `tool`, `args`, `job_id` or `job_ids`, `exit_code`, `captured_tail`,
   `req_src`, `partition`, `time_limit_s`, `mem`, `gpus`, `array`, `user`, `_a3`, `agent_type`,
-  `_kt`, `_kv`, `tree_root_pid`, `host`, `_ts_epoch`; `exit`, `truncated` of the query commands,
+  `_kt`, `_kv`, `tree_root_pid`, `host`, `_ts_epoch`; `exit` of the query commands,
   `scancel`, `srun` and `salloc` (`_command`, `_ts_epoch`, `exit_code`, `signal`).
 - **Computation:** `SlurmReducer.feed` and `_submit` per key (an agent's (host, agent pid, tree
   root); anyone else's (host, class, user)): the outcome (`outcome`: job, dry run, step, refused, no
@@ -1414,12 +1463,12 @@ Panels not settled yet: the sandbox ones. See
 | IN-6 | processes by sandbox wrapper, kind and sandbox state | BUILD | `sandbox.ancestry_matrix` | `SandboxReducer.feed`, `result`; `sandbox.py:_reading` · `tabs/SandboxTab.tsx:SandboxTab` |
 | IN-7 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
 
-Records for the whole tab: `exit`, `truncated`: `_sandbox` (four states), `_sandbox_src`,
+Records for the whole tab: `exit` (each counted once): `_sandbox` (four states), `_sandbox_src`,
 `sandbox_detail`, `_sandbox_ancestry`, `_approval`, `_command` (a wrapper is `bwrap` or
 `codex-linux-san…`), `_role`, `pid`, `ppid`, `host`, `_ts_epoch`, `duration_s`, `exit_code`,
 `signal`, `dstate_wait_s`, `is_agent`, `agent_pid`, `tree_root_pid`, `agent_type`, `user`; and
-each agent root's own record of any kind, `residency`, `conn` and `netio` among them, for its
-launch (`_approval`, `_approval_detail`).
+each agent root's own record of any kind, `truncated`, `residency`, `conn` and `netio` among
+them, for its launch (`_approval`, `_approval_detail`).
 
 #### IN-1 plates
 
@@ -1449,7 +1498,10 @@ launch (`_approval`, `_approval_detail`).
 #### IN-3 sandboxed, per process and per session
 
 - **Shows:** per class, the processes in each of the four namespace states, and the sessions in each
-  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls).
+  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls). As in IN-2 and IN-4, a state
+  the axis can judge is a share of the class's judged ones, and the rest (exited before it was checked,
+  unknown, no calls, not an agent session, can't tell) are counts, with the coverage under the class
+  (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`): the share a plate above prints.
 - **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
   IN-2.
 

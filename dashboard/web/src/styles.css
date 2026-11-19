@@ -1030,7 +1030,7 @@ html {
 /* The plates of a row share their label's height: a label that wraps to two
  * lines lowers every number in the row with it, so the numbers still read
  * across on one line. Only the label: the number, its class split and its note
- * stay one piece under it (.plate-body), so a note never drifts from its own
+ * stay one piece under it (.under), so a note never drifts from its own
  * numbers to line up with a longer split next door. */
 @supports (grid-template-rows: subgrid) {
   .plate {
@@ -1042,7 +1042,7 @@ html {
   .plate .k {
     grid-row: 1;
   }
-  .plate .plate-body {
+  .plate .under {
     grid-row: 2;
   }
 }
@@ -1848,6 +1848,12 @@ td.cmd-cut {
 }
 .notreturned .feed {
   color: var(--ink-2);
+}
+/* The service could not reduce the panel (Panel.tsx <NotReduced>): the same
+ * frame, with the pill of a failure. */
+.notreduced .pill {
+  border-color: var(--crit);
+  color: var(--crit);
 }
 /* Feed present, rows exist, the reduction is not finished. A THIRD state, and
  * it must look like neither `nofeed` (dashed, blames the path) nor `none`

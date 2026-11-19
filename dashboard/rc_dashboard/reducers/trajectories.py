@@ -35,9 +35,10 @@ the kernel also credits with the I/O of every child the process reaped
 rtx6000a feed a parent's read+write covered its exited children's in 132 of 133
 families. Summed over a session as it comes, a command's bytes counted once per
 shell above it. Here a process's figure loses what its children carried
-(`reaped`, the join between a child's exit and its parent's later one), so a sum
-over any set of processes counts each byte once. Network bytes and peak memory
-are per process already.
+(`reaped`, the join between a child's exit and its parent's later one, which
+every panel that sums disk bytes shares: own_io.py), so a sum over any set of
+processes counts each byte once. Network bytes and peak memory are per process
+already.
 
 Each row also carries `drift`: two process-level proxies for an agent leaving the
 task it started on. Neither sees the model's context; both are labelled proxies.
@@ -143,7 +144,7 @@ from array import array
 from operator import itemgetter
 
 from ..anonymize import HOME_PATTERNS
-from ..procindex import VIA, pop_oldest
+from ..procindex import VIA
 from ..redact import redact
 
 from . import pct
@@ -159,6 +160,7 @@ from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN
                             segment)
 from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
 from .phase_tasks import DEFAULTS as TASK_DEFAULTS, name_tasks, task_spans
+from .own_io import DISK, OwnIo, cap_of
 
 RANKS = ("recent", "events", "cpu_s", "peak_rss_mb", "io_mb", "net_mb", "distinct_tools")
 RANK_MEANING = {
@@ -177,7 +179,6 @@ WAIT_PURPOSES = frozenset({"poll", "slurm_mon"})
 MIN_DRIFT_N = 30            # processes; below this the thirds are noise
 DRIFT_CAP = 100000          # per-session processes kept for drift; past it, flagged
 MAX_CWDS = 200000           # distinct cwds interned per window; past it, unmeasured
-REAPED_MAX = 200000         # parents with exited children held for their own exit
 _NO_PARENT = (None, 0, 1)   # a ppid that names no process that started it
 MAX_PREVIEWS = 200000       # masked command previews interned per reducer; past it, none
 MAX_TAGSETS = 200000        # tag sets (names, words) interned per reducer; past it, none
@@ -783,11 +784,9 @@ class TrajectoryReducer:
         self._cwd_id, self._cwds = {None: 0}, [None]
         self.cwd_overflow = 0
         # (host, pid) -> [MB read, MB written] its exited children carried, for
-        # its own exit to give back (`own_io`), and the keys touched since
-        # `track` (for the hours' ageing).
-        self.reaped = collections.OrderedDict()
-        self.reaped_evicted = 0
-        self._rtouched = None
+        # its own exit to give back (`own_io`): the join every panel that sums
+        # disk bytes holds one of (own_io.py), here over disk bytes alone.
+        self.own = OwnIo(DISK, cap_of(cfg), "trajectories")
         # Phases. The thresholds: the config's over phase_segment.DEFAULTS.
         self.phase_params = dict(PHASE_DEFAULTS, **(r.get("phases") or {}))
         # The tasks above them, likewise: the config's over phase_tasks.DEFAULTS.
@@ -1485,38 +1484,12 @@ class TrajectoryReducer:
         return opened, extra
 
     def own_io(self, rec):
-        """This process's disk MB (read, written), without its reaped children's.
-
-        A child exits before the parent that reaps it, so by the parent's exit
-        every child it reaped has handed its whole figure -- its own and what
-        it reaped in turn -- to `reaped`. A child its parent never waited for
-        exits after it, and is never taken off. Only `scope: process` figures
-        include children; a `leader` one is the leader thread's alone.
-        """
-        io = rec.get("io")
-        if not isinstance(io, dict):
+        """This process's disk MB (read, written), without its reaped children's
+        (own_io.py); 0 where the record has none."""
+        own = self.own.take(rec)
+        if own is None:
             return 0.0, 0.0
-        rd, wr = io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0
-        if io.get("scope") != "process":
-            return rd, wr
-        host = rec.get("host")
-        kids = self.reaped.pop((host, rec.get("pid")), None)
-        ppid = rec.get("ppid")
-        if ppid is not None and (rd or wr):
-            key = (host, ppid)
-            acc = self.reaped.get(key)
-            if acc is None:
-                if len(self.reaped) >= REAPED_MAX:
-                    pop_oldest(self.reaped)
-                    self.reaped_evicted += 1
-                acc = self.reaped[key] = [0.0, 0.0]
-            acc[0] += rd
-            acc[1] += wr
-            if self._rtouched is not None:
-                self._rtouched.add(key)
-        if kids:
-            rd, wr = max(0.0, rd - kids[0]), max(0.0, wr - kids[1])
-        return rd, wr
+        return own[0] or 0.0, own[1] or 0.0
 
     def _track(self, s, rec):
         if len(s.ev_p) >= DRIFT_CAP:
@@ -1553,27 +1526,36 @@ class TrajectoryReducer:
 
     def track(self):
         """Note every carried key touched from here on, for the ageing."""
-        self._rtouched = set()
+        self.own.track()
         self.pend.touched = set()
         self._ctouched = set()
         self._xtouched = set()
 
     def carry(self):
-        return {"reaped": self.reaped, "phase_pend": self.pend.entries,
-                "phase_calls": self.calls_at, "phase_exited": self.exited,
-                "phase_exited_horizon": self.exited_horizon,
-                "touched": {"reaped": self._rtouched or (),
-                            "phase_pend": self.pend.touched or (),
-                            "phase_calls": self._ctouched or (),
-                            "phase_exited": self._xtouched or ()}}
+        return self.own.carry({
+            "phase_pend": self.pend.entries,
+            "phase_calls": self.calls_at, "phase_exited": self.exited,
+            "phase_exited_horizon": self.exited_horizon,
+            "touched": {"phase_pend": self.pend.touched or (),
+                        "phase_calls": self._ctouched or (),
+                        "phase_exited": self._xtouched or ()}})
 
     def carry_caps(self):
         """What one pass holds each carried map to (`hours.combine_carries`)."""
-        return {"reaped": REAPED_MAX, "phase_pend": self.pend.cap,
-                "phase_calls": CALLS_AT_MAX, "phase_exited": EXITED_MAX}
+        return dict(self.own.carry_caps(), phase_pend=self.pend.cap,
+                    phase_calls=CALLS_AT_MAX, phase_exited=EXITED_MAX)
+
+    def carry_trimmed(self, c, dropped):
+        """What `hours.combine_carries` dropped past the caps: the join's parents
+        counted (own_io.py), and the exits as `exited_trimmed` keeps them."""
+        self.own.carry_trimmed(c, dropped)
+        self.exited_trimmed(c, dropped)
+
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
 
     @staticmethod
-    def carry_trimmed(c, dropped):
+    def exited_trimmed(c, dropped):
         """Exits dropped past the cap as `_went` drops them: the latest end among
         them is kept as the horizon."""
         for _key, x in dropped.get("phase_exited", ()):
@@ -1581,7 +1563,7 @@ class TrajectoryReducer:
                 c["phase_exited_horizon"] = x[1]
 
     def seed(self, c):
-        self.reaped = c["reaped"]
+        self.own.seed(c)
         x = c.get("phase_calls")
         self.calls_at = (x if isinstance(x, collections.OrderedDict)
                          else collections.OrderedDict(x or ()))
@@ -1592,8 +1574,7 @@ class TrajectoryReducer:
         self.exited_horizon = c.get("phase_exited_horizon", 0.0)
 
     def strip(self):
-        self.reaped = collections.OrderedDict()
-        self._rtouched = None
+        self.own.strip()
         self.pend.entries = collections.OrderedDict()
         self.pend.touched = None
         self.calls_at = collections.OrderedDict()
@@ -1657,7 +1638,7 @@ class TrajectoryReducer:
         self.evicted += o.evicted
         self.fed += o.fed
         self.cwd_overflow += o.cwd_overflow
-        self.reaped_evicted += o.reaped_evicted
+        self.own.merge(o.own)
         self.pend.evicted += o.pend.evicted
         self.pend.refused += o.pend.refused
         self.pend.refused_records += o.pend.refused_records
@@ -2112,7 +2093,15 @@ class TrajectoryReducer:
             "dominant_user_share_pct": dom,
             "summary": self.summary(live),
             "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
-                       "reaped": len(self.reaped), "reaped_evicted": self.reaped_evicted,
+                       "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
+                       # children a parent could not have reaped (own_io.py): dropped
+                       "reaped_rejected": self.own.rejected,
+                       # figures short of their children's, shown as 0
+                       "reaped_clamped": self.own.clamped,
+                       # groups dropped from a pid past own_io.PER_PID
+                       "reaped_crowded": self.own.crowded,
+                       # groups held for an exit that says it reaped none
+                       "reaped_unreaped": self.own.unreaped,
                        # the phases' joins and bounds, every one counted
                        "phase_pending": len(self.pend.entries),
                        "phase_pending_evicted": self.pend.evicted,

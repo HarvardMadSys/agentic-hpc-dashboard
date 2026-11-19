@@ -20,6 +20,7 @@ import type { Sorter, SortDir } from '../lib/useSort';
 import { CmdCell } from './Cmd';
 import { SortTh } from './SortTh';
 import './IoCmds.css';
+import { table } from '../lib/lookup';
 
 const PAGE = 200;
 const POLL_MS = 600;
@@ -64,14 +65,14 @@ function params(q: IoQuery, win: number | null, who: Who, cls: Cls[]): URLSearch
 }
 
 /** An exit verdict in the words the Non-zero exits panel uses. */
-const OUTCOME_WORDS: Record<string, string> = {
+const OUTCOME_WORDS: Record<string, string> = table({
   nonzero: 'exited non-zero',
   signal: 'stopped by a signal',
   answer: 'exit 1 that is an answer',
   pipe: 'SIGPIPE',
   none: 'no exit recorded',
   ok: 'exit 0',
-};
+});
 
 /** What the lookup was narrowed to, in words, for the drawer's head. */
 function narrowed(q: IoQuery, who: Who, cls: Cls[]): string[] {

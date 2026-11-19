@@ -12,8 +12,9 @@ jobs, 112 of them in one minute, and 79% of agent submissions asked for
   what came back: `job` (a job id), `dry_run` (`--test-only`, which never makes
   a job), `step` (`srun --jobid`/`--overlap` into an allocation already held),
   `rejected` (no job id, a non-zero exit, and the scheduler's own refusal --
-  sbatch's error, or an srun/salloc `error:` or allocation line; that line is
-  its reason) or `no_id` (no id read: it exited 0, or an srun ran and failed);
+  sbatch's error, or srun's or salloc's that it could not get the allocation;
+  that line is its reason) or `no_id` (no id read: it exited 0, or an srun
+  ran and failed);
 * **how it was asked**: `--parsable`, `--dependency`, `--wrap`, `--array`, and
   whether the request (partition, time, memory, GPUs) was on the command line
   at all -- a `#SBATCH` line in the script is invisible here (`req_src`);
@@ -53,12 +54,27 @@ FAIL_ROWS = 20
 _DIGITS = re.compile(rb"\d+")
 _NUM = re.compile(r"\d+")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b-\x1f\x7f]")
-# What the scheduler prints when it refuses. sbatch prints nothing else on a
-# failure; srun and salloc also relay the payload's own output, and a program
-# that ran and failed is not a refusal.
-_REFUSAL = re.compile(r"(?:sbatch|srun|salloc): error|submission failed|Unable to allocate"
-                      r"|allocation failure|violates|Invalid (?:account|partition|qos)"
-                      r"|not available|presently disabled|denied", re.I)
+# What the scheduler prints when it refuses, at the start of a line: any error
+# of sbatch's, which prints nothing else on a failure, and srun's and salloc's
+# about the allocation -- "Unable to allocate resources" (srun, and salloc
+# --immediate), "Job submit/allocate failed" (salloc; "Failed to allocate
+# resources" in older Slurm), "Unable to create step" and "Unable to confirm
+# allocation" (srun inside one). Those two also relay the payload's own output,
+# and say how it ended in an error line of their own (`srun: error: holy7c24101:
+# task 0: Exited with exit code 1`): a program that ran and failed is not a
+# refusal, nor is a "denied" or "not available" it printed. The line's start is
+# required, prefix and all: numpy's MemoryError says "Unable to allocate 2.00
+# GiB for an array". So `rejected` is a lower bound: a submission keeps its
+# last 300 characters (`captured_tail`), and a refusal line cut at its start
+# there is missed -- which takes a reason of some 200 characters, as Slurm
+# prints that line last.
+_REFUSAL = re.compile(r"sbatch: error|(?:srun|salloc): error: (?:Unable to allocate"
+                      r"|Job submit/allocate failed|Failed to allocate|Unable to create step"
+                      r"|Unable to confirm allocation)", re.I)
+# A refusal's reason: the scheduler's first error line, which can say more than
+# the allocation line after it (QOSMaxSubmitJobPerUserLimit). A refused srun ran
+# no task, so none of its error lines is a task's.
+_ERROR = re.compile(r"(?:sbatch|srun|salloc): error", re.I)
 _ARRAY_PART = re.compile(r"^(\d+)(?:-(\d+)(?::(\d+))?)?$")
 
 FLAGS = (
@@ -81,19 +97,24 @@ def outcome(rec):
     ec = rec.get("exit_code")
     if ec not in (0, None) and (
             (rec.get("tool") or "").startswith("sbatch")
-            or _REFUSAL.search(rec.get("captured_tail") or "")):
+            or any(_REFUSAL.match(x) for x in _lines(rec))):
         return "rejected"
     return "no_id"
+
+
+def _lines(rec):
+    """The captured output's lines, escapes and control characters out."""
+    lines = [x.strip() for x in _ANSI.sub("", rec.get("captured_tail") or "").splitlines()]
+    return [x for x in lines if x]
 
 
 def reason(rec):
     """The last line the scheduler printed, with ids and node numbers masked --
     and credentials, since it is served as text of its own."""
-    lines = [x.strip() for x in _ANSI.sub("", rec.get("captured_tail") or "").splitlines()]
-    lines = [x for x in lines if x]
+    lines = _lines(rec)
     # the scheduler's own error line, else the last line printed: sbatch can
     # follow its error with an example script
-    pick = next((x for x in lines if _REFUSAL.search(x)), lines[-1] if lines else None)
+    pick = next((x for x in lines if _ERROR.match(x)), lines[-1] if lines else None)
     if pick:
         return _NUM.sub("N", redact(pick))[:160]
     ec, sig = rec.get("exit_code"), rec.get("signal")
@@ -199,7 +220,9 @@ class _Key:
 
 
 class SlurmReducer:
-    EVENTS = ("exit", "truncated", "submit")
+    # Exits, not `truncated`: an `srun --pty` still running at a collector stop
+    # is written then, and again at its exit after the restart -- one run.
+    EVENTS = ("exit", "submit")
     KEY = "slurm"
 
     def __init__(self, cfg, classes, window_s=86400, procs=None):
@@ -289,8 +312,9 @@ class SlurmReducer:
             s.fails[why] += 1
             fk = (s.cls, rec.get("tool") or "?", why)
             self.fail_rows[fk] += 1
-            self.fail_eg.setdefault(fk, {"user": rec.get("user"), "ts": rec.get("ts"),
-                                         "args": args[:300]})
+            if fk not in self.fail_eg:          # masked, then cut: a key the cut falls in
+                self.fail_eg[fk] = {"user": rec.get("user"), "ts": rec.get("ts"),
+                                    "args": redact(args)[:300]}
         if oc == "dry_run":
             return
         for name, rx in FLAGS:
@@ -306,7 +330,7 @@ class SlurmReducer:
         if oc != "job":
             return
         if s.example_t is None or (ts or 0) >= s.example_t:
-            s.example, s.example_t = args[:300], ts or 0
+            s.example, s.example_t = redact(args)[:300], ts or 0     # masked, then cut
         if ts is not None:
             s.minutes[int(ts // 60)] += 1
         self._bin(ts, s.cls, 0)

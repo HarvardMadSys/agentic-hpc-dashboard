@@ -17,6 +17,7 @@ import { GLOSS } from '../lib/glossary';
 import { useNodeWords } from '../lib/nodes';
 import type { NodeWords } from '../lib/nodes';
 import { pick, winLabel } from '../lib/panels';
+import { countedIn, noShare, shareOf, wholeOf } from '../lib/shares';
 import { useSort } from '../lib/useSort';
 import { Fragment, memo } from 'react';
 import type { Panels } from '../lib/panels';
@@ -26,6 +27,9 @@ import { IoNum } from '../components/IoCmds';
 /** One row per unit: the whole point is that the ranking changes between them. */
 interface UnitRow {
   k: string;
+  /** every class the quantity's panel counted, `unlabeled` too: a share is out
+   *  of all of them, whatever the class chips show (lib/shares.ts) */
+  all: string[];
   get: (c: string) => number | null;
   fmt?: (n: number | null) => string;
   tip?: string;
@@ -88,30 +92,31 @@ export const OverviewTab = memo(function OverviewTab({
     const a = ioBy[c]?.[k];
     return a?.n ? a.total ?? null : null;
   };
+  const slBy = sl.by_class ?? {};
   const units: UnitRow[] = ([
-    { k: 'processes exited', get: (c) => tmBy[c]?.calls ?? null,
+    { k: 'processes exited', all: countedIn(tmBy), get: (c) => tmBy[c]?.calls ?? null,
       tip: GLOSS.exited + '; a shell is counted as the command it ran' },
-    { k: 'CPU time', get: (c) => {
+    { k: 'CPU time', all: countedIn(tmBy, resBy), get: (c) => {
         const v = tmBy[c]?.cpu_s ?? resBy[c]?.cpu_s;
         return v == null ? null : v / 3600;
       }, fmt: (n) => (n == null ? DASH : fmt(n) + ' h'), tip: GLOSS.cpuh,
       cellTip: (c) => topTip(c, 'cpu_s', dur, 'most CPU in one process') },
-    { k: 'disk read', get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.rd, io: 'rd_mb' },
-    { k: 'disk written', get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.wr, io: 'wr_mb' },
-    { k: 'network sent', get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx, io: 'tx_mb' },
-    { k: 'network received', get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx, io: 'rx_mb' },
-    { k: 'peak memory', get: peakGb, fmt: (n) => (n == null ? DASH : fmt(n) + ' GB'),
+    { k: 'disk read', all: countedIn(ioBy), get: (c) => ioBy[c]?.rd_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.rd, io: 'rd_mb' },
+    { k: 'disk written', all: countedIn(ioBy), get: (c) => ioBy[c]?.wr_mb ?? null, fmt: (n) => mb(n), tip: GLOSS.wr, io: 'wr_mb' },
+    { k: 'network sent', all: countedIn(ioBy), get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx, io: 'tx_mb' },
+    { k: 'network received', all: countedIn(ioBy), get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx, io: 'rx_mb' },
+    { k: 'peak memory', all: countedIn(res.series?.resident), get: peakGb, fmt: (n) => (n == null ? DASH : fmt(n) + ' GB'),
       tip: 'the most memory the class held at once in the window, sampled while processes ran; hover a cell for the single largest process',
       cellTip: (c) => topTip(c, 'peak_rss_mb', (v) => mb(v), 'largest single process') },
-    { k: 'sessions', get: (c) => traj?.summary?.[c]?.sessions ?? null,
+    { k: 'sessions', all: countedIn(traj?.summary), get: (c) => traj?.summary?.[c]?.sessions ?? null,
       tip: GLOSS.session + '; scripts that only probe an agent are not counted' },
-    { k: 'jobs submitted', group: 'slurm', get: (c) => slurmOf(c, (x) => x.jobs),
+    { k: 'jobs submitted', group: 'slurm', all: countedIn(slBy), get: (c) => slurmOf(c, (x) => x.jobs),
       tip: 'sbatch / srun / salloc submissions that came back with a job id; dry runs (--test-only) are not jobs' },
-    { k: 'GPUs asked', group: 'slurm', get: (c) => slurmOf(c, (x) => x.gpus),
+    { k: 'GPUs asked', group: 'slurm', all: countedIn(slBy), get: (c) => slurmOf(c, (x) => x.gpus),
       fmt: (n) => (n == null ? DASH : `${fint(n)} GPU${n === 1 ? '' : 's'}`),
       tip: 'GPUs on the command line (--gres gpu:N, --gpus), times the tasks of an array; a #SBATCH request in the script is not seen\n' +
         have.map((c) => `${CLS_LBL[c] ?? c}: ${fint(sl.by_class?.[c]?.gpu_jobs ?? 0)} GPU jobs`).join(' · ') },
-    { k: 'GPU-hours asked', group: 'slurm', get: (c) => slurmOf(c, (x) => (x.gpu_jobs ? x.gpu_h : 0)),
+    { k: 'GPU-hours asked', group: 'slurm', all: countedIn(slBy), get: (c) => slurmOf(c, (x) => (x.gpu_jobs ? x.gpu_h : 0)),
       fmt: (n) => (n == null ? DASH : `${fint(n)} GPU·h`),
       tip: GLOSS.gpuh + '\n' +
         have.map((c) => `${CLS_LBL[c] ?? c}: ${fint(sl.by_class?.[c]?.gpu_h_known ?? 0)} of ${fint(sl.by_class?.[c]?.gpu_jobs ?? 0)}`).join(' · ') },
@@ -119,14 +124,13 @@ export const OverviewTab = memo(function OverviewTab({
 
   // Sort by a class's SHARE of each unit (the only thing comparable across rows
   // of different units), within each group, so "asked of Slurm" stays together.
+  // A share is out of every class the unit's panel counted, not the ones the
+  // chips show: turning the IDE off must not hand its share to the others.
   const sort = useSort<string>();
-  const shareOf = (u: UnitRow, c: string) => {
-    const tot = have.reduce((a, x) => a + (u.get(x) ?? 0), 0);
-    const v = u.get(c);
-    return v == null || !tot ? null : (100 * v) / tot;
-  };
+  const wholes = new Map(units.map((u) => [u, wholeOf(u.all, u.get)]));
+  const shareIn = (u: UnitRow, c: string) => shareOf(u.get(c), wholes.get(u)!);
   const sorted = (['node', 'slurm'] as const).flatMap((g) =>
-    sort.sort(units.filter((u) => (u.group ?? 'node') === g), (u, k) => (k === 'unit' ? u.k : shareOf(u, k))),
+    sort.sort(units.filter((u) => (u.group ?? 'node') === g), (u, k) => (k === 'unit' ? u.k : shareIn(u, k))),
   );
 
   return (
@@ -174,7 +178,7 @@ export const OverviewTab = memo(function OverviewTab({
             </thead>
             <tbody>
               {sorted.map((u, i) => {
-                const tot = have.reduce((a, c) => a + (u.get(c) ?? 0), 0);
+                const why = noShare(wholes.get(u)!);
                 const g = u.group ?? 'node';
                 const head = i === 0 || (sorted[i - 1].group ?? 'node') !== g;
                 return (
@@ -188,21 +192,18 @@ export const OverviewTab = memo(function OverviewTab({
                     </tr>
                   )}
                   <tr>
-                    <td><Term tip={u.tip}>{u.k}</Term></td>
+                    <td><Term tip={[u.tip, why].filter(Boolean).join('\n\n') || undefined}>{u.k}</Term></td>
                     {have.map((c) => {
                       const v = u.get(c);
+                      const pct = shareIn(u, c);
                       return (
-                        <td key={c} data-tip={u.cellTip?.(c)}>
+                        <td key={c} data-tip={[u.cellTip?.(c), v != null ? why : null].filter(Boolean).join('\n') || undefined}>
                           {u.io && v ? (
                             <IoNum q={{ title: `${u.k} · ${CLS_LBL[c] ?? c}`, sort: u.io, class: [c], ...coveredBy(io) }}>
-                              <ShareCell pct={tot ? (100 * v) / tot : null} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
+                              <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
                             </IoNum>
                           ) : (
-                            <ShareCell
-                              pct={v == null || !tot ? null : (100 * v) / tot}
-                              sub={u.fmt ? u.fmt(v) : fint(v)}
-                              c={CLS_COL[c]}
-                            />
+                            <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
                           )}
                         </td>
                       );

@@ -1,11 +1,12 @@
 """What a process the collector tagged as an agent actually is.
 
 The collector's classifier (`collector/lib/agent_classify.py`) answers "which
-agent's tree is this?" from argv, and it matches any path under `~/.claude/`,
-`~/.codex/` or `~/.vscode-server/`. That is right for the tree, and wrong for
-the process: `resolve()` makes every argv match its own agent root (`is_agent`,
-`depth` 0, `agent_pid` = itself), so a process that only *mentions* an agent
-path becomes the `agent_pid`, and so the `session_key`, of everything under it.
+agent's tree is this?" from argv, and until it read the program alone it matched
+any path under `~/.claude/`, `~/.codex/` or `~/.vscode-server/`. That is right for
+the tree, and wrong for the process: through schema 7 `resolve()` made every argv
+match its own agent root (`is_agent`, `depth` 0, `agent_pid` = itself), so a
+process that only *mentions* an agent path became the `agent_pid`, and so the
+`session_key`, of everything under it.
 
 Across two weeks of madsys-gpu1 (2026-09-20 .. 10-07) the tagged processes are
 mostly not agents:
@@ -80,6 +81,14 @@ _IDE_SERVER = re.compile(
     r"|\.(?:vscode|cursor|windsurf)-server/cli/servers/[^ ]*/server/(?:node|bin/code-server)(?:\s|$)")
 _IDE_EXE = re.compile(r"^code-[0-9a-f]{6,}")
 _IDE_TYPES = frozenset({"vscode"})
+# Cursor's and Windsurf's servers carry their IDE's own type, which their AI
+# features' processes share (a CURSOR_SANDBOX wrapper, `cursor-agent`): for those
+# two types the server's directory tells the IDE's processes apart. The collector
+# tags an agent by its own type wherever it is installed, so Claude Code or Codex
+# from one of these IDEs' extensions (`~/.cursor-server/extensions/
+# anthropic.claude-code-*/...`) is that agent, as it is from VS Code's.
+_IDE_DIR_TYPES = frozenset({"cursor", "windsurf"})
+_IDE_DIRS = (".cursor-server", ".windsurf-server")
 
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "fish"})
 _TOOL_SHELL = re.compile(r"/\.claude/shell-snapshots/")
@@ -226,8 +235,8 @@ def _role_of(agent_type, command, args):
     if agent_type == "bwrap" or command.startswith(_SANDBOX_PREFIX) \
             or argv0 in ("bwrap", "codex-linux-sandbox"):
         return "sandbox"
-    if agent_type in _IDE_TYPES or ".cursor-server" in (args or "") \
-            or ".windsurf-server" in (args or ""):
+    if agent_type in _IDE_TYPES or (agent_type in _IDE_DIR_TYPES
+                                    and any(d in (args or "") for d in _IDE_DIRS)):
         return "ide" if (_IDE_EXE.match(command) or _IDE_SERVER.search(args or "")) \
             else "helper"
     if command.startswith(_INFRA_PREFIX):

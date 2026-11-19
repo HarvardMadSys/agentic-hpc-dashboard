@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import ask                                         # noqa: E402
+from rc_dashboard.anonymize import Verbatim                          # noqa: E402
 from rc_dashboard import config as configmod                         # noqa: E402
 from rc_dashboard import hours, snapshots                            # noqa: E402
 from rc_dashboard.aggregator import Aggregator                       # noqa: E402
@@ -25,8 +26,11 @@ PY = sys.executable
 
 
 class Cfg:
+    """A service with Ask on, behind a password: Ask runs nowhere else."""
+
     def __init__(self, **kv):
-        self.kv = {"cache.dir": tempfile.mkdtemp()}
+        self.kv = {"cache.dir": tempfile.mkdtemp(), "ask.enabled": True,
+                   "server.auth.password_hash": "scrypt$16$1$1$c2FsdHNhbHQ=$a2V5a2V5a2V5a2V5a2V5a2V5"}
         self.kv.update(kv)
 
     def get(self, dotted, default=None):
@@ -154,6 +158,16 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(ask.describe(Cfg())["agent"], "codex")         # the preset, by name
         self.assertEqual(ask.describe(Cfg(**{"ask.command": "env"}))["agent"], "custom")
 
+    def test_the_page_is_told_the_program_and_nothing_else_of_the_command(self):
+        key = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
+        for cmd in ("env ANTHROPIC_API_KEY=%s claude -p" % key,
+                    ["env", "ANTHROPIC_API_KEY=%s" % key, "/opt/bin/claude", "-p"]):
+            with self.subTest(cmd=cmd):
+                d = ask.describe(Cfg(**{"ask.command": cmd}))
+                self.assertEqual((d["agent"], d["command"]), ("claude", "claude"))
+                self.assertNotIn(key, json.dumps(d))
+        self.assertEqual(ask.describe(Cfg())["command"], "codex")
+
 
 class AskSettingsTest(unittest.TestCase):
     """An ask setting changes the questions, never what a saved window holds:
@@ -211,6 +225,37 @@ class JobTest(unittest.TestCase):
         a = ask.Asker(Cfg(**{"ask.enabled": False, "ask.command": [PY, "-c", "0"]}))
         with self.assertRaises(ValueError):
             a.submit("q", {}, None, "w")
+
+    def test_on_a_pinned_clock_the_agent_is_still_timed(self):
+        # `clock.as_of` freezes time.time: the job is timed on a clock that moves
+        cmd = [PY, "-c", "import sys,time; sys.stdin.read(); time.sleep(0.4); print('ok')"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        with mock.patch("time.time", return_value=time.time()):
+            jid = a.submit("q", {}, None, "w")["id"]
+            end = time.monotonic() + 20
+            while a.view(jid)["state"] not in ("done", "error") and time.monotonic() < end:
+                time.sleep(0.05)
+            v = a.view(jid)
+        self.assertEqual(v["state"], "done", v)
+        self.assertGreaterEqual(v["elapsed_s"], 0.4)
+
+    def test_refused_while_names_are_anonymized_unless_allowed(self):
+        # An answer goes back as the agent wrote it, and the agent can read the
+        # raw feeds: with names masked, a real name it read would be shown.
+        cmd = [PY, "-c", "import sys; sys.stdin.read(); print('ok')"]
+        masked = Cfg(**{"ask.command": cmd, "anonymize.enabled": True})
+        info = ask.describe(masked)
+        self.assertEqual((info["available"], info["error"]), (False, ask.UNMASKED))
+        self.assertIn("ask.unmasked_answers", info["error"])
+        with self.assertRaises(ValueError) as cm:
+            ask.Asker(masked).submit("q", {}, None, "w")
+        self.assertEqual(str(cm.exception), ask.UNMASKED)
+        allowed = Cfg(**{"ask.command": cmd, "anonymize.enabled": True,
+                         "ask.unmasked_answers": True})
+        self.assertTrue(ask.describe(allowed)["available"])
+        a = ask.Asker(allowed)
+        self.assertEqual(wait(a, a.submit("q", {}, None, "w")["id"])["answer"], "ok")
+        self.assertIs(configmod.defaults()["ask"]["unmasked_answers"], False)
 
     def test_one_at_a_time(self):
         cmd = [PY, "-c", "import sys,time; sys.stdin.read(); time.sleep(0.6); print('ok')"]
@@ -476,6 +521,23 @@ class DoneTest(unittest.TestCase):
         self.a.mark_done("j2", 0)
         self.assertEqual(self.a.done_for_prompt()[0]["action"], "email them now")
 
+    def test_only_what_was_written_under_this_masking_goes_as_written(self):
+        # A suggestion is the agent's words: written under the masking in use,
+        # it goes out as written (rewritten, a name a reader planted would come
+        # back as its alias). Kept from before -- names shown, or another salt
+        # -- it holds the data's names, and goes through the masking like them.
+        self.a.masked_by = "salt-a"
+        self.a.mark_done("j1", 0)
+        self.assertNotIn("masked_by", self.a.done_list()["items"][0])
+        for masked_by, written_here in (("salt-a", True), ("salt-b", False), (None, False)):
+            self.a.masked_by = masked_by
+            for got in (self.a.done_list()["items"][0], self.a.mark_done("j1", 0)["items"][0],
+                        self.a.done_for_prompt()[0]):
+                self.assertEqual(type(got["title"]) is Verbatim, written_here, masked_by)
+                self.assertNotIn("masked_by", got)
+        with open(self.a._done_path()) as fh:
+            self.assertEqual(json.load(fh)["items"][0]["masked_by"], "salt-a")
+
 
 class SessionDigestTest(unittest.TestCase):
     """A session for a question: totals, sequence, landmarks, and an outline."""
@@ -703,11 +765,117 @@ class CiteTest(unittest.TestCase):
         self.assertIsNone(a.submit("q", {}, None, "w")["view"])
 
 
+class FailClosedTest(unittest.TestCase):
+    """Ask is off unless turned on, never runs while the service has no
+    password, and the agent gets a short question, a short environment and a
+    directory of its own."""
+
+    def test_off_by_default(self):
+        self.assertIs(configmod.defaults()["ask"]["enabled"], False)
+        info = ask.describe(configmod.Config(configmod.defaults(), {}, None))
+        self.assertFalse(info["enabled"])
+
+    def test_no_password_no_agent(self):
+        mark = os.path.join(tempfile.mkdtemp(), "ran")
+        cfg = Cfg(**{"ask.command": [PY, "-c", "open(%r, 'w')" % mark],
+                     "server.auth.password_hash": ""})
+        info = ask.describe(cfg)
+        self.assertTrue(info["enabled"])
+        self.assertFalse(info["available"])
+        self.assertIn("no password", info["error"])
+        self.assertIn("new-password", info["error"])
+        with self.assertRaises(ValueError) as cm:
+            ask.Asker(cfg).submit("q", PANELS, None, "w")
+        self.assertIn("no password", str(cm.exception))
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_a_long_question_is_refused_whole(self):
+        a = ask.Asker(Cfg(**{"ask.command": [PY, "-c", "import sys; sys.stdin.read(); print('ok')"]}))
+        for n in (ask.MAX_QUESTION + 1, 3000000):
+            with self.subTest(n=n), self.assertRaises(ValueError) as cm:
+                a.submit("x" * n, PANELS, None, "w")
+            self.assertIn("at most %d characters" % ask.MAX_QUESTION, str(cm.exception))
+        v = wait(a, a.submit("x" * ask.MAX_QUESTION, PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "done", v)
+
+    def test_the_prompt_carries_three_earlier_turns_cut_short(self):
+        turns = [{"q": "Q%d" % i + "q" * 5000, "a": "A%d" % i + "a" * 5000} for i in range(5)]
+        p = ask.prompt("now", "{}", "w", history=turns)
+        self.assertEqual(p.count("Earlier question:"), 3)
+        self.assertNotIn("Q1", p)
+        self.assertNotIn("q" * 601, p)
+        self.assertNotIn("a" * 1501, p)
+
+    def test_the_agent_gets_only_the_environment_a_program_needs(self):
+        env = {"RC_DASH_PASSWORD_HASH": "scrypt$the-hash", "SLACK_WEBHOOK": "https://hooks/x",
+               "AWS_SECRET_ACCESS_KEY": "aws", "GITHUB_TOKEN": "gh", "RC_DASH_CACHE_DIR": "/c",
+               "OPENAI_API_KEY": "k", "ANTHROPIC_BASE_URL": "u", "CODEX_HOME": "/h",
+               "LC_ALL": "C.UTF-8", "HTTPS_PROXY": "http://proxy:3128",
+               "XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/b"}
+        cmd = [PY, "-c", "import os, sys; sys.stdin.read(); print('env', *sorted(os.environ))"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        with mock.patch.dict(os.environ, env):
+            v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "done", v)
+        seen = set(v["answer"].split()[1:])
+        for name in ("PATH", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "CODEX_HOME", "LC_ALL",
+                     "HTTPS_PROXY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+            self.assertIn(name, seen)
+        for name in ("RC_DASH_PASSWORD_HASH", "SLACK_WEBHOOK", "AWS_SECRET_ACCESS_KEY",
+                     "GITHUB_TOKEN", "RC_DASH_CACHE_DIR"):
+            self.assertNotIn(name, seen)
+
+    def test_a_cloud_providers_credentials_pass_when_named(self):
+        env = {"AWS_ACCESS_KEY_ID": "a", "AWS_REGION": "us-east-1", "GOOGLE_APPLICATION_CREDENTIALS": "/c",
+               "CLOUD_ML_REGION": "r", "AZURE_OPENAI_KEY": "z", "PATH": "/bin",
+               "RC_DASH_PASSWORD_HASH": "scrypt$the-hash", "RC_DASH_X": "x"}
+        self.assertEqual(set(ask.agent_env(Cfg(), env)), {"PATH"})
+        cfg = Cfg(**{"ask.env_passthrough": ["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
+                                             "CLOUD_ML_REGION", "RC_DASH_*", "RC_DASH_X"]})
+        self.assertEqual(set(ask.agent_env(cfg, env)),
+                         {"PATH", "AWS_ACCESS_KEY_ID", "AWS_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
+                          "CLOUD_ML_REGION"})
+        # and the agent itself gets them
+        cmd = [PY, "-c", "import os, sys; sys.stdin.read(); print('env', *sorted(os.environ))"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd, "ask.env_passthrough": ["AWS_*"]}))
+        with mock.patch.dict(os.environ, env):
+            v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        seen = set(v["answer"].split()[1:])
+        self.assertTrue({"AWS_ACCESS_KEY_ID", "AWS_REGION"} <= seen, seen)
+        self.assertFalse(seen & {"AZURE_OPENAI_KEY", "RC_DASH_PASSWORD_HASH"})
+
+    def test_a_failed_agent_says_its_environment_is_short(self):
+        cmd = [PY, "-c", "import sys; sys.stdin.read(); sys.exit('no credentials found')"]
+        a = ask.Asker(Cfg(**{"ask.command": cmd}))
+        v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "error")
+        self.assertIn("no credentials found", v["error"])
+        self.assertIn("ask.env_passthrough", v["error"])
+
+    def test_its_directory_is_its_own_and_goes_when_it_answers(self):
+        cmd = [PY, "-c", "import os, json, sys; sys.stdin.read(); "
+                         "print('dir', json.dumps([os.getcwd(), os.stat('.').st_mode & 0o777]))"]
+        cfg = Cfg(**{"ask.command": cmd})
+        with open(os.path.join(cfg.kv["cache.dir"], "anonymize.salt"), "w") as fh:
+            fh.write("00" * 32)
+        a = ask.Asker(cfg)
+        v = wait(a, a.submit("q", PANELS, None, "w")["id"])
+        self.assertEqual(v["state"], "done", v)
+        cwd, mode = json.loads(v["answer"].partition(" ")[2])
+        self.assertEqual(os.path.dirname(cwd), os.path.realpath(tempfile.gettempdir()))
+        self.assertTrue(os.path.basename(cwd).startswith("rc-dash-ask-"))
+        self.assertFalse(cwd.startswith(os.path.realpath(cfg.kv["cache.dir"])))
+        self.assertEqual(mode, 0o700)
+        self.assertFalse(os.path.exists(cwd))
+
+
 class AggregatorCiteTest(unittest.TestCase):
     """What the aggregator hands the snapshot so a cited row can be opened."""
 
     def agg(self):
         agg = Aggregator.__new__(Aggregator)
+        agg.cfg = Cfg(**{"ask.command": [PY, "-c", "0"]})
         agg.anon = None
         agg.window = lambda m: {"minutes": 60, "label": "last 1 h"}
         agg.panels = lambda m, v=None: {"panels": {}, "facets": None,
@@ -791,6 +959,23 @@ class AggregatorCiteTest(unittest.TestCase):
         self.assertEqual(found(sessions, "h", 1, None), "h|2026-10-29|agent|apid:1")
         self.assertIsNone(found(sessions, "h", 2, "alice"))
         self.assertIsNone(found(sessions, "other", 1, "alice"))
+
+    def test_a_question_that_cannot_run_reads_nothing(self):
+        cmd = [PY, "-c", "0"]
+        for why, cfg, q in (("no password", Cfg(**{"ask.command": cmd,
+                                                    "server.auth.password_hash": ""}), "q"),
+                            ("off", Cfg(**{"ask.command": cmd, "ask.enabled": False}), "q"),
+                            ("too long", Cfg(**{"ask.command": cmd}), "x" * (ask.MAX_QUESTION + 1))):
+            for ctx in (None, {"suggest": True}, {"parts": [{"panel": "risk"}]},
+                        {"session": "h|d|agent|apid:1"}):
+                with self.subTest(why=why, ctx=ctx):
+                    agg = self.agg()
+                    agg.cfg = cfg
+                    agg.panels = agg.trajectories = agg.live_payload = agg.window = mock.Mock(
+                        side_effect=AssertionError("read before the question was refused"))
+                    with self.assertRaises(ValueError):
+                        agg.ask(q, 60, (), ctx)
+                    agg.asker.submit.assert_not_called()
 
     def test_a_panel_question_states_its_view(self):
         agg = self.agg()

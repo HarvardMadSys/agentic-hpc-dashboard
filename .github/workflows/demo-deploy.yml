@@ -5,6 +5,7 @@ name: demo-deploy
 # runs. It is the same `wrangler deploy` deploy/cloudflare/README.md runs by
 # hand: wrangler builds docker/demo/Dockerfile with the runner's Docker, pushes
 # the image to Cloudflare's registry, and deploys the Worker and the container.
+# Every test suite (ci.yml) runs first; if one fails, the demo stays as it is.
 #
 # develop, not main: the demo is develop's page (the other workflows build
 # nothing from develop because they publish release images; this publishes only
@@ -48,10 +49,18 @@ concurrency:
   group: demo-deploy
   cancel-in-progress: false
 
-# Nothing by default; the job asks for what it reads.
+# Nothing by default; each job asks for what it reads.
 permissions: {}
 
 jobs:
+  # Every test suite first (ci.yml, as a pull request runs it), with no secret and a
+  # read-only token: the deploy waits for it and does not run if it fails.
+  ci:
+    if: github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   deploy:
     # The public demo is develop's page: a run started by hand from another
     # branch does nothing. This is a convenience, not the security boundary: a
@@ -59,6 +68,7 @@ jobs:
     # drop this line. The `demo` environment's develop-only branch rule is what
     # keeps the token from any other branch, and must exist before the secrets.
     if: github.ref == 'refs/heads/develop'
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: read

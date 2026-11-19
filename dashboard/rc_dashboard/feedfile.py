@@ -330,7 +330,7 @@ def _probe_read(fh, pos, limit):
         if not line.strip():
             continue
         try:
-            ts = epoch_of(fastjson.loads(line))
+            ts = epoch_of(fastjson.record(line))
         except ValueError:
             continue
         if ts is not None:
