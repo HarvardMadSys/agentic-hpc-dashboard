@@ -19,6 +19,7 @@ import collections
 import re
 
 from . import INSTANCE_CAP, add_counts, first_in_time, pct, who
+from .phase_rules import _GIT_VALUED, _sub
 
 from ..tool_buckets import BUCKETS, bucket
 
@@ -29,7 +30,11 @@ from ..tool_buckets import BUCKETS, bucket
 COMPUTE_BUCKETS = ("build", "interpreter")
 TRANSFER_BUCKETS = ("net/data",)
 
-# (id, label, axis, severity, regex over "<effective_comm> <args>")
+# (id, label, axis, severity, what it matches)
+#
+# A built-in rule reads the words of the command line (`_WORD_RULES`), and the last field says what
+# it asks of them, as the page shows it. A cluster that changes a rule's pattern (`risk.profile`)
+# gives a regex instead, over "<effective_comm> <args>".
 #
 # axis:
 #   environment-unaware -- it runs, and tells you nothing useful here (no GPU on
@@ -43,33 +48,38 @@ DANGEROUS = [
     # fleet this was written for, false on a GPU dev box like rtx6000a, where
     # nvidia-smi is a perfectly sensible question). See the panel's basis note.
     ("nvidia_smi_login", "nvidia-smi (pointless without a local GPU)",
-     "environment-unaware", "low", r"(?:^|/)nvidia-smi\b"),
+     "environment-unaware", "low", "the command nvidia-smi"),
     ("nvcc_login", "nvcc compile on a login node", "environment-unaware", "low",
-     r"(?:^|/)nvcc\b"),
+     "the command nvcc"),
     ("pip_install", "pip install on a login node", "policy-unaware", "med",
-     r"(?:^|/)pip3?\b[^\n]*\binstall\b"),
+     "the command pip, pip3 or pip3.N, or python -m pip, with the word install"),
     ("conda_install", "conda/mamba install or create on login", "policy-unaware", "med",
-     r"(?:^|/)(?:conda|mamba|micromamba)\b[^\n]*\b(?:install|create|env\s+create)\b"),
+     "the command conda, mamba or micromamba, with the word install or create"),
     ("build_login", "compiler or make on a login node", "policy-unaware", "med",
-     r"(?:^|/)(?:make|cmake|ninja|gcc|g\+\+|clang|nvcc|cargo|go)\b"),
+     "the command make, cmake, ninja, gcc, g++, clang, clang++, nvcc, cargo or go "
+     "(or one with a -N version)"),
     # The compute nodes' names are the cluster's own: `risk.vars.compute_hosts`.
     ("ssh_compute", "ssh straight into a compute node", "policy-unaware", "med",
-     r"(?:^|/)ssh\b[^\n]*\b(?:{{compute_hosts}})[\w.-]*"),
+     r"the command ssh, its destination's host matching \b(?:{{compute_hosts}})"),
     ("server_on_login", "http.server / tensorboard / streamlit on login",
      "policy-unaware", "med",
-     r"-m\s+http\.server|(?:^|/)tensorboard\b|(?:^|/)streamlit\b|(?:^|/)jupyter\b[^\n]*\b(?:lab|notebook)\b"),
+     "-m http.server; the command tensorboard or streamlit; the command jupyter with lab or "
+     "notebook, or jupyter-lab or jupyter-notebook"),
     ("bulk_download", "wget/curl bulk download on login", "policy-unaware", "med",
-     r"(?:^|/)(?:wget|curl)\b[^\n]*(?:-O|--output|-o\s)"),
+     "the command wget or curl, with an option -o or -O (alone or among short options) "
+     "or --output..."),
     ("hf_download", "huggingface download on login", "policy-unaware", "med",
-     r"(?:huggingface-cli|(?:^|/)hf)\b[^\n]*\bdownload\b"),
+     "the command huggingface-cli or hf, with the word download"),
     ("headless_browser", "headless browser swarm", "policy-unaware", "low",
-     r"(?:chromium|chrome|msedge)[^\n]*--headless|(?:^|/)playwright\b|(?:^|/)puppeteer\b"),
+     "chromium, chrome or msedge, then --headless on the same line; playwright or "
+     "puppeteer as the command or a folder of a path"),
     ("git_force_push", "git push --force", "policy-unaware", "low",
-     r"(?:^|/)git\b[^\n]*\bpush\b[^\n]*(?:--force(?!-with-lease)|(?<!\w)-f(?!\w))"),
+     "the command git, subcommand push, with --force or -f (alone or among short options); "
+     "not --force-with-lease"),
     ("rm_rf_shared", "rm -rf against a shared path", "policy-unaware", "HIGH",
-     r"(?:^|/)rm\b[^\n]*-[a-zA-Z]*[rR][a-zA-Z]*f|(?:^|/)rm\b[^\n]*-[a-zA-Z]*f[a-zA-Z]*[rR]"),
+     "the command rm, with -r (or -R, --recursive) and -f (or --force), together or apart"),
     ("chmod_777", "chmod 777", "policy-unaware", "med",
-     r"(?:^|/)chmod\b[^\n]*\b777\b"),
+     "the command chmod, with the mode 777"),
 ]
 
 # (id, label, severity, regex).  NOTHING matched by these is ever emitted --
@@ -120,7 +130,264 @@ def subst(pattern, vars_):
     return _VAR.sub(lambda m: vars_[m.group(1)], pattern)
 
 
-_DANGEROUS = [(i, l, a, s, re.compile(subst(r, DEFAULT_VARS), re.I)) for i, l, a, s, r in DANGEROUS]
+# ------------------------------------------------------- the built-in rules, by word
+#
+# As regexes over the whole line, the built-in rules fired on commands that are none of what they
+# say: `rm notes-draft.txt` was an `rm -rf` (`-draf` held an r and an f), `ls /usr/local/go/bin` a
+# build (`go` in a path), `ssh git@github.com git-upload-pack 'nodejs/node.git'` an ssh to a compute
+# node (`node` in the remote command), `git push --force-with-lease --force-if-includes` a force
+# push, a grep of `.../site-packages/pip/_internal/commands/install.py` a pip install, and
+# `chmod 600 /scratch/job.777.out` a chmod 777. And two took seconds on one line of 4,000
+# characters never seen before (`'/git '*n + 'push '*n`, `'/rm '*s + '-' + 'r'*m`).
+#
+# So a built-in rule reads the words: the command is the record's own program, never a folder of
+# a path; a flag is a word that begins with `-`, read as getopt reads it (`_opts`): short ones may
+# stand together (`-rf`) or apart (`-r -f`) up to `--`, and what follows one that takes a value is
+# that value (`curl -XPOST`), not more flags; and what a rule asks of an argument it asks of that
+# argument (the host an `ssh` goes to, the mode a `chmod` sets). Each rule reads each word once at
+# most. Names and words are compared case-folded, as the regexes were case-insensitive, and
+# options as recorded, as the program reads them (curl's `-O` is not its `-o`).
+
+class _Line:
+    """A command line as the built-in rules read it: `name`, the command's (case-folded); `words`,
+    the words after it, case-folded, and `raw`, the same as recorded; `low`, the whole line,
+    folded. The command's words follow the word that names it -- argv[0], or the script after its
+    interpreter (`/usr/bin/python3 /usr/bin/pip install x`) -- else argv[0]. The script Python is
+    given, past its options (`_python_command`), is the command, as the kernel makes it one run by
+    its `#!` (`python3 -u ~/.local/bin/pip install x` is pip's); so is pip run as a module
+    (`python3 -u -m pip install x`)."""
+
+    __slots__ = ("name", "words", "raw", "low")
+
+    def __init__(self, ec, args, low=None):
+        raw = (args or "").split()
+        words = [w.casefold() for w in raw]
+        name = (ec or "").casefold() or (words[0].rsplit("/", 1)[-1] if words else "")
+        at = next((i for i, w in enumerate(words) if w.rsplit("/", 1)[-1] == name), 0)
+        words, raw = words[at + 1:], raw[at + 1:]
+        run = _python_command(raw) if _PYTHON.match(name) else None
+        if run is not None:
+            k, name = run
+            words, raw = words[k + 1:], raw[k + 1:]
+        self.name, self.words, self.raw = name, words, raw
+        self.low = ("%s %s" % (ec, args)).casefold() if low is None else low
+
+
+def _python_command(raw):
+    """The command a Python interpreter runs, given its arguments as recorded: `(k, name)`, the
+    index in `raw` of the word that names it and the name, folded; or None. Past the interpreter's
+    options -- flags alone or grouped (`-u`, `-uB`, `-OO`), and `-W`, `-X` and
+    `--check-hash-based-pycs` with their values, attached or in the next word -- it is the script,
+    named by its file; or pip run as a module, which runs what the script pip runs, the module
+    named in the next word or the rest of the word (`-m pip`, `-mpip3`). `-c` ends the options
+    with code, `-m` with any other module, and `-` with standard input: no command."""
+    i, n = 0, len(raw)
+    while i < n:
+        w = raw[i]
+        if w == "--":
+            i += 1
+            break
+        if w[:1] != "-":
+            break
+        if w == "-":
+            return None
+        if w[1] == "-":
+            i += 2 if w == "--check-hash-based-pycs" else 1     # with its value, or alone
+            continue
+        for j, c in enumerate(w[1:], 1):
+            if c == "c":
+                return None
+            if c == "m":
+                if j < len(w) - 1:
+                    k, mod = i, w[j + 1:]       # the module is the rest of the word,
+                elif i + 1 < n:
+                    k, mod = i + 1, raw[i + 1]  # or the next
+                else:
+                    return None
+                mod = mod.casefold()
+                return (k, mod) if _PIP.match(mod) else None
+            if c in "WX":
+                if j == len(w) - 1:
+                    i += 1                      # its value is the next word
+                break
+        i += 1
+    return (i, raw[i].casefold().rsplit("/", 1)[-1]) if i < n else None
+
+
+def _opts(words, valued=""):
+    """The options in `words` (as recorded), up to `--`, as getopt reads them: a long option whole,
+    and each letter of a short-option word as `-x`, up to one in `valued`, which takes a value --
+    the rest of its word (`-XPOST`), or else the next word (`-X POST`). The value is no option."""
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        i += 1
+        if w == "--":
+            return
+        if len(w) < 2 or w[0] != "-":
+            continue
+        if w[1] == "-":
+            yield w
+            continue
+        for j, c in enumerate(w[1:], 1):
+            yield "-" + c
+            if c in valued:
+                if j == len(w) - 1:
+                    i += 1                      # its value is the next word
+                break
+
+
+# The short options that take a value: curl(1)'s and wget(1)'s. git push takes one, `-o`.
+_DOWNLOAD_VALUED = {"curl": "AbcCdDeEFHKmoPQrtTuUwxXyYz", "wget": "aABCDeiIlnoOPQRtTUwXY"}
+
+
+_SSH_VALUED = frozenset("BbcDEeFIiJLlmOoPpQRSWw")   # ssh(1)'s options that take a value
+
+
+def _ssh_host(raw):
+    """The host ssh goes to: its first argument that is neither an option nor an option's value
+    (getopt: `-p 22`, `-p22`, `-vp 22`; options read as recorded, `-f` is not `-F`), without the
+    user or a `ssh://` URI's port."""
+    i = 0
+    while i < len(raw):
+        t = raw[i]
+        if t == "--":
+            t = raw[i + 1] if i + 1 < len(raw) else ""
+        elif len(t) > 1 and t[0] == "-":
+            for j, ch in enumerate(t[1:], 1):
+                if ch in _SSH_VALUED:
+                    if j == len(t) - 1:
+                        i += 1                  # its value is the next word
+                    break
+            i += 1
+            continue
+        if t.casefold().startswith("ssh://"):
+            t = t[6:].split("/", 1)[0].rsplit(":", 1)[0]
+        return t.rsplit("@", 1)[-1]
+    return ""
+
+
+def _pip_install(line, _):
+    return bool(_PIP.match(line.name)) and "install" in line.words
+
+
+def _rm_rf(line, _):
+    if line.name != "rm":
+        return False
+    opts = set(_opts(line.raw))
+    return bool(opts & {"-r", "-R", "--recursive"}) and bool(opts & {"-f", "--force"})
+
+
+def _git_force_push(line, _):
+    if line.name != "git":
+        return False
+    sub, rest = _sub(line.raw, _GIT_VALUED)
+    return sub.casefold() == "push" and not {"-f", "--force"}.isdisjoint(_opts(rest, "o"))
+
+
+def _chmod_777(line, _):
+    """chmod's mode is its first word that is not an option, or the word after `--`."""
+    if line.name != "chmod":
+        return False
+    for i, w in enumerate(line.words):
+        if w == "--":
+            return line.words[i + 1:i + 2] == ["777"]
+        if not (len(w) > 1 and w[0] == "-"):
+            return w == "777"
+    return False
+
+
+def _server(line, _):
+    n, w = line.name, line.words
+    if n in ("tensorboard", "streamlit", "jupyter-lab", "jupyter-notebook"):
+        return True
+    if n == "jupyter" and ("lab" in w or "notebook" in w):
+        return True
+    return any(a == "-m" and b == "http.server" for a, b in zip(w, w[1:]))
+
+
+def _download(line, _):
+    valued = _DOWNLOAD_VALUED.get(line.name)
+    return valued is not None and any(o in ("-o", "-O") or o.startswith("--output")
+                                      for o in _opts(line.raw, valued))
+
+
+def _headless(line, _):
+    for part in line.low.split("\n"):
+        h = part.rfind("--headless")
+        if h > 0 and any(part.find(b, 0, h) >= 0 for b in ("chromium", "chrome", "msedge")):
+            return True
+    return bool(_TEST_DRIVER.search(line.low))
+
+
+def _ssh_compute(line, hosts):
+    return line.name == "ssh" and bool(hosts.search(_ssh_host(line.raw)))
+
+
+_PIP = re.compile(r"pip(?:\d+(?:\.\d+)*)?$")
+_PYTHON = re.compile(r"python[\d.]*$")
+_BUILD = frozenset({"make", "cmake", "ninja", "gcc", "g++", "clang", "clang++", "nvcc", "cargo",
+                    "go"})
+_VERSION = re.compile(r"-\d+(?:\.\d+)*$")
+_TEST_DRIVER = re.compile(r"(?:^|/)(?:playwright|puppeteer)\b")    # no backtracking: linear
+
+
+class _Words:
+    """A built-in dangerous rule read on a command line's words: `test(line, var)`, given the
+    cluster variable it reads as a regex (`var`, compiled by `bind`). `search(hay)` reads
+    `"<command> <args>"`, as a regex rule's would."""
+
+    def __init__(self, test, var=None):
+        self.fn, self.var, self.rx = test, var, None
+
+    def bind(self, vars_):
+        """This rule with the cluster's variable compiled; KeyError or re.error as a pattern's."""
+        out = _Words(self.fn, self.var)
+        if self.var:
+            out.rx = re.compile(r"\b(?:%s)" % vars_[self.var], re.I)
+        return out
+
+    def test(self, line):
+        return self.fn(line, self.rx)
+
+    def search(self, hay):
+        ec, _, args = hay.partition(" ")
+        return self.test(_Line(ec, args))
+
+
+_WORD_RULES = {
+    "nvidia_smi_login": _Words(lambda line, _: line.name == "nvidia-smi"),
+    "nvcc_login": _Words(lambda line, _: line.name == "nvcc"),
+    "pip_install": _Words(_pip_install),
+    "conda_install": _Words(lambda line, _: line.name in ("conda", "mamba", "micromamba") and (
+        "install" in line.words or "create" in line.words)),
+    "build_login": _Words(lambda line, _: (line.name in _BUILD
+                                           or _VERSION.sub("", line.name) in _BUILD)),
+    "ssh_compute": _Words(_ssh_compute, "compute_hosts"),
+    "server_on_login": _Words(_server),
+    "bulk_download": _Words(_download),
+    "hf_download": _Words(lambda line, _: line.name in ("huggingface-cli", "hf")
+                          and "download" in line.words),
+    "headless_browser": _Words(_headless),
+    "git_force_push": _Words(_git_force_push),
+    "rm_rf_shared": _Words(_rm_rf),
+    "chmod_777": _Words(_chmod_777),
+}
+
+# Characters of a command line a regex rule reads, at most -- a pattern a cluster gave, or a
+# credential pattern: the collector's in-kernel argv read keeps 4 KB, and a pattern's time on a
+# line can grow faster than the line. Cut at a word (`_bounded`).
+RULE_TEXT = 4096
+
+
+def _bounded(text):
+    if len(text) <= RULE_TEXT:
+        return text
+    k = max(text.rfind(" ", 0, RULE_TEXT + 1), text.rfind("\n", 0, RULE_TEXT + 1))
+    return text[:k if k > 0 else RULE_TEXT]
+
+
+_DANGEROUS = [(i, l, a, s, _WORD_RULES[i].bind(DEFAULT_VARS)) for i, l, a, s, r in DANGEROUS]
 _SECRETS = [(i, l, s, re.compile(r)) for i, l, s, r in SECRETS]
 
 # A literal every match of a pattern must contain, so a command line with none
@@ -338,7 +605,9 @@ class RuleSet:
                 gate = o["gate"]
             spec = {"id": rid, "label": o.get("label", label), "axis": o.get("axis", axis),
                     "severity": o.get("severity", sev), "pattern": pat, "gate": gate,
-                    "source": "changed" if o else "built-in"}
+                    "source": "changed" if o else "built-in",
+                    # read by word, unless the cluster gave the rule a pattern of its own
+                    "words": kind == "dangerous" and "pattern" not in o}
             if o:
                 self.notes["changed"].append({"kind": kind, "id": rid, "fields": sorted(o)})
             specs.append(spec)
@@ -358,7 +627,8 @@ class RuleSet:
         for sp in specs:
             try:
                 resolved = subst(sp["pattern"], self.vars)
-                rx = re.compile(resolved, flags)
+                rx = (_WORD_RULES[sp["id"]].bind(self.vars) if sp.get("words")
+                      else re.compile(resolved, flags))
             except KeyError as e:
                 self.notes["invalid"].append({"kind": kind, "id": sp["id"],
                                               "error": "unset variable %s" % e})
@@ -427,9 +697,13 @@ def _by_type(c):
     return out
 
 class RiskReducer:
-    """`login_compute`, `dangerous` and `secrets` in one pass over `exit`."""
+    """`login_compute`, `dangerous` and `secrets` in one pass over `exit`.
 
-    EVENTS = ("exit", "truncated")
+    Exits only: a process running at a collector stop is written then as
+    `truncated`, and again at its exit after the restart; each is one process,
+    counted once, at its exit."""
+
+    EVENTS = ("exit",)
     KEY = "risk"
 
     # the rule set is the config's, rebuilt by every fresh instance -- never saved
@@ -548,17 +822,32 @@ class RiskReducer:
     def _matches(self, ec, args):
         """Which dangerous and secret patterns a command line trips, by index.
 
-        Only indices are kept: the matched text never leaves `rx.search`."""
+        A built-in dangerous rule reads the line's words (`_Line`, read once for all of them); a
+        regex reads at most RULE_TEXT characters of the line. Only indices are kept: the matched
+        text never leaves `rx.search`."""
         key = (ec, args)
         m = self._match.get(key)
         if m is None:
             hay = "%s %s" % (ec, args)
             low = hay.casefold()
             rs = self.rules
-            m = (tuple(i for i, d in enumerate(rs.dg)
-                       if _passes(rs.dg_gate[i], low) and d[-1].search(hay)),
+            line, text, dg = None, None, []
+            for i, d in enumerate(rs.dg):
+                if not _passes(rs.dg_gate[i], low):
+                    continue
+                rule = d[-1]
+                if isinstance(rule, _Words):
+                    line = line or _Line(ec, args, low)
+                    hit = rule.test(line)
+                else:
+                    text = text if text is not None else _bounded(hay)
+                    hit = rule.search(text)
+                if hit:
+                    dg.append(i)
+            bounded = _bounded(args) if args else args
+            m = (tuple(dg),
                  tuple(i for i, sc in enumerate(rs.sec)
-                       if args and _passes(rs.sec_gate[i], args) and sc[-1].search(args)))
+                       if args and _passes(rs.sec_gate[i], args) and sc[-1].search(bounded)))
             if len(self._match) >= MATCH_CACHE_MAX:
                 self._match.clear()
             self._match[key] = m

@@ -207,6 +207,63 @@ class HistoryTest(unittest.TestCase):
             self.assertEqual(list(st._cache), paths[1:])
         self.assertEqual(st.status()["held"]["replicas"], 2)
 
+    def test_a_replica_whose_table_is_gone_or_cut_short_stands_in_for_nothing(self):
+        """The review's r3: with its table deleted, the manifest still read
+        "current" and the replica was taken -- and a window's plan then left
+        the sealed day out, as if it held nothing in the window. Cut short or
+        emptied, the read raised on every retry. Each is no replica now, and
+        the next round converts the file again."""
+        p = self.write("2026-11-13", "exits", [full("exit", i) for i in range(50)])
+        st = history.HistoryStore(self.cfg)
+        self.assertEqual(st.run_once(), 1)
+        table = fp.out_path(st.roots[os.path.abspath(self.root)], "exit", "2026-11-13",
+                            HOST + ".exits")
+        with open(table, "rb") as fh:
+            whole = fh.read()
+        for cut in (None, len(whole) // 2, 0):
+            with self.subTest(cut=cut):
+                st._cache.clear()                   # as at a start: nothing taken yet
+                if cut is None:
+                    os.unlink(table)
+                else:
+                    with open(table, "wb") as fh:
+                        fh.write(whole[:cut])
+                self.assertIsNone(st.replica_for(p))
+                todo, _prune = st.discover()
+                self.assertEqual([x for _d, x, _o in todo], [p])
+                self.assertEqual(st.run_once(), 1)
+                self.assertIsInstance(st.replica_for(p), replica.Replica)
+                with open(table, "rb") as fh:
+                    whole = fh.read()
+
+    def test_a_replica_a_read_finds_broken_is_let_go_and_said_so(self):
+        """A table damaged under a replica already taken, its size intact: the
+        read goes on from the file (here a window's plan, which raised), the
+        store lets the replica go and keeps the error the Feeds tab shows, and
+        the next round converts the file again."""
+        from rc_dashboard import export
+        p = self.write("2026-11-13", "exits", [full("exit", i) for i in range(50)])
+        st = history.HistoryStore(self.cfg)
+        st.run_once()
+        replica.install(st.replica_for, st.replica_failed)      # as `start` does
+        self.assertIsInstance(replica.for_path(p), replica.Replica)
+        table = fp.out_path(st.roots[os.path.abspath(self.root)], "exit", "2026-11-13",
+                            HOST + ".exits")
+        size = os.path.getsize(table)
+        with open(table, "r+b") as fh:
+            fh.write(b"\0" * size)
+        plan, _total = export.window_plan([self.root], 0)
+        self.assertEqual([(e["path"], e["start"]) for e in plan], [(p, 0)])
+        s = st.status()
+        self.assertEqual(s["read_failures"], 1)
+        self.assertEqual([e["file"] for e in s["errors"]], [p])
+        self.assertIn("read as JSONL", s["errors"][0]["error"])
+        self.assertIsNone(st.replica_for(p))
+        todo, _prune = st.discover()
+        self.assertEqual([x for _d, x, _o in todo], [p])
+        self.assertEqual(st.run_once(), 1)
+        self.assertIsInstance(st.replica_for(p), replica.Replica)
+
     def test_lookups_are_counted(self):
         """What /api/feeds says of the store's use: a sealed file asked for is
         answered from its replica, or left to the JSONL; any other file is no

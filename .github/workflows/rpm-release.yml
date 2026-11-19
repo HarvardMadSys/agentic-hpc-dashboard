@@ -39,15 +39,22 @@ jobs:
     steps:
       - name: Install build tooling
         run: |
-          dnf -y install rpm-build rpmdevtools git-core
+          # python3 is EL8's 3.6, what the collector runs on, for its tests below;
+          # procps-ng for the ps those tests' node snapshots read (the image has none)
+          dnf -y install rpm-build rpmdevtools git-core python3 procps-ng
 
+      # Actions pinned to a commit, not a tag, since this job can write releases.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Nothing is built or published from a collector whose tests fail.
+      - name: Collector tests
+        run: python3 -m unittest discover -s collector/tests -q
 
       - name: Compute version and release
         id: ver
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             # Strip the leading v: v1.2.3 -> 1.2.3
             version="${GITHUB_REF_NAME#v}"
             release="1"
@@ -61,8 +68,13 @@ jobs:
           echo "release=${release}" >> "$GITHUB_OUTPUT"
           echo "Building ebpfm-collector ${version}-${release}"
 
+      # The version is the tag's name, text whoever pushed it chose: it reaches the
+      # script as data, not pasted into it.
       - name: Build RPM
         id: build
+        env:
+          EBPFM_VERSION: ${{ steps.ver.outputs.version }}
+          EBPFM_RELEASE: ${{ steps.ver.outputs.release }}
         run: |
           set -euo pipefail
           topdir="$(pwd)/rpmbuild"
@@ -76,8 +88,8 @@ jobs:
           cp packaging/rpm/ebpfm-collector.spec "$topdir/SPECS/"
           rpmbuild \
             --define "_topdir $topdir" \
-            --define "_ebpfm_version ${{ steps.ver.outputs.version }}" \
-            --define "_ebpfm_release ${{ steps.ver.outputs.release }}" \
+            --define "_ebpfm_version ${EBPFM_VERSION}" \
+            --define "_ebpfm_release ${EBPFM_RELEASE}" \
             -bb "$topdir/SPECS/ebpfm-collector.spec"
           rpm_path="$(find "$topdir/RPMS" -name '*.rpm' | head -n1)"
           echo "rpm_path=${rpm_path}" >> "$GITHUB_OUTPUT"
@@ -88,7 +100,7 @@ jobs:
           rpm -qpl "$rpm_path"
 
       - name: Upload RPM as workflow artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ${{ steps.build.outputs.rpm_name }}
           path: ${{ steps.build.outputs.rpm_path }}
@@ -96,7 +108,7 @@ jobs:
 
       - name: Attach RPM to GitHub Release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: ${{ steps.build.outputs.rpm_path }}
           fail_on_unmatched_files: true

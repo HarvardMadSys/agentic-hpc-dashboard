@@ -14,6 +14,7 @@ import gzip
 import io
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -368,7 +369,7 @@ class SelfPathTest(unittest.TestCase):
     happened to work, which is why the collector's own test runs missed it."""
 
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def test_self_is_resolved_absolute(self):
         self.assertIn('SELF="$(cd "$(dirname "$0")"', self.src)
@@ -681,6 +682,160 @@ CLAUDE_VSCODE = (HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.30
                  'resources/native-binary/claude')
 
 
+def _node_tier_classify():
+    """node_snapshot.py's own copy of classify(), loaded by itself: importing the
+    module takes a snapshot. The copy runs from `_AGENT_PATTERNS` to the function
+    after `classify_agent`."""
+    path = _ROOT / 'node_snapshot.py'
+    src = path.read_text(encoding='utf-8')
+    body = ast.parse(src).body
+    start = next(n.lineno for n in body if isinstance(n, ast.Assign)
+                 and any(getattr(t, 'id', None) == '_AGENT_PATTERNS' for t in n.targets))
+    end = next(n.lineno for n in body if isinstance(n, ast.FunctionDef)
+               and n.name == 'parse_proc_tree')
+    ns = {'re': re}
+    exec(compile(''.join(src.splitlines(True)[start - 1:end - 1]), str(path), 'exec'), ns)
+    return ns['classify_agent']
+
+
+class ClassifyTest(unittest.TestCase):
+    """The classifier reads the program a command line runs, and the runtime
+    artifacts only an agent writes. It matched every word, so on a login node
+    a human's command that named an agent became an agent root of its own."""
+
+    NOT_AGENTS = (
+        # the review's six, each an agent root at a human's prompt
+        'grep claude notes.txt',
+        'vim ' + HOME + '/.claude/CLAUDE.md',
+        'cat ' + HOME + '/.claude/settings.json',
+        'git commit -m ask claude about this',
+        'git clone https://github.com/openai/codex',
+        'pip install claude-agent-sdk',
+        # a multiplexer named after its agent: the server holding every pane
+        'tmux new-session -s claude',
+        'screen -S codex',
+        # the agent run elsewhere, installed, or its files read
+        'srun --pty claude',
+        'npm install -g @openai/codex',
+        'python3 -m pip install claude-agent-sdk',
+        'cat ' + HOME + '/.claude/shell-snapshots/snapshot-zsh-1.sh',
+        'sh -c grep -r claude ' + HOME + '/notes',
+        'ls ' + HOME + '/.vscode-server',
+        'rm -rf ' + HOME + '/.cursor-server',
+        'vim ' + HOME + '/.cursor/mcp.json',
+        'ls /usr/bin/bwrap',
+        # a runtime's marker named or printed, not set in the program's environment
+        'grep -r CURSOR_SANDBOX .',
+        'rg WINDSURF_STATE ' + HOME + '/notes',
+        'less ' + HOME + '/windsurf-terminal.log',
+        'echo CURSOR_SANDBOX=1',
+        'grep CURSOR_SANDBOX=1 f',
+        'env FOO=1 grep CURSOR_SANDBOX=1 f',
+        'echo WINDSURF_STATE=x',
+        'grep WINDSURF_STATE=1 f',
+        'env FOO=1 grep WINDSURF_STATE=1 f',
+        # another variable: names are case-sensitive
+        'cursor_sandbox=1 bash -c make',
+        # the user's own scripts under ~/.claude/, run by hand
+        'python3 ' + HOME + '/.claude/statusline.py',
+        'bash ' + HOME + '/.claude/hooks/check.sh',
+        '/bin/bash ' + HOME + '/.claude/hooks/command-guard.sh',
+        'node ' + HOME + '/.claude/plugins/cache/x/server/index.js',
+        # a project's own program in a Claude worktree: a venv's console script
+        HOME + '/repo/.claude/worktrees/fix-1/.venv/bin/python3 ' + HOME
+        + '/repo/.claude/worktrees/fix-1/.venv/bin/pytest -q',
+        '-bash',
+        '',
+    )
+
+    AGENTS = (
+        # argv[0], by name or by where it is installed
+        ('claude', 'claude_code'),
+        (CLAUDE_VSCODE + ' --output-format stream-json', 'claude_code'),
+        (HOME + '/.local/share/claude/versions/2.1.282 --session-id 08749fc1', 'claude_code'),
+        # each way Claude Code is installed: by its name wherever it is, the local
+        # installer's launcher, npm's bin link run through its #! line, the Agent
+        # SDK's own binary (tests/test_surfaces.py's shape)
+        (HOME + '/.claude/bin/claude', 'claude_code'),
+        (HOME + '/.claude/local/claude --resume', 'claude_code'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/claude --resume', 'claude_code'),
+        (HOME + '/kemp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude '
+         '--output-format stream-json', 'claude_code'),
+        (HOME + '/.claude/remote/ccd-cli/2.1.286 --output-format stream-json', 'claude_code'),
+        (CODEX_STANDALONE + ' app-server --listen unix://', 'codex'),
+        (HOME + '/.codex/tmp/arg0/codex-arg0lL3/codex-linux-sandbox --sandbox-policy-cwd '
+         + HOME + '/w', 'codex'),
+        (HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 --cli-data-dir x', 'vscode'),
+        # an interpreter's script
+        ('node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js', 'claude_code'),
+        ('node ' + HOME + '/.nvm/versions/node/v22.22.0/bin/codex exec fix it', 'codex'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/copilot', 'copilot'),
+        ('/bin/bash ' + HOME + '/stubs/claude -p x', 'claude_code'),
+        (HOME + '/proj/.venv/bin/python -I /tmp/tmp8vrbdxsm/bin/claude -p', 'claude_code'),
+        ('python3 -O -W ignore /tmp/tmp8vrbdxsm/bin/codex exec', 'codex'),
+        ('deno run -A ' + HOME + '/.claude/local/cli.js', 'claude_code'),
+        ('node /x/.claude/cli.js', 'claude_code'),
+        (HOME + '/.claude/remote/srv/89cb/server --serve --socket x.sock', 'claude_code'),
+        # through a wrapper, a package runner, a shell's -c command
+        ('env FOO=1 claude --resume', 'claude_code'),
+        ('nohup codex exec fix it', 'codex'),
+        ('timeout -s KILL 600 claude -p x', 'claude_code'),
+        ('npx -y @anthropic-ai/claude-code -p x', 'claude_code'),
+        ('npm exec -- @openai/codex', 'codex'),
+        ('node /usr/bin/npx @openai/codex', 'codex'),
+        ('sh -c exec claude --resume', 'claude_code'),
+        ('bash -lc codex exec fix it', 'codex'),
+        ('bash -o pipefail -c claude -p x', 'claude_code'),
+        # runtime artifacts: Claude Code's tool-call shell, bare and behind the
+        # sandbox runtime's prologue, and Cursor's sandbox marker
+        (SNAP + "'git status'", 'claude_code'),
+        ('/bin/bash -c -l source ' + HOME + '/.claude/shell-snapshots/snapshot-bash-1.sh '
+         "&& eval 'make'", 'claude_code'),
+        ('bash -c exec 3<&- || exit 126; source ' + HOME + '/.claude/shell-snapshots/'
+         "snapshot-bash-1.sh && eval 'ls'", 'claude_code'),
+        ('CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('env CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('bash -c CURSOR_SANDBOX=1 make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 --ro-bind / / /bin/bash -c make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 -- /bin/bash -c make', 'cursor'),
+        ('WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('env WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('bwrap --setenv WINDSURF_STATE /tmp/ws --ro-bind / / /bin/bash', 'windsurf'),
+        (HOME + '/.local/bin/windsurf-terminal --pty', 'windsurf'),
+        # a bwrap, by what it confines; past the `--` that ends its options, a
+        # --setenv is its command's argument (grep's here), not a Cursor sandbox
+        ('bwrap --ro-bind / / /bin/true', 'bwrap'),
+        ('bwrap --ro-bind / / claude', 'claude_code'),
+        ('bwrap --ro-bind / / -- grep -r --setenv CURSOR_SANDBOX .', 'bwrap'),
+    )
+
+    def test_a_command_that_only_names_an_agent_is_untagged(self):
+        for args in self.NOT_AGENTS:
+            with self.subTest(args=args[:70]):
+                self.assertIsNone(C.classify(args))
+
+    def test_the_program_or_a_runtime_artifact_is_tagged(self):
+        for args, want in self.AGENTS:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(C.classify(args), want)
+
+    def test_an_agent_inside_an_ide_host_is_the_agent(self):
+        self.assertEqual(C.classify('node ' + HOME + '/.vscode-server/extensions/'
+                                    'anthropic.claude-code-2.0.1/cli.js'), 'claude_code')
+        self.assertEqual(C.classify(HOME + '/.cursor-server/extensions/openai.chatgpt-26.1.0/bin/'
+                                    'linux-x86_64/codex app-server'), 'codex')
+
+    def test_the_node_tiers_copy_agrees(self):
+        """node_snapshot.py keeps a copy of its own (VENDORED.md), which tags
+        the pids of proc_tree.agents."""
+        classify_agent = _node_tier_classify()
+        lines = ([args for _t, _c, args, _r in AgentRoleTest.CASES] + list(self.NOT_AGENTS)
+                 + [args for args, _want in self.AGENTS])
+        for args in lines:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(classify_agent(args), C.classify(args))
+
+
 class AgentRoleTest(unittest.TestCase):
     """What a classifier-tagged process is, on argv shapes seen on madsys-gpu1
     from 2026-09-20 to 10-07 and on the FAS login nodes from 2026-10-20 to 10-28.
@@ -804,15 +959,29 @@ class AgentRoleTest(unittest.TestCase):
             with self.subTest(args=args[:70]):
                 self.assertEqual(T.agent_role(agent_type, command, args), want)
 
+    # Shapes the classifier tagged only for an agent's path among their arguments,
+    # until it read the program alone: the agent binary run as rg or ugrep, which
+    # only its comm (a version) says, and a shell or a command on an agent's files.
+    # Records from before carry them, and the dashboard's roles.py reads those. In a
+    # tree each is its tree's process now, as any untagged child is.
+    UNTAGGED = frozenset((
+        'rg --no-config --files --hidden ' + HOME + '/.claude/plugins',
+        'ugrep -G --ignore-files --hidden -I -rn foo',
+        'sh -c ls -1 ' + HOME + '/.claude/projects/x',
+        'chmod 700 ' + HOME + '/.claude/remote',
+        'mkdir -p ' + HOME + '/.codex/packages/app-server-daemon',
+        "sh -c printf '%b' " + HOME + '/.codex/x',
+    ))
+
     def test_each_shape_is_one_the_classifier_tags(self):
         """agent_role() is only asked about tagged processes, so a shape here
-        that the classifier would not tag tests nothing. `ugrep -G ...` names no
-        agent path: it is tagged only when its pattern or path does."""
+        that the classifier would not tag tests nothing, but for UNTAGGED."""
         for _agent_type, _command, args, _want in self.CASES:
-            if args.startswith('ugrep'):
-                continue
             with self.subTest(args=args[:70]):
-                self.assertIsNotNone(C.classify(args))
+                if args in self.UNTAGGED:
+                    self.assertIsNone(C.classify(args))
+                else:
+                    self.assertIsNotNone(C.classify(args))
 
     def test_a_comm_the_kernel_cut_still_matches(self):
         self.assertEqual(T.agent_role('codex', 'codex-linux-san', 'x'), 'sandbox')
@@ -838,6 +1007,31 @@ class AgentRoleTest(unittest.TestCase):
                          'agent')
         self.assertEqual(T.agent_role('claude_code', 'claude',
                                       'claude -p what is --claude-in-chrome-mcp'), 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_that_agent(self):
+        """As the dashboard's roles.py (tests/test_sessions.py): the tag decides,
+        not a path under ~/.cursor-server/ or ~/.windsurf-server/, which made
+        an extension's session the IDE's `helper`. The IDE's own processes keep
+        their roles."""
+        ext = '/extensions/anthropic.claude-code-2.1.300-linux-x64/resources/native-binary/claude'
+        for ide in ('cursor', 'windsurf'):
+            srv = '%s/.%s-server' % (HOME, ide)
+            for agent_type, command, args, want in (
+                    ('claude_code', 'claude', srv + ext + ' --output-format stream-json', 'agent'),
+                    ('claude_code', 'claude', srv + ext + ' auth status --json', 'probe'),
+                    ('codex', 'codex', srv + '/extensions/openai.chatgpt-26.1007.21434-linux-x64/bin/'
+                     'linux-x86_64/codex app-server --analytics-default-enabled', 'agent'),
+                    ('claude_code', 'claude', 'claude --add-dir ' + srv + '/data '
+                     '--dangerously-skip-permissions', 'agent'),
+                    (ide, 'node', srv + '/bin/4fe60c8b/node ' + srv + '/bin/4fe60c8b/out/'
+                     'server-main.js --connection-token=x', 'ide'),
+                    (ide, 'node', srv + '/cli/servers/Stable-07f/server/node --dns-result-order='
+                     'ipv4first ' + srv + '/cli/servers/Stable-07f/server/out/bootstrap-fork '
+                     '--type=extensionHost', 'ide'),
+                    (ide, 'cpuUsage.sh', '/bin/bash ' + srv + '/cli/servers/Stable-a44/server/out/'
+                     'vs/base/node/cpuUsage.sh 123', 'helper')):
+                with self.subTest(ide=ide, args=args[len(HOME):70]):
+                    self.assertEqual(T.agent_role(agent_type, command, args), want)
 
 
 class AgentRootTest(unittest.TestCase):
@@ -959,19 +1153,40 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(T.tree_root(501), 500)
 
     def test_outside_any_tree_a_tagged_process_is_still_a_root(self):
-        """A human's `claude --version`, or chmod on ~/.claude/, at a prompt:
-        nothing above it is in an agent tree, so it is attributed exactly as
-        before (actor, actor3, its own session)."""
-        for pid, comm, args in ((60, 'claude', 'claude --version'),
-                                (61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')):
-            self.add(pid, 50, comm, args, tty='pts/1')
-            self.assertEqual(self.who(pid), (pid, 0, True))
-            m = T.proc[pid]
-            self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
-            ident = T._base_identity(m, 'agent', 'ancestry')
-            self.assertEqual(ident['actor3'], 'agent')
-            self.assertEqual(ident['agent_type'], 'claude_code')
-            self.assertEqual(ident['session_key'], 'apid:%d' % pid)
+        """A human's `claude --version` at a prompt: nothing above it is in an
+        agent tree, so it is attributed exactly as before (actor, actor3, its own
+        session)."""
+        self.add(60, 50, 'claude', 'claude --version', tty='pts/1')
+        self.assertEqual(self.who(60), (60, 0, True))
+        m = T.proc[60]
+        self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
+        ident = T._base_identity(m, 'agent', 'ancestry')
+        self.assertEqual(ident['actor3'], 'agent')
+        self.assertEqual(ident['agent_type'], 'claude_code')
+        self.assertEqual(ident['session_key'], 'apid:60')
+
+    def test_a_command_that_only_mentions_an_agent_is_the_humans(self):
+        """At a human's prompt a command whose arguments name an agent, or an
+        agent's files, runs no agent. The classifier matched every word, so each
+        was an agent root of its own: actor ('agent', 'ancestry'), is_agent,
+        depth 0, a session apiece. Inside an agent's tree the same command is
+        the agent's, as any untagged child."""
+        for pid, comm, args in ((61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote'),
+                                (62, 'grep', 'grep claude notes.txt'),
+                                (63, 'vim', 'vim ' + HOME + '/.claude/CLAUDE.md'),
+                                (64, 'cat', 'cat ' + HOME + '/.claude/settings.json'),
+                                (65, 'git', 'git commit -m ask claude about this'),
+                                (66, 'git', 'git clone https://github.com/openai/codex'),
+                                (67, 'pip', 'pip install claude-agent-sdk')):
+            with self.subTest(args=args):
+                self.add(pid, 50, comm, args, tty='pts/1')
+                self.assertFalse(T.resolve(pid))
+                m = T.proc[pid]
+                self.assertEqual((m['is_agent'], m['agent_pid'], m['depth']), (False, None, None))
+                self.assertEqual(T.actor_of(m), ('human', 'tty'))
+                self.assertEqual(T._base_identity(m, 'human', 'tty')['actor3'], 'human')
+                self.add(pid + 1000, 200, comm, args)       # under a Bash tool call
+                self.assertEqual(self.who(pid + 1000), (100, 2, False))
 
     def test_an_ide_probe_is_in_the_ide_tree_and_its_agent_is_not(self):
         """The extension host runs `claude auth status` every few minutes. It is
@@ -984,6 +1199,30 @@ class AgentRootTest(unittest.TestCase):
                          'human-vscode')
         self.assertEqual(self.who(703), (703, 0, True))
         self.assertEqual(T._base_identity(T.proc[703], 'agent', 'ancestry')['actor3'], 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_its_own_root(self):
+        """As from VS Code's (703 above). Its path under ~/.cursor-server/ made
+        agent_role() call it the IDE's helper, so the session joined the IDE's
+        tree: agent_type `cursor` on it and on every tool call it ran, which the
+        dashboard counts as IDE work."""
+        for base, ide in ((800, 'cursor'), (900, 'windsurf')):
+            srv = '%s/.%s-server/cli/servers/Stable-07f/server/' % (HOME, ide)
+            self.add(base, 1, 'node', srv + 'node ' + srv + 'out/server-main.js '
+                     '--connection-token=x', user='v', uid=1001)
+            self.add(base + 1, base, 'node', srv + 'node --dns-result-order=ipv4first ' + srv
+                     + 'out/bootstrap-fork --type=extensionHost', user='v', uid=1001)
+            self.add(base + 2, base + 1, 'claude', '%s/.%s-server/extensions/anthropic.claude-code-'
+                     '2.1.300-linux-x64/resources/native-binary/claude --output-format stream-json'
+                     % (HOME, ide), user='v', uid=1001)
+            self.add(base + 3, base + 2, 'git', 'git status', user='v', uid=1001)
+            with self.subTest(ide=ide):
+                self.assertEqual(self.who(base + 1), (base, 1, False))
+                self.assertEqual(T.proc[base + 1]['agent_type'], ide)
+                self.assertEqual(self.who(base + 2), (base + 2, 0, True))
+                self.assertEqual(self.who(base + 3), (base + 2, 1, False))
+                ident = T._base_identity(T.proc[base + 3], 'agent', 'ancestry')
+                self.assertEqual((ident['agent_type'], ident['session_key']),
+                                 ('claude_code', 'apid:%d' % (base + 2)))
 
     def test_a_bwrap_in_an_agent_tree_still_reads_as_bwrap(self):
         """bwrap takes its agent's tree and agent_type, and sandbox_ancestry,
@@ -1008,7 +1247,7 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(self.who(242), (100, 3, False))
 
     def test_an_exec_out_of_any_tree_clears_the_old_attribution(self):
-        self.add(62, 1, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')
+        self.add(62, 1, 'claude', 'claude --version')
         self.assertEqual(self.who(62), (62, 0, True))
         T.proc[62].update(comm='sleep', args='sleep 1')
         T._invalidate_attribution(62)
@@ -1039,6 +1278,200 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual({p: r['depth'] for p, r in recs.items()}, {200: 1, 201: 2, 210: 1})
         self.assertFalse(any(r['is_agent'] for r in recs.values()))
         self.assertEqual(recs[200]['schema_version'], 8)
+
+
+def _resolve_recursive(table, pid, m=None):
+    """resolve() as it was through 2026-11, one recursion per ancestor: the
+    reference DeepAncestryTest holds the loop to, on tables it can recurse."""
+    if m is None:
+        m = table.get(pid)
+    if m is None:
+        return False
+    if m['attributed'] is not None:
+        return m['attributed']
+    own_args = m['args'] if m.get('argv_source') != 'inherit' else None
+    tag = T.classify(own_args) if own_args else None
+    m['tag'] = tag
+    if tag is not None and T.agent_role(tag, T._command_of(m), own_args) == 'agent':
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    ppid = m['ppid']
+    pm = table.get(ppid) if ppid and ppid != pid else None
+    if pm is not None and T._born_after(pm, m.get('fork_ktime')):
+        pm = None
+    if pm is not None and _resolve_recursive(table, ppid, pm):
+        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
+                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
+        return True
+    if tag is not None:
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
+    return False
+
+
+class DeepAncestryTest(unittest.TestCase):
+    """resolve() walks up a parent chain in a loop. It recursed once per
+    ancestor not resolved yet, so a chain about 1,000 deep -- a script that runs
+    itself, with a URL in the last one's argv -- raised RecursionError out of
+    the seed (the collector exited at start-up, and systemd restarted it into
+    the same crash), out of every residency tick, which then wrote nothing, and
+    out of the flush at stop, whose stop record then said `truncated: 0`."""
+
+    ATTRS = ('attributed', 'is_agent', 'agent_pid', 'agent_type', 'depth', 'tag')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._handler_errors.clear()
+        T._HOST_CACHE.clear(); T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T.writer, T.read_stat, T.list_pids, T._read_vmrss_kb, T.read_io,
+                       T.FEATURES, T.MIN_UID, T.actor_of)
+        T.writer = self.W = FakeWriter()
+        T.read_stat = _fake_stat
+        T._read_vmrss_kb = lambda pid: 0
+        T.read_io = lambda pid: None
+        T.FEATURES = set()
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        (T.writer, T.read_stat, T.list_pids, T._read_vmrss_kb, T.read_io,
+         T.FEATURES, T.MIN_UID, T.actor_of) = self._saved
+        T.proc.clear(); T._children.clear()
+        T._handler_errors.clear()
+        T._HOST_CACHE.clear(); T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def chain(self, depth, top='claude', leaf_args=None, deepest_first=False):
+        """An agent (`top`) and `depth` shells under it, each the child of the
+        one before. `deepest_first` orders the table as /proc may: a process
+        before its ancestors, so the first resolve() walks the whole chain."""
+        T.proc_add(100, 1, comm=top, args=top, user='u', uid=1000, tty='pts/1')
+        prev = 100
+        for i in range(depth):
+            m = T.proc_add(1000 + i, prev, comm='sh', args='sh r.sh %d' % i,
+                           argv_source='proc', user='u', uid=1000)
+            prev = m['pid']
+        if leaf_args:
+            T.proc[prev]['args'] = leaf_args
+        if deepest_first:
+            items = list(T.proc.items())
+            T.proc.clear()
+            T.proc.update(reversed(items))
+        return T.proc[prev]
+
+    def test_a_chain_far_deeper_than_the_recursion_limit_resolves(self):
+        leaf = self.chain(5000)
+        self.assertTrue(T.resolve(leaf['pid'], leaf))
+        self.assertEqual((leaf['agent_pid'], leaf['depth'], leaf['is_agent']), (100, 5000, False))
+        mid = T.proc[1000 + 2499]
+        self.assertEqual((mid['attributed'], mid['agent_pid'], mid['depth']), (True, 100, 2500))
+        self.assertEqual(T.tree_root(leaf['pid']), 100)
+
+    def test_with_no_agent_above_it_the_chain_is_nobodys(self):
+        leaf = self.chain(5000, top='bash')
+        self.assertFalse(T.resolve(leaf['pid']))
+        self.assertTrue(all(m['attributed'] is False for m in T.proc.values()))
+
+    def test_a_parent_loop_ends_the_walk(self):
+        """pids that loop back on themselves (a parent's pid recycled under its
+        own descendant) end the walk as no parent does; the recursion never
+        returned from them."""
+        T.proc_add(2001, 2002, comm='ls', args='ls', user='u', uid=1000)
+        T.proc_add(2002, 2003, comm='sh', args='sh -c ls', user='u', uid=1000)
+        # tagged without being an agent runtime: a probe, its own root outside any
+        # tree (a mention such as `chmod ~/.claude/...` is no longer tagged at all)
+        T.proc_add(2003, 2002, comm='claude', args='claude --version', user='u', uid=1000)
+        self.assertTrue(T.resolve(2001))
+        # the loop's last process, tagged, is the root its descendants attach to
+        self.assertEqual([(T.proc[p]['agent_pid'], T.proc[p]['depth']) for p in (2001, 2002, 2003)],
+                         [(2003, 2), (2003, 1), (2003, 0)])
+        T.proc_add(2101, 2102, comm='ls', args='ls', user='u', uid=1000)
+        T.proc_add(2102, 2101, comm='sh', args='sh -c ls', user='u', uid=1000)
+        self.assertFalse(T.resolve(2101))
+        self.assertIs(T.proc[2102]['attributed'], False)
+
+    def test_the_loop_attributes_as_the_recursion_did(self):
+        """Random forests of agents, tagged helpers, inherited argv and recycled
+        parents, each resolved in a random order by both."""
+        import copy
+        import random
+        rnd = random.Random(7)
+        argvs = [('claude', 'claude'), ('claude', 'claude -p summarise'), ('codex', 'codex'),
+                 ('zsh', SNAP + "'git status'"), ('chmod', 'chmod 700 ' + HOME + '/.claude/remote'),
+                 ('bwrap', 'bwrap --ro-bind / / /bin/true'), ('codex', 'codex --version'),
+                 ('2.1.291', RC_WORKER), ('git', 'git status'), ('python3', 'python3 train.py'),
+                 ('sh', 'sh -c make'), ('node', None)]
+        for trial in range(40):
+            T.proc.clear(); T._children.clear()
+            n = rnd.randint(2, 150)
+            for pid in range(2, n + 2):
+                comm, args = rnd.choice(argvs)
+                ppid = rnd.choice([1, 0, pid, 99999] + list(range(2, pid)) * 3)
+                m = T.proc_add(pid, ppid, comm=comm, args=args, user='u', uid=1000,
+                               argv_source=rnd.choice(['proc', 'kernel', 'inherit']),
+                               fork_ktime=rnd.choice([None, 10 * pid, 10 * pid, 5]))
+            ref = copy.deepcopy(T.proc)
+            order = list(T.proc)
+            rnd.shuffle(order)
+            for pid in order:
+                self.assertEqual(T.resolve(pid), _resolve_recursive(ref, pid), (trial, pid))
+            for pid in T.proc:
+                self.assertEqual([T.proc[pid][k] for k in self.ATTRS],
+                                 [ref[pid][k] for k in self.ATTRS], (trial, pid))
+
+    def test_the_seed_survives_a_deep_chain(self):
+        self.chain(1200, leaf_args='bash -c sleep 999999; : http://a.example.org/x',
+                   deepest_first=True)
+        T.list_pids = lambda: set()               # the table is in already
+        T.seed_existing()
+        self.assertEqual(T._HOST_WANT.get_nowait(), 'a.example.org')
+        self.assertEqual(dict(T._handler_errors), {})
+
+    def test_one_process_the_seed_cannot_read_is_counted_and_skipped(self):
+        self.chain(3, leaf_args='curl https://a.example.org/x')
+        T.proc_add(90, 1, comm='curl', args='curl https://b.example.org/', user='u', uid=1000,
+                   tty='pts/2')
+        real = T.actor_of
+
+        def actor_of(m):
+            if m['pid'] == 90:
+                raise ValueError('unreadable')
+            return real(m)
+        T.actor_of = actor_of
+        T.list_pids = lambda: set()
+        T.seed_existing()
+        self.assertEqual(T._HOST_WANT.get_nowait(), 'a.example.org')
+        self.assertEqual(dict(T._handler_errors), {'seed_existing': 1})
+
+    def test_a_deep_chain_ticks(self):
+        self.chain(1200, deepest_first=True)
+        T.list_pids = lambda: set(T.proc)
+        T.residency_tick(None)
+        (res,) = self.W.of('residency')
+        self.assertEqual((res['pid'], res['n_procs'], res['max_depth']), (100, 1201, 1200))
+        self.assertEqual(dict(T._handler_errors), {})
+
+    def test_a_tick_skips_a_process_it_cannot_read(self):
+        self.chain(3)
+        T.list_pids = lambda: set(T.proc)
+        T.read_stat = lambda pid: 1 / 0 if pid == 1001 else _fake_stat(pid)
+        T.residency_tick(None)
+        (res,) = self.W.of('residency')
+        self.assertEqual(res['n_procs'], 3)            # the agent and two of its three shells
+        self.assertEqual(len(self.W.of('residency_totals')), 1)
+        self.assertEqual(dict(T._handler_errors), {'residency_proc': 1})
+
+    def test_the_flush_at_stop_skips_a_process_it_cannot_read(self):
+        self.chain(3)
+        T.read_stat = lambda pid: 1 / 0 if pid == 1001 else _fake_stat(pid)
+        self.assertEqual(T._flush_at_stop({}, set()), 3)
+        self.assertEqual(sorted(r['pid'] for r in self.W.of('truncated')), [100, 1000, 1002])
+        self.assertEqual(dict(T._handler_errors), {'flush_live': 1})
+
+    def test_a_flush_that_did_not_finish_has_no_count(self):
+        """The stop record's `truncated` is null then: 0 would say none were written."""
+        self.chain(3)
+        self.assertIsNone(T._flush_at_stop({}, None))     # cannot even read its features
+        self.assertEqual(dict(T._handler_errors), {'flush_live': 1})
 
 
 # ---------------------------------------------------------------------------
@@ -1631,6 +2064,39 @@ class FlushPolicyTest(unittest.TestCase):
             self.assertEqual(len(calls), w.flushes, mode)
             if mode == 'poll':
                 self.assertEqual(old, w.flushes - 1, 'the old count missed the exits flush')
+
+    def _restart_on(self, content):
+        """A day's snapshot file holding `content`, then a start that writes its
+        meta record: the file's bytes after, and the writer."""
+        os.makedirs(os.path.dirname(self._path('snapshot')))
+        with open(self._path('snapshot'), 'wb') as f:
+            f.write(content)
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'meta', 'schema_version': 8, 'ts': 'x', 'ts_epoch': 1.0})
+        w.flush()
+        w.close()
+        with open(self._path('snapshot'), 'rb') as f:
+            return f.read(), w
+
+    def test_a_line_cut_short_is_ended_before_the_next_start_writes(self):
+        """SIGKILL, a power cut or a full disk can leave the file ending in half a
+        line; appended to, it would swallow the next start's meta record:
+        `...partial li{"event": "meta", ...}`, neither line parseable."""
+        whole = b'{"event": "residency", "ts": "x"}\n'
+        got, w = self._restart_on(whole + b'{"event": "residency", "partial li')
+        lines = got.split(b'\n')
+        self.assertEqual(lines[:2], [whole[:-1], b'{"event": "residency", "partial li'])
+        self.assertEqual(json.loads(lines[2].decode())['event'], 'meta')
+        self.assertEqual(lines[3:], [b''])
+        self.assertEqual(w.output_stats()['jsonl']['writes'], 1, 'in the same write(2)')
+
+    def test_a_file_that_ends_its_lines_gets_nothing_more(self):
+        meta = (json.dumps({'event': 'meta', 'schema_version': 8, 'ts': 'x',
+                            'ts_epoch': 1.0}) + '\n').encode()
+        for before in (b'', b'{"event": "residency", "ts": "x"}\n'):
+            got, _w = self._restart_on(before)
+            self.assertEqual(got, before + meta)
+            shutil.rmtree(os.path.join(self.dir, self.day))
 
     def test_errors_are_the_callers_and_a_failed_write_is_retried(self):
         """A record json.dumps refuses raises, as it always did, and none of it
@@ -2301,6 +2767,21 @@ class ArgsTruncationTest(unittest.TestCase):
         self.assertEqual((len(i['args']), i['args_len']), (9000, 9000))
         self.assertFalse(i['args_truncated'])
 
+    def test_a_line_the_masking_cuts_is_truncated(self):
+        """The masking reads 16 KB of a line and writes [CUT] after them; a
+        longer /proc read was cut there and still said to be whole."""
+        saved = (T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS)
+        T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = frozenset(('keys', 'prompts')), True, True
+        try:
+            T.proc_add(706, 1, comm='sh', args='x ' * 10000, argv_source='proc')
+            T.proc[706]['args_raw_len'] = 20000
+            i = T._base_identity(T.proc[706], 'human', 'tty')
+        finally:
+            T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = saved
+        self.assertTrue(i['args'].endswith(' [CUT]'), i['args'][-20:])
+        self.assertEqual(i['args_redacted'], ['cut'])
+        self.assertTrue(i['args_truncated'])
+
     def test_an_emit_cap_still_applies_when_set(self):
         T.ARGS_MAXLEN = 2048
         T.proc_add(701, 1, comm='sh', args='x' * 9000, argv_source='proc')
@@ -2708,7 +3189,7 @@ def _net_binary(feats, offs):
                             'f_file': offs.get('socket', {}).get('file', -1),
                             'birth_cmd': birth, 'dump': dump}
     path = os.path.join(_NET_BIN_DIR[0], 'net%d' % len(_NET_BIN_CACHE))
-    with open(path + '.c', 'w') as f:
+    with open(path + '.c', 'w', encoding='utf-8') as f:
         f.write('#include "%s"\n%s\n%s\n%s' % (
             _MOCK_H, T.build_tcp_common_c() if tcp_on else '', net, driver))
     p = subprocess.run([_CC, '-std=gnu11', '-w', '-o', path, path + '.c'],
@@ -3030,9 +3511,12 @@ class NetEndpointBlockTest(unittest.TestCase):
 
 
 class FeatureCacheTest(unittest.TestCase):
-    """The feature cache is keyed by kernel release. A collector that gained
-    blocks since the cache was written must probe them: loading the old set
-    would never try the new ones, on every host that ran an older collector."""
+    """The feature cache is keyed by kernel release, and holds only for the block
+    list and `_feature_key` it was probed under: a collector that gained blocks,
+    or runs another BCC or other compiled-in settings, probes afresh. A start
+    takes from it only what is final -- a block that loaded on top of the same
+    blocks, one superseded, one missing a block it requires -- and probes again
+    what a load or BTF error refused: a refusal of a moment's is not kept."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_cache_')
@@ -3048,28 +3532,82 @@ class FeatureCacheTest(unittest.TestCase):
         with open(T._feature_cache_path(), 'w') as f:
             json.dump(kw, f)
 
-    def _probe(self):
+    def _probe(self, refuse=()):
+        """One start: (accepted, rejected, programs loaded), the stand-in BCC
+        loading any program that holds none of the `refuse` strings."""
+        loads = []
+
         class FakeBPF(object):
             def __init__(self, text=None, cflags=None):
-                pass
+                loads.append(text)
+                for r in refuse:
+                    if r in text:
+                        raise Exception('cannot attach %s' % r)
 
             def cleanup(self):
                 pass
-        return T.probe_features(FakeBPF, verbose=False)[1]
+        _b, accepted, rejected = T.probe_features(FakeBPF, verbose=False)
+        return accepted, rejected, len(loads)
+
+    def _fresh(self, refuse=()):
+        """What a start with no cache makes of `refuse`."""
+        saved, T.FEATURE_CACHE = T.FEATURE_CACHE, False
+        try:
+            return self._probe(refuse)
+        finally:
+            T.FEATURE_CACHE = saved
 
     def test_a_cache_written_before_a_block_existed_is_reprobed(self):
         self._cache(kernel='k', features=['netbytes', 'tcp_btf'])
-        self.assertIn('netpeer_btf', self._probe())
+        accepted, _rejected, loads = self._probe()
+        self.assertIn('netpeer_btf', accepted)
+        self.assertEqual(loads, self._fresh()[2])
 
-    def test_a_current_cache_is_used_as_is(self):
-        self._cache(kernel='k', features=['netbytes'], blocks=list(T.BLOCK_NAMES))
-        self.assertEqual(self._probe(), {'netbytes'})
-
-    def test_a_fresh_probe_writes_a_cache_that_the_next_start_uses(self):
+    def test_a_cache_whose_refusals_are_final_costs_one_load(self):
         first = self._probe()
+        self.assertTrue(all(r.startswith('superseded') for r in first[1].values()), first[1])
         with open(T._feature_cache_path()) as f:
-            self.assertEqual(json.load(f)['blocks'], list(T.BLOCK_NAMES))
-        self.assertEqual(self._probe(), first)
+            saved = json.load(f)
+        self.assertEqual((saved['blocks'], saved['key']), (list(T.BLOCK_NAMES), T._feature_key()))
+        self.assertEqual(self._probe(), first[:2] + (1,))
+
+    def test_a_block_refused_once_is_probed_again_with_the_blocks_that_need_it(self):
+        acc, rej, _ = self._probe(refuse=('kretprobe__tcp_sendmsg',))
+        self.assertNotIn('netbytes', acc)
+        self.assertTrue(rej['netpeer_btf'].startswith('requires'))
+        acc, rej, _ = self._probe()                     # the refusal is gone
+        self.assertTrue({'netbytes', 'netbytes_udp6', 'netbytes_page', 'netpeer_btf'} <= acc)
+        self.assertEqual((acc, rej), self._fresh()[:2])
+
+    def test_a_block_refused_every_time_costs_one_load_more(self):
+        first = self._probe(refuse=('udpv6_sendmsg',))
+        self.assertNotIn('netbytes_udp6', first[0])
+        self.assertEqual(self._probe(refuse=('udpv6_sendmsg',)), first[:2] + (2,))
+
+    def test_a_cache_made_under_another_key_is_probed_afresh(self):
+        every = self._probe()[2]
+        with mock.patch.object(T, 'SUBMIT_BUDGET', T.SUBMIT_BUDGET * 2):   # compiled in
+            self.assertEqual(self._probe()[2], every)
+        with mock.patch.object(T, '_bcc_version', lambda: 'another'):
+            self.assertEqual(self._probe()[2], every)
+
+    def test_a_cached_set_that_no_longer_loads_is_probed_afresh(self):
+        self._probe()
+        got = self._probe(refuse=('kretprobe__tcp_sendmsg',))
+        self.assertNotIn('netbytes', got[0])
+        self.assertEqual(got[:2], self._fresh(refuse=('kretprobe__tcp_sendmsg',))[:2])
+
+    def test_a_start_from_the_cache_ends_where_a_fresh_probe_does(self):
+        refusable = ('kretprobe__tcp_sendmsg', 'udpv6_sendmsg', 'tcp_sendpage', 'inet_csk_accept',
+                     'sum_block_runtime', 'bpf_probe_read_user', 'run_delay', 'cgroup_id',
+                     'tcp_set_state')
+        rng = random.Random(11)
+        for _ in range(16):
+            before = rng.sample(refusable, rng.randint(0, 3))
+            now = rng.sample(refusable, rng.randint(0, 3))
+            self._probe(refuse=before)
+            self.assertEqual(self._probe(refuse=now)[:2], self._fresh(refuse=now)[:2],
+                             (before, now))
 
 
 class SelfRecordTest(unittest.TestCase):
@@ -3579,6 +4117,98 @@ class ArgvHostResolverTest(unittest.TestCase):
         self.assertEqual(T._HOST_WANT.qsize(), 0)
 
 
+class ArgvHostnamesCostTest(unittest.TestCase):
+    """Finding names stays linear in an argv any user writes. One regex tried
+    at every letter read a run of scheme characters again from each of them: a
+    run of 32,000 before a ` ://` took 0.7 s, against 0.1 ms for a benign 4 KB
+    line, on every exec and every record of the process, and argv read from
+    /proc at the seed has no length cap."""
+
+    OLD = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
+                     r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T._argv_hostnames, T.MIN_UID)
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        T._argv_hostnames, T.MIN_UID = self._saved
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def timed(self, fn, *args):
+        t0 = time.time()
+        out = fn(*args)
+        return time.time() - t0, out
+
+    def test_the_urls_found_are_the_regexs(self):
+        import random
+        cases = ['curl https://a.example.org/x http://B.example.org:8/y',
+                 'git clone https://u:pw@github.com/x/y.git ssh://git@h.example.org/r',
+                 'x http://a.b+git://c.example.org/ ://nope 9://nope a1+.-://ok.example.org',
+                 'http://[2001:db8::a]/ http://[::1 ftp://-x/ s3://bucket.name/k',
+                 'http://host-x://y http://h:// a@b://c d://@e f://g@@h',
+                 'x://' + 'y' * 50 + ' ' + 'z' * 31 + '://w.example.org',
+                 'http://' + 'a.' * 30 + 'org', '://', 'a://', 'a:// b', '']
+        rnd = random.Random(3)
+        alphabet = 'aZ1+.-:/@ []hx'
+        cases += [''.join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 40)))
+                  for _ in range(20000)]
+        for s in cases:
+            self.assertEqual(T._url_hosts(s), self.OLD.findall(s), s)
+
+    def test_a_scheme_is_read_from_its_last_32_characters(self):
+        """The one difference: a scheme of more than 32 characters whose last
+        32 hold no letter is none."""
+        self.assertEqual(T._url_hosts('a' + '1' * 31 + '://h.example.org'), ['h.example.org'])
+        self.assertEqual(T._url_hosts('a' + '1' * 32 + '://h.example.org'), [])
+
+    def test_a_long_run_before_a_url_marker_costs_nothing(self):
+        dt, out = self.timed(T._argv_hostnames, 'x ' + 'a' * 64000 + ' ://', 'x')
+        self.assertLess(dt, 0.25)                # the regex: over 2 s
+        dt, out = self.timed(T._url_hosts, 'x ' + 'a' * 64000 + ' ://')
+        self.assertEqual(out, [])
+        self.assertLess(dt, 0.25)
+
+    def test_only_the_first_4096_characters_are_read_and_never_half_a_name(self):
+        pad = 'x ' * 2000
+        self.assertEqual(T._argv_hostnames(pad + 'https://a.example.org/x', 'curl'),
+                         ['a.example.org'])
+        self.assertEqual(T._argv_hostnames(pad + 'x' * 75 + ' https://api.example.org/v1', 'curl'),
+                         [])                     # the cut falls inside the name
+        self.assertEqual(T._argv_hostnames(pad * 3 + 'https://a.example.org/x', 'curl'), [])
+
+    def test_an_argv_is_read_once(self):
+        calls = []
+        real = T._argv_hostnames
+
+        def counting(args, command=None):
+            calls.append(args)
+            return real(args, command)
+        T._argv_hostnames = counting
+        m = T.proc_add(100, 1, comm='curl', args='curl https://a.example.org/x', user='u',
+                       uid=1000, tty='pts/1')
+        T._ask_hosts(m)
+        for _ in range(3):
+            T._hosts_for(m)
+        self.assertEqual(len(calls), 1)
+        m['args'] = 'curl https://b.example.org/x'          # a new image's argv
+        T._ask_hosts(m)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(T._HOST_WANT.qsize(), 2)
+
+    def test_a_process_that_will_not_be_reported_is_not_read(self):
+        calls = []
+        T._argv_hostnames = lambda args, command=None: calls.append(args) or []
+        T.MIN_UID = 1000
+        m = T.proc_add(900, 1, comm='curl', args='curl https://updates.example.org/x',
+                       user='root', uid=0)
+        T._ask_hosts(m)
+        self.assertEqual(calls, [])
+
+
 class NetEndpointsExitTest(_NetpeerCase):
     def test_the_exit_record_carries_the_endpoint_list(self):
         self.K.put(101, '104.18.0.1', 443, tx=1500, rx=9000, calls=12)
@@ -3869,7 +4499,7 @@ class Python36Test(unittest.TestCase):
         sources = [(p.name, p.read_text(encoding='utf-8')) for p in
                    [_ROOT / 'ebpf_trace.py', _ROOT / 'node_snapshot.py', Path(__file__).resolve()]
                    + sorted((_ROOT / 'lib').glob('*.py'))]
-        sh = (_ROOT / 'ebpfm.sh').read_text()
+        sh = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
         snippets = re.findall(r"python3 -c '([^']*)'", sh)
         snippets += re.findall(r"python3 - <<'PY'\n(.*?)\nPY\n", sh, re.S)
         self.assertGreaterEqual(len(snippets), 6)
@@ -4650,6 +5280,15 @@ class SubmitCaptureTest(unittest.TestCase):
         self.assertNotIn('hf_abcdefghij', r['captured_tail'])
         self.assertIn('HF_TOKEN=[REDACTED]', r['captured_tail'])
 
+    def test_the_tail_is_masked_before_it_is_cut(self):
+        """Cut to its last 300 characters first, the password's name lost its
+        first letters to the cut, and `SWORD=hunter2secret` was written."""
+        out = b'Submitted batch job 9\n' + b'a' * 100 + b'\n+ export DB_PASSWORD=hunter2secret\n' \
+            + b'b' * 280
+        r = self._submit('sbatch run.sh', out)
+        self.assertNotIn('hunter2secret', r['captured_tail'])
+        self.assertEqual(r['captured_tail'], 'PASSWORD=[REDACTED]\n' + 'b' * 280)
+
     def test_the_kernel_spends_a_budget_and_forgets_an_exec_into_anything_else(self):
         txt = T.build_bpf_text({'submit'}, offs=FAKE_OFFS)
         # LLVM may prove the last clamp redundant and drop it; 4.18 needs it
@@ -4750,7 +5389,7 @@ class UnsafeDirTest(unittest.TestCase):
 
 class WrapperTest(unittest.TestCase):
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def _fn(self, name):
         m = re.search(r'^%s\(\) \{[^\n]*\n.*?^\}\n' % re.escape(name), self.src, re.M | re.S)
@@ -4787,6 +5426,49 @@ class WrapperTest(unittest.TestCase):
     def test_a_node_snapshot_is_bounded(self):
         self.assertIn('$(_node_timeout) python3 "$NODE_SNAPSHOT"', self.src)
 
+    def test_check_masks_a_credential_through_the_node_tiers_lib(self):
+        """It only compiled node_snapshot.py: a lib/redact.py it could not
+        import, or that masked nothing, passed."""
+        d = tempfile.mkdtemp(prefix='ebpfm_check_')
+        try:
+            os.mkdir(os.path.join(d, 'lib'))
+            snap = os.path.join(d, 'node_snapshot.py')
+            shutil.copy(str(_ROOT / 'node_snapshot.py'), snap)
+            script = ('ok() { echo "ok $1"; }; warn() { echo "warn $1"; }; bad() { echo "bad $1"; }\n'
+                      '_node_mode() { echo node; }; want_ebpf() { return 1; }\n'
+                      'NODE_SNAPSHOT=%s; NODE_OUTPUT_DIR=%s/out\n' % (snap, d)
+                      + self._fn('_check_node_tier') + '_check_node_tier\n')
+
+            def verdict():
+                rc, out, err = self._bash(script)
+                return [l for l in out.splitlines() if l.split()[1:] == ['redact']]
+            self.assertEqual(verdict(), ['bad redact'])               # no lib/redact.py
+            shutil.copy(str(_ROOT / 'lib' / 'redact.py'), os.path.join(d, 'lib'))
+            self.assertEqual(verdict(), ['ok redact'])
+            with open(os.path.join(d, 'lib', 'redact.py'), 'w') as f:  # one that masks nothing
+                f.write('MASK = "[REDACTED]"\n\n\ndef redact_line(line, **kw):\n'
+                        '    return line, None\n')
+            self.assertEqual(verdict(), ['bad redact'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_bootstrap_forgets_the_feature_cache(self):
+        """What bootstrap installs can load blocks the last probe could not: the
+        next start probes every block rather than taking the cache's word."""
+        self.assertIn('_forget_features', self._fn('cmd_bootstrap'))
+        d = tempfile.mkdtemp(prefix='ebpfm_wrap_')
+        try:
+            for name in ('.features_6.8.0-90-generic.json', '.features_4.18.0.json', 'node7.log'):
+                open(os.path.join(d, name), 'w').close()
+            script = ('OUTPUT_DIR=%s\nok() { echo "ok $*"; }\n' % d
+                      + self._fn('_forget_features') + '_forget_features\n')
+            rc, out, err = self._bash(script)
+            self.assertEqual((rc, err), (0, ''))
+            self.assertIn('2 file(s) removed', out)
+            self.assertEqual(os.listdir(d), ['node7.log'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     # --- run for real ------------------------------------------------------
     def _bash(self, script, env=None):
         r = subprocess.run(['bash', '-c', 'set -uo pipefail\n' + script], env=env,
@@ -4799,7 +5481,7 @@ class WrapperTest(unittest.TestCase):
         e.update(env)
         r = subprocess.run(['bash', str(_ROOT / 'ebpfm.sh')] + list(args), env=e,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
+                           encoding='utf-8')
         return r.returncode, r.stdout, r.stderr
 
     def test_help_prints_the_header_and_no_more(self):

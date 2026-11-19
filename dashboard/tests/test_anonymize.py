@@ -3,6 +3,7 @@
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
 import collections
+import errno
 import os
 import re
 import shutil
@@ -372,14 +373,134 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(first.user_alias("glen"), again.user_alias("glen"))
 
     def test_a_configured_salt_wins_and_is_never_printed(self):
-        a = anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
+        salt = "s3cret-of-this-site"
+        a = anonmod.from_config(self.cfg(enabled=True, salt=salt))
         self.assertEqual(a.salt_source, "config")
-        printed = self.cfg(enabled=True, salt="s3cret").as_dict(with_origins=True)
+        printed = self.cfg(enabled=True, salt=salt).as_dict(with_origins=True)
         self.assertEqual(printed["anonymize"]["salt"]["_value"], "(hidden)")
 
-    def test_the_operator_named_in_the_config_is_a_known_name(self):
-        a = anonmod.from_config(self.cfg(enabled=True))
-        self.assertIn("juncheng", a.users)          # filters.drop_global's default
+    def test_an_empty_salt_file_stops_the_service(self):
+        # it used to recurse until the interpreter gave up; this service never
+        # leaves one (below), so it was made by hand or by an older version
+        open(os.path.join(self.tmp, "anonymize.salt"), "w").close()
+        with self.assertRaises(SystemExit) as cm:
+            anonmod.from_config(self.cfg(enabled=True))
+        self.assertIn("is not a salt", str(cm.exception))
+
+    def test_a_writer_that_dies_mid_write_leaves_no_salt_file(self):
+        # killed, or the disk full, between making the file and filling it: the
+        # next start must make a salt, not find an empty file and refuse to start
+        def dies(fd, *a, **kw):
+            os.close(fd)
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        with mock.patch.object(anonmod.os, "fdopen", dies), self.assertRaises(OSError):
+            anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual(os.listdir(self.tmp), [])
+        salt, source = anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual((len(salt), source), (32, "generated"))
+        self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])
+
+    def test_a_file_system_without_hard_links_still_gets_a_salt(self):
+        # some FUSE, SMB and object-store mounts refuse link(2): the file is made in place
+        for code in (errno.EPERM, errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused):
+                salt, source = anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual((len(salt), source), (32, "generated"), code)
+            path = os.path.join(self.tmp, "anonymize.salt")
+            self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"], code)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, code)
+            self.assertEqual(anonmod.load_salt(self.cfg(enabled=True)), (salt, "file"), code)
+            os.unlink(path)
+
+    def test_a_link_refused_for_room_or_an_io_error_is_raised_with_no_file_left(self):
+        # a full disk, a quota, EIO, too many links: no reason to write in place instead
+        for code in (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMLINK):
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused), \
+                    self.assertRaises(OSError) as cm:
+                anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(cm.exception.errno, code)
+            self.assertEqual(os.listdir(self.tmp), [], code)
+
+    def test_a_write_in_place_that_fails_leaves_no_salt_file(self):
+        # where the file system has no hard links the salt is made in place, and that
+        # write failing for room leaves no salt file (a link refused for room, an I/O
+        # error or a quota never comes here: the test above)
+        fdopen = os.fdopen
+        for code in (errno.EPERM, errno.EXDEV):
+            calls = []
+
+            def full(fd, *a, **kw):
+                calls.append(fd)
+                if len(calls) > 1:                    # the file made in place
+                    os.close(fd)
+                    raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+                return fdopen(fd, *a, **kw)
+
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused), \
+                    mock.patch.object(anonmod.os, "fdopen", full), self.assertRaises(OSError):
+                anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(len(calls), 2, code)       # the temporary file, then in place
+            self.assertEqual(os.listdir(self.tmp), [], code)
+            self.assertEqual(anonmod.load_salt(self.cfg(enabled=True))[1], "generated", code)
+            os.unlink(os.path.join(self.tmp, "anonymize.salt"))
+
+    def test_the_new_name_is_synced_and_a_directory_that_will_not_sync_is_let_be(self):
+        # a power loss just after the first start must not leave the next one to make a
+        # new salt, and with it new aliases
+        fsync = os.fsync
+        for refuse in (False, True):
+            synced = []
+
+            def sync(fd):
+                is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+                synced.append(is_dir)
+                if is_dir and refuse:
+                    raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+                return fsync(fd)
+            with mock.patch.object(anonmod.os, "fsync", sync):
+                salt, source = anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(source, "generated")
+            self.assertEqual(synced, [False, True], "the file's bytes, then its name")
+            os.unlink(os.path.join(self.tmp, "anonymize.salt"))
+
+    def test_of_two_instances_making_a_salt_the_first_link_wins(self):
+        theirs, link = "ab" * 32, os.link
+
+        def second(src, dst):
+            with open(dst, "w") as fh:                # the other instance links first
+                fh.write(theirs + "\n")
+            return link(src, dst)
+        with mock.patch.object(anonmod.os, "link", second):
+            salt, source = anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual((salt.hex(), source), (theirs, "file"))
+        self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])     # its own file is gone
+
+    def test_a_salt_too_short_to_keep_names_hidden_is_refused(self):
+        for text in ("ab\n", "not hex at all\n"):
+            with open(os.path.join(self.tmp, "anonymize.salt"), "w") as fh:
+                fh.write(text)
+            with self.assertRaises(SystemExit, msg=text) as cm:
+                anonmod.from_config(self.cfg(enabled=True))
+            self.assertIn("alias", str(cm.exception))
+        # a deployment's own short salt: lengthening it changes every alias, and says so
+        with self.assertRaises(SystemExit) as cm:
+            anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
+        self.assertIn("new alias", str(cm.exception))
+
+    def test_the_accounts_the_filters_name_are_known_names(self):
+        tree = configmod.defaults()
+        tree["cache"]["dir"] = self.tmp
+        tree["anonymize"]["enabled"] = True
+        tree["filters"].update(drop_global=["monitor"], drop_agent=["builder"])
+        a = anonmod.from_config(configmod.Config(tree, {}, None))
+        self.assertIn("monitor", a.users)
+        self.assertIn("builder", a.users)
 
 
 if __name__ == "__main__":

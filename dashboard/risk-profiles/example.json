@@ -27,8 +27,9 @@
       "rm_rf_shared": {
         "//": "the built-in matches any rm -rf; here only one aimed at shared storage counts.",
         "//gate": "a new pattern drops the built-in gate; this one still always contains rm, so it may keep one",
+        "//pattern": "anchored at the command, each condition a lookahead read once: a pattern with two .* in a row took 17 s on a crafted 4 KB line",
         "label": "rm -rf on shared storage",
-        "pattern": "(?:^|/)rm\\b[^\\n]*\\s-[a-zA-Z]*(?:[rR][a-zA-Z]*f|f[a-zA-Z]*[rR])[^\\n]*\\s(?:{{shared_roots}})",
+        "pattern": "^(?:\\S*/)?rm\\b(?=.*?\\s-(?=[a-z]*r)[a-z]*f)(?=.*\\s(?:{{shared_roots}}))",
         "gate": ["rm"]
       }
     },
@@ -40,14 +41,14 @@
         "label": "apptainer/singularity build on a login node",
         "severity": "med",
         "axis": "policy-unaware",
-        "pattern": "(?:^|/)(?:apptainer|singularity)\\b[^\\n]*\\bbuild\\b",
+        "pattern": "^(?:\\S*/)?(?:apptainer|singularity)\\b(?=.*\\bbuild\\b)",
         "gate": ["apptainer", "singularity"]
       },
       {
         "id": "rclone_sync_login",
         "label": "rclone sync or copy on a login node",
         "//gate": "omitted: the rule then runs on every command line, which is always correct",
-        "pattern": "(?:^|/)rclone\\b[^\\n]*\\b(?:sync|copy)\\b"
+        "pattern": "^(?:\\S*/)?rclone\\b(?=.*\\b(?:sync|copy)\\b)"
       }
     ]
   },

@@ -19,10 +19,16 @@ does. A session with no use is `wait` when it only waited, `unknown` when its co
 recorded, and `none` when it made no tool call at all.
 
   Work. The time of the block's phases, each from its start to the next one's, but idle gaps,
-  waiting, and commands not recorded. A phase counts toward a use by its kind, as a task's verb
-  counts it (`phase_tasks._category`): an edit, a guessed edit, a test, and an edit-test loop are
-  `develop`, and a wait on Slurm is `hpc`, since a job is Slurm's work whether it is being submitted
-  or waited on. Any other wait is the agent waiting on something it started (a process, a file, a
+  waiting, and commands not recorded. The last phase's ends with its own calls (`own_t1`), not with
+  the lane, which runs on while a call of an earlier phase does; and the time a call, or a process
+  it left behind, ran on past the end of its phase counts toward the call's own use (`ran_on`,
+  `phase_segment`, Work). A call hung for 14 h beside a minute of edits is 14 h of running, not of
+  editing, and a training run left going for 3 h while the agent read its log is 3 h of running
+  beside the reading, so the work can be longer than the session. A phase that does not say
+  (a block from before, or one built by hand) is weighed from its start to its end. A phase
+  counts toward a use by its kind, as a task's verb counts it (`phase_tasks._category`): an edit, a
+  guessed edit, a test, and an edit-test loop are `develop`, and a wait on Slurm is `hpc`, since a
+  job is Slurm's work whether it is being submitted or waited on. Any other wait is the agent waiting on something it started (a process, a file, a
   fixed sleep), which is no use: it is said apart, in the summary, as `portraits.leverage` says a
   user's. So a session that submits a job and polls the queue for four hours is a Slurm session,
   and one that starts a script in the background and polls its log for four hours is whatever the
@@ -53,8 +59,14 @@ the user's own under `/var/tmp`, and are `develop`, as their tasks are `Edit`.
 The summary is one to three sentences, each built from the block's own numbers and none from a
 model: what the work was and its mix, the calls and tasks with what they named, and how long the
 agent waited. A use is named beside the category only when it holds `also` of the work, and waiting
-only when it holds `also` of the session's time but idle gaps. The work's length is said when it is
-a second or more: a call or two of a few milliseconds is said by its calls alone. The names counted
+only when it holds `also` of the session's time but idle gaps. Develop work is said by what it held:
+"edited and tested code" with an edit and a test in the session, "changed files from the shell" with
+no test, and "tested code" with no edit -- a test's own phase, or a test call's time past its phase
+(`ran_on`), whichever phase took it in; an edit is an edit or an edit-test loop phase, a guessed
+edit, or a call that edits wherever it was taken in, as a task's label reads it. The work's length is
+said when it is a second or more: a call or two of a few milliseconds is said by its calls alone.
+When a call ran on beside the phases after it, the work can be longer than the time it was done in,
+the session's phases but idle gaps; then that time is said too (`5.9 h of work in 3.0 h`). The names counted
 are those the calls' tag sets hold, distinct, by kind (`phase_names`): a script run, a file written
 or read, a test file, a Slurm job's name (the one it was given, else its script's: one a call), a
 package or module, a search, a branch, and a pull request; and the commits whose subjects the agent
@@ -64,7 +76,7 @@ names kept. Durations are written as the page writes them (`web/src/lib/format.t
 import collections
 import decimal
 
-from .phase_log import TAGS
+from .phase_log import CAT, TAGS
 
 USES = ("explore", "develop", "build", "run", "hpc", "git")     # as portraits.USES, a tie's order
 MIXED, WAIT, UNKNOWN, NONE = "mixed", "wait", "unknown", "none"
@@ -80,12 +92,14 @@ DEFAULTS = {
 USE_OF = {"explore": "explore", "edit": "develop", "edit_guess": "develop", "test": "develop",
           "loop": "develop", "build": "build", "run": "run", "slurm": "hpc", "git": "git"}
 _TESTS = frozenset({"test", "loop"})        # the develop phases that test
+_EDITS = frozenset({"edit", "edit_guess", "loop"})  # the develop phases that edit
 
 # What the agent did, as a summary says it: the use, in the past tense.
 DID = {"explore": "explored code and files", "develop": "edited and tested code",
        "build": "built and installed software", "run": "ran programs",
        "hpc": "ran jobs on Slurm", "git": "managed code in git"}
 CHANGED = "changed files from the shell"    # develop with no test in it: edits alone
+TESTED = "tested code"                      # develop with no edit in it: tests alone
 # What a wait waited on (`phase_rules.waits_on`), as the page's phase lines say it.
 WAITS_ON = {"slurm": "Slurm", "process": "a process", "output": "a file or its output",
             "sleep": "a fixed sleep", "command": "something else"}
@@ -116,7 +130,7 @@ def summarize(block, calls, tagsets, params=None):
     or of its calls when no work had a length. It is empty when the session did no work. `summary`
     is a string. The rules are in the module's docstring."""
     p = DEFAULTS if params is None else params
-    w = _weigh(block["list"])
+    w = _weigh(block["list"], calls)
     n_calls = block.get("n_calls") or 0
     category, base, uses = _category(w, p["mostly"], n_calls)
     work = sum(base[u] for u in uses)
@@ -134,29 +148,38 @@ def summarize(block, calls, tagsets, params=None):
 class _Weights:
     """A block's phases, weighed: by use, its work's seconds and calls; the seconds and calls of
     commands not recorded; the seconds of waiting by what it waited on, and the pace of the longest
-    wait on each; the seconds of every phase but idle (`active`); and whether a develop phase
-    tested."""
+    wait on each; the seconds of every phase but idle (`active`, the last to its own calls, and
+    `lane`, as the phases run); and whether the work tested, and edited."""
     __slots__ = ("time", "calls", "unk_s", "unk_n", "wait_s", "wait_n", "pace", "active",
-                 "tested")
+                 "lane", "tested", "edited")
 
     def __init__(self):
         self.time, self.calls = collections.Counter(), collections.Counter()
-        self.unk_s = self.active = 0.0
+        self.unk_s = self.active = self.lane = 0.0
         self.unk_n = self.wait_n = 0
         self.wait_s, self.pace = collections.Counter(), {}
-        self.tested = False
+        self.tested = self.edited = False
 
 
-def _weigh(phases):
+def _weigh(phases, calls=()):
     w = _Weights()
     longest = {}
-    for ph in phases:
+    final = len(phases) - 1
+    for k, ph in enumerate(phases):
         kind = ph["kind"]
         if kind == "idle":
             continue
-        s = max(0.0, ph["t1"] - ph["t0"])
+        t1, own = ph["t1"], ph.get("own_t1")
+        if k == final and own is not None:
+            t1 = min(t1, own)           # the work ends with the last phase's own calls
+        s = max(0.0, t1 - ph["t0"])
         n = ph["n"]
+        for cat, ran in ph.get("ran_on") or ():
+            _ran_on(w, cat, ran)
         w.active += s
+        w.lane += max(0.0, ph["t1"] - ph["t0"])
+        # a guessed edit taken in by another phase is an edit, as a task's label reads it
+        w.edited = w.edited or bool(ph.get("slices"))
         if kind == "wait":
             on = ph.get("waits_on")
             w.wait_s[on] += s
@@ -173,7 +196,22 @@ def _weigh(phases):
             w.time[use] += s
             w.calls[use] += n
             w.tested = w.tested or kind in _TESTS
+            w.edited = w.edited or kind in _EDITS
+    # a call that edits, whichever phase took it in
+    w.edited = w.edited or any(c[CAT] == "edit" for c in calls)
     return w
+
+
+def _ran_on(w, cat, s):
+    """`s` seconds a call of category `cat` ran on past its phase, weighed to the call's own use:
+    a run's to `run`, a command not recorded to the unknown, a wait to none. A test's is testing,
+    and an edit's editing, as a phase of either kind would be."""
+    if cat == "unknown":
+        w.unk_s += s
+    elif USE_OF.get(cat) is not None:
+        w.time[USE_OF[cat]] += s
+        w.tested = w.tested or cat in _TESTS
+        w.edited = w.edited or cat in _EDITS
 
 
 def _use_of(ph):
@@ -223,8 +261,10 @@ def _what(category, w, timed, base, named, work, block):
     if category == UNKNOWN:
         known = sum(w.time.values())
         if known and w.unk_s + known >= 1.0:
-            return "Commands not recorded for %s of %s." % (_pct(w.unk_s, w.unk_s + known),
-                                                            dur(w.unk_s + known))
+            within = _within(w.unk_s + known, w)
+            return "Commands not recorded for %s of %s%s." % (
+                _pct(w.unk_s, w.unk_s + known), dur(w.unk_s + known),
+                " of work" + within if within else "")
         return "Commands not recorded."
     if category == WAIT:
         ons = _ranked_waits(w)
@@ -233,11 +273,13 @@ def _what(category, w, timed, base, named, work, block):
         return "Only waited."
     if category == MIXED:
         parts = ["%s (%s)" % (_did(u, w), _pct(base[u], work)) for u in named]
-        return "Mixed work%s: %s." % (" (%s)" % dur(work) if timed else "", _and(parts))
+        return "Mixed work%s: %s." % (" (%s%s)" % (dur(work), _within(work, w)) if timed else "",
+                                      _and(parts))
     top = named[0]
     if base[top] >= 0.995 * work:
-        return "Only %s%s." % (_did(top, w), " (%s of work)" % dur(work) if timed else "")
-    of = "%s of %s of work" % (_pct(base[top], work), dur(work)) if timed else \
+        return "Only %s%s." % (_did(top, w),
+                               " (%s of work%s)" % (dur(work), _within(work, w)) if timed else "")
+    of = "%s of %s of work%s" % (_pct(base[top], work), dur(work), _within(work, w)) if timed else \
         "%s of its work" % _pct(base[top], work) if base is w.time else \
         "%s of its tool calls" % _pct(base[top], work)
     then = _and(["%s (%s)" % (_did(u, w), _pct(base[u], work)) for u in named[1:]])
@@ -321,7 +363,20 @@ def _waited(w, also):
 
 
 def _did(use, w):
-    return CHANGED if use == "develop" and not w.tested else DID[use]
+    """What the agent did in `use`, as the summary says it; develop by what it held."""
+    if use == "develop":
+        if not w.tested:
+            return CHANGED
+        if not w.edited:
+            return TESTED
+    return DID[use]
+
+
+def _within(work, w):
+    """` in 3.0 h`: the time the work was done in, when the work is longer, as it is said. A call that
+    ran on beside the phases after it counts for its own use and theirs, so the work's length is not
+    the session's."""
+    return " in %s" % dur(w.lane) if work > w.lane and dur(work) != dur(w.lane) else ""
 
 
 def _waits_on(on):

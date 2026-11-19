@@ -92,8 +92,8 @@ The collector also ships as a container image on the GitHub Container Registry,
 built on a project Rocky 8.10 base image. **x86_64 only** at present.
 
 ```
-ghcr.io/fasrc/agentic-hpc-dashboard/collector     # the collector
-ghcr.io/fasrc/agentic-hpc-dashboard/base          # the Rocky 8.10 base it builds on
+ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector     # the collector
+ghcr.io/harvardmadsys/agentic-hpc-dashboard/base          # the Rocky 8.10 base it builds on
 ```
 
 Image tags follow the same scheme as the RPM:
@@ -101,6 +101,9 @@ Image tags follow the same scheme as the RPM:
 * semver tag `vX.Y.Z` → `X.Y.Z`, `X.Y`, `latest`
 * branch push → `<branch>` (moving) and `<branch>-<YYYYMMDD>-<sha>` (immutable)
 * `main` → additionally `edge`
+
+`latest` is published with the first `vX.Y.Z` tag; until then, `edge`, main's newest
+build, is the one to pull.
 
 Running the eBPF tier in a container needs host-level privileges, because eBPF
 attaches to the host kernel and the collector attributes **host** processes. On
@@ -116,7 +119,7 @@ docker run -d --name ebpfm \
   -v /sys:/sys:ro \                    # BTF + tracefs for program load
   -v /var/log/ebpfm:/var/log/ebpfm \   # persist the JSONL output
   -e EBPFM_HOST="$(hostname -s)" \     # name day-files for the node, not the container
-  ghcr.io/fasrc/agentic-hpc-dashboard/collector:latest
+  ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector:latest
 ```
 
 Notes:
@@ -138,8 +141,11 @@ Step-by-step
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+`serve` starts only behind a password, or with `--open` on a machine only you can reach
+([`dashboard/README.md`](dashboard/README.md#password)).
 
 Bash script bundling
 ```bash

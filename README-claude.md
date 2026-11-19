@@ -57,8 +57,12 @@ filesystem space or interface counters at all.
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+
+`serve` starts only behind a password, or with `--open` (`RC_DASH_OPEN=1`) on a machine only
+you can reach: on a login node every user can reach 127.0.0.1.
 
 Off-cluster, `--check-feeds` exits 1 — the eBPF feed is `required` and absent. Point it at
 a collector root first:
@@ -124,7 +128,7 @@ same rules:
 ## Tests
 
 ```bash
-cd collector && python3 -m unittest discover -s tests -q    # 278 tests, no root, no BPF needed
+cd collector && python3 -m unittest discover -s tests -q    # no root, no BPF needed
 cd dashboard && uv run python -m unittest discover -s tests -q   # ingest: restarts, the hand-off, backfill order
 cd dashboard/web && npm run typecheck && npm run check:no-random
 python3 -m unittest discover -s fleet/tests -q          # the fleet stream, over a fake collector
@@ -151,6 +155,7 @@ carry them.
 - **Collector**: Linux with BCC (`python3-bpfcc`) and kernel headers for the eBPF tier;
   developed against 6.8 and 6.17, with a 4.18 path for D-state dwell. The node tier is
   pure `/proc` and needs neither. `bootstrap` installs the rest.
-- **Dashboard**: Python ≥ 3.11 (`fastapi`, `uvicorn` — that is all), Node for the
+- **Dashboard**: Python ≥ 3.11 with what `dashboard/pyproject.toml` lists (`fastapi`,
+  `uvicorn`, `numpy`, `orjson`, `pyarrow`; `uv sync` installs them), Node for the
   frontend build (`react`, `react-dom` at runtime; no charting library, every chart is
   hand-rolled SVG).

@@ -29,6 +29,15 @@ honoured as urllib honours it. An API key is read from the environment variable
 `api_key_env` names (by default ANTHROPIC_API_KEY or OPENAI_API_KEY), or from
 `api_key_file`, or -- last, and never shown by /api/config -- `api_key`.
 
+The prompt is other users' command lines, text written by whoever ran them. A
+CLI provider hands it to an agent on this host, which can read whatever the
+service's account can read; so, as Ask's agent (ask.py), it runs only while the
+service has a password, with only part of the service's environment
+(`ask.agent_env`, `ask.env_passthrough`), in a directory of its own in the
+system's temporary one. An HTTP provider runs nothing here: the model gets the
+masked text the page shows, no tools, and its answer is read as a label and a
+kind, so it is not refused for want of a password.
+
 Every answer is kept (`<cache.dir>/annotate/purposes.jsonl`), keyed by the
 provider and model, the prompt it was asked with (the built-in one's version,
 or a digest of the site's own) and the command line, so a command
@@ -109,6 +118,12 @@ DEFAULT_MODEL = {"anthropic": "claude-opus-5-5"}
 DEFAULT_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 DEFAULT_BASE = {"anthropic": "https://api.anthropic.com", "openai": "https://api.openai.com/v1"}
 PROVIDERS = ("anthropic", "openai", "codex", "claude", "ask", "command")
+# What `describe` says for a CLI provider while the service has no password.
+NO_PASSWORD = ("this dashboard has no password, and a CLI provider runs only behind one: it runs "
+               "an agent on this host, which can read whatever the service's account can read, "
+               "over other users' command lines. Set server.auth.password_hash (`python -m "
+               "rc_dashboard new-password` makes one), or use the anthropic or openai provider, "
+               "which runs nothing here")
 ANTHROPIC_VERSION = "2023-06-01"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -211,6 +226,8 @@ def describe(cfg):
                 err = "%s was not found on the service's PATH" % (argv[0] if argv else "?")
         except ValueError as e:
             err = str(e)
+        if not str(cfg.get("server.auth.password_hash") or "").strip():
+            err = NO_PASSWORD
     base = cfg.get("annotate.base_url") or DEFAULT_BASE.get(p)
     return {"enabled": bool(cfg.get("annotate.enabled", False)),
             "provider": p, "model": model or None,
@@ -406,15 +423,16 @@ def _openai(cfg, system, user, timeout):
 
 
 def _cli(cfg, system, user, timeout):
-    base = os.path.join(cfg.get("cache.dir") or tempfile.gettempdir(), "annotate")
-    os.makedirs(base, mode=0o700, exist_ok=True)
-    work = tempfile.mkdtemp(prefix="a-", dir=base)
+    # As Ask's agent: a directory of its own in the system's temporary one, not
+    # beside the salt and the session key in cache.dir (0700, removed after),
+    # and only part of the service's environment.
+    work = tempfile.mkdtemp(prefix="rc-dash-annotate-")
     answer_file = os.path.join(work, "answer.txt")
     try:
         argv = argv_for(cfg, work, answer_file)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, cwd=work, text=True,
-                                start_new_session=True)
+                                stderr=subprocess.PIPE, cwd=work, env=ask.agent_env(cfg),
+                                text=True, start_new_session=True)
         killer = threading.Timer(timeout, lambda: ask._kill(proc))
         killer.start()
         try:
@@ -430,8 +448,8 @@ def _cli(cfg, system, user, timeout):
         if proc.returncode != 0 and not (text or "").strip():
             if proc.returncode in (-signal.SIGKILL, -signal.SIGTERM):
                 raise ProviderError("%s timed out after %d s" % (argv[0], timeout))
-            raise ProviderError("%s exited %d: %s" % (argv[0], proc.returncode,
-                                                      (err or "").strip()[-400:]))
+            raise ProviderError("%s exited %d: %s%s" % (argv[0], proc.returncode,
+                                                        (err or "").strip()[-400:], ask.ENV_HINT))
         return text or ""
     finally:
         shutil.rmtree(work, ignore_errors=True)

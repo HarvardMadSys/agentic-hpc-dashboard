@@ -175,6 +175,13 @@ class TestRender(unittest.TestCase):
         self.assertIs(c["anonymize"]["enabled"], True)
         self.assertEqual(config(["RISK_PROFILE=/etc/rc/rules.json"])["risk"]["profile"], "/etc/rc/rules.json")
 
+    def test_accounts_dropped_from_site(self):
+        # Empty, as site.env.example has them: the stream's own account alone.
+        self.assertEqual(config()["filters"], {"drop_global": ["alice"], "drop_agent": []})
+        c = config(["DROP_USERS=monitor ops,alice monitor", "DROP_AGENT_USERS=builder"])
+        self.assertEqual(c["filters"], {"drop_global": ["alice", "monitor", "ops"],
+                                        "drop_agent": ["builder"]})
+
     def test_day_cache_from_site(self):
         # The day cache holds a second day's state beside the built view; a host short
         # of memory can turn it off.
@@ -227,7 +234,8 @@ class TestRender(unittest.TestCase):
                     "SOURCE_USER=", "SOURCE_NODES=", "SOURCE_NODES=a -oProxyCommand=x",
                     "SOURCE_NODES=a a", "SOURCE_NODES=a b'c", "SOURCE_DOMAIN=a b",
                     "RISK_PROFILE=a b.json", "FREE_MIN_GB=-1", "HISTORY_DAYS=0",
-                    "INGEST_WORKERS=-1", "INGEST_WORKERS=four", "INGEST_WORKERS=257"):
+                    "INGEST_WORKERS=-1", "INGEST_WORKERS=four", "INGEST_WORKERS=257",
+                    "DROP_USERS=a'b", "DROP_AGENT_USERS=-x"):
             p = run_render("stream.json.in", [bad])
             self.assertEqual(p.returncode, 2, bad)
 

@@ -21,6 +21,11 @@ needs: `apid` (the agent pids whose processes count, on one `host`) and `cwd`
 (a directory: processes that ran in it or below it). With names masked, a host,
 tool or directory is matched as the reader sees the records (`_as_seen`), so
 a real name in one finds nothing.
+
+The disk and syscall bytes are each process's own, as the panels sum them: the
+collector's figure also holds every child the process reaped, taken back off at
+its exit (reducers/own_io.py), over every record the read parses. A child whose
+line the byte check skipped -- one the filters leave out -- is not taken off.
 """
 import json
 import re
@@ -34,8 +39,11 @@ from .where import Prefix
 from .proctree import _trie
 from .normalize import Normalizer
 from .redact import redact
+from .reducers.own_io import OwnIo, cap_of
 
-EVENTS = frozenset({"exit", "truncated"})
+# Exits, as every panel's sums take them: a `truncated` record is a process still
+# running at a collector stop, which its exit after the restart counts again.
+EVENTS = frozenset({"exit"})
 
 # what a page can be sorted by, and the row field each reads
 SORT = ("cmd", "tool", "n", "rd_mb", "wr_mb", "rchar_mb", "wchar_mb",
@@ -179,7 +187,7 @@ class Job:
                       "no_ts": 0, "matched": 0}
         self.t0 = time.monotonic()
         self.elapsed = None
-        self.done_at = None        # wall clock, for TTL_LIVE
+        self.done_at = None        # monotonic, for TTL_LIVE
         self.groups = None         # cmd -> slots, while reading
         self.rows = None           # [(cmd, slots)], done
         self.orders = {}           # (sort, dir) -> rows in that order
@@ -269,7 +277,7 @@ class IoCommands:
             for j in self.jobs.values():
                 if j.key != key or j.state == "error":
                     continue
-                if j.state != "done" or pinned or now - j.done_at < TTL_LIVE:
+                if j.state != "done" or pinned or time.monotonic() - j.done_at < TTL_LIVE:
                     return j
             j = Job(key, query, since, until)
             self.jobs[j.id] = j
@@ -299,7 +307,7 @@ class IoCommands:
                 j.state = "error"
             finally:
                 j.elapsed = time.monotonic() - j.t0
-                j.done_at = time.time()
+                j.done_at = time.monotonic()
                 with self.lock:
                     self._trim()
 
@@ -343,13 +351,19 @@ class IoCommands:
         groups = j.groups = {}
         tot = [0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0]
         st = j.stats
+        join = OwnIo(cap=cap_of(self.cfg), name="lookup")
         # Files one after another, not merged on time: a sum has no order, and
-        # a merge holds every file open to seed it.
+        # a merge holds every file open to seed it. Each host's own day-files
+        # come in date order (`day_files`), so a child is read before the
+        # parent that reaped it, as the join needs.
         for entry in plan:
             for _ts, rec in export._window_stream(entry, norm, j.since, j.until, st, wanted,
                                                   kinds=EVENTS, where=where):
-                if rec.get("event") not in EVENTS or not ok(rec) \
-                        or (seen is not None and not seen(rec)):
+                if rec.get("event") not in EVENTS:
+                    continue
+                # every exit read joins, whether the filters keep it or not
+                own = join.take(rec)
+                if not ok(rec) or (seen is not None and not seen(rec)):
                     continue
                 st["matched"] += 1
                 cmd = rec.get("args") or rec.get("_command") or ""
@@ -362,8 +376,7 @@ class IoCommands:
                         g = groups[cmd] = [0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0,
                                            rec.get("_eff") or rec.get("_command"), set(), None, None]
                 io = rec.get("io") or {}
-                rd, wr = io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0
-                rc, wc = io.get("rchar_mb") or 0.0, io.get("wchar_mb") or 0.0
+                rd, wr, rc, wc = ((v or 0.0) for v in own) if own else (0.0,) * 4
                 tx, rx = rec.get("net_tx_bytes") or 0, rec.get("net_rx_bytes") or 0
                 cpu = rec.get("cpu_s") or 0.0
                 has_io = io.get("rchar_mb") is not None

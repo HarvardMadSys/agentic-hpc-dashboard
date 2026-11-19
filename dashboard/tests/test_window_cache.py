@@ -22,11 +22,14 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rc_dashboard import snapshots, windows        # noqa: E402
-from rc_dashboard.export import window_plan, window_scan   # noqa: E402
+from rc_dashboard import feedparquet as fp         # noqa: E402
+from rc_dashboard import history, replica, snapshots, windows   # noqa: E402
+from rc_dashboard.aggregator import Aggregator     # noqa: E402
+from rc_dashboard.export import (make_predicate, parse_filters, scan,   # noqa: E402
+                                 window_plan, window_scan)
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
-from test_ingest import FeedCase, exit_rec, stamp    # noqa: E402
+from test_ingest import FeedCase, exit_rec, line, stamp    # noqa: E402
 
 WIN = 1440
 # Enough variety that every reducer holds state worth getting wrong: a shell
@@ -111,6 +114,41 @@ class ScanTest(CacheCase):
         self.assertEqual(got, [5000, 5001, 5002])
         # The saved offset stops before the fragment, so a resume reads it whole.
         self.assertEqual(plan[0]["end"], os.path.getsize(self.path("h1.exits.jsonl")) - 25)
+
+    def test_lines_and_records_no_reader_can_read_fail_no_build_or_query(self):
+        # `null`, `[]` and `0` lines and an exit whose `args` is a list: a
+        # window's build raised at each, on every retry, and so did an events
+        # query that met one.
+        recs = [varied_exit(self.now - 3600 + 60 * i, i) for i in range(12)]
+        bad = varied_exit(self.now - 3600 + 60 * 6, 90)
+        bad["args"] = ["make", "all"]
+        with mock.patch("time.time", return_value=self.now):
+            self.write_raw("h1.exits.jsonl", b"".join(map(line, recs)))
+            want = self.build(self.registry()).payload["tool_mix"]
+            os.unlink(self.path("h1.exits.jsonl"))
+            self.write_raw("h1.exits.jsonl", b"".join(map(line, recs[:6])) + b"null\n[]\n0\n"
+                           + line(bad) + b"".join(map(line, recs[6:])))
+            self.assertEqual(self.build(self.registry()).payload["tool_mix"], want)
+        pred = make_predicate(parse_filters({"event": ["exit"]}))
+        for newest_first in (True, False):
+            got = [r["pid"] for r, _s, _m in scan([self.root], Normalizer(self.cfg()), pred,
+                                                  newest_first=newest_first)]
+            self.assertEqual(sorted(got), sorted(r["pid"] for r in recs))
+
+    def test_on_a_pinned_clock_a_build_is_still_timed(self):
+        # `clock.as_of` freezes time.time: a build's elapsed runs on a clock that moves
+        self.feed(30, 10)
+        scan = windows.window_scan
+
+        def slow(*a, **kw):
+            time.sleep(0.25)
+            yield from scan(*a, **kw)
+        reg = self.registry()
+        with mock.patch("time.time", return_value=self.now), \
+                mock.patch.object(windows, "window_scan", slow):
+            view = self.build(reg)
+        self.assertEqual(view.progress["records"], 10)
+        self.assertGreaterEqual(view.progress["elapsed_s"], 0.2)
 
 
 class PrewarmTest(CacheCase):
@@ -354,6 +392,439 @@ class RoundTripTest(CacheCase):
         with mock.patch("time.time", return_value=self.now):
             for key, r in view.reducers.items():
                 self.assertEqual(restored[key].result(), r.result(), key)
+
+
+class SeamTest(CacheCase):
+    """The live feed and a view's build split each day-file where the build
+    stopped reading it, byte for byte (`PanelView.seam`): the tail, positioned
+    at start-up, hands the view every record, and the view counts those its
+    build did not read -- whatever their time."""
+
+    def aggregator(self):
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()                  # the tail is handed each file at its end
+        return agg
+
+    def built(self, agg, minutes=WIN):
+        reg = agg.panels_by_window
+        view = reg.request(minutes)
+        reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        return view
+
+    @staticmethod
+    def calls(view):
+        view.materialize()
+        return view.payload["tool_mix"]["by_class"]["agent"]["calls"]
+
+    def lagging(self):
+        """Two hosts, ten exits each 30..21 minutes ago; then one more from
+        host b 5 s ago. Host a's link is down: nothing from it since."""
+        for h in ("a", "b"):
+            self.append("%s.exits.jsonl" % h, [exit_rec(self.now - 1800 + 60 * i, 100 + i,
+                                                         host=h) for i in range(10)])
+        self.append("b.exits.jsonl", [exit_rec(self.now - 5, 999, host="b")])
+
+    def catch_up(self):
+        """Host a's link is back: its 20 exits of the last 20 minutes arrive,
+        each older than host b's newest, which the build read."""
+        self.append("a.exits.jsonl", [exit_rec(self.now - 1200 + 60 * i, 200 + i, host="a")
+                                      for i in range(20)])
+
+    def test_a_host_that_lagged_when_the_view_was_built_is_counted_as_it_catches_up(self):
+        # The review's r2: the view stayed at 21 while the live tier and the
+        # disk said 41, until the next re-scan -- 6 h for the 24-hour view.
+        self.lagging()
+        agg = self.aggregator()
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 21)
+        self.catch_up()
+        self.assertEqual(agg.poll_once(), 20)
+        self.assertEqual(self.events(agg)["agent"], 41)          # the live tier
+        self.assertEqual(self.calls(view), 41)                   # and the view
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]),
+                         (20, {"already_read": 0, "before_window": 0}))
+        self.assertEqual(st["drift_s"], 0.0)       # all of it older than host b's newest
+
+    def test_a_line_the_build_read_is_not_counted_again_when_the_tail_reaches_it(self):
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        # Written after the tail was positioned and before the build: the build
+        # reads them, and the tail hands them over after it.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 300 + i, 300 + i) for i in range(5)])
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 15)
+        # Written after the build: the tail's alone.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 200 + i, 400 + i) for i in range(3)])
+        self.assertEqual(agg.poll_once(), 8)
+        self.assertEqual(self.calls(view), 18)
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]["already_read"]), (3, 5))
+
+    def test_the_seam_holds_where_the_day_is_compressed_under_the_tail(self):
+        # The build read host a's plain file; the tail, behind in it, meets the
+        # rest in the `.gz` the collector sealed the day into -- the same bytes
+        # at the same offsets, under another name and inode.
+        self.lagging()
+        agg = self.aggregator()
+        early = [exit_rec(self.now - 1250 + i, 150 + i, host="a") for i in range(3)]
+        self.append("a.exits.jsonl", early)              # the build reads these
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 24)
+        self.catch_up()                                  # these it never saw
+        self.compress("a.exits.jsonl")
+        self.assertEqual(agg.poll_once(), 23)
+        self.assertEqual(self.calls(view), 44)
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]["already_read"]), (20, 3))
+
+    def test_the_seam_holds_where_the_day_is_compressed_under_the_build(self):
+        # The other way round: the tail reads the plain file while the build
+        # runs (its records held for replay), the collector then seals the day,
+        # and the build lists and reads the `.gz` alone. Each held record was
+        # counted twice: its file was not one the seam named.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i) for i in range(5)])
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        real = windows.window_plan
+
+        def plan(*a, **k):
+            self.assertEqual(agg.poll_once(), 5)       # held: the build is under way
+            self.compress("h1.exits.jsonl")
+            return real(*a, **k)
+        with mock.patch.object(windows, "window_plan", plan):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(self.calls(view), 15)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 5)
+
+    def cut_short(self, name, recs):
+        """The day-file truncated and written again in place: its inode the same."""
+        p = self.path(name)
+        ino = os.stat(p).st_ino
+        with open(p, "r+b") as fh:
+            fh.truncate(0)
+            fh.write(b"".join(map(line, recs)))
+        self.assertEqual(os.stat(p).st_ino, ino)
+
+    def test_a_file_cut_short_in_place_after_the_build_is_counted_as_the_tail_reads_it(self):
+        # The tail goes back to its start; the view held it as the file its build
+        # read, so each record ending before the build's end there was taken as
+        # read -- dropped from the view until the file grew past it, or a rebuild.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 20)
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        self.assertEqual(agg.poll_once(), 3)
+        self.assertEqual(agg.source.stats["resets"], 1)
+        self.assertEqual(self.calls(view), 23)          # as the live tier counts them
+        self.assertEqual(self.events(agg)["agent"], 23)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
+
+    def test_a_file_cut_short_while_the_build_reads_it_is_counted_as_the_tail_reads_it(self):
+        # The same, told to a build under way in order with the records held for
+        # it: the seam it installs does not hold the file either.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        real = windows.window_scan
+
+        def scan(*a, **k):
+            for got in real(*a, **k):
+                yield got
+            # the build has read the file whole; then it is cut short, and the
+            # tail reads it from its start again
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+            self.assertEqual(agg.poll_once(), 3)
+        with mock.patch.object(windows, "window_scan", scan):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(self.calls(view), 23)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
+
+    def test_a_file_cut_short_before_the_build_read_it_is_not_counted_again(self):
+        # Cut short before the build read it, the tail noticing only after: the
+        # seam is the build's read of what the file holds now, and the tail's
+        # read of it from its start again is what the build counted.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        view = self.built(agg)
+        self.assertEqual(self.calls(view), 3)
+        self.assertEqual(agg.poll_once(), 3)
+        self.assertEqual(agg.source.stats["resets"], 1)
+        self.assertEqual(self.calls(view), 3)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
+    def test_a_restart_held_before_the_build_read_the_file_is_not_counted_again(self):
+        # The same, the tail noticing while the build is under way, before it
+        # reads the file: the notice is held with the records, and the seam the
+        # build installs is of what it read, which is what the file holds now.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        real = windows.window_plan
+
+        def plan(*a, **k):
+            self.assertEqual(agg.poll_once(), 3)       # held: the build is under way
+            return real(*a, **k)
+        with mock.patch.object(windows, "window_plan", plan):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(self.calls(view), 3)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
+    def test_a_file_cut_and_grown_back_past_the_build_with_its_first_bytes_is_counted(self):
+        # Cut short after the build and written again past where the build read
+        # to, its first 4 KB as they were: the size and the head said "the file
+        # the build read", so the tail's read of it from its start was skipped
+        # as read up to the build's end -- though the bytes there are new. The
+        # file was still in the seam: what the tail read past the build's end
+        # was no record the view takes, and the tail noticed the cut because
+        # the file was shorter than where it had read to.
+        first = [exit_rec(self.now - 900 + i, 100 + i) for i in range(40)]
+        self.append("h1.exits.jsonl", first)
+        agg = self.aggregator()
+        view = self.built(agg)
+        end = os.path.getsize(self.path("h1.exits.jsonl"))
+        self.assertGreater(len(b"".join(map(line, first[:20]))), 4096)
+        self.append("h1.exits.jsonl", [skipped_rec(self.now - 500 + i) for i in range(40)])
+        agg.poll_once()
+        self.assertIn(self.path("h1.exits.jsonl"), view.seam)
+        self.cut_short("h1.exits.jsonl", first[:20] + [exit_rec(self.now - 60 + i, 500 + i)
+                                                       for i in range(30)])
+        self.assertGreater(os.path.getsize(self.path("h1.exits.jsonl")), end)
+        self.assertEqual(agg.poll_once(), 50)
+        self.assertEqual(agg.source.stats["resets"], 1)
+        self.assertEqual(self.calls(view), 90)          # as the live tier counts them
+        self.assertEqual(self.events(agg)["agent"], 90)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 0)
+
+    def test_a_restart_reads_each_file_once_and_outside_the_lock(self):
+        # What a restarted file holds now was read under the aggregator's lock,
+        # by each view, while every reader waited.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        views = [self.built(agg), self.built(agg, 60)]
+        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i) for i in range(3)])
+        reads, real = [], windows.Look
+
+        def look(*a, **k):
+            reads.append(agg.lock._is_owned())
+            return real(*a, **k)
+        with mock.patch.object(windows, "Look", look):
+            self.assertEqual(agg.poll_once(), 3)
+        self.assertEqual(reads, [False])
+        self.assertEqual([self.calls(v) for v in views], [23, 23])
+
+    def building(self, agg, before_plan=None, after_scan=None, after_check=None):
+        """A view built with `before_plan()` run as it plans its read,
+        `after_scan()` once it has read every file, and `after_check()` once it
+        has checked the restart notices held for it (`restarts_checked`): what
+        happens to the files and the tail while the build is under way."""
+        reg = agg.panels_by_window
+        view = reg.request(WIN)
+        plan, scan, check = windows.window_plan, windows.window_scan, reg.restarts_checked
+
+        def planned(*a, **k):
+            if before_plan:
+                before_plan()
+            return plan(*a, **k)
+
+        def scanned(*a, **k):
+            yield from scan(*a, **k)
+            if after_scan:
+                after_scan()
+
+        def checked(*a, **k):
+            out = check(*a, **k)
+            if after_check:
+                after_check()
+            return out
+        with mock.patch.object(windows, "window_plan", planned), \
+                mock.patch.object(windows, "window_scan", scanned), \
+                mock.patch.object(reg, "restarts_checked", checked):
+            reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        return view
+
+    def test_a_file_replaced_while_the_build_runs_is_counted_once(self):
+        # The review's case: the tail holds a record of the old file, then the
+        # file is replaced (another inode) and the tail reads the new one from
+        # its start; the build reads the new one. The old file's record, its
+        # inode not the seam's, took the seam with it, and the new file's
+        # records -- which the build had read -- were counted again: 9, not 5.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        p = self.path("h1.exits.jsonl")
+
+        def replace():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600, 200)])
+            self.assertEqual(agg.poll_once(), 1)
+            with open(p + ".new", "wb") as fh:
+                fh.write(b"".join(line(exit_rec(self.now - 60 + i, 500 + i)) for i in range(4)))
+            os.replace(p + ".new", p)               # a new inode under the name
+            self.assertEqual(agg.poll_once(), 4)
+        view = self.building(agg, before_plan=replace)
+        self.assertEqual(self.calls(view), 5)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 4)
+
+    def test_records_held_before_a_cut_the_build_read_are_not_counted_again(self):
+        # Held before the file was cut, read by the build, which read the file
+        # before the cut: they are what the seam is of, though the cut drops it.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+
+        def cut():
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+            self.assertEqual(agg.poll_once(), 3)
+        view = self.building(agg, before_plan=more, after_scan=cut)
+        self.assertEqual(self.calls(view), 28)          # 25 read, then 3 new
+        self.assertEqual(self.events(agg)["agent"], 28)
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 5)
+
+    def test_records_held_before_a_cut_the_build_read_after_are_counted_once(self):
+        # Held before the file was cut and gone from it after; the build read
+        # what the cut left: they are another generation of the file than the
+        # one the seam is of, and must not take the seam with them.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more_then_cut():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+
+        def noticed():
+            self.assertEqual(agg.poll_once(), 3)
+        view = self.building(agg, before_plan=more_then_cut, after_scan=noticed)
+        self.assertEqual(self.calls(view), 8)           # the 3 it read, the 5 held
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
+    def test_a_file_cut_again_after_its_notices_were_checked_is_counted_once(self):
+        # The review's case: the setup above, then the file cut again, to 2 new
+        # records, after the notices held for the build were checked and before
+        # it installs. The second notice took the first's decision: it kept a
+        # seam that no longer describes the file, the 2 new records were skipped
+        # against it, and the 3 the build read were fed as unread: 11, not 10.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more_then_cut():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                              for i in range(3)])
+
+        def noticed():
+            self.assertEqual(agg.poll_once(), 3)
+
+        def cut_again():
+            self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 30 + i, 700 + i)
+                                              for i in range(2)])
+            self.assertEqual(agg.poll_once(), 2)
+        view = self.building(agg, before_plan=more_then_cut, after_scan=noticed,
+                             after_check=cut_again)
+        self.assertEqual(self.calls(view), 10)          # the 3 read, the 5 held, the 2 new
+        self.assertEqual(view.status()["live_skipped"]["already_read"], 3)
+
+    def test_a_catch_up_from_before_the_window_is_left_out(self):
+        # A scan now would leave out a record older than the window's start, so
+        # the live feed does too, and says how many.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 100 + i) for i in range(10)])
+        agg = self.aggregator()
+        view = self.built(agg, 60)
+        self.append("h2.exits.jsonl", [exit_rec(self.now - 7200 + i, 500 + i, host="h2")
+                                       for i in range(4)] + [exit_rec(self.now - 30, 600, host="h2")])
+        self.assertEqual(agg.poll_once(), 5)
+        self.assertEqual(self.calls(view), 11)
+        self.assertEqual(view.status()["live_skipped"], {"already_read": 0, "before_window": 4})
+
+
+class SealedDayTest(CacheCase):
+    """A window reads a sealed day from its replica (`history.py`): one whose
+    table is gone or damaged must not stand in for the day. The review's r3:
+    a filtered 24 h view built `ready` with 5 agent calls where the window held
+    105, or failed on every retry."""
+
+    SEALED = "2026-09-24"
+
+    def setUp(self):
+        super().setUp()
+        recs = []
+        for i in range(100):                    # 20 h ago, alice's and bob's
+            r = exit_rec(self.now - 20 * 3600 + i, 100 + i)
+            r["user"] = "alice" if i % 2 else "bob"
+            recs.append(r)
+        self.append("h1.exits.jsonl", recs, day=self.SEALED)
+        self.compress("h1.exits.jsonl", day=self.SEALED)
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 900 + i) for i in range(5)])
+        self.store = history.HistoryStore(self.cfg())
+        self.assertEqual(self.store.run_once(), 1)
+        replica.install(self.store.replica_for, self.store.replica_failed)
+        self.addCleanup(replica.install, None)
+        self.table = fp.out_path(self.store.roots[os.path.abspath(self.root)], "exit",
+                                 self.SEALED, "h1.exits")
+
+    def calls(self):
+        reg = self.registry()
+        view = reg.request(WIN, ViewFilter(["alice", "bob"]))
+        reg._build(view)
+        self.assertEqual((view.state, view.error), ("ready", None))
+        return view.payload["tool_mix"]["by_class"]["agent"]["calls"]
+
+    def damage(self, cut):
+        with open(self.table, "rb") as fh:
+            whole = fh.read()
+        if cut is None:
+            os.unlink(self.table)
+        else:
+            with open(self.table, "wb") as fh:
+                fh.write(whole[:cut])
+
+    def test_the_whole_window_through_an_intact_replica(self):
+        self.assertEqual(self.calls(), 105)
+        self.assertGreater(self.store.status()["lookups"]["replica"], 0)
+
+    def test_a_table_gone_is_read_around(self):
+        self.damage(None)
+        self.assertEqual(self.calls(), 105)
+
+    def test_a_table_cut_short_is_read_around(self):
+        self.damage(os.path.getsize(self.table) // 2)
+        self.assertEqual(self.calls(), 105)
+
+    def test_a_table_emptied_is_read_around(self):
+        self.damage(0)
+        self.assertEqual(self.calls(), 105)
+
+    def test_a_table_damaged_under_a_replica_taken_already_is_read_around(self):
+        gz_path = self.path("h1.exits.jsonl.gz", day=self.SEALED)
+        self.assertIsNotNone(replica.for_path(gz_path))       # taken, and held
+        size = os.path.getsize(self.table)
+        with open(self.table, "r+b") as fh:
+            fh.write(b"\0" * size)                           # its size intact
+        self.assertEqual(self.calls(), 105)
+        st = self.store.status()
+        self.assertEqual([e["file"] for e in st["errors"]], [gz_path])
+        self.assertEqual(st["read_failures"], 1)
 
 
 def _imports(path):

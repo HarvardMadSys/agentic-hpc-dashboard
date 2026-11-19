@@ -46,11 +46,13 @@ service a translator: send `alice`, get back her alias, and get back a name
 that is no account unchanged.
 """
 import bisect
+import errno
 import hashlib
 import hmac
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 
@@ -609,32 +611,96 @@ class Anonymizer:
 
 
 # ---------------------------------------------------------------- set-up
+MIN_SALT = 16            # bytes: a shorter key lets a list of names be tried against it
+# What link(2) answers on a file system without hard links
+_NO_LINKS = frozenset(getattr(errno, n) for n in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV",
+                                                  "ENOSYS") if hasattr(errno, n))
+
+
 def load_salt(cfg):
     """`(salt bytes, source)`. `anonymize.salt` when set; else the hex in
     `<cache.dir>/anonymize.salt`, made once (mode 0600) when missing. A salt
-    file that exists but cannot be read is an error: serving with no salt, or a
-    new one, would hand out aliases nobody asked for."""
+    file that exists but cannot be read is an error, as is a salt shorter than
+    MIN_SALT bytes: serving with no salt, a guessable one, or a new one would
+    hand out aliases nobody asked for. A new salt is written whole under a name
+    of its own, synced, and linked into place, and the directory synced: the
+    file is never there half written -- a crash or a full disk mid-write leaves
+    none, and the next start makes one -- and of two instances making one at
+    once, the first link wins. Where the file system has no hard links it is
+    made in place instead, and removed if that write fails; there, of two
+    instances first started at the same moment, one can find the other's file
+    not yet written and stop. Started again, it reads the other's salt."""
     s = cfg.get("anonymize.salt") or ""
     if s:
-        return str(s).encode(), "config"
+        salt = str(s).encode()
+        if len(salt) < MIN_SALT:
+            raise SystemExit("anonymize.salt is %d bytes; a salt must be at least %d, and a "
+                             "longer one gives every name a new alias" % (len(salt), MIN_SALT))
+        return salt, "config"
     d = cfg.get("cache.dir") or "."
     path = os.path.join(d, "anonymize.salt")
     try:
         with open(path) as fh:
             got = fh.read().strip()
-        if got:
-            return bytes.fromhex(got), "file"
     except FileNotFoundError:
-        pass
+        got = None
+    if got is not None:
+        try:
+            salt = bytes.fromhex(got)
+        except ValueError:
+            salt = b""
+        if len(salt) < MIN_SALT:
+            raise SystemExit("%s is not a salt of %d bytes or more. Delete it and a new one "
+                             "is made, which gives every name a new alias." % (path, MIN_SALT))
+        return salt, "file"
     os.makedirs(d, exist_ok=True)
     salt = secrets.token_bytes(32)
+    fd, tmp = tempfile.mkstemp(prefix=".anonymize.salt.", dir=d)     # mode 0600
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:           # another instance won the race: use theirs
-        return load_salt(cfg)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(salt.hex() + "\n")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(salt.hex() + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:       # another instance's, linked first and whole: use it
+            return load_salt(cfg)
+        except OSError as e:
+            if e.errno not in _NO_LINKS:
+                raise                 # a full disk, a quota, an I/O error: not a mount without links
+            # No hard links on this file system (some FUSE, SMB and object-store
+            # mounts): made in place, which a crash mid-write can leave cut short.
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return load_salt(cfg)
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(salt.hex() + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except BaseException:
+                os.unlink(path)       # none left, as on the link's way
+                raise
+    finally:
+        os.unlink(tmp)
+    _sync_dir(d)                      # the new name, through a power loss
     return salt, "generated"
+
+
+def _sync_dir(d):
+    """fsync directory `d`, so a name just made in it is on disk; a file system
+    that will not sync a directory is left as it is."""
+    try:
+        fd = os.open(d, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def from_config(cfg, roster=None):

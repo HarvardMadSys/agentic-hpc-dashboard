@@ -24,6 +24,7 @@ from starlette.responses import Response
 
 from . import annotate as annotatemod
 from . import auth as authmod
+from . import guard as guardmod
 from . import history as historymod
 from . import feeds as feedmod
 from . import gcwatch
@@ -86,6 +87,33 @@ def view_filter(request, anon=None):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# The largest body a route that changes something reads: a question, the last
+# turns with their answers, and what it is about.
+MAX_BODY = 1 << 20
+
+
+async def json_body(request, limit=MAX_BODY):
+    """The request's body as a JSON object (guard.JsonOnly has seen it say it is
+    JSON): a 413 past `limit` bytes, before they are all read, and a 400 for
+    anything that is not an object -- never a 500."""
+    size = request.headers.get("content-length") or ""
+    if size.isdigit() and int(size) > limit:
+        raise HTTPException(413, "the body is over %d bytes" % limit)
+    chunks, n = [], 0
+    async for chunk in request.stream():
+        n += len(chunk)
+        if n > limit:
+            raise HTTPException(413, "the body is over %d bytes" % limit)
+        chunks.append(chunk)
+    try:
+        body = json.loads(b"".join(chunks))
+    except (ValueError, RecursionError):
+        raise HTTPException(400, "the body is not JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "the body is not a JSON object")
+    return body
+
+
 # The per-record memos (each a pure function of its text, memoized up to a
 # length and a count): what /api/health says of them, so their bounds can be
 # checked against a site's real command lines.
@@ -103,6 +131,65 @@ def memo_status():
         out[name] = {"hits": ci.hits, "misses": ci.misses, "size": ci.currsize,
                      "max": ci.maxsize}
     return out
+
+
+# The push to the page (`/ws`). Each reader has a sender of its own, with a
+# mailbox holding the newest frame of each kind (`Reader`): whoever makes a frame
+# -- the ingest loop, the builds' progress, the feed refresh -- posts it and goes
+# on. They sent it to each reader in turn, so one reader that stopped reading
+# held them all, the ingest loop with them: nothing was read for as long as it
+# stayed. A reader that has not taken a frame WS_SEND_TIMEOUT_S after it was
+# sent is dropped, and no more than WS_MAX_CLIENTS are served at once.
+WS_SEND_TIMEOUT_S = 5.0
+WS_MAX_CLIENTS = 64
+# `/api/health` says `ok` false, and why (`api_health`): once the tail has not
+# moved -- no poll ended, no batch handed over -- for STALE_POLLS poll intervals,
+# and STALE_MIN_S at least; once a background loop's last LOOP_FAILS rounds all
+# raised; once a view could not take a record in FEED_FAILS of the tail's
+# batches in a row.
+STALE_POLLS = 5
+STALE_MIN_S = 5.0
+LOOP_FAILS = 3
+FEED_FAILS = 3
+
+
+class Reader:
+    """One websocket reader: the frames waiting for it, the newest of each kind,
+    and the task that sends them (`run`). A newer frame of a kind replaces one
+    still waiting, so a reader that falls behind skips to the newest and nothing
+    queues without bound; frames go out in the order their kinds were last
+    posted."""
+
+    def __init__(self, ws, minutes):
+        self.ws = ws
+        self.minutes = minutes          # the window it is viewing
+        self.frames = {}                # kind -> text
+        self.wake = asyncio.Event()
+        self.task = None
+        self.slow = False               # dropped for taking no frame in time
+        self.gone = None                # why it was dropped, once it is
+
+    def post(self, kind, frame):
+        if self.gone is None:
+            self.frames.pop(kind, None)
+            self.frames[kind] = frame
+            self.wake.set()
+
+    async def run(self, timeout, drop):
+        """Send what is posted, a frame at a time; `drop(self, why)` once one
+        takes longer than `timeout` s to go out, or the socket fails."""
+        try:
+            while True:
+                await self.wake.wait()
+                self.wake.clear()
+                while self.frames:
+                    kind = next(iter(self.frames))
+                    await asyncio.wait_for(self.ws.send_text(self.frames.pop(kind)), timeout)
+        except asyncio.TimeoutError:
+            self.slow = True
+            drop(self, "took over %g s to take a frame" % timeout)
+        except Exception as e:
+            drop(self, "%s: %s" % (type(e).__name__, e))
 
 
 class CachedStatic(StaticFiles):
@@ -267,53 +354,98 @@ def create_app(cfg):
     app.state.cfg = cfg
     app.state.agg = agg
     app.state.auth = gate
-    # ws -> the window that client is viewing. A dict rather than a set because
-    # the live frame is window-specific: one payload per DISTINCT window, not
-    # one per client, so ten readers on the default window still cost one build.
+    # ws -> its `Reader`, which says the window that reader is viewing: the live
+    # frame is window-specific, one payload per DISTINCT window, not one per
+    # client, so ten readers on the default window still cost one build.
     app.state.clients = {}
+    # readers dropped for taking no frame in time, and turned away at the cap
+    ws_stats = app.state.ws_stats = {"dropped": 0, "refused": 0, "last_drop": None}
+    closing = set()                 # the dropped readers' closes, held while they run
 
     def frame_of(kind, payload):
         return jsonout.frame(kind, masked(payload))
 
+    def drop(reader, why):
+        """`reader` takes no more frames (`Reader.run`): it is let go, and its
+        handler ends at its next message. One that took no frame in time is
+        told to close, in the background and for as long as a frame may take:
+        a socket that does not drain may never take the close either."""
+        reader.gone = why
+        reader.frames.clear()
+        if app.state.clients.get(reader.ws) is reader:
+            del app.state.clients[reader.ws]
+        if reader.slow:
+            ws_stats["dropped"] += 1
+            ws_stats["last_drop"] = {"at": time.time(), "why": why}
+            task = asyncio.ensure_future(close_slow(reader.ws))
+            closing.add(task)
+            task.add_done_callback(closing.discard)
+
+    async def close_slow(ws):
+        try:
+            await asyncio.wait_for(ws.close(code=1008, reason="too slow"), WS_SEND_TIMEOUT_S)
+        except Exception:
+            pass
+
     async def broadcast(kind, payload):
-        """Every reader gets the frame. Masked and serialized off the event loop,
-        which only sends it."""
-        dead = []
+        """Every reader gets the frame: masked and serialized off the event loop,
+        and posted to each reader's own sender (`Reader`), never sent from here."""
         frame = await asyncio.get_running_loop().run_in_executor(None, frame_of, kind, payload)
-        for ws in list(app.state.clients):
-            try:
-                await ws.send_text(frame)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            app.state.clients.pop(ws, None)
+        for reader in list(app.state.clients.values()):
+            reader.post(kind, frame)
 
     async def broadcast_live():
-        """A `live` frame per distinct window in use.
+        """A `live` frame per distinct window in use, posted to its readers.
 
         Made in the executor (`Aggregator.live_frame`): taking the live tier needs
         the aggregator's lock, and a build, a hold of the tail or a re-rank can
         keep it for seconds. On the event loop that wait stalled every request,
         every static file and every other socket with it."""
         by_window = {}
-        for ws, minutes in list(app.state.clients.items()):
-            by_window.setdefault(minutes, []).append(ws)
+        for reader in list(app.state.clients.values()):
+            by_window.setdefault(reader.minutes, []).append(reader)
         loop = asyncio.get_running_loop()
-        for minutes, sockets in by_window.items():
+        for minutes, readers in by_window.items():
             frame = await loop.run_in_executor(None, agg.live_frame, minutes)
-            for ws in sockets:
-                try:
-                    await ws.send_text(frame)
-                except Exception:
-                    app.state.clients.pop(ws, None)
+            for reader in readers:
+                if reader.minutes == minutes:   # not one that moved on meanwhile
+                    reader.post("live", frame)
 
     # ------------------------------------------------------------ background
     def poll():
         return agg.poll_once()
 
+    interval = max(0.2, int(cfg.get("ingest.poll_ms", 1000)) / 1000.0)
+    # Each background loop's last error, and how many, for /api/health: kept and
+    # logged, never passed over. A loop whose every round raised went unseen,
+    # and /api/health said nothing was wrong.
+    # `streak` is its rounds in a row that raised, which a round that does not
+    # ends: `ok` goes false at LOOP_FAILS.
+    loops = app.state.loops = {name: {"started": None, "errors": 0, "error": None,
+                                      "error_at": None, "streak": 0}
+                               for name in ("ingest", "windows", "feeds", "rebuild")}
+    logged = {}
+
+    def failed(name, e):
+        """`e` ended a round of loop `name`: kept, and logged when it changes and
+        once a minute while it repeats."""
+        now = time.time()
+        st = loops[name]
+        msg = "%s: %s" % (type(e).__name__, e)
+        st["errors"] += 1
+        st["streak"] += 1
+        if msg != st["error"] or now - logged.get(name, 0.0) >= 60:
+            print("%s loop: %s" % (name, msg), file=sys.stderr, flush=True)
+            logged[name] = now
+        st["error"], st["error_at"] = msg, now
+
+    def went(name):
+        """A round of loop `name` ended without an error."""
+        loops[name]["streak"] = 0
+
     async def ingest_loop():
-        interval = max(0.2, int(cfg.get("ingest.poll_ms", 1000)) / 1000.0)
         loop = asyncio.get_running_loop()
+        loops["ingest"]["started"] = time.time()
         # The backfill hands the tail every file at its end, then reads the
         # history behind that point newest first -- while this loop is already
         # polling, so the page is live from the first second and watches the past
@@ -334,8 +466,9 @@ def create_app(cfg):
                     # While the backfill runs the bins move every cycle, new
                     # records or not.
                     await broadcast_live()
-            except Exception:
-                pass
+                went("ingest")
+            except Exception as e:
+                failed("ingest", e)
             await asyncio.sleep(interval)
 
     async def windows_loop():
@@ -347,6 +480,7 @@ def create_app(cfg):
         last = None
         installed = None
         loop = asyncio.get_running_loop()
+        loops["windows"]["started"] = time.time()
         while True:
             await asyncio.sleep(2)
             try:
@@ -373,22 +507,26 @@ def create_app(cfg):
                 if key != last:
                     last = key
                     await broadcast("windows", st)
-            except Exception:
-                pass
+                went("windows")
+            except Exception as e:
+                failed("windows", e)
 
     async def feeds_loop():
         loop = asyncio.get_running_loop()
+        loops["feeds"]["started"] = time.time()
         while True:
             await asyncio.sleep(30)
             try:
                 await loop.run_in_executor(None, agg.refresh_feeds)
                 await broadcast("feeds", agg.reports)
-            except Exception:
-                pass
+                went("feeds")
+            except Exception as e:
+                failed("feeds", e)
 
     async def rebuild_loop():
         interval = max(60, int(cfg.get("rebuild.interval_s", 900)))
         loop = asyncio.get_running_loop()
+        loops["rebuild"]["started"] = time.time()
         while True:
             await asyncio.sleep(interval)
             try:
@@ -399,8 +537,9 @@ def create_app(cfg):
                 await broadcast("rebuilt", {
                     "node_built_at": agg.node_built_at,
                     "windows": [w["minutes"] for w in st["held"]]})
-            except Exception:
-                pass
+                went("rebuild")
+            except Exception as e:
+                failed("rebuild", e)
 
     @app.on_event("startup")
     async def _startup():
@@ -419,12 +558,12 @@ def create_app(cfg):
         # loops above run meanwhile (`panels.preprocess_wait_s`).
         wait = float(cfg.get("panels.preprocess_wait_s") or 0)
         if cfg.get("panels.preprocess") and wait > 0:
-            t0 = time.time()
+            t0 = time.monotonic()
             done = await asyncio.get_running_loop().run_in_executor(
                 None, agg.wait_preprocessed, wait)
             print("preprocess: %s in %.1f s; listening" % (
                 "every window built" if done else
-                "not finished, the builds carry on", time.time() - t0), flush=True)
+                "not finished, the builds carry on", time.monotonic() - t0), flush=True)
 
     @app.on_event("shutdown")
     async def _shutdown():
@@ -453,16 +592,21 @@ def create_app(cfg):
     # /api/panels, so a panel's question reads the view the reader is looking at.
     @app.post("/api/ask")
     async def api_ask(request: Request):
-        body = await request.json()
+        body = await json_body(request)
+        question, minutes, ctx = body.get("question"), body.get("window_min"), body.get("context")
+        history = body.get("history") or []
+        turns = [h for h in history if isinstance(h, dict)][-3:] if isinstance(history, list) else None
+        text = (str, type(None))
+        if (not isinstance(question, text) or type(minutes) not in (int, type(None))
+                or turns is None or not isinstance(ctx, (dict, type(None)))
+                or any(not isinstance(h.get(k), text) for h in turns for k in ("q", "a"))):
+            raise HTTPException(400, "question is text, window_min a number of minutes, "
+                                     "history a list of {q, a} texts, and context an object")
         flt = view_filter(request, anon)
-        ctx = body.get("context")
-        if isinstance(ctx, dict) and ctx.get("session") is not None:
+        if ctx is not None and ctx.get("session") is not None:
             ctx = dict(ctx, session=dealias_sid(ctx["session"], anon))
         try:
-            return await asyncio.to_thread(
-                agg.ask, str(body.get("question") or ""), body.get("window_min"),
-                [h for h in (body.get("history") or []) if isinstance(h, dict)][-3:],
-                ctx if isinstance(ctx, dict) else None, flt)
+            return await asyncio.to_thread(agg.ask, question or "", minutes, turns, ctx, flt)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -484,7 +628,7 @@ def create_app(cfg):
     @app.post("/api/suggestions/done")
     async def api_mark_done(request: Request):
         kept_answers()
-        body = await request.json()
+        body = await json_body(request)
         try:
             return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
         except LookupError as e:
@@ -529,7 +673,7 @@ def create_app(cfg):
         masking, or written by an agent on this host that read the raw feeds,
         can hold a name -- and the command lines, masked with the tree, come out
         as they went in, so the page matches each call to its row exactly."""
-        body = await request.json()
+        body = await json_body(request)
         sid = body.get("sid")
         if not isinstance(sid, str) or not sid:
             raise HTTPException(400, "name a session (sid)")
@@ -678,9 +822,59 @@ def create_app(cfg):
         return jsonout.response(body, request, headers={"vary": "Accept-Encoding"},
                                 encode=jsonout.dumps_str)
 
+    def ingest_health(now):
+        """Whether the tail is moving: `ok` false once no poll has ended and no
+        batch been handed over (`polled_at`) for STALE_POLLS poll intervals, and
+        STALE_MIN_S at least -- a poll that hangs, or raises every time. It said
+        `ok` with a `last_poll` two minutes old."""
+        stale = max(STALE_MIN_S, STALE_POLLS * interval)
+        at = agg.stats.get("polled_at") or loops["ingest"]["started"] or now
+        age = max(0.0, now - at)
+        return {"ok": age <= stale, "age_s": round(age, 1), "stale_after_s": round(stale, 1),
+                "feed_errors": agg.stats["feed_errors"],
+                "feed_error_streak": agg.stats["feed_error_streak"],
+                "feed_error": agg.stats["feed_error"]}
+
+    def unwell(ingest):
+        """Why the service is not well, or nothing (`api_health`)."""
+        why = []
+        if not ingest["ok"]:
+            why.append("the tail has not moved for %.0f s" % ingest["age_s"])
+        for name, st in loops.items():
+            if st["streak"] >= LOOP_FAILS:
+                why.append("the %s loop failed its last %d rounds: %s"
+                           % (name, st["streak"], st["error"]))
+        if ingest["feed_error_streak"] >= FEED_FAILS:
+            why.append("a view could not take a record in %d of the tail's batches in a "
+                       "row: %s" % (ingest["feed_error_streak"], ingest["feed_error"]))
+        return why
+
     @app.get("/api/health")
     def api_health(request: Request):
-        return respond({"ok": True, "records": agg.stats["records"],
+        """`ok` false, and `why`, when the service is not doing its work:
+
+        - the tail has not moved -- no poll ended, no batch handed over -- for
+          STALE_POLLS poll intervals, and STALE_MIN_S at least (5 s by default);
+        - a background loop's last LOOP_FAILS (3) rounds all raised: the ingest
+          loop's after 3 polls, the windows loop's after 6 s, the feeds loop's
+          after 90 s, the rebuild loop's after 3 rebuild intervals;
+        - a view could not take a record in FEED_FAILS (3) of the tail's batches
+          in a row.
+
+        One error alone flips nothing: a round that goes through ends a loop's
+        streak, and a batch every view took ends the views' (each is reported,
+        in `loops` and `ingest`, all the same). It said `ok` whatever the loops
+        and the views met."""
+        now = time.time()
+        ingest = ingest_health(now)
+        why = unwell(ingest)
+        return respond({"ok": not why, "why": why, "ingest": ingest,
+                        # each background loop's last error, and how many
+                        "loops": {k: dict(v) for k, v in loops.items()},
+                        "websocket": dict(ws_stats, readers=len(app.state.clients),
+                                          max=WS_MAX_CLIENTS,
+                                          send_timeout_s=WS_SEND_TIMEOUT_S),
+                        "records": agg.stats["records"],
                         "last_poll": agg.stats["last_poll"],
                         "backfill": agg.backfill,
                         "node_built_at": agg.node_built_at,
@@ -841,7 +1035,7 @@ def create_app(cfg):
         norm = Normalizer(cfg)
         cap = int(cfg.get("export.max_rows", 5000000))
         reports = agg.reports
-        t0 = time.time()
+        t0 = time.monotonic()
 
         def gen():
             matched = 0
@@ -872,7 +1066,7 @@ def create_app(cfg):
                 yield chunk
             yield json.dumps({"_trailer": {
                 "rows": n, "truncated": n >= cap,
-                "elapsed_s": round(time.time() - t0, 2)}}) + "\n"
+                "elapsed_s": round(time.monotonic() - t0, 2)}}) + "\n"
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         return StreamingResponse(
@@ -885,16 +1079,34 @@ def create_app(cfg):
         return (agg.live_frame(minutes), frame_of("feeds", dict(agg.reports)),
                 frame_of("windows", agg.panels_by_window.status()))
 
+    async def full(websocket):
+        """Turn a reader away at WS_MAX_CLIENTS (1013, try again later): the page
+        retries, then reads by polling (`useLive`)."""
+        if len(app.state.clients) < WS_MAX_CLIENTS:
+            return False
+        ws_stats["refused"] += 1
+        await websocket.close(code=1013, reason="too many readers")
+        return True
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
         await websocket.accept()
+        if await full(websocket):
+            return
         minutes = agg.window(None)["minutes"]
-        app.state.clients[websocket] = minutes
         loop = asyncio.get_running_loop()
+        reader = None
         try:
-            for frame in await loop.run_in_executor(None, first_frames, minutes):
-                await websocket.send_text(frame)
-            while True:
+            first = await loop.run_in_executor(None, first_frames, minutes)
+            if await full(websocket):
+                return
+            # Its own sender sends every frame it gets, these first, `live` first.
+            reader = Reader(websocket, minutes)
+            for kind, frame in zip(("live", "feeds", "windows"), first):
+                reader.post(kind, frame)
+            app.state.clients[websocket] = reader
+            reader.task = loop.create_task(reader.run(WS_SEND_TIMEOUT_S, drop))
+            while reader.gone is None:
                 msg = await websocket.receive_text()
                 # The only client->server message: which window this reader is
                 # looking at. Anything else is a keepalive ping and is ignored.
@@ -905,20 +1117,25 @@ def create_app(cfg):
                 if not isinstance(body, dict) or body.get("type") != "window":
                     continue
                 want = agg.window(body.get("minutes"))["minutes"]
-                if want == app.state.clients.get(websocket):
+                if want == reader.minutes:
                     continue
-                app.state.clients[websocket] = want
+                reader.minutes = want
                 # Answer immediately rather than waiting for the next poll: the
                 # chart must not keep showing the previous window while the
                 # picker already reads the new one.
-                await websocket.send_text(
-                    await loop.run_in_executor(None, agg.live_frame, want))
+                frame = await loop.run_in_executor(None, agg.live_frame, want)
+                if reader.minutes == want:
+                    reader.post("live", frame)
         except WebSocketDisconnect:
             pass
         except Exception:
             pass
         finally:
-            app.state.clients.pop(websocket, None)
+            if reader is not None:
+                if app.state.clients.get(websocket) is reader:
+                    del app.state.clients[websocket]
+                if reader.task is not None:
+                    reader.task.cancel()
 
     # --------------------------------------------------------------- statics
     static = cfg.get("server.static_dir")
@@ -938,8 +1155,24 @@ def create_app(cfg):
 
     # -------------------------------------------------------------- sign-in
     # Around every route above and the static mount, so a route added later is
-    # covered without anyone remembering to be (auth.py).
+    # covered without anyone remembering to be (auth.py). Inside it, what may
+    # change something takes a JSON body only (guard.JsonOnly).
+    app.add_middleware(guardmod.JsonOnly)
     if gate is not None:
         app.add_middleware(authmod.AuthMiddleware, gate=gate,
                            site=str(cfg.get("site.name") or ""))
+    # ------------------------------------------------------ who may connect
+    # Outside the sign-in, so what it refuses costs no password check: a
+    # websocket from another site's page, and with no password, a request
+    # under a name that is not this host's (guard.py).
+    origins = guardmod.allowed_origins(cfg)
+    app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
+                       bind_host=str(cfg.get("server.host") or ""),
+                       allowed_hosts=cfg.get("server.allowed_hosts") or (),
+                       allowed_origins=origins)
+    # Said at start, beside the sign-in (__main__.py): run.sh, or the
+    # environment, may have added a dev server's origins to the configured ones.
+    named = list(dict.fromkeys(o.strip() for o in origins if o.strip()))
+    sys.stderr.write("origins: a websocket is accepted from the service's own origin %s\n" % (
+        ("and from " + ", ".join(named)) if named else "only"))
     return app

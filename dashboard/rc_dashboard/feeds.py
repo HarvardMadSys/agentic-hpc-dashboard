@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 
 from . import gz
+from .normalize import epoch_of
 from .feedfile import dated_dirs, feed_files, host_of
 from .feedfile import _STREAM_SUFFIXES  # noqa: F401  (moved with host_of; importable as before)
 
@@ -42,7 +43,10 @@ FEEDS = tuple(TIER)
 
 
 def newest_record_ts(path, ts_field="ts"):
-    """Newest record's timestamp, read from the tail.  None if nothing parses.
+    """`(ts, epoch)` of the newest record, read from the tail: its `ts` as the
+    collector wrote it, in its node's time zone, and its epoch
+    (`normalize.epoch_of`), which says how old it is wherever it is read.
+    None if nothing parses.
 
     The window grows until it holds a complete line: some collectors write one
     large JSON object per line (a census record is ~200 KB), so a fixed small
@@ -72,11 +76,13 @@ def newest_record_ts(path, ts_field="ts"):
                 rec = json.loads(line)
             except ValueError:
                 continue                # half-written final line: try the one before
+            if not isinstance(rec, dict):
+                continue                # JSON, but no record (`0`, `null`, `[]`)
             ts = rec.get(ts_field) or rec.get("timestamp")
             if ts:
                 try:
-                    return datetime.strptime(ts, TS_FORMAT)
-                except ValueError:
+                    return datetime.strptime(ts, TS_FORMAT), epoch_of(rec)
+                except (TypeError, ValueError):     # a `ts` that is not a string, too
                     return None
         if start == 0 or window > 256 * 1024 * 1024:
             return None
@@ -153,12 +159,17 @@ def resolve_dated(name, cfg):
     newest = max(read, key=lambda f: (f["mtime"], f["path"]))
     rep["newest_file"] = newest["path"]
     rep["newest_mtime"] = datetime.fromtimestamp(newest["mtime"]).strftime(TS_FORMAT)
-    ts = newest_record_ts(newest["path"])
-    if ts is not None:
+    got = newest_record_ts(newest["path"])
+    if got is not None:
+        ts, epoch = got
         rep["newest_record_ts"] = ts.strftime(TS_FORMAT)
-        # time.time(), not datetime.now(): a pinned clock (`clock`) covers it
-        rep["lag_s"] = (datetime.fromtimestamp(time.time()) - ts).total_seconds()
-        rep["lag"] = fmt_age(rep["lag_s"])
+        if epoch is not None:
+            # From the record's epoch, not its `ts`: that is the node's local time,
+            # and read in another zone it was hours off. time.time(), not
+            # datetime.now(): a pinned clock (`clock`) covers it. A record stamped
+            # ahead of this clock (the node's runs fast) is no lag at all.
+            rep["lag_s"] = max(0.0, time.time() - epoch)
+            rep["lag"] = fmt_age(rep["lag_s"])
     max_age = rep["max_age_s"]
     rep["status"] = ("stale" if (max_age and rep["lag_s"] is not None
                                  and rep["lag_s"] > max_age) else "ok")

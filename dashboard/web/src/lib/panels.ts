@@ -16,9 +16,21 @@ export function absent(feed: string, why = 'the backend did not return this pane
   return { _feed: feed, _status: 'missing', _present: false, _paths: [], _notice: why, _unsent: true };
 }
 
-/** The payload for `key`, or an absent-feed envelope carrying the same shape. */
+/** Each errored envelope's copy as not present, once, so its identity holds from render to render. */
+const unreduced = new WeakMap<object, PanelEnvelope>();
+
+/** The payload for `key`, or an absent-feed envelope carrying the same shape.
+ *
+ * A panel whose reducer raised (`_error`) has no body: it comes back as not
+ * present, `_error` kept, so a plate guarded by `_present` reads null rather
+ * than a 0, and <Panel> says the service could not reduce it. */
 export function pick<T extends PanelEnvelope>(P: Panels | undefined, key: string, feed: string): T {
   const p = P?.[key];
+  if (p && typeof p._error === 'string') {
+    let q = unreduced.get(p);
+    if (!q) unreduced.set(p, (q = { ...p, _present: false }));
+    return q as unknown as T;
+  }
   if (p) return p as unknown as T;
   // No payload at all is the service starting or unreachable, not a missing
   // feed: saying "no configured path" then would be a false diagnosis. The
@@ -27,6 +39,16 @@ export function pick<T extends PanelEnvelope>(P: Panels | undefined, key: string
   // every real answer carries at least the node panel, so empty means waiting.
   if (!P || !Object.keys(P).length) return { ...absent(feed, 'waiting for the dashboard service…'), _waiting: true } as unknown as T;
   return absent(feed) as unknown as T;
+}
+
+/** Whether an envelope holds a body to read: the service answered, reduced the
+ *  panel, found its feed, and has finished a first build of the window. Only
+ *  then can an empty body say "none"; otherwise <Panel> says which of the other
+ *  kinds of nothing it is. */
+export function hasBody(p: PanelEnvelope | null | undefined): boolean {
+  if (!p || p._waiting || p._error != null || p._present === false) return false;
+  const w = p._window;
+  return !(w && w.state !== 'ready' && !w.has_payload);
 }
 
 /** How a plate should name the span it counted over.
