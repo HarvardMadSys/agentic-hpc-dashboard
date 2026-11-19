@@ -310,8 +310,9 @@ class SlurmReducer:
             s.fails[why] += 1
             fk = (s.cls, rec.get("tool") or "?", why)
             self.fail_rows[fk] += 1
-            self.fail_eg.setdefault(fk, {"user": rec.get("user"), "ts": rec.get("ts"),
-                                         "args": args[:300]})
+            if fk not in self.fail_eg:          # masked, then cut: a key the cut falls in
+                self.fail_eg[fk] = {"user": rec.get("user"), "ts": rec.get("ts"),
+                                    "args": redact(args)[:300]}
         if oc == "dry_run":
             return
         for name, rx in FLAGS:
@@ -327,7 +328,7 @@ class SlurmReducer:
         if oc != "job":
             return
         if s.example_t is None or (ts or 0) >= s.example_t:
-            s.example, s.example_t = args[:300], ts or 0
+            s.example, s.example_t = redact(args)[:300], ts or 0     # masked, then cut
         if ts is not None:
             s.minutes[int(ts // 60)] += 1
         self._bin(ts, s.cls, 0)

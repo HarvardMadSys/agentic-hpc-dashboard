@@ -154,6 +154,20 @@ class Sessions(unittest.TestCase):
         self.assertEqual(a["polling_sessions"], 1)
         self.assertEqual(a["flags_pct"]["parsable"], 100.0)
 
+    def test_a_key_the_cut_falls_in_is_masked_whole(self):
+        # A row keeps 300 characters of a command line. Cut first, a key that
+        # began just before the cut was too short to read as one, and its first
+        # characters were served, as they were after the page's own masking.
+        from rc_dashboard import redact
+        args = "sbatch --wrap " + "x" * 273 + " sk-" + "k" * 30
+        recs = [sub(T0, args, job_id=1, job_ids=[1]),
+                sub(T0 + 1, args, exit_code=1, captured_tail="sbatch: error: invalid account\n")]
+        out = self.run_reducer(recs, FoldTo())
+        row = [r for r in out["sessions"] if r["cls"] == "agent"][0]
+        self.assertIn(redact.MASK, row["args"])
+        self.assertEqual([f["eg"]["args"] for f in out["rejections"]], [row["args"]])
+        self.assertNotIn("sk-k", repr(redact.payload(out)))
+
     def test_a_failed_program_is_no_refusal_in_the_class_rates(self):
         tail = ("Traceback (most recent call last):\nValueError: 3 is not 4\n"
                 "srun: error: holy7c24101: task 0: Exited with exit code 1\n")

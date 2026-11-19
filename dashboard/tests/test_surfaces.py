@@ -184,6 +184,24 @@ def codex_tui_session(t0, tui=300, server=310):
     ]
 
 
+def ide_extension_session(t0, ide, root=100, host=90):
+    """A bypassed Claude Code session an IDE's extension host started, with two
+    Bash calls, as the review reproduced it."""
+    binary = (HOME + "/.%s-server/extensions/anthropic.claude-code-2.1.300-linux-x64/resources/"
+              "native-binary/claude --output-format stream-json --verbose --input-format "
+              "stream-json --dangerously-skip-permissions" % ide)
+    return [
+        rec("conn", t0, root, host, "claude", binary, agent_pid=root, tree_root=host,
+            is_agent=True),
+        rec("exit", t0 + 10, 5001, root, "zsh", SNAP + "'ls'", agent_pid=5001, tree_root=host,
+            is_agent=True),
+        rec("exit", t0 + 20, 5002, root, "zsh", SNAP + "'make'", agent_pid=5002, tree_root=host,
+            is_agent=True),
+        rec("exit", t0 + 60, root, host, "claude", binary, agent_pid=root, tree_root=host,
+            is_agent=True, duration_s=100.0),
+    ]
+
+
 def row_of(payload, pid):
     t = payload["trajectories"]
     rows = [r for r in t["rows"].values() if r["agent_pid"] == str(pid)]
@@ -290,6 +308,24 @@ class SurfaceGrainTest(unittest.TestCase):
         d = live.user_detail("alice", now=now, window_s=3600)
         self.assertEqual([(s["surface"], [(a["pid"], a["surface"]) for a in s["agents"]])
                           for s in d["sessions"]], [("terminal", [(310, "terminal")])])
+
+    def test_a_session_from_each_ides_extension_is_a_session(self):
+        """Claude Code started by Cursor's or Windsurf's extension is a session
+        as from VS Code's. Its binary's path under ~/.cursor-server/ made it a
+        `helper`: its calls were held by the IDE's server (pid 90) with approval
+        `unknown`, and it had no agent node and no count on the plate."""
+        for ide, name in (("vscode", "VS Code"), ("cursor", "Cursor"), ("windsurf", "Windsurf")):
+            with self.subTest(ide=ide):
+                p = reduce(ide_extension_session(self.t0, ide))
+                r = row_of(p, 100)
+                self.assertEqual((r["approval"], r["surface"], r["surface_detail"]),
+                                 ("bypassed", "extension", name))
+                self.assertEqual((node_of(p, 100)["role"], node_of(p, 100)["approval"]),
+                                 ("agent", "bypassed"))
+                self.assertEqual(p["cascades"]["summary"]["agents"], 1)
+                self.assertEqual(p["trajectories"]["summary"]["agent"]["sessions"], 1)
+                self.assertEqual([(s["pid"], s["approval"]) for s in p["sandbox"]["sessions"]],
+                                 [(100, "bypassed")])
 
     def test_a_terminal_session_in_the_live_users_carries_its_surface(self):
         # the agent is its own tree's root: the session row speaks for it

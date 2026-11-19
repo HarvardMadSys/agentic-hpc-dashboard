@@ -29,8 +29,11 @@ except ValueError:
 
 # Credentials and coding-agent prompts in the command lines below are masked
 # before anything is printed: EBPFM_REDACT, as for the eBPF tier (keys,prompts
-# unless set; 0 for neither), with that tier's rules from lib/redact.py. A copy
-# of this file without lib/ beside it masks nothing.
+# unless set; 0 for neither), with that tier's rules from lib/redact.py. When
+# lib/redact.py cannot be imported, every command line is written as
+# [REDACTED] and `redact` reads ["error"], unless EBPFM_REDACT switched masking
+# off: the tier fails closed, as the eBPF tier does a line at a time, and its
+# other sections are still written. `ebpfm.sh check` tries the masking.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 try:
     from redact import (redact_line as _redact_line, redact_ps_line as _redact_ps_line,
@@ -38,14 +41,29 @@ try:
 except Exception:
     _redact_line = None
 
-REDACT = _parse_kinds(os.environ.get('EBPFM_REDACT'))[0] if _redact_line else set()
+
+def _redact_off(value):
+    """Whether EBPFM_REDACT switches masking off, as redact.parse_kinds reads
+    it: 0, none or off, alone."""
+    kinds = set(k.strip().lower() for k in (value or '').split(',') if k.strip())
+    return bool(kinds) and kinds <= set(('0', 'none', 'off'))
+
+
+if _redact_line is not None:
+    REDACT = _parse_kinds(os.environ.get('EBPFM_REDACT'))[0]
+elif _redact_off(os.environ.get('EBPFM_REDACT')):
+    REDACT = set()
+else:
+    REDACT = set(['error'])
 
 
 def _mask(cmd, pid=None):
     """A command line as printed: masked, and only then cut to ARGS_MAXLEN.
     With its pid, from the process's own arguments where they can be read
     (redact.redact_ps_line)."""
-    if cmd and REDACT:
+    if cmd and REDACT and _redact_line is None:
+        cmd = '[REDACTED]'            # no masking to be had: no command line
+    elif cmd and REDACT:
         kw = {'keys': 'keys' in REDACT, 'prompts': 'prompts' in REDACT}
         try:
             cmd = (_redact_ps_line(cmd, pid, **kw) if pid is not None
@@ -551,25 +569,124 @@ def parse_d_state_procs(s):
 # analyze/agent_lib.py for offline use). Order matters: an agent running inside
 # an IDE host (e.g. Claude Code under .vscode-server) is tagged as the agent, and
 # a Cursor-tagged bwrap is told apart from a generic sandbox probe.
+# A copy of lib/agent_classify.py's classify() as classify_agent(), which reads
+# the program a command line runs, not every word of it (VENDORED.md);
+# tests/test_ebpfm.py's ClassifyTest holds the two equal.
 _AGENT_PATTERNS = [
     ('claude_code', re.compile(r'anthropic\.claude-code|native-binary/claude'
-                               r'|/\.claude/|claude-agent-sdk|(?:^|/|\s)claude(?:\s|$)', re.I)),
+                               r'|/\.claude/(?:local|remote)/|/\.claude/cli\.[cm]?js$'
+                               r'|claude-agent-sdk'
+                               r'|(?:^|/|\s)claude(?:\s|$)'
+                               r'|/claude/versions/|@anthropic-ai/claude-code'
+                               r'|claude-code/cli\.[cm]?js$', re.I)),
     ('codex',       re.compile(r'@openai/codex|openai\.chatgpt|codex[ -]app-server'
                                r'|/\.codex/|codex-linux-sandbox|codex-bin|codex-homes'
                                r'|(?:^|/|\s)codex(?:\s|$|@)', re.I)),
     ('copilot',     re.compile(r'github\.copilot|/copilot(?:\s|$)', re.I)),
-    ('cursor',      re.compile(r'CURSOR_SANDBOX|\.cursor-server|\.cursor/', re.I)),
-    ('windsurf',    re.compile(r'windsurf-terminal|WINDSURF_STATE|\.windsurf-server'
-                               r'|\.codeium/windsurf', re.I)),
+    ('cursor',      re.compile(r'\.cursor-server|\.cursor/', re.I)),
+    ('windsurf',    re.compile(r'\.windsurf-server|\.codeium/windsurf|(?:^|/)windsurf-terminal',
+                               re.I)),
     ('vscode',      re.compile(r'\.vscode-server|\.vscode/cli', re.I)),
     ('bwrap',       re.compile(r'(?:^|/)bwrap(?:\s|$)')),
 ]
+_MARKERS = {
+    'cursor':   re.compile(r'CURSOR_SANDBOX='),
+    'windsurf': re.compile(r'WINDSURF_STATE='),
+}
+_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
+_SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'))
+_WRAPPERS = {
+    'env': (('-u', '--unset', '-C', '--chdir'), 0),
+    'exec': (('-a',), 0),
+    'nohup': ((), 0),
+    'setsid': ((), 0),
+    'nice': (('-n', '--adjustment'), 0),
+    'timeout': (('-s', '--signal', '-k', '--kill-after'), 1),
+}
+_RUNNERS = {'npx': (), 'npx-cli': (), 'pnpx': (), 'bunx': (),
+            'npm': ('exec', 'x'), 'npm-cli': ('exec', 'x'), 'pnpm': ('exec', 'dlx'),
+            'yarn': ('exec', 'dlx'), 'bun': ('x',)}
+_RUNNER_VALUES = ('-p', '--package', '-c', '--call', '--cache')
+_INTERPRETER = re.compile(r'^(?:node|nodejs|bun|deno|python(?:\d+(?:\.\d+)*)?|pypy3?)$')
+_INTERPRETER_VALUES = ('-r', '--require', '--import', '--loader', '--experimental-loader',
+                       '--title', '-W', '-X')
+_SHELL_VALUES = ('-o', '-O', '--rcfile', '--init-file')
+_INLINE = ('-c', '-e', '--eval', '-p', '--print', '-m')
+_ASSIGN = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+
+
+def _program_name(word):
+    name = word.rsplit('/', 1)[-1]
+    for ext in ('.js', '.mjs', '.cjs'):
+        if name.endswith(ext):
+            return name[:-len(ext)]
+    return name
+
+
+def _past_options(words, i, values):
+    while i < len(words) and len(words[i]) > 1 and words[i][0] == '-':
+        if words[i] == '--':
+            return i + 1
+        i += 2 if words[i] in values else 1
+    return i
+
+
+def _program_words(words):
+    """(program words, environment). argv[0]; past a wrapper or a VAR=value, the
+    word run; a package runner's package; an interpreter's script; the first
+    word of a shell's -c command. Every word of a bwrap's. The environment: the
+    VAR=value words before a program word, and a bwrap's `--setenv VAR value`
+    before the `--` that ends its options."""
+    out, env = [], []
+    i, n = 0, len(words)
+    while i < n:
+        word = words[i]
+        if _ASSIGN.match(word):
+            env.append(word)
+            i += 1
+            continue
+        out.append(word)
+        name = _program_name(word)
+        if name == 'bwrap':
+            end = words.index('--', i + 1) if '--' in words[i + 1:] else n
+            env.extend(words[j + 1] + '=' + (words[j + 2] if j + 2 < n else '')
+                       for j in range(i + 1, end - 1) if words[j] == '--setenv')
+            return words, env
+        if name in _WRAPPERS:
+            values, before = _WRAPPERS[name]
+            i = _past_options(words, i + 1, values) + before
+        elif name in _RUNNERS and (not _RUNNERS[name]
+                                   or (i + 1 < n and words[i + 1] in _RUNNERS[name])):
+            i = _past_options(words, i + (2 if _RUNNERS[name] else 1), _RUNNER_VALUES)
+        elif name in _SHELLS or _INTERPRETER.match(name):
+            shell = name in _SHELLS
+            values = _SHELL_VALUES if shell else _INTERPRETER_VALUES
+            i += 2 if name in ('bun', 'deno') and words[i + 1:i + 2] == ['run'] else 1
+            while i < n and len(words[i]) > 1 and words[i][0] == '-':
+                opt = words[i]
+                if opt == '--':
+                    i += 1
+                    break
+                if not shell and opt in _INLINE:
+                    return out, env
+                i += 2 if opt in values else 1
+        else:
+            break
+    return out, env
 
 
 def classify_agent(args):
     """Tag a command line as a coding agent / IDE / sandbox, else None."""
+    if not args:
+        return None
+    words, env = _program_words(args.split())
+    if _TOOL_SHELL.search(args) and any(_program_name(w) in _SHELLS for w in words):
+        return 'claude_code'
     for name, rx in _AGENT_PATTERNS:
-        if rx.search(args):
+        if any(rx.search(w) for w in words):
+            return name
+        marker = _MARKERS.get(name)
+        if marker is not None and any(marker.match(a) for a in env):
             return name
     return None
 
@@ -697,11 +814,14 @@ def parse_ps(s, n):
                 'stat':    p[6],
                 'started': started,
                 'time':    p[time_i],
-                'args':    _mask(' '.join(p[time_i+1:]), p[0]),
+                'args':    ' '.join(p[time_i+1:]),
             })
         except (ValueError, IndexError):
             pass
-    return procs[:n]
+    procs = procs[:n]
+    for proc in procs:                  # only the rows kept are masked
+        proc['args'] = _mask(proc['args'], proc['pid'])
+    return procs
 
 def _read_proc_io(pid):
     """Snapshot the cumulative IO byte counters of one pid, or None if unreadable.
@@ -811,10 +931,12 @@ def collect_top_io_processes(n, interval=1.0):
             'kb_wr_s':   round((b['wr']   - a['wr'])   / 1024.0 / interval, 2),
             'kb_ccwr_s': round((b['ccwr'] - a['ccwr']) / 1024.0 / interval, 2),
             'iodelay':   b['blkio'] - a['blkio'],
-            'command':   _mask(cmd, pid),
+            'command':   cmd,
         })
-    return sorted(procs, key=lambda x: x['kb_rd_s'] + x['kb_wr_s'],
-                  reverse=True)[:n]
+    procs = sorted(procs, key=lambda x: x['kb_rd_s'] + x['kb_wr_s'], reverse=True)[:n]
+    for proc in procs:                  # only the rows kept are masked
+        proc['command'] = _mask(proc['command'], proc['pid'])
+    return procs
 
 def parse_fds(s):
     p = s.split()

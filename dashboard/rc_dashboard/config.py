@@ -211,6 +211,39 @@ def defaults():
             # figure, and the page links each to its row (ask.CITE_GUIDE)
             "citations": True,
         },
+        # What each tool call in a session was for, in a model's words (annotate.py):
+        # the session inspector's "annotate purposes". Off by default: it sends
+        # the session's tool-call command lines -- masked, as the page shows
+        # them -- and the folders they ran in to the provider below.
+        "annotate": {
+            "enabled": False,
+            # anthropic | openai (any OpenAI-compatible endpoint) | codex | claude
+            # (the CLIs, with this user's own login) | ask (the chat's agent) | command
+            "provider": "anthropic",
+            "model": "",               # empty: the provider's default (anthropic: claude-opus-5-5)
+            "base_url": "",            # empty: the provider's own API; set for a proxy, vLLM, Ollama, ...
+            # The key: the variable named here (empty: ANTHROPIC_API_KEY or
+            # OPENAI_API_KEY), else a file, else `api_key` (never shown by /api/config).
+            "api_key_env": "",
+            "api_key_file": "",
+            "api_key": "",
+            "effort": "low",           # anthropic only: output_config.effort; empty leaves it out
+            "max_tokens": 8000,
+            # `command`: argv or one shell-style string; prompt on stdin, answer on
+            # stdout or in {answer_file}; {workdir} {answer_file} {model} filled in
+            "command": None,
+            "timeout_s": 120,
+            "batch_size": 40,          # calls per request
+            "max_calls": 400,          # distinct calls asked about per session, oldest first
+            "max_concurrent": 1,
+            # annotate a session as soon as it opens, rather than on the button
+            "auto": False,
+            "system_prompt": "",
+            "system_prompt_file": "",
+            # answers kept in <cache.dir>/annotate/purposes.jsonl, so a command is asked about once
+            "cache": True,
+            "cache_max": 200000,
+        },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
         # not be mistaken for each other.
@@ -470,6 +503,13 @@ ENV_MAP = {
     "ask.model": ("RC_DASH_ASK_MODEL", str),
     "ask.command": ("RC_DASH_ASK_CMD", str),
     "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
+    "annotate.enabled": ("RC_DASH_ANNOTATE", lambda v: v not in ("0", "false", "no", "off")),
+    "annotate.provider": ("RC_DASH_ANNOTATE_PROVIDER", str),
+    "annotate.model": ("RC_DASH_ANNOTATE_MODEL", str),
+    "annotate.base_url": ("RC_DASH_ANNOTATE_BASE_URL", str),
+    "annotate.api_key_env": ("RC_DASH_ANNOTATE_KEY_ENV", str),
+    "annotate.api_key_file": ("RC_DASH_ANNOTATE_KEY_FILE", str),
+    "annotate.command": ("RC_DASH_ANNOTATE_CMD", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
     "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
@@ -483,7 +523,7 @@ ENV_MAP = {
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
-HIDDEN = ("anonymize.salt", "server.auth.password_hash")
+HIDDEN = ("anonymize.salt", "server.auth.password_hash", "annotate.api_key")
 
 # retired names still honoured, with a one-line warning
 ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}

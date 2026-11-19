@@ -265,7 +265,7 @@ class TestReplacedWhileDown(Base):
         c.append("exits", b"x" * 70000)
         self.rig.start()
         self.wait_same()
-        have = self.rig.mirror.inventory(3)[c.key("exits")]
+        have = self.rig.mirror.inventory()[c.key("exits")]
         self.assertEqual(have["head_n"], 65536)
         self.assertEqual(have["head"], zlib.crc32(b"x" * 65536) & 0xffffffff)
 

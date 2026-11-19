@@ -13,6 +13,7 @@ import { fint, pc } from '../lib/format';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { CALL_KNOWN, riskLine, shareOfKnown } from '../lib/sandbox';
+import { noShare, shareOf, wholeOf } from '../lib/shares';
 import { GLOSS } from '../lib/glossary';
 import { useNodeWords } from '../lib/nodes';
 
@@ -34,7 +35,11 @@ export const WindowPlates = memo(function WindowPlates({
   const have = cls.filter((c) => c in tmBy || c in resBy);
 
   const nodes = useNodeWords();
-  const totN = have.reduce((a, c) => a + (tmBy[c]?.calls ?? 0), 0);
+  // The agent's share of every process: out of every class the panel counted,
+  // `unlabeled` too, whatever the chips show (lib/shares.ts). A class the panel
+  // did not count ran none.
+  const allN = wholeOf(Object.keys(tmBy), (c) => tmBy[c]?.calls);
+  const agentPct = cls.includes('agent') ? shareOf(tmBy.agent?.calls ?? 0, allN) : null;
   // What each class is made of -- which agents, which IDEs -- on hover.
   const typeTip =
     have
@@ -63,9 +68,11 @@ export const WindowPlates = memo(function WindowPlates({
   const hasDg = risk.dangerous != null;
   const hasSec = risk.secrets != null;
   const riskyAgent = hasDg || hasSec ? dgAgent + secAgent : null;
-  const riskyBy = Object.fromEntries(
-    have.map((c) => [c, classSum(risk.dangerous?.rows, c) + classSum(risk.secrets?.rows, c)]),
-  );
+  // per class, only when a kind was counted: a cluster whose profile shows
+  // neither has no zeros to give (reducers/risk.py leaves the kind out)
+  const riskyBy = hasDg || hasSec
+    ? Object.fromEntries(have.map((c) => [c, classSum(risk.dangerous?.rows, c) + classSum(risk.secrets?.rows, c)]))
+    : undefined;
   const failedAgent = sb.tool_calls?.agent?.failed ?? 0;
 
   return (
@@ -75,7 +82,9 @@ export const WindowPlates = memo(function WindowPlates({
         tip={[GLOSS.exited, typeTip].filter(Boolean).join('\n\n')}
         total={cls.includes('agent') ? tmBy.agent?.calls ?? null : null}
         by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.calls ?? null]))}
-        note={totN ? `${pc((100 * (tmBy.agent?.calls ?? 0)) / totN)} of every process on the ${nodes.many}` : undefined}
+        note={agentPct != null
+          ? `${pc(agentPct)} of every process on the ${nodes.many}`
+          : cls.includes('agent') ? noShare(allN) ?? undefined : undefined}
       />
       <Plate
         k="agent sessions"

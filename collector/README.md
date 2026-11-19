@@ -330,7 +330,7 @@ started".
 | `residency_totals` | residency tick | `by_actor3`, `by_agent_type`, `dropped`, `fork_rate`, the endpoint table's counters, and (schema 8) the run's `perf_seen`/`perf_lost`, `handler_errors`, `proc_entries`, `proc_vanished`, `thread_acc`, `netpeer_kernel` |
 | `submit` | `sbatch`/`salloc`/`srun` | `tool`, `job_id`, `work_dir`, `captured_tail` (masked; null for `--pty`) |
 | `truncated` | SIGTERM | one per live tracked process, with accumulated counters |
-| `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated`, `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (`jsonl`: records, bytes, `write(2)`s and errors up to this record; `ebr`: null) |
+| `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated` (null when the flush did not finish), `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (`jsonl`: records, bytes, `write(2)`s and errors up to this record; `ebr`: null) |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
 `ts` is local, naive and second-granular — fine for reading one host's file, useless for
@@ -347,6 +347,60 @@ tracked as a human, so the collector's own `truncated` record and its children's
 `sudo` processes above it have pids of their own and are not covered by the rule. The
 field also tells two runs in one day's file apart.
 
+### Agent tags: the program, not a mention
+
+Within schema 8, with no bump: `classify()` (`lib/agent_classify.py`, and its copy in
+`node_snapshot.py` behind `proc_tree.agents`) reads the program a command line runs, not
+every word of it. It matched its patterns anywhere, so at a human's prompt `grep claude
+notes.txt`, `vim ~/.claude/CLAUDE.md`, `cat ~/.claude/settings.json`, `git commit -m "ask
+claude about this"`, `git clone https://github.com/openai/codex` and `pip install
+claude-agent-sdk` each became an agent root of its own (`actor` `agent` by ancestry,
+`is_agent`, `depth` 0, a session of its own), and the dashboard, which takes `actor3` as
+given, counted each as an agent session. So was a tmux or screen session named `claude`
+or `codex`, and every command in its panes with it: its server keeps the client's argv.
+
+The program is:
+
+- argv[0], by its name (`claude`, `codex`, `codex-linux-sandbox`, `bwrap`) or where it is
+  installed (`~/.claude/remote/…`, `~/.local/share/claude/versions/…`, `~/.codex/…`, an
+  IDE extension, `~/.vscode-server/…`);
+- past `env`, `exec`, `nohup`, `setsid`, `nice`, `timeout` and any `VAR=value`, the word
+  they run;
+- a package runner's package: `npx`, `npm exec`, `pnpm dlx`, `yarn dlx`, `bunx`, `bun x`;
+- an interpreter's script (`node`, `bun`, `deno`, `python`, a shell): `node
+  …/@anthropic-ai/claude-code/cli.js`, `/usr/bin/env node …/bin/codex`;
+- the first word of a shell's `-c` command (`sh -c exec claude …`);
+- for a `bwrap`, every word: a sandbox is tagged by what it confines, as before.
+
+Beside the program, the artifacts only an agent's runtime writes count, where it writes
+them: Claude Code's tool-call shell (a shell sourcing `~/.claude/shell-snapshots/…`), and
+Cursor's and Windsurf's `CURSOR_SANDBOX` and `WINDSURF_STATE` set in the environment a
+program is run with (`CURSOR_SANDBOX=1 bash …`, `env CURSOR_SANDBOX=1 …`, a bwrap's
+`--setenv CURSOR_SANDBOX 1`), never a word that names or prints one (`grep -r
+CURSOR_SANDBOX .`, `echo CURSOR_SANDBOX=1`); the names are case-sensitive, as a
+variable's is. Windsurf's `windsurf-terminal` counts as a program. `ClassifyTest` pins both lists, and that the node tier's copy agrees.
+
+What moves:
+
+- **A command that only mentions an agent is its runner's.** At a person's prompt it is
+  theirs (`actor` by tty), not an agent root. Inside an agent tree nothing changes: an
+  untagged child joins its tree as a tagged one did. It no longer buys a sandbox and cwd
+  read of its own at exec; it inherits them, as any untagged child does.
+- **Some agents are tagged that were not**: Claude's native binary started by its versions
+  path with nothing else naming Claude (`~/.local/share/claude/versions/2.1.282
+  --session-id …`), Claude Code's npm launcher by path (`node
+  …/@anthropic-ai/claude-code/cli.js`), and `npx @anthropic-ai/claude-code`.
+- **Under `~/.claude/` only Claude Code's own installs are Claude's**: `~/.claude/local/…`,
+  `~/.claude/remote/…` and its CLI's `cli.js`. A hook or a status line script there, run
+  by hand, is the user's, and a program in a project's `.claude/worktrees/…` the project's.
+- The role table's `helper`s that were tagged only for a path among their arguments
+  (`chmod`, `mkdir` and `sh -c ls` on `~/.claude/` or `~/.codex/`), and the native binary
+  run as `rg` or `ugrep`, are not tagged: in a tree they are its processes at the same
+  depth, with its session.
+
+No record says which rule tagged it, so a capture across the deploy has both; the `meta`
+record of the collector's restart is where to cut it.
+
 ### Schema 8: one session per agent, whole processes, masked text
 
 Two sets of changes share schema 8: sessions that stop splitting at every tool
@@ -360,7 +414,7 @@ This part renames no field. It changes what `is_agent`, `agent_pid`, `session_ke
 
 Through schema 7, `resolve()` made every process whose own argv matched the classifier
 (`lib/agent_classify.py`) its own agent root: `is_agent` true, `depth` 0, `agent_pid`
-itself. The classifier matches any argv that mentions `/.claude/`, `/.codex/` or
+itself. The classifier then matched any argv that mentioned `/.claude/`, `/.codex/` or
 `.vscode-server`, so these all became roots, each starting a session of its own:
 
 - Claude Code's shell for each Bash tool call (`zsh -c source ~/.claude/shell-snapshots/…`)
@@ -379,8 +433,8 @@ sorts tagged processes into `agent`, `tool-shell`, `embedded-tool`, `sandbox`, `
 `client`, `infra`, `ide` and `helper`, and only `agent` starts a session inside a tree.
 `AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1 and the FAS login
 nodes. Among them is the agent binary run as a helper of its own, which is `helper`:
-Codex's `--codex-run-as-fs-helper` and Claude's `--claude-in-chrome-mcp`. The classifier
-itself is unchanged; see `VENDORED.md`.
+Codex's `--codex-run-as-fs-helper` and Claude's `--claude-in-chrome-mcp`. Schema 8 left
+the classifier itself unchanged; it has since come to read the program alone (above).
 
 For a tagged process that is not an agent runtime, inside an agent tree:
 
@@ -398,9 +452,9 @@ Claude process's `session_key`, at depths 1, 2 and 1.
 - **Nested agents are still roots.** `claude -p` run from a tool call, and the
   `--print --sdk-url` workers `claude rc` starts, keep their own sessions. `tree_root_pid`
   still names the outermost agent, and it is unchanged for every process.
-- **Outside an agent tree nothing changes.** Running `claude --version` or
-  `chmod ~/.claude/…` at a human prompt still gives its own root, with the same `actor`
-  and `actor3`.
+- **Outside an agent tree nothing changes.** Running `claude --version` at a human
+  prompt still gives its own root, with the same `actor` and `actor3`. So did
+  `chmod ~/.claude/…`, until the classifier read the program alone (above).
 - **`actor3` can move inside a tree, because `agent_type` follows the tree.** The
   `claude auth status` probe that VS Code's extension host runs every few minutes is now
   `vscode`, so `human-vscode`, and no longer `agent`. Something an agent runs that matches
@@ -477,6 +531,47 @@ Schema 8 is the fix for each; every point below changes what a field holds.
   pid, is masked from the space-joined line, as is a process gone before `/proc` is
   read, an argument `ps` prints `?` in, and a multi-line script; there a session name's
   later words read as a prompt's.
+
+  Masking is a deny-list, and best effort: it masks the shapes below, and a secret in
+  a shape it does not know is written as it is. Credentials:
+  - a PEM private key; an `Authorization` header's credential (a scheme it knows --
+    Bearer, Basic, Token, Digest, Bot -- is kept; any other goes with it: to the closing
+    quote, or unquoted two words and each after a comma); a key, token, secret, cookie
+    or subscription-key header (`X-Api-Key`, `X-Auth-Token`, `X-Vault-Token`,
+    `PRIVATE-TOKEN`, `Cookie`, `Ocp-Apim-Subscription-Key`), also as a JSON or TOML key;
+  - a URL's password, or a user long enough to be a token; `-u`/`--user`/`--proxy-user`
+    `user:PASS`, but a container's uid:gid; a query string's `token`, `key`, `secret`,
+    `password`, `sig` and the like;
+  - a credential-named flag's value (`--token`, `--api-key`, `--api_key`, `--password`,
+    `--secret`, `--access-key`, `--credentials`, ...), also as a JSON list's items; a
+    credential-named variable, kwarg or JSON key, by how its name ends (`TOKEN`,
+    `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `_PASS`, `_PWD`, `API_KEY`,
+    `ACCESS_KEY`, `SECRET_KEY` and Spark's `secret.key`, `CREDENTIALS`, and in capitals
+    `_KEY`, `PASS`, `_AUTH`; `PASSWD_FILE` names where a password is, and stays);
+  - what a program takes as one: mysql's and mariadb's `-pPASS`, the mongo tools' `-p`,
+    redis-cli's `-a`, sshpass's `-p`, a registry login's `-p` (docker, podman, apptainer,
+    singularity, ...), `az login -p`, `twine upload -p`, `wandb login KEY`, and a
+    credential-named setting in `aws configure set` and `rclone config create`. The
+    program is found after a space, a slash, a quote, a backtick, `;` `|` `&` `(` or
+    `=`, so inside `bash -c '...'` and Claude Code's `eval '...'` too;
+  - token shapes wherever they stand: `sk-` (OpenAI, Anthropic, OpenRouter), GitHub's
+    `ghp_` and kin, `glpat-`, `hf_`, `AKIA`/`ASIA`, `xox?-`, `AIza`, `ya29.`, `npm_`, a
+    JWT, EOS's `zteos64:`, `nvapi-`, `gsk_`, `r8_`, `pplx-`, `xai-`, Stripe's
+    `sk_live_`/`rk_live_`, SendGrid's `SG.`, `dop_v1_`, Vault's `hvs.`, PyPI's tokens.
+
+  Prompts: an agent's prompt arguments and options, as above; in a command string,
+  its here-string or heredoc, what `echo`, `printf` or `cat` pipes straight into it,
+  and a variable set in the same string and expanded where a prompt was masked; and an
+  environment it is started with whose value says a sentence (`env 'PROMPT=...'`).
+
+  Every rule reads a line in time linear in its length. Past 16 KB a line is cut at a
+  space, the rest neither read nor written, and `[CUT]` written after the masked part
+  (a quoted credential the cut falls in is masked whole, as is one whose quote never closes);
+  `args_redacted` names `cut` and `args_truncated` is true. A submit record's
+  `captured_tail` is masked whole and then cut to its last 300 characters. The node
+  tier fails closed: if it cannot import `lib/redact.py` it writes every command line
+  as `[REDACTED]` and its `redact` field reads `["error"]` (unless `EBPFM_REDACT=0`),
+  and `ebpfm.sh check` masks a made-up credential through it.
 - **Kernel-socket traffic is no process's network I/O.** The NFS client sends its RPCs
   from the calling process's context, so every `ls` on an NFS path was an endpoint:
   95% of the table. A socket with no file behind it is now counted per node in
@@ -593,7 +688,11 @@ to, so `host` is null rather than a guess when:
 
 The collector takes only the hostname, never a URL's credentials. It skips address
 literals and `localhost`, and never treats a file name or an email address as a
-hostname. It looks names up only for processes it reports anyway. `stop.argv_hosts`
+hostname. It looks names up only for processes it reports anyway, and reads an argv for
+them once. It reads the first 4,096 characters of argv (the in-kernel read's default; an
+argv read from `/proc` at start has no cap), never half a word, and a URL's scheme from at
+most the 32 characters before its `://`, so the cost stays linear in what any user can
+put on a command line. `stop.argv_hosts`
 counts lookups resolved, failed, and dropped because the queue was full; each dropped
 one may be a missing `host`. `EBPFM_ARGV_HOSTS=0` turns this off.
 
@@ -610,7 +709,8 @@ carry them.
 **`args` is no longer capped by default** (`EBPFM_ARGS_MAXLEN=0`; it was 2048). What limits
 it now is how much argv the collector can read: the in-kernel read at exec stops at
 `EBPFM_ARGV_KMAX` (4096 bytes), while a `/proc` read, used for processes seeded at
-startup, is whole. `args_truncated` now also reports the in-kernel cut. Before, it
+startup, is whole up to the 16 KB the masking reads (*masked text*, above). `args_truncated` now also
+reports the in-kernel cut. Before, it
 compared only against the emit cap, so with no cap a clipped command line would have
 read as complete. The cost is width: identity, and so `args`, rides on every record
 about a process, including each tick's `residency`, `conn` and `netio`, so one long
@@ -717,7 +817,7 @@ that made it worth keeping. **A process that talked to the network is never a no
 | `approval_mode`, `approval_src` | identity | unattended execution, split from confinement. `autonomous` is unchanged |
 | `env_flags` | identity | agent env variable names from `/proc/<pid>/environ`. **Gone in schema 7:** the collector no longer reads another process's environment |
 | `session_uuid` | identity | survives a collector restart, unlike the pid-based `session_key` |
-| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`) or an emit cap (`EBPFM_ARGS_MAXLEN`) cut it |
+| `args_len`, `args_truncated` | identity | true pre-clamp argv length. `args_truncated` is `null`, not `false`, when unknown, and `true` when the in-kernel read (`EBPFM_ARGV_KMAX`), an emit cap (`EBPFM_ARGS_MAXLEN`) or the masking's 16 KB cut (`args_redacted` names `cut`) cut it |
 | `partition`, `gpus`, `array`, `time_limit_s`, `mem`, `cpus_per_task`, `req_src` | `submit` | the resource request, parsed from the tool's argv |
 | `io` | `truncated` | processes alive at SIGTERM carried no I/O at all before |
 | `top_procs`, `state_counts`, `tcp_open_ext`, `tcp_open` | `residency` | live per-process rows, the zombie census, standing external connections per tree |
@@ -798,7 +898,10 @@ filesystem**, so it cannot hang on the mount being diagnosed. Replaces the
 **Drains the D-state and `netbytes` hashes first**, so the record carries real
 accumulated counters rather than only what `/proc` shows at that instant — strictly
 better than the poller's version. SIGKILL is unrecoverable; a missing `stop` record
-already signals a truncated file.
+already signals a truncated file. A process that cannot be read is skipped and counted
+in the stop record's `handler_errors` (`flush_live`); a flush that fails as a whole
+leaves `truncated` null, not 0. The residency tick does the same per process
+(`residency_proc`).
 
 **6. Unattributed user processes** — **`EBPFM_MIN_UID` is the discriminator, not the
 cgroup.** The cgroup cannot be trusted: tty-attached human processes sat in

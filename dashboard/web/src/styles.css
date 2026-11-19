@@ -1814,6 +1814,12 @@ td.cmd-cut {
 .notreturned .feed {
   color: var(--ink-2);
 }
+/* The service could not reduce the panel (Panel.tsx <NotReduced>): the same
+ * frame, with the pill of a failure. */
+.notreduced .pill {
+  border-color: var(--crit);
+  color: var(--crit);
+}
 /* Feed present, rows exist, the reduction is not finished. A THIRD state, and
  * it must look like neither `nofeed` (dashed, blames the path) nor `none`
  * (a flat rule, asserts a measurement). Solid border, and a moving bar. */

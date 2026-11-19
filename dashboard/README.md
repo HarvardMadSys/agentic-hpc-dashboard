@@ -599,6 +599,9 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
+| `GET /api/annotate` | the model that labels tool calls with their purpose: provider, model, endpoint, whether it can run here ([below](#tool-call-purposes-from-a-model)) |
+| `POST /api/annotate` `{sid, window_min, from, to, order, run}` | one session's tool calls and the purposes already known; `run` starts a job asking the model about the rest |
+| `GET /api/annotate/{job}` | that job's progress and its answers so far |
 | `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, one row each, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
@@ -671,7 +674,10 @@ line are replaced by `[REDACTED]` on every way out (built panels, the live frame
 `/api/events`, `/api/export`, and the `q` search, which matches the masked text), keeping the
 flag or variable name so a reader can see what was there. Records stay raw in memory, because
 the secrets, sandbox and approval detectors need to read them. The rules and their measured cost
-are in `rc_dashboard/redact.py`.
+are in `rc_dashboard/redact.py`, word for word the collector's: a deny-list, so a secret in a
+shape they do not know is shown as it is (`collector/README.md` lists the shapes). Each reads a
+text in linear time, and one past 100,000 characters, as far as the phase rules read a command,
+is cut there and marked `[CUT]`.
 
 ## Conventions the panels obey
 
@@ -682,7 +688,9 @@ already made once.
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
   editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
-  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  CLI started in an IDE terminal, or by an IDE's extension, keeps its own agent type and stays
+  `agent`: its role is read from that type, not from the IDE's directory in its path
+  (`roles.py`). Folding the IDE
   class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
   silently empty the IDE class.
@@ -1124,12 +1132,15 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
-  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
-  to what the agent started most recently, so it does not take the time of the work that follows it. A gap
-  that begins while it runs lists it (`alive`), and once it ends, its time past the phase it began in is
-  said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The session's last phase
-  ends at the latest end of all the session's calls, or of a process one of them left running, whichever is
-  later, so the lane does not end while anything the agent started still runs.
+  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. On the
+  lane, time goes to what the agent started most recently, so it does not take the time of the work that
+  follows it. A gap that begins while it runs lists it (`alive`), and once it ends, its time past the phase
+  it began in is said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The
+  session's last phase ends at the latest end of all the session's calls, or of a process one of them left
+  running, whichever is later, so the lane does not end while anything the agent started still runs. That
+  is the lane, not the work: each phase also says where its own calls ended (`own_t1`) and how long its
+  calls, or what they left running, went on past it, by the call's category (`ran_on`), and the summary
+  weighs the work by those (below).
 - **A session across midnight is one block.** A row is one local day, since its session id carries the day,
   so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
   the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
@@ -1142,8 +1153,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 `category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
 files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
 programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
-is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
-wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded, the
+last phase's only to the end of its own calls (`own_t1`); and the time a call, or a process it left running,
+went on past its phase counts toward the call's own use (`ran_on`). A call hung for 14 h beside a minute of
+edits is then a session of running, not of changing files (it was "Mostly changed files from the shell (99% of
+14 h of work)"), and a training run left going for 3 h while the agent read its log is 3 h of running beside
+the reading, so the work can be longer than the session. A wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
 being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
 apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
 the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
@@ -1157,7 +1172,11 @@ the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
 that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
+said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
+phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
+the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
 2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
@@ -1204,6 +1223,53 @@ category.
 | `min_calls` | 5 | a task with fewer calls than this merges into a neighbor |
 | `cap` | 10 | the number of tasks a local day is merged down toward |
 | `headline_names` | 3 | the names the headline lists after the project |
+
+## Tool-call purposes from a model
+
+The rule-based `purpose` (git, build, compute, ...) says what kind of program a call ran, not
+why. The session inspector's **✦ annotate purposes** asks a language model instead: what each
+of the session's tool calls was for, in a few words ("check which CUDA version the node has"),
+and one of a fixed set of kinds (explore, edit, build, test, run, debug, hpc, git, data, env,
+monitor, other). It is the one place where a model writes onto a row, so its answer is kept
+apart from everything measured: a dashed, purple ✦ tag beside the command in the table, a ✦
+beside the box's name in the tree, the model named in every hover, and never counted anywhere.
+
+It is **off by default**, because it sends command lines off the host. What goes is exactly
+what the page shows: each distinct tool call's command line (what a Claude Code Bash call or a
+Codex sandbox ran), masked by `redact.py` and -- with [anonymized names](#anonymized-names) on
+-- by the anonymizer, and the folder it ran in. The service takes them from its own read of
+the session; the page posts only the session's name, so the endpoint cannot be used to send a
+model anything else. The first `annotate.max_calls` (400) distinct calls are asked about,
+`annotate.batch_size` (40) to a request.
+
+Each answer is kept in `<cache.dir>/annotate/purposes.jsonl`, keyed by the provider and model,
+the prompt it was asked with and the command line: a command asked about once is known to every
+reader of every session that runs it, and opening a session shows what is known at once, asking
+nothing. A different model, or a changed prompt -- a new built-in version, or an edit to
+`annotate.system_prompt` or its file -- asks afresh. A call the model's answer
+leaves out stays unlabelled and is counted as such; nothing is filled in for it.
+
+Set it up under `annotate` (every key: `dashboard.config.example.json`):
+
+| `provider` | what it calls | the key |
+|---|---|---|
+| `anthropic` (default) | the Claude Messages API; `model` defaults to `claude-opus-5-5`, `effort` (`low`) is sent as `output_config.effort`; `base_url` for a gateway | `ANTHROPIC_API_KEY` |
+| `openai` | any OpenAI-compatible `/chat/completions`: OpenAI, or with `base_url` vLLM, Ollama, LiteLLM, OpenRouter, ...; `model` is required | `OPENAI_API_KEY`; none for a local `base_url` |
+| `codex`, `claude` | the Codex or Claude Code CLI on this host, as the service's user, with that user's login | the CLI's own |
+| `ask` | whatever agent the chat (`ask`) runs | the agent's own |
+| `command` | any command: the prompt on stdin, a JSON answer on stdout or in `{answer_file}` | -- |
+
+The key is read from the variable `api_key_env` names (empty: the one above), else from
+`api_key_file`, else from `api_key` -- which `/api/config` and `--print-config` show only as
+set or not. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
+`auto: true` asks as soon as a session opens instead of on the button. The environment can set
+`RC_DASH_ANNOTATE=1`, `RC_DASH_ANNOTATE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_KEY_ENV`,
+`_KEY_FILE` and `_CMD`. For example, a local model:
+
+```json
+"annotate": { "enabled": true, "provider": "openai", "model": "qwen2.5-coder:7b",
+              "base_url": "http://127.0.0.1:11434/v1" }
+```
 
 ## Agents: subagents and blast radius
 
@@ -1393,9 +1459,10 @@ only jobs with GPUs and a time limit on the command line, and say how many those
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
 - **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
-  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
+  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). The dashboard decides what each tagged process
   really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
   trajectory rows say how many keys they fold and how the least certain one was
   attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a

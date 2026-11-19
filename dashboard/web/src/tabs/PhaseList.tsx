@@ -41,6 +41,13 @@ function Chip({ look, fill }: { look: Look; fill?: string }) {
   return <span className={`pl-chip ${look}`} style={look === 'fill' ? { background: fill } : undefined} aria-hidden="true" />;
 }
 
+/** A phase's chip by its kind alone, as its row draws it: a fill in its colour, a hatch for a guess, an empty dashed outline
+ *  for idle. The line under a closed task in the list of tasks (TaskList.tsx) draws one before each phase it names. */
+export function PhaseChip({ kind }: { kind: Phase['kind'] }) {
+  const col = phaseCol(kind);
+  return <Chip look={kind === 'edit_guess' ? 'guess' : col === 'none' ? 'idle' : 'fill'} fill={col} />;
+}
+
 /** One phase, as a row to click: its chip, name, when it began and ended, how long it was, and what it was. Picking it is
  *  the caller's: `onPick` is told which. */
 export function PhaseRow({ p, onPick }: { p: Phase; onPick: (p: Phase) => void }) {

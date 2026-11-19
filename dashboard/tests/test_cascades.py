@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import test_merge as TM                                              # noqa: E402
 from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
-from test_sandbox import CODEX_APP, codex_failed_call, root_tick     # noqa: E402
+from test_sandbox import (CODEX_APP, codex_failed_call, reused_agent_pid,   # noqa: E402
+                          root_tick)
 
 PROJ = HOME + "/proj"
 
@@ -379,6 +380,61 @@ class CascadeTest(unittest.TestCase):
     def test_a_reused_pid_that_started_after_the_child_is_not_its_parent(self):
         p = self.reused_parent_pid("haoran")      # same user: only the start times say no
         self.assertIsNone(node(tree_of(p, 28324), 28324)["parent"])
+
+    def test_an_agent_that_had_exited_is_no_parent_of_a_later_process_on_its_pid(self):
+        """Agent 500 exits; four hours later a login shell holds pid 500 and
+        starts agent 600. Taken by pid alone, 500 was 600's parent: a nested
+        agent and a tree two agents deep, where one session followed another."""
+        t0 = time.time() - 20000
+        recs = [
+            rec("exit", t0 + 100, 500, 400, "claude", "claude -p summarize", agent_pid=500,
+                tree_root=500, is_agent=True, duration_s=100.0),
+            rec("exit", t0 + 15000, 600, 500, "claude", "claude", agent_pid=600, tree_root=600,
+                is_agent=True, duration_s=300.0),
+            rec("exit", t0 + 15100, 500, 1, "bash", "-bash", agent_pid=None, tree_root=None,
+                agent_type=None, actor="human", actor3="human", tty="pts/1", duration_s=600.0),
+        ]
+        p = reduce(recs)
+        s = p["cascades"]["summary"]
+        self.assertEqual((s["trees"], s["agents"], s["nested"], s["max_agent_depth"]),
+                         (2, 2, 0, 1))
+        self.assertIsNone(node(tree_of(p, 600), 600)["parent"])
+
+    def test_a_later_process_on_a_pid_is_never_merged_into_its_node(self):
+        """bob's bypassed Claude, given the pid alice's had, merged into her node:
+        her user and argv, his approval and its flag -- and a bypass, once read,
+        stands. Now her node is hers, and his process is counted, not drawn."""
+        p = reduce(reused_agent_pid(time.time() - 7000))
+        n = node(tree_of(p, 4242), 4242)
+        self.assertEqual((n["user"], n["args"], n["approval"], n["approval_detail"]),
+                         ("alice", "claude", "supervised", "no launch flag"))
+        c = p["cascades"]
+        self.assertEqual((c["summary"]["agents"], c["buffer"]["reused"]), (1, 1))
+
+    def test_a_later_process_on_a_pid_is_held_apart_in_a_merged_window(self):
+        recs = TM.normalized(reused_agent_pid(time.time() - 7000))
+        one = TM.one_pass(recs).reducers["cascades"]
+        a, b = TM.one_pass(recs[:3]).reducers["cascades"], TM.one_pass(recs[3:]).reducers["cascades"]
+        a.merge(b)
+        for c in (one, a):
+            n = c.nodes[("h1", 4242)]
+            self.assertEqual((n["user"], n["approval"]), ("alice", "supervised"))
+            self.assertEqual([(m["user"], m["approval"]) for m in c.later[("h1", 4242)]],
+                             [("bob", "bypassed")])
+
+    def test_a_parent_still_running_when_its_child_started_is_its_parent(self):
+        t0 = self.t0
+        recs = [
+            rec("residency", t0, 100, 50, "claude", "claude", agent_pid=100, tree_root=100,
+                is_agent=True, age_s=60.0),
+            rec("exit", t0 + 30, 250, 100, "claude", "claude -p review", agent_pid=250,
+                tree_root=100, is_agent=True, duration_s=20.0),
+            rec("exit", t0 + 40, 100, 50, "claude", "claude", agent_pid=100, tree_root=100,
+                is_agent=True, duration_s=100.0),
+        ]
+        p = reduce(recs)
+        self.assertEqual(node(tree_of(p, 100), 250)["parent"], 100)
+        self.assertEqual(p["cascades"]["summary"]["nested"], 1)
 
     def test_two_users_agents_that_share_a_pid_are_one_agent_in_the_tree(self):
         # Neither agent left a record of its own, so each is known from its tool calls, as the
