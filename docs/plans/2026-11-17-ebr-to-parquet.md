@@ -1,5 +1,11 @@
 # EBR out, Parquet in: Implementation Plan
 
+> **Status: landed.** Every task below merged with
+> [PR #55](https://github.com/HarvardMadSys/agentic-hpc-dashboard/pull/55) (`claude/dashboard-parquet`)
+> on 2026-11-17, and [PR #56](https://github.com/HarvardMadSys/agentic-hpc-dashboard/pull/56) measured
+> the store's workers. This file is the record of how it was built, not work to do: what the store
+> does now is in [History in Parquet](../../dashboard/README.md#history-in-parquet).
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Remove EBR from the collector, fleet and dashboard; keep JSONL as the one live format and

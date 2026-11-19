@@ -599,7 +599,10 @@ service's own process); the spike hours by boslogin07, whose records cost more t
 reduce, so its second read buys less. Two workers per node -- one per node and group -- is the
 most that helps; each is ~0.5 GB (16 of them ~7.4 GB, plus ~1.7 GB in the service while it
 merges), and they count against the service's memory cap. The FAS deployment uses that
-(`INGEST_WORKERS` in `deploy/fleet/site.env`, empty for two per node).
+(`INGEST_WORKERS` in `deploy/fleet/site.env`, empty for two per node). The table was measured
+with one pool that every worker took any unit's next hour from; with a worker for every unit, as
+in the 16 (2) column, each unit now keeps to its own (`hours.UnitPool`, below), which this feed
+has not been measured with.
 
 **Python 3.14.** The same reductions run 5-10% faster on CPython 3.14 than on 3.12, and every
 panel is the same (compared field by field on a real slice); the test suite passes on both. Its
