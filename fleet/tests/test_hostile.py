@@ -397,7 +397,10 @@ class TestSkewedNode(unittest.TestCase):
             self.assertTrue(wait_for(lambda: all(k in rig.mirror.verified for k in sealed)
                                      and rig.link.live == d[2]
                                      and os.path.isdir(os.path.join(rig.mdir, d[2]))),
-                            rig.link.status())
+                            "%s; the copy holds %s" % (
+                                rig.link.status(),
+                                sorted(os.listdir(rig.mdir)) if os.path.isdir(rig.mdir)
+                                else "no folder"))
             r = fs.Receiver({"base": rig.basedir, "days": 3, "hosts": {}})
             r.base, r.links = rig.base, [rig.link]
             r.retention()
