@@ -272,6 +272,33 @@ class SharedSpans(unittest.TestCase):
         self.assertEqual(len(held.held), 0)
         self.assertIsNone(getattr(gz._shared, "spans", None))
 
+    def test_a_block_holding_fewer_files_than_are_searched_keeps_none(self):
+        # An hour searches every file before it reads any (`hours.plan_span`): a
+        # block one file short loses each span to the searches after it, and
+        # every read inflates its span again -- what `hours.shared_files` sizes
+        # the hourly reduction's block against.
+        paths = [self.path]
+        for k in range(5):
+            p = os.path.join(self.dir, "h%d.snapshot.jsonl.gz" % k)
+            with open(p, "wb") as fh:
+                fh.write(gzip.compress(payload(200, k + 10)))
+            paths.append(p)
+        for p in paths:                               # indexed, outside the block
+            with gz.open_feed(p) as fh:
+                fh.read()
+
+        def an_hour(n):
+            seen, patch = self.counted()
+            with patch, gz.shared_spans(n):
+                for _search_then_read in range(2):
+                    for p in paths:
+                        with gz.open_feed(p, buffering=64) as fh:
+                            fh.seek(300)
+                            fh.read(1)
+            return len(seen)
+        self.assertEqual(an_hour(len(paths)), len(paths))
+        self.assertEqual(an_hour(len(paths) - 1), 2 * len(paths))
+
     def test_a_block_inside_another_is_the_outer_one(self):
         with gz.shared_spans(5) as outer:
             with gz.shared_spans(2) as inner:

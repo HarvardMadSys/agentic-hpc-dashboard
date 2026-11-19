@@ -128,8 +128,23 @@ NODES = "__nodes__"
 NODE_LOOKAHEAD_H = 4
 # The files whose last span a node's hour shares between its time search and
 # its read (`gz.shared_spans`): the node's two of the day, and the next day's
-# two near midnight. At most this many spans per worker, for one task.
+# two near midnight. At most this many spans per worker, for one task. It is
+# enough because only those files' searches inflate anything: the node's other
+# day-files are searched too, every hour, but a search of an unchanged sealed
+# file is answered from the probe memo (`feedfile._memo`) once it has been
+# made. In a worker's first task it has not, so later days' searches can push
+# the day's spans out once, before their read.
 NODE_SHARED_FILES = 4
+
+
+def shared_files(files):
+    """How many files' last spans a run of hours keeps (`gz.shared_spans`): one
+    for every file an hour reads -- each host and stream, on the two days either
+    side of midnight -- and no fewer than `gz.SHARED_FILES`. An hour searches
+    every file before it reads any (`plan_span`), so a block that held fewer
+    would lose each file's span to the searches after it, and keep none."""
+    names = {gz.plain_name(os.path.basename(p)) for p in files}
+    return max(gz.SHARED_FILES, 2 * len(names))
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what an hour's state means. `live.py` is not here:
@@ -1156,8 +1171,8 @@ class HourStore:
             return self._reduce_nodes(files, a, b, carry, ages, tick)
         # An hour's time search and its read open each file in turn, and the next
         # hour's search lands where that read ended: one inflation of a span
-        # serves them all.
-        with gz.shared_spans():
+        # serves them all, kept for every file the hour reads (`shared_files`).
+        with gz.shared_spans(shared_files(files)):
             return self._reduce_here(files, a, b, carry, ages, tick)
 
     def _reduce_here(self, files, a, b, carry, ages, tick=None):
