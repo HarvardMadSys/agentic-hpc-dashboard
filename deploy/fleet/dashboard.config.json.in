@@ -14,8 +14,8 @@
  "ingest": {"workers": @INGEST_WORKERS@},
  "clock": {"as_of": ""},
  "risk": {"profile": @RISK_PROFILE_JSON@},
- "//filters": "The account that runs the senders on the nodes: its processes are the stream, not a user's work.",
- "filters": {"drop_global": @DROP_GLOBAL_JSON@, "drop_agent": []},
+ "//filters": "The account that runs the senders on the nodes: its processes are the stream, not a user's work. DROP_USERS and DROP_AGENT_USERS in site.env add accounts: every record of theirs, or their agents' only.",
+ "filters": {"drop_global": @DROP_GLOBAL_JSON@, "drop_agent": @DROP_AGENT_JSON@},
  "anonymize": {"enabled": @ANONYMIZE@},
  "ask": {
   "enabled": @ASK_ENABLED@,

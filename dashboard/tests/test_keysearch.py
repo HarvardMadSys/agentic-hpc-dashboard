@@ -18,6 +18,8 @@ import random
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -234,6 +236,61 @@ class KeySearchTest(unittest.TestCase):
                                         default=str))
         self.assertEqual(trees[2], trees[0])
         self.assertEqual(trees[3], trees[1])
+
+
+class _Stop(Exception):
+    pass
+
+
+class IdleTest(unittest.TestCase):
+    """The workers, a few hundred MB, are let go once nobody has read for IDLE_S --
+    on a pinned clock too: `clock.as_of` freezes time.time for the whole process."""
+
+    class Pool:
+        """An executor as the reaper sees it."""
+        _broken = False
+
+        def __init__(self):
+            self.down = False
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            self.down = True
+
+    def reap(self, idle_s, wait):
+        """One look of the reaper's, `wait` seconds after a read, with time.time
+        frozen: whether it let the workers go."""
+        pool = self.Pool()
+        looks = []
+        me = threading.current_thread()
+
+        class Clock:
+            """keysearch's `time`, whose reaper looks once, at once, then stops (in
+            this thread: a reaper an earlier test started sleeps as it did)."""
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+            def sleep(self, s):
+                if threading.current_thread() is not me:
+                    return time.sleep(s)
+                looks.append(s)
+                if len(looks) > 1:
+                    raise _Stop
+        with mock.patch.dict(keysearch._pool, {"ex": pool, "n": 2, "busy": 0,
+                                               "reaper": "running"}), \
+                mock.patch.object(keysearch, "IDLE_S", idle_s), \
+                mock.patch("time.time", return_value=time.time()):
+            self.assertIs(keysearch._executor(2), pool)          # a read takes the pool
+            time.sleep(wait)
+            with mock.patch.object(keysearch, "time", Clock()), self.assertRaises(_Stop):
+                keysearch._reap()
+            self.assertEqual(pool.down, keysearch._pool["ex"] is None)
+            return pool.down
+
+    def test_idle_workers_are_let_go_on_a_pinned_clock(self):
+        self.assertTrue(self.reap(idle_s=0.05, wait=0.2))
+
+    def test_workers_read_from_lately_are_kept(self):
+        self.assertFalse(self.reap(idle_s=60, wait=0))
 
 
 if __name__ == "__main__":

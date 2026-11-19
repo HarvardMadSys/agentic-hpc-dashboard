@@ -310,8 +310,13 @@ def defaults():
             "preprocess_wait_s": 0,
         },
         "filters": {
-            "drop_global": ["juncheng"],     # the monitoring operator
-            "drop_agent": ["flamraoui"],     # period3 agent build skew
+            # Accounts whose records are dropped, and counted (`dropped_users`):
+            # drop_global, every record of theirs (RC_DASH_DROP_USERS,
+            # comma-separated); drop_agent, only those classed agent
+            # (RC_DASH_DROP_AGENT_USERS). A site names its own -- the account its
+            # monitoring runs as, say -- and none is dropped by default.
+            "drop_global": [],
+            "drop_agent": [],
             "classes": ["agent", "human", "ide"],
             "unlabeled_class": "unlabeled",
             # the collector's own probes (node_snapshot's mpstat/iostat/sar/
@@ -380,9 +385,10 @@ def defaults():
         # numeric user ID in what the service sends out with a stable alias
         # (anonymize.py). Off by default: a deployment for the cluster's own
         # staff shows real names unless told otherwise. `salt` empty: one is
-        # generated into <cache.dir>/anonymize.salt and reused; changing it
-        # reshuffles every alias. The patterns name where homes and lab trees
-        # sit on this cluster -- see anonymize.HOME_PATTERNS for the defaults.
+        # generated into <cache.dir>/anonymize.salt and reused; set, it is 16
+        # bytes or more. Changing it reshuffles every alias. The patterns name
+        # where homes and lab trees sit on this cluster -- see
+        # anonymize.HOME_PATTERNS for the defaults.
         # What the page opens on, before a reader changes it. Nothing here
         # changes a number, so the saved builds ignore the section.
         # user_columns: the Active users table's columns (agents, ides, running,

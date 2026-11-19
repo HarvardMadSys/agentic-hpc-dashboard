@@ -234,8 +234,21 @@ cmd_bootstrap() {
     fi
 
     _set_sysctls
+    _forget_features
     echo "== re-checking"
     cmd_check
+}
+
+_forget_features() {
+    # What bootstrap installs (BCC, kernel headers, bpftool) can load blocks the
+    # last probe could not, so the next start probes every block afresh rather
+    # than taking the feature cache's word for them.
+    local f n=0
+    for f in "$OUTPUT_DIR"/.features_*.json; do
+        [ -e "$f" ] || continue
+        rm -f "$f" && n=$((n+1))
+    done
+    ok "feature cache" "$n file(s) removed: the next start probes every block"
 }
 
 _bootstrap_apt() {
@@ -470,6 +483,14 @@ _check_node_tier() {
     if [ -f "$NODE_SNAPSHOT" ]; then
         python3 -m py_compile "$NODE_SNAPSHOT" 2>/dev/null && ok "node_snapshot syntax" ok \
             || bad "node_snapshot syntax" "py_compile failed"
+    fi
+    # The node tier masks argv with the lib/redact.py beside it. One it cannot
+    # import leaves every command line [REDACTED]; one that masks nothing, raw.
+    if python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import redact; out = redact.redact_line("tool --password hunter2check")[0]; sys.exit(0 if "hunter2check" not in out and redact.MASK in out else 1)' \
+            "$(dirname "$NODE_SNAPSHOT")/lib" >/dev/null 2>&1; then
+        ok redact "masks a test credential"
+    else
+        bad redact "$(dirname "$NODE_SNAPSHOT")/lib/redact.py did not mask a test credential"
     fi
     ok "snapshot mode" "$(_node_mode)$(want_ebpf && echo '  (ebpf tier carries the 4 dropped sections)' || echo '  (no ebpf tier: keeping every section)')"
 

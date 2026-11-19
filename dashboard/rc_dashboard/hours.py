@@ -1096,7 +1096,7 @@ class HourStore:
         # hour is the slack of a time-ordered file, not a straggler.
         prev = {f["path"]: f for f in pm["files"]} if pm else None
         for h in range(a, b):
-            t0 = time.time()
+            t0 = time.monotonic()
             red = self._hour_set()
             carried = carry is not None
             if carried:
@@ -1132,7 +1132,7 @@ class HourStore:
             self.stats["hours_reduced"] += 1
             self.stats["records"] += n
             self.stats["bytes"] += stats["bytes"]
-            self.stats["reduce_s"] += time.time() - t0
+            self.stats["reduce_s"] += time.monotonic() - t0
             if tick:
                 tick(records=n, bytes=stats["bytes"])
             if self.pause:
@@ -1644,7 +1644,8 @@ def build(reg, view):
     past what the reads reached (`PanelView.feed`).
     """
     store = reg.hours
-    t0 = time.time()
+    t0 = time.time()                # the present: the window's end
+    m0 = time.monotonic()           # and this times the build
     roots = reg.roots_fn()
     since = t0 - view.window_s
     h_lo = int(math.ceil(since / HOUR))
@@ -1676,7 +1677,7 @@ def build(reg, view):
         prog.update(records=prog["records"] + records, bytes=prog["bytes"] + bytes,
                     total_bytes=max(prog["total_bytes"], prog["bytes"] + bytes),
                     pct=min(99, int(100 * weight["done"] / weight["total"])),
-                    elapsed_s=round(time.time() - t0, 1))
+                    elapsed_s=round(time.monotonic() - m0, 1))
 
     try:
         reduced = store.ensure(roots, h_from, h_hi, progress=lambda i, n, records=0,
@@ -1761,5 +1762,5 @@ def build(reg, view):
         with reg.lock:
             view.state = "ready"
             view.installed_at = time.time()
-            prog.update(pct=100, elapsed_s=round(time.time() - t0, 1))
+            prog.update(pct=100, elapsed_s=round(time.monotonic() - m0, 1))
         return True

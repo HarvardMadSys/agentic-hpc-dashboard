@@ -58,6 +58,11 @@ never outranks the file.
   of an hour and a group of reducers each; 0 workers is one per CPU the service may use
   ([Hourly merge-reduce](#hourly-merge-reduce)). Going from 1 worker to more, or back,
   reduces the hours afresh; the count and the groups change no saved hour.
+- `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the
+  accounts it names, and `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only those classed
+  agent: the account a site's monitoring runs as, say. Neither names anyone by default;
+  `run.sh` sets these clusters' own (not the demo's). The ebpf feed's report counts what was
+  dropped (`excluded.users` in `/api/feeds`).
 
 JSON rather than TOML: the format is shared with the rest of the repo (every collector's record
 is a JSON line; the retired builder's contract was `data.json`) and
@@ -694,7 +699,10 @@ line are replaced by `[REDACTED]` on every way out (built panels, the live frame
 `/api/events`, `/api/export`, and the `q` search, which matches the masked text), keeping the
 flag or variable name so a reader can see what was there. Records stay raw in memory, because
 the secrets, sandbox and approval detectors need to read them. The rules and their measured cost
-are in `rc_dashboard/redact.py`.
+are in `rc_dashboard/redact.py`, word for word the collector's: a deny-list, so a secret in a
+shape they do not know is shown as it is (`collector/README.md` lists the shapes). Each reads a
+text in linear time, and one past 100,000 characters, as far as the phase rules read a command,
+is cut there and marked `[CUT]`.
 
 ## Conventions the panels obey
 
@@ -705,7 +713,9 @@ already made once.
   editor a person drives: the VS Code, Cursor and Windsurf remote-server trees the collector
   tags (it calls the first `human-vscode` and counts the other two as agents), plus other
   editors' servers recognised by their own executable path (`normalize.ide_class`). An agent
-  CLI started in an IDE terminal keeps its own agent type and stays `agent`. Folding the IDE
+  CLI started in an IDE terminal, or by an IDE's extension, keeps its own agent type and stays
+  `agent`: its role is read from that type, not from the IDE's directory in its path
+  (`roles.py`). Folding the IDE
   class into "agent" is what produced a retracted GPU near-parity claim. `actor3` is
   *derived* via `agent_lib.actor3`, never approximated from the binary `actor`, which would
   silently empty the IDE class.
@@ -832,7 +842,14 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   `anonymize.salt`, or else `<cache.dir>/anonymize.salt`, generated once with mode 0600. One
   account reads the same in every tab, window, and restart, and without the salt a list of
   candidate names does not turn an alias back. Changing the salt reshuffles every alias.
-  Neither `/api/config` nor `--print-config` shows it.
+  Neither `/api/config` nor `--print-config` shows it. A configured salt shorter than 16 bytes
+  stops the service at start rather than serving under it, and a longer one gives every name
+  a new alias. The file is written whole and then linked into place, so a crash cannot leave
+  it half-written (on a file system without hard links it is made in place, which can; and two
+  instances started there at the same moment for the first time can stop one of them, which
+  started again reads the other's salt). One that is empty, not hex or shorter (edited by hand,
+  a crash there, or an older version) stops the service too: delete it, and the next start
+  makes a new salt, with new aliases.
 - **What is a name.**
   - Every account the live roster holds or a `user` field names, plus the accounts the
     config's filters name.
@@ -1140,12 +1157,15 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
-  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
-  to what the agent started most recently, so it does not take the time of the work that follows it. A gap
-  that begins while it runs lists it (`alive`), and once it ends, its time past the phase it began in is
-  said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The session's last phase
-  ends at the latest end of all the session's calls, or of a process one of them left running, whichever is
-  later, so the lane does not end while anything the agent started still runs.
+  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. On the
+  lane, time goes to what the agent started most recently, so it does not take the time of the work that
+  follows it. A gap that begins while it runs lists it (`alive`), and once it ends, its time past the phase
+  it began in is said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The
+  session's last phase ends at the latest end of all the session's calls, or of a process one of them left
+  running, whichever is later, so the lane does not end while anything the agent started still runs. That
+  is the lane, not the work: each phase also says where its own calls ended (`own_t1`) and how long its
+  calls, or what they left running, went on past it, by the call's category (`ran_on`), and the summary
+  weighs the work by those (below).
 - **A session across midnight is one block.** A row is one local day, since its session id carries the day,
   so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
   the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
@@ -1158,8 +1178,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 `category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
 files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
 programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
-is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
-wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded, the
+last phase's only to the end of its own calls (`own_t1`); and the time a call, or a process it left running,
+went on past its phase counts toward the call's own use (`ran_on`). A call hung for 14 h beside a minute of
+edits is then a session of running, not of changing files (it was "Mostly changed files from the shell (99% of
+14 h of work)"), and a training run left going for 3 h while the agent read its log is 3 h of running beside
+the reading, so the work can be longer than the session. A wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
 being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
 apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
 the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
@@ -1173,7 +1197,11 @@ the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
 that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
+said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
+phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
+the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
 2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
@@ -1439,7 +1467,10 @@ that, from the window's `slurm` reducer (`reducers/slurm.py`):
   a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
   no id, a non-zero exit and the scheduler's own error line, which is the reason shown
   (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
-  is not a refusal;
+  is not a refusal, nor is srun's own line saying so (`task 0: Exited with exit code 1`): an
+  srun or salloc is refused only when it cannot get the allocation. The count of refusals is a
+  lower bound: a submission keeps its last 300 characters, and a refusal line cut at its start
+  there (a reason of some 200 characters: Slurm prints that line last) is not counted;
 - queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
   gap, not 0.
 
@@ -1453,9 +1484,10 @@ only jobs with GPUs and a time limit on the command line, and say how many those
   `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
   `exit_mm()` (verified). Until then the metric renders **not measured**.
 - **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tags anything whose argv
-  mentions `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in. The dashboard decides what each tagged process
+  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
+  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
+  Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). The dashboard decides what each tagged process
   really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
   trajectory rows say how many keys they fold and how the least certain one was
   attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a

@@ -674,10 +674,11 @@ class Normalizer:
             rec["_eff"] = ec
             rec["_purpose"] = self.purpose_of(ec)
             rec["_shell_resolved"] = bool(comm in self.shell_comms and ec != comm)
-            # pre-v4 emitted cpu_pct on a 0-duration process; recompute, never trust
+            # pre-v4 emitted cpu_pct on a 0-duration process; recompute, never trust.
+            # A measured 0 s of CPU is 0%, not unmeasured.
             d = rec.get("duration_s")
             cpu = rec.get("cpu_s")
-            rec["_cpu_pct"] = (100.0 * cpu / d) if (d and d >= 0.01 and cpu) else None
+            rec["_cpu_pct"] = (100.0 * cpu / d) if (d and d >= 0.01 and cpu is not None) else None
 
         if ev in ("exit", "truncated", "submit", "residency"):
             kt, kv = session_key_of(rec)

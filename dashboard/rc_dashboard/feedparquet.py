@@ -950,7 +950,7 @@ def convert_source(day, path, out, level=ZSTD_LEVEL,
     crash or a power loss too."""
     pa = _pa()
     pq = pa.parquet
-    t0 = time.time()
+    t0 = time.monotonic()
     stem = stem_of(path)
     host = feedfile.host_of(path)
     ident = identity(path)
@@ -1029,7 +1029,7 @@ def convert_source(day, path, out, level=ZSTD_LEVEL,
            "partial": src.partial, "head": base64.b64encode(src.head).decode(),
            "nonrec": src.nonrec, "records": counts, "malformed": src.malformed,
            "extra_rows": {n: b.extra_rows for n, b in builders.items() if b.extra_rows},
-           "seconds": round(time.time() - t0, 1),
+           "seconds": round(time.monotonic() - t0, 1),
            "bytes": {n: os.path.getsize(out_path(out, n, day, stem)) for n in writers}}
     mp = manifest_path(out, day, stem)
     _makedirs(os.path.dirname(mp))

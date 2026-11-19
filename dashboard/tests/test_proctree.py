@@ -20,8 +20,10 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -1134,7 +1136,27 @@ class EndToEndTest(unittest.TestCase):
 
     def test_an_old_tree_is_read_again(self):
         self.inspect()
-        self.assertFalse(self.inspect(now=time.time() + proctree.CACHE_TTL + 1)["cached"])
+        self.assertFalse(self.inspect(now=time.monotonic() + proctree.CACHE_TTL + 1)["cached"])
+
+    def test_on_a_pinned_clock_an_old_tree_is_read_again(self):
+        # `clock.as_of` freezes time.time: the TTL runs on a clock that moves
+        with mock.patch("time.time", return_value=time.time()), \
+                mock.patch.object(proctree, "CACHE_TTL", 0.05):
+            self.assertFalse(self.inspect()["cached"])
+            time.sleep(0.2)
+            self.assertFalse(self.inspect()["cached"])
+
+    def test_on_a_pinned_clock_the_read_is_still_timed(self):
+        scan = proctree.key_scan
+
+        def slow(*a, **kw):
+            time.sleep(0.25)
+            yield from scan(*a, **kw)
+        with mock.patch("time.time", return_value=time.time()), \
+                mock.patch.object(proctree, "key_scan", slow):
+            body = self.inspect()
+        self.assertEqual(body["scan"]["method"], "key search")
+        self.assertGreaterEqual(body["scan"]["elapsed_s"], 0.25)
 
     def test_a_background_read_gives_way_to_a_reader(self):
         proctree._waiting[0] = 1
@@ -1154,6 +1176,56 @@ class EndToEndTest(unittest.TestCase):
         self.view.reducers = {}
         body = self.inspect()
         self.assertIsNone(body["found"])
+
+
+class WarmerTest(unittest.TestCase):
+    """The warmer rests once nobody has opened a session for WARM_IDLE -- on a
+    pinned clock too: `clock.as_of` freezes time.time for the whole process."""
+
+    class Agg:
+        """What `serve` and one pass of `_warm_loop` read of the aggregator."""
+
+        def __init__(self):
+            self.cfg = configmod.Config(configmod.defaults(), {}, None)
+            self.lock = threading.RLock()
+            self.reports = {"ebpf": {"name": "ebpf", "status": "ok", "configured": [],
+                                     "notice": None, "env": None, "cli": None}}
+            self.panels_by_window = types.SimpleNamespace(
+                views={}, request=lambda minutes, flt=None: None)
+            self.looks = self.passes = 0
+
+        @property
+        def stopping(self):
+            self.passes += 1
+            return self.passes > 1              # one pass of the loop
+
+        def roots(self):
+            return []
+
+        def window(self, minutes):
+            self.looks += 1
+            return {"minutes": 1440, "label": "24 h"}
+
+    def looks(self, idle_s, wait):
+        """Whether one pass of the warmer, `wait` seconds after a session was
+        opened, looked for sessions to read, with time.time frozen."""
+        agg = self.Agg()
+        with mock.patch("time.time", return_value=time.time()), \
+                mock.patch.object(proctree, "WARM_IDLE", idle_s), \
+                mock.patch.object(proctree, "WARM_EVERY", 0), \
+                mock.patch.object(proctree, "inspect", lambda *a, **k: {"found": None}), \
+                mock.patch.dict(proctree._warm, {"thread": object()}):
+            proctree.serve(agg, "h1|2026-01-01|agent|apid:100")       # the open
+            opened = agg.looks
+            time.sleep(wait)
+            proctree._warm_loop(agg)
+        return agg.looks > opened
+
+    def test_on_a_pinned_clock_the_warmer_rests(self):
+        self.assertFalse(self.looks(idle_s=0.05, wait=0.2))
+
+    def test_after_an_open_the_warmer_reads(self):
+        self.assertTrue(self.looks(idle_s=60, wait=0))
 
 
 if __name__ == "__main__":

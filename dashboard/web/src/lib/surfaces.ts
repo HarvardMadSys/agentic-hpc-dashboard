@@ -11,6 +11,7 @@
  */
 import type { Surface } from '../api/types';
 import { fint } from './format';
+import { table } from './lookup';
 
 export type SurfaceGroup = 'CLI' | 'app';
 
@@ -26,14 +27,14 @@ export const SURFACE_GROUP: Record<Surface, SurfaceGroup | null> = {
 };
 
 /** The surface as a legend or a count names it. */
-export const SURFACE_LBL: Record<Surface, string> = {
+export const SURFACE_LBL: Record<Surface, string> = table({
   terminal: 'terminal',
   script: 'script',
   desktop: 'desktop app',
   extension: 'IDE extension',
   web: 'web or phone',
   unknown: 'unknown',
-};
+});
 
 /** What a chip names: the place, and for an extension the IDE, where its path says which. */
 export function surfaceShort(s: Surface, detail?: string | null): string {
@@ -41,7 +42,7 @@ export function surfaceShort(s: Surface, detail?: string | null): string {
 }
 
 /* What each detail the service sends means, in the reader's words. */
-const DETAIL_TIP: Record<string, string> = {
+const DETAIL_TIP: Record<string, string> = table({
   interactive: 'a person at the agent’s own interactive screen, in a terminal (tmux and an IDE’s terminal included)',
   'background session': 'a background session that `claude daemon` keeps for its user, who attaches to it from a terminal',
   'claude -p': 'a program runs `claude -p`, with no one at a terminal',
@@ -57,7 +58,7 @@ const DETAIL_TIP: Record<string, string> = {
   'shared app server':
     'a Codex app-server daemon serves whichever client attaches to it, so its own command line names none, and no terminal of its user started it',
   'app server': 'a Codex app server on stdio, started by a program whose own record is not here',
-};
+});
 
 /** Sessions by group in words -- "12 from a terminal or script · 5 from an app" -- and each
  *  surface's count for the hover; null when there are none to count. */

@@ -451,7 +451,7 @@ class Aggregator:
         if not span:
             return 0
 
-        t0 = time.time()
+        t0 = time.monotonic()
         stats = {"bytes": 0, "parse_errors": 0, "records": 0}
         # Its own normalizer, so a batch is read, parsed and normalized outside the
         # lock; the lock is held only to hand the batch to the live tier, and to
@@ -495,7 +495,7 @@ class Aggregator:
             self.backfill.update(
                 state="done", pct=100, records=seen, bytes=stats["bytes"],
                 parse_errors=stats["parse_errors"],
-                elapsed_s=round(time.time() - t0, 1),
+                elapsed_s=round(time.monotonic() - t0, 1),
                 # What the read actually reached back to. Younger than `from`
                 # when the feed itself is -- a collector started inside the
                 # window, or `feeds.ebpf.days` not covering it -- and the live

@@ -65,6 +65,17 @@ def _flag(v, key, default):
     return x
 
 
+def _accounts(v, key):
+    """The account names in `key`, separated by spaces or commas, each once."""
+    out = []
+    for name in v.get(key, "").replace(",", " ").split():
+        if not PLAIN.match(name) or name.startswith("-"):
+            raise ValueError("%s: %r is not an account name" % (key, name))
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def derive(v):
     """The values the templates need beyond site.env's own. A history or memory key that
     site.env leaves out takes the dashboard's own default, as site.env.example has it."""
@@ -136,7 +147,9 @@ def derive(v):
         "CODEX_JSON": json.dumps(codex or "codex"),
         "DASH_PATH": (os.path.dirname(codex) + ":" if codex else "") + SYSTEM_PATH,
         "RISK_PROFILE_JSON": json.dumps(profile),
-        "DROP_GLOBAL_JSON": json.dumps([user]),
+        # The stream's own account, and the ones site.env names.
+        "DROP_GLOBAL_JSON": json.dumps([user] + [a for a in _accounts(v, "DROP_USERS") if a != user]),
+        "DROP_AGENT_JSON": json.dumps(_accounts(v, "DROP_AGENT_USERS")),
         "SITE_NAME_JSON": json.dumps(v.get("SITE_NAME", "")),
         "SITE_DESCRIPTION_JSON": json.dumps(v.get("SITE_DESCRIPTION", "")),
         "MAX_WINDOWS": str(int(v.get("MAX_WINDOWS") or 5)),

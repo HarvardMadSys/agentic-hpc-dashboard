@@ -166,11 +166,14 @@ What this misreads, in records, from boslogin06 (schema 7) on 2026-10-28 and rtx
     burst, and on four of the five node-days whose captures hold the app's reads a model's call
     came within 1.2 s of one of them. Within 2 s, a model's `cat` with no argv is the app's.
 """
+import collections
 import functools
+import hashlib
 import math
 import os
 import re
 import shlex
+import threading
 import zlib
 
 from ..procindex import _NO_PARENT
@@ -180,9 +183,14 @@ from ..roles import (_AGENT_EXES, _EMBEDDED, _SANDBOX_PREFIX, _SHELLS, _TOOL_SHE
 # In priority order: a call that holds several commands takes the first category any of them has.
 CATS = ("test", "slurm", "run", "build", "edit", "git", "wait", "explore", "unknown")
 
-_MAX_TEXT = 100000          # characters of one command read; the longest argv seen was 58 k
+# Characters of one command read, at most (`_cut`). A Claude Bash call's argv is 2.6 KB at the 99th
+# percentile on boslogin06 and 6.8 KB at most, and the collector's in-kernel read keeps 4 KB; only
+# an argv read from /proc at its start is longer (the longest seen, 58 k). Reading costs about
+# 16 us a line: 100,000 characters of short lines took 0.8 s for each of category_of and tagset.
+_MAX_TEXT = 16384
 _MAX_DEPTH = 3              # `$( )`, `sh -c` and `eval` read inside one another this deep
 _LOOKAHEAD = 40             # lines a quoted string may run on, looking for its closing quote
+_LOOKAHEAD_MISSES = 8       # quotes a text may leave open for good before its lines are not looked past
 
 # ------------------------------------------------------------------ the tables
 # Programs, by what a call that runs one is. A program no table names is `run`.
@@ -290,7 +298,9 @@ _BUILD_WORDS = frozenset({"build", "install", "setup", "compile", "configure", "
                           "fetch", "download"})
 
 # Python that writes a file: open() with a mode that writes, and the calls that write or delete.
-_FILE_MODE = r"['\"][rwxabt+]*[wax+][rwxabt+]*['\"]"
+# A mode is read up to its first `w`, `a`, `x` or `+`, in one way only: `[rwxabt+]*` before that
+# letter could take any of them, and `'www...wz'` took 1.4 s at 16,000 characters.
+_FILE_MODE = r"['\"][rbt]*[wax+][rwxabt+]*['\"]"
 _PY_WRITES = re.compile(
     r"\bopen\s*\((?:[^()]|\([^()]*\))*?(?:,\s*|\bmode\s*=\s*)" + _FILE_MODE +
     r"|\.open\s*\(\s*" + _FILE_MODE +
@@ -415,6 +425,50 @@ def _lex(line):
         return None
 
 
+_OPENS = re.compile(r"['\"\\]")         # what opens a quote or escapes, outside quotes
+_IN_DOUBLE = re.compile(r'["\\]')         # what closes a double quote or escapes, inside one
+
+
+def _left_open(s, state=""):
+    """What `_lex` is left inside at the end of `s`, starting inside `state`: "" for nothing, `'`
+    or `"` for a quote, or a backslash (`\\`, or `"\\` inside double quotes) that takes the next
+    character as it is. `_lex` fails exactly when this is not "" -- shlex's posix rules: a single
+    quote holds a backslash as it is, a double quote does not. One pass over `s`, jumping from one
+    quote or backslash to the next."""
+    i, n = 0, len(s)
+    while True:
+        if not state:
+            m = _OPENS.search(s, i)
+            if m is None:
+                return ""
+            i, state = m.end(), m.group()
+        elif state == "'":
+            i = s.find("'", i)
+            if i < 0:
+                return state
+            i, state = i + 1, ""
+        elif state == '"':
+            m = _IN_DOUBLE.search(s, i)
+            if m is None:
+                return state
+            i, state = m.end(), "" if m.group() == '"' else '"\\'
+        else:
+            if i >= n:
+                return state
+            i, state = i + 1, "" if state == "\\" else '"'
+
+
+def _cut(text):
+    """`text` as far as `_MAX_TEXT` characters: cut at its last line before that, else its last word,
+    not in a word -- half a word would read as a program."""
+    if len(text) <= _MAX_TEXT:
+        return text
+    k = text.rfind("\n", 0, _MAX_TEXT + 1)
+    if k <= 0:
+        k = max(text.rfind(" ", 0, _MAX_TEXT + 1), text.rfind("\t", 0, _MAX_TEXT + 1))
+    return text[:k if k > 0 else _MAX_TEXT]
+
+
 def _is_separator(tok):
     return bool(tok) and all(c in _SEPARATOR for c in tok)
 
@@ -428,18 +482,25 @@ def _lines(text):
     each follows the one before with no space, and the bodies of the heredocs it opens, which are
     the lines that follow it. A line that ends in a backslash goes on, and so does one with an
     open quote, for up to `_LOOKAHEAD` lines. A text longer than `_MAX_TEXT` is cut at a line, not
-    in a word: half a word would read as a program."""
-    if len(text) > _MAX_TEXT:
-        k = text.rfind("\n", 0, _MAX_TEXT)
-        text = text[:k if k > 0 else _MAX_TEXT]
-    lines = text.split("\n")
-    n, i = len(lines), 0
+    in a word: half a word would read as a program.
+
+    Where an open quote closes is found in one pass over the lines after it (`_left_open`), and
+    the line is lexed once, joined to them: lexing a growing join up to `_LOOKAHEAD` times, for
+    every line, took 2 s over 1,000 lines that each end in three backslashes. A text whose quotes
+    stay open for good `_LOOKAHEAD_MISSES` times has its next such lines split on whitespace
+    without looking past them; the test texts leave two at most."""
+    lines = _cut(text).split("\n")
+    n, i, misses = len(lines), 0, 0
     while i < n:
         line = lines[i]
         i += 1
-        while line.endswith("\\") and not line.endswith("\\\\") and i < n:
-            line = line[:-1] + " " + lines[i]
-            i += 1
+        if line.endswith("\\") and not line.endswith("\\\\") and i < n:
+            held = []                   # joined once: adding each to the last was quadratic
+            while line.endswith("\\") and not line.endswith("\\\\") and i < n:
+                held.append(line[:-1])
+                line = lines[i]
+                i += 1
+            line = " ".join(held + [line])
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         bodies = []
@@ -459,14 +520,20 @@ def _lines(text):
 
         if "<<" in line:
             line = _HEREDOC_OP.sub(cut, line)
-        first, resume, lexed, k = line, i, _lex(line), 0
-        while lexed is None and i < n and k < _LOOKAHEAD:   # an open quote runs on to the next line
-            line += "\n" + lines[i]
-            i += 1
-            k += 1
-            lexed = _lex(line)
+        lexed = _lex(line)
+        if lexed is None and i < n and misses < _LOOKAHEAD_MISSES:
+            # an open quote runs on to the next line: to the first line that closes it
+            state, k, stop = _left_open(line), 0, min(n, i + _LOOKAHEAD)
+            while state and i + k < stop:
+                state = _left_open("\n" + lines[i + k], state)
+                k += 1
+            joined = None if state else _lex("\n".join([line] + lines[i:i + k]))
+            if joined is None:
+                misses += 1
+            else:
+                lexed, i = joined, i + k
         if lexed is None:
-            i, toks = resume, first.split()
+            toks = line.split()
             lexed = toks, [False] * len(toks)
         yield lexed[0], lexed[1], bodies
 
@@ -495,9 +562,25 @@ class _Splitter:
         self.braces = []                        # open `{` groups: the index in `out` of each
         self.group = None                       # a group just closed: where in `out` it began
         self.cases, self.pat, self.test, self.glue = 0, False, False, False
+        self.lead = {}          # a command's word list, by id: [the list, how many lead keywords]
 
     def _in_sub(self):
         return any(k == "$" for k, _c, _e, _i in self.stack)
+
+    def _at_start(self):
+        """True while the command being read holds only keywords: where a command starts. A
+        command's words are only added to, and only the last is glued onto, so how many of the
+        words before the last are keywords is kept for each list: a run of `{` read them all again
+        for each one (0.6 s at 16,000 characters)."""
+        cur = self.cur
+        lead = self.lead.get(id(cur))
+        if lead is None or lead[0] is not cur:
+            lead = self.lead[id(cur)] = [cur, 0]
+        k, last = lead[1], len(cur) - 1
+        while k < last and cur[k] in _KEYWORDS:
+            k += 1
+        lead[1] = k
+        return k >= last and (last < 0 or cur[last] in _KEYWORDS)
 
     def _arith(self):
         return bool(self.stack) and self.stack[-1][0] == "(("
@@ -544,13 +627,13 @@ class _Splitter:
             self.cur.append(t)
             self.flush(kind="def")
             return
-        if t == "[[" and all(w in _KEYWORDS for w in self.cur):
+        if t == "[[" and self._at_start():
             self.test = True                    # `[[` where a command starts, `if [[` included
         elif t == "]]":
             self.test = False
-        elif t == "{" and all(w in _KEYWORDS for w in self.cur):
+        elif t == "{" and self._at_start():
             self.braces.append(len(self.out))   # a group opens where a command starts
-        elif t == "}" and self.braces and all(w in _KEYWORDS for w in self.cur):
+        elif t == "}" and self.braces and self._at_start():
             self.group = self.braces.pop()
         self.cur.append(t)
 
@@ -1319,28 +1402,58 @@ def _category(cmds):
     return "explore" if setup else "unknown"
 
 
-# Characters of a text the rule caches hold: a longer one is read each time it comes, so each
-# cache holds 65,536 texts of 4 KB at most. On boslogin06 a Claude Bash call's argv is 2.6 KB at the
-# 99th percentile and 6.8 KB at most (the final review's measure); a text is read only as far as
-# _MAX_TEXT in any case.
+# Characters of a text the rule caches hold: each cache holds 65,536 texts of 4 KB at most. On
+# boslogin06 a Claude Bash call's argv is 2.6 KB at the 99th percentile and 6.8 KB at most (the final
+# review's measure); a text is read only as far as _MAX_TEXT in any case. A longer text is
+# remembered by a digest of it instead, LONG_CACHED of them: read again each time it came, one of
+# crafted shape took seconds at every window build.
 CACHED_TEXT = 4096
+LONG_CACHED = 4096
+
+
+def _digest(args):
+    """16 bytes that stand for a call's arguments (texts, or None), in place of the texts."""
+    h = hashlib.blake2b(digest_size=16)
+    for a in args:
+        b = a.encode("utf-8", "surrogatepass") if isinstance(a, str) else repr(a).encode()
+        h.update(b"%d:%s:" % (len(b), type(a).__name__.encode()))
+        h.update(b)
+    return h.digest()
 
 
 def _cached(fn=None, *, maxsize=65536, text_max=CACHED_TEXT):
-    """`functools.lru_cache(maxsize)` over `fn`, with a call whose texts pass `text_max` characters
-    read around it. `cache_info` and `cache_clear` are the cache's, and `__wrapped__` is `fn`.
-    Bare (`@_cached`), or with smaller bounds (`@_cached(maxsize=..., text_max=...)`)."""
+    """`functools.lru_cache(maxsize)` over `fn`, and for a call whose texts pass `text_max` characters
+    a cache of LONG_CACHED answers by the digest of its texts (`cache_long`), which never holds the
+    texts themselves. `cache_info` is the first cache's, `cache_clear` clears both, and
+    `__wrapped__` is `fn`. Bare (`@_cached`), or with smaller bounds (`@_cached(maxsize=...,
+    text_max=...)`)."""
     if fn is None:
         return functools.partial(_cached, maxsize=maxsize, text_max=text_max)
     cache = functools.lru_cache(maxsize=maxsize)(fn)
+    long, lock = collections.OrderedDict(), threading.Lock()
 
     @functools.wraps(fn)
     def call(*args):
-        if sum(len(a) for a in args if isinstance(a, str)) > text_max:
-            return fn(*args)
-        return cache(*args)
+        if sum(len(a) for a in args if isinstance(a, str)) <= text_max:
+            return cache(*args)
+        key = _digest(args)
+        with lock:
+            if key in long:
+                long.move_to_end(key)
+                return long[key]
+        out = fn(*args)
+        with lock:
+            long[key] = out
+            if len(long) > LONG_CACHED:
+                long.popitem(last=False)            # the least recently used
+        return out
 
-    call.cache_info, call.cache_clear = cache.cache_info, cache.cache_clear
+    def clear():
+        cache.cache_clear()
+        with lock:
+            long.clear()
+
+    call.cache_info, call.cache_clear, call.cache_long = cache.cache_info, clear, long
     return call
 
 
@@ -1349,11 +1462,11 @@ def category_of(text):
     """One of CATS for a shell command text. A call that holds several commands takes the first of
     CATS any of them has; a loop that sleeps is a wait whatever it holds; setup-only commands name a
     call only when nothing else is in it; and a text with no command to read is `unknown`. A text
-    is read as far as _MAX_TEXT (100,000 characters), cut at the last line before it (`_lines`).
+    is read as far as _MAX_TEXT (16,384 characters), cut at the last line before it (`_cut`).
 
     Cached: a command line recurs (a poll runs the same one every round) and this runs on millions
     of records a day. It is a pure function of the text, so the cache cannot go stale. A text past
-    CACHED_TEXT characters is read around the cache (`_cached`)."""
+    CACHED_TEXT characters is remembered by its digest (`_cached`)."""
     if not text or not text.strip() or "CODEX_REMOTE_PAYLOAD" in text:
         return "unknown"
     return _category(_commands(text))
@@ -1367,7 +1480,9 @@ def category_of_argv(command, args):
 
     A wrapper's shell is read through too (`sudo -n bash -c pytest -q`, `nohup sh -c ...`).
 
-    Cached on `(command, args)`, like `category_of`, and around the cache past CACHED_TEXT."""
+    Cached on `(command, args)`, like `category_of`, and by digest past CACHED_TEXT. `args` is read
+    as far as _MAX_TEXT, as a text is (`_cut`)."""
+    args = _cut(args) if args else args
     text = shell_text(command, args)
     if text is not None:
         return category_of(text)
@@ -1450,8 +1565,9 @@ _FLOCK_CHECK = re.compile(r"if\s+command\s+-v\s+flock\b")
 # `;`, `&`, `|`, a newline, `(`, or `{`, and not as an argument (`cp -r . ~/.codex/backup`). Nor
 # after `if`: a newer Codex sources the snapshot so before the model's own command, `if . <snapshot>
 # >/dev/null 2>&1; then :; fi ... exec bash -c '<command>'`, which is a tool call (2 on boslogin06 on
-# 2026-10-28).
-_CODEX_SOURCED = re.compile(r"""(?:^|[;&|\n({])\s*(?:source|\.)\s+["']?\S*/\.codex/""")
+# 2026-10-28). The space after a separator holds no newline, which is a separator itself: `\s*`
+# there read a run of newlines again from each of them (1.3 s at 16,000), for the same matches.
+_CODEX_SOURCED = re.compile(r"""(?:^|[;&|\n({])[^\S\n]*(?:source|\.)\s+["']?\S*/\.codex/""")
 _SH_S = re.compile(r"^\S+\s+-s(?:\s|$)")                         # `sh -s`: a script on stdin
 # Codex's remote launcher. Its VS Code extension starts Codex over SSH as a login shell that execs
 # the extension's payload, `bash -l -i -c 'CODEX_HOME=...; exec /bin/sh -c "$CODEX_REMOTE_PAYLOAD"'`,
@@ -1526,8 +1642,11 @@ _DAEMON_CHORES = (
 # them by time: one that began within `app_read_s` of one of these reads is the app's too
 # (`cat_without_argv`, `PhaseLog.add_app_read`).
 APP_READ = "app assets"     # the housekeeping shape of these reads
-_ASSET_FILE = (r"/(?:\S*/)?\.codex/(?:\.tmp/(?:plugins|bundled-marketplaces)|plugins/cache)/"
-               r"(?:\S*/)?assets/\S+")
+# The file is read one folder at a time, and each folder once (atomic groups): its first
+# `.codex/<cache>/` and the first `assets/` after it are as good as any later one, and trying every
+# pair took 0.97 s for a 6.7 KB `cat` of `.codex/plugins/cache/` and `assets/` repeated.
+_ASSET_FILE = (r"/(?>(?:[^\s/]*/)*?\.codex/(?:\.tmp/(?:plugins|bundled-marketplaces)"
+               r"|plugins/cache)/)(?>(?:[^\s/]*/)*?assets/)\S+")
 _APP_ASSETS = re.compile(
     r"^(?:(?:\S*/)?cat|/proc/self/exe --codex-run-as-process-setup (?:\S+ )+?/bin/cat /bin/cat) "
     + _ASSET_FILE + "$")
