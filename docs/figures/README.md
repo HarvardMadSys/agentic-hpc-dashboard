@@ -132,12 +132,20 @@ a join (`reducers/own_io.py:OwnIo`) that takes the children's figures back off a
 exit, carried across hours as the sessions' always was, and held to `reducers.own_io.max_parents`
 parents (a parent dropped is counted, `own_io.evicted`, and said on stderr; what is held for an
 agent runtime, or for what started one, goes last, unless such parents hold over half the cap).
+A join takes off only the children it read, so the figure is worked out once, by the hours,
+which read every record: one more join first in each hour's set (`own_io.py:Ledger`) puts each
+exit's own figure on the record (`_own`) before the reducers read it, and `OwnIo.take` gives a
+record that carries one that figure. The parents' are saved beside the hour (`o<hour>`, by user
+and agent type), and a reader that does not read every exit -- a filtered build, a merge's
+edge -- puts them back on the exits of the closed hours it reads (`hours.py:OwnFigures`).
 
 A view is built one of three ways:
 
 - **merge** -- an unfiltered view with a closed hour inside it (`hours.py:build`). The records from
-  the window's start to its first whole hour are read; every closed hour is merged from its saved
-  state, a whole epoch day from one saved state (`HourStore.load_part`, each reducer's `merge`);
+  the window's start to its first whole hour are read, their exits given the own figures their
+  hour worked out, so a child reaped before the window began is taken off; every closed hour is
+  merged from its saved state, a whole epoch day from one saved state (`HourStore.load_part`,
+  each reducer's `merge`);
   the join state the last hour ended with is installed; the open hour is read. An hour not saved
   yet is reduced first, in order (`HourStore.ensure`), once ever. Replicas: no -- the edge, the
   hours and the tail read the JSONL and search the `.gz` by time. In a run of hours, a reader of a
@@ -157,7 +165,12 @@ A view is built one of three ways:
   merged, saved and resumed like a scan. Replicas: yes. The filter is a `where`
   (`ViewFilter.where`, `where.py`) that a sealed file's replica tests on its columns before it
   builds a record; in a JSONL file a byte check (`ViewFilter.line_match`) skips the lines it
-  rejects before they are parsed.
+  rejects before they are parsed. So its joins never see a child the filter leaves out: each
+  exit of a closed hour in the window takes the own figure the hours worked out instead
+  (`WindowRegistry._own_figures`, which reduces the window's hours first where they are not, as
+  a merge would), loading those of the users and agent types it keeps (`ViewFilter.holds`); an
+  exit of the hour still open, or fed live, is joined over what the filter keeps
+  (`cache.own_io` says which).
 
 A view's payload (each reducer's `result()`, credentials masked) is made after its build and again
 on every rebuild tick (`rebuild.interval_s`, 900 s; `WindowRegistry.refresh`), which instead builds

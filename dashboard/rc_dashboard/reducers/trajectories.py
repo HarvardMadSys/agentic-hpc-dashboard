@@ -2136,8 +2136,10 @@ class TrajectoryReducer:
                        "chain_runs; the displayed chain is capped at max_runs_shown.",
                 "io": "io_rd_mb / io_wr_mb sum each process's OWN disk bytes: the "
                       "collector's figure includes every child the process reaped, "
-                      "which is taken back off at the parent's exit. A child whose "
-                      "exit the window did not see is not taken off. "
+                      "which is taken back off at the parent's exit. An exit of a "
+                      "closed hour takes the figure the hours worked out over every "
+                      "record, whatever the view's filter leaves out; in the hour still "
+                      "open, a child whose exit the view did not read is not taken off. "
                       "net_tx_mb / net_rx_mb are per process already; peak_rss_mb "
                       "is the largest of any one exited process.",
                 "summary": "over every session in the window. An agent-class session "
