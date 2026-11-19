@@ -2,6 +2,7 @@
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import collections
 import errno
 import os
 import re
@@ -16,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import anonymize as anonmod        # noqa: E402
+from rc_dashboard import app as appmod               # noqa: E402
 from rc_dashboard import config as configmod         # noqa: E402
 from rc_dashboard.anonymize import (AMBIGUOUS, EMAIL_MASK, UID_MASK, UNKNOWN,   # noqa: E402
                                     Anonymizer)
@@ -36,6 +38,13 @@ class AliasTest(unittest.TestCase):
         self.assertEqual(a.user_alias("glen"), b.user_alias("glen"))
         other = Anonymizer(b"another", known_users=["glen"])
         self.assertNotEqual(a.user_alias("glen"), other.user_alias("glen"))
+
+    def test_the_masking_is_named_by_its_salt_without_giving_it_away(self):
+        a, b, other = anon(), anon(), Anonymizer(b"another")
+        self.assertEqual(a.ident(), b.ident())
+        self.assertNotEqual(a.ident(), other.ident())
+        self.assertRegex(a.ident(), r"^[0-9a-f]{16}$")
+        self.assertNotIn(b"salt".hex(), a.ident())
 
     def test_a_user_and_a_lab_of_the_same_spelling_get_different_aliases(self):
         a = anon("glen")
@@ -215,6 +224,53 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(out, {"by_class": {"agent": 1}, "glen_total": 2})
 
 
+class VerbatimTest(unittest.TestCase):
+    """What a reader sent goes back as they sent it: rewritten, a name they
+    typed came back as its alias."""
+
+    def test_it_goes_back_as_sent_and_the_data_beside_it_does_not(self):
+        a = anon("glen", "bob.smith")
+        sent = anonmod.verbatim({"host": ["glen", "zed9"], "q": "/home/mallory",
+                                 "user": "bob.smith"})
+        body = {"filters": sent, "rows": [{"user": "glen", "args": "ls /home/glen"}]}
+        once = a.payload(body)
+        self.assertEqual(once["filters"], {"host": ["glen", "zed9"], "q": "/home/mallory",
+                                           "user": "bob.smith"})
+        self.assertEqual(once["rows"][0]["user"], a.user_alias("glen"))
+        # still marked: a second pass (a job stored, then served) leaves it too
+        self.assertEqual(a.payload(once), once)
+        self.assertIs(type(a.payload(once)["filters"]["q"]), anonmod.Verbatim)
+
+    def test_it_teaches_nothing(self):
+        a = anon()
+        a.payload(anonmod.verbatim({"user": "zed9", "uid": 5, "users": ["ana"],
+                                    "cmd": "sbatch -A sham_lab x"}))
+        self.assertEqual((a.users, a.labs, a.system), ({}, {}, set()))
+
+    def test_every_string_is_marked_and_every_shape_kept(self):
+        got = anonmod.verbatim({"a": ["x", ("y", 1)], "b": {"z"}, "c": None, "d": 2.5})
+        self.assertEqual(got, {"a": ["x", ("y", 1)], "b": {"z"}, "c": None, "d": 2.5})
+        self.assertIs(type(got["a"][1]), tuple)
+        self.assertEqual({type(s) for s in (got["a"][0], got["a"][1][0], *got["b"])},
+                         {anonmod.Verbatim})
+        # a namedtuple is built from fields, not from one generator: as it is
+        point = collections.namedtuple("Point", "x y")("glen", "ana")
+        self.assertIs(anonmod.verbatim(point), point)
+        self.assertEqual(anonmod.verbatim([point]), [point])
+        # so is a dict subclass, as a list's or a tuple's is: unmarked, it is masked
+        ordered = collections.OrderedDict(user="ana")
+        self.assertIs(anonmod.verbatim(ordered), ordered)
+        self.assertIs(type(anonmod.verbatim([ordered])[0]["user"]), str)
+
+    def test_no_such_account_is_never_learned_as_one(self):
+        # A real name in a filter maps to UNKNOWN, echoed under `users`: it was
+        # learned as an account there, and shown as an alias of no one.
+        a = anon()
+        self.assertEqual(a.payload({"users": [UNKNOWN], "user": UNKNOWN}),
+                         {"users": [UNKNOWN], "user": UNKNOWN})
+        self.assertEqual(a.users, {})
+
+
 class RequestTest(unittest.TestCase):
 
     def test_an_alias_maps_back_and_anything_else_maps_to_nothing(self):
@@ -229,6 +285,65 @@ class RequestTest(unittest.TestCase):
         roster.append("ana")
         alias = Anonymizer(b"salt").user_alias("ana")
         self.assertEqual(a.dealias_user(alias), "ana")
+        b = anon(roster=lambda: list(roster))
+        roster.append("bo")
+        bo = Anonymizer(b"salt").user_alias("bo")
+        self.assertEqual(b.dealias_text("/scratch/%s/x" % bo), "/scratch/bo/x")
+
+    def test_unknown_aliases_reread_the_roster_at_most_once_a_second(self):
+        # Any reader can send aliases no one has, as many as they like; each
+        # re-read copies the roster under the aggregator's lock.
+        class Clock:
+            t = 100.0
+
+            def monotonic(self):
+                return self.t
+            perf_counter = monotonic
+        clock, reads = Clock(), []
+        a = anon(roster=lambda: reads.append(1) or ["glen"])
+        with mock.patch.object(anonmod, "time", clock):
+            for i in range(200):
+                self.assertEqual(a.dealias_user("user-%08x" % i), UNKNOWN)
+                a.dealias_text("/scratch/user-%08x/x" % (i + 1000))
+            self.assertEqual(len(reads), 1)
+            clock.t += anonmod.FORCED_EVERY_S
+            a.dealias_user("user-0000ffff")
+            self.assertEqual(len(reads), 2)
+
+    def test_an_alias_in_a_path_or_a_word_maps_back_and_nothing_else_does(self):
+        a = anon("glen", "bob.smith")
+        g, b = a.user_alias("glen"), a.user_alias("bob.smith")
+        self.assertEqual(a.dealias_text("/scratch/%s/run" % g), "/scratch/glen/run")
+        self.assertEqual(a.dealias_text("/home/%s/bin/%s_sync" % (b, g)),
+                         "/home/bob.smith/bin/glen_sync")
+        # a real name stays a real name: what it finds is tested as shown
+        for s in ("/scratch/glen/run", "/home/user-0123abcd/x", "lab-1b2c3d4e", "x" + g,
+                  g + "0", "", None):
+            self.assertEqual(a.dealias_text(s), s)
+
+    def test_a_record_teaches_its_own_account_before_its_text_is_masked(self):
+        # A scan meets accounts no response has named; a search masks a
+        # record's text with its owner learned, or the real name is still there.
+        a = anon()
+        self.assertEqual(a.text("rsync /scratch/dave/run"), "rsync /scratch/dave/run")
+        a.learn_record({"user": "dave", "uid": 2004, "args": "rsync /scratch/dave/run"})
+        self.assertEqual(a.text("rsync /scratch/dave/run"),
+                         "rsync /scratch/%s/run" % a.user_alias("dave"))
+        a.learn_record({"user": "gdm", "uid": 120})       # a system account stays visible
+        a.learn_record({"pid": 7})                        # a record of no one teaches nothing
+        self.assertEqual(sorted(a.users), ["dave"])
+
+    def test_a_session_id_takes_its_accounts_alias_and_a_real_name_names_none(self):
+        a = anon("glen")
+        g = a.user_alias("glen")
+        head = "h1|2026-11-18|human|"
+        for sent, want in ((head + "tty:%s@pts/3" % g, head + "tty:glen@pts/3"),
+                           (head + "usr:%s" % g, head + "usr:glen"),
+                           (head + "tty:glen@pts/3", head + "tty:%s@pts/3" % UNKNOWN),
+                           (head + "usr:glen", head + "usr:" + UNKNOWN),
+                           (head + "apid:4242", head + "apid:4242")):
+            self.assertEqual(appmod.dealias_sid(sent, a), want)
+        self.assertEqual(appmod.dealias_sid(head + "usr:glen", None), head + "usr:glen")
 
 
 class ConfigTest(unittest.TestCase):

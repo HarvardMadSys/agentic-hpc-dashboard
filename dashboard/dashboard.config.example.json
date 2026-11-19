@@ -49,7 +49,11 @@
     "snapshot_guide": true,
     "//citations": "every row the model is given carries a ref it cites after each figure; the",
     "//citations1": "page links each to its row, with a preview of what the model saw. false: none",
-    "citations": true
+    "citations": true,
+    "//unmasked_answers": "with anonymize.enabled, Ask and its suggestions marked done are refused",
+    "//unmasked_answers1": "unless true: an answer is shown as the agent writes it, and the agent can",
+    "//unmasked_answers2": "read the raw feeds the service reads",
+    "unmasked_answers": false
   },
 
   "//annotate": "The session inspector's 'annotate purposes': what each tool call was for, asked of a",

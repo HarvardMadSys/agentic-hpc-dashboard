@@ -33,7 +33,17 @@ clip command lines at 160-400 characters) is matched by its prefix.
 Requests are anonymous too: `dealias_user` maps an alias back to its account,
 and anything that is not a known alias maps to `UNKNOWN`, which matches no
 record. A real name typed into a filter finds nothing, so the page cannot be
-used to ask whether someone is here.
+used to ask whether someone is here. Text a reader types into a search, or a
+host, tool or directory filter, is matched on the record as they see it -- the
+record's own account learned first (`learn_record`), then masked -- so a real
+name typed there finds nothing either. The aliases in such text are turned
+back into accounts only to find the records to test (`dealias_text`).
+
+And what a reader sends never goes through the rewrite on its way back: an
+echoed filter, search, question or session id is `Verbatim`, which `payload`
+passes through untouched and learns nothing from. Rewritten, it made the
+service a translator: send `alice`, get back her alias, and get back a name
+that is no account unchanged.
 """
 import bisect
 import errno
@@ -120,6 +130,10 @@ _ALIAS = re.compile(r"(?:user|lab)-[0-9a-f]{8}")
 _NAME_OK = re.compile(r"(?=[^A-Za-z]*[A-Za-z])[A-Za-z0-9_][A-Za-z0-9._-]{1,63}")
 CLIPPED_MIN = 100                 # the shortest string a clipped name is looked for in
 ROSTER_EVERY_S = 2.0
+# A re-read forced by an alias the service does not know (`dealias_user`,
+# `dealias_text`): any reader can send one, and each copies the roster under
+# the aggregator's lock, so however many arrive, one this often at most.
+FORCED_EVERY_S = 1.0
 # What `_rewrite` made of each string, and the strings `learn_text` has read, kept
 # while no name is learned or forgotten (`generation`). A payload's strings repeat
 # (class names, hosts, the same command in every frame), and the rewrite is a few
@@ -127,6 +141,35 @@ ROSTER_EVERY_S = 2.0
 # a string longer than `MEMO_LEN` is rewritten every time.
 MEMO_MAX = 50000
 MEMO_LEN = 2000
+# An alias inside a longer string: a path or a word the page showed with one.
+_ALIAS_IN = re.compile(r"(?<![A-Za-z0-9])user-[0-9a-f]{8}(?![0-9a-f])")
+
+
+class Verbatim(str):
+    """Text a reader sent, on its way back to them as they sent it.
+
+    `payload` leaves it as it is and learns nothing from it. Rewritten like
+    the data around it, an echoed filter or question turned a name the reader
+    typed into its alias and left a word that is no account unchanged -- a
+    lookup table from names to aliases for anyone with a list of candidates.
+    """
+    __slots__ = ()
+
+
+def verbatim(obj):
+    """`obj` with every string in it `Verbatim`: the values of a plain dict (its
+    keys are the service's), and the items of a plain list, tuple or set,
+    which keep their kind. Any other container -- a namedtuple, which no
+    generator builds, or a subclass of dict, list or tuple -- goes as it is,
+    unmarked: its strings are masked like any other rather than kept as
+    written, and the request does not fail on it."""
+    if isinstance(obj, str):
+        return obj if type(obj) is Verbatim else Verbatim(obj)
+    if type(obj) is dict:
+        return {k: verbatim(v) for k, v in obj.items()}
+    if type(obj) in (list, tuple, set, frozenset):
+        return type(obj)(verbatim(v) for v in obj)
+    return obj
 
 
 class Anonymizer:
@@ -149,6 +192,8 @@ class Anonymizer:
         self._roster = roster
         self._roster_n = -1
         self._roster_at = 0.0
+        self._forced_at = None
+        self._forced_lock = threading.Lock()
         self._lock = threading.RLock()
         self.users = {}           # account -> alias
         self.labs = {}            # lab -> alias
@@ -170,6 +215,11 @@ class Anonymizer:
         return hmac.new(self._salt, ("%s:%s" % (kind, name)).encode(),
                         hashlib.sha256).hexdigest()[:8]
 
+    def ident(self):
+        """Which masking this is -- a digest of the salt that does not give it
+        away -- for text kept on disk to say what it was written under."""
+        return hmac.new(self._salt, b"ident", hashlib.sha256).hexdigest()[:16]
+
     def user_alias(self, name):
         """The alias of one account, learning it if new; reserved names stay."""
         a = self.users.get(name)
@@ -180,6 +230,8 @@ class Anonymizer:
 
     # ----------------------------------------------------------- learning
     def learn_user(self, name, uid=None):
+        if type(name) is Verbatim or name == UNKNOWN:
+            return                # a reader's text, or this module's "no such account"
         system = isinstance(uid, int) and 0 <= uid < 1000
         if not system and isinstance(name, str) and name in self.users:
             return                # known: every payload names its users again
@@ -228,10 +280,17 @@ class Anonymizer:
             self._special = self._sorted = None
 
     def refresh(self, force=False):
-        """Learn every account the live roster holds, at most every 2 s."""
+        """Learn every account the live roster holds, at most every 2 s; when
+        forced, at most once a second (`FORCED_EVERY_S`)."""
         if self._roster is None:
             return
         now = time.monotonic()
+        if force:
+            with self._forced_lock:
+                if self._forced_at is not None and now - self._forced_at < FORCED_EVERY_S:
+                    force = False
+                else:
+                    self._forced_at = now
         if not force and now - self._roster_at < ROSTER_EVERY_S:
             return
         self._roster_at = now
@@ -247,8 +306,9 @@ class Anonymizer:
 
     def learn_text(self, s):
         """Learn the labs the patterns capture in `s`. Names they capture are
-        masked where they stand (`_in_place`), not learned."""
-        if not s or not isinstance(s, str) or s in self._learned:
+        masked where they stand (`_in_place`), not learned. A reader's own text
+        (`Verbatim`) teaches nothing."""
+        if not s or not isinstance(s, str) or type(s) is Verbatim or s in self._learned:
             return
         for gate, pats in ((_PATTERN_GATES[0], self._home), (_PATTERN_GATES[1], self._labp)):
             if not pats or not any(g in s for g in gate):
@@ -264,6 +324,17 @@ class Anonymizer:
             if len(self._learned) >= MEMO_MAX:
                 self._learned = set()
             self._learned.add(s)
+
+    def learn_record(self, rec):
+        """Learn the account one raw record is of, as `payload` would before
+        masking it. A test of what a reader typed against the record as they
+        see it must find that account's name masked, and a scan meets accounts
+        no response has named yet -- older than the live roster -- whose real
+        name would otherwise still be there to match."""
+        u = rec.get("user")
+        if isinstance(u, str):
+            uid = rec.get("uid")
+            self.learn_user(u, uid if isinstance(uid, int) else None)
 
     # ----------------------------------------------------------- rewriting
     def _special_names(self):
@@ -470,7 +541,9 @@ class Anonymizer:
 
     def _walk(self, o):
         if isinstance(o, str):
-            return self._rw(o)
+            # what a reader sent goes back as they sent it, still marked, so a
+            # second pass over the same object leaves it too (`Verbatim`)
+            return o if type(o) is Verbatim else self._rw(o)
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():
@@ -514,6 +587,18 @@ class Anonymizer:
             self.refresh(force=True)
             n = self.back.get(v)
         return n if n is not None else UNKNOWN
+
+    def dealias_text(self, s):
+        """`s` -- a path or a word the page showed -- with each alias in it
+        turned back into its account, so the records it was shown from can be
+        found. Anything else stays as it is, a real name included: what this
+        finds must then be tested as the reader sees it (`learn_record`,
+        `text`), where that name reads as its alias and matches nothing."""
+        if not isinstance(s, str) or "user-" not in s:
+            return s
+        if any(a not in self.back for a in _ALIAS_IN.findall(s)):
+            self.refresh(force=True)      # an account the roster took on since
+        return _ALIAS_IN.sub(lambda m: self.back.get(m.group(0), m.group(0)), s)
 
     def status(self):
         """For /api/health: counts only, never a name."""

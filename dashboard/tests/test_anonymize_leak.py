@@ -9,11 +9,15 @@ the test cannot pass by serving nothing.
 
 Behind a password, as Ask runs nowhere else; every request sends it.
 
+`ReaderTextTest` sends real names instead: a real name a reader types finds
+nothing, even for an account no response has named yet.
+
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -38,6 +42,8 @@ from rc_dashboard import app as appmod             # noqa: E402
 from rc_dashboard import ask as ask_mod            # noqa: E402
 from rc_dashboard import auth                      # noqa: E402
 from rc_dashboard import config as configmod       # noqa: E402
+from rc_dashboard import export                    # noqa: E402
+from rc_dashboard.anonymize import Anonymizer      # noqa: E402
 from test_ingest import DAY, line, stamp           # noqa: E402
 
 PASSWORD = "Leak-test:1"
@@ -61,6 +67,11 @@ def exit_rec(epoch, pid, user, args, actor3="agent", cwd=None):
             "cpu_s": 0.2, "duration_s": 1.0, "peak_rss_mb": 12.0,
             "io": {"rd_mb": 0.1, "wr_mb": 0.1, "rchar_mb": 0.2, "wchar_mb": 0.2,
                    "scope": "process"}}
+
+
+# How long before `now` alice's agent ran the tool call the annotator is asked
+# about (`feed`, `Served.called_sid`).
+CALL_AGO = 90
 
 
 def feed(now):
@@ -101,19 +112,48 @@ def feed(now):
                  "by_actor3": {"agent": {"n_procs": 3, "threads": 5, "rss_mb": 120.0,
                                          "d_state": 0, "users": 1}},
                  "by_agent_type": {}, "trees": 1, "tracked_live": 3})
+    # a Bash tool call of alice's agent: the command it ran is what the
+    # annotator is asked about (proctree.ran)
+    recs.append(exit_rec(now - CALL_AGO, 5100, "alice",
+                         "/bin/zsh -c -l source /home/alice/.claude/shell-snapshots/snapshot-zsh-1.sh"
+                         " && eval 'python train.py --data /n/home03/carol/data' < /dev/null"))
     return recs
 
 
-class LeakTest(unittest.TestCase):
+# A stand-in for the annotator's model: it keeps each prompt it is sent, and
+# labels every call with real names, as an answer kept from a run without
+# masking may, or an agent on this host that read the raw feeds.
+ANNOTATOR = r'''
+import json, os, re, sys, uuid
+d, t = sys.argv[1], sys.stdin.read()
+open(os.path.join(d, uuid.uuid4().hex), "w").write(t)
+print(json.dumps({i: {"purpose": "reads /n/home03/carol/notes for alice and bob.smith",
+                      "kind": "explore"} for i in re.findall(r'"id": "(\d+)"', t)}))
+'''
+
+
+class Served(unittest.TestCase):
+    """The real app on a free local port over `records`, with names masked."""
+
+    # what the stand-in agent below answers, Python run with the prompt as `t`
+    ANSWER = "print('ok')"
+
+    @classmethod
+    def records(cls, now):
+        return feed(now)
+
+    @classmethod
+    def configure(cls, tree):
+        """Changes to the config before the app is made."""
 
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="rc_anon_leak_")
         root = os.path.join(cls.tmp, "ebpf")
         os.makedirs(os.path.join(root, DAY))
-        now = time.time()
+        cls.now = now = time.time()
         with open(os.path.join(root, DAY, "h1.exits.jsonl"), "wb") as fh:
-            for r in feed(now):
+            for r in cls.records(now):
                 fh.write(line(r))
         tree = configmod.defaults()
         tree["feeds"]["ebpf"]["roots"] = [root]
@@ -129,11 +169,18 @@ class LeakTest(unittest.TestCase):
         tree["ask"]["command"] = [
             sys.executable, "-c",
             "import os,sys,uuid; d=sys.argv[1]; t=sys.stdin.read();"
-            "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); print('ok')",
+            "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); " + cls.ANSWER,
             cls.prompts]
         tree["ask"]["enabled"] = True
         tree["anonymize"]["enabled"] = True
         tree["server"]["auth"]["password_hash"] = auth.hash_password(PASSWORD, n=16, r=1, p=1)
+        # these questions are asked with names masked: answers as the agent wrote them
+        tree["ask"]["unmasked_answers"] = True
+        cls.annotated = os.path.join(cls.tmp, "annotated")
+        os.makedirs(cls.annotated)
+        tree["annotate"].update(enabled=True, provider="command",
+                                command=[sys.executable, "-c", ANNOTATOR, cls.annotated])
+        cls.configure(tree)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)    # on_event
@@ -209,6 +256,33 @@ class LeakTest(unittest.TestCase):
     def assertClean(self, where, body):
         for s in SECRETS:
             self.assertNotIn(s, body, "%s leaks %r" % (where, s))
+
+    def called_sid(self, ranks):
+        """The agent's row of the day its annotated tool call ran in (CALL_AGO):
+        a session's rows are split by day, and in the first forty minutes after
+        midnight the busiest is the day before's, which holds none of the calls."""
+        day = time.strftime("%Y-%m-%d", time.localtime(self.now - CALL_AGO))
+        sid = next((s for s in ranks.get("events") or [] if "|%s|agent|" % day in s), None)
+        self.assertIsNotNone(sid, "no agent row of %s among %r" % (day, ranks.get("events")))
+        return sid
+
+    def annotated_job(self, sid):
+        """`(POST answer, finished job's answer)`: one session annotated."""
+        status, first = self.post("/api/annotate", {"sid": sid, "run": True})
+        self.assertEqual(status, 200, first)
+        job = json.loads(first)["job"]
+        self.assertTrue(job, first)
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.05)
+            text = self.get("/api/annotate/%s" % job["id"])[1]
+            job = json.loads(text)
+        self.assertEqual(job["state"], "done", job)
+        return first, text
+
+
+class LeakTest(Served):
 
     def test_no_route_serves_a_real_name(self):
         alice = self.anon.user_alias("alice")
@@ -348,12 +422,365 @@ class LeakTest(unittest.TestCase):
             status, _ = self.post("/api/ask", {"question": "q", "context": ctx})
             self.assertEqual(status, 400, ctx)
 
+    def test_a_suggestion_kept_from_before_names_were_masked_is_served_masked(self):
+        # Marked done while the service showed names, so its text holds them.
+        # The list is read from disk once: read again, as after the restart
+        # that turned masking on.
+        asker, cfg = self.app.state.agg.asker, self.app.state.cfg
+        path = os.path.join(cfg.get("cache.dir"), "ask", "done.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump({"version": 1, "items": [{
+                "id": "kept", "job": "j0", "index": 0, "priority": "high",
+                "title": "Ask alice about polling", "action": "mail me@fas.harvard.edu",
+                "evidence": "/n/home03/carol/notes", "users": ["alice", "bob.smith"],
+                "panel": None, "tab": None, "window": "24h", "done_at": 1.0}]}, fh)
+        with asker.lock:
+            asker._done = None
+
+        def send(method, path, body=None):
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d%s" % (self.port, path), method=method,
+                data=None if body is None else json.dumps(body).encode(),
+                headers=dict(AUTH, **{"content-type": "application/json"}))
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.status, r.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+        try:
+            listed = self.get("/api/suggestions/done")[1]
+            self.assertClean("/api/suggestions/done", listed)
+            self.assertIn(self.anon.user_alias("alice"), listed)
+            self.assertClean("the next suggestions' prompt", self.asked({"suggest": True}))
+            # while Ask is refused (no ask.unmasked_answers), so is what it kept
+            cfg.set("ask.unmasked_answers", False, "test")
+            try:
+                for method, where, body in (("GET", "/api/suggestions/done", None),
+                                            ("POST", "/api/suggestions/done",
+                                             {"job": "j0", "index": 0}),
+                                            ("DELETE", "/api/suggestions/done/kept", None)):
+                    status, got = send(method, where, body)
+                    self.assertEqual(status, 400, (method, got))
+                    self.assertIn("ask.unmasked_answers", got)
+            finally:
+                cfg.set("ask.unmasked_answers", True, "test")
+        finally:
+            send("DELETE", "/api/suggestions/done/kept")
+
+    def test_annotations_go_to_the_model_and_come_back_masked(self):
+        # The model is given the calls as the page shows them, and what it
+        # answers -- names, here -- comes back masked too: /api/annotate sent
+        # its answers out past the anonymizer.
+        alice = self.anon.user_alias("alice")
+        sid = self.called_sid(json.loads(self.get("/api/trajectories")[1])["ranks"])
+        before = set(os.listdir(self.annotated))
+        first, done = self.annotated_job(sid)
+        self.assertIn(alice, json.loads(done)["results"][self.anon.text(
+            "python train.py --data /n/home03/carol/data")][0])
+        again = self.post("/api/annotate", {"sid": sid})[1]     # the kept answers, now known
+        self.assertTrue(json.loads(again)["known"])
+        for where, body in (("POST", first), ("GET job", done), ("POST known", again)):
+            self.assertClean("/api/annotate " + where, body)
+        sent = [open(os.path.join(self.annotated, n)).read()
+                for n in set(os.listdir(self.annotated)) - before]
+        self.assertTrue(sent)
+        for prompt in sent:
+            self.assertClean("the annotator's prompt", prompt)
+            self.assertIn(alice, prompt)             # the call's folder, her home
+
     def test_health_says_it_is_on_without_naming_anyone(self):
         h = json.loads(self.get("/api/health")[1])["anonymize"]
         self.assertTrue(h["enabled"])
         self.assertGreaterEqual(h["users_known"], 2)
         self.assertEqual(h["alias_collisions"], 0)
 
+
+SALT = "reader-text-salt-1"   # 16 bytes or more, as a salt must be
+MARK = "zq7mark"        # in dave's command lines only: his rows wherever they are served
+
+
+def named_later(now):
+    """`feed`, and accounts no response has named: `dave` and `erin` ran things
+    three hours ago, past the hour the live roster holds here but in the
+    day-file a search or a filter reads. `frank`'s tool and directory carry
+    his name, and his processes are keyed by his account alone (`usr:`). Enough
+    newer exits that the old ones are past /api/events' first page and the
+    export's cap (`ReaderTextTest.configure`)."""
+    recs = feed(now)
+    for i in range(3):
+        recs.append(exit_rec(now - 3 * 3600 + i, 9000 + i, "dave",
+                             "rsync -a /scratch/dave/run%d remote: %s" % (i, MARK), "human",
+                             cwd="/scratch/dave"))
+        recs.append(exit_rec(now - 3 * 3600 + 30 + i, 9100 + i, "erin",
+                             "rsync -a /scratch/erin/out%d remote:" % i, "human",
+                             cwd="/scratch/erin"))
+        frank = exit_rec(now - 900 + i, 9200 + i, "frank", "/home/frank/bin/frank_sync --go",
+                         "human", cwd="/scratch/frank/run")
+        del frank["session_key"]
+        recs.append(frank)
+    for i in range(170):
+        recs.append(exit_rec(now - 2400 + 12 * i, 6000 + i, ("alice", "bob.smith")[i % 2],
+                             "git status", ("agent", "human")[i % 2]))
+    return sorted(recs, key=lambda r: r["ts_epoch"])
+
+
+class ReaderTextTest(Served):
+    """What a reader sends, with real names in it, over `named_later`."""
+
+    records = staticmethod(named_later)
+    # an agent that answers with all it was told but the data -- the question,
+    # earlier turns, the panel's title -- as a model asked to repeat it would
+    ANSWER = "print(t.split('<snapshot>')[0])"
+
+    @classmethod
+    def configure(cls, tree):
+        tree["live"].update(retention_min=60, window_min=60, backfill_hours=1,
+                            window_presets_min=[60])
+        tree["export"]["max_rows"] = 100
+        tree["anonymize"]["salt"] = SALT
+
+    @staticmethod
+    def alias(name):
+        """`name`'s alias, worked out without teaching the service the name."""
+        return Anonymizer(SALT).user_alias(name)
+
+    def rows(self, query, route="/api/events"):
+        """The records a query returns: /api/events' rows, or the export's lines."""
+        status, body = self.get(route + "?" + query)
+        self.assertEqual(status, 200, body)
+        if route == "/api/export":
+            return [json.loads(x) for x in body.splitlines()[1:-1]]
+        return json.loads(body)["rows"]
+
+    def lookup(self, query):
+        """A finished /api/io/commands lookup."""
+        job = json.loads(self.get("/api/io/commands?" + query)[1])
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.1)
+            job = json.loads(self.get("/api/io/commands/%s" % job["id"])[1])
+        self.assertEqual(job["state"], "done", job)
+        return job
+
+    def test_a_first_search_finds_no_account_by_its_real_name(self):
+        # No response has named erin, so her name was still in her records'
+        # text when the first search masked it: `q=erin` found her rows, then
+        # served them under her alias.
+        self.assertNotIn("erin", self.anon.users)
+        for route in ("/api/events", "/api/export"):
+            for q in ("erin", "/scratch/erin"):
+                self.assertEqual(self.rows("q=" + urllib.parse.quote(q), route), [], (route, q))
+        erin = self.alias("erin")
+        for route in ("/api/events", "/api/export"):
+            got = self.rows("q=" + erin, route)
+            self.assertEqual(({r["user"] for r in got}, len(got)), ({erin}, 3), route)
+
+    def test_a_real_name_in_a_tool_or_a_directory_finds_nothing(self):
+        frank, alice = self.alias("frank"), self.alias("alice")
+        real, shown = "/home/frank/bin/frank_sync", "/home/%s/bin/%s_sync" % (frank, frank)
+        for route in ("/api/events", "/api/export"):
+            self.assertEqual(self.rows("tool=" + urllib.parse.quote(real), route), [], route)
+            got = self.rows("tool=" + urllib.parse.quote(shown), route)
+            self.assertEqual(({r["user"] for r in got}, len(got)), ({frank}, 3), route)
+        for query, n in (("tool=" + urllib.parse.quote(real), 0),
+                         ("tool=" + urllib.parse.quote(shown), 3),
+                         ("cwd=/scratch/frank", 0),
+                         ("cwd=" + urllib.parse.quote("/scratch/" + frank), 3),
+                         ("cwd=/home/alice", 0)):
+            self.assertEqual(self.lookup(query)["matched"], n, query)
+        self.assertGreater(self.lookup("cwd=" + urllib.parse.quote("/home/" + alice))["matched"], 0)
+
+    def test_a_real_name_in_a_session_id_names_no_session(self):
+        # frank's processes are keyed by his account (`usr:frank`); the
+        # mapping itself is pinned in test_anonymize (dealias_sid)
+        day = time.strftime("%Y-%m-%d", time.localtime(self.now - 900))
+        for _ in range(3):
+            body = json.loads(self.get("/api/trajectory?sid=" + urllib.parse.quote(
+                "h1|%s|human|usr:frank" % day))[1])
+            self.assertFalse(body["found"], body)
+
+    def answered(self, body, query=""):
+        """A question's job, once the agent has answered."""
+        status, got = self.post("/api/ask" + query, body)
+        self.assertEqual(status, 200, got)
+        job = json.loads(got)
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.1)
+            job = json.loads(self.get("/api/ask/%s" % job["id"])[1])
+        self.assertEqual(job["state"], "done", job)
+        return job
+
+    def test_what_a_reader_sends_comes_back_as_sent(self):
+        # Rewritten on the way out, each of these turned a name the reader
+        # typed into its alias -- alice's here -- and left `zed9`, no account,
+        # as it was: a table of names to aliases for anyone with a guess.
+        alice, quote = self.alias("alice"), urllib.parse.quote
+        head = json.loads(self.get("/api/export?from=9999999999&host=alice,zed9,bob.smith&tool="
+                                   + quote("/home/mallory"))[1].splitlines()[0])
+        self.assertEqual({k: head["_meta"]["filters"][k] for k in ("host", "tool")},
+                         {"host": ["alice", "bob.smith", "zed9"], "tool": ["/home/mallory"]})
+        self.assertEqual(json.loads(self.get("/api/panels?agent_type=alice")[1])["filter"]
+                         ["agent_types"], ["alice"])
+        # and the filtered view's status, which every reader's /api/windows lists
+        windows = self.get("/api/windows")[1]
+        self.assertIn('"agent_types":["alice"]', windows.replace(" ", ""))
+        job = self.lookup("host=alice&cwd=" + quote("/home/alice"))
+        self.assertEqual(job["query"], {"host": "alice", "cwd": "/home/alice"})
+        self.assertEqual(json.loads(self.get("/api/io/commands/%s?sort=alice" % job["id"])[1])
+                         ["sort"], "alice")
+        self.assertEqual(json.loads(self.get("/api/trajectory?sid=alice")[1])["sid"], "alice")
+        said = "alice bob.smith /home/mallory"
+        job = self.answered({"question": said, "context": {
+            "parts": [{"panel": "risk"}], "title": "alice", "classes": ["alice"]}})
+        self.assertEqual((job["question"], job["about"], job["view"]["cls"]),
+                         (said, "alice", ["alice"]))
+        self.assertIn("Question: " + said, job["answer"])
+        self.assertIn('"alice"', job["answer"])          # the title, in the panel's guide
+        for body in (windows, json.dumps(job)):
+            self.assertNotIn(alice, body)
+
+    # The bodies each POST route reads, with SENT where the reader's text goes.
+    # A POST route added later fails the walk below until it is listed here.
+    SENT = object()
+    BODIES = {
+        "/api/ask": [
+            {"question": SENT},
+            {"question": SENT, "history": [{"q": SENT, "a": SENT}],
+             "context": {"parts": [{"panel": "risk"}], "title": SENT, "tab": SENT,
+                         "classes": [SENT]}},
+            {"question": "q", "context": {"suggest": True, "classes": [SENT]}},
+            {"question": "q", "context": {"session": SENT, "title": SENT}},
+        ],
+        "/api/suggestions/done": [{"job": SENT, "index": 0}],
+        # a session's tool calls for the annotator: its sid is the reader's text
+        "/api/annotate": [
+            {"sid": SENT},
+            {"sid": SENT, "window_min": 1440, "order": SENT, "run": False},
+        ],
+    }
+
+    @classmethod
+    def body_with(cls, body, name):
+        if body is cls.SENT:
+            return name
+        if isinstance(body, dict):
+            return {k: cls.body_with(v, name) for k, v in body.items()}
+        if isinstance(body, list):
+            return [cls.body_with(v, name) for v in body]
+        return body
+
+    def send(self, method, path, body=None):
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method=method,
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers=dict(AUTH, **{"content-type": "application/json"}))
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def answers(self, where, status, body):
+        """A question the walk asked, once the agent has answered it."""
+        if where[:2] != ("POST", "/api/ask") or status != 200:
+            return []
+        job, text = json.loads(body), body
+        deadline = time.time() + 60
+        while job["state"] not in ("done", "error"):
+            self.assertLess(time.time(), deadline, job)
+            time.sleep(0.05)
+            text = self.get("/api/ask/%s" % job["id"])[1]
+            job = json.loads(text)
+        return [text]
+
+    def test_no_route_answers_a_real_name_with_its_alias_or_its_rows(self):
+        """dave's name in every query, path and body parameter of every route,
+        one at a time (a POST route's query, which only its view filter reads,
+        all at once): no answer may carry his alias, or any of his rows (each
+        holds MARK). His records are older than the live roster and past the
+        first page of anything unfiltered, so only a filter or a search could
+        reach them, and only a translation of his name could produce his alias.
+        Nor may any carry the feed's other names (SECRETS), which its records --
+        alice's tool call among them, read by the annotator -- hold everywhere.
+        The routes are the app's own; a POST route needs its body in BODIES."""
+        dave, quote = self.alias("dave"), urllib.parse.quote
+        # A reader with his alias finds him, and the service has learned his
+        # name: a bare `dave` echoed through the rewrite would be translated.
+        got = self.rows("q=" + dave)
+        self.assertEqual(({r["user"] for r in got}, len(got)), ({dave}, 3))
+        self.assertIn("dave", self.anon.users)
+        day = time.strftime("%Y-%m-%d", time.localtime(self.now - 3 * 3600))
+        names = ("dave", "/home/dave", "h1|%s|human|usr:dave" % day)
+        ranks = json.loads(self.get("/api/trajectories")[1])["ranks"]
+        sid = next(iter(ranks["recent"]))
+        # a lookup and a question to name, made when their route is reached:
+        # the walk's own lookups push older ones out
+        made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"],
+                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"],
+                "/api/annotate/{jid}": lambda: json.loads(
+                    self.annotated_job(self.called_sid(ranks))[1])["id"]}
+        fill = {"name": self.alias("alice"), "sid": sid}
+        filters = list(export.LIST_FIELDS + export.SCALARS)
+
+        def check(where, status, body):
+            # turned away at the sign-in, a request reaches no route, and the walk
+            # would pass having read nothing
+            self.assertNotEqual(status, 401, where)
+            if where[1] != "/":           # "frontend not built": no UI here, by design
+                self.assertLess(status, 500, where)
+            for text in [body] + self.answers(where, status, body):
+                self.assertNotIn(dave, text, where)
+                self.assertNotIn(MARK, text, where)
+                self.assertClean(where, text)
+
+        swept, seen = [], set()
+        for r in self.app.routes:
+            if not isinstance(r, APIRoute):
+                continue
+            declared = [p.alias for p in r.dependant.query_params]
+            required = {p.alias: fill.get(p.alias, "x") for p in r.dependant.query_params
+                        if p.field_info.is_required()}
+            path = re.sub(r"\{[^}]+\}", made.get(r.path, lambda: "nope")(), r.path)
+            for method in sorted(r.methods):
+                seen.add((method, r.path))
+                bodies = [None]
+                if method == "POST":
+                    self.assertIn(r.path, self.BODIES, "a POST route the walk does not know")
+                    bodies = self.BODIES[r.path]
+                elif method == "GET" and "{" not in r.path:
+                    swept.append((r.path, required))
+                for name in names:
+                    for slot in [p.name for p in r.dependant.path_params]:
+                        check((method, r.path, slot, name), *self.send(method, r.path.replace(
+                            "{%s}" % slot, quote(name, safe="")), self.body_with(bodies[0], "q")))
+                    if method == "GET":
+                        for key in dict.fromkeys(declared + filters):
+                            query = urllib.parse.urlencode(dict(required, **{key: name}))
+                            check((method, r.path, key, name), *self.get(path + "?" + query))
+                        continue
+                    # the others read the query for the page's view filter alone: it
+                    # goes with the first body, the window's own question, which runs
+                    # whether or not the filtered view is built yet
+                    query = urllib.parse.urlencode(dict({k: name for k in declared + filters},
+                                                        **required))
+                    check((method, r.path, "?" + query), *self.send(
+                        method, path + "?" + query, self.body_with(bodies[0], "q")))
+                    for body in bodies:
+                        check((method, r.path, body, name),
+                              *self.send(method, path, self.body_with(body, name)))
+        self.assertIn(("POST", "/api/ask"), seen)
+        self.assertGreater(len(seen), 20)
+        # and nothing the walk left behind -- a filtered view, a lookup, a
+        # question -- tells any later reader
+        for path, required in swept:
+            check(("GET", path), *self.get(path + "?" + urllib.parse.urlencode(required)))
+        with connect("ws://127.0.0.1:%d/ws" % self.port, open_timeout=20,
+                     additional_headers=AUTH) as ws:
+            for _ in range(3):
+                check(("WS", "/ws"), 200, ws.recv(timeout=20))
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,8 @@ from . import redact
 from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
+from .anonymize import Verbatim, verbatim
+from .ask import unmasked_refusal
 from .export import make_predicate, meta_header, parse_filters, scan
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .normalize import Normalizer
@@ -63,13 +65,17 @@ def dealias(params, anon):
 
 def dealias_sid(sid, anon):
     """A session id as the service keys it. A terminal's (`tty:<user>@<tty>`)
-    carries its account, which the page only ever saw as an alias."""
+    and an account's own (`usr:<user>`, the key of last resort,
+    `normalize.session_key_of`) carry the account, which the page only ever
+    saw as an alias: a real name there names no session."""
     if anon is None or not isinstance(sid, str):
         return sid
     head, sep, key = sid.rpartition("|")
     if sep and key.startswith("tty:") and "@" in key:
         who, _, tty = key[4:].partition("@")
         return "%s|tty:%s@%s" % (head, anon.dealias_user(who), tty)
+    if sep and key.startswith("usr:"):
+        return "%s|usr:%s" % (head, anon.dealias_user(key[4:]))
     return sid
 
 
@@ -607,12 +613,21 @@ def create_app(cfg):
     # The operator's suggestions marked done: kept by the service for everyone
     # until undone, and left out of the next "suggest actions" (ask.Asker). A
     # mark names a job and an index; the text is the service's own.
+    def kept_answers():
+        """The suggestions marked done are Ask's answers, kept: refused as Ask
+        is while names are anonymized and `ask.unmasked_answers` is off."""
+        why = unmasked_refusal(cfg)
+        if why:
+            raise HTTPException(400, why)
+
     @app.get("/api/suggestions/done")
     def api_done():
+        kept_answers()
         return agg.asker.done_list()
 
     @app.post("/api/suggestions/done")
     async def api_mark_done(request: Request):
+        kept_answers()
         body = await json_body(request)
         try:
             return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
@@ -623,6 +638,7 @@ def create_app(cfg):
 
     @app.delete("/api/suggestions/done/{did}")
     def api_undo_done(did: str):
+        kept_answers()
         try:
             return agg.asker.undo_done(did)
         except LookupError as e:
@@ -651,8 +667,12 @@ def create_app(cfg):
         what is already known of them, and -- with `run` -- a job asking about
         the rest. Calls another request is already asking about are answered by
         its job: `job` is that one when this request started none, and `also`
-        names any others, so every reader of the session gets the answers. The body is the tree's own text, masked once: it is sent as
-        it is, so the page matches each call to its row exactly."""
+        names any others, so every reader of the session gets the answers. The
+        body goes out through the anonymizer, as the tree did: the model's words
+        are masked like everything else -- an answer kept from a run without
+        masking, or written by an agent on this host that read the raw feeds,
+        can hold a name -- and the command lines, masked with the tree, come out
+        as they went in, so the page matches each call to its row exactly."""
         body = await json_body(request)
         sid = body.get("sid")
         if not isinstance(sid, str) or not sid:
@@ -672,7 +692,7 @@ def create_app(cfg):
             job = None
             if body.get("run") and info["enabled"]:
                 row = tree.get("row") if isinstance(tree.get("row"), dict) else {}
-                job = annotator.submit(calls, row.get("agent_type"), about=sid)
+                job = annotator.submit(calls, row.get("agent_type"), about=Verbatim(sid))
             # calls another request is asking about already: their jobs, to follow
             also = annotator.following(calls, job["id"] if job else None) \
                 if info["enabled"] else []
@@ -680,9 +700,9 @@ def create_app(cfg):
                 job = annotator.view(also.pop(0))
             # the calls themselves, so the page keeps only their answers out of
             # a followed job that another session started
-            return {"info": info, "calls": len(calls), "total": total,
-                    "cmds": [c["cmd"] for c in calls],
-                    "known": known, "job": job, "also": also}
+            return masked({"info": info, "calls": len(calls), "total": total,
+                           "cmds": [c["cmd"] for c in calls],
+                           "known": known, "job": job, "also": also}, "annotate")
 
         try:
             out = await asyncio.to_thread(work)
@@ -695,7 +715,7 @@ def create_app(cfg):
         j = annotator.view(jid)
         if j is None:
             raise HTTPException(404, "no such annotation job")
-        return jsonout.response(j, request)
+        return respond(j, "annotate", request)
 
     @app.get("/api/collectors")
     def api_collectors(request: Request):
@@ -793,8 +813,11 @@ def create_app(cfg):
         that launched a filtered-to-Claude-Code session would cut the tree at
         its root rather than narrow it.
         """
-        body = masked(redacted(proctree.serve(agg, dealias_sid(sid, anon), window_min,
-                                              frm, to, order)), "trajectory")
+        body = redacted(proctree.serve(agg, dealias_sid(sid, anon), window_min, frm, to, order))
+        if anon is not None:
+            # the id as the page sent it: what it read is the account behind it
+            body["sid"] = Verbatim(sid)
+        body = masked(body, "trajectory")
         # serialized as it always was (`default=str`), with orjson, here on the worker
         return jsonout.response(body, request, headers={"vary": "Accept-Encoding"},
                                 encode=jsonout.dumps_str)
@@ -866,7 +889,7 @@ def create_app(cfg):
 
     _roots = agg.roots
     # which twin of a stream written in both formats the event views read
-    iocmds = IoCommands(cfg, _roots)
+    iocmds = IoCommands(cfg, _roots, anon)
 
     # Every command behind an I/O number (iocmds.py): a lookup the page starts
     # with the number's filters -- /api/events' own, plus `apid`, `host` and
@@ -878,9 +901,6 @@ def create_app(cfg):
         f = parse_filters(dealias(query_lists(request), anon))
         f.pop("q", None)
         f["event"] = None                 # exits and truncations: iocmds.EVENTS
-        if cwd and anon is not None:
-            # a path the page showed carries aliases where names were
-            cwd = "/".join(anon.back.get(s, s) for s in cwd.split("/"))
         minutes = agg.window(window_min)["minutes"]
         pids = [p for p in (apid or "").split(",") if p.strip().isdigit()]
         if pids and host:
@@ -889,7 +909,12 @@ def create_app(cfg):
             with agg.lock:
                 view = agg.panels_by_window.peek(minutes, flt) or \
                     agg.panels_by_window.peek(minutes)
-                pids = sorted(agent_keys(view, host, pids))
+                pids = sorted(agent_keys(view, host if anon is None else anon.dealias_text(host),
+                                         pids))
+        # The host, tool and directory as the reader sent them: with names
+        # masked, a path the page showed carries aliases where names were, and
+        # `iocmds` reads for the accounts behind them, then keeps the records
+        # that read as sent -- a real name in its place finds nothing.
         j = iocmds.start(f, minutes, pids, host, cwd)
         return respond(j.status(), request=request)
 
@@ -903,39 +928,72 @@ def create_app(cfg):
         out = j.status()
         if j.state == "done":
             out.update(rows=j.page(sort, dir != "asc", offset, limit),
-                       offset=offset, limit=limit, sort=sort, dir="asc" if dir == "asc" else "desc")
+                       offset=offset, limit=limit, sort=Verbatim(sort),
+                       dir="asc" if dir == "asc" else "desc")
         return respond(out, request=request)
 
-    def search(pred, qv):
-        """`q` over the command text the reader sees -- aliases, not names -- so
-        a real name typed in finds nothing. A raw miss is a miss (masking only
-        swaps names for aliases), unless the query could only match an alias or
-        a mask; only those, and raw hits, pay for the rewrite."""
-        aliasish = any(w in qv for w in ("user-", "lab-", "[email", "[uid")) \
-            or re.fullmatch(r"[0-9a-f-]+", qv) is not None
+    # The filters a reader types text into, by the record field each tests
+    # (`export.make_predicate`): matched as the reader sees the record when
+    # names are masked (`search`).
+    TYPED = (("host", "host"), ("tool", "_eff"))
+
+    def search(pred, qv, sent):
+        """`pred`, with what the reader typed matched on the text they see --
+        aliases, not names: `q` within the command text, and a `host` or `tool`
+        filter against that field. The record's own account is learned before
+        its text is masked (`learn_record`): a scan reaches accounts no response
+        has named yet, older than the live roster, and the first search over
+        them found each one's rows by its real name. So a real name typed in
+        finds nothing. A raw miss of `q` is a miss (masking only swaps names for
+        aliases), unless it could only match an alias or a mask; only those,
+        and raw hits, pay for the rewrite. `pred` itself when there is nothing
+        to test or no names are masked."""
+        typed = [(field, sent[k]) for k, field in TYPED if sent.get(k)]
+        if anon is None or (not qv and not typed):
+            return pred
+        aliasish = bool(qv) and (any(w in qv for w in ("user-", "lab-", "[email", "[uid"))
+                                 or re.fullmatch(r"[0-9a-f-]+", qv) is not None)
 
         def ok(rec):
+            anon.learn_record(rec)
             if not pred(rec):
                 return False
+            for field, want in typed:
+                if anon.text(str(rec.get(field))) not in want:
+                    return False
+            if not qv:
+                return True
             hay = "%s %s" % (rec.get("_command") or "", redact.redact(rec.get("args") or ""))
             if not aliasish and qv not in hay.lower():
                 return False
             return qv in anon.text(hay).lower()
+        # what `scan` reads off `pred` -- its time bounds, event types, and the
+        # fields a sealed file's replica tests -- holds for this stricter test
+        ok.bounds, ok.events, ok.where = pred.bounds, pred.events, pred.where
         return ok
 
     def event_filters(request):
-        """`/api/events`' and `/api/export`'s filters, and the `q` this module
-        searches itself when names are masked (None otherwise)."""
-        f = parse_filters(dealias(query_lists(request), anon))
+        """`/api/events`' and `/api/export`'s filters, the `q` this module
+        searches itself when names are masked (None otherwise), and the filters
+        as the reader sent them. A `user` alias becomes its account (`dealias`),
+        and so does an alias in a `host` or `tool`, to find the records it was
+        shown from; `search` then tests the latter as the reader sees them."""
+        params = query_lists(request)
+        sent = parse_filters(params)
+        f = parse_filters(dealias(params, anon))
         qv = f.pop("q", None) if anon is not None else None
-        return f, qv
+        if anon is not None:
+            for k, _ in TYPED:
+                if f.get(k):
+                    f[k] = {anon.dealias_text(v) for v in f[k]}
+        return f, qv, sent
 
     @app.get("/api/events")
     def api_events(request: Request,
                    limit: int = Query(200, le=5000),
                    cursor: int = Query(0, ge=0),
                    order: str = Query("desc")):
-        f, qv = event_filters(request)
+        f, qv, sent = event_filters(request)
         pred = make_predicate(f)
         norm = Normalizer(cfg)
         newest = order != "asc"
@@ -949,8 +1007,7 @@ def create_app(cfg):
         if default_event:
             f["event"] = {"exit"}
             pred = make_predicate(f)
-        if qv:
-            pred = search(pred, qv)
+        pred = search(pred, qv, sent)
         rows, scanned, matched = [], 0, 0
         for rec, scanned, matched in scan(_roots(), norm, pred, limit=limit,
                                           offset=cursor, newest_first=newest):
@@ -969,14 +1026,12 @@ def create_app(cfg):
 
     @app.get("/api/export")
     def api_export(request: Request, order: str = Query("desc")):
-        f, qv = event_filters(request)
+        f, qv, sent = event_filters(request)
         # same default as /api/events, so "the download is the view" holds
         export_default_event = not f.get("event")
         if export_default_event:
             f["event"] = {"exit"}
-        pred = make_predicate(f)
-        if qv:
-            pred = search(pred, qv)
+        pred = search(make_predicate(f), qv, sent)
         norm = Normalizer(cfg)
         cap = int(cfg.get("export.max_rows", 5000000))
         reports = agg.reports
@@ -999,8 +1054,10 @@ def create_app(cfg):
 
         def stream():
             # a cheap pre-pass is not worth a second full scan, so the header
-            # declares the cap and the filters and leaves `rows` to the trailer
-            head = meta_header(dict(f, q=qv) if qv else f, reports, cfg, None, None, 0.0)
+            # declares the cap and the filters and leaves `rows` to the trailer;
+            # the filters as the reader sent them, never rewritten (`Verbatim`)
+            head = meta_header(verbatim(dict(sent, event=f["event"])), reports, cfg,
+                               None, None, 0.0)
             head["_meta"]["rows"] = "see _trailer"
             yield json.dumps(masked(head), default=str) + "\n"
             n = 0
