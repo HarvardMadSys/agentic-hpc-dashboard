@@ -111,6 +111,31 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual([d for d, _p, _o in todo], [])
         self.assertIsNotNone(st2.replica_for(b))
 
+    def test_a_held_replica_pruned_by_days_is_not_handed_out(self):
+        # history.days prunes a copy whose source is still on disk: the copy
+        # held in memory must go with its tables, and the read falls back to JSONL
+        a = self.write("2026-11-12", "exits", [full("exit", 0)])
+        self.write("2026-11-13", "exits", [full("exit", 1)])
+        st = history.HistoryStore(self.cfg)
+        st.run_once()
+        self.assertIsNotNone(st.replica_for(a))
+        st.days = 1
+        st.run_once()
+        out = st.roots[os.path.abspath(self.root)]
+        self.assertIsNone(fp.read_manifest(out, "2026-11-12", HOST + ".exits"))
+        self.assertTrue(os.path.exists(a))
+        self.assertIsNone(st.replica_for(a))
+        self.assertNotIn(a, st._cache)
+
+    def test_a_held_replica_whose_tables_went_elsewhere_is_not_handed_out(self):
+        a = self.write("2026-11-12", "exits", [full("exit", 0)])
+        st = history.HistoryStore(self.cfg)
+        st.run_once()
+        self.assertIsNotNone(st.replica_for(a))
+        # another process (a second service on the same store) pruned it
+        fp.drop_source(st.roots[os.path.abspath(self.root)], "2026-11-12", HOST + ".exits")
+        self.assertIsNone(st.replica_for(a))
+
     def test_a_store_root_of_another_source_is_refused(self):
         self.write("2026-11-13", "exits", [full("exit", 0)])
         st = history.HistoryStore(self.cfg)

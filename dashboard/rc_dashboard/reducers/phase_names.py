@@ -196,6 +196,7 @@ import shlex
 from ..redact import MASK, masked_by_rules, redact
 from .phase_rules import (_cached, _GIT_VALUED, _SETUP, _SHELL_VALUE_OPTS, _UV_VALUED, _c_index,
                           _commands, _in_place, _read, _sub)
+from .phase_rules import _cut as _cut_text
 
 KINDS = ("run", "test", "write", "read", "dir", "job", "pr", "branch", "worktree", "pkg", "scratch",
          "cd", "grep", "word")
@@ -1047,6 +1048,7 @@ _HEREDOC_MESSAGE = re.compile(
     r"(?<![\w-])(?:-[aeinopqsvzh]*m|--message)(?:=|[ \t]*)"
     r"\"\$\(\s*cat\s*<<-?[ \t]*(?:'(?P<d1>[^'\n]+)'|\"(?P<d2>[^\"\n]+)\"|\\?(?P<d3>\w+))[^\n]*\n")
 _HEREDOC_CLOSE = re.compile(r"\s*\)\"")                 # what closes the `$( )` and its quote
+_NOT_SPACE = re.compile(r"\S")
 
 
 def _without_references(line):
@@ -1109,12 +1111,17 @@ def _heredoc_messages(text):
     `_commands` loses the heredoc of a `$( )` inside quotes, and this is how Claude Code gives a
     commit its message (`--message` and `-am` too). A heredoc that was cut, with no delimiter or
     no `)"`, runs to the end of the text. A `$( )` that is only part of the value is not read.
-    `text` itself comes back when there is none."""
+    `text` itself comes back when there is none.
+
+    Each heredoc is read once: one that was read and then not taken is passed over, body and all,
+    as one that was taken is. Read again from each opening inside it, nested openings took 1 s at
+    39 KB."""
     if "<<" not in text or "$(" not in text:
         return text
-    parts, pos = [], 0
-    for m in _HEREDOC_MESSAGE.finditer(text):
-        if m.start() < pos:
+    parts, pos, seen, last = [], 0, 0, len(text.rstrip())
+    # every opening ends in a newline: none is looked for past the last one
+    for m in _HEREDOC_MESSAGE.finditer(text, 0, text.rfind("\n") + 1):
+        if m.start() < seen:
             continue                                    # inside a heredoc already read
         delimiter = m.group("d1") or m.group("d2") or m.group("d3")
         lines, end, closed = [], m.end(), False
@@ -1125,11 +1132,14 @@ def _heredoc_messages(text):
             if not closed:
                 lines.append(text[end:stop])
             end = min(stop + 1, len(text))
+        seen = end
         tail = _HEREDOC_CLOSE.match(text, end) if closed else None
-        if closed and not tail and text[end:].strip() not in ("", ")"):
-            continue                                    # more of the value follows
+        if closed and not tail:
+            rest = _NOT_SPACE.search(text, end)         # what follows is all space, or `)`
+            if rest is not None and (rest.group() != ")" or rest.end() != last):
+                continue                                # more of the value follows
         parts += [text[pos:m.start()], "-m ", shlex.quote(_first_line("\n".join(lines)))]
-        pos = tail.end() if tail else len(text)
+        pos = seen = tail.end() if tail else len(text)
     return "".join(parts) + text[pos:] if parts else text
 
 
@@ -1261,9 +1271,10 @@ def tagset(text, masked=None):
 
     Cached (`phase_rules._cached`): a pure function of its text and the masking rules, whose answer
     is tuples and strings, read for every tool call an agent makes -- and a session repeats its
-    commands. The repeats are short, so the cache keeps texts of 1 KB at most, 16,384 of them; and
-    it is dropped whenever the masking rules grow (`redact.masked_by_rules`)."""
-    m = masked if masked is not None else redact(text)
+    commands. The repeats are short, so the cache keeps texts of 1 KB at most, 16,384 of them, and
+    longer ones by digest (`_cached`); both are dropped whenever the masking rules grow
+    (`redact.masked_by_rules`). A text is read as far as `phase_rules._MAX_TEXT` (`_cut_text`)."""
+    m = _cut_text(masked) if masked is not None else redact(_cut_text(text or ""))
     if not m:
         return (), None
     cmds, read = _commands(m), _heredoc_messages(m)

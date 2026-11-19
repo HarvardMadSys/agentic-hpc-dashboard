@@ -17,6 +17,7 @@ import type { AskCite, AskView, CiteJump, Cls } from '../api/types';
 import { AGENT_TYPE_LBL, CLS } from './classes';
 import { parseUrl, urlQuery } from './filters';
 import type { UrlState } from './filters';
+import { table } from './lookup';
 
 /** One bracket of refs, as the backend reads them (`ask.CITE_RE`). */
 const REF = '[a-z]{1,2}\\d{1,5}';
@@ -54,7 +55,7 @@ interface Place {
 }
 
 /** As App.tsx's TABS names them. */
-const TAB_LBL: Record<string, string> = {
+const TAB_LBL: Record<string, string> = table({
   live: 'Live',
   agents: 'Agents',
   trajectories: 'Sessions',
@@ -62,7 +63,7 @@ const TAB_LBL: Record<string, string> = {
   risk: 'Risks',
   slurm: 'Slurm',
   internal: 'Internal',
-};
+});
 
 /** The inspector's title, which is also its anchor (TrajectoryInspector.tsx). */
 const INSPECTOR = 'Session inspector';

@@ -3,8 +3,10 @@ ss, tmux, curl, and ps replaced by stand-ins that log their calls."""
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,6 +14,9 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 KIT = os.path.dirname(HERE)
 SCRIPT = os.path.join(KIT, "check-local.sh")
+sys.path.insert(0, HERE)
+
+from test_check_local import path_without   # noqa: E402
 
 STUBS = {
     "systemctl": r'''#!/bin/bash
@@ -116,13 +121,14 @@ class Rig(unittest.TestCase):
             fh.write("".join(l + "\n" for l in lines))
 
     def run_check(self, *args, active=ACTIVE, linger="yes", panes="stream=0 dashboard=0",
-                  http="401", age="7200", start_rc="0", swap=""):
+                  http="401", age="7200", start_rc="0", swap="", **extra):
         env = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], HOME=self.home,
                    RC_DASH_ROOT=os.path.join(self.home, "rc-dashboard"), RC_DASH_RUN=self.tmpd,
                    RC_FLEET_ETC=self.etc, RC_CGROUP_ROOT=self.cgroot,
                    RC_CHECK_RETRY_S="0", STUB_LOG=self.log, STUB_ACTIVE=active,
                    STUB_LINGER=linger, STUB_SS_FILE=self.ss_file, STUB_PANES=panes,
                    STUB_HTTP=http, STUB_AGE=age, STUB_START_RC=start_rc, STUB_SWAP=swap)
+        env.update(extra)
         p = subprocess.run(["bash", SCRIPT] + list(args), env=env, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, universal_newlines=True)
         calls = ""
@@ -237,6 +243,48 @@ class TestFullRun(Rig):
         code, out, calls = self.run_check()
         self.assertEqual(code, 16)
         self.assertIn("STREAM status", out)
+
+
+class TestWithoutSs(Rig):
+    """A host without ss: the port's listeners come from /proc/net/tcp. Real ones here, a
+    socket this test holds on a free port, and every command but ss on PATH."""
+
+    def setUp(self):
+        super().setUp()
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.addCleanup(self.sock.close)
+        with open(os.path.join(self.etc, "dashboard.config.json"), "w") as fh:
+            json.dump({"server": {"port": self.sock.getsockname()[1]}}, fh)
+        stubs = os.path.join(self.tmp, "bin-no-ss")
+        os.mkdir(stubs, 0o700)
+        for name in STUBS:
+            if name != "ss":
+                os.symlink(os.path.join(self.bin, name), os.path.join(stubs, name))
+        self.path = stubs + ":" + path_without(os.path.join(self.tmp, "path"), "ss")
+
+    def test_the_dashboards_own_listener(self):
+        with open(os.path.join(self.cgroot, "u", "rc-dashboard.scope", "cgroup.procs"), "w") as fh:
+            fh.write("%d\n" % os.getpid())
+        code, out, _ = self.run_check(PATH=self.path)
+        self.assertEqual((code, out), (0, "OK"))
+
+    def test_a_listener_outside_the_scope_is_foreign(self):
+        code, out, _ = self.run_check(PATH=self.path)      # the scope's one process is 4242
+        self.assertEqual(code, 14)
+        self.assertIn("PORT foreign", out)
+
+    def test_listeners_that_cannot_be_listed_are_reported(self):
+        """No ss and no /proc/net/tcp: not OK, and the dashboard's window is left alone,
+        as it is beside a foreign listener."""
+        empty = os.path.join(self.tmp, "net")
+        os.mkdir(empty, 0o700)
+        code, out, calls = self.run_check(panes="stream=0 dashboard=1", PATH=self.path,
+                                          RC_PROC_NET=empty)
+        self.assertEqual(code, 14)
+        self.assertIn("PORT cannot tell", out)
+        self.assertNotIn("respawn-pane -t rc-dashboard:dashboard", calls)
 
 
 class TestSession(Rig):

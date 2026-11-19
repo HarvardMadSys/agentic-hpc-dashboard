@@ -368,7 +368,7 @@ class SelfPathTest(unittest.TestCase):
     happened to work, which is why the collector's own test runs missed it."""
 
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def test_self_is_resolved_absolute(self):
         self.assertIn('SELF="$(cd "$(dirname "$0")"', self.src)
@@ -1039,6 +1039,200 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual({p: r['depth'] for p, r in recs.items()}, {200: 1, 201: 2, 210: 1})
         self.assertFalse(any(r['is_agent'] for r in recs.values()))
         self.assertEqual(recs[200]['schema_version'], 8)
+
+
+def _resolve_recursive(table, pid, m=None):
+    """resolve() as it was through 2026-11, one recursion per ancestor: the
+    reference DeepAncestryTest holds the loop to, on tables it can recurse."""
+    if m is None:
+        m = table.get(pid)
+    if m is None:
+        return False
+    if m['attributed'] is not None:
+        return m['attributed']
+    own_args = m['args'] if m.get('argv_source') != 'inherit' else None
+    tag = T.classify(own_args) if own_args else None
+    m['tag'] = tag
+    if tag is not None and T.agent_role(tag, T._command_of(m), own_args) == 'agent':
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    ppid = m['ppid']
+    pm = table.get(ppid) if ppid and ppid != pid else None
+    if pm is not None and T._born_after(pm, m.get('fork_ktime')):
+        pm = None
+    if pm is not None and _resolve_recursive(table, ppid, pm):
+        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
+                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
+        return True
+    if tag is not None:
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
+    return False
+
+
+class DeepAncestryTest(unittest.TestCase):
+    """resolve() walks up a parent chain in a loop. It recursed once per
+    ancestor not resolved yet, so a chain about 1,000 deep -- a script that runs
+    itself, with a URL in the last one's argv -- raised RecursionError out of
+    the seed (the collector exited at start-up, and systemd restarted it into
+    the same crash), out of every residency tick, which then wrote nothing, and
+    out of the flush at stop, whose stop record then said `truncated: 0`."""
+
+    ATTRS = ('attributed', 'is_agent', 'agent_pid', 'agent_type', 'depth', 'tag')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._handler_errors.clear()
+        T._HOST_CACHE.clear(); T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T.writer, T.read_stat, T.list_pids, T._read_vmrss_kb, T.read_io,
+                       T.FEATURES, T.MIN_UID, T.actor_of)
+        T.writer = self.W = FakeWriter()
+        T.read_stat = _fake_stat
+        T._read_vmrss_kb = lambda pid: 0
+        T.read_io = lambda pid: None
+        T.FEATURES = set()
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        (T.writer, T.read_stat, T.list_pids, T._read_vmrss_kb, T.read_io,
+         T.FEATURES, T.MIN_UID, T.actor_of) = self._saved
+        T.proc.clear(); T._children.clear()
+        T._handler_errors.clear()
+        T._HOST_CACHE.clear(); T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def chain(self, depth, top='claude', leaf_args=None, deepest_first=False):
+        """An agent (`top`) and `depth` shells under it, each the child of the
+        one before. `deepest_first` orders the table as /proc may: a process
+        before its ancestors, so the first resolve() walks the whole chain."""
+        T.proc_add(100, 1, comm=top, args=top, user='u', uid=1000, tty='pts/1')
+        prev = 100
+        for i in range(depth):
+            m = T.proc_add(1000 + i, prev, comm='sh', args='sh r.sh %d' % i,
+                           argv_source='proc', user='u', uid=1000)
+            prev = m['pid']
+        if leaf_args:
+            T.proc[prev]['args'] = leaf_args
+        if deepest_first:
+            items = list(T.proc.items())
+            T.proc.clear()
+            T.proc.update(reversed(items))
+        return T.proc[prev]
+
+    def test_a_chain_far_deeper_than_the_recursion_limit_resolves(self):
+        leaf = self.chain(5000)
+        self.assertTrue(T.resolve(leaf['pid'], leaf))
+        self.assertEqual((leaf['agent_pid'], leaf['depth'], leaf['is_agent']), (100, 5000, False))
+        mid = T.proc[1000 + 2499]
+        self.assertEqual((mid['attributed'], mid['agent_pid'], mid['depth']), (True, 100, 2500))
+        self.assertEqual(T.tree_root(leaf['pid']), 100)
+
+    def test_with_no_agent_above_it_the_chain_is_nobodys(self):
+        leaf = self.chain(5000, top='bash')
+        self.assertFalse(T.resolve(leaf['pid']))
+        self.assertTrue(all(m['attributed'] is False for m in T.proc.values()))
+
+    def test_a_parent_loop_ends_the_walk(self):
+        """pids that loop back on themselves (a parent's pid recycled under its
+        own descendant) end the walk as no parent does; the recursion never
+        returned from them."""
+        T.proc_add(2001, 2002, comm='ls', args='ls', user='u', uid=1000)
+        T.proc_add(2002, 2003, comm='sh', args='sh -c ls', user='u', uid=1000)
+        # tagged without being an agent runtime: a probe, its own root outside any
+        # tree (a mention such as `chmod ~/.claude/...` is no longer tagged at all)
+        T.proc_add(2003, 2002, comm='claude', args='claude --version', user='u', uid=1000)
+        self.assertTrue(T.resolve(2001))
+        # the loop's last process, tagged, is the root its descendants attach to
+        self.assertEqual([(T.proc[p]['agent_pid'], T.proc[p]['depth']) for p in (2001, 2002, 2003)],
+                         [(2003, 2), (2003, 1), (2003, 0)])
+        T.proc_add(2101, 2102, comm='ls', args='ls', user='u', uid=1000)
+        T.proc_add(2102, 2101, comm='sh', args='sh -c ls', user='u', uid=1000)
+        self.assertFalse(T.resolve(2101))
+        self.assertIs(T.proc[2102]['attributed'], False)
+
+    def test_the_loop_attributes_as_the_recursion_did(self):
+        """Random forests of agents, tagged helpers, inherited argv and recycled
+        parents, each resolved in a random order by both."""
+        import copy
+        import random
+        rnd = random.Random(7)
+        argvs = [('claude', 'claude'), ('claude', 'claude -p summarise'), ('codex', 'codex'),
+                 ('zsh', SNAP + "'git status'"), ('chmod', 'chmod 700 ' + HOME + '/.claude/remote'),
+                 ('bwrap', 'bwrap --ro-bind / / /bin/true'), ('codex', 'codex --version'),
+                 ('2.1.291', RC_WORKER), ('git', 'git status'), ('python3', 'python3 train.py'),
+                 ('sh', 'sh -c make'), ('node', None)]
+        for trial in range(40):
+            T.proc.clear(); T._children.clear()
+            n = rnd.randint(2, 150)
+            for pid in range(2, n + 2):
+                comm, args = rnd.choice(argvs)
+                ppid = rnd.choice([1, 0, pid, 99999] + list(range(2, pid)) * 3)
+                m = T.proc_add(pid, ppid, comm=comm, args=args, user='u', uid=1000,
+                               argv_source=rnd.choice(['proc', 'kernel', 'inherit']),
+                               fork_ktime=rnd.choice([None, 10 * pid, 10 * pid, 5]))
+            ref = copy.deepcopy(T.proc)
+            order = list(T.proc)
+            rnd.shuffle(order)
+            for pid in order:
+                self.assertEqual(T.resolve(pid), _resolve_recursive(ref, pid), (trial, pid))
+            for pid in T.proc:
+                self.assertEqual([T.proc[pid][k] for k in self.ATTRS],
+                                 [ref[pid][k] for k in self.ATTRS], (trial, pid))
+
+    def test_the_seed_survives_a_deep_chain(self):
+        self.chain(1200, leaf_args='bash -c sleep 999999; : http://a.example.org/x',
+                   deepest_first=True)
+        T.list_pids = lambda: set()               # the table is in already
+        T.seed_existing()
+        self.assertEqual(T._HOST_WANT.get_nowait(), 'a.example.org')
+        self.assertEqual(dict(T._handler_errors), {})
+
+    def test_one_process_the_seed_cannot_read_is_counted_and_skipped(self):
+        self.chain(3, leaf_args='curl https://a.example.org/x')
+        T.proc_add(90, 1, comm='curl', args='curl https://b.example.org/', user='u', uid=1000,
+                   tty='pts/2')
+        real = T.actor_of
+
+        def actor_of(m):
+            if m['pid'] == 90:
+                raise ValueError('unreadable')
+            return real(m)
+        T.actor_of = actor_of
+        T.list_pids = lambda: set()
+        T.seed_existing()
+        self.assertEqual(T._HOST_WANT.get_nowait(), 'a.example.org')
+        self.assertEqual(dict(T._handler_errors), {'seed_existing': 1})
+
+    def test_a_deep_chain_ticks(self):
+        self.chain(1200, deepest_first=True)
+        T.list_pids = lambda: set(T.proc)
+        T.residency_tick(None)
+        (res,) = self.W.of('residency')
+        self.assertEqual((res['pid'], res['n_procs'], res['max_depth']), (100, 1201, 1200))
+        self.assertEqual(dict(T._handler_errors), {})
+
+    def test_a_tick_skips_a_process_it_cannot_read(self):
+        self.chain(3)
+        T.list_pids = lambda: set(T.proc)
+        T.read_stat = lambda pid: 1 / 0 if pid == 1001 else _fake_stat(pid)
+        T.residency_tick(None)
+        (res,) = self.W.of('residency')
+        self.assertEqual(res['n_procs'], 3)            # the agent and two of its three shells
+        self.assertEqual(len(self.W.of('residency_totals')), 1)
+        self.assertEqual(dict(T._handler_errors), {'residency_proc': 1})
+
+    def test_the_flush_at_stop_skips_a_process_it_cannot_read(self):
+        self.chain(3)
+        T.read_stat = lambda pid: 1 / 0 if pid == 1001 else _fake_stat(pid)
+        self.assertEqual(T._flush_at_stop({}, set()), 3)
+        self.assertEqual(sorted(r['pid'] for r in self.W.of('truncated')), [100, 1000, 1002])
+        self.assertEqual(dict(T._handler_errors), {'flush_live': 1})
+
+    def test_a_flush_that_did_not_finish_has_no_count(self):
+        """The stop record's `truncated` is null then: 0 would say none were written."""
+        self.chain(3)
+        self.assertIsNone(T._flush_at_stop({}, None))     # cannot even read its features
+        self.assertEqual(dict(T._handler_errors), {'flush_live': 1})
 
 
 # ---------------------------------------------------------------------------
@@ -2708,7 +2902,7 @@ def _net_binary(feats, offs):
                             'f_file': offs.get('socket', {}).get('file', -1),
                             'birth_cmd': birth, 'dump': dump}
     path = os.path.join(_NET_BIN_DIR[0], 'net%d' % len(_NET_BIN_CACHE))
-    with open(path + '.c', 'w') as f:
+    with open(path + '.c', 'w', encoding='utf-8') as f:
         f.write('#include "%s"\n%s\n%s\n%s' % (
             _MOCK_H, T.build_tcp_common_c() if tcp_on else '', net, driver))
     p = subprocess.run([_CC, '-std=gnu11', '-w', '-o', path, path + '.c'],
@@ -3579,6 +3773,98 @@ class ArgvHostResolverTest(unittest.TestCase):
         self.assertEqual(T._HOST_WANT.qsize(), 0)
 
 
+class ArgvHostnamesCostTest(unittest.TestCase):
+    """Finding names stays linear in an argv any user writes. One regex tried
+    at every letter read a run of scheme characters again from each of them: a
+    run of 32,000 before a ` ://` took 0.7 s, against 0.1 ms for a benign 4 KB
+    line, on every exec and every record of the process, and argv read from
+    /proc at the seed has no length cap."""
+
+    OLD = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
+                     r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T._argv_hostnames, T.MIN_UID)
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        T._argv_hostnames, T.MIN_UID = self._saved
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def timed(self, fn, *args):
+        t0 = time.time()
+        out = fn(*args)
+        return time.time() - t0, out
+
+    def test_the_urls_found_are_the_regexs(self):
+        import random
+        cases = ['curl https://a.example.org/x http://B.example.org:8/y',
+                 'git clone https://u:pw@github.com/x/y.git ssh://git@h.example.org/r',
+                 'x http://a.b+git://c.example.org/ ://nope 9://nope a1+.-://ok.example.org',
+                 'http://[2001:db8::a]/ http://[::1 ftp://-x/ s3://bucket.name/k',
+                 'http://host-x://y http://h:// a@b://c d://@e f://g@@h',
+                 'x://' + 'y' * 50 + ' ' + 'z' * 31 + '://w.example.org',
+                 'http://' + 'a.' * 30 + 'org', '://', 'a://', 'a:// b', '']
+        rnd = random.Random(3)
+        alphabet = 'aZ1+.-:/@ []hx'
+        cases += [''.join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 40)))
+                  for _ in range(20000)]
+        for s in cases:
+            self.assertEqual(T._url_hosts(s), self.OLD.findall(s), s)
+
+    def test_a_scheme_is_read_from_its_last_32_characters(self):
+        """The one difference: a scheme of more than 32 characters whose last
+        32 hold no letter is none."""
+        self.assertEqual(T._url_hosts('a' + '1' * 31 + '://h.example.org'), ['h.example.org'])
+        self.assertEqual(T._url_hosts('a' + '1' * 32 + '://h.example.org'), [])
+
+    def test_a_long_run_before_a_url_marker_costs_nothing(self):
+        dt, out = self.timed(T._argv_hostnames, 'x ' + 'a' * 64000 + ' ://', 'x')
+        self.assertLess(dt, 0.25)                # the regex: over 2 s
+        dt, out = self.timed(T._url_hosts, 'x ' + 'a' * 64000 + ' ://')
+        self.assertEqual(out, [])
+        self.assertLess(dt, 0.25)
+
+    def test_only_the_first_4096_characters_are_read_and_never_half_a_name(self):
+        pad = 'x ' * 2000
+        self.assertEqual(T._argv_hostnames(pad + 'https://a.example.org/x', 'curl'),
+                         ['a.example.org'])
+        self.assertEqual(T._argv_hostnames(pad + 'x' * 75 + ' https://api.example.org/v1', 'curl'),
+                         [])                     # the cut falls inside the name
+        self.assertEqual(T._argv_hostnames(pad * 3 + 'https://a.example.org/x', 'curl'), [])
+
+    def test_an_argv_is_read_once(self):
+        calls = []
+        real = T._argv_hostnames
+
+        def counting(args, command=None):
+            calls.append(args)
+            return real(args, command)
+        T._argv_hostnames = counting
+        m = T.proc_add(100, 1, comm='curl', args='curl https://a.example.org/x', user='u',
+                       uid=1000, tty='pts/1')
+        T._ask_hosts(m)
+        for _ in range(3):
+            T._hosts_for(m)
+        self.assertEqual(len(calls), 1)
+        m['args'] = 'curl https://b.example.org/x'          # a new image's argv
+        T._ask_hosts(m)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(T._HOST_WANT.qsize(), 2)
+
+    def test_a_process_that_will_not_be_reported_is_not_read(self):
+        calls = []
+        T._argv_hostnames = lambda args, command=None: calls.append(args) or []
+        T.MIN_UID = 1000
+        m = T.proc_add(900, 1, comm='curl', args='curl https://updates.example.org/x',
+                       user='root', uid=0)
+        T._ask_hosts(m)
+        self.assertEqual(calls, [])
+
+
 class NetEndpointsExitTest(_NetpeerCase):
     def test_the_exit_record_carries_the_endpoint_list(self):
         self.K.put(101, '104.18.0.1', 443, tx=1500, rx=9000, calls=12)
@@ -3869,7 +4155,7 @@ class Python36Test(unittest.TestCase):
         sources = [(p.name, p.read_text(encoding='utf-8')) for p in
                    [_ROOT / 'ebpf_trace.py', _ROOT / 'node_snapshot.py', Path(__file__).resolve()]
                    + sorted((_ROOT / 'lib').glob('*.py'))]
-        sh = (_ROOT / 'ebpfm.sh').read_text()
+        sh = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
         snippets = re.findall(r"python3 -c '([^']*)'", sh)
         snippets += re.findall(r"python3 - <<'PY'\n(.*?)\nPY\n", sh, re.S)
         self.assertGreaterEqual(len(snippets), 6)
@@ -4750,7 +5036,7 @@ class UnsafeDirTest(unittest.TestCase):
 
 class WrapperTest(unittest.TestCase):
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def _fn(self, name):
         m = re.search(r'^%s\(\) \{[^\n]*\n.*?^\}\n' % re.escape(name), self.src, re.M | re.S)
@@ -4799,7 +5085,7 @@ class WrapperTest(unittest.TestCase):
         e.update(env)
         r = subprocess.run(['bash', str(_ROOT / 'ebpfm.sh')] + list(args), env=e,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
+                           encoding='utf-8')
         return r.returncode, r.stdout, r.stderr
 
     def test_help_prints_the_header_and_no_more(self):

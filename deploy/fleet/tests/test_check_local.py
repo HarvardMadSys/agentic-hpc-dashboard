@@ -12,6 +12,27 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(os.path.dirname(HERE), "check-local.sh")
 
 
+def path_without(folder, *names):
+    """`folder`, made, holding a link to every command on PATH but `names`: a PATH for
+    a host without them (ss sits in /usr/bin beside bash, so PATH cannot just skip it)."""
+    os.mkdir(folder, 0o700)
+    for top in os.environ["PATH"].split(os.pathsep):
+        if not os.path.isdir(top):
+            continue
+        for name in os.listdir(top):
+            p = os.path.join(top, name)
+            if (name not in names and not os.path.lexists(os.path.join(folder, name))
+                    and os.path.isfile(p) and os.access(p, os.X_OK)):
+                os.symlink(p, os.path.join(folder, name))
+    return folder
+
+
+def proc_net_row(n, addr, port, state, inode):
+    """One line of /proc/net/tcp or tcp6: `addr` in its hex form, `state` 0A for LISTEN."""
+    return ("%4d: %s:%04X %s:0000 %s 00000000:00000000 00:00000000 00000000  1000        0 %d 1 "
+            "0000000000000000 100 0 0 10 0" % (n, addr, port, "0" * len(addr), state, inode))
+
+
 class TestStartChecks(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="check-local-")
@@ -30,8 +51,10 @@ class TestStartChecks(unittest.TestCase):
                 e.pop(k, None)
             else:
                 e[k] = v
-        return subprocess.run(["bash", SCRIPT, flag], env=e, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, universal_newlines=True).returncode
+        p = subprocess.run(["bash", SCRIPT, flag], env=e, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True)
+        self.err = p.stderr
+        return p.returncode
 
     def test_needs_the_deployment_folder(self):
         """There is no default folder, in /tmp or in the home."""
@@ -112,7 +135,9 @@ class TestStartChecks(unittest.TestCase):
             fh.write("RC_DASH_PASSWORD_HASH=scrypt$16384$8$1$c2FsdA$aGFzaA\n")
         self.assertEqual(self.run_check("--auth-set"), 0)
 
-    def test_port_free(self):
+    def port_free_while_listening(self, **env):
+        """--port-free while a real socket listens on the dashboard's port, then once it
+        has closed."""
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -120,10 +145,82 @@ class TestStartChecks(unittest.TestCase):
             json.dump({"server": {"port": port}}, fh)
         try:
             s.listen(1)
-            self.assertEqual(self.run_check("--port-free"), 14)
+            taken = self.run_check("--port-free", **env)
         finally:
             s.close()
-        self.assertEqual(self.run_check("--port-free"), 0)
+        return taken, self.run_check("--port-free", **env)
+
+    def stub_ss(self, body):
+        """A PATH whose ss is a script running `body`."""
+        stubs = os.path.join(self.tmp, "bin")
+        os.mkdir(stubs, 0o700)
+        with open(os.path.join(stubs, "ss"), "w") as fh:
+            fh.write("#!/bin/bash\n" + body)
+        os.chmod(os.path.join(stubs, "ss"), 0o700)
+        return stubs + ":" + os.environ["PATH"]
+
+    def test_port_free(self):
+        """With whatever this host has, ss or not."""
+        self.assertEqual(self.port_free_while_listening(), (14, 0))
+
+    def test_port_free_without_ss(self):
+        """Without ss the port's listeners come from /proc/net/tcp: a port in use never
+        reads free because the tool that would have shown it is missing."""
+        path = path_without(os.path.join(self.tmp, "path"), "ss")
+        self.assertEqual(self.port_free_while_listening(PATH=path), (14, 0))
+
+    def test_port_free_when_ss_fails(self):
+        """An ss that cannot read the sockets prints nothing and fails: no answer, so
+        /proc/net/tcp gives one."""
+        path = self.stub_ss('echo "Cannot open netlink socket: Permission denied" >&2\nexit 1\n')
+        self.assertEqual(self.port_free_while_listening(PATH=path), (14, 0))
+
+    def test_port_free_takes_what_ss_says(self):
+        with open(os.path.join(self.etc, "dashboard.config.json"), "w") as fh:
+            json.dump({"server": {"port": 28090}}, fh)
+        out = os.path.join(self.tmp, "ss.out")
+        with open(out, "w") as fh:
+            fh.write('LISTEN 0 128 127.0.0.1:28090 0.0.0.0:* users:(("python",pid=777,fd=7))\n')
+        path = self.stub_ss('cat "$STUB_SS"\n')
+        self.assertEqual(self.run_check("--port-free", PATH=path, STUB_SS=out), 14)
+        open(out, "w").close()
+        self.assertEqual(self.run_check("--port-free", PATH=path, STUB_SS=out), 0)
+
+    def test_port_free_reads_tcp_and_tcp6(self):
+        """Without ss: a listener on the port in tcp6 alone is a listener; a connection
+        on the port, or a listener on another port, is not; a host without IPv6 has no
+        tcp6."""
+        with open(os.path.join(self.etc, "dashboard.config.json"), "w") as fh:
+            json.dump({"server": {"port": 28090}}, fh)
+        net = os.path.join(self.tmp, "net")
+        os.mkdir(net)
+        path = path_without(os.path.join(self.tmp, "path"), "ss")
+
+        def table(name, *rows):
+            with open(os.path.join(net, name), "w") as fh:
+                fh.write("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when "
+                         "retrnsmt   uid  timeout inode\n" + "".join(r + "\n" for r in rows))
+
+        def check():
+            return self.run_check("--port-free", PATH=path, RC_PROC_NET=net)
+
+        table("tcp", proc_net_row(0, "0100007F", 28090, "01", 9001),
+              proc_net_row(1, "0100007F", 28091, "0A", 9002))
+        table("tcp6", proc_net_row(0, "00000000000000000000000001000000", 28090, "0A", 9003))
+        self.assertEqual(check(), 14)
+        table("tcp6")
+        self.assertEqual(check(), 0)
+        os.unlink(os.path.join(net, "tcp6"))
+        self.assertEqual(check(), 0)
+
+    def test_port_that_cannot_be_checked_is_not_free(self):
+        """No ss, and no /proc/net/tcp to read: who listens is unknown, which is no
+        reason to start the dashboard."""
+        empty = os.path.join(self.tmp, "net")
+        os.mkdir(empty)
+        path = path_without(os.path.join(self.tmp, "path"), "ss")
+        self.assertEqual(self.run_check("--port-free", PATH=path, RC_PROC_NET=empty), 14)
+        self.assertIn("PORT cannot tell", self.err)
 
 
 if __name__ == "__main__":
