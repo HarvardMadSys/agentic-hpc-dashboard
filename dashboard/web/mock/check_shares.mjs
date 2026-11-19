@@ -156,6 +156,6 @@ test('the Sandbox tables: unknown, no tool calls and exited-before-checked are c
   assert.deepEqual(stateRow(html, 'Approval at launch', 'unknown'), ['1']);
   assert.deepEqual(stateRow(html, 'per session', 'no tool calls seen'), ['9']);
   assert.deepEqual(stateRow(html, 'per process', 'exited before it was checked'), ['412', '5', '0']);
-  // 17 of 20 sessions judged
-  assert.match(textOf(html.slice(html.indexOf('Approval at launch'))), /agent 20 sessions cov 85%/);
+  // 17 of 20 sessions judged, under the class's name (its tip's ? and its sort arrow between them)
+  assert.match(textOf(html.slice(html.indexOf('Approval at launch'))), /agent[^a-z]*20 sessions cov 85%/);
 });

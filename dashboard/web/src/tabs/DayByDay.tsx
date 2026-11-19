@@ -126,7 +126,7 @@ export function DayByDay({ P, cls, who }: { P: Panels; cls: Cls[]; who: Who | nu
         maxBar={22}
         pctAxis={read === 'share'}
         countLabel={read === 'share' ? 'each class’s share of the processes that exited' : 'processes that exited'}
-        costLabel={read === 'share' ? 'each class’s share of the CPU' : 'CPU-hours'}
+        costLabel={read === 'share' ? 'each class’s share of the CPU' : 'CPU time'}
         countAxis={read === 'share' ? '% of processes' : 'processes'}
         costAxis={read === 'share' ? '% of CPU' : 'CPU-hours'}
         labelTop={false}

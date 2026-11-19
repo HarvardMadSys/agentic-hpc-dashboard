@@ -39,15 +39,14 @@ export function CountCost({
   /** print each bar's value above it. On by default: a share near 0 draws a bar
    *  a pixel tall, and hover is not a reasonable way to read a number. */
   labelTop?: boolean;
-  /** how each chart writes a value and a tick when the axes are not shares */
+  /** how each chart writes a value when the axes are not shares. Its ticks are
+   *  written alike along the axis (`axisFmt`), whatever writes the values. */
   countFmt?: (v: number) => string;
   costFmt?: (v: number) => string;
 }) {
-  const f = pctAxis
-    ? { fmtVal: (v: number) => v.toFixed(1) + '%', tickFmt: (t: number) => t + '%' }
-    : {};
-  const fCount = !pctAxis && countFmt ? { fmtVal: countFmt, tickFmt: countFmt } : f;
-  const fCost = !pctAxis && costFmt ? { fmtVal: costFmt, tickFmt: costFmt } : f;
+  const f = pctAxis ? { fmtVal: (v: number) => v.toFixed(1) + '%', tickUnit: '%' } : {};
+  const fCount = !pctAxis && countFmt ? { fmtVal: countFmt } : f;
+  const fCost = !pctAxis && costFmt ? { fmtVal: costFmt } : f;
   const costGroups: BarGroup[] = groups.map((g) => ({
     k: g.k,
     k2: g.k2,
@@ -59,32 +58,37 @@ export function CountCost({
           .filter(([, t]) => t))
       : undefined,
   }));
+  // Each caption in one box with its chart: as two children of a panel's
+  // column, the panel's gap fell between them, and the second caption sat
+  // nearer the chart above it than its own.
   return (
     <>
-      <div className="eyebrow">{countLabel}</div>
-      <GroupBars
-        groups={groups}
-        series={series}
-        W={W}
-        H={H}
-        maxBar={maxBar}
-        ylabel={countAxis}
-        labelTop={labelTop}
-        {...fCount}
-      />
-      <div className="eyebrow" style={{ marginTop: 6 }}>
-        {costLabel}
+      <div>
+        <div className="eyebrow">{countLabel}</div>
+        <GroupBars
+          groups={groups}
+          series={series}
+          W={W}
+          H={H}
+          maxBar={maxBar}
+          ylabel={countAxis}
+          labelTop={labelTop}
+          {...fCount}
+        />
       </div>
-      <GroupBars
-        groups={costGroups}
-        series={series}
-        W={W}
-        H={H}
-        maxBar={maxBar}
-        ylabel={costAxis}
-        labelTop={labelTop}
-        {...fCost}
-      />
+      <div style={{ marginTop: 12 }}>
+        <div className="eyebrow">{costLabel}</div>
+        <GroupBars
+          groups={costGroups}
+          series={series}
+          W={W}
+          H={H}
+          maxBar={maxBar}
+          ylabel={costAxis}
+          labelTop={labelTop}
+          {...fCost}
+        />
+      </div>
       <Legend items={series.map((s) => ({ k: s.lbl, c: s.c }))} />
     </>
   );

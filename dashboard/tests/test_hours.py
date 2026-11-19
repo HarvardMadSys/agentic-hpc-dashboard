@@ -873,6 +873,22 @@ class NodeSplitTest(HourCase):
         self.assertEqual(sorted(reg2.hours.have), sorted(reg3.hours.have))
         self.same(v2, v3)
 
+    def test_a_worker_for_every_unit_keeps_each_unit_to_its_own(self):
+        # Two nodes in two groups are four units: three workers share one pool,
+        # and four are one each, every hour of a unit reduced in its own. The
+        # hours are the same either way.
+        shared, v3 = self.built(3, "shared")
+        self.assertNotIsInstance(shared.hours._pool, hours.UnitPool)
+        own, v4 = self.built(4, "own")
+        pool = own.hours._pool
+        self.assertIsInstance(pool, hours.UnitPool)
+        self.assertEqual(own.hours.stats["node_workers"], 4)
+        self.assertEqual(len(pool.home), 4)
+        self.assertEqual(sorted(pool.home.values()), [0, 1, 2, 3])
+        self.assertEqual(own.hours.fp, shared.hours.fp)
+        self.assertEqual(sorted(own.hours.have), sorted(shared.hours.have))
+        self.same(v3, v4)
+
     def test_a_factory_that_does_not_pickle_reduces_each_node_here_alike(self):
         _reg, want = self.built(2)
         reg, got = self.built(2, "here", fresh=lambda f: (lambda: f()))
@@ -1010,6 +1026,43 @@ class NodeSplitTest(HourCase):
             with self.subTest(var=var, value=bad), mock.patch.dict(os.environ, {var: bad}):
                 with self.assertRaises(SystemExit):
                     configmod.load(None, None)
+
+
+class UnitPoolTest(unittest.TestCase):
+    """`UnitPool` sends every task of a unit -- a node, or a node and a reducer
+    group -- to one worker; a unit it has not seen takes a worker no unit
+    holds, else the one used least recently."""
+
+    def test_each_unit_keeps_to_one_worker(self):
+        made = []
+
+        class Worker:
+            def __init__(self, max_workers, **kw):
+                self.max_workers, self.got, self.down = max_workers, [], False
+                made.append(self)
+
+            def submit(self, fn, task):
+                self.got.append((task["node"], task["hour"]))
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                self.down = True
+
+        with mock.patch.object(hours.concurrent.futures, "ProcessPoolExecutor", Worker):
+            pool = hours.UnitPool(3, initializer=None)
+        self.assertEqual([w.max_workers for w in made], [1, 1, 1])
+        for h in range(3):
+            for nd in ("a", "b"):
+                pool.submit(None, {"node": nd, "hour": h, "keys": None})
+        self.assertEqual([w.got for w in made],
+                         [[("a", 0), ("a", 1), ("a", 2)], [("b", 0), ("b", 1), ("b", 2)], []])
+        pool.submit(None, {"node": "a", "hour": 3, "keys": ["io_process"]})   # a group: a unit
+        self.assertEqual(made[2].got, [("a", 3)])
+        pool.submit(None, {"node": "c", "hour": 0, "keys": None})     # full: a's, used least
+        self.assertEqual(made[0].got[-1], ("c", 0))
+        pool.submit(None, {"node": "b", "hour": 3, "keys": None})
+        self.assertEqual(made[1].got[-1], ("b", 3))
+        pool.shutdown(wait=False, cancel_futures=True)
+        self.assertTrue(all(w.down for w in made))
 
 
 class CombineCarriesTest(unittest.TestCase):

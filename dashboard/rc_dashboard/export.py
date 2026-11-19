@@ -493,13 +493,25 @@ BLOCK = 8 << 20
 # A line a line-by-line read passes over without counting it: nothing but
 # whitespace (`not line.strip()`).
 _BLANK = re.compile(rb"^[ \t\r\x0b\x0c]*\n", re.M)
+# Where such a line could begin: a byte after a newline that is whitespace or a
+# newline itself. `_BLANK` tries a match at every line's start, and through a
+# block of a day-file that took ten times as long as looking for this.
+_BLANK_AFTER = re.compile(rb"\n[ \t\r\x0b\x0c\n]")
+_BLANK_FIRST = frozenset(b" \t\r\x0b\x0c\n")
 
 
 def _passed(body, a, b):
     """How many of the whole lines in `body[a:b]` a line-by-line read counts as
     skipped: all but the blank ones. `a` is a line's start."""
     n = body.count(b"\n", a, b)
-    return n - len(_BLANK.findall(body, a, b)) if n else 0
+    if not n:
+        return 0
+    # A collector writes no blank line, so the blank ones are counted only
+    # where one could be: at `a`, or after a newline that is followed by
+    # whitespace or another newline. Anywhere else, every line is counted.
+    if body[a] not in _BLANK_FIRST and _BLANK_AFTER.search(body, a, b) is None:
+        return n
+    return n - len(_BLANK.findall(body, a, b))
 
 
 def _found(fh, pos, find, stats, entry, block=None):

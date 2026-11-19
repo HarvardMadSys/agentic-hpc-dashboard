@@ -22,7 +22,7 @@ import type {
   ReactNode,
   RefObject,
 } from 'react';
-import { niceTicks } from './scale';
+import { axisFmt, niceTicks } from './scale';
 import { fint, fmt } from '../lib/format';
 import { useNarrow } from '../lib/useNarrow';
 
@@ -624,6 +624,8 @@ export function GroupBars({
   ylabel,
   fmtVal,
   tickFmt,
+  tickUnit = '',
+  integer = false,
   labelTop,
   max,
   zoom = true,
@@ -635,7 +637,12 @@ export function GroupBars({
   maxBar?: number;
   ylabel?: string;
   fmtVal?: (v: number) => string;
+  /** writes each tick by itself; left out, the axis is written alike (`axisFmt`) */
   tickFmt?: (v: number) => string;
+  /** after each tick the axis writes, e.g. `%` */
+  tickUnit?: string;
+  /** a count axis: whole-number steps only */
+  integer?: boolean;
   labelTop?: boolean;
   max?: number;
   /** scroll over the plot to magnify the short bars; the baseline stays 0 */
@@ -651,7 +658,8 @@ export function GroupBars({
   const ph = H - TOP - B;
   const dataMax =
     max || Math.max(...groups.flatMap((g) => series.map((s) => g.v[s.k] ?? 0)), 1);
-  const ticks = niceTicks(ceil ?? dataMax, 4);
+  const ticks = niceTicks(ceil ?? dataMax, 4, integer);
+  const axis = axisFmt(ticks);
   const topV = ticks[ticks.length - 1];
   const y = (v: number) => TOP + ph - (ph * Math.min(v, topV)) / topV;
   const wheel = useCeilingWheel(
@@ -679,7 +687,7 @@ export function GroupBars({
       )}
       <Svg w={W} h={H} label={ylabel} fit={fitRef}>
         {ticks.map((t) => (
-          <YGrid key={t} x0={L} x1={W - R} y={y(t)} lbl={tickFmt ? tickFmt(t) : fmt(t)} />
+          <YGrid key={t} x0={L} x1={W - R} y={y(t)} lbl={tickFmt ? tickFmt(t) : axis(t) + tickUnit} />
         ))}
         <g
           ref={wheel}
@@ -1070,7 +1078,6 @@ export function Lines({
   const y0 = ymin != null ? ymin : ylog ? (ny ? ylo : 1e-3) : 0;
   const X = xScale(L, pw, x0, x1, xlog);
   const Y = yScale(TOP, ph, y0, y1, ylog);
-  const F = (v: number) => (yfmt ? yfmt(v) : fmt(v));
   const XF = (v: number) => (xfmt ? xfmt(v) : fmt(v));
   const XT = (v: number) => (xtip ? xtip(v) : XF(v));
 
@@ -1227,6 +1234,7 @@ export function Lines({
   if (!series.length) return null;
 
   const yt = niceTicks(y1, 4).filter((t) => t >= y0);
+  const yAxis = yfmt ?? axisFmt(yt);
   const xt = (
     typeof xticks === 'function' ? xticks(x0, x1) : xticks || niceTicks(x1, 5).filter((t) => t >= x0)
   ).filter((t) => t >= x0 && t <= x1);
@@ -1275,7 +1283,7 @@ export function Lines({
           </defs>
         )}
         {yt.map((t) => (
-          <YGrid key={'y' + t} x0={L} x1={W - R} y={Y(t)} lbl={F(t)} />
+          <YGrid key={'y' + t} x0={L} x1={W - R} y={Y(t)} lbl={yAxis(t)} />
         ))}
         {xtShown.map((t, i) => {
           // a label centred on a tick at the plot's edge would be cut in half
