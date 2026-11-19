@@ -1115,12 +1115,15 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
   after a burst.
 - **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
   (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
-  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. Time goes
-  to what the agent started most recently, so it does not take the time of the work that follows it. A gap
-  that begins while it runs lists it (`alive`), and once it ends, its time past the phase it began in is
-  said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The session's last phase
-  ends at the latest end of all the session's calls, or of a process one of them left running, whichever is
-  later, so the lane does not end while anything the agent started still runs.
+  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. On the
+  lane, time goes to what the agent started most recently, so it does not take the time of the work that
+  follows it. A gap that begins while it runs lists it (`alive`), and once it ends, its time past the phase
+  it began in is said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The
+  session's last phase ends at the latest end of all the session's calls, or of a process one of them left
+  running, whichever is later, so the lane does not end while anything the agent started still runs. That
+  is the lane, not the work: each phase also says where its own calls ended (`own_t1`) and how long its
+  calls, or what they left running, went on past it, by the call's category (`ran_on`), and the summary
+  weighs the work by those (below).
 - **A session across midnight is one block.** A row is one local day, since its session id carries the day,
   so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
   the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
@@ -1133,8 +1136,12 @@ folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netsc
 `category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
 files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
 programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
-is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded. A
-wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
+is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded, the
+last phase's only to the end of its own calls (`own_t1`); and the time a call, or a process it left running,
+went on past its phase counts toward the call's own use (`ran_on`). A call hung for 14 h beside a minute of
+edits is then a session of running, not of changing files (it was "Mostly changed files from the shell (99% of
+14 h of work)"), and a training run left going for 3 h while the agent read its log is 3 h of running beside
+the reading, so the work can be longer than the session. A wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
 being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
 apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
 the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
@@ -1148,7 +1155,11 @@ the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
 that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's.
+is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
+said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
+phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
+the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
 2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them

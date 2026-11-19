@@ -155,6 +155,35 @@ class SegmentTest(unittest.TestCase):
         b = seg([K(0, 5, "run", "nohup python train.py &", pid=201, past=3600)])
         self.assertEqual(b["list"][0]["ran_past"], [["nohup python train.py &", 3595]])
 
+    # ------------------------------------------------------------------- work (own_t1, ran_on)
+    def test_a_phase_says_where_its_own_calls_ended_and_what_ran_on_past_it(self):
+        # S1 of the review: a call hangs for 14 h, and six edits come in its sixth minute. The lane
+        # runs the last phase to the hung call's end; the edits' own work ended at 351 s.
+        calls = [K(0, 50400, "run", "./linktest --all")] + [
+            K(300 + g, 1, "edit", "sed -i s/a/b%d/ conf%d.txt" % (i, i))
+            for i, g in enumerate([0, 7, 19, 26, 41, 50])]
+        b = seg(calls, guess=False)
+        self.assertEqual([(p["kind"], p["t0"], p["t1"], p["own_t1"], p["ran_on"]) for p in b["list"]],
+                         [("run", 0, 300, 50400, [["run", 50100.0]]),
+                          ("edit", 300, 50400, 351, None)])
+
+    def test_the_last_phase_s_left_behind_process_runs_on_past_its_own_calls(self):
+        b = seg([K(0, 5, "run", "nohup python train.py &", pid=201, past=3600)])
+        self.assertEqual((b["list"][0]["t1"], b["list"][0]["own_t1"], b["list"][0]["ran_on"]),
+                         (3600, 5, [["run", 3595.0]]))
+
+    def test_a_call_still_running_is_its_phase_s_own_work_and_never_ran_on(self):
+        b = seg([K(0, 2, "explore", "ls"), K(10, 600, "run", "", flags=OPEN)], absorb_calls=1)
+        last = b["list"][-1]
+        self.assertEqual((last["own_t1"], last["ran_on"]), (610, None))
+        b = seg([K(0, 900, "run", "", flags=OPEN), K(30, 1, "explore", "ls")], absorb_calls=1)
+        self.assertTrue(all(p["ran_on"] is None for p in b["list"]), b["list"])
+
+    def test_a_phase_with_no_call_says_no_work_of_its_own(self):
+        b = seg([K(0, 1, "explore", "ls"), K(2000, 1, "explore", "cat a")])
+        self.assertEqual(kinds(b), ["explore", "idle", "explore"])
+        self.assertEqual((b["list"][1]["own_t1"], b["list"][1]["ran_on"]), (None, None))
+
     def test_a_run_taken_in_takes_the_kind_of_the_one_that_took_it(self):
         # Four quick reads, then two loops polling for an hour (boslogin06 apid 114602): by calls
         # the reads would name the hour, and it was a wait. Its mix leads with its own kind.

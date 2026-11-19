@@ -18,6 +18,7 @@ import { DASH, fint, mb, pc } from '../lib/format';
 import { useSort } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
 import type { NodeWords } from '../lib/nodes';
+import { shareOf, wholeOf } from '../lib/shares';
 
 export type EndpointBy = 'calls' | 'bytes';
 const BYS: { k: EndpointBy; lbl: string; tip: string }[] = [
@@ -139,7 +140,9 @@ export function NetEndpoints({ ep, have, byClass }: {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const tot = cls.reduce((a, c) => a + of(r, c), 0);
+                // each class's share of the endpoint: out of every class that
+                // reached it, whatever the chips show (lib/shares.ts)
+                const tot = wholeOf(Object.keys(r.by_class), (c) => of(r, c));
                 return (
                   <tr key={`${r.name}\u0000${r.inbound}`}>
                     <td className="num nm">{rank.get(r)}</td>
@@ -155,7 +158,7 @@ export function NetEndpoints({ ep, have, byClass }: {
                       const v = of(r, c);
                       return (
                         <td key={c}>
-                          <ShareCell pct={tot ? (100 * v) / tot : null}
+                          <ShareCell pct={shareOf(v, tot)}
                             sub={v ? (by === 'calls' ? fint(v) : mb(v / MB)) : DASH} c={CLS_COL[c]} />
                         </td>
                       );

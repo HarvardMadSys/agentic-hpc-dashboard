@@ -15,6 +15,7 @@ import { CLS } from './classes';
 import { serverNow } from './clock';
 import type { Cls, TrajOrder, TrajRank } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
+import { table } from './lookup';
 
 /** Scalar filter params, in the order the backend documents them. */
 export const SCALAR_KEYS = [
@@ -105,7 +106,7 @@ const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
 const RANKS = new Set<string>(TRAJ_RANKS);
 
 /** Renamed tabs: old key -> current key. */
-const TAB_ALIAS: Record<string, string> = {
+const TAB_ALIAS: Record<string, string> = table({
   cascades: 'agents',
   // the consolidation (roadmap notes 41-47): a saved link still lands on the panels
   sessions: 'agents',
@@ -113,7 +114,7 @@ const TAB_ALIAS: Record<string, string> = {
   sandbox: 'internal',
   // Overview's one table is a section of Live now; App.tsx lands such a link on it
   overview: 'live',
-};
+});
 
 /** How a filter asks for the processes the collector gave no agent type. */
 export const UNTAGGED = 'none';

@@ -173,6 +173,11 @@ export interface PanelEnvelope {
    *  or a request that failed), so the page made one up (lib/panels.ts
    *  `absent`): a fact about the response, not about the feed. */
   _unsent?: boolean;
+  /** The service could not reduce this panel: its reducer raised, and this is
+   *  what it said (`windows.materialize`). The body holds nothing else, so it
+   *  is neither "none" nor a 0: <Panel> says so, and `pick` hands it on as not
+   *  present, so no plate reads a number off it. */
+  _error?: string | null;
 }
 
 /* ---------------------------------------------------------------- window */
@@ -774,6 +779,14 @@ export interface Phase {
   /** `[preview, seconds]`: a process that outlived its call, or a call that ran past this phase. Never a call
    *  still running (R65) */
   ran_past: [string | null, number][] | null;
+  /** where its own calls ended, a call still running at its edge so far; null on a phase that holds none. The
+   *  last phase's `t1` is the lane's end, which a call of an earlier phase can hold open (phase_segment, Work).
+   *  Absent from a service that predates it */
+  own_t1?: number | null;
+  /** `[category, seconds]`: how long its calls, or what they left running, went on past the end its work is
+   *  weighed to (`t1`; the last phase's `own_t1`), by category, the longest first; the session's summary
+   *  weighs that time to the call's own use. Never a call still running. Absent from a service that predates it */
+  ran_on?: [string, number][] | null;
   /** an idle gap's: `[preview, since]` for each call from an earlier step that was still running as the gap began,
    *  three at most, the earliest first. The agent had moved past it, and it may have ended inside the gap. The
    *  preview is null for a call still running, which has none of its own (R65). Null on any other phase, and on an
@@ -879,8 +892,9 @@ export interface PhaseBlock {
   /** what kind of session it was (`rc_dashboard/reducers/phase_summary.py`). Absent from a service that predates it */
   category?: SessionCategory;
   /** `[use, percent]`: each use's share of the session's work, the most first. The work is its phases' time but idle
-   *  gaps, waiting (a wait on Slurm is Slurm work), and commands not recorded; where none of it had a length, its
-   *  calls. Empty for a session that did no work */
+   *  gaps, waiting (a wait on Slurm is Slurm work), and commands not recorded, the last phase's to its own calls'
+   *  end, and the time a call ran on past its phase toward the call's own use (`ran_on`); where none of it had a
+   *  length, its calls. Empty for a session that did no work */
   uses?: [UseKind, number][];
   /** the session in a few sentences, from the block's own numbers: what the work was and its mix, the tool calls and
    *  tasks with the names they held, and how long the agent waited. No model writes it */

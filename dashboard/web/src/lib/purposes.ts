@@ -5,6 +5,7 @@
  * purpose vocabulary is wider than eight (`git`, `editor`, `env`, `guard`, ...),
  * so anything outside the table folds to `other` rather than earning a colour.
  */
+import { table } from './lookup';
 
 export const PURP: [key: string, label: string, colour: string, short: string][] = [
   ['poll', 'poll / introspection', 'var(--s1)', 'poll'],
@@ -18,9 +19,10 @@ export const PURP: [key: string, label: string, colour: string, short: string][]
   ['other', 'other (git, editor, env, …)', 'var(--sg)', 'other'],
 ];
 
-const PURP_COL: Record<string, string> = {};
-const PURP_LBL: Record<string, string> = {};
-const PURP_SHORT: Record<string, string> = {};
+// tables with no prototype: a purpose is the service's word (lib/lookup.ts)
+const PURP_COL: Record<string, string> = table({});
+const PURP_LBL: Record<string, string> = table({});
+const PURP_SHORT: Record<string, string> = table({});
 for (const [k, l, c, s] of PURP) {
   PURP_COL[k] = c;
   PURP_LBL[k] = l;
