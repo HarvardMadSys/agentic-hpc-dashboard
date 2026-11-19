@@ -56,8 +56,8 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what a reducer's state means: with the scan and the
 # normaliser, the modules they and the reducers count a record with -- which
 # processes are sessions (roles.py), whose session a key is (procindex.py), how
-# a day-file is listed, read and searched by time (feedfile.py), how an EBR
-# day-file's records are decoded (ebr.py), what an offset into a compressed
+# a day-file is listed, read and searched by time (feedfile.py), how a sealed
+# one's replica reads it (replica.py, where.py, feedparquet.py), what an offset into a compressed
 # day-file is (gz.py), the live tier's bins and roster
 # (buckets.py, roster.py), and the rest hours.py fingerprints for an hour.
 # Not hours.py itself, which a saved build never goes through (`windows._build`
@@ -69,7 +69,8 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 # other.
 CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py", "redact.py",
               "roles.py", "procindex.py", "proctree.py", "tool_buckets.py", "fastjson.py",
-              "gz.py", "feedfile.py", "ebr.py", "buckets.py", "roster.py")
+              "gz.py", "feedfile.py", "replica.py", "where.py", "feedparquet.py",
+              "buckets.py", "roster.py")
 HELPER_MODULES = ("agent_lib", "tool_bucket_lib", "purpose_lib", "deep_traj_lib")
 
 
@@ -100,11 +101,12 @@ def fingerprint(code, cfg, roots):
     """16 hex chars naming the code, config and feed a saved state belongs to.
 
     Not `anonymize` (names are masked on the way out, after the reducers), not
-    `ui` (what the page opens on), and not `ask` (a question reads a built
-    view, it never builds one): none changes anything a saved state holds, so
+    `ui` (what the page opens on), not `ask` (a question reads a built view, it
+    never builds one), and not `history` (a sealed file's replica reads as the
+    file does, offsets and all): none changes anything a saved state holds, so
     switching them is a restart, not a rebuild."""
     tree = {k: v for k, v in cfg.as_dict().items()
-            if k not in ("server", "anonymize", "ui", "ask")}
+            if k not in ("server", "anonymize", "ui", "ask", "history")}
     blob = json.dumps([code, tree, list(roots)], sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 

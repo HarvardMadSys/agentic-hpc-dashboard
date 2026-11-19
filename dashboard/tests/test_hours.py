@@ -7,6 +7,7 @@ thread (`WindowRegistry._build`), as in test_window_cache.
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import collections
 import gc
 import json
 import os
@@ -23,8 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import hours                     # noqa: E402
+from rc_dashboard.aggregator import Aggregator     # noqa: E402
+from rc_dashboard.reducers.own_io import AgentHeld  # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
-from test_ingest import DAY, FeedCase, ebr_twins  # noqa: E402
+from test_ingest import DAY, FeedCase, exit_rec   # noqa: E402
 import test_merge as TM                           # noqa: E402
 
 HOUR = 3600
@@ -38,6 +41,19 @@ def gen(t0, t1, seed=7):
     bounds = [h * HOUR for h in range(int(t0 // HOUR) + 1, int(t1 // HOUR) + 1)]
     with mock.patch.multiple(TM, T0=t0, T1=t1, BOUNDS=bounds):
         return TM.stream(seed)
+
+
+def leader_io(recs):
+    """`recs` with every I/O figure the leader thread's alone, which holds no
+    reaped child and so joins nothing (reducers/own_io.py). For a window a scan
+    reads from its first second, compared with the same window merged from
+    hours whose first is reduced whole: the merge's joins know the children
+    that exited before the window began, the scan's cannot, and a parent's own
+    bytes differ by them -- as the sessions' always did."""
+    for r in recs:
+        if isinstance(r.get("io"), dict):
+            r["io"]["scope"] = "leader"
+    return recs
 
 
 class HourCase(FeedCase):
@@ -174,14 +190,14 @@ class LateRecordTest(HourCase):
     def test_a_record_for_a_closed_hour_is_merged_into_it(self):
         # Hours are reduced through the newest closed one; then a host writes a
         # record dated two hours back, and the feed moves on an hour.
-        early = gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR)
+        early = leader_io(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR))
         self.write(early)
         reg = self.registry(self.cfg())
         self.assertEqual(self.build(reg, 300).cache["source"], "hours")
         late_t = NOW - 3 * HOUR + 120
         late = TM.plain("exit", late_t, 999999, 1, "pip", "pip install late",
                         user="erin")
-        self.write([late] + gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9))
+        self.write([late] + leader_io(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9)))
         view = self.build(reg, 300)
         h = int(late_t // HOUR)
         self.assertEqual(reg.hours.meta(h)["stragglers"], 1)
@@ -198,6 +214,61 @@ class LateRecordTest(HourCase):
         # and the window holds what a scan of the same files holds
         want = self.payload(self.build(self.registry(self.cfg(merge=False)), 300))
         for key in ("facets", "io_process", "risk", "resources", "tool_mix"):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(want[key], got[key]), [])
+
+
+class SeamTest(HourCase):
+    """test_window_cache's SeamTest, the window merged from saved hours: the
+    live feed counts what the open hour's read did not reach, whatever its
+    time (`hours.build`, `PanelView.seam`)."""
+
+    def test_a_host_that_lagged_when_the_view_was_merged_is_counted_as_it_catches_up(self):
+        # The review's r2, merged: host b's newest exit is 5 s old, host a's 21
+        # minutes; then host a's 20 exits of the last 20 minutes arrive.
+        for h in ("a", "b"):
+            self.append("%s.exits.jsonl" % h, [exit_rec(NOW - 1800 + 60 * i, 100 + i, host=h)
+                                               for i in range(10)])
+        self.append("b.exits.jsonl", [exit_rec(NOW - 5, 999, host="b")])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        reg = agg.panels_by_window
+        view = reg.request(1440)
+        reg._build(view)
+        self.assertEqual((view.state, view.error, view.cache["source"]),
+                         ("ready", None, "hours"))
+
+        def calls():
+            view.materialize()
+            return view.payload["tool_mix"]["by_class"]["agent"]["calls"]
+        self.assertEqual(calls(), 21)
+        self.append("a.exits.jsonl", [exit_rec(NOW - 1200 + 60 * i, 200 + i, host="a")
+                                      for i in range(20)])
+        self.assertEqual(agg.poll_once(), 20)
+        self.assertEqual(calls(), 41)
+        st = view.status()
+        self.assertEqual((st["live_records"], st["live_skipped"]),
+                         (20, {"already_read": 0, "before_window": 0}))
+
+
+class MalformedLineTest(HourCase):
+
+    def test_lines_and_records_no_reader_can_read_fail_no_hour(self):
+        # A `null` line, and an exit whose `args` is a list: an hour's read
+        # raised at each, and so did every build of the window that held it.
+        recs = gen(SINCE + 1, NOW - 30)
+        half = len(recs) // 2
+        self.write(recs[:half])
+        t = recs[half]["ts_epoch"]
+        for host in sorted({r["host"] for r in recs}):
+            bad = TM.plain("exit", t, 990000, 1, "make", ["make", "all"], host=host)
+            self.append("%s.jsonl" % host, [bad], raw=b"null\n[]\n")
+        self.write(recs[half:])
+        want = self.payload(self.build(self.registry(self.cfg(merge=False))))
+        view = self.build(self.registry(self.cfg()))
+        self.assertEqual(view.cache["source"], "hours")
+        got = self.payload(view)
+        for key in sorted(want):
             with self.subTest(reducer=key):
                 self.assertEqual(TM.diff(want[key], got[key]), [])
 
@@ -262,12 +333,12 @@ class CompressedDayTest(HourCase):
     def test_a_day_compressed_between_two_hours_is_counted_once(self):
         # Hours reduced through the newest closed one from the plain files;
         # then midnight: the day is compressed, the next day's files go on.
-        self.write(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR))
+        self.write(leader_io(gen(NOW - 6 * HOUR + 777, NOW - 2 * HOUR)))
         reg = self.registry(self.cfg())
         self.assertEqual(self.build(reg, 300).cache["source"], "hours")
         last = reg.hours.chain[0]
         self.compress_day()
-        self.write(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9), day=self.NEXT)
+        self.write(leader_io(gen(NOW - 2 * HOUR + 1, NOW - 30, seed=9)), day=self.NEXT)
         view = self.build(reg, 300)
         self.assertGreater(reg.hours.chain[0], last)
         # The next hour's read starts SCAN_SLACK_S early, in records the hour
@@ -700,4 +771,302 @@ class PreprocessTest(HourCase):
         self.assertLess(time.monotonic() - t0, 5)
 
 
-ebr_twins(globals())
+class NodeSplitTest(HourCase):
+    """`ingest.workers` >= 2: each node's share of an hour is reduced in a worker
+    process of its own, and the hour saved is the node states merged in node order.
+    The test feed is two nodes (h1, h2) in one root."""
+
+    def setUp(self):
+        super().setUp()
+        self.write(gen(SINCE + 1, NOW - 30))
+        # the workers pin their clock to the service's (`clock.install`); this
+        # case pins `time.time` by patching it, which a spawned process never sees
+        from rc_dashboard import clock
+        self.pin = mock.patch.dict(clock._state, {"pinned": True, "as_of": NOW})
+        self.pin.start()
+
+    def tearDown(self):
+        self.pin.stop()
+        super().tearDown()
+
+    def node_cfg(self, workers, tag=None, groups=None):
+        c = self.cfg()
+        c.tree["ingest"]["workers"] = workers
+        if groups is not None:
+            c.tree["ingest"]["reducer_groups"] = groups
+        c.tree["cache"]["dir"] = os.path.join(self.tmp, "cache-%s" % (tag or workers))
+        return c
+
+    def built(self, workers, tag=None, fresh=None, groups=None):
+        reg = self.registry(self.node_cfg(workers, tag, groups))
+        self.addCleanup(reg.stop)
+        if fresh is not None:
+            reg.hours.fresh = fresh(reg.hours.fresh)
+        return reg, self.build(reg)
+
+    def same(self, a, b):
+        pa, pb = self.payload(a), self.payload(b)
+        self.assertEqual(sorted(pa), sorted(pb))
+        for key in sorted(pa):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(pa[key], pb[key]), [])
+
+    def test_hours_are_reduced_by_node_in_worker_processes(self):
+        reg, view = self.built(2, groups=1)
+        st = reg.hours.stats
+        self.assertEqual(view.cache["source"], "hours")
+        self.assertEqual(st["node_workers"], 2)
+        self.assertEqual(st["node_in_process"], 0)
+        self.assertGreaterEqual(st["hours_reduced"], 3)
+        # every hour is one task per node
+        self.assertEqual(st["node_tasks"], 2 * st["hours_reduced"])
+        self.assertEqual(sorted(st["node_cpu_by"]), ["h1", "h2"])
+
+    def test_each_node_by_reducer_group_makes_the_same_hours(self):
+        # Two groups that share nothing, each fed every record of the node in
+        # order: put back together, the node's state is one process's.
+        one, v1 = self.built(4, "g1", groups=1)
+        two, v2 = self.built(4, "g2", groups=2)
+        self.assertEqual(one.hours.fp, two.hours.fp)          # no saved hour changes
+        self.assertEqual(two.hours.stats["node_tasks"], 2 * one.hours.stats["node_tasks"])
+        self.assertEqual(two.hours.stats["node_workers"], 4)
+        self.same(v1, v2)
+        # and the chains: each node's join state whole, as one group-less run saves it
+        c1, c2 = one.hours.chain[1][hours.NODES], two.hours.chain[1][hours.NODES]
+        self.assertEqual(sorted(c1), sorted(c2))
+        for nd in c1:
+            self.assertEqual(sorted(c1[nd]), sorted(c2[nd]))
+
+    def test_reducers_that_share_an_object_are_one_group(self):
+        reg = self.registry(self.node_cfg(2, "groups"))
+        red = reg.hours.fresh()
+        groups = hours.reducer_groups(red, 2)
+        self.assertEqual(sorted(sum(groups, [])), sorted(red))      # each key once
+        self.assertEqual(len(groups), 2)
+        where = {k: i for i, g in enumerate(groups) for k in g}
+        for k, r in red.items():
+            for v in vars(r).values():
+                for k2, r2 in red.items():
+                    if v is r2:
+                        self.assertEqual(where[k], where[k2], (k, k2))
+        # the session reducers and the process index they fold through
+        self.assertEqual(len({where[k] for k in ("_procs", "trajectories", "cascades")}), 1)
+        self.assertEqual(hours.reducer_groups(red, 1), [list(red)])
+        # each group keeps the set's order, which is the order records are fed in
+        for g in groups:
+            self.assertEqual(g, [k for k in red if k in g])
+
+    def test_a_node_is_split_only_when_the_workers_cover_the_nodes(self):
+        # Each group reads the node's records itself: with fewer workers than
+        # nodes, a second read per node-hour costs more than a second core gives.
+        reg = self.registry(self.node_cfg(4, "cover"))
+        self.assertEqual(len(reg.hours._reducer_groups(4)), 2)
+        self.assertEqual(len(reg.hours._reducer_groups(5)), 1)
+        self.assertEqual(reg.hours._reducer_groups(5), [list(reg.hours.fresh())])
+        one = self.registry(self.node_cfg(4, "one", groups=1))
+        self.assertEqual(len(one.hours._reducer_groups(2)), 1)
+
+    def test_any_count_from_two_makes_the_same_hours(self):
+        reg2, v2 = self.built(2)
+        reg3, v3 = self.built(3)
+        self.assertEqual(reg2.hours.fp, reg3.hours.fp)
+        self.assertEqual(sorted(reg2.hours.have), sorted(reg3.hours.have))
+        self.same(v2, v3)
+
+    def test_a_factory_that_does_not_pickle_reduces_each_node_here_alike(self):
+        _reg, want = self.built(2)
+        reg, got = self.built(2, "here", fresh=lambda f: (lambda: f()))
+        self.assertEqual(reg.hours.stats["node_workers"], 0)
+        self.assertGreater(reg.hours.stats["node_in_process"], 0)
+        self.assertIn("in this process", reg.hours.stats["node_note"])
+        self.same(want, got)
+
+    def test_each_node_carries_its_own_join_state(self):
+        reg, _view = self.built(2)
+        hour, carry, ages = reg.hours.chain
+        self.assertEqual(sorted(carry), [hours.NODES])
+        self.assertEqual(sorted(carry[hours.NODES]), ["h1", "h2"])
+        self.assertEqual(sorted(ages[hours.NODES]), ["h1", "h2"])
+        # as saved, so a restart resumes every node from its own
+        saved = reg.hours._load_chain(hour)
+        self.assertEqual(sorted(saved[1][hours.NODES]), ["h1", "h2"])
+        # and a window installs them as one: its tail and live feed are one pass
+        node = carry[hours.NODES]
+        before = pickle.dumps(reg.hours.chain, protocol=pickle.HIGHEST_PROTOCOL)
+        acc = reg.hours.fresh()
+        self.assertTrue(reg.hours.install_carry(acc, hour))
+        # the chain is the next hour's start: installing reads a copy of it
+        self.assertEqual(pickle.dumps(reg.hours.chain, protocol=pickle.HIGHEST_PROTOCOL), before)
+
+        def union(red, field):
+            return set(node["h1"][red][field]) | set(node["h2"][red][field])
+
+        traj = acc["trajectories"]
+        for field, held in (("reaped", traj.own.reaped), ("phase_calls", traj.calls_at),
+                            ("phase_exited", traj.exited)):
+            with self.subTest(field=field):
+                self.assertTrue(node["h1"]["trajectories"][field])
+                self.assertTrue(node["h2"]["trajectories"][field])
+                self.assertEqual(set(held), union("trajectories", field))
+                # each node's keys in its own order: the order its cap evicts in
+                for nd in ("h1", "h2"):
+                    mine = node[nd]["trajectories"][field]
+                    self.assertEqual([k for k in held if k in mine], list(mine))
+        self.assertEqual(set(acc["tool_mix"].child_tok), union("tool_mix", "child_tok"))
+        self.assertEqual(set(acc["_procs"].wanted), union("_procs", "wanted"))
+        sb = acc["sandbox"]
+        self.assertEqual(set(sb.below), union("sandbox", "below"))
+        self.assertEqual(sb.n_units, max(node[nd]["sandbox"]["n_units"] for nd in node))
+        self.assertGreater(len(node["h1"]["sandbox"]["units"]), 0)
+        self.assertEqual(set(sb.units), union("sandbox", "units"))
+
+    def test_an_installed_map_is_held_to_one_pass_cap(self):
+        # Two nodes' maps at their own caps would be twice one pass's: installed, the
+        # oldest of the two are dropped, each node keeping its newest keys -- but for
+        # what is held for an agent runtime, kept in place of the oldest of the rest
+        # (own_io.py).
+        reg, _view = self.built(2)
+        hour, carry, _ages = reg.hours.chain
+        node = carry[hours.NODES]
+        n1, n2 = (len(node[nd]["trajectories"]["reaped"]) for nd in ("h1", "h2"))
+        cap = (n1 + n2) // 2
+        acc = reg.hours.fresh()
+        caps = acc["trajectories"].carry_caps()
+        acc["trajectories"].carry_caps = lambda: dict(caps, reaped=cap)
+        self.assertTrue(reg.hours.install_carry(acc, hour))
+        held = acc["trajectories"].own.reaped
+        self.assertEqual(len(held), cap)
+        for nd in ("h1", "h2"):
+            own = node[nd]["trajectories"]["reaped"]
+            agents = [k for k, v in own.items() if type(v) is AgentHeld]
+            rest = [k for k in own if k not in agents]
+            mine = [k for k in held if k in rest]
+            self.assertTrue(agents)
+            self.assertEqual(mine, rest[len(rest) - len(mine):])
+            self.assertEqual([k for k in agents if k not in held], [])
+
+    def test_a_deploy_since_the_start_reduces_here_alike(self):
+        # The code a worker would start from is not this process's: no pool, and the
+        # nodes are reduced here, into the same hours.
+        _reg, want = self.built(2)
+        reg = self.registry(self.node_cfg(2, "deployed"))
+        self.addCleanup(reg.stop)
+        reg.hours._identity = "0" * 16
+        got = self.build(reg)
+        st = reg.hours.stats
+        self.assertEqual(st["node_workers"], 0)
+        self.assertGreater(st["node_in_process"], 0)
+        self.assertIn("until the service restarts", st["node_note"])
+        self.same(want, got)
+
+    def test_a_worker_started_after_a_deploy_reduces_nothing(self):
+        # The service's own check passes, but each worker finds it runs other code
+        # than the service: every task comes back undone, and is reduced here.
+        _reg, want = self.built(2)
+        with mock.patch.object(hours, "spawn_identity", return_value="feedfacefeedface"):
+            reg = self.registry(self.node_cfg(2, "late"))
+            self.addCleanup(reg.stop)
+            got = self.build(reg)
+        st = reg.hours.stats
+        self.assertEqual(st["node_workers"], 2)             # a pool was made...
+        self.assertGreater(st["node_in_process"], 0)        # ...and reduced nothing
+        self.assertEqual(st["node_tasks"], st["node_in_process"])
+        self.assertIn("a worker started now runs other code", st["node_note"])
+        self.assertIsNone(reg.hours._pool)
+        self.assertIsNone(reg.hours._node_pool(2))          # and none is made again
+        self.same(want, got)
+
+    def test_a_window_merged_from_node_hours_counts_what_one_pass_counts(self):
+        # The counts, sums, sets and sketches a merge adds are the same whatever
+        # the order; what may differ is what `merge` takes from one state (a
+        # "first N" sample, a "newest record's" field, ties). Here, the totals.
+        _r1, one = self.built(1)
+        _r2, split = self.built(2)
+        a, b = self.payload(one), self.payload(split)
+        for key in ("facets", "resources", "io_process", "tool_mix", "slurm", "workspace"):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(a[key], b[key]), [])
+
+    def test_the_split_is_in_the_fingerprint_and_the_count_is_not(self):
+        fp = lambda c: hours.fingerprint("code", c, [self.root])     # noqa: E731
+        one, two, eight = (fp(self.node_cfg(w, "fp")) for w in (1, 2, 8))
+        self.assertNotEqual(one, two)
+        self.assertEqual(two, eight)
+        # one pass is the fingerprint the hours had before the split existed
+        bare = self.node_cfg(1, "fp")
+        del bare.tree["ingest"]["workers"]
+        self.assertEqual(fp(bare), one)
+        # 0 is one per CPU: one pass on a one-CPU host
+        with mock.patch.object(hours, "usable_cpus", return_value=1):
+            self.assertEqual(fp(self.node_cfg(0, "fp")), one)
+        with mock.patch.object(hours, "usable_cpus", return_value=16):
+            self.assertEqual(fp(self.node_cfg(0, "fp")), two)
+
+    def test_a_count_that_is_not_one_is_refused_at_start(self):
+        from rc_dashboard import config as configmod
+        for var, bad in (("RC_DASH_INGEST_WORKERS", "-1"), ("RC_DASH_INGEST_WORKERS", "257"),
+                         ("RC_DASH_INGEST_REDUCER_GROUPS", "0"),
+                         ("RC_DASH_INGEST_REDUCER_GROUPS", "3")):
+            with self.subTest(var=var, value=bad), mock.patch.dict(os.environ, {var: bad}):
+                with self.assertRaises(SystemExit):
+                    configmod.load(None, None)
+
+
+class CombineCarriesTest(unittest.TestCase):
+
+    def test_per_node_join_state_is_one_join_state(self):
+        a = {"tools": {"child_tok": {("s1", 1): {"x"}}},
+             "sandbox": {"below": {("h1", 5): [1]}, "units": {}, "n_units": 3},
+             "trajectories": {"reaped": {("h1", 9): [1.0, 0.0]},
+                              "phase_exited_horizon": 10.0}}
+        b = {"tools": {"child_tok": {("s2", 2): {"y"}}},
+             "sandbox": {"below": {("h2", 5): [2]}, "units": {}, "n_units": 7},
+             "trajectories": {"reaped": {("h2", 9): [2.0, 0.0]},
+                              "phase_exited_horizon": 4.0}}
+        got = hours.combine_carries({"h2": b, "h1": a})
+        self.assertEqual(list(got["tools"]["child_tok"]), [("s1", 1), ("s2", 2)])
+        self.assertEqual(sorted(got["sandbox"]["below"]), [("h1", 5), ("h2", 5)])
+        self.assertEqual(got["sandbox"]["n_units"], 7)
+        self.assertEqual(got["trajectories"]["phase_exited_horizon"], 10.0)
+        self.assertEqual(len(got["trajectories"]["reaped"]), 2)
+
+    def test_maps_interleave_by_the_hour_each_key_was_last_touched(self):
+        od = collections.OrderedDict
+        a = {"trajectories": {"reaped": od([(("h1", 1), 1), (("h1", 2), 2)])}}
+        b = {"trajectories": {"reaped": od([(("h2", 1), 1), (("h2", 2), 2)])}}
+        ages = {"h1": {"trajectories.reaped": {("h1", 1): 10, ("h1", 2): 12}},
+                "h2": {"trajectories.reaped": {("h2", 1): 11, ("h2", 2): 12}}}
+        got = hours.combine_carries({"h1": a, "h2": b}, ages)["trajectories"]["reaped"]
+        self.assertIsInstance(got, od)
+        self.assertEqual(list(got), [("h1", 1), ("h2", 1), ("h1", 2), ("h2", 2)])
+
+    def test_a_capped_map_drops_its_oldest_and_its_reducer_is_told(self):
+        from rc_dashboard.reducers.trajectories import TrajectoryReducer
+
+        class Red:
+            carry_trimmed = staticmethod(TrajectoryReducer.exited_trimmed)
+
+            @staticmethod
+            def carry_caps():
+                return {"phase_exited": 2}
+
+        od = collections.OrderedDict
+        a = {"trajectories": {"phase_exited": od([(("h1", 1), (0.0, 5.0, "lost", None)),
+                                                  (("h1", 2), (0.0, 9.0, "lost", None))]),
+                              "phase_exited_horizon": 1.0}}
+        b = {"trajectories": {"phase_exited": od([(("h2", 1), (0.0, 7.0, "lost", None))]),
+                              "phase_exited_horizon": 2.0}}
+        got = hours.combine_carries({"h1": a, "h2": b}, None,
+                                    {"trajectories": Red()})["trajectories"]
+        self.assertEqual(len(got["phase_exited"]), 2)
+        # no ages: each node's keys spread over the same span, h1's first the oldest
+        self.assertEqual(list(got["phase_exited"]), [("h2", 1), ("h1", 2)])
+        # and the latest end among those dropped is the horizon, as `_went` keeps it
+        self.assertEqual(got["phase_exited_horizon"], 5.0)
+
+    def test_a_field_with_no_rule_is_refused(self):
+        a = {"tools": {"odd": [1]}}
+        b = {"tools": {"odd": [2]}}
+        with self.assertRaises(TypeError):
+            hours.combine_carries({"h1": a, "h2": b})
+

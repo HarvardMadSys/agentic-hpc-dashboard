@@ -7,25 +7,16 @@ run without the rest of the repo. The price is six copied modules.
 | Vendored as | Copied from | Upstream sha256 at vendor time | Local changes |
 |---|---|---|---|
 | `lib/procparse.py` | `collect/common/procparse.py` | `f4ecb417…92292f` | **added `read_cwd(pid)`** (readlink only) |
-| `lib/agent_classify.py` | `collect/common/agent_classify.py` | `0d6528d0…20f9f3` | none |
+| `lib/agent_classify.py` | `collect/common/agent_classify.py` | `0d6528d0…20f9f3` | **`classify()` reads the program, not every word**: argv[0], past wrappers (`env`, `nohup`, …), a package runner's package, an interpreter's script, a shell's `-c` command's first word, and every word of a `bwrap`; plus the runtime artifacts only an agent writes, where it writes them (Claude Code's tool-call shell; `CURSOR_SANDBOX` and `WINDSURF_STATE` in the environment a program is run with (leading or `env` assignments, a bwrap's `--setenv`); `windsurf-terminal` as a program). Upstream matches its patterns anywhere, so a human's `vim ~/.claude/CLAUDE.md` is an agent there. Added patterns: `/claude/versions/`, `@anthropic-ai/claude-code`, `claude-code/cli.js`; under `/.claude/` only Claude Code's installs match (`local/`, `remote/`, its `cli.js`), not a hook, a status line or a project's `.claude/worktrees/`. Upstream, `snapshot.py`'s copy and `analyze/agent_lib.py` want the same change |
 | `lib/provider_cidrs.py` | `collect/nettcp/provider_cidrs.py` | `13f4b613…e6bad8` | none |
-| `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | **GPU sections dropped**: `nvidia-smi` is never run, and `gpu`/`gpu_pmon`/`gpu_compute_apps` are always null, kept in place because the key order is load-bearing. Login nodes have no GPUs; upstream still collects them for compute nodes. **Schema 8 of the eBPF tier:** argv fields masked with `lib/redact.py` (`EBPFM_REDACT`), and `ts_epoch`, `tz`, `redact` APPENDED after every existing key, whose order stays as it was |
-| `lib/redact.py` (credential rules only) | `dashboard/rc_dashboard/redact.py` | — | **`RULES` and `MASK` verbatim**; prompt masking and the entry points are new. `tests/test_redact.py` holds the two rule sets equal whenever the dashboard is alongside |
+| `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | **GPU sections dropped**: `nvidia-smi` is never run, and `gpu`/`gpu_pmon`/`gpu_compute_apps` are always null, kept in place because the key order is load-bearing. Login nodes have no GPUs; upstream still collects them for compute nodes. **Schema 8 of the eBPF tier:** argv fields masked with `lib/redact.py` (`EBPFM_REDACT`), and `ts_epoch`, `tz`, `redact` APPENDED after every existing key, whose order stays as it was. **Its inline classifier (`classify_agent`, for `proc_tree.agents`) is a copy of `lib/agent_classify.py`'s `classify()`**, local change included; `tests/test_ebpfm.py`'s `ClassifyTest` holds the two equal |
+| `lib/redact.py` (credential rules only) | `dashboard/rc_dashboard/redact.py` | — | **`MASK`, and everything from `_NOT_A_REF` to the end of `RULES` verbatim** (the rules, their helpers, `TEXT_MAX`, `CUT`, `cut_text`); prompt masking and the entry points are new. `tests/test_redact.py` holds that span equal, word for word, whenever the dashboard is alongside |
 | `lib/slurm_args.py` | `analyze/switch_submitline_time.py` | see `.vendored.sha256` | **`parse_cli_time` returns `None`, not `numpy.nan`** (the collector has no numpy, and null is the honest absent value); the flag parsers are new |
 
 `node_snapshot.py` is the **node tier** (`ebpfm.sh start` runs it unprivileged on a
 300 s loop). It is vendored rather than imported for the same reason as the rest: the
 bundle has to run on a node with no repo. `collect/common/snapshot.py` stays canonical —
-`collect/compute/` still uses it directly, and it is the file to edit. Its EBR twin
-(`<host>.ebr`) is written by `ebpfm.sh`, which pipes the snapshot's line to
-`lib/ebr.py append`; `node_snapshot.py` itself is unchanged for it.
-
-**Not vendored: `lib/ebr.py`.** The EBR codec (the binary day-file format, see README.md)
-is canonical **here**, and it goes the other way: `dashboard/rc_dashboard/ebr.py` is a
-byte-identical mirror, so the dashboard reads exactly what the collector writes. It is
-not in `.vendored.sha256`, which lists only files copied *into* this folder. Edit it here,
-then copy it across unchanged: `DashboardSyncTest` in `tests/test_ebr.py` fails while the
-two differ.
+`collect/compute/` still uses it directly, and it is the file to edit.
 
 Vendored from repo commit `9a76f14`; the three sources were last touched upstream in
 `fb6c9ab` (2026-08-01). Full hashes are in `.vendored.sha256`, which is the machine-readable

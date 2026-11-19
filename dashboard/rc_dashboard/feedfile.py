@@ -1,123 +1,68 @@
-"""The collector's day-files on disk: finding them, reading their records, and
-seeking in them by time -- in either of the two formats the collector writes.
+"""The collector's day-files on disk: finding them, reading their lines, and
+seeking in them by time.
 
-A day-file is `<root>/<YYYY-MM-DD>/<host>[.<stream>].<fmt>` (or a flat file
-under the root), plain or gzip-compressed (`gz`), appended as events occur:
-
-  jsonl   one JSON record to a line
-  ebr     EBR, the collector's binary records (`ebr.py`, a byte-identical copy
-          of collector/lib/ebr.py): CRC-checked frames, normally one per poll
-          round, each with its time bounds and event kinds in its header
+A day-file is `<root>/<YYYY-MM-DD>/<host>[.<stream>].jsonl` (or a flat file under
+the root), plain or gzip-compressed (`gz`): one JSON record to a line, appended as
+events occur. A collector seals a day by compressing its files, so a stream has
+its plain file while the day is live and its `.gz` after; both exist for the
+moment the compression takes, and the plain one is read then: it is the complete
+copy.
 
 Everything that depends on that shape is here -- the listing (`feed_files`,
-`dated_dirs`, `day_files`, `host_of`, and the twin rule, `choose`), the line
-framing (`iter_lines_reverse`, `iter_lines_forward`, `complete_end`), the
-binary searches by timestamp (`seek_to_epoch`, `end_at`), a file's identity
-beyond its inode (`head_digest`), and EBR's frames and records (`decoder_at`,
-`records_forward`, `records_reverse`, `last_records`, `newest`) -- so a reader
-branches on a file's format once, at the top of its loop, and the JSONL loops
-stay as they were. Each name that moved here is still importable from where it
-was.
-
-TWINS. A collector writing both formats (`EBPFM_FORMAT=both`) leaves two files
-per stream, `x.jsonl` and `x.ebr`, holding the same records in the same order;
-a reader reads exactly ONE of them, the one `choose()` names for the stem
-(`feeds.<tier>.prefer`, jsonl unless set). The choice is monotone -- a live day
-never switches twins, so nothing is read twice -- because it is a function of
-each twin's FIRST record, which never changes once written:
-
-  one file for the stem                     that file
-  neither twin holds a record yet           held: nothing is read
-  the preferred twin holds one              it, unless its first record is
-                                            more than MIDDAY_S after the other
-                                            twin's first: started mid-day, so
-                                            the other twin is read, and why
-  only the other twin holds one             held for HOLD_S after that record,
-                                            then the other twin
-
-A final choice is remembered by the twins' identities, and a held stem still
-counts as a day (`dated_dirs`). For either format the plain file beats its
-`.gz`, as it always did: both exist while one is compressed into the other.
+`dated_dirs`, `day_files`, `host_of`, `chosen_for`), the line framing
+(`iter_lines_reverse`, `iter_lines_forward`, `complete_end`, `is_boundary`), the
+binary searches by timestamp (`seek_to_epoch`, `end_at`), and a file's identity
+beyond its inode (`head_digest`). A sealed file may also have a Parquet replica in
+the history store, which answers the same questions with the same offsets
+(`replica.py`).
 
 It is in both code fingerprints (`snapshots.CODE_FILES`, `hours.CODE_FILES`), as
-export.py and ebr.py are: a change here discards saved builds and hours.
+export.py is: a change here discards saved builds and hours.
 """
 import collections
-import contextlib
-import gzip
 import hashlib
 import os
 import threading
-import time
-import zlib
 
-from . import ebr, gz, fastjson
+from . import gz, fastjson
 from .normalize import epoch_of
 
-FORMATS = ("jsonl", "ebr")
-SUFFIX = {"jsonl": ".jsonl", "ebr": ".ebr"}
-PREFER = "jsonl"            # what `feeds.<tier>.prefer` is unless set
-# A preferred twin whose first record is this far after its twin's first was
-# started mid-day: the other twin holds the day's start, and is read instead.
-MIDDAY_S = 1.0
-# How long a stem waits for its preferred twin's first record once the other
-# twin has one. A collector writing both formats writes the two in one flush,
-# so the wait is a poll round; past this, the preferred twin is not coming.
-HOLD_S = 300.0
-# A live EBR file's last bytes may not all be visible yet over NFS: a corrupt
-# region that starts this close to its end is read as a frame still being
-# written (`ebr.frames(settle=)`), not resynced past. A sealed `.gz` has none.
-SETTLE = 4 << 20
-# The most of a file's head read for its first record (`first_record`).
-FIRST_MAX = 64 << 20
-# Frames a seek's probe walks past (corrupt regions, frames with no time) for one
-# that says when its records are. Frames that hold no records -- SEGMENTs, and the
-# MARKs a converter writes (`ebr.MARK`, ebrview.py) -- are not counted: a probe
-# walks past them up to PROBE_PASS_BYTES.
-PROBE_FRAMES = 16
-PROBE_PASS_BYTES = 4 << 20
+FORMAT = "jsonl"
+SUFFIX = ".jsonl"
 
 
 # ------------------------------------------------------------------- names
 # The ebpf tier splits each day into two files per host (ebpf_trace.stream_of):
-# `<host>.exits.<fmt>` and `<host>.snapshot.<fmt>`. The node tier still writes a
-# single `<host>.<fmt>`, and feeds captured before the split are single-file too,
+# `<host>.exits.jsonl` and `<host>.snapshot.jsonl`. The node tier still writes a
+# single `<host>.jsonl`, and feeds captured before the split are single-file too,
 # so all three spellings have to resolve to the same host.
 _STREAM_SUFFIXES = (".snapshot", ".exits")
 
 
 def split_name(path):
     """`(stem, fmt, gz)` of a day-file's name: `h.exits.jsonl.gz` is
-    `("h.exits", "jsonl", True)`. `fmt` is None for a name of neither format."""
+    `("h.exits", "jsonl", True)`. `fmt` is None for a name that is no day-file."""
     name = os.path.basename(path)
     z = gz.is_gz(name)
     if z:
         name = name[:-len(gz.SUFFIX)]
-    for fmt in FORMATS:
-        suf = SUFFIX[fmt]
-        if name.endswith(suf):
-            return name[:-len(suf)], fmt, z
+    if name.endswith(SUFFIX):
+        return name[:-len(SUFFIX)], FORMAT, z
     return name, None, z
 
 
-def format_of(path):
-    """`jsonl` or `ebr`, by the file's name (`jsonl` for any other name)."""
-    return split_name(path)[1] or "jsonl"
-
-
 def stem_of(path):
-    """`(dir, stem)`: what a file is one of the twins of."""
+    """`(dir, stem)`: the stream a file is (its plain file or its `.gz`)."""
     return os.path.dirname(path), split_name(path)[0]
 
 
 def host_of(path):
-    """`<host>[.<stream>].<fmt>[.gz]` -> `<host>`.
+    """`<host>[.<stream>].jsonl[.gz]` -> `<host>`.
 
     Only a RECOGNISED stream suffix is stripped. That is the whole point: a
     hostname may legitimately contain dots, and blindly cutting at the last one
     would turn `login.rc.fas` into `login.rc` -- inventing a host that does not
-    exist and splitting one node's records across two of them in the report.
-    Either format's suffix goes first, so a host's EBR twin is the same host."""
+    exist and splitting one node's records across two of them in the report."""
     stem = split_name(path)[0]
     for suf in _STREAM_SUFFIXES:
         if stem.endswith(suf):
@@ -125,172 +70,14 @@ def host_of(path):
     return stem
 
 
-def twin_names(path):
-    """Every name `path`'s twin of the other format could have: plain and `.gz`."""
-    d, stem = stem_of(path)
-    fmt = split_name(path)[1]
-    out = []
-    for f in FORMATS:
-        if f != fmt:
-            p = os.path.join(d, stem + SUFFIX[f])
-            out += [p, p + gz.SUFFIX]
-    return out
-
-
-def prefer_of(cfg, tier="ebpf"):
-    """The format a tier reads when a stream has both (`feeds.<tier>.prefer`).
-    `config.load` refuses anything but the two; a config built another way
-    reads JSONL rather than fail."""
-    v = cfg.get("feeds.%s.prefer" % tier, PREFER) if cfg is not None else PREFER
-    v = str(v or PREFER).strip().lower()
-    return v if v in FORMATS else PREFER
-
-
-# ----------------------------------------------------------------- twins
-_twin_lock = threading.Lock()
-_firsts = collections.OrderedDict()    # (dev, ino, path) -> first record's epoch
-_choices = collections.OrderedDict()   # (dir, stem, prefer, ((fmt, dev, ino), ...)) -> (fmt, why)
-_KEEP = 8192
-
-
-def _keep(memo, key, value):
-    with _twin_lock:
-        memo[key] = value
-        memo.move_to_end(key)
-        while len(memo) > _KEEP:
-            memo.popitem(last=False)
-
-
-def first_record(path):
-    """`(has_record, ts)`: whether `path` holds one complete record yet -- a
-    whole line, or a whole DATA frame -- and that first record's epoch (None
-    when it carries none). Once it has one, that never changes, so the answer
-    is kept by the file's identity. A `.gz` is streamed from its start
-    (`gzip.open`): no seek index is built for it."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return False, None
-    key = (st.st_dev, st.st_ino, path)
-    with _twin_lock:
-        if key in _firsts:
-            return True, _firsts[key]
-    got = _first_read(path)
-    if got[0]:
-        _keep(_firsts, key, got[1])
-    return got
-
-
-def _first_read(path):
-    ebr_fmt = format_of(path) == "ebr"
-    try:
-        if gz.is_gz(path):
-            with gzip.open(path, "rb") as fh:
-                return _first_ebr_stream(fh) if ebr_fmt else _first_jsonl(fh)
-        if ebr_fmt:
-            return _first_ebr(path, SETTLE)
-        with open(path, "rb") as fh:
-            return _first_jsonl(fh)
-    except (OSError, EOFError, zlib.error, ebr.Error):
-        return False, None
-
-
-def _first_jsonl(fh):
-    budget = FIRST_MAX
-    while budget > 0:
-        line = fh.readline(budget)
-        if not line.endswith(b"\n"):
-            return False, None          # nothing complete yet
-        budget -= len(line)
-        if not line.strip():
-            continue
-        try:
-            rec = fastjson.loads(line)
-        except ValueError:
-            return True, None
-        return True, (epoch_of(rec) if isinstance(rec, dict) else None)
-    return False, None
-
-
-def _first_ebr(src, settle):
-    dec = ebr.Decoder()
-    for f in ebr.frames(src, settle=settle):
-        if f.kind == ebr.DATA and f.n_records:
-            for _pos, rec in dec.records(src, f):
-                return True, epoch_of(rec)
-            return True, None
-        dec.skip(f, src)
-    return False, None
-
-
-def _first_ebr_stream(fh):
-    buf, want = b"", 1 << 16
-    while True:
-        more = fh.read(want - len(buf))
-        buf += more
-        got = _first_ebr(buf, len(buf))
-        if got[0] or not more or len(buf) >= FIRST_MAX:
-            return got
-        want = min(FIRST_MAX, want * 4)
-
-
-def _ago(s):
-    return "%.0f s" % s if s < 120 else "%.1f h" % (s / 3600.0) if s >= 7200 else "%.0f min" % (s / 60.0)
-
-
-def choose(d, stem, cands, prefer=PREFER, now=None):
-    """`(path, reason)`: which of `cands` ({fmt: path}, one stem's files in `d`)
-    is read, or `(None, reason)` while the stem is held. The rule is in the
-    module's docstring; `reason` is None when the preferred twin (or the only
-    file) is read for no other reason than that."""
-    if len(cands) == 1:
-        return next(iter(cands.values())), None
-    ids = []
-    for fmt in sorted(cands):
-        try:
-            st = os.stat(cands[fmt])
-        except OSError:
-            continue
-        ids.append((fmt, st.st_dev, st.st_ino))
-    if len(ids) < len(cands):           # one went while the directory was listed
-        left = {i[0]: cands[i[0]] for i in ids}
-        return choose(d, stem, left, prefer, now) if left else (None, "gone")
-    if prefer not in cands:
-        prefer = sorted(cands)[0]
-    other = next(f for f in FORMATS if f != prefer and f in cands)
-    key = (d, stem, prefer, tuple(ids))
-    with _twin_lock:
-        hit = _choices.get(key)
-    if hit is not None:
-        return cands[hit[0]], hit[1]
-    has_p, tp = first_record(cands[prefer])
-    has_o, to = first_record(cands[other])
-    if has_p:
-        if has_o and tp is not None and to is not None and tp > to + MIDDAY_S:
-            fmt, why = other, ("the %s twin's first record is %s after the %s twin's: "
-                               "it was started mid-day" % (prefer, _ago(tp - to), other))
-        else:
-            fmt, why = prefer, None
-    elif has_o:
-        now = time.time() if now is None else now
-        if to is not None and now - to < HOLD_S:
-            return None, ("held: the %s twin has a record and the preferred %s twin none "
-                          "yet" % (other, prefer))
-        fmt, why = other, ("the preferred %s twin held no record %d s after the %s twin's "
-                           "first" % (prefer, HOLD_S, other))
-    else:
-        return None, "held: neither twin holds a record yet"
-    _keep(_choices, key, (fmt, why))
-    return cands[fmt], why
-
-
-def _listing(d, prefer=PREFER, now=None):
-    """`(files, notes)`: the day-files read in `d`, one per stem, and a note for
-    every stem with twins or none read (`feeds.resolve_dated` reports them)."""
+# ----------------------------------------------------------------- listing
+def _listing(d):
+    """The day-files read in `d`, one per stream, sorted: its plain file, else
+    its `.gz`."""
     try:
         names = os.listdir(d)
     except OSError:
-        return [], []
+        return []
     by = {}
     for n in names:
         if n.startswith("."):
@@ -298,47 +85,29 @@ def _listing(d, prefer=PREFER, now=None):
         stem, fmt, z = split_name(n)
         if fmt is None:
             continue
-        slot = by.setdefault(stem, {})
-        cur = slot.get(fmt)
+        cur = by.get(stem)
         if cur is None or (not z and gz.is_gz(cur)):
-            slot[fmt] = os.path.join(d, n)
-    files, notes = [], []
-    for stem in sorted(by):
-        cands = by[stem]
-        path, why = choose(d, stem, cands, prefer, now)
-        if path is not None:
-            files.append(path)
-        if len(cands) > 1 or path is None:
-            notes.append({"dir": d, "stream": stem, "files": dict(cands),
-                          "read": None if path is None else format_of(path),
-                          "path": path, "reason": why})
-    return sorted(files), notes
+            by[stem] = os.path.join(d, n)
+    return sorted(by.values())
 
 
-def feed_files(d, prefer=PREFER, now=None, report=None):
-    """A directory's day-files, one per stream: plain or gzip-compressed (`gz`),
-    of the format the twin rule chooses (`choose`; `prefer` is the tier's).
+def feed_files(d):
+    """A directory's day-files, one per stream: plain or gzip-compressed (`gz`).
 
-    A plain file wins over its `.gz` twin: both exist while one is being
-    compressed into the other, and the plain one is the complete copy.
-    `report`, a list, receives a note per stem with twins or none read.
+    A plain file wins over its `.gz`: both exist while one is being compressed
+    into the other, and the plain one is the complete copy.
     """
-    files, notes = _listing(d, prefer, now)
-    if report is not None:
-        report.extend(notes)
-    return files
+    return _listing(d)
 
 
-def dated_dirs(root, days=0, prefer=PREFER, now=None, report=None):
+def dated_dirs(root, days=0):
     """`[(date, files)]` for the newest `days` date dirs under `root` that hold
     a day-file, oldest first; every one of them for 0.
 
     An empty date dir is passed over, not counted. A capture copied in from
     another cluster has dated dirs made ahead of the files that fill them, and
     counting those pushed the days that do hold records out of every window:
-    the 1 h view of such a capture read nothing at all. A dir whose streams
-    are all held (twins with no record yet, `choose`) counts, with no files,
-    as a dir of empty day-files always did.
+    the 1 h view of such a capture read nothing at all.
     """
     if not os.path.isdir(root):
         return []
@@ -347,30 +116,28 @@ def dated_dirs(root, days=0, prefer=PREFER, now=None, report=None):
                    reverse=True)
     out = []
     for d in dates:
-        files, notes = _listing(os.path.join(root, d), prefer, now)
-        if files or any(n["path"] is None for n in notes):
+        files = _listing(os.path.join(root, d))
+        if files:
             out.append((d, files))
-            if report is not None:
-                report.extend(dict(n, day=d) for n in notes)
             if days and len(out) >= days:
                 break
     return out[::-1]
 
 
-def day_files(roots, days=0, prefer=PREFER):
+def day_files(roots, days=0):
     out = []
     for root in roots:
-        for _d, files in dated_dirs(root, days, prefer):
+        for _d, files in dated_dirs(root, days):
             out += files
-        out += feed_files(root, prefer)
+        out += feed_files(root)
     return sorted(set(out))
 
 
-def chosen_for(path, prefer=PREFER, now=None):
-    """The file read for `path`'s stream now (`path`, its `.gz`, or its twin of
-    the other format), or None while the stream is held or gone."""
+def chosen_for(path):
+    """The file read for `path`'s stream now (`path`, or its `.gz` once the day
+    is sealed), or None once the stream is gone."""
     d, stem = stem_of(path)
-    for p in _listing(d, prefer, now)[0]:
+    for p in _listing(d):
         if split_name(p)[0] == stem:
             return p
     return None
@@ -428,14 +195,8 @@ def iter_lines_forward(path, start=0):
                 yield line
 
 
-def complete_end(fh, size, block=65536, fmt="jsonl", settle=0):
-    """Offset just past the last complete record in the first `size` bytes, else 0.
-
-    JSONL: just past the last newline. EBR: the end of the last complete frame,
-    moved back before a corrupt region in its last `settle` bytes
-    (`settled_end`)."""
-    if fmt == "ebr":
-        return settled_end(ebr_src(fh), size, settle)
+def complete_end(fh, size, block=65536):
+    """Offset just past the last newline in the first `size` bytes, else 0."""
     pos = size
     while pos > 0:
         n = min(block, pos)
@@ -447,19 +208,16 @@ def complete_end(fh, size, block=65536, fmt="jsonl", settle=0):
     return 0
 
 
-def is_boundary(fh, off, fmt="jsonl"):
-    """Whether a read can resume at `off`: the start, or just past a line
-    (JSONL) or a frame (EBR)."""
+def is_boundary(fh, off):
+    """Whether a read can resume at `off`: the start, or just past a line."""
     if off == 0:
         return True
-    if fmt == "ebr":
-        return ebr.is_boundary(ebr_src(fh), off)
     fh.seek(off - 1)
     return fh.read(1) == b"\n"
 
 
 # ------------------------------------------------------------ time searches
-def seek_to_epoch(fh, since, size, fmt="jsonl", probe_lines=64):
+def seek_to_epoch(fh, since, size, probe_lines=64):
     """Offset of the first line in `fh` whose timestamp is >= `since`.
 
     `size` bytes is the search space; the return is `size` when the file holds
@@ -469,16 +227,7 @@ def seek_to_epoch(fh, since, size, fmt="jsonl", probe_lines=64):
     EARLIER rather than guessing.  That reads more than strictly necessary,
     which is the right way to be wrong here: the alternative is starting the
     rebuild after rows that belonged in the window.
-
-    EBR (`fmt`): the first frame whose newest record (`ts_max`, its header's)
-    is >= `since`, by the same search over frames. A probe that lands on a
-    frame still being written searches earlier too. A frame its header cannot
-    place (a record in it has no `ts_epoch`) is placed by its records' own
-    times instead (`_probe_ebr`), and only a frame with no time at all is
-    walked past, as a line with none is.
     """
-    if fmt == "ebr":
-        return _seek_ebr(fh, since, size)
     lo, hi, best = 0, size, size
     while lo < hi:
         mid = (lo + hi) // 2
@@ -496,9 +245,9 @@ def seek_to_epoch(fh, since, size, fmt="jsonl", probe_lines=64):
 def end_at_jsonl(fh, t, size, probe_lines=64):
     """An offset past which every line is later than `t`, or `size`.
 
-    `export.seek_to_epoch`'s binary search with the opposite caution: a probe
-    that cannot be placed in time searches LATER, because an end bound read too
-    far only costs a search, and one cut too early would lose records.
+    `seek_to_epoch`'s binary search with the opposite caution: a probe that
+    cannot be placed in time searches LATER, because an end bound read too far
+    only costs a search, and one cut too early would lose records.
     """
     lo, hi, best = 0, size, size
     while lo < hi:
@@ -513,14 +262,7 @@ def end_at_jsonl(fh, t, size, probe_lines=64):
     return best
 
 
-def end_at(fh, t, size, fmt="jsonl"):
-    """An offset past which every record is later than `t`, or `size`: for
-    EBR, the first frame whose OLDEST record (`ts_min`) is after `t`. Not
-    `seek_to_epoch`'s rule: a frame spans a poll round, so the first frame
-    with a record after `t` can hold records before it too."""
-    if fmt == "ebr":
-        return _end_at_ebr(fh, t, size)
-    return end_at_jsonl(fh, t, size)
+end_at = end_at_jsonl
 
 
 # What `_probe` and `head_digest` found, by the file's identity on disk. A
@@ -588,7 +330,7 @@ def _probe_read(fh, pos, limit):
         if not line.strip():
             continue
         try:
-            ts = epoch_of(fastjson.loads(line))
+            ts = epoch_of(fastjson.record(line))
         except ValueError:
             continue
         if ts is not None:
@@ -611,279 +353,3 @@ def head_digest(fh, n):
     fh.seek(0)
     out = hashlib.sha1(fh.read(n)).hexdigest()
     return _remember(m, ("head", n), out) if m is not None else out
-
-
-# ------------------------------------------------------------------- EBR
-def ebr_src(fh):
-    """What `ebr` reads an open day-file through: a plain file by its path (it
-    is read with os.pread), a compressed one through its reader, which reads
-    and seeks by uncompressed offset (`gz.open_feed`)."""
-    if isinstance(getattr(fh, "raw", None), gz.GzipRaw):
-        return fh
-    name = getattr(fh, "name", None)
-    return name if isinstance(name, str) else fh
-
-
-def settle_of(path):
-    """`ebr.frames(settle=)` for a file: a plain one may still be written to."""
-    return 0 if gz.is_gz(path) else SETTLE
-
-
-@contextlib.contextmanager
-def ebr_source(path):
-    """`path` as an `ebr` source: the path of a plain file, the open reader of a
-    `.gz`. OSError when it cannot be opened."""
-    if gz.is_gz(path):
-        with gz.open_feed(path) as fh:
-            yield fh
-    else:
-        os.stat(path)
-        yield path
-
-
-def decoder_at(src, off):
-    """A decoder for the frame at `off`: its segment's tables replayed from the
-    SEGMENT (`ebr.Decoder.at`). An offset that is no frame's end -- right after
-    a corrupt region -- gets a decoder broken until the next SEGMENT, which is
-    all a reader can decode from there."""
-    try:
-        return ebr.Decoder.at(src, off)
-    except ebr.Error:
-        return ebr.Decoder()
-
-
-def errors(st):
-    """What a decoder could not read, from its stats: bad records, records lost
-    with a frame, corrupt or undecodable frames, and frames of a segment this
-    reader does not support."""
-    return (st["bad_records"] + st["lost_records"] + st["bad_frames"]
-            + st["unsupported_frames"])
-
-
-def settled_end(src, size, settle=SETTLE):
-    """`ebr.complete_end`, moved back before the first corrupt region in its
-    last `settle` bytes: there a live file's bytes may still be arriving, and a
-    reader that took up after them would never read what they hold.
-
-    The frames back to there are checked in one read and one loop first
-    (`ebr.verify_back`): when every one is whole and its CRCs good, as on any
-    file but a damaged one or one still arriving over NFS, there is no corrupt
-    region, and nothing is walked frame by frame."""
-    with ebr.source(src) as s:
-        end = ebr.complete_end(s, size)
-        if not settle or not end or ebr.verify_back(s, end, end - settle):
-            return end
-    cut = end
-    for f in ebr.frames_reverse(src, end, verify=True):
-        if f.kind == ebr.BAD:
-            cut = f.off
-        if f.off <= end - settle:
-            break
-    return cut
-
-
-def _placed(f):
-    return f.ts_min - f.ts_min == 0.0 and f.ts_max - f.ts_max == 0.0
-
-
-def _probe_ebr(fh, pos, size, src=None):
-    """`(off, foff, ts_min, ts_max)` for a probe at `pos`: `off` the first frame
-    header at or after it, and from there the first DATA frame placed in time
-    (corrupt regions and frames with no time at all are walked past,
-    PROBE_FRAMES at most, as `_probe` walks past lines with no time; frames that
-    hold no record, SEGMENTs and MARKs, up to PROBE_PASS_BYTES): its
-    offset and its times. A frame is placed by its header, or -- when a record
-    in it has no `ts_epoch`, which leaves the header's times infinite -- by its
-    records' own times as `epoch_of` reads them, a legacy record's `ts` string
-    included, as `_probe` reads a line's. A capture converted from JSONL older
-    than `ts_epoch` is all such frames, and a seek by the headers alone would
-    skip all of it. The times are None when there is none by `size` -- the
-    frame is still being written, or no frame after `off` holds a record --
-    and `off` is `size` when no header is; `foff` is then None when the walk
-    was cut short with frames still ahead of it, `size` when it met the end.
-    Remembered by the file's identity, as `_probe`'s answers are.
-
-    Placing a frame by its records costs a replay of its segment (up to the
-    writer's reset_bytes, 2 MiB) plus the frame: once per probe, since one
-    decoder serves the walk's consecutive frames. Only a converted legacy
-    capture pays it -- the collector stamps `ts_epoch` on every record, so its
-    frames are placed by their headers -- and a sealed capture pays it once,
-    the answer being remembered. A growing file is remembered by its size, so
-    one whose records lacked `ts_epoch` would pay it at each new size.
-
-    `src`, an `ebr.source` of `fh`, is what a search's probes share: each
-    reads a few headers, and would otherwise open the file and fill a window
-    of its own, twice."""
-    ident = _identity(fh)
-    m = _memo_of(ident) if ident is not None else None
-    key = ("ebr", pos, size)
-    if m is not None:
-        hit = m.get(key)
-        if hit is not None:
-            return hit
-    if src is None:
-        src = ebr_src(fh)
-    out = (size, size, None, None)
-    off = ebr.resync(src, pos, size)
-    if off is not None and off < size:
-        out = (off, None, None, None)     # cut short, unless the walk meets the end
-        dec = None
-        walked = 0
-        for f in ebr.frames(src, off, size, verify=False):
-            if f.kind == ebr.DATA and f.n_records and _placed(f):
-                out = (off, f.off, f.ts_min, f.ts_max)
-                break
-            if f.kind == ebr.DATA and f.n_records:
-                if dec is None:
-                    dec = decoder_at(src, f.off)
-                times = _record_times(dec, src, f)
-                if times is not None:
-                    out = (off, f.off) + times
-                    break
-                walked += 1
-            else:
-                if dec is not None:
-                    dec.skip(f, src)      # the walk's next frame decodes in step
-                if f.kind in (ebr.DATA, ebr.BAD):
-                    walked += 1
-                elif f.end - off > PROBE_PASS_BYTES:
-                    break                 # a run of record-less frames past reason
-            if walked >= PROBE_FRAMES:
-                break
-        else:
-            out = (off, size, None, None)     # no frame ahead holds a placed record
-    return _remember(m, key, out) if m is not None else out
-
-
-def _record_times(dec, src, f):
-    """`(ts_min, ts_max)` of a DATA frame its header cannot place, from its
-    records' times as `epoch_of` reads them; None when no record has one.
-    `dec` is a decoder positioned at the frame."""
-    lo = hi = None
-    try:
-        for _pos, rec in dec.records(src, f):
-            t = epoch_of(rec)
-            if t is None:
-                continue
-            if lo is None or t < lo:
-                lo = t
-            if hi is None or t > hi:
-                hi = t
-    except (ebr.Error, ValueError, OSError):
-        return None
-    return None if lo is None else (lo, hi)
-
-
-def _seek_ebr(fh, since, size):
-    """The first frame that reaches `since`. The offset a probe lands on, not
-    the frame it places: what it walked past is read too. A probe that places
-    nothing searches before it (what follows it is still being written, or
-    holds no record); one whose walk was cut short with frames still ahead is
-    read from as well, so what lies past it is never skipped."""
-    lo, hi, best = 0, size, size
-    with ebr.source(ebr_src(fh)) as src:
-        while lo < hi:
-            mid = (lo + hi) // 2
-            off, foff, _tmin, tmax = _probe_ebr(fh, mid, size, src)
-            if tmax is None:
-                if foff is None:
-                    best = min(best, off)     # not known past its walk: read from here
-                hi = mid                      # and widen backwards
-            elif tmax >= since:
-                best = min(best, off)
-                hi = mid
-            else:
-                lo = max(off, mid) + 1    # off >= mid, so this always advances
-    return best
-
-
-def _end_at_ebr(fh, t, size):
-    """The first frame entirely after `t`: the frame a probe places, not the
-    offset it landed on, so what it walked past is read too."""
-    lo, hi, best = 0, size, size
-    with ebr.source(ebr_src(fh)) as src:
-        while lo < hi:
-            mid = (lo + hi) // 2
-            off, foff, tmin, _tmax = _probe_ebr(fh, mid, size, src)
-            if tmin is not None and tmin > t:
-                best = min(best, foff)
-                hi = mid
-            else:
-                lo = max(off, mid) + 1    # unplaceable: an end read too far costs a search
-    return best
-
-
-def records_forward(path, start=0, end=None, kinds=None, where=None, stats=None):
-    """`(position, record)` of an EBR day-file from frame boundary `start` on,
-    oldest first, to `end` or the last complete frame. `kinds`/`where` are
-    ebr's filters; `stats` (a dict) receives the decoder's counters."""
-    try:
-        cm = ebr_source(path)
-        src = cm.__enter__()
-    except OSError:
-        return
-    dec = None
-    try:
-        dec = decoder_at(src, start)
-        for f in ebr.frames(src, start, end, settle=settle_of(path)):
-            for pr in dec.records(src, f, kinds, where):
-                yield pr
-    finally:
-        cm.__exit__(None, None, None)
-        if stats is not None and dec is not None:
-            for k, v in dec.stats.items():
-                stats[k] = stats.get(k, 0) + v
-
-
-def records_reverse(path, end, start=0, kinds=None, where=None, stats=None):
-    """`(position, record)` of the frames of an EBR day-file in `[start, end)`,
-    NEWEST first (`ebr.records_reverse`). A plain file's is `ebr`'s own
-    iterator, which opens the file itself: no generator stands between."""
-    if not gz.is_gz(path):
-        try:
-            os.stat(path)
-        except OSError:
-            return iter(())
-        return ebr.records_reverse(path, end, start, kinds, where, stats)
-    return _records_reverse_gz(path, end, start, kinds, where, stats)
-
-
-def _records_reverse_gz(path, end, start, kinds, where, stats):
-    try:
-        cm = ebr_source(path)
-        src = cm.__enter__()
-    except OSError:
-        return
-    try:
-        for pr in ebr.records_reverse(src, end, start, kinds, where, stats):
-            yield pr
-    finally:
-        cm.__exit__(None, None, None)
-
-
-def last_records(path, n):
-    """The last `n` records of an EBR day-file, oldest first, read from its end
-    (the node tier's snapshots: only the newest few per host matter)."""
-    out = []
-    if n <= 0:
-        return out
-    with ebr_source(path) as src:
-        for _pos, rec in ebr.records_reverse(src, ebr.complete_end(src)):
-            out.append(rec)
-            if len(out) >= n:
-                break
-    out.reverse()
-    return out
-
-
-def newest(path, want, limit=None):
-    """`want(record)` of the newest record of an EBR day-file it is not None
-    for, read from the end and at most `limit` bytes back; None if none."""
-    with ebr_source(path) as src:
-        end = ebr.complete_end(src)
-        start = 0 if limit is None else max(0, end - limit)
-        for _pos, rec in ebr.records_reverse(src, end, start):
-            v = want(rec)
-            if v is not None:
-                return v
-    return None

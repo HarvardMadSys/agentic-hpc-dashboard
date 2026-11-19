@@ -28,6 +28,8 @@ import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/typ
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
+import { shareOf, wholeOf } from '../lib/shares';
+import { table } from '../lib/lookup';
 
 
 /** Who ran it, at a glance: one chip per agent type (a human's untagged
@@ -67,7 +69,7 @@ function WhoChips({ r, cls }: {
 }
 
 /** The login-compute categories, in the legend's words. */
-const LC_KIND: Record<string, string> = { compute: 'compute', transfer: 'bulk transfer' };
+const LC_KIND: Record<string, string> = table({ compute: 'compute', transfer: 'bulk transfer' });
 
 function Caret({ on, show }: { on: boolean; show: boolean }) {
   return <span className="u-caret" style={show ? undefined : { visibility: 'hidden' }}>{on ? '▾' : '▸'}</span>;
@@ -186,10 +188,10 @@ const QUANT_SORT: Record<string, IoSort | undefined> = {
   net_tx_mb: 'tx_mb', net_rx_mb: 'rx_mb',
 };
 /** A per-process counter in the page's words; its raw name is on hover. */
-const QUANT_LBL: Record<string, string> = {
+const QUANT_LBL: Record<string, string> = table({
   rd_mb: 'disk read (MB)', wr_mb: 'disk written (MB)', rchar_mb: 'read requested (MB)', wchar_mb: 'write requested (MB)',
   net_tx_mb: 'sent (MB)', net_rx_mb: 'received (MB)',
-};
+});
 const quantLbl = (k: string) => QUANT_LBL[k] ?? k;
 
 /* A tool is not a class. A row the service split by class wears its class's
@@ -346,14 +348,17 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
 /* Two tabs from one reduction: Risk (what agents did that they should not have,
  * on a shared login node) and I/O (what their reads, writes and traffic cost).
  * They read the same panels, so they share the setup and each renders its half. */
-export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, series = true }: {
+export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, io: ioPart = 'main' }: {
   P: Panels;
   cls: Cls[];
   part: 'risk' | 'io';
   /** the I/O tiles: off on Resources, where their numbers are Overview rows */
   plates?: boolean;
-  /** the syscall-against-disk time series: off on Resources, they are on Live */
-  series?: boolean;
+  /** which I/O panels: `main` is who moved the bytes (by tool, by user) and
+   *  where the network bytes went, on Resources; `internal` is the
+   *  requested-against-disk series (a repeat of Live's picker, with the
+   *  per-class page-cache table) and the raw counters' quantiles, on Internal */
+  io?: 'main' | 'internal';
 }) {
   const nodes = useNodeWords();
   // A command or pattern row opens in place into who ran it; the old list of
@@ -373,8 +378,12 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
   const secSort = (sc: RiskSection) =>
     sortOf(sc.id, sc.kind === 'login_compute' ? 'tool' : sc.kind === 'credentials' ? 'pattern' : 'command', 'asc');
 
-  const totRd = have.reduce((a, c) => a + (byClass[c]?.rd_mb ?? 0), 0);
-  const totWr = have.reduce((a, c) => a + (byClass[c]?.wr_mb ?? 0), 0);
+  // the agent's share of all disk reads and writes: out of every class the
+  // panel counted, whatever the chips show (lib/shares.ts)
+  const rdPct = cls.includes('agent')
+    ? shareOf(byClass.agent?.rd_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.rd_mb)) : null;
+  const wrPct = cls.includes('agent')
+    ? shareOf(byClass.agent?.wr_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.wr_mb)) : null;
 
   /* Disk bytes against requested bytes over time, one axis per direction,
    * MB/min. Solid is what reached the disk, dashed is what programs requested
@@ -503,14 +512,14 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
           total={cls.includes('agent') ? byClass.agent?.rd_mb ?? null : null}
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rd_mb ?? null]))}
           fmtFn={(n) => mb(n)}
-          note={totRd ? `${pc((100 * (byClass.agent?.rd_mb ?? 0)) / totRd)} of all disk reads` : undefined}
+          note={rdPct != null ? `${pc(rdPct)} of all disk reads` : undefined}
         />
         <Plate
           k="agent disk written"
           total={cls.includes('agent') ? byClass.agent?.wr_mb ?? null : null}
           by={Object.fromEntries(have.map((c) => [c, byClass[c]?.wr_mb ?? null]))}
           fmtFn={(n) => mb(n)}
-          note={totWr ? `${pc((100 * (byClass.agent?.wr_mb ?? 0)) / totWr)} of all disk writes` : undefined}
+          note={wrPct != null ? `${pc(wrPct)} of all disk writes` : undefined}
         />
         <Plate
           k="agent network sent"
@@ -533,7 +542,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
 
       {part === 'io' && (
       <div className="grid wide">
-        {series && (
+        {ioPart === 'internal' && (
         <Panel
           id="sec-syscall-bytes-against-disk-bytes"
           title="Requested bytes against disk bytes"
@@ -607,6 +616,8 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
         </Panel>
         )}
 
+        {ioPart === 'main' && (
+        <>
         <Panel
           id="sec-reads-by-tool"
           title="Disk read by tool"
@@ -770,8 +781,10 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
             </table>
           </div>
         </Panel>
+        </>
+        )}
 
-        {quantKeys.length > 0 && (
+        {ioPart === 'internal' && quantKeys.length > 0 && (
           <Panel title="I/O distributions" p={io} span empty={!have.length}
             ask={[{ panel: 'io_process', keys: ['by_class', 'notes'] }]}>
             <div className="scroller">
@@ -811,10 +824,11 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
         {/* One panel per section, in the order this cluster's risk profile
             lists them (risk.sections); a section it leaves out is not drawn and
             not computed. */}
+        {/* none only of a risk panel the service reduced: while it is waited for,
+            building, not reduced or not sent, the panel's envelope says which */}
         {sections.length === 0 && (
-          <Panel title="No risk sections" span>
-            <NoRows what="this cluster's risk profile lists no sections (risk.sections)" />
-          </Panel>
+          <Panel title="Risk sections" p={risk} span empty
+            emptyWhat="this cluster's risk profile lists no sections (risk.sections)" />
         )}
         {sections.map((sc) =>
           sc.kind === 'login_compute' ? (

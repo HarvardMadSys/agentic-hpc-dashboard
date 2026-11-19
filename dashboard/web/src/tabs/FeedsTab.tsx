@@ -20,10 +20,10 @@ import type {
   CollectorVerdict,
   ConfigNode,
   ConfigTree,
-  ConvertStatus,
   FeedReport,
   FeedsResponse,
   FeedStatus,
+  HistoryStatus,
 } from '../api/types';
 import { isConfigLeaf } from '../api/types';
 import { fullClock } from '../charts/scale';
@@ -265,23 +265,36 @@ function Where({ f }: { f: FeedReport }) {
   );
 }
 
-/** How a dated tier is read: through its EBR view, and how far that is. */
-function Converted({ c }: { c: ConvertStatus | undefined }) {
-  if (!c || !c.enabled || c.state === 'off') return null;
-  const n = c.counts ?? { converted: 0, linked: 0, held: 0 };
-  const streams = [`${fint(n.converted)} converted`, `${fint(n.linked)} linked`]
-    .concat(n.held ? [`${fint(n.held)} held`] : [])
-    .join(', ');
+/** The eBPF tier's sealed days as Parquet (rc_dashboard/history.py): how much
+ *  of them the store holds, and how many selective reads it answered. A day not
+ *  copied yet is read as JSONL, so this never says the page is waiting. */
+function History({ h }: { h: HistoryStatus | undefined }) {
+  if (!h || !h.enabled || h.state === 'off') return null;
+  const p = h.progress;
+  const asked = h.lookups ? h.lookups.replica + h.lookups.jsonl : 0;
+  const failed = h.state === 'error' || !!h.errors?.length;
   const text =
-    c.state === 'catching_up'
-      ? `converting to EBR before reading: ${fint(c.pct ?? 0)}%`
-      : c.state === 'error'
-        ? `read as the files are: the EBR view failed (${c.reason ?? (c.errors?.[0]?.error ?? 'unknown error')})`
-        : `read as EBR, through its view: ${streams}${c.lag_bytes ? ` · ${bytes(c.lag_bytes)} behind` : ''}${
-            c.errors?.length ? ` · ${fint(c.errors.length)} error${c.errors.length === 1 ? '' : 's'}` : ''}`;
+    h.state === 'error'
+      ? `sealed days read as JSONL: the history store failed (${h.note ?? h.errors?.[0]?.error ?? 'unknown error'})`
+      : [
+          h.state === 'converting' && p && p.todo
+            ? `copying sealed days to Parquet: ${fint(p.done)} of ${fint(p.todo)} files`
+            : `sealed days kept as Parquet: ${fint(h.replicas ?? 0)} file${h.replicas === 1 ? '' : 's'}, ${bytes(h.bytes ?? 0)}`,
+          asked ? `${fint(h.lookups?.replica ?? 0)} of ${fint(asked)} selective reads answered from it` : null,
+          h.errors?.length ? `${fint(h.errors.length)} error${h.errors.length === 1 ? '' : 's'}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ');
   return (
-    <div className="nm" style={{ fontSize: '12px', color: c.state === 'error' || c.errors?.length ? '#8a6410' : undefined }}
-      data-tip={[c.dir ? `view: ${c.dir}` : null, ...(c.errors ?? []).slice(-3).map((e) => e.error)].filter(Boolean).join('\n') || undefined}>
+    <div
+      className="nm"
+      style={{ fontSize: '12px', color: failed ? '#8a6410' : undefined }}
+      data-tip={
+        [h.dir ? `store: ${h.dir}` : null, ...(h.errors ?? []).slice(-3).map((e) => `${e.file ?? ''} ${e.error}`)]
+          .filter(Boolean)
+          .join('\n') || undefined
+      }
+    >
       {text}
     </div>
   );
@@ -338,9 +351,8 @@ function Sources({ list }: { list: FeedReport[] }) {
                   )}
                 </td>
                 <td style={{ maxWidth: 520, whiteSpace: 'normal' }}>
-                  {/* the collector's roots, not the view the service reads them through */}
-                  <Where f={f.source_roots?.length ? { ...f, resolved: f.source_roots, configured: f.source_roots } : f} />
-                  <Converted c={f.convert} />
+                  <Where f={f} />
+                  <History h={f.history} />
                   {note && <div style={{ color: '#8a6410', fontSize: '12.5px', marginTop: 3 }}>{note}</div>}
                 </td>
                 <td className="num">
@@ -368,10 +380,7 @@ function Backfill({ b }: { b: Record<string, unknown> | null | undefined }) {
   const n = (k: string) => (typeof b[k] === 'number' ? (b[k] as number) : null);
   const s = String(b.state ?? '');
   const text =
-    s === 'converting'
-      ? // the startup conversion to EBR (ebrview.py): nothing reads the day-files before it ends
-        `converting the JSONL day-files to EBR before reading them: ${fint(n('pct'))}%${n('files') ? ` of ${fint(n('files'))} files` : ''}`
-      : s === 'positioning'
+    s === 'positioning'
       ? // each file opened, each sealed .gz indexed: minutes for a week of 8 nodes
         'finding where the history starts in each file; reading begins next'
       : s === 'running'

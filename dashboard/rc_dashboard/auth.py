@@ -343,9 +343,8 @@ form { width: 100%; max-width: 340px; padding: 22px 24px 24px; background: var(-
   box-shadow: 0 1px 2px rgba(30, 30, 30, 0.04), 0 4px 10px -6px rgba(30, 30, 30, 0.06); }
 .mark { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600;
   letter-spacing: -0.015em; }
-.bmark { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
-  flex: none; color: #fff; background: var(--crimson);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 2px 6px rgba(165, 28, 48, 0.28); }
+.bmark { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center;
+  flex: none; color: #fff; background: var(--crimson); }
 .site { margin: 6px 0 20px; font-size: 11px; color: var(--muted);
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
 label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--ink-2); }
@@ -362,7 +361,7 @@ button:focus-visible { outline: 2px solid var(--crimson); outline-offset: 2px; }
 </head>
 <body>
 <form method="post" action="/login">
-<div class="mark"><span class="bmark"><svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="4" y="6.5" width="12" height="9" rx="2.4"/><path d="M10 6.5V3.8M2.6 10v2.5M17.4 10v2.5"/><circle cx="10" cy="3.2" r="0.9" fill="currentColor" stroke="none"/><circle cx="7.6" cy="11" r="1" fill="currentColor" stroke="none"/><circle cx="12.4" cy="11" r="1" fill="currentColor" stroke="none"/></svg></span>Agent Behaviour</div>
+<div class="mark"><span class="bmark"><svg width="30" height="30" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M5.7 24.1a8 8 0 0 1 16 0z"/><path d="M14.4 17.9L18.4 13.9" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><rect x="4.7" y="23.9" width="18" height="2.6" rx="1.3"/><path d="M23.4 4.6C23.96 8.34 23.96 8.34 27.7 8.9C23.96 9.46 23.96 9.46 23.4 13.2C22.84 9.46 22.84 9.46 19.1 8.9C22.84 8.34 22.84 8.34 23.4 4.6Z"/></svg></span>Agent Observatory</div>
 <div class="site">$site</div>
 <label for="password">Password</label>
 <input id="password" type="password" name="password" autocomplete="current-password" required autofocus>

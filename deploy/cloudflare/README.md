@@ -99,13 +99,11 @@ needs beyond the template: if a deploy fails at the domain, add **Zone · DNS ·
 
 **Cold start.** The container sleeps after 15 minutes with no request and no websocket
 message (`SLEEP_AFTER`), and the next request starts it. The service writes its history
-before it listens -- about 11 s on a `basic` instance, measured when the demo still wrote
-JSONL, plus the container's own start. EBR, which it writes now, takes longer to write than
-JSONL (timings in [Demo mode](../../dashboard/README.md#demo-mode)). It then preprocesses the
-history, also before it listens (`panels.preprocess`): every hour reduced and every window
-built, so the first page has every window ready rather than a *merging* bar. On a laptop
-that took ~6 s for the two days (JSONL); on a `basic` instance expect it to scale the way the
-writing does (not yet measured there). A request waits up to
+before it listens -- about 11 s on a `basic` instance, plus the container's own start. It
+then preprocesses the history, also before it listens (`panels.preprocess`): every hour
+reduced and every window built, so the first page has every window ready rather than a
+*merging* bar. On a laptop that took ~6 s for the two days; on a `basic` instance expect it
+to scale the way the writing does (not yet measured there). A request waits up to
 6 s (`READY_WAIT_MS`); past that, a page gets a small "starting the demo" page that reloads
 itself every 4 s, and an API call a 503 with `Retry-After`. Each request waits on its own and
 ends its wait before it answers: a wait shared between requests was dropped with the request

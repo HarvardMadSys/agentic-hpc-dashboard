@@ -58,7 +58,6 @@ import time
 
 from . import config as configmod
 from .export import window_plan, window_scan
-from .feedfile import prefer_of
 from .normalize import Normalizer, canonical_class
 from .procindex import ProcIndex
 from .redact import redact
@@ -309,8 +308,8 @@ def reduce_day(cfg, dirs, since, until, progress=None):
     for r in red.values():
         for ev in r.EVENTS:
             dispatch.setdefault(ev, []).append(r)
-    plan, total = window_plan(dirs, since, 0, prefer=prefer_of(cfg, "ebpf"))
-    t0 = time.time()
+    plan, total = window_plan(dirs, since, 0)
+    t0 = time.monotonic()
     n, errors, stats = 0, collections.Counter(), {}
     for rec, stats in window_scan(plan, Normalizer(cfg), since, until - 1e-6,
                                   events=set(dispatch)):
@@ -323,10 +322,10 @@ def reduce_day(cfg, dirs, since, until, progress=None):
         if progress is not None and n % 500000 == 0:
             progress("%s records, %.0f%% of %.0f MB, %.0f s" % (
                 "{:,}".format(n), 100.0 * stats["bytes"] / max(total, 1), total / 1e6,
-                time.time() - t0))
+                time.monotonic() - t0))
     return traj, {"records": n, "files": [e["path"] for e in plan], "bytes": stats.get("bytes", 0),
                   "parse_errors": stats.get("parse_errors", 0), "no_ts": stats.get("no_ts", 0),
-                  "errors": dict(errors), "seconds": round(time.time() - t0, 1),
+                  "errors": dict(errors), "seconds": round(time.monotonic() - t0, 1),
                   "max_sessions": configured}
 
 

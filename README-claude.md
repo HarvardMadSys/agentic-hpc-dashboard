@@ -7,25 +7,24 @@ Two halves, in this order:
 
 | | what it is | privilege | output |
 |---|---|---|---|
-| [`collector/`](collector/) | `ebpfm` — a standalone two-tier login-node collector (eBPF + `/proc` node snapshot) | root for the eBPF tier, unprivileged for the node tier | JSONL and/or EBR (`EBPFM_FORMAT`), two streams per host per day (`snapshot` + `exits`) |
+| [`collector/`](collector/) | `ebpfm` — a standalone two-tier login-node collector (eBPF + `/proc` node snapshot) | root for the eBPF tier, unprivileged for the node tier | JSONL, two streams per host per day (`snapshot` + `exits`), each day gzipped once it is over |
 | [`dashboard/`](dashboard/) | `rc_dashboard` — FastAPI service that tails those day-files, keeps rolling 24 h aggregates, and pushes them to a React page over a WebSocket | unprivileged | HTTP + WebSocket on `:8080` |
 
 The collector runs on each login node; the dashboard reads the directory the collector
 writes. They are coupled only by the on-disk records (`SCHEMA_VERSION = 8`), written as
-JSONL or as EBR (`collector/lib/ebr.py`'s binary records) — the same records either way —
-so the dashboard can read a feed captured months ago, or a fleet's worth of hosts at once,
-and nothing needs to be running for it to start.
+JSONL, so the dashboard can read a feed captured months ago, or a fleet's worth of hosts
+at once, and nothing needs to be running for it to start.
 
 The eBPF tier splits each day in two: `<host>.exits.jsonl` for the per-process terminal
 records, whose rate is the node's fork rate and which dominate the volume, and
 `<host>.snapshot.jsonl` for the residency census, connections, per-tick network bytes by
-endpoint, submits and the run's own meta/stop bookends. With `EBPFM_FORMAT=both`, the default
-while EBR is on trial, each has an `.ebr` twin holding the same records in the same order
-(with `ebr`, the `.ebr` file alone), and the dashboard reads one file of each pair. The
-dashboard reads EBR only: at startup it converts every stream written only as JSONL into an
-EBR view in its cache and links the `.ebr` files it finds (`dashboard/rc_dashboard/ebrview.py`,
-`RC_DASH_CONVERT=0` to read the day-files as they are). Records are unchanged either way — each carries its own `host`, and the dashboard lists the day
-directory — so this is a filing decision, not a schema one.
+endpoint, submits and the run's own meta/stop bookends. Each record carries its own `host`,
+and the dashboard lists the day directory, so the split is a filing decision, not a schema
+one. Once a day is over the collector gzips its files (`.jsonl.gz`), and they never change
+again; the dashboard keeps each such sealed file as Parquet too, in the background
+(`dashboard/rc_dashboard/history.py`), and answers a selective read of a sealed day -- one
+user's events, one session's process tree -- or a search of it by time from that copy,
+which reads exactly as the file does, offsets and all.
 
 ```
 login node                                    anywhere with read access
@@ -58,8 +57,12 @@ filesystem space or interface counters at all.
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+
+`serve` starts only behind a password, or with `--open` (`RC_DASH_OPEN=1`) on a machine only
+you can reach: on a login node every user can reach 127.0.0.1.
 
 Off-cluster, `--check-feeds` exits 1 — the eBPF feed is `required` and absent. Point it at
 a collector root first:
@@ -92,10 +95,10 @@ uv run python -m rc_dashboard demo                 # http://127.0.0.1:8080
 
 | document | covers |
 |---|---|
-| [`collector/README.md`](collector/README.md) | the two tiers, why eBPF (and why `sudo` does not escape the cgroup cap — `systemd-run` does), the concurrency model, **measured overhead**, the binary record format (EBR) and its rollout, the full event/field schema, `ebpfm.sh` verbs, kernel support |
+| [`collector/README.md`](collector/README.md) | the two tiers, why eBPF (and why `sudo` does not escape the cgroup cap — `systemd-run` does), the concurrency model, **measured overhead**, the full event/field schema, `ebpfm.sh` verbs, kernel support |
 | [`collector/COVERAGE.md`](collector/COVERAGE.md) | the field-by-field crosswalk: for each of the 40 observable login-node signals, which tier reads it after the cutover |
 | [`collector/VENDORED.md`](collector/VENDORED.md) | the five copied modules, why copies rather than symlinks, and the sync rule `ebpfm.sh check` enforces |
-| [`dashboard/README.md`](dashboard/README.md) | feed resolution and config precedence, reading JSONL and EBR twins, the startup conversion to EBR, the 24 h window, the REST/WS API, the panel conventions, known collector limitations the page surfaces |
+| [`dashboard/README.md`](dashboard/README.md) | feed resolution and config precedence, the history store (sealed days as Parquet), the 24 h window, the REST/WS API, the panel conventions, known collector limitations the page surfaces |
 | [`dashboard/web/README.md`](dashboard/web/README.md) | the SPA: tabs, charts, filter/URL state, the dev fixture, and the integrity rules the code enforces |
 | [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live service on a host of your own: the fleet stream from each node, the settings file, the first deploy, memory and disk, and the hourly check |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the demo, over a synthetic feed, on a public URL |
@@ -125,7 +128,7 @@ same rules:
 ## Tests
 
 ```bash
-cd collector && python3 -m unittest discover -s tests -q    # 278 tests, no root, no BPF needed
+cd collector && python3 -m unittest discover -s tests -q    # no root, no BPF needed
 cd dashboard && uv run python -m unittest discover -s tests -q   # ingest: restarts, the hand-off, backfill order
 cd dashboard/web && npm run typecheck && npm run check:no-random
 python3 -m unittest discover -s fleet/tests -q          # the fleet stream, over a fake collector
@@ -152,6 +155,7 @@ carry them.
 - **Collector**: Linux with BCC (`python3-bpfcc`) and kernel headers for the eBPF tier;
   developed against 6.8 and 6.17, with a 4.18 path for D-state dwell. The node tier is
   pure `/proc` and needs neither. `bootstrap` installs the rest.
-- **Dashboard**: Python ≥ 3.11 (`fastapi`, `uvicorn` — that is all), Node for the
+- **Dashboard**: Python ≥ 3.11 with what `dashboard/pyproject.toml` lists (`fastapi`,
+  `uvicorn`, `numpy`, `orjson`, `pyarrow`; `uv sync` installs them), Node for the
   frontend build (`react`, `react-dom` at runtime; no charting library, every chart is
   hand-rolled SVG).

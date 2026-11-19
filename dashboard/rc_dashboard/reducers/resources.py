@@ -29,6 +29,8 @@ import collections
 import time
 
 from . import INSTANCE_CAP, Acc, Quant, add_counts, pct, top_by, who
+from .own_io import OwnIo, cap_of
+from ..redact import redact
 
 FAULT_FIELDS = ("min_flt", "maj_flt", "cmaj_flt", "nvcsw", "nivcsw")
 DELAY_FIELDS = ("blkio_wait_s", "swapin_wait_s", "freepages_wait_s")
@@ -39,8 +41,9 @@ NFS_IO_FIELDS = ("ops_s", "rd_kb_s", "rd_rtt_ms", "rd_exe_ms", "rd_retrans",
 # count: a bin whose records all lacked schedstat is null, not 0 s of wait.
 SERIES_FIELDS = ("cpu_s", "sched_wait_s", "dstate_wait_s", "maj_flt")
 # The same, from the record's `io` block: bytes through read()/write() and bytes
-# that reached the disk. Null for another user's process (/proc/<pid>/io is
-# theirs), so a bin can have calls and no I/O measured.
+# that reached the disk, each process's own (its reaped children's taken off:
+# own_io.py). Null for another user's process (/proc/<pid>/io is theirs), so a
+# bin can have calls and no I/O measured.
 IO_SERIES_FIELDS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # Network bytes sent and received, from the record's own TCP accounting, in MB
 # (Live's picker: "every time series on Live", roadmap note 23). Null where the
@@ -70,7 +73,11 @@ def bin_for(window_s):
 
 
 class ResourceReducer:
-    EVENTS = ("exit", "truncated", "residency_totals")
+    # Exits, not `truncated`: a process running at a collector stop is written
+    # then with its whole life's counters so far, and again at its exit after
+    # the restart, so summing both counted it twice -- "once per process" is the
+    # exit's alone.
+    EVENTS = ("exit", "residency_totals")
     KEY = "resources"
 
     def __init__(self, cfg, classes, window_s=86400):
@@ -115,6 +122,8 @@ class ResourceReducer:
         # INSTANCE_CAP by value, ties in arrival order, whenever the trims ran -- so
         # its row is not made at all: nearly every exit waited for a CPU a little.
         self.floor = {"worst_stall": 0, "worst_fault": 0, "worst_wait": 0}
+        # each process's own bytes for the I/O series (own_io.py)
+        self.own = OwnIo(cap=cap_of(cfg), name="resources")
 
     def _bin(self, rec):
         """The bin a record lands in, or None when it has no usable time."""
@@ -142,14 +151,14 @@ class ResourceReducer:
                 if isinstance(v, (int, float)):
                     slot[k] = slot.get(k, 0) + v
 
-    def _series_add(self, rec):
+    def _series_add(self, rec, own):
         b = self._bin(rec)
         if b is None:
             return
         slot = self.bins.setdefault(b, {}).setdefault(
             rec["_a3"], {"n": 0, "sum": {}, "has": {}})
         slot["n"] += 1
-        io = rec.get("io") or {}
+        io = dict(zip(self.own.fields, own)) if own else {}
         for k, v in [(k, rec.get(k)) for k in SERIES_FIELDS] + \
                 [(k, io.get(k)) for k in IO_SERIES_FIELDS] + \
                 [(k, rec[f] / 1e6 if isinstance(rec.get(f), (int, float)) else None)
@@ -168,7 +177,8 @@ class ResourceReducer:
         if rec.get("event") == "residency_totals":
             self._tick(rec)
             return
-        self._series_add(rec)
+        # every exit joins, binned or not: its parent's own figure needs it
+        self._series_add(rec, self.own.take(rec))
         for k in rec.get("_impossible") or ():
             self.impossible[rec["_a3"]][k] += 1
         c = self.cls[rec["_a3"]]
@@ -256,6 +266,33 @@ class ResourceReducer:
             self.floor[attr] = lst[-1].get(field) or 0
 
     # ----------------------------------------------------------------- merge
+    # The own-I/O join crosses an hour -- a shell that exits in the next hour
+    # gives back what the children it reaped in this one carried -- so it is
+    # CARRIED into each hour's reduction, and is not part of the saved hour.
+    CARRY_AGED = ("reaped",)
+
+    def track(self):
+        self.own.track()
+
+    def carry(self):
+        return self.own.carry({})
+
+    def carry_caps(self):
+        """What one pass holds the carried map to (`hours.combine_carries`)."""
+        return self.own.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.own.carry_trimmed(c, dropped)
+
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
+
+    def seed(self, c):
+        self.own.seed(c)
+
+    def strip(self):
+        self.own.strip()
+
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed.
 
@@ -267,6 +304,7 @@ class ResourceReducer:
         """
         if self.bin_s % o.bin_s:
             raise ValueError("cannot merge %d s bins into %d s bins" % (o.bin_s, self.bin_s))
+        self.own.merge(o.own)
         f = self.bin_s // o.bin_s
         for b, row in o.bins.items():
             dst = self.bins.setdefault(b // f, {})
@@ -374,6 +412,10 @@ class ResourceReducer:
             "scope": "login nodes only -- the eBPF tier runs on login nodes, so this is "
                      "login-node resource use, not cluster resource use",
             "cpu_basis": "sum(cpu_s), self, once per process; child_cpu_s NEVER added",
+            "io_basis": "each process's own bytes, once per process: the collector's "
+                        "io also holds every child the process reaped, taken back off "
+                        "at its exit",
+            "own_io": self.own.status(),
             "series": series,
             "impossible_waits": {c: dict(v) for c, v in self.impossible.items()},
             "impossible_basis": "a wait longer than the process lived is not a "
@@ -445,6 +487,15 @@ class ResourceReducer:
         return out
 
 
+def _local_epoch(ts):
+    """A node snapshot's local-naive `timestamp` as epoch seconds, for a
+    snapshot from before `ts_epoch`; None when it cannot be read."""
+    try:
+        return time.mktime(time.strptime((ts or "")[:19], "%Y-%m-%d %H:%M:%S"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 class NodeReducer:
     """The unprivileged node tier: load, memory, filesystem, NFS, per-user cgroup.
 
@@ -460,11 +511,17 @@ class NodeReducer:
     """
 
     KEY = "node"
+    # Processes in D state listed per host; the rest are counted.
+    DSTATE_ROWS = 20
 
     def __init__(self, cfg, classes):
         self.cfg = cfg
         self.keep = int(cfg.get("feeds.ebpf_node.snapshots_per_host", 2) or 2)
         self.snaps = collections.defaultdict(list)
+        # A local filesystem this full is flagged (`full`): the service holds the
+        # line, so the page and the Needs-attention list draw the same one.
+        self.disk_full_pct = float(cfg.get("node.disk_full_pct", 90) or 90)
+        self.inode_full_pct = float(cfg.get("node.inode_full_pct", 90) or 90)
 
     def feed_snapshot(self, rec):
         h = rec.get("hostname") or rec.get("host") or "?"
@@ -496,6 +553,10 @@ class NodeReducer:
             used_gb = mem.get("used_gb")
             row = {
                 "host": h, "ts": cur.get("timestamp"),
+                "epoch": cur.get("ts_epoch") if isinstance(cur.get("ts_epoch"), (int, float))
+                else _local_epoch(cur.get("timestamp")),
+                "synthetic": bool(cur.get("synthetic")),
+                "privileged": (cur.get("collector") or {}).get("privileged"),
                 "load_1": up.get("load_1"), "load_5": up.get("load_5"),
                 "load_15": up.get("load_15"),
                 "mem_total_gb": total_gb, "mem_used_gb": used_gb,
@@ -508,6 +569,16 @@ class NodeReducer:
                 "procs_blocked": pstat.get("procs_blocked"),
                 "btime": pstat.get("btime"),
                 "d_state_procs": len(cur.get("d_state_procs") or []),
+                # which processes, and what they wait in: the wait channel, and
+                # the kernel stack's top frames where the collector could read
+                # it (root). The argv is masked here: this panel is served as
+                # it is built, not through a window's redaction.
+                "d_state": [{"pid": d.get("pid"), "ppid": d.get("ppid"), "user": d.get("user"),
+                             "wchan": d.get("wchan"),
+                             "kstack": (d.get("kstack") or [])[:4]
+                             if isinstance(d.get("kstack"), list) else None,
+                             "args": redact((d.get("args") or "")[:220])}
+                            for d in (cur.get("d_state_procs") or [])[:self.DSTATE_ROWS]],
                 "zombie": ps.get("zombie"), "blocked_io": ps.get("blocked_io"),
                 "sleeping": ps.get("sleeping"), "running": ps.get("running"),
                 "fork_exec_ms": resp.get("fork_exec_ms"),
@@ -547,6 +618,9 @@ class NodeReducer:
                 row["per_user"].append({
                     "user": user, "uid": r.get("uid"),
                     "cpu_delta_s": delta, "gap_s": dt, "counter_reset": reset,
+                    # CPU over the gap as cores in use on average: the rate the
+                    # quota beside it is a ceiling on
+                    "cpu_cores": (round(delta / dt, 2) if delta is not None and dt else None),
                     "cpu_quota_cores": (round(quota / period, 2)
                                         if quota and period else None),
                     "throttled_delta_s": thr,
@@ -556,6 +630,10 @@ class NodeReducer:
                 })
             row["per_user"].sort(key=lambda x: -(x["cpu_delta_s"] or x["mem_gb"] or 0))
             row["per_user_resets"] = sum(1 for u in row["per_user"] if u["counter_reset"])
+            # accounts the kernel held back at their CPU quota between the two
+            # snapshots: null when there is no second snapshot to compare
+            row["throttled_users"] = (sum(1 for u in row["per_user"] if (u["throttled_delta_s"] or 0) > 0)
+                                      if prev else None)
             hosts.append(row)
             # Two sources per mount. `nfs_io` (nfsiostat) has the interval rates
             # and lists only mounts with I/O in that interval; `nfs_mountstats`
@@ -572,9 +650,14 @@ class NodeReducer:
                                "wr_ops_total": (s.get("write") or {}).get("ops"),
                                **{k: i.get(k) for k in NFS_IO_FIELDS}})
             for d in (cur.get("disk_space") or []):
-                disks.append({"host": h, **d})
+                used, inodes = d.get("used_pct"), d.get("inode_used_pct")
+                disks.append({"host": h, **d,
+                              "full": bool((used is not None and used >= self.disk_full_pct)
+                                           or (inodes is not None and inodes >= self.inode_full_pct))})
         return {
             "hosts": hosts, "nfs": mounts, "disk": disks,
+            "thresholds": {"disk_full_pct": self.disk_full_pct,
+                           "inode_full_pct": self.inode_full_pct},
             "cpu_delta_basis": "per_user_cgroup.cpu_usage_usec is CUMULATIVE; cpu_delta_s "
                                "is the difference between the two newest snapshots over "
                                "their gap (gap_s). One snapshot alone cannot yield a rate, "

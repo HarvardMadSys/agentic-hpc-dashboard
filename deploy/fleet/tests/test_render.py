@@ -175,11 +175,25 @@ class TestRender(unittest.TestCase):
         self.assertIs(c["anonymize"]["enabled"], True)
         self.assertEqual(config(["RISK_PROFILE=/etc/rc/rules.json"])["risk"]["profile"], "/etc/rc/rules.json")
 
+    def test_accounts_dropped_from_site(self):
+        # Empty, as site.env.example has them: the stream's own account alone.
+        self.assertEqual(config()["filters"], {"drop_global": ["alice"], "drop_agent": []})
+        c = config(["DROP_USERS=monitor ops,alice monitor", "DROP_AGENT_USERS=builder"])
+        self.assertEqual(c["filters"], {"drop_global": ["alice", "monitor", "ops"],
+                                        "drop_agent": ["builder"]})
+
     def test_day_cache_from_site(self):
         # The day cache holds a second day's state beside the built view; a host short
         # of memory can turn it off.
         self.assertIs(config()["panels"]["day_cache"], True)
         self.assertIs(config(["DAY_CACHE=false"])["panels"]["day_cache"], False)
+
+    def test_two_ingest_workers_per_node_unless_site_says(self):
+        # A node's hours by reducer group are two processes at a time: two per node is
+        # the most that helps.
+        self.assertEqual(config()["ingest"], {"workers": 6})
+        self.assertEqual(config(["INGEST_WORKERS=1"])["ingest"], {"workers": 1})
+        self.assertEqual(config(["INGEST_WORKERS=0"])["ingest"], {"workers": 0})
 
     def test_seven_days_offer_every_window(self):
         c = config()
@@ -208,6 +222,7 @@ class TestRender(unittest.TestCase):
         self.assertEqual(c["live"]["retention_min"], 10080)
         self.assertEqual(c["panels"], {"max_windows": 5, "prewarm_min": [60, 360, 720], "day_cache": True})
         self.assertEqual(c["reducers"]["trajectories"]["max_sessions"], 150000)
+        self.assertEqual(c["ingest"], {"workers": 2})        # one node
         self.assertEqual(c["site"], {"name": "", "description": ""})
         self.assertIs(c["ask"]["enabled"], False)
         self.assertEqual(s["free_min_gb"], 300)
@@ -218,7 +233,9 @@ class TestRender(unittest.TestCase):
                     "SENDER_DIR=/a b", "SENDER_DIR=rel/dir", "CODEX=codex", "DASH_PYTHON=python 3",
                     "SOURCE_USER=", "SOURCE_NODES=", "SOURCE_NODES=a -oProxyCommand=x",
                     "SOURCE_NODES=a a", "SOURCE_NODES=a b'c", "SOURCE_DOMAIN=a b",
-                    "RISK_PROFILE=a b.json", "FREE_MIN_GB=-1", "HISTORY_DAYS=0"):
+                    "RISK_PROFILE=a b.json", "FREE_MIN_GB=-1", "HISTORY_DAYS=0",
+                    "INGEST_WORKERS=-1", "INGEST_WORKERS=four", "INGEST_WORKERS=257",
+                    "DROP_USERS=a'b", "DROP_AGENT_USERS=-x"):
             p = run_render("stream.json.in", [bad])
             self.assertEqual(p.returncode, 2, bad)
 

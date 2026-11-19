@@ -59,13 +59,6 @@ This package installs the standalone collector bundle under %{ebpfm_libdir},
 a systemd unit (ebpfm.service) that runs the eBPF tier, and the `ebpfm`
 command (a symlink to ebpfm.sh) for check/status/tail.
 
-Both tiers write their day-files as JSONL, as EBR (lib/ebr.py's framed binary
-records: the same records, 4-8x smaller) or as both, twins holding the same
-records in the same order: EBPFM_FORMAT=jsonl|ebr|both in /etc/default/ebpfm,
-default both while EBR is on trial. `ebpfm compare|verify [day]` check the
-twins and `ebpfm bench` measures the codec on this host's Python; lib/ebr.py,
-pure standard library, ships with the rest of lib/.
-
 Package dependencies (python3-bcc from EPEL, bpftool, iproute, jq, sysstat,
 nfs-utils, procps-ng) are resolved by dnf. The two required kernel sysctls
 (kernel.sched_schedstats, kernel.task_delayacct) ship as a sysctl.d drop-in and

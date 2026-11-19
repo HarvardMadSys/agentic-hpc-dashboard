@@ -20,13 +20,28 @@ sys.path.insert(0, HERE)
 
 import fleet_stream as fs                                         # noqa: E402
 import seed_mirror as sm                                          # noqa: E402
-from fakecollector import STREAMS, FakeCollector, ebr, records    # noqa: E402
+from fakecollector import FakeCollector                           # noqa: E402
 from test_receiver import HOST, Rig, mirror_tree, read, source_tree   # noqa: E402
 
 SEED = os.path.join(FLEET, "seed_mirror.py")
 PULL = os.path.join(FLEET, "pull-gz.sh")
 EXITS = "nodeA.cluster.example.org.exits.jsonl"
 SNAP = "nodeA.cluster.example.org.snapshot.jsonl"
+
+# seed_mirror.py run as its command line runs it, on a volume that reads 2 TB free of
+# 4 TB: it seeds nothing on a disk with less free than the receiver's floor (300 GB),
+# and the disk these tests run on may have less. The two tests of that floor call
+# seed() with a statvfs of their own.
+ROOMY = ("import runpy, sys; sys.path.insert(0, %r); import fleet_stream; "
+         "fleet_stream.SafeBase.free_bytes = lambda self: (2e12, 4e12); "
+         "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')" % FLEET)
+
+
+def run_seed(*args):
+    """`seed_mirror.py <args>` on that volume; its stdout and stderr together."""
+    return subprocess.run([sys.executable, "-c", ROOMY, SEED] + list(args),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True)
 
 
 def pull_patterns():
@@ -69,9 +84,7 @@ class Seeded(unittest.TestCase):
         shutil.rmtree(self.pull, ignore_errors=True)
 
     def seed(self, *extra):
-        return subprocess.run([sys.executable, SEED, self.pull, self.rig.basedir] + list(extra),
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              universal_newlines=True)
+        return run_seed(self.pull, self.rig.basedir, *extra)
 
     def sealed(self):
         """The sealed days' plain bytes, as the copy must hold them."""
@@ -199,8 +212,7 @@ class TestSeed(Seeded):
 
     def test_makes_a_missing_base_private(self):
         base = os.path.join(self.rig.basedir, "new")
-        p = subprocess.run([sys.executable, SEED, self.pull, base], stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, universal_newlines=True)
+        p = run_seed(self.pull, base)
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertEqual(stat.S_IMODE(os.stat(base).st_mode), 0o700)
 
@@ -231,59 +243,6 @@ class TestSeed(Seeded):
         rc = sm.seed(self.pull, self.rig.basedir, statvfs=small, say=out.append, free_min_gb=50)
         self.assertEqual(rc, 0, out)
         self.assertEqual(len(self.ledger()), 4)
-
-
-@unittest.skipIf(ebr is None, "no collector/lib/ebr.py alongside fleet/")
-class TestSeedEbr(Seeded):
-    """Days the collector wrote as EBR beside JSONL (EBPFM_FORMAT=both), pulled as
-    pull-gz.sh pulls them: each `.ebr.gz` is seeded as a `.jsonl.gz` is. Seeded here in
-    this process, on a disk said to have room to spare."""
-
-    def setUp(self):
-        self.rig = Rig(days=3)
-        self.pull = tempfile.mkdtemp(prefix="fleet-pull-")
-        c = FakeCollector(self.rig.src, day="2026-11-09", formats=("jsonl", "ebr"))
-        for n, next_day in ((3000, "2026-11-10"), (2000, "2026-11-11")):
-            c.write_twins("exits", records(n))
-            c.write_twins("snapshot", records(30, event="residency"))
-            c.roll(next_day)
-        c.write_twins("exits", records(100))
-        self.c = c
-        pull_like_pull_gz(self.rig.src, self.pull)
-
-    def seed_here(self, inflate=False):
-        out = []
-        rc = sm.seed(self.pull, self.rig.basedir, statvfs=lambda: (10 ** 13, 10 ** 13),
-                     say=out.append, inflate=inflate)
-        return rc, out
-
-    def test_both_formats_go_into_the_copy_as_pulled(self):
-        rc, out = self.seed_here()
-        self.assertEqual(rc, 0, out)
-        sealed = self.sealed()
-        self.assertEqual(len(sealed), 8)                   # 2 days x 2 streams x 2 formats
-        self.assertEqual(len([k for k in sealed if k.endswith(".ebr")]), 4)
-        self.assertEqual(source_tree(self.rig.mdir), sealed)
-        self.assertEqual(self.ledger(), sorted(sealed))
-        for key in sealed:
-            self.assertEqual(read(os.path.join(self.rig.mdir, key + ".gz")),
-                             read(os.path.join(self.pull, HOST, key + ".gz")))
-        self.private_files()
-
-    def test_then_only_the_live_day_streams(self):
-        rc, out = self.seed_here()
-        self.assertEqual(rc, 0, out)
-        self.rig.start()
-        self.wait_same()
-        self.assertEqual(self.rig.counters.total(HOST, "gz"), 0)
-        live = sum(len(self.c.read(s, fmt=f)) for s in STREAMS for f in ("jsonl", "ebr"))
-        self.assertEqual(self.rig.counters.total(HOST, "plain"), live)
-
-    def test_inflate_writes_plain_ebr_files(self):
-        rc, out = self.seed_here(inflate=True)
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(mirror_tree(self.rig.mdir), self.sealed())
-        self.assertEqual(self.ledger(), sorted(self.sealed()))
 
 
 class TestPull(unittest.TestCase):
@@ -322,7 +281,7 @@ class TestPull(unittest.TestCase):
         calls = self.calls()
         self.assertEqual(len(calls), 2)
         for host, call in zip(("nodeA", "nodeB"), calls):
-            self.assertIn("--include=*/ --include=*.jsonl.gz --include=*.ebr.gz --exclude=*", call)
+            self.assertIn("--include=*/ --include=*.jsonl.gz --exclude=*", call)
             self.assertIn("--prune-empty-dirs", call)
             self.assertTrue(call.endswith("alice@%s.cluster.example.org:/scratch/ebpfm/ %s/%s/"
                                           % (host, dest, host)), call)

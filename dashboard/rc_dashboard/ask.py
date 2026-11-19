@@ -23,6 +23,15 @@ are filled in, the prompt arrives on stdin, and a command with no
 bounds how many agents run at once: on a small deployment a second question
 waits rather than starting a second agent.
 
+Off unless `ask.enabled`, and refused while the service has no password
+(`check`): the question is the reader's own text in the agent's prompt, and
+the agent can read whatever the service's account can read -- its sandbox is
+read-only, not confined. So it runs with only the environment a program needs
+(`AGENT_ENV`, and what `ask.env_passthrough` names), in a directory of its own
+in the system's temporary one, not
+beside the service's cache, and a question is at most MAX_QUESTION
+characters. Run the service as a dedicated account, not a person's.
+
 Every answer cites its sources (`ask.citations`, on by default). Each object
 the model reads carries a `ref` -- every section, the dicts up to REF_DEPTH
 levels into it, every row of a list -- and each line of an outline starts with
@@ -46,6 +55,7 @@ import time
 import uuid
 
 from . import redact
+from .anonymize import verbatim
 
 # Argv for each preset. The prompt is piped on stdin (`-`), the agent's last
 # message is written to {answer_file}, and --json streams its events so the
@@ -56,6 +66,51 @@ PRESETS = {
               "--sandbox", "read-only", "--color", "never", "--json",
               "-C", "{workdir}", "-o", "{answer_file}", "{model_flag}", "-"],
 }
+
+# The longest question a reader may ask. The earlier turns the prompt carries
+# are cut by `prompt`: the last three, 600 and 1 500 characters a side.
+MAX_QUESTION = 4000
+
+# What `describe` says, and `check` refuses with, while the service has no password.
+NO_PASSWORD = ("this dashboard has no password, and Ask runs only behind one, since the agent "
+               "can read whatever the service's account can read: set server.auth.password_hash "
+               "(`python -m rc_dashboard new-password` makes one)")
+
+# What of the service's environment the agent is given: what a program needs to
+# run, to find its login, and to reach its provider through the site's proxy --
+# the presets' and the documented commands' own (CODEX_HOME, OPENAI_*,
+# ANTHROPIC_*, CLAUDE_*) -- and what `ask.env_passthrough` names besides: a
+# provider reached through a cloud (AWS_*, GOOGLE_APPLICATION_CREDENTIALS,
+# AZURE_*, ...). The service's own RC_DASH_* settings (its password hash among
+# them) are never passed, and nothing else its environment holds is.
+AGENT_ENV = frozenset((
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM",
+    "LD_LIBRARY_PATH", "CODEX_HOME",
+    # systemd-run --user, as deploy/fleet runs the agent, finds the user manager by these
+    "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    # passed as they are, a user and password in the URL included (README, Ask LLM)
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS"))
+AGENT_ENV_PREFIXES = ("LC_", "OPENAI_", "ANTHROPIC_", "CLAUDE_")
+# Said when an agent fails, since a missing credential fails it without a word
+# about the environment it was given.
+ENV_HINT = ("; it runs with only part of the service's environment (ask.AGENT_ENV): name any "
+            "other variable it needs, such as a cloud provider's credentials, in "
+            "ask.env_passthrough")
+
+
+def agent_env(cfg=None, environ=None):
+    """The agent's environment: the service's, kept to AGENT_ENV and to the
+    names and NAME_* prefixes in `ask.env_passthrough`, never an RC_DASH_* one."""
+    env = os.environ if environ is None else environ
+    extra = (cfg.get("ask.env_passthrough") if cfg is not None else None) or ()
+    names = {x for x in extra if not x.endswith("*")}
+    prefixes = AGENT_ENV_PREFIXES + tuple(x[:-1] for x in extra if x.endswith("*"))
+    return {k: v for k, v in env.items() if not k.startswith("RC_DASH_")
+            and (k in AGENT_ENV or k in names or k.startswith(prefixes))}
 
 # Bulky, per-row, or per-bin fields that cost the budget and answer little a
 # question about the window needs; the summaries beside them stay.
@@ -185,7 +240,9 @@ PRIORITIES = ("high", "medium", "low")
 PANEL_TABS = {
     "live": ("live", "Live"), "live_now": ("live", "Live"),
     "live_now.users": ("live", "Active users"), "active users": ("live", "Active users"),
-    "live_now.hosts": ("live", "Login nodes right now"), "node": ("live", "Login nodes right now"),
+    "live_now.hosts": ("live", "Login nodes right now"),
+    "node": ("resources", "Login node health"), "login node health": ("resources", "Login node health"),
+    "trend": ("live", "Day by day"), "day by day": ("live", "Day by day"),
     "login nodes right now": ("live", "Login nodes right now"), "login nodes": ("live", "Login nodes right now"),
     # Overview is a section of Live now, and Trajectories and Risk & Warning are
     # Sessions and Risks: the old names still place a suggestion, under the new ones
@@ -882,24 +939,60 @@ def _program(argv):
     return os.path.basename(rest[0]) if rest and rest[0] else None
 
 
+# Why a question is refused while names are anonymized: an answer goes back as
+# the agent wrote it (`Asker.view`; rewritten, a name typed into the question
+# came back as its alias), and the agent can read whatever the service's
+# account can -- the raw feeds among it -- so a real name it read would be shown.
+UNMASKED = ("names are anonymized here (anonymize.enabled), and an answer is shown as the "
+            "agent writes it, while the agent can read the raw feeds: a real name it read "
+            "there would be shown. Set ask.unmasked_answers to allow Ask anyway.")
+
+
+def unmasked_refusal(cfg):
+    """`UNMASKED` while names are anonymized and `ask.unmasked_answers` is off,
+    else None: Ask is refused then, and so are the suggestions it keeps."""
+    if cfg.get("anonymize.enabled") and not cfg.get("ask.unmasked_answers"):
+        return UNMASKED
+    return None
+
+
 def describe(cfg):
     """What the page shows about the agent, and whether it can run here. A
-    command of one's own is named by the program it runs, as a preset is."""
+    command of one's own is named by the program it runs, as a preset is, and
+    nothing more of it is shown: the rest can hold a key (`env KEY=... cli`)."""
     try:
         argv = argv_for(cfg, "<workdir>", "<answer>")
         exe = shutil.which(argv[0]) if argv else None
         err = None if exe else "%s was not found on the service's PATH" % (argv[0] if argv else "?")
     except ValueError as e:
         argv, exe, err = [], None, str(e)
-    return {"enabled": bool(cfg.get("ask.enabled", True)),
+    err = unmasked_refusal(cfg) or err
+    if not str(cfg.get("server.auth.password_hash") or "").strip():
+        err = NO_PASSWORD
+    return {"enabled": bool(cfg.get("ask.enabled", False)),
             "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")
             else _program(argv) or "custom",
             "model": cfg.get("ask.model") or None,
-            "command": " ".join(argv[:3]) + (" ..." if len(argv) > 3 else ""),
+            "command": _program(argv) or "",
             "available": bool(exe) and not err, "error": err,
             "system_prompt": ("file" if cfg.get("ask.system_prompt_file")
                               else "config" if cfg.get("ask.system_prompt") else "built-in"),
             "timeout_s": int(cfg.get("ask.timeout_s", 240))}
+
+
+def check(cfg, question=""):
+    """`describe`, or a ValueError saying why `question` cannot run here,
+    before anything is read for it: Ask is off, the service has no password,
+    the agent cannot run, or the question is longer than MAX_QUESTION."""
+    info = describe(cfg)
+    if not info["enabled"]:
+        raise ValueError("chat is turned off (ask.enabled)")
+    if not info["available"]:
+        raise ValueError(info["error"] or "the agent cannot run here")
+    n = len(question or "")
+    if n > MAX_QUESTION:
+        raise ValueError("a question is at most %d characters; this one is %d" % (MAX_QUESTION, n))
+    return info
 
 
 def _progress_of(line):
@@ -935,6 +1028,10 @@ class Asker:
         self.lock = threading.Lock()
         self.slots = threading.BoundedSemaphore(max(1, int(cfg.get("ask.max_concurrent", 1))))
         self._done = None
+        # The masking names are under (`Anonymizer.ident`), None while they are
+        # shown: a suggestion marked done keeps it, to say what it was written
+        # under (`_as_written`).
+        self.masked_by = None
 
     # ----------------------------------------------------------------- done
     # A suggestion marked done is kept by the service, for everyone who opens
@@ -967,9 +1064,25 @@ class Asker:
             json.dump({"version": 1, "items": self._done}, fh)
         os.replace(tmp, path)
 
+    def _written_here(self, item):
+        """Whether a kept suggestion was written under the masking in use."""
+        return self.masked_by is not None and item.get("masked_by") == self.masked_by
+
+    def _as_written(self, items):
+        """Kept suggestions on their way out. One written under the masking in
+        use is the agent's words about aliases, and goes as written, never
+        rewritten as names (`view`). One kept from before -- names shown, or
+        another salt -- holds the names of the data it was written from, and
+        goes through the masking as that data would."""
+        out = []
+        for x in items:
+            shown = {k: v for k, v in x.items() if k != "masked_by"}
+            out.append(verbatim(shown) if self._written_here(x) else shown)
+        return out
+
     def done_list(self):
         with self.lock:
-            return {"items": list(self._done_items())}
+            return {"items": self._as_written(self._done_items())}
 
     def mark_done(self, jid, index):
         """Suggestion `index` of job `jid`'s answer, marked done."""
@@ -984,10 +1097,11 @@ class Asker:
             done = self._done_items()
             if not any(x.get("job") == jid and x.get("index") == index for x in done):
                 done.insert(0, dict(items[index], id=uuid.uuid4().hex[:12], job=jid, index=index,
-                                    window=job.get("window"), done_at=time.time()))
+                                    window=job.get("window"), done_at=time.time(),
+                                    masked_by=self.masked_by))
                 del done[self.DONE_KEEP:]
                 self._done_save()
-            return {"items": list(done)}
+            return {"items": self._as_written(done)}
 
     def undo_done(self, did):
         with self.lock:
@@ -997,17 +1111,19 @@ class Asker:
                 raise LookupError("that suggestion is not marked done")
             done[:] = keep
             self._done_save()
-            return {"items": list(done)}
+            return {"items": self._as_written(done)}
 
     def done_for_prompt(self, keep=50):
         """What the model is told the operator already dealt with, without the
         citations it was suggested with: they named another snapshot's rows."""
         with self.lock:
-            return [{"title": x.get("title"),
-                     "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
-                     "users": x.get("users") or [], "panel": x.get("panel"),
-                     "marked_done": _clock(x.get("done_at"))}
-                    for x in self._done_items()[:keep]]
+            kept = self._done_items()[:keep]
+        return self._as_written([
+            {"title": x.get("title"),
+             "action": _CITE_STRIP.sub("", x["action"]) if x.get("action") else None,
+             "users": x.get("users") or [], "panel": x.get("panel"),
+             "marked_done": _clock(x.get("done_at")), "masked_by": x.get("masked_by")}
+            for x in kept])
 
     def submit(self, question, panels, live, window_label, history=(), extra=None,
                scope=None):
@@ -1016,11 +1132,7 @@ class Asker:
         snapshot's `steps` and `keep`; `parse: "suggestions"` reads the answer
         as the operator's suggestions too (`parse_suggestions`)."""
         scope = scope or {}
-        info = describe(self.cfg)
-        if not info["enabled"]:
-            raise ValueError("chat is turned off (ask.enabled)")
-        if not info["available"]:
-            raise ValueError(info["error"] or "the agent cannot run here")
+        info = check(self.cfg, question)
         question = (question or "").strip()
         if not question:
             raise ValueError("ask a question")
@@ -1037,6 +1149,9 @@ class Asker:
                "parse": scope.get("parse"), "suggestions": None,
                "agent": info["agent"], "model": info["model"],
                "submitted": time.time(), "started": None, "finished": None,
+               # the same three on the monotonic clock, which `elapsed_s` is timed on:
+               # a pinned one (`clock.as_of`) never moves
+               "_submitted_m": time.monotonic(), "_started_m": None, "_finished_m": None,
                "progress": "waiting for a free agent", "answer": None, "error": None,
                "snapshot_kb": round(len(snap) / 1024, 1),
                "view": scope.get("view"), "cites": None, "_refs": refs}
@@ -1063,8 +1178,17 @@ class Asker:
             if j is None:
                 return None
             out = {k: v for k, v in j.items() if not k.startswith("_")}
-        end = out["finished"] or time.time()
-        out["elapsed_s"] = round(end - (out["started"] or out["submitted"]), 1)
+            since = j["_submitted_m"] if j["_started_m"] is None else j["_started_m"]
+            end = j["_finished_m"]
+        out["elapsed_s"] = round((time.monotonic() if end is None else end) - since, 1)
+        # The reader's question and the agent's words go back as they are,
+        # never rewritten as names (`anonymize.Verbatim`): rewritten, "repeat
+        # after me: alice" was answered with her alias. What a job holds of
+        # the data -- `view`, and what `cites` shows -- was aliased before the
+        # agent saw it (Aggregator.ask).
+        for k in ("question", "about", "answer", "progress", "error", "suggestions", "cites"):
+            if k in out:
+                out[k] = verbatim(out[k])
         return out
 
     def _set(self, job, **kv):
@@ -1073,10 +1197,12 @@ class Asker:
 
     def _run(self, job, text):
         with self.slots:
-            self._set(job, state="running", started=time.time(), progress="starting the agent")
-            base = os.path.join(self.cfg.get("cache.dir") or tempfile.gettempdir(), "ask")
-            os.makedirs(base, mode=0o700, exist_ok=True)
-            work = tempfile.mkdtemp(prefix="q-", dir=base)
+            self._set(job, state="running", started=time.time(), _started_m=time.monotonic(),
+                      progress="starting the agent")
+            # In the system's temporary directory, not under cache.dir: the
+            # salt, the session key and the saved builds are not its
+            # neighbours. Mode 0700 (mkdtemp), and removed once it has answered.
+            work = tempfile.mkdtemp(prefix="rc-dash-ask-")
             answer_file = os.path.join(work, "answer.md")
             timeout = int(self.cfg.get("ask.timeout_s", 240))
             try:
@@ -1087,8 +1213,8 @@ class Asker:
                 # Its own session, so a timeout can stop the agent and anything
                 # it started, not only the first process.
                 proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, cwd=work, text=True,
-                                        start_new_session=True)
+                                        stderr=subprocess.PIPE, cwd=work, env=agent_env(self.cfg),
+                                        text=True, start_new_session=True)
                 killer = threading.Timer(timeout, lambda: _kill(proc))
                 killer.start()
                 last, out_lines = None, []
@@ -1117,14 +1243,17 @@ class Asker:
                 if code != 0 and not answer:
                     timed_out = code in (-signal.SIGKILL, -signal.SIGTERM)
                     raise RuntimeError("the agent timed out after %d s" % timeout if timed_out
-                                       else "the agent exited %d: %s" % (code, (err or "").strip()[-400:]))
+                                       else "the agent exited %d: %s%s" % (
+                                           code, (err or "").strip()[-400:], ENV_HINT))
                 answer = redact.redact(answer) if answer else "(no answer)"
                 self._set(job, state="done", answer=answer, progress=None, finished=time.time(),
+                          _finished_m=time.monotonic(),
                           suggestions=parse_suggestions(answer)
                           if job.get("parse") == "suggestions" else None,
                           cites=self._cites(job, answer))
             except Exception as e:
-                self._set(job, state="error", error=str(e), progress=None, finished=time.time())
+                self._set(job, state="error", error=str(e), progress=None, finished=time.time(),
+                          _finished_m=time.monotonic())
             finally:
                 # the whole table is let go once the answer has said what it cites
                 self._set(job, _refs=None)

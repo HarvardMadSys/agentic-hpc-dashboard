@@ -13,16 +13,32 @@ jobs plate is replaced by one built from eBPF `submit` records -- agent job
 submissions in the window, which is per-submission AND actor-attributed, and so
 is better evidence than a census count.
 """
+import bisect
 import collections
+import heapq
 import itertools
 import time
 
 from ..buckets import RollingBuckets, _epoch_of
+from ..procindex import users_conflict
 from ..roster import UserRoster, W as ROSTER_W
 from ..redact import redact
 from ..roles import agent_version
+from .own_io import (CLAMP_TOL_MB, DISK, START_SLACK_S, AgentHeld, Held, OwnIo, cap_of,
+                     reaped_none, runtime_share)
 from .phase_rules import CATS, category_of_argv
 from .slurm import outcome as slurm_outcome, reason as slurm_reason
+
+# Each process's own disk bytes, in both orders the live tier is fed in
+# (`LiveReducer._own_io`): parents noted for children the backfill has yet to
+# read, at most this many; and how far out of order a day-file's records are,
+# within a poll round. A note is about 0.5 KB, so 10 MB at most. One lives
+# until the backfill reads past its start, so what is held is the exits of
+# about BOOKED_SLACK_S and what ran across them: 254 at most over the demo's
+# week, 1,520 at eight times its density; a node writing 2.7 M exits a day
+# writes some 9,400 in BOOKED_SLACK_S.
+BOOKED_MAX = 20000
+BOOKED_SLACK_S = 300
 
 
 def _sum_or_none(vals):
@@ -172,6 +188,21 @@ def _full(tail):
     return tail is not None and tail.maxlen is not None and len(tail) >= tail.maxlen
 
 
+def _start(rec):
+    """When an exited process started, or None."""
+    e, d = rec.get("_ts_epoch"), rec.get("duration_s")
+    if isinstance(e, (int, float)) and isinstance(d, (int, float)) and d >= 0:
+        return e - d
+    return None
+
+
+# A noted parent (`LiveReducer.io_booked`): its note's number, when it started and
+# ended, the roster bin it was counted in (None when the roster does not hold it)
+# and as whose, the MB read and written of its figure not yet taken back, and its
+# row in the tails, if it has one.
+_B_SEQ, _B_START, _B_END, _B_EPOCH, _B_USER, _B_CLS, _B_TYPE, _B_RD, _B_WR, _B_ROW = range(10)
+
+
 class LiveReducer:
     # conn / netio are read for one thing: the identity block of a running agent
     # root, which carries its launch flags. Residency alone cannot give that -- its
@@ -230,6 +261,26 @@ class LiveReducer:
         # event tail's own dicts, shared, so a row costs memory once.
         self.user_tail_n = int(cfg.get("live.user_tail", 100))
         self.user_tails = {}     # user -> deque, newest first
+        # Each process's own disk bytes (own_io.py), in both orders this tier is
+        # fed in. The tail is oldest first: a parent's exit takes back what the
+        # children it reaped carried (`io_join`), as a window's reducers do. The
+        # backfill is newest first, so it meets a parent before its children:
+        # the parent is counted whole and noted (`io_booked`), and each child
+        # met later takes its figure back off the parent's roster bin and row. A
+        # child whose parent was not met -- one still running when the tail
+        # began, or gone before the child -- is held for that parent's exit
+        # (`io_given`, a join of its own). And a process the tail meets that
+        # was running before the tail began is noted too: the backfill may yet
+        # read the children it reaped. Each pairing is held to what the shared
+        # join allows: the same user, and a child begun after its parent.
+        self.io_join = OwnIo(DISK, cap_of(cfg), "live")
+        self.io_booked = Held()      # (host, pid) -> a note (_B_*), runtimes' apart
+        self.io_given = OwnIo(DISK, cap_of(cfg), "live")
+        self._io_starts = []         # (-start, note's number, key): the latest start first
+        self._io_seq = 0
+        self.io_tail_from = None     # when the first exit the tail read ended
+        self.io_dropped = 0          # notes dropped at their cap
+        self.io_clamped = 0          # noted parents a child's figure took past 0
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, older=False):
@@ -243,7 +294,10 @@ class LiveReducer:
         """
         ev = rec.get("event")
         self._root(rec, ev, older)
-        if ev in ("exit", "truncated"):
+        # Exits only: a `truncated` record is a process still running at a
+        # collector stop, with its whole life's CPU and I/O so far, and its exit
+        # after the restart carries them again. It still speaks for a root.
+        if ev == "exit":
             self._exit(rec, older)
         elif ev == "residency":
             self._residency(rec, older)
@@ -303,43 +357,169 @@ class LiveReducer:
                 k = (rec.get("host"), rec.get("_kt"), rec.get("_kv"))
                 if e > self.human_sessions.get(k, 0):
                     self.human_sessions[k] = e
-        io = rec.get("io") or {}
+        rd, wr = self._own_io(rec, older)
         tx, rx = _mb(rec.get("net_tx_bytes")), _mb(rec.get("net_rx_bytes"))
-        self.roster.add(_epoch_of(rec), rec.get("user"), rec["_a3"],
-                        rec.get("agent_type"), rec.get("cpu_s"),
-                        rd_mb=io.get("rd_mb"), wr_mb=io.get("wr_mb"), tx_mb=tx, rx_mb=rx)
+        now = time.time()
+        epoch = _epoch_of(rec)
+        held = self.roster.add(epoch, rec.get("user"), rec["_a3"],
+                               rec.get("agent_type"), rec.get("cpu_s"), now=now,
+                               rd_mb=rd, wr_mb=wr, tx_mb=tx, rx_mb=rx)
         u = rec.get("user")
-        if older and _full(self.event_tail) and (not u or _full(self.user_tails.get(u))):
-            # The backfill, past both tails' depth: newer rows hold every slot,
-            # and `_place` would drop this one -- so it is not made. Millions of
-            # a week's exits reach here.
+        row = None
+        # The backfill, past both tails' depth: newer rows hold every slot, and
+        # `_place` would drop this one -- so it is not made. Millions of a
+        # week's exits reach here.
+        if not (older and _full(self.event_tail) and (not u or _full(self.user_tails.get(u)))):
+            row = {
+                "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
+                "host": rec.get("host"), "user": rec.get("user"),
+                "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
+                "comm": rec.get("_command"), "tool": rec.get("_eff"),
+                # Raw, and private to this process: masked once, the first time
+                # the row is served (`result`), so the backfill's millions of rows
+                # that age out unseen never pay for it. Cut after masking, never
+                # before -- a cut can leave a token too short to recognise.
+                "_argv": rec.get("args") or "",
+                "purpose": rec.get("_purpose"), "depth": rec.get("depth"),
+                "pid": rec.get("pid"),
+                "duration_s": rec.get("duration_s"), "cpu_s": rec.get("cpu_s"),
+                "peak_rss_mb": rec.get("peak_rss_mb"),
+                "rd_mb": rd, "wr_mb": wr,
+                "net_tx_mb": tx, "net_rx_mb": rx,
+                "exit_code": rec.get("exit_code"), "signal": rec.get("signal"),
+                "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
+                "session_key": rec.get("session_key"),
+            }
+            self._place(self.event_tail, row, older)
+            if u:
+                tail = self.user_tails.get(u)
+                if tail is None:
+                    tail = self.user_tails[u] = collections.deque(maxlen=self.user_tail_n)
+                self._place(tail, row, older)
+        self._io_note(rec, older, min(epoch, now) if held else None, rd, wr, row)
+
+    # ---------------------------------------------------------- own disk bytes
+    def _own_io(self, rec, older):
+        """This exit's own disk MB, (read, written), each None where it has
+        none: its figure less what the children it reaped carried (own_io.py,
+        and `io_join` above for the two orders)."""
+        if not older:
+            if self.io_tail_from is None:
+                self.io_tail_from = rec.get("_ts_epoch")
+            own = self.io_join.take(rec)
+            if own is None:
+                return None, None
+            rd, wr = own
+            # and the children the backfill met before this exit, those it can
+            # have reaped (a pid is reused)
+            got = (self.io_given.pop_reaped(rec)
+                   if rec["io"].get("scope") == "process" else None)
+            if got:
+                rd, wr = self.io_given.less((rd, wr), got)
+            return rd, wr
+        io = rec.get("io")
+        if not isinstance(io, dict):
+            return None, None
+        rd, wr = io.get("rd_mb"), io.get("wr_mb")
+        self._io_back(rec, io, rd, wr)
+        # Whole for now: the children it reaped are older, and the backfill
+        # meets them next; each takes its figure back off this one then.
+        return rd, wr
+
+    def _io_back(self, rec, io, rd, wr):
+        """A backfill exit, met before the children it reaped and after its parent:
+        it gives its figure back to the parent, or holds it for one still to come."""
+        host, end = rec.get("host"), rec.get("_ts_epoch")
+        if end is not None:
+            self._io_prune(end)
+        # Children held for this pid that began while this process ran outlived
+        # it, and so were never reaped: its orphans, not any parent's to take.
+        self.io_given.forget_outlived(host, rec.get("pid"), end)
+        ppid = rec.get("ppid")
+        if io.get("scope") != "process" or ppid is None or not (rd or wr):
             return
-        row = {
-            "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
-            "host": rec.get("host"), "user": rec.get("user"),
-            "actor3": rec["_a3"], "agent_type": rec.get("agent_type"),
-            "comm": rec.get("_command"), "tool": rec.get("_eff"),
-            # Raw, and private to this process: masked once, the first time
-            # the row is served (`result`), so the backfill's millions of rows
-            # that age out unseen never pay for it. Cut after masking, never
-            # before -- a cut can leave a token too short to recognise.
-            "_argv": rec.get("args") or "",
-            "purpose": rec.get("_purpose"), "depth": rec.get("depth"),
-            "pid": rec.get("pid"),
-            "duration_s": rec.get("duration_s"), "cpu_s": rec.get("cpu_s"),
-            "peak_rss_mb": rec.get("peak_rss_mb"),
-            "rd_mb": io.get("rd_mb"), "wr_mb": io.get("wr_mb"),
-            "net_tx_mb": tx, "net_rx_mb": rx,
-            "exit_code": rec.get("exit_code"), "signal": rec.get("signal"),
-            "sandbox": rec.get("_sandbox"), "approval": rec.get("_approval"),
-            "session_key": rec.get("session_key"),
-        }
-        self._place(self.event_tail, row, older)
-        if u:
-            tail = self.user_tails.get(u)
-            if tail is None:
-                tail = self.user_tails[u] = collections.deque(maxlen=self.user_tail_n)
-            self._place(tail, row, older)
+        # The noted parent reaped this child only if the child ended before it
+        # did and BEGAN after it did, give or take its last exec (own_io.py):
+        # an earlier holder's orphan can end inside the noted one's life.
+        b = self.io_booked.get((host, ppid))
+        st = _start(rec)
+        if b is not None and end is not None and end <= b[_B_END] + 1 \
+                and (b[_B_START] is None
+                     or (st if st is not None else end) >= b[_B_START] - START_SLACK_S) \
+                and not users_conflict(rec.get("user"), b[_B_USER]):
+            self._take_back(b, rd or 0.0, wr or 0.0)
+            return
+        self.io_given.give(rec)
+
+    def _take_back(self, b, rd, wr):
+        """A child's whole figure off a noted parent's, as far as it goes: a
+        parent left short of it is counted, as `OwnIo.less` counts one."""
+        if rd - b[_B_RD] > CLAMP_TOL_MB or wr - b[_B_WR] > CLAMP_TOL_MB:
+            self.io_clamped += 1
+        x, y = min(rd, b[_B_RD]), min(wr, b[_B_WR])
+        if not (x or y):
+            return
+        b[_B_RD] -= x
+        b[_B_WR] -= y
+        if b[_B_EPOCH] is not None:
+            self.roster.add(b[_B_EPOCH], b[_B_USER], b[_B_CLS], b[_B_TYPE], None,
+                            rd_mb=-x, wr_mb=-y, n=0)
+        row = b[_B_ROW]
+        if row is not None:
+            for k, v in (("rd_mb", x), ("wr_mb", y)):
+                if v and row.get(k) is not None:
+                    row[k] = round(max(0.0, row[k] - v), 3)
+
+    def _io_note(self, rec, older, epoch, rd, wr, row):
+        """Note a counted exit for the children the backfill has yet to read: any
+        it met itself, and one the tail met that was running before the tail
+        began, give or take START_SLACK_S: its recorded start is its last exec,
+        and a child it forked before that can have ended before the tail began.
+        `epoch` is the roster bin it was counted in, None when none."""
+        io = rec.get("io")
+        # one that says it reaped no child has none to give back (own_io.reaped_none)
+        if not isinstance(io, dict) or io.get("scope") != "process" or not (rd or wr) \
+                or rec.get("_ts_epoch") is None or reaped_none(rec):
+            return
+        st = _start(rec)
+        if not older and (st is None or self.io_tail_from is None
+                          or st >= self.io_tail_from + START_SLACK_S):
+            return
+        key = (rec.get("host"), rec.get("pid"))
+        self._io_seq += 1
+        note = [self._io_seq, st, rec.get("_ts_epoch"), epoch, rec.get("user"),
+                rec["_a3"], rec.get("agent_type"), rd or 0.0, wr or 0.0, row]
+        # an agent runtime's note waits for every tool call it made: passed
+        # over at the cap, as the joins pass it over (own_io._runtime)
+        self.io_booked[key] = AgentHeld(note) if key[1] == rec.get("tree_root_pid") else note
+        self.io_booked.move_to_end(key)
+        if len(self.io_booked) > BOOKED_MAX:
+            self.io_booked.pop_least_recent(runtime_share(BOOKED_MAX))
+            self.io_dropped += 1
+        if st is not None:
+            heapq.heappush(self._io_starts, (-st, self._io_seq, key))
+            # A note dropped at BOOKED_MAX, or noted again, leaves its entry here
+            # until the backfill reads past its start -- for a process that ran
+            # for days, perhaps never. Past twice the notes held, keep only the
+            # entries of notes still held: O(1) a note, amortized.
+            if len(self._io_starts) > 2 * len(self.io_booked) + 64:
+                self._io_starts = [e for e in self._io_starts if self._io_held(e)]
+                heapq.heapify(self._io_starts)
+
+    def _io_held(self, entry):
+        """Whether `_io_starts`' entry is the note `io_booked` holds for its key."""
+        b = self.io_booked.get(entry[2])
+        return b is not None and b[_B_SEQ] == entry[1]
+
+    def _io_prune(self, t):
+        """The backfill has read back to `t`: a noted process that started after
+        it has met every child it reaped."""
+        h, lim = self._io_starts, -(t + BOOKED_SLACK_S)
+        while h and h[0][0] < lim:
+            _st, seq, key = heapq.heappop(h)
+            b = self.io_booked.get(key)
+            if b is not None and b[_B_SEQ] == seq:
+                del self.io_booked[key]
 
     @staticmethod
     def _rss_tick(t, rss):
@@ -645,6 +825,129 @@ class LiveReducer:
                 "recent_depth": self.user_tail_n, "recent_held": len(tail)}
 
     # ---------------------------------------------------------------- result
+    # How long a day-by-day reading is reused: its days move by the minute, and
+    # every /api/panels answer carries it.
+    DAILY_REUSE_S = 20
+
+    def daily(self, now=None):
+        """Each class's processes, CPU and users per local day, over the days
+        the live tier holds -- retention, not the selected window.
+
+        Processes and CPU are the minute bins' (`buckets`), the same sums the
+        rate chart draws; users and agent types are the roster's, which counts
+        an account once a day in each class it ran something in. A day is told
+        apart from a quiet one by its `held` minutes -- the minutes in it the
+        collector wrote any exit in -- against the minutes of it the tier could
+        hold (`minutes`): today is still going, and the oldest day starts where
+        retention does. A day no minute was held in has null counts, not 0.
+        """
+        now = now or time.time()
+        # Its age by the monotonic clock as well as by `now`: with `clock.as_of`
+        # set, time.time() stands still, and a reading taken mid-backfill would
+        # otherwise be reused for good.
+        mono = time.monotonic()
+        hit = getattr(self, "_daily", None)
+        if hit is not None and 0 <= now - hit[0] < self.DAILY_REUSE_S \
+                and mono - hit[2] < self.DAILY_REUSE_S:
+            return hit[1]
+        self.buckets.evict(now)
+        bin_s = self.buckets.bin_s
+        start, end = self.buckets._span(now)
+        lo = start * bin_s
+        # Local midnights from the day the tier starts in to the one after
+        # today: mktime with isdst=-1 places each, so a day with a clock change
+        # is 23 or 25 hours long.
+        t = time.localtime(lo)
+        mids = []
+        y, m, d = t.tm_year, t.tm_mon, t.tm_mday
+        while True:
+            e = time.mktime((y, m, d, 0, 0, 0, 0, 0, -1))
+            mids.append(e)
+            if e > now:
+                break
+            d += 1
+        if len(mids) < 2:
+            mids.append(mids[0] + 86400)
+        days = []
+        for i in range(len(mids) - 1):
+            a, b = mids[i], mids[i + 1]
+            if b <= lo or a > now:
+                continue
+            frm, to = max(a, lo), min(b, now)
+            days.append({"date": time.strftime("%Y-%m-%d", time.localtime(a + 1)),
+                         "from": frm, "to": to, "day_from": a, "day_to": b,
+                         "today": a <= now < b, "cut": a < lo,
+                         "minutes": max(0, int((to - frm) // 60)), "held": 0,
+                         "_by": {}, "_users": {}, "_types": {}})
+        starts = [x["day_from"] for x in days]
+
+        def day_of(epoch):
+            j = bisect.bisect_right(starts, epoch) - 1
+            return days[j] if 0 <= j < len(days) and epoch < days[j]["day_to"] else None
+
+        for idx, slot in self.buckets.bins.items():
+            if idx < start or idx > end or not slot:
+                continue
+            day = day_of(idx * bin_s)
+            if day is None:
+                continue
+            day["held"] += bin_s / 60.0
+            for cls, c in slot.items():
+                acc = day["_by"].setdefault(cls, [0, 0.0])
+                acc[0] += c.get("n", 0)
+                acc[1] += c.get("cpu_s", 0.0)
+        ros = self.roster
+        ros.roll(now)
+        for store, size in ((ros.coarse, ros.coarse_s), (ros.fine, ros.fine_s)):
+            for idx, slot in store.items():
+                day = day_of(idx * size)
+                if day is None:
+                    continue
+                for user, e in slot.items():
+                    for (cls, atype), n, cpu in ros.decode(e):
+                        day["_users"].setdefault(cls, set()).add(user)
+                        if cls == "agent" and atype:
+                            ty = day["_types"].setdefault(atype, [set(), 0, 0.0])
+                            ty[0].add(user)
+                            ty[1] += n
+                            ty[2] += cpu
+        out = []
+        for day in days:
+            held = day["held"] > 0
+            classes = list(self.classes) + [c for c in day["_by"] if c not in self.classes]
+            by = {}
+            for c in classes:
+                acc = day["_by"].get(c)
+                if not held:
+                    by[c] = {"n": None, "cpu_s": None, "users": None}
+                else:
+                    # in a day with records, a class with none is a measured 0
+                    by[c] = {"n": acc[0] if acc else 0,
+                             "cpu_s": round(acc[1], 1) if acc else 0.0,
+                             "users": len(day["_users"].get(c, ()))}
+            out.append({
+                "date": day["date"], "from": day["from"], "to": day["to"],
+                "today": day["today"], "cut": day["cut"],
+                "minutes": day["minutes"], "held": int(round(day["held"])),
+                "by_class": by,
+                "types": {t: {"users": len(v[0]), "n": v[1], "cpu_s": round(v[2], 1)}
+                          for t, v in sorted(day["_types"].items(),
+                                             key=lambda kv: -len(kv[1][0]))} if held else {},
+            })
+        body = {
+            "days": out, "bin_s": bin_s,
+            "retention_minutes": self.retention_s // 60,
+            "retained_from": self.buckets.oldest_epoch(),
+            "tz": time.strftime("%Z", time.localtime(now)),
+            "basis": "processes and CPU from the live tier's minute bins, by exit time; "
+                     "users and agent types from its roster (an account once a day in "
+                     "each class it ran something in; its bins are hours past the last "
+                     "day, so a day boundary off the hour lands with the hour it is in). "
+                     "`held` is the minutes of the day the collector wrote any exit in.",
+        }
+        self._daily = (now, body, mono)
+        return body
+
     def result(self, now=None, window_s=None):
         """The live tier as seen through `window_s` (default: all of retention).
 
@@ -739,6 +1042,10 @@ class LiveReducer:
                 "trees": v.get("trees"), "tracked_live": v.get("tracked_live"),
                 "conn_records": v.get("conn_records"), "fork_rate": v.get("fork_rate"),
                 "dropped": v.get("dropped"),
+                # the kernel frames this host's tracked D-state processes were
+                # blocked in at its newest tick, {frame: processes}; null when
+                # none was, or the stacks were not readable
+                "d_stack_top": v.get("d_stack_top"),
                 # load and cpu_pct belong to the NODE tier; absent here rather
                 # than zero, so the column reads as unreported not as idle
                 "load_1": None, "cpu_pct": None,
@@ -820,6 +1127,17 @@ class LiveReducer:
             "submits": [s for s in self.submit_tail if (s.get("epoch") or 0) >= cutoff],
             "skew_dropped": self.buckets.skew_dropped,
             "no_timestamp": self.buckets.no_ts,
+            # the disk bytes' join (`_own_io`): parents whose children's bytes
+            # wait for their exit, and what its caps dropped (those children's
+            # bytes then count twice)
+            "own_io": {"waiting": len(self.io_join.reaped) + len(self.io_given.reaped),
+                       "noted": len(self.io_booked),
+                       "dropped": self.io_join.evicted + self.io_given.evicted + self.io_dropped,
+                       "rejected": self.io_join.rejected + self.io_given.rejected,
+                       "clamped": (self.io_join.clamped + self.io_given.clamped
+                                   + self.io_clamped),
+                       "crowded": self.io_join.crowded + self.io_given.crowded,
+                       "unreaped": self.io_join.unreaped + self.io_given.unreaped},
             "conn_unmatched_births": self.conn_unmatched_births,
             "unavailable": {
                 "running_jobs": "needs the slurm_jobs census feed (not configured)",

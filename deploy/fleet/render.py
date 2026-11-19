@@ -65,6 +65,17 @@ def _flag(v, key, default):
     return x
 
 
+def _accounts(v, key):
+    """The account names in `key`, separated by spaces or commas, each once."""
+    out = []
+    for name in v.get(key, "").replace(",", " ").split():
+        if not PLAIN.match(name) or name.startswith("-"):
+            raise ValueError("%s: %r is not an account name" % (key, name))
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def derive(v):
     """The values the templates need beyond site.env's own. A history or memory key that
     site.env leaves out takes the dashboard's own default, as site.env.example has it."""
@@ -96,6 +107,12 @@ def derive(v):
     days = int(v.get("HISTORY_DAYS") or 7)
     if days < 1:
         raise ValueError("HISTORY_DAYS must be at least 1")
+    # Two processes per node reduce the hours by default, one per reducer group: a node
+    # and group is one process at a time, so more do nothing, and with fewer than one per
+    # node the dashboard reduces each node's hour in one process.
+    workers = v.get("INGEST_WORKERS") or str(2 * len(sources))
+    if not workers.isdigit() or int(workers) > 256:
+        raise ValueError("INGEST_WORKERS=%r must be a process count 0..256" % workers)
     free = float(v.get("FREE_MIN_GB") or 300)
     if free < 0:
         raise ValueError("FREE_MIN_GB must not be negative")
@@ -130,11 +147,14 @@ def derive(v):
         "CODEX_JSON": json.dumps(codex or "codex"),
         "DASH_PATH": (os.path.dirname(codex) + ":" if codex else "") + SYSTEM_PATH,
         "RISK_PROFILE_JSON": json.dumps(profile),
-        "DROP_GLOBAL_JSON": json.dumps([user]),
+        # The stream's own account, and the ones site.env names.
+        "DROP_GLOBAL_JSON": json.dumps([user] + [a for a in _accounts(v, "DROP_USERS") if a != user]),
+        "DROP_AGENT_JSON": json.dumps(_accounts(v, "DROP_AGENT_USERS")),
         "SITE_NAME_JSON": json.dumps(v.get("SITE_NAME", "")),
         "SITE_DESCRIPTION_JSON": json.dumps(v.get("SITE_DESCRIPTION", "")),
         "MAX_WINDOWS": str(int(v.get("MAX_WINDOWS") or 5)),
         "MAX_SESSIONS": str(int(v.get("MAX_SESSIONS") or 150000)),
+        "INGEST_WORKERS": str(int(workers)),
         "DASH_PORT": str(int(v["DASH_PORT"])),
     })
     return d

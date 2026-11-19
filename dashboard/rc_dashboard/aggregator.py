@@ -24,14 +24,13 @@ import collections
 import itertools
 import json
 import re
+import sys
 import threading
 import time
 
 from . import anonymize
 from . import ask
 from . import clock
-from . import ebr
-from . import ebrview
 from . import endpoints
 from . import feeds as feedmod
 from . import gz
@@ -45,8 +44,8 @@ from .normalize import Normalizer, canonical_class
 from .procindex import users_conflict
 from .reducers.live import LiveReducer, running_now
 from .reducers.resources import NodeReducer
+from .nodehist import NodeHistory
 from .tail import FileTailSource, read_back
-from .feedfile import format_of, last_records, prefer_of
 
 # Records per lock hold during the backfill.  Between batches the tail and the
 # API take their turn, so the page stays live and watches the history fill in
@@ -69,6 +68,19 @@ def normalized(norm, raws):
         if rec is not None:
             out.append(rec)
     return out
+
+
+def normalized_at(norm, items):
+    """The tail's `(src, end, raw)` items (`FileTailSource.poll_at`) through
+    `norm`: `(recs, at)`, the records it keeps in order, and beside each the
+    item it came from, which says where the tail read it."""
+    recs, at = [], []
+    for item in items:
+        rec = norm.normalize(item[2])
+        if rec is not None:
+            recs.append(rec)
+            at.append(item)
+    return recs, at
 
 
 def last_lines(path, n, window=1 << 20):
@@ -116,16 +128,17 @@ class Aggregator:
         risk_ruleset(cfg)
         self.lock = threading.RLock()
         self.reports = feedmod.resolve(cfg)
-        # The EBR view the feeds are read through (ebrview.py), set by the app
-        # once this is made, or None: the day-files are read as they are.
-        self.convert = None
-        self.convert_error = None
+        # The store of sealed day-files' Parquet tables (history.py), set by
+        # the app once this is made, or None.
+        self.history = None
         self.source = FileTailSource(
             self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
-            days=int(cfg.get("feeds.ebpf.days", 8)), prefer=prefer_of(cfg, "ebpf"))
+            days=int(cfg.get("feeds.ebpf.days", 8)))
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         self.node = NodeReducer(cfg, self.classes)
+        # The node tier over time, read on its own thread (nodehist.py).
+        self.nodehist = NodeHistory(cfg)
         # each collector's own account of itself: start, heartbeat, stop
         self.health = CollectorHealth(cfg)
         self.asker = ask.Asker(cfg)
@@ -133,6 +146,7 @@ class Aggregator:
         # It learns accounts from the roster, so an alias a reader pastes into a
         # filter maps back even for someone the page has not shown yet.
         self.anon = anonymize.from_config(cfg, roster=self._accounts)
+        self.asker.masked_by = self.anon.ident() if self.anon is not None else None
         # Names for the Network bytes panel's endpoints, looked up in the
         # background and applied when the panel is read; None when off.
         self.rdns = endpoints.from_config(cfg)
@@ -151,7 +165,13 @@ class Aggregator:
         self.node_built_at = None
         self.node_result = {}
         self.backfill = {"state": "idle", "pct": 0, "records": 0, "hours": 0}
-        self.stats = {"records": 0, "last_poll": None}
+        # `polled_at`: when a poll last ended, or handed a batch over -- whether
+        # the tail is moving, which /api/health's `ok` is judged by; and the
+        # records a view could not take (`_feed_failed`)
+        self.stats = {"records": 0, "last_poll": None, "feed_errors": 0, "polled_at": None,
+                      "feed_error": None, "feed_error_streak": 0}
+        self._batch_failed = False
+        self._feed_logged = 0.0
         # Bumped by every batch dispatched to the live tier: a live frame made since
         # the last bump is the frame a new one would be (`live_frame`).
         self.dispatched = 0
@@ -173,6 +193,7 @@ class Aggregator:
                 or self.cfg.get("feeds.ebpf.roots") or [])
 
     def start(self):
+        self.nodehist.start()
         reg = self.panels_by_window
         reg.start()
         pre = bool(self.cfg.get("panels.preprocess"))
@@ -204,6 +225,7 @@ class Aggregator:
 
     def stop(self):
         self.stopping = True
+        self.nodehist.stop()
         self.panels_by_window.stop()
         if self.rdns is not None:
             self.rdns.close()
@@ -218,11 +240,15 @@ class Aggregator:
         """
         return self.dispatch(normalized(self.norm, records), older)
 
-    def dispatch(self, recs, older=False):
+    def dispatch(self, recs, older=False, at=None):
         """Hand records `normalized` already to the live tier, the collectors'
-        health and, unless `older`, every held view. Under the lock."""
+        health and, unless `older`, every held view. Under the lock.
+
+        `at`, beside `recs`, is where the tail read each (`normalized_at`): a
+        view skips a record its build already read by it, byte for byte."""
         live_ev, health_ev = LiveReducer.EVENTS, CollectorHealth.EVENTS
-        for rec in recs:
+        feed = self.panels_by_window.feed
+        for rec, place in zip(recs, itertools.repeat(None) if at is None else at):
             ev = rec.get("event")
             if ev in live_ev:
                 try:
@@ -237,10 +263,36 @@ class Aggregator:
             if not older:
                 # Each built window keeps ingesting after its scan, so the panels
                 # stay current between rebuilds instead of ageing a full interval.
-                self.panels_by_window.feed(rec)
+                # One record a view cannot take is counted and passed over: raised
+                # out of here it would end the poll, and the tail, its offsets not
+                # moved, would hand the whole batch over again at the next one.
+                try:
+                    feed(rec, place)
+                except Exception as e:
+                    self._feed_failed(e)
+        if not older and recs:
+            # the tail's batches in a row a view could not take a record of:
+            # /api/health's `ok` goes false at FEED_FAILS (app.py)
+            self.stats["feed_error_streak"] = (
+                self.stats["feed_error_streak"] + 1 if self._batch_failed else 0)
+            self._batch_failed = False
         self.stats["records"] += len(recs)
         self.dispatched += 1
         return len(recs)
+
+    def _feed_failed(self, e):
+        """A record a view could not take: counted, its error kept, and logged
+        when it changes and once a minute while it repeats -- a view that raises
+        at every record shows as more than a count, and floods no log. Under
+        the lock."""
+        now = time.time()
+        msg = ("%s: %s" % (type(e).__name__, e))[:300]
+        self.stats["feed_errors"] += 1
+        self._batch_failed = True
+        if msg != self.stats["feed_error"] or now - self._feed_logged >= 60:
+            print("view feed: %s" % msg, file=sys.stderr, flush=True)
+            self._feed_logged = now
+        self.stats["feed_error"] = msg
 
     def _fold(self, norm):
         """Add a private normalizer's counters to the shared one's, and zero them.
@@ -276,17 +328,6 @@ class Aggregator:
         keep = int(self.cfg.get("feeds.ebpf_node.snapshots_per_host", 2) or 2)
         n = 0
         for f in rep.get("files", []):
-            if f.get("held"):
-                continue                # a twin with no record yet: none is read
-            if format_of(f["path"]) == "ebr":
-                try:
-                    recs = last_records(f["path"], keep)
-                except (OSError, ebr.Error):
-                    continue
-                for rec in recs:
-                    self.node.feed_snapshot(rec)
-                    n += 1
-                continue
             try:
                 lines = last_lines(f["path"], keep)
             except OSError:
@@ -315,23 +356,42 @@ class Aggregator:
         -- while every read of the views and of the live tier waited.
         """
         if not self.positioned.is_set():
+            self.stats["polled_at"] = time.time()
             return 0
-        it = self.source.poll()
+        it = self.source.poll_at()
         n = 0
         while True:
-            raws = list(itertools.islice(it, BACKFILL_BATCH))
-            if not raws:
+            items = list(itertools.islice(it, BACKFILL_BATCH))
+            if not items:
                 break
-            recs = normalized(self._poll_norm, raws)
+            recs, at = normalized_at(self._poll_norm, items)
+            self._restarted(self.source.take_restarted())
             with self.lock:
                 self._fold(self._poll_norm)
-                n += self.dispatch(recs)
+                n += self.dispatch(recs, at=at)
+                self.stats["polled_at"] = time.time()
             # Hand the lock over: this thread keeps the GIL otherwise (see the backfill).
             time.sleep(0)
+        self._restarted(self.source.take_restarted())
         with self.lock:
             self.source.prune_state()
-            self.stats["last_poll"] = time.time()
+            self.stats["last_poll"] = self.stats["polled_at"] = time.time()
         return n
+
+    def _restarted(self, paths):
+        """Tell the views of each of `paths`, which the tail went back to the
+        start of, before it hands over what it read there (`PanelView.restarted`).
+        What each file holds now is read here once, outside the lock
+        (`windows.Look`), at the places the views' builds stopped reading it;
+        under the lock the views only compare. Not under the lock."""
+        if not paths:
+            return
+        with self.lock:
+            ends = self.panels_by_window.seam_ends(paths)
+        looks = {p: winmod.Look(p, ends.get(p, ())) for p in paths}
+        with self.lock:
+            for p in paths:
+                self.panels_by_window.restarted(p, looks[p])
 
     def backfill_now(self):
         """Position the tail, then fill RETENTION behind it.  The one expensive read.
@@ -392,7 +452,7 @@ class Aggregator:
         if not span:
             return 0
 
-        t0 = time.time()
+        t0 = time.monotonic()
         stats = {"bytes": 0, "parse_errors": 0, "records": 0}
         # Its own normalizer, so a batch is read, parsed and normalized outside the
         # lock; the lock is held only to hand the batch to the live tier, and to
@@ -436,7 +496,7 @@ class Aggregator:
             self.backfill.update(
                 state="done", pct=100, records=seen, bytes=stats["bytes"],
                 parse_errors=stats["parse_errors"],
-                elapsed_s=round(time.time() - t0, 1),
+                elapsed_s=round(time.monotonic() - t0, 1),
                 # What the read actually reached back to. Younger than `from`
                 # when the feed itself is -- a collector started inside the
                 # window, or `feeds.ebpf.days` not covering it -- and the live
@@ -465,23 +525,23 @@ class Aggregator:
                         "self_observation": self.norm.stats["dropped_self_observation"],
                     }
                     rep["backfill"] = dict(self.backfill)
-                    # what the tail met in the files it follows
+                    # what the tail met in the files it follows: `parse_errors` the
+                    # lines that are no JSON object; `malformed` the records read
+                    # from them, the backfill's too, that the normalizer could not
+                    # read (a field of a type no collector writes); `feed_errors`
+                    # those a view could not take -- each passed over, never
+                    # stopping the tail
                     rep["tail"] = {k: self.source.stats.get(k, 0) for k in (
-                        "partial_holds", "corrupt_frames", "twin_switches", "parse_errors",
-                        "resets")}
+                        "partial_holds", "parse_errors", "resets")}
+                    rep["tail"].update(malformed=self.norm.stats.get("malformed", 0),
+                                       feed_errors=self.stats["feed_errors"])
                     # written by the demo (rc_dashboard/demo), not measured: the
                     # header says so whenever any host's records do
                     rep["synthetic_hosts"] = self.health.synthetic_hosts()
-                if name in ebrview.TIERS:
-                    # read through the EBR view, or as they are, and why
-                    rep["convert"] = self.convert_status(name)
+                    # the sealed days kept as Parquet, and how far along
+                    rep["history"] = (self.history.status() if self.history is not None
+                                      else {"enabled": False, "state": "off"})
             return self.reports
-
-    def convert_status(self, tier):
-        """The tier's `convert` block (ebrview.EbrView.status)."""
-        if self.convert is not None:
-            return self.convert.status(tier)
-        return ebrview.status_off(self.cfg, tier, self.convert_error)
 
     def collectors(self):
         """Is each collector OK: its own records (`health`) and its files on disk.
@@ -551,6 +611,11 @@ class Aggregator:
         flt = flt or winmod.NO_FILTER
         view = self.panels_by_window.request(win["minutes"], flt)
         facets = self.facets(win["minutes"])
+        # Outside the lock: the node history keeps its own (nodehist.py).
+        try:
+            node_series = self.nodehist.series(win["minutes"] * 60)
+        except Exception as e:
+            node_series = {"_error": str(e)}
         with self.lock:
             ebpf = feedmod.panel_meta(self.reports["ebpf"])
             node = feedmod.panel_meta(self.reports["ebpf_node"])
@@ -583,7 +648,20 @@ class Aggregator:
             body = dict(self.node_result) if isinstance(self.node_result, dict) \
                 else {"rows": self.node_result}
             body.update(node)
+            # the window's probes, per host (nodehist.py): the snapshot above is
+            # now, this is the selected window
+            body["series"] = node_series
             out["node"] = body
+            # Day by day over everything the live tier holds: its own bins, so
+            # it is neither the selected window nor narrowed by the filter --
+            # `_filter` says the latter, and the page says both.
+            try:
+                trend = dict(self.live.daily())
+            except Exception as e:
+                trend = {"_error": str(e)}
+            trend.update(ebpf)
+            trend["_filter"] = None
+            out["trend"] = trend
             res = {"panels": out,
                    # The node tier is a snapshot of current state, not a window
                    # aggregate, so it keeps its own build stamp.
@@ -672,6 +750,10 @@ class Aggregator:
         page's own filter (`flt`). `context.session` makes it about one session,
         given as a digest of its process tree. `context.title` and `.tab` are
         what the page calls the panel, for the prompt."""
+        # Refused before anything is read for it -- Ask off, no password, no
+        # agent, a question too long (ask.check): a question that cannot run
+        # must not make the service build a window or re-read a day first.
+        ask.check(self.cfg, question)
         context = context if isinstance(context, dict) else {}
         if context.get("session") is not None:
             return self._ask_session(question, window_min, history, context)
@@ -708,7 +790,8 @@ class Aggregator:
             extra["risk_who"] = ask.risk_who(panels.get("risk"))
             extra["done"] = self.asker.done_for_prompt()
             extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
-                             "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                             "classes_shown": anonymize.verbatim(
+                                 [c for c in classes if isinstance(c, str)][:8])
                              if isinstance(classes, list) else None}
             scope.update({"about": "suggestions for the operator", "parse": "suggestions",
                           "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE})
@@ -798,11 +881,12 @@ class Aggregator:
         """What a question was asked over, as the page's own URL keys, so a
         citation in its answer opens the page on the data the model saw: the
         window, the filter (none is no filter, not "whatever is on screen"),
-        the classes shown, and the session."""
+        the classes shown, and the session. The classes and agent types are
+        the reader's own text, kept as sent (`anonymize.Verbatim`)."""
         flt = flt or winmod.NO_FILTER
         return {"window_min": win["minutes"], "users": list(flt.users),
                 "atypes": list(flt.agent_types),
-                "cls": [c for c in classes if isinstance(c, str)][:8]
+                "cls": anonymize.verbatim([c for c in classes if isinstance(c, str)][:8])
                 if isinstance(classes, list) else None,
                 "sid": sid}
 
@@ -876,7 +960,8 @@ class Aggregator:
             panels = self._cascade_hints(panels, self._agent_sessions(self.trajectories(window_min, flt)))
         classes = ctx.get("classes")
         extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
-                         "classes_shown": [c for c in classes if isinstance(c, str)][:8]
+                         "classes_shown": anonymize.verbatim(
+                             [c for c in classes if isinstance(c, str)][:8])
                          if isinstance(classes, list) else None}
         title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
         scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),
@@ -892,12 +977,6 @@ class Aggregator:
         sid = ctx.get("session")
         if not isinstance(sid, str) or not sid or len(sid) > 400:
             raise ValueError("context.session: a session id")
-        # Refused before the read: a question that cannot run must not make
-        # the service re-read a day of records first.
-        info = ask.describe(self.cfg)
-        if not info["enabled"] or not info["available"]:
-            raise ValueError("chat is turned off (ask.enabled)" if not info["enabled"]
-                             else info["error"] or "the agent cannot run here")
         win = self.window(window_min)
         body = proctree.serve(self, sid, window_min)
         if body.get("found") is None:

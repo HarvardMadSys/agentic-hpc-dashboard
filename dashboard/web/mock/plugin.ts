@@ -407,8 +407,9 @@ export function mockApi(): Plugin {
             const panels = Object.fromEntries(
               Object.entries(src.panels || {}).map(([k, v]) => [
                 k,
-                // The node tier is a snapshot of now, not a window aggregate.
-                k === 'node' ? v : { ...(v as object), _window: st },
+                // The node tier is a snapshot of now, and the day-by-day trend
+                // spans retention: neither is a window aggregate.
+                k === 'node' || k === 'trend' ? v : { ...(v as object), _window: st },
               ]),
             );
             return send({ ...src, panels, window: win, window_status: st });

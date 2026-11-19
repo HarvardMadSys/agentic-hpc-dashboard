@@ -31,6 +31,7 @@ import { useStickyBar } from './lib/sticky';
 import { FrameCtx, PinnedCtx } from './lib/useNow';
 import { CLS } from './lib/classes';
 import { Icon } from './components/Icon';
+import { LogoGlyph } from './components/Logo';
 import type { IconName } from './components/Icon';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteItem } from './components/CommandPalette';
@@ -46,6 +47,7 @@ import './tabs/users.css';
 import { TabBoundary, lazyTab, preloadTabs } from './lib/lazyTab';
 import { NodeNounCtx, nodeWords } from './lib/nodes';
 import { feedLabel } from './lib/feeds';
+import { table } from './lib/lookup';
 
 /* Live is the first paint, with the shell; every other tab loads its code
  * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). Search &
@@ -93,7 +95,7 @@ const TABS: Tab[] = [
  *  login-node use, not the cluster's (README, "Scope is stated"). */
 const NODES_EYEBROW = 'what runs on them, what should not, and what they ask of the scheduler';
 /** A link to a tab that folded into another lands on the part it became. */
-const LANDS_ON: Record<string, string> = { overview: 'sec-who-uses-what' };
+const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what' });
 /** The tab the page was opened on, read once, before the link is rewritten
  *  (an effect can run twice on mount, and the second saw the rewritten link). */
 const OPENED_ON = new URLSearchParams(window.location.search).get('tab') ?? '';
@@ -260,6 +262,17 @@ export default function App() {
     if (rebuild > 0) reloadPanels();
   }, [rebuild, reloadPanels]);
 
+  // The refresh button and command: everything on the page asked for again --
+  // the live frame, the windows and the feeds (`live.refresh`), the panels and
+  // the sessions -- not only the live frame.
+  const refreshLive = live.refresh;
+  const reloadTraj = traj.reload;
+  const refresh = useCallback(() => {
+    refreshLive();
+    reloadPanels();
+    reloadTraj();
+  }, [refreshLive, reloadPanels, reloadTraj]);
+
   // A `feeds` frame supersedes the REST snapshot.
   const wsFeeds = live.feeds;
   const mergeFeeds = feeds.merge;
@@ -310,7 +323,7 @@ export default function App() {
     (config.data?.site as Record<string, { _value?: unknown }> | undefined)?.name?._value ?? '',
   );
   useEffect(() => {
-    document.title = siteName ? `${siteName} · Agent Behaviour` : 'Agent Behaviour';
+    document.title = siteName ? `${siteName} · Agent Observatory` : 'Agent Observatory';
   }, [siteName]);
   // Names are aliased on the way out (rc_dashboard/anonymize.py): the header
   // says so, or a reader takes `user-7f3a9c1e` for a real account.
@@ -480,7 +493,7 @@ export default function App() {
           />
         );
       case 'resources':
-        return <ResourcesTab P={P} cls={cls} />;
+        return <ResourcesTab P={P} cls={cls} live={live.live} />;
       case 'risk':
         return <RiskIoTab P={P} cls={cls} part="risk" />;
       case 'chat':
@@ -590,7 +603,7 @@ export default function App() {
       label: 'Refresh the data',
       icon: 'refresh',
       keywords: 'reload update',
-      run: live.refresh,
+      run: refresh,
     },
     {
       id: 'act:rail',
@@ -618,8 +631,10 @@ export default function App() {
           <Icon name="menu" />
         </button>
         <span className="topbar-brand">
-          <span className="bdot" />
-          Agent Behaviour
+          <span className="bmark bmark-sm" aria-hidden="true">
+            <LogoGlyph size={22} />
+          </span>
+          Agent Observatory
         </span>
         <span className="topbar-tab">
           <Icon name={railOn.icon} size={16} />
@@ -637,9 +652,9 @@ export default function App() {
         <div className="brand">
           <div className="mark">
             <span className="bmark" aria-hidden="true">
-              <Icon name="agents" size={15} />
+              <LogoGlyph />
             </span>
-            <span className="mark-t">Agent Behaviour</span>
+            <span className="mark-t">Agent Observatory</span>
           </div>
           <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
             {siteName || 'rc_measurement'}
@@ -746,6 +761,43 @@ export default function App() {
           <Icon name={mini ? 'expand' : 'collapse'} size={16} />
           <span>fold</span>
         </button>
+        {/* MaDSys, Harvard SEAS and FASRC. Folded, the MaDSys hexagon alone. */}
+        <div className="credits">
+          <a
+            className="credits-lab"
+            href="https://madsys.seas.harvard.edu/"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-tip={mini ? 'MaDSys · Harvard SEAS · FASRC' : undefined}
+          >
+            <img
+              className="credits-full"
+              src="./logos/madsys.png"
+              alt="Harvard University MaDSys: Measurement and Design of Systems"
+              width={385}
+              height={140}
+            />
+            <img className="credits-mark" src="./logos/madsys-mark.png" alt="MaDSys" width={117} height={132} />
+          </a>
+          <div className="credits-partners">
+            <a href="https://seas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+              <img
+                src="./logos/harvard-seas.svg"
+                alt="Harvard John A. Paulson School of Engineering and Applied Sciences"
+                width={307}
+                height={86}
+              />
+            </a>
+            <a href="https://www.rc.fas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+              <img
+                src="./logos/fasrc.png"
+                alt="FAS Research Computing, Harvard University"
+                width={284}
+                height={61}
+              />
+            </a>
+          </div>
+        </div>
       </aside>
 
       <main ref={mainRef}>
@@ -829,7 +881,7 @@ export default function App() {
               <Icon name="hosts" size={14} />
               <b>{fint(live.live?.hosts?.length ?? null)}</b> {(live.live?.hosts?.length ?? 0) === 1 ? nodes.one : nodes.many}
             </span>
-            <button className="btn" onClick={live.refresh} data-tip="ask the service for everything on this page again">
+            <button className="btn" onClick={refresh} data-tip="ask the service for everything on this page again">
               <Icon name="refresh" size={14} />
               refresh
             </button>

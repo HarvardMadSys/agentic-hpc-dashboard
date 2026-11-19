@@ -19,6 +19,9 @@ export interface IoQuery {
   tool?: string[];
   /** tool kinds (Tool mix) */
   bucket?: string[];
+  /** how the processes ended, as the tool mix's exit verdicts word it
+   *  (`nonzero`, `signal`, `answer`, `pipe`, `none`, or `ok` for an exit 0) */
+  outcome?: string[];
   /** a blast-radius row: one agent's processes (and its subagents') on one host */
   host?: string;
   apid?: number[];

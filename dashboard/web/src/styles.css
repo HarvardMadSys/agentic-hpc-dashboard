@@ -135,22 +135,18 @@ button {
 .bmark {
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: 7px;
   display: grid;
   place-items: center;
   flex: none;
   color: #fff;
   background: var(--crimson);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 2px 6px rgba(165, 28, 48, 0.28);
 }
-.brand .bdot,
-.topbar .bdot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--crimson);
-  flex: none;
-  box-shadow: 0 0 0 3px rgba(165, 28, 48, 0.18);
+/* the top bar's mark, under 900px */
+.bmark.bmark-sm {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
 }
 .brand .sub {
   margin: 6px 0 0 40px;
@@ -429,6 +425,47 @@ section.panel {
   background: var(--surface-2);
   color: var(--crimson-ink);
 }
+/* the rail's last word: MaDSys, Harvard SEAS and FASRC. The logos
+   keep their own colours; each is drawn for a white ground, as the rail is. */
+.credits {
+  margin: 12px 12px 0;
+  padding: 12px 4px 0;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.credits img {
+  display: block;
+  height: auto;
+}
+.credits-lab .credits-full {
+  width: 160px;
+}
+.credits-lab .credits-mark {
+  display: none;
+  width: 30px;
+}
+.credits-partners {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.credits-partners a:first-child img {
+  width: 176px;
+}
+.credits-partners a:last-child img {
+  width: 112px;
+}
+.credits a {
+  border-radius: 4px;
+}
+.credits a:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
 /* the drawer's close, below 900px only (scoped past .iconbtn, which follows) */
 .rail .rail-close {
   display: none;
@@ -488,6 +525,17 @@ section.panel {
   }
   .app.mini .rail-search kbd {
     display: none;
+  }
+  .app.mini .credits {
+    margin: 10px 8px 0;
+    padding: 10px 0 0;
+  }
+  .app.mini .credits-full,
+  .app.mini .credits-partners {
+    display: none;
+  }
+  .app.mini .credits-lab .credits-mark {
+    display: block;
   }
   .app.mini .rail-search {
     margin: 0 auto 6px;
@@ -1766,6 +1814,12 @@ td.cmd-cut {
 .notreturned .feed {
   color: var(--ink-2);
 }
+/* The service could not reduce the panel (Panel.tsx <NotReduced>): the same
+ * frame, with the pill of a failure. */
+.notreduced .pill {
+  border-color: var(--crit);
+  color: var(--crit);
+}
 /* Feed present, rows exist, the reduction is not finished. A THIRD state, and
  * it must look like neither `nofeed` (dashed, blames the path) nor `none`
  * (a flat rule, asserts a measurement). Solid border, and a moving bar. */
@@ -2740,6 +2794,67 @@ table tr.section.fold:hover td {
   position: relative;
   margin: 0 auto;
 }
+/* a side the tree runs past: the edge fades into the panel, so a box cut there reads as more tree and not as a narrow
+   box, and a button in it scrolls a screenful that way. The fade takes no pointer; the button does */
+.tdiag-wrap {
+  position: relative;
+  max-width: 100%;
+  min-width: 0;
+}
+.tdiag-wrap::before,
+.tdiag-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+}
+.tdiag-wrap::before {
+  left: 0;
+  background: linear-gradient(to right, var(--surface) 25%, transparent);
+}
+.tdiag-wrap::after {
+  right: 0;
+  background: linear-gradient(to left, var(--surface) 25%, transparent);
+}
+.tdiag-wrap.more-l::before,
+.tdiag-wrap.more-r::after {
+  opacity: 1;
+}
+.tdiag-more {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 22px;
+  height: 30px;
+  padding: 0 0 2px;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tdiag-more.l {
+  left: 0;
+}
+.tdiag-more.r {
+  right: 0;
+}
+.tdiag-more:hover {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+.tdiag-more:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 1px;
+}
 .tdiag-edges {
   position: absolute;
   left: 0;
@@ -3169,4 +3284,60 @@ th.sortable:focus-visible {
   textarea {
     font-size: 16px !important;
   }
+}
+
+/* Needs attention (tabs/Attention.tsx): one line per flag, its split and its
+   detail under it, and the link to the panel at the line's end. */
+.attn {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.attn li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+}
+.attn li:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+.attn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  align-self: center;
+}
+.attn-dot.data {
+  background: var(--serious);
+}
+.attn-what {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attn-go {
+  white-space: nowrap;
+}
+.attn-note {
+  grid-column: 2 / 4;
+  color: var(--muted);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attn-foot {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Commands that failed (tabs/ExitsPanel.tsx): the codes and signals of a row,
+   wrapping between items, never inside one. */
+.exit-item {
+  white-space: nowrap;
 }

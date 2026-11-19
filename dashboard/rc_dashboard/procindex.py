@@ -21,7 +21,9 @@ Pids are reused -- madsys-gpu1's wrapped on 2026-10-09 -- so a link is refused
 when it would join two users' processes (root aside), and an untagged parent is
 refused when it started after the child that asked for it. Without both, an
 unrelated `cut` that inherited a dead parent's pid made glen's codex the parent
-of haoran's Claude Desktop server.
+of haoran's Claude Desktop server. Nor does a record of another process on a
+held pid -- another user's, or one from after the held process exited -- fill
+in a parent or cwd the held one lacked.
 
 The parent kept is the FIRST one seen. A process whose parent exits is
 reparented to init (or a subreaper), and its later tick records say so; the
@@ -58,7 +60,8 @@ class ProcIndex:
 
     def __init__(self, cfg, classes=None):
         self.cap = int(cfg.get("reducers.sessions.proc_index_max", 200000) or 200000)
-        # (host, pid) -> [ppid, role, spawned_by_agent, command, cwd, user]
+        # (host, pid) -> [ppid, role, spawned_by_agent, command, cwd, user, earliest time
+        # known (its start, else its first record), exit time]
         self.entries = collections.OrderedDict()   # evicted oldest first (`pop_oldest`)
         self.evicted = 0
         # (host, pid) -> [earliest start, user] of the held children naming it
@@ -81,12 +84,18 @@ class ProcIndex:
         key = (host, pid)
         e = self.entries.get(key)
         if e is not None:
-            if e[0] in _NO_PARENT and rec.get("ppid") not in _NO_PARENT:
-                e[0] = rec.get("ppid")
-                self.version += 1
-            if e[4] is None and rec.get("cwd"):
-                e[4] = rec["cwd"]
-                self.version += 1
+            # A pid is reused: a record of another process -- another user's, or
+            # one from after the held one exited -- fills nothing in. The entry
+            # stays the first process's.
+            if not _another_process(e, rec.get("user"), _at(rec)):
+                if e[0] in _NO_PARENT and rec.get("ppid") not in _NO_PARENT:
+                    e[0] = rec.get("ppid")
+                    self.version += 1
+                if e[4] is None and rec.get("cwd"):
+                    e[4] = rec["cwd"]
+                    self.version += 1
+                if rec.get("event") == "exit":
+                    e[7] = rec.get("_ts_epoch")
             if self.touched is not None:
                 self.touched.add(key)
             return
@@ -108,7 +117,8 @@ class ProcIndex:
         # process that did would otherwise move the anchor drift is measured from.
         self.entries[key] = [rec.get("ppid"), role,
                              spawned_by_agent(role, rec.get("_command"), rec.get("args")),
-                             rec.get("_command"), rec.get("cwd"), rec.get("user")]
+                             rec.get("_command"), rec.get("cwd"), rec.get("user"), _at(rec),
+                             rec.get("_ts_epoch") if rec.get("event") == "exit" else None]
         self.version += 1
         if self.touched is not None:
             self.touched.add(key)
@@ -142,6 +152,10 @@ class ProcIndex:
         return {"entries": self.entries, "wanted": self.wanted,
                 "touched": {"entries": self.touched or ()}}
 
+    def carry_caps(self):
+        """What one pass holds the carried maps to (`hours.combine_carries`)."""
+        return {"entries": self.cap, "wanted": self.cap}
+
     def seed(self, c):
         self.entries = c["entries"]
         self.wanted = c["wanted"]
@@ -163,7 +177,8 @@ class ProcIndex:
 
         A key new here is admitted as `feed` admits one, oldest evicted at the
         cap; a key held already keeps what it was first seen with, and takes
-        only a parent or a cwd it lacked -- `feed`'s own rule."""
+        only a parent or a cwd it lacked, and its exit, from the same process
+        -- `feed`'s own rule."""
         for k, e in o.entries.items():
             cur = self.entries.get(k)
             if cur is None:
@@ -172,10 +187,14 @@ class ProcIndex:
                     self.evicted += 1
                 self.entries[k] = e
                 continue
+            if _another_process(cur, e[5], e[6]):
+                continue
             if cur[0] in _NO_PARENT and e[0] not in _NO_PARENT:
                 cur[0] = e[0]
             if cur[4] is None and e[4]:
                 cur[4] = e[4]
+            if e[7] is not None:
+                cur[7] = e[7]
         self.wanted_full += o.wanted_full
         self.version += 1
 
@@ -235,6 +254,19 @@ class ProcIndex:
 def users_conflict(a, b):
     """Two known, different, non-root users: one cannot have started the other."""
     return bool(a and b and a != b and "root" not in (a, b))
+
+
+def _another_process(e, user, at):
+    """Whether a record of `user` from time `at` is of another process than
+    held entry `e`'s: another user's, or from after `e`'s process exited."""
+    return users_conflict(user, e[5]) or (
+        at is not None and e[7] is not None and at > e[7] + 1.0)
+
+
+def _at(rec):
+    """The earliest a record says its process is known at: its start, else its time."""
+    st = _start(rec)
+    return st if st is not None else rec.get("_ts_epoch")
 
 
 def _start(rec):

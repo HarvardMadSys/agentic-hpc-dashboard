@@ -78,12 +78,15 @@ import time
 from array import array
 
 from . import feeds as feedmod, fastjson
-from . import gz
-from .export import _window_stream, event_filter, window_plan, window_scan
-from .feedfile import day_files, end_at_jsonl as _end_at, format_of, host_of, prefer_of
+from . import gz, keysearch, replica
+from .export import event_filter, window_plan, window_scan
+from .feedfile import day_files, end_at_jsonl as _end_at, host_of
 from .normalize import Normalizer, epoch_of
+from .where import AfterColon
 from .procindex import VIA
 from .redact import redact
+from .reducers import EXIT_ANSWERS
+from .reducers.own_io import OwnIo, cap_of
 from .reducers.trajectories import fold as fold_sessions
 
 NO_PARENT = (None, 0, 1)
@@ -126,8 +129,9 @@ RETYPE_QUICK = 10.0      # seconds: a failed try that ran longer was work, not a
 RETYPE_PAUSE = (0.5, 120.0)  # seconds the shell sat idle before a line a person typed,
                              # and at most from a failed try to the next line
 RETYPE_EDITS = (3, 5)    # edits a retyped line is from the try: 3, or a 5th of its length
-# Programs whose exit 1 is an answer, not a failure: no line matched, the files differ.
-ANSWERS = frozenset({"grep", "egrep", "fgrep", "zgrep", "rg", "ag", "diff", "cmp"})
+# Programs whose exit 1 is an answer, not a failure: no line matched, the files
+# differ. One list with the tool mix's exit verdicts (reducers.EXIT_ANSWERS).
+ANSWERS = EXIT_ANSWERS
 
 DEFAULTS = {
     # Matched exit records read before the scan stops and says where. At ~25 us a
@@ -139,6 +143,10 @@ DEFAULTS = {
     "inspect_newest_records": 600000,
     # Bytes of day-file read before the scan stops, likewise.
     "inspect_max_bytes": 6 << 30,
+    # Worker processes a read's records are built in (`keysearch`), at most this
+    # many and no more than the CPUs the service may use; 1 builds them in the
+    # service's own process. The same records either way.
+    "inspect_workers": 8,
     # Processes itemised; past it a process with nothing below it is counted
     # under its parent instead (`k: "agg"`), and a parent at 1.5x it too.
     "inspect_hold": 20000,
@@ -212,21 +220,29 @@ def _add(a, b):
 # A process's I/O, from its exit record: disk bytes, syscall bytes (pipes and
 # terminals included) and network bytes, in MB. None when the record carries
 # none of them -- unmeasured, as `cpu` None is -- and summed up a subtree the
-# way `sub_cpu` is, so a session's tree says which commands did the I/O.
+# way `sub_cpu` is, so a session's tree says which commands did the I/O. The
+# disk and syscall bytes are the process's own (`own`, from the read's join,
+# reducers/own_io.py): the collector's figure also holds every child the process
+# reaped, and those are drawn, and summed, as the children's own.
 IO_KEYS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb", "tx_mb", "rx_mb")
 
 
-def _io_of(rec):
+def _io_of(rec, own=None):
     io = rec.get("io") or {}
     tx, rx = rec.get("net_tx_bytes"), rec.get("net_rx_bytes")
     if io.get("rchar_mb") is None and io.get("rd_mb") is None and tx is None and rx is None:
         return None
-    return (io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0, io.get("rchar_mb") or 0.0,
-            io.get("wchar_mb") or 0.0, (tx or 0) / 1e6, (rx or 0) / 1e6)
+    rd, wr, rc, wc = own if own is not None else (
+        io.get("rd_mb"), io.get("wr_mb"), io.get("rchar_mb"), io.get("wchar_mb"))
+    return (rd or 0.0, wr or 0.0, rc or 0.0, wc or 0.0, (tx or 0) / 1e6, (rx or 0) / 1e6)
 
 
 def _io_add(a, b):
-    return b if a is None else a if b is None else tuple(x + y for x, y in zip(a, b))
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3], a[4] + b[4], a[5] + b[5])
 
 
 def _io_out(v):
@@ -249,10 +265,12 @@ class Agg:
         self.kv, self.depth = kv, depth
 
     def _span(self, t0, t1):
-        for t in (t0, t1):
-            if t is not None:
-                self.t0 = t if self.t0 is None else min(self.t0, t)
-                self.t1 = t if self.t1 is None else max(self.t1, t)
+        if t0 is not None:
+            self.t0 = t0 if self.t0 is None else min(self.t0, t0)
+            self.t1 = t0 if self.t1 is None else max(self.t1, t0)
+        if t1 is not None:
+            self.t0 = t1 if self.t0 is None else min(self.t0, t1)
+            self.t1 = t1 if self.t1 is None else max(self.t1, t1)
 
     def _cmd(self, cmd, n):
         cmd = cmd or "?"
@@ -339,7 +357,8 @@ class Proc:
         self.tries = 0
 
     @classmethod
-    def from_record(cls, rec, start, ts):
+    def from_record(cls, rec, start, ts, io):
+        """`io`: its own I/O, as `_io_of` gives it."""
         p = cls(rec.get("pid"))
         p.ppid = rec.get("ppid")
         p.cmd = rec.get("_command")
@@ -353,7 +372,7 @@ class Proc:
         p.purpose = rec.get("_purpose")
         p.start, p.end = start, ts
         p.dur, p.cpu = rec.get("duration_s"), rec.get("cpu_s")
-        p.io = _io_of(rec)
+        p.io = io
         p.code, p.sig = rec.get("exit_code"), rec.get("signal")
         p.core = bool(rec.get("core_dumped"))
         # A fork that never exec'd: a shell's subshell, so a `zsh /bin/zsh -i`
@@ -433,7 +452,7 @@ class TreeBuilder:
     """
 
     def __init__(self, hold=DEFAULTS["inspect_hold"],
-                 per_parent=DEFAULTS["inspect_per_parent"], newest=False):
+                 per_parent=DEFAULTS["inspect_per_parent"], newest=False, own_cap=None):
         self.hold = max(1, int(hold))
         self.hard = self.hold + self.hold // 2
         self.per_parent = max(1, int(per_parent))
@@ -466,6 +485,10 @@ class TreeBuilder:
         self.first_tool = self.first_any = None
         self.longest = []           # the few longest, longest first
         self.fails, self.n_fails = [], 0
+        # Each process's own disk and syscall bytes (reducers/own_io.py), over
+        # the records this read takes: a child the read does not take (another
+        # session's) is not taken off its parent.
+        self.own = OwnIo(cap=own_cap, name="inspector")
 
     # ----------------------------------------------------------------- feed
     def feed(self, rec):
@@ -476,6 +499,9 @@ class TreeBuilder:
         if ev not in ("exit", "truncated"):
             return
         self.matched += 1
+        # before any budget applies: a process only counted still gives its
+        # children back, and is counted with its own bytes
+        io = _io_of(rec, self.own.take(rec) if ev == "exit" else self.own.peek(rec))
         ts = rec.get("_ts_epoch")
         if ts is not None:
             self.first = ts if self.first is None else min(self.first, ts)
@@ -514,9 +540,9 @@ class TreeBuilder:
         drawn = self.itemised - self.absorbed if self.newest else self.itemised
         if (drawn >= (self.hold if leaf else self.hard)
                 or (leaf and self.leaves[lk] >= self.per_parent)):
-            self._count(rec, ppid, st, ts, kids, agg, par)
+            self._count(rec, ppid, st, ts, kids, agg, par, io)
             return
-        p = Proc.from_record(rec, st, ts)
+        p = Proc.from_record(rec, st, ts, io)
         self.itemised += 1
         if leaf:
             self.leaves[lk] += 1
@@ -625,8 +651,9 @@ class TreeBuilder:
                                      for f in fails]}
         return out
 
-    def _count(self, rec, ppid, st, ts, kids, agg, par=None):
-        """Past the hold budget: this process, and what waited on it, as a count."""
+    def _count(self, rec, ppid, st, ts, kids, agg, par=None, io=None):
+        """Past the hold budget: this process, and what waited on it, as a count.
+        `io`: its own I/O (`_io_of`)."""
         self.aggregated += 1
         if par is not None:
             if par.agg is None:
@@ -636,7 +663,7 @@ class TreeBuilder:
             table, key = ((self.orphan_agg, rec.get("_kv")) if ppid in NO_PARENT
                           else (self.pending_agg, ppid))
             a = self._agg_at(table, key, rec.get("_kv"), rec.get("depth"))
-        a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, _io_of(rec))
+        a.add(rec.get("_command"), rec.get("cpu_s"), st, ts, io)
         for k in kids or ():
             self.absorbed += a.absorb(k)
             self._drop(k)
@@ -1455,7 +1482,7 @@ def key_patterns(members):
 
 
 def key_where(members):
-    """`key_patterns` for an EBR day-file's decoder: an `ebr` filter (`where`)
+    """`key_patterns` for a sealed file's replica: a `where` (`where.py`)
     that passes every record whose session key is one of these, or None
     exactly when `_key_values` is None (a key not on a pid: no prefilter).
 
@@ -1469,9 +1496,7 @@ def key_where(members):
     if kvs is None:
         return None
     kvs = frozenset(kvs)
-    return [{"session_key": lambda v: isinstance(v, str) and bool(v)
-             and v.split(":", 1)[-1] in kvs},
-            {"agent_pid": kvs}]
+    return [{"session_key": AfterColon(kvs)}, {"agent_pid": kvs}]
 
 
 def key_matcher(members):
@@ -1563,12 +1588,24 @@ def _key_stream_gz(entry, norm, since, until, stats, pats, ev):
 def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=None):
     """One file's records on the keys, as `(ts, rec)`, ascending.
 
-    An EBR day-file is read as a window scan reads it (`export._window_stream`),
-    its decoder rejecting by `kinds` and the keys' `where` (`key_where`) before
-    a record is built: there are no lines to search."""
-    if format_of(entry["path"]) == "ebr":
-        yield from _window_stream(entry, norm, since, until, stats, kinds=kinds, where=where)
-        return
+    A sealed file with a replica is read from it (`_key_stream_replica`), the
+    replica rejecting by the keys' `where` (`key_where`) on its columns before a
+    record is built: the session's few records of a day are found without
+    inflating the `.gz` to search it. Should the replica raise, the read goes on
+    in the `.gz`, from where it left off."""
+    rep = replica.for_path(entry["path"]) if where is not None else None
+    if rep is not None:
+        got = {}
+        try:
+            yield from _key_stream_replica(entry, rep, norm, since, until, stats, kinds,
+                                           where, got)
+            return
+        except Exception as e:
+            # The replica stopped answering part way: the rest of the read from
+            # the file, from the line after the last one it read (`replica.failed`).
+            replica.failed(entry["path"], rep, e)
+            if "next" in got:
+                entry = dict(entry, start=got["next"])
     if gz.is_gz(entry["path"]):
         yield from _key_stream_gz(entry, norm, since, until, stats, pats, ev)
         return
@@ -1620,7 +1657,59 @@ def _key_stream(entry, norm, since, until, stats, pats, ev, kinds=None, where=No
             mm.close()
 
 
-def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
+def _key_stream_replica(entry, rep, norm, since, until, stats, kinds, where, got=None):
+    """`_key_stream_gz` over a sealed file's replica, read and counted as that
+    reads and counts the file: the same end (the read's end and its slack, to a
+    line's end), `bytes` a CHUNK at a time -- each chunk ending at a line's end,
+    counted before its records are looked at -- and `skipped` the records on the
+    keys of an event not asked for. So `inspect_max_bytes` stops a read at the
+    same record either way. The records on the keys are found by `where` on the
+    replica's columns rather than by the patterns, and a line that does not
+    parse, which no column describes, is not looked at. `got["next"]` keeps
+    where a read of the file would go on from: the line after the last record
+    read."""
+    got = {} if got is None else got
+    size = rep.size
+    start = entry["start"]
+    if size <= start:
+        return
+    end = rep.end_at(until + UNTIL_SLACK, size) if until is not None else size
+    end = rep.prev_boundary(max(start, end))
+    if end <= start:
+        return
+
+    def chunk(pos):
+        return min(rep.next_boundary(min(pos + CHUNK, end)), end)
+    pos, stop = start, chunk(start)
+    stats["bytes"] += stop - pos
+    for off, _n, raw in rep.records(start, end, where=where):
+        got["next"] = off + _n
+        while off >= stop:
+            pos, stop = stop, chunk(stop)
+            stats["bytes"] += stop - pos
+        if kinds is not None and raw.get("event") not in kinds:
+            stats["skipped"] += 1
+            continue
+        stats["scanned"] += 1
+        rec = norm.normalize(raw)
+        if rec is None:
+            continue
+        ts = rec.get("_ts_epoch")
+        if ts is None:
+            stats["no_ts"] += 1
+            continue
+        if ts < since:
+            continue
+        if until is not None and ts > until:
+            return                    # sorted: nothing later qualifies
+        yield ts, rec
+    while stop < end:
+        pos, stop = stop, chunk(stop)
+        stats["bytes"] += stop - pos
+
+
+def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None, workers=1,
+             cfg=None):
     """Yield `(rec, stats)` for the records on these session keys, OLDEST FIRST.
 
     `window_scan` for one session: the same byte ranges, the same per-file
@@ -1633,19 +1722,38 @@ def key_scan(plan, norm, since, until, pats, events=EVENTS, where=None):
 
     `skipped` here counts the lines a key hit that are not one of `events`;
     the lines no key hit are never visited, so they are not counted at all.
-    An EBR day-file is decoded instead, rejecting by `events` and `where`
-    (`key_where`) before a record is built; `skipped` then counts what those
-    rejected, and `bytes` the frames read (`inspect_max_bytes` bounds the
-    bytes READ, in either format).
+    A sealed file with a replica is read from it instead, the keys' `where`
+    (`key_where`) rejecting on its columns before a record is built, and counted
+    as its search would be: the same `bytes`, chunk by chunk, so
+    `inspect_max_bytes` stops the read at the same record, and the same
+    `skipped` (`_key_stream_replica`).
+
+    With `workers` over 1 (and `cfg`, the config `norm` was made from), a plain
+    file's and a replica's records are built and normalised in that many worker
+    processes, a part of the file each, and replayed here in order with the same
+    counters (`keysearch`); a `.gz` with no replica is read here as before.
     """
     stats = {"scanned": 0, "skipped": 0, "bytes": 0, "parse_errors": 0,
              "no_ts": 0, "files": len(plan), "method": "key search"}
     ev = event_filter(events)
     kinds = frozenset(events) if events else None
-    streams = [_key_stream(e, norm, since, until, stats, pats, ev, kinds, where)
-               for e in plan]
-    for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
-        yield rec, stats
+    spec = keysearch.cfg_spec(cfg) if workers > 1 and cfg is not None else None
+    read = keysearch.next_read() if spec is not None else None
+    try:
+        streams = []
+        for e in plan:
+            s = (keysearch.stream(e, spec, since, until, stats, pats, events, kinds, where,
+                                  workers, read) if spec is not None else None)
+            streams.append(s if s is not None
+                           else _key_stream(e, norm, since, until, stats, pats, ev, kinds,
+                                            where))
+        for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
+            yield rec, stats
+    finally:
+        # stopped early (a budget, a reader gone elsewhere): what the workers have
+        # left of this read is dropped, so the next read does not wait behind it
+        if read is not None:
+            keysearch.cancel(read)
 
 
 def _day_end(sid):
@@ -1736,7 +1844,7 @@ def _remember(key, body):
     """Keep a built tree, least recently opened out first, within the bounds."""
     size = len(json.dumps(body, default=str, separators=(",", ":")))
     with _cache_lock:
-        _cache[key] = (time.time() + CACHE_TTL, body, size)
+        _cache[key] = (time.monotonic() + CACHE_TTL, body, size)
         _cache.move_to_end(key)
         while len(_cache) > 1 and (len(_cache) > CACHE_KEEP or
                                    sum(v[2] for v in _cache.values()) > CACHE_BYTES):
@@ -1751,7 +1859,9 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     page uses `frm` to continue past a read that stopped at its budget. One
     read runs at a time -- a second request waits rather than doubling the I/O.
     A built tree is served again for CACHE_TTL seconds, the last CACHE_KEEP of
-    them, until the window is rebuilt (`installed_at` is in the key).
+    them, until the window is rebuilt (`installed_at` is in the key). The TTL
+    runs on the monotonic clock (`now`, for tests, is a reading of it): a
+    pinned one (`clock.as_of`) never moves.
 
     `order` is one of ORDERS, anything else the first: which end of the
     session the tree lists first, and draws in full (see the module's notes).
@@ -1760,7 +1870,7 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
     scan, gives way mid-read to anyone who opens a session, and returns None
     when it did.
     """
-    now = now or time.time()
+    now = now or time.monotonic()
     order = order if order in ORDERS else ORDERS[0]
     key = (sid, view.minutes, view.installed_at, frm, to, order)
     hit = _cached(key, now)
@@ -1778,7 +1888,7 @@ def inspect(cfg, view, lock, roots, sid, frm=None, to=None, now=None, background
             with _cache_lock:
                 _waiting[0] -= 1
     try:
-        hit = _cached(key, time.time())
+        hit = _cached(key, time.monotonic())
         if hit is not None:
             return hit
         try:
@@ -1820,7 +1930,8 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
             if kt == "apid" and kv.isdigit():
                 keys.add(int(kv))
 
-    t0 = time.time()
+    t0 = time.time()                # the present: it bounds the read
+    m0 = time.monotonic()           # and this times it
     if first is None:
         return {"sid": sid, "found": False, "_window": status, "row": row,
                 "why": "the session's records carry no timestamp, so they cannot "
@@ -1832,24 +1943,26 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
     if to:
         until = min(until, to) if until else to
     days = int(max(0, t0 - since) // 86400) + 2
-    prefer = prefer_of(cfg, "ebpf")
     # The sid names one host, and a day-file is named for its host: reading
     # the other hosts' files would only find other processes with the same pids.
     # Its files are planned alone, and every host's only when none of them
     # holds the span -- as the full plan, cut to the host's, read before. The
     # host is the file's exactly (`feedfile.host_of`): `login1.` is a prefix of
     # `login1.rc.fas`'s files too.
-    mine = [p for p in day_files(roots, days, prefer) if host and host_of(p) == host]
+    mine = [p for p in day_files(roots, days) if host and host_of(p) == host]
     plan, total = window_plan(roots, since, days, paths=mine) if mine else ([], 0)
     if not plan:
-        plan, total = window_plan(roots, since, days, prefer=prefer)
+        plan, total = window_plan(roots, since, days)
 
-    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
+    b = TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest,
+                    own_cap=cap_of(cfg))
     norm = Normalizer(cfg)
     want = set(members)
     stopped, stopped_at, stats = None, None, {}
     pats = key_patterns(members)
-    records = (key_scan(plan, norm, since, until, pats, where=key_where(members))
+    workers = keysearch.workers_for(lim["inspect_workers"])
+    records = (key_scan(plan, norm, since, until, pats, where=key_where(members),
+                        workers=workers, cfg=cfg)
                if pats is not None else window_scan(plan, norm, since, until, events=EVENTS))
     if give_way is not None and give_way():
         raise _GiveWay
@@ -1865,7 +1978,11 @@ def _inspect(cfg, view, lock, roots, sid, frm, to, give_way=None, order="oldest"
         if stats["bytes"] >= lim["inspect_max_bytes"]:
             stopped, stopped_at = "bytes", rec.get("_ts_epoch")
             break
-    elapsed = time.time() - t0
+    # Its workers let go now, not when this read's frame goes (`keysearch.cancel`).
+    close = getattr(records, "close", None)
+    if close is not None:
+        close()
+    elapsed = time.monotonic() - m0
 
     with lock:
         procs = red.get("_procs")
@@ -1977,7 +2094,7 @@ def response(body, accept_encoding):
 
 def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     """`/api/trajectory`: `inspect` over the aggregator's view of that window."""
-    _warm["last_open"] = time.time()
+    _warm["last_open"] = time.monotonic()
     if _warm["thread"] is None:
         _warm["thread"] = threading.Thread(target=_warm_loop, args=(agg,),
                                            name="proctree-warm", daemon=True)
@@ -2001,7 +2118,7 @@ def serve(agg, sid, window_min=None, frm=None, to=None, order="oldest"):
     return body
 
 
-WARM_IDLE = 1800         # seconds without an open after which the warmer rests
+WARM_IDLE = 1800         # seconds without an open after which the warmer rests (monotonic)
 
 
 def _warm_loop(agg):
@@ -2020,7 +2137,7 @@ def _warm_loop(agg):
 
     while not getattr(agg, "stopping", False):
         time.sleep(WARM_EVERY)
-        if time.time() - _warm["last_open"] > WARM_IDLE:
+        if time.monotonic() - _warm["last_open"] > WARM_IDLE:
             continue
         try:
             reg = agg.panels_by_window

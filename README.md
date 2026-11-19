@@ -1,6 +1,23 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/lockup-dark.svg">
+    <img src="docs/logo/lockup.svg" alt="Agent Observatory, Harvard MaDSys" width="400">
+  </picture>
+</p>
+
 # agentic-hpc-dashboard
 
 The aims of this repository is to collect agent behaviors on HPC login nodes (the collector), and make them visible to human (the dashboard).
+
+<p>
+  <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="64"></a>
+</p>
+
+<p>
+  <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="44"></a>
+  &nbsp;&nbsp;
+  <a href="https://www.rc.fas.harvard.edu/"><img src="dashboard/web/public/logos/fasrc.png" alt="FAS Research Computing, Harvard University" height="32"></a>
+</p>
 
 ## Quick start -- Collector (`/collector`)
 A single file (`ebpfm.sh`) acts as a single entry point for the collectors.
@@ -12,11 +29,6 @@ sudo ./collector/ebpfm.sh start        # start the collector
 sudo ./collector/ebpfm.sh status       # check the collector runtime
 sudo ./collector/ebpfm.sh stop         # stop the collector
 ```
-
-The collector writes each day's records as JSONL, as EBR (binary records: the same records,
-4-8x smaller), or as both side by side: `EBPFM_FORMAT=jsonl|ebr|both`, `both` by default
-while EBR is on trial. See [Binary records (EBR)](collector/README.md#binary-records-ebr) in
-the collector's README for the format, its settings, and when to move to `ebr`.
 
 ### Collector -- RPM install (Rocky/RHEL 8)
 
@@ -39,7 +51,7 @@ The RPM lays down:
 | `/usr/bin/ebpfm` | symlink to `ebpfm.sh` — the entry point for `check`/`status`/`tail` |
 | `/usr/lib/systemd/system/ebpfm.service` | the eBPF-tier unit, paths pre-substituted (no `install-unit` needed) |
 | `/usr/lib/sysctl.d/99-ebpfm.conf` | the two required sysctls, applied on install and every boot |
-| `/etc/default/ebpfm` | the unit's environment: the output format (`EBPFM_FORMAT`) and the other settings, kept across upgrades |
+| `/etc/default/ebpfm` | the unit's environment: the collector's settings, kept across upgrades |
 | `/var/log/ebpfm/` | default output directory |
 
 Dependencies and sysctls are handled by the package, not a separate bootstrap
@@ -80,8 +92,8 @@ The collector also ships as a container image on the GitHub Container Registry,
 built on a project Rocky 8.10 base image. **x86_64 only** at present.
 
 ```
-ghcr.io/fasrc/agentic-hpc-dashboard/collector     # the collector
-ghcr.io/fasrc/agentic-hpc-dashboard/base          # the Rocky 8.10 base it builds on
+ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector     # the collector
+ghcr.io/harvardmadsys/agentic-hpc-dashboard/base          # the Rocky 8.10 base it builds on
 ```
 
 Image tags follow the same scheme as the RPM:
@@ -89,6 +101,9 @@ Image tags follow the same scheme as the RPM:
 * semver tag `vX.Y.Z` → `X.Y.Z`, `X.Y`, `latest`
 * branch push → `<branch>` (moving) and `<branch>-<YYYYMMDD>-<sha>` (immutable)
 * `main` → additionally `edge`
+
+`latest` is published with the first `vX.Y.Z` tag; until then, `edge`, main's newest
+build, is the one to pull.
 
 Running the eBPF tier in a container needs host-level privileges, because eBPF
 attaches to the host kernel and the collector attributes **host** processes. On
@@ -102,9 +117,9 @@ docker run -d --name ebpfm \
   --privileged \                       # eBPF load + attach on EL8's 4.18 kernel
   --pid=host \                         # see/attribute every process on the node
   -v /sys:/sys:ro \                    # BTF + tracefs for program load
-  -v /var/log/ebpfm:/var/log/ebpfm \   # persist the day-files (JSONL and/or EBR)
+  -v /var/log/ebpfm:/var/log/ebpfm \   # persist the JSONL output
   -e EBPFM_HOST="$(hostname -s)" \     # name day-files for the node, not the container
-  ghcr.io/fasrc/agentic-hpc-dashboard/collector:latest
+  ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector:latest
 ```
 
 Notes:
@@ -119,8 +134,6 @@ Notes:
   `... ebpfm features`.
 * The collector emits **only** to the mounted output directory; it makes
   no outbound network connections.
-* The output format is `-e EBPFM_FORMAT=jsonl|ebr|both` (`both` unless set):
-  `/etc/default/ebpfm` is the systemd unit's, and does not reach a container.
 
 ## Quick start -- Dashboard (`/dashboard`)
 Step-by-step
@@ -128,8 +141,11 @@ Step-by-step
 cd dashboard && uv sync
 uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
 cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
+uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
+`serve` starts only behind a password, or with `--open` on a machine only you can reach
+([`dashboard/README.md`](dashboard/README.md#password)).
 
 Bash script bundling
 ```bash
@@ -154,10 +170,10 @@ runs the dashboard over them behind a password, all set from one settings file.
 ```bash
 RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # Where the ebpf collected data reside
 RC_DASH_NODE_ROOTS=/var/log/ebpfm-login  # Where the other data reside (node-level)
-RC_DASH_EBPF_PREFER=jsonl                # jsonl (default) or ebr: which twin to read
-RC_DASH_NODE_PREFER=jsonl                # the same, for the node tier
-RC_DASH_CONVERT=1                        # read EBR only: JSONL converted at startup into an EBR view (0: off)
-RC_DASH_CONVERT_WORKERS=0                # processes converting at startup: 0 (default) = every CPU it may use
+RC_DASH_HISTORY=1                        # keep every sealed (.jsonl.gz) day-file as Parquet too (0: off)
+RC_DASH_HISTORY_WORKERS=0                # processes converting in the background: 0 (default) = up to 8
+RC_DASH_INGEST_WORKERS=1                 # processes reducing the hours: 1 (default) = one pass; N = one node per process
+RC_DASH_INGEST_REDUCER_GROUPS=2          # with N >= 2: each node's hour in 2 processes, one per reducer group (1: one)
 ```
-See [Two formats](dashboard/README.md#two-formats) for how the dashboard reads a collector
-writing both, and the order to move to EBR in.
+See [History in Parquet](dashboard/README.md#history-in-parquet) for what the store holds,
+which reads it answers, and what it costs.

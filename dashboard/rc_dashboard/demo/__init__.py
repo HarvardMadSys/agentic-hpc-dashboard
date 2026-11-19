@@ -11,10 +11,7 @@ Every reducer, the tail, the backfill, the saved builds and the websocket run
 exactly as they do on a cluster; nothing on the page is drawn from a fixture.
 The feed keeps growing in real time, so the Live tab moves.
 
-The files are EBR, the collector's binary format (rc_dashboard/ebr.py), unless
-`--demo-format` (RC_DASH_DEMO_FORMAT) says `jsonl`, the JSONL a collector has
-always written, or `both`: the two as twins, as a collector on EBPFM_FORMAT=both
-writes them, with the service reading the EBR one.
+The files are JSONL, as a collector writes them.
 
 Nothing in it was measured, and the page cannot be mistaken for a measurement:
 
@@ -30,8 +27,6 @@ What a demo overrides, whatever the shell or the config file says (run.sh
 exports the cluster's feed roots, and a demo must never read them):
 
     feeds.ebpf.roots, feeds.ebpf_node.roots   the demo's own feed
-    feeds.ebpf.prefer, feeds.ebpf_node.prefer the twin the service reads: jsonl
-                                              for a JSONL feed, else ebr
     feeds.sacct/sacctmgr/domains/user_actor   a path in the demo dir that does not exist
     cache.dir                                 the demo's own, so no real saved build is evicted
     clock.as_of                               "" -- the wall clock: the feed is live
@@ -41,12 +36,14 @@ exports the cluster's feed roots, and a demo must never read them):
     server.rdns.enabled                       off: the Network bytes panel names its
                                               endpoints by the records' own host names,
                                               and a demo asks no DNS server about them
+    server.auth.open                          on: a demo serves with no password unless
+                                              server.auth.password_hash is set
 
 The feed is a pure function of the seed, the host count and the clock
-(`world.World`): the same window over the same seed is the same records --
-JSONL: same bytes; EBR: same decoded records -- and a restart (run.sh restarts on
-every save) resumes it where it stopped rather than writing anything twice
-(`feed.Feed`). `--demo-fresh` starts it again, as does another format.
+(`world.World`): the same window over the same seed is the same bytes, and a
+restart (run.sh restarts on every save) resumes it where it stopped rather than
+writing anything twice (`feed.Feed`). `--demo-fresh` starts it again, as does a
+feed an older demo wrote in another format.
 """
 import fcntl
 import os
@@ -54,7 +51,7 @@ import sys
 import threading
 import time
 
-from .feed import FORMATS, Feed, day_of
+from .feed import Feed, day_of
 from .world import GENERATOR, World, midnight
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,10 +59,12 @@ DEFAULT_DIR = os.path.join(HERE, ".cache", "demo")
 SITE_NAME = "demo · fake data"
 SITE_DESC = ("a demo: fake records for fictional login nodes, users and sessions, "
              "written by rc_dashboard/demo; nothing here was measured")
-DEFAULTS = {"dir": DEFAULT_DIR, "days": 3, "hosts": 2, "seed": "demo", "format": "ebr"}
+DEFAULTS = {"dir": DEFAULT_DIR, "days": 3, "hosts": 2, "seed": "demo"}
 ENV = {"dir": "RC_DASH_DEMO_DIR", "days": "RC_DASH_DEMO_DAYS",
-       "hosts": "RC_DASH_DEMO_HOSTS", "seed": "RC_DASH_DEMO_SEED",
-       "format": "RC_DASH_DEMO_FORMAT"}
+       "hosts": "RC_DASH_DEMO_HOSTS", "seed": "RC_DASH_DEMO_SEED"}
+# What the stamp says the feed is in: a feed an older demo wrote as EBR is
+# started afresh rather than resumed into files the service would not read.
+FORMAT = "jsonl"
 TICK_S = 2.0           # how often the live feed is appended to
 CHUNK_S = 3600         # the history is written an hour at a time
 
@@ -81,35 +80,20 @@ def options(args):
     out["days"] = max(1, min(14, int(out["days"])))
     out["hosts"] = max(1, min(6, int(out["hosts"])))
     out["seed"] = str(out["seed"])
-    fmt = str(out["format"]).strip().lower()
-    if fmt not in FORMATS:
-        raise SystemExit("demo: the feed's format is one of %s, not %r (--demo-format, %s)"
-                         % (", ".join(FORMATS), out["format"], ENV["format"]))
-    out["format"] = fmt
     out["dir"] = os.path.abspath(os.path.expanduser(str(out["dir"])))
     out["fresh"] = bool(getattr(args, "demo_fresh", False))
     return out
 
 
-def _fmt(opts):
-    """The format the demo writes (FORMATS): ebr when `opts` does not say."""
-    return opts.get("format") or DEFAULTS["format"]
-
-
 def configure(cfg, opts):
     """Point the service at the demo's feed and nothing else (see the module doc)."""
-    fmt = _fmt(opts)
-    feed = Feed(opts["dir"], fmt)
+    feed = Feed(opts["dir"])
     missing = os.path.join(feed.base, "not-in-a-demo")
     days, mins = opts["days"], opts["days"] * 1440
-    # the service reads the twin the demo writes: the EBR one whenever there is one
-    prefer = "jsonl" if fmt == "jsonl" else "ebr"
     for key, val in (
             ("feeds.ebpf.roots", [feed.ebpf]),
             ("feeds.ebpf.days", days + 1),
-            ("feeds.ebpf.prefer", prefer),
             ("feeds.ebpf_node.roots", [feed.node]),
-            ("feeds.ebpf_node.prefer", prefer),
             ("feeds.sacct.dir", missing),
             ("feeds.sacct.jobs_csv", None),
             ("feeds.sacctmgr.dir", missing),
@@ -127,7 +111,10 @@ def configure(cfg, opts):
             ("panels.preprocess_wait_s", 300),
             ("site.name", SITE_NAME),
             ("site.description", SITE_DESC),
-            ("server.rdns.enabled", False)):
+            ("server.rdns.enabled", False),
+            # Made-up data: served with no password unless one is set. `serve`
+            # refuses to start open unless told to.
+            ("server.auth.open", True)):
         cfg.set(key, val, "demo")
     return cfg
 
@@ -149,7 +136,7 @@ class Demo:
 
     def __init__(self, opts):
         self.opts = opts
-        self.feed = Feed(opts["dir"], _fmt(opts))
+        self.feed = Feed(opts["dir"])
         self.state = None
         self.world = None
         self._stop = threading.Event()
@@ -182,15 +169,17 @@ class Demo:
         span = o["days"] * 86400
         st = self.feed.load_state()
         want = {"generator": GENERATOR, "seed": o["seed"], "hosts": o["hosts"],
-                "format": self.feed.fmt}
+                "format": FORMAT}
+        # a stamp without a format is a JSONL-only demo's, from before there was another
+        had = None if st is None else dict({"format": "jsonl"}, **st)
         why = None
         if o["fresh"]:
             why = "--demo-fresh"
         elif st is None:
             why = "no demo feed in %s yet" % self.feed.base
-        elif any(st.get(k) != v for k, v in want.items()):
+        elif any(had.get(k) != v for k, v in want.items()):
             why = "the feed there has another %s" % " and ".join(
-                _another(k, st.get(k), v) for k, v in want.items() if st.get(k) != v)
+                _another(k, had.get(k), v) for k, v in want.items() if had.get(k) != v)
         elif not isinstance(st.get("written_to"), (int, float)) or st["written_to"] < now - span:
             why = "the feed there ends more than %d days ago" % o["days"]
         elif self.covers_from(st) > now - span + 3600:
@@ -206,7 +195,7 @@ class Demo:
         else:
             cut = self.feed.cut_after(st["written_to"])
             _log("resuming the %s feed in %s from %s%s" % (
-                self.feed.fmt, self.feed.base,
+                FORMAT, self.feed.base,
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st["written_to"])),
                 " (cut %d file(s) back to it)" % cut if cut else ""))
         self.state = st

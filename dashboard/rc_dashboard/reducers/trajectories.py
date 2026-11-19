@@ -35,9 +35,10 @@ the kernel also credits with the I/O of every child the process reaped
 rtx6000a feed a parent's read+write covered its exited children's in 132 of 133
 families. Summed over a session as it comes, a command's bytes counted once per
 shell above it. Here a process's figure loses what its children carried
-(`reaped`, the join between a child's exit and its parent's later one), so a sum
-over any set of processes counts each byte once. Network bytes and peak memory
-are per process already.
+(`reaped`, the join between a child's exit and its parent's later one, which
+every panel that sums disk bytes shares: own_io.py), so a sum over any set of
+processes counts each byte once. Network bytes and peak memory are per process
+already.
 
 Each row also carries `drift`: two process-level proxies for an agent leaving the
 task it started on. Neither sees the model's context; both are labelled proxies.
@@ -143,7 +144,7 @@ from array import array
 from operator import itemgetter
 
 from ..anonymize import HOME_PATTERNS
-from ..procindex import VIA, pop_oldest
+from ..procindex import VIA
 from ..redact import redact
 
 from . import pct
@@ -159,6 +160,7 @@ from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN
                             segment)
 from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
 from .phase_tasks import DEFAULTS as TASK_DEFAULTS, name_tasks, task_spans
+from .own_io import DISK, OwnIo, cap_of
 
 RANKS = ("recent", "events", "cpu_s", "peak_rss_mb", "io_mb", "net_mb", "distinct_tools")
 RANK_MEANING = {
@@ -177,7 +179,6 @@ WAIT_PURPOSES = frozenset({"poll", "slurm_mon"})
 MIN_DRIFT_N = 30            # processes; below this the thirds are noise
 DRIFT_CAP = 100000          # per-session processes kept for drift; past it, flagged
 MAX_CWDS = 200000           # distinct cwds interned per window; past it, unmeasured
-REAPED_MAX = 200000         # parents with exited children held for their own exit
 _NO_PARENT = (None, 0, 1)   # a ppid that names no process that started it
 MAX_PREVIEWS = 200000       # masked command previews interned per reducer; past it, none
 MAX_TAGSETS = 200000        # tag sets (names, words) interned per reducer; past it, none
@@ -783,11 +784,9 @@ class TrajectoryReducer:
         self._cwd_id, self._cwds = {None: 0}, [None]
         self.cwd_overflow = 0
         # (host, pid) -> [MB read, MB written] its exited children carried, for
-        # its own exit to give back (`own_io`), and the keys touched since
-        # `track` (for the hours' ageing).
-        self.reaped = collections.OrderedDict()
-        self.reaped_evicted = 0
-        self._rtouched = None
+        # its own exit to give back (`own_io`): the join every panel that sums
+        # disk bytes holds one of (own_io.py), here over disk bytes alone.
+        self.own = OwnIo(DISK, cap_of(cfg), "trajectories")
         # Phases. The thresholds: the config's over phase_segment.DEFAULTS.
         self.phase_params = dict(PHASE_DEFAULTS, **(r.get("phases") or {}))
         # The tasks above them, likewise: the config's over phase_tasks.DEFAULTS.
@@ -1308,14 +1307,14 @@ class TrajectoryReducer:
         """
         return self._phases(s, members)[0]
 
-    def _phases(self, s, members):
+    def _phases(self, s, members, fresh=True):
         """`(block, n_calls)`: `phase_block`, and the calls of row `s` alone,
         which `_row` serves as the row's own. `n_calls` is None for a row whose
         calls are not recognized, and the block's own for a row of one day. The
         counts of the rows of a block add up to the block's."""
         if s.cls != "agent" or s.agent_type not in PHASE_AGENTS:
             return {"unavailable": UNAVAILABLE}, None
-        parts = [(r, m, self._pending_of(m)) for r, m in self._day_rows(s, members)]
+        parts = [(r, m, self._pending_of(m)) for r, m in self._day_rows(s, members, fresh)]
         key = (tuple((r.sid, r.n, len(r.phase.calls), len(m), len(e), sum(x[P_N] for x in e),
                       max((x[P_LAST] for x in e), default=None))
                      for r, m, e in parts),
@@ -1328,17 +1327,19 @@ class TrajectoryReducer:
             hit = self._phase_cache[at] = (key, *self._build_block(parts))
         return hit[1], hit[2][s.sid]
 
-    def _day_rows(self, s, members):
+    def _day_rows(self, s, members, fresh=True):
         """`[(row, members)]`, the day rows whose calls make one block with row
         `s` (`phase_block`), in time order, `s` among them with its `members`.
         The others are the current fold's rows of the same agent
         (`_agent_key`) that have a time and whose calls are read. The fold is
         made if it is stale (`folded`), as `result` makes it before it reads a
-        row. `s` alone when it is not keyed on an agent or has no time."""
+        row -- unless `fresh` is False, when the last fold is taken as it is
+        (`_agent_days`). `s` alone when it is not keyed on an agent or has no
+        time."""
         rows = [(s, members)]
         key = _agent_key(s)
         if key is not None and s.first is not None:
-            others = self._agent_days().get(key, ())
+            others = self._agent_days(fresh).get(key, ())
             held = self._fold_cache[2]      # after the line above, which makes the fold if need be
             rows += [(r, held.get(r.sid) or [r.sid]) for r, _via, _k in others
                      if r.sid != s.sid and r.first is not None and r.cls == "agent"
@@ -1483,38 +1484,12 @@ class TrajectoryReducer:
         return opened, extra
 
     def own_io(self, rec):
-        """This process's disk MB (read, written), without its reaped children's.
-
-        A child exits before the parent that reaps it, so by the parent's exit
-        every child it reaped has handed its whole figure -- its own and what
-        it reaped in turn -- to `reaped`. A child its parent never waited for
-        exits after it, and is never taken off. Only `scope: process` figures
-        include children; a `leader` one is the leader thread's alone.
-        """
-        io = rec.get("io")
-        if not isinstance(io, dict):
+        """This process's disk MB (read, written), without its reaped children's
+        (own_io.py); 0 where the record has none."""
+        own = self.own.take(rec)
+        if own is None:
             return 0.0, 0.0
-        rd, wr = io.get("rd_mb") or 0.0, io.get("wr_mb") or 0.0
-        if io.get("scope") != "process":
-            return rd, wr
-        host = rec.get("host")
-        kids = self.reaped.pop((host, rec.get("pid")), None)
-        ppid = rec.get("ppid")
-        if ppid is not None and (rd or wr):
-            key = (host, ppid)
-            acc = self.reaped.get(key)
-            if acc is None:
-                if len(self.reaped) >= REAPED_MAX:
-                    pop_oldest(self.reaped)
-                    self.reaped_evicted += 1
-                acc = self.reaped[key] = [0.0, 0.0]
-            acc[0] += rd
-            acc[1] += wr
-            if self._rtouched is not None:
-                self._rtouched.add(key)
-        if kids:
-            rd, wr = max(0.0, rd - kids[0]), max(0.0, wr - kids[1])
-        return rd, wr
+        return own[0] or 0.0, own[1] or 0.0
 
     def _track(self, s, rec):
         if len(s.ev_p) >= DRIFT_CAP:
@@ -1551,22 +1526,44 @@ class TrajectoryReducer:
 
     def track(self):
         """Note every carried key touched from here on, for the ageing."""
-        self._rtouched = set()
+        self.own.track()
         self.pend.touched = set()
         self._ctouched = set()
         self._xtouched = set()
 
     def carry(self):
-        return {"reaped": self.reaped, "phase_pend": self.pend.entries,
-                "phase_calls": self.calls_at, "phase_exited": self.exited,
-                "phase_exited_horizon": self.exited_horizon,
-                "touched": {"reaped": self._rtouched or (),
-                            "phase_pend": self.pend.touched or (),
-                            "phase_calls": self._ctouched or (),
-                            "phase_exited": self._xtouched or ()}}
+        return self.own.carry({
+            "phase_pend": self.pend.entries,
+            "phase_calls": self.calls_at, "phase_exited": self.exited,
+            "phase_exited_horizon": self.exited_horizon,
+            "touched": {"phase_pend": self.pend.touched or (),
+                        "phase_calls": self._ctouched or (),
+                        "phase_exited": self._xtouched or ()}})
+
+    def carry_caps(self):
+        """What one pass holds each carried map to (`hours.combine_carries`)."""
+        return dict(self.own.carry_caps(), phase_pend=self.pend.cap,
+                    phase_calls=CALLS_AT_MAX, phase_exited=EXITED_MAX)
+
+    def carry_trimmed(self, c, dropped):
+        """What `hours.combine_carries` dropped past the caps: the join's parents
+        counted (own_io.py), and the exits as `exited_trimmed` keeps them."""
+        self.own.carry_trimmed(c, dropped)
+        self.exited_trimmed(c, dropped)
+
+    def carry_tier(self, field, value):
+        return self.own.carry_tier(field, value)
+
+    @staticmethod
+    def exited_trimmed(c, dropped):
+        """Exits dropped past the cap as `_went` drops them: the latest end among
+        them is kept as the horizon."""
+        for _key, x in dropped.get("phase_exited", ()):
+            if x[1] is not None and x[1] > (c.get("phase_exited_horizon") or 0.0):
+                c["phase_exited_horizon"] = x[1]
 
     def seed(self, c):
-        self.reaped = c["reaped"]
+        self.own.seed(c)
         x = c.get("phase_calls")
         self.calls_at = (x if isinstance(x, collections.OrderedDict)
                          else collections.OrderedDict(x or ()))
@@ -1577,8 +1574,7 @@ class TrajectoryReducer:
         self.exited_horizon = c.get("phase_exited_horizon", 0.0)
 
     def strip(self):
-        self.reaped = collections.OrderedDict()
-        self._rtouched = None
+        self.own.strip()
         self.pend.entries = collections.OrderedDict()
         self.pend.touched = None
         self.calls_at = collections.OrderedDict()
@@ -1642,7 +1638,7 @@ class TrajectoryReducer:
         self.evicted += o.evicted
         self.fed += o.fed
         self.cwd_overflow += o.cwd_overflow
-        self.reaped_evicted += o.reaped_evicted
+        self.own.merge(o.own)
         self.pend.evicted += o.pend.evicted
         self.pend.refused += o.pend.refused
         self.pend.refused_records += o.pend.refused_records
@@ -1900,23 +1896,32 @@ class TrajectoryReducer:
                 return s, via, k, list(members)
         return None
 
-    def _by_agent(self, since=None):
+    def _by_agent(self, since=None, fold=None):
         """(host, agent pid, user) -> [(session, owner_via, n_keys)]: the folded
         rows of each agent (`_agent_key`), one for each day and class (the sid
         carries both). Sessions last active before `since` are left out."""
         by = {}
-        for s, via, k in self.folded()[0]:
+        for s, via, k in (fold if fold is not None else self.folded())[0]:
             key = _agent_key(s)
             if key is not None and (since is None or (s.last or 0) >= since):
                 by.setdefault(key, []).append((s, via, k))
         return by
 
-    def _agent_days(self):
+    def _agent_days(self, fresh=True):
         """`_by_agent()`, held until the fold changes: every row asks it for the
-        rows it shares a block with (`phase_block`)."""
-        fold = self.folded()
+        rows it shares a block with (`phase_block`).
+
+        `fresh` False takes the last fold as it is, when there is one. The
+        inspector's row (`_row` given its members by `lookup`) asks so: the
+        agent's other days are what the last fold holds -- seconds old on a live
+        window, whose ranking folds every few -- and a new fold is every session
+        of the window folded again under the service's lock, seconds on a
+        busy one, to change nothing the row reads."""
+        fold = self._fold_cache[1]
+        if fresh or fold is None:
+            fold = self.folded()
         if self._day_idx[0] is not fold:
-            self._day_idx = (fold, self._by_agent())
+            self._day_idx = (fold, self._by_agent(fold=fold))
         return self._day_idx[1]
 
     def agent_sessions(self, since=None):
@@ -1992,10 +1997,13 @@ class TrajectoryReducer:
         chain = s.chain[:self.max_runs]
         purpose = s.purpose[:self.purpose_cap]
         surface, surface_detail = self.surface_of(s)
+        given = members is not None
         if members is None:
             held = self._fold_cache[2]
             members = (held.get(s.sid) if held else None) or [s.sid]
-        phases, n_calls = self._phases(s, members)
+        # given its members (`lookup`), the row takes the agent's other days from
+        # the last fold rather than folding the window again (`_agent_days`)
+        phases, n_calls = self._phases(s, members, fresh=not given)
         return {
             "sid": s.sid, "key_type": s.kt, "host": s.host, "user": s.user,
             # how many collector session keys this row folds together, and how
@@ -2085,7 +2093,15 @@ class TrajectoryReducer:
             "dominant_user_share_pct": dom,
             "summary": self.summary(live),
             "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
-                       "reaped": len(self.reaped), "reaped_evicted": self.reaped_evicted,
+                       "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
+                       # children a parent could not have reaped (own_io.py): dropped
+                       "reaped_rejected": self.own.rejected,
+                       # figures short of their children's, shown as 0
+                       "reaped_clamped": self.own.clamped,
+                       # groups dropped from a pid past own_io.PER_PID
+                       "reaped_crowded": self.own.crowded,
+                       # groups held for an exit that says it reaped none
+                       "reaped_unreaped": self.own.unreaped,
                        # the phases' joins and bounds, every one counted
                        "phase_pending": len(self.pend.entries),
                        "phase_pending_evicted": self.pend.evicted,

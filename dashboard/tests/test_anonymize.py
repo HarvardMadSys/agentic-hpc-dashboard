@@ -2,6 +2,8 @@
 
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
+import collections
+import errno
 import os
 import re
 import shutil
@@ -10,10 +12,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import anonymize as anonmod        # noqa: E402
+from rc_dashboard import app as appmod               # noqa: E402
 from rc_dashboard import config as configmod         # noqa: E402
 from rc_dashboard.anonymize import (AMBIGUOUS, EMAIL_MASK, UID_MASK, UNKNOWN,   # noqa: E402
                                     Anonymizer)
@@ -34,6 +38,13 @@ class AliasTest(unittest.TestCase):
         self.assertEqual(a.user_alias("glen"), b.user_alias("glen"))
         other = Anonymizer(b"another", known_users=["glen"])
         self.assertNotEqual(a.user_alias("glen"), other.user_alias("glen"))
+
+    def test_the_masking_is_named_by_its_salt_without_giving_it_away(self):
+        a, b, other = anon(), anon(), Anonymizer(b"another")
+        self.assertEqual(a.ident(), b.ident())
+        self.assertNotEqual(a.ident(), other.ident())
+        self.assertRegex(a.ident(), r"^[0-9a-f]{16}$")
+        self.assertNotIn(b"salt".hex(), a.ident())
 
     def test_a_user_and_a_lab_of_the_same_spelling_get_different_aliases(self):
         a = anon("glen")
@@ -213,6 +224,53 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(out, {"by_class": {"agent": 1}, "glen_total": 2})
 
 
+class VerbatimTest(unittest.TestCase):
+    """What a reader sent goes back as they sent it: rewritten, a name they
+    typed came back as its alias."""
+
+    def test_it_goes_back_as_sent_and_the_data_beside_it_does_not(self):
+        a = anon("glen", "bob.smith")
+        sent = anonmod.verbatim({"host": ["glen", "zed9"], "q": "/home/mallory",
+                                 "user": "bob.smith"})
+        body = {"filters": sent, "rows": [{"user": "glen", "args": "ls /home/glen"}]}
+        once = a.payload(body)
+        self.assertEqual(once["filters"], {"host": ["glen", "zed9"], "q": "/home/mallory",
+                                           "user": "bob.smith"})
+        self.assertEqual(once["rows"][0]["user"], a.user_alias("glen"))
+        # still marked: a second pass (a job stored, then served) leaves it too
+        self.assertEqual(a.payload(once), once)
+        self.assertIs(type(a.payload(once)["filters"]["q"]), anonmod.Verbatim)
+
+    def test_it_teaches_nothing(self):
+        a = anon()
+        a.payload(anonmod.verbatim({"user": "zed9", "uid": 5, "users": ["ana"],
+                                    "cmd": "sbatch -A sham_lab x"}))
+        self.assertEqual((a.users, a.labs, a.system), ({}, {}, set()))
+
+    def test_every_string_is_marked_and_every_shape_kept(self):
+        got = anonmod.verbatim({"a": ["x", ("y", 1)], "b": {"z"}, "c": None, "d": 2.5})
+        self.assertEqual(got, {"a": ["x", ("y", 1)], "b": {"z"}, "c": None, "d": 2.5})
+        self.assertIs(type(got["a"][1]), tuple)
+        self.assertEqual({type(s) for s in (got["a"][0], got["a"][1][0], *got["b"])},
+                         {anonmod.Verbatim})
+        # a namedtuple is built from fields, not from one generator: as it is
+        point = collections.namedtuple("Point", "x y")("glen", "ana")
+        self.assertIs(anonmod.verbatim(point), point)
+        self.assertEqual(anonmod.verbatim([point]), [point])
+        # so is a dict subclass, as a list's or a tuple's is: unmarked, it is masked
+        ordered = collections.OrderedDict(user="ana")
+        self.assertIs(anonmod.verbatim(ordered), ordered)
+        self.assertIs(type(anonmod.verbatim([ordered])[0]["user"]), str)
+
+    def test_no_such_account_is_never_learned_as_one(self):
+        # A real name in a filter maps to UNKNOWN, echoed under `users`: it was
+        # learned as an account there, and shown as an alias of no one.
+        a = anon()
+        self.assertEqual(a.payload({"users": [UNKNOWN], "user": UNKNOWN}),
+                         {"users": [UNKNOWN], "user": UNKNOWN})
+        self.assertEqual(a.users, {})
+
+
 class RequestTest(unittest.TestCase):
 
     def test_an_alias_maps_back_and_anything_else_maps_to_nothing(self):
@@ -227,6 +285,65 @@ class RequestTest(unittest.TestCase):
         roster.append("ana")
         alias = Anonymizer(b"salt").user_alias("ana")
         self.assertEqual(a.dealias_user(alias), "ana")
+        b = anon(roster=lambda: list(roster))
+        roster.append("bo")
+        bo = Anonymizer(b"salt").user_alias("bo")
+        self.assertEqual(b.dealias_text("/scratch/%s/x" % bo), "/scratch/bo/x")
+
+    def test_unknown_aliases_reread_the_roster_at_most_once_a_second(self):
+        # Any reader can send aliases no one has, as many as they like; each
+        # re-read copies the roster under the aggregator's lock.
+        class Clock:
+            t = 100.0
+
+            def monotonic(self):
+                return self.t
+            perf_counter = monotonic
+        clock, reads = Clock(), []
+        a = anon(roster=lambda: reads.append(1) or ["glen"])
+        with mock.patch.object(anonmod, "time", clock):
+            for i in range(200):
+                self.assertEqual(a.dealias_user("user-%08x" % i), UNKNOWN)
+                a.dealias_text("/scratch/user-%08x/x" % (i + 1000))
+            self.assertEqual(len(reads), 1)
+            clock.t += anonmod.FORCED_EVERY_S
+            a.dealias_user("user-0000ffff")
+            self.assertEqual(len(reads), 2)
+
+    def test_an_alias_in_a_path_or_a_word_maps_back_and_nothing_else_does(self):
+        a = anon("glen", "bob.smith")
+        g, b = a.user_alias("glen"), a.user_alias("bob.smith")
+        self.assertEqual(a.dealias_text("/scratch/%s/run" % g), "/scratch/glen/run")
+        self.assertEqual(a.dealias_text("/home/%s/bin/%s_sync" % (b, g)),
+                         "/home/bob.smith/bin/glen_sync")
+        # a real name stays a real name: what it finds is tested as shown
+        for s in ("/scratch/glen/run", "/home/user-0123abcd/x", "lab-1b2c3d4e", "x" + g,
+                  g + "0", "", None):
+            self.assertEqual(a.dealias_text(s), s)
+
+    def test_a_record_teaches_its_own_account_before_its_text_is_masked(self):
+        # A scan meets accounts no response has named; a search masks a
+        # record's text with its owner learned, or the real name is still there.
+        a = anon()
+        self.assertEqual(a.text("rsync /scratch/dave/run"), "rsync /scratch/dave/run")
+        a.learn_record({"user": "dave", "uid": 2004, "args": "rsync /scratch/dave/run"})
+        self.assertEqual(a.text("rsync /scratch/dave/run"),
+                         "rsync /scratch/%s/run" % a.user_alias("dave"))
+        a.learn_record({"user": "gdm", "uid": 120})       # a system account stays visible
+        a.learn_record({"pid": 7})                        # a record of no one teaches nothing
+        self.assertEqual(sorted(a.users), ["dave"])
+
+    def test_a_session_id_takes_its_accounts_alias_and_a_real_name_names_none(self):
+        a = anon("glen")
+        g = a.user_alias("glen")
+        head = "h1|2026-11-18|human|"
+        for sent, want in ((head + "tty:%s@pts/3" % g, head + "tty:glen@pts/3"),
+                           (head + "usr:%s" % g, head + "usr:glen"),
+                           (head + "tty:glen@pts/3", head + "tty:%s@pts/3" % UNKNOWN),
+                           (head + "usr:glen", head + "usr:" + UNKNOWN),
+                           (head + "apid:4242", head + "apid:4242")):
+            self.assertEqual(appmod.dealias_sid(sent, a), want)
+        self.assertEqual(appmod.dealias_sid(head + "usr:glen", None), head + "usr:glen")
 
 
 class ConfigTest(unittest.TestCase):
@@ -256,14 +373,134 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(first.user_alias("glen"), again.user_alias("glen"))
 
     def test_a_configured_salt_wins_and_is_never_printed(self):
-        a = anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
+        salt = "s3cret-of-this-site"
+        a = anonmod.from_config(self.cfg(enabled=True, salt=salt))
         self.assertEqual(a.salt_source, "config")
-        printed = self.cfg(enabled=True, salt="s3cret").as_dict(with_origins=True)
+        printed = self.cfg(enabled=True, salt=salt).as_dict(with_origins=True)
         self.assertEqual(printed["anonymize"]["salt"]["_value"], "(hidden)")
 
-    def test_the_operator_named_in_the_config_is_a_known_name(self):
-        a = anonmod.from_config(self.cfg(enabled=True))
-        self.assertIn("juncheng", a.users)          # filters.drop_global's default
+    def test_an_empty_salt_file_stops_the_service(self):
+        # it used to recurse until the interpreter gave up; this service never
+        # leaves one (below), so it was made by hand or by an older version
+        open(os.path.join(self.tmp, "anonymize.salt"), "w").close()
+        with self.assertRaises(SystemExit) as cm:
+            anonmod.from_config(self.cfg(enabled=True))
+        self.assertIn("is not a salt", str(cm.exception))
+
+    def test_a_writer_that_dies_mid_write_leaves_no_salt_file(self):
+        # killed, or the disk full, between making the file and filling it: the
+        # next start must make a salt, not find an empty file and refuse to start
+        def dies(fd, *a, **kw):
+            os.close(fd)
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        with mock.patch.object(anonmod.os, "fdopen", dies), self.assertRaises(OSError):
+            anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual(os.listdir(self.tmp), [])
+        salt, source = anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual((len(salt), source), (32, "generated"))
+        self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])
+
+    def test_a_file_system_without_hard_links_still_gets_a_salt(self):
+        # some FUSE, SMB and object-store mounts refuse link(2): the file is made in place
+        for code in (errno.EPERM, errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused):
+                salt, source = anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual((len(salt), source), (32, "generated"), code)
+            path = os.path.join(self.tmp, "anonymize.salt")
+            self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"], code)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, code)
+            self.assertEqual(anonmod.load_salt(self.cfg(enabled=True)), (salt, "file"), code)
+            os.unlink(path)
+
+    def test_a_link_refused_for_room_or_an_io_error_is_raised_with_no_file_left(self):
+        # a full disk, a quota, EIO, too many links: no reason to write in place instead
+        for code in (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMLINK):
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused), \
+                    self.assertRaises(OSError) as cm:
+                anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(cm.exception.errno, code)
+            self.assertEqual(os.listdir(self.tmp), [], code)
+
+    def test_a_write_in_place_that_fails_leaves_no_salt_file(self):
+        # where the file system has no hard links the salt is made in place, and that
+        # write failing for room leaves no salt file (a link refused for room, an I/O
+        # error or a quota never comes here: the test above)
+        fdopen = os.fdopen
+        for code in (errno.EPERM, errno.EXDEV):
+            calls = []
+
+            def full(fd, *a, **kw):
+                calls.append(fd)
+                if len(calls) > 1:                    # the file made in place
+                    os.close(fd)
+                    raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+                return fdopen(fd, *a, **kw)
+
+            def refused(src, dst):
+                raise OSError(code, os.strerror(code))
+            with mock.patch.object(anonmod.os, "link", refused), \
+                    mock.patch.object(anonmod.os, "fdopen", full), self.assertRaises(OSError):
+                anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(len(calls), 2, code)       # the temporary file, then in place
+            self.assertEqual(os.listdir(self.tmp), [], code)
+            self.assertEqual(anonmod.load_salt(self.cfg(enabled=True))[1], "generated", code)
+            os.unlink(os.path.join(self.tmp, "anonymize.salt"))
+
+    def test_the_new_name_is_synced_and_a_directory_that_will_not_sync_is_let_be(self):
+        # a power loss just after the first start must not leave the next one to make a
+        # new salt, and with it new aliases
+        fsync = os.fsync
+        for refuse in (False, True):
+            synced = []
+
+            def sync(fd):
+                is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+                synced.append(is_dir)
+                if is_dir and refuse:
+                    raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+                return fsync(fd)
+            with mock.patch.object(anonmod.os, "fsync", sync):
+                salt, source = anonmod.load_salt(self.cfg(enabled=True))
+            self.assertEqual(source, "generated")
+            self.assertEqual(synced, [False, True], "the file's bytes, then its name")
+            os.unlink(os.path.join(self.tmp, "anonymize.salt"))
+
+    def test_of_two_instances_making_a_salt_the_first_link_wins(self):
+        theirs, link = "ab" * 32, os.link
+
+        def second(src, dst):
+            with open(dst, "w") as fh:                # the other instance links first
+                fh.write(theirs + "\n")
+            return link(src, dst)
+        with mock.patch.object(anonmod.os, "link", second):
+            salt, source = anonmod.load_salt(self.cfg(enabled=True))
+        self.assertEqual((salt.hex(), source), (theirs, "file"))
+        self.assertEqual(os.listdir(self.tmp), ["anonymize.salt"])     # its own file is gone
+
+    def test_a_salt_too_short_to_keep_names_hidden_is_refused(self):
+        for text in ("ab\n", "not hex at all\n"):
+            with open(os.path.join(self.tmp, "anonymize.salt"), "w") as fh:
+                fh.write(text)
+            with self.assertRaises(SystemExit, msg=text) as cm:
+                anonmod.from_config(self.cfg(enabled=True))
+            self.assertIn("alias", str(cm.exception))
+        # a deployment's own short salt: lengthening it changes every alias, and says so
+        with self.assertRaises(SystemExit) as cm:
+            anonmod.from_config(self.cfg(enabled=True, salt="s3cret"))
+        self.assertIn("new alias", str(cm.exception))
+
+    def test_the_accounts_the_filters_name_are_known_names(self):
+        tree = configmod.defaults()
+        tree["cache"]["dir"] = self.tmp
+        tree["anonymize"]["enabled"] = True
+        tree["filters"].update(drop_global=["monitor"], drop_agent=["builder"])
+        a = anonmod.from_config(configmod.Config(tree, {}, None))
+        self.assertIn("monitor", a.users)
+        self.assertIn("builder", a.users)
 
 
 if __name__ == "__main__":

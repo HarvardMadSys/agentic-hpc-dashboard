@@ -10,6 +10,7 @@
 #                                tripped (no TRIPPED in the folder); exit 0, 11, or 13
 #   check-local.sh --auth-set    etc/auth.env holds a password hash; exit 0 or 15
 #   check-local.sh --port-free   nothing listens on the dashboard's port yet; exit 0 or 14
+#                                (14 too when it cannot tell)
 #   check-local.sh               the hourly check (check.sh runs it over ssh): all of the
 #                                above, linger, the tmux session and its two windows (a
 #                                window whose loop ended is started again), a dashboard
@@ -23,11 +24,12 @@
 #
 # Exit codes, most severe first when several apply: 11 TRIPPED (the stream stopped on a
 # swapped base folder; nothing is restarted), 13 UNSAFE (a folder is not this account's
-# 700 folder), 14 PORT (someone else listens on the port), 15 AUTH (no password
-# hash, or a start failed), 16 STREAM (a source node down over an hour, or a stale
-# status), 12 AUDIT (files readable by others, or extended ACLs), 10 RESTARTED, FROZEN,
-# or LINGER (something was started or restarted, or linger was turned back on), 0 OK;
-# 2 for a usage error, or no RC_DASH_ROOT.
+# 700 folder), 14 PORT (someone else listens on the port, or who listens cannot be
+# told), 15 AUTH (no password hash, or a start failed), 16 STREAM (a source node down
+# over an hour, one connected with nothing from it for an hour, or a stale status), 12
+# AUDIT (files readable by others, or extended ACLs), 10 RESTARTED, FROZEN, or LINGER
+# (something was started or restarted, or linger was turned back on), 0 OK; 2 for a
+# usage error, or no RC_DASH_ROOT.
 set -u
 umask 077
 me=$(id -un)
@@ -50,7 +52,8 @@ UNIT=rc-tmux.service
 WINDOWS="stream dashboard"
 KEEP=$(dirname "$0")/keep-running.sh
 CGROUP_ROOT=${RC_CGROUP_ROOT:-/sys/fs/cgroup}
-DOWN_ALERT_S=3600          # a source node down longer than this is reported
+PROC_NET=${RC_PROC_NET:-/proc/net}
+DOWN_ALERT_S=3600          # a source node down, or silent while connected, this long is reported
 STALE_ALERT_S=600          # a status file older than this, with the stream running, too
 FROZEN_AFTER_S=1200        # a listening dashboard this old must answer
 NEVER_LISTENED_S=7200      # one not listening yet gets this long: a start on a busy core is slow
@@ -88,7 +91,53 @@ dirs_ok() { own_dir "$RUN" && own_dir "$RUN/cache" && own_dir "$RUN/logs" && own
 base_ok() { private_dir "$RUN" && private_dir "$BASE"; }
 tripped() { [ -e "$MARKER" ] || [ -L "$MARKER" ]; }
 auth_set() { grep -q '^RC_DASH_PASSWORD_HASH=..' "$ETC/auth.env" 2>/dev/null; }
-listener() { ss -ltnpH "sport = :$PORT" 2>/dev/null; }
+# Every TCP listener on the port, one line each, with pid=<n> where the process is this
+# account's. From ss; without ss, or when it fails, from /proc/net/tcp and tcp6, which
+# list every account's sockets as ss does (lsof, run as this account, would show none of
+# another account's). Fails, printing nothing, when neither can be read: who listens is
+# then unknown, and no caller takes that for "nobody".
+listener() {
+  local out
+  if command -v ss >/dev/null 2>&1 && out=$(ss -ltnpH "sport = :$PORT" 2>/dev/null); then
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
+  fi
+  python3 - "$PORT" "$PROC_NET" 2>/dev/null <<'PYEOF'
+import errno, os, sys
+port, net = int(sys.argv[1]), sys.argv[2]
+inodes = {}
+for name in ("tcp", "tcp6"):
+    try:
+        with open(os.path.join(net, name)) as fh:
+            rows = fh.read().splitlines()[1:]
+    except OSError as e:
+        if name == "tcp6" and e.errno == errno.ENOENT:
+            continue                    # no IPv6 here, so no IPv6 listener
+        sys.exit(1)
+    for row in rows:                    # sl local remote st queues tr retr uid timeout inode
+        f = row.split()
+        if len(f) > 9 and f[3] == "0A" and int(f[1].rsplit(":", 1)[1], 16) == port:
+            inodes[f[9]] = f[1]         # 0A: LISTEN
+pids = {}
+for pid in (os.listdir("/proc") if inodes else []):
+    if not pid.isdigit():
+        continue
+    try:
+        fds = os.listdir("/proc/%s/fd" % pid)
+    except OSError:
+        continue                        # another account's process, or gone
+    for fd in fds:
+        try:
+            link = os.readlink("/proc/%s/fd/%s" % (pid, fd))
+        except OSError:
+            continue
+        if link.startswith("socket:[") and link[8:-1] in inodes:
+            pids.setdefault(link[8:-1], set()).add(int(pid))
+for inode, local in sorted(inodes.items()):
+    print(" ".join(["LISTEN", local, "inode=" + inode]
+                   + ["pid=%d" % p for p in sorted(pids.get(inode, ()))]))
+PYEOF
+}
 tmx() { tmux -L rc-dashboard "$@"; }
 scope_pids() {   # the processes of a running scope, one per line
   local cg
@@ -117,7 +166,10 @@ case "${1:-}" in
     auth_set && exit 0
     echo "AUTH $ETC/auth.env holds no password hash; the page would be open" >&2; exit 15 ;;
   --port-free)
-    [ -z "$(listener)" ] && exit 0
+    if ! lines=$(listener); then
+      echo "PORT cannot tell whether port $PORT is free: ss is missing or failed, and $PROC_NET/tcp could not be read" >&2; exit 14
+    fi
+    [ -z "$lines" ] && exit 0
     echo "PORT 127.0.0.1:$PORT is already taken" >&2; exit 14 ;;
   "") ;;
   *) echo "usage: check-local.sh [--dirs-only|--base-ok|--auth-set|--port-free]" >&2; exit 2 ;;
@@ -151,10 +203,14 @@ for f in "$RUN"/logs/*.log; do
   [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %s "$f")" -gt 104857600 ] && cp "$f" "$f.1" && : > "$f"
 done
 
-# Every listener on the port must be a process of the dashboard's own scope.
+# Every listener on the port must be a process of the dashboard's own scope. When the
+# listeners cannot be listed, that is reported, and the dashboard is left alone as it is
+# beside a foreign listener.
 foreign=0
-lines=$(listener)
-if [ -n "$lines" ]; then
+if ! lines=$(listener); then
+  note "PORT cannot tell who listens on port $PORT: ss is missing or failed, and $PROC_NET/tcp could not be read" 14
+  foreign=1
+elif [ -n "$lines" ]; then
   mine=" $(scope_pids rc-dashboard.scope | tr '\n' ' ') "
   while IFS= read -r l; do
     [ -z "$l" ] && continue
@@ -240,6 +296,9 @@ for host, s in sorted((st.get("hosts") or {}).items()):
     if not s.get("connected") and since and now - since > down_s:
         err = (s.get("last_error") or "no error recorded")[:160]
         print("STREAM %s down %.1f h: %s" % (host, (now - since) / 3600, err))
+    lag = s.get("lag_s")
+    if s.get("connected") and isinstance(lag, (int, float)) and lag > down_s:
+        print("STREAM %s stale: connected, nothing from it for %.1f h" % (host, lag / 3600))
 PYEOF
   )
   while IFS= read -r l; do

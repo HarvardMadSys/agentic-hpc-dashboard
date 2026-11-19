@@ -27,3 +27,15 @@ else:
     loads = json.loads
 
 DecodeError = ValueError     # what both parsers raise on a malformed line
+
+
+def record(line):
+    """The record a collector line holds: `loads`, and a ValueError, as for a
+    line that does not parse, when the line is JSON but not an object (`0`,
+    `null`, `[]`, a string). Every reader of the day-files counts such a line
+    as one that does not parse; handed on, the first `.get` on it raised, and
+    one such line stopped the tail for every host."""
+    rec = loads(line)
+    if type(rec) is not dict:
+        raise ValueError("a JSON %s, not an object" % type(rec).__name__)
+    return rec

@@ -586,7 +586,7 @@ class Normalizer:
         self.drop_self = f.get("drop_self_observation", True)
         self.stats = {
             "schema_versions": {}, "excluded_pre_v4": {}, "dropped_users": 0,
-            "parse_errors": 0, "records": 0, "skew_dropped": 0,
+            "parse_errors": 0, "records": 0, "skew_dropped": 0, "malformed": 0,
             "dropped_self_observation": 0, "impossible_wait": {},
             "purpose_src": self.purpose_src,
         }
@@ -596,12 +596,28 @@ class Normalizer:
         return self.normalize(rec)
 
     def normalize(self, rec):
-        """Returns the record with derived keys added, or None if filtered out.
+        """Returns the record with derived keys added, or None if filtered out --
+        or if it is no record this can read: JSON that is not an object, or a
+        field of a type no collector writes (a list `args` or `event`, a number
+        for `ts`, `session_key` or `cgroup`, a string `duration_s`). That one is
+        passed over and counted (`malformed`), never raised: one such line
+        stopped the tail for every host, its batch counted again at every poll,
+        and failed every build of a window that held it.
 
         Derived keys are additive and prefixed `_`, so the raw record is still
         byte-faithful in memory, where the detectors need its argv as written.
         Credentials are masked on the way OUT, never here (`redact`).
         """
+        if not isinstance(rec, dict):
+            self.stats["malformed"] += 1
+            return None
+        try:
+            return self._normalize(rec)
+        except Exception:
+            self.stats["malformed"] += 1
+            return None
+
+    def _normalize(self, rec):
         sv = schema_of(rec)
         s = self.stats
         s["schema_versions"][sv] = s["schema_versions"].get(sv, 0) + 1
@@ -609,6 +625,9 @@ class Normalizer:
 
         user = rec.get("user")
         ev = rec.get("event")
+        if ev is not None and type(ev) is not str:
+            # what every reader dispatches by, and looks up in a set
+            raise TypeError("an event that is a %s" % type(ev).__name__)
 
         # class first: it gates the agent-only exclusion
         if "actor3" in rec:
@@ -655,10 +674,11 @@ class Normalizer:
             rec["_eff"] = ec
             rec["_purpose"] = self.purpose_of(ec)
             rec["_shell_resolved"] = bool(comm in self.shell_comms and ec != comm)
-            # pre-v4 emitted cpu_pct on a 0-duration process; recompute, never trust
+            # pre-v4 emitted cpu_pct on a 0-duration process; recompute, never trust.
+            # A measured 0 s of CPU is 0%, not unmeasured.
             d = rec.get("duration_s")
             cpu = rec.get("cpu_s")
-            rec["_cpu_pct"] = (100.0 * cpu / d) if (d and d >= 0.01 and cpu) else None
+            rec["_cpu_pct"] = (100.0 * cpu / d) if (d and d >= 0.01 and cpu is not None) else None
 
         if ev in ("exit", "truncated", "submit", "residency"):
             kt, kv = session_key_of(rec)

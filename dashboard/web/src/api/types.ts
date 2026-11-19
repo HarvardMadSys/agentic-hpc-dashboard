@@ -57,29 +57,44 @@ export interface FeedReport {
   backfill: unknown;
   /** hosts whose records were written by the demo (rc_dashboard/demo), not measured */
   synthetic_hosts?: string[];
-  /** the dated tiers read through the EBR view: the collector's own roots */
-  source_roots?: string[];
-  /** the dated tiers: the startup conversion to EBR (rc_dashboard/ebrview.py) */
-  convert?: ConvertStatus;
+  /** the eBPF tier: its sealed day-files kept as Parquet (rc_dashboard/history.py) */
+  history?: HistoryStatus;
 }
 export type FeedsResponse = Record<string, FeedReport>;
 
-/** How a dated tier is read: through the EBR view the service converts its
- *  JSONL into (and links its EBR into) at startup, or as the files are. */
-export interface ConvertStatus {
+/** The history store: a Parquet copy of every sealed (`.jsonl.gz`) day-file of
+ *  the eBPF tier, made in the background. A selective read of a sealed file --
+ *  one user's events, one session's tree -- and a search of it by time are
+ *  answered from its copy once there is one; nothing waits for the store. */
+export interface HistoryStatus {
   enabled: boolean;
-  state: 'off' | 'catching_up' | 'live' | 'stopped' | 'error';
-  reason?: string;
-  pct?: number;
+  state: 'off' | 'idle' | 'converting' | 'error';
+  note?: string | null;
   dir?: string;
+  workers?: number;
+  /** the newest dated dirs kept; 0 for every one */
+  days?: number;
   source_roots?: string[];
-  view_roots?: string[];
-  counts?: { converted: number; linked: number; held: number };
-  records?: number;
-  bad_lines?: number;
-  bytes_in?: number;
-  bytes_out?: number;
-  lag_bytes?: number;
+  store_roots?: string[];
+  /** sealed day-files with a current copy */
+  replicas?: number;
+  /** Parquet files, one per table a day-file has records of */
+  files?: number;
+  bytes?: number;
+  /** day-files converted since the service started */
+  converted?: number;
+  /** sealed day-files a reader asked for since the service started: answered
+   *  from a copy, or read as JSONL (no copy yet) */
+  lookups?: { replica: number; jsonl: number };
+  /** the current (or last) round of conversions */
+  progress?: {
+    todo: number;
+    done: number;
+    failed: number;
+    records: number;
+    bytes_in: number;
+    elapsed_s: number;
+  };
   errors?: { at: number; file: string | null; error: string }[];
 }
 
@@ -158,6 +173,11 @@ export interface PanelEnvelope {
    *  or a request that failed), so the page made one up (lib/panels.ts
    *  `absent`): a fact about the response, not about the feed. */
   _unsent?: boolean;
+  /** The service could not reduce this panel: its reducer raised, and this is
+   *  what it said (`windows.materialize`). The body holds nothing else, so it
+   *  is neither "none" nor a 0: <Panel> says so, and `pick` hands it on as not
+   *  present, so no plate reads a number off it. */
+  _error?: string | null;
 }
 
 /* ---------------------------------------------------------------- window */
@@ -369,6 +389,41 @@ export interface ToolMix extends PanelEnvelope {
   by_agent_type?: Record<string, ToolTypeBlock>;
   dedup: { dropped: number; dropped_pct: number | null; rule: string };
   cpu_basis: string;
+  /** how the counted processes ended (reducers/tools.py `exits`); absent on a
+   *  window reduced before they were counted */
+  exits?: ToolExits;
+}
+
+/** How a process ended, past a plain exit 0: a non-zero exit, an exit 1 that
+ *  is an answer (grep: no match), a signal other than SIGPIPE, SIGPIPE (its
+ *  reader went first, `| head`), or no verdict on the record. */
+export type ExitVerdict = 'nonzero' | 'answer' | 'signal' | 'pipe' | 'none';
+export interface ExitTally extends Record<ExitVerdict, number> {
+  /** processes counted, after the shell dedup: the tool mix's own */
+  calls: number;
+}
+export interface ExitToolRow extends ExitTally {
+  tool: string;
+  bucket: string;
+}
+export interface ExitBucketRow extends ExitTally {
+  b: string;
+}
+export interface ExitBlock extends ExitTally {
+  /** [exit code, processes] of the non-zero exits, the most first */
+  codes: [number, number][];
+  /** [signal, processes], SIGPIPE apart */
+  signals: [number, number][];
+  /** the tools with the most non-zero exits or signals, each with every verdict */
+  tools: ExitToolRow[];
+  buckets: ExitBucketRow[];
+}
+export interface ToolExits {
+  by_class: Record<string, ExitBlock>;
+  by_agent_type: Record<string, ExitBlock>;
+  /** programs whose exit 1 is an answer */
+  answers: string[];
+  basis: string;
 }
 
 /* ----------------------------------------------------------- io_process */
@@ -589,6 +644,9 @@ export interface AncestryRow {
 export interface SandboxSessionRow {
   host: string;
   pid: number | null;
+  /** Which of the processes that held this pid one after another: 0 the first,
+   *  null a session whose calls found no root. A row's key with host and pid. */
+  gen: number | null;
   user: string | null;
   actor3: string | null;
   agent_type: string | null;
@@ -724,6 +782,14 @@ export interface Phase {
   /** `[preview, seconds]`: a process that outlived its call, or a call that ran past this phase. Never a call
    *  still running (R65) */
   ran_past: [string | null, number][] | null;
+  /** where its own calls ended, a call still running at its edge so far; null on a phase that holds none. The
+   *  last phase's `t1` is the lane's end, which a call of an earlier phase can hold open (phase_segment, Work).
+   *  Absent from a service that predates it */
+  own_t1?: number | null;
+  /** `[category, seconds]`: how long its calls, or what they left running, went on past the end its work is
+   *  weighed to (`t1`; the last phase's `own_t1`), by category, the longest first; the session's summary
+   *  weighs that time to the call's own use. Never a call still running. Absent from a service that predates it */
+  ran_on?: [string, number][] | null;
   /** an idle gap's: `[preview, since]` for each call from an earlier step that was still running as the gap began,
    *  three at most, the earliest first. The agent had moved past it, and it may have ended inside the gap. The
    *  preview is null for a call still running, which has none of its own (R65). Null on any other phase, and on an
@@ -829,8 +895,9 @@ export interface PhaseBlock {
   /** what kind of session it was (`rc_dashboard/reducers/phase_summary.py`). Absent from a service that predates it */
   category?: SessionCategory;
   /** `[use, percent]`: each use's share of the session's work, the most first. The work is its phases' time but idle
-   *  gaps, waiting (a wait on Slurm is Slurm work), and commands not recorded; where none of it had a length, its
-   *  calls. Empty for a session that did no work */
+   *  gaps, waiting (a wait on Slurm is Slurm work), and commands not recorded, the last phase's to its own calls'
+   *  end, and the time a call ran on past its phase toward the call's own use (`ran_on`); where none of it had a
+   *  length, its calls. Empty for a session that did no work */
   uses?: [UseKind, number][];
   /** the session in a few sentences, from the block's own numbers: what the work was and its mix, the tool calls and
    *  tasks with the names they held, and how long the agent waited. No model writes it */
@@ -1551,7 +1618,7 @@ export interface LiveSubmit {
  *  have not been read yet: a gap, not a quiet fleet. `retained_from` here is
  *  set once it is `done`. */
 export interface BackfillStatus {
-  state: 'idle' | 'converting' | 'positioning' | 'running' | 'done' | 'skipped' | 'error';
+  state: 'idle' | 'positioning' | 'running' | 'done' | 'skipped' | 'error';
   pct: number;
   records: number;
   hours: number;
@@ -2216,6 +2283,56 @@ export interface AskInfo {
   error: string | null;
   timeout_s: number;
 }
+/* -------------------------------------------------------------- annotate */
+
+/** The model that labels tool calls with their purpose (rc_dashboard/annotate.py). */
+export interface AnnotateInfo {
+  enabled: boolean;
+  provider: string;
+  model: string | null;
+  /** where the command lines go, for an HTTP provider */
+  endpoint: string | null;
+  available: boolean;
+  error: string | null;
+  /** annotate a session as soon as it opens */
+  auto: boolean;
+  max_calls: number;
+  kinds: string[];
+  prompt_version: number;
+}
+/** command line, as the tree serves it -> [purpose, kind] */
+export type AnnotateResults = Record<string, [string, string]>;
+export interface AnnotateJob {
+  id: string;
+  state: 'queued' | 'running' | 'done' | 'error';
+  provider: string;
+  model: string | null;
+  /** `provider:model`, who wrote the answers */
+  label: string;
+  /** the session the job was started for */
+  about?: string | null;
+  /** calls asked about, answered so far, and left out by the model's answers */
+  total: number;
+  done: number;
+  unlabelled: number;
+  error: string | null;
+  elapsed_s: number;
+  results: AnnotateResults;
+}
+export interface AnnotateResponse {
+  info: AnnotateInfo;
+  /** distinct tool calls taken (at most info.max_calls), and how many there are */
+  calls: number;
+  total: number;
+  /** the calls taken, as the tree serves their command lines */
+  cmds?: string[];
+  known: AnnotateResults;
+  /** this request's job, or, when it started none, the one already asking about its calls */
+  job: AnnotateJob | null;
+  /** other jobs already asking about some of its calls, to follow too */
+  also?: string[];
+}
+
 /** Part of one panel's data, as the service keys it: a window panel
  * (`tool_mix`, `risk`, ...) or some of its fields, the live tier's small
  * sections (`live`: now, users, hosts, submits), or the ranked sessions
@@ -2392,4 +2509,162 @@ export interface ProcIo {
   wchar_mb: number;
   tx_mb: number;
   rx_mb: number;
+}
+
+/* ------------------------------------------------------------ node tier */
+
+/** A process in D state when the node tier looked, and what it waited in. */
+export interface NodeDState {
+  pid: number | null;
+  ppid: number | null;
+  user: string | null;
+  /** the kernel wait channel; `-` for another user's process when unprivileged */
+  wchan: string | null;
+  /** the kernel stack's top frames, where the collector could read it (root) */
+  kstack: string[] | null;
+  args: string;
+}
+/** One account's cgroup between the node tier's two newest snapshots. */
+export interface NodeUser {
+  user: string;
+  uid: number | null;
+  cpu_delta_s: number | null;
+  gap_s: number | null;
+  /** the cgroup was recreated between the snapshots: no rate, not an idle one */
+  counter_reset: boolean;
+  /** CPU over the gap as cores in use on average */
+  cpu_cores: number | null;
+  cpu_quota_cores: number | null;
+  /** seconds the kernel held the account back at its quota, over the gap */
+  throttled_delta_s: number | null;
+  mem_gb: number | null;
+  pids: number | null;
+  pids_max: number | null;
+}
+export interface NodeHost {
+  host: string;
+  ts: string | null;
+  epoch: number | null;
+  synthetic: boolean;
+  privileged: boolean | null;
+  load_1: number | null;
+  load_5: number | null;
+  load_15: number | null;
+  mem_total_gb: number | null;
+  mem_used_gb: number | null;
+  mem_used_pct: number | null;
+  mem_available_gb: number | null;
+  cpu_idle_pct: number | null;
+  cpu_iowait_pct: number | null;
+  procs_running: number | null;
+  procs_blocked: number | null;
+  d_state_procs: number;
+  d_state?: NodeDState[];
+  zombie: number | null;
+  fork_exec_ms: number | null;
+  stat_local_ms: number | null;
+  getent_ms: number | null;
+  logged_in_users: number;
+  fds_allocated: number | null;
+  snapshots: number;
+  per_user: NodeUser[];
+  per_user_resets: number;
+  /** accounts held back at their CPU quota; null without a second snapshot */
+  throttled_users?: number | null;
+}
+export interface NodeMount {
+  host: string;
+  mount: string;
+  fstype: string | null;
+  bad_xid: number | null;
+  backlog_u: number | null;
+  rd_ops_total: number | null;
+  wr_ops_total: number | null;
+  ops_s: number | null;
+  rd_kb_s: number | null;
+  rd_rtt_ms: number | null;
+  rd_exe_ms: number | null;
+  rd_retrans: number | null;
+  wr_kb_s: number | null;
+  wr_rtt_ms: number | null;
+  wr_exe_ms: number | null;
+  wr_retrans: number | null;
+}
+export interface NodeDisk {
+  host: string;
+  mountpoint: string;
+  fstype: string | null;
+  total_gb: number | null;
+  used_pct: number | null;
+  inode_used_pct: number | null;
+  /** at or past the service's line for space or inodes (`thresholds`) */
+  full?: boolean;
+}
+export type NodeField =
+  | 'fork_exec_ms' | 'stat_local_ms' | 'getent_ms' | 'load_1' | 'iowait_pct'
+  | 'mem_used_pct' | 'd_state' | 'nfs_rd_rtt_ms' | 'nfs_wr_rtt_ms' | 'nfs_retrans';
+/** The node tier over the window, per host (rc_dashboard/nodehist.py). */
+export interface NodeSeries {
+  bin_s: number;
+  /** epoch seconds at the start of each bin */
+  t: number[];
+  /** the usual gap between a host's snapshots */
+  interval_s: number | null;
+  /** how a bin of snapshots is read: a latency's worst, a level's mean */
+  fields: Record<NodeField, 'max' | 'mean'>;
+  hosts: Record<string, Record<NodeField | 'snapshots', (number | null)[]>>;
+  /** the thread reading the node tier's files: still on its first pass, or done */
+  state: 'idle' | 'reading' | 'ready';
+  passes: number;
+  error: string | null;
+  read: { files: number; lines: number; bad: number; bytes: number };
+  held_from: number | null;
+  days: number;
+  _error?: string;
+}
+export interface NodePanel extends PanelEnvelope {
+  hosts?: NodeHost[];
+  nfs?: NodeMount[];
+  disk?: NodeDisk[];
+  thresholds?: { disk_full_pct: number; inode_full_pct: number };
+  series?: NodeSeries;
+  cpu_delta_basis?: string;
+  privilege?: string;
+  _error?: string;
+}
+
+/* ---------------------------------------------------------------- trend */
+
+export interface TrendCell {
+  /** processes that exited; null on a day no minute of was held */
+  n: number | null;
+  cpu_s: number | null;
+  /** accounts that ran something in the class that day */
+  users: number | null;
+}
+export interface TrendDay {
+  date: string;
+  from: number;
+  to: number;
+  /** still going */
+  today: boolean;
+  /** starts where retention does, not at midnight */
+  cut: boolean;
+  /** minutes of the day the live tier could hold */
+  minutes: number;
+  /** minutes of it the collector wrote any exit in */
+  held: number;
+  by_class: Record<string, TrendCell>;
+  /** agent type -> accounts, processes and CPU that day */
+  types: Record<string, { users: number; n: number; cpu_s: number }>;
+}
+/** Each class per day, over everything the live tier holds (reducers/live.py `daily`). */
+export interface TrendPanel extends PanelEnvelope {
+  days?: TrendDay[];
+  bin_s?: number;
+  retention_minutes?: number;
+  retained_from?: number | null;
+  tz?: string;
+  basis?: string;
+  _error?: string;
 }

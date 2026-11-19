@@ -1,15 +1,27 @@
-/* The trajectory inspector: one ranked session, opened as its process tree.
+/* The trajectory inspector: one ranked session, told top down -- what it was, what the agent did, and the
+ * processes that back it.
  *
- * The row's own summary -- the purpose ribbon and the tool tokens -- stays on
- * top, because it is the session at a glance. Below it is what the summary
- * compresses: every process, nested under whoever started it, in start order.
+ * It opens on who ran the session and what it came to (`Facts`), the session's headline, and the gist: what
+ * kind of session it was and the session in a few sentences. Then two parts, each under a heading:
+ *
+ * - WHAT IT DID, for an agent whose commands are read: a map of its tasks over its phases on the whole
+ *   session's clock (SessionMap.tsx), and under it the list of them (TaskList.tsx, or PhaseList.tsx where the
+ *   block has no tasks). They are the row's block, which is the whole session's, so they are drawn as soon
+ *   as the row is here, before any process is read. An agent of a type whose commands are not read says so
+ *   in their place; a person or an IDE has neither, as their row has none.
+ * - PROCESSES: what the processes were for, run by run, and the tools they ran (`ProcessMix`, the row's
+ *   purpose ribbon and tool tokens: they count processes, so a poll loop is most of the ribbon however
+ *   little of the work it was, which is why they stand here and not over the agent's phases); what the read
+ *   covers; the navigator; and the process tree, every process nested under whoever started it, with its
+ *   own controls on the line over its find bar.
  *
  * The tree is a re-read of the day-files, so it says what it read and where it
  * stopped. A read that hit a budget says so above the tree, not in a tooltip:
  * a tree that covers the first forty minutes of a four-hour session and looks
- * complete is the kind of picture this dashboard exists not to draw.
+ * complete is the kind of picture this dashboard exists not to draw. The map
+ * above it is the row's, so it holds the four hours whatever the read reached.
  *
- * Between the two sits the navigator (TrajectoryNav.tsx), and every way of
+ * Over the tree sits the navigator (TrajectoryNav.tsx), and every way of
  * picking a moment -- a click on its strip, a quick jump, a ribbon run or a
  * tool token here or in the ranked table -- becomes one `Pending` jump that
  * this component carries out: read the page holding it if this read does not
@@ -18,15 +30,13 @@
  * the quick jumps what it landed on -- the process itself, or the row that
  * counts it when it is counted rather than drawn.
  *
- * A phase picked by its name on the navigator's chart, or in the list under it, is one
+ * A phase picked by its name on the navigator's chart, on the map, or in the list, is one
  * more such jump (`onPhase`): to the phase's start, with the chart zoomed to its span. A task
- * picked by its block in the chart's lane is another (`onTask`): to the task's start, with the
- * chart zoomed to its own span. The phases and the tasks are the row's own, the same block the
- * sessions list draws, and the ranking's row is the fresher of the two this component has, so
- * it is read first. Above the navigator is the session's headline, the project and the names its
- * tasks recur on, where the block has one, and under that what kind of session it was and its
- * summary, the session in a few sentences (components/CategoryChip.tsx). Under the navigator is
- * the list: a task opens into its phases
+ * picked by its block in the chart's lane or on the map, or by its row in the list, is another
+ * (`onTask`): to the task's start, with the chart zoomed to its own span. The phases and the tasks
+ * are the row's own, the same block the sessions list draws, and the ranking's row is the fresher
+ * of the two this component has, so it is read first. Under the gist (components/CategoryChip.tsx)
+ * the map draws them, and under the map is the list: a task opens into its phases
  * and a phase into its commands where the block has tasks (TaskList.tsx), and it is the list of
  * phases alone where it has none (PhaseList.tsx). Either list picks as the chart does, and the
  * task that holds the chart's zoom is open in the three-level list.
@@ -37,15 +47,25 @@
  * it the jump (`pendingJump`), which it goes to as any pick once it has read itself. Where the
  * window does not hold it, the pick is made on this row.
  *
+ * Find, over the tree, looks through every process the read served: its
+ * command, its command line, and the folder it ran in, its own or the one it
+ * inherited (ProcDiagram.tsx `findIndex`), every word of the query in one
+ * process. What a process opened is not recorded, so a folder it only read
+ * from is found only where its command line names it. It marks what it
+ * matched in either view, and a closed row or box with a match below it, and
+ * Enter or its arrows go from one match to the next: the rows above it are
+ * opened, and a match that "hide routine" or "hide typos" took out turns that
+ * off, as a jump does, and says so.
+ *
  * Oldest first or newest first (`?torder=`) is asked of the service, not
  * sorted here: the read's budgets keep one end drawn and count the other, and
  * newest first moves them to keep the newest (rc_dashboard/proctree.py). A
  * page-side reverse would put at the top the processes the service had only
  * counted. The order the tree came in (`order`) is the one jumps go by.
  */
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { sessionName } from '../lib/sessions';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useTrajectory } from '../api/hooks';
 import type { OwnerVia, Phase, PhaseDay, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
 import { PROC_LINKS } from '../api/types';
@@ -62,9 +82,11 @@ import {
   spots,
 } from '../components/ProcTree';
 import type { Found, JumpReq } from '../components/ProcTree';
-import { DEFAULT_ROUTINE, ProcDiagram, hiddenCount, unhidNote } from '../components/ProcDiagram';
+import { DEFAULT_ROUTINE, ProcDiagram, findIds, findIndex, hiddenCount, reveal, unhidNote } from '../components/ProcDiagram';
 import type { Hide } from '../components/ProcDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
+import { AnnotateControl, useAnnotate } from '../components/Annotate';
+import { LlmPurposes } from '../lib/annotate';
 import { CategoryChip } from '../components/CategoryChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
@@ -75,15 +97,17 @@ import { serverNow } from '../lib/clock';
 import { useNow } from '../lib/useNow';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
-import { isBlock, phaseLbl } from '../lib/phases';
+import { categoryOf, isBlock, phaseLbl, phasesUnread } from '../lib/phases';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
 import { otherDay, taskLabel } from '../lib/tasks';
 import { PhaseList } from './PhaseList';
+import { SessionMap } from './SessionMap';
 import { TaskList } from './TaskList';
 import { SPAN_MIN, TrajectoryNav } from './TrajectoryNav';
 import type { Quick } from './TrajectoryNav';
 import './trajectories.css';
+import { table } from '../lib/lookup';
 
 /** A moment to go to, from wherever it was picked. */
 export interface Pending extends JumpReq {
@@ -141,14 +165,14 @@ export function runTip(t: number | null | undefined, where: string): string {
 }
 
 /* What each attribution means, for the keys column and the fold table. */
-export const VIA_TIP: Record<OwnerVia, string> = {
+export const VIA_TIP: Record<OwnerVia, string> = table({
   self: 'the key process is itself the agent',
   ancestor: 'walked up the process tree to the nearest agent',
   parent: 'the parent of a tool-call shell, embedded tool or Codex sandbox, never itself seen',
   tree_root: 'fell back to the top-most agent the collector recorded for the tree',
   root: 'not an agent, with nothing above it to fold into',
   unknown: 'the key process was never seen in the window, so it is left as its own session',
-};
+});
 
 /** `pgrep x120 > git > rg x3 ...` -- the tool tokens as text, bounded. With
  *  `onPick`, each token is a button for the run it stands for. */
@@ -217,19 +241,20 @@ function useElapsed(on: boolean): number {
   return t;
 }
 
-function Facts({
-  row,
-  d,
-  onRun,
-}: {
-  row: TrajRow | null;
-  d: TrajectoryDetail | null;
-  onRun: (kind: 'purpose' | 'tool', i: number) => void;
-}) {
+/** Who ran the session and where, then what it came to: when it ran and for how long, its tool calls where its commands are
+ *  read (the count its row shows), its processes, CPU, and distinct tools, and how it was launched. How many pieces its row
+ *  was joined from is said only where that says something: more than one piece, or a piece placed by a weaker rule than the
+ *  agent itself or an ancestor of it (`VIA_TIP`). One piece of the agent's own is every plain session, and is not said. */
+function Facts({ row, d }: { row: TrajRow | null; d: TrajectoryDetail | null }) {
   const r = row ?? d?.row ?? null;
   if (!r) return null;
-  const calls = r.purpose_rle?.reduce((a, [, k]) => a + k, 0) ?? 0;
   const cls = r.actor3 ?? 'unlabeled';
+  const calls = isBlock(r.phases) ? (r.n_calls ?? null) : null;
+  const weak = !!r.owner_via && r.owner_via !== 'self' && r.owner_via !== 'ancestor';
+  // An agent that worked past midnight is a row to a day, and these facts are this row's, while its gist, its map, and its
+  // list are the whole session's: said, so that two counts of its tool calls do not read as one count that disagrees.
+  const days = isBlock(r.phases) ? (r.phases.days ?? []) : [];
+  const nth = days.findIndex((x) => x.sid === r.sid);
   return (
     <>
       <div className="ins-id">
@@ -246,22 +271,41 @@ function Facts({
         <span className="sid" data-tip={r.sid}>{sessionName(r).key}</span>
       </div>
       <div className="ins-facts">
+        {r.first != null && r.last != null && (
+          <span data-tip="the session's first and last process in this window">
+            <b>{clock(r.first)}</b>
+            {' → '}
+            <b>{clock(r.last)}</b>
+          </span>
+        )}
+        {days.length > 1 && nth >= 0 && (
+          <span data-tip="it worked past midnight, so it is a row to a day: these figures are this day's, and its summary and what it did, below, are the whole session's">
+            day <b>{fint(nth + 1)}</b> of <b>{fint(days.length)}</b>
+          </span>
+        )}
+        <span data-tip={GLOSS.wall}>
+          length <b>{dur(r.wall_s)}</b>
+        </span>
+        {calls != null && (
+          <span data-tip="commands the agent issued itself; what they started counts as processes">
+            tool calls <b>{fint(calls)}</b>
+          </span>
+        )}
         <span>
           processes <b>{fint(r.n_events)}</b>
         </span>
         <span>
           CPU <b>{fmt(r.cpu_s)}</b> s
         </span>
-        <span data-tip={GLOSS.wall}>
-          length <b>{dur(r.wall_s)}</b>
+        <span data-tip="how many different programs its processes ran">
+          distinct tools <b>{fint(r.distinct_tools)}</b>
         </span>
-        <span>
-          tools <b>{fint(r.distinct_tools)}</b>
-        </span>
-        <span data-tip={`${GLOSS.keys}${r.owner_via ? `\n${r.owner_via}: ${VIA_TIP[r.owner_via]}` : ''}`}>
-          pieces <b>{fint(r.fragments ?? 1)}</b>
-          {r.owner_via && r.owner_via !== 'self' && r.owner_via !== 'ancestor' ? ` ${r.owner_via}` : ''}
-        </span>
+        {((r.fragments ?? 1) > 1 || weak) && (
+          <span data-tip={`${GLOSS.keys}${r.owner_via ? `\n${r.owner_via}: ${VIA_TIP[r.owner_via]}` : ''}`}>
+            pieces <b>{fint(r.fragments ?? 1)}</b>
+            {weak ? ` ${r.owner_via}` : ''}
+          </span>
+        )}
         <span>
           sandbox <b>{label(SB_LABEL, r.sandbox ?? 'unknown')}</b>
         </span>
@@ -269,6 +313,29 @@ function Facts({
           approval <b>{label(AP_LABEL, r.approval ?? 'unknown')}</b>
         </span>
       </div>
+    </>
+  );
+}
+
+/** What the session's processes were for, run by run, and the tools they ran, in the order their records were written: the
+ *  row's purpose ribbon and its tool runs, with the key to the purposes' colours. A run picked on either opens the tree at
+ *  it. They count processes, so a poll loop of a thousand `pgrep`s is most of the ribbon however little of the work it was;
+ *  an agent's phases, above them, count its tool calls. So the ribbon stands in the Processes part, as one more view of the
+ *  processes, and what the agent did is said by its phases. */
+function ProcessMix({
+  row,
+  d,
+  onRun,
+}: {
+  row: TrajRow | null;
+  d: TrajectoryDetail | null;
+  onRun: (kind: 'purpose' | 'tool', i: number) => void;
+}) {
+  const r = row ?? d?.row ?? null;
+  if (!r) return null;
+  const calls = r.purpose_rle?.reduce((a, [, k]) => a + k, 0) ?? 0;
+  return (
+    <div className="ins-mix">
       <div className="ins-summary">
         <span className="eyebrow">purpose</span>
         {r.purpose_rle?.length ? (
@@ -305,7 +372,7 @@ function Facts({
         )}
       </div>
       <Legend items={purposeLegend()} />
-    </>
+    </div>
   );
 }
 
@@ -336,11 +403,38 @@ function ReadLine({
     b.elided > 0 ? `${fint(b.elided)} past the ${fint(b.nodes)}-row budget` : null,
     weak > 0 ? `${fint(weak)} parent${weak === 1 ? '' : 's'} placed on weaker evidence` : null,
   ].filter(Boolean);
+  // What the tree covers comes first, where it is not the whole session: it changes what every view under it means, so
+  // it is a box of its own with its continue button, and it says what the tree covers before why.
   return (
     <div className="ins-read">
+      {s.stopped && (
+        <div className="ins-bound">
+          <span>
+            <b>{`this tree covers ${clock(s.first)}–${clock(s.stopped_at)} of a session that ran ${clock(d.span?.first)}–${clock(
+              d.span?.last,
+            )}`}</b>
+            {`: the read stopped at its ${
+              s.stopped === 'records' ? `${fint(b.max_records)}-record` : `${bytes(b.max_bytes)}`
+            } budget${newest ? ', so its newest are the newest read, not the session’s' : ''}`}
+          </span>
+          {s.stopped_at != null && (
+            <button className="btn primary" onClick={() => setFrom(s.stopped_at)}>
+              {`continue from ${clock(s.stopped_at)} →`}
+            </button>
+          )}
+        </div>
+      )}
+      {from != null && (
+        <div className="ins-bound soft">
+          <span>{`reading from ${clock(from)}, past an earlier read's budget; what ran before is not in this tree`}</span>
+          <button className="btn" onClick={() => setFrom(null)}>
+            ← from the session's start
+          </button>
+        </div>
+      )}
       <div>
         <b>{fint(s.records)}</b>
-        {` processes, ${clock(s.first)} → ${clock(s.last)}`}
+        {` processes read, ${clock(s.first)} → ${clock(s.last)}`}
         <span className="ins-scan">
           {` · re-read ${bytes(s.bytes)} of ${fint(s.files)} day-file${s.files === 1 ? '' : 's'} in ${s.elapsed_s.toFixed(1)} s`}
         </span>
@@ -358,30 +452,6 @@ function ReadLine({
           </span>
         )}
       </div>
-      {s.stopped && (
-        <div className="ins-bound">
-          <span>
-            {`the read stopped at ${clock(s.stopped_at)}, at its ${
-              s.stopped === 'records' ? `${fint(b.max_records)}-record` : `${bytes(b.max_bytes)}`
-            } budget: this tree covers ${clock(s.first)}–${clock(s.stopped_at)} of a session that ran ${clock(
-              d.span?.first,
-            )}–${clock(d.span?.last)}${newest ? ', so its newest are the newest read, not the session’s' : ''}`}
-          </span>
-          {s.stopped_at != null && (
-            <button className="btn primary" onClick={() => setFrom(s.stopped_at)}>
-              {`continue from ${clock(s.stopped_at)} →`}
-            </button>
-          )}
-        </div>
-      )}
-      {from != null && (
-        <div className="ins-bound soft">
-          <span>{`reading from ${clock(from)}, past an earlier read's budget; what ran before is not in this tree`}</span>
-          <button className="btn" onClick={() => setFrom(null)}>
-            ← from the session's start
-          </button>
-        </div>
-      )}
       {limits.length > 0 && (
         <details className="ins-limits">
           <summary>
@@ -426,6 +496,29 @@ function ReadLine({
 }
 
 /** A failure's exit, as the tree's exit column says it. */
+/** A figure in a session's summary -- a count, a share, a length (`79%`, `41 min`, `30`) -- and not a digit
+ *  inside a name. */
+const FIGURE = /(?<![\w.])\d[\d,]*(?:\.\d+)?(?:%| (?:ms|s|min|h|d)\b)?/g;
+
+/** A session's summary with its figures set in bold, so the numbers it rests on are what the eye lands on. */
+function Figures({ text }: { text: string }) {
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(FIGURE)) {
+    if (m.index > at) out.push(text.slice(at, m.index));
+    out.push(<b key={m.index}>{m[0]}</b>);
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return <>{out}</>;
+}
+
+/** The colour of the gist's rule: its category's, and the plain edge for one with no colour of its own. */
+const gistColour = (c: string | null | undefined) => {
+  const col = c ? categoryOf(c)[2] : 'none';
+  return col === 'none' ? 'var(--edge)' : col;
+};
+
 const failWhat = (f: [number | null, number | null, number | null, string | null, number | null, number | null]) =>
   `${f[3] ?? '?'} · ${f[5] != null ? `signal ${f[5]}` : `exit ${f[4]}`}`;
 
@@ -484,6 +577,8 @@ export function TrajectoryInspector({
     setFrom(t);
   };
   const q = useTrajectory(sid, win, from, to, order);
+  // the ids the two parts' headings name them by
+  const uid = useId().replace(/[^\w-]/g, '');
   const d = q.data && q.data.sid === sid && !q.loading ? q.data : null;
   const elapsed = useElapsed(q.loading);
   const tree: ProcNode | null = d?.found ? (d.tree ?? null) : null;
@@ -514,11 +609,22 @@ export function TrajectoryInspector({
   const [failIdx, setFailIdx] = useState<number | null>(null);
   const [note, setNote] = useState<ReactNode>(null);
   const [want, setWant] = useState<Pending | null>(null);
+  // find: what is typed, which match it went to last (-1: none yet), that
+  // match's box in the tree view, and what going there turned off
+  const [query, setQuery] = useState('');
+  const [hi, setHi] = useState(-1);
+  const [goTo, setGoTo] = useState<{ id: string; n: number } | null>(null);
+  const [findNote, setFindNote] = useState('');
   const stampKey = `${sid}|${d?.scan?.computed_at ?? ''}`;
+  // a model's purpose for each tool call, asked for on the button (components/Annotate.tsx)
+  const annot = useAnnotate(sid, win, from, to, order, tree ? stampKey : null);
   useEffect(() => {
     if (tree) setOpen(defaultOpen(tree));
     setDopen(new Set(['r']));
     setDall(new Set());
+    setHi(-1);
+    setGoTo(null);
+    setFindNote('');
     // a new read is a new axis and new rows: nothing from the last one applies
     setView(null);
     setAim(null);
@@ -568,6 +674,42 @@ export function TrajectoryInspector({
   }, [jumpHere]);
 
   const index = useMemo(() => (tree ? spots(tree) : []), [tree]);
+  const found = useMemo(() => (tree ? findIndex(tree) : []), [tree]);
+  const matches = useMemo(() => findIds(found, query), [found, query]);
+  const hits = useMemo(() => (matches.length ? new Set(matches) : null), [matches]);
+  // matches that what is hidden takes out: found, and drawn once gone to
+  const hiddenHits = useMemo(
+    () => (tree ? matches.filter((id) => { const o = hiddenAt(tree, id, hiding); return o.routine || o.typos; }).length : 0),
+    [tree, matches, hiding],
+  );
+  /** Go to match `i`: open what is above it, show it if it is hidden, and
+   *  bring it into view, in the view that is shown. */
+  const findGo = (i: number) => {
+    const id = matches[i];
+    if (!tree || id == null) return;
+    setHi(i);
+    const off = hiddenAt(tree, id, hiding);
+    if (off.routine) setHide(false);
+    if (off.typos) setTypos(false);
+    setFindNote(off.routine || off.typos ? unhidNote(off) : '');
+    if (mode === 'tree') {
+      const r = reveal(tree, id, hiding);
+      setDopen((o) => (r.open.every((x) => o.has(x)) ? o : new Set([...o, ...r.open])));
+      setDall((a) => (r.all.every((x) => a.has(x)) ? a : new Set([...a, ...r.all])));
+      setGoTo((g) => ({ id, n: (g?.n ?? 0) + 1 }));
+    } else {
+      setOpen((o) => {
+        const up = ancestors(id);
+        return up.every((x) => o.has(x)) ? o : new Set([...o, ...up]);
+      });
+      setFlash((f) => ({ id, n: (f?.n ?? 0) + 1 }));
+    }
+  };
+  const findStep = (dir: 1 | -1) => {
+    if (!matches.length) return;
+    const n = matches.length;
+    findGo(hi < 0 || hi >= n ? (dir > 0 ? 0 : n - 1) : (hi + dir + n) % n);
+  };
   const axis: [number, number] | null =
     d?.timeline?.lo != null && d.timeline.hi != null && d.timeline.hi >= d.timeline.lo
       ? [d.timeline.lo, d.timeline.hi]
@@ -843,6 +985,11 @@ export function TrajectoryInspector({
       t,
     );
 
+  // What the agent did, where its commands are read: the row's block, which is the whole session's whatever the read
+  // reached. So it is drawn, and listed, as soon as the row is here, before the tree is read; a pick made from it waits for
+  // the read, as every jump does. An agent of a type whose commands are not read says so in its place, as its row does.
+  const unread = r ? phasesUnread(r) : null;
+
   return (
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
       <Panel
@@ -855,56 +1002,6 @@ export function TrajectoryInspector({
         emptyWhat={d?.why ?? 'not in this window'}
         header={
           <div className="ins-tools">
-            {tree && (
-              <>
-                <Segmented
-                  value={mode}
-                  onChange={setMode}
-                  options={[
-                    { k: 'tree', lbl: 'tree', tip: 'boxes joined by lines, opened a level at a time' },
-                    { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline; landmarks and the strip jump here' },
-                  ]}
-                />
-                {setOrder && (
-                  <Segmented
-                    value={order}
-                    onChange={setOrder}
-                    options={[
-                      {
-                        k: 'oldest',
-                        lbl: 'oldest first',
-                        tip:
-                          "each process's children by when they started, the first at the top. In a busy session " +
-                          'the newest are the ones counted in ⋯ rows rather than drawn',
-                      },
-                      {
-                        k: 'newest',
-                        lbl: 'newest first',
-                        tip:
-                          "each process's children by when they started, the latest at the top. The service reads " +
-                          'on to the session’s end and draws the newest in full; the oldest are the ones counted in ⋯ rows',
-                      },
-                    ]}
-                  />
-                )}
-                <button className="btn" onClick={() => (mode === 'tree' ? setDopen(allOpen(tree)) : setOpen(allOpen(tree)))}
-                  data-tip="open every process the read served">
-                  expand all
-                </button>
-                <button className="btn" onClick={() => (mode === 'tree' ? setDopen(new Set(['r'])) : setOpen(new Set(['r'])))}>
-                  collapse
-                </button>
-                <a
-                  className="btn"
-                  href={treePopHref(sid, win, from, hide, order, typos)}
-                  target="_blank"
-                  rel="noopener"
-                  data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
-                >
-                  pop out ↗
-                </a>
-              </>
-            )}
             <button className="btn ins-close" onClick={onClose} aria-label="close the inspector" data-tip="close the inspector">
               ×
             </button>
@@ -925,143 +1022,280 @@ export function TrajectoryInspector({
           ) : undefined
         }
       >
-        <Facts row={row} d={d} onRun={onRun} />
-        {q.error && <div className="err">{`/api/trajectory: ${q.error}`}</div>}
-        {q.loading && (
-          <div className="building">
-            <div className="hd">
-              <span className="pill">
-                <i className="ld" />
-                reading
-              </span>
-              <span className="mono">{`${elapsed} s`}</span>
-            </div>
-            <p className="paths">
-              {`reading the session's records${n != null ? ` · ${fint(n)} of them` : ''}`}
-              {want ? ` · then going to ${clock(want.t)} (${want.what})` : ''}
-            </p>
-          </div>
-        )}
-        {d?.found && <ReadLine d={d} from={from} setFrom={page} reread={() => setTo(Math.ceil(serverNow() / 1000))} />}
-        {d?.found && axis && block?.headline && (
+        <Facts row={row} d={d} />
+        {block?.headline && (
           <div className="ins-headline" data-tip="the project the agent worked in, and the names that recur across its tasks">
             {block.headline}
           </div>
         )}
-        {d?.found && axis && block?.summary && (
-          <p className="ins-gist">
+        {block?.summary && (
+          <p
+            className="ins-gist"
+            style={{ '--cat': gistColour(block.category) } as CSSProperties}
+          >
             <CategoryChip of={block} />
             <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
-              {block.summary}
+              <Figures text={block.summary} />
             </span>
           </p>
         )}
-        {d?.found && axis && (
-          <TrajectoryNav
-            d={d}
-            axis={axis}
-            view={view}
-            setView={zoomTo}
-            cursor={cursor}
-            onPick={(t) =>
-              setWant({ t, by: 'start', what: `the first process started at or after ${clock(t)}` })
-            }
-            onFail={(i) => go(failReq(i))?.()}
-            quick={quick}
-            status={note ?? <span className="nm">{`pick a moment on the strip, or a landmark ${DASH} the tree opens there`}</span>}
-            inView={inView}
-            phases={block}
-            now={edge}
-            onPhase={onPhase}
-            onTask={onTask}
-          />
+        {block && block.list.length > 0 && (
+          <section className="ins-sec" aria-labelledby={`${uid}-did`}>
+            <div className="ins-sec-h">
+              <h4 id={`${uid}-did`}>What it did</h4>
+              <p>
+                {block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session · hover one for
+                what it was, click it to open its processes below
+              </p>
+            </div>
+            <SessionMap block={block} first={r?.first} now={edge} onTask={onTask} onPhase={onPhase} />
+            {block.tasks?.length ? (
+              <TaskList block={block} now={edge} view={view ?? aim} onTask={onTask} onPhase={onPhase} />
+            ) : (
+              <PhaseList block={block} now={edge} onPick={onPhase} />
+            )}
+          </section>
         )}
-        {d?.found && axis && block && block.list.length > 0 &&
-          (block.tasks?.length ? (
-            <TaskList block={block} now={edge} view={view ?? aim} onTask={onTask} onPhase={onPhase} />
-          ) : (
-            <PhaseList block={block} now={edge} onPick={onPhase} />
-          ))}
-        {tree && (
-          <div className="pd-bar">
-            <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
-              <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
-              hide routine
-            </label>
-            {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
-            <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
-              <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
-              hide typos
-            </label>
-            {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
-            <span className="nm pd-hint">
-              {mode === 'tree'
-                ? 'click a box to open what it started · hover for its command'
-                : 'click a row to open what it started · hover for its command'}
-            </span>
+        {unread && (
+          <p className="ins-unread">
+            {`${unread}: its processes, below, are the record of what it did`}
+          </p>
+        )}
+        <section className="ins-sec" aria-labelledby={`${uid}-procs`}>
+          <div className="ins-sec-h">
+            <h4 id={`${uid}-procs`}>Processes</h4>
+            <p>every program the session ran, each under the one that started it</p>
           </div>
-        )}
-        {tree && mode === 'tree' && (
-          // keyed on what is hidden: hiding moves every parent, so start again over the root
-          <ProcDiagram
-            key={`${hide ? 'hide' : 'all'}${typos ? '-typos' : ''}`}
-            root={tree}
-            open={dopen}
-            setOpen={setDopen}
-            hide={hiding}
-            all={dall}
-            setAll={setDall}
-          />
-        )}
-        {tree && mode === 'table' && (
-          <ProcTree
-            root={tree}
-            open={open}
-            setOpen={setOpen}
-            timeline={d?.timeline}
-            view={treeView}
-            flash={flash}
-            hide={hiding}
-            newest={newest}
-            onOrder={setOrder}
-          />
-        )}
-        {tree && (
-          <div className="pt-legend">
-            <span>
-              <span className="pt-tl">
-                <i className="pt-bar" style={{ left: 0, width: '100%' }} />
+          <ProcessMix row={row} d={d} onRun={onRun} />
+          {q.error && <div className="err">{`/api/trajectory: ${q.error}`}</div>}
+          {q.loading && (
+            <div className="building">
+              <div className="hd">
+                <span className="pill">
+                  <i className="ld" />
+                  reading
+                </span>
+                <span className="mono">{`${elapsed} s`}</span>
+              </div>
+              <p className="paths">
+                {`reading the session's records${n != null ? ` · ${fint(n)} of them` : ''}`}
+                {want ? ` · then going to ${clock(want.t)} (${want.what})` : ''}
+              </p>
+            </div>
+          )}
+          {d?.found && <ReadLine d={d} from={from} setFrom={page} reread={() => setTo(Math.ceil(serverNow() / 1000))} />}
+          {d?.found && axis && (
+            <TrajectoryNav
+              d={d}
+              axis={axis}
+              view={view}
+              setView={zoomTo}
+              cursor={cursor}
+              onPick={(t) =>
+                setWant({ t, by: 'start', what: `the first process started at or after ${clock(t)}` })
+              }
+              onFail={(i) => go(failReq(i))?.()}
+              quick={quick}
+              status={note ?? <span className="nm">{`pick a moment on the strip, or a landmark ${DASH} the tree opens there`}</span>}
+              inView={inView}
+              phases={block}
+              now={edge}
+              onPhase={onPhase}
+              onTask={onTask}
+            />
+          )}
+          {tree && (
+            // the tree's own controls, beside it: how it is drawn, which end of the session it lists first, and a tab of its own
+            <div className="ins-tree-tools">
+              <Segmented
+                value={mode}
+                onChange={setMode}
+                options={[
+                  { k: 'tree', lbl: 'tree', tip: 'boxes joined by lines, opened a level at a time' },
+                  { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline; landmarks and the strip jump here' },
+                ]}
+              />
+              {setOrder && (
+                <Segmented
+                  value={order}
+                  onChange={setOrder}
+                  options={[
+                    {
+                      k: 'oldest',
+                      lbl: 'oldest first',
+                      tip:
+                        "each process's children by when they started, the first at the top. In a busy session " +
+                        'the newest are the ones counted in ⋯ rows rather than drawn',
+                    },
+                    {
+                      k: 'newest',
+                      lbl: 'newest first',
+                      tip:
+                        "each process's children by when they started, the latest at the top. The service reads " +
+                        'on to the session’s end and draws the newest in full; the oldest are the ones counted in ⋯ rows',
+                    },
+                  ]}
+                />
+              )}
+              <button className="btn" onClick={() => (mode === 'tree' ? setDopen(allOpen(tree)) : setOpen(allOpen(tree)))}
+                data-tip="open every process the read served">
+                expand all
+              </button>
+              <button className="btn" onClick={() => (mode === 'tree' ? setDopen(new Set(['r'])) : setOpen(new Set(['r'])))}>
+                collapse
+              </button>
+              <a
+                className="btn"
+                href={treePopHref(sid, win, from, hide, order, typos)}
+                target="_blank"
+                rel="noopener"
+                data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
+              >
+                pop out ↗
+              </a>
+            </div>
+          )}
+          {tree && (
+            <div className="pd-bar">
+              <span className="pd-find">
+                {/* the explanation is on the label, not the box: a tip on a box shows on focus, over the tree being searched */}
+                <span
+                  className="q-mark"
+                  data-tip={
+                    'looks through every process the read served: its command, its command line, and the folder it ran in ' +
+                    '(its own, or its parent’s). Files and folders it only opened are not recorded, so they are found only where its command line names them. ' +
+                    'Every word must be in one process: `pytest myproj` finds pytest run in a folder named myproj. ' +
+                    'Processes counted rather than drawn are found by their command name only\n' +
+                    'Enter: the next match · Shift+Enter: the one before · Esc: clear'
+                  }
+                >
+                  find
+                </span>
+                <input
+                  type="search"
+                  placeholder="a command or folder"
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setHi(-1);
+                    setFindNote('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      findStep(e.shiftKey ? -1 : 1);
+                    } else if (e.key === 'Escape') {
+                      setQuery('');
+                      setHi(-1);
+                      setFindNote('');
+                    }
+                  }}
+                  aria-label="find a command or folder"
+                />
+                <button className="btn" onClick={() => findStep(-1)} disabled={!matches.length} aria-label="previous match">
+                  ‹
+                </button>
+                <button className="btn" onClick={() => findStep(1)} disabled={!matches.length} aria-label="next match">
+                  ›
+                </button>
+                {query.trim() && (
+                  <span
+                    className="nm"
+                    data-tip={hiddenHits ? `${fint(hiddenHits)} of them are in what hide routine or hide typos takes out: going to one shows it` : undefined}
+                  >
+                    {matches.length
+                      ? `${hi >= 0 ? fint(hi + 1) : DASH} of ${fint(matches.length)}${hiddenHits ? ` · ${fint(hiddenHits)} hidden` : ''}`
+                      : 'no match'}
+                    {findNote ? ` · ${findNote}` : ''}
+                  </span>
+                )}
               </span>
-              ran, exit 0
-            </span>
-            <span>
-              <span className="pt-tl">
-                <i className="pt-bar bad" style={{ left: 0, width: '100%' }} />
+              <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
+                <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
+                hide routine
+              </label>
+              {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
+              <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+                <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
+                hide typos
+              </label>
+              {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
+              <AnnotateControl a={annot} />
+              <span className="nm pd-hint">
+                {mode === 'tree'
+                  ? 'click a box to open what it started · hover for its command'
+                  : 'click a row to open what it started · hover for its command'}
               </span>
-              non-zero exit
-            </span>
-            <span>
-              <span className="pt-tl">
-                <i className="pt-bar sig" style={{ left: 0, width: '100%' }} />
+            </div>
+          )}
+          <LlmPurposes.Provider value={annot.set}>
+          {tree && mode === 'tree' && (
+            // keyed on what is hidden: hiding moves every parent, so start again over the root
+            <ProcDiagram
+              key={`${hide ? 'hide' : 'all'}${typos ? '-typos' : ''}`}
+              root={tree}
+              open={dopen}
+              setOpen={setDopen}
+              hide={hiding}
+              all={dall}
+              setAll={setDall}
+              hits={hits}
+              cur={hi >= 0 ? (matches[hi] ?? null) : null}
+              goTo={goTo}
+            />
+          )}
+          {tree && mode === 'table' && (
+            <ProcTree
+              root={tree}
+              open={open}
+              setOpen={setOpen}
+              timeline={d?.timeline}
+              view={treeView}
+              flash={flash}
+              hide={hiding}
+              newest={newest}
+              onOrder={setOrder}
+              hits={hits}
+            />
+          )}
+          </LlmPurposes.Provider>
+          {tree && (
+            <div className="pt-legend">
+              <span>
+                <span className="pt-tl">
+                  <i className="pt-bar" style={{ left: 0, width: '100%' }} />
+                </span>
+                ran, exit 0
               </span>
-              killed by a signal
-            </span>
-            <span>
-              <span className="pt-tl">
-                <i className="pt-bar open" style={{ left: 0, width: '100%' }} />
+              <span>
+                <span className="pt-tl">
+                  <i className="pt-bar bad" style={{ left: 0, width: '100%' }} />
+                </span>
+                non-zero exit
               </span>
-              no exit in the read
-            </span>
-            <span>
-              <span className="pt-tl">
-                <i className="pt-bar group" style={{ left: 0, width: '100%' }} />
+              <span>
+                <span className="pt-tl">
+                  <i className="pt-bar sig" style={{ left: 0, width: '100%' }} />
+                </span>
+                killed by a signal
               </span>
-              a group or a count
-            </span>
-            <span className="pt-tag weak">dashed tag</span>
-            <span>a parent link weaker than the record's own ppid</span>
-          </div>
-        )}
+              <span>
+                <span className="pt-tl">
+                  <i className="pt-bar open" style={{ left: 0, width: '100%' }} />
+                </span>
+                no exit in the read
+              </span>
+              <span>
+                <span className="pt-tl">
+                  <i className="pt-bar group" style={{ left: 0, width: '100%' }} />
+                </span>
+                a group or a count
+              </span>
+              <span className="pt-tag weak">dashed tag</span>
+              <span>a parent link weaker than the record's own ppid</span>
+            </div>
+          )}
+        </section>
       </Panel>
     </div>
   );

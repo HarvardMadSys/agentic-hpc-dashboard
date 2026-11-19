@@ -26,7 +26,7 @@ everything on the host stays private.
 
 | Where | What |
 |---|---|
-| Each source node | The collector, which writes `SOURCE_ROOT/<day>/<host>.<stream>.jsonl`, `.ebr`, or both (`EBPFM_FORMAT`); the stream carries either. The sender, `SENDER_DIR/current/fleet_stream.py`, which a forced-command ssh key starts. |
+| Each source node | The collector, which writes `SOURCE_ROOT/<day>/<host>.<stream>.jsonl`. The sender, `SENDER_DIR/current/fleet_stream.py`, which a forced-command ssh key starts. |
 | The dashboard's host | One folder, `DASH_ROOT`, and one tmux session, `rc-dashboard`, which the systemd user unit `rc-tmux.service` starts. The session's window `stream` runs `fleet_stream.py receive`, which keeps one ssh connection to each node and writes the copy. Its window `dashboard` runs the dashboard on `127.0.0.1:DASH_PORT`. |
 | This machine | The repository and `site.env`. `deploy.sh` builds and ships each release, and `check.sh` checks the host every hour. |
 
@@ -50,7 +50,11 @@ stopping it, and a stalled dashboard answers nothing.
   posts from the hourly check: `jq` and `curl`.
 - **The dashboard's host:** Linux with systemd, a user manager that you can keep running
   with `loginctl enable-linger`, and tmux. Python 3.11 or later for the dashboard's venv
-  (`DASH_PYTHON`), and `/usr/bin/python3` for the stream. `ss`, `curl`, and `getfacl` for
+  (`DASH_PYTHON`; 3.14 reduces the hours about 10% faster than 3.12, with the same panels:
+  `uv python install 3.14`, then `DASH_PYTHON=$(uv python find 3.14)`), and
+  `/usr/bin/python3` for the stream. A deploy whose `DASH_PYTHON` is another version than the
+  venv's makes the venv again, keeps the one before as `venv.old`, and restarts the session.
+  `ss` (without it, the port checks read `/proc/net/tcp`), `curl`, and `getfacl` for
   the checks. Disk and memory: see [Memory and disk](#memory-and-disk).
 - **Each source node:** the collector ([`collector/`](../../collector), or the RPM), an
   account (`SOURCE_USER`) that can log in with an ssh key, and `/usr/bin/python3` 3.6 or
@@ -68,6 +72,7 @@ in. Git ignores `site.env`. The example explains each key; in short:
 | `SENDER_DIR`, `SHARED_HOME` | Where the sender lives on the nodes, and whether their home is shared. |
 | `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`, `DASH_PYTHON`, `PRIVATE_TREE` | The dashboard's host, its folder, its port, the Python that makes its venv, and whether the folder stays private ([When the stream trips](#when-the-stream-trips)). |
 | `SITE_NAME`, `SITE_DESCRIPTION`, `RISK_PROFILE`, `ANONYMIZE`, `CODEX` | What the page calls itself, the risk rules, aliases for user names, and Ask. |
+| `DROP_USERS`, `DROP_AGENT_USERS` | Accounts whose records the dashboard drops: every record, or their agents' only. Empty, it drops only `SOURCE_USER`'s: the stream's own processes. |
 | `HISTORY_DAYS`, `MAX_WINDOWS`, `PREWARM_MIN`, `MAX_SESSIONS`, `DAY_CACHE`, `DASH_MEMORY_MAX`, `FREE_MIN_GB` | History, memory, and disk. A key you leave out takes the dashboard's default. |
 | `SSH_KEY`, `WORK_DIR`, `NODE_MODULES`, `SLACK_WEBHOOK_FILE` | This machine's key, work folder, bundle build, and the check's Slack posts. |
 
@@ -92,8 +97,9 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
    On the host, `ip route get <a node's address>` shows the address the nodes see. The
    stream accepts each node's host key on its first connection
    (`StrictHostKeyChecking=accept-new`).
-4. Make the password. The dashboard's loop does not start without one, so the page is
-   never open. On this machine, in the repository:
+4. Make the password. The dashboard's loop does not start without one (`check-local.sh
+   --auth-set`), nor does `rc_dashboard serve` itself, so the page is never open. On this
+   machine, in the repository:
 
        cd dashboard && uv run python -m rc_dashboard new-password
 
@@ -102,9 +108,8 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
    proxy's name), and prints only the hash. On the dashboard's host, put the hash in
    `$DASH_ROOT/etc/auth.env` (mode 600) as one line, `RC_DASH_PASSWORD_HASH=<hash>`.
 5. Optional, to spare the nodes' network: if the nodes' sealed days are already in a
-   folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz` and
-   `*.ebr.gz`, seed the copy from it before the first start. From a checkout of this
-   repository on the host:
+   folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz`, seed the
+   copy from it before the first start. From a checkout of this repository on the host:
    `python3 fleet/seed_mirror.py <folder> $DASH_ROOT/data --free-min-gb <FREE_MIN_GB>`.
    `fleet/pull-gz.sh <folder>` makes such a folder with rsync, on a machine that logs in to
    the nodes with an ordinary key (the stream's key runs only the sender), with the
@@ -125,7 +130,11 @@ on that host, an ssh tunnel works. On your own machine:
 Then open http://localhost:8000 and sign in. Any free local port works in place of 8000.
 To serve the page at an address of its own, put a reverse proxy or a tunnel service on
 the host in front of `127.0.0.1:DASH_PORT`. When the proxy says the request came over
-https (`X-Forwarded-Proto`), the session cookie is Secure. See the dashboard's
+https (`X-Forwarded-Proto`), the session cookie is Secure. The dashboard refuses a
+websocket opened by a page on another site, by its `Origin`: a proxy that keeps the
+public name in the `Host` (cloudflared does) needs nothing more, and one that rewrites the
+`Host` to `127.0.0.1:DASH_PORT` needs the page's origin named, as a line
+`RC_DASH_ALLOWED_ORIGINS=https://<the public name>` in `etc/auth.env`. See the dashboard's
 [Password](../../dashboard/README.md#password) section for the sign-in, the cookie, and
 scripts.
 
@@ -202,11 +211,28 @@ sessions per view, or days of history), the first build of each view reduces its
 again from the copy.
 
 The copy keeps a sealed day as `.gz`, as each node does (`keep_gz` in `stream.json`):
-about 19 times less disk than plain JSONL. The dashboard reads a `.gz` through an index of
+about 19 times less disk than plain. The dashboard reads a `.gz` through an index of
 about 0.5% of its plain size, and drops the index of a file that is gone or that no
 reader used for 30 minutes. At each day's end the stream gzips the day it has just
 checked. The stream pauses every node's link while the copy's volume has less free space
 than `FREE_MIN_GB`, or than 10% of the volume if that is more.
+
+The dashboard keeps each sealed day as Parquet too, in `DASH_ROOT/cache/history`, and
+reads a filtered query of a sealed day -- one user's events, one session's process tree --
+from it rather than inflating the `.gz` ([History in
+Parquet](../../dashboard/README.md#history-in-parquet)). It takes about a third of the
+`.gz`'s disk, and is made in the background after a start and as each day is sealed, by
+up to 8 processes (one per CPU the service may use), each holding up to 0.8 GB inside the
+`DASH_MEMORY_MAX` cap while it works; they exit when the days are converted. Nothing waits
+for it: a day not converted yet is read from its `.gz`. On a deployment over the same 8 nodes
+with a 32G cap, the first start after this store came in converted their 7 sealed days
+(18.4 GB of `.gz`, 182 M records) into 5.8 GB of Parquet in 12 minutes beside its refill,
+the service peaking at 19.1 GiB meanwhile and holding 12.5 GiB after.
+The hours are reduced meanwhile too, by `INGEST_WORKERS` processes (two per node unless
+set, 16 here) of about 0.5 GB each, plus about 1.7 GB in the service while it merges an
+hour: about 9 GB more at once, so a first start can come near 28 GiB of the 32G cap. On a
+lower cap, set `INGEST_WORKERS` to the node count (8 here: about 4 GB, and 80 to 90% of
+the speed of 16).
 
 For scale, one deployment that reads 8 busy login nodes, measured with the defaults and a
 32G cap:
@@ -232,9 +258,7 @@ On this machine, from a tree with no uncommitted changes to tracked files:
     deploy/fleet/deploy.sh --restart    # install HEAD and restart the session
 
 A deploy installs the sender on the nodes first, then the release on the dashboard's
-host, so the nodes never run an older sender than the receiver expects. A sender sends
-`.ebr` files only to a receiver that asks for them, so a receiver still on an older
-release, which does not, keeps getting `.jsonl` files only until it restarts. Without
+host, so the nodes never run an older sender than the receiver expects. Without
 `--restart`, the new code and settings are used at each process's next start. A change to
 `site.env` alone (the same commit) keeps the release folder as it is and replaces only
 the settings.
@@ -251,10 +275,14 @@ a reboot. It starts the session if it is down, starts again a window whose proce
 stopped (a start limit, or Ctrl-C), and makes a missing window. It restarts a dashboard
 that listens, has run 20 minutes, and twice gives no answer at all (a 401 without the
 password counts as an answer), and one that has not listened after 2 hours. It reports a
-node whose link has been down for more than an hour. It checks that the listener on the
-port is the dashboard's own and, with `PRIVATE_TREE=true`, audits that nothing in
-`DASH_ROOT` is readable by anyone else. It prints `OK`, or one line of findings with an
-exit code; anything but `OK` goes to Slack when `SLACK_WEBHOOK_FILE` names a webhook.
+node whose link has been down for more than an hour, and one connected with nothing from
+it for an hour (`STREAM ... stale`). The stream itself closes a link whose node has sent
+nothing, not even its pings, for 5 minutes (a `stall_s` in `stream.json` changes that):
+the link shows as down, and stays down while its node only says hello or sends what the
+stream refuses. It checks that the listener on the port is the dashboard's own and, with
+`PRIVATE_TREE=true`, audits that nothing in `DASH_ROOT` is readable by anyone else. It
+prints `OK`, or one line of findings with an exit code; anything but `OK` goes to Slack
+when `SLACK_WEBHOOK_FILE` names a webhook.
 
 ## When the stream trips
 

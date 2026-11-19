@@ -14,6 +14,7 @@ import gzip
 import io
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -33,12 +34,9 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / 'lib'))
 
 import ebpf_trace as T           # noqa: E402
-import ebr                       # noqa: E402
 import sockdiag                  # noqa: E402
 import agent_classify as C       # noqa: E402
 import slurm_args as SA          # noqa: E402
-
-BOTH = ('jsonl', 'ebr')          # EBPFM_FORMAT's default; pinned where files are counted
 
 ALL_BLOCKS = set(T.BLOCK_NAMES)
 # offsets a real host would get from BTF; fixed here so no bpftool is needed
@@ -371,7 +369,7 @@ class SelfPathTest(unittest.TestCase):
     happened to work, which is why the collector's own test runs missed it."""
 
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def test_self_is_resolved_absolute(self):
         self.assertIn('SELF="$(cd "$(dirname "$0")"', self.src)
@@ -684,6 +682,160 @@ CLAUDE_VSCODE = (HOME + '/.vscode-server/extensions/anthropic.claude-code-2.1.30
                  'resources/native-binary/claude')
 
 
+def _node_tier_classify():
+    """node_snapshot.py's own copy of classify(), loaded by itself: importing the
+    module takes a snapshot. The copy runs from `_AGENT_PATTERNS` to the function
+    after `classify_agent`."""
+    path = _ROOT / 'node_snapshot.py'
+    src = path.read_text(encoding='utf-8')
+    body = ast.parse(src).body
+    start = next(n.lineno for n in body if isinstance(n, ast.Assign)
+                 and any(getattr(t, 'id', None) == '_AGENT_PATTERNS' for t in n.targets))
+    end = next(n.lineno for n in body if isinstance(n, ast.FunctionDef)
+               and n.name == 'parse_proc_tree')
+    ns = {'re': re}
+    exec(compile(''.join(src.splitlines(True)[start - 1:end - 1]), str(path), 'exec'), ns)
+    return ns['classify_agent']
+
+
+class ClassifyTest(unittest.TestCase):
+    """The classifier reads the program a command line runs, and the runtime
+    artifacts only an agent writes. It matched every word, so on a login node
+    a human's command that named an agent became an agent root of its own."""
+
+    NOT_AGENTS = (
+        # the review's six, each an agent root at a human's prompt
+        'grep claude notes.txt',
+        'vim ' + HOME + '/.claude/CLAUDE.md',
+        'cat ' + HOME + '/.claude/settings.json',
+        'git commit -m ask claude about this',
+        'git clone https://github.com/openai/codex',
+        'pip install claude-agent-sdk',
+        # a multiplexer named after its agent: the server holding every pane
+        'tmux new-session -s claude',
+        'screen -S codex',
+        # the agent run elsewhere, installed, or its files read
+        'srun --pty claude',
+        'npm install -g @openai/codex',
+        'python3 -m pip install claude-agent-sdk',
+        'cat ' + HOME + '/.claude/shell-snapshots/snapshot-zsh-1.sh',
+        'sh -c grep -r claude ' + HOME + '/notes',
+        'ls ' + HOME + '/.vscode-server',
+        'rm -rf ' + HOME + '/.cursor-server',
+        'vim ' + HOME + '/.cursor/mcp.json',
+        'ls /usr/bin/bwrap',
+        # a runtime's marker named or printed, not set in the program's environment
+        'grep -r CURSOR_SANDBOX .',
+        'rg WINDSURF_STATE ' + HOME + '/notes',
+        'less ' + HOME + '/windsurf-terminal.log',
+        'echo CURSOR_SANDBOX=1',
+        'grep CURSOR_SANDBOX=1 f',
+        'env FOO=1 grep CURSOR_SANDBOX=1 f',
+        'echo WINDSURF_STATE=x',
+        'grep WINDSURF_STATE=1 f',
+        'env FOO=1 grep WINDSURF_STATE=1 f',
+        # another variable: names are case-sensitive
+        'cursor_sandbox=1 bash -c make',
+        # the user's own scripts under ~/.claude/, run by hand
+        'python3 ' + HOME + '/.claude/statusline.py',
+        'bash ' + HOME + '/.claude/hooks/check.sh',
+        '/bin/bash ' + HOME + '/.claude/hooks/command-guard.sh',
+        'node ' + HOME + '/.claude/plugins/cache/x/server/index.js',
+        # a project's own program in a Claude worktree: a venv's console script
+        HOME + '/repo/.claude/worktrees/fix-1/.venv/bin/python3 ' + HOME
+        + '/repo/.claude/worktrees/fix-1/.venv/bin/pytest -q',
+        '-bash',
+        '',
+    )
+
+    AGENTS = (
+        # argv[0], by name or by where it is installed
+        ('claude', 'claude_code'),
+        (CLAUDE_VSCODE + ' --output-format stream-json', 'claude_code'),
+        (HOME + '/.local/share/claude/versions/2.1.282 --session-id 08749fc1', 'claude_code'),
+        # each way Claude Code is installed: by its name wherever it is, the local
+        # installer's launcher, npm's bin link run through its #! line, the Agent
+        # SDK's own binary (tests/test_surfaces.py's shape)
+        (HOME + '/.claude/bin/claude', 'claude_code'),
+        (HOME + '/.claude/local/claude --resume', 'claude_code'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/claude --resume', 'claude_code'),
+        (HOME + '/kemp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude '
+         '--output-format stream-json', 'claude_code'),
+        (HOME + '/.claude/remote/ccd-cli/2.1.286 --output-format stream-json', 'claude_code'),
+        (CODEX_STANDALONE + ' app-server --listen unix://', 'codex'),
+        (HOME + '/.codex/tmp/arg0/codex-arg0lL3/codex-linux-sandbox --sandbox-policy-cwd '
+         + HOME + '/w', 'codex'),
+        (HOME + '/.vscode-server/code-4fe60c8b1cdac1c4 --cli-data-dir x', 'vscode'),
+        # an interpreter's script
+        ('node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js', 'claude_code'),
+        ('node ' + HOME + '/.nvm/versions/node/v22.22.0/bin/codex exec fix it', 'codex'),
+        ('/usr/bin/env node ' + HOME + '/.npm-global/bin/copilot', 'copilot'),
+        ('/bin/bash ' + HOME + '/stubs/claude -p x', 'claude_code'),
+        (HOME + '/proj/.venv/bin/python -I /tmp/tmp8vrbdxsm/bin/claude -p', 'claude_code'),
+        ('python3 -O -W ignore /tmp/tmp8vrbdxsm/bin/codex exec', 'codex'),
+        ('deno run -A ' + HOME + '/.claude/local/cli.js', 'claude_code'),
+        ('node /x/.claude/cli.js', 'claude_code'),
+        (HOME + '/.claude/remote/srv/89cb/server --serve --socket x.sock', 'claude_code'),
+        # through a wrapper, a package runner, a shell's -c command
+        ('env FOO=1 claude --resume', 'claude_code'),
+        ('nohup codex exec fix it', 'codex'),
+        ('timeout -s KILL 600 claude -p x', 'claude_code'),
+        ('npx -y @anthropic-ai/claude-code -p x', 'claude_code'),
+        ('npm exec -- @openai/codex', 'codex'),
+        ('node /usr/bin/npx @openai/codex', 'codex'),
+        ('sh -c exec claude --resume', 'claude_code'),
+        ('bash -lc codex exec fix it', 'codex'),
+        ('bash -o pipefail -c claude -p x', 'claude_code'),
+        # runtime artifacts: Claude Code's tool-call shell, bare and behind the
+        # sandbox runtime's prologue, and Cursor's sandbox marker
+        (SNAP + "'git status'", 'claude_code'),
+        ('/bin/bash -c -l source ' + HOME + '/.claude/shell-snapshots/snapshot-bash-1.sh '
+         "&& eval 'make'", 'claude_code'),
+        ('bash -c exec 3<&- || exit 126; source ' + HOME + '/.claude/shell-snapshots/'
+         "snapshot-bash-1.sh && eval 'ls'", 'claude_code'),
+        ('CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('env CURSOR_SANDBOX=1 bash -c make', 'cursor'),
+        ('bash -c CURSOR_SANDBOX=1 make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 --ro-bind / / /bin/bash -c make', 'cursor'),
+        ('bwrap --setenv CURSOR_SANDBOX 1 -- /bin/bash -c make', 'cursor'),
+        ('WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('env WINDSURF_STATE=/tmp/ws bash', 'windsurf'),
+        ('bwrap --setenv WINDSURF_STATE /tmp/ws --ro-bind / / /bin/bash', 'windsurf'),
+        (HOME + '/.local/bin/windsurf-terminal --pty', 'windsurf'),
+        # a bwrap, by what it confines; past the `--` that ends its options, a
+        # --setenv is its command's argument (grep's here), not a Cursor sandbox
+        ('bwrap --ro-bind / / /bin/true', 'bwrap'),
+        ('bwrap --ro-bind / / claude', 'claude_code'),
+        ('bwrap --ro-bind / / -- grep -r --setenv CURSOR_SANDBOX .', 'bwrap'),
+    )
+
+    def test_a_command_that_only_names_an_agent_is_untagged(self):
+        for args in self.NOT_AGENTS:
+            with self.subTest(args=args[:70]):
+                self.assertIsNone(C.classify(args))
+
+    def test_the_program_or_a_runtime_artifact_is_tagged(self):
+        for args, want in self.AGENTS:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(C.classify(args), want)
+
+    def test_an_agent_inside_an_ide_host_is_the_agent(self):
+        self.assertEqual(C.classify('node ' + HOME + '/.vscode-server/extensions/'
+                                    'anthropic.claude-code-2.0.1/cli.js'), 'claude_code')
+        self.assertEqual(C.classify(HOME + '/.cursor-server/extensions/openai.chatgpt-26.1.0/bin/'
+                                    'linux-x86_64/codex app-server'), 'codex')
+
+    def test_the_node_tiers_copy_agrees(self):
+        """node_snapshot.py keeps a copy of its own (VENDORED.md), which tags
+        the pids of proc_tree.agents."""
+        classify_agent = _node_tier_classify()
+        lines = ([args for _t, _c, args, _r in AgentRoleTest.CASES] + list(self.NOT_AGENTS)
+                 + [args for args, _want in self.AGENTS])
+        for args in lines:
+            with self.subTest(args=args[:70]):
+                self.assertEqual(classify_agent(args), C.classify(args))
+
+
 class AgentRoleTest(unittest.TestCase):
     """What a classifier-tagged process is, on argv shapes seen on madsys-gpu1
     from 2026-09-20 to 10-07 and on the FAS login nodes from 2026-10-20 to 10-28.
@@ -807,15 +959,29 @@ class AgentRoleTest(unittest.TestCase):
             with self.subTest(args=args[:70]):
                 self.assertEqual(T.agent_role(agent_type, command, args), want)
 
+    # Shapes the classifier tagged only for an agent's path among their arguments,
+    # until it read the program alone: the agent binary run as rg or ugrep, which
+    # only its comm (a version) says, and a shell or a command on an agent's files.
+    # Records from before carry them, and the dashboard's roles.py reads those. In a
+    # tree each is its tree's process now, as any untagged child is.
+    UNTAGGED = frozenset((
+        'rg --no-config --files --hidden ' + HOME + '/.claude/plugins',
+        'ugrep -G --ignore-files --hidden -I -rn foo',
+        'sh -c ls -1 ' + HOME + '/.claude/projects/x',
+        'chmod 700 ' + HOME + '/.claude/remote',
+        'mkdir -p ' + HOME + '/.codex/packages/app-server-daemon',
+        "sh -c printf '%b' " + HOME + '/.codex/x',
+    ))
+
     def test_each_shape_is_one_the_classifier_tags(self):
         """agent_role() is only asked about tagged processes, so a shape here
-        that the classifier would not tag tests nothing. `ugrep -G ...` names no
-        agent path: it is tagged only when its pattern or path does."""
+        that the classifier would not tag tests nothing, but for UNTAGGED."""
         for _agent_type, _command, args, _want in self.CASES:
-            if args.startswith('ugrep'):
-                continue
             with self.subTest(args=args[:70]):
-                self.assertIsNotNone(C.classify(args))
+                if args in self.UNTAGGED:
+                    self.assertIsNone(C.classify(args))
+                else:
+                    self.assertIsNotNone(C.classify(args))
 
     def test_a_comm_the_kernel_cut_still_matches(self):
         self.assertEqual(T.agent_role('codex', 'codex-linux-san', 'x'), 'sandbox')
@@ -841,6 +1007,31 @@ class AgentRoleTest(unittest.TestCase):
                          'agent')
         self.assertEqual(T.agent_role('claude_code', 'claude',
                                       'claude -p what is --claude-in-chrome-mcp'), 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_that_agent(self):
+        """As the dashboard's roles.py (tests/test_sessions.py): the tag decides,
+        not a path under ~/.cursor-server/ or ~/.windsurf-server/, which made
+        an extension's session the IDE's `helper`. The IDE's own processes keep
+        their roles."""
+        ext = '/extensions/anthropic.claude-code-2.1.300-linux-x64/resources/native-binary/claude'
+        for ide in ('cursor', 'windsurf'):
+            srv = '%s/.%s-server' % (HOME, ide)
+            for agent_type, command, args, want in (
+                    ('claude_code', 'claude', srv + ext + ' --output-format stream-json', 'agent'),
+                    ('claude_code', 'claude', srv + ext + ' auth status --json', 'probe'),
+                    ('codex', 'codex', srv + '/extensions/openai.chatgpt-26.1007.21434-linux-x64/bin/'
+                     'linux-x86_64/codex app-server --analytics-default-enabled', 'agent'),
+                    ('claude_code', 'claude', 'claude --add-dir ' + srv + '/data '
+                     '--dangerously-skip-permissions', 'agent'),
+                    (ide, 'node', srv + '/bin/4fe60c8b/node ' + srv + '/bin/4fe60c8b/out/'
+                     'server-main.js --connection-token=x', 'ide'),
+                    (ide, 'node', srv + '/cli/servers/Stable-07f/server/node --dns-result-order='
+                     'ipv4first ' + srv + '/cli/servers/Stable-07f/server/out/bootstrap-fork '
+                     '--type=extensionHost', 'ide'),
+                    (ide, 'cpuUsage.sh', '/bin/bash ' + srv + '/cli/servers/Stable-a44/server/out/'
+                     'vs/base/node/cpuUsage.sh 123', 'helper')):
+                with self.subTest(ide=ide, args=args[len(HOME):70]):
+                    self.assertEqual(T.agent_role(agent_type, command, args), want)
 
 
 class AgentRootTest(unittest.TestCase):
@@ -962,19 +1153,40 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(T.tree_root(501), 500)
 
     def test_outside_any_tree_a_tagged_process_is_still_a_root(self):
-        """A human's `claude --version`, or chmod on ~/.claude/, at a prompt:
-        nothing above it is in an agent tree, so it is attributed exactly as
-        before (actor, actor3, its own session)."""
-        for pid, comm, args in ((60, 'claude', 'claude --version'),
-                                (61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')):
-            self.add(pid, 50, comm, args, tty='pts/1')
-            self.assertEqual(self.who(pid), (pid, 0, True))
-            m = T.proc[pid]
-            self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
-            ident = T._base_identity(m, 'agent', 'ancestry')
-            self.assertEqual(ident['actor3'], 'agent')
-            self.assertEqual(ident['agent_type'], 'claude_code')
-            self.assertEqual(ident['session_key'], 'apid:%d' % pid)
+        """A human's `claude --version` at a prompt: nothing above it is in an
+        agent tree, so it is attributed exactly as before (actor, actor3, its own
+        session)."""
+        self.add(60, 50, 'claude', 'claude --version', tty='pts/1')
+        self.assertEqual(self.who(60), (60, 0, True))
+        m = T.proc[60]
+        self.assertEqual(T.actor_of(m), ('agent', 'ancestry'))
+        ident = T._base_identity(m, 'agent', 'ancestry')
+        self.assertEqual(ident['actor3'], 'agent')
+        self.assertEqual(ident['agent_type'], 'claude_code')
+        self.assertEqual(ident['session_key'], 'apid:60')
+
+    def test_a_command_that_only_mentions_an_agent_is_the_humans(self):
+        """At a human's prompt a command whose arguments name an agent, or an
+        agent's files, runs no agent. The classifier matched every word, so each
+        was an agent root of its own: actor ('agent', 'ancestry'), is_agent,
+        depth 0, a session apiece. Inside an agent's tree the same command is
+        the agent's, as any untagged child."""
+        for pid, comm, args in ((61, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote'),
+                                (62, 'grep', 'grep claude notes.txt'),
+                                (63, 'vim', 'vim ' + HOME + '/.claude/CLAUDE.md'),
+                                (64, 'cat', 'cat ' + HOME + '/.claude/settings.json'),
+                                (65, 'git', 'git commit -m ask claude about this'),
+                                (66, 'git', 'git clone https://github.com/openai/codex'),
+                                (67, 'pip', 'pip install claude-agent-sdk')):
+            with self.subTest(args=args):
+                self.add(pid, 50, comm, args, tty='pts/1')
+                self.assertFalse(T.resolve(pid))
+                m = T.proc[pid]
+                self.assertEqual((m['is_agent'], m['agent_pid'], m['depth']), (False, None, None))
+                self.assertEqual(T.actor_of(m), ('human', 'tty'))
+                self.assertEqual(T._base_identity(m, 'human', 'tty')['actor3'], 'human')
+                self.add(pid + 1000, 200, comm, args)       # under a Bash tool call
+                self.assertEqual(self.who(pid + 1000), (100, 2, False))
 
     def test_an_ide_probe_is_in_the_ide_tree_and_its_agent_is_not(self):
         """The extension host runs `claude auth status` every few minutes. It is
@@ -987,6 +1199,30 @@ class AgentRootTest(unittest.TestCase):
                          'human-vscode')
         self.assertEqual(self.who(703), (703, 0, True))
         self.assertEqual(T._base_identity(T.proc[703], 'agent', 'ancestry')['actor3'], 'agent')
+
+    def test_an_agent_from_cursors_or_windsurfs_extension_is_its_own_root(self):
+        """As from VS Code's (703 above). Its path under ~/.cursor-server/ made
+        agent_role() call it the IDE's helper, so the session joined the IDE's
+        tree: agent_type `cursor` on it and on every tool call it ran, which the
+        dashboard counts as IDE work."""
+        for base, ide in ((800, 'cursor'), (900, 'windsurf')):
+            srv = '%s/.%s-server/cli/servers/Stable-07f/server/' % (HOME, ide)
+            self.add(base, 1, 'node', srv + 'node ' + srv + 'out/server-main.js '
+                     '--connection-token=x', user='v', uid=1001)
+            self.add(base + 1, base, 'node', srv + 'node --dns-result-order=ipv4first ' + srv
+                     + 'out/bootstrap-fork --type=extensionHost', user='v', uid=1001)
+            self.add(base + 2, base + 1, 'claude', '%s/.%s-server/extensions/anthropic.claude-code-'
+                     '2.1.300-linux-x64/resources/native-binary/claude --output-format stream-json'
+                     % (HOME, ide), user='v', uid=1001)
+            self.add(base + 3, base + 2, 'git', 'git status', user='v', uid=1001)
+            with self.subTest(ide=ide):
+                self.assertEqual(self.who(base + 1), (base, 1, False))
+                self.assertEqual(T.proc[base + 1]['agent_type'], ide)
+                self.assertEqual(self.who(base + 2), (base + 2, 0, True))
+                self.assertEqual(self.who(base + 3), (base + 2, 1, False))
+                ident = T._base_identity(T.proc[base + 3], 'agent', 'ancestry')
+                self.assertEqual((ident['agent_type'], ident['session_key']),
+                                 ('claude_code', 'apid:%d' % (base + 2)))
 
     def test_a_bwrap_in_an_agent_tree_still_reads_as_bwrap(self):
         """bwrap takes its agent's tree and agent_type, and sandbox_ancestry,
@@ -1011,7 +1247,7 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual(self.who(242), (100, 3, False))
 
     def test_an_exec_out_of_any_tree_clears_the_old_attribution(self):
-        self.add(62, 1, 'chmod', 'chmod 700 ' + HOME + '/.claude/remote')
+        self.add(62, 1, 'claude', 'claude --version')
         self.assertEqual(self.who(62), (62, 0, True))
         T.proc[62].update(comm='sleep', args='sleep 1')
         T._invalidate_attribution(62)
@@ -1042,6 +1278,200 @@ class AgentRootTest(unittest.TestCase):
         self.assertEqual({p: r['depth'] for p, r in recs.items()}, {200: 1, 201: 2, 210: 1})
         self.assertFalse(any(r['is_agent'] for r in recs.values()))
         self.assertEqual(recs[200]['schema_version'], 8)
+
+
+def _resolve_recursive(table, pid, m=None):
+    """resolve() as it was through 2026-11, one recursion per ancestor: the
+    reference DeepAncestryTest holds the loop to, on tables it can recurse."""
+    if m is None:
+        m = table.get(pid)
+    if m is None:
+        return False
+    if m['attributed'] is not None:
+        return m['attributed']
+    own_args = m['args'] if m.get('argv_source') != 'inherit' else None
+    tag = T.classify(own_args) if own_args else None
+    m['tag'] = tag
+    if tag is not None and T.agent_role(tag, T._command_of(m), own_args) == 'agent':
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    ppid = m['ppid']
+    pm = table.get(ppid) if ppid and ppid != pid else None
+    if pm is not None and T._born_after(pm, m.get('fork_ktime')):
+        pm = None
+    if pm is not None and _resolve_recursive(table, ppid, pm):
+        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
+                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
+        return True
+    if tag is not None:
+        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        return True
+    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
+    return False
+
+
+class DeepAncestryTest(unittest.TestCase):
+    """resolve() walks up a parent chain in a loop. It recursed once per
+    ancestor not resolved yet, so a chain about 1,000 deep -- a script that runs
+    itself, with a URL in the last one's argv -- raised RecursionError out of
+    the seed (the collector exited at start-up, and systemd restarted it into
+    the same crash), out of every residency tick, which then wrote nothing, and
+    out of the flush at stop, whose stop record then said `truncated: 0`."""
+
+    ATTRS = ('attributed', 'is_agent', 'agent_pid', 'agent_type', 'depth', 'tag')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._handler_errors.clear()
+        T._HOST_CACHE.clear(); T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T.writer, T.read_stat, T.list_pids, T._read_vmrss_kb, T.read_io,
+                       T.FEATURES, T.MIN_UID, T.actor_of)
+        T.writer = self.W = FakeWriter()
+        T.read_stat = _fake_stat
+        T._read_vmrss_kb = lambda pid: 0
+        T.read_io = lambda pid: None
+        T.FEATURES = set()
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        (T.writer, T.read_stat, T.list_pids, T._read_vmrss_kb, T.read_io,
+         T.FEATURES, T.MIN_UID, T.actor_of) = self._saved
+        T.proc.clear(); T._children.clear()
+        T._handler_errors.clear()
+        T._HOST_CACHE.clear(); T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def chain(self, depth, top='claude', leaf_args=None, deepest_first=False):
+        """An agent (`top`) and `depth` shells under it, each the child of the
+        one before. `deepest_first` orders the table as /proc may: a process
+        before its ancestors, so the first resolve() walks the whole chain."""
+        T.proc_add(100, 1, comm=top, args=top, user='u', uid=1000, tty='pts/1')
+        prev = 100
+        for i in range(depth):
+            m = T.proc_add(1000 + i, prev, comm='sh', args='sh r.sh %d' % i,
+                           argv_source='proc', user='u', uid=1000)
+            prev = m['pid']
+        if leaf_args:
+            T.proc[prev]['args'] = leaf_args
+        if deepest_first:
+            items = list(T.proc.items())
+            T.proc.clear()
+            T.proc.update(reversed(items))
+        return T.proc[prev]
+
+    def test_a_chain_far_deeper_than_the_recursion_limit_resolves(self):
+        leaf = self.chain(5000)
+        self.assertTrue(T.resolve(leaf['pid'], leaf))
+        self.assertEqual((leaf['agent_pid'], leaf['depth'], leaf['is_agent']), (100, 5000, False))
+        mid = T.proc[1000 + 2499]
+        self.assertEqual((mid['attributed'], mid['agent_pid'], mid['depth']), (True, 100, 2500))
+        self.assertEqual(T.tree_root(leaf['pid']), 100)
+
+    def test_with_no_agent_above_it_the_chain_is_nobodys(self):
+        leaf = self.chain(5000, top='bash')
+        self.assertFalse(T.resolve(leaf['pid']))
+        self.assertTrue(all(m['attributed'] is False for m in T.proc.values()))
+
+    def test_a_parent_loop_ends_the_walk(self):
+        """pids that loop back on themselves (a parent's pid recycled under its
+        own descendant) end the walk as no parent does; the recursion never
+        returned from them."""
+        T.proc_add(2001, 2002, comm='ls', args='ls', user='u', uid=1000)
+        T.proc_add(2002, 2003, comm='sh', args='sh -c ls', user='u', uid=1000)
+        # tagged without being an agent runtime: a probe, its own root outside any
+        # tree (a mention such as `chmod ~/.claude/...` is no longer tagged at all)
+        T.proc_add(2003, 2002, comm='claude', args='claude --version', user='u', uid=1000)
+        self.assertTrue(T.resolve(2001))
+        # the loop's last process, tagged, is the root its descendants attach to
+        self.assertEqual([(T.proc[p]['agent_pid'], T.proc[p]['depth']) for p in (2001, 2002, 2003)],
+                         [(2003, 2), (2003, 1), (2003, 0)])
+        T.proc_add(2101, 2102, comm='ls', args='ls', user='u', uid=1000)
+        T.proc_add(2102, 2101, comm='sh', args='sh -c ls', user='u', uid=1000)
+        self.assertFalse(T.resolve(2101))
+        self.assertIs(T.proc[2102]['attributed'], False)
+
+    def test_the_loop_attributes_as_the_recursion_did(self):
+        """Random forests of agents, tagged helpers, inherited argv and recycled
+        parents, each resolved in a random order by both."""
+        import copy
+        import random
+        rnd = random.Random(7)
+        argvs = [('claude', 'claude'), ('claude', 'claude -p summarise'), ('codex', 'codex'),
+                 ('zsh', SNAP + "'git status'"), ('chmod', 'chmod 700 ' + HOME + '/.claude/remote'),
+                 ('bwrap', 'bwrap --ro-bind / / /bin/true'), ('codex', 'codex --version'),
+                 ('2.1.291', RC_WORKER), ('git', 'git status'), ('python3', 'python3 train.py'),
+                 ('sh', 'sh -c make'), ('node', None)]
+        for trial in range(40):
+            T.proc.clear(); T._children.clear()
+            n = rnd.randint(2, 150)
+            for pid in range(2, n + 2):
+                comm, args = rnd.choice(argvs)
+                ppid = rnd.choice([1, 0, pid, 99999] + list(range(2, pid)) * 3)
+                m = T.proc_add(pid, ppid, comm=comm, args=args, user='u', uid=1000,
+                               argv_source=rnd.choice(['proc', 'kernel', 'inherit']),
+                               fork_ktime=rnd.choice([None, 10 * pid, 10 * pid, 5]))
+            ref = copy.deepcopy(T.proc)
+            order = list(T.proc)
+            rnd.shuffle(order)
+            for pid in order:
+                self.assertEqual(T.resolve(pid), _resolve_recursive(ref, pid), (trial, pid))
+            for pid in T.proc:
+                self.assertEqual([T.proc[pid][k] for k in self.ATTRS],
+                                 [ref[pid][k] for k in self.ATTRS], (trial, pid))
+
+    def test_the_seed_survives_a_deep_chain(self):
+        self.chain(1200, leaf_args='bash -c sleep 999999; : http://a.example.org/x',
+                   deepest_first=True)
+        T.list_pids = lambda: set()               # the table is in already
+        T.seed_existing()
+        self.assertEqual(T._HOST_WANT.get_nowait(), 'a.example.org')
+        self.assertEqual(dict(T._handler_errors), {})
+
+    def test_one_process_the_seed_cannot_read_is_counted_and_skipped(self):
+        self.chain(3, leaf_args='curl https://a.example.org/x')
+        T.proc_add(90, 1, comm='curl', args='curl https://b.example.org/', user='u', uid=1000,
+                   tty='pts/2')
+        real = T.actor_of
+
+        def actor_of(m):
+            if m['pid'] == 90:
+                raise ValueError('unreadable')
+            return real(m)
+        T.actor_of = actor_of
+        T.list_pids = lambda: set()
+        T.seed_existing()
+        self.assertEqual(T._HOST_WANT.get_nowait(), 'a.example.org')
+        self.assertEqual(dict(T._handler_errors), {'seed_existing': 1})
+
+    def test_a_deep_chain_ticks(self):
+        self.chain(1200, deepest_first=True)
+        T.list_pids = lambda: set(T.proc)
+        T.residency_tick(None)
+        (res,) = self.W.of('residency')
+        self.assertEqual((res['pid'], res['n_procs'], res['max_depth']), (100, 1201, 1200))
+        self.assertEqual(dict(T._handler_errors), {})
+
+    def test_a_tick_skips_a_process_it_cannot_read(self):
+        self.chain(3)
+        T.list_pids = lambda: set(T.proc)
+        T.read_stat = lambda pid: 1 / 0 if pid == 1001 else _fake_stat(pid)
+        T.residency_tick(None)
+        (res,) = self.W.of('residency')
+        self.assertEqual(res['n_procs'], 3)            # the agent and two of its three shells
+        self.assertEqual(len(self.W.of('residency_totals')), 1)
+        self.assertEqual(dict(T._handler_errors), {'residency_proc': 1})
+
+    def test_the_flush_at_stop_skips_a_process_it_cannot_read(self):
+        self.chain(3)
+        T.read_stat = lambda pid: 1 / 0 if pid == 1001 else _fake_stat(pid)
+        self.assertEqual(T._flush_at_stop({}, set()), 3)
+        self.assertEqual(sorted(r['pid'] for r in self.W.of('truncated')), [100, 1000, 1002])
+        self.assertEqual(dict(T._handler_errors), {'flush_live': 1})
+
+    def test_a_flush_that_did_not_finish_has_no_count(self):
+        """The stop record's `truncated` is null then: 0 would say none were written."""
+        self.chain(3)
+        self.assertIsNone(T._flush_at_stop({}, None))     # cannot even read its features
+        self.assertEqual(dict(T._handler_errors), {'flush_live': 1})
 
 
 # ---------------------------------------------------------------------------
@@ -1136,38 +1566,32 @@ class EnvelopeTest(unittest.TestCase):
         runtime starts a session inside an agent tree (AgentRootTest), exit
         counters over every thread, masked args/captured_tail, NFS out of net_*.
 
-        The EBR container (EBPFM_FORMAT) is not a bump: the records are the same
-        in every format, meta.output and stop.output are informational
-        additions, and the container has its own version, ebr.VERSION."""
+        meta.output and stop.output are informational, and keep their shape:
+        no bump."""
         self.assertEqual(T.SCHEMA_VERSION, 8)
 
-    def test_meta_and_stop_say_what_each_format_was_and_cost(self):
-        """meta.output = descriptor(), stop.output = output_stats(): their keys,
-        null for a format not written, and JSON all the way down."""
+    def test_meta_and_stop_say_what_was_written_and_what_it_cost(self):
+        """meta.output = descriptor(), stop.output = output_stats(): JSONL, with
+        the `ebr` key the blocks have always had, null; and JSON all the way
+        down."""
         d = tempfile.mkdtemp(prefix='ebpfm_env_')
         try:
-            w = T.DailyWriter(d, 'h', formats=BOTH)
+            w = T.DailyWriter(d, 'h')
             desc = w.descriptor()
-            self.assertEqual(desc, {'formats': ['jsonl', 'ebr'],
-                                    'ebr': {'version': ebr.VERSION, 'zstd': T.EBR_ZSTD,
-                                            'reset_bytes': T.EBR_RESET_BYTES,
-                                            'str_id_size': ebr.STR_ID_SIZE}})
+            self.assertEqual(desc, {'formats': ['jsonl'], 'ebr': None})
+            self.assertEqual(w.output_stats(), {'jsonl': {'records': 0, 'bytes': 0, 'writes': 0,
+                                                          'errors': 0}, 'ebr': None})
             w.write({'event': 'meta'})
             st = w.output_stats()
             self.assertEqual(list(st), ['jsonl', 'ebr'])
             self.assertEqual(list(st['jsonl']), ['records', 'bytes', 'writes', 'errors'])
-            self.assertEqual(list(st['ebr']), ['records', 'bytes', 'writes', 'frames', 'segments',
-                                               'errors', 'lost', 'repaired_bytes'])
-            self.assertEqual((st['jsonl']['records'], st['ebr']['records']), (1, 1))
+            self.assertEqual((st['jsonl']['records'], st['jsonl']['writes']), (1, 0))
+            self.assertIsNone(st['ebr'])
             w.close()
             st = w.output_stats()
-            self.assertEqual((st['jsonl']['writes'], st['ebr']['writes'], st['ebr']['segments']),
-                             (1, 1, 1))
+            self.assertEqual((st['jsonl']['records'], st['jsonl']['writes']), (1, 1))
+            self.assertEqual(st['jsonl']['bytes'], os.path.getsize(w.path('snapshot')))
             self.assertEqual(json.loads(json.dumps([desc, st])), [desc, st])
-            j = T.DailyWriter(d, 'j', formats=('jsonl',))
-            self.assertEqual(j.descriptor(), {'formats': ['jsonl'], 'ebr': None})
-            self.assertEqual(j.output_stats(), {'jsonl': {'records': 0, 'bytes': 0, 'writes': 0,
-                                                          'errors': 0}, 'ebr': None})
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -1416,14 +1840,13 @@ class FlushPolicyTest(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_flush_')
-        self._saved = (T.FLUSH_MODE, T.FORMATS, T.COMPRESS)
-        # The default, twins, whatever EBPFM_FORMAT the suite runs under; and no
-        # gzip of a day a test rolls away from (CompressionTest covers that).
-        T.FORMATS, T.COMPRESS = BOTH, False
+        self._saved = (T.FLUSH_MODE, T.COMPRESS)
+        # No gzip of a day a test rolls away from (CompressionTest covers that).
+        T.COMPRESS = False
         self.day = datetime.now().strftime('%Y-%m-%d')
 
     def tearDown(self):
-        T.FLUSH_MODE, T.FORMATS, T.COMPRESS = self._saved
+        T.FLUSH_MODE, T.COMPRESS = self._saved
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _path(self, stream='exits'):
@@ -1555,7 +1978,7 @@ class FlushPolicyTest(unittest.TestCase):
         self.assertEqual((w.n, w.flushes), (7, 1))
         w.close()
 
-    # --- formats: JSONL and EBR twins ---------------------------------------
+    # --- the bytes, and the write(2)s that land them -----------------------
     def _varied(self, n=300):
         """Records whose values are the encoding's hazards: ints past 64 bits,
         floats that look like ints, NaN/inf/-0.0, null vs absent, non-ASCII and
@@ -1586,14 +2009,13 @@ class FlushPolicyTest(unittest.TestCase):
         w.close()
         for s in T.STREAMS:
             want = ''.join(json.dumps(r) + '\n' for r in recs if T.stream_of(r['event']) == s)
-            with open(w.path(s, fmt='jsonl'), 'rb') as f:
+            with open(w.path(s), 'rb') as f:
                 self.assertEqual(f.read(), want.encode('ascii'), s)
 
-    def test_a_dirty_stream_costs_one_write_per_format(self):
-        """Twins cost one more write(2) per dirty stream, and no more: one per
-        format however many records and bytes the round made (the text handle
-        this replaced split a round past 8 KiB into several), JSONL's first,
-        and none at all in an idle round."""
+    def test_a_dirty_stream_costs_one_write(self):
+        """One write(2) per dirty stream, however many records and bytes the
+        round made (the text handle this replaced split a round past 8 KiB into
+        several), and none at all in an idle round."""
         T.FLUSH_MODE = 'poll'
         w = T.DailyWriter(self.dir, 'node0')
         calls, patch = _counted_writes()
@@ -1601,129 +2023,26 @@ class FlushPolicyTest(unittest.TestCase):
             for i in range(400):
                 w.write({'event': 'exit', 'pid': i, 'args': 'x' * 200, 'ts': 'x'})
             w.flush()
-            self.assertEqual(calls, ['node0.exits.jsonl', 'node0.exits.ebr'])
+            self.assertEqual(calls, ['node0.exits.jsonl'])
             self.assertGreater(os.path.getsize(self._path()), 10 * 8192)
             del calls[:]
             for _ in range(100):
                 w.write(self._rec('exit'))
                 w.write(self._rec('residency'))
             w.flush()
-            self.assertEqual(sorted(calls[:2]), ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
-            self.assertEqual(sorted(calls[2:]), ['node0.exits.ebr', 'node0.snapshot.ebr'])
+            self.assertEqual(sorted(calls), ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
             del calls[:]
             for _ in range(10):
                 w.flush()
-            self.assertEqual(calls, [], 'an idle round writes nothing in either format')
-        self.assertEqual(w.flushes, 3, 'flushes still counts stream flushes')
+            self.assertEqual(calls, [], 'an idle round writes nothing')
+        self.assertEqual(w.flushes, 3, 'flushes counts stream flushes')
         w.close()
-
-    def test_the_ebr_twin_holds_the_jsonl_records(self):
-        """Decoding the .ebr gives back the .jsonl's records, in order, with
-        exact types and key order: re-encoded, each is its JSONL line."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        recs = self._varied()
-        for i, r in enumerate(recs):
-            w.write(r)
-            if i % 37 == 0:
-                w.flush()
-        w.close()
-        total = 0
-        for s in T.STREAMS:
-            lines = _lines(w.path(s, fmt='jsonl'))
-            self.assertEqual(_ebr_lines(w.path(s, fmt='ebr')), lines, s)
-            total += len(lines)
-        self.assertEqual(total, len(recs))
-        st = w.output_stats()
-        self.assertEqual((st['jsonl']['records'], st['ebr']['records']), (len(recs), len(recs)))
-        self.assertEqual((st['jsonl']['errors'], st['ebr']['errors'], st['ebr']['lost']), (0, 0, 0))
-        self.assertLess(st['ebr']['bytes'], st['jsonl']['bytes'])
-
-    def test_an_ebr_error_never_costs_jsonl_a_record(self):
-        """With twins, EBR is the format on trial: an error encoding a record is
-        counted and said once on stderr, never raised, and JSONL still gets
-        every record."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        err = io.StringIO()
-        with mock.patch.object(T._EbrSink, 'add', _refuse), contextlib.redirect_stderr(err):
-            for i in range(300):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.flush()
-        w.close()
-        self.assertEqual([r['pid'] for r in self._on_disk()], list(range(300)))
-        said = err.getvalue().splitlines()
-        self.assertEqual(len(said), 1, said)
-        self.assertIn('EBR write error, JSONL unaffected', said[0])
-        st = w.output_stats()
-        self.assertEqual((st['jsonl']['records'], st['jsonl']['errors']), (300, 0))
-        self.assertEqual((st['ebr']['records'], st['ebr']['errors']), (0, 300))
-        self.assertEqual((w.n, w.flushes), (300, 1))
-
-    def test_a_failed_ebr_write_is_retried_and_jsonl_does_not_wait(self):
-        """ENOSPC on the .ebr alone: JSONL's write goes ahead, EBR keeps its
-        frames, and once there is room the twin catches up whole."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        err = io.StringIO()
-        calls, patch = _counted_writes(fail=lambda name: name.endswith('.ebr'))
-        with patch, contextlib.redirect_stderr(err):
-            for i in range(50):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.flush()
-        self.assertEqual(calls, ['node0.exits.jsonl'])
-        self.assertEqual(len(self._on_disk()), 50)
-        self.assertEqual(os.path.getsize(w.path('exits', fmt='ebr')), 0)
-        self.assertIn('EBR flush error, JSONL unaffected', err.getvalue())
-        w.write({'event': 'exit', 'pid': 50, 'ts': 'x'})
-        w.flush()
-        w.close()
-        self.assertEqual(_ebr_lines(w.path('exits', fmt='ebr')), _lines(self._path()))
-        st = w.output_stats()['ebr']
-        self.assertEqual((st['records'], st['errors'], st['lost']), (51, 1, 0))
-
-    def test_a_thousand_ebr_errors_in_a_row_stop_ebr_until_the_next_day(self):
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        err = io.StringIO()
-        with mock.patch.object(T._EbrSink, 'add', _refuse), contextlib.redirect_stderr(err):
-            for i in range(1500):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.flush()
-        self.assertEqual(w.output_stats()['ebr']['errors'], 1000, 'stopped at the 1000th')
-        self.assertEqual(len(self._on_disk()), 1500, 'JSONL kept every record')
-        said = err.getvalue().splitlines()
-        self.assertEqual(len(said), 2, said)
-        self.assertIn('1000 EBR errors in a row; no EBR until the next day opens', said[1])
-        with mock.patch.object(T, 'datetime', _clock('2099-01-01')):
-            w.write({'event': 'exit', 'pid': 1500, 'ts': 'x'})
-        w.close()
-        back = _ebr_lines(w.path('exits', '2099-01-01', 'ebr'))
-        self.assertEqual(back, _lines(w.path('exits', '2099-01-01', 'jsonl')))
-        self.assertEqual(len(back), 1, 'the next day writes EBR again')
-
-    def test_ebr_errors_that_are_not_in_a_row_never_stop_it(self):
-        w = T.DailyWriter(self.dir, 'node0')
-        real_add = T._EbrSink.add
-
-        def flaky(sink, rec):
-            if rec['pid'] % 500:
-                raise ValueError('refused')
-            real_add(sink, rec)
-        with mock.patch.object(T._EbrSink, 'add', flaky), \
-                contextlib.redirect_stderr(io.StringIO()):
-            for i in range(3000):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-        w.close()
-        self.assertEqual([json.loads(l)['pid'] for l in _ebr_lines(w.path('exits', fmt='ebr'))],
-                         list(range(0, 3000, 500)))
-        self.assertEqual(w.output_stats()['ebr']['errors'], 3000 - 6)
 
     def test_the_stop_records_flushes_are_exact(self):
         """stop.flushes is built before the stop record is written, so it adds
         what is still to come: the flush that lands it, and close()'s of the
         exits stream that flush_live's truncated records leave dirty, which the
-        old `+ 1` missed. Each flush is one write(2) per format."""
+        old `+ 1` missed. Each flush is one write(2)."""
         for mode in ('poll', 'record'):
             w = T.DailyWriter(self.dir, 'node-' + mode, flush_mode=mode)
             calls, patch = _counted_writes()
@@ -1742,31 +2061,50 @@ class FlushPolicyTest(unittest.TestCase):
                 w.write(stop)
                 w.close()
             self.assertEqual(stop['flushes'], w.flushes, mode)
-            self.assertEqual(len(calls), 2 * w.flushes, mode)
+            self.assertEqual(len(calls), w.flushes, mode)
             if mode == 'poll':
                 self.assertEqual(old, w.flushes - 1, 'the old count missed the exits flush')
 
-    def test_one_format_alone(self):
-        """EBPFM_FORMAT=jsonl writes no .ebr and =ebr no .jsonl, and path()
-        names the format written. Alone, EBR's errors are the caller's, as
-        JSONL's always were: there is no twin to fall back on."""
-        daydir = os.path.join(self.dir, self.day)
-        for fmt in BOTH:
-            host = 'only-' + fmt
-            w = T.DailyWriter(self.dir, host, formats=(fmt,))
-            for i in range(20):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-            w.write({'event': 'meta', 'ts': 'x'})
-            self.assertTrue(w.path('exits').endswith('.exits.' + fmt))
-            w.close()
-            self.assertEqual(sorted(f for f in os.listdir(daydir) if f.startswith(host + '.')),
-                             ['%s.exits.%s' % (host, fmt), '%s.snapshot.%s' % (host, fmt)])
-            self.assertEqual([r['pid'] for _p, r in ebr.iter_records(w.path('exits'))],
-                             list(range(20)))
-            self.assertEqual(w.descriptor()['formats'], [fmt])
-            self.assertIsNone(w.output_stats()['ebr' if fmt == 'jsonl' else 'jsonl'])
-            self.assertEqual(w.output_stats()[fmt]['records'], 21)
-        w = T.DailyWriter(self.dir, 'only-ebr-raises', formats=('ebr',))
+    def _restart_on(self, content):
+        """A day's snapshot file holding `content`, then a start that writes its
+        meta record: the file's bytes after, and the writer."""
+        os.makedirs(os.path.dirname(self._path('snapshot')))
+        with open(self._path('snapshot'), 'wb') as f:
+            f.write(content)
+        w = T.DailyWriter(self.dir, 'node0')
+        w.write({'event': 'meta', 'schema_version': 8, 'ts': 'x', 'ts_epoch': 1.0})
+        w.flush()
+        w.close()
+        with open(self._path('snapshot'), 'rb') as f:
+            return f.read(), w
+
+    def test_a_line_cut_short_is_ended_before_the_next_start_writes(self):
+        """SIGKILL, a power cut or a full disk can leave the file ending in half a
+        line; appended to, it would swallow the next start's meta record:
+        `...partial li{"event": "meta", ...}`, neither line parseable."""
+        whole = b'{"event": "residency", "ts": "x"}\n'
+        got, w = self._restart_on(whole + b'{"event": "residency", "partial li')
+        lines = got.split(b'\n')
+        self.assertEqual(lines[:2], [whole[:-1], b'{"event": "residency", "partial li'])
+        self.assertEqual(json.loads(lines[2].decode())['event'], 'meta')
+        self.assertEqual(lines[3:], [b''])
+        self.assertEqual(w.output_stats()['jsonl']['writes'], 1, 'in the same write(2)')
+
+    def test_a_file_that_ends_its_lines_gets_nothing_more(self):
+        meta = (json.dumps({'event': 'meta', 'schema_version': 8, 'ts': 'x',
+                            'ts_epoch': 1.0}) + '\n').encode()
+        for before in (b'', b'{"event": "residency", "ts": "x"}\n'):
+            got, _w = self._restart_on(before)
+            self.assertEqual(got, before + meta)
+            shutil.rmtree(os.path.join(self.dir, self.day))
+
+    def test_errors_are_the_callers_and_a_failed_write_is_retried(self):
+        """A record json.dumps refuses raises, as it always did, and none of it
+        is written. A write that fails (ENOSPC) raises too and keeps its bytes:
+        the stream stays dirty, the next flush writes them first, and the file
+        holds every record whole. stop.output.jsonl.errors counts both."""
+        T.FLUSH_MODE = 'poll'
+        w = T.DailyWriter(self.dir, 'node0')
         with self.assertRaises(TypeError):
             w.write({'event': 'exit', 'pid': object()})
         w.write({'event': 'exit', 'pid': 1, 'ts': 'x'})
@@ -1774,121 +2112,15 @@ class FlushPolicyTest(unittest.TestCase):
         with patch, self.assertRaises(OSError):
             w.flush()
         self.assertTrue(w.dirty['exits'], 'a failed flush is retried the next round')
-        w.close()
-        self.assertEqual([r['pid'] for _p, r in ebr.iter_records(w.path('exits'))], [1])
-        self.assertEqual(w.output_stats()['ebr']['errors'], 2)
-
-    def test_the_format_setting(self):
-        """EBPFM_FORMAT: jsonl, ebr or both, unset meaning both; anything else
-        writes both and says why."""
-        self.assertEqual(T._formats_of(None), (BOTH, None))
-        self.assertEqual(T._formats_of(''), (BOTH, None))
-        self.assertEqual(T._formats_of('both'), (BOTH, None))
-        self.assertEqual(T._formats_of(' EBR '), (('ebr',), None))
-        self.assertEqual(T._formats_of('jsonl'), (('jsonl',), None))
-        formats, why = T._formats_of('parquet')
-        self.assertEqual(formats, BOTH)
-        self.assertIn("EBPFM_FORMAT='parquet'", why)
-        self.assertEqual(T.DailyWriter(self.dir, 'x', formats='both').formats, BOTH)
-        self.assertEqual(T.DailyWriter(self.dir, 'x').formats, BOTH)
-        with self.assertRaises(ValueError):
-            T.DailyWriter(self.dir, 'x', formats=('jsonl', 'xml'))
-
-    def test_an_unknown_format_setting_writes_both_and_says_so_once(self):
-        code = ('import sys; sys.path[:0] = [%r, %r]\nimport ebpf_trace as T\nprint(T.FORMATS)\n'
-                % (str(_ROOT), str(_ROOT / 'lib')))
-        r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, universal_newlines=True,
-                           env=dict(os.environ, EBPFM_FORMAT='parquet', EBPFM_OUTPUT_DIR=self.dir))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), str(BOTH))
-        self.assertEqual(r.stderr.count('EBPFM_FORMAT'), 1, r.stderr)
-
-    def test_the_zstd_setting_and_the_zlib_one_it_replaces(self):
-        """EBPFM_EBR_ZSTD is a zstd level 0-22, off by default, anything else
-        0 and said once. EBPFM_EBR_ZLIB (format v1's deflate) is gone: set, it
-        is said once and changes nothing."""
-        code = ('import sys; sys.path[:0] = [%r, %r]\nimport ebpf_trace as T\nprint(T.EBR_ZSTD)\n'
-                % (str(_ROOT), str(_ROOT / 'lib')))
-        for env, want, said in (({}, '0', ()),
-                                ({'EBPFM_EBR_ZSTD': '7'}, '7', ()),
-                                ({'EBPFM_EBR_ZSTD': '23'}, '0', ('EBPFM_EBR_ZSTD',)),
-                                ({'EBPFM_EBR_ZLIB': '6'}, '0', ('EBPFM_EBR_ZLIB is replaced',)),
-                                ({'EBPFM_EBR_ZLIB': '', 'EBPFM_EBR_ZSTD': ''}, '0', ())):
-            e = dict(os.environ, EBPFM_OUTPUT_DIR=self.dir)
-            e.pop('EBPFM_EBR_ZSTD', None)
-            e.pop('EBPFM_EBR_ZLIB', None)
-            e.update(env)
-            r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, universal_newlines=True, env=e)
-            self.assertEqual((r.returncode, r.stdout.strip()), (0, want), (env, r.stderr))
-            for s in said:
-                self.assertEqual(r.stderr.count(s), 1, (env, r.stderr))
-            if not said:
-                self.assertNotIn('EBPFM_EBR', r.stderr, env)
-
-    def test_zstd_without_a_zstd_module_writes_ebr_uncompressed_and_says_so(self):
-        """Asked for zstd where python3 has no zstd module, the run writes EBR
-        uncompressed rather than none, warns once a process, and meta.output
-        says so: zstd 0, zstd_unavailable."""
-        err = io.StringIO()
-        with mock.patch.object(T, 'EBR_ZSTD', 3), mock.patch.object(ebr, '_ZSTD', False), \
-                mock.patch.object(T, '_ZSTD_SAID', []), mock.patch.object(sys, 'stderr', err):
-            w = T.DailyWriter(self.dir, 'node0')
-            w2 = T.DailyWriter(self.dir, 'node1')
-            for i in range(30):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x', 'args': 'make -j8 all' * 3})
-            w.close()
-            w2.close()
-        self.assertEqual(err.getvalue().count('EBPFM_EBR_ZSTD=3'), 1, err.getvalue())
-        self.assertIn('writing EBR uncompressed', err.getvalue())
-        self.assertEqual(w.descriptor()['ebr'],
-                         {'version': ebr.VERSION, 'zstd': 0, 'zstd_unavailable': True,
-                          'reset_bytes': T.EBR_RESET_BYTES, 'str_id_size': ebr.STR_ID_SIZE})
-        p = w.path('exits', fmt='ebr')
-        self.assertEqual([f.flags for f in ebr.frames(p)], [0, 0])
-        self.assertEqual(_ebr_lines(p), _lines(self._path()))
-        j = T.DailyWriter(self.dir, 'node2', formats=('jsonl',))
-        self.assertEqual(j.descriptor(), {'formats': ['jsonl'], 'ebr': None})
-
-    @unittest.skipUnless(ebr.zstd_available(), 'no zstd module in this Python')
-    def test_zstd_compresses_the_ebr_twin(self):
-        """EBPFM_EBR_ZSTD=L with a zstd module: the EBR frames are zstd where
-        that is smaller, and the twins still hold the same records."""
-        err = io.StringIO()
-        with mock.patch.object(T, 'EBR_ZSTD', 3), mock.patch.object(sys, 'stderr', err):
-            w = T.DailyWriter(self.dir, 'node0')
-            for i in range(40):
-                w.write({'event': 'exit', 'pid': i, 'ts': 'x', 'args': 'make -j8 all ' * 8})
-                if i % 10 == 9:
-                    w.flush()
-            w.close()
-        self.assertEqual(err.getvalue(), '')
-        self.assertEqual(w.descriptor()['ebr']['zstd'], 3)
-        self.assertNotIn('zstd_unavailable', w.descriptor()['ebr'])
-        p = w.path('exits', fmt='ebr')
-        self.assertEqual([f.flags for f in ebr.frames(p) if f.kind == ebr.DATA],
-                         [ebr.F_ZSTD] * 4)
-        self.assertEqual(_ebr_lines(p), _lines(self._path()))
-
-    def test_a_crashed_runs_torn_ebr_tail_is_cut_off_and_counted(self):
-        """SIGKILL mid-write can leave part of a frame. The next run's open cuts
-        it off -- stop.output.ebr.repaired_bytes says how much -- and appends
-        after the last whole frame, so the file decodes whole."""
-        w = T.DailyWriter(self.dir, 'node0')
-        w.write({'event': 'exit', 'pid': 1, 'ts': 'x'})
-        w.close()
-        p = w.path('exits', fmt='ebr')
-        with open(p, 'rb') as f:
-            whole = f.read()
-        with open(p, 'ab') as f:
-            f.write(whole[:30])                     # a frame's first 30 bytes
-        w = T.DailyWriter(self.dir, 'node0')
+        self.assertEqual(self._on_disk(), [])
         w.write({'event': 'exit', 'pid': 2, 'ts': 'x'})
-        self.assertEqual(w.output_stats()['ebr']['repaired_bytes'], 30)
+        w.flush()
+        self.assertFalse(w.dirty['exits'])
+        self.assertEqual([r['pid'] for r in self._on_disk()], [1, 2])
         w.close()
-        self.assertEqual([r['pid'] for _p, r in ebr.iter_records(p)], [1, 2])
-        self.assertEqual(_ebr_lines(p), _lines(self._path()))
+        st = w.output_stats()['jsonl']
+        self.assertEqual((st['records'], st['errors'], st['writes']), (2, 2, 1))
+        self.assertEqual((w.n, w.flushes), (2, 1))
 
 
 def _fd_name(fd):
@@ -1911,11 +2143,6 @@ def _counted_writes(fail=None):
     return calls, mock.patch.object(os, 'write', write)
 
 
-def _refuse(sink, rec):
-    """An _EbrSink.add that refuses every record."""
-    raise ValueError('refused')
-
-
 def _clock(day):
     """ebpf_trace's `datetime`, with now() at midday of `day`: DailyWriter.write()
     takes the day from the wall clock, and this lets a test choose it."""
@@ -1930,11 +2157,6 @@ def _lines(path):
     """A JSONL file's lines, gzipped or not."""
     with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
         return f.read().splitlines()
-
-
-def _ebr_lines(path):
-    """An EBR file's records, gzipped or not, as the JSONL lines they were."""
-    return [json.dumps(r) for _p, r in ebr.iter_records(path)]
 
 
 class StreamSplitTest(unittest.TestCase):
@@ -1967,25 +2189,17 @@ class StreamSplitTest(unittest.TestCase):
         # dedicated CompressionTest covers the gzip behaviour on its own.
         self._compress = T.COMPRESS
         T.COMPRESS = False
-        # Twins, the default, whatever EBPFM_FORMAT the suite runs under: the
-        # split holds in each format.
-        self._formats, T.FORMATS = T.FORMATS, BOTH
         self.day = datetime.now().strftime('%Y-%m-%d')
 
     def tearDown(self):
         T.FLUSH_MODE = self._mode
         T.COMPRESS = self._compress
-        T.FORMATS = self._formats
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _read(self, stream, host='node0'):
         p = os.path.join(self.dir, self.day, '%s.%s.jsonl' % (host, stream))
         with open(p) as f:
             return [json.loads(l) for l in f if l.strip()]
-
-    def _read_ebr(self, stream, host='node0'):
-        p = os.path.join(self.dir, self.day, '%s.%s.ebr' % (host, stream))
-        return [r for _p, r in ebr.iter_records(p)]
 
     # --- the mapping -------------------------------------------------------
     def test_every_documented_event_maps_to_a_real_stream(self):
@@ -2022,8 +2236,6 @@ class StreamSplitTest(unittest.TestCase):
         self.assertEqual([r['event'] for r in self._read('snapshot')],
                          ['meta', 'conn', 'netio', 'submit',
                           'residency', 'residency_totals', 'stop'])
-        for s in T.STREAMS:      # and each .ebr twin holds its .jsonl's records
-            self.assertEqual(self._read_ebr(s), self._read(s), s)
 
     def test_the_streams_do_not_bleed(self):
         w = T.DailyWriter(self.dir, 'node0')
@@ -2043,8 +2255,6 @@ class StreamSplitTest(unittest.TestCase):
             w.write({'event': ev, 'ts': 'x'})
         w.close()
         self.assertEqual(len(self._read('exits')) + len(self._read('snapshot')),
-                         len(self.ALL_EVENTS) * 13)
-        self.assertEqual(len(self._read_ebr('exits')) + len(self._read_ebr('snapshot')),
                          len(self.ALL_EVENTS) * 13)
         self.assertEqual(w.n, len(self.ALL_EVENTS) * 13)
 
@@ -2067,10 +2277,6 @@ class StreamSplitTest(unittest.TestCase):
         w.close()
         self.assertEqual(self._read('exits'), [], 'no exits observed, not a missing file')
         self.assertEqual(len(self._read('snapshot')), 1)
-        # the EBR twins too; an EBR file with no record holds nothing at all,
-        # not even the segment header, so it reads exactly as the empty .jsonl
-        self.assertEqual(os.path.getsize(w.path('exits', fmt='ebr')), 0)
-        self.assertEqual(len(self._read_ebr('snapshot')), 1)
 
     def test_ts_epoch_backstop_still_applies_to_both_streams(self):
         w = T.DailyWriter(self.dir, 'node0')
@@ -2088,18 +2294,15 @@ class StreamSplitTest(unittest.TestCase):
                          os.path.join(self.dir, self.day, 'node0.exits.jsonl'))
         self.assertEqual(w.path('snapshot'),
                          os.path.join(self.dir, self.day, 'node0.snapshot.jsonl'))
-        self.assertEqual(w.path('exits', fmt='ebr'),
-                         os.path.join(self.dir, self.day, 'node0.exits.ebr'))
-        self.assertEqual(w.path('snapshot', '2026-01-01', 'ebr'),
-                         os.path.join(self.dir, '2026-01-01', 'node0.snapshot.ebr'))
+        self.assertEqual(w.path('snapshot', '2026-01-01'),
+                         os.path.join(self.dir, '2026-01-01', 'node0.snapshot.jsonl'))
         w.close()
 
     # --- day rollover ------------------------------------------------------
     def test_rollover_opens_a_new_pair_and_strands_nothing(self):
-        """The rollover path closes two handles per format, not one. Records
-        buffered in EITHER stream must reach disk before the day changes -- with
-        one handle that was automatic, with four it is a thing that can be got
-        wrong.
+        """The rollover path closes two handles, not one. Records buffered in
+        EITHER stream must reach disk before the day changes -- with one handle
+        that was automatic, with two it is a thing that can be got wrong.
 
         _roll() is driven directly because the day is taken from the wall clock:
         reassigning w.day would still resolve to today's directory and prove
@@ -2113,16 +2316,12 @@ class StreamSplitTest(unittest.TestCase):
         self.assertEqual(w.flushes, 2, 'the roll flushed both streams')
         self.assertEqual(len(self._read('exits')), 1, 'day 1 exit reached disk')
         self.assertEqual(len(self._read('snapshot')), 1, 'day 1 residency reached disk')
-        self.assertEqual(len(self._read_ebr('exits')), 1, 'and so did its EBR twin')
-        self.assertEqual(len(self._read_ebr('snapshot')), 1)
 
-        # the new day opens a pair per format: four files, before any record
-        day2 = os.path.join(self.dir, '1999-01-01')
+        day2 = os.path.join(self.dir, '1999-01-01')  # the new day opens a PAIR
         self.assertEqual(sorted(os.listdir(day2)),
-                         ['node0.exits.ebr', 'node0.exits.jsonl',
-                          'node0.snapshot.ebr', 'node0.snapshot.jsonl'])
+                         ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
         self.assertEqual([os.path.getsize(os.path.join(day2, f))
-                          for f in sorted(os.listdir(day2))], [0, 0, 0, 0])
+                          for f in sorted(os.listdir(day2))], [0, 0])
         w.close()
 
     def test_record_mode_routes_the_same_way(self):
@@ -2136,20 +2335,18 @@ class StreamSplitTest(unittest.TestCase):
 
 
 class CompressionTest(unittest.TestCase):
-    """Sealed day-files are gzipped in place to <file>.jsonl.gz, and EBR twins to
-    <file>.ebr.gz; the live day is left plain. The gzip runs as a fire-and-forget
-    `nice` subprocess, so these tests WAIT for it to land rather than assuming it
-    is synchronous -- the race that assumption caused is exactly what this suite
-    exists to prevent."""
+    """Sealed day-files are gzipped in place to <file>.jsonl.gz; the live day is
+    left plain. The gzip runs as a fire-and-forget `nice` subprocess, so these
+    tests WAIT for it to land rather than assuming it is synchronous -- the race
+    that assumption caused is exactly what this suite exists to prevent."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_gz_')
         self._mode, T.FLUSH_MODE = T.FLUSH_MODE, 'poll'
         self._compress, T.COMPRESS = T.COMPRESS, True
-        self._formats, T.FORMATS = T.FORMATS, BOTH
 
     def tearDown(self):
-        T.FLUSH_MODE, T.COMPRESS, T.FORMATS = self._mode, self._compress, self._formats
+        T.FLUSH_MODE, T.COMPRESS = self._mode, self._compress
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _wait_gz(self, path, timeout=10.0):
@@ -2177,19 +2374,15 @@ class CompressionTest(unittest.TestCase):
         self._write_on(w, '2026-01-02', {'event': 'meta', 'ts_epoch': 2.0})  # seals 2026-01-01
         d1 = os.path.join(self.dir, '2026-01-01')
         for s in ('exits', 'snapshot'):
-            for fmt in BOTH:
-                gz = self._wait_gz(os.path.join(d1, 'node0.%s.%s' % (s, fmt)))
-                self.assertTrue(gz.endswith('.%s.gz' % fmt))
-        # content survives the round trip, in either format
-        gz = os.path.join(d1, 'node0.exits.%s.gz')
-        self.assertEqual(_lines(gz % 'jsonl'), [json.dumps({'event': 'exit', 'pid': 1,
-                                                            'ts_epoch': 1.0})])
-        self.assertEqual(_ebr_lines(gz % 'ebr'), _lines(gz % 'jsonl'))
+            gz = self._wait_gz(os.path.join(d1, 'node0.%s.jsonl' % s))
+            self.assertTrue(gz.endswith('.jsonl.gz'))
+        # content survives the round trip
+        self.assertEqual(_lines(os.path.join(d1, 'node0.exits.jsonl.gz')),
+                         [json.dumps({'event': 'exit', 'pid': 1, 'ts_epoch': 1.0})])
         # the LIVE day stays plain -- it is still being appended to
         d2 = os.path.join(self.dir, '2026-01-02')
         self.assertEqual(sorted(os.listdir(d2)),
-                         ['node0.exits.ebr', 'node0.exits.jsonl',
-                          'node0.snapshot.ebr', 'node0.snapshot.jsonl'])
+                         ['node0.exits.jsonl', 'node0.snapshot.jsonl'])
         w.close()
 
     def test_disabled_leaves_sealed_day_uncompressed(self):
@@ -2200,27 +2393,7 @@ class CompressionTest(unittest.TestCase):
         time.sleep(0.3)                              # give any (unexpected) gzip a chance
         d1 = os.path.join(self.dir, '2026-01-01')
         self.assertIn('node0.exits.jsonl', os.listdir(d1))
-        self.assertIn('node0.exits.ebr', os.listdir(d1))
         self.assertFalse(any(f.endswith('.gz') for f in os.listdir(d1)))
-        w.close()
-
-    def test_a_sealed_day_is_gzipped_in_both_formats_whatever_this_run_writes(self):
-        """A day written under another EBPFM_FORMAT is sealed the same way: a
-        JSONL-only run still gzips the .ebr a previous run left."""
-        T.FORMATS = ('jsonl',)
-        old = os.path.join(self.dir, '2026-01-01')
-        os.makedirs(old)
-        w = T.DailyWriter(self.dir, 'node0')
-        e = ebr.Writer(os.path.join(old, 'node0.exits.ebr'))
-        e.write({'event': 'exit', 'pid': 7})
-        e.close()
-        with open(os.path.join(old, 'node0.exits.jsonl'), 'w') as f:
-            f.write('{"event": "exit", "pid": 7}\n')
-        self._write_on(w, '2026-01-01', {'event': 'exit', 'ts_epoch': 1.0})
-        self._write_on(w, '2026-01-02', {'event': 'exit', 'ts_epoch': 2.0})
-        gz = self._wait_gz(os.path.join(old, 'node0.exits.ebr'))
-        self.assertEqual([r['pid'] for _p, r in ebr.iter_records(gz)], [7])
-        self._wait_gz(os.path.join(old, 'node0.exits.jsonl'))
         w.close()
 
     def test_startup_sweep_compresses_leftover_sealed_day(self):
@@ -2228,22 +2401,18 @@ class CompressionTest(unittest.TestCase):
         os.makedirs(old)
         with open(os.path.join(old, 'node0.exits.jsonl'), 'w') as f:
             f.write('{}\n')
-        open(os.path.join(old, 'node0.exits.ebr'), 'w').close()   # opened, nothing written
         T._sweep_sealed_days(self.dir, 'node0', '2026-01-02')
         self._wait_gz(os.path.join(old, 'node0.exits.jsonl'))
-        self._wait_gz(os.path.join(old, 'node0.exits.ebr'))
 
     def test_sweep_skips_today(self):
         today = '2026-01-02'
         d = os.path.join(self.dir, today)
         os.makedirs(d)
-        for fmt in BOTH:
-            with open(os.path.join(d, 'node0.exits.' + fmt), 'w') as f:
-                f.write('{}\n' if fmt == 'jsonl' else '')
+        with open(os.path.join(d, 'node0.exits.jsonl'), 'w') as f:
+            f.write('{}\n')
         T._sweep_sealed_days(self.dir, 'node0', today)
         time.sleep(0.3)
         self.assertIn('node0.exits.jsonl', os.listdir(d), 'today must stay plain')
-        self.assertIn('node0.exits.ebr', os.listdir(d))
         self.assertFalse(any(f.endswith('.gz') for f in os.listdir(d)))
 
 
@@ -2597,6 +2766,21 @@ class ArgsTruncationTest(unittest.TestCase):
         i = T._base_identity(T.proc[701], 'human', 'tty')
         self.assertEqual((len(i['args']), i['args_len']), (9000, 9000))
         self.assertFalse(i['args_truncated'])
+
+    def test_a_line_the_masking_cuts_is_truncated(self):
+        """The masking reads 16 KB of a line and writes [CUT] after them; a
+        longer /proc read was cut there and still said to be whole."""
+        saved = (T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS)
+        T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = frozenset(('keys', 'prompts')), True, True
+        try:
+            T.proc_add(706, 1, comm='sh', args='x ' * 10000, argv_source='proc')
+            T.proc[706]['args_raw_len'] = 20000
+            i = T._base_identity(T.proc[706], 'human', 'tty')
+        finally:
+            T.REDACT, T.REDACT_KEYS, T.REDACT_PROMPTS = saved
+        self.assertTrue(i['args'].endswith(' [CUT]'), i['args'][-20:])
+        self.assertEqual(i['args_redacted'], ['cut'])
+        self.assertTrue(i['args_truncated'])
 
     def test_an_emit_cap_still_applies_when_set(self):
         T.ARGS_MAXLEN = 2048
@@ -3005,7 +3189,7 @@ def _net_binary(feats, offs):
                             'f_file': offs.get('socket', {}).get('file', -1),
                             'birth_cmd': birth, 'dump': dump}
     path = os.path.join(_NET_BIN_DIR[0], 'net%d' % len(_NET_BIN_CACHE))
-    with open(path + '.c', 'w') as f:
+    with open(path + '.c', 'w', encoding='utf-8') as f:
         f.write('#include "%s"\n%s\n%s\n%s' % (
             _MOCK_H, T.build_tcp_common_c() if tcp_on else '', net, driver))
     p = subprocess.run([_CC, '-std=gnu11', '-w', '-o', path, path + '.c'],
@@ -3327,9 +3511,12 @@ class NetEndpointBlockTest(unittest.TestCase):
 
 
 class FeatureCacheTest(unittest.TestCase):
-    """The feature cache is keyed by kernel release. A collector that gained
-    blocks since the cache was written must probe them: loading the old set
-    would never try the new ones, on every host that ran an older collector."""
+    """The feature cache is keyed by kernel release, and holds only for the block
+    list and `_feature_key` it was probed under: a collector that gained blocks,
+    or runs another BCC or other compiled-in settings, probes afresh. A start
+    takes from it only what is final -- a block that loaded on top of the same
+    blocks, one superseded, one missing a block it requires -- and probes again
+    what a load or BTF error refused: a refusal of a moment's is not kept."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='ebpfm_cache_')
@@ -3345,28 +3532,82 @@ class FeatureCacheTest(unittest.TestCase):
         with open(T._feature_cache_path(), 'w') as f:
             json.dump(kw, f)
 
-    def _probe(self):
+    def _probe(self, refuse=()):
+        """One start: (accepted, rejected, programs loaded), the stand-in BCC
+        loading any program that holds none of the `refuse` strings."""
+        loads = []
+
         class FakeBPF(object):
             def __init__(self, text=None, cflags=None):
-                pass
+                loads.append(text)
+                for r in refuse:
+                    if r in text:
+                        raise Exception('cannot attach %s' % r)
 
             def cleanup(self):
                 pass
-        return T.probe_features(FakeBPF, verbose=False)[1]
+        _b, accepted, rejected = T.probe_features(FakeBPF, verbose=False)
+        return accepted, rejected, len(loads)
+
+    def _fresh(self, refuse=()):
+        """What a start with no cache makes of `refuse`."""
+        saved, T.FEATURE_CACHE = T.FEATURE_CACHE, False
+        try:
+            return self._probe(refuse)
+        finally:
+            T.FEATURE_CACHE = saved
 
     def test_a_cache_written_before_a_block_existed_is_reprobed(self):
         self._cache(kernel='k', features=['netbytes', 'tcp_btf'])
-        self.assertIn('netpeer_btf', self._probe())
+        accepted, _rejected, loads = self._probe()
+        self.assertIn('netpeer_btf', accepted)
+        self.assertEqual(loads, self._fresh()[2])
 
-    def test_a_current_cache_is_used_as_is(self):
-        self._cache(kernel='k', features=['netbytes'], blocks=list(T.BLOCK_NAMES))
-        self.assertEqual(self._probe(), {'netbytes'})
-
-    def test_a_fresh_probe_writes_a_cache_that_the_next_start_uses(self):
+    def test_a_cache_whose_refusals_are_final_costs_one_load(self):
         first = self._probe()
+        self.assertTrue(all(r.startswith('superseded') for r in first[1].values()), first[1])
         with open(T._feature_cache_path()) as f:
-            self.assertEqual(json.load(f)['blocks'], list(T.BLOCK_NAMES))
-        self.assertEqual(self._probe(), first)
+            saved = json.load(f)
+        self.assertEqual((saved['blocks'], saved['key']), (list(T.BLOCK_NAMES), T._feature_key()))
+        self.assertEqual(self._probe(), first[:2] + (1,))
+
+    def test_a_block_refused_once_is_probed_again_with_the_blocks_that_need_it(self):
+        acc, rej, _ = self._probe(refuse=('kretprobe__tcp_sendmsg',))
+        self.assertNotIn('netbytes', acc)
+        self.assertTrue(rej['netpeer_btf'].startswith('requires'))
+        acc, rej, _ = self._probe()                     # the refusal is gone
+        self.assertTrue({'netbytes', 'netbytes_udp6', 'netbytes_page', 'netpeer_btf'} <= acc)
+        self.assertEqual((acc, rej), self._fresh()[:2])
+
+    def test_a_block_refused_every_time_costs_one_load_more(self):
+        first = self._probe(refuse=('udpv6_sendmsg',))
+        self.assertNotIn('netbytes_udp6', first[0])
+        self.assertEqual(self._probe(refuse=('udpv6_sendmsg',)), first[:2] + (2,))
+
+    def test_a_cache_made_under_another_key_is_probed_afresh(self):
+        every = self._probe()[2]
+        with mock.patch.object(T, 'SUBMIT_BUDGET', T.SUBMIT_BUDGET * 2):   # compiled in
+            self.assertEqual(self._probe()[2], every)
+        with mock.patch.object(T, '_bcc_version', lambda: 'another'):
+            self.assertEqual(self._probe()[2], every)
+
+    def test_a_cached_set_that_no_longer_loads_is_probed_afresh(self):
+        self._probe()
+        got = self._probe(refuse=('kretprobe__tcp_sendmsg',))
+        self.assertNotIn('netbytes', got[0])
+        self.assertEqual(got[:2], self._fresh(refuse=('kretprobe__tcp_sendmsg',))[:2])
+
+    def test_a_start_from_the_cache_ends_where_a_fresh_probe_does(self):
+        refusable = ('kretprobe__tcp_sendmsg', 'udpv6_sendmsg', 'tcp_sendpage', 'inet_csk_accept',
+                     'sum_block_runtime', 'bpf_probe_read_user', 'run_delay', 'cgroup_id',
+                     'tcp_set_state')
+        rng = random.Random(11)
+        for _ in range(16):
+            before = rng.sample(refusable, rng.randint(0, 3))
+            now = rng.sample(refusable, rng.randint(0, 3))
+            self._probe(refuse=before)
+            self.assertEqual(self._probe(refuse=now)[:2], self._fresh(refuse=now)[:2],
+                             (before, now))
 
 
 class SelfRecordTest(unittest.TestCase):
@@ -3876,6 +4117,98 @@ class ArgvHostResolverTest(unittest.TestCase):
         self.assertEqual(T._HOST_WANT.qsize(), 0)
 
 
+class ArgvHostnamesCostTest(unittest.TestCase):
+    """Finding names stays linear in an argv any user writes. One regex tried
+    at every letter read a run of scheme characters again from each of them: a
+    run of 32,000 before a ` ://` took 0.7 s, against 0.1 ms for a benign 4 KB
+    line, on every exec and every record of the process, and argv read from
+    /proc at the seed has no length cap."""
+
+    OLD = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
+                     r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+
+    def setUp(self):
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+        self._saved = (T._argv_hostnames, T.MIN_UID)
+        T.MIN_UID = 0
+
+    def tearDown(self):
+        T._argv_hostnames, T.MIN_UID = self._saved
+        T.proc.clear(); T._children.clear()
+        T._host_pending.clear(); _drain(T._HOST_WANT)
+
+    def timed(self, fn, *args):
+        t0 = time.time()
+        out = fn(*args)
+        return time.time() - t0, out
+
+    def test_the_urls_found_are_the_regexs(self):
+        import random
+        cases = ['curl https://a.example.org/x http://B.example.org:8/y',
+                 'git clone https://u:pw@github.com/x/y.git ssh://git@h.example.org/r',
+                 'x http://a.b+git://c.example.org/ ://nope 9://nope a1+.-://ok.example.org',
+                 'http://[2001:db8::a]/ http://[::1 ftp://-x/ s3://bucket.name/k',
+                 'http://host-x://y http://h:// a@b://c d://@e f://g@@h',
+                 'x://' + 'y' * 50 + ' ' + 'z' * 31 + '://w.example.org',
+                 'http://' + 'a.' * 30 + 'org', '://', 'a://', 'a:// b', '']
+        rnd = random.Random(3)
+        alphabet = 'aZ1+.-:/@ []hx'
+        cases += [''.join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 40)))
+                  for _ in range(20000)]
+        for s in cases:
+            self.assertEqual(T._url_hosts(s), self.OLD.findall(s), s)
+
+    def test_a_scheme_is_read_from_its_last_32_characters(self):
+        """The one difference: a scheme of more than 32 characters whose last
+        32 hold no letter is none."""
+        self.assertEqual(T._url_hosts('a' + '1' * 31 + '://h.example.org'), ['h.example.org'])
+        self.assertEqual(T._url_hosts('a' + '1' * 32 + '://h.example.org'), [])
+
+    def test_a_long_run_before_a_url_marker_costs_nothing(self):
+        dt, out = self.timed(T._argv_hostnames, 'x ' + 'a' * 64000 + ' ://', 'x')
+        self.assertLess(dt, 0.25)                # the regex: over 2 s
+        dt, out = self.timed(T._url_hosts, 'x ' + 'a' * 64000 + ' ://')
+        self.assertEqual(out, [])
+        self.assertLess(dt, 0.25)
+
+    def test_only_the_first_4096_characters_are_read_and_never_half_a_name(self):
+        pad = 'x ' * 2000
+        self.assertEqual(T._argv_hostnames(pad + 'https://a.example.org/x', 'curl'),
+                         ['a.example.org'])
+        self.assertEqual(T._argv_hostnames(pad + 'x' * 75 + ' https://api.example.org/v1', 'curl'),
+                         [])                     # the cut falls inside the name
+        self.assertEqual(T._argv_hostnames(pad * 3 + 'https://a.example.org/x', 'curl'), [])
+
+    def test_an_argv_is_read_once(self):
+        calls = []
+        real = T._argv_hostnames
+
+        def counting(args, command=None):
+            calls.append(args)
+            return real(args, command)
+        T._argv_hostnames = counting
+        m = T.proc_add(100, 1, comm='curl', args='curl https://a.example.org/x', user='u',
+                       uid=1000, tty='pts/1')
+        T._ask_hosts(m)
+        for _ in range(3):
+            T._hosts_for(m)
+        self.assertEqual(len(calls), 1)
+        m['args'] = 'curl https://b.example.org/x'          # a new image's argv
+        T._ask_hosts(m)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(T._HOST_WANT.qsize(), 2)
+
+    def test_a_process_that_will_not_be_reported_is_not_read(self):
+        calls = []
+        T._argv_hostnames = lambda args, command=None: calls.append(args) or []
+        T.MIN_UID = 1000
+        m = T.proc_add(900, 1, comm='curl', args='curl https://updates.example.org/x',
+                       user='root', uid=0)
+        T._ask_hosts(m)
+        self.assertEqual(calls, [])
+
+
 class NetEndpointsExitTest(_NetpeerCase):
     def test_the_exit_record_carries_the_endpoint_list(self):
         self.K.put(101, '104.18.0.1', 443, tx=1500, rx=9000, calls=12)
@@ -4160,13 +4493,13 @@ class Python36Test(unittest.TestCase):
 
     def test_what_runs_on_the_collector_host_parses_as_python_3_6(self):
         """Every Python file the collector runs -- the tracer, the node tier,
-        lib/ including ebr.py, these tests -- and the Python inside ebpfm.sh:
+        lib/, these tests -- and the Python inside ebpfm.sh:
         3.6 syntax, no f-strings (the project's rule) and no subprocess
         `text=`/`capture_output=`, which 3.6 rejects at the call."""
         sources = [(p.name, p.read_text(encoding='utf-8')) for p in
                    [_ROOT / 'ebpf_trace.py', _ROOT / 'node_snapshot.py', Path(__file__).resolve()]
                    + sorted((_ROOT / 'lib').glob('*.py'))]
-        sh = (_ROOT / 'ebpfm.sh').read_text()
+        sh = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
         snippets = re.findall(r"python3 -c '([^']*)'", sh)
         snippets += re.findall(r"python3 - <<'PY'\n(.*?)\nPY\n", sh, re.S)
         self.assertGreaterEqual(len(snippets), 6)
@@ -4181,33 +4514,6 @@ class Python36Test(unittest.TestCase):
                     if fn in ('run', 'Popen', 'call', 'check_call', 'check_output'):
                         kws = set(k.arg for k in node.keywords)
                         self.assertFalse(kws & set(['text', 'capture_output']), name)
-
-    def test_without_lib_ebr_the_collector_still_writes_jsonl(self):
-        """`import ebr` is guarded: an interpreter that cannot load it still
-        collects, in JSONL alone whatever EBPFM_FORMAT asks, and meta.output
-        says why there is no EBR."""
-        d = tempfile.mkdtemp(prefix='ebpfm_noebr_')
-        try:
-            code = ('import json, sys\nsys.modules["ebr"] = None\nsys.path[:0] = [%r, %r]\n'
-                    'import ebpf_trace as T\n'
-                    'w = T.DailyWriter(%r, "h")\n'
-                    'w.write({"event": "meta"})\nw.write({"event": "exit"})\nw.close()\n'
-                    'print(json.dumps([T.ebr is None, list(w.formats), w.descriptor(),'
-                    ' w.output_stats()]))\n' % (str(_ROOT), str(_ROOT / 'lib'), d))
-            r = subprocess.run([sys.executable, '-c', code], stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, universal_newlines=True,
-                               env=dict(os.environ, EBPFM_FORMAT='ebr', EBPFM_OUTPUT_DIR=d))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            unavailable, formats, desc, st = json.loads(r.stdout)
-            self.assertTrue(unavailable)
-            self.assertEqual(formats, ['jsonl'])
-            self.assertIsNone(desc['ebr'])
-            self.assertRegex(desc['ebr_unavailable'], r'^\w*(Import|NotFound)Error: .*\bebr\b')
-            self.assertEqual((st['jsonl']['records'], st['ebr']), (2, None))
-            day = os.path.join(d, datetime.now().strftime('%Y-%m-%d'))
-            self.assertEqual(sorted(os.listdir(day)), ['h.exits.jsonl', 'h.snapshot.jsonl'])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4974,6 +5280,15 @@ class SubmitCaptureTest(unittest.TestCase):
         self.assertNotIn('hf_abcdefghij', r['captured_tail'])
         self.assertIn('HF_TOKEN=[REDACTED]', r['captured_tail'])
 
+    def test_the_tail_is_masked_before_it_is_cut(self):
+        """Cut to its last 300 characters first, the password's name lost its
+        first letters to the cut, and `SWORD=hunter2secret` was written."""
+        out = b'Submitted batch job 9\n' + b'a' * 100 + b'\n+ export DB_PASSWORD=hunter2secret\n' \
+            + b'b' * 280
+        r = self._submit('sbatch run.sh', out)
+        self.assertNotIn('hunter2secret', r['captured_tail'])
+        self.assertEqual(r['captured_tail'], 'PASSWORD=[REDACTED]\n' + 'b' * 280)
+
     def test_the_kernel_spends_a_budget_and_forgets_an_exec_into_anything_else(self):
         txt = T.build_bpf_text({'submit'}, offs=FAKE_OFFS)
         # LLVM may prove the last clamp redundant and drop it; 4.18 needs it
@@ -5074,7 +5389,7 @@ class UnsafeDirTest(unittest.TestCase):
 
 class WrapperTest(unittest.TestCase):
     def setUp(self):
-        self.src = (_ROOT / 'ebpfm.sh').read_text()
+        self.src = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
 
     def _fn(self, name):
         m = re.search(r'^%s\(\) \{[^\n]*\n.*?^\}\n' % re.escape(name), self.src, re.M | re.S)
@@ -5111,11 +5426,50 @@ class WrapperTest(unittest.TestCase):
     def test_a_node_snapshot_is_bounded(self):
         self.assertIn('$(_node_timeout) python3 "$NODE_SNAPSHOT"', self.src)
 
-    # --- formats ------------------------------------------------------------
-    def _fn1(self, name):
-        """A one-line function, `name() { ...; }`."""
-        return re.search(r'^%s\(\)\s+\{.*\}$' % re.escape(name), self.src, re.M).group(0) + '\n'
+    def test_check_masks_a_credential_through_the_node_tiers_lib(self):
+        """It only compiled node_snapshot.py: a lib/redact.py it could not
+        import, or that masked nothing, passed."""
+        d = tempfile.mkdtemp(prefix='ebpfm_check_')
+        try:
+            os.mkdir(os.path.join(d, 'lib'))
+            snap = os.path.join(d, 'node_snapshot.py')
+            shutil.copy(str(_ROOT / 'node_snapshot.py'), snap)
+            script = ('ok() { echo "ok $1"; }; warn() { echo "warn $1"; }; bad() { echo "bad $1"; }\n'
+                      '_node_mode() { echo node; }; want_ebpf() { return 1; }\n'
+                      'NODE_SNAPSHOT=%s; NODE_OUTPUT_DIR=%s/out\n' % (snap, d)
+                      + self._fn('_check_node_tier') + '_check_node_tier\n')
 
+            def verdict():
+                rc, out, err = self._bash(script)
+                return [l for l in out.splitlines() if l.split()[1:] == ['redact']]
+            self.assertEqual(verdict(), ['bad redact'])               # no lib/redact.py
+            shutil.copy(str(_ROOT / 'lib' / 'redact.py'), os.path.join(d, 'lib'))
+            self.assertEqual(verdict(), ['ok redact'])
+            with open(os.path.join(d, 'lib', 'redact.py'), 'w') as f:  # one that masks nothing
+                f.write('MASK = "[REDACTED]"\n\n\ndef redact_line(line, **kw):\n'
+                        '    return line, None\n')
+            self.assertEqual(verdict(), ['bad redact'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_bootstrap_forgets_the_feature_cache(self):
+        """What bootstrap installs can load blocks the last probe could not: the
+        next start probes every block rather than taking the cache's word."""
+        self.assertIn('_forget_features', self._fn('cmd_bootstrap'))
+        d = tempfile.mkdtemp(prefix='ebpfm_wrap_')
+        try:
+            for name in ('.features_6.8.0-90-generic.json', '.features_4.18.0.json', 'node7.log'):
+                open(os.path.join(d, name), 'w').close()
+            script = ('OUTPUT_DIR=%s\nok() { echo "ok $*"; }\n' % d
+                      + self._fn('_forget_features') + '_forget_features\n')
+            rc, out, err = self._bash(script)
+            self.assertEqual((rc, err), (0, ''))
+            self.assertIn('2 file(s) removed', out)
+            self.assertEqual(os.listdir(d), ['node7.log'])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    # --- run for real ------------------------------------------------------
     def _bash(self, script, env=None):
         r = subprocess.run(['bash', '-c', 'set -uo pipefail\n' + script], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -5127,84 +5481,63 @@ class WrapperTest(unittest.TestCase):
         e.update(env)
         r = subprocess.run(['bash', str(_ROOT / 'ebpfm.sh')] + list(args), env=e,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
+                           encoding='utf-8')
         return r.returncode, r.stdout, r.stderr
 
-    def test_the_format_is_validated_like_the_tier(self):
-        self.assertIn('EBR="$DIR/lib/ebr.py"', self.src)
-        self.assertIn('FORMAT="${EBPFM_FORMAT:-both}"', self.src)
-        self.assertIn('export EBPFM_FORMAT="$FORMAT"', self.src)
-        rc, _out, err = self._run('help', EBPFM_FORMAT='xml')
-        self.assertEqual(rc, 1)
-        self.assertIn("EBPFM_FORMAT must be jsonl, ebr or both (got 'xml')", err)
-        for fmt in ('jsonl', 'ebr', 'both', ''):
-            rc, out, _err = self._run('help', EBPFM_FORMAT=fmt)
-            self.assertEqual(rc, 0, fmt)
-            self.assertIn('EBPFM_FORMAT=jsonl|ebr|both', out)
-        rc, out, _err = self._run('ebr', '--version')
-        self.assertEqual(rc, 0)
-        self.assertRegex(out, r'\Aebr %d \(zstd: [^\n]+\)\n\Z' % ebr.VERSION)
+    def test_help_prints_the_header_and_no_more(self):
+        """`help` prints the header comment, every verb in it, and stops at its
+        end: the line range it prints follows the header's length."""
+        rc, out, err = self._run('help')
+        self.assertEqual((rc, err), (0, ''))
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith('ebpfm.sh'), lines[0])
+        self.assertIn('install-unit  install the persistent systemd unit', lines[-2])
+        self.assertEqual(lines[-1], '')
+        self.assertEqual(self._run('no-such-verb')[0], 1)
 
-    def test_the_file_helpers_take_a_format(self):
-        """_ebpf_file STREAM [DAY] [EXT]; _twin picks the plain file over its
-        .gz; _feed_count counts either format, plain or gzipped."""
+    def test_the_day_file_helpers(self):
+        """_jsonl_file takes the plain file over its .gz -- while gzip runs both
+        exist, and only the plain one is complete -- else the .gz, else none;
+        _feed_count counts a day-file's records, plain or gzipped."""
         d = tempfile.mkdtemp(prefix='ebpfm_wrap_')
         try:
-            day = os.path.join(d, '2026-11-01')
-            os.makedirs(day)
-            open(os.path.join(day, 'node7.rc.example.edu.exits.ebr'), 'w').close()
-            for name in ('h.exits.jsonl.gz', 'h.exits.ebr', 'h.exits.ebr.gz'):
+            for name in ('a.exits.jsonl', 'a.exits.jsonl.gz', 'b.exits.jsonl.gz'):
                 open(os.path.join(d, name), 'w').close()
-            script = ('OUTPUT_DIR=%s; HOST=node7\n' % d + self._fn('_ebpf_file') + self._fn('_twin')
-                      + '_ebpf_file exits 2026-11-01 ebr; _ebpf_file snapshot 2026-11-01 ebr\n'
-                      + '_ebpf_file exits 2026-11-01\n'
-                      + '_twin %s h.exits jsonl; _twin %s h.exits ebr\n' % (d, d)
-                      + '_twin %s h.snapshot ebr || echo none\n' % d)
+            script = (self._fn('_jsonl_file')
+                      + '_jsonl_file %s a.exits; _jsonl_file %s b.exits\n' % (d, d)
+                      + '_jsonl_file %s c.exits || echo none\n' % d)
             rc, out, err = self._bash(script)
             self.assertEqual((rc, err), (0, ''))
-            self.assertEqual(out.split(), [
-                os.path.join(day, 'node7.rc.example.edu.exits.ebr'),
-                os.path.join(day, 'node7.snapshot.ebr'), os.path.join(day, 'node7.exits.jsonl'),
-                os.path.join(d, 'h.exits.jsonl.gz'), os.path.join(d, 'h.exits.ebr'), 'none'])
+            self.assertEqual(out.split(), [os.path.join(d, 'a.exits.jsonl'),
+                                           os.path.join(d, 'b.exits.jsonl.gz'), 'none'])
 
-            recs = [{'event': 'exit', 'pid': i} for i in range(5)]
+            body = ''.join(json.dumps({'event': 'exit', 'pid': i}) + '\n' for i in range(5))
             with open(os.path.join(d, 'x.jsonl'), 'w') as f:
-                f.write(''.join(json.dumps(r) + '\n' for r in recs))
-            w = ebr.Writer(os.path.join(d, 'x.ebr'))
-            for r in recs:
-                w.write(r)
-                w.flush()
-            w.close()
-            for name in ('x.jsonl', 'x.ebr'):
-                with open(os.path.join(d, name), 'rb') as a, \
-                        gzip.open(os.path.join(d, name + '.gz'), 'wb') as b:
-                    b.write(a.read())
-            open(os.path.join(d, 'empty.ebr'), 'w').close()
-            files = ' '.join(os.path.join(d, n) for n in
-                             ('x.jsonl', 'x.jsonl.gz', 'x.ebr', 'x.ebr.gz', 'empty.ebr'))
-            script = ('EBR=%s\n' % (_ROOT / 'lib' / 'ebr.py') + self._fn('_feed_count')
-                      + 'for f in %s; do _feed_count "$f"; done\n' % files)
+                f.write(body)
+            with gzip.open(os.path.join(d, 'x.jsonl.gz'), 'wt') as f:
+                f.write(body)
+            open(os.path.join(d, 'empty.jsonl'), 'w').close()
+            files = ' '.join(os.path.join(d, n) for n in ('x.jsonl', 'x.jsonl.gz', 'empty.jsonl'))
+            script = self._fn('_feed_count') + 'for f in %s; do _feed_count "$f"; done\n' % files
             rc, out, err = self._bash(script)
             self.assertEqual((rc, err), (0, ''))
-            self.assertEqual(out.split(), ['5', '5', '5', '5', '0'])
+            self.assertEqual(out.split(), ['5', '5', '0'])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def _node_tick_script(self, d, fmt, snapshot):
+    def _node_tick_script(self, d, snapshot):
         return ('NODE_OUTPUT_DIR=%s/out; HOST=node7; NODE_SNAPSHOT=%s; NODE_TOP_N=25\n'
-                'NODE_INTERVAL=300; EBR=%s; FORMAT=%s; DIR_MODE=0750; FILE_MODE=0640\n'
+                'NODE_INTERVAL=300; DIR_MODE=0750; FILE_MODE=0640\n'
                 'EBPFM_GROUP=; want_ebpf() { return 1; }\n'
-                % (d, snapshot, _ROOT / 'lib' / 'ebr.py', fmt)
-                + self._fn1('_want_jsonl') + self._fn1('_want_ebr') + self._fn('_secure_dir')
-                + self._fn('_secure_file') + self._fn('_node_mode') + self._fn('_node_timeout')
-                + self._fn('_ebr_zstd') + self._fn('_node_tick') + 'umask 022\n')
+                % (d, snapshot)
+                + self._fn('_secure_dir') + self._fn('_secure_file') + self._fn('_node_mode')
+                + self._fn('_node_timeout') + self._fn('_node_tick') + 'umask 022\n')
 
-    def test_node_tick_writes_equal_twins_at_the_file_mode(self):
-        """The node tier's snapshot is captured, then appended to <host>.jsonl
-        and handed to `ebr.py append` for <host>.ebr: twins holding the same
-        records, both at the configured mode however permissive the umask, the
-        second snapshot continuing the first's segment. node_snapshot.py is not
-        touched, so a stub stands in for it."""
+    def test_node_tick_appends_whole_snapshots_at_the_file_mode(self):
+        """The node tier's snapshot is captured, then appended to <host>.jsonl,
+        a line each, at the configured mode however permissive the umask; one
+        the timeout kills appends nothing, not half a line. node_snapshot.py is
+        not touched, so a stub stands in for it."""
         d = tempfile.mkdtemp(prefix='ebpfm_node_')
         try:
             snap = os.path.join(d, 'snap.py')
@@ -5214,197 +5547,74 @@ class WrapperTest(unittest.TestCase):
                         '    "top_n": int(sys.argv[2]), "mode": os.environ.get("SNAPSHOT_MODE"),\n'
                         '    "load": [0.5, 1, None], "user": "\\u00e9\\ud800", "big": 2 ** 70,\n'
                         '    "ts_epoch": time.time()}))\n')
-            rc, out, err = self._bash(self._node_tick_script(d, 'both', snap)
+            rc, out, err = self._bash(self._node_tick_script(d, snap)
                                       + '_node_tick && _node_tick && echo ok\n')
             self.assertEqual((rc, out, err), (0, 'ok\n', ''))
             day = os.path.join(d, 'out', datetime.now().strftime('%Y-%m-%d'))
-            j, e = os.path.join(day, 'node7.jsonl'), os.path.join(day, 'node7.ebr')
+            self.assertEqual(os.listdir(day), ['node7.jsonl'])
+            j = os.path.join(day, 'node7.jsonl')
             lines = _lines(j)
             self.assertEqual(len(lines), 2)
+            self.assertEqual([json.loads(l)['top_n'] for l in lines], [25, 25])
             self.assertEqual(json.loads(lines[0])['mode'], 'full')
-            self.assertEqual(_ebr_lines(e), lines)
-            for p in (j, e):
-                self.assertEqual(os.stat(p).st_mode & 0o777, 0o640, p)
+            self.assertEqual(os.stat(j).st_mode & 0o777, 0o640)
             self.assertEqual(os.stat(day).st_mode & 0o777, 0o750)
-            frames = list(ebr.frames(e))
-            self.assertEqual([f.kind for f in frames], [ebr.SEGMENT, ebr.DATA, ebr.DATA])
-            dec = ebr.Decoder()
-            dec.skip(frames[0], e)
-            self.assertEqual((dec.segment['host'], dec.segment['stream'], dec.segment['writer']),
-                             ('node7', 'node', 'node_snapshot.py'))
-            # one format alone writes only that file
-            for fmt, other in (('jsonl', 'ebr'), ('ebr', 'jsonl')):
-                shutil.rmtree(os.path.join(d, 'out'))
-                rc, out, err = self._bash(self._node_tick_script(d, fmt, snap) + '_node_tick\n')
-                self.assertEqual((rc, err), (0, ''), fmt)
-                self.assertEqual(os.listdir(day), ['node7.' + fmt])
             # a snapshot that dies (the timeout's kill) appends nothing, not half a line
             with open(snap, 'w') as f:
                 f.write('import sys\nsys.stdout.write(\'{"timestamp": "x", "half\')\n'
                         'sys.stdout.flush()\nsys.exit(124)\n')
             shutil.rmtree(os.path.join(d, 'out'))
-            rc, out, err = self._bash(self._node_tick_script(d, 'both', snap) + '_node_tick\n')
+            rc, out, err = self._bash(self._node_tick_script(d, snap) + '_node_tick\n')
             self.assertEqual(rc, 1)
             self.assertEqual([os.path.getsize(os.path.join(day, n)) for n in sorted(os.listdir(day))]
                              if os.path.isdir(day) else [], [])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def test_node_tick_hands_the_zstd_level_to_append(self):
-        """EBPFM_EBR_ZSTD reaches the node tier's `ebr.py append` (as the
-        eBPF tier reads it: a level 0-22, anything else 0). Where python3 has
-        no zstd module the snapshot is still appended, uncompressed, and the
-        tick says why on stderr; it never costs the EBR twin a snapshot."""
-        self.assertIn('--zstd "$(_ebr_zstd)"', self._fn('_node_tick'))
-        lib_ebr = str(_ROOT / 'lib' / 'ebr.py')
-        shell_zstd = 'zstd: unavailable' not in subprocess.run(
-            ['python3', lib_ebr, '--version'], stdout=subprocess.PIPE,
-            universal_newlines=True).stdout
-        d = tempfile.mkdtemp(prefix='ebpfm_node_')
-        try:
-            snap = os.path.join(d, 'snap.py')
-            with open(snap, 'w') as f:
-                f.write('import json, sys\n'
-                        'print(json.dumps({"timestamp": "x", "hostname": sys.argv[1],\n'
-                        '    "procs": [{"cmd": "python3 train.py --epochs 10", "n": i}\n'
-                        '              for i in range(40)], "ts_epoch": 5.0}))\n')
-            day = os.path.join(d, 'out', datetime.now().strftime('%Y-%m-%d'))
-            for level, want in (('3', 3), ('99', 0), ('', 0)):
-                shutil.rmtree(os.path.join(d, 'out'), ignore_errors=True)
-                env = dict(os.environ, EBPFM_EBR_ZSTD=level)
-                rc, out, err = self._bash(self._node_tick_script(d, 'both', snap)
-                                          + '_node_tick && echo ok\n', env=env)
-                self.assertEqual((rc, out), (0, 'ok\n'), (level, err))
-                e = os.path.join(day, 'node7.ebr')
-                flags = [f.flags for f in ebr.frames(e) if f.kind == ebr.DATA]
-                if want and not shell_zstd:
-                    self.assertIn('--zstd 3: this Python has no zstd module', err)
-                    self.assertIn('appending uncompressed', err)
-                    self.assertEqual(flags, [0])
-                elif want:
-                    self.assertEqual((err, flags), ('', [ebr.F_ZSTD]))
-                else:
-                    self.assertEqual((err, flags), ('', [0]), level)
-                if ebr.zstd_available() or not flags[0]:
-                    self.assertEqual(_ebr_lines(e), _lines(os.path.join(day, 'node7.jsonl')))
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
-
-    def test_tail_and_overhead_read_ebr_through_its_cat(self):
-        """`ebr.py cat` prints an EBR file's records as the JSONL lines they
-        were, so tail reads either format, and overhead finds the stop record
-        by kind -- the last line of a file is not a record in EBR."""
+    def test_tail_and_overhead_read_the_day_files(self):
+        """tail prints the last lines of today's files as they are. overhead
+        counts both streams' records, plain or gzipped, and takes the perf
+        counters and the bytes written from the snapshot stream's last `stop`
+        record: the last line of the exits file is an exit record."""
         tail = self._fn('cmd_tail')
-        self.assertIn('python3 "$EBR" cat --tail "$n" "$f" | jq .', tail)
-        self.assertIn('tail -n "$n" "$f" | jq .', tail, 'JSONL is tailed as it always was')
+        self.assertIn('tail -n "$n" "$f" | jq .', tail)
         over = self._fn('cmd_overhead')
-        self.assertIn('python3 "$EBR" cat --tail 1 --kind stop "$f"', over)
+        self.assertIn('f="$(_jsonl_file "$d" "$HOST.$s")" || continue', over)
         self.assertIn('_feed_count "$f"', over)
+        self.assertIn('_last_stop "$f"', over)
         self.assertNotIn('tail -1 "$f"', over)
-        self.assertIn('o=json.load(sys.stdin).get("output")', over, 'bytes from stop.output')
-        # and the tail runs: EBR alone, today
+        self.assertIn('o=(json.load(sys.stdin).get("output") or {}).get("jsonl")', over,
+                      'bytes from stop.output')
         d = tempfile.mkdtemp(prefix='ebpfm_tail_')
         try:
-            with mock.patch.object(T, 'FORMATS', ('ebr',)):
-                w = T.DailyWriter(d, 'node7')
+            w = T.DailyWriter(d, 'node7')
             recs = [{'event': 'exit', 'pid': i, 'ts_epoch': 1.5 + i} for i in range(5)]
-            for r in recs:
+            w.write({'event': 'meta', 'ts_epoch': 1.0})
+            stop = {'event': 'stop', 'perf_seen': {'exit': 5}, 'ts_epoch': 9.0}
+            for r in recs + [stop, {'event': 'residency', 'ts_epoch': 9.5}]:
                 w.write(r)
             w.close()
-            script = ('OUTPUT_DIR=%s; HOST=node7; EBR=%s; FORMAT=ebr; EBPF_STREAMS="snapshot exits"\n'
-                      'jq() { cat; }\n' % (d, _ROOT / 'lib' / 'ebr.py')
-                      + self._fn1('_want_jsonl') + self._fn1('_exts') + self._fn('_ebpf_file')
-                      + self._fn('_tail_file') + self._fn('cmd_tail') + 'cmd_tail 2\n')
+            script = ('OUTPUT_DIR=%s; HOST=node7; EBPF_STREAMS="snapshot exits"\n'
+                      'jq() { cat; }\n' % d
+                      + self._fn('_ebpf_file') + self._fn('cmd_tail') + 'cmd_tail 2\n')
             rc, out, err = self._bash(script)
             self.assertEqual((rc, err), (0, ''))
             self.assertEqual([l for l in out.splitlines() if l.startswith('== ')],
                              ['== snapshot (%s)' % w.path('snapshot'), '== exits (%s)' % w.path('exits')])
-            self.assertEqual([l for l in out.splitlines() if not l.startswith('== ')],
-                             [json.dumps(r) for r in recs[-2:]])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
-
-    def test_check_reports_the_format_and_ebr(self):
-        fns = (self._fn1('ok') + self._fn1('warn') + self._fn1('bad') + self._fn1('_want_ebr')
-               + self._fn('_ebr_zstd') + self._fn('_check_format')
-               + 'fails=0\n_check_format; echo "fails=$fails"\n')
-        env = dict((k, v) for k, v in os.environ.items() if not k.startswith('EBPFM_EBR_'))
-        here = 'FORMAT=both; EBR=%s\n' % (_ROOT / 'lib' / 'ebr.py')
-        rc, out, _err = self._bash(here + fns, env=env)
-        self.assertIn('ok    EBPFM_FORMAT', out)
-        self.assertIn('ebr %d (zstd: ' % ebr.VERSION, out)
-        m = re.search(r'ok    EBR settings +zstd 0 \(([^\n]+)\), a segment per 2097152 bytes', out)
-        self.assertTrue(m, out)
-        self.assertIn('fails=0', out)
-        self.assertNotIn('WARN', out)
-        # zstd asked for: where python3 has no zstd module EBR goes uncompressed,
-        # a WARN, not a FAIL; a level that is not one, or the v1 knob, a WARN too
-        rc, out, _err = self._bash(here + fns, env=dict(env, EBPFM_EBR_ZSTD='5'))
-        if m.group(1) == 'unavailable':
-            self.assertRegex(out, r'WARN  EBR settings +zstd 5 \(unavailable: written uncompressed')
-        else:
-            self.assertIn('ok    EBR settings                   zstd 5 (%s)' % m.group(1), out)
-        self.assertIn('fails=0', out)
-        rc, out, _err = self._bash(here + fns, env=dict(env, EBPFM_EBR_ZSTD='fast',
-                                                        EBPFM_EBR_ZLIB='6'))
-        self.assertIn("WARN  EBPFM_EBR_ZSTD                 'fast' is not a zstd level 0-22: off",
-                      out)
-        self.assertIn('WARN  EBPFM_EBR_ZLIB                 ignored: replaced by EBPFM_EBR_ZSTD',
-                      out)
-        self.assertIn('zstd 0 (', out)
-        self.assertIn('fails=0', out)
-        rc, out, _err = self._bash('FORMAT=both; EBR=/nonexistent/ebr.py\n' + fns)
-        self.assertIn('FAIL  ebr.py', out)
-        self.assertIn('fails=1', out)
-        rc, out, _err = self._bash('FORMAT=jsonl; EBR=/nonexistent/ebr.py\n' + fns)
-        self.assertIn('WARN  ebr.py', out)
-        self.assertIn('fails=0', out)
-
-    def test_compare_and_verify_cover_every_twin_of_the_day(self):
-        """compare: every JSONL/EBR pair of the day in both tiers, sealed (.gz)
-        or not, record by record; a pair that differs fails it. verify: every
-        EBR file of the day."""
-        d = tempfile.mkdtemp(prefix='ebpfm_cmp_')
-        try:
-            day = '2026-01-01'
-            ebpf, node = os.path.join(d, 'ebpf'), os.path.join(d, 'login')
-            with mock.patch.object(T, 'datetime', _clock(day)), \
-                    mock.patch.object(T, 'COMPRESS', False):
-                w = T.DailyWriter(ebpf, 'node7', formats=BOTH)
-                for i in range(50):
-                    w.write({'event': ('exit', 'residency')[i % 2], 'pid': i, 'ts_epoch': 1.0 + i})
-                w.close()
-            for f in os.listdir(os.path.join(ebpf, day)):     # sealed: gzipped in place
-                subprocess.check_call(['gzip', os.path.join(ebpf, day, f)])
-            os.makedirs(os.path.join(node, day))
-            nb = os.path.join(node, day, 'node7')
-            snaps = [{'timestamp': 'x', 'n': i, 'ts_epoch': 2.0 + i} for i in range(3)]
-            with open(nb + '.jsonl', 'w') as f:
-                f.write(''.join(json.dumps(r) + '\n' for r in snaps))
-            e = ebr.Writer(nb + '.ebr')
-            for r in snaps:
-                e.write(r)
-            e.close()
-            env = {'EBPFM_OUTPUT_DIR': ebpf, 'EBPFM_NODE_OUTPUT_DIR': node, 'EBPFM_FORMAT': 'both'}
-            rc, out, err = self._run('compare', day, **env)
-            self.assertEqual(rc, 0, out + err)
-            self.assertIn('node7.exits', out)
-            self.assertIn('25 records compared, 0 differ, OK', out)
-            self.assertIn('3 records compared, 0 differ, OK', out)
-            self.assertIn('== 3 twin pairs, all equal', out)
-            rc, out, err = self._run('verify', day, **env)
-            self.assertEqual(rc, 0, out + err)
-            self.assertEqual(len([l for l in out.splitlines() if ': ebr, ' in l and l.endswith('OK')]),
-                             3, out)
-            e = ebr.Writer.open_append(nb + '.ebr')        # the EBR twin gains a record
-            e.write({'timestamp': 'x', 'n': 99})
-            e.close()
-            rc, out, err = self._run('compare', day, **env)
-            self.assertEqual(rc, 1, out + err)
-            self.assertIn('B has 1 more', out)
-            self.assertIn('NOT all equal', out)
-            self.assertEqual(self._run('compare', '1999-01-01', **env)[0], 1, 'nothing compared')
-            self.assertEqual(self._run('verify', '1999-01-01', **env)[0], 1)
+            self.assertEqual([json.loads(l)['event'] for l in out.splitlines()
+                              if not l.startswith('== ')], ['stop', 'residency', 'exit', 'exit'])
+            subprocess.check_call(['gzip', w.path('snapshot')])
+            fns = self._fn('_last_stop') + self._fn('_jsonl_file') + self._fn('_feed_count')
+            for name in ('node7.snapshot', 'node7.exits', 'node7.none'):
+                rc, out, err = self._bash(
+                    fns + 'f="$(_jsonl_file %s %s)" || f=""\n' % (os.path.dirname(w.path('exits')), name)
+                    + 'echo "count=$([ -n "$f" ] && _feed_count "$f")"\n'
+                    + '[ -n "$f" ] && _last_stop "$f"; true\n')
+                self.assertEqual((rc, err), (0, ''), name)
+                count, _, line = out.partition('\n')
+                want = {'node7.snapshot': (3, json.dumps(stop) + '\n'),
+                        'node7.exits': (5, ''), 'node7.none': ('', '')}[name]
+                self.assertEqual((count, line), ('count=%s' % want[0], want[1]), name)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

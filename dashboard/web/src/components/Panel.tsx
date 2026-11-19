@@ -7,6 +7,9 @@
  *                           the empty state, because it is a different fact.
  *   no envelope at all    -> <NotReturned>: the backend did not return the panel.
  *                           It says so, names the feed, and blames nothing.
+ *   `_error`              -> <NotReduced>: the service could not reduce the
+ *                           panel. Its body is empty, which is not `none` and
+ *                           not a 0: it says so, with what the reducer said.
  *
  * Rule: data only. A panel carries a title, the feed that fills it, and the
  * chart or table. `notes` / `basis` / `cpu_basis` go in <Basis>, a collapsed
@@ -17,6 +20,7 @@ import type { ReactNode } from 'react';
 import type { FeedStatus, PanelEnvelope, WindowStatus } from '../api/types';
 import { AskBox, canAsk, useAskScope } from './Ask';
 import type { AskRef } from './Ask';
+import { Boundary } from './Boundary';
 
 export function StatusPill({
   status,
@@ -95,6 +99,19 @@ export function NotReturned({ feed, notice }: { feed: string; notice?: string | 
           </>
         )}
       </span>
+    </div>
+  );
+}
+
+/** The service could not reduce this panel: its reducer raised (`_error`).
+ *  The feed may be fine and the window built; this panel's body is empty
+ *  because the reduction failed, which must read as neither `none` nor a
+ *  missing feed. The dashed frame of the missing family, with what it said. */
+export function NotReduced({ error }: { error: string }) {
+  return (
+    <div className="notreturned notreduced">
+      <span className="pill">not reduced</span>
+      <span>the service could not reduce this panel: {error || 'no reason given'}</span>
     </div>
   );
 }
@@ -182,7 +199,9 @@ export function Panel({
   const [asking, setAsking] = useState(false);
   const askable = !!ask && canAsk(scope.info);
   const feedName = p?._feed ?? feed ?? '';
-  const missing = p != null && p._present === false;
+  // no body to show, ask about or qualify: an absent feed, or a panel the
+  // service could not reduce (which reads its own state below)
+  const missing = p != null && (p._present === false || p._error != null);
   // Feed-absent outranks window-building: if the collector wrote nothing, no
   // amount of reducing will produce rows, and naming the path is the useful
   // answer. Only when the feed is fine does "still reading" become the story.
@@ -243,6 +262,8 @@ export function Panel({
       )}
       {p?._waiting ? (
         <div className="none">waiting for the dashboard service…</div>
+      ) : p?._error != null ? (
+        <NotReduced error={p._error} />
       ) : missing && p!._unsent ? (
         <NotReturned feed={feedName} notice={p!._notice} />
       ) : missing ? (
@@ -257,7 +278,11 @@ export function Panel({
       ) : empty ? (
         <NoRows what={emptyWhat} />
       ) : (
-        children
+        // a body that throws as it is drawn says so, and the rest of the tab stays;
+        // new data for the panel draws it afresh
+        <Boundary what="this panel" resetOn={p}>
+          {children}
+        </Boundary>
       )}
       {/* A basis handed over as bare text is a paragraph of method notes; the
           reader asked for none of those under a panel. Only <Basis>, which is

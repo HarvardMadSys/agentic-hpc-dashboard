@@ -6,9 +6,8 @@ seeded on (seed, host, day, user), so one person's plan never moves another's.
 A session is BUILT into its records only when a window being written overlaps
 it: every record it will ever write, whole, from its own seeded generator. A
 window keeps the records that fall in it. So `records(a, b) + records(b, c)` is
-`records(a, c)`, byte for byte, which is what lets a stopped demo resume. On disk
-(feed.py) that is, for JSONL: same bytes; for EBR: same decoded records, since an
-EBR file's frames and segments follow the rounds that wrote it.
+`records(a, c)`, byte for byte, which is what lets a stopped demo resume: on disk
+(feed.py), the same bytes.
 
 Pids come from a block per (day, session), so two sessions on one host never
 share a pid on a day -- a row is keyed on its root's pid and its day, so two would
@@ -23,7 +22,7 @@ from . import agents, cast, host as hostmod, sessions
 
 # Bump when what a seed writes changes: a feed from another generator is
 # written again rather than resumed into a mixture of the two.
-GENERATOR = 2
+GENERATOR = 3
 
 # The longest any session runs: how far back a window looks for plans.
 MAX_SESSION_S = 20 * 3600

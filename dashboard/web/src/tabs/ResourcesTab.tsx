@@ -11,7 +11,7 @@
  * sampled while processes run, and its pill says that instead.
  */
 import { memo, useState } from 'react';
-import type { Accum, Cls, MaxProcess, Quant, Resources } from '../api/types';
+import type { Accum, Cls, LiveResponse, MaxProcess, Quant, Resources } from '../api/types';
 import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
@@ -23,6 +23,7 @@ import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import { InstanceTable, RiskIoTab } from './RiskIoTab';
+import { NodeHealth } from './NodeHealth';
 import type { ResourceInstance } from '../api/types';
 import type { Panels } from '../lib/panels';
 
@@ -305,11 +306,46 @@ function FaultTable({
 export { TimeChart };
 export type { TimeLine, View };
 
-export const ResourcesTab = memo(function ResourcesTab({ P, cls }: { P: Panels; cls: Cls[] }) {
+/* Two readers, two halves (user, 2026-11-17). An operator asks whose process
+ * to go and look at, and who moved the bytes and where to: that is Resources.
+ * The per-class quantile and kernel-accounting tables answer a researcher's
+ * question, so they sit on Internal (`part="internal"`), with the I/O panels
+ * that are the same kind of table or repeat a Live chart. Same payloads, same
+ * titles, so a citation lands on whichever tab draws the panel (lib/cites.ts). */
+export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', live = null }: {
+  P: Panels;
+  cls: Cls[];
+  part?: 'main' | 'internal';
+  /** the live frame: what the eBPF tier's D-state processes were blocked in */
+  live?: LiveResponse | null;
+}) {
   const r = pick<Resources>(P, 'resources', 'ebpfm');
   const byClass = r.by_class ?? {};
   const have = shown(byClass, cls);
   const [stats, setStats] = useState<QKey[]>(STATS_ON);
+
+  if (part === 'main') {
+    return (
+      <>
+        {/* the node as a whole, before its processes: what the eBPF tier
+            cannot see (load, file servers, disks, accounts' limits) */}
+        <div className="grid wide">
+          <NodeHealth P={P} live={live} />
+        </div>
+        <div className="grid-gap" />
+        <div className="grid wide">
+          <WorstPanel r={r} />
+        </div>
+
+        {/* I/O is a resource (roadmap notes 41 and 42): who moved the bytes,
+            by tool and by user, and where the network bytes went. Its tiles
+            became rows of Who uses what, and its time series are on Live's
+            picker. */}
+        <div className="grid-gap" />
+        <RiskIoTab P={P} cls={cls} part="io" plates={false} io="main" />
+      </>
+    );
+  }
 
   return (
     <>
@@ -346,41 +382,43 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls }: { P: Panels; 
         >
           <FaultTable byClass={byClass} have={have} impossible={r.impossible_waits ?? {}} />
         </Panel>
-
-        <Panel
-          title="Worst individual processes"
-          ask={[{ panel: 'resources', keys: ['worst_stall', 'worst_fault', 'worst_wait'] }]}
-          p={r}
-          span
-          empty={
-            !(r.worst_stall?.length || r.worst_fault?.length || r.worst_wait?.length)
-          }
-          emptyWhat="no process stalled, faulted or waited measurably in the window"
-        >
-          {/* An aggregate by class says how much; only a pid says whose process
-              to go and look at. One table per axis, because the worst staller
-              and the worst faulter are rarely the same process. */}
-          {([
-            ['longest D-state wait (uninterruptible sleep, the NFS/autofs signal)', r.worst_stall],
-            ['most major faults (the ones that actually hit disk)', r.worst_fault],
-            ['longest runqueue wait (ready, but not scheduled)', r.worst_wait],
-          ] as [string, ResourceInstance[] | undefined][]).map(([label, list], i) => {
-            const rows = list ?? [];
-            if (!rows.length) return null;
-            return (
-              <More key={i} label={`${label} · ${fint(rows.length)}`}>
-                <InstanceTable rows={rows} showArgs />
-              </More>
-            );
-          })}
-        </Panel>
       </div>
 
-      {/* I/O is a resource (roadmap notes 41 and 42): its panels, as they were
-          on the I/O tab. Its tiles became rows of the Overview table, and its
-          time series moved to Live's picker. */}
       <div className="grid-gap" />
-      <RiskIoTab P={P} cls={cls} part="io" plates={false} series={false} />
+      <RiskIoTab P={P} cls={cls} part="io" plates={false} io="internal" />
     </>
   );
 });
+
+/** An aggregate by class says how much; only a pid says whose process to go
+ *  and look at. */
+function WorstPanel({ r }: { r: Resources }) {
+  return (
+    <Panel
+      title="Worst individual processes"
+      ask={[{ panel: 'resources', keys: ['worst_stall', 'worst_fault', 'worst_wait'] }]}
+      p={r}
+      span
+      empty={
+        !(r.worst_stall?.length || r.worst_fault?.length || r.worst_wait?.length)
+      }
+      emptyWhat="no process stalled, faulted or waited measurably in the window"
+    >
+      {/* One table per axis, because the worst staller and the worst
+          faulter are rarely the same process. */}
+      {([
+        ['longest D-state wait (uninterruptible sleep, the NFS/autofs signal)', r.worst_stall],
+        ['most major faults (the ones that actually hit disk)', r.worst_fault],
+        ['longest runqueue wait (ready, but not scheduled)', r.worst_wait],
+      ] as [string, ResourceInstance[] | undefined][]).map(([label, list], i) => {
+        const rows = list ?? [];
+        if (!rows.length) return null;
+        return (
+          <More key={i} label={`${label} · ${fint(rows.length)}`}>
+            <InstanceTable rows={rows} showArgs />
+          </More>
+        );
+      })}
+    </Panel>
+  );
+}

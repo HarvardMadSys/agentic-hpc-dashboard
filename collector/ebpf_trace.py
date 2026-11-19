@@ -60,11 +60,6 @@ on the owning exit record; v7 added `netio`). Two files per host per day:
 stream_of() is the single mapping, and the split is a filing decision, not a
 schema one: a reader that globs the day directory sees exactly what one file
 used to give it. Schema in README.md.
-
-EBPFM_FORMAT=jsonl|ebr|both (default both) picks the container: JSONL as above,
-EBR (lib/ebr.py's framed binary records, `<stream>.ebr`, 4-8x smaller), or both
-as twins holding the same records in the same order. The records themselves are
-the same in every container; meta.output says which were written.
 """
 import bisect
 import collections
@@ -103,12 +98,6 @@ try:  # netlink socket-diag for standing connections
     import sockdiag
 except Exception:  # pragma: no cover
     sockdiag = None
-try:  # the binary day-file format; absent -> JSONL only, said in meta.output
-    import ebr
-    _EBR_ERROR = None
-except Exception as _e:  # pragma: no cover
-    ebr = None
-    _EBR_ERROR = '%s: %s' % (type(_e).__name__, _e)
 
 # This process's pid, stamped on every record (see _envelope). Read once: the
 # tracer never forks itself -- ebpfm.sh daemonizes before Python starts -- and a
@@ -230,59 +219,12 @@ def _secure_path(path, mode):
         except OSError:
             pass
 
-# --- output format ---------------------------------------------------------
-# What a day-file is written as. 'jsonl' is what every reader has always read;
-# 'ebr' is lib/ebr.py's framed binary records: the same records, 4-8x smaller,
-# and a reader can skip a frame by its header (time bounds, event kinds). 'both'
-# writes twins, x.jsonl and x.ebr, with the same records in the same order, and
-# is the default while EBR is on trial. Anything else writes both and says so
-# once. Inside a live file nothing is compressed unless EBPFM_EBR_ZSTD (a zstd
-# level, 1-22) compresses each frame -- which needs a zstd module (Python 3.14+,
-# or zstandard/pyzstd installed); without one EBR is written uncompressed, said
-# once and in meta.output.ebr. Sealed days are gzipped whole either way.
-# EBPFM_EBR_ZLIB (format v1's deflate) is gone: set, it is said once and ignored.
-# EBPFM_EBR_RESET_BYTES is how often a segment (a fresh dictionary a reader can
-# start from) begins, which is also the most one corrupt frame can cost.
-FORMAT_NAMES = ('jsonl', 'ebr')
-
-
-def _formats_of(value):
-    """EBPFM_FORMAT -> (formats, warning or None). Unset or empty is 'both'."""
-    v = (value or '').strip().lower() or 'both'
-    if v == 'both':
-        return FORMAT_NAMES, None
-    if v in FORMAT_NAMES:
-        return (v,), None
-    return FORMAT_NAMES, 'EBPFM_FORMAT=%r is not jsonl, ebr or both; writing both' % value
-
-
-def _ebr_setting(name, default, lo, hi):
-    """An integer EBR knob in [lo, hi]; anything else is `default`, said once."""
-    v = env_num(name, default, int)
-    if lo <= v <= hi:
-        return v
-    sys.stderr.write('ebpfm: %s=%r is not in %d..%d; using %d\n'
-                     % (name, os.environ.get(name), lo, hi, default))
-    return default
-
-
-FORMATS, _why = _formats_of(os.environ.get('EBPFM_FORMAT'))
-if _why:
-    sys.stderr.write('ebpfm: %s\n' % _why)
-EBR_ZSTD = _ebr_setting('EBPFM_EBR_ZSTD', 0, 0, 22)
-EBR_RESET_BYTES = _ebr_setting('EBPFM_EBR_RESET_BYTES', 2 << 20, 1, 1 << 31)
-if (os.environ.get('EBPFM_EBR_ZLIB') or '').strip():
-    sys.stderr.write('ebpfm: EBPFM_EBR_ZLIB is replaced by EBPFM_EBR_ZSTD (a zstd level, '
-                     '1-22; off by default); ignoring it\n')
-_ZSTD_SAID = []           # the warning that EBR_ZSTD has no zstd module: once a process
-
 # --- log compression -------------------------------------------------------
 # The day-files are unbounded (the exits stream can exceed 1 GB) and the only
 # rotation is the daily rollover -- nothing shrinks a sealed day. gzip on this
 # newline-delimited JSON is ~10-20x, so sealed days are compressed in place to
-# <file>.jsonl.gz, and EBR twins to <file>.ebr.gz. Only SEALED days are touched;
-# the live day's open files are never compressed. Default on; EBPFM_COMPRESS=0
-# disables.
+# <file>.jsonl.gz. Only SEALED days are touched; the live day's open files are
+# never compressed. Default on; EBPFM_COMPRESS=0 disables.
 COMPRESS      = os.environ.get('EBPFM_COMPRESS', '1') != '0'
 
 def _compress_file(path):
@@ -316,15 +258,12 @@ def _compress_file(path):
         pass
 
 def _compress_day(root, day, host):
-    """Compress a sealed day's stream files, JSONL and EBR alike, whatever this
-    run writes: a day written under another EBPFM_FORMAT is sealed the same way.
-    Called at rollover for the day that just closed, and by the startup sweep for
-    any older sealed day."""
+    """Compress a sealed day's stream files. Called at rollover for the day that
+    just closed, and by the startup sweep for any older sealed day."""
     if not COMPRESS or not day:
         return
     for s in STREAMS:
-        for fmt in FORMAT_NAMES:
-            _compress_file(os.path.join(root, day, '%s.%s.%s' % (host, s, fmt)))
+        _compress_file(os.path.join(root, day, '%s.%s.jsonl' % (host, s)))
 
 def _sweep_sealed_days(root, host, keep_day):
     """At startup, gzip any sealed day left uncompressed by a prior run or crash.
@@ -1857,12 +1796,105 @@ def _short_err(err):
     return ' | '.join(keep)[:600]
 
 
+_BTF_GAP = 'BTF lacks required members (needs bpftool + /sys/kernel/btf/vmlinux)'
+
+
 def _feature_cache_path():
     return os.path.join(OUTPUT_DIR, '.features_%s.json' % os.uname().release.replace('/', '_'))
 
 
+def _feature_key():
+    """What a probe's outcome rests on beside the kernel release (the cache file's
+    name) and the block list: the BCC that compiles the blocks, whether bpftool
+    and the kernel's BTF are there for the offsets, and each block's program
+    text, which holds the settings compiled into it (EBPFM_ARGV_KMAX,
+    EBPFM_SUBMIT_BUDGET, ...). A cache made under another key is not used."""
+    import shutil
+    texts = [build_bpf_text(set(BLOCK_NAMES), offs={})]
+    texts += [build_bpf_text({name} | set(requires), offs={}) for name, requires, _p in BLOCKS]
+    return {'bcc': _bcc_version(), 'bpftool': shutil.which('bpftool') is not None,
+            'btf': os.path.exists('/sys/kernel/btf/vmlinux'),
+            'text': hashlib.sha1('\n'.join(texts).encode('utf-8')).hexdigest()}
+
+
+def _cached_features(key):
+    """The last probe's outcome on this kernel, or None: none saved, unreadable,
+    or made for another block list or `_feature_key`."""
+    try:
+        with open(_feature_cache_path()) as fh:
+            cached = json.load(fh)
+    except Exception:
+        return None
+    if (not isinstance(cached, dict) or cached.get('blocks') != list(BLOCK_NAMES)
+            or cached.get('key') != key or not isinstance(cached.get('features'), list)
+            or not isinstance(cached.get('rejected'), dict)):
+        return None
+    return cached
+
+
+def _probe(BPF, was=None):
+    """The greedy probe: each block in turn on top of those accepted before it,
+    -> (bpf, accepted, rejected). `was` is the set the last probe accepted: a
+    block it accepted on top of the very same blocks is taken without a load,
+    every other block is decided as a fresh probe decides it, and the set is
+    loaded once at the end. None when that load fails."""
+    order = dict((n, i) for i, n in enumerate(BLOCK_NAMES))
+    b = None
+    if was is None:
+        b, err = _try_load(BPF, set(), quiet=False)
+        if b is None:
+            raise SystemExit('error: even the base BPF program failed to load:\n%s' % err)
+    accepted, rejected, taken = set(), {}, False
+    for name, requires, _purpose in BLOCKS:
+        alt = ALTERNATIVES.get(name)
+        sup = [a for a in ((alt,) if alt else ()) + ALSO_SUPERSEDED_BY.get(name, ()) if a in accepted]
+        if sup:
+            rejected[name] = 'superseded by %s' % ','.join(sup)
+            continue
+        if any(r not in accepted for r in requires):
+            rejected[name] = 'requires %s' % ','.join(requires)
+            continue
+        if not btf_ok(name):
+            rejected[name] = _BTF_GAP
+            continue
+        cand = accepted | {name}
+        if was is not None and name in was and \
+                accepted == set(n for n in was if order[n] < order[name]):
+            accepted, taken = cand, True
+            continue
+        nb, err = _try_load(BPF, cand)
+        if nb is None:
+            rejected[name] = _short_err(err)
+            continue
+        if b is not None:
+            try:
+                b.cleanup()
+            except Exception:
+                pass
+        b, accepted, taken = nb, cand, False
+    if b is None or taken:
+        nb, err = _try_load(BPF, accepted)
+        if b is not None:
+            try:
+                b.cleanup()
+            except Exception:
+                pass
+        if nb is None:
+            return None
+        b = nb
+    return b, accepted, rejected
+
+
 def probe_features(BPF, verbose=True):
-    """Greedy per-block probing -> (bpf, accepted_set, rejected{name: reason})."""
+    """Greedy per-block probing -> (bpf, accepted_set, rejected{name: reason}).
+
+    The outcome is cached per kernel. A start takes from the cache only what is
+    final -- a block that loaded on top of the same blocks, one superseded by a
+    variant, one missing a block it requires -- and probes again every block a
+    load or BTF error refused, with the blocks that need it: a refusal of a
+    moment's (memory pressure, a slow bpftool) is not kept for good. If the set
+    then fails to load, or the cache was made under another `_feature_key`,
+    every block is probed afresh."""
     global BTF_OFFS
     if FEATURES_ENV != 'auto':
         feats = {x.strip() for x in FEATURES_ENV.split(',') if x.strip()}
@@ -1876,52 +1908,23 @@ def probe_features(BPF, verbose=True):
         if b is None:
             raise SystemExit('pinned feature set failed to load: %s' % err)
         return b, feats, {}
-    if FEATURE_CACHE:
-        try:
-            with open(_feature_cache_path()) as fh:
-                cached = json.load(fh)
-            # Keyed by kernel release, but only valid for the block list it was
-            # probed against: a collector that has gained a block since must probe
-            # it, or every host that ran the older collector never would.
-            if cached.get('blocks') != list(BLOCK_NAMES):
-                raise ValueError('feature cache predates the current block list')
-            feats = set(cached.get('features', []))
-            if cached.get('btf_offs'):
-                BTF_OFFS = cached['btf_offs']
-            b, err = _try_load(BPF, feats)
-            if b is not None:
-                if verbose:
-                    sys.stderr.write('BPF features (cached for %s): %s\n'
-                                     % (os.uname().release, ','.join(sorted(feats))))
-                return b, feats, cached.get('rejected', {})
-        except Exception:
-            pass
-    b, err = _try_load(BPF, set(), quiet=False)
-    if b is None:
-        raise SystemExit('error: even the base BPF program failed to load:\n%s' % err)
-    accepted, rejected = set(), {}
-    for name, requires, _purpose in BLOCKS:
-        alt = ALTERNATIVES.get(name)
-        sup = [a for a in ((alt,) if alt else ()) + ALSO_SUPERSEDED_BY.get(name, ()) if a in accepted]
-        if sup:
-            rejected[name] = 'superseded by %s' % ','.join(sup)
-            continue
-        if any(r not in accepted for r in requires):
-            rejected[name] = 'requires %s' % ','.join(requires)
-            continue
-        if not btf_ok(name):
-            rejected[name] = 'BTF lacks required members (needs bpftool + /sys/kernel/btf/vmlinux)'
-            continue
-        cand = accepted | {name}
-        nb, err = _try_load(BPF, cand)
-        if nb is None:
-            rejected[name] = _short_err(err)
-            continue
-        try:
-            b.cleanup()
-        except Exception:
-            pass
-        b, accepted = nb, cand
+    # Keyed by kernel release, and only for the block list and `_feature_key` it
+    # was probed under: a collector that has gained a block since must probe it,
+    # or every host that ran the older collector never would.
+    key = _feature_key() if FEATURE_CACHE else None
+    cached = _cached_features(key) if FEATURE_CACHE else None
+    got = None
+    if cached is not None:
+        before = BTF_OFFS
+        # the offsets this kernel's BTF gave, unless a block found them lacking:
+        # then bpftool is asked again
+        if cached.get('btf_offs') and not any(_BTF_GAP in r for r in cached['rejected'].values()):
+            BTF_OFFS = cached['btf_offs']
+        got = _probe(BPF, set(cached['features']))
+        if got is None:
+            BTF_OFFS = before
+    from_cache = got is not None
+    b, accepted, rejected = got if got is not None else _probe(BPF)
     # A failed variant whose sibling loaded is not a capability gap; say so while
     # keeping the compiler line for the record.
     for group in (PIDS_BLOCKS, TCP_BLOCKS, {'argv_user', 'argv_kernel'}, DSTATE_BLOCKS,
@@ -1939,13 +1942,15 @@ def probe_features(BPF, verbose=True):
             with open(cache_path, 'w') as fh:
                 json.dump({'kernel': os.uname().release, 'features': sorted(accepted),
                            'rejected': rejected, 'btf_offs': btf_offsets(),
-                           'blocks': list(BLOCK_NAMES),
+                           'blocks': list(BLOCK_NAMES), 'key': key,
                            'probed_at': _now()}, fh, indent=1)
             _secure_path(cache_path, FILE_MODE)
         except Exception:
             pass
     if verbose:
-        sys.stderr.write('BPF features: %s\n' % (','.join(sorted(accepted)) or '(base only)'))
+        sys.stderr.write('BPF features%s: %s\n' % (
+            ' (cached for %s)' % os.uname().release if from_cache else '',
+            ','.join(sorted(accepted)) or '(base only)'))
         gaps = []
         for k, v in rejected.items():
             v1 = v.replace('\n', ' | ')
@@ -2255,6 +2260,19 @@ def _create_mode():
     return FILE_MODE if FILE_MODE is not None else 0o666
 
 
+def _ends_mid_line(fd, path):
+    """True when the file open at `fd` holds bytes and the last is not a newline."""
+    try:
+        size = os.fstat(fd).st_size
+        if not size:
+            return False
+        with open(path, 'rb') as fh:
+            fh.seek(size - 1)
+            return fh.read(1) != b'\n'
+    except (IOError, OSError):
+        return False
+
+
 class _JsonlSink(object):
     """One stream's JSONL day-file.
 
@@ -2264,7 +2282,6 @@ class _JsonlSink(object):
     8 KiB into several write(2)s; this is one per round, so the count in
     stop.output.jsonl.writes is exact. A failed write keeps the bytes it did not
     write, and the next flush writes them first, as a BufferedWriter would."""
-    fmt = 'jsonl'
     KEYS = ('records', 'bytes', 'writes', 'errors')
 
     def __init__(self, path):
@@ -2272,8 +2289,12 @@ class _JsonlSink(object):
         self.fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_CLOEXEC,
                           _create_mode())
         self.buf = []
-        self.retry = b''          # what a failed write left unwritten
-        self.torn = False         # the file ends mid-line: a short write, then an error
+        # the file ends mid-line: a short write, then an error -- or, found at
+        # open, a line a killed collector, a lost power or a full disk cut short
+        self.torn = _ends_mid_line(self.fd, path)
+        # what a failed write left unwritten; at open, the end of that cut line,
+        # so the next record starts a line of its own rather than joining it
+        self.retry = b'\n' if self.torn else b''
         self.records = self.bytes = self.writes = self.errors = 0
 
     def add(self, rec):
@@ -2335,47 +2356,14 @@ class _JsonlSink(object):
             self.fd = None
 
 
-class _EbrSink(object):
-    """One stream's EBR day-file: an ebr.Writer, whose flush() is one os.write of
-    every frame the round made (the segment header rides with the first). It
-    writes nothing to a file before the first record, so a 0-byte `.ebr` means
-    "opened, nothing written", as an empty `.jsonl` does. Opening it repairs a
-    tail a crashed run left torn (stop.output.ebr.repaired_bytes)."""
-    fmt = 'ebr'
-    KEYS = ('records', 'bytes', 'writes', 'frames', 'segments', 'errors', 'lost',
-            'repaired_bytes')
-
-    def __init__(self, path, meta, reset_bytes, zstd):
-        self.path = path
-        self.w = ebr.Writer(path, meta=meta, reset_bytes=reset_bytes, zstd=zstd,
-                            mode=_create_mode())
-
-    def add(self, rec):
-        self.w.write(rec)
-
-    def flush(self):
-        return self.w.flush()
-
-    def stats(self):
-        st = self.w.stats
-        return {'records': st['records'], 'bytes': st['bytes'], 'writes': st['writes'],
-                'frames': st['frames'], 'segments': st['segments'],
-                'lost': st['lost_records'], 'repaired_bytes': st['repaired_bytes']}
-
-    def close(self):
-        self.w.close()
-
-
 class DailyWriter:
-    """The day-files: per host and day, one file per stream and per format.
+    """The day-files: per host and day, one JSONL file per stream.
 
-    Layout is `<root>/<YYYY-MM-DD>/<host>.<stream>.<fmt>`, `stream` in
-    (snapshot, exits) per stream_of(), `fmt` in `formats` (EBPFM_FORMAT): jsonl,
-    ebr, or both as twins holding the same records in the same order. Every
-    (stream, format) file opens when the day opens, not on first use, so a
-    running collector always shows the whole set and an empty `.exits.jsonl`
-    reads as "no exits observed" rather than "collector never started" (a 0-byte
-    `.ebr` reads the same).
+    Layout is `<root>/<YYYY-MM-DD>/<host>.<stream>.jsonl`, `stream` in
+    (snapshot, exits) per stream_of(). Both files open when the day opens, not
+    on first use, so a running collector always shows the pair and an empty
+    `.exits.jsonl` reads as "no exits observed" rather than "collector never
+    started".
 
     Flush policy is the whole I/O cost of this collector. Through schema 5 every
     record was followed by fh.flush(), which is one write(2) per record -- and
@@ -2386,72 +2374,35 @@ class DailyWriter:
     instead of 400. Only DIRTY streams flush, so the split costs a second
     write(2) only in a round that actually wrote to both -- an idle round still
     costs nothing, and a pure-exit burst still costs one. A stream's flush is one
-    write(2) per format, JSONL's first; `flushes` counts stream flushes.
-
-    Twins: JSONL is the format every reader trusts, so EBR can never cost it a
-    record. Each record is encoded for JSONL first, and one JSON refuses never
-    reaches EBR, so the twins stay equal. With both formats an EBR error (open,
-    write, flush, close) is counted, said once per kind on stderr, and goes no
-    further; 1000 in a row stop EBR until the next day opens. With one format,
-    its errors are the caller's, as JSONL's always were.
+    write(2); `flushes` counts stream flushes. An error -- a record json.dumps
+    refuses, a failed open, write or close -- is the caller's.
 
     What that trades: a record is durable within one poll round rather than
     immediately. SIGTERM, SIGINT and the duration stop all run through close(),
     which flushes, so the exposure is SIGKILL or power loss losing at most one
     round. EBPFM_FLUSH_MODE=record restores the old behaviour."""
 
-    EBR_ERRORS_IN_A_ROW = 1000
-
-    def __init__(self, root, host, flush_mode=None, formats=None):
+    def __init__(self, root, host, flush_mode=None):
         self.root, self.host, self.day = root, host, None
-        if formats is None:
-            formats = FORMATS
-        elif isinstance(formats, str):
-            formats = FORMAT_NAMES if formats == 'both' else (formats,)
-        wanted = tuple(f for f in FORMAT_NAMES if f in formats)
-        if not wanted or set(formats) - set(FORMAT_NAMES):
-            raise ValueError('formats are jsonl and/or ebr, not %r' % (formats,))
-        # Without lib/ebr.py this writes JSONL: never nothing.
-        self.ebr_unavailable = _EBR_ERROR if ('ebr' in wanted and ebr is None) else None
-        if ebr is None:
-            wanted = ('jsonl',)
-        self.formats = wanted
-        self.contain = len(wanted) > 1        # twins: EBR trouble never reaches JSONL
-        self.zstd, self.reset_bytes = EBR_ZSTD, EBR_RESET_BYTES
-        # zstd asked for, and no module to do it: uncompressed EBR beats none
-        self.zstd_unavailable = bool(self.zstd and 'ebr' in wanted
-                                     and not ebr.zstd_available())
-        if self.zstd_unavailable:
-            if not _ZSTD_SAID:
-                _ZSTD_SAID.append(True)
-                sys.stderr.write('ebpfm: EBPFM_EBR_ZSTD=%d, but this Python has no zstd '
-                                 'module (Python 3.14+, or pip install zstandard or pyzstd); '
-                                 'writing EBR uncompressed\n' % self.zstd)
-            self.zstd = 0
-        self._jsonl = {}          # stream -> _JsonlSink of the open day
-        self._ebr = {}            # stream -> _EbrSink of the open day
+        self._sinks = {}          # stream -> _JsonlSink of the open day
         self.dirty = {}           # stream -> written since its last flush
         self.n = 0
-        self.flushes = 0          # stream flushes, one write(2) per format each; in the stop record
+        self.flushes = 0          # stream flushes, one write(2) each; in the stop record
         self.per_record = (flush_mode or FLUSH_MODE) == 'record'
-        self._errors = dict.fromkeys(FORMAT_NAMES, 0)     # those no sink counts itself
-        self._retired = dict((f, collections.Counter()) for f in FORMAT_NAMES)
-        self._said = set()        # (format, what) already reported on stderr
-        self._ebr_run = 0         # EBR errors in a row
-        self._ebr_off = False     # stopped until the next day opens
+        self._errors = 0          # those no sink counts itself: a failed open
+        self._retired = collections.Counter()     # the closed files' counters
 
-    def path(self, stream, day=None, fmt=None):
-        """Where `stream` lands for `day` (default: the open day) in `fmt`
-        (default: the first format written -- JSONL whenever it is). Used by the
+    def path(self, stream, day=None):
+        """Where `stream` lands for `day` (default: the open day). Used by the
         tests and by anything that needs to name a file without writing one."""
         return os.path.join(self.root, day or self.day,
-                            '%s.%s.%s' % (self.host, stream, fmt or self.formats[0]))
+                            '%s.%s.jsonl' % (self.host, stream))
 
     def _roll(self, day):
-        """Open the day's files, every (stream, format) of them, so twins exist
-        before any record, closing the outgoing day's. _shut() flushes first, so
-        a rollover cannot strand a record in the old day's buffer. If an open
-        fails, nothing new is kept open and the next write tries again."""
+        """Open the day's files, one per stream, closing the outgoing day's.
+        _shut() flushes first, so a rollover cannot strand a record in the old
+        day's buffer. If an open fails, nothing new is kept open and the next
+        write tries again."""
         prev_day = self.day
         self._shut()
         daydir = os.path.join(self.root, day)
@@ -2461,34 +2412,23 @@ class DailyWriter:
         # browsing /scratch/ebpfm sees the same policy at every level.
         _secure_path(self.root, DIR_MODE)
         _secure_path(daydir, DIR_MODE)
-        self._ebr_off, self._ebr_run = False, 0
-        jsonl, ebrs = {}, {}
+        sinks = {}
         try:
             for s in STREAMS:
-                if 'jsonl' in self.formats:
-                    try:
-                        jsonl[s] = _JsonlSink(self.path(s, day, 'jsonl'))
-                    except Exception:
-                        self._errors['jsonl'] += 1
-                        raise
-                    _secure_path(jsonl[s].path, FILE_MODE)
-                if 'ebr' in self.formats:
-                    try:
-                        ebrs[s] = _EbrSink(self.path(s, day, 'ebr'), self._segment_meta(s, day),
-                                           self.reset_bytes, self.zstd)
-                    except Exception as e:
-                        if not self._contain('ebr', 'open', e):
-                            raise
-                    else:
-                        _secure_path(ebrs[s].path, FILE_MODE)
+                try:
+                    sinks[s] = _JsonlSink(self.path(s, day))
+                except Exception:
+                    self._errors += 1
+                    raise
+                _secure_path(sinks[s].path, FILE_MODE)
         except BaseException:
-            for sink in list(jsonl.values()) + list(ebrs.values()):
+            for sink in sinks.values():
                 try:
                     sink.close()
                 except Exception:
                     pass
             raise
-        self._jsonl, self._ebr = jsonl, ebrs
+        self._sinks = sinks
         self.dirty = dict.fromkeys(STREAMS, False)
         self.day = day
         # The outgoing day's files are now closed and complete -- compress them
@@ -2496,39 +2436,21 @@ class DailyWriter:
         if prev_day and prev_day != day:
             _compress_day(self.root, prev_day, self.host)
 
-    def _segment_meta(self, stream, day):
-        """What every EBR segment of this file says about its writer."""
-        return {'host': self.host, 'stream': stream, 'writer': 'ebpf_trace.py',
-                'pid': COLLECTOR_PID, 'schema_version': SCHEMA_VERSION, 'day': day}
-
     def _shut(self):
-        """Flush and close the open day. A flush error that reaches the caller
-        (JSONL's, or EBR's when it is the only format) leaves every file open, so
+        """Flush and close the open day. A flush error leaves every file open, so
         the next write retries the roll with the bytes still held."""
         self.flush()
-        jsonl, ebrs = self._jsonl, self._ebr
-        self._jsonl, self._ebr, self.dirty = {}, {}, {}
+        sinks, self._sinks, self.dirty = self._sinks, {}, {}
         err = None
-        for sink in jsonl.values():
+        for sink in sinks.values():
             try:
                 sink.close()
             except Exception as e:
                 if err is None:
                     err = e
-            self._retire(sink)
-        for sink in ebrs.values():
-            try:
-                sink.close()
-            except Exception as e:
-                if not self._contain('ebr', 'close', e) and err is None:
-                    err = e
-            self._retire(sink)
+            self._retired.update(sink.stats())    # its counters, into the run's
         if err is not None:
             raise err
-
-    def _retire(self, sink):
-        """Fold a closed file's counters into the run's (output_stats)."""
-        self._retired[sink.fmt].update(sink.stats())
 
     def write(self, rec):
         # Backstop for `ts_epoch`: every record type is supposed to get it from
@@ -2541,17 +2463,9 @@ class DailyWriter:
         if day != self.day:
             self._roll(day)
         s = stream_of(rec.get('event'))
-        j = self._jsonl.get(s)
+        j = self._sinks.get(s)
         if j is not None:
             j.add(rec)               # its errors are the caller's, as they always were
-        e = self._ebr.get(s)
-        if e is not None:
-            try:
-                e.add(rec)
-                self._ebr_run = 0
-            except Exception as x:
-                if not self._contain('ebr', 'write', x):
-                    raise
         self.n += 1
         if self.per_record:
             self._flush((s,))
@@ -2566,15 +2480,14 @@ class DailyWriter:
             self._flush(dirty)
 
     def _flush(self, streams):
-        """One write(2) per format for each of `streams`, JSONL's before EBR's,
-        so the format every reader trusts is never the one behind. A stream
-        counts in `flushes` once its writes succeed. One whose write failed
-        stays dirty, for the next round to retry with the bytes it kept, and the
-        first such error is raised once every stream has had its turn."""
+        """One write(2) for each of `streams`. A stream counts in `flushes` once
+        its write succeeds. One whose write failed stays dirty, for the next
+        round to retry with the bytes it kept, and the first such error is
+        raised once every stream has had its turn."""
         err = None
         failed = set()
         for s in streams:
-            j = self._jsonl.get(s)
+            j = self._sinks.get(s)
             if j is not None:
                 try:
                     j.flush()
@@ -2583,54 +2496,11 @@ class DailyWriter:
                     if err is None:
                         err = x
         for s in streams:
-            e = self._ebr.get(s)
-            if e is not None:
-                try:
-                    e.flush()
-                    self._ebr_run = 0
-                except Exception as x:
-                    if not self._contain('ebr', 'flush', x):
-                        failed.add(s)
-                        if err is None:
-                            err = x
-        for s in streams:
             if s not in failed:
                 self.dirty[s] = False
                 self.flushes += 1
         if err is not None:
             raise err
-
-    def _contain(self, fmt, what, exc):
-        """Count an error in `fmt`'s `what` (open, write, flush, close). Between
-        twins it goes no further (True) once the first of each kind is said on
-        stderr, and EBR_ERRORS_IN_A_ROW EBR errors in a row stop EBR until the
-        next day opens. A format written alone keeps its errors the caller's
-        (False: re-raise)."""
-        self._errors[fmt] += 1
-        if not self.contain:
-            return False
-        if (fmt, what) not in self._said:
-            self._said.add((fmt, what))
-            sys.stderr.write('ebpfm: %s %s error, JSONL unaffected (any more are only counted, '
-                             'in stop.output.%s.errors): %s: %s\n'
-                             % (fmt.upper(), what, fmt, type(exc).__name__, exc))
-        if fmt == 'ebr':
-            self._ebr_run += 1
-            if self._ebr_run >= self.EBR_ERRORS_IN_A_ROW and not self._ebr_off:
-                self._drop_ebr()
-        return True
-
-    def _drop_ebr(self):
-        self._ebr_off = True
-        sinks, self._ebr = self._ebr, {}
-        sys.stderr.write('ebpfm: %d EBR errors in a row; no EBR until the next day opens '
-                         '(JSONL unaffected)\n' % self._ebr_run)
-        for sink in sinks.values():
-            try:
-                sink.close()
-            except Exception as e:
-                self._contain('ebr', 'close', e)
-            self._retire(sink)
 
     def pending_flushes(self, stream):
         """The stream flushes still to come for the records written so far plus
@@ -2641,39 +2511,19 @@ class DailyWriter:
         return len(set(s for s in STREAMS if self.dirty.get(s)) | {stream})
 
     def descriptor(self):
-        """meta.output: the formats written, and the EBR container's settings
-        (null without EBR); `ebr_unavailable` says why EBR was asked for and is
-        not written, ebr.zstd_unavailable that zstd was and no module could do
-        it (zstd is then 0). The container's version is not the records'
-        schema_version."""
-        e = None
-        if 'ebr' in self.formats:
-            e = {'version': ebr.VERSION, 'zstd': self.zstd,
-                 'reset_bytes': self.reset_bytes, 'str_id_size': ebr.STR_ID_SIZE}
-            if self.zstd_unavailable:
-                e['zstd_unavailable'] = True
-        d = {'formats': list(self.formats), 'ebr': e}
-        if self.ebr_unavailable:
-            d['ebr_unavailable'] = self.ebr_unavailable
-        return d
+        """meta.output: the format written. Its shape is unchanged: the `ebr`
+        key, for a binary format this collector no longer writes, stays null."""
+        return {'formats': ['jsonl'], 'ebr': None}
 
     def output_stats(self):
-        """stop.output: what each format cost the run so far -- jsonl {records,
-        bytes, writes, errors}, ebr {records, bytes, writes, frames, segments,
-        errors, lost, repaired_bytes} -- null for a format not written. Read for
-        the stop record, so that record and the flush landing it are not in it."""
-        out = {}
-        for sink_cls, open_sinks in ((_JsonlSink, self._jsonl), (_EbrSink, self._ebr)):
-            fmt = sink_cls.fmt
-            if fmt not in self.formats:
-                out[fmt] = None
-                continue
-            t = collections.Counter(self._retired[fmt])
-            for sink in open_sinks.values():
-                t.update(sink.stats())
-            t['errors'] += self._errors[fmt]
-            out[fmt] = dict((k, t[k]) for k in sink_cls.KEYS)
-        return out
+        """stop.output: what the day-files cost the run so far -- jsonl {records,
+        bytes, writes, errors}, and `ebr` null as in descriptor(). Read for the
+        stop record, so that record and the flush landing it are not in it."""
+        t = collections.Counter(self._retired)
+        for sink in self._sinks.values():
+            t.update(sink.stats())
+        t['errors'] += self._errors
+        return {'jsonl': dict((k, t[k]) for k in _JsonlSink.KEYS), 'ebr': None}
 
     def close(self):
         self._shut()
@@ -3047,13 +2897,16 @@ def proc_del(pid):
 # ---------------------------------------------------------------------------
 # agent roles: which classifier-tagged processes are an agent session
 # ---------------------------------------------------------------------------
-# classify() answers "which agent's tree is this?" and matches any argv that
-# mentions ~/.claude/, ~/.codex/ or ~/.vscode-server/. Most processes it tags are
-# not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/shell-snapshots/
-# ...`, its native binary re-executed as rg/ugrep/bfs, codex-linux-sandbox and
-# bwrap, --version and `auth status` probes, Codex's self-update script, VS Code's
-# server and its helpers. agent_role() says which one a tagged process is, from
-# its own argv, and resolve() lets only an `agent` start a session inside a tree.
+# classify() answers "which agent's tree is this?" from the program a command line
+# runs and the artifacts only an agent's runtime writes on it. Most processes it
+# tags are not agents: Claude Code's per-tool-call `zsh -c source ~/.claude/
+# shell-snapshots/...`, codex-linux-sandbox and bwrap, --version and `auth status`
+# probes, VS Code's server and its helpers. Until it read the program alone it
+# matched any argv that mentioned ~/.claude/, ~/.codex/ or ~/.vscode-server/, so
+# it also tagged the native binary re-executed as rg/ugrep/bfs, Codex's
+# self-update script and a human's `vim ~/.claude/CLAUDE.md`. agent_role() says
+# which one a tagged process is, from its own argv, and resolve() lets only an
+# `agent` start a session inside a tree.
 #
 # A port of dashboard/rc_dashboard/roles.py, which applies the same rules to
 # schema <= 7 records at read time; keep the two in sync. It is a heuristic over
@@ -3068,9 +2921,10 @@ def proc_del(pid):
 #   infra          hosts sessions without being one (claude daemon, bg-pty-host, remote server)
 #   agent          an agent session runtime: the thing that talks to the model and runs tools
 #   tool-shell     the shell a Claude Code Bash tool call runs in
-#   helper         tagged only because its argv mentions an agent path, or the agent
-#                  binary run as a helper of its own (Codex's fs helper, Claude's
-#                  Chrome MCP server)
+#   helper         tagged for an agent's name or path without being its runtime (a
+#                  wrapper or test double named after it; in older records, any
+#                  argv that mentioned an agent path), or the agent binary run
+#                  as a helper of its own (Codex's fs helper, Claude's Chrome MCP server)
 
 # The agent executables. Claude's native binary is installed as its version
 # (`~/.local/share/claude/versions/2.1.291`), so its comm is a version string.
@@ -3088,6 +2942,12 @@ _ROLE_IDE_SERVER = re.compile(
     r'bootstrap-fork|server-main\.js|--type=extensionHost|--connection-token'
     r'|\.(?:vscode|cursor|windsurf)-server/cli/servers/[^ ]*/server/(?:node|bin/code-server)(?:\s|$)')
 _ROLE_IDE_EXE = re.compile(r'^code-[0-9a-f]{6,}')
+# Cursor's and Windsurf's servers carry their IDE's own type, which their AI
+# features' processes share: for those two types the server's directory tells the
+# IDE's processes apart. An agent tagged by its own type is that agent wherever it
+# is installed: Claude Code from Cursor's extension is a session, as from VS Code's.
+_ROLE_IDE_DIR_TYPES = frozenset({'cursor', 'windsurf'})
+_ROLE_IDE_DIRS = ('.cursor-server', '.windsurf-server')
 _ROLE_SHELLS = frozenset({'sh', 'bash', 'zsh', 'dash', 'fish'})
 _ROLE_TOOL_SHELL = re.compile(r'/\.claude/shell-snapshots/')
 # The agent binary run as a helper of its own, picked by its first argument alone:
@@ -3203,7 +3063,8 @@ def agent_role(agent_type, command, args):
     if agent_type == 'bwrap' or command.startswith(_ROLE_SANDBOX_PREFIX) \
             or argv0 in ('bwrap', 'codex-linux-sandbox'):
         return 'sandbox'
-    if agent_type == 'vscode' or '.cursor-server' in args or '.windsurf-server' in args:
+    if agent_type == 'vscode' or (agent_type in _ROLE_IDE_DIR_TYPES
+                                  and any(d in args for d in _ROLE_IDE_DIRS)):
         return 'ide' if (_ROLE_IDE_EXE.match(command) or _ROLE_IDE_SERVER.search(args)) \
             else 'helper'
     if command.startswith(_ROLE_INFRA_PREFIX):
@@ -3264,34 +3125,54 @@ def resolve(pid, m=None):
     attached to its agent's tree is still known to be one (_sandbox_type).
 
     `m` is the entry itself when the caller holds it: an exit record is written
-    after a hold, and by then the pid may name a newer process."""
+    after a hold, and by then the pid may name a newer process.
+
+    A loop, not a recursion: it walks up past every ancestor not resolved yet,
+    then attributes them on the way back down. A chain is as deep as a user
+    makes it -- a script that runs itself -- and one recursion per ancestor
+    raised RecursionError at about 1,000, out of the seed and every tick. A
+    parent already on the walk (pids that loop back on themselves) ends it, as
+    no parent does."""
     if m is None:
         m = proc.get(pid)
     if m is None:
         return False
     if m['attributed'] is not None:
         return m['attributed']
-    own_args = m['args'] if m.get('argv_source') != 'inherit' else None
-    tag = classify(own_args) if own_args else None
-    m['tag'] = tag
-    if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
-        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
-        return True
-    ppid = m['ppid']
-    pm = proc.get(ppid) if ppid and ppid != pid else None
-    if pm is not None and _born_after(pm, m.get('fork_ktime')):
-        pm = None             # the pid was recycled since: a newer process holds it
-    if pm is not None and resolve(ppid, pm):
-        m.update(attributed=True, is_agent=False, agent_pid=pm['agent_pid'],
-                 agent_type=pm['agent_type'], depth=(pm['depth'] or 0) + 1)
-        return True
-    if tag is not None:
-        # outside any agent tree: its own root, as every tagged process was
-        m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
-        return True
-    # Cleared, not left over from an earlier image: an exec re-resolves a process
-    m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None, depth=None)
-    return False
+    walk, seen, above = [], set(), None     # above: the resolved entry over walk[-1]
+    while True:
+        seen.add(id(m))
+        own_args = m['args'] if m.get('argv_source') != 'inherit' else None
+        tag = classify(own_args) if own_args else None
+        m['tag'] = tag
+        if tag is not None and agent_role(tag, _command_of(m), own_args) == 'agent':
+            m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+            above = m
+            break
+        walk.append((pid, m, tag))
+        ppid = m['ppid']
+        pm = proc.get(ppid) if ppid and ppid != pid else None
+        if pm is not None and _born_after(pm, m.get('fork_ktime')):
+            pm = None         # the pid was recycled since: a newer process holds it
+        if pm is None or id(pm) in seen:
+            break
+        if pm['attributed'] is not None:
+            above = pm
+            break
+        pid, m = ppid, pm
+    for pid, m, tag in reversed(walk):
+        if above is not None and above['attributed']:
+            m.update(attributed=True, is_agent=False, agent_pid=above['agent_pid'],
+                     agent_type=above['agent_type'], depth=(above['depth'] or 0) + 1)
+        elif tag is not None:
+            # outside any agent tree: its own root, as every tagged process was
+            m.update(attributed=True, is_agent=True, agent_pid=pid, agent_type=tag, depth=0)
+        else:
+            # Cleared, not left over from an earlier image: an exec re-resolves a process
+            m.update(attributed=False, is_agent=False, agent_pid=None, agent_type=None,
+                     depth=None)
+        above = m
+    return above['attributed']
 
 
 def _born_after(pm, kt):
@@ -3418,8 +3299,12 @@ def seed_existing(poll=None):
                 if c:
                     m['cwd'] = c
     # Only once the whole table is in: attribution needs every parent present.
+    # One process that cannot be read is counted; it must not stop the start.
     for m in list(proc.values()):
-        _ask_hosts(m)
+        try:
+            _ask_hosts(m)
+        except Exception:
+            _count_error('seed_existing')
 
 
 def _inherit(m, key):
@@ -3943,13 +3828,15 @@ def _base_identity(m, actor, attribution=None):
         # An honest denominator for "unresolvable" in the tool distribution: a
         # truncated shell payload was indistinguishable from a genuinely short
         # one. null (not false) when the raw length is unknown -- false would
-        # claim "measured and complete". Two things can cut it: the in-kernel
-        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, and
-        # the emit cap when one is set.
+        # claim "measured and complete". Three things can cut it: the in-kernel
+        # read (ARGV_KMAX), which is the only limit when ARGS_MAXLEN is 0, the
+        # emit cap when one is set, and the masking, which reads 16 KB of a line
+        # (redact.TEXT_MAX) and writes [CUT] after them.
         'args_len': m.get('args_raw_len'),
         'args_truncated': (None if m.get('args_raw_len') is None
                            else bool(m.get('args_clamped'))
-                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)),
+                           or (ARGS_MAXLEN > 0 and m['args_raw_len'] > ARGS_MAXLEN)
+                           or 'cut' in (masked or ())),
         'cwd': m.get('cwd'),
         # sandbox = namespace isolation (ground truth); sandbox_ancestry = how it
         # got there. Their disagreement separates a bwrap PROBE from a real one.
@@ -4425,10 +4312,17 @@ def _interactive_submit(m):
     return '--pty' in (m.get('args') or '').split(' ')
 
 
+# The most of a submit tool's output masked for its captured tail: all of it
+# at the default budget. Masked, and only then cut to its last 300 characters,
+# so a credential the cut falls in is still read whole; cut first, `export
+# DB_PASSWORD=...` was written as `SWORD=...`, which no rule reads as a name.
+_SUBMIT_MASKED = 8192
+
+
 def _emit_submit(m, exit_rec):
     text = (m.get('submit_buf') or b'').decode('utf-8', 'replace')
     jobs = parse_job_ids(text)
-    tail = text[-300:] if text else None
+    tail = text[-_SUBMIT_MASKED:] if text else None
     if tail and _interactive_submit(m):
         tail = None
     elif tail and REDACT_KEYS:
@@ -4437,6 +4331,8 @@ def _emit_submit(m, exit_rec):
         except Exception:
             _count_error('redact')
             tail = None
+    if tail:
+        tail = tail[-300:]
     rec = _envelope('submit')
     rec.update(_base_identity(m, exit_rec['actor'], exit_rec.get('attribution')))
     req = parse_submit_args(m.get('args'))
@@ -4451,7 +4347,7 @@ def _emit_submit(m, exit_rec):
         'exit_code': exit_rec['exit_code'], 'signal': exit_rec['signal'],
         'start': exit_rec['start'], 'duration_s': exit_rec['duration_s'],
         'captured_bytes': len(text),
-        # the last 300 characters, credentials masked; null for an interactive
+        # the last 300 characters, credentials masked first; null for an interactive
         # (--pty) session, whose output is the user's own terminal
         'captured_tail': tail,
     })
@@ -5023,9 +4919,18 @@ def _netp_lifetime(m):
 # other addresses (a CDN rotating them) leaves `host` null. Only hostnames are
 # taken -- a URL's credentials never are -- only for a process that is reported,
 # and nothing is read from the traffic itself.
+#
+# Every path here stays linear in the argv, which any user writes: a URL is
+# found from its `://`, with its scheme looked for in the _URL_SCHEME_MAX
+# characters before it, and only the first _ARGV_HOSTS_TEXT characters of an
+# argv are read. One regex tried at every letter (`[A-Za-z][A-Za-z0-9+.-]*://`)
+# read a run of scheme characters again from each of them: a run of 32,000
+# before a ` ://` took 0.7 s, for every exec and every record of the process.
 
-_URL_HOST = re.compile(r'[A-Za-z][A-Za-z0-9+.-]*://(?:[^\s/@]*@)?'
-                       r'(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_URL_SCHEME = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.-'
+_URL_SCHEME_MAX = 32                                    # characters of a scheme looked at
+_URL_AUTHORITY = re.compile(r'(?:[^\s/@]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)')
+_ARGV_HOSTS_TEXT = 4096                                 # the in-kernel argv read's default
 _SSH_COMMANDS = {'ssh', 'autossh', 'sftp', 'mosh'}     # destination: first non-option
 _HOSTPATH_COMMANDS = {'scp', 'rsync'}                   # [user@]host:path arguments
 _SSH_OPT_ARG = set('BbcDEeFIiJLlmOoPpQRSWw')          # ssh(1) options that take a value
@@ -5057,14 +4962,40 @@ def _ssh_destination(toks):
     return None
 
 
+def _url_hosts(text):
+    """The host of every URL in `text`, in order: what findall() of
+    `[A-Za-z][A-Za-z0-9+.-]*://(?:[^\\s/@]*@)?(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9._-]+)`
+    gives, in one pass from `://` to `://`. A scheme is the run of scheme
+    characters just before its `://`, from its first letter; only the last
+    _URL_SCHEME_MAX characters of the run are looked at, and none before where
+    the previous URL ended."""
+    out, i, end = [], 0, 0
+    while True:
+        q = text.find('://', i)
+        if q < 0:
+            return out
+        i = q + 3
+        run = text[max(end, q - _URL_SCHEME_MAX):q]
+        if not any(c.isalpha() for c in run[len(run.rstrip(_URL_SCHEME)):]):
+            continue                            # no scheme: not a URL
+        m = _URL_AUTHORITY.match(text, i)
+        if m:
+            out.append(m.group(1))
+            i = end = m.end()
+
+
 def _argv_hostnames(args, command=None):
     """The hostnames `args` names, in order, without repeats: every URL's host,
     and the destination of an ssh/sftp/scp/rsync. Address literals and localhost
     need no name and are left out, and an ordinary argument -- a file name, an
-    email address -- is never taken for one."""
+    email address -- is never taken for one. Only the first _ARGV_HOSTS_TEXT
+    characters are read, cut before the word the cut may have split (as
+    decode_argv() cuts a truncated argv), so half a name is never one."""
     if not args:
         return []
-    found = _URL_HOST.findall(args) if '://' in args else []
+    if len(args) > _ARGV_HOSTS_TEXT:
+        args = args[:args.rfind(' ', 0, _ARGV_HOSTS_TEXT + 1) + 1]
+    found = _url_hosts(args) if '://' in args else []
     if command in _SSH_COMMANDS:
         dest = _ssh_destination(args.split(' ')[1:])
         mt = dest and (_SSH_DEST.match(dest) or _HOST_PATH.match(dest))
@@ -5149,16 +5080,33 @@ def _host_worker():
         _resolve_host(_HOST_WANT.get())
 
 
+def _names_of(m):
+    """_argv_hostnames() of m's argv, read once per argv: kept on the entry
+    against the very string and command it was read from, as _emit_args() keeps
+    the masking, for the exec that asks and every record that labels."""
+    args, command = m.get('args'), _command_of(m)
+    c = m.get('argv_names')
+    if c is None or c[0] is not args or c[1] != command:
+        c = m['argv_names'] = (args, command, _argv_hostnames(args, command))
+    return c[2]
+
+
 def _ask_hosts(m):
     """Queue the names m's argv gives, for a process that will be reported.
-    Not callable while seeding: actor_of() memoizes, and a parent not ingested
-    yet would pin the child as unattributed."""
+    Whether it will be is asked before the argv is read for names, and only of
+    an argv that could name one (a `://`, or an ssh/scp/rsync). Not callable
+    while seeding: actor_of() memoizes, and a parent not ingested yet would pin
+    the child as unattributed."""
     if not WANT_ARGV_HOSTS:
         return
-    names = _argv_hostnames(m.get('args'), _command_of(m))
-    if names and actor_of(m)[0] is not None:
-        for n in names:
-            _want_host(n)
+    args, command = m.get('args') or '', _command_of(m)
+    if (args.find('://', 0, _ARGV_HOSTS_TEXT) < 0 and command not in _SSH_COMMANDS
+            and command not in _HOSTPATH_COMMANDS):
+        return
+    if actor_of(m)[0] is None:
+        return
+    for n in _names_of(m):
+        _want_host(n)
 
 
 def _hosts_for(m):
@@ -5166,7 +5114,7 @@ def _hosts_for(m):
     if not WANT_ARGV_HOSTS:
         return {}
     out = {}
-    for name in _argv_hostnames(m.get('args'), _command_of(m)):
+    for name in _names_of(m):
         for ip in _host_ips(name) or ():
             out.setdefault(ip, name)
     return out
@@ -5364,13 +5312,17 @@ def residency_tick(b=None):
     trees, totals, by_type = {}, {}, {}
     stacks_read = 0
     global_frames = {}
-    for m in live:
+
+    def tick_one(m):
+        # One live process's share of the tick, apart so that a process that
+        # cannot be read is counted and skipped, not the end of the tick.
+        nonlocal stacks_read
         actor, _attr = actor_of(m)
         if actor is None:
-            continue
+            return
         st = read_stat(m['pid'])
         if st is None:
-            continue                          # gone; reconcile_proc() retires it
+            return                          # gone; reconcile_proc() retires it
         if m.get('start_ep') is None:
             m['start_ep'] = start_epoch(st['starttime'])
         if m.get('start_ticks') is None:
@@ -5383,7 +5335,7 @@ def residency_tick(b=None):
             pid = m['pid']
             _replace(m)
             _ingest_proc(pid)
-            continue
+            return
         rss_kb = _read_vmrss_kb(m['pid']) or 0
         cpu_s = st['cpu_ticks'] / float(CLK_TCK)
         in_d = st['state'] == 'D'
@@ -5421,7 +5373,7 @@ def residency_tick(b=None):
         if m.get('user'):
             t['users'].add(m['user'])
         if actor != 'agent' or m.get('agent_pid') is None:
-            continue
+            return
         # item 7: per-agent-type totals, mirroring the census's totals_by_type
         at = m.get('agent_type') or '?'
         bt = by_type.setdefault(at, {'trees': set(), 'n_procs': 0, 'threads': 0,
@@ -5463,6 +5415,11 @@ def residency_tick(b=None):
                             'state': st['state'], 'threads': st['threads']})
         if frames:
             tr['frames'][frames[0]] = tr['frames'].get(frames[0], 0) + 1
+    for m in live:
+        try:
+            tick_one(m)
+        except Exception:
+            _count_error('residency_proc')
     # Computed before the emit loop so the per-tree counts are available to it,
     # but the records themselves are written AFTER, below, so the file's record
     # order is byte-for-byte what v4 produced. The process table is already
@@ -5650,15 +5607,18 @@ def flush_live(b, features):
             pass
     n = 0
     now = time.time()
-    for m in list(proc.values()):
+
+    def flush_one(m):
+        # 1 for a record written. Apart so that a process that cannot be read
+        # is counted and skipped, and the others are still flushed.
         if m['exited']:
-            continue
+            return 0
         actor, attribution = actor_of(m)
         if actor is None:
-            continue
+            return 0
         st = read_stat(m['pid'])
         if st is None:
-            continue
+            return 0
         pid = m['pid']
         d_total, d_max, d_cnt = ds.get(pid, (None, None, None))
         tx, rx, calls = nb.get(pid, (None, None, None))
@@ -5698,8 +5658,24 @@ def flush_live(b, features):
         })
         writer.write(rec)
         m['emitted'] = True
-        n += 1
+        return 1
+    for m in list(proc.values()):
+        try:
+            n += flush_one(m)
+        except Exception:
+            _count_error('flush_live')
     return n
+
+
+def _flush_at_stop(b, features):
+    """The stop record's `truncated`: how many records flush_live() wrote, or
+    None when it did not finish -- an unknown count, which 0 would state as
+    none written."""
+    try:
+        return flush_live(b, features)
+    except Exception:
+        _count_error('flush_live')
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -5995,8 +5971,7 @@ def main():
                        'dstack_max': DSTACK_MAX, 'flush': FLUSH_ON_EXIT,
                        'submit_comms': sorted(SUBMIT_COMMS), 'gc_grace_s': GRACE_S},
             'seeded_pids': len(proc)})
-    # The container, not the records: which formats this run writes (EBPFM_FORMAT)
-    # and the EBR settings. Informational; the records are the same in each.
+    # The container, not the records: the format this run writes. Informational.
     meta['output'] = writer.descriptor()
     writer.write(meta)
     writer.flush()          # `ebpfm.sh status` looks for this record immediately
@@ -6004,14 +5979,10 @@ def main():
         if v == '0':
             sys.stderr.write('warning: %s=0 — the dstate_*/blkio_* fields will read 0 '
                              '(run `ebpfm.sh bootstrap` to set it)\n' % k)
-    if writer.ebr_unavailable:
-        sys.stderr.write('warning: lib/ebr.py could not be imported (%s); writing JSONL only\n'
-                         % writer.ebr_unavailable)
     # `ebpfm.sh overhead` waits for "running on" in this line
-    exts = writer.formats[0] if len(writer.formats) == 1 else '{%s}' % ','.join(writer.formats)
-    sys.stderr.write('ebpfm running on %s -> %s/<date>/%s.{snapshot,exits}.%s '
+    sys.stderr.write('ebpfm running on %s -> %s/<date>/%s.{snapshot,exits}.jsonl '
                      '(features: %s)\n'
-                     % (HOSTNAME, OUTPUT_DIR, HOSTNAME, exts, ','.join(sorted(feats)) or 'base'))
+                     % (HOSTNAME, OUTPUT_DIR, HOSTNAME, ','.join(sorted(feats)) or 'base'))
 
     start = time.time()
     last_gc = last_res = last_resync = start
@@ -6080,12 +6051,7 @@ def main():
         netio_final_live()
     except Exception:
         _count_error('netpeer_read')
-    n_trunc = 0
-    if FLUSH_ON_EXIT:
-        try:
-            n_trunc = flush_live(b, feats)
-        except Exception:
-            n_trunc = 0
+    n_trunc = _flush_at_stop(b, feats) if FLUSH_ON_EXIT else 0
     # NB: `_stop` is the module-global shutdown flag read below -- do not shadow it.
     stop_rec = _envelope('stop')
     stop_rec.update({'uptime_s': round(time.time() - start, 1), 'records': writer.n,
@@ -6098,8 +6064,8 @@ def main():
                      'proc_late_exits': _proc_stats['late_exits'],
                      # stream flushes for the whole run, against `records` above:
                      # the pair IS the I/O amplification, measured rather than
-                     # assumed. Each is one write(2) per format (output.<fmt>.
-                     # writes counts those). This record is built before it is
+                     # assumed. Each is one write(2) (output.jsonl.writes counts
+                     # those). This record is built before it is
                      # written, so the flushes still to come are added: the one
                      # landing it, and close()'s of any other stream left dirty
                      # (the truncated records) -- exact in both modes.
@@ -6121,10 +6087,8 @@ def main():
                      # queue (each a `host` that may be missing)
                      'argv_hosts': dict(_host_stats) if WANT_ARGV_HOSTS else None,
                      'reason': 'duration' if DURATION and not _stop else 'signal'})
-    # What each format cost: records, bytes and write(2)s, errors, and for EBR
-    # its frames, segments, records lost to a failed write and the torn tail a
-    # crashed run left (repaired at open). As of now: this record and the flush
-    # that lands it are not in it.
+    # What the day-files cost: records, bytes and write(2)s, errors. As of now:
+    # this record and the flush that lands it are not in it.
     stop_rec['output'] = writer.output_stats()
     writer.write(stop_rec)
     if any(_perf_lost.values()):

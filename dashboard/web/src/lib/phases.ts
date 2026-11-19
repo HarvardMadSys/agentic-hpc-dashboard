@@ -22,6 +22,7 @@ import type {
 } from '../api/types';
 import { clockPinned } from './clock';
 import { clock, dur, fint } from './format';
+import { own } from './lookup';
 
 export const PHASES: [kind: PhaseKind, label: string, short: string, colour: string][] = [
   ['explore', 'Exploring', 'explore', 'var(--s3)'],
@@ -56,6 +57,19 @@ export function phaseShort(p: Phase): string {
 /** A phase block, as against `{unavailable}` or nothing at all. */
 export function isBlock(x: PhaseBlock | PhasesUnavailable | null | undefined): x is PhaseBlock {
   return x != null && Array.isArray((x as PhaseBlock).list);
+}
+
+/** What the service says of an agent whose commands it does not read; these words if it says none. */
+export const PHASES_UNAVAILABLE = 'phases not available for this agent type';
+
+/** Why an agent's session has no phases, for an agent of a type whose commands are not read: what its `{unavailable}` says,
+ *  or `PHASES_UNAVAILABLE` where that says nothing. Null for a row with a block, and for a person or an IDE: the service sends
+ *  them `{unavailable}` too, but no phase was ever on offer for them, so their row and their inspector say nothing (R41). */
+export function phasesUnread(r: { actor3: string | null; phases?: PhaseBlock | PhasesUnavailable }): string | null {
+  const ph = r.phases;
+  return r.actor3 === 'agent' && ph && !isBlock(ph) && typeof ph.unavailable === 'string'
+    ? ph.unavailable || PHASES_UNAVAILABLE
+    : null;
 }
 
 /* ------------------------------------------------------------ small words */
@@ -129,8 +143,7 @@ const namedBy = (top: [string, number][], n: number | null): string | null => {
 };
 
 /** `table[key]` for a key the table holds, and never one off `Object.prototype`: keys come from the service. */
-const lookup = (table: Record<string, string>, key: string): string | undefined =>
-  Object.hasOwn(table, key) ? table[key] : undefined;
+const lookup = (table: Record<string, string>, key: string): string | undefined => own(table, key);
 
 /** The category names a mixed phase is made of, as the phase labels say them. */
 const MIX_WORD: Record<string, string> = {
@@ -585,24 +598,51 @@ const SEQ_ENDS = 4;
 /** A phase this share of the session's span or more has its duration after its name. */
 const SEQ_LONG = 0.25;
 
+/** One part of a line of phases: a phase, named short (`phaseShort`) and, where it is long, with its length; or, for the
+ *  phases a long line leaves out, `…` with no phase. */
+export interface SeqPart {
+  p: Phase | null;
+  text: string;
+}
+
+/** The phases in order, as the parts of a line: a phase that is a quarter of the list's span or more says how long, and
+ *  past nine phases the first four and the last four stand around a `…`. The span is the list's own, its first start to
+ *  its last end, so the phases of one task are measured against the task. One rule for a session row's line
+ *  (`sequenceLine`) and the line under a task in the inspector's list (TaskList.tsx), which draws each part with the
+ *  chip of its colour. */
+export function sequenceParts(list: Phase[]): SeqPart[] {
+  const span = list.length ? list[list.length - 1].t1 - list[0].t0 : 0;
+  const part = (p: Phase): SeqPart => {
+    const d = p.t1 - p.t0;
+    return { p, text: span > 0 && d >= span * SEQ_LONG ? `${phaseShort(p)} ${dur(d)}` : phaseShort(p) };
+  };
+  return list.length > SEQ_NAMED
+    ? [...list.slice(0, SEQ_ENDS).map(part), { p: null, text: '…' }, ...list.slice(-SEQ_ENDS).map(part)]
+    : list.map(part);
+}
+
 /** The phases in order, as one line: `explore → edit? → edit–test loop ×4 1.2 h → git → running now`.
  *
  *  A phase that is a quarter of the session or more says how long. Past nine phases it names the first
- *  four and the last four around a `…`. The live edge ends it: `running now`, `idle`, or `not known yet`
- *  (`not known` on a pinned clock). The session's span is the list's own, first start to last end. */
+ *  four and the last four around a `…` (`sequenceParts`). The live edge ends it: `running now`, `idle`, or
+ *  `not known yet` (`not known` on a pinned clock). The session's span is the list's own, first start to last end. */
 export function sequenceLine(list: Phase[], now?: TrajRunning['now'] | null): string {
-  const span = list.length ? list[list.length - 1].t1 - list[0].t0 : 0;
-  const name = (p: Phase): string => {
-    const d = p.t1 - p.t0;
-    return span > 0 && d >= span * SEQ_LONG ? `${phaseShort(p)} ${dur(d)}` : phaseShort(p);
-  };
-  const parts =
-    list.length > SEQ_NAMED
-      ? [...list.slice(0, SEQ_ENDS).map(name), '…', ...list.slice(-SEQ_ENDS).map(name)]
-      : list.map(name);
+  const parts = sequenceParts(list).map((s) => s.text);
   const edge = edgeShort(now);
   if (edge) parts.push(edge);
   return parts.join(' → ');
+}
+
+/** The axis a session's phases are drawn on whole, `[t0, t1]` in epoch seconds: from its first record, or from its first
+ *  phase where that begins earlier (a call is stamped by when it exited, and a phase by when it began, so a first call can
+ *  begin before the first record), to its last phase's end, which is the latest end of any call, so that no call runs off
+ *  it. A session running now runs on to now (`nowS`, on the service's clock), where the live edge ends it. A session row's
+ *  band (TrajectoriesTab.tsx) and the inspector's map of the whole session (SessionMap.tsx) are both drawn on it, so the
+ *  two agree. Null for a list with no phase. */
+export function bandAxis(list: Phase[], first: number | null | undefined, nowS: number | null): [number, number] | null {
+  if (!list.length) return null;
+  const last = list[list.length - 1].t1;
+  return [Math.min(first ?? list[0].t0, list[0].t0), nowS != null ? Math.max(nowS, last) : last];
 }
 
 /* ------------------------------------------------------------ housekeeping */

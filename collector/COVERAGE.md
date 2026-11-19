@@ -12,12 +12,8 @@ It answers one question per row: **after the cutover, where does this signal com
 
 | Tier | Privilege | Written by | Lands in |
 |---|---|---|---|
-| **node** | unprivileged | `node_snapshot.py` (vendored `collect/common/snapshot.py`) | `login/logs/<date>/<host>.jsonl` — unchanged schema, unchanged path — and/or its EBR twin `<host>.ebr` |
-| **ebpf** | root | `ebpf_trace.py` | `ebpfm/logs/<date>/<host>.{snapshot,exits}.jsonl` and/or `.ebr` |
-
-The file format is not a coverage question: `EBPFM_FORMAT` (`jsonl`, `ebr`, or `both`, the
-default) picks JSONL, EBR (`lib/ebr.py`'s binary records) or both as twins, and every key
-below is the same in each (README.md, "Binary records (EBR)").
+| **node** | unprivileged | `node_snapshot.py` (vendored `collect/common/snapshot.py`) | `login/logs/<date>/<host>.jsonl` — unchanged schema, unchanged path |
+| **ebpf** | root | `ebpf_trace.py` | `ebpfm/logs/<date>/<host>.{snapshot,exits}.jsonl` |
 
 `ebpfm.sh` runs both as root, the node tier alone as an ordinary user. The node tier's
 mode follows the tier set: `SNAPSHOT_MODE=node` when the eBPF tier is running, `full`

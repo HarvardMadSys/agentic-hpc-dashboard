@@ -107,7 +107,7 @@ const slotOf = (p: string) => (SLOT.has(p) ? p : 'other');
 /** Tick steps, seconds: a label every ~100 px. */
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
 
-function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }[] {
+export function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }[] {
   const step = STEPS.find((s) => (v1 - v0) / s <= room) ?? STEPS[STEPS.length - 1];
   // On the local clock: an hour tick is a local hour, whatever the offset.
   const off = -new Date(v0 * 1000).getTimezoneOffset() * 60;
@@ -121,9 +121,9 @@ function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }
 
 export const SPAN_MIN = 1; // seconds: the narrowest zoom, whatever the bin width
 
-/** The width the bars are binned for, and the width the session track and a chart with no phases are drawn at.
- *  The bins are the same at every width the chart is shown at: a chart with phases is drawn at its box's own
- *  pixel width, so that its names are 11.5 px, but its bars are regrouped as for this. */
+/** The width the bars are binned for, and the width the session track and the zoom map are drawn at. The bins
+ *  are the same at every width the chart is shown at: the chart is drawn at its box's own pixel width, so that
+ *  its words are 11.5 px, but its bars are regrouped as for this. */
 const BIN_W = 1120;
 
 /** Served bins regrouped into display bins at least ~3 px wide across `w` px,
@@ -188,22 +188,24 @@ export interface Quick {
   run?: () => void;
 }
 
-/** A box's own width in px as it is laid out, kept as the box is resized; `fallback` before it is first measured. */
-function useWidth(on: boolean, fallback: number): [RefObject<HTMLDivElement | null>, number] {
+/** The width of a box's content in px as it is laid out (its own width less its padding), kept as the box is
+ *  resized; `fallback` before it is first measured. `which` names the box the ref is on, where that can change. */
+export function useWidth(on: boolean, fallback: number, which = ''): [RefObject<HTMLDivElement | null>, number] {
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(fallback);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!on || !el) return;
     const read = () => {
-      const n = Math.round(el.clientWidth);
+      const cs = getComputedStyle(el);
+      const n = Math.round(el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
       if (n > 0) setW(n);
     };
     read();
     const ro = new ResizeObserver(read);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [on]);
+  }, [on, which]);
   return [ref, w];
 }
 
@@ -388,10 +390,10 @@ function hkTip(hk: PhaseHousekeeping, t: number): string {
   return hk.cut > 0 ? `${what}\n${fint(hk.cut)} of the ${fint(hk.n)} commands have no minute, so they have no tick` : what;
 }
 
-/** The chart's rows, top to bottom, in the units it is drawn in. A chart with no phases is the strip as it was:
- *  the caption in its first row, the bars, the failures, and the ticks. One with phases has, where the session has
+/** The chart's rows, top to bottom, in the units it is drawn in. A chart with no phases is the strip alone: the
+ *  bars, the failures, and the ticks. One with phases has, where the session has
  *  tasks, a lane of them at the top, then a row of names at the top of its bands (where it has any), the bars, a thin
- *  row of the agent's own commands, the failures, and the ticks, and its caption is under it. */
+ *  row of the agent's own commands, the failures, and the ticks. Either chart's caption is under it. */
 interface Rows {
   H: number;
   /** the task lane at the top: its height, 0 where the session has no tasks */
@@ -422,8 +424,8 @@ const FAIL_H = 6;
 
 function rowsOf(merged: boolean, bands: boolean, lane: boolean): Rows {
   if (!merged) {
-    const BASE = 45;
-    return { H: 62, task: 0, top: 0, lbl: 0, PH: 32, BASE, hk: null, failY: BASE + 2, hover: [13, BASE], cursor: [11, BASE + 8], hit: BASE + 10 };
+    const BASE = 36;
+    return { H: BASE + 17, task: 0, top: 0, lbl: 0, PH: 32, BASE, hk: null, failY: BASE + 2, hover: [0, BASE], cursor: [0, BASE + 8], hit: BASE + 10 };
   }
   const task = lane ? TASK_H : 0;
   const top = lane ? TASK_H + TASK_GAP : 0;
@@ -464,8 +466,7 @@ function Strip({
   onFail: (i: number) => void;
   /** processes drawn in the tree that ran in the zoomed range */
   inView: number | null;
-  /** the width it is drawn at, beside the gutter: its box's own, less the gutter, for a chart with phases, and `BIN_W` for one
-   *  without */
+  /** the width it is drawn at, beside the gutter: its box's own, less the gutter */
   W: number;
   /** what the agent was doing, where its commands are read: the bands behind the bars, and the task lane above them */
   phases?: PhaseBlock;
@@ -665,10 +666,10 @@ function Strip({
   const laneBlocks = R.task ? taskBlocks(tasks, [v0, v1], W) : [];
   // The captions of the levels, in the gutter beside the row each names, centred on it: the task lane, the row of the phases'
   // names, and the bars. The bars stand on the baseline and are `PH` tall, under the names, in a chart with phases or without.
-  // These rows are in the chart's own units, which are px only where it is drawn at its box's width, as the chart with phases is.
-  // The chart with no phases is drawn in `BIN_W` units and scaled to its plot. The svg keeps its aspect ratio, so its height is `H`
-  // times the plot's width over `W`, and a row's share of `H` is the same share of that height. So a caption's box is its row's share
-  // of the plot's height, which puts it at its row at whatever width the plot is drawn.
+  // These rows are in the chart's own units, which are px once the chart is drawn at its box's width, and not before the box is
+  // first measured. The svg keeps its aspect ratio, so its height is `H` times the plot's width over `W`, and a row's share of `H`
+  // is the same share of that height. So a caption's box is its row's share of the plot's height, which puts it at its row at
+  // whatever width the plot is drawn.
   const levels = chartLevels(R.task > 0, bands);
   const capBox: Record<Level, [top: number, height: number]> = {
     tasks: [0, R.task],
@@ -885,11 +886,6 @@ function Strip({
               </pattern>
             </defs>
           )}
-          {!merged && (
-            <text className="tick" x={2} y={9}>
-              {caption}
-            </text>
-          )}
           {under}
           <line className="base-line" x1={0} x2={W} y1={BASE} y2={BASE} />
           {names}
@@ -938,13 +934,11 @@ function Strip({
       {phases && <PhaseLegend list={list} axis={axis} />}
       {outside && <div className="tn-note">{outside}</div>}
       {/* what the bars count, and what is no call in any phase: one line under the chart */}
-      {(merged || phases) && (
-        <div className="tn-note">
-          {merged && <span>{caption}</span>}
-          {merged && phases && <span className="sep">{' · '}</span>}
-          {phases && <span className="tn-hk-text">{housekeepingText(phases.housekeeping)}</span>}
-        </div>
-      )}
+      <div className="tn-note">
+        <span>{caption}</span>
+        {phases && <span className="sep">{' · '}</span>}
+        {phases && <span className="tn-hk-text">{housekeepingText(phases.housekeeping)}</span>}
+      </div>
       {zoomed && (
         <ZoomMap
           W={BIN_W}
@@ -1013,11 +1007,12 @@ export function TrajectoryNav({
   const at = useNow(live);
   const nowS = live ? at / 1000 : null;
   const S = sessionAxis(d, axis, list.length ? [list[0].t0, Math.max(list[list.length - 1].t1, nowS ?? -Infinity)] : null);
-  // A chart with phases is drawn at its box's own pixel width, so that its names are 11.5 px whatever the box, less the gutter
-  // that its captions stand in, which the three tracks start after (the stylesheet reads it from `--tn-gut`).
-  const [box, boxW] = useWidth(!!phases && !!nav, W);
+  // The chart is drawn at its box's own pixel width, so that its words are 11.5 px whatever the box, less the gutter that its
+  // captions stand in, which the three tracks start after (the stylesheet reads it from `--tn-gut`). A chart with phases stands
+  // in a box of its own (`.tn-strip`); one with none stands straight in the navigator's, which is then the box measured.
+  const [box, boxW] = useWidth(!!nav, W, phases ? 'strip' : 'nav');
   return (
-    <div className="tn" style={{ '--tn-gut': `${GUTTER}px` } as CSSProperties}>
+    <div className="tn" ref={phases ? undefined : box} style={{ '--tn-gut': `${GUTTER}px` } as CSSProperties}>
       <SessionTrack d={d} axis={axis} S={S} view={view} onPick={onPick} W={W} />
       {nav ? (
         phases ? (
@@ -1049,7 +1044,7 @@ export function TrajectoryNav({
             onPick={onPick}
             onFail={onFail}
             inView={inView}
-            W={W}
+            W={plotW(boxW)}
           />
         )
       ) : (

@@ -21,10 +21,11 @@ would move the windows off the end of the capture a minute per minute, and
 which dates every saved window build in the future (`windows._resume`) and
 re-scans the window instead of resuming it. Frozen, every restart computes the
 same windows over the same bytes, so a saved build resumes, and the page is
-the same page each time it is opened -- which is what a test needs. The cost:
-durations the service measures with this clock read 0 s (a build's elapsed,
-the inspector's read time), and its caches never age out, which over a capture
-that cannot change is correct.
+the same page each time it is opened -- which is what a test needs. A frozen
+clock measures no duration, so none is measured on it: a build's elapsed, the
+inspector's read time, how long the key search's workers or the inspector's
+warmer have been idle, and a cached tree's age are all timed on
+`time.monotonic()`, which the pin leaves alone.
 
 It is applied by replacing `time.time` and `time.time_ns` for the whole
 process rather than by threading a clock through every call site: there are
@@ -42,36 +43,25 @@ it. Pin at or after the end of the capture.
 import os
 import time
 
-from . import ebr, gz
+from . import gz
 from .export import dated_dirs
-from .feedfile import format_of, newest, prefer_of
 from .normalize import epoch_of
 
 _wall = time.time
 _state = {"pinned": False, "as_of": None, "source": "wall clock"}
 
 
-def newest_record(roots, prefer="jsonl"):
+def newest_record(roots):
     """`(epoch, path)` of the newest record in the newest day of each root.
 
     Read from each file's end; a compressed file is indexed to get there, which
-    the tail would do moments later anyway. An EBR day-file's last frames are
-    decoded newest first (`feedfile.newest`), as far back as a JSONL file's
-    last 4 MB would reach. `prefer`: which twin of a stream is read.
+    the tail would do moments later anyway.
     """
-    import json
+    from . import fastjson
     best = (None, None)
     for root in roots:
-        days = dated_dirs(root, 1, prefer)
+        days = dated_dirs(root, 1)
         for path in (days[-1][1] if days else []):
-            if format_of(path) == "ebr":
-                try:
-                    ts = newest(path, epoch_of, 4 << 20)
-                except (OSError, ebr.Error):
-                    continue
-                if ts is not None and (best[0] is None or ts > best[0]):
-                    best = (ts, path)
-                continue
             try:
                 with gz.open_feed(path) as fh:
                     size = gz.fstat(fh).st_size
@@ -83,8 +73,8 @@ def newest_record(roots, prefer="jsonl"):
                 if not line.strip():
                     continue
                 try:
-                    ts = epoch_of(json.loads(line))
-                except ValueError:
+                    ts = epoch_of(fastjson.record(line))
+                except ValueError:                  # a line that is no record
                     continue
                 if ts is not None:
                     if best[0] is None or ts > best[0]:
@@ -99,7 +89,7 @@ def resolve(cfg, roots):
     if not raw:
         return None, "wall clock"
     if raw == "auto":
-        ts, path = newest_record(roots, prefer_of(cfg, "ebpf"))
+        ts, path = newest_record(roots)
         if ts is None:
             raise SystemExit("clock.as_of=auto: no record with a timestamp in the "
                              "newest day of %s" % (", ".join(roots) or "(no ebpf root)"))

@@ -5,10 +5,6 @@ feed into a scratch directory laid out the way the collector lays it out --
 `<root>/<date>/<host>.{exits,snapshot}.jsonl` -- and drives the Aggregator
 through the calls `app.py` makes.
 
-`FeedCase` writes either format the collector does: JSONL, or EBR binary
-records in its EBR twin (`ebr_twins`), which runs every test of a case again on
-`.ebr` day-files. A test about JSONL's own bytes is marked `@jsonl_only(why)`.
-
     cd dashboard && .venv/bin/python -m unittest discover -s tests -q
 """
 import gzip
@@ -22,13 +18,14 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import config as configmod      # noqa: E402
-from rc_dashboard import ebr                      # noqa: E402
+from rc_dashboard import feeds as feedmod         # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
-from rc_dashboard import tail                     # noqa: E402
+from rc_dashboard import clock, feedfile, tail    # noqa: E402
 
 TS = "%Y-%m-%d %H:%M:%S"
 DAY = "2026-09-25"
@@ -59,77 +56,8 @@ def line(rec):
     return json.dumps(rec).encode() + b"\n"
 
 
-def ebr_name(name):
-    """A JSONL day-file's name, as its EBR twin's: `x.jsonl[.gz]` is `x.ebr[.gz]`."""
-    for suf in (".jsonl", ".jsonl.gz"):
-        if name.endswith(suf):
-            return name[:-len(suf)] + suf.replace(".jsonl", ".ebr")
-    return name
-
-
-# Records per EBR frame a FeedCase writes: a poll round of a busy host. One
-# append is still one flush (one os.write), its frames cut at this many; a test
-# that wants a frame spanning hours says so (test_formats). And a segment every
-# 16 KiB, not every 2 MiB: a test's day-file is small, and its reads should
-# still cross segments.
-FRAME_RECORDS = 16
-RESET_BYTES = 16 << 10
-
-
-def ebr_rounds(rounds, frame_records=FRAME_RECORDS):
-    """The bytes a collector's EBR writer appends for each poll round, as one
-    writer would write them in turn: the first opens a segment, and each is a
-    flush of frames. Appended to a day-file at a frame's end, they read as
-    written."""
-    out, bio = [], io.BytesIO()
-    w = ebr.Writer(bio, max_frame_records=frame_records, reset_bytes=RESET_BYTES)
-    for recs in rounds:
-        at = bio.tell()
-        for r in recs:
-            w.write(r)
-        w.flush()
-        out.append(bio.getvalue()[at:])
-    w.close()
-    return out
-
-
-def jsonl_only(why):
-    """A test about JSONL's own bytes (a line's regex, a memory map): the EBR
-    twin of its case (`ebr_twins`) skips it, saying why."""
-    def mark(fn):
-        fn._jsonl_only = why
-        return fn
-    return mark
-
-
-def ebr_twins(ns):
-    """Add to the module namespace `ns` an EBR twin of every FeedCase subclass
-    defined there: `<Case>Ebr`, every one of its tests again on `.ebr`
-    day-files (`FeedCase.FORMAT`). Called at the end of the module."""
-    for name, cls in list(ns.items()):
-        if not (isinstance(cls, type) and issubclass(cls, FeedCase) and cls is not FeedCase
-                and cls.__module__ == ns["__name__"] and cls.FORMAT == "jsonl" and cls.TWIN):
-            continue
-        body = {"FORMAT": "ebr", "__module__": ns["__name__"],
-                "__qualname__": name + "Ebr"}
-        for attr in dir(cls):
-            fn = getattr(cls, attr, None)
-            why = getattr(fn, "_jsonl_only", None)
-            if attr.startswith("test") and why:
-                body[attr] = unittest.skip("JSONL only: %s" % why)(fn)
-        ns[name + "Ebr"] = type(name + "Ebr", (cls,), body)
-
-
 class FeedCase(unittest.TestCase):
-    """A scratch collector root, and a config that reads only from it.
-
-    `FORMAT` is the format it writes its day-files in: `jsonl`, or `ebr` in a
-    case's EBR twin (`ebr_twins`). Every name is given as the JSONL one and
-    mapped (`fname`), so a test reads the same in either."""
-
-    FORMAT = "jsonl"
-    FRAME_RECORDS = FRAME_RECORDS
-    TWIN = True             # False: `ebr_twins` makes none (a case that writes both itself)
+    """A scratch collector root, and a config that reads only from it."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="rc_ingest_")
@@ -140,43 +68,23 @@ class FeedCase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def fname(self, name):
-        """`name`, a JSONL day-file's, in this case's format."""
-        return ebr_name(name) if self.FORMAT == "ebr" else name
-
     def path(self, name, day=DAY):
-        return os.path.join(self.root, day, self.fname(name))
+        return os.path.join(self.root, day, name)
 
     def append(self, name, recs, raw=b"", day=DAY):
-        """One poll round: `recs` appended as the collector writes them. EBR:
-        one `open_append`, the records, one flush -- a frame. `raw` is bytes
-        written after them (a round cut short: see `rounds`)."""
+        """One poll round: `recs` appended as the collector writes them, a line
+        each. `raw` is bytes written after them (a round cut short: see
+        `rounds`)."""
         os.makedirs(os.path.join(self.root, day), exist_ok=True)
-        if self.FORMAT == "ebr":
-            if recs:
-                w = ebr.Writer.open_append(self.path(name, day),
-                                           max_frame_records=self.FRAME_RECORDS,
-                                           reset_bytes=RESET_BYTES)
-                try:
-                    for r in recs:
-                        w.write(r)
-                    w.flush()
-                finally:
-                    w.close()
-            if raw:
-                self.write_raw(name, raw, day)
-            return
         with open(self.path(name, day), "ab") as fh:
             for r in recs:
                 fh.write(line(r))
             fh.write(raw)
 
     def rounds(self, rounds):
-        """The bytes each of `rounds` (lists of records) adds to a day-file in
-        this case's format, written one after another: for writing a round
-        only part way (`write_raw`), as a reader can find one mid-write."""
-        if self.FORMAT == "ebr":
-            return ebr_rounds(rounds, self.FRAME_RECORDS)
+        """The bytes each of `rounds` (lists of records) adds to a day-file,
+        written one after another: for writing a round only part way
+        (`write_raw`), as a reader can find one mid-write."""
         return [b"".join(line(r) for r in recs) for recs in rounds]
 
     def write_raw(self, name, data, day=DAY):
@@ -184,51 +92,20 @@ class FeedCase(unittest.TestCase):
         with open(self.path(name, day), "ab") as fh:
             fh.write(data)
 
-    def records(self, name, day=DAY):
-        """Every record of a day-file, in file order."""
-        p = self.path(name, day)
-        if self.FORMAT == "ebr":
-            return [r for _p, r in ebr.iter_records(p)]
-        opener = gzip.open if p.endswith(".gz") else open
-        with opener(p, "rb") as fh:
-            return [json.loads(x) for x in fh if x.strip()]
-
     def replace_bytes(self, name, old, new, day=DAY):
         """The day-file deleted and written again with the first `old` in its
-        records' JSON made `new`: the same records but for that, in the same
-        rounds (EBR: the same frames)."""
+        bytes made `new`: the same records but for that, in the same lines."""
         p = self.path(name, day)
-        if self.FORMAT == "jsonl":
-            with open(p, "rb") as fh:
-                data = fh.read()
-            os.unlink(p)
-            with open(p, "wb") as fh:
-                fh.write(data.replace(old, new, 1))
-            return
         with open(p, "rb") as fh:
             data = fh.read()
-        dec, groups, done = ebr.Decoder(), [], False
-        for f in ebr.frames(data):
-            recs = []
-            for _pos, r in dec.records(data, f):
-                text = json.dumps(r).encode()
-                if not done and old in text:
-                    r, done = json.loads(text.replace(old, new, 1)), True
-                recs.append(r)
-            if f.kind == ebr.DATA:
-                groups.append(recs)
         os.unlink(p)
-        w = ebr.Writer(p, max_frame_records=self.FRAME_RECORDS, reset_bytes=RESET_BYTES)
-        for recs in groups:
-            for r in recs:
-                w.write(r)
-            w.flush()
-        w.close()
+        with open(p, "wb") as fh:
+            fh.write(data.replace(old, new, 1))
 
     def write_gz(self, name, dest_dir, day=DAY):
         """A gzip-compressed copy of day-file `name` written into `dest_dir`,
         under its compressed name, as a capture copied in from elsewhere."""
-        dst = os.path.join(dest_dir, self.fname(name) + ".gz")
+        dst = os.path.join(dest_dir, name + ".gz")
         with open(self.path(name, day), "rb") as src, gzip.open(dst, "wb") as out:
             shutil.copyfileobj(src, out)
         return dst
@@ -236,7 +113,7 @@ class FeedCase(unittest.TestCase):
     def compress(self, name, day=DAY):
         """What the collector does to a sealed day (`_compress_day`, `gzip -f`):
         the `.gz` written beside the file, then the file unlinked -- the same
-        bytes under a new name and a new inode. For either format."""
+        bytes under a new name and a new inode."""
         p = self.path(name, day)
         with open(p, "rb") as src, gzip.open(p + ".gz", "wb") as dst:
             shutil.copyfileobj(src, dst)
@@ -246,9 +123,6 @@ class FeedCase(unittest.TestCase):
     def cfg(self, **live):
         tree = configmod.defaults()
         tree["feeds"]["ebpf"]["roots"] = [self.root]
-        # A twin of a stream in the other format is never written here; read
-        # this case's own all the same.
-        tree["feeds"]["ebpf"]["prefer"] = self.FORMAT
         # The node tier is not under test: point it at nothing.
         tree["feeds"]["ebpf_node"]["roots"] = [os.path.join(self.tmp, "node")]
         # Where the retired offset store lived. Scratch, so a regression that
@@ -397,7 +271,6 @@ class HandOffTest(FeedCase):
         # Three complete lines and the first half of a fourth, as the collector
         # leaves a file mid-write. The half line belongs to the tail: it is not
         # parseable yet, and positioning past it would lose it once complete.
-        # (EBR: three records in a frame, and the first 20 bytes of the next.)
         t = self.now - 600
         recs = [exit_rec(t + 60 * i, pid=i) for i in range(1, 6)]
         first, fourth, fifth = self.rounds([recs[:3], recs[3:4], recs[4:5]])
@@ -479,6 +352,113 @@ class BackfillTest(FeedCase):
         self.assertEqual(self.events(agg), dict(NONE, agent=1))
 
 
+class NonObjectTest(FeedCase):
+    """A line that is JSON but no object, and a record with a field of a type
+    no collector writes: each passed over and counted, and nothing else lost
+    or counted twice. The review's r1, r1b, r1c and r12."""
+
+    def size(self, name):
+        return os.path.getsize(self.path(name))
+
+    def test_a_line_that_is_no_object_is_a_parse_error_and_the_tail_goes_on(self):
+        # One `null` among host a's records made every poll raise: the offsets
+        # stayed put, host b was never read, and the live count grew by the
+        # first batch at every poll (258, 514, 770 ... against 905 on disk).
+        self.append("a.exits.jsonl", [exit_rec(self.now - 600, 1, host="a")])
+        self.append("b.exits.jsonl", [exit_rec(self.now - 600, 2, host="b")])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        self.append("a.exits.jsonl", [exit_rec(self.now - 300 + i * 0.01, 1000 + i, host="a")
+                                      for i in range(300)], raw=b"null\n0\n")
+        self.append("a.exits.jsonl", [exit_rec(self.now - 200 + i * 0.01, 5000 + i, host="a")
+                                      for i in range(600)], raw=b'[]\n"x"\n')
+        self.append("b.exits.jsonl", [exit_rec(self.now - 100 + i, 9000 + i, host="b")
+                                      for i in range(3)])
+        self.assertEqual(agg.poll_once(), 903)
+        self.assertEqual(agg.poll_once(), 0)
+        self.assertEqual(self.events(agg)["agent"], 905)
+        self.assertEqual(agg.source.stats["parse_errors"], 4)
+        for name in ("a.exits.jsonl", "b.exits.jsonl"):
+            self.assertEqual(agg.source.state[self.path(name)]["offset"], self.size(name))
+        self.assertEqual(agg.refresh_feeds()["ebpf"]["tail"]["parse_errors"], 4)
+        # the newest line of a file, as the feed report and the clock read it
+        self.assertIsNotNone(agg.reports["ebpf"]["newest_record_ts"])
+        self.assertAlmostEqual(clock.newest_record([self.root])[0], self.now - 98, delta=1)
+
+    def test_a_record_the_normalizer_cannot_read_is_counted_and_passed_over(self):
+        # Each raised out of `normalize`, so out of the poll, as the `null` did.
+        bad = [exit_rec(self.now - 250, 10), exit_rec(self.now - 250, 11),
+               exit_rec(self.now - 250, 12), exit_rec(self.now - 250, 13),
+               exit_rec(self.now - 250, 14), exit_rec(self.now - 250, 15)]
+        bad[0]["args"] = ["git", "status"]
+        bad[1]["ts"] = self.now - 250
+        bad[2]["session_key"] = 123
+        bad[3]["duration_s"] = "1.0"
+        bad[4].update(cgroup=5, session_key=None, agent_pid=None)
+        bad[5]["event"] = ["exit"]
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600, 1)])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 300, 2)] + bad +
+                    [exit_rec(self.now - 200, 3)])
+        self.assertEqual(agg.poll_once(), 2)
+        self.assertEqual(agg.poll_once(), 0)
+        self.assertEqual(self.events(agg)["agent"], 3)
+        tail = agg.refresh_feeds()["ebpf"]["tail"]
+        self.assertEqual((tail["malformed"], tail["parse_errors"], tail["feed_errors"]),
+                         (6, 0, 0))
+
+    def test_a_line_that_is_no_object_does_not_stop_the_backfill(self):
+        # A `[]` already in a file at start: the read back raised at it, and the
+        # backfill ended in `error` with 512 of 1180 records.
+        for h in ("a", "b"):
+            self.append("%s.exits.jsonl" % h, [exit_rec(self.now - 7000 + 10 * i, i, host=h)
+                                               for i in range(300)],
+                        raw=b"[]\n" if h == "a" else b"")
+            self.append("%s.exits.jsonl" % h, [exit_rec(self.now - 3000 + 10 * i, 1000 + i,
+                                                        host=h) for i in range(290)])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        agg.poll_once()
+        b = agg.backfill
+        self.assertEqual((b["state"], b["records"], b["parse_errors"]), ("done", 1180, 1))
+        self.assertEqual(self.events(agg)["agent"], 1180)
+
+    def test_a_view_that_takes_no_record_is_logged_once_and_counted_by_the_batch(self):
+        # A bug in one view raised at every record, counted, and written nowhere.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 600, 1)])
+        agg = Aggregator(self.cfg())
+        agg.backfill_now()
+        reg = agg.panels_by_window
+        view = reg.request(1440)
+        reg._build(view)
+        log = io.StringIO()
+        with mock.patch.object(view, "feed", side_effect=RuntimeError("a bug in one view")), \
+                mock.patch("sys.stderr", log):
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 300 + i * 0.01, 100 + i)
+                                           for i in range(600)])
+            self.assertEqual(agg.poll_once(), 600)
+        self.assertEqual(log.getvalue().count("view feed: RuntimeError: a bug in one view"), 1)
+        self.assertEqual(agg.stats["feed_errors"], 600)
+        self.assertEqual(agg.stats["feed_error_streak"], 3)    # three batches, each with one
+        self.assertEqual(self.events(agg)["agent"], 601)        # the live tier, all the same
+        # a batch every view takes ends the streak
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 100, 900)])
+        self.assertEqual(agg.poll_once(), 1)
+        self.assertEqual(agg.stats["feed_error_streak"], 0)
+
+    def test_a_time_search_steps_over_lines_that_are_no_object(self):
+        recs = [exit_rec(self.now - 1000 + 10 * i, i) for i in range(100)]
+        self.write_raw("h1.exits.jsonl", b"".join(line(r) + b"[]\n" for r in recs))
+        with open(self.path("h1.exits.jsonl"), "rb") as fh:
+            size = os.path.getsize(self.path("h1.exits.jsonl"))
+            at = feedfile.seek_to_epoch(fh, self.now - 500, size)
+            fh.seek(at)
+            first = next(r for r in map(json.loads, fh) if isinstance(r, dict))
+        self.assertEqual(first["pid"], 50)          # the first at or after the time
+        self.assertLess(at, size)
+
+
 class ConcurrencyTest(FeedCase):
 
     def test_the_page_can_read_while_the_backfill_runs(self):
@@ -530,7 +510,44 @@ class PanelsTest(FeedCase):
             agg.stop()
 
 
-ebr_twins(globals())
+class _Zone:
+    """Run under the time zone `tz`, and put the process's own back after."""
+
+    def __init__(self, tz):
+        self.tz = tz
+
+    def __enter__(self):
+        self.was = os.environ.get("TZ")
+        os.environ["TZ"] = self.tz
+        time.tzset()
+
+    def __exit__(self, *exc):
+        if self.was is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self.was
+        time.tzset()
+
+
+class FeedLagTest(FeedCase):
+    """How old a feed's newest record is, wherever the dashboard reads it: the
+    collector stamps `ts` in its node's time zone, which need not be this one's."""
+
+    def test_the_lag_is_the_same_in_every_time_zone(self):
+        with _Zone("America/New_York"):
+            rec = exit_rec(self.now - 2, 1)          # 2 s old, stamped in New York
+        self.append("h1.exits.jsonl", [rec])
+        for tz in ("America/New_York", "UTC", "America/Los_Angeles"):
+            with _Zone(tz):
+                rep = feedmod.resolve_dated("ebpf", self.cfg())
+            self.assertEqual(rep["newest_record_ts"], rec["ts"], tz)
+            self.assertTrue(2 <= rep["lag_s"] < 60, (tz, rep["lag_s"]))
+            self.assertEqual(rep["status"], "ok", tz)
+
+    def test_a_record_stamped_ahead_of_this_clock_is_no_lag(self):
+        self.append("h1.exits.jsonl", [exit_rec(self.now + 120, 1)])    # its node runs fast
+        rep = feedmod.resolve_dated("ebpf", self.cfg())
+        self.assertEqual((rep["lag_s"], rep["lag"], rep["status"]), (0.0, "0s", "ok"))
 
 
 if __name__ == "__main__":

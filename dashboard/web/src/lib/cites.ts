@@ -17,6 +17,7 @@ import type { AskCite, AskView, CiteJump, Cls } from '../api/types';
 import { AGENT_TYPE_LBL, CLS } from './classes';
 import { parseUrl, urlQuery } from './filters';
 import type { UrlState } from './filters';
+import { table } from './lookup';
 
 /** One bracket of refs, as the backend reads them (`ask.CITE_RE`). */
 const REF = '[a-z]{1,2}\\d{1,5}';
@@ -54,7 +55,7 @@ interface Place {
 }
 
 /** As App.tsx's TABS names them. */
-const TAB_LBL: Record<string, string> = {
+const TAB_LBL: Record<string, string> = table({
   live: 'Live',
   agents: 'Agents',
   trajectories: 'Sessions',
@@ -62,7 +63,7 @@ const TAB_LBL: Record<string, string> = {
   risk: 'Risks',
   slurm: 'Slurm',
   internal: 'Internal',
-};
+});
 
 /** The inspector's title, which is also its anchor (TrajectoryInspector.tsx). */
 const INSPECTOR = 'Session inspector';
@@ -74,10 +75,12 @@ const PLACES: [string, Place][] = [
   ['panels.tool_mix.tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix.head', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix.n_tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
+  ['panels.tool_mix.exits', { tab: 'agents', panel: 'Commands that failed', anchor: 'sec-commands-that-failed' }],
   ['panels.tool_mix', { tab: 'agents', panel: 'Tool mix', anchor: 'sec-tool-mix' }],
   ['panels.io_process.by_user', { tab: 'resources', panel: 'I/O by user' }],
   ['panels.io_process.by_tool', { tab: 'resources', panel: 'Disk read by tool', anchor: 'sec-reads-by-tool' }],
-  ['panels.io_process', { tab: 'resources', panel: 'I/O distributions' }],
+  ['panels.io_process.endpoints', { tab: 'resources', panel: 'Network bytes' }],
+  ['panels.io_process', { tab: 'internal', panel: 'I/O distributions' }],
   ['panels.risk.rules', { tab: 'risk', panel: 'Rules in effect' }],
   ['panels.risk.sections', { tab: 'risk', panel: 'Rules in effect' }],
   ['panels.risk.totals', { tab: 'risk', panel: 'Rules in effect' }],
@@ -86,9 +89,9 @@ const PLACES: [string, Place][] = [
   ['panels.resources.worst_stall', { tab: 'resources', panel: 'Worst individual processes' }],
   ['panels.resources.worst_fault', { tab: 'resources', panel: 'Worst individual processes' }],
   ['panels.resources.worst_wait', { tab: 'resources', panel: 'Worst individual processes' }],
-  ['panels.resources.stall_by_tool', { tab: 'resources', panel: 'Faults, delays, and D-state' }],
-  ['panels.resources.impossible_waits', { tab: 'resources', panel: 'Faults, delays, and D-state' }],
-  ['panels.resources', { tab: 'resources', panel: 'Per-process distributions', anchor: 'sec-per-event-distributions' }],
+  ['panels.resources.stall_by_tool', { tab: 'internal', panel: 'Faults, delays, and D-state' }],
+  ['panels.resources.impossible_waits', { tab: 'internal', panel: 'Faults, delays, and D-state' }],
+  ['panels.resources', { tab: 'internal', panel: 'Per-process distributions', anchor: 'sec-per-event-distributions' }],
   ['panels.sandbox.attempts', { tab: 'internal', panel: 'Sandbox wrapper calls, by outcome' }],
   ['panels.sandbox.tool_calls', { tab: 'internal', panel: 'Tool calls — did they run sandboxed?', anchor: 'sec-tool-calls-did-they-run-namespace-isolated' }],
   ['panels.sandbox.launch_modes', { tab: 'internal', panel: 'Approval at launch — an independent axis' }],
@@ -103,7 +106,9 @@ const PLACES: [string, Place][] = [
   ['panels.slurm', { tab: 'slurm', panel: 'How each class uses the scheduler' }],
   ['panels.cascades', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
   ['panels.workspace', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
-  ['panels.node', { tab: 'live' }],
+  ['panels.node.series', { tab: 'live', panel: 'Login node response', anchor: 'sec-node-response' }],
+  ['panels.node', { tab: 'resources', panel: 'Login node health', anchor: 'sec-node-health' }],
+  ['panels.trend', { tab: 'live', panel: 'Day by day', anchor: 'sec-day-by-day' }],
   ['live_now.users', { tab: 'live', panel: 'Active users', anchor: 'live-users' }],
   ['live_now.hosts', { tab: 'live', panel: 'Login nodes right now', titled: 'right now' }],
   ['live_now.submits', { tab: 'slurm', panel: 'Latest submissions' }],

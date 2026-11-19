@@ -6,13 +6,14 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import iocmds                         # noqa: E402
 from rc_dashboard.export import parse_filters           # noqa: E402
-from test_ingest import FeedCase, ebr_twins, exit_rec, jsonl_only   # noqa: E402
+from test_ingest import FeedCase, exit_rec   # noqa: E402
 
 
 def rec(epoch, pid, args, user="alice", actor3="agent", rd=0.0, wr=0.0, rc=0.0, wc=0.0,
@@ -105,8 +106,6 @@ class Lookup(FeedCase):
         self.assertEqual({r["cmd"] for r in self.rows(j)},
                          {"python train.py --lr 3", "cat notes.md", "rg TODO"})
 
-    @jsonl_only("the byte prefilter is a JSONL line's; its EBR form, prefilter_where, is "
-                "property-tested in test_formats")
     def test_prefilter_never_misses(self):
         f = parse_filters({"user": ["alice"]})
         m = iocmds.prefilter(f, frozenset({"7"}), "h1", "/home/alice/proj")
@@ -123,6 +122,16 @@ class Lookup(FeedCase):
         self.assertIs(a, b)
         c = self.run_job({"user": "alice"})
         self.assertIsNot(a, c)
+
+    def test_a_finished_lookup_ages_on_a_clock_that_only_moves_on(self):
+        # TTL_LIVE is a duration: a wall clock set back an hour meanwhile (NTP, a
+        # resumed VM) must not keep a live feed's lookup for that hour more
+        with mock.patch.object(iocmds, "TTL_LIVE", 0.1):
+            a = self.run_job({"user": "bob"})
+            with mock.patch("time.time", return_value=time.time() - 3600):
+                time.sleep(0.3)
+                b = self.run_job({"user": "bob"})
+        self.assertIsNot(a, b)
 
     def test_secrets_masked(self):
         self.append("h1.jsonl", [rec(self.now - 50, 30, "curl -H 'Authorization: Bearer abc123def'")])
@@ -161,6 +170,3 @@ class AgentKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-ebr_twins(globals())

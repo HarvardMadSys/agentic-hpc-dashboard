@@ -26,6 +26,7 @@ import { DASH, dur, fint, fmt } from '../lib/format';
 import { pick, shown, winLabel } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { openIoCmds } from '../lib/iocmds';
+import { NodeResponse } from './NodeResponse';
 
 type PickKey = 'wait' | 'dstate' | 'faults' | 'read' | 'write' | 'net' | 'queue' | 'jobs';
 
@@ -340,6 +341,9 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
           </div>
         </div>
       </Panel>
+
+      {/* how quickly the nodes answered, zoomed with the charts above */}
+      <NodeResponse P={P} win={win.startsWith('last') ? win : 'window'} view={view} onView={onView} />
 
       <Panel title="More over time" id="sec-more-over-time" p={r} span empty={!hasSeries}
         emptyWhat="no process exited in the window for the selection">

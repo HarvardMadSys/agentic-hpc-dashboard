@@ -4,9 +4,8 @@
 A new receiver first fetches every sealed day its sources still hold, as the
 collector's `.gz`, and only then streams the live day. This builds the sealed part of
 the copy from `.gz` files pulled another way (pull-gz.sh, or any copy kept in the
-same `<host>/<day>/` layout). Each `PULL/<host>/<day>/<name>.gz`, of either of the
-collector's formats (`<name>` is `<host>.<stream>.jsonl` or `.ebr`), is copied as it is
-to `BASE/mirror/<host>/<day>/<name>.gz`, with zlib checking every member's CRC and
+same `<host>/<day>/` layout). Each `PULL/<host>/<day>/<name>.jsonl.gz` is copied as it is to
+`BASE/mirror/<host>/<day>/<name>.jsonl.gz`, with zlib checking every member's CRC and
 size on the way as the receiver does, and listed in `BASE/state/<host>.verified.json`.
 A receiver started on BASE tells each source that those days are verified, and the
 source sends only what is missing: the live day's plain bytes, and any sealed day newer
@@ -16,9 +15,8 @@ than the pull.
 
 - The receiver counts a listed `.gz` as held whatever its `keep_gz` says. Set
   `"keep_gz": true` in its config so the days that seal later stay `.gz` too.
-- `--inflate` writes the plain `<name>` instead, as a receiver without `keep_gz` does:
-  about 19 times the disk for JSONL, but the dashboard reads plain files with no index
-  in memory.
+- `--inflate` writes `<name>.jsonl` instead, as a receiver without `keep_gz` does:
+  about 19 times the disk, but the dashboard reads plain files with no index in memory.
 
 - Run it before the receiver starts, or with the receiver stopped: it refuses a BASE
   whose status a receiver wrote in the last 5 minutes.
@@ -69,7 +67,7 @@ def _status_age(basedir):
 
 
 def _pulled(pull, hosts):
-    """{day: {host: [plain names]}} for every `.jsonl.gz` and `.ebr.gz` in the pull."""
+    """{day: {host: [plain names]}} for every `.jsonl.gz` in the pull."""
     found = {}
     for host in hosts:
         top = os.path.join(pull, host)
@@ -78,8 +76,7 @@ def _pulled(pull, hosts):
         for day in fs.list_days(top):
             folder = os.path.join(top, day)
             names = [n[:-len(fs.GZ)] for n in sorted(os.listdir(folder))
-                     if n.endswith(fs.GZ) and n[:-len(fs.GZ)].endswith(fs.SUFFIXES)
-                     and os.path.isfile(os.path.join(folder, n))]
+                     if n.endswith(".jsonl" + fs.GZ) and os.path.isfile(os.path.join(folder, n))]
             if names:
                 found.setdefault(day, {})[host] = names
     return found
@@ -236,8 +233,7 @@ def seed(pull, basedir, hosts=None, statvfs=None, say=_say, inflate=False, free_
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  epilog="See the module docstring for the details.")
-    ap.add_argument("pull", help="the pulled days: PULL/<host>/<day>/<name>.jsonl.gz "
-                                 "and <name>.ebr.gz")
+    ap.add_argument("pull", help="the pulled days: PULL/<host>/<day>/<name>.jsonl.gz")
     ap.add_argument("base", help="the receiver's base folder (its config's \"base\")")
     ap.add_argument("--hosts", nargs="+", help="only these hosts (default: every folder in PULL)")
     ap.add_argument("--inflate", action="store_true",

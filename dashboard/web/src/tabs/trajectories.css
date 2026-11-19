@@ -121,17 +121,79 @@ table.tj-table td .sub {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
-/* under it, what kind of session it was and the session in a few sentences */
+/* under it, what kind of session it was and the session in a few sentences: set off as a
+ * callout, ruled in its category's colour (`--cat`, set on the element), its figures in bold */
 .ins-gist {
   margin: 0;
-  font-size: 13.5px;
-  line-height: 1.45;
-  color: var(--ink-2);
+  padding: 7px 10px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--cat, var(--edge));
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
   overflow-wrap: anywhere;
+}
+.ins-gist b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .ins-gist .sess-cat {
   margin-right: 6px;
   vertical-align: 1px;
+}
+/* The inspector's two parts under the session's overview (TrajectoryInspector.tsx): what the agent did, its tasks and
+   phases over the whole session, and then its processes, the tree that backs them with what the read of it covers. Each
+   opens over a rule with a heading and a line saying what it holds, so the story and the process tree read apart */
+.ins-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+.ins-sec-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+}
+.ins-sec-h h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.ins-sec-h p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+/* an agent of a type whose commands are not read: said where what it did would be */
+.ins-unread {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+/* the purpose ribbon, the tool runs, and the key to the purposes, at the head of the Processes part */
+.ins-mix {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+/* the process tree's own controls, on a line of their own right above its find bar */
+.ins-tree-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
 }
 /* A bound the read hit. It changes what the tree means, so it is not a tooltip. */
 .ins-bound {
@@ -689,6 +751,46 @@ details.ins-limits > summary .eyebrow {
 .tn-hk-tick {
   fill: var(--muted);
 }
+/* The map of the whole session (SessionMap.tsx): its tasks and its phases on the session's own clock, captioned in the
+   navigator's gutter (`--tn-gut`, set on `.sm`) with the navigator's captions (`.tn-plot`, `.tn-lane-cap`). A task's block
+   is the lane's (`.tn-task`) and a phase's band the chart's tint (`.tn-band`) with a rule of its full colour along its foot.
+   It is drawn at its box's own width, so its words are the chart's size at any width. A block or a band under the pointer
+   is outlined in the ink, which is how the map says it takes a click */
+.sm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.sm .tn-svg.sm-svg {
+  height: auto;
+  overflow: visible;
+}
+.sm-pick {
+  cursor: pointer;
+}
+.sm-hl {
+  fill: none;
+  stroke: none;
+  pointer-events: none;
+}
+.sm-pick:hover > .sm-hl {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+.sm-num {
+  font-weight: 600;
+  fill: var(--ink);
+}
+.sm-tick {
+  stroke: var(--edge);
+  stroke-width: 1;
+}
+.sm-key {
+  flex: none;
+  box-sizing: content-box;
+  border: 1px solid var(--rule);
+}
 /* a line of caption under the chart */
 .tn-note {
   font-family: 'IBM Plex Mono', monospace;
@@ -789,6 +891,15 @@ svg:has(> g.pickable:focus-visible) {
     animation: none;
   }
 }
+/* What find matched (TrajectoryInspector.tsx): the row tinted, and a closed
+ * row with a match below it given a dashed rule, so a match in a folded part
+ * of the tree is not out of sight and out of mind. */
+.pt-row.hit > .pt-tree {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.pt-row.hit-in > .pt-tree {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warn) 80%, transparent);
+}
 
 /* ------------------------------------------ the process tree, as a tree
  * (components/ProcDiagram.tsx): a box per process, its purpose on the left
@@ -849,6 +960,28 @@ svg:has(> g.pickable:focus-visible) {
 .pd-box .bad {
   color: var(--crit);
 }
+/* the folder it ran in, under its name: muted where it is its parent's, in
+ * ink where the process changed folder */
+.pd-w {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pd-w.own {
+  color: var(--ink-2);
+}
+/* what find matched: the box ringed, and a closed box with a match below it
+ * dashed */
+.pd .tnode.hit {
+  outline: 2px solid var(--warn);
+  outline-offset: 1px;
+}
+.pd .tnode.hit-in {
+  outline: 1.5px dashed var(--warn);
+  outline-offset: 1px;
+}
 .pd .tdiag-canvas {
   margin: 0;
 }
@@ -869,6 +1002,33 @@ svg:has(> g.pickable:focus-visible) {
 }
 .pd-bar label + .nm {
   margin-right: 8px;
+}
+/* find: a command, a command line, or the folder a process ran in */
+.pd-find {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.pd-find input {
+  width: 15em;
+  max-width: 100%;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.pd-find input:focus-visible {
+  outline: 2px solid var(--edge);
+  outline-offset: 0;
+}
+.pd-find .btn {
+  padding: 1px 6px;
+}
+.pd-find .nm {
+  min-width: 5.5em;
 }
 /* how to use the tree: at the row's far end, out of the way of the controls */
 .pd-bar .pd-hint {
@@ -1210,6 +1370,33 @@ svg:has(> g.pickable:focus-visible) {
 .tl-row.lone .tl-state {
   display: block;
 }
+/* under a closed task's row, its phases in order, each with the chip of its colour (`TaskSeq`): set in under the label, as
+   the row's content, and in `--ink-2`, since it is what the task was made of and not a footnote. It wraps between phases,
+   never inside one */
+.tl-seq {
+  flex: none;
+  padding: 0 4px 6px 182px;
+  margin-top: -2px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.tl-seq-ph {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.tl-seq .pl-chip {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-top: 0;
+}
+.tl-seq-to {
+  color: var(--muted);
+}
 /* what is under an open task: its phases, each a chevron and the phase list's row, set in under the task's own chevron */
 .tl-phases {
   flex: none;
@@ -1269,6 +1456,10 @@ svg:has(> g.pickable:focus-visible) {
   }
   .tl-state {
     grid-column: 2 / -1;
+  }
+  /* the line of phases stays under the label, which here starts after the number */
+  .tl-seq {
+    padding-left: 46px;
   }
 }
 /* a session whose agent is running now */
@@ -1358,4 +1549,37 @@ svg:has(> g.pickable:focus-visible) {
   .pt-tog {
     width: 24px;
   }
+}
+
+/* A model's purpose for a tool call (components/Annotate.tsx): one colour of its
+ * own and a dashed edge, the page's mark for what is read rather than measured. */
+.pt-llm {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--s4);
+  border: 1px dashed var(--s4);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.pt-llm i {
+  font-style: normal;
+  margin-right: 4px;
+}
+.pd-llm {
+  flex: none;
+  color: var(--s4);
+  font-size: 11.5px;
+}
+.pd-annotate {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.pd-annotate .nm.bad {
+  color: var(--crit);
 }
