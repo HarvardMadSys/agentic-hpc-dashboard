@@ -7,6 +7,7 @@ same answer for either.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_gz -q
 """
+import contextlib
 import gzip
 import os
 import random
@@ -180,9 +181,11 @@ class IndexCache(unittest.TestCase):
 
 
 class SharedSpans(unittest.TestCase):
-    """Inside `shared_spans` a thread's readers share the spans they inflate: each
-    reads what it would have read alone, a span is inflated once however many
-    readers ask for it, at most `n` are held, and none once the block ends."""
+    """Inside `shared_spans` a reader is handed the span another reader of the same
+    file inflated last: each reads what it would have read alone, a read after a
+    search inflates the search's span no more, a read through a whole file holds
+    its last span and none of those it went past, at most `n` files' are held, and
+    none once the block ends."""
 
     def setUp(self):
         self.saved = gz.SPAN, gz._STEP, gz._CHUNK
@@ -223,29 +226,49 @@ class SharedSpans(unittest.TestCase):
             with gz.open_feed(self.path) as fh:
                 self.assertEqual(list(fh), self.plain.splitlines(True))
 
-    def test_a_span_is_inflated_once_however_many_readers_ask(self):
+    def test_a_read_after_a_search_is_handed_the_span_the_search_inflated(self):
+        # As an hour is read: a time search ends in a span, and the read of what it
+        # found starts there. Alone, the read inflates that span again.
+        at = len(self.plain) // 2
         seen, patch = self.counted()
         with patch:
             with gz.open_feed(self.path) as fh:       # indexed, outside the block
                 fh.read()
-            n_spans = len(seen)
-            del seen[:]
-            for _ in range(3):
-                with gz.open_feed(self.path) as fh:
-                    self.assertEqual(fh.read(), self.plain)
-            self.assertEqual(len(seen), 3 * n_spans)  # alone, each reader inflates them all
-            del seen[:]
-            with gz.shared_spans(n_spans):
-                for _ in range(3):
-                    with gz.open_feed(self.path) as fh:
-                        self.assertEqual(fh.read(), self.plain)
-            self.assertEqual(sorted(seen), list(range(n_spans)))
+            for shared in (False, True):
+                del seen[:]
+                with gz.shared_spans(4) if shared else contextlib.nullcontext():
+                    with gz.open_feed(self.path, buffering=64) as fh:   # the search
+                        fh.seek(at)
+                        fh.read(1)
+                    with gz.open_feed(self.path, buffering=64) as fh:   # the read
+                        fh.seek(at)
+                        self.assertEqual(fh.read(), self.plain[at:])
+                self.assertEqual(seen.count(seen[0]), 1 if shared else 2, shared)
+                self.assertEqual(len(set(seen)), len(seen) - (0 if shared else 1))
 
-    def test_at_most_n_are_held_and_none_once_the_block_ends(self):
-        with gz.shared_spans(3) as held:
+    def test_a_read_through_a_file_holds_its_last_span_only(self):
+        # A read goes on forward, so the spans it went past are not asked for
+        # again: holding them made a FAS node-hour's block hold some 40.
+        with gz.shared_spans(4) as held:
             with gz.open_feed(self.path) as fh:
                 self.assertEqual(fh.read(), self.plain)
-            self.assertEqual(len(held.held), 3)
+            idx = gz._indexes[self.path]
+            self.assertGreater(len(idx.offs), 10)
+            self.assertEqual(list(held.held), [idx])
+            self.assertEqual(held.held[idx][0], len(idx.offs) - 1)
+
+    def test_at_most_n_files_are_held_and_none_once_the_block_ends(self):
+        paths = [self.path]
+        for k in range(3):
+            p = os.path.join(self.dir, "h%d.exits.jsonl.gz" % (k + 2))
+            with open(p, "wb") as fh:
+                fh.write(gzip.compress(payload(100, k)))
+            paths.append(p)
+        with gz.shared_spans(2) as held:
+            for p in paths:
+                with gz.open_feed(p) as fh:
+                    fh.read()
+            self.assertEqual(set(held.held), {gz._indexes[p] for p in paths[-2:]})
         self.assertEqual(len(held.held), 0)
         self.assertIsNone(getattr(gz._shared, "spans", None))
 

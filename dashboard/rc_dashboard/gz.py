@@ -25,12 +25,12 @@ What it costs, measured on boslogin06's 2026-10-08 exits file (66 MB -> 1.49 GB)
   an 8 MB span, and lives only in this process -- an inflater's state cannot be
   pickled -- so a restart indexes again;
 * each open reader holds the two spans it last inflated, 2 x `SPAN` bytes;
-* inside `shared_spans`, the readers of one thread share the spans they
-  inflate, the last `SHARED_SPANS` used held until the block ends, at most
-  32 x `SPAN` bytes. The hourly reduction opens each file a few times an
-  hour -- a time search, then the records, and the next hour's search lands
-  where they ended -- and each open inflated the same span again: 454 spans
-  for 73 distinct over a 6-node bench feed's 24 hours, 4 s of a 21 s run;
+* inside `shared_spans`, a thread's readers share the span each file's
+  readers inflated last, for the last `SHARED_FILES` files read: at most 16
+  spans, held until the block ends. The hourly reduction opens each file a
+  few times an hour -- a time search, then the records, and the next hour's
+  search lands near where they ended -- and each open inflated the same span
+  again: 455 spans over a 6-node bench feed's 24 hours, 132 with this;
 * the process keeps the indexes of the last `_KEEP` files read, and drops
   the index of a file that is gone or that no reader used for `_IDLE_S`,
   looked for at every build and at an open once a `_SWEEP_S`. A copy that
@@ -59,7 +59,7 @@ _MAGIC = b"\x1f\x8b"
 _KEEP = 256               # indexes held, least recently used dropped first
 _IDLE_S = 1800.0          # an index no reader used for this long is dropped
 _SWEEP_S = 60.0           # how often an open looks for gone or idle indexes
-SHARED_SPANS = 32         # spans held between a thread's readers (`shared_spans`)
+SHARED_FILES = 16         # files whose last span a thread's readers share (`shared_spans`)
 
 SUFFIX = ".gz"
 
@@ -258,35 +258,41 @@ _shared = threading.local()        # `.spans`: this thread's `_Shared`, inside t
 
 
 class _Shared:
-    """The spans a thread's readers inflated inside `shared_spans`, by index
-    and checkpoint, the `n` used last kept. A span is the same bytes whichever
+    """The span each file's readers on a thread last inflated inside
+    `shared_spans`, for the `n` files read last. A time search and the read
+    after it land in the same span, and the next hour's search where that read
+    ended: each time the span a reader of the file inflated last, so that one
+    is kept. The spans a read went past are not -- a read goes on forward, and
+    a FAS node-hour is some 40 of them. A span is the same bytes whichever
     reader inflates it, so a reader handed one another inflated reads what it
     would have inflated itself."""
 
     def __init__(self, n):
         self.n = max(1, int(n))
-        self.held = collections.OrderedDict()      # (Index, i) -> bytes
+        self.held = collections.OrderedDict()      # Index -> (checkpoint, bytes)
 
     def span(self, index, fh, i):
-        key = (index, i)
-        data = self.held.get(key)
-        if data is not None:
-            self.held.move_to_end(key)
+        got = self.held.get(index)
+        if got is not None and got[0] == i:
+            self.held.move_to_end(index)
             index.used = time.monotonic()
-            return data
-        data = self.held[key] = index.span(fh, i)
+            return got[1]
+        data = index.span(fh, i)
+        self.held[index] = (i, data)
+        self.held.move_to_end(index)
         while len(self.held) > self.n:
             self.held.popitem(last=False)
         return data
 
 
 @contextlib.contextmanager
-def shared_spans(n=SHARED_SPANS):
-    """Inside the block, the readers of this thread share the spans they
-    inflate, the `n` used last held until it ends: a file opened again, as a
-    time search and then a read of what it found open it, is not inflated
-    again where another reader already was. Only how a reader gets a span
-    changes, never what it reads. A block inside another is the outer one's."""
+def shared_spans(n=SHARED_FILES):
+    """Inside the block, a reader on this thread is handed the span another
+    reader of the same file inflated last, for the `n` files read last, rather
+    than inflating it again: a file opened again, as a time search and then a
+    read of what it found open it, goes on where the other reader was. At most
+    `n` x `SPAN` bytes are held, until the block ends. Only how a reader gets a
+    span changes, never what it reads. A block inside another is the outer one's."""
     if getattr(_shared, "spans", None) is not None:
         yield _shared.spans
         return

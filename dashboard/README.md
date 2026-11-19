@@ -554,11 +554,17 @@ filling the hours the first time costs about what one scan does. A week of hours
 disk. A view filtered to users or agent types is still scanned.
 
 On a sealed day, an hour's time search and its read each open the `.gz`, and the next hour's
-search lands where that read ended; each open inflated the same 8 MB span again. A run of hours
-now shares the spans its readers inflate (`gz.shared_spans`, up to 32 held while it runs), so
-each is inflated once: on a 6-node bench feed (`bench/amplify.py --days 2 --hosts 3
---host-clones 2 --density 8 --gzip-sealed`), a 24 h window's hours inflated 76 spans where they
-inflated 454, and were reduced in 17.0 s where they took 21.1 s.
+search lands near where that read ended; each open inflated the same 8 MB span again. In a run of
+hours, a reader is now handed the span another reader of the same file inflated last
+(`gz.shared_spans`): one span a file, for the 16 files read last, so at most 16 spans of 8 to 12
+MB are held while the run lasts. A node-split worker holds at most 4 (`hours.NODE_SHARED_FILES`),
+for one node-hour. What this saves depends on how an hour of a file compares with a span. On a
+6-node bench feed (`bench/amplify.py --days 2 --hosts 3 --host-clones 2 --density 8
+--gzip-sealed`), whose files grow 1 to 3 MB an hour, a 24 h window's hours inflated 132 spans
+where they inflated 455, and were reduced in 22.8 s where they took 26.3 s, holding 152 MB at
+most. A FAS login node's file grows about 140 MB (17 spans) an hour, and the records between
+where one hour's read stops and the next one's starts (twice `SCAN_SLACK_S`, 240 s) run over a
+span or two, so there it saves about one span a file an hour.
 
 **Reducing by node, in parallel (`ingest.workers`).** A reducer is pure Python and holds the
 GIL, so the service's threads share one core: one pass over an hour of the eight FAS login nodes

@@ -126,6 +126,10 @@ STRAGGLER_CAP = 100000
 # may be reduced past the oldest hour not yet merged.
 NODES = "__nodes__"
 NODE_LOOKAHEAD_H = 4
+# The files whose last span a node's hour shares between its time search and
+# its read (`gz.shared_spans`): the node's two of the day, and the next day's
+# two near midnight. At most this many spans per worker, for one task.
+NODE_SHARED_FILES = 4
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 # Everything that decides what an hour's state means. `live.py` is not here:
@@ -636,7 +640,7 @@ def reduce_node_hour(ctx, task):
     prev = task["prev"]
     strays = [] if prev is not None else None
     # the time search and the read open each file in turn: one inflation of a span serves both
-    with gz.shared_spans():
+    with gz.shared_spans(NODE_SHARED_FILES):
         stream, plan, stats = read_span(task["files"], ctx.norm, h * HOUR, (h + 1) * HOUR,
                                         ctx.events, prev, strays, new_stats())
         n, newest = feed_all(red, stream)
