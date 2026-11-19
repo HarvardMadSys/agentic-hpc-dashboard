@@ -253,7 +253,9 @@ class Served(unittest.TestCase):
         a session's rows are split by day, and in the first forty minutes after
         midnight the busiest is the day before's, which holds none of the calls."""
         day = time.strftime("%Y-%m-%d", time.localtime(self.now - CALL_AGO))
-        return next(s for s in ranks.get("events") or [] if "|%s|agent|" % day in s)
+        sid = next((s for s in ranks.get("events") or [] if "|%s|agent|" % day in s), None)
+        self.assertIsNotNone(sid, "no agent row of %s among %r" % (day, ranks.get("events")))
+        return sid
 
     def annotated_job(self, sid):
         """`(POST answer, finished job's answer)`: one session annotated."""

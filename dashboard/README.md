@@ -846,9 +846,12 @@ the tunnel serves their pages only to readers who sign in ([Password](#password)
   - So Ask is refused while names are anonymized, unless `ask.unmasked_answers` is set: its
     answer is shown as the agent writes it, and the agent can read whatever the service's
     account can, the raw feeds included, so a real name it read there would be shown. So
-    are the suggestions marked done (`/api/suggestions/done`), which keep its answers. With
-    it set, one kept from before names were masked, or under another salt, holds the names
-    of the data it was written from: it goes through the masking, as that data would.
+    are the suggestions marked done (`/api/suggestions/done`), which keep its answers --
+    deleting one included, so the page can neither show nor clear them then: to clear them,
+    edit or remove `<cache.dir>/ask/done.json` by hand. With it set, one kept from before
+    names were masked, or under another salt, holds the names of the data it was written
+    from: it goes through the masking, as that data would. The salt outlives a restart (see
+    the salt above), so only a new salt -- its file deleted -- sends every kept one through it.
 - **Not covered.** A person's name in free text that no rule ties to an account (a commit
   message, a folder named after someone), hostnames, partitions, and job ids. Nor a name the
   masking cannot see yet: an account named in another account's command line, outside a home

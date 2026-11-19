@@ -256,6 +256,10 @@ class VerbatimTest(unittest.TestCase):
         point = collections.namedtuple("Point", "x y")("glen", "ana")
         self.assertIs(anonmod.verbatim(point), point)
         self.assertEqual(anonmod.verbatim([point]), [point])
+        # so is a dict subclass, as a list's or a tuple's is: unmarked, it is masked
+        ordered = collections.OrderedDict(user="ana")
+        self.assertIs(anonmod.verbatim(ordered), ordered)
+        self.assertIs(type(anonmod.verbatim([ordered])[0]["user"]), str)
 
     def test_no_such_account_is_never_learned_as_one(self):
         # A real name in a filter maps to UNKNOWN, echoed under `users`: it was
