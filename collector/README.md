@@ -1012,7 +1012,10 @@ Where the day-files go, unless `EBPFM_OUTPUT_DIR` (eBPF tier) and `EBPFM_NODE_OU
 (node tier) say otherwise: as root, `/scratch/ebpfm` and `/scratch/ebpfm-login` where
 `/scratch` is writable, else `/var/log/ebpfm` and `/var/log/ebpfm-login`; as a user,
 `~/.ebpfm/login` (and `~/.ebpfm/ebpf`). The systemd unit, and so the RPM, sets
-`EBPFM_OUTPUT_DIR` itself (`/scratch/ebpfm`), and `/etc/default/ebpfm` cannot change it.
+`EBPFM_OUTPUT_DIR` to `/scratch/ebpfm`. An `EBPFM_OUTPUT_DIR` in `/etc/default/ebpfm`
+overrides it (systemd's `EnvironmentFile=` wins over `Environment=`), but the unit's
+`RequiresMountsFor=/scratch`, and `ebpfm status` and `tail`, which read their own
+environment, do not follow it.
 
 `ebpfm.sh`: `EBPFM_TIER` (`node`, `ebpf` or `all`; by default, by privilege) ·
 `EBPFM_PID_DIR` (`/run`; a user's `~/.run`) · `EBPFM_NODE_INTERVAL` (300 s between node

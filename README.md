@@ -142,7 +142,7 @@ The RPM lays down:
 | `/usr/lib/systemd/system/ebpfm.service` | the eBPF-tier unit, paths pre-substituted (no `install-unit` needed) |
 | `/usr/lib/sysctl.d/99-ebpfm.conf` | the two required sysctls, applied on install and every boot |
 | `/etc/default/ebpfm` | the unit's environment: the collector's settings, kept across upgrades |
-| `/scratch/ebpfm/` | the output directory (the unit's `EBPFM_OUTPUT_DIR`), made by the collector when it first starts; the unit waits for `/scratch` to be mounted |
+| `/scratch/ebpfm/` | the output directory (the unit's `EBPFM_OUTPUT_DIR`, which `/etc/default/ebpfm` can override), made by the collector when it first starts; the unit waits for `/scratch` to be mounted |
 
 Dependencies and sysctls are handled by the package, not a separate bootstrap
 step:
