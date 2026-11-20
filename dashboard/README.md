@@ -1068,7 +1068,7 @@ restart:
   one host keep separate ones. *Sign out*, at the foot of the sidebar, ends it. A page whose
   session runs out goes back to the form on its next request.
 - **Scripts** send the password as HTTP Basic auth, with any user name:
-  `curl --netrc-file ~/.config/rc-dashboard/netrc http://127.0.0.1:8085/api/health`. The
+  `curl --netrc-file ~/.config/rc-dashboard/netrc http://127.0.0.1:8080/api/health`. The
   password then never appears on a command line, where `ps` would show it to other users.
 - **What the service keeps.** Only the hash. A password is checked with scrypt, one check at a
   time, compared in constant time, and a wrong one waits a second more. The cookie is an expiry

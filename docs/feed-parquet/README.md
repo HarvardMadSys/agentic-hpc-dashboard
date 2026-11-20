@@ -614,8 +614,7 @@ every line to get them.
 
 - **Integers past 64 bits**: the day-files are read as the dashboard reads them
   (`fastjson`), and orjson reads such an integer as a float, so the copy has the float
-  (in `_extra`). The collector writes no such value. `fastjson`'s docstring says orjson
-  refuses them; orjson 3.13 does not.
+  (in `_extra`). The collector writes no such value.
 - **Key order**: a record comes back in its event's order; a key `_extra` holds that no
   table names comes back last. On FAS every record comes back in its own order. The
   demo generator writes `by_agent_type`'s `users` and `autonomous` the other way round
