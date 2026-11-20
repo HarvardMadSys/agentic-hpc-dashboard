@@ -178,8 +178,6 @@ export function whoQuery(w: Who): string {
   return p.toString();
 }
 
-export const whoActive = (w: Who): boolean => w.users.length + w.atypes.length > 0;
-
 /** The one client-side test, for the live tier the service does not rebuild
  *  per filter: the same rule the service applies to a filtered view's records. */
 export function whoMatch(w: Who, user: string | null | undefined, atype: string | null | undefined): boolean {
