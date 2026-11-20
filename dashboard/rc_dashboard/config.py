@@ -100,8 +100,8 @@ def _ebpf_candidates():
 def _node_candidates():
     """The unprivileged node tier.  `log/login` is last but load-bearing:
     node_snapshot.py is a vendored copy of collect/common/snapshot.py, so the
-    existing login feed is schema-compatible and works before `ebpfm --node` is
-    deployed anywhere."""
+    login feed that poller writes is schema-compatible, and is read where the
+    collector's node tier is not deployed."""
     c = []
     for e in ("EBPFM_NODE_LOG_ROOT", "EBPFM_NODE_OUTPUT_DIR"):
         if os.environ.get(e):

@@ -53,8 +53,9 @@ never outranks the file.
   load, so the example file is itself a legal config.
 - `--print-config` prints the resolved tree with a `_origin` per key, so "why is it reading
   *that*" is never a guess.
-- Path defaults are **candidate lists**, probed against the filesystem. `--check-feeds` shows
-  every candidate and which one won.
+- Path defaults are **candidate lists**, probed against the filesystem, and every candidate
+  that exists is read. `--print-config` lists the ones that exist (`_existing`);
+  `--check-feeds` prints the first, or how many it tried when none does.
 - **A mistake stops the service rather than loosening it.** A config file named by `--config`
   or `RC_DASH_CONFIG` must exist. A yes/no setting, as an `RC_DASH_*` variable or as a string
   in the file, is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off` in any case; anything else
@@ -85,8 +86,13 @@ is a JSON line; the retired builder's contract was `data.json`) and
 
 | feed | what it carries | default candidates |
 |---|---|---|
-| `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `log/ebpfm`, `/var/log/ebpfm` |
-| `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `…/ebpfm/node/logs`, `/var/log/ebpfm-login`, `log/login` |
+| `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `log/ebpfm`, `log/ebpfm/logs`, `/var/log/ebpfm`, `~/.ebpfm/ebpf` |
+| `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `$EBPFM_NODE_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/node/logs`, `log/ebpfm_node`, `/var/log/ebpfm-login`, `~/.ebpfm/login`, `log/login` |
+
+A relative candidate is under the repository's root. `/var/log/ebpfm{,-login}` and
+`~/.ebpfm/{ebpf,login}` are where the collector writes as root and as a user; as root on a
+host with a writable `/scratch` it writes to `/scratch/ebpfm{,-login}`, which is not a
+candidate, so name it in `RC_DASH_EBPF_ROOTS` / `RC_DASH_NODE_ROOTS`.
 
 Under a root, a day is a directory of one file per host and stream:
 `<YYYY-MM-DD>/<host>.exits.jsonl[.gz]` and `<host>.snapshot.jsonl[.gz]` for the eBPF tier,
@@ -94,12 +100,14 @@ Under a root, a day is a directory of one file per host and stream:
 sealed; it never seals the node tier's.
 
 `log/login` is last but load-bearing: `node_snapshot.py` is a vendored copy of
-`collect/common/snapshot.py`, so the existing login feed is schema-compatible and works before
-`ebpfm --node` is deployed anywhere.
+`collect/common/snapshot.py`, so the login feed that poller writes is schema-compatible, and is
+read where the collector's node tier is not deployed.
 
-Reading the collector's output uses a **separate** env var from the collector's own
-`EBPFM_OUTPUT_DIR`, following `collect/healthcheck.py`: sharing one would let an operator shell
-silently repoint the readers along with the writer.
+The readers have a variable of their own, `EBPFM_LOG_ROOT`, first in the list, following
+`collect/healthcheck.py`: an operator shell that repoints the collector's `EBPFM_OUTPUT_DIR`
+is not meant to repoint the readers too. That variable is still a candidate, though, and every
+candidate that exists is read, so one set where the service starts adds a root.
+`RC_DASH_EBPF_ROOTS` (`--ebpf-root`) replaces the list.
 
 ### History in Parquet
 
@@ -212,8 +220,9 @@ as EBR reads again once converted to JSONL, by the last `ebr.py` there was:
 | `run-fasrc.sh` | 8085 | FAS RC capture, `/scratch/marthen/fas-rc-test-data` (boslogin06, 2026-10-08..09, `.jsonl.gz`) | pinned to the capture's end | `fasrc.json` | on |
 | `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
-Both hot-reload as `./run.sh build`, from the same tree, and both serve names as aliases
-(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `run-dev.sh` and
+All three hot-reload as `./run.sh build`, from the same tree. `run-dev.sh` and `run-fasrc.sh`
+serve names as they are (`RC_DASH_ANONYMIZE=0` unless set; `1` aliases every name,
+[Anonymized names](#anonymized-names)), to readers who sign in. `run-dev.sh` and
 `run-fasrc.sh` (and `run.sh` itself) start only with a password hash in
 `dashboard.config.json` ([Password](#password)); without one the backend prints how to make
 one and exits. `run-demo.sh` needs none. `site.name` (`RC_DASH_SITE_NAME`) is
@@ -270,11 +279,12 @@ panels' shapes recognisable and are a model of nothing.
 **What it overrides**, whatever the shell or the config file says -- `run.sh` exports the
 cluster's feed roots, and a demo must never read them: both feed roots (the demo's own), the other feeds (a path in the
 demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
-saved builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
-`live.backfill_hours` (the history written), `panels.preprocess` and `panels.preprocess_wait_s`
-(every window built before the port opens, so a visitor never lands on a *merging* bar),
-`site.name`/`site.description`, and `server.auth.open` (a demo serves its made-up data with no
-password unless one is set). Each reads `demo` as its origin in `--print-config`.
+saved builds are evicted), `clock.as_of` (the wall clock), `feeds.ebpf.days`,
+`live.retention_min`, `live.backfill_hours` and `live.window_min` (fitted to the history
+written), `panels.preprocess` and `panels.preprocess_wait_s` (every window built before the
+port opens, so a visitor never lands on a *merging* bar), `site.name`/`site.description`,
+`server.rdns.enabled` (off: no DNS is asked about made-up addresses), and `server.auth.open`
+(a demo serves its made-up data with no password unless one is set). Each reads `demo` as its origin in `--print-config`.
 `--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
 
 | flag | env | default | |
@@ -332,7 +342,8 @@ a running one would date every saved build in the future after a hot-reload rest
 re-scan instead of resuming). Every live frame carries `clock`, the header reads *frozen
 capture · as of ...* instead of *live*, and the page takes "now" from the server, not the
 browser, so the events query, the export bounds and every "ago" agree with the windows.
-Durations the service measures with that clock read 0 s.
+Durations are not measured on that clock: a build's elapsed time, the inspector's read time
+and the workers' idle time are timed on `time.monotonic()`, which the pin leaves alone.
 
 ### Testing against a capture
 
@@ -502,7 +513,8 @@ scanned from scratch, unless all of these hold — and the window status's `cach
 one failed:
 
 - the same code and config (a fingerprint of the reducers, the normaliser, the scan and every
-  config key outside `server`) — changing how a record is counted must never resume a reduction
+  config key outside `server`, `anonymize`, `ui`, `ask` and `history`, none of which changes
+  what a saved state holds) — changing how a record is counted must never resume a reduction
   counted the old way;
 - the same files: every one it read still there, the same inode *and* the same first 4 KB (a
   file deleted and rewritten can get its inode number back), at least as long, and a line ending
@@ -674,8 +686,10 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
+| `GET /api/live/users?window_min=&q=&limit=&running=` | the user roster past the busiest rows the live frame carries; `q` searches it (the aliases, when names are anonymized), `running=agent:<type>` keeps the accounts with such a session up |
+| `GET /api/live/user?name=&window_min=&n=` | one account opened up: the sessions it has running and its last `n` (25) exited processes, however long ago |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
-| `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
+| `GET /api/trajectory?sid=&window_min=&from=&to=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/annotate` | the model that labels tool calls with their purpose: provider, model, endpoint, whether it can run here ([below](#tool-call-purposes-from-a-model)) |
 | `POST /api/annotate` `{sid, window_min, from, to, order, run}` | one session's tool calls and the purposes already known; `run` starts a job asking the model about the rest |
 | `GET /api/annotate/{job}` | that job's progress and its answers so far |
@@ -683,14 +697,17 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
+| `GET /api/io/commands?<filters>&window_min=&apid=&host=&cwd=` | starts a lookup of every command behind an I/O figure, over the window's records (`iocmds.py`); `apid` and `host` name the agents as the page drew them, `cwd` a directory |
+| `GET /api/io/commands/{job}?offset=&limit=&sort=&dir=` | that lookup's state and, once it is done, a page of its rows (200, by `rd_mb`, largest first, unless asked otherwise) |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a reader that stops reading holds up neither the tail nor the other readers (one did, for as long as it stayed); one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
 | `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved -- no poll ended, no batch handed over -- for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row (the ingest loop's 3 polls, the windows loop's 6 s, the feeds loop's 90 s, the rebuild loop's 3 rebuild intervals); or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing: a round that goes through, or a batch every view takes, ends the streak. It said `ok` with a `last_poll` two minutes old, and whatever the loops and the views met. `ingest` (`age_s`, `stale_after_s`, `feed_errors`, `feed_error_streak`, `feed_error`), each loop's last error, how many and its `streak` (`loops`), the readers (`websocket`: `readers`, `dropped`, `refused`, `last_drop`), the backfill, the windows, the memos. A loop's error and a view's are also logged to stderr, when they change and once a minute while they repeat |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
 With a password set, every route above asks for it ([Password](#password)). `POST /api/ask`,
-`GET /api/ask` and `/api/suggestions/done` are [Ask LLM](#ask-llm)'s; every route under `/api`
-that is not a GET or HEAD takes a JSON body only (a 415 otherwise).
+`GET /api/ask`, `GET /api/ask/{job}` and `/api/suggestions/done` (`GET`, `POST`, and `DELETE
+/api/suggestions/done/{id}`) are [Ask LLM](#ask-llm)'s; every route under `/api` that is not a
+GET or HEAD takes a JSON body only (a 415 otherwise).
 
 `window_min` is optional everywhere and omitting it is `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -739,12 +756,15 @@ drawn one is counted under its parent in its place. The read goes on to the sess
 `inspect_hold` drawn, so that budget bounds time alone. Totals are the same in either order.
 
 Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
-`from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox
-approval depth_min depth_max cpu_min duration_min exit_code signal outcome[] q`. `outcome` is
+`from to event[] class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key
+sandbox approval depth_min depth_max cpu_min duration_min rd_min wr_min exit_code signal
+outcome[] q`. `event` is `exit` unless one is given (an empty `event=` widens it to every kind,
+and `/api/events` says `event_filter_defaulted` when it applied the default); `rd_min` and
+`wr_min` are MB read and written, at least. `outcome` is
 how a process ended, in the words of [Commands that failed](#commands-that-failed): `ok`,
 `nonzero`, `answer`, `signal`, `pipe` or `none`.
 
-The export's first line is a `_meta` header (filters, window, feed paths, schema versions) and its last is a `_trailer` (row count, whether the cap truncated it).
+The export's first line is a `_meta` header (the filters, `from` and `to` among them, the feed paths and their status, schema versions) and its last is a `_trailer` (row count, whether the cap truncated it).
 Body rows are the
 collector's own fields plus additive `_`-prefixed derived keys — originals unmodified,
 except credentials.
@@ -1106,15 +1126,16 @@ credentials. So:
   even when turned on: `GET /api/ask` says why, and a question gets a 400 saying so. A refused
   question reads nothing.
 - **A short environment.** The agent gets what a program needs to run, to find its login and
-  to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV`): `PATH`,
-  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
-  `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
+  to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV` and
+  `ask.AGENT_ENV_PREFIXES`): `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LANGUAGE`,
+  `LC_*`, `TZ`, `TMPDIR`, `TERM`, `LD_LIBRARY_PATH`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`,
+  `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `DBUS_SESSION_BUS_ADDRESS` (which
   `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
   `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
   provider reached through a cloud, is named in `ask.env_passthrough`
   (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix,
   three characters or more and then `_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
-  "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_*", "AZURE_*"]` as the provider needs. A shorter prefix,
+  "CLOUD_ML_REGION", "AZURE_*"]` as the provider needs. A shorter prefix,
   or one without the `_` (`S*`), would take in whatever else begins so, and is refused at
   start; such a variable is named whole. The service's own `RC_DASH_*` settings, its password
   hash among them, are never passed. An agent that fails says so, since a credential left out
@@ -1129,8 +1150,9 @@ credentials. So:
   are not its neighbours.
 - **A short question.** At most 4 000 characters (a 400 past that); the prompt carries the last
   three earlier turns, cut to 600 and 1 500 characters a side.
-- **JSON only.** `POST /api/ask`, and `POST`/`DELETE /api/suggestions/done`, take
-  `Content-Type: application/json` (a 415 otherwise), which another site's page cannot send
+- **JSON only.** Every `/api` request but a GET, HEAD or OPTIONS (`POST /api/ask`, `POST
+  /api/suggestions/done`, `DELETE /api/suggestions/done/{id}`, `POST /api/annotate`) takes
+  `Content-Type: application/json` (a 415 otherwise, `guard.py:JsonOnly`), which another site's page cannot send
   without the browser asking first; a body past 1 MB is a 413, and a malformed one a 400.
 
 `ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, `{workdir}`,
@@ -1450,7 +1472,9 @@ for the session to be put under it, and `also` (0.1), the share a second use, or
 summary names it. Like the rest of `reducers`, all three are part of the config a
 saved window or hour is fingerprinted by, so a changed value builds them again rather than resuming them
 (*The time window*). A saved state needs that only for the phase thresholds read as records arrive, which
-bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max`, and `idle_s`).
+bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max` and
+`idle_s`), and `app_read_s`, which decides as a `cat` arrives whether it is a call or the Codex
+app's own read.
 The rest, every task and summary threshold among them, are read when a row is built: the reducer cuts and
 names a row each time it serves it, with the thresholds it runs with, and no saved state holds a task or a
 category.
@@ -1709,27 +1733,26 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 
 ## Known collector limitations the page surfaces
 
-- **`peak_rss_mb` is always 0** on kernel 6.8: the kernel runs `exit_mm()` (clearing
-  `task->mm`) before the `sched_process_exit` tracepoint fires, so the `if (mm)` guard at
-  `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
-  `exit_mm()` (verified). Until then the metric renders **not measured**.
-- **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
-  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in -- until it read the program alone (collector
-  README, *Agent tags*). The dashboard decides what each tagged process
-  really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
-  trajectory rows say how many keys they fold and how the least certain one was
-  attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a
-  24 h window went from 3 281 keys to 636 sessions, one VS Code server alone from 688.
-- **The node tier daemon needs an absolute path.** `ebpfm.sh:466` re-execs `"$0"`, so
-  `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by absolute
-  path.
+- **`peak_rss_mb` is 0 on every exit in older captures**: the kernel runs `exit_mm()` (clearing
+  `task->mm`) before the `sched_process_exit` tracepoint fires, so a collector that read
+  `mm->hiwater_rss` never got a value. The collector now reads `task->signal->maxrss`, which
+  survives `exit_mm()`; a field that is 0 on every record of a feed renders **not measured**
+  rather than as a measured zero (`reducers/__init__.py`, `all_zero`).
+- **Through schema 7 the collector's session key split one session per tool call.** It keyed
+  a process on its nearest classifier-tagged ancestor, and the classifier tagged anything
+  whose argv mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell
+  every Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). Schema 8 starts a session only at an agent runtime. For the older
+  captures the dashboard decides what each tagged process really is (`roles.py`) and folds
+  each key into the agent above it (`procindex.py`); trajectory rows say how many keys they
+  fold and how the least certain one was attributed, and the Sandbox tab attributes tool
+  calls to sessions through the same fold. On madsys-gpu1 a 24 h window went from 3 281 keys
+  to 636 sessions, one VS Code server alone from 688.
 - **`submit` request fields are argv-only.** A job whose `#SBATCH` directives carry the
   request reports `null` for `partition`/`gpus`/`array`; `req_src` says which. Recovering them
   needs a `slurm_jobs` census join, which is not a configured feed.
 - **Scheduler and GPU panels are absent, not zero.** `running_agent_jobs` and GPU duty need
-  the census and `dcgm`. The Live tab shows *agent job submissions in the window* from eBPF
+  the census and `dcgm`. The Slurm tab shows the *latest submissions* in the window from eBPF
   `submit` records instead — per-submission and actor-attributed, which is better evidence
   than a census count.
 
@@ -1737,6 +1760,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 
 | path | role |
 |---|---|
+| `rc_dashboard/__main__.py` | the CLI: `serve` (the default), `demo`, `check-feeds`, `print-config` (also as `--check-feeds`, `--print-config`) and `new-password` (`--force` to replace a password, `--dir`, `--netrc-host`; [Password](#password)) |
 | `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/feedfile.py` | the collector's day-files: listing them (a plain file before its `.gz`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line ends, the head digest |
@@ -1780,9 +1804,9 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it |
 | `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short |
 | `rc_dashboard/ask.py` | a question about the window on screen, answered by an agent CLI on this host ([Ask LLM](#ask-llm)) |
-| `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `feed` the files), and the overrides that point the service at it |
+| `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `records` the records themselves as the collector writes them, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
-| `bench/` | a synthetic feed at fleet density, timers, a profiler, and the guard that every served answer stayed the same ([bench/README.md](bench/README.md)) |
+| `bench/` | a synthetic feed at fleet density, timers, a profiler, and the guard that the main served answers stayed the same ([bench/README.md](bench/README.md)) |
 
 ## Ingestion, precisely
 
@@ -1790,7 +1814,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 service was running.** Nothing in the live tier is restored from a previous run (the historical
 windows resume from saved builds, but only from ones that are provably a prefix of the same files —
 see *The time window*). On every start the service hands
-each day-file to the tail at the end of its last complete line or frame, then reads the history
+each day-file to the tail at the end of its last complete line, then reads the history
 behind that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it,
 located by the same timestamp binary search the window rebuild uses. Offsets used to be
 persisted while the bins they fed were not, so a restart resumed at EOF with empty bins and the
