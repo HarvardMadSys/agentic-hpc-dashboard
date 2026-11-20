@@ -261,6 +261,14 @@ class ViewFilter:
     `vscode`, ...), and `none` asks for the records it did not tag -- a person's
     own shell, and the editors it does not recognise.
 
+    One figure is not the records' own: a process's disk bytes less what its
+    reaped children carried (reducers/own_io.py), where the child may be one the
+    filter leaves out -- a Codex a Claude started, under `agent_type=claude_code`.
+    The build gives each exit of a closed hour the figure the hours worked out
+    over every record (`WindowRegistry._own_figures`), loading those of the
+    records the filter keeps (`holds`); the hour still open, and the live feed,
+    are joined over what the filter keeps.
+
     Records with no user and no agent type -- the per-host `residency_totals`
     ticks -- cannot be attributed to anyone, so a filtered view does not hold
     them, and `NOT_NARROWED` says what that leaves out rather than letting an
@@ -338,6 +346,13 @@ class ViewFilter:
             return False
         return True
 
+    def holds(self, part):
+        """Whether the records of `part`, a user and an agent type token
+        (`hours.own_part`), are ones `match` keeps: the own figures a build of
+        this view loads (`hours.OwnFigures`)."""
+        user, token = part
+        return (not self._u or user in self._u) and (not self._t or token in self._t)
+
     def slug(self):
         """A short stable name for the saved file: same filter, same name."""
         return hashlib.sha1(json.dumps(self.key).encode()).hexdigest()[:12]
@@ -408,9 +423,12 @@ class PanelView:
         # And the panels (`payloads`): `restored` says, while the view shows
         # panels saved by an earlier view of its window, which ones; `panels_saved_at`
         # is when its own were last written down; `panels_note` why saved
-        # panels were not shown, or why its own could not be saved.
+        # panels were not shown, or why its own could not be saved. `own_io`,
+        # of a filtered view, where its exits' own disk bytes came from
+        # (`WindowRegistry._own_figures`).
         self.cache = {"source": None, "note": None, "saved_at": None,
-                      "restored": None, "panels_saved_at": None, "panels_note": None}
+                      "restored": None, "panels_saved_at": None, "panels_note": None,
+                      "own_io": None}
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, at=None, unread=False):
@@ -937,11 +955,15 @@ class WindowRegistry:
         m0 = time.monotonic()           # and this times the build
         view.state = "building"
         view.error = None
+        roots = self.roots_fn()
+        # A filtered view's exits take their own disk bytes from the hours,
+        # which are reduced first if need be, before live records are held
+        # for the build: a reduction can take as long as an unfiltered build's.
+        own = self._own_figures(view, roots, t0)
         # Buffer live records from here, so the seam between "the scan reached
         # EOF" and "the fresh reducers are installed" replays rather than drops.
         with self.lock:
             view._replay = collections.deque()
-        roots = self.roots_fn()
         view.cache["note"] = None
         # Only a view with nothing in memory resumes. A drift re-build exists to
         # move the window's start forward, which a saved copy -- older still --
@@ -977,6 +999,8 @@ class WindowRegistry:
                                       where=view.flt.where, stats=scanned):
             if keep is not None and not keep(rec):
                 continue
+            if own is not None:
+                own(rec)
             ts = rec.get("_ts_epoch")
             if ts is not None and (newest is None or ts > newest):
                 newest = ts
@@ -1049,6 +1073,15 @@ class WindowRegistry:
                         "{:,}".format(n)))
             elif unsaved:
                 view.cache["note"] = unsaved
+            if own is not None:
+                view.cache["own_io"] = (
+                    "the exits of the window's %d closed hour(s) took their own disk bytes "
+                    "as the hours worked them out over every record (%d exit(s)%s); those of "
+                    "the hour still open, and what the view is fed live, are joined within "
+                    "it, over what its filter keeps"
+                    % (own.h_hi - own.h_lo, own.given,
+                       "; %d more, of hours with none saved, joined within it" % own.left
+                       if own.left else ""))
             pending, view._replay = view._replay, None
             view.replay(pending, held, checked)
         # The panels, a reducer per hold; the view says it is ready once they are in,
@@ -1068,6 +1101,44 @@ class WindowRegistry:
             except Exception as e:      # a cache that cannot be written is no cache
                 view.cache["note"] = "not saved: %s" % e
         self._save_panels(view)
+
+    def _own_figures(self, view, roots, t0):
+        """For a filtered view, what puts each exit's own disk bytes on the
+        records its build reads (`hours.OwnFigures`), with the closed hours of
+        its window reduced first, as an unfiltered build of it would.
+
+        A filtered read never parses a record its filter leaves out
+        (`ViewFilter`), so its joins never take such a child off its parent: a
+        Claude whose figure holds a Codex it started kept the Codex's bytes
+        under `agent_type=claude_code`. The hour chain reads every record, and
+        works each exit's figure out once (reducers/own_io.py, `Ledger`); every
+        exit of a closed hour takes it. One of the hour still open, or fed live,
+        is joined within the view, as before, and so is every exit when there
+        is no hour store or the hours cannot be reduced: the view says which
+        (`cache.own_io`). None for an unfiltered view, whose joins read every
+        record."""
+        view.cache["own_io"] = None
+        if not view.flt:
+            return None
+        if self.hours is None:
+            view.cache["own_io"] = ("each exit's own disk bytes joined within the view, from "
+                                    "what its filter keeps: no hours are kept "
+                                    "(panels.merge_reduce)")
+            return None
+        m0 = time.monotonic()
+        prog = view.progress = {"pct": 0, "records": 0, "bytes": 0, "total_bytes": 0,
+                                "files": 0, "elapsed_s": 0.0, "mode": "hours"}
+
+        def step(i, n, records=0, bytes=0):
+            prog.update(records=prog["records"] + records, bytes=prog["bytes"] + bytes,
+                        total_bytes=prog["bytes"] + bytes, pct=min(99, int(100 * i / max(1, n))),
+                        elapsed_s=round(time.monotonic() - m0, 1))
+        own, got = hourmod.own_figures(self.hours, roots, t0 - view.window_s, t0,
+                                       view.flt.holds, step)
+        if own is None:
+            view.cache["own_io"] = ("each exit's own disk bytes joined within the view, from "
+                                    "what its filter keeps: %s" % got)
+        return own
 
     # ---------------------------------------------------------- saved panels
     def _show_saved(self, view):

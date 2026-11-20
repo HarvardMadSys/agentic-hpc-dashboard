@@ -869,7 +869,9 @@ def _reducers():
 class FingerprintTest(unittest.TestCase):
 
     def test_every_module_a_saved_build_counts_with_is_in_its_fingerprint(self):
-        # Out on purpose: the hours, which a saved build never holds, feeds.py,
+        # The hours are in: a filtered build's exits take the own figures they
+        # worked out (`hours.OwnFigures`). Out on purpose: clock.py, which says
+        # which hours are closed, feeds.py,
         # which finds the day-files whose roots the fingerprint holds,
         # anonymize.py, whose home patterns the trajectories read only to name
         # a task's project when a read builds a phase block (`_phase_cache`,
@@ -877,7 +879,7 @@ class FingerprintTest(unittest.TestCase):
         # panels a build served and nothing a build reads, and keysearch.py, the
         # session inspector's read fanned out over worker processes, which reads
         # what proctree's own read does and nothing any saved state holds.
-        out = {"hours.py", "feeds.py", "anonymize.py", "payloads.py", "keysearch.py"}
+        out = {"clock.py", "feeds.py", "anonymize.py", "payloads.py", "keysearch.py"}
         got = _reached(["normalize.py", "export.py", "windows.py", "snapshots.py",
                         "redact.py"] + sorted(_reducers()), out)
         self.assertEqual(got - set(snapshots.CODE_FILES) - _reducers() - out, set())
@@ -914,9 +916,10 @@ class FingerprintTest(unittest.TestCase):
     def test_what_decides_an_hour_decides_a_saved_build(self):
         # A saved build and a saved hour hold the state of the same normaliser
         # and reducers, so a module that changes what an hour means changes
-        # what a saved build means. hours.py itself decides only the hours.
+        # what a saved build means. hours.py too: a filtered build's exits
+        # took the own figures the hours worked out (`hours.OwnFigures`).
         from rc_dashboard import hours
-        self.assertEqual(set(hours.CODE_FILES) - set(snapshots.CODE_FILES), {"hours.py"})
+        self.assertEqual(set(hours.CODE_FILES) - set(snapshots.CODE_FILES), set())
 
 
 if __name__ == "__main__":

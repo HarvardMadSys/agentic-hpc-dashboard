@@ -555,7 +555,12 @@ parents whose pid an older process had used. An hour closes once the newest reco
 next hour's read and merged into its hour's saved state, not lost. On one login node's feed a 24 h window then builds in ~2-3 s and a 7 d one in
 ~8 s after a restart, a window switch or a drift refresh (against ~15 s and ~160 s scanned);
 filling the hours the first time costs about what one scan does. A week of hours is ~38 MB on
-disk. A view filtered to users or agent types is still scanned.
+disk. A view filtered to users or agent types is still scanned, but its exits take their own
+disk bytes from the hours, which its build reduces first when they are not yet (see "Disk I/O
+is each process's own"): each hour also saves the own figures of the exits it took a child off
+(`o<hour>`), kept by user and agent type so a filtered build reads only its own. On the bench
+feed (a day of 8 nodes, 0.9 M records) they are 0.25 MB beside 3.3 MB of hour states, and
+working them out adds under 3% to reducing an hour.
 
 On a sealed day, an hour's time search and its read each open the `.gz`, and the next hour's
 search lands near where that read ended; each open inflated the same 8 MB span again. In a run of
@@ -840,8 +845,22 @@ already made once.
   figure less what its exited children carried (`reducers/own_io.py`: one join per reducer,
   carried across hours like the other joins; the live tier's backfill, which reads newest first,
   takes each child off the parent it met first). So a command's bytes count once, not once per
-  process above it. A child whose exit was not read is not taken off: one outside the window, or
-  one a filter leaves out. Nor is one its parent cannot have reaped: a child that outlives its
+  process above it. A join can take off only a child whose exit it read, and a filtered view
+  never reads what its filter leaves out: a `claude` that read 20 MB itself, under which a
+  `codex` it started read 100 MB, was 20 MB unfiltered and 120 MB under
+  `agent_type=claude_code`. So the figure is worked out once, by the one pass that reads every
+  record: the hours (`hours.py`, "Hourly merge-reduce") put each exit's own figure on it before
+  their reducers read it, with one more join (`Ledger`), and save the parents' beside each hour,
+  kept by the process's user and agent type. A filtered view's build gives every exit of a
+  closed hour in its window that figure, from a day-file or a sealed day's replica alike,
+  loading only the figures of the users and agent types it keeps; a window's first part-hour
+  does too, so a child reaped before the window began is taken off as in the hours after it.
+  Then a process reads the same in any view. A child is still not taken off where no such pass
+  has read it: in the hour still open and in what a filtered view is fed live, the view takes
+  off only the children it read, until it is built again once that hour has closed (its status
+  says which, `cache.own_io`); with no hours kept (`panels.merge_reduce` off) every view joins
+  what it reads, as before; and the inspector and the commands behind a number join what their
+  own reads parse, as before. Nor is one its parent cannot have reaped: a child that outlives its
   parent still names it, and a later process may get that pid, so a process takes off only its
   own user's children (root aside) that began no more than a minute before it did (its recorded
   start is its last exec); the rest were counted at their own exits and are dropped, counted.
@@ -865,9 +884,9 @@ already made once.
   parent holds, but a login shell the feed never sees exit would otherwise crowd the rest out.
   A pid whose children's groups pass PER_PID (eight) with no two of one user to merge drops the
   earliest begun, counted apart (`crowded`): the cap does not bear on it. A service holds some
-  35 joins (five in each held window, five carried in the hours' chain, the live tier's two, an
-  inspector read's and a lookup's): at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at
-  the demo's 2.8 ~69 MB, at worst (eight, ~2.5 KB) 159 MB; the live tier's notes add at most
+  36 joins (five in each held window, six carried in the hours' chain, the live tier's two, an
+  inspector read's and a lookup's): at one entry a parent (~0.5 KB) 2000 is ~40 MB in all, at
+  the demo's 2.8 ~71 MB, at worst (eight, ~2.5 KB) 164 MB; the live tier's notes add at most
   ~10 MB. The repo's streams hold under 500 parents at once, and the bench's feed, 32 times the
   demo's records, drops none at 2000. A busy login node may need more -- over one real day an
   uncapped join of agent children alone ended holding 177,411 parents, most of them stale

@@ -37,6 +37,20 @@ one pass would. The carried state is aged: what was last touched more than
 `CARRY_KEEP_H` ago is dropped, so a service that runs for a month carries
 about a day of it, not a month.
 
+**Own figures.** The one join a reader that skips records cannot make is the
+one that takes a process's reaped children's disk bytes off its own
+(reducers/own_io.py): a filtered view never reads a child its filter leaves
+out, so never takes it off. This pass reads every record, so it makes that
+join for every reader, once: a `Ledger` first in each hour's reducer set puts
+each exit's own figure on the record before the reducers read it, so every
+panel the hour holds takes the same one, and the figures that differ from a
+record's own `io` -- the parents' -- are saved beside the hour (`o<hour>`), by
+the user and agent type of the process (`own_part`). A filtered view's build
+puts them back on the exits it reads of every closed hour in its window, and
+so does a window's edge read (`OwnFigures`): each process's own bytes are then
+the same in any view, filtered or not, sealed day or not. Only the hour still
+open, and what a filtered view is fed live, join within the view.
+
 **When an hour closes.** Once the newest record seen is past its end by
 `panels.hour_grace_s` -- the collector writes a poll round at a time and hosts'
 clocks disagree, so not at the stroke of the hour. A record that arrives for
@@ -48,9 +62,10 @@ hour are the one thing such a record loses.
 
 **Saved.** Under `<cache.dir>/hours/`, one file per hour (`h<epoch hour>`),
 per merged day (`d<epoch day>`), and per hour a run may start after, the join
-state that hour ends with (its chain, `c<epoch hour>`). Every hour reduced
-saves its chain first, then itself, so a build stopped after any hour resumes
-there; a chain is dropped once no run can start from it. Each is named
+state that hour ends with (its chain, `c<epoch hour>`); and per hour its own
+figures (`o<epoch hour>`). Every hour reduced saves its chain first, then its
+figures, then itself, so a build stopped after any hour resumes there, and a
+saved hour has its figures; a chain is dropped once no run can start from it. Each is named
 by a fingerprint of the code and config that decide what a reduction means --
 a state reduced by other code is never merged, and is pruned (all but the
 newest other generation, which another process may share the directory with). A pickle header
@@ -102,12 +117,14 @@ from concurrent.futures.process import BrokenProcessPool
 from operator import itemgetter
 
 from . import fastjson, gz, snapshots
-from .export import (HEAD_BYTES, SCAN_SLACK_S, day_files, event_filter, head_digest,
-                     seek_to_epoch)
+from .export import (HEAD_BYTES, SCAN_SLACK_S, agent_type_token, day_files, event_filter,
+                     head_digest, seek_to_epoch)
 from .feedfile import host_of
 from .normalize import Normalizer
+from .reducers.own_io import FIELDS, LEDGER, OWN, Ledger, cap_of, figure_key
 
-FORMAT = 1
+# 2: each hour saves its exits' own figures beside it (`o<hour>`, `Ledger`).
+FORMAT = 2
 HOUR = 3600
 # Every window's bin width is a whole number of these, so an hour's series
 # folds into any window's exactly (resources.ResourceReducer.merge).
@@ -283,6 +300,20 @@ def ingest_workers(cfg):
 
 
 # ------------------------------------------------------------ the reducer set
+def own_part(rec):
+    """Which of an hour's own figures a record's is kept with: its user's and
+    agent type's (`ViewFilter.holds`), the two things a view is filtered by."""
+    return rec.get("user"), agent_type_token(rec.get("agent_type"))
+
+
+def with_ledger(red, cfg):
+    """An hour's reducer set `red` with the pass's own-figure join first, so it
+    is fed each exit before any reducer (`Ledger`)."""
+    out = {LEDGER: Ledger(cap_of(cfg), own_part)}
+    out.update(red)
+    return out
+
+
 def prepare(red):
     """Make a fresh reducer set an hour's: series at HOUR_BIN_S, and the
     process index noting what each hour touched (procindex.ProcIndex.track)."""
@@ -567,6 +598,7 @@ class NodeContext:
         self.events = events
         self.norm = Normalizer(cfg)
         self.cls = {k: type(r) for k, r in fresh().items()}
+        self.cls[LEDGER] = Ledger
 
 
 _NODE_CTX = None
@@ -652,11 +684,13 @@ def reduce_node_hour(ctx, task):
     (`snapshots.capture`), the carry, and what the hour's meta needs."""
     t0, c0 = time.monotonic(), time.process_time()
     h = task["hour"]
-    red = prepare(ctx.fresh())
+    red = prepare(with_ledger(ctx.fresh(), ctx.cfg))
     if task.get("keys") is not None:
         # one group of the set (`reducer_groups`): only its reducers are fed,
-        # seeded, carried and captured; the other group's are another task's
-        red = {k: red[k] for k in task["keys"]}
+        # seeded, carried and captured; the other group's are another task's.
+        # Each has the ledger, first: its reducers take each exit's own figure
+        # from it, and the same records make the same figures in every group.
+        red = {k: red[k] for k in [LEDGER] + list(task["keys"])}
     carry = task["carry"]
     if carry is not None:
         seed(red, carry)
@@ -669,12 +703,16 @@ def reduce_node_hour(ctx, task):
         n, newest = feed_all(red, stream)
     carry = take_carry(red)
     strip(red)
+    # never part of the saved state; and every group of a node makes the same
+    # figures, so one of them hands them back
+    ledger = red.pop(LEDGER)
+    figures = ledger.take_figures() if task.get("figures", True) else None
     files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop", "resume")}
                   for e in plan]
     carry, ages = age(ctx.cls, carry, task["ages"], h)
     return {"node": task["node"], "hour": h, "state": snapshots.capture(red), "records": n,
             "newest": newest, "files": files_meta, "carry": carry, "ages": ages,
-            "strays": strays, "bytes": stats["bytes"],
+            "strays": strays, "bytes": stats["bytes"], "figures": figures,
             "wall_s": time.monotonic() - t0, "cpu_s": time.process_time() - c0}
 
 
@@ -854,12 +892,16 @@ class HourStore:
         self.have = set()               # hours saved under the current fingerprint
         self.days = set()
         self.chains = set()             # hours whose chain is saved
+        self.figs = set()               # hours whose own figures are saved (`Ledger`)
         self.chain = None               # (hour, carry, ages): the newest chain
         self.stats = {"hours_reduced": 0, "records": 0, "bytes": 0, "stragglers": 0,
                       "stragglers_lost": 0, "patched_hours": 0, "reduce_s": 0.0,
                       "merged_states": 0, "days_built": 0, "pruned": 0, "chains_saved": 0,
-                      "chain_bytes": 0}
+                      "chain_bytes": 0, "figures_saved": 0, "figure_bytes": 0,
+                      "figure_hours_read": 0}
         self._cls = {k: type(r) for k, r in fresh().items()}
+        # what `age` ages an hour's carry by: the reducers', and the own-figure join's
+        self._aged = dict(self._cls, **{LEDGER: Ledger})
         # The node split (`ingest.workers`): 1 is one pass in this process.
         self.workers = ingest_workers(cfg)
         self.split = self.workers > 1
@@ -910,6 +952,7 @@ class HourStore:
             return
         self.fp, self.roots = fp, list(roots)
         self.have, self.days, self.chains, self.chain = set(), set(), set(), None
+        self.figs = set()
         try:
             names = os.listdir(self.dir)
         except OSError:
@@ -928,18 +971,22 @@ class HourStore:
                 self.days.add(idx)
             elif stem[0] == "c":
                 self.chains.add(idx)
+            elif stem[0] == "o":
+                self.figs.add(idx)
         self.chain = self._newest_chain()
         self.prune()
 
     def _path(self, kind, idx):
         return os.path.join(self.dir, "%s%d.%s.hr" % (kind, idx, self.fp))
 
-    def _write(self, path, meta, blob):
-        """`blob` is a pickle: a reducer set's comes from `snapshots.capture`."""
+    def _write(self, path, meta, blob, packed=False):
+        """`blob` is a pickle: a reducer set's comes from `snapshots.capture`.
+        `packed`: its parts are compressed already, each on its own (an hour's
+        figures, `_save_figures`), and it is written as it is."""
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         meta = dict(meta, format=FORMAT, fingerprint=self.fp, saved_at=time.time())
         # Level 3: within a tenth of level 6's size at well over twice its speed.
-        body = zlib.compress(blob, 3)
+        body = blob if packed else zlib.compress(blob, 3)
         tmp = "%s.%d.tmp" % (path, os.getpid())
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -955,8 +1002,9 @@ class HourStore:
             raise
         return len(body)
 
-    def _read(self, path, body=True):
-        """`(meta, raw body)` of a private, current file, or `(None, None)`."""
+    def _read(self, path, body=True, packed=False):
+        """`(meta, raw body)` of a private, current file, or `(None, None)`.
+        `packed`: the body as it was written (`_write`)."""
         try:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except OSError:
@@ -968,7 +1016,9 @@ class HourStore:
             meta = pickle.load(fh)
             if meta.get("format") != FORMAT or meta.get("fingerprint") != self.fp:
                 return None, None
-            return meta, (zlib.decompress(fh.read()) if body else None)
+            if not body:
+                return meta, None
+            return meta, (fh.read() if packed else zlib.decompress(fh.read()))
 
     def meta(self, hour):
         try:
@@ -981,7 +1031,7 @@ class HourStore:
             os.unlink(self._path(kind, idx))
         except OSError:
             pass
-        {"h": self.have, "d": self.days, "c": self.chains}[kind].discard(idx)
+        {"h": self.have, "d": self.days, "c": self.chains, "o": self.figs}[kind].discard(idx)
 
     def load(self, kind, idx):
         """A saved hour (`h`) or day (`d`) as a live reducer set, or None."""
@@ -1033,6 +1083,61 @@ class HourStore:
             self._drop("c", hour)
             return None
 
+    def _save_figures(self, hour, figures):
+        """Save hour `hour`'s own figures (`Ledger.take_figures`): each part
+        compressed on its own, so a filtered view inflates only the parts of
+        the records it keeps (`figures`). Saved for every hour reduced, none
+        kept or not: an hour with the file is one whose figures are known."""
+        parts = {p: zlib.compress(pickle.dumps(d, protocol=pickle.HIGHEST_PROTOCOL), 3)
+                 for p, d in (figures or {}).items() if d}
+        n = sum(len(d) for d in (figures or {}).values())
+        size = self._write(self._path("o", hour),
+                           {"kind": "figures", "hour": hour, "parts": len(parts), "entries": n},
+                           pickle.dumps(parts, protocol=pickle.HIGHEST_PROTOCOL), packed=True)
+        self.figs.add(hour)
+        self.stats["figures_saved"] += n
+        self.stats["figure_bytes"] += size
+        return size
+
+    def figures(self, hour, want=None):
+        """Hour `hour`'s own figures, of the parts `want` holds (a callable on
+        a part, `own_part`; None for every one), as one map `figure_key -> own
+        figure` in FIELDS order; or None when none are saved for it, or they
+        cannot be read (then dropped, and made again when the hour is)."""
+        if hour not in self.figs:
+            return None
+        try:
+            meta, body = self._read(self._path("o", hour), packed=True)
+            if meta is None or meta.get("kind") != "figures" or meta.get("hour") != hour:
+                raise ValueError("not this hour's figures")
+            out = {}
+            for p, blob in pickle.loads(body).items():
+                if want is None or want(p):
+                    out.update(pickle.loads(zlib.decompress(blob)))
+        except Exception:
+            self._drop("o", hour)
+            return None
+        self.stats["figure_hours_read"] += 1
+        return out
+
+    def _patch_figures(self, hour, figures):
+        """Add the figures of records that came for closed hour `hour` late
+        (`_patch`) to the ones it saved. Its file is dropped if they cannot be
+        written: the hour's exits are then joined where they are read, as
+        before, rather than given figures that leave these out."""
+        if hour not in self.figs or not any(figures.values()):
+            return
+        try:
+            meta, body = self._read(self._path("o", hour), packed=True)
+            if meta is None or meta.get("kind") != "figures" or meta.get("hour") != hour:
+                raise ValueError("not this hour's figures")
+            parts = {p: pickle.loads(zlib.decompress(b)) for p, b in pickle.loads(body).items()}
+            for p, d in figures.items():
+                parts.setdefault(p, {}).update(d)
+            self._save_figures(hour, parts)
+        except Exception:
+            self._drop("o", hour)
+
     def _newest_chain(self):
         """The newest saved hour's chain that can be read, or None."""
         for h in sorted(self.chains & self.have, reverse=True):
@@ -1061,7 +1166,9 @@ class HourStore:
 
     # --------------------------------------------------------------- reduce
     def _hour_set(self):
-        return prepare(self.fresh())
+        """A reducer set to reduce an hour with, the own-figure join first
+        (`with_ledger`): taken out again before the hour is saved."""
+        return prepare(with_ledger(self.fresh(), self.cfg))
 
     def ensure(self, roots, h_lo, h_hi, progress=None):
         """Reduce whichever of hours `[h_lo, h_hi)` are not saved, in order.
@@ -1205,17 +1312,20 @@ class HourStore:
             n, newest = feed_all(red, stream)
             carry = take_carry(red)
             strip(red)
+            figures = red.pop(LEDGER).take_figures()
             files_meta = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head", "stop",
                                              "resume")}
                           for e in plan]
             # Aged before it is saved: the chain is what the next hour starts from. Handed on
             # as it is, since it is saved: the next hour may change it in place, and a window
             # installs a copy (`install_carry`).
-            carry, ages = age(self._cls, carry, ages, h)
+            carry, ages = age(self._aged, carry, ages, h)
             # The chain first, then the hour: a saved hour always has the state it carries
             # out, so a build stopped after it resumes there (R67). One saved for an hour
             # whose own save did not complete belongs to no saved hour, and is never used.
+            # Its figures between the two: a saved hour has them too.
             self._save_chain(h, carry, ages)
+            self._save_figures(h, figures)
             self._save_hour(h, red, {"records": n, "newest": newest, "carried": carried,
                                      "files": files_meta, "stragglers": 0,
                                      "reduced_at": time.time()})
@@ -1342,11 +1452,12 @@ class HourStore:
         groups = self._reducer_groups(len(nodes))
         units = [(nd, g) for nd in nodes for g in range(len(groups))]
         pool = self._node_pool(len(units))
+        # what each group carries: its reducers' join state, and the own-figure join's,
+        # which every group runs (`reduce_node_hour`)
+        held = [None if len(groups) == 1 else [LEDGER] + list(keys) for keys in groups]
         # each unit's own join state, next hour to queue, and read of its previous hour
-        carries = {(nd, g): pick_carry(node_carry.get(nd), groups[g] if len(groups) > 1 else None)
-                   for nd, g in units}
-        ages_of = {(nd, g): pick_ages(node_ages.get(nd), groups[g] if len(groups) > 1 else None)
-                   for nd, g in units}
+        carries = {(nd, g): pick_carry(node_carry.get(nd), held[g]) for nd, g in units}
+        ages_of = {(nd, g): pick_ages(node_ages.get(nd), held[g]) for nd, g in units}
         nxt = {u: a for u in units}
         prev = {u: prev0 for u in units}
         done = collections.defaultdict(dict)    # hour -> unit -> result
@@ -1362,7 +1473,7 @@ class HourStore:
             nd, g = u
             task = {"node": nd, "hour": hr, "files": by_node.get(nd, []), "prev": prev[u],
                     "carry": carries[u], "ages": ages_of[u],
-                    "keys": groups[g] if len(groups) > 1 else None}
+                    "keys": groups[g] if len(groups) > 1 else None, "figures": g == 0}
             fut = self._run_node(pool if self._drift is None else None, task)
             running[fut], tasks[fut] = u, task
 
@@ -1444,7 +1555,8 @@ class HourStore:
     def _save_node_hour(self, h, got, nodes, n_groups, carried):
         """Put each node's groups together, merge the nodes in node order, and
         save hour `h` as `_reduce_run` saves an hour: its chain first (every
-        node's join state as its own hour ended), then the hour. Returns its
+        node's join state as its own hour ended), then its own figures (every
+        node's, whose keys are each its own), then the hour. Returns its
         records and bytes."""
         t0 = time.monotonic()
         red = None
@@ -1474,7 +1586,14 @@ class HourStore:
         files_meta = sorted((f for x in first for f in x["files"]), key=lambda f: f["path"])
         n = sum(x["records"] for x in first)
         newest = max((x["newest"] for x in first if x["newest"] is not None), default=None)
+        figures = {}
+        for x in first:
+            for p, d in (x.get("figures") or {}).items():
+                figures.setdefault(p, {}).update(d)
+            x["figures"] = None
         self._save_chain(h, {NODES: chain}, {NODES: chain_ages})
+        self._save_figures(h, figures)
+        del figures
         self._save_hour(h, red, {"records": n, "newest": newest, "carried": carried,
                                  "files": files_meta, "stragglers": 0,
                                  "reduced_at": time.time(), "nodes": len(nodes),
@@ -1521,6 +1640,8 @@ class HourStore:
             recs.sort(key=itemgetter(0))
             n, newest = feed_all(part, ((x[0], x[1]) for x in recs))
             strip(part)
+            # their own figures, joined among themselves as their counts are
+            self._patch_figures(h, part.pop(LEDGER).take_figures())
             merge_into(red, part)
             for r in red.values():
                 if hasattr(r, "bin_s"):
@@ -1590,7 +1711,14 @@ class HourStore:
         newest one's. Returns whether it was."""
         if self.chain is None or self.chain[0] != last_hour:
             return False
-        carry = pickle.loads(pickle.dumps(self.chain[1], protocol=pickle.HIGHEST_PROTOCOL))
+        # Not the own-figure join's: a window has none (`Ledger`), and its tail
+        # and live feed are joined by its reducers' joins, as they always were.
+        def reducers_of(c):
+            return {k: v for k, v in (c or {}).items() if k != LEDGER}
+        held = self.chain[1] or {}
+        held = ({NODES: {nd: reducers_of(c) for nd, c in held[NODES].items()}}
+                if NODES in held else reducers_of(held))
+        carry = pickle.loads(pickle.dumps(held, protocol=pickle.HIGHEST_PROTOCOL))
         if carry and NODES in carry:
             # reduced by node: the window's tail and live feed are one pass over every
             # node, so its maps are interleaved by age and held to one pass's caps
@@ -1688,7 +1816,7 @@ class HourStore:
                 idx = int(stem[1:])
             except ValueError:
                 continue
-            if (stem[0] in "hc" and idx < oldest) or (stem[0] == "d" and idx * 24 < oldest):
+            if (stem[0] in "hco" and idx < oldest) or (stem[0] == "d" and idx * 24 < oldest):
                 self._drop(stem[0], idx)
                 self.stats["pruned"] += 1
         if len(other) > 1:
@@ -1723,12 +1851,94 @@ class HourStore:
         is taken whole (a sorted copy, a tuple), never iterated live."""
         have, chain = sorted(self.have), self.chain
         return {"hours": len(have), "days": len(self.days), "chains": len(self.chains),
+                # hours whose exits' own figures are saved (`Ledger`)
+                "figure_hours": len(self.figs),
                 "newest_hour": (time.strftime("%Y-%m-%d %H:00", time.localtime(
                     have[-1] * HOUR)) if have else None),
                 "carried_through": (time.strftime("%Y-%m-%d %H:00", time.localtime(
                     (chain[0] + 1) * HOUR)) if chain else None),
                 "grace_s": self.grace, **{k: (round(v, 1) if isinstance(v, float) else v)
                                           for k, v in list(self.stats.items())}}
+
+
+# ------------------------------------------------------------ own figures
+class OwnFigures:
+    """Each exit's own figure as the hour chain worked it out (`Ledger`), put
+    back on the record by a reader that does not read every exit, before its
+    reducers read it (reducers/own_io.py, `OWN`): a filtered view's build, which
+    never reads what its filter leaves out (`windows.WindowRegistry._build`),
+    and a window's edge, which never read what came before it (`build`).
+
+    Only an exit of a closed hour in `[h_lo, h_hi)` whose figures are saved is
+    given one, the hour's own or, when the hour kept none for it, its `io` as it
+    stands: it took nothing off -- most exits, and a parent the hour's join
+    dropped at its cap, whose children count again in every view alike. Any
+    other record is passed on as it is, and its reducers' joins work its figure
+    out from what they read, as before: one of the hour still open, or of an
+    hour whose figures cannot be read. Not told apart: an exit written after its
+    hour closed, which the hour never read; until a later hour's read finds it
+    (`HourStore._patch`) it too takes its `io` as it stands, where a join over
+    what the view read would have taken off the children it read with it.
+    `want` picks the parts loaded (`own_part`; `windows.ViewFilter.holds`).
+    Called with each record; hands it back."""
+
+    HELD = 3        # hours held at once: a read comes in time order, give or take a poll round
+
+    def __init__(self, store, h_lo, h_hi, want=None):
+        self.store = store
+        self.h_lo, self.h_hi = h_lo, h_hi
+        self.want = want
+        self.held = collections.OrderedDict()   # hour -> its figures, or None
+        self.given = 0          # exits given their saved figure
+        self.left = 0           # exits of a closed hour with none saved: joined as before
+
+    def __call__(self, rec):
+        if rec.get("event") != "exit" or OWN in rec:
+            return rec
+        io = rec.get("io")
+        ts = rec.get("_ts_epoch")
+        if not isinstance(io, dict) or ts is None:
+            return rec
+        h = int(ts // HOUR)
+        if not self.h_lo <= h < self.h_hi:
+            return rec
+        figs = self._hour(h)
+        if figs is None:
+            self.left += 1
+            return rec
+        own = figs.get(figure_key(rec))
+        rec[OWN] = (dict(zip(FIELDS, own)) if own is not None
+                    else {f: io.get(f) for f in FIELDS})
+        self.given += 1
+        return rec
+
+    def _hour(self, h):
+        if h in self.held:
+            self.held.move_to_end(h)
+            return self.held[h]
+        got = self.store.figures(h, self.want)
+        self.held[h] = got
+        if len(self.held) > self.HELD:
+            self.held.popitem(last=False)
+        return got
+
+
+def own_figures(store, roots, since, t0, want=None, progress=None):
+    """For a filtered build of the window `[since, t0]`: its closed hours
+    reduced, as an unfiltered build of it reduces them (`build`, the edge's
+    hour too), and what puts their exits' own figures on the records the build
+    reads (`OwnFigures`). Returns `(figures, hours reduced)`, or `(None, why)`
+    when no hour of the window has closed or its hours cannot be reduced: the
+    view then works every figure out itself, as it always did."""
+    h_from = int(math.ceil(since / HOUR)) - 1
+    h_hi = store.closed_end(t0, roots)
+    if h_hi <= h_from:
+        return None, "no hour of the window has closed"
+    try:
+        n = store.ensure(roots, h_from, h_hi, progress=progress)
+    except Exception as e:      # a store that cannot be written is no store
+        return None, "the hours could not be reduced (%s)" % e
+    return OwnFigures(store, h_from, h_hi, want), n
 
 
 # ------------------------------------------------------------ a window build
@@ -1799,7 +2009,11 @@ def build(reg, view):
             stats = new_stats()
             stream, _plan, stats = read_span(files, norm, since, h_lo * HOUR, store.events,
                                              stats=stats)
-            n_edge, _ = feed_all(acc, stream)
+            # The edge's exits take the own figures their hour worked out: the
+            # read begins at the window's start, and a child reaped before it
+            # is taken off its parent as it is in the hours after it.
+            own = OwnFigures(store, h_from, h_lo)
+            n_edge, _ = feed_all(acc, ((ts, own(rec)) for ts, rec in stream))
             step(1, n_edge, stats["bytes"])
             for kind, idx in parts:
                 part = store.load_part(kind, idx)
