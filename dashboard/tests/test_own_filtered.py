@@ -366,6 +366,43 @@ class NoHoursTest(OwnCase):
         self.assertIsNone(view.own_open_hour)
 
 
+class BrokenHoursTest(OwnCase):
+    """Hours kept, but they cannot be reduced (`HourStore.ensure` raises, as a
+    full disk would have it): every exit is joined within the view, which says
+    so, and the build still records the hour still open. So a held view is
+    built again once each hour closes, to take the figures should the hours
+    work again -- and not at every tick while they stay broken."""
+
+    def test_built_again_once_an_hour_closes_not_every_tick(self):
+        self.write(nested(NOW - 900) + [later(NOW - 30)])
+        reg = self.registry(self.cfg())
+        broken = mock.patch.object(reg.hours, "ensure",
+                                   side_effect=OSError("No space left on device"))
+        broken.start()
+        self.addCleanup(broken.stop)
+        view = self.build(reg, flt=CLAUDE)
+        self.assertIn("could not be reduced", view.cache["own_io"])
+        self.assertEqual(tools(view), {"claude": 120.0})
+        h = int(NOW // HOUR)
+        self.assertEqual(view.own_open_hour, h)
+        reg._queue.clear()                  # what `request` queued, built above on this thread
+        reg.refresh()
+        self.assertEqual(list(reg._queue), [])
+        # 41 minutes on, that hour has closed: built again once
+        self.at(NOW + 2450)
+        self.write([later(NOW + 2410)])
+        reg.refresh()
+        self.assertEqual(list(reg._queue), [view_key(WIN, CLAUDE)])
+        reg._job(reg._queue.popleft())
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(view.own_open_hour, h + 1)
+        self.assertEqual(tools(view), {"claude": 120.0})   # the store still broken
+        # and then not again, tick after tick, until the next hour closes
+        for _ in range(3):
+            reg.refresh()
+            self.assertEqual(list(reg._queue), [])
+
+
 class NodeSplitTest(OwnCase):
     """`ingest.workers` >= 2, each node's hour in reducer groups: the figures each
     node's units make are the ones one pass makes."""

@@ -124,8 +124,9 @@ def _newest(a, b):
 
 
 def _hour_label(h):
-    """Epoch hour `h` as the local time it begins at."""
-    return time.strftime("%Y-%m-%d %H:00", time.localtime(h * hourmod.HOUR))
+    """Epoch hour `h` as the local time it begins at, and its zone: the
+    service's, which a reader of its status may not share."""
+    return time.strftime("%Y-%m-%d %H:00 %Z", time.localtime(h * hourmod.HOUR))
 
 
 # How much of what a build read just before where it stopped in a plain
@@ -982,6 +983,9 @@ class WindowRegistry:
         # copy is resumed only while that hour is still open (`_resume`); held,
         # the view is built again once it has closed (`refresh`). None for an
         # unfiltered view, whose joins read every record, and with no hours kept.
+        # Taken before the scan, as the figures are: an hour that closes while
+        # a long scan runs is saved as the open one, and the next tick builds
+        # the view again -- a second scan, expected, that takes its figures.
         open_hour = None
         if view.flt and self.hours is not None:
             open_hour = own.h_hi if own is not None else self.hours.closed_end(t0, roots)
