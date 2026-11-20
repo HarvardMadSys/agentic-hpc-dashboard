@@ -735,13 +735,18 @@ def _key(k):
 
 
 def _cache_file(path):
-    """`(meta, state)` of a saved window build, hour state or saved panels."""
+    """`(meta, state)` of a saved window build, hour state or saved panels. An
+    hour's own figures (`o<hour>`) are written packed, each part compressed on
+    its own (`hours.HourStore._save_figures`): their state is every part's."""
     import pickle
     import zlib
     with open(path, "rb") as fh:
         meta = pickle.load(fh)
         if os.sep + "windows" + os.sep in path:
             return meta, pickle.load(fh)
+        if meta.get("kind") == "figures":
+            return meta, {p: pickle.loads(zlib.decompress(b))
+                          for p, b in pickle.loads(fh.read()).items()}
         return meta, pickle.loads(zlib.decompress(fh.read()))
 
 
