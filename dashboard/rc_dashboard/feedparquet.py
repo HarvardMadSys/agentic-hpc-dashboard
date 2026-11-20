@@ -46,7 +46,7 @@ captures:
   signals, depths, a process's threads, `args_len`) and int64 everywhere else;
 * every float is float64, as written: the collector rounds at the source, and a
   narrower float would change the number a reader gets back;
-* `ts` and `start`, local naive second-granular strings, are timestamp[s] with no
+* `ts` and `start`, local naive second-granular strings, are timestamp[ms] with no
   zone (Parquet's `isAdjustedToUTC=false`, which is what they are). `ts_epoch` is
   the authoritative time, as in the feed, and stays the float it was;
 * nested blocks keep their shape: `io`, `conns`, `net_endpoints` are structs,
@@ -83,10 +83,12 @@ feed (8 hosts, 179 M records) every record was the same, in its own key order; o
 the demo's schema 8 every record is the same, the demo writing one block's keys
 (`by_agent_type`'s `users`, `autonomous`) in another order than the collector.
 
-What it does not keep: a line that is not a JSON object (the torn last line of a
-live file), counted in the manifest as `malformed`, as the dashboard's readers
-count it; and the order of keys a record had beyond its event's (an `_extra` key
-comes back last).
+What it does not keep: a line that does not parse or is not a JSON object,
+counted in the manifest as `malformed`, as the dashboard's readers count it (a
+blank line is not counted; each one's offset and kind is in `nonrec`); a last
+line with no newline, the torn end of a live file, which ends the read at
+`partial`; and the order of keys a record had beyond its event's (an `_extra`
+key comes back last).
 
 Encoding: zstd 9, row groups of 1 Mi rows, statistics on every column, dictionary
 pages on every column but `pid`/`ppid` (delta-packed) and `ts_epoch` (byte-stream
@@ -129,14 +131,15 @@ _MISSING = object()
 
 
 def _pa():
-    """pyarrow, imported on first use: the service never needs it."""
+    """pyarrow, imported on first use, so a module that only names a kind does not
+    load it. It is a main dependency: the history store (history.py) needs it."""
     try:
         import pyarrow
         import pyarrow.compute
         import pyarrow.parquet  # noqa: F401
     except ImportError as e:     # pragma: no cover - exercised only without pyarrow
-        raise SystemExit("feedparquet needs pyarrow: `uv sync --extra parquet` "
-                         "(or `uv run --extra parquet ...`): %s" % e)
+        raise SystemExit("feedparquet needs pyarrow, a dependency of the dashboard: "
+                         "`uv sync` in dashboard/ installs it: %s" % e)
     return pyarrow
 
 
@@ -1145,7 +1148,8 @@ def _type_name(kind):
     return str(kind.arrow())
 
 
-BOOKKEEPING = (("_absent", "list<string>"), ("_extra", "string (JSON object)"))
+BOOKKEEPING = (("_off", "int64"), ("_absent", "list<string>"),
+               ("_extra", "string (JSON object)"))
 
 
 def schema_text(markdown=False):
