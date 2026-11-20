@@ -21,6 +21,9 @@ repo=$(cd "$here/../.." && pwd)
 kit=${here#"$repo"/}                 # this kit's folder in the repository
 # shellcheck source=/dev/null
 . "$here/site.env"
+# render.py checks the keys it renders; these two are this script's own, and SSH_KEY is
+# first read after the sender has shipped, so an unset one stops here instead.
+: "${WORK_DIR:?WORK_DIR is not set in site.env}" "${SSH_KEY:?SSH_KEY is not set in site.env}"
 first=0 restart=0
 for a in "$@"; do
   case $a in

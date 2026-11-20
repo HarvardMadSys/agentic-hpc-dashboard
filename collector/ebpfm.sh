@@ -742,7 +742,7 @@ _ebpf_stop() {
 
 # The eBPF tier can be carried by either unit: the PERSISTENT one from
 # install-unit (fleet deploys, survives reboot) or the TRANSIENT systemd-run
-# scope from `start` (one-offs). Echo whichever is active, so status, start and
+# service from `start` (one-offs). Echo whichever is active, so status, start and
 # stop all agree -- otherwise `status` cheerfully reports NOT RUNNING while the
 # installed unit is collecting.
 _active_unit() {
@@ -779,7 +779,7 @@ _ebpf_status() {
 }
 
 # --- persistent systemd unit ------------------------------------------------
-# `start` uses a TRANSIENT systemd-run scope: correct for a one-off, but it does
+# `start` uses a TRANSIENT systemd-run service: correct for a one-off, but it does
 # not survive a reboot and has no restart policy. For a fleet deployment the
 # admin installs this instead, and systemd -- not run.sh, which is unprivileged
 # and cannot sudo -- becomes the keepalive.

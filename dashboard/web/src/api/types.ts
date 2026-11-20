@@ -951,7 +951,6 @@ export interface TrajRunning {
 /** How a session's collector keys were attributed to it, most certain first
  * (`rc_dashboard/procindex.py: VIA`). A row reports its least certain key. */
 export type OwnerVia = 'self' | 'ancestor' | 'parent' | 'tree_root' | 'root' | 'unknown';
-export const OWNER_VIA: OwnerVia[] = ['self', 'ancestor', 'parent', 'tree_root', 'root', 'unknown'];
 
 export interface TrajRow {
   sid: string;

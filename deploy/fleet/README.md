@@ -55,7 +55,9 @@ stopping it, and a stalled dashboard answers nothing.
   `/usr/bin/python3` for the stream. A deploy whose `DASH_PYTHON` is another version than the
   venv's makes the venv again, keeps the one before as `venv.old`, and restarts the session.
   `ss` (without it, the port checks read `/proc/net/tcp`), `curl`, and `getfacl` for
-  the checks. Disk and memory: see [Memory and disk](#memory-and-disk).
+  the checks. Access to PyPI, or a mirror pip is set up for: each deploy installs the
+  dashboard's pinned requirements into its venv there. Disk and memory: see
+  [Memory and disk](#memory-and-disk).
 - **Each source node:** the collector ([`collector/`](../../collector), or the RPM), an
   account (`SOURCE_USER`) that can log in with an ssh key, and `/usr/bin/python3` 3.6 or
   later. The sender uses the standard library only, so nothing is installed. The nodes can
@@ -73,18 +75,25 @@ in. Git ignores `site.env`. The example explains each key; in short:
 | `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`, `DASH_PYTHON`, `PRIVATE_TREE` | The dashboard's host, its folder, its port, the Python that makes its venv, and whether the folder stays private ([When the stream trips](#when-the-stream-trips)). |
 | `SITE_NAME`, `SITE_DESCRIPTION`, `RISK_PROFILE`, `ANONYMIZE`, `CODEX` | What the page calls itself, the risk rules, aliases for user names, and Ask. |
 | `DROP_USERS`, `DROP_AGENT_USERS` | Accounts whose records the dashboard drops: every record, or their agents' only. Empty, it drops only `SOURCE_USER`'s: the stream's own processes. |
-| `HISTORY_DAYS`, `MAX_WINDOWS`, `PREWARM_MIN`, `MAX_SESSIONS`, `DAY_CACHE`, `DASH_MEMORY_MAX`, `FREE_MIN_GB` | History, memory, and disk. A key you leave out takes the dashboard's default. |
+| `HISTORY_DAYS`, `MAX_WINDOWS`, `PREWARM_MIN`, `MAX_SESSIONS`, `DAY_CACHE`, `DASH_MEMORY_MAX`, `FREE_MIN_GB`, `INGEST_WORKERS` | History, memory, and disk. A key you leave out takes the dashboard's default, but `INGEST_WORKERS`: two per node. |
 | `SSH_KEY`, `WORK_DIR`, `NODE_MODULES`, `SLACK_WEBHOOK_FILE` | This machine's key, work folder, bundle build, and the check's Slack posts. |
+
+Required: `SOURCE_USER`, `SOURCE_NODES`, `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`,
+`WORK_DIR` and `SSH_KEY`. `SOURCE_ROOT` is read only by `fleet/pull-gz.sh` (step 5); the
+sender's folder on the nodes is the `--root` in its key line (step 3).
 
 `render.py` turns `site.env` into the unit (`rc-tmux.service.in`), the dashboard's
 settings (`dashboard.config.json.in`), and the stream's settings (`stream.json.in`). It
-checks every value first, so a bad `site.env` stops a deploy before anything is shipped.
+checks every value first, and `deploy.sh` its own two keys, so a bad `site.env` stops a
+deploy before anything is shipped.
 
 ## First deploy
 
 1. On this machine, fill in `deploy/fleet/site.env`.
-2. On the dashboard's host, make the folder and the stream's key:
+2. On the dashboard's host, make the folder and the stream's key, with `DASH_ROOT` as
+   `site.env` sets it (nothing sets it on the host):
 
+       DASH_ROOT=<DASH_ROOT>
        umask 077; mkdir -p $DASH_ROOT/etc
        ssh-keygen -t ed25519 -N '' -C rc-fleet-stream -f $DASH_ROOT/etc/rc_fleet_stream
 
@@ -183,7 +192,7 @@ Other views of the state:
     R=<DASH_ROOT>
     systemctl --user status rc-tmux rc-dashboard.scope rc-fleet-stream.scope
     /usr/bin/python3 $R/current/fleet/fleet_stream.py status --base $R/data
-    RC_DASH_ROOT=$R $R/current/deploy/fleet/check-local.sh
+    RC_DASH_ROOT=$R $R/current/deploy/fleet/check-local.sh   # the hourly check itself: starts what is down
     tail $R/logs/rc-fleet-stream.log
     curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<DASH_PORT>/api/health   # 401: it answers
 
@@ -204,8 +213,9 @@ and 12h views ahead (`PREWARM_MIN`), and keeps up to 150,000 sessions per view
 finished day's 24 hour states into one saved state, so a wide window merges days, not
 hours.
 
-Every 6 hours a view is built again from the saved hours, beside the held one, until it
-replaces it. Views are built one at a time, so a reader who asks for another window
+A view is built again from the saved hours, beside the held one, until it replaces it,
+once it has taken in a quarter of its window's worth of newer records
+(`panels.max_drift_pct`, 25): every 6 hours for the 24h view, every 15 minutes for the 1h. Views are built one at a time, so a reader who asks for another window
 meanwhile waits. After a deploy that changes what an hour holds (the reducers' code,
 sessions per view, or days of history), the first build of each view reduces its hours
 again from the copy.
@@ -279,7 +289,7 @@ that listens, has run 20 minutes, and twice gives no answer at all (a 401 withou
 password counts as an answer), and one that has not listened after 2 hours. It reports a
 node whose link has been down for more than an hour, and one connected with nothing from
 it for an hour (`STREAM ... stale`). The stream itself closes a link whose node has sent
-nothing, not even its pings, for 5 minutes (a `stall_s` in `stream.json` changes that):
+nothing, not even its pings, for 5 minutes (a `stall_s` in `stream.json.in` changes that):
 the link shows as down, and stays down while its node only says hello or sends what the
 stream refuses. It checks that the listener on the port is the dashboard's own and, with
 `PRIVATE_TREE=true`, audits that nothing in `DASH_ROOT` is readable by anyone else. It
@@ -315,9 +325,10 @@ then stops itself and the dashboard.
 ## Moving to another host
 
 Set `DASH_SSH`, `DASH_NODE`, and `DASH_ROOT` in `site.env`, and do the steps in
-[First deploy](#first-deploy) on the new host, with its own key line on the nodes. Then
-remove the old host's deployment ([Removing everything](#removing-everything)) and its
-key line.
+[First deploy](#first-deploy) on the new host, with its own key line on the nodes. Then,
+on the old host, do only the dashboard's host's part of [Removing
+everything](#removing-everything), and delete the old host's key line on the nodes: the
+sender, the crontab line and `WORK_DIR` serve the new host.
 
 ## Removing everything
 
@@ -326,10 +337,11 @@ On the dashboard's host:
     systemctl --user disable --now rc-tmux
     rm -rf <DASH_ROOT>
     rm ~/.config/systemd/user/rc-tmux.service
+    loginctl disable-linger          # unless something else of yours needs it
 
 On the nodes: `rm -rf <SENDER_DIR>`, and delete the `rc-fleet-stream` line from
-`~/.ssh/authorized_keys`. On this machine: delete the check's line from the crontab, and
-`rm -rf <WORK_DIR>`.
+`~/.ssh/authorized_keys`. On this machine: delete the check's line from the crontab,
+`rm -rf <WORK_DIR>`, and `rm -rf ~/.config/rc-dashboard` (the password and its netrc).
 
 ## Tests
 

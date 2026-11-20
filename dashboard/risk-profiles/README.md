@@ -156,7 +156,7 @@ The default is the three the tab always had:
   most one `"rest"` section per kind.
 - **Masking credentials is never switched off** by this: a credential pattern is applied to
   every command line the page shows whether or not a section counts it.
-- The Overview's "risky agent actions" plate sums only the kinds this cluster counts, and says
+- The Live tab's "risky agent actions" plate sums only the kinds this cluster counts, and says
   which.
 
 A profile's `sections` replaces the whole list, so a profile that sets it states the full tab.
@@ -175,7 +175,7 @@ Dangerous commands -- read by word (above), case-insensitively:
 | `conda_install` | conda/mamba install or create on login | the command `conda`, `mamba` or `micromamba` with the word `install` or `create` | policy-unaware | med |
 | `build_login` | compiler or make on a login node | the command `make`, `cmake`, `ninja`, `gcc`, `g++`, `clang`, `clang++`, `nvcc`, `cargo` or `go`, or one of them with a version (`gcc-12`) | policy-unaware | med |
 | `ssh_compute` | ssh straight into a compute node | the command `ssh`, the host it goes to matching `{{compute_hosts}}` | policy-unaware | med |
-| `server_on_login` | http.server / tensorboard / streamlit on login | `-m http.server`; the command `tensorboard` or `streamlit`; `jupyter lab`, `jupyter notebook` | policy-unaware | med |
+| `server_on_login` | http.server / tensorboard / streamlit on login | `-m http.server`; the command `tensorboard` or `streamlit`; `jupyter lab`, `jupyter notebook`; the command `jupyter-lab` or `jupyter-notebook` | policy-unaware | med |
 | `bulk_download` | wget/curl bulk download on login | the command `wget` or `curl` with `-o` or `-O` (alone, or among short flags: `-sSLO`) or `--output…` | policy-unaware | med |
 | `hf_download` | huggingface download on login | the command `huggingface-cli` or `hf` with the word `download` | policy-unaware | med |
 | `headless_browser` | headless browser swarm | `chromium`, `chrome` or `msedge` before `--headless` on a line; `playwright` or `puppeteer` as the command or a folder of a path | policy-unaware | low |

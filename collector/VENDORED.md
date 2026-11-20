@@ -6,7 +6,7 @@ run without the rest of the repo. The price is six copied modules.
 
 | Vendored as | Copied from | Upstream sha256 at vendor time | Local changes |
 |---|---|---|---|
-| `lib/procparse.py` | `collect/common/procparse.py` | `f4ecb417…92292f` | **added `read_cwd(pid)`** (readlink only) |
+| `lib/procparse.py` | `collect/common/procparse.py` | `f4ecb417…42292f` | **added `read_cwd(pid)`** (readlink only) |
 | `lib/agent_classify.py` | `collect/common/agent_classify.py` | `0d6528d0…20f9f3` | **`classify()` reads the program, not every word**: argv[0], past wrappers (`env`, `nohup`, …), a package runner's package, an interpreter's script, a shell's `-c` command's first word, and every word of a `bwrap`; plus the runtime artifacts only an agent writes, where it writes them (Claude Code's tool-call shell; `CURSOR_SANDBOX` and `WINDSURF_STATE` in the environment a program is run with (leading or `env` assignments, a bwrap's `--setenv`); `windsurf-terminal` as a program). Upstream matches its patterns anywhere, so a human's `vim ~/.claude/CLAUDE.md` is an agent there. Added patterns: `/claude/versions/`, `@anthropic-ai/claude-code`, `claude-code/cli.js`; under `/.claude/` only Claude Code's installs match (`local/`, `remote/`, its `cli.js`), not a hook, a status line or a project's `.claude/worktrees/`. Upstream, `snapshot.py`'s copy and `analyze/agent_lib.py` want the same change |
 | `lib/provider_cidrs.py` | `collect/nettcp/provider_cidrs.py` | `13f4b613…e6bad8` | none |
 | `node_snapshot.py` | `collect/common/snapshot.py` | `469489b0…799522` | **GPU sections dropped**: `nvidia-smi` is never run, and `gpu`/`gpu_pmon`/`gpu_compute_apps` are always null, kept in place because the key order is load-bearing. Login nodes have no GPUs; upstream still collects them for compute nodes. **Schema 8 of the eBPF tier:** argv fields masked with `lib/redact.py` (`EBPFM_REDACT`), and `ts_epoch`, `tz`, `redact` APPENDED after every existing key, whose order stays as it was. **Its inline classifier (`classify_agent`, for `proc_tree.agents`) is a copy of `lib/agent_classify.py`'s `classify()`**, local change included; `tests/test_ebpfm.py`'s `ClassifyTest` holds the two equal |
@@ -42,8 +42,8 @@ maintenance debt, not an oversight.
 
 ```
 -- vendored libraries
-  [ OK ] procparse.py         upstream unchanged
-  [WARN] agent_classify.py    UPSTREAM MOVED — re-vendor (collect/common/agent_classify.py)
+  ok    procparse.py                   upstream unchanged
+  WARN  agent_classify.py              UPSTREAM MOVED — re-vendor (collect/common/agent_classify.py)
 ```
 
 It deliberately checks *upstream movement*, not a plain diff — `procparse.py` carries a

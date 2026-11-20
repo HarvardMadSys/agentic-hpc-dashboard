@@ -729,7 +729,6 @@ def meta_header(f, reports, cfg, matched, truncated, elapsed):
         "feed_paths": reports["ebpf"]["resolved"] or reports["ebpf"]["configured"],
         "feed_status": reports["ebpf"]["status"],
         "schema_versions": reports["ebpf"].get("schema_versions") or {},
-        # which format each stream was read from, where a collector wrote both
         "elapsed_s": round(elapsed, 2),
         "note": "Records are the collector's own, plus additive `_`-prefixed derived "
                 "keys (_a3, _eff, _purpose, _sandbox, _approval, _surface, _sid, _ts_epoch). "

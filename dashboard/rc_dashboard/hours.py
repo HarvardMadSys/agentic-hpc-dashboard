@@ -1836,16 +1836,6 @@ class HourStore:
                     except OSError:
                         pass
 
-    def disk_bytes(self):
-        tot = 0
-        for n in os.listdir(self.dir) if os.path.isdir(self.dir) else ():
-            if self.fp and n.endswith(".%s.hr" % self.fp):
-                try:
-                    tot += os.path.getsize(os.path.join(self.dir, n))
-                except OSError:
-                    pass
-        return tot
-
     def status(self):
         """Read from the API thread while the build thread works: every value
         is taken whole (a sorted copy, a tuple), never iterated live."""
