@@ -9,7 +9,8 @@ name: ci
 #   python          the collector, fleet and deploy-kit tests on the runner's Python 3
 #   dashboard       the service's tests with the dependencies uv.lock pins, on 3.11
 #                   (pyproject's minimum) and 3.13 (what the demo image runs)
-#   web             the page: its types, its check:* scripts, and its build
+#   web             the page: its types, every check:* script package.json lists, and
+#                   its build
 #
 # demo-deploy.yml runs this workflow first (workflow_call) and deploys only if it
 # passes. Nothing here reads a secret or writes anything.
@@ -163,6 +164,21 @@ jobs:
 
       - name: "check: css"
         run: npm run check:css
+
+      - name: "check: shares"
+        run: npm run check:shares
+
+      - name: "check: panels"
+        run: npm run check:panels
+
+      - name: "check: live"
+        run: npm run check:live
+
+      - name: "check: lookup"
+        run: npm run check:lookup
+
+      - name: "check: procexit"
+        run: npm run check:procexit
 
       - name: Build
         run: npm run build
