@@ -37,7 +37,7 @@ From the repository root; CI (`.github/workflows/ci.yml`) runs the same suites.
 python3 -m unittest discover -s collector/tests -q        # no root, no BPF needed
 python3 -m unittest discover -s fleet/tests -q
 python3 -m unittest discover -s deploy/fleet/tests -q
-(cd dashboard && uv sync && uv run python -m unittest discover -s tests -q)   # ~3 min
+(cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # ~3 min
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)
 ```
 
@@ -45,10 +45,13 @@ One file, class or test:
 
 ```bash
 python3 -m unittest discover -s collector/tests -p 'test_redact.py'
-cd dashboard && uv run python -m unittest tests.test_config.Flags
+cd dashboard && uv run --frozen python -m unittest tests.test_config.Flags
 cd dashboard/web && node --test --test-name-pattern='prototype' mock/check_lookup.mjs
 ```
 
+- Give `uv` `--frozen` (or `--no-sync` after a frozen sync), as CI does: without it `uv` may
+  re-lock and rewrite `dashboard/uv.lock`, and a `uv.lock` change on `develop` redeploys the
+  public demo.
 - `npm run check` is `check:no-random`, then every `mock/check_*.mjs` under one `node --test`,
   by glob: a new check file runs in CI without touching `ci.yml`.
 - `dashboard/tests/e2e_history.py` is not picked up by discovery:
@@ -59,8 +62,8 @@ cd dashboard/web && node --test --test-name-pattern='prototype' mock/check_looku
 Running the dashboard:
 
 ```bash
-cd dashboard && uv run python -m rc_dashboard --check-feeds   # which feed paths resolved, and why
-cd dashboard && uv run python -m rc_dashboard demo            # synthetic feed, no cluster: :8080
+cd dashboard && uv run --frozen python -m rc_dashboard --check-feeds   # which feed paths resolved, and why
+cd dashboard && uv run --frozen python -m rc_dashboard demo            # synthetic feed, no cluster: :8080
 cd dashboard/web && npm run dev                                # the page alone, from mock/api.json: :5173
 ```
 
@@ -115,7 +118,10 @@ Research-integrity constraints, each a past mistake (root `README.md`):
 ## Constraints that bite
 
 - **Python 3.6** for all of `collector/` (the Python inside `ebpfm.sh` included) and the fleet
-  sender: CI runs them on EL8's own 3.6. The dashboard needs 3.11 or later.
+  sender. CI's EL8 job checks it on EL8's own 3.6: the collector's tests, and
+  `python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py`. A newer Python accepts
+  syntax 3.6 rejects, so a local run on one does not catch a break. The dashboard needs 3.11
+  or later.
 - **Vendored copies**: `collector/node_snapshot.py` and `collector/lib/{procparse,agent_classify,provider_cidrs,slurm_args}.py`
   are copies of files in the upstream measurement repository, with their upstream hashes in
   `collector/.vendored.sha256` (`ebpfm.sh check` warns when the upstream file has moved). Keep
@@ -129,8 +135,14 @@ Research-integrity constraints, each a past mistake (root `README.md`):
 - The page's dev fixture `dashboard/web/mock/api.json` is generated: edit `mock/gen_fixture.mjs`
   and run `TZ=America/New_York npm run fixture`. It is deterministic, so the diff should hold
   only what you meant to change.
-- **Pushes have side effects.** A push to any branch but `develop` that changes `collector/` or
-  `packaging/rpm/` builds an RPM artifact; one that changes `collector/`, `docker/collector/` or
-  `docker/base/` pushes a branch-tagged collector image to GHCR, and `docker/base/` also
-  rebuilds the base image. A push to `develop` that changes the dashboard redeploys the public
-  demo (`demo-deploy.yml`) once the tests pass.
+- **Pushes and tags have side effects.**
+  - A push to any branch but `develop` that changes `collector/` or `packaging/rpm/` builds an
+    RPM artifact; one that changes `collector/`, `docker/collector/` or `docker/base/` pushes a
+    branch-tagged collector image to GHCR, and `docker/base/` also rebuilds the base image.
+  - A `v*.*.*` tag runs all three whatever it changes: it publishes the release images
+    (`X.Y.Z`, `latest`) and attaches the RPM to the tag's GitHub Release, creating the release
+    if there is none. Push a tag only when a release is asked for.
+  - A push to `develop` that changes what the demo runs (`dashboard/rc_dashboard/`,
+    `dashboard/web/`, `dashboard/pyproject.toml` or `uv.lock`, `docker/demo/`,
+    `deploy/cloudflare/`) redeploys the public demo (`demo-deploy.yml`) once the tests pass; a
+    change to `dashboard/tests/` alone does not.
