@@ -32,9 +32,10 @@ EBPFM_MIN_UID=0
 #EBPFM_GROUP=
 
 # --- output / cadence ------------------------------------------------------
-# Where additional (node-tier) output lands. The eBPF tier's own output dir is
-# fixed by the unit (defaults to /scratch/ebpfm — large, root-writable, unlike
-# the small root disk); this is only consulted if you also run the node tier.
+# The eBPF tier's output dir is fixed by the unit (/scratch/ebpfm — large,
+# root-writable, unlike the small root disk). The unit runs the eBPF tier only,
+# so nothing reads the node tier's setting from this file: `ebpfm start`, run
+# as a user, takes EBPFM_NODE_OUTPUT_DIR from its own environment.
 #EBPFM_NODE_OUTPUT_DIR=/scratch/ebpfm-login
 
 # Compress sealed day-files to <file>.jsonl.gz (default on). Each day's streams
