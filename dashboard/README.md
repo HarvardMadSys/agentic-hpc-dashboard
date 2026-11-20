@@ -434,7 +434,10 @@ Three things a rebuild reports rather than assumes:
   the feed) — with a real percentage.
 - **Drift.** A built view keeps ingesting, so it holds more than its own window. The excess is
   published in seconds and the view re-scans at `panels.max_drift_pct` (25%) of the window —
-  proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively.
+  proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively. With the
+  hours kept, a view filtered by user or agent type also re-scans once the hour still open as
+  it was built has closed, whatever its drift, so its exits' own disk bytes are the hours'
+  ("Disk I/O is each process's own").
 - **The seam.** A build reads the day-files while the tailer is also advancing through them.
   Rows landing in that seam are buffered and replayed; if the buffer overflows the count is
   published as `replay_dropped` rather than quietly going missing. The seam is drawn per file,
@@ -510,11 +513,17 @@ one failed:
   same bytes at the same offsets under a new name and inode, so it is read on from its `.gz` (or
   its replica, which answers the same checks), known by its first 4 KB alone;
 - built within the window's drift budget. An older one would be re-scanned the moment it caught
-  up, so catching it up would only add to the cost.
+  up, so catching it up would only add to the cost;
+- for a view filtered by user or agent type, the hour still open when it was built not closed
+  since. Such a build joins that hour's exits within itself, over what its filter keeps, and once
+  the hour has closed a build gives them the figures the hours worked out over every record
+  instead ("Disk I/O is each process's own"); a copy that only reads on from where it stopped
+  would keep its own, so that hour is saved with it (`own_open_hour`).
 
 A drift re-build always scans: it exists to move the window's start forward, which an older copy
-cannot do. Pickle runs code for whoever can write the file, so the directory is created 0700,
-files 0600, and a symlink or a file another user owns or can write is never loaded.
+cannot do. So does a filtered view's once the hour still open as it was built has closed. Pickle
+runs code for whoever can write the file, so the directory is created 0700, files 0600, and a
+symlink or a file another user owns or can write is never loaded.
 
 **The panels are saved too** (`payloads.py`). What a view materialises -- every reducer's
 `result()`, credentials masked -- is written to `<cache.dir>/payloads/` after each build and each
@@ -857,10 +866,16 @@ already made once.
   does too, so a child reaped before the window began is taken off as in the hours after it.
   Then a process reads the same in any view. A child is still not taken off where no such pass
   has read it: in the hour still open and in what a filtered view is fed live, the view takes
-  off only the children it read, until it is built again once that hour has closed (its status
-  says which, `cache.own_io`); with no hours kept (`panels.merge_reduce` off) every view joins
-  what it reads, as before; and the inspector and the commands behind a number join what their
-  own reads parse, as before. Nor is one its parent cannot have reaped: a child that outlives its
+  off only the children it read, until that hour has closed (its status says from which hour,
+  `cache.own_io`). A held filtered view is then built again at the next rebuild tick
+  (`rebuild.interval_s`, 15 minutes), whatever its drift: about one filtered scan an hour for
+  each filtered view held, where drift alone would build a 24 h view again every 6 h and a 7 d
+  one every 42 h (on the bench's six-node feed, `bench/README.md`, a 24 h filtered view is
+  built again in about 3 to 7 s, a 48 h one in 4 to 16 s). And a build of it saved before that hour
+  closed is not resumed after: a restart reads the window again (`cache.note` says why). With
+  no hours kept (`panels.merge_reduce` off) every view joins what it reads, as before; and the
+  inspector and the commands behind a number join what their own reads parse, as before. Nor is
+  one its parent cannot have reaped: a child that outlives its
   parent still names it, and a later process may get that pid, so a process takes off only its
   own user's children (root aside) that began no more than a minute before it did (its recorded
   start is its last exec); the rest were counted at their own exits and are dropped, counted.

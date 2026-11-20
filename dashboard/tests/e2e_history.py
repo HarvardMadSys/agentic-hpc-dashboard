@@ -804,7 +804,10 @@ def resumed(services, views, scan, grown=0):
     scanned window comes back from its saved build ("snapshot"), read on from
     where it stopped; with merge-reduce, a window with whole hours inside it is
     merged from the saved hour states ("hours"), and none of them is reduced
-    again -- only an hour the feed's growth (`grown` seconds) closed."""
+    again -- only an hour the feed's growth (`grown` seconds) closed. A
+    filtered view whose open hour that growth closed is read again ("scan"):
+    it joined that hour's exits within itself, and a build now takes the
+    figures the hours worked out there (`WindowRegistry._resume`)."""
     bad = []
     new_hours = int(math.ceil(grown / 3600.0)) + 1 if grown else 0
     for s in services:
@@ -813,7 +816,8 @@ def resumed(services, views, scan, grown=0):
             v = s.view(minutes, flt_of(params))
             src = ((v or {}).get("cache") or {}).get("source")
             note = ((v or {}).get("cache") or {}).get("note")
-            ok = src == "snapshot" or (src == "hours" and not scan)
+            ok = src == "snapshot" or (src == "hours" and not scan) or (
+                src == "scan" and bool(grown and params) and "has closed since" in (note or ""))
             log("  %-5s %-4s %-34s cache.source=%s  %s" % (
                 "ok" if ok else "FAIL", s.name, label(minutes, params), src, note or ""))
             if not ok:
