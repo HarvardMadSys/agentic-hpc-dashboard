@@ -10,7 +10,9 @@ which a `codex` it started read 100 MB, was 20 MB unfiltered and 120 MB under
 exit's own figure out once and saves it beside the hour (hours.py, `Ledger`),
 and a filtered build gives each exit of a closed hour that figure
 (`hours.OwnFigures`), from a day-file or a sealed day's replica alike. The
-hour still open is joined within the view, as before, until it closes.
+hour still open is joined within the view, as before, until it closes: then
+a held view is built again, and a saved build of it is not resumed
+(`OpenHourTest`).
 
     cd dashboard && .venv/bin/python -m unittest tests.test_own_filtered -q
 """
@@ -26,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_dashboard import clock, history, hours, replica         # noqa: E402
 from rc_dashboard.normalize import Normalizer                   # noqa: E402
 from rc_dashboard.reducers import own_io                        # noqa: E402
-from rc_dashboard.windows import ViewFilter                     # noqa: E402
+from rc_dashboard.windows import HOURS_JOB, ViewFilter, view_key  # noqa: E402
 from test_count_once import family, iob, person, raw            # noqa: E402
 from test_hours import HOUR, NOW, WIN, HourCase                 # noqa: E402
 from test_sessions import cfg                                   # noqa: E402
@@ -87,6 +89,17 @@ class OwnCase(HourCase):
                 self.append("%s.exits.jsonl" % host, rs)
             else:
                 self.append("%s.exits.jsonl" % host, rs, day=day)
+
+    def at(self, t):
+        """The pinned clock, moved on to `t`."""
+        self.clock.stop()
+        self.clock = mock.patch("time.time", return_value=t)
+        self.clock.start()
+
+    def fresh(self, flt):
+        """A build of the view at this moment, from nothing saved: a registry
+        with no saved builds over the same hours."""
+        return self.build(self.registry(self.cfg(cache_windows=False)), flt=flt)
 
 
 class NestedAgentTest(OwnCase):
@@ -170,21 +183,31 @@ class NestedAgentTest(OwnCase):
         self.assertEqual(claude_of(view), claude_of(unfiltered))
         self.assertEqual(claude_of(view), OWN)
 
-    def test_a_saved_build_resumed_takes_them_for_what_it_reads(self):
+    def test_a_saved_build_resumed_joins_what_it_reads_until_its_hour_closes(self):
         c = self.cfg()
         self.build(self.registry(c), flt=CLAUDE)          # saved (`panels.cache_windows`)
-        # Another family, in the hour then still open, read by the resume alone;
-        # 41 minutes on, within the window's drift budget, that hour has closed.
+        # Another family, in the hour then still open, read by a resume alone.
         self.write([dict(r, pid=r["pid"] + 100, ppid=r["ppid"] + 100 if r["ppid"] == 200
                          else r["ppid"], agent_pid=r["agent_pid"] + 100,
                          tree_root_pid=300, session_key="apid:%d" % (r["agent_pid"] + 100))
                     for r in nested(NOW + 100)])
-        self.clock.stop()
-        self.clock = mock.patch("time.time", return_value=NOW + 2450)
-        self.clock.start()
+        # Ten minutes on, that hour still open: a restart resumes, and joins
+        # the new family within the view, over what its filter keeps, as a
+        # build at that moment does -- its claude keeps its codex's 100 MB.
+        self.at(NOW + 600)
+        self.write([later(NOW + 570)])
+        view = self.build(self.registry(c), flt=CLAUDE)
+        self.assertEqual(view.cache["source"], "snapshot", view.cache["note"])
+        self.assertEqual(tools(view), {"claude": 140.0})
+        self.assertEqual(tools(self.fresh(CLAUDE)), {"claude": 140.0})
+        # 41 minutes on, within the window's drift budget, that hour has
+        # closed: a restart reads the window again rather than resume a copy
+        # that joined it within itself, and both claudes take their own 20 MB.
+        self.at(NOW + 2450)
         self.write([later(NOW + 2410)])
-        view = self.build(self.registry(c), flt=CLAUDE)   # a restart
-        self.assertEqual(view.cache["source"], "snapshot")
+        view = self.build(self.registry(c), flt=CLAUDE)
+        self.assertEqual(view.cache["source"], "scan")
+        self.assertIn("has closed since", view.cache["note"])
         self.assertEqual(tools(view), {"claude": 40.0})
 
 
@@ -237,20 +260,72 @@ class WindowEdgeTest(OwnCase):
 class OpenHourTest(OwnCase):
     """The hour still open has no figures yet: a filtered view joins its exits
     over what it keeps, as before, and says so. Built again once the hour has
-    closed, it takes the hour's."""
+    closed, it takes the hour's -- and it is built again then, held or saved:
+    a held view at the next tick (`WindowRegistry.refresh`), and a saved copy is
+    not resumed past it (`WindowRegistry._resume`), the review of #76."""
+
+    def setUp(self):
+        super().setUp()
+        # claude's exit in the hour still open: 120 MB within the view, 20 once it closes
+        self.write(nested(NOW - 900) + [later(NOW - 30)])
 
     def test_joined_within_the_view_until_the_hour_closes(self):
-        self.write(nested(NOW - 900) + [later(NOW - 30)])
         reg = self.registry(self.cfg())
         view = self.build(reg, flt=CLAUDE)
         self.assertEqual(tools(view), {"claude": 120.0})
         self.assertIn("still open", view.cache["own_io"])
         # two hours on
-        self.clock.stop()
-        self.clock = mock.patch("time.time", return_value=NOW + 2 * HOUR)
-        self.clock.start()
+        self.at(NOW + 2 * HOUR)
         self.write([later(NOW + 2 * HOUR - 30)])
         self.assertEqual(tools(self.build(reg, flt=CLAUDE)), {"claude": 20.0})
+
+    def test_a_saved_build_is_not_resumed_once_that_hour_has_closed(self):
+        c = self.cfg()
+        self.assertEqual(tools(self.build(self.registry(c), flt=CLAUDE)), {"claude": 120.0})
+        # 41 minutes on, within the window's drift budget, that hour has closed
+        self.at(NOW + 2450)
+        self.write([later(NOW + 2410)])
+        view = self.build(self.registry(c), flt=CLAUDE)     # a restart
+        self.assertEqual(view.cache["source"], "scan")
+        self.assertIn("has closed since", view.cache["note"])
+        self.assertEqual(claude_of(view), OWN)
+        self.assertEqual(tools(view), tools(self.fresh(CLAUDE)))
+
+    def test_a_restart_while_that_hour_is_open_resumes(self):
+        c = self.cfg()
+        self.build(self.registry(c), flt=CLAUDE)
+        # ten minutes on, the hour still open
+        self.at(NOW + 600)
+        self.write([later(NOW + 570)])
+        view = self.build(self.registry(c), flt=CLAUDE)
+        self.assertEqual(view.cache["source"], "snapshot", view.cache["note"])
+        self.assertEqual(view.own_open_hour, int(NOW // HOUR))
+        # what a build at that moment holds: the hour is still joined within the view
+        self.assertEqual(tools(view), {"claude": 120.0})
+        self.assertEqual(tools(self.fresh(CLAUDE)), {"claude": 120.0})
+
+    def test_a_held_view_is_built_again_once_that_hour_has_closed(self):
+        reg = self.registry(self.cfg())
+        everyone = self.build(reg)
+        view = self.build(reg, flt=CLAUDE)
+        h = int(NOW // HOUR)
+        self.assertEqual((view.own_open_hour, everyone.own_open_hour), (h, None))
+        reg._queue.clear()                  # what `request` queued, built above on this thread
+        reg.refresh()                       # the hour still open: nothing to build
+        self.assertEqual(list(reg._queue), [])
+        # 41 minutes on, within the drift budget, that hour has closed: the tick
+        # queues its reduction, then the filtered view, and not the unfiltered one
+        self.at(NOW + 2450)
+        self.write([later(NOW + 2410)])
+        reg.refresh()
+        self.assertEqual(list(reg._queue), [HOURS_JOB, view_key(WIN, CLAUDE)])
+        while reg._queue:                   # the build worker
+            reg._job(reg._queue.popleft())
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(claude_of(view), OWN)
+        self.assertEqual(view.own_open_hour, h + 1)
+        reg.refresh()                       # built in the hour now open: nothing more
+        self.assertEqual(list(reg._queue), [])
 
 
 class StragglerTest(OwnCase):
@@ -286,6 +361,46 @@ class NoHoursTest(OwnCase):
         view = self.build(reg, flt=CLAUDE)
         self.assertEqual(tools(view), {"claude": 120.0})
         self.assertIn("panels.merge_reduce", view.cache["own_io"])
+        # no hour it could take figures from: neither a held view nor a saved
+        # one is built again for one closing
+        self.assertIsNone(view.own_open_hour)
+
+
+class BrokenHoursTest(OwnCase):
+    """Hours kept, but they cannot be reduced (`HourStore.ensure` raises, as a
+    full disk would have it): every exit is joined within the view, which says
+    so, and the build still records the hour still open. So a held view is
+    built again once each hour closes, to take the figures should the hours
+    work again -- and not at every tick while they stay broken."""
+
+    def test_built_again_once_an_hour_closes_not_every_tick(self):
+        self.write(nested(NOW - 900) + [later(NOW - 30)])
+        reg = self.registry(self.cfg())
+        broken = mock.patch.object(reg.hours, "ensure",
+                                   side_effect=OSError("No space left on device"))
+        broken.start()
+        self.addCleanup(broken.stop)
+        view = self.build(reg, flt=CLAUDE)
+        self.assertIn("could not be reduced", view.cache["own_io"])
+        self.assertEqual(tools(view), {"claude": 120.0})
+        h = int(NOW // HOUR)
+        self.assertEqual(view.own_open_hour, h)
+        reg._queue.clear()                  # what `request` queued, built above on this thread
+        reg.refresh()
+        self.assertEqual(list(reg._queue), [])
+        # 41 minutes on, that hour has closed: built again once
+        self.at(NOW + 2450)
+        self.write([later(NOW + 2410)])
+        reg.refresh()
+        self.assertEqual(list(reg._queue), [view_key(WIN, CLAUDE)])
+        reg._job(reg._queue.popleft())
+        self.assertEqual((view.state, view.error), ("ready", None))
+        self.assertEqual(view.own_open_hour, h + 1)
+        self.assertEqual(tools(view), {"claude": 120.0})   # the store still broken
+        # and then not again, tick after tick, until the next hour closes
+        for _ in range(3):
+            reg.refresh()
+            self.assertEqual(list(reg._queue), [])
 
 
 class NodeSplitTest(OwnCase):

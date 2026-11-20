@@ -173,12 +173,17 @@ A view is built one of three ways:
   (`WindowRegistry._own_figures`, which reduces the window's hours first where they are not, as
   a merge would), loading those of the users and agent types it keeps (`ViewFilter.holds`); an
   exit of the hour still open, or fed live, is joined over what the filter keeps
-  (`cache.own_io` says which).
+  (`cache.own_io` says which, and from which hour) -- until that hour closes. A held view is
+  then built again at the next rebuild tick, whatever its drift (`WindowRegistry.refresh`,
+  `PanelView.own_open_hour`), and a build saved before it closed is not resumed after
+  (`WindowRegistry._resume`, the hour saved as `own_open_hour`), so those exits take the hour's
+  figures too.
 
 A view's payload (each reducer's `result()`, credentials masked) is made after its build and again
 on every rebuild tick (`rebuild.interval_s`, 900 s; `WindowRegistry.refresh`), which instead builds
-again a view whose drift passed `panels.max_drift_pct` (25%) of its window: by a merge where the
-view can be merged, else by a scan, and never by resuming a saved build. So most BUILD
+again a view whose drift passed `panels.max_drift_pct` (25%) of its window, or a filtered one
+whose open hour has closed since its build: by a merge where the view can be merged, else by a
+scan, and never by resuming a saved build. So most BUILD
 figures move every 15 minutes, not with each record; the page re-reads `/api/panels` on the
 `rebuilt` frame and when a build lands. Four are composed on read instead: `trajectories` is made
 again at most every `reducers.trajectories.live_s` (5 s) when the view has ingested since
