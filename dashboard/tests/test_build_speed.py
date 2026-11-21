@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import config as configmod       # noqa: E402
-from rc_dashboard import export, normalize, procindex, redact, roles, tool_buckets  # noqa: E402
+from rc_dashboard import export, procindex, redact, roles, tool_buckets  # noqa: E402
 from rc_dashboard.buckets import RollingBuckets     # noqa: E402
 from rc_dashboard.normalize import Normalizer       # noqa: E402
 from rc_dashboard.reducers import INSTANCE_CAP, top_by   # noqa: E402

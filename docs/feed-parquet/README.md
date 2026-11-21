@@ -50,7 +50,9 @@ uv run python -m rc_dashboard.feedparquet schema --markdown
   `.gz`), through `feedfile`.
 - Today's day-files are skipped (they are still being written) unless `--include-today`.
 - A day-file whose source has not changed since its manifest (its name, size, mtime and
-  inode) is skipped, so a cron job can run it every night; `--force` converts again.
+  inode) is skipped while that manifest is this version's and every table it names is still
+  the size it was written, so a cron job can run it every night; otherwise, or with
+  `--force`, it is converted again.
   `--days N` and `--day D` narrow it, `--jobs` sets the processes (one per day-file).
 - Output is written beside its final name and renamed into place, files `0640` and
   directories `0750`, as the collector writes the day-files: the tables hold what those
@@ -128,9 +130,11 @@ exits/snapshot split reads the same.
   zone (Parquet's `isAdjustedToUTC=false`; `ms`, Parquet having no seconds unit).
   **`ts_epoch`** stays the float it is: it is the authoritative time, as in the feed.
 - **Nested blocks keep their shape**: `io`, `conns`, `net_endpoints` are structs, endpoint
-  and peer lists are lists of structs, and objects whose keys are data (`by_command`,
-  `providers`, `state_counts`, `perf_seen`, ...) are `map<string, int64>`, in their own
-  order. The blocks of `meta` and `stop` with no fixed shape (`config`, `btf_offs`,
+  and peer lists are lists of structs, and objects whose keys are data are maps, in their
+  own order: `map<string, int64>` for counts (`by_command`, `providers`, `state_counts`,
+  `perf_seen`, ...), `map<string, string>` for `sysctl` and `features_rejected`, and maps of
+  structs for `by_actor3`, `by_agent_type` and `tcp_open_ext_by_actor3`. The blocks of
+  `meta` and `stop` with no fixed shape (`config`, `btf_offs`,
   `output`, `unsafe_dirs`) are JSON text.
 - **Null means what it means in the feed** (not measured, not applicable), never "this
   record had no such key": that is `_absent`.
@@ -438,6 +442,7 @@ An event kind no other table names: the envelope, the rest in _extra. Columns: t
 
 | column | type |
 |---|---|
+| `_off` | `int64` |
 | `_absent` | `list<string>` |
 | `_extra` | `string (JSON object)` |
 
@@ -569,7 +574,7 @@ every line to get them.
 
 ## Choices
 
-- **A table per record kind, not per stream.** The snapshot stream mixes six kinds with
+- **A table per record kind, not per stream.** The snapshot stream mixes seven kinds with
   little in common; one table each gives every table a fixed set of columns and no
   column that is null by construction. `exit` and `truncated` share one, as they share
   the exits stream: both end a process's life, and `event` tells them apart.
@@ -609,16 +614,16 @@ every line to get them.
 
 - **Integers past 64 bits**: the day-files are read as the dashboard reads them
   (`fastjson`), and orjson reads such an integer as a float, so the copy has the float
-  (in `_extra`). The collector writes no such value. `fastjson`'s docstring says orjson
-  refuses them; orjson 3.13 does not.
+  (in `_extra`). The collector writes no such value.
 - **Key order**: a record comes back in its event's order; a key `_extra` holds that no
   table names comes back last. On FAS every record comes back in its own order. The
   demo generator writes `by_agent_type`'s `users` and `autonomous` the other way round
   from the collector; those come back in the collector's order.
-- **What is not kept**: a line that is not a JSON object (the torn end of a live file),
-  counted in the manifest as `malformed`, as every reader of the feed counts it; where it
-  lies, and whether it is blank, unparseable or JSON but not an object, is (`nonrec`), so
-  every offset stays the file's. The dashboard stands a copy in for its file only when the
+- **What is not kept**: a line that does not parse or is not a JSON object, counted in the
+  manifest as `malformed`, as every reader of the feed counts it (a blank line is kept out
+  too, and not counted); where each lies, and whether it is blank, unparseable or JSON but not
+  an object, is (`nonrec`), so every offset stays the file's. A last line with no newline,
+  the torn end of a live file, ends the read; its offset is `partial`. The dashboard stands a copy in for its file only when the
   file has no last line still being written and no line that is JSON but not an object.
 - **The node tier** is not covered: its 36-key snapshots have no `event` and would land
   in `other`. A table of its own is the next step if it is wanted.

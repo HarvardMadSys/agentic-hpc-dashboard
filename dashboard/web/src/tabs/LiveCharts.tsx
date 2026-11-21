@@ -167,7 +167,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
                       <SortTh s={sortOf('wait')} k="cls" first="asc">class</SortTh>
                       <SortTh s={sortOf('wait')} k="run" num tip="time on a CPU, summed">run</SortTh>
                       <SortTh s={sortOf('wait')} k="wait" num gloss="runqueue">wait</SortTh>
-                      <SortTh s={sortOf('wait')} k="ratio" num tip="wait divided by run: above 1 means these processes waited longer for a CPU than they ran">ratio</SortTh>
+                      <SortTh s={sortOf('wait')} k="ratio" num tip="CPU time divided by run time, the median over processes with more than 1 s of CPU: the two clocks should agree, so a value far from 1 means CPU is being counted on another basis">ratio</SortTh>
                     </tr>
                   </thead>
                   <tbody>

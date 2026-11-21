@@ -165,7 +165,6 @@ TRAITS = (
      "%d%% or more of the minutes in which a call began fall between 00:00 and 06:00, local "
      "time, of %d such minutes or more" % (100 * RULES["night"], RULES["night_min"])),
 )
-_TRAIT = {t[0]: t for t in TRAITS}
 
 # What one user's portrait lists, at most: the rest are counted.
 SESSIONS_SHOWN = 60         # sessions, the newest first

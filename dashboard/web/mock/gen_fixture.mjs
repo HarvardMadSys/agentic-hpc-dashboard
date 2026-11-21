@@ -466,20 +466,23 @@ function resourceSeries(nowEpoch) {
 
 function resources(nowEpoch) {
   const by_class = {};
+  /* events, cpu_s, sched_run_s, sched_wait_s, and schedstat_ratio: as the service
+     computes it (reducers/resources.py), the median over processes with more than
+     1 s of CPU of cpu_s / sched_run_s -- two clocks of the same time, so near 1. */
   const shape = {
-    agent: [4_812_446, 91_244.8, 62_118.4, 188_442.6],
-    'ide': [1_964_118, 48_611.2, 31_884.2, 44_118.8],
-    human: [384_902, 26_408.4, 18_442.6, 9_884.2],
+    agent: [4_812_446, 91_244.8, 62_118.4, 188_442.6, 1.004],
+    'ide': [1_964_118, 48_611.2, 31_884.2, 44_118.8, 0.998],
+    human: [384_902, 26_408.4, 18_442.6, 9_884.2, 1.001],
   };
   for (const c of CLASSES) {
-    const [events, cpu, run, wait] = shape[c];
+    const [events, cpu, run, wait, ratio] = shape[c];
     const cov = c === 'agent' ? 58.4 : c === 'ide' ? 31.2 : 12.6;
     by_class[c] = {
       events,
       cpu_s: cpu,
       sched_run_s: accum(run, Math.round((events * cov) / 100), cov),
       sched_wait_s: accum(wait, Math.round((events * cov) / 100), cov),
-      schedstat_ratio: Number((run / wait).toFixed(3)),
+      schedstat_ratio: ratio,
       quants: {
         cpu_s: quant(events, [0.001, 0.002, 0.006, 0.028, 0.184, 4.82, 3_118.4, 0.019], 100, events > 2_000_000),
         peak_rss_mb: quant(events, [1.8, 2.9, 5.4, 18.2, 84.6, 1_218.4, 41_882.6, 42.1], 96.8),

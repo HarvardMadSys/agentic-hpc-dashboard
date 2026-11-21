@@ -9,7 +9,8 @@ name: ci
 #   python          the collector, fleet and deploy-kit tests on the runner's Python 3
 #   dashboard       the service's tests with the dependencies uv.lock pins, on 3.11
 #                   (pyproject's minimum) and 3.13 (what the demo image runs)
-#   web             the page: its types, its check:* scripts, and its build
+#   web             the page: its types, `npm run check` (no Math.random, and every
+#                   mock/check_*.mjs), and its build
 #
 # demo-deploy.yml runs this workflow first (workflow_call) and deploys only if it
 # passes. Nothing here reads a secret or writes anything.
@@ -149,20 +150,12 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
-      - name: "check: no Math.random"
-        run: npm run check:no-random
-
-      - name: "check: phases"
-        run: npm run check:phases
-
-      - name: "check: charts"
-        run: npm run check:charts
-
-      - name: "check: figures"
-        run: npm run check:figures
-
-      - name: "check: css"
-        run: npm run check:css
+      # `npm run check` is check:no-random, then every mock/check_*.mjs under one
+      # `node --test`, by glob: a check added to mock/ runs here without being
+      # named, so CI and a local run cannot drift apart. node --test names the
+      # file and the test that failed.
+      - name: "Checks: no Math.random, every mock/check_*.mjs"
+        run: npm run check
 
       - name: Build
         run: npm run build

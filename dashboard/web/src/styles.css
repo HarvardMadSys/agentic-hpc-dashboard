@@ -1233,34 +1233,6 @@ details.more > summary:hover {
   }
 }
 
-/* Overview: one measure per row, each class's value named, then the split */
-.unit-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 16px;
-  margin: 10px 0 4px;
-  font-size: 13.5px;
-}
-.unit-row .unit-k {
-  min-width: 110px;
-  font-weight: 600;
-  color: var(--ink);
-}
-.unit-row .unit-v {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-2);
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 12.5px;
-}
-.unit-row .unit-v i {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-
 /* the tool-mix table: an inline bar per share, the value beside it */
 table.mix th,
 table.mix td {
@@ -2284,11 +2256,6 @@ table.users tr.u-open > td {
 }
 .u-detail table {
   width: auto;
-}
-.u-cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: 12px 32px;
 }
 .u-cmd {
   font-family: 'IBM Plex Mono', monospace;

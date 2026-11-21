@@ -149,7 +149,7 @@ class MergedWindowTest(HourCase):
     def test_a_panels_knob_or_another_feeds_path_does_not_discard_the_hours(self):
         self.build(self.registry(self.cfg()))
         cfg = self.cfg(max_drift_pct=40, prewarm_min=[60])
-        cfg.tree["feeds"]["sacct"]["dir"] = "/elsewhere"
+        cfg.tree["feeds"]["ebpf_node"]["roots"] = ["/elsewhere"]
         reg = self.registry(cfg)
         self.build(reg)
         self.assertEqual(reg.hours.stats["hours_reduced"], 0)

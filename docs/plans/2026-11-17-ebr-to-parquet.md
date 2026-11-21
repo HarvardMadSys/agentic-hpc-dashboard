@@ -4,9 +4,12 @@
 > [PR #55](https://github.com/HarvardMadSys/agentic-hpc-dashboard/pull/55) (`claude/dashboard-parquet`)
 > on 2026-11-17, and [PR #56](https://github.com/HarvardMadSys/agentic-hpc-dashboard/pull/56) measured
 > the store's workers. This file is the record of how it was built, not work to do: what the store
-> does now is in [History in Parquet](../../dashboard/README.md#history-in-parquet).
-
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> does now is in [History in Parquet](../../dashboard/README.md#history-in-parquet), and its
+> files are in [docs/feed-parquet](../feed-parquet/README.md#layout). The layout below is the
+> plan's: the manifest the code writes holds more keys than it lists (`records` is the
+> `{table: rows}` map; `partial`, `malformed`, `bytes` and the source's `day`, `stem` and
+> `host` besides), and only the store's root and `SOURCE.json` are 0700/0600, the tables and
+> manifests inside them feedparquet's 0640 files in 0750 directories.
 
 **Goal:** Remove EBR from the collector, fleet and dashboard; keep JSONL as the one live format and
 give the dashboard a Parquet history store of sealed day-files that its analytical readers use.

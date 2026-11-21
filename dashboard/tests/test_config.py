@@ -18,6 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from rc_dashboard import __main__ as cli            # noqa: E402
 from rc_dashboard import config as configmod        # noqa: E402
 
 DASH = str(Path(__file__).resolve().parents[1])
@@ -241,6 +242,51 @@ class UnknownKeys(Case):
         with mock.patch.object(configmod, "HERE", DASH):
             _, err = self.load(path=os.path.join(DASH, "dashboard.config.example.json"))
         self.assertEqual(err, "")
+
+
+class Retired(Case):
+    """The feeds removed once nothing read them (sacct, sacctmgr, the domain and
+    user CSVs): every way there was to set one is named and ignored, never
+    refused, so a unit, a wrapper or a file written for them still starts."""
+
+    def test_a_file_that_sets_one_starts_without_it(self):
+        cfg, err = self.load({"feeds": {"sacct": {"dir": "/n/sacct", "jobs_csv": None},
+                                        "user_actor": {"path": "user.csv"},
+                                        "ebpf": {"days": 3}}})
+        for feed in ("sacct", "user_actor"):
+            self.assertIn("feeds.%s is retired" % feed, err)
+        self.assertNotIn("is not a setting", err)
+        # dropped, so neither /api/config nor a saved build's fingerprint holds it
+        self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
+        self.assertEqual(cfg.get("feeds.ebpf.days"), 3)
+
+    def test_a_variable_that_set_one_is_named_and_ignored(self):
+        env = {"RC_DASH_SACCT_DIR": "/n/sacct", "RC_DASH_DOMAINS_CSV": "map_user.csv",
+               "RC_USER_CSV": "user.csv"}
+        with mock.patch.dict(os.environ, env):
+            cfg, err = self.load({})
+        for var in env:
+            self.assertIn("%s is retired" % var, err)
+        self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
+
+    def test_every_variable_there_was_is_named(self):
+        self.assertEqual(len(configmod.RETIRED_ENV), 9)
+        for var in configmod.RETIRED_ENV:
+            with self.subTest(var=var), mock.patch.dict(os.environ, {var: "x"}):
+                _, err = self.load({})
+                self.assertIn("%s is retired" % var, err)
+
+    def test_a_flag_that_set_one_is_taken_named_and_ignored(self):
+        ap = cli.build_parser()
+        self.assertNotIn("--sacct-dir", ap.format_help())
+        self.assertNotIn("--jobs-csv", ap.format_help())
+        args = ap.parse_args(["--sacct-dir", "/n/sacct", "--jobs-csv", "jobs.csv"])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            cfg = configmod.load(args, self.write({}))
+        self.assertIn("--sacct-dir is retired", err.getvalue())
+        self.assertIn("--jobs-csv is retired", err.getvalue())
+        self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
 
 
 if __name__ == "__main__":

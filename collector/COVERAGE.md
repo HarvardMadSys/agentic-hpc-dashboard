@@ -12,19 +12,19 @@ It answers one question per row: **after the cutover, where does this signal com
 
 | Tier | Privilege | Written by | Lands in |
 |---|---|---|---|
-| **node** | unprivileged | `node_snapshot.py` (vendored `collect/common/snapshot.py`) | `login/logs/<date>/<host>.jsonl` — unchanged schema, unchanged path |
-| **ebpf** | root | `ebpf_trace.py` | `ebpfm/logs/<date>/<host>.{snapshot,exits}.jsonl` |
+| **node** | unprivileged | `node_snapshot.py` (vendored `collect/common/snapshot.py`) | `$EBPFM_NODE_OUTPUT_DIR/<date>/<host>.jsonl` — the login poller's schema, unchanged |
+| **ebpf** | root | `ebpf_trace.py` | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` |
 
 `ebpfm.sh` runs both as root, the node tier alone as an ordinary user. The node tier's
 mode follows the tier set: `SNAPSHOT_MODE=node` when the eBPF tier is running, `full`
 when it is not.
 
 **The eBPF tier is not a replacement for the node tier, and cannot become one.** It emits
-only *events*, and only for *tracked* processes (§4). Everything in §2 stays where it is.
+only *events*, and only for *tracked* processes (§7). Everything in §2 stays where it is.
 
 ---
 
-## 2. Node-scope — the node tier is the only source (20 keys)
+## 2. Node-scope — the node tier is the only source (29 keys)
 
 eBPF cannot produce any of these. They are node aggregates and kernel counters, not task
 events. Stated plainly: **eBPF cannot produce load average, memory totals, filesystem
@@ -33,11 +33,12 @@ space, or interface counters.**
 | Key | Source | Why there is no eBPF analogue |
 |---|---|---|
 | `timestamp`, `hostname`, `collector`, `schema_version` | — | envelope |
+| `ts_epoch`, `tz`, `redact` | — | appended in schema 8 after every other key: the epoch time, the zone, and which masking ran on the command lines (`EBPFM_REDACT`) |
 | `uptime` (`load_1/5/15`, `users`) | `uptime` | a run-queue average is a kernel scalar sampled at an instant |
 | `process_states` (R/D/S/Z/T) | `ps -e -o stat` | node-wide census; the eBPF tier sees only tracked pids |
 | `memory`, `meminfo_detail` | `free -b`, `/proc/meminfo` | **memory totals** — nothing to hook |
 | `cpu` (per-core), `vmstat` | `mpstat -P ALL`, `vmstat` | per-core utilisation aggregates |
-| `proc_stat` (`processes`, `ctxt`, `procs_running/blocked`, **`btime`**) | `/proc/stat` | **`btime` is the reboot-era key for every dataset** — see §5 |
+| `proc_stat` (`processes`, `ctxt`, `procs_running/blocked`, **`btime`**) | `/proc/stat` | **`btime` is the reboot-era key for every dataset** — see §6 |
 | `local_disk_io` | `iostat -xz` | per-device block-layer stats |
 | `nfs_io`, `nfs_mountstats`, `nfs_rpc` | `nfsiostat`, `/proc/self/mountstats`, `/proc/net/rpc/nfs` | per-mount RTT / retrans — the wedge's primary evidence |
 | `mount_topology` | `/proc/self/mountinfo` | autofs / NFS mount census |
@@ -49,10 +50,10 @@ space, or interface counters.**
 | `gpu`, `gpu_pmon`, `gpu_compute_apps` | nothing: `nvidia-smi` is no longer run | always null, since login nodes have no GPUs; the keys stay for the key-order contract |
 | `slurm` | `$SLURM_*` | always null on a login node |
 
-## 3. Per-process / per-user aggregates — kept in the node tier (8 keys)
+## 3. Per-process / per-user aggregates — kept in the node tier (7 keys)
 
 Unprivileged `ps` / cgroup rollups. The eBPF tier does **not** reproduce them, because it
-is not a census (§4).
+is not a census (§7).
 
 | Key | Why it stays | eBPF's nearest analogue (not a replacement) |
 |---|---|---|
@@ -71,7 +72,7 @@ named replacement.
 | Dropped key | Why it was not worth keeping | Replacement |
 |---|---|---|
 | `top_io_processes` | **own-user only.** `/proc/<pid>/io` is ptrace-gated, so other users' processes were silently *omitted* — on a shared login node the section is structurally incomplete | `io` block (`task->ioac`) → `exit.io.{rd_mb,wr_mb,rchar_mb,wchar_mb}` + `io.scope`. Per process, exact, **all users** |
-| `top_sleeping_procs` | `wchan` → `-` and `syscall` → `N/A` for every other user | `dstate_stat` → `residency.d_stack`: top-5 kernel frames from `/proc/<pid>/stack`. **Reading a kernel stack touches no filesystem**, so it cannot hang on the mount being diagnosed |
+| `top_sleeping_procs` | `wchan` → `-` and `syscall` → `N/A` for every other user | `residency.d_stack`: top-5 kernel frames from `/proc/<pid>/stack`, read at the tick whatever BPF blocks loaded. **Reading a kernel stack touches no filesystem**, so it cannot hang on the mount being diagnosed |
 | `sleeping_wchans` | other users collapse into the `-` bucket, under-counting real NFS waits | `residency_totals.d_stack_top` — per-node top-10 blocking frames |
 | `socket_talkers` | connection **counts** only, own-process attribution | `netbytes` + `tcp_*` → `exit.conns` / `conn` with real `rx_bytes`/`tx_bytes`, `rtt_ms`, `retrans`, `provider`, `connect_ms`; from schema 7, `netpeer_*` → `exit.net_endpoints` / `netio`, bytes per endpoint for UDP as well as TCP |
 
