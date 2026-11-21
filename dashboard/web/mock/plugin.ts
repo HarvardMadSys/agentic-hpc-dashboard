@@ -367,6 +367,64 @@ function readClientFrames(buf: Buffer): { texts: string[]; rest: Buffer } {
 }
 
 export function mockApi(): Plugin {
+  /** `/api/trend` from the fixture's day-by-day panel, the only days it has:
+   *  its days folded into weeks or months. A fixture, so a bucket's users are
+   *  its busiest day's (the service counts distinct accounts over the bucket). */
+  const mockTrend = (fx: Fixture, by: string, days: number) => {
+    type D = { date: string; from: number; today: boolean; cut: boolean; minutes: number; held: number;
+      by_class: Record<string, { n: number | null; cpu_s: number | null; users: number | null }>;
+      types: Record<string, { users: number; n: number; cpu_s: number }> };
+    const src = ((fx.panels as { panels?: { trend?: { days?: D[] } } }).panels?.trend?.days ?? []).slice(-days);
+    const keyOf = (date: string) => {
+      const d = new Date(`${date}T12:00:00`);
+      if (by === 'month') return `${date.slice(0, 7)}-01`;
+      if (by === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    };
+    const out = new Map<string, Record<string, any>>(); // eslint-disable-line @typescript-eslint/no-explicit-any
+    for (const d of src) {
+      const k = keyOf(d.date);
+      const b = out.get(k) ?? { key: k, from: d.date, to: d.date, t: d.from, t_end: d.from + 86400, cut: d.cut,
+        today: false, partial: false, days: 0, data_days: 0, complete_days: 0, minutes: 0, held: 0, records: 0,
+        users: null, by_class: {}, types: {}, hosts: {} };
+      b.to = d.date;
+      b.days += 1;
+      b.today ||= d.today;
+      b.minutes += d.minutes;
+      b.held += d.held;
+      if (d.held) {
+        b.data_days += 1;
+        if (!d.today && !d.cut) b.complete_days += 1;
+        let all = 0;
+        for (const [c, v] of Object.entries(d.by_class)) {
+          const a = (b.by_class[c] ??= { n: 0, cpu_s: 0, cpu_n: 0, submits: 0, users: 0 });
+          a.n += v.n ?? 0;
+          a.cpu_s += v.cpu_s ?? 0;
+          a.cpu_n += v.n ?? 0;
+          a.users = Math.max(a.users, v.users ?? 0);
+          all += v.users ?? 0;
+          b.records += v.n ?? 0;
+        }
+        b.users = Math.max(b.users ?? 0, all);
+        for (const [t, v] of Object.entries(d.types)) {
+          const a = (b.types[t] ??= { n: 0, cpu_s: 0, users: 0 });
+          a.n += v.n;
+          a.cpu_s += v.cpu_s;
+          a.users = Math.max(a.users, v.users);
+        }
+      }
+      b.partial = b.cut || b.complete_days < b.days;
+      out.set(k, b);
+    }
+    const bs = [...out.values()];
+    return { enabled: true, by, days, buckets: bs, from: src[0]?.date, to: src[src.length - 1]?.date,
+      tz: 'UTC', state: 'ok', error: null, late_dropped: 0,
+      table: { days: src.length, oldest: src[0]?.date ?? null, newest: src[src.length - 1]?.date ?? null,
+        complete: src.filter((d) => !d.today && !d.cut).length, written_at: null },
+      basis: 'the dev fixture’s day-by-day panel, folded into buckets (mock/plugin.ts)' };
+  };
+
   return {
     name: 'rc-mock-api',
     apply: 'serve',
@@ -414,6 +472,8 @@ export function mockApi(): Plugin {
             );
             return send({ ...src, panels, window: win, window_status: st });
           }
+          case '/api/trend':
+            return send(mockTrend(fx, q.get('by') || 'day', Number(q.get('days') || 365)));
           case '/api/live':
             return send({ ...freshenLive(fx, win.minutes),
                           window: { ...freshenLive(fx, win.minutes).window,

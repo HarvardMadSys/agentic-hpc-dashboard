@@ -519,6 +519,8 @@ def create_app(cfg):
             try:
                 await loop.run_in_executor(None, agg.refresh_feeds)
                 await broadcast("feeds", agg.reports)
+                # the roll-up's days that changed, to its table (rollup.py)
+                await loop.run_in_executor(None, agg.flush_rollup)
                 went("feeds")
             except Exception as e:
                 failed("feeds", e)
@@ -570,6 +572,11 @@ def create_app(cfg):
         for t in getattr(app.state, "tasks", []):
             t.cancel()
         agg.stop()
+        if agg.rollup is not None:
+            try:                        # today as far as it was read, kept
+                agg.rollup.flush(agg.lock, force=True)
+            except Exception:
+                pass
         store.stop()
         keysearch.shutdown()            # the inspector's workers (keysearch.py)
 
@@ -739,6 +746,14 @@ def create_app(cfg):
     @app.get("/api/panels")
     def api_panels(request: Request, window_min: int = Query(None)):
         return respond(agg.panels(window_min, view_filter(request, anon)), "panels", request)
+
+    @app.get("/api/trend")
+    def api_trend(request: Request, days: int = Query(365, ge=1, le=366),
+                  by: str = Query("day", pattern="^(day|week|month)$")):
+        """The Trend tab: each day's, week's or month's processes, CPU, users and
+        submissions by class and agent type, from the roll-up table (rollup.py),
+        up to a year back. Not the window, and not narrowed by the filter."""
+        return respond(agg.trend(days, by), "trend", request)
 
     @app.get("/api/live")
     def api_live(request: Request, window_min: int = Query(None)):

@@ -20,6 +20,13 @@ const PATHS = {
       <rect x="11" y="11" width="6" height="6" rx="1.4" />
     </>
   ),
+  trend: (
+    <>
+      <path d="M3 16.5h14" />
+      <polyline points="3.5,13 7.5,9.5 10.5,11.5 16.5,5" />
+      <polyline points="13,5 16.5,5 16.5,8.5" />
+    </>
+  ),
   users: (
     <>
       <circle cx="10" cy="7" r="3.2" />

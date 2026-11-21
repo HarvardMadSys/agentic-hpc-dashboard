@@ -252,8 +252,11 @@ is: what is measured, and what it cannot see.
 | **feed** | a stream of records the page reads: process tracer, node metrics, job accounting, … | data source, tier, provenance |
 | **fake data** | the demo's made-up records | synthetic data |
 
-The tabs are Live, Users, Agents, **Sessions**, Login nodes (Resources, **Risks**, Slurm), Ask LLM,
-Internal and Feeds. A tab's URL key (`?tab=trajectories`, `?tab=risk`), an API field and a
+The tabs are Live, **Trend**, Users, Agents, **Sessions**, Login nodes (Resources, **Risks**, Slurm),
+Ask LLM, Internal and Feeds. Trend (`src/tabs/TrendTab.tsx`, `/api/trend`) is the one tab that
+reads neither the window nor the filter: each class's use over up to a year, from the roll-up
+table the service writes as it ingests (`rc_dashboard/rollup.py`), so the window picker is not
+shown on it. A tab's URL key (`?tab=trajectories`, `?tab=risk`), an API field and a
 filter key keep their old names, so links, citations and exports are unchanged: only what the
 page says moved. A panel whose title changed keeps its old anchor (`id=`), which
 `src/lib/cites.ts` points at.

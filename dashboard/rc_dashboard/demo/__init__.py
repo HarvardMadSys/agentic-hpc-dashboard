@@ -29,6 +29,8 @@ exports the cluster's feed roots, and a demo must never read them):
     feeds.ebpf.roots, feeds.ebpf_node.roots   the demo's own feed
     feeds.sacct/sacctmgr/domains/user_actor   a path in the demo dir that does not exist
     cache.dir                                 the demo's own, so no real saved build is evicted
+    rollup.dir                                the demo's own, so no made-up day lands in a
+                                              real roll-up table (rollup.py)
     clock.as_of                               "" -- the wall clock: the feed is live
     live.retention_min, backfill_hours        the history written, so every window is filled
     panels.preprocess, preprocess_wait_s      every window built before the port opens
@@ -100,6 +102,7 @@ def configure(cfg, opts):
             ("feeds.domains.path", os.path.join(missing, "map_user.csv")),
             ("feeds.user_actor.path", os.path.join(missing, "user.csv")),
             ("cache.dir", feed.cache),
+            ("rollup.dir", os.path.join(feed.cache, "rollup")),
             ("clock.as_of", ""),
             ("live.retention_min", mins),
             ("live.backfill_hours", days * 24),

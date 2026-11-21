@@ -37,6 +37,7 @@ from . import gz
 from . import jsonout
 from . import portraits
 from . import proctree
+from . import rollup as rollupmod
 from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
@@ -136,6 +137,9 @@ class Aggregator:
             days=int(cfg.get("feeds.ebpf.days", 8)))
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
+        # The roll-up table the Trend tab reads (rollup.py): each local day's
+        # sums, fed beside the live tier and written to disk as days end.
+        self.rollup = rollupmod.Rollup(cfg) if rollupmod.enabled(cfg) else None
         self.node = NodeReducer(cfg, self.classes)
         # The node tier over time, read on its own thread (nodehist.py).
         self.nodehist = NodeHistory(cfg)
@@ -247,6 +251,7 @@ class Aggregator:
         `at`, beside `recs`, is where the tail read each (`normalized_at`): a
         view skips a record its build already read by it, byte for byte."""
         live_ev, health_ev = LiveReducer.EVENTS, CollectorHealth.EVENTS
+        roll_ev = rollupmod.Accumulator.EVENTS if self.rollup is not None else ()
         feed = self.panels_by_window.feed
         for rec, place in zip(recs, itertools.repeat(None) if at is None else at):
             ev = rec.get("event")
@@ -255,6 +260,11 @@ class Aggregator:
                     self.live.feed(rec, older=older)
                 except Exception:
                     pass          # one bad record must never stop the stream
+            if ev in roll_ev:
+                try:
+                    self.rollup.feed(rec)
+                except Exception:
+                    pass
             if ev in health_ev:
                 try:
                     self.health.feed(rec)
@@ -411,7 +421,8 @@ class Aggregator:
         """
         hours = int(self.cfg.get("live.backfill_hours", 168))
         span = min(hours * 3600, self.live.retention_s) if hours > 0 else 0
-        since = time.time() - span if span else None
+        tail_from = time.time()
+        since = tail_from - span if span else None
         with self.lock:
             self.backfill = {"state": "positioning", "pct": 0, "records": 0,
                              "hours": hours if span else 0}
@@ -436,6 +447,7 @@ class Aggregator:
         except Exception as e:                     # never wedge the tail behind it
             self.backfill = {"state": "error", "error": str(e), "pct": 0,
                              "records": 0, "hours": hours}
+            self._covered(tail_from)
             return 0
         finally:
             self.positioned.set()
@@ -450,6 +462,7 @@ class Aggregator:
             with self.lock:
                 self.node_result = {"_error": str(e)}
         if not span:
+            self._covered(tail_from)
             return 0
 
         t0 = time.monotonic()
@@ -489,8 +502,11 @@ class Aggregator:
             with self.lock:
                 self.backfill.update(state="error", error=str(e),
                                      records=stats["records"])
+            # what the read reached is not known whole: only the tail's is
+            self._covered(tail_from)
             return stats["records"]
         seen = stats["records"]
+        self._covered(since)
         with self.lock:
             retained = self.live.buckets.oldest_epoch()
             self.backfill.update(
@@ -508,6 +524,27 @@ class Aggregator:
                 retained_hours=(round((time.time() - retained) / 3600.0, 1)
                                 if retained else None))
         return seen
+
+    def _covered(self, since):
+        """The roll-up's days from `since` on are read whole: it may write them.
+        A day-file the positioning could not open is read by the tail once it
+        can be; until then the roll-up keeps any whole copy holding more
+        records than it counted (`Rollup.flush`)."""
+        if self.rollup is not None:
+            with self.lock:
+                self.rollup.covered(since)
+
+    def flush_rollup(self):
+        """Write the roll-up's days that changed (rollup.py); at most once a minute."""
+        if self.rollup is not None:
+            self.rollup.flush(self.lock)
+
+    def trend(self, days=365, by="day"):
+        """The Trend tab: the roll-up table over `days` local days, in `by` buckets."""
+        if self.rollup is None:
+            return {"enabled": False, "buckets": [], "by": by, "days": days,
+                    "note": "the roll-up table is off (rollup.enabled)"}
+        return self.rollup.trend(self.lock, days, by)
 
     # ---------------------------------------------------------------- results
     def refresh_feeds(self):

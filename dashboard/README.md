@@ -669,6 +669,7 @@ on. Off by default because a held 7 d window on a busy node is up to ~1 GB; the 
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
+| `GET /api/trend?days=&by=` | the Trend tab: the roll-up table's last `days` (1..366, 365 by default) local days in `by` buckets (`day`, `week`, `month`): each class's processes, CPU, distinct users and submissions, the agent types and the hosts, and the table's own state ([Trend](#trend-up-to-a-year)) |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/annotate` | the model that labels tool calls with their purpose: provider, model, endpoint, whether it can run here ([below](#tool-call-purposes-from-a-model)) |
@@ -1217,6 +1218,71 @@ categorical panel, read as numbers or as each class's share of the day.
   bins are hours past the newest day, so a day boundary off the hour (a +5:30 zone) lands with the
   hour it falls in.
 
+## Trend: up to a year
+
+**Trend** is a tab of its own: each class's processes, CPU, users and Slurm submissions per day,
+week or month, over up to a year -- 30, 90, 180 or 365 days -- with the users of each agent type
+and each login node's processes beside them. *Day by day* on Live answers the same question over
+what the live tier holds (retention, 7 days); this answers it over what the **roll-up table**
+holds, which outlives retention and the day-files (`rc_dashboard/rollup.py`).
+
+**The table is filled as records are ingested.** Every exit and submit the live tier takes -- the
+tail's and the backfill's -- is summed into its local day beside it (`Aggregator.dispatch`), so it
+costs no read of its own, and every minute the days that changed are written to SQLite, at
+`rollup.dir` (`<cache.dir>/rollup/rollup.sqlite` unless set):
+
+| table | one row per | holds |
+|---|---|---|
+| `day` | local day | its span and zone, `minutes` it could hold and `held` (minutes with any exit), `records`, the first and last record's time, `complete`, `source` (`ingest` or `files`) and when it was written |
+| `day_class` | day, host, class, agent type | `processes` that exited, `cpu_s` and `cpu_n` (the processes that reported a CPU figure: a dropped BPF block writes null, never 0), `submits` |
+| `day_user` | day, account, class, agent type | the same per account, so a week's or a month's users are distinct accounts counted over it, never a sum of days |
+
+It is plain SQLite, for a query of your own:
+`sqlite3 rollup.sqlite "SELECT date, SUM(processes) FROM day_class WHERE class='agent' GROUP BY date"`.
+
+**A row is a function of the collector's files, never of when the service ran.** The backfill reads
+retention again on every start, so the days it reads are recounted from the files, not added to
+the table's. A day is written only once the service has read all of it -- from the backfill's start
+once the backfill is done; until then the table keeps what an earlier run wrote -- `complete` once it
+ended 15 minutes ago (`GRACE_S`), and today as it stands, written again as it grows. A day the
+read began inside is written only where the table holds no whole copy of it and fewer of its
+records, and never as complete. A record that lands on a day already written (a host's stream
+catching up) writes it again. And a recount never replaces a complete day that holds more records
+than it read: records only ever add to a day, so fewer means a day-file the startup could not open
+(the tail reads it once it can) or day-files cleaned away inside retention, and the table's copy is
+the better one (`kept_better` in the response). Days are the service's local days, cut at local
+midnight.
+
+**On the page.** A stretch the table holds no record of is a hole in the line, and nothing before
+its first day is drawn. Processes and CPU are a mean per day over each point's days with data, so
+the week still going sits on the scale of a whole one; users are distinct over the whole point,
+and a point that is partial says so in the table below the charts. Like *Day by day*, it is
+everyone: neither the window nor the user and agent-type filter narrows it.
+
+**Older days, by hand.** The table starts the first time the service runs with it, from what the
+backfill reads (a week). Days still on disk before that are filled with
+
+```bash
+uv run python -m rc_dashboard rollup --rollup-days 365     # --force reads again days it holds whole
+```
+
+which reads every date dir near a day the table lacks, oldest first, through the service's own
+normalizer, and writes each day once the dirs either side of it are read too (a record lands in
+the collector's day's dir, which near midnight need not be the service's day). It never writes
+today, and writes a day partial, to be read again by the next run, while it is inside its 15
+minutes of grace or while a day-file near it could not be read whole. That is a full parse of every exit and submit, in one process: 14 us a record on the demo
+feed (118 k records in 1.7 s), so some 40 s a node-day at FAS's 2.7 M exits if its records cost the
+same -- not measured there -- and a year of eight nodes a day and more. So it is a command, run once,
+not something the service starts by itself.
+
+| setting | env | default | |
+|---|---|---|---|
+| `rollup.enabled` | `RC_DASH_ROLLUP` | `true` | sum and write the days; off, the Trend tab says so |
+| `rollup.dir` | `RC_DASH_ROLLUP_DIR` | `<cache.dir>/rollup` | where the table lives. It is the only copy of a day whose day-files are gone, so a directory outside the cache is safer |
+
+Neither is in what a saved window or hour is keyed on, and a demo writes only its own table.
+The table keeps account names (0700, as the other caches); what `/api/trend` serves is counts.
+
 ## Commands that failed
 
 **Commands that failed**, on the Agents tab under the tool panels, is how the Tool mix's processes
@@ -1737,6 +1803,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/roles.py` | what a classifier-tagged process is: agent, tool-shell, probe, sandbox, infra, ... |
 | `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
+| `rc_dashboard/rollup.py` | the roll-up table: each local day's sums, fed beside the live tier as records are ingested and written to SQLite as days end; the Trend tab's `/api/trend`, and the `rollup` command that fills older days from the day-files ([Trend](#trend-up-to-a-year)) |
 | `rc_dashboard/nodehist.py` | the node tier over time: every snapshot's probes, load and NFS round trips, read incrementally on its own thread and binned to a window ([Login node health](#login-node-health)) |
 | `rc_dashboard/reducers/` | tools, io, resources, risk, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), facets (the page filters' choices), own_io (each process's own disk bytes, its reaped children's taken off), live |
 | `rc_dashboard/reducers/phase_*.py` | an agent's tool calls named (`phase_rules`) and logged (`phase_log`), cut into phases (`phase_segment`) and into tasks (`phase_tasks`), the names and the agent's own words the tasks are labeled from (`phase_names`), and a session at a glance, its kind of work and a few sentences (`phase_summary`) |

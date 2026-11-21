@@ -63,6 +63,7 @@ const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab)
 const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
 const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
+const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab));
 const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then((m) => m.EventsExplorer));
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
@@ -79,6 +80,7 @@ const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then(
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
 const TABS: Tab[] = [
   { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
+  { k: 'trend', lbl: 'Trend', eyebrow: 'each class’s use over up to a year, from the roll-up table', icon: 'trend', group: 'Monitor', also: 'year history growth' },
   { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Monitor' },
   { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Monitor' },
   { k: 'trajectories', lbl: 'Sessions', eyebrow: 'one session at a time: what it ran, and when', icon: 'trajectories', group: 'Monitor', also: 'trajectories trajectory' },
@@ -492,6 +494,8 @@ export default function App() {
             openUserTraj={openUserTraj}
           />
         );
+      case 'trend':
+        return <TrendTab cls={cls} who={who} />;
       case 'resources':
         return <ResourcesTab P={P} cls={cls} live={live.live} />;
       case 'risk':
@@ -924,14 +928,15 @@ export default function App() {
               role="group"
               aria-label="time window and filters"
             >
-              <WindowPicker
+              {/* Trend reads its own range, a year at most, never the window */}
+              {tab.k !== 'trend' && <WindowPicker
                 value={url.win}
                 onChange={(w) => setUrl({ win: w })}
                 windows={windows}
                 resolved={resolvedWin}
                 status={winStatus}
                 backfill={live.live?.backfill}
-              />
+              />}
               <ClassFilter
                 value={url.cls}
                 onChange={(c) => setUrl({ cls: c })}

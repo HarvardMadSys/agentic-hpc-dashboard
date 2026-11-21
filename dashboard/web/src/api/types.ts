@@ -2665,6 +2665,60 @@ export interface TrendDay {
   /** agent type -> accounts, processes and CPU that day */
   types: Record<string, { users: number; n: number; cpu_s: number }>;
 }
+/** One class's sums over a bucket of the roll-up table (rollup.py). `cpu_n`:
+ *  the processes that reported their CPU (a dropped BPF block writes null). */
+export interface TrendClass {
+  n: number;
+  cpu_s: number;
+  cpu_n: number;
+  submits: number;
+  /** distinct accounts over the whole bucket, never a sum of days */
+  users: number;
+}
+/** A day, week or month of the roll-up table. With no `data_days` its maps are
+ *  empty and `users` null: no record was held, which is not a quiet stretch. */
+export interface TrendBucket {
+  key: string;
+  from: string;
+  to: string;
+  /** local midnight starting the bucket, and the one ending it (epoch s) */
+  t: number;
+  t_end: number;
+  /** the range asked for starts inside it */
+  cut: boolean;
+  today: boolean;
+  partial: boolean;
+  days: number;
+  data_days: number;
+  complete_days: number;
+  minutes: number;
+  held: number;
+  records: number;
+  users: number | null;
+  by_class: Record<string, TrendClass>;
+  types: Record<string, { n: number; cpu_s: number; users: number }>;
+  hosts: Record<string, { n: number; cpu_s: number }>;
+}
+/** `/api/trend`: the roll-up table over up to a year (rollup.py). */
+export interface TrendResponse {
+  enabled: boolean;
+  buckets: TrendBucket[];
+  by: 'day' | 'week' | 'month';
+  days: number;
+  from?: string;
+  to?: string;
+  tz?: string;
+  basis?: string;
+  note?: string;
+  path?: string;
+  grace_s?: number;
+  state?: 'ok' | 'reading' | 'error';
+  error?: string | null;
+  covered_from?: number | null;
+  flushed_at?: number | null;
+  late_dropped?: number;
+  table?: { days: number; oldest: string | null; newest: string | null; complete: number; written_at: number | null };
+}
 /** Each class per day, over everything the live tier holds (reducers/live.py `daily`). */
 export interface TrendPanel extends PanelEnvelope {
   days?: TrendDay[];
