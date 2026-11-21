@@ -1,6 +1,5 @@
-"""The node tier over time (nodehist.py), the live tier day by day
-(LiveReducer.daily), and how the tool mix's processes ended (ToolMixReducer
-`exits`).
+"""The node tier over time (nodehist.py), and how the tool mix's processes
+ended (ToolMixReducer `exits`).
 
 * a bin no snapshot landed in is a hole, a probe a snapshot did not report is
   None, and an NFS mount list with no I/O is no round trip, not one of 0;
@@ -8,8 +7,6 @@
   and a level its mean;
 * a second pass reads only what was appended, a line still being written waits
   for its newline, and a day sealed into its `.gz` adds nothing it held;
-* a day the live tier held no minute of has null counts, a class with nothing
-  in a held day is 0, and an account counts once a day in each class;
 * an exit 1 from grep is an answer, SIGPIPE is not a failure, and a merged
   state counts the endings one pass counts.
 
@@ -29,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import config as configmod                  # noqa: E402
 from rc_dashboard.nodehist import NodeHistory, point           # noqa: E402
-from rc_dashboard.reducers.live import LiveReducer            # noqa: E402
 from rc_dashboard.reducers.tools import ToolMixReducer        # noqa: E402
 
 CLASSES = ["agent", "human", "ide", "unlabeled"]
@@ -167,59 +163,6 @@ class NodeHistoryTest(unittest.TestCase):
         self.write([snap("login1", self.now - 6 * 3600), snap("login1", self.now - 60)], "w")
         h.scan()
         self.assertEqual(len(h.points["login1"]), 1)
-
-
-def exit_rec(e, cls="agent", user="ann", atype="claude_code", cpu=1.0, **kw):
-    r = {"event": "exit", "_a3": cls, "agent_type": atype if cls == "agent" else None,
-         "_ts_epoch": e, "user": user, "cpu_s": cpu, "pid": int(e) % 100000, "host": "h"}
-    r.update(kw)
-    return r
-
-
-class DailyTest(unittest.TestCase):
-
-    def test_days_held_quiet_and_unheld(self):
-        r = LiveReducer(cfg(), CLASSES)
-        now = time.time()
-        # an hour ago and on: whatever the hour, every record lands in one day
-        t0 = int((now - 3600) // 60) * 60
-        mid = time.mktime(time.localtime(t0)[:3] + (0, 0, 0, 0, 0, -1))
-        t0 = max(t0, mid + 60)
-        for k in range(6):
-            r.feed(exit_rec(t0 + k * 60, user="ann" if k % 2 else "bob"))
-        r.feed(exit_rec(t0 + 6 * 60, cls="human", user="ann", cpu=2.0))
-        days = {d["date"]: d for d in r.daily(now)["days"]}
-        self.assertTrue(days[time.strftime("%Y-%m-%d", time.localtime(now))]["today"])
-        day = days[time.strftime("%Y-%m-%d", time.localtime(t0))]
-        self.assertEqual(day["held"], 7)
-        self.assertEqual(day["by_class"]["agent"], {"n": 6, "cpu_s": 6.0, "users": 2})
-        self.assertEqual(day["by_class"]["human"], {"n": 1, "cpu_s": 2.0, "users": 1})
-        # held, and the class ran nothing: a measured 0
-        self.assertEqual(day["by_class"]["ide"], {"n": 0, "cpu_s": 0.0, "users": 0})
-        self.assertEqual(day["types"]["claude_code"]["users"], 2)
-        before = days[time.strftime("%Y-%m-%d", time.localtime(mid - 3600))]
-        # not one minute held: unknown, not quiet
-        self.assertEqual(before["held"], 0)
-        self.assertFalse(before["today"])
-        self.assertIsNone(before["by_class"]["agent"]["n"])
-        self.assertEqual(before["types"], {})
-
-    def test_a_pinned_clock_does_not_keep_a_reading_for_good(self):
-        # clock.as_of freezes time.time(): a reading taken before the backfill
-        # read anything must still give way once the records are in
-        from unittest import mock
-        r = LiveReducer(cfg(), CLASSES)
-        now = time.time()
-        t0 = int((now - 600) // 60) * 60
-        day = time.strftime("%Y-%m-%d", time.localtime(t0))
-        empty = {d["date"]: d for d in r.daily(now)["days"]}
-        self.assertEqual(empty.get(day, {}).get("held", 0), 0)
-        r.feed(exit_rec(t0, user="ann"))
-        # within the reuse span, by both clocks: the same reading
-        self.assertIs(r.daily(now), r.daily(now))
-        with mock.patch("time.monotonic", return_value=time.monotonic() + LiveReducer.DAILY_REUSE_S + 1):
-            days = {d["date"]: d for d in r.daily(now)["days"]}
-        self.assertEqual(days[day]["held"], 1)
 
 
 def tool_rec(tool, code=0, sig=None, cls="agent", pid=1):

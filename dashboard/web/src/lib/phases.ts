@@ -637,8 +637,7 @@ export function sequenceLine(list: Phase[], now?: TrajRunning['now'] | null): st
  *  phase where that begins earlier (a call is stamped by when it exited, and a phase by when it began, so a first call can
  *  begin before the first record), to its last phase's end, which is the latest end of any call, so that no call runs off
  *  it. A session running now runs on to now (`nowS`, on the service's clock), where the live edge ends it. A session row's
- *  band (TrajectoriesTab.tsx) and the inspector's map of the whole session (SessionMap.tsx) are both drawn on it, so the
- *  two agree. Null for a list with no phase. */
+ *  band (TrajectoriesTab.tsx) is drawn on it. Null for a list with no phase. */
 export function bandAxis(list: Phase[], first: number | null | undefined, nowS: number | null): [number, number] | null {
   if (!list.length) return null;
   const last = list[list.length - 1].t1;

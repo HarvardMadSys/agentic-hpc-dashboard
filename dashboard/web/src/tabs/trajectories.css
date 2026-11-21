@@ -751,46 +751,6 @@ details.ins-limits > summary .eyebrow {
 .tn-hk-tick {
   fill: var(--muted);
 }
-/* The map of the whole session (SessionMap.tsx): its tasks and its phases on the session's own clock, captioned in the
-   navigator's gutter (`--tn-gut`, set on `.sm`) with the navigator's captions (`.tn-plot`, `.tn-lane-cap`). A task's block
-   is the lane's (`.tn-task`) and a phase's band the chart's tint (`.tn-band`) with a rule of its full colour along its foot.
-   It is drawn at its box's own width, so its words are the chart's size at any width. A block or a band under the pointer
-   is outlined in the ink, which is how the map says it takes a click */
-.sm {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.sm .tn-svg.sm-svg {
-  height: auto;
-  overflow: visible;
-}
-.sm-pick {
-  cursor: pointer;
-}
-.sm-hl {
-  fill: none;
-  stroke: none;
-  pointer-events: none;
-}
-.sm-pick:hover > .sm-hl {
-  stroke: var(--ink);
-  stroke-width: 1.5;
-}
-.sm-num {
-  font-weight: 600;
-  fill: var(--ink);
-}
-.sm-tick {
-  stroke: var(--edge);
-  stroke-width: 1;
-}
-.sm-key {
-  flex: none;
-  box-sizing: content-box;
-  border: 1px solid var(--rule);
-}
 /* a line of caption under the chart */
 .tn-note {
   font-family: 'IBM Plex Mono', monospace;

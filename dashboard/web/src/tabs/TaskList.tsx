@@ -89,7 +89,7 @@ export function PhaseCalls({ p, onPick }: { p: Phase; onPick: (p: Phase) => void
   );
 }
 
-/** The line under a closed task's row: its phases in order, each with the chip of its colour, as the map above the list draws
+/** The line under a closed task's row: its phases in order, each with the chip of its colour, as the navigator's chart draws
  *  them, so a reader sees what the task was made of without opening it: `explore → edit? → test 40 min → run`. The parts are
  *  the row line's (`sequenceParts`): a phase a quarter of the task or more says how long, and past nine phases the middle
  *  is a `…`. It is the phases the task's row counts (`taskPhases`), so it names no gap the gap line names. Opened, the task

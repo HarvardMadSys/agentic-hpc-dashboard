@@ -7,8 +7,8 @@ backend serves as static files.
 ```
 src/api/        the contract: types, fetch client, hooks, the live websocket
 src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks
-src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
-src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure, Icon, CommandPalette
+src/charts/     hand-rolled SVG primitives (lines, bars, ribbon)
+src/components/ Panel/EmptyState, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure, Icon, CommandPalette
 src/tabs/       one module per tab
 mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```
@@ -64,11 +64,11 @@ reload — the middleware re-reads the file on every request. Delete a panel's k
 see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels. Give a
 panel an `_error` string to see `<NotReduced>`, a panel whose reducer raised.
 
-The node tier, the day-by-day panel and the exit verdicts have theirs: a node whose probes are
+The node tier, the Trend tab's days (`trend_days`) and the exit verdicts have theirs: a node whose probes are
 ten times the rest, an NFS hiccup in the same bins as the resources series' stall, a host whose
 snapshots stop for 40 minutes (a hole), a full `/tmp` and a `/var` out of file slots, an account
 held back at its CPU limit and one whose cgroup was made again, processes stuck in NFS waits, a
-day the collector wrote nothing in, the oldest day cut where retention starts, a test runner
+day the collector wrote nothing in, the oldest day cut where the range starts, a test runner
 failing most of its runs, a command not found, a timeout's SIGKILL, grep's exit-1 answers and
 `| head`'s SIGPIPE. With no Slurm or risk panel, Needs attention names both as not checked.
 
@@ -153,10 +153,9 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    in full, never abbreviated. Folding the IDE class into "agent" is what produced the retracted GPU
    near-parity claim. `<Plate>` **requires** a per-class breakdown, so a headline number
    cannot ship without its split.
-2. **Count and cost side by side** — every categorical panel goes through
-   `<CountCost>`, which renders an event-weighted chart and a CPU-weighted chart, each on
-   its own single axis. `GroupBars`/`Lines` take one `ylabel` and have no second-axis
-   option, so a dual axis is not expressible.
+2. **Count and cost side by side** — a categorical panel shows how many (processes) and
+   what they cost (CPU) as two readings, each on its own single axis. `GroupBars`/`Lines`
+   take one `ylabel` and have no second-axis option, so a dual axis is not expressible.
 3. **Colour** — Harvard palette, light only, tokens copied from the archived template.
    Crimson `#A51C30` (`--s1`) is reserved for `agent`. Eight series slots plus one grey
    tail (`--sg`); the purpose table in `src/lib/purposes.ts` folds everything outside its
@@ -335,8 +334,8 @@ The tip is visual only: its layer is `aria-hidden`, and no control points at it 
 
 | tab | source | notes |
 |---|---|---|
-| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=`, its `node` and `trend` | *Needs attention* first: what the service already flags -- a feed past its own max age, risk-rule hits by agents, credentials on command lines, sessions polling the queue, refused submissions, full local disks, accounts held back at a CPU limit, NFS retransmissions -- each with its per-class split and a link to its panel, and every source it could not check named, never read as an all-clear (`src/tabs/Attention.tsx`); then three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, *Who uses what* (each class's share of the window in eight units, the old Overview tab; `?tab=overview` lands on it), per-login-node table with a per-class split, bounded event stream, submissions; *Day by day*, each class per day over retention (`trend`, not the window, and not narrowed by the filter, which it says), count and cost side by side, a day with no record a gap (`src/tabs/DayByDay.tsx`); and *Login node response*, the node tier's probes, slowest NFS round trip and load per host over the window, zoomed with the CPU chart (`node.series`, `src/tabs/NodeResponse.tsx`) |
-| **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait, and shown as a table or as **figures**, each user drawn from their numbers (`src/components/PortraitFigure.tsx`: a part for each number, its numbers and rule on hover, a key beside it); a row or a figure opens the user's **portrait** (`?portrait=`): their figure, how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
+| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=`, and its `node` | *Needs attention* first: what the service already flags -- a feed past its own max age, risk-rule hits by agents, credentials on command lines, sessions polling the queue, refused submissions, full local disks, accounts held back at a CPU limit, NFS retransmissions -- each with its per-class split and a link to its panel, and every source it could not check named, never read as an all-clear (`src/tabs/Attention.tsx`); then three-class stat tiles, per-minute rate chart over the **selected window** with real gaps, *Who uses what* (each class's share of the window in eight units, the old Overview tab; `?tab=overview` lands on it), per-login-node table with a per-class split, bounded event stream, submissions; and *Login node response*, the node tier's probes, slowest NFS round trip and load per host over the window, zoomed with the CPU chart (`node.series`, `src/tabs/NodeResponse.tsx`) |
+| **Users** | `/api/users`, `/api/user?name=` | a portrait of each user from how they use coding agents (`src/tabs/UsersTab.tsx`, words in `src/lib/portraits.ts`): a roster, one row per user with an agent session in the window -- agents, where sessions are driven from, launched with a bypass flag, tool calls by what they do, a typical session, how many at once, active minutes by hour, and traits, with a line under each saying in one sentence how they leverage agents -- filterable by trait; a row opens the user's **portrait** (`?portrait=`): their figure, drawn from their numbers (`src/components/PortraitFigure.tsx`: a part for each number, its numbers and rule on hover, a key beside it), how they leverage agents, the sentence and then point by point with the numbers each rests on and the window's medians beside them, the traits with the rule behind each, launch shares with the window's share as a tick on each bar, the hours and the sessions over the window, calls counted beside time by phase, projects and tasks in the agents' own words, the scheduler, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page only words what it counted |
 | **Agents** | `cascades`, `tool_mix` | agent and subagent behaviour (`?tab=agents`, `?tab=cascades` still opens it): every agent tree, listed by user (the default) or as one list, the latest first (agent / infra / client nodes; `claude daemon`'s idle spares are infra, counted not drawn; how each parent was found, each agent's start folder, directories and writes outside it), agents with **subagents** kept apart from **hosted** sessions (a daemon or server running them); **Workspace & blast radius** per agent with a *this agent only / with its subagents* toggle -- where its processes **ran** (measured), the **bytes** they moved (measured per process), the paths its command lines **named** (inferred, drawn dashed), writes and deletes outside its start folder flagged by where they landed; depth and fan-out histograms, who-starts-whom, and the count-and-cost census of everything the classifier tagged; then the **Tool mix** and **Top tools** (the old Sessions & tools tab: the 12-way bucket mix, counted then costed, by class or by kind of tool; per-class head); *Commands that failed* (`tool_mix.exits`): how the tool mix's processes ended, per class, agent type and tool -- a failure is a non-zero exit or a signal, past grep's exit-1 answer and SIGPIPE -- with each row's commonest exit codes and signals, and each count opening the commands behind it (`outcome` filter; `src/tabs/ExitsPanel.tsx`) |
 | **Sessions** (`?tab=trajectories`) | `/api/trajectories?rank=&window_min=` | rank switcher that only **reorders** (processes and CPU always visible), a ribbon (the purpose of each process, or for an agent whose commands are read its phases, with a line naming its tasks: [below](#sessions-tasks-phases-and-processes)) + tool tokens, `dominant_user_share_pct`; a **pieces** count for how many collector session keys each row joins and how they were attributed. Clicking a row opens the **inspector** (`/api/trajectory`, `?traj=` in the URL), which reads top down: who ran the session and what it came to, its headline and gist, then **What it did** (for an agent whose commands are read: a map of its tasks over its phases on the whole session's clock, and the list of tasks, each with its phases named under it), then **Processes**: the purpose ribbon and tool tokens, what the read covers, the chart of the read, and the process tree -- indentation guides, collapsible subtrees, start / duration / own and subtree CPU / exit or signal per process, a timeline bar on the read's own axis, repeated siblings folded into counted groups, weaker parent links and processes with no exit tagged, and every read bound stated above the tree. **oldest first / newest first** (or the table's `started` header) asks the service for the other end: newest first, the newest processes are the ones drawn in full and the oldest the ones counted |
 | **Login nodes › Resources** (`?tab=resources`; `?tab=io` opens it too) | `node`, `resources`, `io_process` | *Login node health* first, the node tier's newest snapshot of each host, one table at a time (nodes: load, CPU, memory, the collector's probes; NFS mounts; local disks, full past the service's line; accounts against their CPU limit; stuck processes and what they wait in; `src/tabs/NodeHealth.tsx`); then what an operator acts on: the worst individual processes (D-state wait, major faults, runqueue wait, each with its pid and command line), disk read and written by tool (each ranked on its own counter), network bytes and the endpoints they went to, per-user read/write/network. The per-class tables behind them are on **Internal** |
@@ -371,11 +370,10 @@ table, the chart, and the list say one thing.
   how it was launched), the session's headline, and the category chip with the summary, the session in a few
   sentences that the service builds from the block's own numbers (`Mostly ran jobs on Slurm (94% of 5.1 h of
   work). 564 tool calls in 7 tasks, …`). Then two parts, each under a heading:
-  - **What it did**: a map of the whole session (`src/tabs/SessionMap.tsx`), its **Tasks** as a lane of
-    numbered blocks over its **Phases** as a band, on the session's own clock, drawn from the row's block
-    before any process is read. The chart below is the read's, and a long session's read stops at its
-    budget, so that chart can hold the first hour of a ten-hour session; the map holds all of it. Under
-    the map is the list (`src/tabs/TaskList.tsx`): each closed task names its phases in order with the
+  - **What it did**: the list of its tasks (`src/tabs/TaskList.tsx`), from the row's block, so it is there
+    before any process is read and holds the whole session, however far the read below reached (the
+    session's row in the list draws the same tasks and phases whole as its band, and the chart below draws
+    them over the processes the read reached). Each closed task names its phases in order with the
     chip of each (`explore 60 min → edit → test → git`), a task opens into its phases, a phase into the
     commands that ran most in it, and a button from there to its calls in the tree. A block with no tasks
     has the phase list alone (`src/tabs/PhaseList.tsx`). An agent of a type whose commands are not read
@@ -386,7 +384,7 @@ table, the chart, and the list say one thing.
     bars, and under it the tree with its own controls (tree or table, oldest or newest first, expand,
     collapse, pop out) on the line above its find bar.
 
-  A click on a task or a phase, in the map, the chart's lane, or the list, picks it: the chart zooms to it
+  A click on a task or a phase, in the chart's lane or the list, picks it: the chart zooms to it
   and the tree opens at its first call, reading the page that holds it if the read does not.
 - **✦ annotate purposes** (`src/components/Annotate.tsx`), in the bar over the tree, when the site
   turned `annotate` on: a language model's reading of what each tool call was for. The inspector shows

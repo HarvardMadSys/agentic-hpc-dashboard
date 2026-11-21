@@ -2642,29 +2642,6 @@ export interface NodePanel extends PanelEnvelope {
 
 /* ---------------------------------------------------------------- trend */
 
-export interface TrendCell {
-  /** processes that exited; null on a day no minute of was held */
-  n: number | null;
-  cpu_s: number | null;
-  /** accounts that ran something in the class that day */
-  users: number | null;
-}
-export interface TrendDay {
-  date: string;
-  from: number;
-  to: number;
-  /** still going */
-  today: boolean;
-  /** starts where retention does, not at midnight */
-  cut: boolean;
-  /** minutes of the day the live tier could hold */
-  minutes: number;
-  /** minutes of it the collector wrote any exit in */
-  held: number;
-  by_class: Record<string, TrendCell>;
-  /** agent type -> accounts, processes and CPU that day */
-  types: Record<string, { users: number; n: number; cpu_s: number }>;
-}
 /** One class's sums over a bucket of the roll-up table (rollup.py). `cpu_n`:
  *  the processes that reported their CPU (a dropped BPF block writes null). */
 export interface TrendClass {
@@ -2718,14 +2695,4 @@ export interface TrendResponse {
   flushed_at?: number | null;
   late_dropped?: number;
   table?: { days: number; oldest: string | null; newest: string | null; complete: number; written_at: number | null };
-}
-/** Each class per day, over everything the live tier holds (reducers/live.py `daily`). */
-export interface TrendPanel extends PanelEnvelope {
-  days?: TrendDay[];
-  bin_s?: number;
-  retention_minutes?: number;
-  retained_from?: number | null;
-  tz?: string;
-  basis?: string;
-  _error?: string;
 }

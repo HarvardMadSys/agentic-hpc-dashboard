@@ -24,6 +24,10 @@ interface Fixture {
   config: unknown;
   feeds: Record<string, unknown>;
   panels: unknown;
+  /** each class per day over a week, what the mock `/api/trend` folds (gen_fixture.mjs: `trendDays`) */
+  trend_days?: { date: string; from: number; today: boolean; cut: boolean; minutes: number; held: number;
+    by_class: Record<string, { n: number | null; cpu_s: number | null; users: number | null }>;
+    types: Record<string, { users: number; n: number; cpu_s: number }> }[];
   live: { rate: Record<string, number | null>[]; events: Record<string, unknown>[]; [k: string]: unknown };
   trajectories: Record<string, unknown>;
   trajectory_detail?: Record<string, unknown>;
@@ -367,14 +371,11 @@ function readClientFrames(buf: Buffer): { texts: string[]; rest: Buffer } {
 }
 
 export function mockApi(): Plugin {
-  /** `/api/trend` from the fixture's day-by-day panel, the only days it has:
+  /** `/api/trend` from the fixture's `trend_days`, the only days it has:
    *  its days folded into weeks or months. A fixture, so a bucket's users are
    *  its busiest day's (the service counts distinct accounts over the bucket). */
   const mockTrend = (fx: Fixture, by: string, days: number) => {
-    type D = { date: string; from: number; today: boolean; cut: boolean; minutes: number; held: number;
-      by_class: Record<string, { n: number | null; cpu_s: number | null; users: number | null }>;
-      types: Record<string, { users: number; n: number; cpu_s: number }> };
-    const src = ((fx.panels as { panels?: { trend?: { days?: D[] } } }).panels?.trend?.days ?? []).slice(-days);
+    const src = (fx.trend_days ?? []).slice(-days);
     const keyOf = (date: string) => {
       const d = new Date(`${date}T12:00:00`);
       if (by === 'month') return `${date.slice(0, 7)}-01`;
@@ -422,7 +423,7 @@ export function mockApi(): Plugin {
       tz: 'UTC', state: 'ok', error: null, late_dropped: 0,
       table: { days: src.length, oldest: src[0]?.date ?? null, newest: src[src.length - 1]?.date ?? null,
         complete: src.filter((d) => !d.today && !d.cut).length, written_at: null },
-      basis: 'the dev fixture’s day-by-day panel, folded into buckets (mock/plugin.ts)' };
+      basis: 'the dev fixture’s `trend_days`, folded into buckets (mock/plugin.ts)' };
   };
 
   return {
@@ -465,9 +466,8 @@ export function mockApi(): Plugin {
             const panels = Object.fromEntries(
               Object.entries(src.panels || {}).map(([k, v]) => [
                 k,
-                // The node tier is a snapshot of now, and the day-by-day trend
-                // spans retention: neither is a window aggregate.
-                k === 'node' || k === 'trend' ? v : { ...(v as object), _window: st },
+                // The node tier is a snapshot of now, not a window aggregate.
+                k === 'node' ? v : { ...(v as object), _window: st },
               ]),
             );
             return send({ ...src, panels, window: win, window_status: st });

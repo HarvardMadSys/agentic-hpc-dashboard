@@ -160,7 +160,7 @@ const BAND_H = 7;
 function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
   const ph = r.phases;
   const block = isBlock(ph) ? ph : null;
-  // the session's own axis, which the inspector's map of the whole session is drawn on too (`bandAxis`)
+  // the session's own axis (`bandAxis`): from its first record or first phase to its last call, and on to now while it runs
   const axis = block ? bandAxis(block.list, r.first, r.running?.now ? nowS : null) : null;
   if (block?.list.length && axis) {
     const { list } = block;
