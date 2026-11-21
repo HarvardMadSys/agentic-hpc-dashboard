@@ -53,7 +53,8 @@ notices when it dies.
 `install-unit` also writes `ebpfm-node.service`, the node tier's loop (the one `start`
 runs with `nohup`) under systemd, writing to `EBPFM_NODE_OUTPUT_DIR`. Neither unit is
 enabled by it: `systemctl enable --now ebpfm ebpfm-node`. While `ebpfm-node` is active,
-`start`, `stop` and `status` defer to it, so the loop never runs twice. Beside the eBPF
+`start`, `stop` and `status` defer to it, and `install-unit` refuses while a loop `start`
+began still runs, so the loop never runs twice. Beside the eBPF
 tier it collects in `SNAPSHOT_MODE=node`; on a host without the eBPF tier, set
 `SNAPSHOT_MODE=full` in `/etc/default/ebpfm`. `EBPFM_UNIT_DIR` installs both somewhere
 other than `/etc/systemd/system`. [`deploy/`](../deploy/README.md) runs both units on each

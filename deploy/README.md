@@ -110,7 +110,7 @@ accounts (`RC_DASH_DROP_USERS`). The installers' own settings come from their en
 
 | Variable | Default | What |
 |---|---|---|
-| `EBPF_DIR`, `NODE_DIR` | `/var/log/ebpfm`, `/var/log/ebpfm-login` | where the collector writes |
+| `EBPF_DIR`, `NODE_DIR` | `/var/log/ebpfm`, `/var/log/ebpfm-login` | where the collector writes. An `EBPFM_OUTPUT_DIR` or `EBPFM_NODE_OUTPUT_DIR` already set in `/etc/default/ebpfm` wins, since systemd lets it override the units' own; one named differently in both places is refused |
 | `COLLECTOR_GROUP` | `ebpfm` | the group that may read it |
 | `SERVICE_USER`, `PULL_USER` | `rc-dashboard`, `rc-pull` | the dashboard's account; the account the copy logs in to the nodes as |
 | `ETC`, `STATE`, `OPT` | `/etc/rc-dashboard`, `/var/lib/rc-dashboard`, `/opt/rc-dashboard` | the folders above |

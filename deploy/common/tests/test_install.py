@@ -231,6 +231,31 @@ class TestSingle(Rig):
         self.assertEqual(self.unit("rc-dashboard.service")["SupplementaryGroups"], ["research"])
         self.assertNotIn("groupadd", self.calls())
 
+    def test_the_folders_the_collector_settings_name_are_read(self):
+        """/etc/default/ebpfm may name the output folders (systemd lets an EnvironmentFile=
+        override the units' Environment=), and the collector then writes there: the group
+        is given those folders, and the dashboard reads them."""
+        data = os.path.join(self.tmp, "data", "ebpfm")
+        node = os.path.join(self.tmp, "data", "ebpfm-login")
+        with open(self.default, "w") as fh:
+            fh.write('EBPFM_MIN_UID=0\nEBPFM_OUTPUT_DIR=%s\nEBPFM_NODE_OUTPUT_DIR="%s"\n' % (data, node))
+        self.install(EBPF_DIR="", NODE_DIR="")
+        paths = self.keys(os.path.join(self.etc, "paths.env"))
+        self.assertEqual(paths["RC_DASH_EBPF_ROOTS"], data)
+        self.assertEqual(paths["RC_DASH_NODE_ROOTS"], node)
+        self.assertIn("chgrp -R ebpfm " + data, self.calls())
+        self.assertIn("chgrp -R ebpfm " + node, self.calls())
+        self.assertEqual(self.unit("ebpfm.service")["Environment"], ["EBPFM_OUTPUT_DIR=" + data])
+        self.assertEqual(self.unit("ebpfm-node.service")["Environment"],
+                         ["EBPFM_NODE_OUTPUT_DIR=" + node])
+
+    def test_a_folder_named_two_ways_is_refused(self):
+        with open(self.default, "w") as fh:
+            fh.write("EBPFM_MIN_UID=0\nEBPFM_OUTPUT_DIR=%s/elsewhere\n" % self.tmp)
+        out = self.install(code=1)
+        self.assertIn("settle on one", out)
+        self.assertFalse(os.path.exists(os.path.join(self.units, "ebpfm.service")))
+
     def test_refusals(self):
         out = self.install(code=1, STUB_UID="1000")
         self.assertIn("run as root", out)
@@ -312,6 +337,17 @@ class TestNode(Rig):
         self.install("--key", KEY, RRSYNC=rr)
         self.assertEqual(self.authorized(),
                          'restrict,command="%s -ro %s" %s\n' % (rr, root, KEY))
+
+    def test_the_folders_the_collector_settings_name_are_what_the_key_reads(self):
+        data = os.path.join(self.tmp, "data")
+        with open(self.default, "w") as fh:
+            fh.write("EBPFM_MIN_UID=0\nEBPFM_OUTPUT_DIR=%s/ebpfm\nEBPFM_NODE_OUTPUT_DIR=%s/ebpfm-login\n"
+                     % (data, data))
+        rr = os.path.join(self.bin, "rrsync")
+        out = self.install("--key", KEY, RRSYNC=rr, EBPF_DIR="", NODE_DIR="")
+        self.assertEqual(self.authorized(), 'restrict,command="%s -ro %s" %s\n' % (rr, data, KEY))
+        self.assertIn("FLEET_EBPF_SOURCE=ebpfm\n", out)
+        self.assertIn("FLEET_NODE_SOURCE=ebpfm-login\n", out)
 
     def test_without_rrsync_the_key_is_restricted_but_not_to_rsync(self):
         out = self.install("--key", KEY, RRSYNC="")

@@ -4,6 +4,7 @@ stand-in that logs its calls, so no root and no systemd are needed."""
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import io
 import base64
@@ -93,6 +94,26 @@ class TestInstall(Rig):
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertEqual(sorted(os.listdir(self.units)), ["ebpfm.service"])
         self.assertNotIn("ebpfm-node", p.stdout)
+
+    def test_a_node_loop_start_began_must_stop_first(self):
+        """Its loop would run beside the unit's once the unit is enabled, writing every
+        snapshot twice, and `stop` would stop only the unit: install-unit refuses, as it
+        does for the eBPF tier's, and installs neither unit."""
+        loop = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                 "_node_daemon"])
+        self.addCleanup(loop.wait)
+        self.addCleanup(loop.kill)
+        host = subprocess.run(["hostname", "-s"], stdout=subprocess.PIPE,
+                              universal_newlines=True).stdout.strip()
+        run = os.path.join(self.tmp, "run")
+        os.makedirs(run)
+        with open(os.path.join(run, "ebpfm-node_%s.pid" % host), "w") as fh:
+            fh.write(str(loop.pid))
+        p = self.run_sh("install-unit")
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("node tier", p.stdout)
+        self.assertIn("pid %d" % loop.pid, p.stdout)
+        self.assertEqual(os.listdir(self.units), [])
 
     def test_uninstall_removes_both(self):
         self.run_sh("install-unit")

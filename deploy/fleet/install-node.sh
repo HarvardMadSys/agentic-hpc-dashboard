@@ -16,13 +16,12 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 PULL_USER=${PULL_USER:-rc-pull}
-EBPF_DIR=${EBPF_DIR:-/var/log/ebpfm}
-NODE_DIR=${NODE_DIR:-/var/log/ebpfm-login}
 DEFAULTS=${EBPFM_DEFAULT_FILE:-/etc/default/ebpfm}
-export EBPF_DIR NODE_DIR
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'install-node.sh: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=SCRIPTDIR/../common/collector-paths.sh
+. "$repo/deploy/common/collector-paths.sh"
 usage() {
   echo "usage: install-node.sh [--key 'PUBLIC KEY'] [--from ADDRESS] [--no-bootstrap] [--no-check]" >&2
   exit 2
@@ -49,6 +48,8 @@ command -v rsync >/dev/null 2>&1 || die "no rsync: the dashboard's host copies t
 "$repo/deploy/common/install-collector.sh" ${pass[@]+"${pass[@]}"}
 group=$( (sed -n 's/^EBPFM_GROUP=//p' "$DEFAULTS" 2>/dev/null || true) | tail -n 1)
 [ -n "$group" ] || die "$DEFAULTS names no EBPFM_GROUP after install-collector.sh"
+# Where the collector writes, as install-collector.sh resolved it: what the key may read.
+collector_paths
 
 # The account: a shell, so sshd can run rsync's server (or rrsync) for it.
 if ! id "$PULL_USER" >/dev/null 2>&1; then

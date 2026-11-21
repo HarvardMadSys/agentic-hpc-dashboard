@@ -12,7 +12,9 @@
 #      tier), writing to EBPF_DIR and NODE_DIR. Both are enabled and started.
 #
 # From the environment: EBPF_DIR (/var/log/ebpfm), NODE_DIR (/var/log/ebpfm-login), and
-# COLLECTOR_GROUP (ebpfm; a group /etc/default/ebpfm already names is kept). Run it again
+# COLLECTOR_GROUP (ebpfm; a group /etc/default/ebpfm already names is kept). An output folder
+# /etc/default/ebpfm already names is where the collector writes, and wins
+# (collector-paths.sh); one named differently there and here is refused. Run it again
 # after a `git pull`: the units are written again, and a running collector keeps running --
 # a restart flushes every live process as `truncated` -- so restart it when you choose:
 #   systemctl restart ebpfm ebpfm-node
@@ -20,13 +22,13 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 EBPFM=${EBPFM_SH:-$repo/collector/ebpfm.sh}
-EBPF_DIR=${EBPF_DIR:-/var/log/ebpfm}
-NODE_DIR=${NODE_DIR:-/var/log/ebpfm-login}
 DEFAULTS=${EBPFM_DEFAULT_FILE:-/etc/default/ebpfm}
 PACKAGED=${EBPFM_PACKAGED_UNIT:-/usr/lib/systemd/system/ebpfm.service}
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'install-collector.sh: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=SCRIPTDIR/collector-paths.sh
+. "$here/collector-paths.sh"
 
 bootstrap=1 check=1
 for a in "$@"; do
@@ -40,9 +42,6 @@ done
 [ "$(id -u)" = 0 ] || die "run as root: the eBPF tier loads programs into the kernel"
 command -v systemctl >/dev/null 2>&1 || die "no systemctl: the collector runs as systemd units"
 [ -f "$EBPFM" ] || die "no collector at $EBPFM"
-for d in "$EBPF_DIR" "$NODE_DIR"; do
-  case $d in /?*) ;; *) die "EBPF_DIR and NODE_DIR must be absolute paths (got '$d')" ;; esac
-done
 if [ -e "$PACKAGED" ]; then
   die "the ebpfm-collector package is installed ($PACKAGED). This would run a second collector
   from this checkout beside it, and every record would be written twice. Use the package's
@@ -55,6 +54,11 @@ if [ ! -e "$DEFAULTS" ]; then
   say "$DEFAULTS, from packaging/rpm/ebpfm.default"
   install -m 644 "$repo/packaging/rpm/ebpfm.default" "$DEFAULTS"
 fi
+# Where the collector writes: a folder $DEFAULTS names wins over the units' own.
+collector_paths
+for d in "$EBPF_DIR" "$NODE_DIR"; do
+  case $d in /?*) ;; *) die "EBPF_DIR and NODE_DIR must be absolute paths (got '$d')" ;; esac
+done
 named=$( (sed -n 's/^EBPFM_GROUP=//p' "$DEFAULTS" || true) | tail -n 1)
 GROUP=${COLLECTOR_GROUP:-${named:-ebpfm}}
 if [ -n "$named" ] && [ "$named" != "$GROUP" ]; then

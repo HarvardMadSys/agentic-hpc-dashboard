@@ -822,6 +822,11 @@ cmd_install_unit() {
     if _running_pid >/dev/null 2>&1; then
         die "a transient ebpfm is running (pid $(_running_pid)); '$SELF stop' first"
     fi
+    # A node loop `start` began would run beside the unit's once that is enabled, writing
+    # every snapshot twice, and `stop` would then stop only the unit: refuse it the same way.
+    if [ -f "$NODE_UNIT_SRC" ] && _node_running_pid >/dev/null 2>&1; then
+        die "a node tier '$SELF start' began is running (pid $(_node_running_pid)); '$SELF stop' first"
+    fi
     mkdir -p "$OUTPUT_DIR"
     sed -e "s#@EBPFM_DIR@#$DIR#g" -e "s#@EBPFM_OUTPUT_DIR@#$OUTPUT_DIR#g" \
         "$UNIT_SRC" > "$UNIT_DST" || die "cannot write $UNIT_DST"
@@ -849,11 +854,6 @@ cmd_install_unit() {
     [ "$node_unit" = 1 ] && \
     echo "  systemctl enable --now $NAME-node   # the node tier, the same way"
     echo "  systemctl status $NAME"
-    if [ "$node_unit" = 1 ] && _node_running_pid >/dev/null 2>&1; then
-        echo
-        echo "  note: a node tier '$SELF start' began runs (pid $(_node_running_pid));"
-        echo "  '$SELF stop' it before enabling $NAME-node, or it writes every snapshot twice."
-    fi
 }
 
 cmd_uninstall_unit() {

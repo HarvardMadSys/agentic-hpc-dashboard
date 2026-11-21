@@ -22,7 +22,8 @@
 # From the environment: SERVICE_USER (rc-dashboard), PULL_USER (rc-pull: the account on the
 # nodes, whose processes the dashboard drops), ETC (/etc/rc-dashboard), STATE
 # (/var/lib/rc-dashboard), OPT (/opt/rc-dashboard), MEMORY_MAX (8G), and for single
-# EBPF_DIR (/var/log/ebpfm), NODE_DIR (/var/log/ebpfm-login), COLLECTOR_GROUP.
+# EBPF_DIR (/var/log/ebpfm), NODE_DIR (/var/log/ebpfm-login), COLLECTOR_GROUP. A folder
+# /etc/default/ebpfm names is where the collector writes, and wins (collector-paths.sh).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -33,14 +34,14 @@ STATE=${STATE:-/var/lib/rc-dashboard}
 OPT=${OPT:-/opt/rc-dashboard}
 UNIT_DIR=${UNIT_DIR:-/etc/systemd/system}
 MEMORY_MAX=${MEMORY_MAX:-8G}
-EBPF_DIR=${EBPF_DIR:-/var/log/ebpfm}
-NODE_DIR=${NODE_DIR:-/var/log/ebpfm-login}
 DEFAULTS=${EBPFM_DEFAULT_FILE:-/etc/default/ebpfm}
 VENV=$OPT/venv
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'install-dashboard.sh: %s\n' "$*" >&2; exit 1; }
 usage() { echo "usage: install-dashboard.sh single|fleet [--no-build]" >&2; exit 2; }
+# shellcheck source=SCRIPTDIR/collector-paths.sh
+. "$here/collector-paths.sh"
 
 mode=${1:-}
 case $mode in single|fleet) shift ;; *) usage ;; esac
@@ -54,7 +55,7 @@ command -v systemctl >/dev/null 2>&1 || die "no systemctl: the dashboard runs as
 for v in SERVICE_USER PULL_USER; do
   [[ ${!v} =~ ^[a-z_][a-z0-9_-]*$ ]] || die "$v='${!v}' is not an account name"
 done
-for v in ETC STATE OPT EBPF_DIR NODE_DIR; do
+for v in ETC STATE OPT; do
   [[ ${!v} =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "$v='${!v}' must be an absolute path, with no spaces or quotes"
 done
 [[ $repo =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "the checkout's path ($repo) must have no spaces or quotes: the units name it"
@@ -66,6 +67,11 @@ if [ "$mode" = single ]; then
   group=${COLLECTOR_GROUP:-$named}
   [ -n "$group" ] || die "no group can read the collector's output: run install-collector.sh first (it sets EBPFM_GROUP in $DEFAULTS), or set COLLECTOR_GROUP"
   getent group "$group" >/dev/null || die "group $group does not exist: run install-collector.sh first"
+  # Where the collector writes, which is where the dashboard reads.
+  collector_paths
+  for v in EBPF_DIR NODE_DIR; do
+    [[ ${!v} =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "$v='${!v}' must be an absolute path, with no spaces or quotes"
+  done
 fi
 
 # ---- the account, and its folders
