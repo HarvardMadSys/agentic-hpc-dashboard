@@ -27,7 +27,7 @@ export function parseWindow(raw: string): number | null {
   return Math.round(n * mult);
 }
 
-function human(minutes: number): string {
+export function human(minutes: number): string {
   if (minutes % 1440 === 0 && minutes >= 2880) return `${minutes / 1440}d`;
   if (minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;

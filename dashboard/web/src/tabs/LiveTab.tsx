@@ -20,6 +20,7 @@ import { pcol } from '../lib/purposes';
 import { ActiveUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
+import { human } from '../components/WindowPicker';
 import { WindowCharts } from './LiveCharts';
 import { DayByDay } from './DayByDay';
 import { Attention } from './Attention';
@@ -54,9 +55,6 @@ function latest(rate: LiveResponse['rate'], c: string): number | null {
   }
   return null;
 }
-
-/** The shortest window the service builds (windows.py MIN_WINDOW_MIN). */
-const MIN_SPAN = 5;
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
  * word a reader meets is "sessions" (roadmap note 14). */
@@ -163,6 +161,7 @@ export const LiveTab = memo(function LiveTab({
   userCols,
   whoUses,
   presets,
+  minWin,
   setWin,
 }: {
   live: LiveState;
@@ -183,9 +182,12 @@ export const LiveTab = memo(function LiveTab({
   /** "Who uses what", the old Overview tab's table: each class's share of the
    *  window in every unit, drawn under the rate chart (App.tsx) */
   whoUses?: ReactNode;
-  /** the service's window presets (`/api/windows`), offered with 5 minutes
-   *  over the headline plates */
+  /** the service's window presets (`/api/windows`), offered over the headline
+   *  plates after its floor */
   presets?: { minutes: number; label: string }[];
+  /** the shortest window the service builds (`min_minutes`, 5): offered first
+   *  when the presets start above it, and not at all until the service says it */
+  minWin?: number | null;
   /** set the page's window: the headline row's span picker is the page's
    *  window picker too, since the window plates are built over that window */
   setWin?: (minutes: number) => void;
@@ -308,7 +310,7 @@ export const LiveTab = memo(function LiveTab({
   // contradicts the window the rest of the tab is built over. Every one is the
   // page's window: the plates, Who uses what and every chart are built over it.
   const offered = [
-    ...((presets ?? []).some((p) => p.minutes <= MIN_SPAN) ? [] : [{ minutes: MIN_SPAN, label: '5m' }]),
+    ...(minWin && !(presets ?? []).some((p) => p.minutes <= minWin) ? [{ minutes: minWin, label: human(minWin) }] : []),
     ...(presets ?? []),
   ];
   const spanOpts: { k: string; lbl: string; tip?: string }[] = [
