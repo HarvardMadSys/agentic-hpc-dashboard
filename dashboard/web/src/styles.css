@@ -760,6 +760,10 @@ main {
 .chip[disabled] {
   cursor: not-allowed;
 }
+/* the user and agent-type dropdowns: beside the chips, as if unboxed */
+.filters-extra {
+  display: contents;
+}
 .chip .sw {
   width: 9px;
   height: 9px;
@@ -857,6 +861,73 @@ html {
 @media (max-width: 640px) {
   .controls {
     position: static;
+    gap: 10px 0;
+  }
+  /* Three rows with one left edge: the window, the classes, then who. Each
+     row's name is a fixed column, so the controls of all three start at one
+     line rather than wherever the name before them happened to end. */
+  .controls > .winpick,
+  .controls > .filters {
+    flex: 1 1 100%;
+    gap: 8px;
+    padding-left: 60px;
+  }
+  /* the name sits in the row's indent, so a control that wraps lands under
+     the first control, not under the name */
+  .controls .eyebrow {
+    flex: none;
+    width: 52px;
+    margin-left: -60px;
+  }
+  /* the presets share the row's width, the custom box at its end; on a phone
+     too narrow for both, the box goes under them rather than squeeze them */
+  .controls .seg {
+    flex: 1 1 180px;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .controls .seg button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-left: 2px;
+    padding-right: 2px;
+    text-align: center;
+  }
+  .controls .wininput {
+    box-sizing: border-box;
+    width: 80px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .filters-extra {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    flex-basis: 100%;
+  }
+  /* The head's facts: one height for every chip and the button beside them,
+     closer together, so they wrap as one strip and not as a ragged pile. */
+  .status {
+    gap: 6px;
+  }
+  .status > .pill,
+  .status > .stat,
+  .status > .btn {
+    box-sizing: border-box;
+    min-height: 30px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .status > .btn {
+    border-radius: 99px;
+  }
+  /* A flag's split by class is a line of its own, and its note starts under
+     it, rather than the note's first words squeezed in beside the last chip. */
+  .attn-note .u-chips {
+    display: flex;
+    margin-top: 2px;
+    margin-bottom: 4px;
   }
   /* A panel's controls go under its title rather than squeezing it to a word
      a line (Tool mix: two switches beside two words), and a switch that still
