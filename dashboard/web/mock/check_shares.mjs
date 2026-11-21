@@ -72,6 +72,61 @@ test('Who uses what: a class with no reading of a unit leaves the unit no share,
   assert.deepEqual(rowShares(html, 'disk read'), ['69%', '8.0%', '23%']);
 });
 
+/** Which class cells of the row whose first cell says `unit` are marked as its largest share, in column order. */
+function rowLeads(html, unit) {
+  const row = html.split('<tr').find((r) => r.includes(`>${unit}<`));
+  assert.ok(row, `a row for ${unit}`);
+  return [...row.matchAll(/<td class="clsv( lead)?"/g)].map((m) => Boolean(m[1]));
+}
+
+/** The parts of the stacked bar in the row whose first cell says `unit`: each one's class, width and whether it is muted. */
+function rowSplit(html, unit) {
+  const row = html.split('<tr').find((r) => r.includes(`>${unit}<`));
+  assert.ok(row, `a row for ${unit}`);
+  return [...row.matchAll(/<i class="seg( muted)?" style="flex-grow:([\d.e+]+)[^"]*" data-tip="([^:"]*):/g)]
+    .map((m) => ({ lbl: m[3], v: Number(m[2]), muted: Boolean(m[1]) }));
+}
+
+test('Who uses what: each unit’s largest share is marked, out of every class counted, whatever the chips show', async () => {
+  const draw = (cls, P = FIX) => ui.render('tabs/OverviewTab.tsx', 'OverviewTab', { P, cls, traj: null });
+  const html = await draw(ALL);
+  assert.deepEqual(rowLeads(html, 'processes exited'), [true, false, false]);
+  // the lead changes hands: the human class holds most of the peak memory
+  assert.deepEqual(rowLeads(html, 'peak memory'), [false, true, false]);
+  // a unit with no known whole has no lead
+  assert.deepEqual(rowLeads(html, 'network sent'), [false, false, false]);
+  // the agent off: no other class is marked in its place
+  assert.deepEqual(rowLeads(await draw(['human', 'ide']), 'processes exited'), [false, false]);
+  // `unlabeled` is part of the whole: when it holds the most, no class leads
+  const by = { ...FIX.tool_mix.by_class, unlabeled: { calls: 9e6, cpu_s: 0, rows: [] } };
+  const P = { ...FIX, tool_mix: env({ ...FIX.tool_mix, by_class: by }) };
+  assert.deepEqual(rowLeads(await draw(ALL, P), 'processes exited'), [false, false, false]);
+});
+
+test('Who uses what: a unit’s stacked bar is its whole, whatever the chips show', async () => {
+  const draw = (cls, P = FIX) => ui.render('tabs/OverviewTab.tsx', 'OverviewTab', { P, cls, traj: null });
+  const calls = FIX.tool_mix.by_class;
+  const want = [
+    { lbl: 'agent', v: calls.agent.calls, muted: false },
+    { lbl: 'human', v: calls.human.calls, muted: false },
+    { lbl: 'IDE', v: calls.ide.calls, muted: false },
+  ];
+  assert.deepEqual(rowSplit(await draw(ALL), 'processes exited'), want);
+  // the IDE off: its part stays, as no class, rather than handed to the other two
+  assert.deepEqual(rowSplit(await draw(['agent', 'human']), 'processes exited'), [want[0], want[1], { ...want[2], muted: true }]);
+  // hover gives each part its share of the whole
+  assert.match(await draw(ALL), /data-tip="agent: 67% of processes exited · 4,812,446"/);
+  // `unlabeled` is a part of its own, in its place after the classes
+  const by = { ...calls, unlabeled: { calls: 1000, cpu_s: 0, rows: [] } };
+  const P = { ...FIX, tool_mix: env({ ...FIX.tool_mix, by_class: by }) };
+  assert.deepEqual(rowSplit(await draw(ALL, P), 'processes exited').map((p) => p.lbl), ['agent', 'human', 'IDE', 'unlabeled']);
+  // no known whole, no bar: the reason where it would be
+  const html = await draw(ALL);
+  assert.deepEqual(rowSplit(html, 'network sent'), []);
+  const net = html.split('<tr').find((r) => r.includes('>network sent<'));
+  assert.match(textOf(net), /no share: human not measured/);
+});
+
 /** The fixture's panels with a tool mix of `calls` per class and a risk panel holding `risk`. */
 function plates(calls, risk) {
   const by = Object.fromEntries(Object.entries(calls).map(([c, n]) => [c, { calls: n, cpu_s: null, rows: [] }]));
