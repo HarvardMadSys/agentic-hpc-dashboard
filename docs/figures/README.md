@@ -392,7 +392,7 @@ charts that name the window.
 | LV-4 | plate: agent processes exited | BUILD | `tool_mix.by_class[c].calls`, `tool_mix.by_type` | `reducers/tools.py:ToolMixReducer._rows`, `_by_type` · `components/WindowPlates.tsx:WindowPlates` |
 | LV-5 | plate: agent sessions | BUILD (on read) | `trajectories.summary`; `sandbox.approval_by_class_sessions`, `sandbox.by_class_sessions` | `TrajectoryReducer.summary`; `SandboxReducer.result` · `components/WindowPlates.tsx:WindowPlates` |
 | LV-6 | plate: risky agent actions | BUILD | `risk.dangerous.rows`, `risk.secrets.rows`; `sandbox.tool_calls` | `reducers/risk.py:RiskReducer.result` · `components/WindowPlates.tsx:WindowPlates` |
-| LV-7 | chart: processes exited per minute | LIVE | `rate` | `buckets.py:RollingBuckets.series` · `tabs/LiveTab.tsx:LiveTab`, `charts/primitives.tsx:Lines` |
+| LV-7 | chart: processes exited per 5 minutes | LIVE | `rate` | `buckets.py:RollingBuckets.series` · `tabs/LiveTab.tsx:LiveTab`, `charts/primitives.tsx:Lines` |
 | LV-8 | table: who uses what | BUILD | `tool_mix`, `io_process`, `resources`, `trajectories.summary`, `slurm` | (no reducer of its own) · `tabs/OverviewTab.tsx:OverviewTab` |
 | LV-9 | chart: CPU seconds per minute | BUILD | `resources.series.by_class[c].cpu_s` | `ResourceReducer._series_add`, `series` · `tabs/LiveCharts.tsx:WindowCharts`, `charts/TimeChart.tsx:TimeChart` |
 | LV-10 | chart: memory; table: peak and average | BUILD | `resources.series.resident[c].rss_mb` | `ResourceReducer._tick`, `series` · `tabs/LiveCharts.tsx:WindowCharts` |
@@ -504,14 +504,16 @@ charts that name the window.
   cache holds 50,000 command lines and is cleared when full. Before the cache, matching was half of
   a window build: 2.5 M regex searches for a 6 h window (`risk.py`).
 
-#### LV-7 processes exited per minute
+#### LV-7 processes exited per 5 minutes
 
-- **Shows:** the processes that exited each minute of the window, a line per class; a minute with no
-  record is a hole in the line.
+- **Shows:** the processes that exited in each 5 minutes of the window, a line per class; 5 minutes
+  with no record are a hole in the line.
 - **Records:** `exit`: `_a3`, `_ts_epoch`.
 - **Computation:** as LV-1; `RollingBuckets.series` gives a row per minute of the window, oldest
   first, sliced from the same bins for any window. A row is made again only when a record landed in
-  its bin since (`_rows`, keyed on each bin's version).
+  its bin since (`_rows`, keyed on each bin's version). The page sums the minutes into 5-minute
+  buckets on local wall-clock multiples (`LiveTab`, `RATE_BIN_S`) and draws only whole buckets: the
+  newest holds the minute still filling, and the oldest can start before the window.
 - **Cost:** per frame, one pass over the window's bins (10,080 at 7 d), most of them cached rows;
   the page builds its points in one pass.
 
