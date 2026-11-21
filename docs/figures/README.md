@@ -32,10 +32,10 @@ How to read it:
 
 - **The eBPF tier** (`feeds.ebpf`): `exit`, `truncated`, `residency`, `residency_totals`, `conn`,
   `netio`, `submit`, `meta`, `stop`. Every figure reads only this tier, but for the Feeds
-  tab's and the three that read the node tier (LV-1, LV-12, RE-1).
+  tab's and the three that read the node tier (LV-1, LV-10, RE-1).
 - **The node tier** (`feeds.ebpf_node`): one snapshot of a host a line. Its newest snapshots are
   read and reduced (path NODE) and served as `panels.node`, which RE-1 draws and LV-1 reads;
-  its history over the window (path NODEHIST) is served as `panels.node.series`, which LV-12
+  its history over the window (path NODEHIST) is served as `panels.node.series`, which LV-10
   draws.
 - **Slurm**: the service reads no scheduler accounting (`sacct`, `sacctmgr`). The Slurm figures
   read the eBPF tier: its `submit` records (one per `sbatch`, `srun` or `salloc`) and the `exit`
@@ -189,7 +189,7 @@ again at most every `reducers.trajectories.live_s` (5 s) when the view has inges
 view's reducers (`portraits.py`) and held up to 60 s (`Aggregator._held`). Both run under the
 aggregator's lock, which the tail and every reader share. `trend` (LV-7) is made from the live
 tier on each `/api/panels` read and reused for 20 s (`LiveReducer.DAILY_REUSE_S`), and
-`node.series` (LV-12) is binned from NODEHIST's snapshots on each read. While a view builds it shows the panels
+`node.series` (LV-10) is binned from NODEHIST's snapshots on each read. While a view builds it shows the panels
 the last view of its window saved (`payloads.py`).
 
 Measured on one login node's feed (README): merged, a 24 h window builds in ~2-3 s and a 7 d one
@@ -345,7 +345,7 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
 #### SH-6 login nodes reporting
 
 - **Shows:** how many login nodes reported, named on hover.
-- **Records, computation, cost:** the live frame's `hosts`, as LV-23.
+- **Records, computation, cost:** the live frame's `hosts`, as LV-21.
 
 #### SH-7 window picker and its state
 
@@ -419,20 +419,18 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 | LV-7 | table: day by day | LIVE, over retention; composed on read | `trend.days` | `reducers/live.py:LiveReducer.daily` · `tabs/DayByDay.tsx:DayByDay` |
 | LV-8 | chart: CPU seconds per minute | BUILD | `resources.series.by_class[c].cpu_s` | `ResourceReducer._series_add`, `series` · `tabs/LiveCharts.tsx:WindowCharts`, `charts/TimeChart.tsx:TimeChart` |
 | LV-9 | chart: memory; table: peak and average | BUILD | `resources.series.resident[c].rss_mb` | `ResourceReducer._tick`, `series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-10 | chart: each class's share of the processes exited | BUILD | `resources.series.by_class[c].n` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-11 | chart: each class's share of the CPU time | BUILD | `resources.series.by_class[c].cpu_s` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-12 | charts: login node response | NODEHIST | `node.series` | `nodehist.py:NodeHistory.series` · `tabs/NodeResponse.tsx:NodeResponse` |
-| LV-13 | chart: runqueue wait; table: run and wait | BUILD | `series.by_class[c].sched_wait_s`; `by_class[c].sched_run_s`, `sched_wait_s`, `schedstat_ratio` | `ResourceReducer.feed`, `series`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-14 | chart: D-state by tool; table: every tool that stalled | BUILD | `series.stall_by_tool`, `series.stall_other`; `stall_by_tool` | `ResourceReducer._series_add`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-15 | chart: major page faults | BUILD | `series.by_class[c].maj_flt` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-16 | charts: disk read, disk written | BUILD; a point opens IOCMDS | `series.by_class[c]`: `rd_mb`, `rchar_mb`, `wr_mb`, `wchar_mb` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-17 | chart: network | BUILD; a point opens IOCMDS | `series.by_class[c]`: `net_tx_mb`, `net_rx_mb` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-18 | charts: Slurm queue checks, Slurm jobs submitted | BUILD | `slurm.series.by_class[c]`: `queries`, `jobs` | `reducers/slurm.py:SlurmReducer._bin`, `_series` · `tabs/LiveCharts.tsx:WindowCharts` |
-| LV-19 | active users: running now (chips) | LIVE | `users.running_by_type` | `LiveReducer.users`, `_running` · `tabs/LiveUsers.tsx:Summary` |
-| LV-20 | active users: one row per account (table) | LIVE; `/api/live/users` past the frame | `users.rows`, `users.rows_total` | `LiveReducer.users`, `_row` · `tabs/LiveUsers.tsx:UsersPanel` |
-| LV-21 | active users: an account opened (three boxes) | LIVE (`/api/live/user`); BUILD for "started by" | `row`, `sessions`, `recent`; `cascades.trees` | `LiveReducer.user_detail` · `tabs/LiveUsers.tsx:Detail`, `nestedAgents` |
-| LV-22 | active users: every process (exit stream) | LIVE | `events` | `LiveReducer._exit`, `result` · `tabs/LiveUsers.tsx:Stream` |
-| LV-23 | table: login nodes right now | LIVE | `hosts` | `LiveReducer._totals`, `result` · `tabs/LiveTab.tsx:LiveTab`, `HostBreakdown` |
+| LV-10 | charts: login node response | NODEHIST | `node.series` | `nodehist.py:NodeHistory.series` · `tabs/NodeResponse.tsx:NodeResponse` |
+| LV-11 | chart: runqueue wait; table: run and wait | BUILD | `series.by_class[c].sched_wait_s`; `by_class[c].sched_run_s`, `sched_wait_s`, `schedstat_ratio` | `ResourceReducer.feed`, `series`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-12 | chart: D-state by tool; table: every tool that stalled | BUILD | `series.stall_by_tool`, `series.stall_other`; `stall_by_tool` | `ResourceReducer._series_add`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-13 | chart: major page faults | BUILD | `series.by_class[c].maj_flt` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-14 | charts: disk read, disk written | BUILD; a point opens IOCMDS | `series.by_class[c]`: `rd_mb`, `rchar_mb`, `wr_mb`, `wchar_mb` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-15 | chart: network | BUILD; a point opens IOCMDS | `series.by_class[c]`: `net_tx_mb`, `net_rx_mb` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-16 | charts: Slurm queue checks, Slurm jobs submitted | BUILD | `slurm.series.by_class[c]`: `queries`, `jobs` | `reducers/slurm.py:SlurmReducer._bin`, `_series` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-17 | active users: running now (chips) | LIVE | `users.running_by_type` | `LiveReducer.users`, `_running` · `tabs/LiveUsers.tsx:Summary` |
+| LV-18 | active users: one row per account (table) | LIVE; `/api/live/users` past the frame | `users.rows`, `users.rows_total` | `LiveReducer.users`, `_row` · `tabs/LiveUsers.tsx:UsersPanel` |
+| LV-19 | active users: an account opened (three boxes) | LIVE (`/api/live/user`); BUILD for "started by" | `row`, `sessions`, `recent`; `cascades.trees` | `LiveReducer.user_detail` · `tabs/LiveUsers.tsx:Detail`, `nestedAgents` |
+| LV-20 | active users: every process (exit stream) | LIVE | `events` | `LiveReducer._exit`, `result` · `tabs/LiveUsers.tsx:Stream` |
+| LV-21 | table: login nodes right now | LIVE | `hosts` | `LiveReducer._totals`, `result` · `tabs/LiveTab.tsx:LiveTab`, `HostBreakdown` |
 
 #### LV-1 needs attention
 
@@ -569,18 +567,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   (`ViewFilter.NOT_NARROWED`).
 - **Cost:** a few adds a tick; per read, bins times hosts.
 
-#### LV-10 each class's share of the processes exited
-
-- **Shows:** per bin, each class's share of the processes that exited.
-- **Records:** as LV-8 (`n`, the records in a bin).
-- **Computation:** in the page: a class's count over every class's, not only the classes shown, so a
-  share does not move with the class chips.
-
-#### LV-11 each class's share of the CPU time
-
-- **Shows:** per bin, each class's share of the CPU seconds; computed as LV-10 from LV-8's series.
-
-#### LV-12 login node response
+#### LV-10 login node response
 
 - **Shows:** per host, over the window and zoomed with LV-8: the time to start a process and to
   look up an account (the node tier's own probes), the slowest NFS mount's read round trip, and the
@@ -593,7 +580,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Cost:** NODEHIST reads the node tier's day-files once, then only what was appended; per
   `/api/panels` read, the binning of the window's snapshots.
 
-#### LV-13 runqueue wait, and run and wait
+#### LV-11 runqueue wait, and run and wait
 
 - **Shows:** seconds spent waiting for a CPU per minute, by class; a table of each class's run time,
   wait time, and the median CPU-to-run ratio.
@@ -604,7 +591,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   of CPU.
 - **Cost:** the ratio keeps one float per such process per class, unbounded, sorted at each read.
 
-#### LV-14 D-state by tool, and every tool that stalled
+#### LV-12 D-state by tool, and every tool that stalled
 
 - **Shows:** seconds in uninterruptible sleep per minute, a line for each of the six tools that
   stalled longest and one for the rest; a table, titled "every tool that stalled", of the 20 that
@@ -617,11 +604,11 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   and null where it was not. Over every class: the class chips do not narrow it.
 - **Cost:** a dict add per stalled record; a sort over the tools per read.
 
-#### LV-15 major page faults
+#### LV-13 major page faults
 
 - **Shows:** major page faults per minute by class: `maj_flt` summed by exit time, as LV-8.
 
-#### LV-16 disk read, disk written
+#### LV-14 disk read, disk written
 
 - **Shows:** per class, the bytes that reached the disk (solid) against the bytes requested through
   `read()` or `write()` (dashed), per minute; the gap is the page cache. A point opens the commands
@@ -631,7 +618,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   collector could not read.
 - **Computation:** as LV-8.
 
-#### LV-17 network
+#### LV-15 network
 
 - **Shows:** per class, bytes sent (solid) and received (dashed) per minute by the processes that
   exited; a point opens IOCMDS.
@@ -639,7 +626,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   count).
 - **Computation:** as LV-8, in MB.
 
-#### LV-18 Slurm queue checks, Slurm jobs submitted
+#### LV-16 Slurm queue checks, Slurm jobs submitted
 
 - **Shows:** per class, the scheduler queries and the jobs submitted per bin; offered only when the
   window holds Slurm records.
@@ -650,7 +637,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   with none in a bin another class has records in 0.
 - **Cost:** O(1) a record; per read one pass over the bins.
 
-#### LV-19 active users: running now
+#### LV-17 active users: running now
 
 - **Shows:** per agent and IDE type, how many accounts have such a session running now; a chip
   narrows the table to them.
@@ -658,7 +645,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Computation:** `LiveReducer._running` groups the trees ticking within 600 s by account, class and
   type; `users` counts the accounts per type. Under a page filter the page counts the rows it kept.
 
-#### LV-20 active users: one row per account
+#### LV-18 active users: one row per account
 
 - **Shows:** a row per account: agents and IDEs running now by type, processes running, processes
   exited in the window as a bar by class, CPU time, disk read and written, network sent and
@@ -684,7 +671,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   full rows. Measured: the roster's first design held 640 MB and took up to 600 ms a frame at 2,000
   users (`roster.py`); the present one is not measured.
 
-#### LV-21 active users: an account opened
+#### LV-19 active users: an account opened
 
 - **Shows:** the account's sessions running now (agent or IDE, version, surface, launch badges,
   running for, processes, memory now, peak and average over its census ticks, CPU, and the agents
@@ -694,7 +681,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Records:** `residency` (`tree_root_pid` or `agent_pid`, `host`, `user`, `_a3`, `agent_type`,
   `_ts_epoch`) for the sessions running now; the agent roots, any record of a process whose role is
   `agent` with `pid == agent_pid` (`_approval`), for the launch badges; the roster's records, as
-  LV-20; the account's own exit tail.
+  LV-18; the account's own exit tail.
 - **Computation:** `/api/live/user` calls `LiveReducer.user_detail`: the account's row, its trees
   ticking within 600 s with the agent roots inside each (`_inner`, `_fronted`), and its own tail
   (`user_tails`, newest first, 100 deep, masked when served). "Started by" is computed in the page
@@ -703,12 +690,12 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Cost:** per open, a roster read and a pass over the live trees and roots; fetched again when the
   count asked for or the window changes.
 
-#### LV-22 active users: every process
+#### LV-20 active users: every process
 
 - **Shows:** the newest exited processes of every user on every host, newest first (the last 10, 25
   or 100), narrowed by the search, a host, the page filter and the class chips.
 - **Records:** `exit`: time, host, user, class, agent type, command and argv, purpose,
-  depth, pid, duration, CPU, peak memory, disk bytes (its own, as LV-20), network bytes, exit
+  depth, pid, duration, CPU, peak memory, disk bytes (its own, as LV-18), network bytes, exit
   code, signal, sandbox,
   approval, session key.
 - **Computation:** `LiveReducer._exit` keeps a deque of `live.event_tail` (500) rows, newest first;
@@ -717,7 +704,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Cost:** a row dict a record, not made during the backfill once the tails are full. A tail, not
   an aggregate: a wider window does not deepen it.
 
-#### LV-23 login nodes right now
+#### LV-21 login nodes right now
 
 - **Shows:** per login node: sessions, processes running (split by class or by agent type), memory,
   processes in D-state, users, external TCP sockets.
@@ -1055,7 +1042,7 @@ and for how the page draws them
   memory, disk I/O, network, distinct tools; each row its key and date, surface, category, a live
   badge with the processes up now, user, its calls (an agent's tool calls, or the commands a session no
   agent ran ran from its terminals), CPU, length, and the rank's own quantity. A user's sessions alone
-  when opened from LV-20.
+  when opened from LV-18.
 - **Records:** `exit`: `_sid`, `_kt`, `_kv`, `pid`, `ppid`, `cpu_s`, `_eff`, `_purpose`,
   `peak_rss_mb`, `io` (`rd_mb`, `wr_mb`, `scope`), `net_tx_bytes`, `net_rx_bytes`, `user` or `uid`,
   `tree_root_pid`, `_sandbox`, `_sandbox_ancestry`, `cwd`, `args`, `duration_s`; each root's own
@@ -1610,8 +1597,8 @@ them, for its launch (`_approval`, `_approval_detail`).
 - **Shows:** over the window, per class, the bytes read and written on disk (solid) against those
   requested through `read()` and `write()` (dashed); a table per class of the processes, those with
   any I/O, the four byte counts, the bytes the page cache served and the cache hit.
-- **Records:** as LV-16 (the series) and RE-3 (each process's own bytes).
-- **Computation:** none of its own: LV-16's series, and `IoReducer`'s per-class sums, where the cache
+- **Records:** as LV-14 (the series) and RE-3 (each process's own bytes).
+- **Computation:** none of its own: LV-14's series, and `IoReducer`'s per-class sums, where the cache
   served is `max(0, rchar - rd)` and the hit its share of `rchar`.
 - **Cost:** its reducers'.
 
@@ -1685,7 +1672,7 @@ What the service computes and serves that no figure on `develop` draws. Each sti
 reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
 
 - **`load_1` and `cpu_pct` of the live frame's host rows**: always null, being the node tier's
-  (`LiveReducer`), so the login nodes table's `load₁` and `CPU` columns (LV-23) are empty; the node
+  (`LiveReducer`), so the login nodes table's `load₁` and `CPU` columns (LV-21) are empty; the node
   tier's own load and CPU are RE-1's.
 - **`workspace`**: the workspace reducer's own payload is its buffer counters; the per-agent views
   the page draws are in `cascades.workspace` (AG-4).
@@ -1700,7 +1687,7 @@ reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
   The Live tab's "right now" plates drew them until its time range replaced that row; they reach
   Ask LLM's snapshot (`live_now`).
 - **The I/O plates** of `RiskIoTab`: both its callers pass `plates={false}`, so they are not
-  drawn; their numbers are LV-6's rows and LV-16's charts.
+  drawn; their numbers are LV-6's rows and LV-14's charts.
 
 ## What is slow
 
@@ -1751,6 +1738,6 @@ by the work the code does.
    reducer per lock hold. Each `/api/panels` read copies the payload and names and ranks the
    endpoints for every class mix (RE-6); a panels payload of 1.8 MB held the event loop for a quarter
    of a second before serializing moved to the request's thread (`app.py`). Not measured since.
-9. **The live frame** (LV-5, LV-19 to LV-23): one per distinct window per poll that
+9. **The live frame** (LV-5, LV-17 to LV-21): one per distinct window per poll that
    brought records, cheap by design -- a bin's rows are cached until a record lands in it, and the
    roster sums closed bins once -- but it holds the aggregator's lock for its payload.
