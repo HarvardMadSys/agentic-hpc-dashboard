@@ -1,8 +1,9 @@
 # CLAUDE.md
 
-`collector/` runs on HPC login nodes and writes one JSONL file per host per day (a day-file);
-`dashboard/` is a FastAPI service, with its React page in `dashboard/web`, that reads them.
-The two are coupled only by those files. `dashboard/README.md` explains each mechanism and
+`collector/` runs on HPC login nodes and writes JSONL day-files, one per host, stream and day:
+`<host>.exits.jsonl` and `<host>.snapshot.jsonl` from the eBPF tier, gzipped once the day is
+over, and `<host>.jsonl` from the node tier. `dashboard/` is a FastAPI service, with its React
+page in `dashboard/web`, that reads them. The two are coupled only by those files. `dashboard/README.md` explains each mechanism and
 module; `docs/README.md` indexes the rest.
 
 ## Git
@@ -10,11 +11,18 @@ module; `docs/README.md` indexes the rest.
 - Pull requests target `develop`, never `main` (GitHub's default): name the base explicitly.
 - Commit subjects read `Area: what changed` (`Dashboard: …`, `Collector: …`, `Docs: …`), with
   a body that says why.
-- Pushes have side effects. A push to `develop` that changes `dashboard/rc_dashboard/`,
-  `dashboard/web/`, `dashboard/pyproject.toml`, `dashboard/uv.lock`, `docker/demo/` or
-  `deploy/cloudflare/` redeploys the public demo. A push to any other branch that changes
-  `collector/`, `packaging/rpm/`, `docker/base/` or `docker/collector/` publishes an RPM
-  artifact or GHCR images. A `v*.*.*` tag publishes a release: push one only when asked.
+- Pushes and tags have side effects (`.github/workflows/`; each workflow also runs when its own
+  file changes):
+  - A push to `develop` that changes `dashboard/rc_dashboard/`, `dashboard/web/`,
+    `dashboard/pyproject.toml`, `dashboard/uv.lock`, `docker/demo/` or `deploy/cloudflare/`
+    redeploys the public demo once CI passes; a change to `*.md` files alone does not.
+  - A push to any other branch that changes `collector/` or `packaging/rpm/` builds an RPM
+    artifact, and one that changes `collector/`, `docker/collector/` or `docker/base/` pushes a
+    branch-tagged collector image to GHCR (`docker/base/` rebuilds the base image too). Docs
+    count: these paths take `*.md` files as well.
+  - A `v*.*.*` tag runs all three whatever it changes: it publishes the `X.Y.Z`, `X.Y` and
+    `latest` images and attaches the RPM to the tag's GitHub Release, creating the release if
+    there is none. Push a tag only when a release is asked for.
 
 ## Commands
 
@@ -35,8 +43,9 @@ python3 -m unittest discover -s hpc/deploy/tests -q
 - Always give `uv` `--frozen` (or `--no-sync` after a frozen sync); otherwise it may rewrite
   `uv.lock`, which redeploys the demo.
 - There is no linter or formatter; `npm run typecheck` is the page's static check.
-- `dashboard/tests/e2e_history.py` is outside discovery. Run it after changing the history
-  store: it serves one feed with the store off and on and diffs every API.
+- `dashboard/tests/e2e_history.py` is outside discovery. After changing the history store, run
+  `(cd dashboard && uv run --frozen python tests/e2e_history.py)`: it serves one feed with the
+  store off and on and diffs every API.
 - `npm run dev`'s mock answers only the main routes; `npm run dev:real` with
   `RC_BACKEND=http://127.0.0.1:<port>` proxies to a running service.
 
