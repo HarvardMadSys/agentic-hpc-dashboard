@@ -1241,37 +1241,39 @@ slow for people?" looks like.
 
 ## Day by day
 
-**Day by day**, on Live under *Who uses what*, is each class's processes, CPU and users per local
-day over everything the live tier holds -- retention, not the window -- from its own minute bins
-and roster (`LiveReducer.daily`), served in `/api/panels` as `trend`. It is not narrowed by the user
-or agent-type filter, and says so when one is set. Count and cost side by side, as every
-categorical panel, read as numbers or as each class's share of the day.
+**Day by day**, on Live under *Who uses what*, shows each class's processes, CPU and users per
+local day over everything the live tier holds (its retention, not the window). It is computed
+from the tier's own minute bins and roster (`LiveReducer.daily`) and served in `/api/panels` as
+`trend`. The user and agent-type filters do not narrow it, and the panel says so when one is set.
+Like every categorical panel, it shows count and cost side by side, either as numbers or as each
+class's share of the day.
 
-- **Three kinds of day.** A day the collector wrote in has its numbers and `held`, the minutes of
-  it that held a record, against `minutes`, those the tier could hold; a day it wrote nothing in
-  has null counts and no bars, not a quiet day; today is still going, and the oldest day starts
-  where retention does (`cut`).
-- **Users are the roster's**: an account counts once a day in each class it ran something in. Its
-  bins are hours past the newest day, so a day boundary off the hour (a +5:30 zone) lands with the
-  hour it falls in.
+- **Three kinds of day.** A day the collector wrote records in has its numbers, plus `held` (the
+  minutes of that day that held a record) and `minutes` (the minutes the tier could hold). A day
+  it wrote nothing in has null counts and no bars, and is not shown as a quiet day. Today is still
+  in progress, and the oldest day starts where retention does (`cut`).
+- **Users come from the roster**: an account counts once per day in each class it ran something
+  in. The roster's bins are hours past the newest day, so a day boundary that isn't on the hour
+  (a +5:30 zone) falls with the hour it lands in.
 
 ## Commands that failed
 
-**Commands that failed**, on the Agents tab under the tool panels, is how the Tool mix's processes
-ended (`tool_mix.exits`, `reducers/tools.py`): the same processes, after its shell dedup, per class
-and agent type, by tool and by kind of tool.
+**Commands that failed**, on the Agents tab under the tool panels, shows how the Tool mix's
+processes ended (`tool_mix.exits`, `reducers/tools.py`). It covers the same processes, after the
+Tool mix's shell dedup, per class and agent type, by tool and by kind of tool.
 
-- **A failure is a non-zero exit or a stop by a signal**, with two kept out because they are not
-  failures: an exit 1 from a program whose 1 is an answer (`EXIT_ANSWERS`: grep, rg, ag, diff, cmp,
+- **A failure is a non-zero exit or a stop by a signal**, with two exceptions that are not really
+  failures: an exit 1 from a program where 1 is an answer (`EXIT_ANSWERS`: grep, rg, ag, diff, cmp,
   and the grep family; shared with the inspector's "hide typos"), and SIGPIPE, which
-  `command | head` sends once head has its lines. Both are counted apart, as is a record with no
-  wait status at all; a rate is over the processes whose ending is known.
-- **The collector does not fold signals into codes**: its `exit_code` is null exactly when a signal
-  ended the process. The panel lists each row's commonest exit codes and signals, and says what
-  the conventional ones mean (127, command not found; SIGKILL, killed outright).
-- **Each count opens its commands**: the `/api/io/commands` lookup with `outcome=nonzero&outcome=signal`,
-  the same verdict rule the reducer counts with (`export.make_predicate`). The lookup reads records
-  before the dedup, so a shell that ran a failing command is listed beside it.
+  `command | head` sends once head has its lines. Both are counted separately, as is a record with
+  no wait status at all. A rate is taken over the processes whose ending is known.
+- **The collector does not fold signals into exit codes**: its `exit_code` is null exactly when a
+  signal ended the process. The panel lists each row's most common exit codes and signals, and
+  explains the conventional ones (127, command not found; SIGKILL, killed outright).
+- **Each count opens its commands** through the `/api/io/commands` lookup with
+  `outcome=nonzero&outcome=signal`, which uses the same verdict rule the reducer counts with
+  (`export.make_predicate`). The lookup reads records before the dedup, so a shell that ran a
+  failing command is listed next to it.
 
 ## Sessions: tasks, phases, and processes
 
@@ -1284,205 +1286,211 @@ An agent session's row says what the agent was doing at three levels, which the 
 | Phases | what the agent spent its time on inside a task: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle | `reducers/phase_segment.py`, from the tool calls `reducers/phase_rules.py` names |
 | Processes | every process the session ran, in its tree | `/api/trajectory` (`proctree.py`) |
 
-A row of Claude Code or Codex carries the first two as `phases`: the `list` of phases, the `tasks` above
-them (each phase says which one it belongs to), a `headline` (the project, then the names that recur
-across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`; and what kind of session
-it was, a `category` with the `uses` of its work it rests on and a `summary` (*What kind of session it
-was*, below). A row of any other
-agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`: not recognized is not none.
-How the page draws the levels is in [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
+A Claude Code or Codex row carries the first two levels as `phases`: the `list` of phases, the `tasks` above
+them (each phase says which task it belongs to), a `headline` (the project, then the names that recur
+across the tasks, as in `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`. It also says what kind
+of session it was: a `category`, the `uses` of its work that the category rests on, and a `summary` (*What
+kind of session it was*, below). A row for any other
+agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`, because "not recognized" is
+not the same as "none". [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes) describes how
+the page draws the levels.
 
-All of it is read from the commands the agent ran and the words it wrote in them, and from nothing else,
-as the basis line over the inspector's chart says. Reading and editing inside the agent, its thinking, and
-a log entry it writes with its own Write or Edit tool leave no command, so none of them is seen. No model
-writes a label, and no transcript, prompt, or file on disk is read. The cutting and the naming are
-heuristics over command text, and their thresholds were tuned on seven hand-labeled sessions of boslogin06
-and rtx6000a. `rc_dashboard/phase_report.py` reads a day of a feed as a window build does, prints the
-phases and tasks of the agents it is asked for, and summarizes every row, which is what the thresholds are
-tuned against.
+All of this is read from the commands the agent ran and the words it wrote in them, and from nothing else,
+as the basis line above the inspector's chart says. Reading and editing inside the agent, its thinking, and
+any log entry it writes with its own Write or Edit tool leave no command behind, so none of them is seen. No
+model writes a label, and no transcript, prompt, or file on disk is read. The cutting and the naming are
+heuristics over command text, and their thresholds were tuned on seven hand-labeled sessions from boslogin06
+and rtx6000a. `rc_dashboard/phase_report.py` reads a day of a feed the way a window build does, prints the
+phases and tasks of the requested agents, and summarizes every row. The thresholds are tuned against that
+output.
 
-**Where a task begins.** Calls that start within `phases.step_s` of a step's first call are one step, and
+**Where a task begins.** Calls that start within `phases.step_s` of a step's first call form one step, and
 every cut falls between two steps. A task is cut
 
-- at a gap of `gap_s` or more in which the agent waited on nothing. The agent waits on the calls of the step
-  it just made, and on a process a finished call left running (`nohup job &`) while that runs. A call from
-  an earlier step that is still running when a later step begins is one it moved past, and holds nothing
-  open. The service lists such calls with the gap, three at most, each with the name the gap line calls it
-  by: the script it ran, else what it tested, the job it submitted, or the folder it made, as a label shows
-  them, and for a call still running with none of these the programs seen under it (`pgrep and sleep`).
-  The page names the first: `scratchpad/linktest still running since 13:05:44`, and by its command where it
-  has no name;
-- where a name new to the session starts to recur: a step holds a name that first occurs in it, and the
-  name turns up again in at least `new_steps` later steps of the stretch, the `new_steps`-th of them within
-  `new_window_s` of the first. A search term and a folder changed into are no object, and begin no task;
-- after a commit or a pull request that closes a burst of git (git calls and nothing else, each within two
-  minutes of the one before), when the names in the `new_window_s` before the burst and after it overlap by
-  less than `close_overlap`. Bursts that start within `close_series_s` of the end of the one before close
-  once, after the last.
+- at a gap of `gap_s` or more in which the agent was waiting on nothing. The agent is waiting on the calls of
+  the step it just made, and on any process that a finished call left running (`nohup job &`) while that
+  process runs. A call from an earlier step that is still running when a later step begins is one the agent
+  has moved past, so it holds nothing open. The service lists up to three such calls with the gap, each under
+  the name the gap line uses for it: the script it ran, or else what it tested, the job it submitted, or the
+  folder it made, as a label would show them. For a still-running call with none of these, it uses the
+  programs seen under it (`pgrep and sleep`). The page names the first one, as in
+  `scratchpad/linktest still running since 13:05:44`, or by its command if it has no name;
+- where a name new to the session starts to recur: a step holds a name that first occurs in that step, and
+  the name turns up again in at least `new_steps` later steps of the stretch, with the `new_steps`-th of them
+  within `new_window_s` of the first. A search term or a folder changed into does not count as such a name,
+  and starts no task;
+- after a commit or a pull request that ends a burst of git (git calls and nothing else, each within two
+  minutes of the one before), when the names in the `new_window_s` before the burst and the names after it
+  overlap by less than `close_overlap`. When bursts each start within `close_series_s` of the end of the one
+  before, they produce only one cut, after the last.
 
-Polls and bursts are folded before names are counted: a command on a timer counts once, and so does one run
-again within three minutes, so a job polled a hundred times is named once. A piece shorter than `min_s`, or
-with fewer than `min_calls` calls, then merges into the neighbor it is more alike, unless it holds the
-agent's own words, and never across a cutting gap. A local day merges down toward `cap` tasks, its most
-alike neighbors first. A few calls hours from other work (at most `lone_calls`, all within `lone_s`, with a
-cutting gap on each side or at the session's edge) are a **lone stretch**: no task, never merged into one,
-and not counted toward the cap. Every session with calls has at least one task.
+Polls and bursts are folded before names are counted. A command on a timer counts once, and so does a
+command run again within three minutes, so a job polled a hundred times is named once. A piece shorter than
+`min_s`, or with fewer than `min_calls` calls, is then merged into whichever neighbor it is more similar to,
+unless it contains the agent's own words. It is never merged across a cutting gap. Each local day is merged
+down toward `cap` tasks, starting with the most similar neighbors. A few calls that are hours away from other
+work (at most `lone_calls`, all within `lone_s`, with a cutting gap or the session's edge on each side) form
+a **lone stretch**. A lone stretch is not a task, is never merged into one, and does not count toward the
+cap. Every session with calls has at least one task.
 
-A row is cut and named again each time it is built, so a task that holds a call still running is open, and
-is named from the calls it has so far. A session's call log holds `phases.max_calls` calls. Past that, calls
-are counted and placed in no phase, and the last span, a lone stretch if that is what it is, and any span
-that ends after the first call dropped, say they are incomplete.
+A row is cut and named again each time it is built, so a task that contains a still-running call is open,
+and is named from the calls it has so far. A session's call log holds `phases.max_calls` calls. Beyond that,
+calls are counted but placed in no phase. The last span (which may be a lone stretch), and any span that ends
+after the first dropped call, are marked as incomplete.
 
 **How a task is labeled.** There are two sources, and the page shows which one a label came from.
 
-- **The agent's own words**, when a command in the task holds any: the title of a pull request
+- **The agent's own words**, when a command in the task contains any. These are the title of a pull request
   (`gh pr create` or `gh pr edit` with `--title`), the subject of a commit (`git commit -m`, or `-F -` with
-  a heredoc), or the title of an entry it writes to a Markdown file whose name has `log`, `plan`, `notes`,
-  `handoff`, `progress`, `changelog`, or the like as a word of its own: a part of the name split on `_`,
-  `-`, `.`, and camel case, so `CHAT_LOG.md` and `progressNotes.md` are logs and `methodology.md` is not.
-  An entry is the text that a `cat` or `tee` heredoc, an
-  `echo`, or a `printf` writes, and its title is its first heading or bold line, else its first line with a
-  word in it. A pull request's title wins over a commit's subject, and a commit's over a log entry. Of
-  several pull requests or commits the last counts, since it closes the work, and of several log entries the
-  first, since it usually states the goal. Only text in the command counts, so `git commit -F msg.txt` has
-  none, and the words are masked as every command is (`redact.py`). The page shows them as a quote: in
-  quotation marks, with their source (`commit`, `PR #235`, or `log`).
+  a heredoc), or the title of an entry the agent writes to a Markdown file whose name has `log`, `plan`,
+  `notes`, `handoff`, `progress`, `changelog`, or similar as a word of its own. A word here is a part of the
+  name split on `_`, `-`, `.`, and camel case, so `CHAT_LOG.md` and `progressNotes.md` are logs and
+  `methodology.md` is not. An entry is the text that a `cat` or `tee` heredoc, an
+  `echo`, or a `printf` writes, and its title is its first heading or bold line, or else its first line that
+  contains a word. A pull request's title takes precedence over a commit's subject, and a commit's subject over
+  a log entry. Among several pull requests or commits, the last one counts, since it closes the work. Among
+  several log entries, the first one counts, since it usually states the goal. Only text in the command counts,
+  so `git commit -F msg.txt` has none, and the words are masked like every command (`redact.py`). The page shows
+  them as a quote, in quotation marks, with their source (`commit`, `PR #235`, or `log`).
 - **Otherwise, names.** The label is a verb for the category that holds most of the task's time (`Read`,
   `Edit`, `Edit and test`, `Test`, `Build`, `Install`, `Run`, `Run on Slurm`, `Wait on`, `Commit`, or
-  `Search for`), then the one or two names most specific to the task. A name is a file a command runs,
-  tests, writes, or reads, a folder it makes or changes into, a Slurm job, a pull request, a branch, a
-  worktree, a package it installs, a name it gave its own scratch, what it searched for, or another
-  argument that reads as a name (`marinQC51`). Some text names nothing a reader knows and is no name: the
-  value of an option that the reader knows takes one (the partition of `srun -p kempner_h100`), anything
-  Slurm's queue and accounting commands are given (`squeue -u xq404`), the operands of a shell test, which
-  are a loop's stop condition and not its work (`[[ "$s" =~ ^(COMPLETED|NODE_FAIL) ]]`), Claude Code's id
-  for a subagent's worktree (`agent-a69e2723ecfaa3a16`), Claude Code's own folders in its temporary folder
-  (`/tmp/claude-<uid>/<project>/<session>/scratchpad`), and what it keeps in its home: `~/.claude/projects`,
-  a project's folder in it, a session's transcript `<uuid>.jsonl` and the folder `<uuid>/` beside it, and
-  the project's `memory` folder and its index `MEMORY.md`. A relative path is read in the folder the
-  command changed into, so `MEMORY.md` after `cd ~/.claude/projects/x/memory` is the index. What the agent
-  makes inside these folders, a script in its scratchpad or a note in `memory`, is named as usual. A name
-  scores by the steps of the task that hold it and how few of the session's spans, tasks and lone stretches
-  alike, hold it, more where it first occurs, and by its kind: the objects a task works on count in full, a
-  name the agent gave its own scratch 0.8, a file only read 0.6, another argument that reads as a name 0.5,
-  a folder changed into 0.1, and a search term 0.05 (`phase_tasks.WEIGHTS`). In a session of two spans or
-  more, a name that every span holds, lone stretches included, scores nothing. With one span, every name is
-  in every span and still scores. A name that is the session's user names no task. The page shows a built
-  label with no quotation marks and no source, so it is never taken for something the agent wrote.
+  `Search for`), followed by the one or two names most specific to the task. A name is a file a command runs,
+  tests, writes, or reads, a folder it creates or changes into, a Slurm job, a pull request, a branch, a
+  worktree, a package it installs, a name the agent gave its own scratch, what it searched for, or another
+  argument that reads as a name (`marinQC51`). Some text names nothing a reader would recognize, so it is not
+  a name. That includes the value of an option known to take a value (the partition of `srun -p kempner_h100`),
+  any arguments given to Slurm's queue and accounting commands (`squeue -u xq404`), the operands of a shell test,
+  which are a loop's stop condition rather than its work (`[[ "$s" =~ ^(COMPLETED|NODE_FAIL) ]]`), Claude Code's
+  id for a subagent's worktree (`agent-a69e2723ecfaa3a16`), Claude Code's own folders in its temporary folder
+  (`/tmp/claude-<uid>/<project>/<session>/scratchpad`), and what Claude Code keeps in its home:
+  `~/.claude/projects`, a project's folder in it, a session's transcript `<uuid>.jsonl` and the folder
+  `<uuid>/` next to it, and the project's `memory` folder and its index `MEMORY.md`. A relative path is
+  resolved in the folder the command changed into, so `MEMORY.md` after `cd ~/.claude/projects/x/memory` is
+  the index. Whatever the agent creates inside these folders, such as a script in its scratchpad or a note in
+  `memory`, is named as usual. A name's score depends on how many of the task's steps contain it, on how few
+  of the session's spans (tasks and lone stretches alike) contain it, and on its kind. It scores more where
+  it first occurs. The objects a task works on count in full, a name the agent gave its own scratch
+  0.8, a file that is only read 0.6, another argument that reads as a name 0.5, a folder changed into 0.1,
+  and a search term 0.05 (`phase_tasks.WEIGHTS`). In a session of two or more spans, a name that every span
+  contains, lone stretches included, scores nothing. With only one span, every name is in every span and
+  still scores. A name that is the session's user names no task. The page shows a built label without
+  quotation marks or a source, so it is never mistaken for something the agent wrote.
 
-The headline is the project, then up to `headline_names` names that two tasks or more hold, but for the
-session's user. The project is the folder the agent was launched in or, when that is a home folder or is
-named for a person, the folder its commands change into most that is not. A folder is named for a person
-when its name, or a part of it split on `_`, `-`, and `.`, is the user's, or is the name of a home or lab
-folder its path runs through (`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netscratch_rroe`), as
-`anonymize.py` finds them.
+The headline is the project, followed by up to `headline_names` names that two or more tasks contain,
+excluding the session's user. The project is the folder the agent was launched in. If that is a home folder
+or is named for a person, the project is instead the folder, not named for a person, that the agent's
+commands change into most often. A folder is named for a person when its name, or a part of it split on
+`_`, `-`, and `.`, is the user's name, or is the name of a home or lab folder that its path runs through
+(`/n/netscratch/alpha_lab/Lab/jdoe`, `…/Lab/netscratch_rroe`), as `anonymize.py` finds them.
 
 **Four things a plain reading of the commands gets wrong**, which the rules account for:
 
-- **A program held in a variable** reads as the program it names. The assignment earlier in the call gives
-  it (`PY=../venv/bin/python; $PY -m pytest tests/x.py`, `S='sbatch --parsable'; $S job.sh`). Failing that,
-  a variable named for Python (`$PY`, `$PYTHON`) or one whose first argument is `-m`, `-c`, `-`, or a `.py`
-  file is Python, read by the Python rules: `-m pytest` is a test, a heredoc follows the heredoc rules, and a
-  script is read by its name (`$PY check_env.py` is a test, `$PY train.py` a run). Nothing else is read, and
-  `$CMD --flag x` stays unknown.
+- **A program held in a variable** is read as the program it names. An assignment earlier in the call
+  supplies it (`PY=../venv/bin/python; $PY -m pytest tests/x.py`, `S='sbatch --parsable'; $S job.sh`).
+  Failing that, a variable named for Python (`$PY`, `$PYTHON`), or one whose first argument is `-m`, `-c`,
+  `-`, or a `.py` file, is treated as Python and read by the Python rules: `-m pytest` is a test, a heredoc
+  follows the heredoc rules, and a script is read by its name (`$PY check_env.py` is a test, `$PY train.py`
+  a run). Nothing else is inferred, and `$CMD --flag x` stays unknown.
 - **The Codex desktop app's reads of its own plugins** are housekeeping, not the model's calls. The app
-  `cat`s the icons of the plugins it lists, hundreds in a minute: one file in an `assets/` folder under
+  `cat`s the icons of the plugins it lists, hundreds per minute, each one file in an `assets/` folder under
   `.codex/.tmp/plugins/`, `.codex/.tmp/bundled-marketplaces/`, or `.codex/plugins/cache/`. Only the app's own
-  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill stays a call. A `cat` whose argv was
-  not recorded (schema 7) names no file, so it is read by when it ran: it is the app's when it began within
-  2 s (`reducers.trajectories.phases.app_read_s`) of one of the app's reads in the same row, before it or
-  after, and a call otherwise. On boslogin06 on 2026-10-09 that took 230 of the day's 8,434 Codex calls,
-  226 of them from one row. A wider window would take the model's own reads, which come as soon as 15 s
-  after a burst.
-- **A call the agent moved past holds no idle.** Only what the agent is still waiting on holds a gap open
-  (above). A call from an earlier step that is still running when a later step begins holds no idle gap and
-  no guess, however long it runs, so one that hangs for hours does not hold off the gaps after it. On the
-  lane, time goes to what the agent started most recently, so it does not take the time of the work that
-  follows it. A gap that begins while it runs lists it (`alive`), and once it ends, its time past the phase
-  it began in is said in that phase (`train.py kept running for 2.7 h`), as a background job's is. The
-  session's last phase ends at the latest end of all the session's calls, or of a process one of them left
-  running, whichever is later, so the lane does not end while anything the agent started still runs. That
-  is the lane, not the work: each phase also says where its own calls ended (`own_t1`) and how long its
-  calls, or what they left running, went on past it, by the call's category (`ran_on`), and the summary
-  weighs the work by those (below).
-- **A session across midnight is one block.** A row is one local day, since its session id carries the day,
-  so an agent that works past midnight has a row for each. Every one of them serves the same block, cut from
-  the calls of all of them, so midnight cuts no task or phase and either row opens the whole session. `days`
-  lists the rows (`{sid, first, last}`), and `sid` on a task or a phase says which row holds it: the row
-  whose span, first record to last, holds its start, else the nearest. A row's own `n_calls` stays its day's,
-  and the block's counts the session's.
+  argv counts, so a model's `rg`, `sed`, or `cat` of a plugin's skill is still a call. A `cat` whose argv was
+  not recorded (schema 7) names no file, so it is judged by when it ran. It belongs to the app if it began
+  within 2 s (`reducers.trajectories.phases.app_read_s`) of one of the app's reads in the same row, before or
+  after, and is a call otherwise. On boslogin06 on 2026-10-09, this rule took 230 of the day's 8,434 Codex
+  calls, 226 of them from one row. A wider window would catch the model's own reads, which can come as soon
+  as 15 s after a burst.
+- **A call the agent has moved past holds no idle time.** Only what the agent is still waiting on holds a gap
+  open (see above). A call from an earlier step that is still running when a later step begins holds no idle
+  gap and no guess, however long it runs, so a call that hangs for hours does not block the gaps after it. On
+  the lane, time goes to whatever the agent started most recently, so the hung call does not take the time of
+  the work that follows it. A gap that begins while the call runs lists it (`alive`). Once the call ends, the
+  time it ran past the phase it began in is reported in that phase (`train.py kept running for 2.7 h`), the
+  same way a background job's is. The session's last phase ends at the latest end of all the session's calls,
+  or of a process one of them left running, whichever is later, so the lane does not end while anything the
+  agent started is still running. That describes the lane, not the work. Each phase also says where its own
+  calls ended (`own_t1`), and how long its calls, or what they left running, went on past it, by the call's
+  category (`ran_on`). The summary weighs the work using those values (below).
+- **A session across midnight is one block.** A row covers one local day, because its session id includes the
+  day, so an agent that works past midnight has a row for each day. Each of those rows serves the same block,
+  cut from the calls of all of them, so midnight splits no task or phase, and either row opens the whole
+  session. `days` lists the rows (`{sid, first, last}`), and `sid` on a task or a phase says which row holds
+  it: the row whose span (first record to last) contains its start, or else the nearest row. A row's own
+  `n_calls` still counts only its own day, and the block's `n_calls` counts the whole session.
 
-**What kind of session it was.** Each block says it in a word and in a few sentences
+**What kind of session it was.** Each block describes this in one word and in a few sentences
 (`reducers/phase_summary.py`), so a list of sessions can be read, and counted, by what they were for. The
-`category` is one of the uses the Users tab counts a user's calls by: `explore` (read and search code and
-files), `develop` (change files from the shell, and test), `build` (build and install software), `run` (run
-programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half of its work or more, and
-is `mixed` when none does. Its work is its phases' time but idle gaps, waiting, and commands not recorded, the
-last phase's only to the end of its own calls (`own_t1`); and the time a call, or a process it left running,
-went on past its phase counts toward the call's own use (`ran_on`). A call hung for 14 h beside a minute of
-edits is then a session of running, not of changing files (it was "Mostly changed files from the shell (99% of
-14 h of work)"), and a training run left going for 3 h while the agent read its log is 3 h of running beside
-the reading, so the work can be longer than the session. A wait on Slurm is Slurm work, as a task's verb counts it, since a job is the scheduler's work whether it is
-being submitted or waited on; any other wait (on a process, a file, or a fixed sleep) is no use, and is said
-apart. The uses are weighed by time, as the band draws them, and not by calls: a Slurm session's polls of
-the queue, or one long `python` run, would otherwise be outnumbered by the quick reads around them. A block
-whose phases have no length at all (a call or two that began and ended in one second) is weighed by its
-calls. A session that only waited is `wait`; one whose commands not recorded hold half of its work and
-themselves, or that did nothing else, is `unknown`; and one that made no tool call is `none`. `uses` gives
-each use's share of the work, the most first.
+`category` is one of the uses by which the Users tab counts a user's calls: `explore` (read and search code
+and files), `develop` (change files from the shell, and test), `build` (build and install software), `run`
+(run programs), `hpc` (Slurm), or `git`. A session is put under the use that holds half or more of its work,
+and is `mixed` when no use does. A session's work is its phases' time, excluding idle gaps, waiting, and
+commands that were not recorded, with the last phase counted only to the end of its own calls (`own_t1`). The
+time a call, or a process it left running, went on past its phase counts toward the call's own use
+(`ran_on`). So a call that hung for 14 h next to a minute of edits makes a session of running, not of
+changing files (it used to read "Mostly changed files from the shell (99% of
+14 h of work)"). A training run left going for 3 h while the agent read its log is 3 h of running alongside
+the reading, so the work can be longer than the session. A wait on Slurm counts as Slurm work, as it does for a task's verb, because a job is the scheduler's work whether it is
+being submitted or waited on. Any other wait (on a process, a file, or a fixed sleep) belongs to no use and is
+reported separately. The uses are weighed by time, as the band draws them, not by calls. Otherwise a Slurm
+session's polls of the queue, or one long `python` run, would be outnumbered by the quick reads around them. A
+block whose phases have no length at all (a call or two that began and ended within one second) is weighed by
+its calls. A session that only waited is `wait`. A session is `unknown` if its unrecorded commands hold half of
+its work plus their own time, or if it did nothing else. A session that made no tool call is `none`. `uses`
+gives each use's share of the work, largest first.
 
-The `summary` is one to three sentences, each built from the block's own numbers and none from a model: what
-the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then explored code and files
+The `summary` is one to three sentences, each built from the block's own numbers and none written by a model.
+They say what the work was and its mix (`Mostly ran jobs on Slurm (82% of 5.1 h of work), then explored code and files
 (12%).`), the tool calls and tasks with the distinct names they held (`564 tool calls in 7 tasks, 5 named in
 the agent's own words; 61 Slurm job names, 74 scripts run.`), and how long the agent waited and on what, when
-that is a tenth of its time but idle gaps or more (`Waited 4.7 h on Slurm, polling every 2 min.`). A Slurm job
-is named once by a call: by the name it was given (`--job-name`, `-J`), else by its script's. Develop work is
-said by what it held: `edited and tested code` with an edit and a test in the session, `changed files from the
-shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) is testing, whichever
-phase took the test in. When the work is longer than the time it was done in (a call that ran on counts beside
-the phases after it), that time is said too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
+that is at least a tenth of its time excluding idle gaps (`Waited 4.7 h on Slurm, polling every 2 min.`). A
+Slurm job is named once per call, by the name it was given (`--job-name`, `-J`), or else by its script's name.
+Develop work is described by what the session contained: `edited and tested code` with both an edit and a
+test, `changed files from the
+shell` with no test, `tested code` with no edit -- a test's time past its phase (`ran_on`) counts as
+testing, whichever phase the test started in. When the work is longer than the time it was done in (because a
+call that ran on counts alongside the phases after it), the summary gives that time too: `Mostly ran programs (51% of 5.9 h of work in 3.0 h)`.
 
 On the eight FAS RC login nodes (`boslogin05`–`08`, `holylogin05`–`08`) on 2026-11-12, 2026-11-13, and
-2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call: half of them
+2026-11-15, 16,630 sessions had an agent at their root. 12,534 of them (75%) made no tool call. Half of those
 lasted under a second and ran only the agent's own commands (`rg`, `git`), and an agent that only reads and
-edits with its own tools leaves no command either. Of the 4,096 that made one, 33% were `explore`, 29% `run`, 20%
+edits with its own tools leaves no command either. Of the 4,096 that made a tool call, 33% were `explore`, 29% `run`, 20%
 `hpc`, 6% `mixed`, 5% `develop`, 4% `unknown`, 1% `wait`, and under 1% each `build` and `git`. One use held
-half of the work in 94% of the sessions that did any, and a count of calls would have named a different
-category for about a third of them, most of them Slurm sessions and long runs. A fifth of the summaries say
-the agent waited. Claude Code's sessions were 27% `hpc` and Codex's 4%; Codex's were 42% `run`. One
-misreading is known: 114 sessions of one user's Codex desktop app on 2026-11-15 ran two calls each, a
-`mkdir -p` and a `chmod 700` of a folder of its own under `/var/tmp`, and read as `develop` (`Only changed
-files from the shell. 2 tool calls.`), as their tasks read `Edit`. The folder is that user's setup, not
-Codex's, so it is not read as housekeeping. `rc_dashboard/phase_report.py` prints each row's category and summary, and counts a day's
+half of the work in 94% of the sessions that did any work, and counting calls instead would have given a
+different category for about a third of them, mostly Slurm sessions and long runs. A fifth of the summaries
+say the agent waited. Claude Code's sessions were 27% `hpc` and Codex's 4%, while 42% of Codex's were `run`.
+There is one known misreading: 114 sessions of one user's Codex desktop app on 2026-11-15 ran two calls each,
+a `mkdir -p` and a `chmod 700` of a folder of its own under `/var/tmp`, and they read as `develop` (`Only changed
+files from the shell. 2 tool calls.`), as their tasks read `Edit`. The folder is part of that user's
+setup, not Codex's, so it is not treated as housekeeping. `rc_dashboard/phase_report.py` prints each row's category and summary, and counts a day's
 sessions by category, each once.
 
-The page shows the category as a chip on the row and in the Users tab's list of a user's sessions, and the
-summary under the headline in the inspector (`web/README.md`). The plates over every session in the window
-do not count categories: a category needs a session's block, and building a block for every session of a
-week on eight login nodes takes minutes, where the plates are read again every few seconds.
+The page shows the category as a chip on the row and in the Users tab's list of a user's sessions, and shows
+the summary under the headline in the inspector (`web/README.md`). The plates over every session in the window
+do not count categories. A category needs a session's block, and building a block for every session of a
+week on eight login nodes takes minutes, while the plates are re-read every few seconds.
 
-**Config.** `reducers.trajectories.tasks` sets the thresholds. It equals `phase_tasks.DEFAULTS`, where each
-one is documented, and a test holds the two equal. `reducers.trajectories.phases`, beside it, does the same
-for the fine phases (`reducers/phase_segment.py`), and `reducers.trajectories.summary` for a block's
-category and summary (`reducers/phase_summary.py`): `mostly` (0.5), the share of the work a use must hold
-for the session to be put under it, and `also` (0.1), the share a second use, or waiting, needs before the
-summary names it. Like the rest of `reducers`, all three are part of the config a
-saved window or hour is fingerprinted by, so a changed value builds them again rather than resuming them
-(*The time window*). A saved state needs that only for the phase thresholds read as records arrive, which
-bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max`, and `idle_s`).
-The rest, every task and summary threshold among them, are read when a row is built: the reducer cuts and
-names a row each time it serves it, with the thresholds it runs with, and no saved state holds a task or a
-category.
+**Config.** `reducers.trajectories.tasks` sets the thresholds. Its defaults equal `phase_tasks.DEFAULTS`,
+where each one is documented, and a test keeps the two equal. `reducers.trajectories.phases`, next to it,
+does the same for the fine phases (`reducers/phase_segment.py`), and `reducers.trajectories.summary` does
+the same for a block's category and summary (`reducers/phase_summary.py`). Its keys are `mostly` (0.5), the
+share of the work a use must hold for the session to be put under it, and `also` (0.1), the share a second
+use, or waiting, needs before the summary mentions it. Like the rest of `reducers`, all three are part of the
+config that a saved window or hour is fingerprinted by, so changing a value rebuilds them instead of resuming
+them (*The time window*). A saved state only actually needs this for the phase thresholds that are read as
+records arrive, which limit the call log and join a call's children to it (`max_calls`, `hk_bin_cap`,
+`pend_max`, and `idle_s`). The rest, including every task and summary threshold, are read when a row is
+built. The reducer cuts and names a row each time it serves it, using its current thresholds, and no saved
+state holds a task or a category.
 
 | key | default | meaning |
 |---|---|---|
 | `gap_s` | 3600 | a gap this many seconds long, with nothing the agent waits on, cuts a task |
 | `lone_calls` | 8 | the most calls a lone stretch holds |
-| `lone_s` | 7200 | the seconds its calls must all start within |
-| `new_steps` | 5 | the later steps of the stretch a new name must turn up in, at least, to begin a task |
-| `new_window_s` | 1800 | the seconds after it first occurs by which the `new_steps`-th of those steps must start |
-| `close_overlap` | 0.5 | a closing commit or pull request cuts when the names around it overlap by less than this: the share of all their names that are in both |
-| `close_series_s` | 300 | bursts of git that start this many seconds or fewer after the end of the one before close once, after the last |
+| `lone_s` | 7200 | the window, in seconds, within which all of a lone stretch's calls must start |
+| `new_steps` | 5 | the minimum number of later steps of the stretch a new name must turn up in to begin a task |
+| `new_window_s` | 1800 | the seconds after the name first occurs by which the `new_steps`-th of those steps must start |
+| `close_overlap` | 0.5 | a closing commit or pull request cuts when the names before and after it overlap by less than this (the share of all their names that appear in both) |
+| `close_series_s` | 300 | bursts of git that each start this many seconds or fewer after the end of the one before produce one cut, after the last |
 | `min_s` | 600 | a task shorter than this merges into a neighbor |
 | `min_calls` | 5 | a task with fewer calls than this merges into a neighbor |
 | `cap` | 10 | the number of tasks a local day is merged down toward |
@@ -1491,32 +1499,35 @@ category.
 ## Tool-call purposes from a model
 
 The rule-based `purpose` (git, build, compute, ...) says what kind of program a call ran, not
-why. The session inspector's **✦ annotate purposes** asks a language model instead: what each
-of the session's tool calls was for, in a few words ("check which CUDA version the node has"),
-and one of a fixed set of kinds (explore, edit, build, test, run, debug, hpc, git, data, env,
-monitor, other). It is the one place where a model writes onto a row, so its answer is kept
-apart from everything measured: a dashed, purple ✦ tag beside the command in the table, a ✦
-beside the box's name in the tree, the model named in every hover, and never counted anywhere.
+why it ran. The session inspector's **✦ annotate purposes** asks a language model instead. The
+model says what each of the session's tool calls was for, in a few words ("check which CUDA
+version the node has"), and picks one of a fixed set of kinds (explore, edit, build, test, run,
+debug, hpc, git, data, env, monitor, other). This is the only place where a model writes onto a
+row, so its answer is kept visibly separate from everything measured: a dashed, purple ✦ tag
+beside the command in the table, a ✦ beside the box's name in the tree, and the model named in
+every hover. The answers are never counted anywhere.
 
-It is **off by default**, because it sends command lines off the host. What goes is exactly
+It is **off by default**, because it sends command lines off the host. What is sent is exactly
 what the page shows: each distinct tool call's command line (what a Claude Code Bash call or a
-Codex sandbox ran), masked by `redact.py` and -- with [anonymized names](#anonymized-names) on
--- by the anonymizer, and the folder it ran in. The service takes them from its own read of
-the session; the page posts only the session's name, so the endpoint cannot be used to send a
-model anything else. The answers come back through the anonymizer too: one kept from a run
-without it, or written by an agent on this host that read the raw feeds, may hold a name. The
-reader's text reaches no model here, so that rewrite translates nothing they chose. The first
-`annotate.max_calls` (400) distinct calls are asked about,
-`annotate.batch_size` (40) to a request.
+Codex sandbox ran), masked by `redact.py` and, with [anonymized names](#anonymized-names) on,
+by the anonymizer, plus the folder it ran in. The service takes these from its own read of
+the session. The page posts only the session's name, so the endpoint cannot be used to send a
+model anything else. The answers also come back through the anonymizer, because an answer kept
+from a run without anonymization, or one written by an agent on this host that read the raw
+feeds, may contain a name. No text written by the reader reaches the model here, so that rewrite
+never translates anything the reader chose. The model is asked about the first
+`annotate.max_calls` (400) distinct calls, in batches of
+`annotate.batch_size` (40) per request.
 
 Each answer is kept in `<cache.dir>/annotate/purposes.jsonl`, keyed by the provider and model,
-the prompt it was asked with and the command line: a command asked about once is known to every
-reader of every session that runs it, and opening a session shows what is known at once, asking
-nothing. A different model, or a changed prompt -- a new built-in version, or an edit to
-`annotate.system_prompt` or its file -- asks afresh. A call the model's answer
-leaves out stays unlabelled and is counted as such; nothing is filled in for it.
+the prompt it was asked with, and the command line. So a command asked about once is known to
+every reader of every session that runs it, and opening a session shows what is already known
+immediately, without asking anything. A different model or a changed prompt (a new built-in
+version, or an edit to `annotate.system_prompt` or its file) asks again from scratch. A call that
+the model's answer leaves out stays unlabelled and is counted as unlabelled; nothing is filled
+in for it.
 
-Set it up under `annotate` (every key: `dashboard.config.example.json`):
+Set it up under `annotate` (`dashboard.config.example.json` lists every key):
 
 | `provider` | what it calls | the key |
 |---|---|---|
@@ -1527,16 +1538,16 @@ Set it up under `annotate` (every key: `dashboard.config.example.json`):
 | `command` | any command: the prompt on stdin, a JSON answer on stdout or in `{answer_file}` | -- |
 
 A CLI provider (`codex`, `claude`, `ask`, `command`) runs an agent on this host over other
-users' command lines, so it keeps [Ask LLM](#ask-llm)'s rules: refused while the service has no
-password, and run with only part of the service's environment (`ask.env_passthrough` names
-more) in a directory of its own in the system's temporary one. An HTTP provider runs nothing
-here: the model gets the masked text the page shows, with no tools, and its answer is read only
-as a label and a kind, so it is not refused for want of a password.
+users' command lines, so it follows [Ask LLM](#ask-llm)'s rules. It is refused while the service
+has no password, and it runs with only part of the service's environment (`ask.env_passthrough`
+adds more) in its own directory inside the system's temporary directory. An HTTP provider runs
+nothing here. The model gets the masked text the page shows, with no tools, and its answer is
+only read as a label and a kind, so it is not refused when there is no password.
 
-The key is read from the variable `api_key_env` names (empty: the one above), else from
-`api_key_file`, else from `api_key` -- which `/api/config` and `--print-config` show only as
-set or not, as they do `command` and `system_prompt`. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
-`auto: true` asks as soon as a session opens instead of on the button. The environment can set
+The key is read from the variable that `api_key_env` names (if empty, the one in the table above),
+otherwise from `api_key_file`, and otherwise from `api_key`. `/api/config` and `--print-config`
+only show whether `api_key` is set, as they do for `command` and `system_prompt`. The HTTP providers use Python's standard library, so `HTTPS_PROXY` is honoured.
+`auto: true` asks as soon as a session opens, instead of waiting for the button. The environment can set
 `RC_DASH_ANNOTATE=1`, `RC_DASH_ANNOTATE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_KEY_ENV`,
 `_KEY_FILE` and `_CMD`. For example, a local model:
 
@@ -1548,99 +1559,102 @@ set or not, as they do `command` and `system_prompt`. The HTTP providers use Pyt
 ## Agents: subagents and blast radius
 
 The **Agents** tab (`?tab=agents`; the old `?tab=cascades` still opens it) answers "which
-agents started which other agents, and where did each one work". A node is a process whose
-role (`roles.py`) is `agent`, `infra` or `client`; tool-call shells, sandboxes, probes and
+agents started which other agents, and where did each one work?". A node is a process whose
+role (`roles.py`) is `agent`, `infra` or `client`. Tool-call shells, sandboxes, probes and
 helpers are steps between nodes. A node's parent is the nearest node above it in the process
-tree, else (for a `bg-pty-host` orphaned to init) its user's only daemon, labelled as
-inferred, else the tree root. An agent started, through any number of steps, beneath another
-agent is that agent's **subagent**. Two outcomes are kept apart: **nested**, an agent with
-subagents, and **hosted**, a daemon, Claude Desktop's remote server or `claude rc` running
-sessions side by side. A Codex TUI whose direct child is `codex app-server` is shown as that
-session's front-end, not as a second agent.
+tree. If there is none, it is the user's only daemon (for a `bg-pty-host` orphaned to init),
+labelled as inferred, and otherwise the tree root. An agent started beneath another agent,
+through any number of steps, is that agent's **subagent**. Two outcomes are kept separate:
+**nested**, an agent with subagents, and **hosted**, a daemon, Claude Desktop's remote server or
+`claude rc` running sessions side by side. A Codex TUI whose direct child is `codex app-server`
+is shown as that session's front-end, not as a second agent.
 
-`claude daemon` roots a tree of its own, hosting its background sessions side by side. It is
-started, detached, by whichever `claude` first needs it, and its `--spawned-by {"pid": N}`
-names that process -- but it is its user's, and every background session the user starts
-later, from any terminal, goes through it. Hung under the process that started it, as it
-was, each of those sessions was drawn as that one session's subagent. Who started it is kept
-on its node (`spawned_by`, in its box's tooltip), and is never its parent, nor is the ppid a
-detached daemon keeps until its starter exits. A session its `bg-pty-host` runs shows as a
-`terminal` **background session**. The daemon also keeps sessions started ahead of need, each
-a `claude bg-spare` waiting to be claimed, so the next background session starts at once:
-one nobody claimed ran no process but its own, and is the daemon's (`infra`), not an agent
--- drawn as one, each was an agent that ran nothing. Idle spares are counted per tree and in
-the summary (`idle_spares`); a spare that ran anything was claimed, and is the agent it
+`claude daemon` is the root of its own tree, hosting its background sessions side by side. It is
+started, detached, by whichever `claude` process needs it first, and its `--spawned-by {"pid": N}`
+names that process. But the daemon belongs to the user, and every background session the user
+starts later, from any terminal, goes through it. When the daemon was hung under the process that
+started it, as it used to be, each of those sessions was drawn as a subagent of that one session.
+The process that started the daemon is recorded on its node (`spawned_by`, in its box's tooltip),
+but is never treated as its parent. Neither is the ppid that a detached daemon keeps until its
+starter exits. A session run by the daemon's `bg-pty-host` shows as a `terminal` **background
+session**. The daemon also starts sessions ahead of time, each a `claude bg-spare` waiting to be
+claimed, so the next background session starts immediately. A spare that nobody claimed ran no
+process except its own, so it belongs to the daemon (`infra`) and is not an agent. When spares were
+drawn as agents, each one was an agent that ran nothing. Idle spares are counted per tree and in
+the summary (`idle_spares`). A spare that ran anything was claimed, and is shown as the agent it
 became.
 
-Every tree is sent, up to `reducers.cascades.top_trees` (1000), the deepest first. It was 25,
-and with 25 trees of subagents in a window no session that started no other was sent at all;
-past the cap the list says how many trees were not, and the type strip that it counts the
-trees sent. A blast radius is served for the `reducers.workspace.max_agents` (300; was 30)
-busiest agents, and for every agent that wrote outside its start folder; one past that says
-so when picked, and an agent that ran nothing says that instead.
+Every tree is sent, up to `reducers.cascades.top_trees` (1000), deepest first. The cap used to be
+25, and with 25 trees of subagents in a window, no session that started no other session was sent
+at all. Past the cap, the list says how many trees were left out, and the type strip says that it
+counts only the trees sent. A blast radius is served for the `reducers.workspace.max_agents` (300;
+was 30) busiest agents, and for every agent that wrote outside its start folder. Picking an agent
+beyond that limit says so, and an agent that ran nothing says that instead.
 
 What it cannot see: Claude Code's Task-tool subagents and workflow agents run inside their
-parent's process. Only agents that are processes of their own appear; an in-process
-subagent's commands are counted in its parent's. On madsys-gpu1 over 2026-10-01..07 that was
-49 agent trees, 4 hosted and none nested.
+parent's process. Only agents that are processes of their own appear, and an in-process
+subagent's commands are counted as its parent's. On madsys-gpu1 over 2026-10-01..07, that came
+to 49 agent trees, 4 hosted and none nested.
 
 **Workspace & blast radius** (`reducers/workspace.py`, composed per agent by the cascades
-reducer) is where each agent worked, from its **home** -- the agent process's own cwd, or,
-when that is `/` (IDE-hosted), its first call's directory off the root, labelled so. The
-collector records no file paths, so three kinds of evidence are kept apart on the page and
-in the payload's `basis`:
+reducer) shows where each agent worked, relative to its **home**. The home is the agent process's
+own cwd, or, when that is `/` (IDE-hosted), its first call's directory below the root, labelled
+as such. The collector records no file paths, so three kinds of evidence are kept separate on the
+page and in the payload's `basis`:
 
 | reading | kind | what it is |
 |---|---|---|
-| ran in | **measured** | processes whose cwd the collector recorded as that directory. It reads cwd at exec for some processes and copies the parent's at fork for the rest -- before a shell's own `cd`, and before the chdir Claude Code's Bash tool makes into the directory its last call left it in (on rtx6000a 1 173 of 1 180 tool-call shells on 2026-10-11 were copied). Each view says how much was read (`cwd_read_pct`) |
-| bytes | **measured, per process** | rchar/wchar (syscall, pipes and terminals included) and read_bytes/write_bytes (disk) of the processes that ran there -- credited to where they ran, not to where the bytes went |
+| ran in | **measured** | processes whose cwd the collector recorded as that directory. It reads cwd at exec for some processes and copies the parent's at fork for the rest, which is before a shell's own `cd`, and before the chdir that Claude Code's Bash tool makes into the directory its last call left it in (on rtx6000a, 1 173 of 1 180 tool-call shells on 2026-10-11 had a copied cwd). Each view says how much was read (`cwd_read_pct`) |
+| bytes | **measured, per process** | rchar/wchar (syscall, pipes and terminals included) and read_bytes/write_bytes (disk) of the processes that ran there, credited to where they ran, not to where the bytes went |
 | named | **inferred** | distinct paths a command line names, classified by the command: read (`cat`, `grep`, `ls`, a script run, `<`), write (`>`/`>>`, a `cp`/`mv`/`rsync` destination, `tee`, `touch`, `mkdir`, `sed -i`, `tar -x`, `git clone`, `wget -O`, `curl -o`), delete (`rm`, `rmdir`, `git rm`, `find -delete`), and anything else path-like as named. Naming a path is not proof of touching it |
 
 Exact file-level reads and writes would need a collector probe (openat / unlink / rename
-tracepoints) that is not built, and Claude Code's Read, Edit and Write tools and Codex's
-apply_patch run inside the agent's own process and leave no command line at all.
+tracepoints) that has not been built. Claude Code's Read, Edit and Write tools and Codex's
+apply_patch also run inside the agent's own process and leave no command line at all.
 
-Directories inside the home are shown relative (`./src`), outside it with `~` for the user's
-home and `~bob` for another's; deeper than `collapse_depth` (4) levels below the home or a
-top-level root (`/tmp`, `/scratch`, `~/.cache`, `/n/<fs>`, another user's home) they fold into
-that ancestor, as do a directory's quieter subdirectories past six, and every fold is counted.
+Directories inside the home are shown as relative paths (`./src`). Directories outside it use `~`
+for the user's home and `~bob` for another user's. Directories more than `collapse_depth` (4)
+levels below the home or a top-level root (`/tmp`, `/scratch`, `~/.cache`, `/n/<fs>`, another
+user's home) are folded into that ancestor, as are a directory's quieter subdirectories beyond
+the first six, and every fold is counted.
 A **write or delete named outside the home is flagged** and labelled by where it landed
 (another user's home and system paths first, the agent's own `/tmp` scratch last). The
 toggle **this agent only / with its subagents** adds every agent beneath it, judged against
 the outer agent's home. Claude Code's tool calls are read through their `eval '<cmd>'`
 (`proctree.ran`, the inspector's own reader), so the snapshot each call sources and the cwd
-file it writes are never counted; a fork that inherited its parent's argv is not read twice. A
-relative path is placed against the process's cwd, never against `/` (an agent's process is at
-`/` when it inherited an IDE's or a daemon's directory, and `ls src` from there is not `/src`),
-and never by climbing out of a copied cwd with `..`: `./bin/cachesim ../data/x` with a cwd
-copied from an agent in `/home/marthen` would otherwise read as `/home/data`, another user's
-home.
+file it writes are never counted, and a fork that inherited its parent's argv is not read twice.
+A relative path is resolved against the process's cwd, never against `/`. (An agent's process is
+at `/` when it inherited an IDE's or a daemon's directory, and `ls src` from there does not mean
+`/src`.) A relative path is also never resolved by climbing out of a copied cwd with `..`.
+Otherwise `./bin/cachesim ../data/x`, with a cwd copied from an agent in `/home/marthen`, would
+read as `/home/data`, which is another user's home.
 
-Cost and bounds: each distinct argv is parsed once (a regex tokenizer, never `shlex`) and the
-per-record path is a few dict lookups. On rtx6000a's 2026-10-10 (1.89 M records, a ~90 s 24 h
-build) `feed` took 2.4 s, ~1.4 µs a record, and the saved window grew by 2.4 MB. State is one
-entry per collector session key, capped at `reducers.workspace.max_keys` (150 000) keys,
+Cost and bounds: each distinct argv is parsed once (with a regex tokenizer, never `shlex`), and
+the per-record path is a few dict lookups. On rtx6000a's 2026-10-10 (1.89 M records, a ~90 s 24 h
+build), `feed` took 2.4 s, ~1.4 µs per record, and the saved window grew by 2.4 MB. The state is
+one entry per collector session key, capped at `reducers.workspace.max_keys` (150 000) keys,
 `max_dirs` (300) directories per key, `max_dir_entries` (400 000) overall, 64 named paths per
-directory and 32 per command line; past any cap the excess is counted, not kept. At the key
-cap, a new key first drops the keys last seen before the window began. The keys are walked
-for that only once the oldest key the previous walk kept has left the window, so a cap full of
-keys inside the window costs one walk, not one per record. Served paths are masked
-(`redact`) and no raw argv is served.
+directory, and 32 per command line. Past any cap, the excess is counted but not kept. At the key
+cap, a new key first evicts the keys last seen before the window began. The service only walks
+the keys for this once the oldest key kept by the previous walk has left the window, so a cap
+full of keys inside the window costs one walk, not one per record. Served paths are masked
+(`redact`), and no raw argv is served.
 
-The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are the session rows' reading and stay
-on the Sessions tab; the Agents page no longer carries them.
+The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are read from the session rows and stay
+on the Sessions tab. The Agents page no longer shows them.
 
 ## Users: a portrait of each user
 
-The **Users** tab (`?tab=users`, a portrait open as `&portrait=<user>`) says how each person works with
-coding agents: which agents, launched how and from where, what the agents' commands do, how long a session
-runs and how many run at once, when in the day, what they work on, and what they ask of the scheduler.
+The **Users** tab (`?tab=users`, with a portrait opened as `&portrait=<user>`) shows how each person works
+with coding agents: which agents they use, how and from where they launch them, what the agents' commands do,
+how long a session runs and how many run at once, what time of day, what they work on, and what they ask of
+the scheduler.
 
-Nothing here is reduced or saved. `rc_dashboard/portraits.py` composes it, when it is read, from the reducers
-a window view already holds -- the trajectories, the sandbox and Slurm -- and from the live tier for what is
-running now, so it can never disagree with the tabs those reducers fill. It holds no state a saved window or
-hour must keep: it is not in either fingerprint (`snapshots.CODE_FILES`, `hours.CODE_FILES`), no reducer
-imports it, and changing it rebuilds nothing.
+Nothing here is reduced or saved. `rc_dashboard/portraits.py` composes the tab when it is read, from the
+reducers a window view already holds (the trajectories, the sandbox and Slurm) and from the live tier for what
+is running now, so it can never disagree with the tabs those reducers fill. It holds no state that a saved
+window or hour must keep. It is not in either fingerprint (`snapshots.CODE_FILES`, `hours.CODE_FILES`), no
+reducer imports it, and changing it rebuilds nothing.
 
 | part | from | what it says |
 |---|---|---|
@@ -1651,106 +1665,113 @@ imports it, and changing it rebuilds nothing.
 | scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the Slurm tab folds them |
 
 - **A session is one agent run.** The rows the Sessions tab lists for one agent on two days are one session
-  here, as the agent's phase block already is. Only rooted sessions count, as the Sessions tab's plates count
-  them, so a status bar probing `codex --version` every minute is none. A session belongs to the account its
-  records name first. One whose records name no user and no uid (the trajectories reducer falls back to
-  `uid:N` where there is one) is no one's row: the roster counts it apart (`unattributed`) and says so under
-  the table, and the Sessions tab lists it with the rest.
-- **Unread is not none.** An agent whose commands the service does not read (anything but Claude Code and
-  Codex) has calls of null, shown as *not read*, never 0.
-- **A share is over the known values**, with the rest counted beside it: a Codex app server's approval is
-  unobservable, and a session whose own record was not seen has no surface.
-- **How they leverage agents** puts the same numbers together (`portraits.leverage`): the way most of their
-  sessions are driven (a terminal, scripts, an IDE, the desktop app or the web, else several places), the
+  here, just as the agent's phase block already is. Only rooted sessions count, as on the Sessions tab's
+  plates, so a status bar probing `codex --version` every minute is not a session. A session belongs to the
+  account its records name first. A session whose records name no user and no uid (the trajectories reducer
+  falls back to `uid:N` where there is a uid) gets no one's row. The roster counts it separately
+  (`unattributed`) and says so under the table, and the Sessions tab lists it with the rest.
+- **Unread is not none.** An agent whose commands the service does not read (anything other than Claude Code
+  and Codex) has null calls, shown as *not read*, never 0.
+- **A share is taken over the known values**, with the rest counted next to it. For example, a Codex app
+  server's approval is unobservable, and a session whose own record was not seen has no surface.
+- **How they leverage agents** combines the same numbers (`portraits.leverage`): how most of the user's
+  sessions are driven (a terminal, scripts, an IDE, the desktop app or the web, or else several of these), the
   freedom the agents start with, how many run at once, what the agents' actions are for (`portraits.USES`:
-  their calls grouped into exploring, editing and testing, building, running programs, Slurm and git, with
-  waiting and unrecorded calls left out, and the uses that hold most of them named), how much is waiting, the
-  scheduler, what the agents leave behind in their own words, what they work on, and when. The service decides
-  each part by `RULES`, and the page words it: one sentence under each user in the roster, and that sentence,
-  point by point, at the head of their portrait.
-- **A figure of each user** draws the same row (`web/src/components/PortraitFigure.tsx`): a person at a desk,
-  drawn the same for everyone (no one's picture is held, and the names are aliases), and round them a part for
-  each number: a robot for each session open at once, coloured by agent, its antenna lit while it runs; the
-  laptop's emblem for where most sessions are driven from, the person leaning back when that is scripts; a
-  padlock for launches that bypassed approval, a shield for auto mode, capsules for the sandboxed trait; a shelf
-  of what the actions are for, each icon's area its share; a 24-hour clock of active minutes; the moon for the
-  overnight trait; papers for what the agents wrote; a mug or a stopwatch for long or short sessions; an
-  hourglass for polling; a server with a light for each Slurm job. Each part says its numbers and the rule
-  behind it on hover, and a key says what each one means. The only numbers the page adds are drawing caps (six
-  robots, five sheets, ten lights), each said where it applies; a calls count the service could not make is
-  drawn as unread, never as an empty shelf. It leads the portrait, and the roster shows everyone's side by side
+  their calls grouped into exploring, editing and testing, building, running programs, Slurm and git, leaving
+  out waiting and unrecorded calls, and naming the uses that hold most of them), how much time is spent
+  waiting, the scheduler, what the agents leave behind in their own words, what they work on, and when. The
+  service decides each part using `RULES`, and the page puts it into words: one sentence under each user in
+  the roster, and the same sentence, point by point, at the top of their portrait.
+- **A figure of each user** draws the same row (`web/src/components/PortraitFigure.tsx`). It shows a person at
+  a desk, drawn the same for everyone (no one's picture is stored, and the names are aliases), surrounded by
+  one element per number: a robot for each session open at once, coloured by agent, with its antenna lit while
+  it runs; the laptop's emblem for where most sessions are driven from, with the person leaning back when that
+  is scripts; a padlock for launches that bypassed approval, a shield for auto mode, and capsules for the
+  sandboxed trait; a shelf showing what the actions are for, with each icon's area matching its share; a
+  24-hour clock of active minutes; the moon for the overnight trait; papers for what the agents wrote; a mug or
+  a stopwatch for long or short sessions; an hourglass for polling; and a server with a light for each Slurm
+  job. Hovering over an element shows its numbers and the rule behind it, and a key explains what each one
+  means. The only numbers the page adds are drawing caps (six robots, five sheets, ten lights), each noted
+  where it applies. A call count that the service could not compute is drawn as unread, never as an empty
+  shelf. The figure is the first thing in the portrait, and the roster shows everyone's figures side by side
   (*figures*). `npm run check:figures` renders every fixture user's figure and checks it against their row.
 - **Traits** are plain statements ("launches with a bypass flag", "keeps several sessions open at once"),
-  each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
-  them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made
-  by a model, and a user can hold none.
-- **The work is read from commands**, as everything on the Sessions tab is: an agent's own Read and Edit
-  tools, and its thinking, leave no command. An agent that edits only through its own tools shows no editing.
-- **One user's portrait reads the phase blocks** of their newest `PHASE_SESSIONS` (80) sessions, the same
-  blocks the Sessions tab's rows show and cache, and lists at most 60 sessions and 40 tasks; the rest are counted.
-  Under a user filter it is read against the whole window's users when that view is held (`fleet_of`).
+  each derived from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are
+  served with the traits and shown on hover, and each trait carries the numbers that met its rule. No trait is
+  a judgement, none is made by a model, and a user may have none.
+- **The work is read from commands**, like everything on the Sessions tab. An agent's own Read and Edit
+  tools, and its thinking, leave no command, so an agent that edits only through its own tools shows no
+  editing.
+- **One user's portrait reads the phase blocks** of their newest `PHASE_SESSIONS` (80) sessions (the same
+  blocks the Sessions tab's rows show and cache), and lists at most 60 sessions and 40 tasks; the rest are
+  counted. Under a user filter, the portrait is compared against all of the window's users when that view is
+  held (`fleet_of`).
 
-Cost: the roster walks every folded session and its call log once; the sandbox's verdicts walk every tool call
-of the window, which is most of it. The aggregator holds each view's inputs (`portraits.Context`), its roster
-and each open portrait, and builds them again once the view has ingested and `reducers.trajectories.live_s`
-has passed, as the ranked sessions are re-ranked. On 500 synthetic sessions with 100 000 calls the roster took
-about 0.3 s, and a portrait read from the roster's inputs about 20 ms.
+Cost: the roster walks every folded session and its call log once, and the sandbox's verdicts walk every
+tool call of the window, which is most of the cost. The aggregator holds each view's inputs
+(`portraits.Context`), its roster and each open portrait, and rebuilds them once the view has ingested new
+records and `reducers.trajectories.live_s` has passed, just as the ranked sessions are re-ranked. On 500
+synthetic sessions with 100 000 calls, the roster took about 0.3 s, and a portrait read from the roster's
+inputs took about 20 ms.
 
 ## Slurm: how sessions use the scheduler
 
-"An agent submitted job N" says nothing about agent behaviour; how agents drive the
-scheduler does. On boslogin06's 2026-10-09 agents made 16.6 scheduler queries per job
-against 0.2 for people, 41 agent sessions polled the queue for 10 minutes or more (94.9 h
-of it; one Claude session every 4.9 s for 4.9 h), one session submitted 112 jobs in a
-minute, and 79% of agent submissions used `--parsable` (people: 0.2%) -- a program reading
-the job id. The **Slurm** tab (`?tab=slurm`, hidden by `slurm.enabled: false`) is built on
-that, from the window's `slurm` reducer (`reducers/slurm.py`):
+"An agent submitted job N" says nothing about agent behaviour, but how agents drive the
+scheduler does. On boslogin06 on 2026-10-09, agents made 16.6 scheduler queries per job,
+compared with 0.2 for people. 41 agent sessions polled the queue for 10 minutes or more (94.9 h
+in total; one Claude session polled every 4.9 s for 4.9 h), one session submitted 112 jobs in a
+minute, and 79% of agent submissions used `--parsable` (people: 0.2%), which means a program was
+reading the job id. The **Slurm** tab (`?tab=slurm`, hidden by `slurm.enabled: false`) is built
+on these patterns, from the window's `slurm` reducer (`reducers/slurm.py`):
 
-- **per session** -- an agent's collector keys folded into the agent, as the Sessions tab folds
-  them; people and IDEs one row per user: jobs, refusals, the busiest minute, distinct
-  command lines (numbers masked: one script resubmitted is one), the flags it submits with,
-  queries, its longest **polling loop** (queries within 2 s are one poll, polls within 3 min
-  one loop, 10 min or more counts as polling), queries per job, cancels, GPU-hours asked;
-- **per class**, the same as rates and shares side by side;
-- **what came back** from each submission: a job id, a dry run (`--test-only` makes no job),
-  a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal** --
-  no id, a non-zero exit and the scheduler's own error line, which is the reason shown
+- **per session**: an agent's collector keys are folded into the agent, as the Sessions tab folds
+  them, and people and IDEs get one row per user. Each row shows jobs, refusals, the busiest
+  minute, distinct command lines (with numbers masked, so one script resubmitted counts once), the
+  flags it submits with, queries, its longest **polling loop** (queries within 2 s are one poll,
+  polls within 3 min are one loop, and a loop of 10 min or more counts as polling), queries per
+  job, cancels, and GPU-hours requested;
+- **per class**, the same figures as rates and shares side by side;
+- **what came back** from each submission: a job id, a dry run (`--test-only` creates no job),
+  a step into an allocation already held (`srun --jobid`/`--overlap`), or a **refusal**, meaning
+  no id, a non-zero exit and the scheduler's own error line, which is shown as the reason
   (`QOSMaxSubmitJobPerUserLimit`, a partition rule). An `srun` whose program ran and failed
-  is not a refusal, nor is srun's own line saying so (`task 0: Exited with exit code 1`): an
-  srun or salloc is refused only when it cannot get the allocation. The count of refusals is a
-  lower bound: a submission keeps its last 300 characters, and a refusal line cut at its start
-  there (a reason of some 200 characters: Slurm prints that line last) is not counted;
-- queries and jobs per time bin, by class. A bin with no Slurm record of any class is a
+  is not a refusal, and neither is srun's own line reporting that (`task 0: Exited with exit code 1`).
+  An srun or salloc only counts as refused when it cannot get the allocation. The refusal count
+  is a lower bound. A submission keeps only its last 300 characters, so a refusal line whose start
+  was cut off (a reason of about 200 characters, since Slurm prints that line last) is not counted;
+- queries and jobs per time bin, by class. A bin with no Slurm record of any class is shown as a
   gap, not 0.
 
-Requests are read off argv: a `#SBATCH` line in the script is not seen, so GPU-hours count
-only jobs with GPUs and a time limit on the command line, and say how many those were.
+Requests are read from argv, so a `#SBATCH` line in the script is not seen. As a result,
+GPU-hours only count jobs with GPUs and a time limit on the command line, and the tab says how
+many jobs that was.
 
 ## Known collector limitations the page surfaces
 
-- **`peak_rss_mb` is always 0** on kernel 6.8: the kernel runs `exit_mm()` (clearing
+- **`peak_rss_mb` is always 0** on kernel 6.8. The kernel runs `exit_mm()` (clearing
   `task->mm`) before the `sched_process_exit` tracepoint fires, so the `if (mm)` guard at
-  `ebpf_trace.py:834` never assigns. Reading `task->signal->maxrss` instead survives
-  `exit_mm()` (verified). Until then the metric renders **not measured**.
-- **The collector's session key splits one session per tool call.** It keys a process on
-  its nearest classifier-tagged ancestor, and the classifier tagged anything whose argv
-  mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell every
-  Claude Code Bash tool call runs in -- until it read the program alone (collector
-  README, *Agent tags*). The dashboard decides what each tagged process
-  really is (`roles.py`) and folds each key into the agent above it (`procindex.py`);
-  trajectory rows say how many keys they fold and how the least certain one was
-  attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On madsys-gpu1 a
-  24 h window went from 3 281 keys to 636 sessions, one VS Code server alone from 688.
+  `ebpf_trace.py:834` never assigns a value. Reading `task->signal->maxrss` instead survives
+  `exit_mm()` (verified). Until the collector does that, the metric renders **not measured**.
+- **The collector's session key splits one session into one per tool call.** The collector keys
+  a process on its nearest classifier-tagged ancestor. Until the classifier was changed to look at
+  the program alone, it tagged anything whose argv mentioned `~/.claude/`, `~/.codex/` or
+  `~/.vscode-server/`, including the shell that every Claude Code Bash tool call runs in
+  (collector README, *Agent tags*). The dashboard decides what each tagged process
+  really is (`roles.py`) and folds each key into the agent above it (`procindex.py`).
+  Trajectory rows say how many keys they fold and how the least certain one was
+  attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On
+  madsys-gpu1, a 24 h window went from 3 281 keys to 636 sessions (one VS Code server alone from
+  688).
 - **The node tier daemon needs an absolute path.** `ebpfm.sh:466` re-execs `"$0"`, so
-  `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by absolute
+  `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by its absolute
   path.
-- **`submit` request fields are argv-only.** A job whose `#SBATCH` directives carry the
-  request reports `null` for `partition`/`gpus`/`array`; `req_src` says which. Recovering them
-  needs a `slurm_jobs` census join, which is not a configured feed.
+- **`submit` request fields are argv-only.** A job whose request is in `#SBATCH` directives
+  reports `null` for `partition`/`gpus`/`array`, and `req_src` says which case applies.
+  Recovering them needs a `slurm_jobs` census join, which is not a configured feed.
 - **Scheduler and GPU panels are absent, not zero.** `running_agent_jobs` and GPU duty need
-  the census and `dcgm`. The Live tab shows *agent job submissions in the window* from eBPF
-  `submit` records instead — per-submission and actor-attributed, which is better evidence
-  than a census count.
+  the census and `dcgm`. Instead, the Live tab shows *agent job submissions in the window* from
+  eBPF `submit` records. These are per submission and attributed to an actor, which is better
+  evidence than a census count.
 
 ## Layout
 
@@ -1805,42 +1826,43 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 
 ## Ingestion, precisely
 
-**What the page holds is a function of the collector's files and the clock — never of when this
-service was running.** Nothing in the live tier is restored from a previous run (the historical
-windows resume from saved builds, but only from ones that are provably a prefix of the same files —
-see *The time window*). On every start the service hands
+**What the page holds depends only on the collector's files and the clock, never on when this
+service was running.** Nothing in the live tier is restored from a previous run. (The historical
+windows resume from saved builds, but only from builds that are provably a prefix of the same
+files; see *The time window*.) On every start, the service hands
 each day-file to the tail at the end of its last complete line or frame, then reads the history
-behind that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it,
-located by the same timestamp binary search the window rebuild uses. Offsets used to be
-persisted while the bins they fed were not, so a restart resumed at EOF with empty bins and the
-page showed only what the collector wrote after the service came back — and `run.sh` restarts
-the service on every save.
+before that point back into the live tier. It reads `min(live.backfill_hours, live.retention_min)`
+of history, located by the same timestamp binary search that the window rebuild uses. Offsets
+used to be persisted while the bins they fed were not, so a restart resumed at EOF with empty
+bins, and the page showed only what the collector wrote after the service came back. And
+`run.sh` restarts the service on every save.
 
 The read-back runs **newest first**, k-way merged across hosts, while the tail is already
-polling; a poll that lands before the hand-off reads nothing, so no record is counted twice. The
-page is live within a second and watches the chart fill from now backwards. The filled span is
-always contiguous, so the picker's `filled 5h of 7d` stays true beside `reading history · N%`.
+polling. A poll that lands before the hand-off reads nothing, so no record is counted twice. The
+page is live within a second, and you can watch the chart fill from now backwards. The filled span
+is always contiguous, so the picker's `filled 5h of 7d` stays accurate next to `reading history · N%`.
 The read takes the aggregation lock one small batch at a time, so neither the page nor the tail
-queues behind it. A week of one login node's feed (4 GB, 2.4 M records) takes 35–45 s here. Bins
-are sums and take records in any order; the "latest" state — each host's plate, the event and
-submission tails — only takes an older record where nothing newer has claimed the slot.
+has to wait behind it. A week of one login node's feed (4 GB, 2.4 M records) takes 35–45 s here.
+Bins are sums and accept records in any order. The "latest" state (each host's plate, the event
+and submission tails) only accepts an older record if nothing newer has already claimed the slot.
 
 `DailyWriter.write()` (`collector/ebpf_trace.py`) buffers and flushes once per poll round, which
-is not atomic against a concurrent reader. So the tailer reads to EOF, finds the last newline,
-yields only complete lines, and **advances its stored offset only that far** — trailing bytes are
-re-read next cycle. Idempotent, never a truncated JSON line, never a lost record. The startup hand-off obeys the
-same rule, so a line still being written belongs to the tail, never to the read-back.
+is not atomic with respect to a concurrent reader. So the tailer reads to EOF, finds the last
+newline, yields only complete lines, and **advances its stored offset only that far**. Any
+trailing bytes are re-read on the next cycle. This is idempotent, never yields a truncated JSON
+line, and never loses a record. The startup hand-off follows the
+same rule, so a line that is still being written belongs to the tail, never to the read-back.
 
-**One bad line stops nothing.** A line that is JSON but not an object (`0`, `null`, `[]`) is
-counted with the lines that do not parse, by every reader of the day-files (`fastjson.record`);
-a record the normalizer cannot read -- a field of a type no collector writes, a list `args` or
-`event`, a number for `ts` -- is passed over and counted, and so is one a held view cannot take.
-`/api/feeds` says how many, in the eBPF tier's `tail`: `parse_errors`, `malformed`,
-`feed_errors`. One `null` used to make every poll raise: the tail's offsets stayed put, the
-other hosts were never read, and the batch already handed over was counted again at every
-poll; a `[]` already in a file stopped the backfill, and such a record failed every build of a
-window that held it.
+**One bad line stops nothing.** Every reader of the day-files counts a line that is JSON but not
+an object (`0`, `null`, `[]`) along with the lines that do not parse (`fastjson.record`). A record
+the normalizer cannot read (a field of a type no collector writes, a list `args` or `event`, a
+number for `ts`) is skipped and counted, and so is a record that a held view cannot take.
+`/api/feeds` reports how many in the eBPF tier's `tail`: `parse_errors`, `malformed`,
+`feed_errors`. A single `null` used to make every poll raise an exception. The tail's offsets
+stayed put, the other hosts were never read, and the batch already handed over was counted again
+at every poll. A `[]` already in a file stopped the backfill, and such a record made every build
+of a window that contained it fail.
 
 Offsets are keyed on `(st_dev, st_ino)`, not path, so a recreated file is detected as a new inode
-rather than silently seeked past its end. A file first seen after startup — a new date
-directory, a new host — is read from byte 0, at most 64 MB per poll.
+instead of being silently seeked past its end. A file first seen after startup (a new date
+directory, a new host) is read from byte 0, at most 64 MB per poll.
