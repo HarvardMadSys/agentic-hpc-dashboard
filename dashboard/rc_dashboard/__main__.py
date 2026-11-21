@@ -147,6 +147,11 @@ def main(argv=None):
         if not rollup.enabled(cfg):
             sys.stderr.write("rollup: off (rollup.enabled)\n")
             return 2
+        if cfg.get("clock.as_of"):
+            # the service's present, so both pick the same days (clock.py)
+            from . import clock
+            clk = clock.install(cfg, feedmod.resolve(cfg)["ebpf"]["resolved"])
+            sys.stderr.write("clock pinned to %s (%s)\n" % (clk["as_of"], clk["source"]))
         n = rollup.build_from_files(cfg, days=args.rollup_days, force=args.force)
         sys.stderr.write("rollup: %d day(s) written to %s\n" % (n, rollup.path_of(cfg)))
         return 0

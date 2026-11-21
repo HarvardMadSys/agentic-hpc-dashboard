@@ -339,6 +339,18 @@ class TrendTest(Case):
         other.write([self.snap(mon, ["alice"])])
         self.assertEqual(served.trend(3, "day", mon)["buckets"][-1]["data_days"], 1)
 
+    def test_a_day_not_yet_whole_is_measured_to_now(self):
+        # written at 00:02, read at noon with nothing written since
+        store = rollup.RollupStore(os.path.join(self.tmp, "t", rollup.FILE))
+        mon = datetime.date(2026, 11, 2)
+        a = rollup.midnight(mon)
+        day = rollup.Day(mon.isoformat(), a, rollup.midnight(mon + datetime.timedelta(days=1)))
+        day.feed({"event": "exit", "host": "h1", "_a3": "agent", "agent_type": "codex",
+                  "user": "alice", "cpu_s": 1.0}, a + 60, "exit")
+        store.write([day.snapshot(a + 120, False)])
+        (b,) = store.trend(1, "day", mon, now=a + 12 * 3600)["buckets"]
+        self.assertEqual((b["minutes"], b["held"]), (720, 1))
+
     def test_a_table_of_another_format_is_refused(self):
         path = os.path.join(self.tmp, "t", rollup.FILE)
         rollup.RollupStore(path)
@@ -420,6 +432,29 @@ class FromFilesTest(Case):
             self.assertEqual(rollup.build_from_files(cfg, days=30, out=quiet), 3)
         days = {d: (recs, done) for d, _h, recs, done in self.rows(rollup.path_of(cfg))["day"]}
         self.assertEqual(days[d3], (6, 1))
+
+
+class ClockTest(Case):
+
+    def test_the_rollup_command_takes_the_pinned_clock(self):
+        # a capture two years old: only the pinned present finds its days
+        from rc_dashboard import __main__ as cli
+        old = self.today - 730 * DAY_S
+        self.write([exit_rec(old - k * DAY_S + 12 * 3600, 100 + k) for k in (3, 2, 1)])
+        self.write([exit_rec(old + 12 * 3600, 99)])
+        cache = os.path.join(self.tmp, "pinned")
+        env = {"RC_DASH_EBPF_ROOTS": self.root, "RC_DASH_CACHE_DIR": cache,
+               "RC_DASH_NODE_ROOTS": os.path.join(self.tmp, "node"), "RC_DASH_AS_OF": "auto"}
+        was_time, was_ns = time.time, time.time_ns
+        try:
+            with mock.patch.dict(os.environ, env), open(os.devnull, "w") as quiet, \
+                    mock.patch("sys.stderr", quiet):
+                self.assertEqual(cli.main(["rollup", "--rollup-days", "30"]), 0)
+        finally:
+            time.time, time.time_ns = was_time, was_ns
+        days = self.rows(os.path.join(cache, "rollup", rollup.FILE))["day"]
+        self.assertEqual([d for d, _h, _r, _c in days],
+                         [date_of(old - k * DAY_S) for k in (3, 2, 1)])
 
 
 class ConfigTest(unittest.TestCase):

@@ -320,24 +320,26 @@ class RollupStore:
                 "written_at": at}
 
     # ---------------------------------------------------------------- trend
-    def trend(self, days, by, today):
-        """`days` local days up to `today` (a datetime.date), in buckets of `by`."""
+    def trend(self, days, by, today, now=None):
+        """`days` local days up to `today` (a datetime.date), in buckets of `by`.
+        `now` is the present a day not yet whole is measured to."""
+        now = time.time() if now is None else now
         # Keyed on the table itself, not only on this process's writes: the
         # `rollup` command writes it from a process of its own. Every write
         # stamps `written_at` on the days it writes.
         with self._connect() as db:
             stamp = db.execute("SELECT COUNT(*), MAX(written_at) FROM day").fetchone()
-        key = (days, by, today, self.version, stamp)
+        key = (days, by, today, self.version, stamp, int(now // 60))
         hit = self._cache.get(key)
         if hit is not None:
             return hit
-        body = self._trend(days, by, today)
+        body = self._trend(days, by, today, now)
         if len(self._cache) > 16:
             self._cache.clear()
         self._cache[key] = body
         return body
 
-    def _trend(self, days, by, today):
+    def _trend(self, days, by, today, now):
         expr = BUCKETS[by]
         lo = today - datetime.timedelta(days=days - 1)
         rng = (lo.isoformat(), today.isoformat())
@@ -365,9 +367,12 @@ class RollupStore:
             bk["today"] = bk["today"] or d == today
             d += datetime.timedelta(days=1)
         with self._connect() as db:
+            # A day not yet whole is measured to now, not to its last write: a
+            # quiet stretch writes nothing, and its minutes go on all the same.
             for row in db.execute(
-                    "SELECT %s AS b, complete, minutes, held, records FROM day "
-                    "WHERE date BETWEEN ? AND ?" % expr, rng):
+                    "SELECT %s AS b, complete, CASE WHEN complete THEN minutes ELSE "
+                    "MAX(minutes, CAST((MIN(day_to, ?) - day_from) / 60 AS INTEGER)) END, "
+                    "held, records FROM day WHERE date BETWEEN ? AND ?" % expr, (now,) + rng):
                 bk = buckets.get(row[0])
                 if bk is None:
                     continue
@@ -561,7 +566,7 @@ class Rollup:
             return dict(body, buckets=[], error=self.error, by=by, days=days)
         self.flush(lock, now)
         t = time.localtime(now)
-        out = dict(self.store.trend(days, by, datetime.date(t.tm_year, t.tm_mon, t.tm_mday)))
+        out = dict(self.store.trend(days, by, datetime.date(t.tm_year, t.tm_mon, t.tm_mday), now))
         out.update(body)
         out.update(self.status(lock))
         out["tz"] = time.strftime("%Z", t)
@@ -584,7 +589,7 @@ class Rollup:
 
 
 # ------------------------------------------------------------ older days, by hand
-def build_from_files(cfg, days=365, force=False, out=sys.stderr):
+def build_from_files(cfg, days=365, force=False, out=None):
     """Fill the table with the days of the last `days` the day-files on disk still
     hold and the table has no complete copy of (all of them with `force`), read
     oldest first through the service's normalizer. A day is written only once the
@@ -596,6 +601,7 @@ def build_from_files(cfg, days=365, force=False, out=sys.stderr):
     from .gz import open_feed
     from .normalize import Normalizer
 
+    out = sys.stderr if out is None else out
     store = RollupStore(path_of(cfg))
     roots = feedmod.resolve(cfg)["ebpf"]["resolved"] or []
     now = time.time()
