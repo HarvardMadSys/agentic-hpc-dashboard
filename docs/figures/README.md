@@ -714,7 +714,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Computation:** `_totals` keeps each host's newest tick; `result` sums the per-class fields per
   host. `users` adds the collector's per-class counts, so one person in two classes counts twice.
   `load₁` and `CPU` would come from the node tier, which is not joined here: they are always null,
-  and the page drops a column with no value.
+  and the table has no column for them; a node's own load and CPU are RE-1's.
 - **Cost:** per frame one pass over the hosts.
 
 ## Users
@@ -1674,8 +1674,8 @@ What the service computes and serves that no figure on `develop` draws. Each sti
 reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
 
 - **`load_1` and `cpu_pct` of the live frame's host rows**: always null, being the node tier's
-  (`LiveReducer`), so the login nodes table's `load₁` and `CPU` columns (LV-21) are empty; the node
-  tier's own load and CPU are RE-1's.
+  (`LiveReducer`), so the login nodes table (LV-21) has no column for them; the node tier's own load
+  and CPU are RE-1's.
 - **`workspace`**: the workspace reducer's own payload is its buffer counters; the per-agent views
   the page draws are in `cascades.workspace` (AG-4).
 - **`cascades.edges`, `edge_via`, `role_census`**: who starts whom, how each parent was found, and
@@ -1688,8 +1688,6 @@ reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
   running now, the live agent sessions by launch approval, and the accounts active in the window.
   The Live tab's "right now" plates drew them until its time range replaced that row; they reach
   Ask LLM's snapshot (`live_now`).
-- **The I/O plates** of `RiskIoTab`: both its callers pass `plates={false}`, so they are not
-  drawn; their numbers are LV-6's rows and LV-14's charts.
 
 ## What is slow
 

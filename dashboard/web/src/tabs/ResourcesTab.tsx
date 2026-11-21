@@ -336,7 +336,7 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
             became rows of Who uses what, and its time series are on Live's
             picker. */}
         <div className="grid-gap" />
-        <RiskIoTab P={P} cls={cls} part="io" plates={false} io="main" />
+        <RiskIoTab P={P} cls={cls} part="io" io="main" />
       </>
     );
   }
@@ -379,7 +379,7 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
       </div>
 
       <div className="grid-gap" />
-      <RiskIoTab P={P} cls={cls} part="io" plates={false} io="internal" />
+      <RiskIoTab P={P} cls={cls} part="io" io="internal" />
     </>
   );
 });
