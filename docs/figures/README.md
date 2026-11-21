@@ -349,13 +349,15 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
 
 #### SH-7 window picker and its state
 
-- **Shows:** the preset windows, a typed one, a clamp (`asked 30d · showing 7d`), how much of the
-  window the live bins hold (`filled 5h of 7d`), the view's build state and percentage, its drift
-  once past half its budget, and the backfill's progress
+- **Shows:** the service's floor (5 minutes) when the presets start above it, the preset windows,
+  a typed one, a clamp (`asked 30d · showing 7d`), how much of the window the live bins hold
+  (`filled 5h of 7d`), the view's build state and percentage, its drift once past half its budget,
+  and the backfill's progress
   ([The window control](../../dashboard/web/README.md#the-window-control)).
 - **Records:** none of its own.
-- **Computation:** `presets` (the configured presets that retention can serve), `resolve` (the
-  clamp and its note), `PanelView.status` (state, progress by bytes or, merging, by hour-reads,
+- **Computation:** `presets` (the configured presets that retention can serve), `MIN_WINDOW_MIN`
+  (the floor, served as `min_minutes` on `/api/windows` and not in the `windows` frame), `resolve`
+  (the clamp and its note), `PanelView.status` (state, progress by bytes or, merging, by hour-reads,
   drift, cache), sent as `/api/windows` and as a `windows` frame when a material field changes
   (checked every 2 s, `app.py:windows_loop`); `retained_minutes` from the oldest live bin
   (`RollingBuckets.oldest_epoch`); the live frame's `backfill`.
@@ -403,9 +405,8 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
 
 ## Live
 
-The window's reducers in the plates and charts, over the time range picked above the plates, which
-is the page's window (5 minutes, the service's floor, then the presets); the live tier in the rate
-chart, Active users and the tables that name now.
+The window's reducers in the plates, under a label naming their window, and in the charts that
+name it; the live tier in the rate chart, Active users and the tables that name now.
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|

@@ -58,8 +58,9 @@ flowchart TB
    dashboard can read a capture made months ago or a whole fleet at once, and nothing has to
    be running for it to start.
 3. **The dashboard**, `rc_dashboard` ([`dashboard/`](dashboard/README.md)), reads those
-   folders wherever they are: on the node itself, on a shared mount, or in the copy the
-   [fleet stream](fleet/README.md) keeps on the dashboard's host. It reduces each record once
+   folders wherever they are: on the node itself, on a shared mount, or in a copy on the
+   dashboard's host, which [`deploy/fleet`](deploy/fleet/README.md) pulls with rsync or the
+   HPC [fleet stream](hpc/fleet/README.md) keeps. It reduces each record once
    into its hour, keeps rolling aggregates for whichever window you pick, keeps every sealed
    day as Parquet too for fast selective reads, and pushes updates to the page over a
    WebSocket.
@@ -178,14 +179,24 @@ get a sign-in page; scripts send the password as HTTP Basic auth, from the netrc
 refuses to start without a password, since on a login node every user can reach 127.0.0.1;
 `--open` (`RC_DASH_OPEN=1`) serves without one, for a machine only you can reach.
 
-### Run it live across a fleet
+### Run it live
 
-[`deploy/fleet`](deploy/fleet/README.md) runs the dashboard on a host of your own, fed live by
-every login node: one ssh connection per node carries its day-files into a private copy on
-that host ([`fleet/`](fleet/README.md)), and the dashboard serves the copy on 127.0.0.1,
-behind a password. Everything is set in one file, `deploy/fleet/site.env`;
-`deploy/fleet/deploy.sh` installs and upgrades it, and `deploy/fleet/check.sh` checks it every
-hour from cron. No machine needs root for any of it.
+Three layouts, the same collector and dashboard in each, the dashboard behind a password on
+127.0.0.1:
+
+| Layout | What runs where | Guide |
+|---|---|---|
+| **One server** | the server runs the collector and the dashboard, which reads the collector's folders; both are systemd units | [`deploy/single`](deploy/single/README.md) |
+| **A fleet** | every node runs the collector and keeps its files; one more host runs the dashboard, and copies each node's files to itself with rsync every minute ([`pull.py`](deploy/fleet/pull.py)) | [`deploy/fleet`](deploy/fleet/README.md) |
+| **A cluster's login nodes** | the same, where you have no root anywhere: one ssh connection per node streams its files to a host of your own ([`hpc/fleet/`](hpc/fleet/README.md)), all set from one file, `hpc/deploy/site.env`, and checked every hour from cron | [`hpc/deploy`](hpc/deploy/README.md) |
+
+```bash
+sudo deploy/single/install.sh      # one server: the collector's two units, then the dashboard's
+```
+
+[`deploy/README.md`](deploy/README.md) says what each piece is, where it keeps things, and how
+to sign in, watch and upgrade it; [`hpc/README.md`](hpc/README.md) says what is HPC-specific,
+and why it lives apart.
 
 ## Configuration
 
@@ -231,6 +242,11 @@ The records name real users and show what they ran, so both halves keep them clo
   model's provider when a site turns them on.
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and
   nothing else, and only from the dashboard's host.
+- **The fleet's copy** ([`deploy/fleet`](deploy/fleet/README.md)) is pulled over ssh by an
+  account in the collector's group, into a folder only the dashboard's account can read.
+  As `install-node.sh` sets up its key, the key runs read-only rsync of the collector's
+  folders and nothing else (`rrsync -ro`, where the node has it), and only from the
+  dashboard's host.
 
 ## Repository layout
 
@@ -238,9 +254,9 @@ The records name real users and show what they ran, so both halves keep them clo
 |---|---|
 | [`collector/`](collector/) | `ebpfm`, the login-node collector, behind one entry point, `ebpfm.sh`; standalone, on Python 3.6 |
 | [`dashboard/`](dashboard/) | `rc_dashboard`, the service; [`web/`](dashboard/web/), the page (React, Vite, TypeScript); [`bench/`](dashboard/bench/), tools that measure it; [`risk-profiles/`](dashboard/risk-profiles/), what counts as risky on each cluster |
-| [`fleet/`](fleet/) | the fleet stream: each node's day-files, carried to the dashboard's host over ssh |
-| [`deploy/fleet/`](deploy/fleet/) | the kit that runs the dashboard live on a host of your own |
+| [`deploy/`](deploy/) | the collector and the dashboard as systemd units on servers where you have root: [`single/`](deploy/single/) one server, [`fleet/`](deploy/fleet/) a fleet whose files the dashboard's host pulls with rsync, [`common/`](deploy/common/) the installers both use |
 | [`deploy/cloudflare/`](deploy/cloudflare/) | the public demo: a Cloudflare Worker in front of a container running the demo |
+| [`hpc/`](hpc/) | what a cluster's login nodes need: [`fleet/`](hpc/fleet/), the fleet stream, each node's day-files carried to the dashboard's host over ssh; [`deploy/`](hpc/deploy/), the no-root kit that runs the dashboard live over it |
 | [`docker/`](docker/) | three images: a Rocky 8.10 base, the collector, the demo |
 | [`packaging/rpm/`](packaging/rpm/) | the collector's RPM for EL8 |
 | [`docs/`](docs/) | documents about more than one part ([index](docs/README.md)) |
@@ -264,8 +280,10 @@ The records name real users and show what they ran, so both halves keep them clo
 | [`docs/feed-parquet/README.md`](docs/feed-parquet/README.md) | the feed as typed Parquet tables: the dashboard's history store, and a dataset for analysis |
 | [`docs/feed-format-v9/README.md`](docs/feed-format-v9/README.md) | a proposed feed schema 9, not implemented, with a prototype that measures it |
 | [`docs/plans/`](docs/plans/) | implementation plans, kept as the record of how the work was done |
-| [`fleet/README.md`](fleet/README.md) | the fleet stream's three programs, and what each is for |
-| [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live deployment: the settings file, the first deploy, memory and disk, upgrades, and the hourly check |
+| [`deploy/README.md`](deploy/README.md) | the live service on servers where you have root: what runs where, the password, watching, settings, upgrading; [`single/`](deploy/single/README.md) and [`fleet/`](deploy/fleet/README.md) install each layout, and the fleet's says how its rsync copy reads as the node |
+| [`hpc/README.md`](hpc/README.md) | what is HPC-specific, why it lives apart, and what HPC-flavoured settings stay in the collector and the dashboard |
+| [`hpc/fleet/README.md`](hpc/fleet/README.md) | the fleet stream's three programs, and what each is for |
+| [`hpc/deploy/README.md`](hpc/deploy/README.md) | the live deployment on login nodes: the settings file, the first deploy, memory and disk, upgrades, and the hourly check |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the public demo: deploying it, its password, and deploying from GitHub |
 | [`docs/logo/README.md`](docs/logo/README.md) | the mark and the lockups |
 | [`CLAUDE.md`](CLAUDE.md) | for Claude Code sessions, and a short guide for anyone: where pull requests go, the commands, the dashboard's architecture in brief, and the constraints that bite |
@@ -281,8 +299,9 @@ repository, and nothing here depends on them.
   (`Dashboard: …`, `Collector: …`, `Docs: …`), with a body that says why.
 - **Docs track the code.** A change to a setting, route, panel, module or command updates the
   document that describes it, in the same pull request.
-- **The collector runs on Python 3.6**, EL8's own, and so does the fleet sender. A newer
-  Python accepts syntax that 3.6 rejects, so CI checks both on EL8. The dashboard needs 3.11
+- **The collector runs on Python 3.6**, EL8's own, and so do the fleet sender and
+  `deploy/fleet/pull.py`. A newer Python accepts syntax that 3.6 rejects, so CI checks them
+  on EL8. The dashboard needs 3.11
   or later.
 
 ### Tests
@@ -292,8 +311,10 @@ every pull request ([`ci.yml`](.github/workflows/ci.yml)):
 
 ```bash
 python3 -m unittest discover -s collector/tests -q        # the collector
-python3 -m unittest discover -s fleet/tests -q            # the fleet stream, over a fake collector
-python3 -m unittest discover -s deploy/fleet/tests -q     # the deploy kit, with stand-ins for systemd, tmux and ssh
+python3 -m unittest discover -s deploy/fleet/tests -q     # pull.py, with rsync for real and stand-in nodes
+python3 -m unittest discover -s deploy/common/tests -q    # the single and fleet installers, with stand-ins for systemd
+python3 -m unittest discover -s hpc/fleet/tests -q        # the fleet stream, over a fake collector
+python3 -m unittest discover -s hpc/deploy/tests -q       # the HPC deploy kit, with stand-ins for systemd, tmux and ssh
 (cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # the service, a few minutes
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)            # the page
 ```
@@ -324,7 +345,7 @@ at all, `cd dashboard/web && npm run dev` serves it from a fixture.
 | [`rpm-release.yml`](.github/workflows/rpm-release.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/` or `packaging/rpm/` | the collector's tests on EL8, then the RPM: attached to the tag's GitHub Release, or uploaded as a workflow artifact |
 | [`base-image.yml`](.github/workflows/base-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `docker/base/` | the base image |
 | [`collector-image.yml`](.github/workflows/collector-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/`, `docker/collector/` or `docker/base/` | the collector image |
-| [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) | a push to `develop` that changes what the demo runs | `ci.yml` first, then the public demo |
+| [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) | a push to `develop` that changes what the demo runs; not a docs-only one (`*.md`) | `ci.yml` first, then the public demo |
 
 A `vX.Y.Z` tag publishes the release images and attaches the RPM to a GitHub Release: push
 one only to make a release. None has been made yet.

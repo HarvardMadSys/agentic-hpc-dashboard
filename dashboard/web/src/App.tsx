@@ -20,7 +20,7 @@ import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
 import { SectionList, useSections } from './components/SectionNav';
 import { useScrollEdges } from './lib/scrollEdges';
-import { WindowPicker } from './components/WindowPicker';
+import { WindowPicker, offeredWindows } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
@@ -204,9 +204,6 @@ export default function App() {
   const setPortrait = useCallback((u: string | null) => setUrl({ portrait: u }, true), [setUrl]);
   const setRank = useCallback((r: TrajRank) => setUrl({ rank: r }), [setUrl]);
   const select = useCallback((sid: string | null) => setUrl({ traj: sid, tfrom: null }, true), [setUrl]);
-  // the Live tab's headline span picker sets the page's window, as the picker
-  // in the controls strip does
-  const setWin = useCallback((w: number) => setUrl({ win: w }), [setUrl]);
   const setTfrom = useCallback((t: number | null) => setUrl({ tfrom: t }, true), [setUrl]);
   const setTorder = useCallback((o: TrajOrder) => setUrl({ torder: o }), [setUrl]);
   const clearUser = useCallback(() => setUrl({ tuser: null }), [setUrl]);
@@ -248,6 +245,9 @@ export default function App() {
   // websocket's `windows` frame supersedes it with live build progress.
   const windowsRest = useWindows();
   const windows = live.windows ?? windowsRest.data;
+  // The service's floor (5 minutes): `/api/windows` says it, the websocket's
+  // `windows` frame that supersedes it does not.
+  const minWin = windowsRest.data?.min_minutes ?? windows?.min_minutes ?? null;
   // The window the SERVICE resolved, which is what every panel was built over --
   // not the one in the URL, which may have been clamped.
   const resolvedWin = live.live?.window;
@@ -483,11 +483,6 @@ export default function App() {
             openUserTraj={openUserTraj}
             userCols={userCols}
             whoUses={whoUses}
-            presets={windows?.presets}
-            // the service's floor: `/api/windows` says it, the websocket's
-            // `windows` frame that supersedes it does not
-            minWin={windowsRest.data?.min_minutes ?? windows?.min_minutes ?? null}
-            setWin={setWin}
           />
         );
       case 'users':
@@ -591,7 +586,7 @@ export default function App() {
       run: () => goSec(s.id),
     })),
     ...(showControls
-      ? (windows?.presets ?? []).map((p) => ({
+      ? offeredWindows(windows?.presets, minWin).map((p) => ({
           id: `win:${p.minutes}`,
           group: 'Window',
           label: `Last ${p.label}`,
@@ -942,6 +937,7 @@ export default function App() {
                 value={url.win}
                 onChange={(w) => setUrl({ win: w })}
                 windows={windows}
+                minMinutes={minWin}
                 resolved={resolvedWin}
                 status={winStatus}
                 backfill={live.live?.backfill}

@@ -43,14 +43,14 @@ class Rig(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def payload(self, sha=SHA, version="one"):
+    def payload(self, sha=SHA, version="one", unit="[Unit]\n"):
         """What deploy.sh ships into DASH_ROOT/incoming/<sha>."""
         inc = os.path.join(self.r, "incoming", sha)
         os.makedirs(os.path.join(inc, "dist"))
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             for name, body in (("rc/dashboard/rc_dashboard/__init__.py", version),
-                               ("rc/fleet/fleet_stream.py", version)):
+                               ("rc/hpc/fleet/fleet_stream.py", version)):
                 data = body.encode()
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
@@ -59,7 +59,7 @@ class Rig(unittest.TestCase):
             fh.write(buf.getvalue())
         files = {"dist/index.html": version, "requirements.txt": "",
                  "stream.json": "{}", "dashboard.config.json": '{"v": "%s"}' % version}
-        files["rc-tmux.service"] = "[Unit]\n"
+        files["rc-tmux.service"] = unit
         for name, body in files.items():
             with open(os.path.join(inc, name), "w") as fh:
                 fh.write(body)
@@ -252,6 +252,29 @@ class TestInstall(Rig):
         self.payload()
         self.install(windows="no")
         self.assertIn("systemctl --user restart rc-tmux.service", self.calls())
+
+    def test_a_unit_whose_kit_moved_restarts_the_session(self):
+        """The session's windows run the kit's scripts by the path the unit named, through
+        `current`. A release whose kit is in another folder (deploy/fleet became hpc/deploy)
+        has no such path, so a window whose process ended could not start it again: a unit
+        whose ExecStart changed restarts the session, with no --restart."""
+        old = "[Service]\nExecStart=%s/current/deploy/fleet/tmux-session.sh\n" % self.r
+        new = "[Service]\nExecStart=%s/current/hpc/deploy/tmux-session.sh\n" % self.r
+        self.payload(unit=old)
+        self.install()
+        self.assertNotIn("restart", self.calls())
+        self.payload(sha="ba9876543210", version="two", unit=new)
+        out = self.install(sha="ba9876543210")
+        self.assertIn("systemctl --user restart rc-tmux.service", self.calls())
+        self.assertIn("ExecStart changed", out)
+
+    def test_the_same_unit_again_keeps_the_session(self):
+        unit = "[Service]\nExecStart=%s/current/hpc/deploy/tmux-session.sh\n" % self.r
+        self.payload(unit=unit)
+        self.install()
+        self.payload(sha="ba9876543210", version="two", unit=unit)
+        self.install(sha="ba9876543210")
+        self.assertNotIn("restart", self.calls())
 
     def test_restart_flag_restarts_the_session(self):
         self.payload()

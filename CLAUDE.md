@@ -24,8 +24,12 @@ Two halves, coupled only by files on disk:
   React page (`dashboard/web`, Vite + TypeScript, built into `web/dist/`, which the service
   serves).
 
-Around them: `fleet/` streams each node's files to the dashboard's host over ssh;
-`deploy/fleet` deploys the live service from one `site.env`; `deploy/cloudflare` is the public
+Around them: `deploy/single` and `deploy/fleet` run the collector and the dashboard as
+systemd units on servers with root -- one server, or a fleet whose files the dashboard's host
+copies with rsync (`deploy/fleet/pull.py`) -- through the installers in `deploy/common`.
+`hpc/` holds what a cluster's login nodes need, where there is no root: `hpc/fleet/` streams
+each node's files to the dashboard's host over ssh, and `hpc/deploy` deploys the live service
+from one `site.env`; `deploy/cloudflare` is the public
 demo; `docker/` holds the base, collector and demo images; `packaging/rpm/` the EL8 RPM.
 `docs/README.md` indexes the cross-cutting documents.
 
@@ -35,8 +39,10 @@ From the repository root; CI (`.github/workflows/ci.yml`) runs the same suites.
 
 ```bash
 python3 -m unittest discover -s collector/tests -q        # no root, no BPF needed
-python3 -m unittest discover -s fleet/tests -q
-python3 -m unittest discover -s deploy/fleet/tests -q
+python3 -m unittest discover -s deploy/fleet/tests -q     # needs rsync
+python3 -m unittest discover -s deploy/common/tests -q
+python3 -m unittest discover -s hpc/fleet/tests -q
+python3 -m unittest discover -s hpc/deploy/tests -q
 (cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # ~3 min
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)
 ```
@@ -117,11 +123,17 @@ Research-integrity constraints, each a past mistake (root `README.md`):
 
 ## Constraints that bite
 
-- **Python 3.6** for all of `collector/` (the Python inside `ebpfm.sh` included) and the fleet
-  sender. CI's EL8 job checks it on EL8's own 3.6: the collector's tests, and
-  `python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py`. A newer Python accepts
+- **Python 3.6** for all of `collector/` (the Python inside `ebpfm.sh` included), the fleet
+  sender, and `deploy/fleet/pull.py`. CI's EL8 job checks it on EL8's own 3.6: the
+  collector's tests, and `python3 -m py_compile hpc/fleet/fleet_stream.py
+  hpc/fleet/seed_mirror.py deploy/fleet/pull.py`. A newer Python accepts
   syntax 3.6 rejects, so a local run on one does not catch a break. The dashboard needs 3.11
   or later.
+- **A copy of a day-file must grow in place.** The dashboard's tail knows a file by
+  `(st_dev, st_ino)` and an offset, so a copy replaced by rename each time (rsync's default)
+  is read whole again on every pass, every record counted again. `deploy/fleet/pull.py`
+  appends in place and swaps in a sealed day's `.gz` only once it inflates whole;
+  `dashboard/tests/test_fleet_copy.py` runs the tail over its copy.
 - **Vendored copies**: `collector/node_snapshot.py` and `collector/lib/{procparse,agent_classify,provider_cidrs,slurm_args}.py`
   are copies of files in the upstream measurement repository, with their upstream hashes in
   `collector/.vendored.sha256` (`ebpfm.sh check` warns when the upstream file has moved). Keep
@@ -145,4 +157,5 @@ Research-integrity constraints, each a past mistake (root `README.md`):
   - A push to `develop` that changes what the demo runs (`dashboard/rc_dashboard/`,
     `dashboard/web/`, `dashboard/pyproject.toml` or `uv.lock`, `docker/demo/`,
     `deploy/cloudflare/`) redeploys the public demo (`demo-deploy.yml`) once the tests pass; a
-    change to `dashboard/tests/` alone does not.
+    change to `dashboard/tests/` alone does not, nor does a docs-only one (`*.md` files, which
+    nothing in the demo reads).
