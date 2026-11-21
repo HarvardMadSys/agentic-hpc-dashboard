@@ -1,7 +1,8 @@
 /* The window in three numbers an operator acts on: how much the agents ran, how
  * many sessions that was, and what they did that they should not have. Was
- * Overview's top row; it sits on Live now, under "right now", labeled with the
- * window it counts (roadmap notes 21 and 22), three across like the row above.
+ * Overview's top row; it is Live's headline row now when the reader picks one of
+ * the window's spans over "right now" (roadmap notes 21 and 22), three across
+ * like the "right now" plates it takes the place of.
  *
  * The headline is the agent's; the other classes sit beside it for scale.
  */
