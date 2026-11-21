@@ -364,13 +364,16 @@ def defaults():
             "io": {"top_n": 20},
             # Abnormal activity at the scheduler (reducers/slurm.py, ABNORMAL,
             # which a test holds equal): a session breaks a rule when its own
-            # count reaches the threshold -- the most queue checks, or jobs
-            # submitted, in one clock minute; submissions the scheduler refused;
-            # scancel calls; srun or salloc runs that failed. Polling the queue
-            # is a rule too, with the loop's own bounds. Each a count of 1 or
-            # more, or the service refuses to start.
-            "slurm": {"abnormal": {"query_burst": 30, "submit_burst": 20, "refused": 3,
-                                   "cancels": 10, "failed_runs": 5}},
+            # count reaches the threshold. Fast polling: its longest stretch of
+            # queue checks at most `poll_gap_s` apart lasts `poll_min_s` or more
+            # (polling every 2-3 min while a job runs is how an agent waits, and
+            # breaks nothing). Then the most queue checks, or jobs submitted, in
+            # any 60 s; submissions the scheduler refused; scancel calls; srun or
+            # salloc runs that failed. Each a count of 1 or more (seconds for the
+            # two polling bounds), or the service refuses to start.
+            "slurm": {"abnormal": {"poll_gap_s": 30, "poll_min_s": 1800, "query_burst": 30,
+                                   "submit_burst": 20, "refused": 3, "cancels": 10,
+                                   "failed_runs": 5}},
             # Each process's own disk bytes (reducers/own_io.py): the parents
             # one join holds for their own exit, the one given to least
             # recently dropped first (an agent runtime, or what started one,
@@ -930,7 +933,8 @@ def load(args=None, config_path=None):
     # What makes a session's Slurm activity abnormal (reducers/slurm.py): each a
     # count of 1 or more, or the service refuses to start -- 0 would flag every
     # session, and a string would compare with nothing.
-    for name in ("query_burst", "submit_burst", "refused", "cancels", "failed_runs"):
+    for name in ("poll_gap_s", "poll_min_s", "query_burst", "submit_burst", "refused",
+                 "cancels", "failed_runs"):
         key = "reducers.slurm.abnormal." + name
         val = _get(tree, key, None)
         if type(val) is not int or val < 1:

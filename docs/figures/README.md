@@ -1504,19 +1504,25 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
 
 - **Shows:** the rules, each worded from its threshold, with each class's count of the sessions
   that broke it; then every session that broke one: who, where and when, each rule it broke with
-  the session's own numbers (how often and how long it polled, the most queue checks or jobs in
-  one minute, the submissions refused and the commonest reason, `scancel` calls, failed
-  `srun`/`salloc` runs), its jobs and queue checks, opened into SL-3's detail.
+  the session's own numbers (how often and how long it polled fast, the most queue checks or jobs
+  in any 60 s, the submissions refused and the commonest reason, `scancel` calls, failed
+  `srun`/`salloc` runs), its jobs and queue checks, opened into SL-3's detail. The count beside
+  the title is the classes' totals, so a session past the cap is counted though its row is not
+  sent, and the panel says how many of them are listed.
 - **Records:** SL-3's.
 - **Computation:** `SlurmReducer.result` judges each session's row (`_abnormal`) against
-  `reducers.slurm.abnormal`: polling is SL-3's stretch of 10 minutes or more; each other rule is a
-  count against a threshold -- the most queue checks in one clock minute (from the query times
-  SL-3 keeps, so a lower bound past 50,000 a key), the most jobs in one clock minute, submissions
-  refused, `scancel` calls, and `srun`/`salloc` runs that ended non-zero or on a signal. Each class
-  counts its sessions per rule, zero included. Every session that broke a rule is served past the
-  busiest 200, up to 500 more, the rest counted (`abnormal.served`). The page holds no threshold:
-  it words the rules from `abnormal.rules`.
-- **Cost:** a pass over each session's row at read, and a count of its query times by minute.
+  `reducers.slurm.abnormal`. Fast polling is the longest stretch of its polls each at most
+  `poll_gap_s` (30 s) after the last (`_stretch`, as `_polls` finds SL-3's loop) lasting
+  `poll_min_s` (30 min) or more; SL-3's own polling loop, at most 3 minutes apart, breaks
+  nothing. Each other rule is a count against a threshold -- the most queue checks, and the most
+  jobs, in any 60 s (`_in_a_minute`: a sliding half-open window over the times SL-3 keeps, so a
+  lower bound past 50,000 a key), submissions refused, `scancel` calls, and `srun`/`salloc` runs
+  that ended non-zero or on a signal. Each class counts its sessions per rule, zero included.
+  Every session that broke a rule is served past the busiest 200, up to 500 more, the rest
+  counted (`abnormal.served`). The page holds no threshold: it words the rules from
+  `abnormal.rules`.
+- **Cost:** a pass over each session's row at read: its query and job times, sorted once, are
+  walked by two pointers for the minutes and once more for the fast stretch.
 
 #### SL-3 sessions at the scheduler
 
@@ -1532,14 +1538,15 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
 - **Computation:** `SlurmReducer.feed` and `_submit` per key (an agent's (host, agent pid, tree
   root); anyone else's (host, class, user)): the outcome (`outcome`: job, dry run, step, refused, no
   id), flags by regex, whether the request was on the command line, the command's shape (a blake2b
-  of `args` with digits masked), submissions per minute, partitions, GPUs times array tasks,
-  GPU-hours where GPUs and a time limit were both on the command line, and each query's time. At
+  of `args` with digits masked), each job's time (the most in any 60 s is SL-2's), partitions,
+  GPUs times array tasks, GPU-hours where GPUs and a time limit were both on the command line, and
+  each query's time. At
   read, `_sessions` folds the agent keys into their owner through the process index, and `_polls`
   joins a session's queries within 2 s into a poll, polls within 3 minutes into a stretch, and
   calls a stretch of 10 minutes or more polling. Sessions sorted by queries plus 10 times jobs and
   refusals plus runs; the busiest 200 served, then every other one that broke a rule (SL-2).
 - **Cost:** a few counters a record; bounds of 50,000 keys (the rest counted), and per key 50,000
-  query times and 2,000 shapes. Per read, a sort of each session's query times.
+  query times, 50,000 job times and 2,000 shapes. Per read, a sort of each session's query times.
 
 #### SL-4 how each class uses the scheduler
 

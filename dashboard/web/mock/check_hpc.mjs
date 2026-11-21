@@ -29,7 +29,7 @@ before(async () => {
 after(() => ui?.close());
 
 const RULES = [
-  { id: 'polling', gap_s: 180, min_s: 600 },
+  { id: 'fast_polling', gap_s: 30, min_s: 1800 },
   { id: 'query_burst', min: 30 },
   { id: 'submit_burst', min: 20 },
   { id: 'refused', min: 3 },
@@ -55,7 +55,8 @@ const klass = (o) => ({
 
 const ADA = row({
   jobs: 1, queries: 7200, queries_peak_per_min: 24, polls: 3600,
-  loop: { from: T, to: T + 18000, polls: 3600, span_s: 18000, every_s: 5, polling: true }, abnormal: ['polling'],
+  loop: { from: T, to: T + 18000, polls: 3600, span_s: 18000, every_s: 5, polling: true },
+  fast_loop: { from: T, to: T + 18000, polls: 3600, span_s: 18000, every_s: 5 }, abnormal: ['fast_polling'],
 });
 const GRACE = row({
   user: 'grace', agent_type: 'codex', session: 'login02:200', host: 'login02', jobs: 875, peak_per_min: 112,
@@ -70,7 +71,7 @@ const ERIN = row({ cls: 'human', user: 'erin', agent_type: null, session: null, 
 const slurm = (o = {}) => ({
   _feed: 'ebpfm', _status: 'ok', _present: true, _paths: [], _notice: null,
   by_class: {
-    agent: klass({ sessions: 2, abnormal_sessions: 2, abnormal_by: { ...NONE_BROKEN, polling: 1, submit_burst: 1 } }),
+    agent: klass({ sessions: 2, abnormal_sessions: 2, abnormal_by: { ...NONE_BROKEN, fast_polling: 1, submit_burst: 1 } }),
     human: klass({ sessions: 2, abnormal_sessions: 1, abnormal_by: { ...NONE_BROKEN, refused: 1 } }),
   },
   // the busiest two, then the abnormal ones past them
@@ -106,7 +107,7 @@ test('every rule is worded from the threshold it was sent with', () => {
     assert.ok(w.lbl && w.when, r.id);
   }
   assert.deepEqual(S.ruleWords(RULES[0]), {
-    lbl: 'polling the queue', when: 'checks at most 3.0 min apart, for 10 min or more',
+    lbl: 'polling the queue fast', when: 'checks at most 30 s apart, for 30 min or more',
   });
   assert.equal(S.ruleWords({ id: 'submit_burst', min: 50 }).when, '50 or more jobs in one minute; an array is one submission');
 });
@@ -114,7 +115,7 @@ test('every rule is worded from the threshold it was sent with', () => {
 test('the rules with each class\'s count, then each session that broke one, with its own numbers', async () => {
   const text = abnormalOf(await tab({ ...FIX, slurm: slurm() }));
   assert.match(text, /3 sessions/);
-  assert.match(text, /polling the queue · checks at most 3\.0 min apart, for 10 min or more 1 0/);
+  assert.match(text, /polling the queue fast · checks at most 30 s apart, for 30 min or more 1 0/);
   assert.match(text, /refused again and again · 3 or more submissions refused 0 1/);
   assert.match(text, /polled the queue every 5\.0 s for 5\.0 h, 3,600 checks/);
   assert.match(text, /112 jobs submitted in one minute/);
@@ -132,15 +133,23 @@ test('the sessions table says what was sent: the busiest, then the others that b
 });
 
 test('none only of a panel the service reduced and judged, and only of the classes shown', async () => {
+  const clean = { agent: klass({ sessions: 2 }), human: klass({ sessions: 2 }) };   // no session broke one
   const none = abnormalOf(await tab({
-    ...FIX, slurm: slurm({ sessions: [ERIN], abnormal: { rules: RULES, sessions: 0, served: 0 } }),
+    ...FIX, slurm: slurm({ by_class: clean, sessions: [ERIN], abnormal: { rules: RULES, sessions: 0, served: 0 } }),
   }));
   assert.match(none, /none · no session broke a rule in the window/);
   const hidden = abnormalOf(await tab({ ...FIX, slurm: slurm() }, ['ide']));
   assert.match(hidden, /none · no session of the classes shown broke a rule/);
-  // the counts it was sent are past what it shows
-  const cut = abnormalOf(await tab({ ...FIX, slurm: slurm({ abnormal: { rules: RULES, sessions: 5, served: 3 } }) }));
-  assert.match(cut, /5 sessions broke a rule; the service sends 3 of them/);
+  // the counts it was sent are past what it shows: five broke a rule, three rows came
+  const cut = abnormalOf(await tab({ ...FIX, slurm: slurm({
+    by_class: {
+      agent: klass({ sessions: 5, abnormal_sessions: 4, abnormal_by: { ...NONE_BROKEN, fast_polling: 3, submit_burst: 1 } }),
+      human: klass({ sessions: 2, abnormal_sessions: 1, abnormal_by: { ...NONE_BROKEN, refused: 1 } }),
+    },
+    abnormal: { rules: RULES, sessions: 5, served: 3 },
+  }) }));
+  assert.match(cut, /^Abnormal Slurm activity 5 sessions /);
+  assert.match(cut, /5 sessions of the classes shown broke a rule; 3 are listed: the service sends 3 of every class's 5, the rest counted/);
 });
 
 test('waited for, not reduced, still read or not judged: never none', async () => {
@@ -173,11 +182,31 @@ test('a rule the page has no words for, or a hostile id, is named and never read
     ...FIX,
     slurm: slurm({
       abnormal: { rules: [...RULES, { id: 'gpu_idle', min: 2 }, { id: '__proto__', min: 1 }], sessions: 3, served: 3 },
-      sessions: [ERIN, { ...ADA, abnormal: ['polling', 'gpu_idle'] }, GRACE, BOB],
+      sessions: [ERIN, { ...ADA, abnormal: ['fast_polling', 'gpu_idle'] }, GRACE, BOB],
     }),
   }));
   assert.match(text, /gpu_idle · a rule this page has no words for — —/);
   assert.match(text, /__proto__ · a rule this page has no words for — —/);
   assert.match(text, /gpu_idle broke it/);
   assert.doesNotMatch(text, /NaN|\[object/);
+});
+
+test('the count is every class shown\'s, sent or not: a class whose rows are past the cap is not none', async () => {
+  // the service judged a person's session and sent none of its row (past the cap)
+  const p = slurm({ sessions: [ERIN, ADA, GRACE], abnormal: { rules: RULES, sessions: 3, served: 2 } });
+  const people = abnormalOf(await tab({ ...FIX, slurm: p }, ['human']));
+  assert.match(people, /^Abnormal Slurm activity 1 session /);
+  assert.doesNotMatch(people, /none ·|^Abnormal Slurm activity none/);
+  assert.match(people, /1 session of the classes shown broke a rule; their rows were not sent: the service sends 2 of every class's 3, the rest counted/);
+  // with every class shown, the two that came are listed, and the one that did not is counted
+  const all = abnormalOf(await tab({ ...FIX, slurm: p }));
+  assert.match(all, /3 sessions/);
+  assert.match(all, /3 sessions of the classes shown broke a rule; 2 are listed/);
+});
+
+test('one person on two login nodes is two rows, each its own key', () => {
+  const a = { ...BOB, host: 'login01' };
+  const b = { ...BOB, host: 'login02' };
+  assert.notEqual(S.sessionKey(a, 0), S.sessionKey(b, 1));
+  assert.equal(S.sessionKey(ADA, 0), 'login01:100');      // an agent session is its own key
 });

@@ -1696,8 +1696,12 @@ export interface SlurmSession {
   poll_gap_s: number | null;
   loop: SlurmLoop | null;
   queries_unplaced: number;
-  /** the most queue checks in one clock minute; a lower bound when `queries_unplaced` */
+  /** the longest stretch of checks at most `poll_gap_s` apart (`reducers.slurm.abnormal`) */
+  fast_loop?: SlurmStretch | null;
+  /** the most queue checks in any 60 s; a lower bound when `queries_unplaced` */
   queries_peak_per_min?: number;
+  /** jobs past the service's cap of times per key: `peak_per_min` is then a lower bound */
+  jobs_unplaced?: number;
   cancels: number;
   runs: number;
   runs_failed: number;
@@ -1709,12 +1713,14 @@ export interface SlurmSession {
   abnormal?: SlurmRuleId[];
 }
 
+/** A stretch of polls each at most some gap after the one before. */
+export type SlurmStretch = Omit<SlurmLoop, 'polling'>;
 /** What makes activity at the scheduler abnormal (reducers/slurm.py, ABNORMAL). */
-export type SlurmRuleId = 'polling' | 'query_burst' | 'submit_burst' | 'refused' | 'cancels' | 'failed_runs';
-/** A rule and its threshold: the loop's bounds for polling, a count for the rest. */
+export type SlurmRuleId = 'fast_polling' | 'query_burst' | 'submit_burst' | 'refused' | 'cancels' | 'failed_runs';
+/** A rule and its threshold: a stretch's gap and length for fast polling, a count for the rest. */
 export type SlurmRule =
-  | { id: 'polling'; gap_s: number; min_s: number }
-  | { id: Exclude<SlurmRuleId, 'polling'>; min: number };
+  | { id: 'fast_polling'; gap_s: number; min_s: number }
+  | { id: Exclude<SlurmRuleId, 'fast_polling'>; min: number };
 
 export interface SlurmClass {
   sessions: number;

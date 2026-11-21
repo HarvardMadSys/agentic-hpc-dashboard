@@ -1768,18 +1768,24 @@ hidden by `slurm.enabled: false`) is built on that, from the window's `slurm` re
 
   | rule | breaks it | setting (default) |
   |---|---|---|
-  | polling the queue | the polling loop below: polls at most 3 min apart for 10 min or more | (the loop's own bounds) |
-  | a burst of queue checks | the most queue checks in one clock minute | `query_burst` (30) |
-  | a burst of submissions | the most jobs submitted in one clock minute (an array is one submission) | `submit_burst` (20) |
+  | polling the queue fast | its longest stretch of polls each at most `poll_gap_s` after the last lasts `poll_min_s` or more | `poll_gap_s` (30 s), `poll_min_s` (1800 s) |
+  | a burst of queue checks | the most queue checks in any 60 s | `query_burst` (30) |
+  | a burst of submissions | the most jobs submitted in any 60 s (an array is one submission) | `submit_burst` (20) |
   | refused again and again | submissions the scheduler refused | `refused` (3) |
   | cancelling again and again | `scancel` calls | `cancels` (10) |
   | runs failing again and again | `srun`/`salloc` runs that ended non-zero or on a signal | `failed_runs` (5) |
 
-  Each a count of 1 or more, or the service refuses to start. The service serves the rules
-  with their thresholds, so the page words them and holds none of its own; each class counts
-  its sessions per rule, zero included; and every session that broke a rule is served past
-  the busiest 200 however quiet it was, up to 500 more, the rest counted. The busiest minute
-  of queue checks is a lower bound for a key past 50,000 checks, whose later ones have no time;
+  The polling loop below -- polls at most 3 min apart for 10 min or more -- is how an agent
+  waits for its own job, and it describes a session without flagging it; fast polling, every
+  30 s or less for half an hour by default, is the alarm (one Claude session polled every 5 s
+  for 5 h). "In any 60 s" is a sliding window, not a clock minute, which would call 29 checks
+  before a minute turns and 29 after it 29. Each setting a count of 1 or more (seconds for the
+  two polling bounds), or the service refuses to start. The service serves the rules with
+  their thresholds, so the page words them and holds none of its own; each class counts its
+  sessions per rule, zero included, and the page's count of flagged sessions is those totals;
+  and every session that broke a rule is served past the busiest 200 however quiet it was, up
+  to 500 more, the rest counted. A session's busiest minute of queue checks, or of jobs, is a
+  lower bound for a key past 50,000 of them, whose later ones have no time;
 
 - **per session** -- an agent's collector keys folded into the agent, as the Sessions tab folds
   them; people and IDEs one row per user: jobs, refusals, the busiest minute, distinct

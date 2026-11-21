@@ -163,10 +163,11 @@ class SlurmAbnormal(Case):
         cfg, _ = self.load({"reducers": {"slurm": {"abnormal": {"refused": 1}}}})
         # one changed, the rest kept: objects merge key by key
         self.assertEqual(cfg.get("reducers.slurm.abnormal"), dict(ABNORMAL, refused=1))
-        for bad in (0, -3, "5", 2.5, True, None):
-            with self.subTest(bad=bad):
-                self.assertIn("reducers.slurm.abnormal.cancels",
-                              self.refused({"reducers": {"slurm": {"abnormal": {"cancels": bad}}}}))
+        for key in ("cancels", "poll_gap_s"):
+            for bad in (0, -3, "5", 2.5, True, None):
+                with self.subTest(key=key, bad=bad):
+                    self.assertIn("reducers.slurm.abnormal." + key, self.refused(
+                        {"reducers": {"slurm": {"abnormal": {key: bad}}}}))
 
 
 class Passthrough(Case):

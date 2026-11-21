@@ -165,7 +165,6 @@ const Sessions = memo(function Sessions({ rows, total, busiest, served }: {
     (r, k) => k === 'session' ? r.user : k === 'jobs' ? r.jobs : k === 'refused' ? r.rejected : k === 'peak' ? r.peak_per_min
       : k === 'shapes' ? r.shapes : k === 'queries' ? r.queries : k === 'qpj' ? r.queries_per_job : pollingS(r),
   );
-  const keyOf = (r: SlurmSession, i: number) => r.session ?? `${r.cls}:${r.user ?? i}`;
   return (
     <>
       <Segmented<Show>
@@ -188,7 +187,7 @@ const Sessions = memo(function Sessions({ rows, total, busiest, served }: {
                 <SortTh s={s} k="session" first="asc" tip="an agent session (its tool calls folded into it), or everything one person or IDE ran; first and last Slurm activity beneath">session</SortTh>
                 <SortTh s={s} k="jobs" num tip="submissions that came back with a job id">jobs submitted</SortTh>
                 <SortTh s={s} k="refused" num tip="submissions the scheduler turned down: a QOS limit, a partition rule, a bad script">refused</SortTh>
-                <SortTh s={s} k="peak" num tip="the most jobs it submitted within a single minute">most in a minute</SortTh>
+                <SortTh s={s} k="peak" num tip="the most jobs it submitted within any 60 s">most in a minute</SortTh>
                 <SortTh s={s} k="shapes" num tip="different submit commands once numbers are masked: one script resubmitted 100 times is 1; a newly written script each time counts each">distinct commands</SortTh>
                 <th data-tip="flags on its submit commands, and how many submissions used each">sbatch flags</th>
                 <SortTh s={s} k="queries" num tip="calls to squeue, sacct, scontrol, sinfo, … asking how jobs or the cluster are doing">queue checks</SortTh>
@@ -197,7 +196,7 @@ const Sessions = memo(function Sessions({ rows, total, busiest, served }: {
               </tr>
             </thead>
             {sorted.map((r, i) => {
-              const k = keyOf(r, i);
+              const k = sessionKey(r, i);
               const o = !!open[k];
               return (
                 <tbody key={k}>
@@ -367,14 +366,15 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
   );
 }
 
-/** No class block: one empty map, so what is made from it holds. */
 /* ---------------------------------------------------- abnormal activity */
 
 /** A rule in the page's words, from the threshold the service sent with it. */
 export function ruleWords(r: SlurmRule): { lbl: string; when: string } {
   switch (r.id) {
-    case 'polling':
-      return { lbl: 'polling the queue', when: `checks at most ${dur(r.gap_s)} apart, for ${dur(r.min_s)} or more` };
+    case 'fast_polling':
+      // not the Slurm tab's polling loop (every 3 min or less, for 10 min), which is
+      // how an agent waits for its job: a stretch the site calls fast
+      return { lbl: 'polling the queue fast', when: `checks at most ${dur(r.gap_s)} apart, for ${dur(r.min_s)} or more` };
     case 'query_burst':
       return { lbl: 'a burst of queue checks', when: `${fint(r.min)} or more in one minute` };
     case 'submit_burst':
@@ -390,18 +390,24 @@ export function ruleWords(r: SlurmRule): { lbl: string; when: string } {
   return { lbl: String((r as { id: unknown }).id), when: 'a rule this page has no words for' };
 }
 
+/** A row's key: the agent session, else the login node, class and user the
+ *  service folds a person's or an IDE's activity by -- one user on two login
+ *  nodes is two rows. */
+export const sessionKey = (r: SlurmSession, i: number) =>
+  r.session ?? `${r.host ?? ''}:${r.cls}:${r.user ?? i}`;
+
 /** What a session did that broke `id`: its own numbers. */
 export function evidence(r: SlurmSession, id: SlurmRuleId): string {
   switch (id) {
-    case 'polling':
-      return r.loop
-        ? `polled the queue every ${dur(r.loop.every_s)} for ${dur(r.loop.span_s)}, ${fint(r.loop.polls)} checks`
-        : 'polled the queue';
+    case 'fast_polling':
+      return r.fast_loop
+        ? `polled the queue every ${dur(r.fast_loop.every_s)} for ${dur(r.fast_loop.span_s)}, ${fint(r.fast_loop.polls)} checks`
+        : 'polled the queue fast';
     case 'query_burst':
       // past the service's cap a check has no time: the minute's count is a floor
       return `${r.queries_unplaced ? 'at least ' : ''}${fint(r.queries_peak_per_min ?? null)} queue checks in one minute`;
     case 'submit_burst':
-      return `${fint(r.peak_per_min)} jobs submitted in one minute`;
+      return `${r.jobs_unplaced ? 'at least ' : ''}${fint(r.peak_per_min)} jobs submitted in one minute`;
     case 'refused':
       return `${fint(r.rejected)} submissions refused${r.fails[0] ? ` · most: ${r.fails[0].why}` : ''}`;
     case 'cancels':
@@ -427,7 +433,9 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
   // keyed by the service's rule ids: a table with no prototype (lib/lookup.ts)
   const rule: Partial<Record<string, { lbl: string; when: string }>> =
     table(Object.fromEntries(ab.rules.map((r) => [r.id, ruleWords(r)])));
-  const keyOf = (r: SlurmSession, i: number) => r.session ?? `${r.cls}:${r.user ?? i}`;
+  // how many of the classes shown broke a rule, from every session the service
+  // judged: its rows past the cap are counted there, not sent
+  const total = have.reduce((n, c) => n + (sp.by_class?.[c]?.abnormal_sessions ?? 0), 0);
   return (
     <>
       <div className="scroller">
@@ -476,7 +484,7 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
               </tr>
             </thead>
             {rows.map((r, i) => {
-              const k = keyOf(r, i);
+              const k = sessionKey(r, i);
               const o = !!open[k];
               return (
                 <tbody key={k}>
@@ -516,16 +524,23 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
             })}
           </table>
         </div>
-      ) : (
+      ) : total ? null : (
+        // none only when no session of the classes shown broke one, sent or not
         <NoRows what={ab.sessions ? 'no session of the classes shown broke a rule' : 'no session broke a rule in the window'} />
       )}
-      {ab.served < ab.sessions && (
-        <p className="paths">{`${fint(ab.sessions)} sessions broke a rule; the service sends ${fint(ab.served)} of them`}</p>
+      {rows.length < total && (
+        <p className="paths">
+          {`${fint(total)} session${total === 1 ? '' : 's'} of the classes shown broke a rule; `}
+          {rows.length
+            ? `${fint(rows.length)} are listed: the service sends ${fint(ab.served)} of every class's ${fint(ab.sessions)}, the rest counted`
+            : `their rows were not sent: the service sends ${fint(ab.served)} of every class's ${fint(ab.sessions)}, the rest counted`}
+        </p>
       )}
     </>
   );
 }
 
+/** No class block: one empty map, so what is made from it holds. */
 const NO_CLASSES: Record<string, SlurmClass> = {};
 
 // It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
@@ -548,8 +563,9 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
     Object.fromEntries(have.map((c) => [c, f(by[c])]));
   const topWhy = (sp.rejections ?? []).find((r) => r.cls === 'agent');
   const sessions = useMemo(() => (sp.sessions ?? []).filter((r) => cls.includes(r.cls as Cls)), [sp.sessions, cls]);
-  // the classes shown: every class's sessions were judged, the chips pick which are drawn
-  const abnormalN = sessions.filter((r) => (r.abnormal?.length ?? 0) > 0).length;
+  // every class's sessions were judged, the chips pick which are counted: the
+  // classes' totals, which hold the sessions past the service's cap too
+  const abnormalN = have.reduce((n, c) => n + (by[c]?.abnormal_sessions ?? 0), 0);
   const submits = (live?.submits ?? []).filter(
     (r) => typeof r.actor3 !== 'string' || cls.includes(r.actor3 as Cls),
   );
