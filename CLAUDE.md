@@ -145,4 +145,5 @@ Research-integrity constraints, each a past mistake (root `README.md`):
   - A push to `develop` that changes what the demo runs (`dashboard/rc_dashboard/`,
     `dashboard/web/`, `dashboard/pyproject.toml` or `uv.lock`, `docker/demo/`,
     `deploy/cloudflare/`) redeploys the public demo (`demo-deploy.yml`) once the tests pass; a
-    change to `dashboard/tests/` alone does not.
+    change to `dashboard/tests/` alone does not, nor does a docs-only one (`*.md` files, which
+    nothing in the demo reads).
