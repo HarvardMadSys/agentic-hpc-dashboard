@@ -1,6 +1,6 @@
 # `dashboard/web` — live agent-behaviour dashboard (frontend)
 
-React + Vite + TypeScript SPA for the live HPC agent-behaviour dashboard. It reads the
+This is the React + Vite + TypeScript SPA for the live HPC agent-behaviour dashboard. It reads the
 `rc_dashboard` HTTP/WS API on the **same origin** and builds to `dist/`, which the Python
 backend serves as static files.
 
@@ -39,14 +39,16 @@ npm run dev -- --mode real          # same thing
 RC_MOCK=0 npm run dev               # same thing
 ```
 
-The backend refuses a websocket opened by a page on any origin but its own, another port of
-the same host included (`rc_dashboard/guard.py`), and Vite's page is on its own port. `../run.sh`
-names it to the backend for you; a backend started any other way needs it named, as the
-browser will write it: `RC_DASH_DEV_ORIGINS=http://127.0.0.1:5173,http://localhost:5173`
-(`server.dev_origins`, added to `server.allowed_origins`), or the page's `/ws` gets a 403 and
-the Live tab does not move.
+The backend refuses a websocket opened by a page from any origin other than its own,
+including another port on the same host (`rc_dashboard/guard.py`). Vite serves its page on
+its own port, so the backend has to be told about that origin. `../run.sh` does this for
+you. A backend started any other way needs the origin set explicitly, spelled the way the
+browser will send it: `RC_DASH_DEV_ORIGINS=http://127.0.0.1:5173,http://localhost:5173`
+(`server.dev_origins`, which is added to `server.allowed_origins`). Otherwise the page's
+`/ws` gets a 403 and the Live tab doesn't update.
 
-Regenerate the fixture after changing its shape (deterministic — no RNG, byte-stable):
+Regenerate the fixture after changing its shape. Generation is deterministic (no RNG) and
+byte-stable:
 
 ```bash
 TZ=America/New_York npm run fixture      # node mock/gen_fixture.mjs -> mock/api.json
@@ -62,40 +64,45 @@ service's, with its hours in a fixed EDT, so it is the same in any zone.
 The fixture deliberately contains the awkward states the UI has to get right: a `missing`
 feed, a `stale` feed whose `lag_s` exceeds its own `max_age_s`, an `empty` feed, `null`
 rate bins (including a 23-minute outage), accumulators with `n: 0, coverage_pct: 0`, a
-sandbox slice that `exited before it was checked` (key `denied`), a session whose every sandbox
-attempt failed, and a trajectory ranking dominated by one user. To see the
+sandbox slice that `exited before it was checked` (key `denied`), a session in which every
+sandbox attempt failed, and a trajectory ranking dominated by one user. To see the
 `<EmptyState>` path, set any rendered panel's `_present` to `false` in `mock/api.json` and
-reload — the middleware re-reads the file on every request. Delete a panel's key instead to
-see `<NotReturned>`; the fixture already leaves out the Slurm and risk-rules panels. Give a
-panel an `_error` string to see `<NotReduced>`, a panel whose reducer raised.
+reload. The middleware re-reads the file on every request. To see `<NotReturned>`, delete a
+panel's key instead (the fixture already leaves out the Slurm and risk-rules panels). To see
+`<NotReduced>`, which marks a panel whose reducer raised, give a panel an `_error` string.
 
-The node tier, the day-by-day panel and the exit verdicts have theirs: a node whose probes are
-ten times the rest, an NFS hiccup in the same bins as the resources series' stall, a host whose
-snapshots stop for 40 minutes (a hole), a full `/tmp` and a `/var` out of file slots, an account
-held back at its CPU limit and one whose cgroup was made again, processes stuck in NFS waits, a
-day the collector wrote nothing in, the oldest day cut where retention starts, a test runner
-failing most of its runs, a command not found, a timeout's SIGKILL, grep's exit-1 answers and
-`| head`'s SIGPIPE. With no Slurm or risk panel, Needs attention names both as not checked.
+The node tier, the day-by-day panel and the exit verdicts have awkward states of their own: a
+node whose probes are ten times the rest, an NFS hiccup in the same bins as the resources
+series' stall, a host whose snapshots stop for 40 minutes (a hole), a full `/tmp` and a `/var`
+out of file slots, an account held back at its CPU limit and one whose cgroup was recreated,
+processes stuck in NFS waits, a day the collector wrote nothing in, the oldest day cut off where
+retention starts, a test runner failing most of its runs, a command not found, a timeout's
+SIGKILL, grep's exit-1 answers and `| head`'s SIGPIPE. Since there is no Slurm or risk panel,
+Needs attention lists both as not checked.
 
-The fixture's agent rows carry the tasks the page has to word: quoted from a commit, from a log entry, and
-from a pull request with a number and one without; built from names; a lone stretch; a gap that names a call
-still running and one that names none; a task still open at the live edge; a task under a call log that was
-cut; and one agent over two day rows, which serve one block. `npm run check:phases` reads every task and
-phase of every row of it, and `npm run check:figures` draws every user's portrait figure and checks each
-part against their row.
+The fixture's agent rows carry each kind of task the page has to put into words: tasks quoted
+from a commit, from a log entry, and from a pull request with a number and one without; tasks
+built from names; a lone stretch; a gap that names a call still running and one that names none;
+a task still open at the live edge; a task under a call log that was cut; and one agent spread
+over two day rows, which serve one block. `npm run check:phases` reads every task and phase of
+every row in the fixture, and `npm run check:figures` draws every user's portrait figure and
+checks each part against that user's row.
 
-The fixture's sessions sit at its own `now_epoch`, so every live frame the mock sends
-carries that as the service's clock (`clock.now`) and the page's "now" follows it: a
-running session's live edge is minutes long, not the days between the fixture and today.
-It stands still, like a capture's clock. `RC_MOCK_PINNED=1 npm run dev` also says it is
-pinned (`clock.pinned`), as a frozen capture does, to see what the page says then.
+The fixture's sessions sit at its own `now_epoch`, so every live frame the mock sends carries
+that time as the service's clock (`clock.now`), and the page's "now" follows it. That way a
+running session's live edge is minutes long, rather than spanning the days between the fixture
+and today. The clock stands still, like a capture's clock. Run `RC_MOCK_PINNED=1 npm run dev`
+to also mark the clock as pinned (`clock.pinned`), as a frozen capture does, and see what the
+page says in that case.
 
-The inspector's read (`/api/trajectory`) is one hand-built tree with its navigator (process starts
-per bin, the landmarks, the failures), laid on the row's own span as the service reads a session: from
-the first record, or from `?from=` where the inspector pages, for as long as the tree runs, so a long
-session stops at its budget with the rest unread. The row's phases, the chart's process starts, and the
-session track then agree about when it ran, and the phases behind the bars can be clicked through pages.
-This is done in `mock/plugin.ts`, so a change to it needs the dev server restarted; `api.json` is re-read.
+The inspector's read (`/api/trajectory`) is one hand-built tree with its navigator (process
+starts per bin, the landmarks, the failures). It is laid over the row's own span the same way
+the service reads a session: from the first record (or from `?from=` when the inspector pages),
+for as long as the tree runs. So a long session stops at its budget, with the rest unread. As a
+result, the row's phases, the chart's process starts and the session track agree about when the
+session ran, and the phases behind the bars can be clicked through across pages. This happens in
+`mock/plugin.ts`, so changing it requires a dev server restart (`api.json`, by contrast, is
+re-read on every request).
 
 ## Build
 
@@ -131,17 +138,18 @@ Output as of 2026-11-20:
 | a chunk per tab loaded on demand (`UsersTab-*`, `ResourcesTab-*`, `AgentsTab-*`, ...), and the ones they share (`scale-*`, `format-*`, `TreePopout-*`) | 4 to 62 kB each | 2 to 19 kB |
 
 Assets are emitted with a **relative** `base` (`./`), so `dist/` works mounted at `/` or
-under a sub-path. The API is addressed absolutely at `/api` and the socket at `/ws`;
-override with `VITE_API_BASE` / `VITE_WS_URL` at build time if the backend is elsewhere.
+under a sub-path. The API is addressed by absolute path at `/api`, and the socket at `/ws`.
+If the backend lives elsewhere, override them with `VITE_API_BASE` / `VITE_WS_URL` at build time.
 
-Every build stamps the bundle with where it came from, and the foot of the rail shows it:
-`commit 0d516df` (HEAD when it was built, with `+ edits` when anything under `web/`
-differed from it) and `built 2026-11-15 14:02` (local time; the full timestamp is on
-hover). The stamp is `virtual:build-info`, written by the plugin in `vite.config.ts` and
-re-read on each build rather than fixed in a `define`, so the one `vite build --watch`
-that `./run.sh build` keeps alive stamps every rebuild with its own time. The dev server
-builds nothing and says so (`built — (dev server)`); its commit is re-read on every page
-load. Built without git or outside a checkout, the commit reads `—`, not a guess.
+Every build stamps the bundle with its origin, and the foot of the rail shows the stamp:
+`commit 0d516df` (HEAD at build time, plus `+ edits` if anything under `web/` differed
+from HEAD) and `built 2026-11-15 14:02` (local time; hover for the full timestamp). The
+stamp comes from `virtual:build-info`, which the plugin in `vite.config.ts` writes. It is
+re-read on each build instead of being fixed in a `define`, so the single `vite build --watch`
+that `./run.sh build` keeps alive stamps each rebuild with that rebuild's time. The dev
+server builds nothing and says so (`built — (dev server)`), and it re-reads the commit on
+every page load. When the bundle is built without git or outside a checkout, the commit
+reads `—` instead of a guess.
 
 ## Dependencies
 
@@ -163,9 +171,9 @@ few icons as paths, in the text colour, so no icon is ever a series colour.
 ## The rules this code enforces
 
 These come from the retired demo's README (git history: `dashboard/archive/README.md`).
-They are research-integrity constraints; breaking one is a reporting error, not a styling error.
+They are research-integrity constraints. Breaking one is a reporting error, not a styling error.
 
-1. **Three classes, never two** — `agent` / `human` / `ide` (+ `unlabeled`).
+1. **Three classes, never two**: `agent` / `human` / `ide` (+ `unlabeled`).
    The list is closed in `src/lib/classes.ts` and labelled `agent` / `human` / `IDE`, always
    in full, never abbreviated. Folding the IDE class into "agent" is what produced the retracted GPU
    near-parity claim. `<Plate>` prints its per-class row from `by`; only a plate about agents
@@ -187,23 +195,23 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 4. **Zero is not missing** — `_present === false` renders the shared `<EmptyState>`:
    the panel frame, the title, the feed name, and one line per `_paths` entry, verbatim
    (`no data from /var/log/ebpfm`). A feed that IS present but has no rows renders
-   `<NoRows>` — the word `none`. The two look nothing alike, because they are not the
-   same fact. A panel the backend did not return — an answer without its key, or a
-   request that failed — renders `<NotReturned>`: one dashed line reading `not returned`, the
-   reason, and the feed it reads. It wears no feed status and names no path, because no
-   feed reported anything; whether the feed is healthy is the Feeds tab's to say.
-5. **Nothing fabricated** — there is no `Math.random()` anywhere in `src/`
-   (`npm run check:no-random` asserts it), and nothing interpolates between frames. A
-   `null` rate bin arrives as `null` and `Lines` emits a separate subpath around it, so a
-   minute with no record is a **hole in the line** — never a 0, never a straight line
-   drawn across the hole. The dev fixture lives in `mock/`, outside `src/`, so it cannot
-   reach the production bundle. The service's demo mode (`rc_dashboard/demo`) feeds it
-   records that were never measured, and the page says so on every tab: the feeds report
-   lists the hosts whose records carry `"synthetic": true` (`synthetic_hosts`), and while
-   any does, every tab opens with a *Fake data* note, the header shows a dashed **fake data**
+   `<NoRows>`, which is the word `none`. The two look nothing alike because they are
+   different facts. A panel the backend did not return (a response without its key, or a
+   request that failed) renders `<NotReturned>`: one dashed line reading `not returned`, the
+   reason, and the feed the panel reads. It shows no feed status and names no path, because
+   no feed reported anything. Whether the feed is healthy is for the Feeds tab to say.
+5. **Nothing fabricated**: there is no `Math.random()` anywhere in `src/`
+   (`npm run check:no-random` checks this), and nothing interpolates between frames. A
+   `null` rate bin arrives as `null`, and `Lines` emits a separate subpath around it, so a
+   minute with no record is a **hole in the line**. It is never a 0, and never a straight
+   line drawn across the hole. The dev fixture lives in `mock/`, outside `src/`, so it cannot
+   reach the production bundle. The service's demo mode (`rc_dashboard/demo`) feeds the page
+   records that were never measured, and the page says so on every tab. The feeds report
+   lists the hosts whose records carry `"synthetic": true` (`synthetic_hosts`). While any
+   host does, every tab opens with a *Fake data* note, the header shows a dashed **fake data**
    pill beside the live one, and the Feeds tab tags each such host.
-6. **Coverage is part of the number** — `<Coverage>`, `<AccumCell>` and `<QuantCells>`
-   print `coverage_pct` next to every value that carries one. An accumulator or quantile
+6. **Coverage is part of the number**: `<Coverage>`, `<AccumCell>` and `<QuantCells>`
+   print `coverage_pct` next to every value that has one. An accumulator or quantile
    with `n: 0` renders the words **`not measured`**, never `0`.
 7. **Data only** — a panel carries a title, its feed, and the chart or table. Every
    `notes` / `basis` / `cpu_basis` / `scope` / `dedup.rule` string goes into `<Basis>`, a
@@ -245,10 +253,10 @@ Two more that the payloads force:
 
 ## Words
 
-One word for each thing, on every tab. A label says the word in the first column; the words
-in the last are not used for that thing anywhere on the page. `src/lib/glossary.ts` holds
-the same table, and the line each word shows on hover (its `?`), where the precise reading
-is: what is measured, and what it cannot see.
+Each thing has one word, on every tab. Labels use the word in the first column. The words in
+the last column are not used for that thing anywhere on the page. `src/lib/glossary.ts` holds
+the same table, plus the line each word shows on hover (its `?`). That line carries the
+precise reading: what is measured, and what the measurement cannot see.
 
 | say | for | not |
 |---|---|---|
@@ -300,7 +308,7 @@ service's default), and beside it says what the window is doing:
 `catching up` with its percentage, `… failed to build — pick it again to retry`, and `+Nm past
 the window` while a built view drifts.
 
-Three rules it follows, all of them the same rule this page follows everywhere:
+The picker follows three rules, each a case of the one rule this page follows everywhere:
 
 - **Presets come from the service**, filtered server-side against retention, and so does the
   floor, so the picker cannot offer a span the process does not hold.
@@ -346,12 +354,13 @@ holds, so it can never name a tab, section or window that is not there.
 
 ## Keyboard
 
-Every control is a tab stop with a visible focus ring (controls restyled from `all: unset`
-restate it at the foot of `src/styles.css`). A sortable header (`src/components/SortTh.tsx`)
-sorts with Enter or Space, and a control's `data-tip` shows under it when it is reached with
-Tab (`src/components/Tooltip.tsx`), since the caveat about how a number is counted lives there.
-The tip is visual only: its layer is `aria-hidden`, and no control points at it with
-`aria-describedby`, so a screen reader does not announce it.
+Every control is a tab stop with a visible focus ring. (Controls restyled from `all: unset`
+re-declare the ring at the foot of `src/styles.css`.) A sortable header
+(`src/components/SortTh.tsx`) sorts with Enter or Space. A control's `data-tip` shows under it
+when the control is reached with Tab (`src/components/Tooltip.tsx`), because that tip is where
+the caveat about how a number is counted lives. The tip is visual only: its layer is
+`aria-hidden`, and no control points at it with `aria-describedby`, so a screen reader does
+not announce it.
 
 | key | does |
 |---|---|
@@ -461,9 +470,9 @@ thinking for one and reading, thinking, or away for the other, and the basis lin
 
 ### Live transport
 
-`src/api/useLive.ts` prefers the websocket. After five failed socket attempts in a row it
-also polls, every 15 s, what the socket would have sent: `GET /api/live`, and `/api/windows`
-and `/api/feeds` on the same beat, so a build that finishes still reaches the panels
+`src/api/useLive.ts` prefers the websocket. After five failed socket attempts in a row, it
+also polls every 15 s for what the socket would have sent: `GET /api/live`, plus `/api/windows`
+and `/api/feeds` on the same schedule, so a build that finishes still reaches the panels
 (`buildNonce`, from the ready windows) and the feeds report stays current. It never gives up
 on the socket: it tries again after a wait that doubles from 1 s to 30 s, each wait spread
 over its upper half by a hash of when the page opened (`src/lib/backoff.ts`; no random

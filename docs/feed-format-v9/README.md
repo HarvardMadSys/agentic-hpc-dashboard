@@ -48,12 +48,12 @@ What it measures (synthetic, vs schema 8 as the collector writes it):
 | dashboard parse, per exit (orjson) | 3.96 µs vs 4.92 µs | |
 | round trip, schema 9 back to schema 8 | **0 undeclared differences** in 64,901 records | |
 
-Read the gzip column honestly. The exits stream dominates a real node (boslogin06 wrote
+Be careful with the gzip column. The exits stream dominates a real node (boslogin06 wrote
 **1.49 GB** of exits on 2026-10-08, 66 MB gzipped, per `dashboard/rc_dashboard/gz.py:20`).
 On that stream, schema 9 saves about a fifth of the plain bytes but almost nothing at
 rest, because gzip already removes most repetition. **Schema 9 is mainly a fix to the
-structure.** If disk size or analysis speed over many host-days is the goal, a columnar
-copy of sealed days is the lever (§4.3), as a separate step.
+structure.** If the goal is disk size or analysis speed over many host-days, the better
+tool is a columnar copy of sealed days (§4.3), built as a separate step.
 
 ---
 
@@ -131,8 +131,8 @@ Together these are 7.7 % of an exit's bytes.
 
 A `truncated` record, written for each live process at stop (`flush_live`), is built
 differently. It has no `cpu_pct`, its `state_last` is the process's last `/proc` state,
-and its counters come from `/proc` (`io.scope` is `proc`). So these fields can be dropped
-only where they hold what the rule says, not by name.
+and its counters come from `/proc` (`io.scope` is `proc`). So a field can be dropped only
+where its value matches what the rule says, not just because of its name.
 
 **F5. Network bytes are written up to three times on an exit.** They appear in
 `net_tx_bytes`/`net_rx_bytes`, in `conns.peers[]` (addr, port, provider, bytes) and in
@@ -193,10 +193,11 @@ that `health.py` reads (`meta`, `stop`, `residency_totals`).
       `cwd` is read today. Nothing is added to the per-event path (design principle 2).
   - The node tier can compute the same key from `/proc/<pid>/stat`. That would join a
     process across the two tiers for the first time.
-- **`ppk`** is the `pk` of the parent that forked the process: the parent `ppid` already
-  keeps since schema 8. It comes from that parent's entry in the collector's process
-  table, which seeding at startup and fork tracking keep complete. This makes the tree
-  exact: no child-first walk, and no refusing links on user or start order.
+- **`ppk`** is the `pk` of the parent that forked the process, which is the parent that
+  `ppid` already holds since schema 8. It comes from that parent's entry in the
+  collector's process table, which seeding at startup and fork tracking keep complete.
+  This makes the tree exact, with no child-first walk and no refusing links on user or
+  start order.
 - **`sess`** is today's `session_uuid` unchanged, so session keys do not move across the
   8/9 boundary. It is non-null whenever a process is in an agent tree.
 
@@ -223,7 +224,7 @@ long-lived processes, not by the fork rate.
 The collector flushes `procs` first in each round. A tail that reads files one at a time
 can still see a reference up to one poll before its definition. A reader holds such a
 record until the next poll, and counts any that never resolve (`unresolved`). It never
-guesses, which is the existing rule that loss is counted.
+guesses; this follows the existing rule that loss is counted.
 
 ### 2.5 `exit` and `truncated`
 
@@ -306,8 +307,8 @@ block, repeated on every tick.
 
 The node tier gets the same envelope: `event: "node"`, `host` (was `hostname`) and
 `ts_epoch`, with `timestamp` dropped. It keeps its own `schema_version` series, which
-`event` disambiguates. It is about 5 % of the bytes and bounded at one record per 5 min,
-so this is consistency, not size.
+`event` disambiguates. The node tier is about 5 % of the bytes and bounded at one record
+per 5 min, so this change is for consistency, not size.
 
 ### 2.9 Invariants kept
 
@@ -483,15 +484,16 @@ zone they were written in. A wrong `--tz` moves no instant (`start_epoch` comes 
 `ts_epoch - duration_s`), but the report then shows every `ts` and `start` as a declared
 difference.
 
-It reads plain or `.gz` day files. The first pass keeps an index of every process and
-session over the whole feed, which is what memory grows with on a multi-week, many-node
-capture. The second pass holds one host-day at a time, and verifies from the files it
-just wrote, read back from disk. It exits 1 if any field differs in a way not declared
-above, or if a record refers to a definition its day's `procs` file does not hold.
+The prototype reads plain or `.gz` day files. The first pass keeps an index of every
+process and session over the whole feed; on a multi-week, many-node capture, memory
+grows with that index. The second pass holds one host-day at a time, and verifies from
+the files it just wrote, read back from disk. The prototype exits 1 if any field differs
+in a way not declared above, or if a record refers to a definition that its day's
+`procs` file does not hold.
 
 A schema-8 record has no start ticks, so the prototype rebuilds `pk`/`ppk` from
-`ts_epoch - duration_s` and `ts_epoch - age_s`. That gets their length right for
-measuring; they are never compared. A process that no exit or residency gives a start for
-gets a guessed one, kept apart from the real lives, so it can never take a real process's
-key. The report counts those (129 here), counts pid reuse from real lives only, and counts
-hosts whose boot time had to be guessed.
+`ts_epoch - duration_s` and `ts_epoch - age_s`. That gets the keys' length right for
+measuring; the keys themselves are never compared. A process with no start from any exit
+or residency gets a guessed start, kept apart from the real lives so that it can never
+take a real process's key. The report counts those (129 here), counts pid reuse from
+real lives only, and counts hosts whose boot time had to be guessed.

@@ -1,8 +1,8 @@
 # Logo
 
-An observatory: a dome on its base, its telescope trained on the agent's spark.
-Crimson `#A51C30` is the page's accent and the `agent` series colour, so the
-mark uses it and nothing else.
+The logo is an observatory: a dome on its base, with its telescope pointed at the
+agent's spark. Crimson `#A51C30` is the page's accent colour and the `agent`
+series colour, so the mark uses that colour and no other.
 
 | file | use |
 |---|---|
@@ -11,14 +11,15 @@ mark uses it and nothing else.
 | `lockup.svg` / `lockup-dark.svg` | mark + "Agent Observatory" over "Harvard MaDSys", for light / dark grounds |
 | `dashboard/web/public/apple-touch-icon.png` | the mark, 180 px and full bleed, for a phone's home screen (`index.html`) |
 
-The wordmark is IBM Plex Sans 600 and 500 (the dashboard's face),
-outlined to paths so it renders the same without the fonts installed.
+The wordmark is set in IBM Plex Sans 600 and 500 (the dashboard's typeface) and
+converted to paths, so it renders the same on machines without the fonts.
 
-Harvard appears as words, not as the Veritas shield: Harvard's identity rules
-keep the shield unaltered and uncombined, so it is shown only in the official
-logos under `dashboard/web/public/logos/` (the rail's credits and the README).
+Harvard appears as text rather than as the Veritas shield. Harvard's identity
+rules say the shield must not be altered or combined with other marks, so the
+shield appears only in the official logos under `dashboard/web/public/logos/`
+(used in the rail's credits and the README).
 
-In the app the glyph is `dashboard/web/src/components/Logo.tsx`, drawn in
+In the app, the glyph is `dashboard/web/src/components/Logo.tsx`, drawn in
 `currentColor` on the `.bmark` tile. The sign-in page
 (`dashboard/rc_dashboard/auth.py`) draws its own copy.
 Keep the four in step: `Logo.tsx`, `auth.py`, `mark.svg` and `favicon.svg`, and export
