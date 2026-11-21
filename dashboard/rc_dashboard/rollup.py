@@ -612,7 +612,8 @@ def build_from_files(cfg, days=365, force=False, out=sys.stderr):
     by_date = {}
     for root in roots:
         for date, files in dated_dirs(root, 0):
-            by_date.setdefault(date, []).extend(files)
+            # a set: a root listed twice is read once, as the tail reads it
+            by_date.setdefault(date, set()).update(files)
 
     def near(date):
         x = datetime.date.fromisoformat(date)

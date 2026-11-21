@@ -371,6 +371,16 @@ class FromFilesTest(Case):
         with open(os.devnull, "w") as quiet:
             self.assertEqual(rollup.build_from_files(cfg, days=30, out=quiet), 0)
 
+    def test_a_root_listed_twice_is_read_once(self):
+        self.feed()
+        ingest = self.rows(self.run_service(self.cfg()))
+        cfg = self.cfg(cache="twice", **{"feeds.ebpf.roots": [self.root, self.root]})
+        with open(os.devnull, "w") as quiet:
+            rollup.build_from_files(cfg, days=30, out=quiet)
+        d3 = date_of(self.today - 3 * DAY_S)
+        self.assertEqual([r for r in self.rows(rollup.path_of(cfg))["class"] if r[0] == d3],
+                         [r for r in ingest["class"] if r[0] == d3])
+
     def test_a_day_within_its_grace_is_written_partial(self):
         # run at 00:01: yesterday is over but a record of it may yet land
         self.feed()
