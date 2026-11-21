@@ -33,15 +33,6 @@ export const CLS_COL: Record<string, string> = table({
   other: 'var(--sg)',
 });
 
-/** Each class's hue as a light wash (styles.css `--wash-*`): the ground of a
- *  cell that a class leads, never a mark of its own. */
-export const CLS_WASH: Record<string, string> = table({
-  agent: 'var(--wash-s1)',
-  human: 'var(--wash-s3)',
-  ide: 'var(--wash-s2)',
-  unlabeled: 'var(--wash-sg)',
-});
-
 /** Each agent or editor type's own colour, inside the agent class's crimson:
  * a tree can hold more than one type, so each box says which by colour too. */
 export const AGENT_TYPE_COL: Record<string, string> = table({

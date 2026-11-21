@@ -18,12 +18,16 @@ export function pctLabel(p: number | null | undefined): string {
   return `${Math.round(p)}%`;
 }
 
-export function ShareCell({ pct, sub, c }: { pct: number | null | undefined; sub?: string; c: string }) {
+/** `bar={false}`: the number and its count alone, where the share is drawn
+ *  elsewhere -- Who uses what's stacked bar beside its class columns. */
+export function ShareCell({ pct, sub, c, bar = true }: { pct: number | null | undefined; sub?: string; c: string; bar?: boolean }) {
   return (
     <div className="share-cell">
-      <span className={pct == null || Number.isNaN(pct) ? 'share-track none' : 'share-track'}>
-        {pct != null && pct > 0 && <i style={{ width: `max(2px, ${Math.min(100, pct)}%)`, background: c }} />}
-      </span>
+      {bar && (
+        <span className={pct == null || Number.isNaN(pct) ? 'share-track none' : 'share-track'}>
+          {pct != null && pct > 0 && <i style={{ width: `max(2px, ${Math.min(100, pct)}%)`, background: c }} />}
+        </span>
+      )}
       <b>{pctLabel(pct)}</b>
       {sub != null && <span className="share-sub">{sub}</span>}
     </div>

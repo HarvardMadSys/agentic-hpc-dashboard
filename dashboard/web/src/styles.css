@@ -35,12 +35,6 @@
   --s7: #d2607d;
   --s8: #3aa0d0;
   --sg: #93a1ad;
-  /* each class's hue at 12% over --surface, painted out rather than mixed: the
-     cell that holds a unit's largest share in Who uses what (OverviewTab.tsx) */
-  --wash-s1: #f2e0e3;
-  --wash-s2: #e4eaf2;
-  --wash-s3: #e8eee1;
-  --wash-sg: #f0f0f2;
   --good: #2f8f2c;
   --warn: #fcb315;
   --serious: #ec8f9c;
@@ -2400,78 +2394,114 @@ table.shares tr.grp td .nm {
   font-family: 'IBM Plex Mono', monospace;
   margin-top: 2px;
 }
-/* Who uses what: each track takes its column's width, so a share reads off a
-   bar long enough to compare, with its number right at the bar's end rather
-   than across a gap; a hairline at 50% says which class holds a majority. */
-@media (min-width: 601px) {
-  table.shares.who .share-cell {
-    --track: minmax(96px, 1fr);
-    grid-template-columns: var(--track) minmax(44px, auto);
-    max-width: 300px;
-  }
-  table.shares.who .share-cell b {
-    text-align: left;
-  }
+/* Who uses what: each unit's whole as one stacked bar (SplitBar.tsx), and each
+   class's share and amount in its own column beside it (OverviewTab.tsx) */
+table.shares.who td {
+  vertical-align: middle;
 }
-/* a byte count opens the commands behind it: its button takes the whole cell,
-   so its track is as long as every other row's */
+table.shares.who th.split,
+table.shares.who td.split {
+  width: auto;
+  min-width: 220px;
+  padding-right: 28px;
+}
+table.shares.who th.cls,
+table.shares.who td.clsv {
+  width: 1%;
+  padding-right: 22px;
+}
+.split-bar {
+  display: flex;
+  gap: 2px;
+  height: 16px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.split-bar .seg {
+  display: block;
+  flex: 1 1 0;
+  /* a part above zero is never thinner than this: there to see and hover */
+  min-width: 3px;
+}
+/* a counted class the chips hide: part of the whole, drawn as no class */
+.split-bar .seg.muted {
+  background: repeating-linear-gradient(135deg, var(--edge) 0 2px, var(--surface-2) 2px 5px);
+}
+/* no known whole, no split: the reason where the bar would be */
+.split-bar.none {
+  align-items: center;
+  padding: 0 8px;
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
+.split-bar.none span {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--surface);
+  padding: 0 4px;
+}
+/* the class columns hold the numbers alone: the share, its amount under it */
+table.shares.who .share-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+table.shares.who .share-cell b {
+  text-align: left;
+}
+table.shares.who .share-sub {
+  margin-top: 1px;
+  white-space: nowrap;
+}
+table.shares.who td.lead .share-cell b {
+  font-weight: 700;
+}
+/* a byte count opens the commands behind it: its button takes the whole cell */
 table.shares.who .ionum {
   display: block;
   width: 100%;
   text-align: inherit;
 }
-table.shares.who .share-track {
-  height: 10px;
-  background:
-    linear-gradient(to right, transparent calc(50% - 0.5px), var(--edge) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
-    var(--rule);
-}
-table.shares.who .share-track.none {
-  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
-}
-/* the bar grows from the left: square there, a 4px rounded end where it stops */
-table.shares.who .share-track i {
-  border-radius: 0 4px 4px 0;
-}
-/* the class with the unit's largest share: its cell washed in the class's hue,
-   so the eye can follow the lead down the table, and see where it changes */
-table.shares.who td.lead .share-cell {
-  background: var(--lead-wash, var(--sunken));
-  border-radius: 6px;
-  padding: 6px 8px;
-  margin: -6px -8px;
-}
-table.shares.who td.lead .share-cell b {
-  font-weight: 700;
-}
-/* the key to that wash, in the panel's header */
-.pill.lead-sum {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-.pill.lead-sum > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.lead-key {
-  display: inline-block;
-  width: 14px;
-  height: 10px;
-  border-radius: 3px;
-  background: var(--wash-s1);
-  box-shadow: inset 0 0 0 1px var(--edge);
-}
+/* on a phone a unit takes three lines: its name, its bar across the width, and
+   its classes' numbers side by side under the bar */
 @media (max-width: 600px) {
-  /* on a phone the key wraps under its label rather than run off the panel */
-  .pill.lead-sum {
-    white-space: normal;
-    border-radius: 10px;
-    flex: 0 1 auto;
+  table.shares.who,
+  table.shares.who thead,
+  table.shares.who tbody {
+    display: block;
   }
-  table.shares.who td.lead .share-cell {
-    padding: 5px 6px;
-    margin: -5px -6px;
+  table.shares.who tr {
+    display: grid;
+    grid-template-columns: repeat(var(--ncls, 3), minmax(0, 1fr));
+    column-gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  table.shares.who tr > * {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+    box-shadow: none;
+  }
+  table.shares.who tr > :first-child,
+  table.shares.who td.split {
+    grid-column: 1 / -1;
+  }
+  table.shares.who th.split {
+    display: none;
+  }
+  table.shares.who td.split {
+    padding: 7px 0 8px;
+  }
+  table.shares.who thead th:first-child {
+    padding-bottom: 6px;
+  }
+  table.shares.who tr.grp {
+    padding-top: 16px;
   }
 }
 
