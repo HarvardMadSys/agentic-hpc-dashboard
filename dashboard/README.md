@@ -1247,7 +1247,11 @@ once the backfill is done; until then the table keeps what an earlier run wrote 
 ended 15 minutes ago (`GRACE_S`), and today as it stands, written again as it grows. A day the
 read began inside is written only where the table holds no whole copy of it and fewer of its
 records, and never as complete. A record that lands on a day already written (a host's stream
-catching up) writes it again. Days are the service's local days, cut at local midnight.
+catching up) writes it again. And a recount never replaces a complete day that holds more records
+than it read: records only ever add to a day, so fewer means a day-file the startup could not open
+(the tail reads it once it can) or day-files cleaned away inside retention, and the table's copy is
+the better one (`kept_better` in the response). Days are the service's local days, cut at local
+midnight.
 
 **On the page.** A stretch the table holds no record of is a hole in the line, and nothing before
 its first day is drawn. Processes and CPU are a mean per day over each point's days with data, so
@@ -1265,7 +1269,8 @@ uv run python -m rc_dashboard rollup --rollup-days 365     # --force reads again
 which reads every date dir near a day the table lacks, oldest first, through the service's own
 normalizer, and writes each day once the dirs either side of it are read too (a record lands in
 the collector's day's dir, which near midnight need not be the service's day). It never writes
-today. That is a full parse of every exit and submit, in one process: 14 us a record on the demo
+today, and writes a day partial, to be read again by the next run, while it is inside its 15
+minutes of grace or while a day-file near it could not be read whole. That is a full parse of every exit and submit, in one process: 14 us a record on the demo
 feed (118 k records in 1.7 s), so some 40 s a node-day at FAS's 2.7 M exits if its records cost the
 same -- not measured there -- and a year of eight nodes a day and more. So it is a command, run once,
 not something the service starts by itself.

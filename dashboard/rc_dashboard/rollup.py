@@ -28,6 +28,10 @@ table had. A day is written only when the service read **all** of it:
   as it grows. A record for a complete day that arrives late (a host's stream
   catching up) marks it dirty and it is written again, so the table converges on
   what the files hold.
+* a recount never replaces a complete day holding more records than it read:
+  late records only add to a day, so fewer means a day-file the startup could
+  not open (the tail reads it once it can) or day-files cleaned away inside
+  retention, and the table's copy is the better one (`kept_better`).
 
 A day held in memory is let go once it is retention behind and written; a
 record older than the days let go (`floor`) is counted (`late_dropped`) and
@@ -460,6 +464,7 @@ class Rollup:
         self.covered_from = None
         self.error = None
         self.written = 0         # day rows written since the service started
+        self.kept_better = 0     # writes passed over for a better copy the table held
         self.flushed_at = None
         self.path = path_of(cfg)
         self._flush_lock = threading.Lock()
@@ -495,15 +500,26 @@ class Rollup:
                         done.append((day, complete))
                         day.dirty = False
             try:
-                # a cut day only where the table has no better copy of it
-                cuts = [s["date"] for s, (day, _c) in zip(snaps, done)
-                        if day.day_from < self.covered_from]
-                if cuts:
-                    had = self.store.held(cuts)
-                    worse = {d for d in cuts if d in had and
-                             (had[d][0] or had[d][1] >= next(
-                                 s["records"] for s in snaps if s["date"] == d))}
-                    snaps = [s for s in snaps if s["date"] not in worse]
+                # Never over a better copy. A cut day only where the table has
+                # no whole copy and fewer of its records; any day never over a
+                # whole copy holding more records than this run read -- a file
+                # the startup could not open (the tail reads it once it can,
+                # and the day is written then), or day-files cleaned away
+                # inside retention. Late records only ever add to a day.
+                had = self.store.held([s["date"] for s in snaps])
+                cut = {s["date"] for s, (day, _c) in zip(snaps, done)
+                       if day.day_from < self.covered_from}
+
+                def worse(s):
+                    h = had.get(s["date"])
+                    if h is None:
+                        return False
+                    if s["date"] in cut:
+                        return bool(h[0]) or h[1] >= s["records"]
+                    return bool(h[0]) and h[1] > s["records"]
+                kept = [s["date"] for s in snaps if worse(s)]
+                snaps = [s for s in snaps if s["date"] not in kept]
+                self.kept_better += len(kept)
                 n = self.store.write(snaps, now=now)
             except Exception as e:
                 with lock:
@@ -558,6 +574,7 @@ class Rollup:
                           else "ok"),
                 "error": self.error, "covered_from": self.covered_from,
                 "flushed_at": self.flushed_at, "written": self.written,
+                "kept_better": self.kept_better,
                 "held_days": held, "late_dropped": late}
 
 
@@ -625,14 +642,19 @@ def build_from_files(cfg, days=365, force=False, out=sys.stderr):
         snaps = []
         for date in sorted(acc.days):
             if date in want and (final or ready(date)):
-                snaps.append(acc.days.pop(date).snapshot(now, whole(date)))
+                day = acc.days.pop(date)
+                # whole only once its grace is past too: a record may land up
+                # to GRACE_S after its day ends, and a later run skips a whole day
+                snaps.append(day.snapshot(now, whole(date) and now >= day.day_to + GRACE_S))
             elif date not in want and (final or ready(date)):
                 acc.days.pop(date)
         written += store.write(snaps, source="files", now=now)
         for s in snaps:
             print("rollup: %s  %d records, %d of %d minutes held%s"
                   % (s["date"], s["records"], s["held"], s["minutes"],
-                     "" if s["complete"] else ", partial: a day-file near it was not read whole"),
+                     "" if s["complete"] else
+                     ", partial: a day-file near it was not read whole, or it ended under "
+                     "%d min ago" % (GRACE_S // 60)),
                   file=out)
 
     for date in dirs:

@@ -526,7 +526,10 @@ class Aggregator:
         return seen
 
     def _covered(self, since):
-        """The roll-up's days from `since` on are read whole: it may write them."""
+        """The roll-up's days from `since` on are read whole: it may write them.
+        A day-file the positioning could not open is read by the tail once it
+        can be; until then the roll-up keeps any whole copy holding more
+        records than it counted (`Rollup.flush`)."""
         if self.rollup is not None:
             with self.lock:
                 self.rollup.covered(since)

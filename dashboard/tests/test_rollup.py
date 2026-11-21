@@ -231,6 +231,24 @@ class IngestTest(Case):
         self.assertEqual(days[d4], 5)
         self.assertNotIn(d4, agg.rollup.acc.days)   # let go once written
 
+    def test_a_file_the_startup_cannot_open_never_shrinks_a_whole_day(self):
+        self.feed()
+        d3 = date_of(self.today - 3 * DAY_S)
+        self.write([exit_rec(self.today - 3 * DAY_S + 15 * 3600, 6000, host="h2")], host="h2")
+        whole = self.rows(self.run_service(self.cfg()))
+        bad = os.path.join(self.root, d3, "h2.exits.jsonl")
+        real = gzmod.open_feed
+
+        def refuse(path, *a, **k):
+            if path == bad:
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, *a, **k)
+        with mock.patch("rc_dashboard.gz.open_feed", side_effect=refuse):
+            agg = self.run_service(self.cfg())
+        self.assertEqual(self.rows(agg)["day"], whole["day"])
+        self.assertEqual(self.rows(agg)["class"], whole["class"])
+        self.assertGreater(agg.rollup.status(agg.lock)["kept_better"], 0)
+
     def test_a_day_the_read_began_inside_never_replaces_the_whole_copy(self):
         self.feed(spread=True)
         whole = self.rows(self.run_service(self.cfg()))
@@ -343,6 +361,20 @@ class FromFilesTest(Case):
         # and a second run reads nothing it holds whole
         with open(os.devnull, "w") as quiet:
             self.assertEqual(rollup.build_from_files(cfg, days=30, out=quiet), 0)
+
+    def test_a_day_within_its_grace_is_written_partial(self):
+        # run at 00:01: yesterday is over but a record of it may yet land
+        self.feed()
+        y = self.today - DAY_S
+        self.write([exit_rec(y + 23 * 3600, 7000)])
+        cfg = self.cfg(cache="by-hand")
+        at = self.today + 60
+        with open(os.devnull, "w") as quiet, \
+                mock.patch.object(rollup.time, "time", return_value=at):
+            rollup.build_from_files(cfg, days=30, out=quiet)
+        days = {d: done for d, _h, _r, done in self.rows(rollup.path_of(cfg))["day"]}
+        self.assertEqual(days[date_of(y)], 0)
+        self.assertEqual(days[date_of(self.today - 2 * DAY_S)], 1)
 
     def test_a_day_file_that_cannot_be_read_leaves_its_days_partial(self):
         self.feed()
