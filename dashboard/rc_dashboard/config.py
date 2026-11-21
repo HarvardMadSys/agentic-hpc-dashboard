@@ -117,7 +117,6 @@ def _node_candidates():
 
 
 def defaults():
-    base = _env("RC_MEASUREMENT_ROOT")
     return {
         "version": 1,
         "feeds": {
@@ -140,18 +139,6 @@ def defaults():
                 "max_age_s": 900,
                 "required": False,
             },
-            "sacct": {
-                "dir": REPO,
-                "pattern": "SlurmData_*.csv",
-                "max_days": 0,
-                "jobs_csv": None,
-                "required": False,
-            },
-            "sacctmgr": {"dir": REPO, "pattern": "sacctmgr_*.jsonl", "required": False},
-            "domains": {"path": os.path.join(REPO, "dataclean", "mapping", "map_user.csv"),
-                        "required": False},
-            "user_actor": {"path": os.path.join(REPO, "dataclean", "user.csv"),
-                           "required": False},
         },
         "live": {
             # RETENTION is what the process holds; WINDOW_MIN is only the view a
@@ -533,13 +520,6 @@ ENV_MAP = {
     "feeds.ebpf.max_age_s": ("RC_DASH_EBPF_MAX_AGE_S", int),
     "feeds.ebpf_node.roots": ("RC_DASH_NODE_ROOTS", _pathsep),
     "feeds.ebpf_node.days": ("RC_DASH_NODE_DAYS", int),
-    "feeds.sacct.dir": ("RC_DASH_SACCT_DIR", str),
-    "feeds.sacct.pattern": ("RC_DASH_SACCT_PATTERN", str),
-    "feeds.sacct.max_days": ("RC_DASH_SACCT_MAX_DAYS", int),
-    "feeds.sacct.jobs_csv": ("RC_DASH_JOBS_CSV", str),
-    "feeds.sacctmgr.dir": ("RC_DASH_SACCTMGR_DIR", str),
-    "feeds.domains.path": ("RC_DASH_DOMAINS_CSV", str),
-    "feeds.user_actor.path": ("RC_DASH_USER_CSV", str),
     "live.retention_min": ("RC_DASH_RETENTION_MIN", int),
     "live.window_min": ("RC_DASH_LIVE_WINDOW_MIN", int),
     "live.window_presets_min": ("RC_DASH_WINDOW_PRESETS",
@@ -605,16 +585,11 @@ ENV_MAP = {
 HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt",
           "annotate.api_key", "annotate.command", "annotate.system_prompt")
 
-# retired names still honoured, with a one-line warning
-ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
-
 # CLI dest -> leaf path
 CLI_MAP = {
     "ebpf_root": "feeds.ebpf.roots",
     "ebpf_days": "feeds.ebpf.days",
     "node_root": "feeds.ebpf_node.roots",
-    "sacct_dir": "feeds.sacct.dir",
-    "jobs_csv": "feeds.sacct.jobs_csv",
     "live_window_min": "live.window_min",
     "retention_min": "live.retention_min",
     "backfill_hours": "live.backfill_hours",
@@ -832,11 +807,6 @@ def load(args=None, config_path=None):
         for p, v in flat.items():
             origins[p] = "file:%s" % path
         _deep_merge(tree, filetree)
-
-    for alias, real in ALIASES.items():
-        if os.environ.get(alias) and not os.environ.get(real):
-            sys.stderr.write("warning: %s is retired; use %s\n" % (alias, real))
-            os.environ[real] = os.environ[alias]
 
     for dotted, (var, coerce) in ENV_MAP.items():
         raw = os.environ.get(var)

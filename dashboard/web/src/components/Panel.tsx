@@ -28,7 +28,8 @@ export function StatusPill({
   beat,
   tip,
 }: {
-  status: FeedStatus | 'live';
+  /** a feed's status, `live`, or `degraded`: a collector's verdict (FeedsTab) */
+  status: FeedStatus | 'degraded' | 'live';
   text?: string;
   beat?: boolean;
   tip?: string;

@@ -18,8 +18,6 @@ def build_parser():
     ap.add_argument("--ebpf-root", action="append", dest="ebpf_root", default=None)
     ap.add_argument("--node-root", action="append", dest="node_root", default=None)
     ap.add_argument("--ebpf-days", type=int, default=None)
-    ap.add_argument("--sacct-dir", default=None)
-    ap.add_argument("--jobs-csv", default=None)
     # --retention-min is the ceiling the picker can reach; --live-window-min is
     # only the view a fresh page opens on. Raising the view is free; raising
     # retention costs memory and a longer backfill.

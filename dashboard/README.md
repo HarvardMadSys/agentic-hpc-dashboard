@@ -1809,7 +1809,6 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/annotate.py` | what each tool call was for, in a model's words: the inspector's "annotate purposes" |
 | `rc_dashboard/iocmds.py` | every command behind an I/O figure, looked up when it is clicked |
 | `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
-| `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (over `feedfile.py`, whose names it re-exports) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
 | `rc_dashboard/auth.py` | sign-in for the whole service: one password, kept as a salted scrypt hash ([Password](#password)) |

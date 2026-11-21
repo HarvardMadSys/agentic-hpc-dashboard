@@ -304,7 +304,7 @@ class FeedTest(unittest.TestCase):
 class ConfigTest(unittest.TestCase):
     def test_the_demo_reads_its_own_feed_whatever_the_shell_says(self):
         env = {"RC_DASH_EBPF_ROOTS": "/var/log/ebpfm", "RC_DASH_NODE_ROOTS": "/var/log/ebpfm-login",
-               "RC_DASH_SACCT_DIR": "/n/sacct", "RC_DASH_AS_OF": "auto",
+               "RC_DASH_AS_OF": "auto",
                "RC_DASH_SITE_NAME": "FAS RC", "RC_DASH_CACHE_DIR": "/srv/cache"}
         with mock.patch.dict(os.environ, env):
             cfg = configmod.load(None, None)
@@ -313,7 +313,6 @@ class ConfigTest(unittest.TestCase):
         feed = demomod.Feed(o["dir"])
         self.assertEqual(cfg.get("feeds.ebpf.roots"), [feed.ebpf])
         self.assertEqual(cfg.get("feeds.ebpf_node.roots"), [feed.node])
-        self.assertTrue(cfg.get("feeds.sacct.dir").startswith(feed.base))
         self.assertEqual(cfg.get("clock.as_of"), "")
         self.assertEqual(cfg.get("cache.dir"), feed.cache)
         self.assertEqual(cfg.get("site.name"), demomod.SITE_NAME)
