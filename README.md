@@ -322,7 +322,7 @@ at all, `cd dashboard/web && npm run dev` serves it from a fixture.
 | [`rpm-release.yml`](.github/workflows/rpm-release.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/` or `packaging/rpm/` | the collector's tests on EL8, then the RPM: attached to the tag's GitHub Release, or uploaded as a workflow artifact |
 | [`base-image.yml`](.github/workflows/base-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `docker/base/` | the base image |
 | [`collector-image.yml`](.github/workflows/collector-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/`, `docker/collector/` or `docker/base/` | the collector image |
-| [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) | a push to `develop` that changes what the demo runs | `ci.yml` first, then the public demo |
+| [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) | a push to `develop` that changes what the demo runs; not a docs-only one (`*.md`) | `ci.yml` first, then the public demo |
 
 A `vX.Y.Z` tag publishes the release images and attaches the RPM to a GitHub Release: push
 one only to make a release. None has been made yet.

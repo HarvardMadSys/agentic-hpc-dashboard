@@ -45,7 +45,8 @@ service (`dashboard/rc_dashboard`, `pyproject.toml`, `uv.lock`), the page (`dash
 `docker/demo`, or this folder, and only once every test suite (`ci.yml`) has passed: if one
 fails, the demo stays as it is. A change to the collector, or to a test outside
 `dashboard/web`, does not redeploy (the page's own checks, `dashboard/web/mock/check_*.mjs`,
-are under the page's folder, so a change to one does). It can
+are under the page's folder, so a change to one does). Nor does a docs-only change: no
+`*.md` file, this one included, is read by the image's build, the service or the Worker. It can
 also be run by hand from the repository's Actions tab (*demo-deploy*, *Run workflow*, on
 `develop`): after rotating the token, or after a security fix to a base image, since
 `docker/demo/Dockerfile` names them by tag and a rebuilt one reaches the demo only at the

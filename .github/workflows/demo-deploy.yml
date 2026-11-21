@@ -25,6 +25,10 @@ on:
     branches: ["develop"]
     # Only what goes into the image (docker/demo/Dockerfile.dockerignore) or
     # into the Worker: a change to the collector or a test does not redeploy.
+    # Nor does one to docs alone: dashboard/web/README.md is copied into the
+    # page's build with the rest of web/, but nothing in the image's build, the
+    # service or the Worker reads a .md file from these trees. Patterns apply in
+    # order, so the `!` one that drops them stays last.
     paths:
       - "dashboard/pyproject.toml"
       - "dashboard/uv.lock"
@@ -33,6 +37,7 @@ on:
       - "docker/demo/**"
       - "deploy/cloudflare/**"
       - ".github/workflows/demo-deploy.yml"
+      - "!**/*.md"
   # A redeploy by hand, from the Actions tab: after rotating the token, after a
   # security fix to a base image (they are tags, so a rebuilt one reaches the
   # demo only at the next deploy), or to put the demo back after a
