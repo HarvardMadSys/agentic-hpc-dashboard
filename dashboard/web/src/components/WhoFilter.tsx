@@ -49,11 +49,37 @@ function Drop({ label, n, tip, children }: { label: string; n: number; tip: stri
   const pop = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = pop.current;
-    if (!open || !el) return;
-    el.style.left = '';
-    const r = el.getBoundingClientRect();
-    const over = r.right - (document.documentElement.clientWidth - 8);
-    if (over > 0) el.style.left = `${-Math.min(over, Math.max(0, r.left - 8))}px`;
+    const host = ref.current;
+    if (!open || !el || !host) return;
+    // On a phone the control bar is one row that scrolls sideways, and a box
+    // that scrolls clips what hangs below it: there the list is placed against
+    // the screen instead, under its button, and follows the button as the
+    // strip or the page moves.
+    const strip = host.closest<HTMLElement>('.controls');
+    const clipped = !!strip && getComputedStyle(strip).overflowX !== 'visible';
+    const place = () => {
+      const vw = document.documentElement.clientWidth;
+      if (clipped) {
+        const b = host.getBoundingClientRect();
+        el.style.position = 'fixed';
+        el.style.top = `${b.bottom + 4}px`;
+        el.style.left = `${Math.max(8, Math.min(b.left, vw - 8 - el.offsetWidth))}px`;
+        return;
+      }
+      el.style.left = '';
+      const r = el.getBoundingClientRect();
+      const over = r.right - (vw - 8);
+      if (over > 0) el.style.left = `${-Math.min(over, Math.max(0, r.left - 8))}px`;
+    };
+    place();
+    if (!clipped) return;
+    // capture: the strip's own scroll does not bubble to the window
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
   }, [open]);
   useEffect(() => {
     if (!open) return;
