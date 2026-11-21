@@ -383,7 +383,7 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
 
 What is happening and who is doing it: the window's three plates, the live tier's rate of
 processes exited, *Who uses what*, Active users and the login nodes right now. The window's other
-series are on Resources (RE-10 to RE-18), and Day by day is on Trend.
+series are on Resources (RE-10 to RE-18), and per-day use is the Trend tab's.
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|

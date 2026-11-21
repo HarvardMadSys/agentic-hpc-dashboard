@@ -49,8 +49,6 @@ export function TimeChart({
   scale = 1,
   view,
   onView,
-  yfmt,
-  ymax,
   legend,
 }: {
   /** any binned series: only its clock (`t`, `bin_s`) is read here */
@@ -62,8 +60,6 @@ export function TimeChart({
   scale?: number;
   view: View;
   onView: (v: View) => void;
-  yfmt?: (v: number) => string;
-  ymax?: number;
   /** a legend other than one swatch per line, e.g. classes plus a line-style key */
   legend?: { k: string; c: string; dashed?: boolean; solid?: boolean }[];
 }) {
@@ -90,8 +86,6 @@ export function TimeChart({
             W={W}
             H={210}
             ymin={0}
-            ymax={ymax}
-            yfmt={yfmt}
             xmin={x0}
             xmax={x1 > x0 ? x1 : x0 + s.bin_s}
             xticks={(a, b) => timeTicks(a, b, tickTarget(W, 7))}

@@ -242,7 +242,7 @@ PANEL_TABS = {
     "live_now.users": ("live", "Active users"), "active users": ("live", "Active users"),
     "live_now.hosts": ("live", "Login nodes right now"),
     "node": ("resources", "Login node health"), "login node health": ("resources", "Login node health"),
-    "trend": ("trend", "Day by day"), "day by day": ("trend", "Day by day"),
+    "trend": ("trend", "Trend"), "day by day": ("trend", "Trend"),
     "login nodes right now": ("live", "Login nodes right now"), "login nodes": ("live", "Login nodes right now"),
     # Overview is a section of Live now, and Trajectories and Risk & Warning are
     # Sessions and Risks: the old names still place a suggestion, under the new ones

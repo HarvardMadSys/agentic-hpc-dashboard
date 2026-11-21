@@ -351,8 +351,9 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
   part: 'risk' | 'io';
   /** which I/O panels: `main` is who moved the bytes (by tool, by user) and
    *  where the network bytes went, on Resources; `internal` is the per-class
-   *  page-cache table and the raw counters' quantiles, on Internal. The disk
-   *  and requested bytes over time are Live's picker's (tabs/LiveCharts.tsx). */
+   *  page-cache table (its series over time are More over time's, on
+   *  Resources: tabs/LiveCharts.tsx) and the raw counters' quantiles, on
+   *  Internal */
   io?: 'main' | 'internal';
 }) {
   const nodes = useNodeWords();
@@ -473,7 +474,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
       <div className="grid wide">
         {/* The bytes per class, over the window: what the programs asked for
             against what reached the disk, and the page cache's part between.
-            The same bytes over time are Live's, under More over time. */}
+            The same bytes over time are More over time's, on Resources. */}
         {ioPart === 'internal' && (
         <Panel
           id="sec-syscall-bytes-against-disk-bytes"

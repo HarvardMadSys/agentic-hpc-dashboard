@@ -1202,30 +1202,13 @@ looks like.
 
 `tests/test_nodehist.py` covers the binning, the holes, the incremental read and the sealed day.
 
-## Day by day
-
-**Day by day**, on the Trend tab under the roll-up table's year, is each class's processes, CPU
-and users per local day over everything the live tier holds -- retention, not the window -- from
-its own minute bins and roster (`LiveReducer.daily`), served in `/api/panels` as `trend`. It is not
-narrowed by the user or agent-type filter, and says so when one is set. Count and cost side by
-side, as every categorical panel, read as numbers or as each class's share of the day.
-
-- **Three kinds of day.** A day the collector wrote in has its numbers and `held`, the minutes of
-  it that held a record, against `minutes`, those the tier could hold; a day it wrote nothing in
-  has null counts and no bars, not a quiet day; today is still going, and the oldest day starts
-  where retention does (`cut`).
-- **Users are the roster's**: an account counts once a day in each class it ran something in. Its
-  bins are hours past the newest day, so a day boundary off the hour (a +5:30 zone) lands with the
-  hour it falls in.
-
 ## Trend: up to a year
 
 **Trend** is a tab of its own: each class's processes, CPU, users and Slurm submissions per day,
 week or month, over up to a year -- 30, 90, 180 or 365 days -- with the users of each agent type
-and each login node's processes beside them. *Day by day*, under the year on the same tab,
-answers the same question over what the live tier holds (retention, 7 days); the year answers it
-over what the **roll-up table** holds, which outlives retention and the day-files
-(`rc_dashboard/rollup.py`).
+and each login node's processes beside them, over what the **roll-up table** holds, which outlives
+retention and the day-files (`rc_dashboard/rollup.py`). It is the one place for per-day use: the
+charts on Live and Resources cover the selected window only.
 
 **The table is filled as records are ingested.** Every exit and submit the live tier takes -- the
 tail's and the backfill's -- is summed into its local day beside it (`Aggregator.dispatch`), so it
@@ -1257,7 +1240,7 @@ midnight.
 **On the page.** A stretch the table holds no record of is a hole in the line, and nothing before
 its first day is drawn. Processes and CPU are a mean per day over each point's days with data, so
 the week still going sits on the scale of a whole one; users are distinct over the whole point,
-and a point that is partial says so in the table below the charts. Like *Day by day*, it is
+and a point that is partial says so in the table below the charts. It is
 everyone: neither the window nor the user and agent-type filter narrows it.
 
 **Older days, by hand.** The table starts the first time the service runs with it, from what the
@@ -1707,8 +1690,8 @@ imports it, and changing it rebuilds nothing.
   hourglass for polling; a server with a light for each Slurm job. Each part says its numbers and the rule
   behind it on hover, and a key says what each one means. The only numbers the page adds are drawing caps (six
   robots, five sheets, ten lights), each said where it applies; a calls count the service could not make is
-  drawn as unread, never as an empty shelf. It leads the portrait, and the roster shows everyone's side by side
-  (*figures*). `npm run check:figures` renders every fixture user's figure and checks it against their row.
+  drawn as unread, never as an empty shelf. It leads the portrait. `npm run check:figures` renders every
+  fixture user's figure and checks it against their row.
 - **Traits** are plain statements ("launches with a bypass flag", "keeps several sessions open at once"),
   each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
   them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made

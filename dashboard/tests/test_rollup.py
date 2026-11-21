@@ -173,19 +173,6 @@ class IngestTest(Case):
         # a null CPU is not a 0: counted, but not as a reading
         self.assertEqual(cls[(d3, "human")], (1, 0.0, 0, 0))
 
-    def test_the_counts_are_the_live_tiers_day_by_day(self):
-        self.feed()
-        agg = self.run_service(self.cfg())
-        live = {d["date"]: d["by_class"] for d in agg.live.daily()["days"]}
-        body = agg.trend(7, "day")
-        for b in body["buckets"]:
-            if not b["data_days"] or b["key"] not in live:
-                continue
-            for c, v in b["by_class"].items():
-                self.assertEqual((v["n"], v["cpu_s"], v["users"]),
-                                 (live[b["key"]][c]["n"], live[b["key"]][c]["cpu_s"],
-                                  live[b["key"]][c]["users"]), (b["key"], c))
-
     def test_a_restart_recounts_rather_than_adds(self):
         self.feed()
         first = self.rows(self.run_service(self.cfg()))

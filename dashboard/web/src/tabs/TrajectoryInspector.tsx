@@ -4,10 +4,10 @@
  * It opens on who ran the session and what it came to (`Facts`), the session's headline, and the gist: what
  * kind of session it was and the session in a few sentences. Then two parts, each under a heading:
  *
- * - WHAT IT DID, for an agent whose commands are read: a map of its tasks over its phases on the whole
- *   session's clock (SessionMap.tsx), and under it the list of them (TaskList.tsx, or PhaseList.tsx where the
- *   block has no tasks). They are the row's block, which is the whole session's, so they are drawn as soon
- *   as the row is here, before any process is read. An agent of a type whose commands are not read says so
+ * - WHAT IT DID, for an agent whose commands are read: the list of its tasks and their phases (TaskList.tsx,
+ *   or PhaseList.tsx where the block has no tasks). They are the row's block, which is the whole session's, so
+ *   they are listed as soon as the row is here, before any process is read; the session's row in the list
+ *   draws them whole as its band, and the navigator below draws them over the processes the read reached. An agent of a type whose commands are not read says so
  *   in their place; a person or an IDE has neither, as their row has none.
  * - PROCESSES: what the processes were for, run by run, and the tools they ran (`ProcessMix`, the row's
  *   purpose ribbon and tool tokens: they count processes, so a poll loop is most of the ribbon however
@@ -18,7 +18,7 @@
  * The tree is a re-read of the day-files, so it says what it read and where it
  * stopped. A read that hit a budget says so above the tree, not in a tooltip:
  * a tree that covers the first forty minutes of a four-hour session and looks
- * complete is the kind of picture this dashboard exists not to draw. The map
+ * complete is the kind of picture this dashboard exists not to draw. The list
  * above it is the row's, so it holds the four hours whatever the read reached.
  *
  * Over the tree sits the navigator (TrajectoryNav.tsx), and every way of
@@ -30,13 +30,13 @@
  * the quick jumps what it landed on -- the process itself, or the row that
  * counts it when it is counted rather than drawn.
  *
- * A phase picked by its name on the navigator's chart, on the map, or in the list, is one
+ * A phase picked by its name on the navigator's chart, or in the list, is one
  * more such jump (`onPhase`): to the phase's start, with the chart zoomed to its span. A task
- * picked by its block in the chart's lane or on the map, or by its row in the list, is another
+ * picked by its block in the chart's lane, or by its row in the list, is another
  * (`onTask`): to the task's start, with the chart zoomed to its own span. The phases and the tasks
  * are the row's own, the same block the sessions list draws, and the ranking's row is the fresher
  * of the two this component has, so it is read first. Under the gist (components/CategoryChip.tsx)
- * the map draws them, and under the map is the list: a task opens into its phases
+ * is the list: a task opens into its phases
  * and a phase into its commands where the block has tasks (TaskList.tsx), and it is the list of
  * phases alone where it has none (PhaseList.tsx). Either list picks as the chart does, and the
  * task that holds the chart's zoom is open in the three-level list.
@@ -103,7 +103,6 @@ import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
 import { otherDay, taskLabel } from '../lib/tasks';
 import { PhaseList } from './PhaseList';
-import { SessionMap } from './SessionMap';
 import { TaskList } from './TaskList';
 import { SPAN_MIN, TrajectoryNav } from './TrajectoryNav';
 import type { Quick } from './TrajectoryNav';
@@ -1048,11 +1047,10 @@ export function TrajectoryInspector({
             <div className="ins-sec-h">
               <h4 id={`${uid}-did`}>What it did</h4>
               <p>
-                {block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session · hover one for
-                what it was, click it to open its processes below
+                {block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session · click one to
+                open its processes below
               </p>
             </div>
-            <SessionMap block={block} first={r?.first} now={edge} onTask={onTask} onPhase={onPhase} />
             {block.tasks?.length ? (
               <TaskList block={block} now={edge} view={view ?? aim} onTask={onTask} onPhase={onPhase} />
             ) : (
