@@ -228,35 +228,6 @@ td.ws-inf {
   font-style: italic;
 }
 
-/* Agent trees: depth and fan-out side by side above the tree table */
-.trees-shape {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 32px;
-  margin-bottom: 18px;
-}
-@media (max-width: 1100px) {
-  .trees-shape {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-/* agent trees: a heading only for a tree of more than one agent */
-table.trees tr.treehead {
-  cursor: pointer;
-  background: var(--surface-2);
-}
-table.trees tr.treehead .caret {
-  color: var(--muted);
-  margin-right: 8px;
-  font-family: 'IBM Plex Mono', monospace;
-}
-table.trees .sub-chip {
-  margin-left: 8px;
-  border-color: var(--crit);
-  color: var(--crit);
-}
-
 /* ------------------------------------------- agents by type (roadmap note 35)
  * A strip compares the types; one is open at a time. */
 .atype-strip {

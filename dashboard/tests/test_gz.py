@@ -27,7 +27,7 @@ from rc_dashboard.aggregator import Aggregator          # noqa: E402
 from rc_dashboard.export import (dated_dirs, feed_files, iter_lines_reverse,  # noqa: E402
                                  make_predicate, parse_filters, resume_plan, scan,
                                  seek_to_epoch, window_plan, window_scan)
-from rc_dashboard.feeds import host_of                  # noqa: E402
+from rc_dashboard.feedfile import host_of               # noqa: E402
 from rc_dashboard.normalize import Normalizer           # noqa: E402
 from rc_dashboard.tail import FileTailSource, read_back  # noqa: E402
 from rc_dashboard.windows import EVENTS                 # noqa: E402

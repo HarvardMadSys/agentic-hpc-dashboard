@@ -1,7 +1,6 @@
 """seed_mirror.py and pull-gz.sh: a copy built ahead of time from pulled `.gz` days,
 which a real sender then leaves alone, sending only the live day's plain bytes."""
 import fnmatch
-import gzip
 import json
 import os
 import re

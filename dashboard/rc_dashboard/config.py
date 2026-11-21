@@ -469,6 +469,8 @@ def defaults():
             "home_patterns": [],
             "lab_patterns": [],
         },
+        # reducer_version: read by no code, but in both fingerprints (hours.py,
+        # snapshots.py), so raising it discards every saved hour and build.
         "cache": {"dir": os.path.join(HERE, ".cache"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,

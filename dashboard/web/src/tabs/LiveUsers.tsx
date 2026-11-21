@@ -39,7 +39,7 @@ const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
 /* ------------------------------------------------------------- columns */
 
 /* The table's columns, each switchable (roadmap note 3). The defaults come
- * from the service's config (`live.user_columns`) when it names them, and a
+ * from the service's config (`ui.user_columns`) when it names them, and a
  * reader's own choice is kept in this browser. */
 type ColKey = 'agents' | 'ides' | 'running' | 'exited' | 'cpu' | 'read' | 'written' | 'sent' | 'received' | 'gpu' | 'last';
 const COLS: { k: ColKey; lbl: string; tip?: string; num?: boolean }[] = [
@@ -656,7 +656,7 @@ interface UsersProps {
   windowMin: number | null;
   windowLbl: string;
   P: Panels;
-  /** the service's default columns (`live.user_columns`), when it names them */
+  /** the service's default columns (`ui.user_columns`), when it names them */
   defaultCols?: string[] | null;
   pageUsers?: string[];
   pageTypes?: string[];
