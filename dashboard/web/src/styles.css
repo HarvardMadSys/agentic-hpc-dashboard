@@ -2597,8 +2597,8 @@ th.sorted .sort-arrow {
   color: var(--ink-2);
 }
 
-/* A labeled row of plates (Internal), and Live's headline row, whose span the
- * reader picks: "right now" or one of the window's spans. */
+/* A labeled row of plates (Internal), and Live's headline row, whose time
+ * range (the page's window) the reader picks above it. */
 .rowlabel {
   font-size: 11.5px;
   text-transform: uppercase;

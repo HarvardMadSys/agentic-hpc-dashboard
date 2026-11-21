@@ -478,6 +478,9 @@ export default function App() {
             userCols={userCols}
             whoUses={whoUses}
             presets={windows?.presets}
+            // the service's floor: `/api/windows` says it, the websocket's
+            // `windows` frame that supersedes it does not
+            minWin={windowsRest.data?.min_minutes ?? windows?.min_minutes ?? null}
             setWin={setWin}
           />
         );
