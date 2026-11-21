@@ -167,3 +167,17 @@ test('a minute of queue checks past the service\'s cap is a floor', () => {
   assert.equal(S.evidence(r, 'query_burst'), 'at least 40 queue checks in one minute');
   assert.equal(S.evidence({ ...r, queries_unplaced: 0 }, 'query_burst'), '40 queue checks in one minute');
 });
+
+test('a rule the page has no words for, or a hostile id, is named and never read off a prototype', async () => {
+  const text = abnormalOf(await tab({
+    ...FIX,
+    slurm: slurm({
+      abnormal: { rules: [...RULES, { id: 'gpu_idle', min: 2 }, { id: '__proto__', min: 1 }], sessions: 3, served: 3 },
+      sessions: [ERIN, { ...ADA, abnormal: ['polling', 'gpu_idle'] }, GRACE, BOB],
+    }),
+  }));
+  assert.match(text, /gpu_idle · a rule this page has no words for — —/);
+  assert.match(text, /__proto__ · a rule this page has no words for — —/);
+  assert.match(text, /gpu_idle broke it/);
+  assert.doesNotMatch(text, /NaN|\[object/);
+});

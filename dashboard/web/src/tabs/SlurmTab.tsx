@@ -50,6 +50,7 @@ import { DASH, dur, fint, fmt, pc } from '../lib/format';
 import { hasBody, pick, shown, winLabel } from '../lib/panels';
 import { useNodeWords } from '../lib/nodes';
 import type { Panels } from '../lib/panels';
+import { own, table } from '../lib/lookup';
 
 type Flag = 'parsable' | 'dependency' | 'array' | 'wrap';
 const FLAGS: [Flag, string, string][] = [
@@ -385,6 +386,8 @@ export function ruleWords(r: SlurmRule): { lbl: string; when: string } {
     case 'failed_runs':
       return { lbl: 'runs failing again and again', when: `${fint(r.min)} or more srun or salloc runs that failed` };
   }
+  // a rule from a service newer than the page: its name, and no words of ours
+  return { lbl: String((r as { id: unknown }).id), when: 'a rule this page has no words for' };
 }
 
 /** What a session did that broke `id`: its own numbers. */
@@ -406,6 +409,7 @@ export function evidence(r: SlurmSession, id: SlurmRuleId): string {
     case 'failed_runs':
       return `${fint(r.runs_failed)} of ${fint(r.runs)} srun or salloc runs failed`;
   }
+  return 'broke it';
 }
 
 /** Every session that broke a rule: the rules first, with each class's count of
@@ -420,7 +424,9 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
     (r, k) => k === 'session' ? r.user : k === 'rules' ? r.abnormal?.length ?? 0 : k === 'jobs' ? r.jobs
       : k === 'queries' ? r.queries : r.last,
   );
-  const rule = Object.fromEntries(ab.rules.map((r) => [r.id, ruleWords(r)])) as Partial<Record<SlurmRuleId, { lbl: string; when: string }>>;
+  // keyed by the service's rule ids: a table with no prototype (lib/lookup.ts)
+  const rule: Partial<Record<string, { lbl: string; when: string }>> =
+    table(Object.fromEntries(ab.rules.map((r) => [r.id, ruleWords(r)])));
   const keyOf = (r: SlurmSession, i: number) => r.session ?? `${r.cls}:${r.user ?? i}`;
   return (
     <>
@@ -445,7 +451,7 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
                   <b>{rule[r.id]?.lbl}</b> <span style={{ color: 'var(--muted)' }}>· {rule[r.id]?.when}</span>
                 </td>
                 {have.map((c) => {
-                  const n = sp.by_class?.[c]?.abnormal_by?.[r.id];
+                  const n = own(sp.by_class?.[c]?.abnormal_by, r.id);
                   return (
                     <td key={c} className="num" style={n ? { color: 'var(--crimson-ink)' } : undefined}>
                       {fint(n ?? null)}
