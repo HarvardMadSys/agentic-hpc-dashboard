@@ -1,23 +1,23 @@
 # Collectors
-> We are overcollecting data right now as we are still in the stage of doing measurement and analysis. Once we are done with the analysis, the collector will be configured to collect only the necessary data.
+> We are overcollecting data for now, because we are still measuring and analyzing. Once the analysis is done, we will configure the collector to collect only the data we need.
 
-> We also capture some duplicate data to verify the accuracy of our prior collection efforts (which run as unprivileged processes on the login nodes with 1 CPU core).
+> We also capture some duplicate data to check the accuracy of our earlier collectors, which run as unprivileged processes on the login nodes with 1 CPU core.
 
 ## What it collects
 
-The collectors collect data from two sources:
-user-level and kernel-level (using eBPF).
+The collectors gather data from two sources:
+user level and kernel level (using eBPF).
 
 ### eBPF-based collection
 - **Process lifecycle (fork, exec, exit)**: pid, parent pid, uid, executable name (e.g., python3, bash, rsync), timestamp
-- **Command line (at exec)**: full argv, whether it was cut (kernel only captures 4096 bytes)
+- **Command line (at exec)**: full argv, whether it was truncated (the kernel captures only 4096 bytes)
 - **Process context**: controlling terminal type (e.g., pts/0, tty1, or headless), cgroup, process group id, session id
 - **Exit status**: exit code, terminating signal, whether a core was dumped
 - **CPU time (at exit)**: user and system time for the whole process, CPU time of reaped children, time on CPU, time waiting in the run queue
 - **Memory (at exit)**: peak resident set size, thread count, minor and major page faults, voluntary and involuntary context switches
 - **I/O (at exit)**: bytes read and written at the storage layer, bytes read and written through syscalls
 - **Delay accounting (at exit)**: time blocked on disk I/O, on swap-in, on free pages
-- **Uninterruptible sleep (D state)**: total time, longest time spent in D state (the longest session a process spends in D state), number of times in D state
+- **Uninterruptible sleep (D state)**: total time in D state, longest single stretch a process spends in D state, number of times in D state
 - **Network bytes per process (TCP/UDP, IPv4/IPv6)**: bytes sent, bytes received, number of send/receive calls
 - **Network bytes per endpoint (TCP/UDP)**: remote address, port, protocol, direction (inbound/outbound), bytes sent, bytes received, call count
 - **TCP connections**: local and remote address and port, address family, open time, duration, connect latency, established or failed, bytes sent and received, inbound (accepted) or outbound
@@ -25,7 +25,7 @@ user-level and kernel-level (using eBPF).
 
 ### User-level collection
 
-Sampled as a snapshot at regular intervals (default to 5 minutes) by peeking at /proc and /sys, or using standard command-line tools.
+Sampled as a snapshot at regular intervals (5 minutes by default) by reading /proc and /sys, or by running standard command-line tools.
 
 **Per process**
 - **Process state**: state (R/S/D/Z/T), parent pid, process group, session, controlling terminal, start time, thread count

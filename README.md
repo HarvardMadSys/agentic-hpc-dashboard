@@ -7,7 +7,7 @@
 
 # agentic-hpc-dashboard
 
-The aims of this repository is to collect agent behaviors on HPC login nodes (the collector), and make them visible to human (the dashboard).
+The aim of this repository is to collect agent behavior on HPC login nodes (the collector) and make it visible to humans (the dashboard).
 
 <p>
   <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="64"></a>
@@ -20,7 +20,7 @@ The aims of this repository is to collect agent behaviors on HPC login nodes (th
 </p>
 
 ## Quick start -- Collector (`/collector`)
-A single file (`ebpfm.sh`) acts as a single entry point for the collectors.
+One script, `ebpfm.sh`, is the entry point for the collectors.
 Its commands are:
 ```bash
 sudo ./collector/ebpfm.sh bootstrap    # dependencies + the two sysctls, once per node
@@ -48,48 +48,48 @@ The RPM lays down:
 | Path | What |
 |---|---|
 | `/usr/lib/ebpfm/` | the standalone collector bundle (`ebpf_trace.py`, `node_snapshot.py`, `lib/`, `ebpfm.sh`) |
-| `/usr/bin/ebpfm` | symlink to `ebpfm.sh` — the entry point for `check`/`status`/`tail` |
+| `/usr/bin/ebpfm` | symlink to `ebpfm.sh`, the entry point for `check`/`status`/`tail` |
 | `/usr/lib/systemd/system/ebpfm.service` | the eBPF-tier unit, paths pre-substituted (no `install-unit` needed) |
 | `/usr/lib/sysctl.d/99-ebpfm.conf` | the two required sysctls, applied on install and every boot |
 | `/etc/default/ebpfm` | the unit's environment: the collector's settings, kept across upgrades |
 | `/var/log/ebpfm/` | default output directory |
 
-Dependencies and sysctls are handled by the package, not a separate bootstrap
-step:
+The package handles dependencies and sysctls itself, so there is no separate
+bootstrap step:
 
 * **Package deps** (`python3-bcc`, `bpftool`, `iproute`, `jq`, `sysstat`,
-  `nfs-utils`, `procps-ng`) are pulled in by `dnf`. `python3-bcc` lives in EPEL,
-  so the RPM `Requires: epel-release`; its `-devel` deps live in PowerTools,
-  which the RPM's `%post` enables (`powertools`/`PowerTools`/`crb`).
+  `nfs-utils`, `procps-ng`) are pulled in by `dnf`. `python3-bcc` comes from
+  EPEL, so the RPM has `Requires: epel-release`. Its `-devel` deps come from
+  PowerTools, which the RPM's `%post` script enables (`powertools`/`PowerTools`/`crb`).
 * **Sysctls** (`kernel.sched_schedstats`, `kernel.task_delayacct`) ship as the
-  `99-ebpfm.conf` drop-in above. `%post` applies them immediately via
-  `systemd-sysctl`, and systemd re-applies them on every boot — no reboot and no
-  `bootstrap` needed.
-  * On EL8's 4.18 kernel `kernel.task_delayacct` has **no writable sysctl** (it
-    was added upstream in 5.14), but delay accounting is compiled in
+  `99-ebpfm.conf` drop-in listed above. `%post` applies them immediately via
+  `systemd-sysctl`, and systemd re-applies them on every boot, so you don't need
+  to reboot or run `bootstrap`.
+  * On EL8's 4.18 kernel, `kernel.task_delayacct` has **no writable sysctl**
+    (upstream added it in 5.14). Delay accounting is still compiled in
     (`CONFIG_TASK_DELAY_ACCT=y`) and on by default, so the data is still
-    collected. The drop-in lists that key with a leading dash
-    (`-kernel.task_delayacct`) so `systemd-sysctl` skips the absent knob
-    silently instead of logging `Couldn't write '1' to 'kernel/task_delayacct'`.
+    collected. The drop-in lists the key with a leading dash
+    (`-kernel.task_delayacct`), so `systemd-sysctl` silently skips the missing
+    knob instead of logging `Couldn't write '1' to 'kernel/task_delayacct'`.
     `ebpfm check` reports it as a non-blocking WARN ("no such knob — compile-time
-    only"); `sched_schedstats` does exist on 4.18 and is set to 1 normally.
+    only"). `sched_schedstats` does exist on 4.18 and is set to 1 as usual.
 
-The service is **not** enabled on install; run `ebpfm check` (expect 0 FAIL)
-before enabling.
+Installing the RPM does **not** enable the service. Run `ebpfm check` (expect
+0 FAIL) before you enable it.
 
 Release vs. feature builds:
 
-* **Releases** — a semver git tag `vX.Y.Z` builds `ebpfm-collector-X.Y.Z-1.el8`
+* **Releases**: a semver git tag `vX.Y.Z` builds `ebpfm-collector-X.Y.Z-1.el8`
   and attaches it to the GitHub Release for that tag.
-* **Feature branches** — a push to any branch builds
+* **Feature branches**: a push to any branch builds
   `ebpfm-collector-0.0.0-<YYYYMMDD>.<shortsha>.el8` and uploads it as a workflow
-  **artifact** (not a release). The `0.0.0` version keeps a branch RPM sorting
-  below any real release, and the datestamp+sha makes each build identifiable.
+  **artifact** (not a release). The `0.0.0` version makes a branch RPM sort
+  below any real release, and the date stamp plus sha makes each build identifiable.
 
 ### Collector -- container image
 
 The collector also ships as a container image on the GitHub Container Registry,
-built on a project Rocky 8.10 base image. **x86_64 only** at present.
+built on the project's own Rocky 8.10 base image. It is **x86_64 only** for now.
 
 ```
 ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector     # the collector
@@ -102,8 +102,8 @@ Image tags follow the same scheme as the RPM:
 * branch push → `<branch>` (moving) and `<branch>-<YYYYMMDD>-<sha>` (immutable)
 * `main` → additionally `edge`
 
-`latest` is published with the first `vX.Y.Z` tag; until then, `edge`, main's newest
-build, is the one to pull.
+`latest` is published with the first `vX.Y.Z` tag. Until then, pull `edge`, which is
+main's newest build.
 
 Running the eBPF tier in a container needs host-level privileges, because eBPF
 attaches to the host kernel and the collector attributes **host** processes. On
@@ -124,15 +124,15 @@ docker run -d --name ebpfm \
 
 Notes:
 
-* The container entrypoint runs `ebpf_trace.py` **in the foreground** as PID 1's
-  child — it deliberately does *not* use `ebpfm.sh start`'s `systemd-run` cgroup
-  escape, which only applies to the capped user slice on a bare login node and
-  has no host systemd to talk to inside a container. `docker stop` delivers the
-  SIGTERM the collector turns into its `truncated` flush.
-* Other subcommands are reachable by passing them as arguments, e.g.
+* The container entrypoint runs `ebpf_trace.py` **in the foreground** as a child
+  of PID 1. It deliberately does *not* use the `systemd-run` cgroup escape from
+  `ebpfm.sh start`. That escape only matters for the capped user slice on a bare
+  login node, and inside a container there is no host systemd for it to talk to.
+  `docker stop` sends a SIGTERM, which the collector handles with its `truncated` flush.
+* To run other subcommands, pass them as arguments, e.g.
   `docker run --rm ... ghcr.io/.../collector:latest ebpfm check` or
   `... ebpfm features`.
-* The collector emits **only** to the mounted output directory; it makes
+* The collector writes **only** to the mounted output directory. It makes
   no outbound network connections.
 
 ## Quick start -- Dashboard (`/dashboard`)
@@ -144,27 +144,28 @@ cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the 
 uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
 uv run python -m rc_dashboard serve --port 8080
 ```
-`serve` starts only behind a password, or with `--open` on a machine only you can reach
-([`dashboard/README.md`](dashboard/README.md#password)).
+`serve` only starts with a password set, or with `--open` on a machine that only you can
+reach ([`dashboard/README.md`](dashboard/README.md#password)).
 
-Bash script bundling
+Or, bundled as one bash script:
 ```bash
 bash run.sh
 ```
 
-Demo mode, with no cluster, collector or root: the same service over a synthetic feed it
-writes itself, for fictional login nodes and users. Every page says *fake data*.
+Demo mode needs no cluster, collector or root. It runs the same service over a synthetic
+feed that it writes itself, for fictional login nodes and users. Every page says *fake data*.
 ```bash
 cd dashboard && uv run python -m rc_dashboard demo     # after the web build above; http://127.0.0.1:8080
 bash run-demo.sh                                       # or with hot reload, on :8087
 ```
-As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare Worker,
-<https://dashboard-demo.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
-redeployed from `develop` by `.github/workflows/demo-deploy.yml` whenever a push changes it.
+The demo also runs as an image (`docker/demo/Dockerfile`), and on a public URL behind a
+Cloudflare Worker, <https://dashboard-demo.agentic-system.org> (see
+[`deploy/cloudflare`](deploy/cloudflare/README.md)). `.github/workflows/demo-deploy.yml`
+redeploys it from `develop` whenever a push changes it.
 
-The real service, live, on a host of your own: [`deploy/fleet`](deploy/fleet/README.md)
-streams each node's collector files to that host over ssh (`fleet/fleet_stream.py`) and
-runs the dashboard over them behind a password, all set from one settings file.
+To run the real service live on a host of your own, see [`deploy/fleet`](deploy/fleet/README.md).
+It streams each node's collector files to that host over ssh (`fleet/fleet_stream.py`) and
+runs the dashboard on them behind a password. Everything is set from one settings file.
 
 ## Configuration -- Dashboard
 ```bash
