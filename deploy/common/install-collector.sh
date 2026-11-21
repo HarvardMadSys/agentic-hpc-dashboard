@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-collector.sh [--no-bootstrap] [--no-check]: run the collector on this host under
+# install-collector.sh [--no-bootstrap] [--no-check] [--restart]: run the collector on this host under
 # systemd, both tiers, where deploy/single's or deploy/fleet's dashboard reads them. Run as
 # root, from a checkout of this repository: the units run the collector from it.
 #
@@ -18,6 +18,9 @@
 # after a `git pull`: the units are written again, and a running collector keeps running --
 # a restart flushes every live process as `truncated` -- so restart it when you choose:
 #   systemctl restart ebpfm ebpfm-node
+# Except one started without EBPFM_GROUP=<the group>, which reads it only at start and would
+# give every file it makes from now on to root alone: that is refused, unless --restart lets
+# this restart it.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -30,14 +33,29 @@ die() { printf 'install-collector.sh: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=SCRIPTDIR/collector-paths.sh
 . "$here/collector-paths.sh"
 
-bootstrap=1 check=1
+bootstrap=1 check=1 restart=0
 for a in "$@"; do
   case $a in
     --no-bootstrap) bootstrap=0 ;;
     --no-check) check=0 ;;
-    *) echo "usage: install-collector.sh [--no-bootstrap] [--no-check]" >&2; exit 2 ;;
+    --restart) restart=1 ;;
+    *) echo "usage: install-collector.sh [--no-bootstrap] [--no-check] [--restart]" >&2; exit 2 ;;
   esac
 done
+
+# UNIT runs, and its process was started without EBPFM_GROUP=$GROUP in its environment: both
+# tiers read it once, at start (ebpf_trace.py's OUTPUT_GID; ebpfm.sh's export), so whatever
+# the defaults file says now, that process gives its new files to root alone.
+_runs_without_group() {
+  local pid
+  systemctl is-active --quiet "$1" 2>/dev/null || return 1
+  pid=$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)
+  case $pid in ''|0|*[!0-9]*) return 1 ;; esac
+  if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "EBPFM_GROUP=$GROUP"; then
+    return 1
+  fi
+  return 0
+}
 
 [ "$(id -u)" = 0 ] || die "run as root: the eBPF tier loads programs into the kernel"
 command -v systemctl >/dev/null 2>&1 || die "no systemctl: the collector runs as systemd units"
@@ -97,6 +115,22 @@ for d in "$EBPF_DIR" "$NODE_DIR"; do
   chgrp -R "$GROUP" "$d"
   chmod -R g+rX,g-w,o-rwx "$d"
 done
+# A tier already running without the group keeps making files only root can read: it is
+# restarted with --restart, and refused otherwise, rather than left so and called readable.
+stale=()
+for u in ebpfm.service ebpfm-node.service; do
+  if _runs_without_group "$u"; then stale+=("$u"); fi
+done
+if [ ${#stale[@]} -gt 0 ]; then
+  if [ "$restart" = 0 ]; then
+    die "${stale[*]} started without EBPFM_GROUP=$GROUP and read it only at start: every file
+  they make from now on would be readable by root alone, the dashboard's included. Run this
+  again with --restart to restart them (the eBPF tier then flushes every live process as
+  \`truncated\`), or restart them yourself and run it again."
+  fi
+  say "restarting ${stale[*]}, started without EBPFM_GROUP=$GROUP (the eBPF tier flushes its live processes as \`truncated\`)"
+  systemctl restart "${stale[@]}"
+fi
 systemctl enable --now ebpfm.service ebpfm-node.service
 say "the collector runs; its output is readable by group $GROUP"
 bash "$EBPFM" status || true

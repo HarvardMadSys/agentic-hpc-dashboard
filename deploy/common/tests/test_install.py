@@ -52,7 +52,7 @@ exec /usr/bin/install "${args[@]}"
     "systemctl": STUB + r'''
 case "$1" in
   is-active) for u in $STUB_ACTIVE; do [ "$u" = "${@: -1}" ] && exit 0; done; exit 3 ;;
-  show) echo 4242 ;;
+  show) echo "${STUB_MAINPID:-4242}" ;;
 esac
 exit 0
 ''',
@@ -201,6 +201,34 @@ class TestSingle(Rig):
         self.assertIn("systemctl enable rc-dashboard.service", calls)
         self.assertNotIn("systemctl start rc-dashboard", calls)
         self.assertIn("new-password", out)
+
+    def collector_running(self, group=None):
+        """The eBPF tier as it runs: ebpfm.service active, its MainPID a process whose
+        environment has EBPFM_GROUP=<group>, or none."""
+        env = {k: v for k, v in os.environ.items() if k != "EBPFM_GROUP"}
+        if group:
+            env["EBPFM_GROUP"] = group
+        p = subprocess.Popen(["sleep", "60"], env=env)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        return {"STUB_ACTIVE": "ebpfm.service", "STUB_MAINPID": str(p.pid)}
+
+    def test_a_collector_running_without_the_group_is_not_left_so(self):
+        """It reads EBPFM_GROUP at start: run on as it is, every file it makes from now on
+        would be root's alone, the dashboard's reads included. Not restarted unasked, since
+        a restart flushes its live processes as `truncated`: refused, or --restart."""
+        running = self.collector_running()
+        out = self.install(code=1, **running)
+        self.assertIn("--restart", out)
+        self.assertNotIn("systemctl restart ebpfm", self.calls())
+        self.assertNotIn("readable by group", out)
+        out = self.install("--restart", **running)
+        self.assertIn("systemctl restart ebpfm.service", self.calls())
+
+    def test_a_collector_running_with_the_group_keeps_running(self):
+        """An upgrade over a collector that already writes for the group leaves it be."""
+        self.install(**self.collector_running(group="ebpfm"))
+        self.assertNotIn("systemctl restart ebpfm", self.calls())
 
     def test_a_password_starts_it_and_a_run_again_restarts_it(self):
         self.install()

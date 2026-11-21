@@ -130,7 +130,10 @@ sudo deploy/single/install.sh            # or, in a fleet: deploy/fleet/install-
 
 The dashboard is rebuilt and restarted. The collector's units are written again, but a
 running collector keeps running: its restart flushes every live process as `truncated`, so
-choose the moment, `sudo systemctl restart ebpfm ebpfm-node`.
+choose the moment, `sudo systemctl restart ebpfm ebpfm-node`. One exception: a collector
+started without the group the installer gives its output reads that only at start, and would
+make every new file root's alone. The installer refuses to leave it so, and restarts it only
+when given `--restart`.
 
 ## The collector from the RPM
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-node.sh [--key 'PUBLIC KEY'] [--from ADDRESS] [--no-bootstrap] [--no-check]:
+# install-node.sh [--key 'PUBLIC KEY'] [--from ADDRESS] [--no-bootstrap] [--no-check] [--restart]:
 # one node of a fleet. Run as root on the node, from a checkout of this repository.
 #
 #   1. deploy/common/install-collector.sh: the collector, both tiers, as systemd units,
@@ -23,7 +23,7 @@ die() { printf 'install-node.sh: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=SCRIPTDIR/../common/collector-paths.sh
 . "$repo/deploy/common/collector-paths.sh"
 usage() {
-  echo "usage: install-node.sh [--key 'PUBLIC KEY'] [--from ADDRESS] [--no-bootstrap] [--no-check]" >&2
+  echo "usage: install-node.sh [--key 'PUBLIC KEY'] [--from ADDRESS] [--no-bootstrap] [--no-check] [--restart]" >&2
   exit 2
 }
 
@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
   case $1 in
     --key) [ $# -ge 2 ] || usage; key=$2; shift 2 ;;
     --from) [ $# -ge 2 ] || usage; from=$2; shift 2 ;;
-    --no-bootstrap|--no-check) pass+=("$1"); shift ;;
+    --no-bootstrap|--no-check|--restart) pass+=("$1"); shift ;;
     *) usage ;;
   esac
 done

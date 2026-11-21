@@ -28,8 +28,15 @@ It runs two steps, each of which says what it does as it goes:
    `rc-dashboard`.
 
 Options: `--no-bootstrap` when the collector's dependencies are already in place,
-`--no-check` to go on even though the collector's check reports a `FAIL`, and `--no-build`
-to keep the venv and the bundle as they are.
+`--no-check` to go on even though the collector's check reports a `FAIL`, `--restart` to let
+it restart a collector already running without the group (see below), and `--no-build` to
+keep the venv and the bundle as they are.
+
+On a server whose collector already runs, started before its output had a group, the
+install stops and says so: the collector reads the group only when it starts, and would go on
+making files that only root can read, the dashboard's reads included. Run it again with
+`--restart` to let it restart the collector, which flushes every process it is following as
+`truncated`, or restart the collector yourself first.
 
 Then make the password ([`../README.md`](../README.md#the-password)), put its hash in
 `/etc/rc-dashboard/dashboard.env`, and:
