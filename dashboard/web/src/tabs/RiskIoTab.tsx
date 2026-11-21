@@ -6,16 +6,14 @@
  */
 import { GLOSS } from '../lib/glossary';
 import { Fragment, memo, useState } from 'react';
-import type { Cls, IoByTool, IoProcess, IoSort, Resources } from '../api/types';
-import { GroupBars, HBars } from '../charts/primitives';
+import type { Cls, IoByTool, IoProcess, IoSort } from '../api/types';
+import { Fluid, HBars, HGroupBars } from '../charts/primitives';
 import { TOOL_COL } from '../charts/TimeChart';
-import { TimeChart } from './ResourcesTab';
-import type { TimeLine, View } from './ResourcesTab';
-import type { BarGroup, HBarItem } from '../charts/primitives';
+import type { BarSeries, HBarCell, HBarGroup } from '../charts/primitives';
 import { Legend, More, NoRows, Panel } from '../components/Panel';
 import { AccumCell, Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
 import { Plate } from '../components/Plate';
-import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { ByUser, distinct } from '../components/ByUser';
 import { CmdCell } from '../components/Cmd';
 import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
@@ -28,7 +26,6 @@ import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/typ
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
-import { shareOf, wholeOf } from '../lib/shares';
 import { table } from '../lib/lookup';
 
 
@@ -179,9 +176,6 @@ function InstanceRows({ rows, showArgs, withUser }: { rows: RiskInstance[]; show
   );
 }
 
-/** One direction of per-tool I/O, ranked on its own counter: disk bytes as the
- *  bar, syscall bytes in the tip. A tool that never moved a byte this way is not
- *  a top reader (or writer) and is left off rather than drawn as a zero. */
 /** A per-process counter's drawer sort: its commands, the heaviest first. */
 const QUANT_SORT: Record<string, IoSort | undefined> = {
   rd_mb: 'rd_mb', wr_mb: 'wr_mb', rchar_mb: 'rchar_mb', wchar_mb: 'wchar_mb',
@@ -194,46 +188,60 @@ const QUANT_LBL: Record<string, string> = table({
 });
 const quantLbl = (k: string) => QUANT_LBL[k] ?? k;
 
-/* A tool is not a class. A row the service split by class wears its class's
- * hue, and the chart then carries the key to them; a row with no class (the
- * service's own `by_tool` has none) wears one tool hue, never a class's:
- * crimson there read as "every write was an agent's". */
-const TOOL_HUE = TOOL_COL[0];
+/** The tools each disk counter ranks: a tool among the heaviest on either is drawn. */
+const TOOL_ROWS = 14;
 
-function toolBars(
-  rows: IoByTool[],
-  dir: 'read' | 'write',
-  from?: string | number | null,
-): { items: HBarItem[]; key: { k: string; c: string }[] } {
-  const [disk, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
-  const top = rows
-    .filter((t) => (t[disk] ?? 0) > 0)
-    .sort((a, b) => (b[disk] ?? 0) - (a[disk] ?? 0))
-    .slice(0, 14);
-  const split = CLS.filter((c) => top.some((t) => t.cls === c));
-  const key = split.length
-    ? [
-        ...split.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] })),
-        ...(top.some((t) => !t.cls) ? [{ k: 'every class', c: TOOL_HUE }] : []),
-      ]
-    : [];
-  const items = top
-    .map((t) => ({
-      k: t.tool,
-      v: t[disk] ?? null,
-      c: t.cls ? CLS_COL[t.cls] : TOOL_HUE,
-      lbl: mb(t[disk]),
-      tip:
-        `${t.tool}: disk ${dir === 'read' ? 'read' : 'written'} ${mb(t[disk])}, ` +
-        `${dir === 'read' ? 'read' : 'write'} requested ${mb(t[sys])}, through ${dir}() calls` +
-        (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
-        `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} processes exited`,
-      onPick: () => openIoCmds({
-        title: `disk ${dir === 'read' ? 'read' : 'written'} · ${t.tool}${t.cls ? ` · ${CLS_LBL[t.cls] ?? t.cls}` : ''}`,
-        sort: disk, tool: [t.tool], class: t.cls ? [t.cls] : undefined, from,
-      }),
-    }));
-  return { items, key };
+/* The two bars of a tool's row are directions, not classes, so they wear hues
+ * no class owns: a tool's bar in crimson read as "every write was an agent's". They are
+ * the network chart's hues for the same direction -- into a process (read,
+ * received) and out of it (written, sent) -- so one hue means one direction
+ * across the I/O panels. */
+const DISK_SERIES: BarSeries[] = [
+  { k: 'read', lbl: 'disk read', c: TOOL_COL[1] },
+  { k: 'written', lbl: 'disk written', c: TOOL_COL[0] },
+];
+
+/** Per-tool disk I/O, a row per tool: its disk read and disk written as two
+ *  bars on one scale, the bytes requested in each bar's tip. The rows are the
+ *  14 heaviest on each counter, so a tool that only writes is drawn wherever a
+ *  chart of writes alone would have drawn it; the most disk bytes in all come
+ *  first. A tool's 0 on the other counter is drawn as the 0 it measured, and
+ *  opens no commands: none moved a byte that way. A row the service split by
+ *  class (its own `by_tool` has none) names its class after the tool, since
+ *  the hue says the direction. */
+function toolBars(rows: IoByTool[], from?: string | number | null): HBarGroup[] {
+  const heaviest = (k: 'rd_mb' | 'wr_mb') =>
+    rows
+      .filter((t) => (t[k] ?? 0) > 0)
+      .sort((a, b) => (b[k] ?? 0) - (a[k] ?? 0))
+      .slice(0, TOOL_ROWS);
+  const disk = (t: IoByTool) => (t.rd_mb ?? 0) + (t.wr_mb ?? 0);
+  return Array.from(new Set([...heaviest('rd_mb'), ...heaviest('wr_mb')]))
+    .sort((a, b) => disk(b) - disk(a))
+    .map((t) => {
+      const who = t.cls ? ` · ${CLS_LBL[t.cls] ?? t.cls}` : '';
+      const bar = (dir: 'read' | 'write'): HBarCell => {
+        const [k, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
+        const done = dir === 'read' ? 'read' : 'written';
+        const v = t[k] ?? null;
+        return {
+          v,
+          lbl: mb(v),
+          tip:
+            `${t.tool}${who}: disk ${done} ${mb(v)}, ` +
+            `${dir === 'read' ? 'read' : 'write'} requested ${mb(t[sys])}, through ${dir}() calls` +
+            (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
+            `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} processes exited`,
+          onPick: v != null && v > 0
+            ? () => openIoCmds({
+                title: `disk ${done} · ${t.tool}${who}`,
+                sort: k, tool: [t.tool], class: t.cls ? [t.cls] : undefined, from,
+              })
+            : undefined,
+        };
+      };
+      return { k: t.tool + who, v: { read: bar('read'), written: bar('write') } };
+    });
 }
 
 /** The rules the Risks tab counted with: they differ by cluster (a `risk`
@@ -348,16 +356,14 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
 /* Two tabs from one reduction: Risk (what agents did that they should not have,
  * on a shared login node) and I/O (what their reads, writes and traffic cost).
  * They read the same panels, so they share the setup and each renders its half. */
-export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, io: ioPart = 'main' }: {
+export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'main' }: {
   P: Panels;
   cls: Cls[];
   part: 'risk' | 'io';
-  /** the I/O tiles: off on Resources, where their numbers are Overview rows */
-  plates?: boolean;
   /** which I/O panels: `main` is who moved the bytes (by tool, by user) and
-   *  where the network bytes went, on Resources; `internal` is the
-   *  requested-against-disk series (a repeat of Live's picker, with the
-   *  per-class page-cache table) and the raw counters' quantiles, on Internal */
+   *  where the network bytes went, on Resources; `internal` is the per-class
+   *  page-cache table and the raw counters' quantiles, on Internal. The disk
+   *  and requested bytes over time are Live's picker's (tabs/LiveCharts.tsx). */
   io?: 'main' | 'internal';
 }) {
   const nodes = useNodeWords();
@@ -378,45 +384,13 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
   const secSort = (sc: RiskSection) =>
     sortOf(sc.id, sc.kind === 'login_compute' ? 'tool' : sc.kind === 'credentials' ? 'pattern' : 'command', 'asc');
 
-  // the agent's share of all disk reads and writes: out of every class the
-  // panel counted, whatever the chips show (lib/shares.ts)
-  const rdPct = cls.includes('agent')
-    ? shareOf(byClass.agent?.rd_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.rd_mb)) : null;
-  const wrPct = cls.includes('agent')
-    ? shareOf(byClass.agent?.wr_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.wr_mb)) : null;
-
-  /* Disk bytes against requested bytes over time, one axis per direction,
-   * MB/min. Solid is what reached the disk, dashed is what programs requested
-   * through read() or write(): the gap between a class's two lines IS the page
-   * cache. Binned by
-   * exit time, like every series on the Resources tab. */
-  const res = pick<Resources>(P, 'resources', 'ebpfm');
-  const rs = res.series;
-  const ioCls = shown(rs?.by_class, cls);
-  const [zoom, setZoom] = useState<View>(null);
-  const ioLines = (disk: 'rd_mb' | 'wr_mb', sys: 'rchar_mb' | 'wchar_mb', sysWord: string): TimeLine[] =>
-    ioCls.flatMap((c) => [
-      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: rs?.by_class[c]?.[disk] },
-      { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: rs?.by_class[c]?.[sys], dashed: true },
-    ]);
-  const ioLegend = (sysWord: string) => [
-    ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
-    { k: 'disk', c: 'var(--ink-2)', solid: true },
-    { k: sysWord, c: 'var(--ink-2)', dashed: true },
-  ];
-
-  const netGroups: BarGroup[] = have.map((c) => ({
-    k: CLS_LBL[c] ?? c,
-    k2: `sent: cov ${pc(byClass[c]?.net_tx_mb?.coverage_pct)}`,
-    v: {
-      tx: byClass[c]?.net_tx_mb?.n ? (byClass[c]!.net_tx_mb.total ?? null) : null,
-      rx: byClass[c]?.net_rx_mb?.n ? (byClass[c]!.net_rx_mb.total ?? null) : null,
-    },
-  }));
+  // a class with a reading of the bytes it sent or received: an accumulator
+  // with nothing in it is "not measured", not a 0
+  const netRead = (c: string) =>
+    (['net_tx_mb', 'net_rx_mb'] as const).some((k) => !!byClass[c]?.[k]?.n && byClass[c]![k].total != null);
 
   const byTool = (io.by_tool ?? []).filter((t) => !t.cls || cls.includes(t.cls as Cls));
-  const toolReads = toolBars(byTool, 'read', coveredBy(io).from);
-  const toolWrites = toolBars(byTool, 'write', coveredBy(io).from);
+  const toolDisk = toolBars(byTool, coveredBy(io).from);
   const byUser = (io.by_user ?? []).filter((u) => !u.cls || cls.includes(u.cls as Cls));
 
   const risk = pick<RiskPanel>(P, 'risk', 'ebpfm');
@@ -505,141 +479,89 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
       </div>
       )}
 
-      {part === 'io' && plates && (
-      <div className="plates">
-        <Plate
-          k="agent disk read"
-          total={cls.includes('agent') ? byClass.agent?.rd_mb ?? null : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rd_mb ?? null]))}
-          fmtFn={(n) => mb(n)}
-          note={rdPct != null ? `${pc(rdPct)} of all disk reads` : undefined}
-        />
-        <Plate
-          k="agent disk written"
-          total={cls.includes('agent') ? byClass.agent?.wr_mb ?? null : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.wr_mb ?? null]))}
-          fmtFn={(n) => mb(n)}
-          note={wrPct != null ? `${pc(wrPct)} of all disk writes` : undefined}
-        />
-        <Plate
-          k="agent network sent"
-          total={cls.includes('agent') ? (byClass.agent?.net_tx_mb?.n ? byClass.agent.net_tx_mb.total ?? null : null) : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_tx_mb?.n ? byClass[c]!.net_tx_mb.total ?? null : null]))}
-          fmtFn={(n) => mb(n)}
-          tip="bytes sent over the network by the processes, as each exited"
-          note={byClass.agent?.net_tx_mb ? `measured on ${pc(byClass.agent.net_tx_mb.coverage_pct)} of agent processes` : undefined}
-        />
-        <Plate
-          k="agent network received"
-          total={cls.includes('agent') ? (byClass.agent?.net_rx_mb?.n ? byClass.agent.net_rx_mb.total ?? null : null) : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_rx_mb?.n ? byClass[c]!.net_rx_mb.total ?? null : null]))}
-          fmtFn={(n) => mb(n)}
-          tip="bytes received over the network by the processes, as each exited"
-          note={byClass.agent?.net_rx_mb ? `measured on ${pc(byClass.agent.net_rx_mb.coverage_pct)} of agent processes` : undefined}
-        />
-      </div>
-      )}
-
       {part === 'io' && (
       <div className="grid wide">
+        {/* The bytes per class, over the window: what the programs asked for
+            against what reached the disk, and the page cache's part between.
+            The same bytes over time are Live's, under More over time. */}
         {ioPart === 'internal' && (
         <Panel
           id="sec-syscall-bytes-against-disk-bytes"
           title="Requested bytes against disk bytes"
-          p={res}
+          p={io}
           span
-          empty={!ioCls.length || !rs?.t.length}
+          empty={!have.length}
           emptyWhat="no class block for the selection"
         >
-          {rs && (
-            <div className="pair-row">
-              <div>
-                <div className="eyebrow">read · solid: disk read, dashed: read requested, through read() calls</div>
-                <TimeChart s={rs} lines={ioLines('rd_mb', 'rchar_mb', 'requested')} ylabel="MB / min"
-                  yname="read" perMin view={zoom} onView={setZoom} legend={ioLegend('requested')} />
-              </div>
-              <div>
-                <div className="eyebrow">written · solid: disk written, dashed: write requested, through write() calls</div>
-                <TimeChart s={rs} lines={ioLines('wr_mb', 'wchar_mb', 'requested')} ylabel="MB / min"
-                  yname="written" perMin view={zoom} onView={setZoom} legend={ioLegend('requested')} />
-              </div>
-            </div>
-          )}
-          <More label="bytes per class">
-            <div className="scroller">
-              <table>
-                <thead>
-                  <tr>
-                    <SortTh s={sortOf('io-class')} k="cls" first="asc">class</SortTh>
-                    <SortTh s={sortOf('io-class')} k="events" num tip="processes exited">processes</SortTh>
-                    <SortTh s={sortOf('io-class')} k="events_with_io" num tip="processes that read or wrote anything, and the share of the class they are">with I/O</SortTh>
-                    <SortTh s={sortOf('io-class')} k="rchar_mb" num tip={GLOSS.rchar}>read requested</SortTh>
-                    <SortTh s={sortOf('io-class')} k="rd_mb" num tip={GLOSS.rd}>disk read</SortTh>
-                    <SortTh s={sortOf('io-class')} k="wchar_mb" num tip={GLOSS.wchar}>write requested</SortTh>
-                    <SortTh s={sortOf('io-class')} k="wr_mb" num tip={GLOSS.wr}>disk written</SortTh>
-                    <SortTh s={sortOf('io-class')} k="cache_served_mb" num tip={GLOSS.cacheserved}>cache served</SortTh>
-                    <SortTh s={sortOf('io-class')} k="cache_hit_pct" num tip={GLOSS.cachehit}>cache hit</SortTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortOf('io-class').sort(have, (c, k) =>
-                    k === 'cls' ? CLS_LBL[c] ?? c : ((byClass[c] as unknown as Record<string, number | null>)?.[k] ?? null),
-                  ).map((c) => {
-                    const b = byClass[c]!;
-                    return (
-                      <tr key={c}>
-                        <td>{CLS_LBL[c] ?? c}</td>
-                        <td className="num">{fint(b.events)}</td>
-                        <td className="num">
-                          {fint(b.events_with_io)}
-                          <Coverage pct={b.io_coverage_pct} n={b.events_with_io} />
-                        </td>
-                        <td className="num">{mb(b.rchar_mb)}</td>
-                        <td className="num">{mb(b.rd_mb)}</td>
-                        <td className="num">{mb(b.wchar_mb)}</td>
-                        <td className="num">{mb(b.wr_mb)}</td>
-                        <td className="num">{mb(b.cache_served_mb)}</td>
-                        <td className="num">
-                          {b.cache_hit_pct == null ? (
-                            <span className="nm">not measured</span>
-                          ) : (
-                            pc(b.cache_hit_pct)
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </More>
+          <div className="scroller">
+            <table>
+              <thead>
+                <tr>
+                  <SortTh s={sortOf('io-class')} k="cls" first="asc">class</SortTh>
+                  <SortTh s={sortOf('io-class')} k="events" num tip="processes exited">processes</SortTh>
+                  <SortTh s={sortOf('io-class')} k="events_with_io" num tip="processes that read or wrote anything, and the share of the class they are">with I/O</SortTh>
+                  <SortTh s={sortOf('io-class')} k="rchar_mb" num tip={GLOSS.rchar}>read requested</SortTh>
+                  <SortTh s={sortOf('io-class')} k="rd_mb" num tip={GLOSS.rd}>disk read</SortTh>
+                  <SortTh s={sortOf('io-class')} k="wchar_mb" num tip={GLOSS.wchar}>write requested</SortTh>
+                  <SortTh s={sortOf('io-class')} k="wr_mb" num tip={GLOSS.wr}>disk written</SortTh>
+                  <SortTh s={sortOf('io-class')} k="cache_served_mb" num tip={GLOSS.cacheserved}>cache served</SortTh>
+                  <SortTh s={sortOf('io-class')} k="cache_hit_pct" num tip={GLOSS.cachehit}>cache hit</SortTh>
+                </tr>
+              </thead>
+              <tbody>
+                {sortOf('io-class').sort(have, (c, k) =>
+                  k === 'cls' ? CLS_LBL[c] ?? c : ((byClass[c] as unknown as Record<string, number | null>)?.[k] ?? null),
+                ).map((c) => {
+                  const b = byClass[c]!;
+                  return (
+                    <tr key={c}>
+                      <td>{CLS_LBL[c] ?? c}</td>
+                      <td className="num">{fint(b.events)}</td>
+                      <td className="num">
+                        {fint(b.events_with_io)}
+                        <Coverage pct={b.io_coverage_pct} n={b.events_with_io} />
+                      </td>
+                      <td className="num">{mb(b.rchar_mb)}</td>
+                      <td className="num">{mb(b.rd_mb)}</td>
+                      <td className="num">{mb(b.wchar_mb)}</td>
+                      <td className="num">{mb(b.wr_mb)}</td>
+                      <td className="num">{mb(b.cache_served_mb)}</td>
+                      <td className="num">
+                        {b.cache_hit_pct == null ? (
+                          <span className="nm">not measured</span>
+                        ) : (
+                          pc(b.cache_hit_pct)
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </Panel>
         )}
 
         {ioPart === 'main' && (
         <>
+        {/* the anchor the read chart had, so a link or a citation to it lands here */}
         <Panel
           id="sec-reads-by-tool"
-          title="Disk read by tool"
+          title="Disk read and written by tool"
           ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
-          empty={!toolReads.items.length}
-          emptyWhat="no tool read from disk in the selection"
+          span
+          empty={!toolDisk.length}
+          emptyWhat="no tool read from or wrote to disk in the selection"
         >
-          <HBars items={toolReads.items} labelW={150} valW={100} />
-          <Legend items={toolReads.key} />
-        </Panel>
-
-        <Panel
-          id="sec-writes-by-tool"
-          title="Disk written by tool"
-          ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
-          p={io}
-          empty={!toolWrites.items.length}
-          emptyWhat="no tool wrote to disk in the selection"
-        >
-          <HBars items={toolWrites.items} labelW={150} valW={100} />
-          <Legend items={toolWrites.key} />
+          {/* as wide as the panel, which has the row to itself; never drawn under
+              560, so in a narrower box it fits as HBars does (useFit) */}
+          <Fluid natural={560}>
+            {(w) => (
+              <HGroupBars groups={toolDisk} series={DISK_SERIES} W={Math.max(560, w)} labelW={150} valW={100} fmtVal={mb} />
+            )}
+          </Fluid>
+          <Legend items={DISK_SERIES.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
 
         <Panel
@@ -647,73 +569,54 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
           ask={[{ panel: 'io_process', keys: ['by_class', 'by_tool', 'endpoints', 'notes'] }]}
           p={io}
           span
-          empty={!have.length || netGroups.every((g) => g.v.tx == null && g.v.rx == null)}
+          empty={!have.length || !have.some(netRead)}
           emptyWhat="no TCP accounting for the selection"
         >
-          {/* the bars, and beside them (under them, when narrow) where the bytes went */}
+          {/* each class's bytes and calls, and beside them (under them, when
+              narrow) where the bytes went. Each class's share of the bytes is
+              Who uses what's, on Live: bars of the same totals here said it
+              again. */}
           <div className="net-split">
-            <div className="net-bars">
-              {/* The groups are the classes; the bars in each are directions, so
-                  they wear hues no class owns: crimson egress under "IDE" read as
-                  agent. */}
-              <GroupBars
-                groups={netGroups}
-                series={[
-                  { k: 'tx', lbl: 'sent', c: TOOL_COL[0] },
-                  { k: 'rx', lbl: 'received', c: TOOL_COL[1] },
-                ]}
-                W={520}
-                H={200}
-                ylabel="MB"
-                fmtVal={(v) => mb(v)}
-              />
-              <Legend
-                items={[
-                  { k: 'sent', c: TOOL_COL[0] },
-                  { k: 'received', c: TOOL_COL[1] },
-                ]}
-              />
-              <More label="network bytes per class">
-                <div className="scroller">
-                  <table>
-                    <thead>
-                      <tr>
-                        <SortTh s={sortOf('net-class')} k="cls" first="asc">class</SortTh>
-                        <SortTh s={sortOf('net-class')} k="tx" num tip={GLOSS.tx}>sent</SortTh>
-                        <SortTh s={sortOf('net-class')} k="rx" num tip={GLOSS.rx}>received</SortTh>
-                        <SortTh s={sortOf('net-class')} k="calls" num tip={GLOSS.netcalls}>network calls</SortTh>
+            <div className="net-class">
+              <div className="scroller">
+                <table>
+                  <thead>
+                    <tr>
+                      <SortTh s={sortOf('net-class')} k="cls" first="asc">class</SortTh>
+                      <SortTh s={sortOf('net-class')} k="tx" num tip={GLOSS.tx}>sent</SortTh>
+                      <SortTh s={sortOf('net-class')} k="rx" num tip={GLOSS.rx}>received</SortTh>
+                      <SortTh s={sortOf('net-class')} k="calls" num tip={GLOSS.netcalls}>network calls</SortTh>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortOf('net-class').sort(have, (c, k) =>
+                      k === 'cls' ? CLS_LBL[c] ?? c
+                      : k === 'tx' ? byClass[c]?.net_tx_mb?.total ?? null
+                      : k === 'rx' ? byClass[c]?.net_rx_mb?.total ?? null
+                      : byClass[c]?.net_calls?.total ?? null,
+                    ).map((c) => (
+                      <tr key={c}>
+                        <td>{CLS_LBL[c] ?? c}</td>
+                        <td className="num">
+                          <IoNum q={{ title: `network sent · ${CLS_LBL[c] ?? c}`, sort: 'tx_mb', class: [c], ...coveredBy(io) }}>
+                            <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
+                          </IoNum>
+                        </td>
+                        <td className="num">
+                          <IoNum q={{ title: `network received · ${CLS_LBL[c] ?? c}`, sort: 'rx_mb', class: [c], ...coveredBy(io) }}>
+                            <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
+                          </IoNum>
+                        </td>
+                        {/* an Acc like its tx/rx neighbours: the count carries the
+                            same coverage, so it must show it the same way */}
+                        <td className="num">
+                          <AccumCell a={byClass[c]?.net_calls} />
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {sortOf('net-class').sort(have, (c, k) =>
-                        k === 'cls' ? CLS_LBL[c] ?? c
-                        : k === 'tx' ? byClass[c]?.net_tx_mb?.total ?? null
-                        : k === 'rx' ? byClass[c]?.net_rx_mb?.total ?? null
-                        : byClass[c]?.net_calls?.total ?? null,
-                      ).map((c) => (
-                        <tr key={c}>
-                          <td>{CLS_LBL[c] ?? c}</td>
-                          <td className="num">
-                            <IoNum q={{ title: `network sent · ${CLS_LBL[c] ?? c}`, sort: 'tx_mb', class: [c], ...coveredBy(io) }}>
-                              <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
-                            </IoNum>
-                          </td>
-                          <td className="num">
-                            <IoNum q={{ title: `network received · ${CLS_LBL[c] ?? c}`, sort: 'rx_mb', class: [c], ...coveredBy(io) }}>
-                              <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
-                            </IoNum>
-                          </td>
-                          {/* an Acc like its tx/rx neighbours: the count carries the
-                              same coverage, so it must show it the same way */}
-                          <td className="num">
-                            <AccumCell a={byClass[c]?.net_calls} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </More>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
             {io.endpoints && <NetEndpoints ep={io.endpoints} have={have} byClass={byClass} />}
           </div>

@@ -57,14 +57,14 @@ function latest(rate: LiveResponse['rate'], c: string): number | null {
 }
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
- * word a reader meets is "sessions" (roadmap note 14). */
-const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct', gloss?: string][] = [
+ * word a reader meets is "sessions" (roadmap note 14). A node's load and CPU
+ * are the node tier's, on Login node health (tabs/NodeHealth.tsx): the live
+ * frame's rows carry them as null, so this table has no column for them. */
+const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num', gloss?: string][] = [
   ['roots', 'sessions', 'int', 'sessions_now'],
   ['procs', 'running', 'int', 'running'],
   ['events', 'exited', 'int', 'exited'],
   ['rss_gb', 'memory GB', 'num', 'rss'],
-  ['cpu_pct', 'CPU', 'pct'],
-  ['load_1', 'load₁', 'num'],
   ['d_state', 'D-state', 'int', 'dstate'],
   ['users', 'users', 'int', 'user'],
   ['tcp_open_ext', 'ext TCP', 'int', 'exttcp'],
@@ -73,7 +73,6 @@ const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num' | 'pct', gloss?:
 function hostCell(h: LiveHost, key: string, kind: string) {
   const v = h[key];
   if (typeof v !== 'number') return DASH;
-  if (kind === 'pct') return fmt(v) + '%';
   if (kind === 'num') return fmt(v);
   if (key === 'd_state' && v > 0) return <span style={{ color: 'var(--crit)' }}>{fint(v)}</span>;
   return fint(v);

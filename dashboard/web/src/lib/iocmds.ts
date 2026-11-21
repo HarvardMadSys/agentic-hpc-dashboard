@@ -15,7 +15,7 @@ export interface IoQuery {
   class?: string[];
   agent_type?: string[];
   user?: string[];
-  /** effective command names (`_eff`), as Top tools and Reads by tool name them */
+  /** effective command names (`_eff`), as Top tools and Disk read and written by tool name them */
   tool?: string[];
   /** tool kinds (Tool mix) */
   bucket?: string[];

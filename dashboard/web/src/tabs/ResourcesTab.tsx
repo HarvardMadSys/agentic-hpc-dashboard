@@ -5,10 +5,8 @@
  * readable for every process (the collector is unprivileged), so a 0 total
  * would be a claim about the cluster rather than about the instrument.
  *
- * The charts are time series over the window, from `series`. Most are sums BY
- * EXIT TIME, and each such chart says so in its pill: a whole-life counter
- * lands in the bin its process exited in. Resident memory is the exception,
- * sampled while processes run, and its pill says that instead.
+ * Its time series, `series`, are drawn on Live (tabs/LiveCharts.tsx), not
+ * here: no chart on this tab or on Internal repeats one of them.
  */
 import { memo, useState } from 'react';
 import type { Accum, Cls, LiveResponse, MaxProcess, Quant, Resources } from '../api/types';
@@ -16,8 +14,6 @@ import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
-import { TimeChart } from '../charts/TimeChart';
-import type { TimeLine, View } from '../charts/TimeChart';
 import { Basis, Panel, More } from '../components/Panel';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
@@ -303,15 +299,13 @@ function FaultTable({
   );
 }
 
-export { TimeChart };
-export type { TimeLine, View };
-
 /* Two readers, two halves (user, 2026-11-17). An operator asks whose process
  * to go and look at, and who moved the bytes and where to: that is Resources.
  * The per-class quantile and kernel-accounting tables answer a researcher's
  * question, so they sit on Internal (`part="internal"`), with the I/O panels
- * that are the same kind of table or repeat a Live chart. Same payloads, same
- * titles, so a citation lands on whichever tab draws the panel (lib/cites.ts). */
+ * that are the same kind of table. A chart that repeated one of Live's is not
+ * drawn here or there. Same payloads, same titles, so a citation lands on
+ * whichever tab draws the panel (lib/cites.ts). */
 export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', live = null }: {
   P: Panels;
   cls: Cls[];
@@ -342,7 +336,7 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
             became rows of Who uses what, and its time series are on Live's
             picker. */}
         <div className="grid-gap" />
-        <RiskIoTab P={P} cls={cls} part="io" plates={false} io="main" />
+        <RiskIoTab P={P} cls={cls} part="io" io="main" />
       </>
     );
   }
@@ -385,7 +379,7 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
       </div>
 
       <div className="grid-gap" />
-      <RiskIoTab P={P} cls={cls} part="io" plates={false} io="internal" />
+      <RiskIoTab P={P} cls={cls} part="io" io="internal" />
     </>
   );
 });
