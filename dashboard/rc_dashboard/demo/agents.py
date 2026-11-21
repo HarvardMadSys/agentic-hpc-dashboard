@@ -28,7 +28,7 @@ import time
 from collections import Counter
 
 from . import cast
-from .records import Proc, endpoint, envelope, exit_record, logu
+from .records import Proc, endpoint, envelope, logu
 from .sessions import DURATION, Builder, human_shell, sbatch_args, slurm_submit, squeue_args
 
 CLAUDE_VER = "2.1.311"

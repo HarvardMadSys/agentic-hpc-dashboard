@@ -37,12 +37,10 @@ How to read it:
   read and reduced (path NODE) and served as `panels.node`, which RE-1 draws and LV-1 reads;
   its history over the window (path NODEHIST) is served as `panels.node.series`, which LV-15
   draws.
-- **Slurm**: no figure reads the scheduler's accounting feeds (`feeds.sacct`, `feeds.sacctmgr`),
-  and `sacct.py` is imported by nothing the service runs. The Slurm figures read the eBPF tier: its
-  `submit` records (one per `sbatch`, `srun` or `salloc`) and the `exit` records of the scheduler
-  commands run on the login nodes (`squeue`, `sacct`, `scontrol`, `scancel`, `srun`, ...).
-- **The domains and user CSVs** (`feeds.domains`, `feeds.user_actor`): resolved and listed on the
-  Feeds tab (FD-2); no figure reads them.
+- **Slurm**: the service reads no scheduler accounting (`sacct`, `sacctmgr`). The Slurm figures
+  read the eBPF tier: its `submit` records (one per `sbatch`, `srun` or `salloc`) and the `exit`
+  records of the scheduler commands run on the login nodes (`squeue`, `sacct`, `scontrol`,
+  `scancel`, `srun`, ...).
 
 On FAS RC's eight login nodes on 2026-11-15 the eBPF tier wrote 21.6 M records: 17.1 M `exit`,
 2.1 M `conn`, 1.7 M `netio`, 0.66 M `residency`, 18 k `submit` and 11.5 k `residency_totals`
@@ -304,7 +302,7 @@ narrowed only by class, tool, kind of tool, agent type or time reads the JSONL. 
 
 #### SH-1 status pill
 
-- **Shows:** `live`, or what is wrong with the data (`data delayed`, `partial data`, `no data yet`,
+- **Shows:** `live`, or what is wrong with the data (`data delayed`, `no data yet`,
   `collector not found`), or how updates arrive (`refreshing every 15 s`, `connecting…`,
   `disconnected · retrying`); on a pinned clock, `frozen capture` and its `as of`.
 - **Records:** none of its own: each required feed's status and newest record (FEEDS), the live
@@ -1655,7 +1653,7 @@ and no filter.
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|
 | FD-1 | collectors: one row per login node, opened into its runs | LIVE (health), FEEDS (files) | `/api/collectors` `hosts`, `tiers` | `health.py:CollectorHealth.feed`, `report`; `aggregator.py:Aggregator.collectors` · `tabs/FeedsTab.tsx:Collectors`, `HostDetail`, `Runs` |
-| FD-2 | feeds, and the history store | FEEDS | `/api/feeds` | `feeds.py:resolve`, `resolve_dated`, `resolve_globbed`, `resolve_file`; `Aggregator.refresh_feeds`; `history.py:HistoryStore.status` · `tabs/FeedsTab.tsx:Sources`, `Where`, `History` |
+| FD-2 | feeds, and the history store | FEEDS | `/api/feeds` | `feeds.py:resolve`, `resolve_dated`; `Aggregator.refresh_feeds`; `history.py:HistoryStore.status` · `tabs/FeedsTab.tsx:Sources`, `Where`, `History` |
 | FD-3 | startup read | LIVE | `backfill` | `Aggregator.backfill_now` · `tabs/FeedsTab.tsx:Backfill` |
 | FD-4 | configuration | CONFIG | `/api/config` | `config.py:Config.as_dict` · `tabs/FeedsTab.tsx:FeedsTab` |
 
@@ -1678,19 +1676,17 @@ and no filter.
 
 #### FD-2 feeds, and the history store
 
-- **Shows:** every feed -- eBPF, node tier, `sacct`, `sacctmgr`, domains CSV, user CSV --: status,
-  newest record and its age against the feed's limit, where it was read from and where else it was
-  looked for, files, bytes, days, hosts; for the eBPF tier, the history store's replicas and their
-  size, the conversion's progress, and how many selective reads the replicas answered
+- **Shows:** both feeds -- the eBPF tier and the node tier --: status, newest record and its age
+  against the feed's limit, where it was read from and where else it was looked for, files, bytes,
+  days, hosts; for the eBPF tier, the history store's replicas and their size, the conversion's
+  progress, and how many selective reads the replicas answered
   ([History in Parquet](../../dashboard/README.md#history-in-parquet)).
-- **Records:** for the eBPF and node tiers, the newest file's last record; for the others, none, only
-  their files' names, sizes and times.
-- **Computation:** `resolve`: the dated tiers glob `feeds.<feed>.days` dated directories (8 for the
-  eBPF tier, 2 for the node tier) and read the newest file's last record (`newest_record_ts`);
-  `sacct` and `sacctmgr` glob their patterns; the CSVs stat their file. `refresh_feeds` adds the eBPF
-  tier's records counted, schema versions, exclusions, backfill, tail counters, synthetic hosts and
-  the store's status.
-- **Cost:** per read a glob, a stat per file and a tail read per dated feed (SH-4).
+- **Records:** each feed's newest file's last record.
+- **Computation:** `resolve` globs `feeds.<feed>.days` dated directories (8 for the eBPF tier, 2 for
+  the node tier) and reads the newest file's last record (`newest_record_ts`). `refresh_feeds` adds
+  the eBPF tier's records counted, schema versions, exclusions, backfill, tail counters, synthetic
+  hosts and the store's status.
+- **Cost:** per read a glob, a stat per file and a tail read per feed (SH-4).
 
 #### FD-3 startup read
 

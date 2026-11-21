@@ -28,7 +28,7 @@ export function isConfigLeaf(n: ConfigNode): n is ConfigLeaf {
 
 /* ----------------------------------------------------------------- feeds */
 
-export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing' | 'degraded';
+export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing';
 
 export interface FeedReport {
   name: string;

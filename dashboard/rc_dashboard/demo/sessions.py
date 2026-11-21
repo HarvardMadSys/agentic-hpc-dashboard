@@ -14,11 +14,10 @@ the commit it ends with. Order is the collector's too: a child's exit is written
 before the shell that waited on it.
 """
 import random
-import shlex
 from collections import defaultdict
 
 from . import cast
-from .records import Proc, costs, endpoint, envelope, exit_record, line, logu
+from .records import Proc, costs, envelope, exit_record, line, logu
 
 # The I/O figures a parent's exit holds of the children it reaped.
 _IO = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb")

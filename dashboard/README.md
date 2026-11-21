@@ -63,6 +63,12 @@ never outranks the file.
   top-level key one slip from one of them (`anonymise`), stops it and names the nearest key
   there is. An unknown key anywhere else, such as an old file's `feeds.ebpf.prefer` from the
   EBR format, is a warning.
+- **The feeds since removed are named and ignored, never refused.** Nothing read the
+  scheduler's accounting or the domain and user CSVs, so their feeds are gone. A unit, wrapper
+  or config file written for them still starts, with a warning for each setting it gives:
+  `feeds.sacct`, `feeds.sacctmgr`, `feeds.domains` or `feeds.user_actor` in the file, which is
+  dropped from the resolved config; `RC_DASH_SACCT_DIR` and the other variables
+  (`config.RETIRED_ENV`); or `--sacct-dir` and `--jobs-csv`.
 - `history` (`RC_DASH_HISTORY`, `RC_DASH_HISTORY_DIR`, `_WORKERS`, `_DAYS`) keeps every
   sealed day-file as Parquet too, made in the background, and answers a selective read of one
   from that copy ([History in Parquet](#history-in-parquet)); `RC_DASH_HISTORY=0` reads every
@@ -1809,7 +1815,6 @@ only jobs with GPUs and a time limit on the command line, and say how many those
 | `rc_dashboard/annotate.py` | what each tool call was for, in a model's words: the inspector's "annotate purposes" |
 | `rc_dashboard/iocmds.py` | every command behind an I/O figure, looked up when it is clicked |
 | `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
-| `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (over `feedfile.py`, whose names it re-exports) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
 | `rc_dashboard/auth.py` | sign-in for the whole service: one password, kept as a salted scrypt hash ([Password](#password)) |

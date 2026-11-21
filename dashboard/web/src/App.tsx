@@ -133,7 +133,6 @@ function headline(feeds: Record<string, FeedReport> | null): {
     (f) => f.lag_s != null && f.max_age_s != null && f.lag_s > f.max_age_s,
   );
   const bad = pool.find((f) => f.status === 'missing') ||
-    pool.find((f) => f.status === 'degraded') ||
     pool.find((f) => f.status === 'stale') ||
     pool.find((f) => f.status === 'empty');
   // The freshest lag among live-cadence feeds is the number a user wants.
@@ -152,7 +151,6 @@ function headline(feeds: Record<string, FeedReport> | null): {
 const DATA_WORDS: Record<FeedStatus, [string, string]> = {
   ok: ['live', ''],
   stale: ['data delayed', 'a feed is older than its own max age: the numbers are not current'],
-  degraded: ['partial data', 'a feed is reporting, but not all of it'],
   empty: ['no data yet', 'the collector is running but has written nothing in this window'],
   missing: ['collector not found', 'a required feed has no files where it is expected'],
 };

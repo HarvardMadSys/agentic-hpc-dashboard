@@ -960,10 +960,6 @@ def run(a, tmp, days, hosts, services):
         # names come from the records' own host names, as in a demo: a lookup's
         # answer depends on when it landed, which no store decides
         "RC_DASH_RDNS": "0",
-        "RC_DASH_SACCT_DIR": none,
-        "RC_DASH_SACCTMGR_DIR": none,
-        "RC_DASH_DOMAINS_CSV": os.path.join(none, "map_user.csv"),
-        "RC_DASH_USER_CSV": os.path.join(none, "user.csv"),
         "RC_DASH_STATIC_DIR": none,
         # set iteration order is drawn per process; fixed, two services that
         # build the same state serve it in the same order
