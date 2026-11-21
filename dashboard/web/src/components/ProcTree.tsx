@@ -793,8 +793,8 @@ export const ProcTree = memo(function ProcTree({
             procs
           </div>
           <div className="num">exit</div>
-          {/* Zoomed, the tip, and with it the "?" of a header that explains itself (styles.css), is on the end clock. On this flex
-              row the "?" would be a third item, and space-between would pull the end clock in from where a full-width bar ends. */}
+          {/* Zoomed, the tip, and with it the dotted underline of a label that explains itself (styles.css), is on the end clock:
+              on the row it would mark both clocks and the space between them. */}
           <div className={`pt-tlhead${view ? ' zoomed' : ''}`}>
             <span>{tl ? clock(tl.lo) : 'timeline'}</span>
             <span data-tip={view ? 'zoomed: the bars are drawn on the range picked on the strip above' : undefined}>{tl ? clock(tl.hi) : ''}</span>

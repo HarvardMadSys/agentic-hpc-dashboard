@@ -13,13 +13,13 @@ import { getAskInfo } from './api/client';
 import type { AskInfo, Cls, Facets, FeedReport, FeedStatus, TrajOrder, TrajRank } from './api/types';
 import { AskScopeCtx } from './components/Ask';
 import type { AskScope } from './components/Ask';
-import { BuildStamp } from './components/BuildStamp';
 import { ClassFilter } from './components/ClassFilter';
 import { WhoFilter } from './components/WhoFilter';
 import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
-import { SectionList, useSections } from './components/SectionNav';
+import { useSections } from './components/SectionNav';
 import { useScrollEdges } from './lib/scrollEdges';
+import { buildStamp } from './lib/buildStamp';
 import { WindowPicker } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
@@ -190,7 +190,7 @@ export default function App() {
   // with every live frame. `setUrl` itself is stable (useUrlState).
   // Opening a tab, a session or a user's sessions is navigation: back returns.
   const goto = useCallback((t: string) => setUrl({ tab: t }, true), [setUrl]);
-  const goLive = useCallback(() => setUrl({ tab: 'live' }, true), [setUrl]);
+  const goResources = useCallback(() => setUrl({ tab: 'resources' }, true), [setUrl]);
   const openTraj = useCallback(
     (sid: string) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true),
     [setUrl],
@@ -345,7 +345,7 @@ export default function App() {
     )?.password_hash?._value,
   );
   const mainRef = useRef<HTMLElement>(null);
-  const { secs, active, go: goSec } = useSections(mainRef, tab.k);
+  const { secs, go: goSec } = useSections(mainRef, tab.k);
   useScrollEdges(mainRef);
   // A link to a tab that folded into another (`?tab=overview`) lands on the
   // part it became, once that part is on the page; the link is rewritten to
@@ -452,6 +452,23 @@ export default function App() {
     [askInfo, resolvedWin?.minutes, resolvedWin?.label, who, url.cls, tab.lbl],
   );
   const hl = headline(feeds.data);
+  // The header says one thing about the data: the pill (pillOf). What stands
+  // behind it -- the newest record's age, each feed past its own limit, the
+  // login nodes that reported -- is its hover, not a chip each.
+  const pill = pillOf(hl.status, live.transport);
+  const hostNames = (live.live?.hosts ?? []).map((h) => h.host);
+  const statusTip = [
+    pill.tip,
+    hl.lag ? `newest record ${hl.lag} old` : null,
+    ...hl.stale.map(
+      (f) => `${feedLabel(f.name)}: newest record ${lagStr(f.lag_s)} old, past its limit of ${lagStr(f.max_age_s)}`,
+    ),
+    hostNames.length
+      ? `${fint(hostNames.length)} ${hostNames.length === 1 ? nodes.one : nodes.many} reporting: ${hostNames.join(', ')}`
+      : `no ${nodes.one} has reported yet`,
+  ]
+    .filter(Boolean)
+    .join('\n');
   const P = panels.data?.panels ?? NO_PANELS;
   const cls: Cls[] = url.cls;
   // the old Overview tab's table, under Live's rate chart: an element made
@@ -534,7 +551,7 @@ export default function App() {
           />
         );
       case 'slurm':
-        return <SlurmTab P={P} live={live.live} cls={cls} goLive={goLive} />;
+        return <SlurmTab P={P} live={live.live} cls={cls} goResources={goResources} />;
       case 'agents':
         return <AgentsTab P={P} cls={cls} />;
       case 'feeds':
@@ -557,6 +574,21 @@ export default function App() {
   };
   const footWords = TRANSPORT_WORDS[live.transport];
   const footAgo = live.receivedAt ? ago(Date.now() - live.receivedAt) : '—';
+  // The rest of how the page gets its data, one fact to a line, on the status
+  // line's hover: the window and how much of it the service holds, when the
+  // panels were built -- restored from a saved build, everything written since
+  // was read from the files on top of it -- and which code this page is.
+  const footTip = [
+    `updates ${footWords}`,
+    `last update ${footAgo}`,
+    `window ${resolvedWin?.label ?? '—'}` +
+      (windows?.retention_minutes != null ? ` of ${Math.round(windows.retention_minutes / 60)}h held` : ''),
+    `panels built ${panels.data?.full_built_at ?? '—'}` +
+      (winStatus?.cache?.source === 'snapshot'
+        ? ` · restored from a saved build${winStatus.cache.note ? `: ${winStatus.cache.note}` : ''}`
+        : ''),
+    buildStamp(),
+  ].join('\n');
 
   // What "go to" offers: only what this page can already do. Made only while
   // it is open; closed, it is handed nothing and is not drawn again.
@@ -676,7 +708,8 @@ export default function App() {
         <nav>
           {railItems.map((r, i) => (
             <Fragment key={r.key}>
-              {(i === 0 || railItems[i - 1].group !== r.group) && <div className="navgroup">{r.group}</div>}
+              {/* the groups part by a rule, not a word */}
+              {i > 0 && railItems[i - 1].group !== r.group && <div className="navgroup" aria-hidden="true" />}
               <button
                 aria-current={r === railOn ? 'page' : undefined}
                 data-tip={mini ? r.lbl : undefined}
@@ -691,115 +724,87 @@ export default function App() {
                   </>
                 )}
               </button>
-              {r === railOn && !mini && <SectionList secs={secs} active={active} go={goSec} />}
             </Fragment>
           ))}
         </nav>
-        {/* How the page gets its data. One fact to a line, and a value never
-            broken mid-token: a timestamp split across two lines reads as two
-            values. Folded, the dot alone, with the facts on hover. */}
-        <div
-          className="foot mono"
-          data-tip={
-            mini
-              ? `updates ${footWords}\nlast update ${footAgo}\nwindow ${resolvedWin?.label ?? '—'}\npanels built ${panels.data?.full_built_at ?? '—'}`
-              : undefined
-          }
-        >
-          <div className="foot-status">
-            <i className={`sdot ${live.transport}`} />
-            <span className="foot-t">
-              updates <b>{footWords}</b>
-            </span>
-          </div>
-          <dl>
-            <div>
-              <dt>last update</dt>
-              <dd>{footAgo}</dd>
+        {/* The rail's foot, held at its bottom: a warning while classes are
+            hidden, sign-out, how the page gets its data, and the credits. */}
+        <div className="rail-end">
+          {nClasses < 3 && (
+            <div className="foot-warn mono" data-tip="the class filter above the panels hides the rest">
+              <span className="foot-warn-n">{nClasses}</span>
+              <span className="foot-warn-t"> of 3 classes shown</span>
             </div>
-            <div>
-              <dt>window</dt>
-              <dd>
-                {resolvedWin?.label ?? '—'}
-                {windows?.retention_minutes != null && (
-                  <span className="held"> of {Math.round(windows.retention_minutes / 60)}h held</span>
-                )}
-              </dd>
+          )}
+          {/* Only while the service asks for a password (rc_dashboard/auth.py). A
+              form, so signing out works without the page's own code. */}
+          {passwordSet && (
+            <form className="rail-signout" method="post" action="/logout">
+              <button type="submit" data-tip="sign this browser out; the page then asks for the password again">
+                <Icon name="signout" size={16} />
+                <span>Sign out</span>
+              </button>
+            </form>
+          )}
+          {/* How the page gets its data, in one line: the transport as a light,
+              and the last update. The window, when the panels were built, and
+              which code this page is are its hover. Folded, the light alone. */}
+          <div className="foot">
+            {/* a tab stop, so its facts show on keyboard focus, and read to a
+                screen reader, which the tip layer is hidden from */}
+            <div className="foot-status mono" data-tip={footTip} tabIndex={0}>
+              <i className={`sdot ${live.transport}`} />
+              <span className="foot-t">
+                {footWords} · {footAgo}
+              </span>
+              <span className="vh">{`. ${footTip}`}</span>
             </div>
-            <div>
-              <dt>panels built</dt>
-              <dd>
-                {panels.data?.full_built_at ?? '—'}
-                {/* Restored from a saved build: the age above is that build's, and
-                    everything written since was read from the files on top of it. */}
-                {winStatus?.cache?.source === 'snapshot' && (
-                  <span className="held" data-tip={winStatus.cache.note ?? ''}> · restored</span>
-                )}
-              </dd>
-            </div>
-          </dl>
-          <BuildStamp />
-        </div>
-        {nClasses < 3 && (
-          <div className="foot-warn mono" data-tip="the class filter above the panels hides the rest">
-            <span className="foot-warn-n">{nClasses}</span>
-            <span className="foot-warn-t"> of 3 classes shown</span>
-          </div>
-        )}
-        {/* Only while the service asks for a password (rc_dashboard/auth.py). A
-            form, so signing out works without the page's own code. */}
-        {passwordSet && (
-          <form className="rail-signout" method="post" action="/logout">
-            <button type="submit" data-tip="sign this browser out; the page then asks for the password again">
-              <Icon name="signout" size={16} />
-              <span>Sign out</span>
+            <button
+              className="iconbtn rail-toggle"
+              onClick={() => setMini(!mini)}
+              aria-pressed={mini}
+              aria-label={mini ? 'unfold the sidebar' : 'fold the sidebar to its icons'}
+              data-tip={mini ? 'unfold the sidebar ( [ )' : 'fold the sidebar to its icons ( [ )'}
+            >
+              <Icon name={mini ? 'expand' : 'collapse'} size={16} />
             </button>
-          </form>
-        )}
-        <button
-          className="rail-toggle"
-          onClick={() => setMini(!mini)}
-          aria-pressed={mini}
-          data-tip={mini ? 'unfold the sidebar ( [ )' : 'fold the sidebar to its icons ( [ )'}
-        >
-          <Icon name={mini ? 'expand' : 'collapse'} size={16} />
-          <span>fold</span>
-        </button>
-        {/* MaDSys, Harvard SEAS and FASRC. Folded, the MaDSys hexagon alone. */}
-        <div className="credits">
-          <a
-            className="credits-lab"
-            href="https://madsys.seas.harvard.edu/"
-            target="_blank"
-            rel="noopener noreferrer"
-            data-tip={mini ? 'MaDSys · Harvard SEAS · FASRC' : undefined}
-          >
-            <img
-              className="credits-full"
-              src="./logos/madsys.png"
-              alt="Harvard University MaDSys: Measurement and Design of Systems"
-              width={385}
-              height={140}
-            />
-            <img className="credits-mark" src="./logos/madsys-mark.png" alt="MaDSys" width={117} height={132} />
-          </a>
-          <div className="credits-partners">
-            <a href="https://seas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+          </div>
+          {/* MaDSys, Harvard SEAS and FASRC. Folded, the MaDSys hexagon alone. */}
+          <div className="credits">
+            <a
+              className="credits-lab"
+              href="https://madsys.seas.harvard.edu/"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-tip={mini ? 'MaDSys · Harvard SEAS · FASRC' : undefined}
+            >
               <img
-                src="./logos/harvard-seas.svg"
-                alt="Harvard John A. Paulson School of Engineering and Applied Sciences"
-                width={307}
-                height={86}
+                className="credits-full"
+                src="./logos/madsys.png"
+                alt="Harvard University MaDSys: Measurement and Design of Systems"
+                width={385}
+                height={140}
               />
+              <img className="credits-mark" src="./logos/madsys-mark.png" alt="MaDSys" width={117} height={132} />
             </a>
-            <a href="https://www.rc.fas.harvard.edu/" target="_blank" rel="noopener noreferrer">
-              <img
-                src="./logos/fasrc.png"
-                alt="FAS Research Computing, Harvard University"
-                width={284}
-                height={61}
-              />
-            </a>
+            <div className="credits-partners">
+              <a href="https://seas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+                <img
+                  src="./logos/harvard-seas.svg"
+                  alt="Harvard John A. Paulson School of Engineering and Applied Sciences"
+                  width={307}
+                  height={86}
+                />
+              </a>
+              <a href="https://www.rc.fas.harvard.edu/" target="_blank" rel="noopener noreferrer">
+                <img
+                  src="./logos/fasrc.png"
+                  alt="FAS Research Computing, Harvard University"
+                  width={284}
+                  height={61}
+                />
+              </a>
+            </div>
           </div>
         </div>
       </aside>
@@ -812,31 +817,26 @@ export default function App() {
           </p>
         )}
         <div className={`head${showControls ? ' with-bar' : ''}`}>
-          <div className="head-title">
-            <span className="head-icon" aria-hidden="true">
-              <Icon name={railOn.icon} size={20} />
-            </span>
-            <div>
-              <h1>{railOn.lbl}</h1>
-              <div className="head-sub">{parent ? NODES_EYEBROW : tab.eyebrow}</div>
-            </div>
-          </div>
+          {/* The tab's name, and what it answers on hover. Below 900px the top
+              bar names the tab, so this one is for a screen reader there. */}
+          <h1 data-tip={parent ? NODES_EYEBROW : tab.eyebrow}>{railOn.lbl}</h1>
+          {/* what the tab answers, for a screen reader: the tip layer is hidden from one */}
+          <p className="vh">{parent ? NODES_EYEBROW : tab.eyebrow}</p>
           <div className="status">
             {/* A pinned clock is a capture, not a feed: "live" and a lag of a
                 second would both be false (rc_dashboard/clock.py). */}
             {live.live?.clock?.pinned ? (
-              <>
-                <StatusPill
-                  status="empty"
-                  text="frozen capture"
-                  tip={`not a live feed: the service's clock is pinned to the capture's end and does not move\n${live.live.clock.source}`}
-                />
-                <span className="stat" data-tip="every window ends here; nothing after it exists in this feed">
-                  as of <b>{live.live.clock.as_of}</b>
-                </span>
-              </>
+              <StatusPill
+                focusable
+                status="empty"
+                text={`frozen capture · as of ${live.live.clock.as_of ?? '—'}`}
+                tip={
+                  "not a live feed: the service's clock is pinned to the capture's end and does not move; " +
+                  `every window ends there, and nothing after it exists in this feed\n${live.live.clock.source}`
+                }
+              />
             ) : (
-              <StatusPill {...pillOf(hl.status, live.transport)} />
+              <StatusPill {...pill} tip={statusTip} focusable />
             )}
             {anonymized && (
               <span
@@ -860,34 +860,13 @@ export default function App() {
                 fake data
               </span>
             )}
-            {hl.lag && !live.live?.clock?.pinned && (
-              <span className="stat" data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">
-                newest record <b>{hl.lag}</b> old
-              </span>
-            )}
-            {hl.stale.length > 0 && (
-              <span
-                className="stat warn"
-                data-tip={hl.stale
-                  .map((f) => `${feedLabel(f.name)}: newest record ${lagStr(f.lag_s)} old, past its limit of ${lagStr(f.max_age_s)}`)
-                  .join('\n')}
-              >
-                {hl.stale.length} feed{hl.stale.length > 1 ? 's' : ''} delayed
-              </span>
-            )}
-            <span
-              className="stat"
-              data-tip={
-                (live.live?.hosts ?? []).map((h) => h.host).join(', ') ||
-                `no ${nodes.one} has reported yet`
-              }
+            <button
+              className="iconbtn"
+              onClick={refresh}
+              aria-label="refresh"
+              data-tip="refresh: ask the service for everything on this page again"
             >
-              <Icon name="hosts" size={14} />
-              <b>{fint(live.live?.hosts?.length ?? null)}</b> {(live.live?.hosts?.length ?? 0) === 1 ? nodes.one : nodes.many}
-            </span>
-            <button className="btn" onClick={refresh} data-tip="ask the service for everything on this page again">
-              <Icon name="refresh" size={14} />
-              refresh
+              <Icon name="refresh" size={16} />
             </button>
           </div>
           {/* A parent entry's sub-tabs. Each is a tab of its own in the URL, so

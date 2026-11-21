@@ -55,7 +55,7 @@ export function SortTh<K extends string>({
       rowSpan={rowSpan}
       style={style}
     >
-      {/* the explanation, if any, rides on the label with its own "?"; the
+      {/* the explanation, if any, rides on the label, underlined; the
           header itself carries no tip, so it is not marked a second time */}
       {tip || gloss ? <Term tip={tip} k={gloss}>{children}</Term> : children}
       {/* a word joiner ties the arrow to the label's last word: a header that

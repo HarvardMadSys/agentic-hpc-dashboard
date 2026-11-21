@@ -117,13 +117,14 @@ test('Tool mix, by class: a row’s shares are of every class, whatever the chip
   assert.match(row(await draw(['agent', 'human'])), new RegExp(`\\b${pct}%`), 'the IDE off: the agent’s share is the same');
 });
 
-test('the Disk plates: the agent’s share of all disk reads is the same whatever the chips show', async () => {
+// The disk plates on Resources said this until they went; Who uses what's row is where it is read now.
+test('Who uses what: the agent’s share of all disk reads is the same whatever the chips show', async () => {
   const draw = async (cls) =>
-    textOf(await ui.render('tabs/RiskIoTab.tsx', 'RiskIoTab', { P: FIX, cls, part: 'io', plates: true }));
+    rowShares(await ui.render('tabs/OverviewTab.tsx', 'OverviewTab', { P: FIX, cls, traj: null }), 'disk read');
   const by = FIX.io_process.by_class;
   const want = Math.round((100 * by.agent.rd_mb) / (by.agent.rd_mb + by.human.rd_mb + by.ide.rd_mb));
-  assert.match(await draw(ALL), new RegExp(`${want}% of all disk reads`));
-  assert.match(await draw(['agent']), new RegExp(`${want}% of all disk reads`));
+  assert.equal((await draw(ALL))[0], `${want}%`);
+  assert.deepEqual(await draw(['agent']), [`${want}%`]);
 });
 
 /** The cells of the first row reading `state` after `from` in some markup: the share-cell's number, or the count. */
@@ -141,7 +142,7 @@ test('the Sandbox tables: a state is a share of the judged ones, as the plates a
   const s = FIX.sandbox.approval_by_class_sessions.agent;
   assert.equal(s.bypassed + s.auto + s.supervised, 17);
   // the plate: 2 of the 17 sessions whose launch flags are readable, 11.8%
-  assert.match(textOf(html), /agent sessions launched with a bypass flag \? 12% of 17/);
+  assert.match(textOf(html), /agent sessions launched with a bypass flag 12% of 17/);
   // on develop the table under it said 10% (2 of 20)
   assert.deepEqual(stateRow(html, 'Approval at launch', 'bypass flag'), ['12%']);
   // tool calls: 41 of 778 judged (on develop 5.2%, of 785)

@@ -1,12 +1,15 @@
-/* Every time series of the window, on Live (roadmap note 23).
+/* Every time series of the window, on Login nodes › Resources, under Login
+ * node health. They were Live's (roadmap note 23) until Live was cut to what
+ * is live: the process exits' rate chart is the one series it keeps.
  *
  * Two stay open, the ones an operator watches: CPU and memory. Each class's
- * share of them is not drawn again here: the rate chart above and these carry
- * the counts, and *Who uses what* the window's shares. Everything else -- waits, D-state,
- * faults, disk, network, the scheduler -- sits behind one picker, one chart at a time,
- * with the table that used to fold under that chart. All of them share one zoom,
- * tied to the window it was taken in: a range picked on the 24 h view means
- * nothing once the 1 h view is on screen.
+ * share of the processes and of the CPU is said once, over the window, by Who
+ * uses what; drawn bin by bin it was the rate chart and the CPU chart over
+ * again, each divided by its bin's total, so it is not drawn. Everything else --
+ * waits, D-state, faults, disk, network, the scheduler -- sits behind one
+ * picker, one chart at a time, with the table that used to fold under that
+ * chart. All of them share one zoom, tied to the window it was taken in: a
+ * range picked on the 24 h view means nothing once the 1 h view is on screen.
  *
  * Sums are binned BY EXIT TIME (a whole-life counter lands in the bin its
  * process exited in); resident memory is the exception, sampled while processes
@@ -48,7 +51,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
   // the tables folded under the charts sort too (roadmap note 27)
   const sortOf = useSortMap();
 
-  const byCls = (field: 'n' | 'cpu_s' | 'sched_wait_s' | 'maj_flt'): TimeLine[] =>
+  const byCls = (field: 'cpu_s' | 'sched_wait_s' | 'maj_flt'): TimeLine[] =>
     shown(s?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.by_class?.[c]?.[field] }));
 
   const memCls = shown(s?.resident, cls);
@@ -268,7 +271,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
         span
         empty={!hasSeries}
         emptyWhat="no process exited in the window for the selection"
-        header={<span className="pill" data-tip="every chart on this panel is binned this finely; drag on either to zoom both, and the charts under them with them">{binEye}</span>}
+        header={<span className="pill" data-tip="both charts on this panel are binned this finely; scroll on either to zoom both, and the charts under them with them">{binEye}</span>}
       >
         <div className="pair-row">
           <div>

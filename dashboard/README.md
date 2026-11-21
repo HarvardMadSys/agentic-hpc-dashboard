@@ -1125,9 +1125,9 @@ refusals, the environment and the directory, and `tests/test_guard.py` the route
 ## Network endpoints
 
 The Network bytes panel, in the I/O section of the Resources tab (under *Login nodes* in the
-rail), lists beside its bars the ten remote endpoints the processes made the most send and
-receive calls to. A switch ranks them by bytes sent and received instead. Each row splits its
-calls or bytes by class, and the list follows the who filter and the class choice like the bars.
+rail), lists beside its per-class table the ten remote endpoints the processes made the most send
+and receive calls to. A switch ranks them by bytes sent and received instead. Each row splits its
+calls or bytes by class, and the list follows the who filter and the class choice like the table.
 It is counted from the collector's `net_endpoints` block (schema 7) as each process exited, so a
 capture from an older collector shows no list. Demo mode turns the lookups below off, so its
 made-up endpoints keep the host names its records give.
@@ -1147,7 +1147,7 @@ made-up endpoints keep the host names its records give.
 - **Exact for any mix of classes.** The service sends the top ten by calls and by bytes for
   every mix of classes, so the page can rank the classes it shows and still hold their whole top
   ten.
-- **What it cannot show is said.** The note under the list gives the share of the bars' bytes
+- **What it cannot show is said.** The note under the list gives the share of the table's bytes
   whose endpoint is known, the bytes a block held with no address, and the processes that moved
   bytes with no endpoint block at all.
 - **A restart, not a rebuild.** `server.rdns.enabled` (`RC_DASH_RDNS`, on by default) turns the
@@ -1182,7 +1182,7 @@ the count of what is wrong in it.
 
 ### Over the window
 
-**Login node response**, on Live under the window's CPU chart and zoomed with it, draws four of
+**Login node response**, on Resources under the window's CPU chart and zoomed with it, draws four of
 the node tier's numbers per host over the window: the time to start a process and to look up an
 account (the collector's own probes), the slowest NFS mount's read round trip, and the load. A
 spike there under the agents' CPU above it is what "do agents make the node slow for people?"
@@ -1208,7 +1208,7 @@ looks like.
 week or month, over up to a year -- 30, 90, 180 or 365 days -- with the users of each agent type
 and each login node's processes beside them, over what the **roll-up table** holds, which outlives
 retention and the day-files (`rc_dashboard/rollup.py`). It is the one place for per-day use: the
-Live tab's charts cover the selected window only.
+charts on Live and Resources cover the selected window only.
 
 **The table is filled as records are ingested.** Every exit and submit the live tier takes -- the
 tail's and the backfill's -- is summed into its local day beside it (`Aggregator.dispatch`), so it

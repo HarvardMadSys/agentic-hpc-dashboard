@@ -46,8 +46,8 @@ SERIES_FIELDS = ("cpu_s", "sched_wait_s", "dstate_wait_s", "maj_flt")
 # bin can have calls and no I/O measured.
 IO_SERIES_FIELDS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # Network bytes sent and received, from the record's own TCP accounting, in MB
-# (Live's picker: "every time series on Live", roadmap note 23). Null where the
-# collector kept none, like the rest.
+# (More over time's picker, on Resources, with every other series of the
+# window). Null where the collector kept none, like the rest.
 NET_SERIES_FIELDS = (("net_tx_mb", "net_tx_bytes"), ("net_rx_mb", "net_rx_bytes"))
 # Per-class state from a residency tick, `residency_totals.by_actor3`.
 TICK_FIELDS = ("rss_mb", "n_procs", "d_state")

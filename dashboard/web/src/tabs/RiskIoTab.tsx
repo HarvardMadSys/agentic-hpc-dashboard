@@ -26,7 +26,6 @@ import type { RiskInstance, RiskPanel, RiskRules, RiskSection } from '../api/typ
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
-import { shareOf, wholeOf } from '../lib/shares';
 import { table } from '../lib/lookup';
 
 
@@ -346,16 +345,15 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
 /* Two tabs from one reduction: Risk (what agents did that they should not have,
  * on a shared login node) and I/O (what their reads, writes and traffic cost).
  * They read the same panels, so they share the setup and each renders its half. */
-export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, io: ioPart = 'main' }: {
+export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'main' }: {
   P: Panels;
   cls: Cls[];
   part: 'risk' | 'io';
-  /** the I/O tiles: off on Resources, where their numbers are Overview rows */
-  plates?: boolean;
   /** which I/O panels: `main` is who moved the bytes (by tool, by user) and
    *  where the network bytes went, on Resources; `internal` is the per-class
-   *  page-cache table (its series over time are Live's picker's) and the raw
-   *  counters' quantiles, on Internal */
+   *  page-cache table (its series over time are More over time's, on
+   *  Resources: tabs/LiveCharts.tsx) and the raw counters' quantiles, on
+   *  Internal */
   io?: 'main' | 'internal';
 }) {
   const nodes = useNodeWords();
@@ -376,12 +374,10 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
   const secSort = (sc: RiskSection) =>
     sortOf(sc.id, sc.kind === 'login_compute' ? 'tool' : sc.kind === 'credentials' ? 'pattern' : 'command', 'asc');
 
-  // the agent's share of all disk reads and writes: out of every class the
-  // panel counted, whatever the chips show (lib/shares.ts)
-  const rdPct = cls.includes('agent')
-    ? shareOf(byClass.agent?.rd_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.rd_mb)) : null;
-  const wrPct = cls.includes('agent')
-    ? shareOf(byClass.agent?.wr_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.wr_mb)) : null;
+  // a class with a reading of the bytes it sent or received: an accumulator
+  // with nothing in it is "not measured", not a 0
+  const netRead = (c: string) =>
+    (['net_tx_mb', 'net_rx_mb'] as const).some((k) => !!byClass[c]?.[k]?.n && byClass[c]![k].total != null);
 
   const byTool = (io.by_tool ?? []).filter((t) => !t.cls || cls.includes(t.cls as Cls));
   const toolReads = toolBars(byTool, 'read', coveredBy(io).from);
@@ -474,43 +470,11 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
       </div>
       )}
 
-      {part === 'io' && plates && (
-      <div className="plates">
-        <Plate
-          k="agent disk read"
-          total={cls.includes('agent') ? byClass.agent?.rd_mb ?? null : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.rd_mb ?? null]))}
-          fmtFn={(n) => mb(n)}
-          note={rdPct != null ? `${pc(rdPct)} of all disk reads` : undefined}
-        />
-        <Plate
-          k="agent disk written"
-          total={cls.includes('agent') ? byClass.agent?.wr_mb ?? null : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.wr_mb ?? null]))}
-          fmtFn={(n) => mb(n)}
-          note={wrPct != null ? `${pc(wrPct)} of all disk writes` : undefined}
-        />
-        <Plate
-          k="agent network sent"
-          total={cls.includes('agent') ? (byClass.agent?.net_tx_mb?.n ? byClass.agent.net_tx_mb.total ?? null : null) : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_tx_mb?.n ? byClass[c]!.net_tx_mb.total ?? null : null]))}
-          fmtFn={(n) => mb(n)}
-          tip="bytes sent over the network by the processes, as each exited"
-          note={byClass.agent?.net_tx_mb ? `measured on ${pc(byClass.agent.net_tx_mb.coverage_pct)} of agent processes` : undefined}
-        />
-        <Plate
-          k="agent network received"
-          total={cls.includes('agent') ? (byClass.agent?.net_rx_mb?.n ? byClass.agent.net_rx_mb.total ?? null : null) : null}
-          by={Object.fromEntries(have.map((c) => [c, byClass[c]?.net_rx_mb?.n ? byClass[c]!.net_rx_mb.total ?? null : null]))}
-          fmtFn={(n) => mb(n)}
-          tip="bytes received over the network by the processes, as each exited"
-          note={byClass.agent?.net_rx_mb ? `measured on ${pc(byClass.agent.net_rx_mb.coverage_pct)} of agent processes` : undefined}
-        />
-      </div>
-      )}
-
       {part === 'io' && (
       <div className="grid wide">
+        {/* The bytes per class, over the window: what the programs asked for
+            against what reached the disk, and the page cache's part between.
+            The same bytes over time are More over time's, on Resources. */}
         {ioPart === 'internal' && (
         <Panel
           id="sec-syscall-bytes-against-disk-bytes"
@@ -600,10 +564,13 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
           ask={[{ panel: 'io_process', keys: ['by_class', 'by_tool', 'endpoints', 'notes'] }]}
           p={io}
           span
-          empty={!have.length || have.every((c) => !byClass[c]?.net_tx_mb?.n && !byClass[c]?.net_rx_mb?.n)}
+          empty={!have.length || !have.some(netRead)}
           emptyWhat="no TCP accounting for the selection"
         >
-          {/* each class's bytes, and beside them (under them, when narrow) where they went */}
+          {/* each class's bytes and calls, and beside them (under them, when
+              narrow) where the bytes went. Each class's share of the bytes is
+              Who uses what's, on Live: bars of the same totals here said it
+              again. */}
           <div className="net-split">
             <div className="net-class">
               <div className="scroller">

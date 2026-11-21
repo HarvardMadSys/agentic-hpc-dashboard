@@ -1614,9 +1614,9 @@ test("a caption of a level stands at the row it names, in a chart with phases an
     /** Where the chart's rows are, in its own units, and where each caption's box is, which is a share of the plot's height. */
     const read = (html) => {
       const [W, H] = /<svg viewBox="0 0 ([\d.]+) ([\d.]+)"[^>]*class="tn-svg strip"/.exec(html).slice(1).map(Number);
-      // a caption is its level's name, and the Phases caption the glossary's term for it, with its `?`
+      // a caption is its level's name, and the Phases caption the glossary's term for it
       const caps = Object.fromEntries(
-        [...html.matchAll(/<div class="tn-cap tn-lane-cap" style="top:([\d.]+)%;height:([\d.]+)%" aria-hidden="true"><span class="eyebrow">(?:<span class="term" data-tip="[^"]*">)?(\w+)(?:<sup class="qm" aria-hidden="true">\?<\/sup><\/span>)?<\/span><\/div>/g)].map(([, top, height, name]) => [name, { y: (top * H) / 100, h: (height * H) / 100 }]),
+        [...html.matchAll(/<div class="tn-cap tn-lane-cap" style="top:([\d.]+)%;height:([\d.]+)%" aria-hidden="true"><span class="eyebrow">(?:<span class="term" data-tip="[^"]*">)?(\w+)(?:<\/span>)?<\/span><\/div>/g)].map(([, top, height, name]) => [name, { y: (top * H) / 100, h: (height * H) / 100 }]),
       );
       const hit = (kind) => {
         const m = new RegExp(`<rect data-${kind}="0" x="[\\d.]+" y="([\\d.]+)" width="[\\d.]+" height="([\\d.]+)"`).exec(html);
@@ -1666,7 +1666,7 @@ test("a caption of a level stands at the row it names, in a chart with phases an
     for (const html of [noPhases, withTasks, noTasks]) assert.ok(!/class="tn-cap tn-lane-cap" style="top:[\d.]+px/.test(html));
     // The Phases caption is the glossary's `phases` term, which the page reaches nowhere else: the basis line's term is `tasks`. The
     // other captions are their names alone.
-    const term = (html) => [...html.matchAll(/<span class="eyebrow"><span class="term" data-tip="([^"]*)">(\w+)<sup/g)].map(([, tip, name]) => [name, tip]);
+    const term = (html) => [...html.matchAll(/<span class="eyebrow"><span class="term" data-tip="([^"]*)">(\w+)<\/span>/g)].map(([, tip, name]) => [name, tip]);
     const gloss = G.GLOSS.phases.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll("'", '&#x27;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     assert.deepEqual(term(withTasks), [['Phases', gloss]]);
     assert.deepEqual(term(noTasks), [['Phases', gloss]]);
@@ -2343,7 +2343,7 @@ test("the inspector's table: a parent that left no record is drawn by its bounds
   }
 });
 
-test("the table's timeline header: the axis's start and end, and zoomed, the tip and its \"?\" on the end clock, which stays where a full-width bar ends", async () => {
+test("the table's timeline header: the axis's start and end, and zoomed, the tip on the end clock", async () => {
   const ui = await renderer();
   try {
     const { tree, timeline } = api.trajectory_detail;
@@ -2353,16 +2353,14 @@ test("the table's timeline header: the axis's start and end, and zoomed, the tip
       const what = view ? 'zoomed' : "on the read's span";
       const html = await ui.render('components/ProcTree.tsx', 'ProcTree', { root: tree, open: new Set(), setOpen() {}, timeline, view });
       const [, attrs, inner] = /<div class="pt-tlhead[^"]*"([^>]*)>(.*?)<\/div>/.exec(html) ?? [];
-      // The "?" a header that explains itself gets is an ::after (styles.css). On the header, a flex row, it would be a third item, and
-      // space-between would pull the end clock in to about 3/4 of the column.
+      // The tip is the end clock's, not the header's: on the header, a flex row with the two clocks at its ends, it would mark the
+      // whole row as a term to hover rather than the one clock that has something to say.
       assert.doesNotMatch(attrs, /\bdata-tip=/, `${what}: the header's flex row has no tip of its own`);
       const clocks = [...inner.matchAll(/<span([^>]*)>([^<]*)<\/span>/g)];
       assert.deepEqual(clocks.map((m) => m[2]), [F.clock(lo), F.clock(hi)], `${what}: the axis's start and end`);
       assert.doesNotMatch(clocks[0][1], /\bdata-tip=/, `${what}: the start clock has no tip`);
       assert.equal(/\bdata-tip="zoomed: /.test(clocks[1][1]), !!view, `${what}: the end clock has the zoom's tip`);
     }
-    // and its "?" takes no room, but hangs past the clock: the clock ends at the header's content box, where a bar at 100% ends
-    assert.match(source('tabs/trajectories.css'), /\n\.pt-tlhead > \[data-tip\]::after \{\s*margin-right: calc\(-1ch - 2px\);\s*\}/);
   } finally {
     await ui.close();
   }

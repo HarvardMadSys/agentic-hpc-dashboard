@@ -2,8 +2,8 @@
  *
  * One place, so a word reads the same wherever it appears. Each entry is one
  * line in the reader's terms, never the collector's; a raw field name keeps its
- * name and says what it counts. `<Term>` and `Plate` show a small "?" beside a
- * term that has an entry here, and the line on hover.
+ * name and says what it counts. `<Term>` and `Plate` underline, dotted, a term
+ * that has an entry here, and show the line on hover.
  *
  * One word per thing. A label says the word on the left, and the words on the
  * right are not used on the page for that thing (web/README.md, "Words", is the

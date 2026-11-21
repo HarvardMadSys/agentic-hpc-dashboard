@@ -349,12 +349,12 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
 const NO_CLASSES: Record<string, SlurmClass> = {};
 
 // It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
-export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {} }: {
+export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () => {} }: {
   P: Panels;
   live: LiveResponse | null;
   cls: Cls[];
-  /** open the Live tab, where this tab's two charts now are */
-  goLive?: () => void;
+  /** open Resources, where this tab's two charts are */
+  goResources?: () => void;
 }) {
   const sp = pick<SlurmPanel>(P, 'slurm', 'ebpfm');
   const tm = pick<ToolMix>(P, 'tool_mix', 'ebpfm');
@@ -412,11 +412,11 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
         />
       </div>
 
-      {/* Its two charts, queue checks and jobs submitted, are on Live's
-          picker with every other time series (roadmap note 23). */}
+      {/* Its two charts, queue checks and jobs submitted, are in Resources'
+          picker with every other time series of the window. */}
       <p className="intro">
-        Queue checks and jobs submitted over time are on the{' '}
-        <button className="linkbtn" onClick={() => goLive()}>Live tab</button>, in the picker under
+        Queue checks and jobs submitted over time are on{' '}
+        <button className="linkbtn" onClick={() => goResources()}>Resources</button>, in the picker under
         “More over time.”
       </p>
 

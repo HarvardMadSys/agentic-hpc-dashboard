@@ -27,17 +27,23 @@ export function StatusPill({
   text,
   beat,
   tip,
+  focusable = false,
 }: {
   status: FeedStatus | 'live';
   text?: string;
   beat?: boolean;
   tip?: string;
+  /** Its tip holds facts the page shows nowhere beside it (the head's pill):
+   *  a tab stop, so the tip shows on keyboard focus, and the tip's words are
+   *  read to a screen reader, which the tip layer is hidden from. */
+  focusable?: boolean;
 }) {
   const cls = status === 'live' ? (beat ? '' : 'ok') : status;
   return (
-    <span className={`pill ${cls}`} data-tip={tip}>
+    <span className={`pill ${cls}`} data-tip={tip} tabIndex={focusable ? 0 : undefined}>
       <i className="ld" />
       {text ?? status}
+      {focusable && tip ? <span className="vh">{`: ${tip}`}</span> : null}
     </span>
   );
 }

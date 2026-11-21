@@ -5,10 +5,9 @@
  * readable for every process (the collector is unprivileged), so a 0 total
  * would be a claim about the cluster rather than about the instrument.
  *
- * The charts are time series over the window, from `series`. Most are sums BY
- * EXIT TIME, and each such chart says so in its pill: a whole-life counter
- * lands in the bin its process exited in. Resident memory is the exception,
- * sampled while processes run, and its pill says that instead.
+ * Its time series, `series`, are drawn here once, under Login node health
+ * (tabs/LiveCharts.tsx): no other chart on this tab or on Internal repeats
+ * one of them.
  */
 import { memo, useState } from 'react';
 import type { Accum, Cls, LiveResponse, MaxProcess, Quant, Resources } from '../api/types';
@@ -22,6 +21,7 @@ import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import { InstanceTable, RiskIoTab } from './RiskIoTab';
 import { NodeHealth } from './NodeHealth';
+import { WindowCharts } from './LiveCharts';
 import type { ResourceInstance } from '../api/types';
 import type { Panels } from '../lib/panels';
 
@@ -305,8 +305,9 @@ function FaultTable({
  * to go and look at, and who moved the bytes and where to: that is Resources.
  * The per-class quantile and kernel-accounting tables answer a researcher's
  * question, so they sit on Internal (`part="internal"`), with the I/O panels
- * that are the same kind of table or repeat a Live chart. Same payloads, same
- * titles, so a citation lands on whichever tab draws the panel (lib/cites.ts). */
+ * that are the same kind of table. A chart that repeated one of the window's
+ * series is not drawn here or there. Same payloads, same titles, so a citation lands on
+ * whichever tab draws the panel (lib/cites.ts). */
 export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', live = null }: {
   P: Panels;
   cls: Cls[];
@@ -327,6 +328,14 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
         <div className="grid wide">
           <NodeHealth P={P} live={live} />
         </div>
+        {/* then the window over time, on one zoom: CPU and memory, how
+            quickly the nodes answered, and every other series behind one
+            picker (they were Live's, roadmap note 23, until Live was cut to
+            what is live) */}
+        <div className="grid-gap" />
+        <div className="grid wide">
+          <WindowCharts P={P} cls={cls} />
+        </div>
         <div className="grid-gap" />
         <div className="grid wide">
           <WorstPanel r={r} />
@@ -334,10 +343,10 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
 
         {/* I/O is a resource (roadmap notes 41 and 42): who moved the bytes,
             by tool and by user, and where the network bytes went. Its tiles
-            became rows of Who uses what, and its time series are on Live's
-            picker. */}
+            became rows of Who uses what, and its time series are in More
+            over time's picker, above. */}
         <div className="grid-gap" />
-        <RiskIoTab P={P} cls={cls} part="io" plates={false} io="main" />
+        <RiskIoTab P={P} cls={cls} part="io" io="main" />
       </>
     );
   }
@@ -380,7 +389,7 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
       </div>
 
       <div className="grid-gap" />
-      <RiskIoTab P={P} cls={cls} part="io" plates={false} io="internal" />
+      <RiskIoTab P={P} cls={cls} part="io" io="internal" />
     </>
   );
 });

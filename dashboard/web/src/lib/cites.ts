@@ -106,7 +106,7 @@ const PLACES: [string, Place][] = [
   ['panels.slurm', { tab: 'slurm', panel: 'How each class uses the scheduler' }],
   ['panels.cascades', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
   ['panels.workspace', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
-  ['panels.node.series', { tab: 'live', panel: 'Login node response', anchor: 'sec-node-response' }],
+  ['panels.node.series', { tab: 'resources', panel: 'Login node response', anchor: 'sec-node-response' }],
   ['panels.node', { tab: 'resources', panel: 'Login node health', anchor: 'sec-node-health' }],
   ['live_now.users', { tab: 'live', panel: 'Active users', anchor: 'live-users' }],
   ['live_now.hosts', { tab: 'live', panel: 'Login nodes right now', titled: 'right now' }],
