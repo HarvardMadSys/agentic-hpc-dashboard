@@ -1,14 +1,15 @@
 # ebpfm — login-node collector, one bash entry point
 
 A **standalone** collector for FASRC-style login nodes. Everything it needs is in this
-folder: no `../` imports, so it runs anywhere you can copy it (or hand over one
-self-extracting file from `ebpfm.sh bundle`). See [VENDORED.md](VENDORED.md) for the four
+folder, with no `../` imports, so it runs anywhere you can copy it. You can also hand
+over a single self-extracting file built by `ebpfm.sh bundle`. See [VENDORED.md](VENDORED.md) for the four
 copied modules and the sync rule, and [COVERAGE.md](COVERAGE.md) for the field-by-field
 crosswalk of what each tier collects and what replaced what.
 
 ## Two tiers, chosen by privilege
 
-Only half of what a login node needs is a kernel event, so only half needs root:
+Only half of what we need from a login node comes from kernel events, so only half of
+the collector needs root:
 
 | Tier | Privilege | What | Output |
 |---|---|---|---|
@@ -16,8 +17,8 @@ Only half of what a login node needs is a kernel event, so only half needs root:
 | **ebpf** | **root** | every process exit with its status, argv, `cwd`, per-process I/O for **all** users, D-state dwell, network bytes and the endpoint each went to, TCP records | `$EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` |
 
 **eBPF cannot produce load average, memory totals, filesystem space or interface
-counters**, and it is not a process census (only *tracked* processes are emitted — see
-COVERAGE.md §7). The node tier is therefore not a fallback; it is the other half.
+counters**. It is also not a process census: only *tracked* processes are emitted (see
+COVERAGE.md §7). So the node tier is not a fallback. It collects the other half.
 
 ```
 ./ebpfm.sh check                # works unprivileged: node tier PASS, ebpf tier "needs root"
@@ -32,55 +33,59 @@ sudo ./ebpfm.sh stop            # SIGTERM -> flushes live processes as `truncate
 sudo ./ebpfm.sh install-unit    # persistent systemd unit, for a fleet deployment
 ```
 
-`EBPFM_TIER=node|ebpf|all` overrides the privilege-derived default. The node tier's
-collection mode follows the tier set: with the eBPF tier running it drops the four
-per-process sections the eBPF tier collects properly (`SNAPSHOT_MODE=node`); without it,
-it keeps everything, because dropping them on a host with no eBPF tier would lose them
-outright. **Losing root on one node costs that node its per-process tier and nothing
-else** — this is per host, not fleet-wide.
+`EBPFM_TIER=node|ebpf|all` overrides the default, which is based on privilege. The node
+tier's collection mode depends on which tiers are running. When the eBPF tier is running,
+the node tier drops the four per-process sections that the eBPF tier collects properly
+(`SNAPSHOT_MODE=node`). Otherwise it keeps everything, because dropping those sections on
+a host with no eBPF tier would lose them entirely. **Losing root on one node costs that
+node its per-process tier and nothing else.** The decision is made per host, not
+fleet-wide.
 
 ### Supervision
 
-`start` uses a *transient* `systemd-run` scope: fine for a one-off, but it does not
-survive a reboot and has no restart policy. For a fleet, `install-unit` writes
+`start` uses a *transient* `systemd-run` scope. That is fine for a one-off, but the scope
+does not survive a reboot and has no restart policy. For a fleet, `install-unit` writes
 `ebpfm.service` (`Restart=on-failure`, `Slice=system.slice`). The repo keepalive
-(`run.sh`) deliberately does **not** manage the eBPF tier — it is unprivileged and cannot
-`sudo` across the fleet — so systemd supervises it and `collect/healthcheck.py` is what
-notices when it dies.
+(`run.sh`) deliberately does **not** manage the eBPF tier, because `run.sh` is
+unprivileged and cannot `sudo` across the fleet. Instead, systemd supervises the eBPF
+tier, and `collect/healthcheck.py` notices when it dies.
 
-`Restart=on-failure`, never `always`, and nothing restarts it periodically: SIGTERM makes
-it flush every live tracked process as `truncated`, so a cycle-time restart would corrupt
-the trace. Same rule `run.sh` documents for the pollers.
+The unit uses `Restart=on-failure`, never `always`, and nothing restarts the collector
+periodically. SIGTERM makes it flush every live tracked process as `truncated`, so a
+restart every cycle would corrupt the trace. This is the same rule `run.sh` documents
+for the pollers.
 
 ---
 
 ## Why eBPF, precisely
 
-The unprivileged `/proc` poller it replaces is **quota-bound, not design-bound**. Every
-process a user runs on a FASRC login node shares one cgroup v2 slice capped at
-`cpu.max = 1.0` CPU. One `/proc` scan costs ~281 ms, so the achievable poll rate is
-~2–5 Hz, the capture floor is about twice the interval, and **sampling density is
-anti-correlated with load**: the busier the node, the more pids to scan, the slower the
-loop, the wider the blind spot. The interval knob does nothing because the loop never
-sleeps.
+The unprivileged `/proc` poller that this collector replaces is **quota-bound, not
+design-bound**. Every process a user runs on a FASRC login node shares one cgroup v2
+slice capped at `cpu.max = 1.0` CPU. One
+`/proc` scan costs ~281 ms, so the achievable poll rate is ~2–5 Hz and the capture floor
+is about twice the interval. Worse, **sampling density is anti-correlated with load**.
+The busier the node, the more pids there are to scan, so the loop runs slower and the
+blind spot gets wider. The interval knob does nothing because the loop never sleeps.
 
-eBPF removes that ceiling by an asymmetry: **a probe's execution is charged to the task
-that triggered the event**, not to the collector. Exhaustive capture is drawn from
-nobody's poll budget and has no sampling floor. Only the userspace drain costs the
-collector anything.
+eBPF removes that ceiling because of how its cost is accounted: **a probe's execution is
+charged to the task that triggered the event**, not to the collector. Exhaustive capture
+therefore comes out of nobody's poll budget and has no sampling floor. Only the userspace
+drain costs the collector anything.
 
 ### `sudo` does not escape the cap — `systemd-run` does
 
-This was measured, not assumed. A `sudo`'d child reports the *calling shell's* cgroup:
+We measured this. A child started with `sudo` reports the *calling shell's* cgroup:
 
 ```
 $ sudo cat /proc/self/cgroup
 0::/user.slice/user-20006.slice/session-27.scope     # still capped
 ```
 
-So a `sudo`-launched collector would silently share the user's one CPU with everything
-else that user runs, reintroducing the exact bottleneck it exists to escape. `ebpfm.sh
-start` therefore launches via `systemd-run --scope --slice=system.slice`, verified:
+A collector launched with `sudo` would therefore silently share the user's one CPU with
+everything else that user runs, which brings back the exact bottleneck it exists to
+escape. `ebpfm.sh
+start` therefore launches via `systemd-run --scope --slice=system.slice`, and we verified
+the result:
 
 ```
 $ sudo ./ebpfm.sh status
@@ -89,50 +94,51 @@ ebpfm: RUNNING on node0 (unit ebpfm-node0.service, pid 106680)
 ```
 
 `ebpfm.sh check` reports the cgroup the collector would land in **and that cgroup's
-`cpu.max`**, so the escape is verifiable per node rather than assumed. Where systemd is
-absent it falls back to `nohup` with a printed warning.
+`cpu.max`**, so you can verify the escape on each node instead of assuming it. Where
+systemd is absent, `start` falls back to `nohup` and prints a warning.
 
 ---
 
 ## Concurrency model
 
 **Kernel side: concurrent by construction.** A probe runs on whichever CPU took the
-event, in that task's context, with no serialization across CPUs — up to 32 simultaneous
-instances on the test node. `BPF_HASH` is protected by per-bucket spinlocks, per-CPU maps
-avoid contention entirely, and perf output is per-CPU so there is no contention on the
-way out.
+event, in the context of the task that triggered it, with no serialization across CPUs.
+On the test node that means up to 32 simultaneous instances. `BPF_HASH` is protected by
+per-bucket spinlocks, per-CPU maps avoid contention entirely, and perf output is per-CPU,
+so there is no contention on the way out either.
 
 **Userspace side: single-threaded, and that is the ceiling.** One thread calls
-`perf_buffer_poll`, drains every per-CPU buffer, decodes and JSON-encodes. The GIL means
-more threads would not parallelize that. Measured below at **157 µs per decoded event**,
-so the drain saturates 1.0 CPU at roughly **6 400 events/s**; it sustained 2 011 events/s
-with zero loss.
+`perf_buffer_poll`, drains every per-CPU buffer, and decodes and JSON-encodes each event.
+Because of the GIL, adding threads would not parallelize that work. The drain costs
+**157 µs per decoded event** (measured below), so it saturates 1.0 CPU at roughly
+**6 400 events/s**. In testing it sustained 2 011 events/s with zero loss.
 
-`perf_lost` (in every `stop` record, and the acceptance gate for anything added) is how
-you know if it ever binds. Escalation path if it does, in order:
+`perf_lost` tells you if that ceiling is ever reached. It appears in every `stop` record
+and is the acceptance gate for anything added. If the ceiling is reached, escalate in
+this order:
 
-1. **BPF ring buffer** instead of per-CPU perf buffers — one shared ring, fewer wakeups.
+1. **BPF ring buffer** instead of per-CPU perf buffers: one shared ring, fewer wakeups.
    Verified available on 6.8 (`BPF_MAP_TYPE_RINGBUF` and `bpf_ringbuf_output` both probe
    present).
 2. **In-kernel aggregation** with per-CPU maps, so hot events become counters.
-3. A **separate writer process** — last, because it adds an IPC hop.
+3. A **separate writer process**. This comes last because it adds an IPC hop.
 
 ---
 
 ## Measured overhead
 
-One-off validation via `sudo ./ebpfm.sh overhead`. **Nothing here runs during normal
-collection**; it adds no fields to the schema. Re-measure only when a probe is
-added or removed.
+This is a one-off validation, run with `sudo ./ebpfm.sh overhead`. **Nothing here runs
+during normal collection**, and it adds no fields to the schema. Re-measure only when a
+probe is added or removed.
 
 Measured on **CloudLab `c220g1` (`node0`), Ubuntu 24.04.4, kernel 6.8.0-138-generic,
 32 cores, 125 GB**, 3 timed reps per condition, median.
 
 ### Per BPF program
 
-`kernel.bpf_stats_enabled=1` for a **separate** window — the knob itself adds two
-`bpf_ktime_get_ns` calls per program run, so enabling it during the timed benchmarks
-would inflate them.
+These numbers come from a **separate** window with `kernel.bpf_stats_enabled=1`. The
+knob itself adds two `bpf_ktime_get_ns` calls per program run, so enabling it during the
+timed benchmarks would inflate their results.
 
 | Program | Events | ns/event |
 |---|---:|---:|
@@ -149,17 +155,18 @@ would inflate them.
 
 **Schema 7 is not in this table.** It adds an entry probe to each send/recv function
 and more work to each return probe (see **Schema 7** below), which puts cost on
-`tcp_recvmsg`, the hottest of these. It has not been measured yet: run `overhead`
-again before relying on it on a busy node.
+`tcp_recvmsg`, the hottest of these. That cost has not been measured yet, so run
+`overhead` again before relying on schema 7 on a busy node.
 
-The expensive three are the process-lifecycle probes, which read many task fields and
-(at exec) copy argv. **The hot paths are the cheap ones** — `tcp_recvmsg` at 182 ns and
-`sched_stat_blocked` at 335 ns are the probes that fire thousands of times per second.
+The three most expensive programs are the process-lifecycle probes, which read many task
+fields and (at exec) copy argv. **The hot paths are the cheap ones.** `tcp_recvmsg` at
+182 ns and `sched_stat_blocked` at 335 ns are the probes that fire thousands of times per
+second.
 
 ### Workload delta
 
-`bpf_stats` **off**, so the knob does not inflate it. Benchmarks chosen to stress our own
-probes.
+These runs had `bpf_stats` **off**, so the knob does not inflate them. The benchmarks were
+chosen to stress our own probes.
 
 | Workload | Off | On | Delta |
 |---|---:|---:|---:|
@@ -167,8 +174,8 @@ probes.
 | loopback TCP | 118 ms | 122 ms | +3.4 % |
 | disk write (`dd` 2 GB) | 3 531 ms | 3 625 ms | +2.7 % |
 
-**Re-measured at SCHEMA_VERSION 5** on the same host — the schema-5 fields add
-userspace work on the exec path, so this had to be redone:
+**Re-measured at SCHEMA_VERSION 5** on the same host. The schema-5 fields add userspace
+work on the exec path, so the measurement had to be redone:
 
 | Workload | Off | On | Delta |
 |---|---:|---:|---:|
@@ -176,34 +183,35 @@ userspace work on the exec path, so this had to be redone:
 | loopback TCP | 121 ms | 119 ms | −1.7 % |
 | disk write (`dd` 2 GB) | 3 675 ms | 3 707 ms | +0.9 % |
 
-**The drain is unchanged: 157.8 µs/event at 2 011 events/s**, against v4's 157 µs
-and 2 011/s, using 31.7 % of one core (v4: 31.5 %). `perf_lost` zero throughout,
-and the per-BPF-program costs measured equal or *lower* than v4 — the kernel side
-did not get more expensive.
+**The drain is unchanged: 157.8 µs/event at 2 011 events/s**, compared with v4's
+157 µs and 2 011/s, using 31.7 % of one core (v4: 31.5 %). `perf_lost` stayed at zero
+throughout, and the per-BPF-program costs measured equal to or *lower* than v4, so the
+kernel side did not get more expensive.
 
-Read the fork/exec row with care: the v4 and v5 runs share a host but not an
-instant, and the *baseline alone* swung 3 490–3 675 ms across runs, so +4.0 %
-against +9.3 % is not a tight comparison. The per-event drain cost, which is
-identical, is the solid number.
+Read the fork/exec row with care. The v4 and v5 runs used the same host but not at the
+same time, and the *baseline alone* swung between 3 490 and 3 675 ms across runs, so
++4.0 % against +9.3 % is not a tight comparison. The per-event drain cost, which is
+identical, is the reliable number.
 
-One regression was found this way and fixed rather than shipped: reading the
-sandbox state for **every** process whose state was unknown charged roughly
-15 000 extra `/proc` operations to this 3 000-exec benchmark — a reproducible
-+12 % and 194 µs/event — for processes the actor filter then dropped and never
-emitted. The predicate now reads only for a process that will actually be
-reported (a tty, or agent ancestry), mirroring what the `cwd` predicate already
-does. That alone took 194 µs/event back to 157.8.
+This re-measurement caught one regression, which was fixed before it shipped. The code
+read the sandbox state for **every** process whose state was unknown. That charged
+roughly 15 000 extra `/proc` operations to this 3 000-exec benchmark (a reproducible
++12 % and 194 µs/event), all for processes that the actor filter then dropped and never
+emitted. The predicate now reads sandbox state only for a process that will actually be
+reported (one with a tty or agent ancestry), which matches what the `cwd` predicate
+already does. That change alone brought the cost from 194 µs/event back to 157.8.
 
-**The two measurements corroborate each other**, which is the reason to trust either:
-fork + exec + exit at 9 652 + 14 037 + 11 413 ns × 3 000 execs ≈ 102 ms of predicted
-kernel-side cost, against +146 ms observed. Same order, right direction.
+**The two measurements corroborate each other**, which is why either can be trusted.
+Fork + exec + exit at 9 652 + 14 037 + 11 413 ns × 3 000 execs predicts ≈ 102 ms of
+kernel-side cost, against +146 ms observed. That is the same order of magnitude, and the
+difference goes in the expected direction.
 
-The event counts are the proof the probes were actually attached for the whole window —
+The event counts prove that the probes were attached for the whole window: there were
 3 011 exec events for a benchmark that runs exactly 3 000 execs. An earlier run of this
-harness reported *negative* overhead because the feature probe (~40 s on a cold kernel)
-consumed the window and the benchmarks ran against an unattached collector; `overhead`
-now warms the feature cache first and polls for the collector's ready line instead of
-sleeping a fixed interval.
+harness reported *negative* overhead. The feature probe (~40 s on a cold kernel) had used
+up the window, so the benchmarks ran against a collector that was not yet attached.
+`overhead` now warms the feature cache first, and it polls for the collector's ready line
+instead of sleeping for a fixed interval.
 
 ### Collector cost
 
@@ -215,31 +223,33 @@ sleeping a fixed interval.
 | per decoded event | **157 µs** of userspace CPU |
 | `perf_lost` | all zero |
 
-**Read the percentage as a ceiling and the µs/event as the rate to scale.** The
+**Read the percentage as a ceiling, and use the µs/event figure to scale.** The
 benchmark drives ~830 exec/s, which is one to two orders of magnitude above a real login
-node; the per-event figure is what transfers.
+node, so the per-event figure is the one that carries over.
 
-One-time costs, excluded from the above and paid once per kernel: the feature probe
-recompiles the program once per block, **~36–41 s**, cached thereafter.
+One-time costs are excluded from the above and paid once per kernel. The feature probe
+recompiles the program once per block, which takes **~36–41 s**, and the result is
+cached after that.
 
 ### Record growth
 
-By arithmetic, not measurement: cwd ~60 B, D-state ~60 B, network bytes ~50 B,
-attribution ~20 B — roughly **13 % growth** on a ~1.5 KB exit record. The `conn`,
-`accept`, `d_stack` and `by_agent_type` additions add records or tick fields rather than
-per-record bytes.
+These figures are calculated, not measured: cwd ~60 B, D-state ~60 B, network bytes
+~50 B, attribution ~20 B. That is roughly **13 % growth** on a ~1.5 KB exit record. The
+`conn`, `accept`, `d_stack` and `by_agent_type` additions add records or tick fields
+rather than bytes per record.
 
-Schema 5 adds, again by arithmetic: `ts_epoch` ~20 B, the four `sandbox_*` fields
-~80 B, `approval_mode`/`approval_src`/`env_flags` ~40 B set (~30 B of nulls when not),
-`session_uuid` ~30 B, `args_len`/`args_truncated` ~30 B — roughly a further **13 %**.
-`sandbox_detail` is a short comma-joined string rather than a nested object precisely
-to keep this down: width is direct write cost on the hottest path. (That argument was
-sharper still when `DailyWriter` flushed on every record — see **I/O cost** below, which
-is no longer true as of schema 6.)
+Schema 5 adds, again by calculation: `ts_epoch` ~20 B, the four `sandbox_*` fields
+~80 B, `approval_mode`/`approval_src`/`env_flags` ~40 B when set (~30 B of nulls when
+not), `session_uuid` ~30 B, and `args_len`/`args_truncated` ~30 B. That is roughly a
+further **13 %**. `sandbox_detail` is a short comma-joined string rather than a nested
+object specifically to keep this growth down, because record width is a direct write
+cost on the hottest path. (That argument was even stronger when `DailyWriter` flushed on
+every record, which is no longer the case as of schema 6. See **I/O cost** below.)
 
 ### I/O cost
 
-Two schema-6 changes cut the collector's write path. They are independent and compose:
+Two schema-6 changes cut the collector's write path. They are independent, and their
+effects compound:
 
 | | records | `write(2)` | on disk |
 |---|---|---|---|
@@ -250,14 +260,15 @@ Two schema-6 changes cut the collector's write path. They are independent and co
 *20 000 process exits, 1 in 6 opening 10 connections (33 000 total), `POLL_MS=100`, at
 the 830 exec/s rate of the throughput benchmark above.*
 
-**The fold is the flat win**: one record per process instead of one per connection is
-**63 % fewer records and 63 % fewer bytes**, and it does not depend on load.
+**The fold is a flat win.** Writing one record per process instead of one per connection
+gives **63 % fewer records and 63 % fewer bytes**, regardless of load.
 
-**The flush policy is the load-proportional one.** `DailyWriter` flushed after every
-record through schema 5, so the syscall rate *was* the record rate — unbounded, and
-highest exactly when the node is busiest. It now flushes once per poll round
-(`EBPFM_FLUSH_MODE`, `poll` by default; `record` restores the old behaviour), which caps
-syscalls at `1000/EBPFM_POLL_MS` per second however many records the round produced:
+**The flush policy is the change whose benefit grows with load.** Through schema 5,
+`DailyWriter` flushed after every record, so the syscall rate *was* the record rate. That
+rate is unbounded, and it is highest exactly when the node is busiest. `DailyWriter` now
+flushes once per poll round (`EBPFM_FLUSH_MODE`, `poll` by default; `record` restores the
+old behaviour). This caps syscalls at `1000/EBPFM_POLL_MS` per second, however many
+records the round produced:
 
 - **idle node** (≤1 record per round): **no change**, 20 000 → 20 000. There is nothing
   to batch, and a round that wrote nothing does not flush at all.
@@ -266,54 +277,57 @@ syscalls at `1000/EBPFM_POLL_MS` per second however many records the round produ
 
 Together, **53 340 → 1 687 write(2), 31.6×**, at the busy rate.
 
-Note the shape: this is the opposite of the `/proc` poller's defining flaw. The poller's
-sampling density was *anti*-correlated with load; this costs nothing extra when idle and
-gets cheaper per record exactly as load rises.
+This is the opposite of the `/proc` poller's defining flaw. The poller's sampling density
+was *anti*-correlated with load. The new flush policy costs nothing extra when the node is
+idle, and gets cheaper per record exactly as load rises.
 
-What it trades is durability granularity: a record is durable within one poll round rather
-than immediately. SIGTERM, SIGINT and the duration stop all run through `close()`, which
-flushes, so the exposure is **SIGKILL or power loss losing at most one round** (100 ms).
-`meta` is flushed immediately on startup regardless, because `ebpfm.sh status` reads the
-file to confirm the collector came up. `stop.flushes` and `stop.flush_mode` report the
-real flush count for any run, so the amplification is measurable rather than assumed.
+The trade-off is durability granularity: a record becomes durable within one poll round
+rather than immediately. SIGTERM, SIGINT and the duration stop all go through `close()`,
+which flushes, so the only exposure is **SIGKILL or power loss losing at most one round**
+(100 ms). `meta` is always flushed immediately on startup, because `ebpfm.sh status` reads
+the file to confirm the collector came up. `stop.flushes` and `stop.flush_mode` report the
+real flush count for any run, so you can measure the write amplification instead of
+assuming it.
 
-`stop.flushes` counts **stream flushes**, and is exact. The stop record is built before it
-is written, so it adds the flushes still to come: the one that lands it, and `close()`'s of
-any other stream left dirty — the `truncated` records — which the old `+ 1` missed. Each
-stream flush is **one `write(2)`**. JSONL goes out through `os.write` from a buffer: byte
-for byte what the text-mode handle wrote, but one syscall per round where that handle split
-a round past 8 KiB into several, so `stop.output.jsonl.writes` is the real syscall count (up
-to the stop record).
+`stop.flushes` counts **stream flushes**, and the count is exact. The stop record is built
+before it is written, so it includes the flushes that are still to come: the one that
+writes the stop record itself, and the ones `close()` does for any other stream left dirty
+(the `truncated` records). The old `+ 1` missed the latter. Each stream flush is **one
+`write(2)`**. JSONL is written with `os.write` from a buffer. The bytes are identical to
+what the text-mode handle wrote, but there is one syscall per round, whereas the handle
+split a round larger than 8 KiB into several. So `stop.output.jsonl.writes` is the real
+syscall count (up to the stop record).
 
-Measured through `DailyWriter` on one host's synthetic demo day (11 742 eBPF records,
-flushed per 0.1 s of `ts_epoch`, 1.6 records per flush, so a syscall nearly every record),
-writing JSONL took **13.5 µs per record** on Python 3.13 and 18.7 on 3.8: 18.78 MB on disk
-in 7 279 `write(2)`s. That is per record *written*, and records are a fraction of the events
-decoded — every fork, exec and exit is an event, only a tracked process's end is a record —
-so it is small against the 157 µs per decoded event above; a busy node also spreads each
-syscall over more records.
+We measured this through `DailyWriter` on one host's synthetic demo day: 11 742 eBPF
+records, flushed per 0.1 s of `ts_epoch`, at 1.6 records per flush (so nearly one syscall
+per record). Writing JSONL took **13.5 µs per record** on Python 3.13 and 18.7 on 3.8, for
+18.78 MB on disk in 7 279 `write(2)`s. That cost is per record *written*, and records are
+only a fraction of the events decoded: every fork, exec and exit is an event, but only the
+end of a tracked process is a record. So the write cost is small compared with the 157 µs
+per decoded event above. On a busy node, each syscall is also spread over more records.
 
 ---
 
 ## What it collects
 
-This section is the **eBPF tier**. For the node tier's 36-key snapshot schema see
-`collect/login/README.md` and `docs/DATA_COLLECTION.md` — it is the same collector and the
-same schema the login poller has always written, which is what keeps every existing
-`log/login` consumer working.
+This section covers the **eBPF tier**. For the node tier's 36-key snapshot schema, see
+`collect/login/README.md` and `docs/DATA_COLLECTION.md`. The node tier is the same
+collector, writing the same schema, that the login poller has always written, so every
+existing `log/login` consumer keeps working.
 
 `SCHEMA_VERSION = 8`. JSONL, one record per line,
 split across **two files per host per day**:
 
 | file | `event` | why separate |
 |---|---|---|
-| `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.jsonl` | `exit`, `truncated` | the per-process terminal records. Unbounded: the rate is the node's fork rate, highest exactly when the node is busiest, and on a build node this is essentially the whole file |
-| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.jsonl` | `meta`, `conn`, `netio`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a moment. Small, bounded by the residency tick, and the part you want when asking "what was running" rather than "what ended" |
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.exits.jsonl` | `exit`, `truncated` | the per-process terminal records. Unbounded: the rate is the node's fork rate, which is highest exactly when the node is busiest. On a build node these records make up essentially the whole output |
+| `$EBPFM_OUTPUT_DIR/<date>/<host>.snapshot.jsonl` | `meta`, `conn`, `netio`, `submit`, `residency`, `residency_totals`, `stop` | what the node and the run looked like at a given moment. Small, bounded by the residency tick, and the file you want when asking "what was running" rather than "what ended" |
 
-`stream_of()` in `ebpf_trace.py` is the single authority on the mapping; an event
-kind added without a decision there lands in `snapshot` rather than vanishing.
+`stream_of()` in `ebpf_trace.py` is the single authority on which event goes to which
+file. An event kind added without a decision there lands in `snapshot` rather than
+vanishing.
 
-The split left the **record** schema untouched; it happened within schema 6. Every
+The split happened within schema 6 and left the **record** schema untouched. Every
 record is self-describing and carries its own `host`, so a consumer that globs
 `<date>/*.jsonl` sees exactly what the single file used to give it, and a feed
 captured before the split reads unchanged. Both files are created when the day
@@ -333,79 +347,84 @@ started".
 | `stop` | shutdown | `records`, `flushes` (exact), `flush_mode`, `truncated` (null when the flush did not finish), `perf_lost`, `perf_seen`, `handler_errors`, `proc_vanished`, `conns_dropped`, `netio_records`, `netpeer_full`, `netpeer_orphans`, `argv_hosts`, `reason`, `output` (`jsonl`: records, bytes, `write(2)`s and errors up to this record; `ebr`: null) |
 
 **Every** record carries `ts_epoch` (float, `time.time()` at emit) in addition to `ts`.
-`ts` is local, naive and second-granular — fine for reading one host's file, useless for
-ordering or binning records from seven hosts against each other. `meta` additionally
-carries `tz` and `boot_id`, without which a reader cannot convert `ts` at all or tell a DST
-shift from a clock jump.
+`ts` is local, naive and has one-second granularity. That is fine for reading one host's
+file, but useless for ordering or binning records from seven hosts against each other.
+`meta` also carries `tz` and `boot_id`. Without them a reader cannot convert `ts` at all,
+or tell a DST shift from a clock jump.
 
 From schema 7, every record also carries **`collector_pid`**, the collector's own pid, so
-its own process tree can be filtered out: drop records whose `pid` or `ppid` equals it.
-A normal deployment never admits that tree, since it has no tty and no agent ancestry.
-But a capture started from a login shell (`sudo ./ebpfm.sh once`) inherits the tty and is
-tracked as a human, so the collector's own `truncated` record and its children's exits
-(`bpftool`, when it dumps BTF) would otherwise read as someone's work. The `ebpfm.sh` and
-`sudo` processes above it have pids of their own and are not covered by the rule. The
-field also tells two runs in one day's file apart.
+you can filter out the collector's own process tree: drop records whose `pid` or `ppid`
+equals `collector_pid`. A normal deployment never admits that tree, since it has no tty
+and no agent ancestry. But a capture started from a login shell (`sudo ./ebpfm.sh once`)
+inherits the tty and is tracked as a human. Without the filter, the collector's own
+`truncated` record and its children's exits (`bpftool`, when it dumps BTF) would look like
+someone's work. The `ebpfm.sh` and `sudo` processes above the collector have their own
+pids and are not covered by this rule. The field also lets you tell apart two runs in one
+day's file.
 
 ### Agent tags: the program, not a mention
 
-Within schema 8, with no bump: `classify()` (`lib/agent_classify.py`, and its copy in
-`node_snapshot.py` behind `proc_tree.agents`) reads the program a command line runs, not
-every word of it. It matched its patterns anywhere, so at a human's prompt `grep claude
+This change was made within schema 8, with no version bump. `classify()`
+(`lib/agent_classify.py`, and its copy in `node_snapshot.py` behind `proc_tree.agents`)
+now reads the program a command line runs, not every word of it. It used to match its
+patterns anywhere, so at a human's prompt `grep claude
 notes.txt`, `vim ~/.claude/CLAUDE.md`, `cat ~/.claude/settings.json`, `git commit -m "ask
 claude about this"`, `git clone https://github.com/openai/codex` and `pip install
 claude-agent-sdk` each became an agent root of its own (`actor` `agent` by ancestry,
-`is_agent`, `depth` 0, a session of its own), and the dashboard, which takes `actor3` as
-given, counted each as an agent session. So was a tmux or screen session named `claude`
-or `codex`, and every command in its panes with it: its server keeps the client's argv.
+`is_agent`, `depth` 0, and its own session). The dashboard takes `actor3` as given, so it
+counted each of these as an agent session. The same happened to a tmux or screen session
+named `claude` or `codex`, along with every command in its panes, because the tmux or
+screen server keeps the client's argv.
 
-The program is:
+The program is one of these:
 
-- argv[0], by its name (`claude`, `codex`, `codex-linux-sandbox`, `bwrap`) or where it is
-  installed (`~/.claude/remote/…`, `~/.local/share/claude/versions/…`, `~/.codex/…`, an
-  IDE extension, `~/.vscode-server/…`);
-- past `env`, `exec`, `nohup`, `setsid`, `nice`, `timeout` and any `VAR=value`, the word
-  they run;
+- argv[0], identified by its name (`claude`, `codex`, `codex-linux-sandbox`, `bwrap`) or by
+  where it is installed (`~/.claude/remote/…`, `~/.local/share/claude/versions/…`,
+  `~/.codex/…`, an IDE extension, `~/.vscode-server/…`);
+- for `env`, `exec`, `nohup`, `setsid`, `nice`, `timeout` and any `VAR=value`, the word
+  they run (skipping past the wrapper);
 - a package runner's package: `npx`, `npm exec`, `pnpm dlx`, `yarn dlx`, `bunx`, `bun x`;
 - an interpreter's script (`node`, `bun`, `deno`, `python`, a shell): `node
   …/@anthropic-ai/claude-code/cli.js`, `/usr/bin/env node …/bin/codex`;
 - the first word of a shell's `-c` command (`sh -c exec claude …`);
-- for a `bwrap`, every word: a sandbox is tagged by what it confines, as before.
+- for a `bwrap`, every word, because a sandbox is tagged by what it confines (as before).
 
-Beside the program, the artifacts only an agent's runtime writes count, where it writes
-them: Claude Code's tool-call shell (a shell sourcing `~/.claude/shell-snapshots/…`), and
-Cursor's and Windsurf's `CURSOR_SANDBOX` and `WINDSURF_STATE` set in the environment a
-program is run with (`CURSOR_SANDBOX=1 bash …`, `env CURSOR_SANDBOX=1 …`, a bwrap's
-`--setenv CURSOR_SANDBOX 1`), never a word that names or prints one (`grep -r
-CURSOR_SANDBOX .`, `echo CURSOR_SANDBOX=1`); the names are case-sensitive, as a
-variable's is. Windsurf's `windsurf-terminal` counts as a program. `ClassifyTest` pins both lists, and that the node tier's copy agrees.
+Besides the program, the classifier also counts the artifacts that only an agent's runtime
+writes, in the places it writes them. These are Claude Code's tool-call shell (a shell
+sourcing `~/.claude/shell-snapshots/…`), and Cursor's and Windsurf's `CURSOR_SANDBOX` and
+`WINDSURF_STATE` when set in the environment a program runs with
+(`CURSOR_SANDBOX=1 bash …`, `env CURSOR_SANDBOX=1 …`, a bwrap's
+`--setenv CURSOR_SANDBOX 1`). A word that merely names or prints one of them never counts (`grep -r
+CURSOR_SANDBOX .`, `echo CURSOR_SANDBOX=1`). The names are case-sensitive, as variable
+names are. Windsurf's `windsurf-terminal` counts as a program. `ClassifyTest` pins both lists, and checks that the node tier's copy agrees.
 
-What moves:
+What changes:
 
-- **A command that only mentions an agent is its runner's.** At a person's prompt it is
-  theirs (`actor` by tty), not an agent root. Inside an agent tree nothing changes: an
-  untagged child joins its tree as a tagged one did. It no longer buys a sandbox and cwd
-  read of its own at exec; it inherits them, as any untagged child does.
-- **Some agents are tagged that were not**: Claude's native binary started by its versions
-  path with nothing else naming Claude (`~/.local/share/claude/versions/2.1.282
+- **A command that only mentions an agent belongs to whoever ran it.** At a person's
+  prompt it is that person's (`actor` by tty), not an agent root. Inside an agent tree
+  nothing changes: an untagged child joins the tree just as a tagged one did. It no longer
+  gets its own sandbox and cwd read at exec. It inherits them, as any untagged child does.
+- **Some agents are now tagged that were not before**: Claude's native binary started by
+  its versions path with nothing else naming Claude (`~/.local/share/claude/versions/2.1.282
   --session-id …`), Claude Code's npm launcher by path (`node
   …/@anthropic-ai/claude-code/cli.js`), and `npx @anthropic-ai/claude-code`.
-- **Under `~/.claude/` only Claude Code's own installs are Claude's**: `~/.claude/local/…`,
-  `~/.claude/remote/…` and its CLI's `cli.js`. A hook or a status line script there, run
-  by hand, is the user's, and a program in a project's `.claude/worktrees/…` the project's.
-- The role table's `helper`s that were tagged only for a path among their arguments
+- **Under `~/.claude/`, only Claude Code's own installs count as Claude**: `~/.claude/local/…`,
+  `~/.claude/remote/…` and its CLI's `cli.js`. A hook or status line script there, run
+  by hand, belongs to the user, and a program in a project's `.claude/worktrees/…` belongs
+  to the project.
+- The role table's `helper`s that were tagged only because of a path among their arguments
   (`chmod`, `mkdir` and `sh -c ls` on `~/.claude/` or `~/.codex/`), and the native binary
-  run as `rg` or `ugrep`, are not tagged: in a tree they are its processes at the same
-  depth, with its session.
+  run as `rg` or `ugrep`, are no longer tagged. Inside a tree they are the tree's
+  processes, at the same depth and with its session.
 
-No record says which rule tagged it, so a capture across the deploy has both; the `meta`
-record of the collector's restart is where to cut it.
+No record says which rule tagged it, so a capture that spans the deploy contains both
+kinds. Use the `meta` record from the collector's restart as the cut point.
 
 ### Schema 8: one session per agent, whole processes, masked text
 
-Two sets of changes share schema 8: sessions that stop splitting at every tool
-call, and the fixes from a review of a week of FASRC captures. Neither was
-deployed before the other, so no capture has one without the other.
+Schema 8 contains two sets of changes: sessions no longer split at every tool call, and
+there are fixes from a review of a week of FASRC captures. The two were deployed
+together, so no capture has one without the other.
 
 #### One session per agent, not per tool call
 
@@ -413,9 +432,10 @@ This part renames no field. It changes what `is_agent`, `agent_pid`, `session_ke
 `session_uuid`, `depth` and `agent_type` mean for one kind of process.
 
 Through schema 7, `resolve()` made every process whose own argv matched the classifier
-(`lib/agent_classify.py`) its own agent root: `is_agent` true, `depth` 0, `agent_pid`
-itself. The classifier then matched any argv that mentioned `/.claude/`, `/.codex/` or
-`.vscode-server`, so these all became roots, each starting a session of its own:
+(`lib/agent_classify.py`) its own agent root, with `is_agent` true, `depth` 0, and
+`agent_pid` set to its own pid. At that time the classifier matched any argv that
+mentioned `/.claude/`, `/.codex/` or `.vscode-server`, so all of these became roots, and
+each started a session of its own:
 
 - Claude Code's shell for each Bash tool call (`zsh -c source ~/.claude/shell-snapshots/…`)
 - its native binary re-executed as `rg`, `ugrep` or `bfs` for Grep and Glob
@@ -426,15 +446,16 @@ One Claude tree on madsys-gpu1 on 2026-10-06 split into 204 `session_key`s this 
 
 From schema 8, a tagged process is a root only when it is an **agent runtime**, or when
 no agent tree is above it. Anything else the classifier tags joins its parent's tree at
-`depth`+1, exactly as an untagged child does. `agent_role()` in `ebpf_trace.py` makes the
-call from the process's own argv. It ports `dashboard/rc_dashboard/roles.py`, which applies
-the same rules to older records when the dashboard reads them; keep the two in sync. It
-sorts tagged processes into `agent`, `tool-shell`, `embedded-tool`, `sandbox`, `probe`,
-`client`, `infra`, `ide` and `helper`, and only `agent` starts a session inside a tree.
-`AgentRoleTest` pins it against the argv shapes seen on madsys-gpu1 and the FAS login
-nodes. Among them is the agent binary run as a helper of its own, which is `helper`:
-Codex's `--codex-run-as-fs-helper` and Claude's `--claude-in-chrome-mcp`. Schema 8 left
-the classifier itself unchanged; it has since come to read the program alone (above).
+`depth`+1, exactly as an untagged child does. `agent_role()` in `ebpf_trace.py` makes that
+decision from the process's own argv. It is a port of `dashboard/rc_dashboard/roles.py`,
+which applies the same rules to older records when the dashboard reads them, so keep the
+two in sync. `agent_role()` sorts tagged processes into `agent`, `tool-shell`,
+`embedded-tool`, `sandbox`, `probe`, `client`, `infra`, `ide` and `helper`, and only
+`agent` starts a session inside a tree. `AgentRoleTest` pins it against the argv shapes
+seen on madsys-gpu1 and the FAS login nodes. These include the agent binary run as its own
+helper, which is classed as `helper`: Codex's `--codex-run-as-fs-helper` and Claude's
+`--claude-in-chrome-mcp`. Schema 8 itself left the classifier unchanged. The classifier
+has since been changed to read only the program (see above).
 
 For a tagged process that is not an agent runtime, inside an agent tree:
 
@@ -454,93 +475,100 @@ Claude process's `session_key`, at depths 1, 2 and 1.
   still names the outermost agent, and it is unchanged for every process.
 - **Outside an agent tree nothing changes.** Running `claude --version` at a human
   prompt still gives its own root, with the same `actor` and `actor3`. So did
-  `chmod ~/.claude/…`, until the classifier read the program alone (above).
-- **`actor3` can move inside a tree, because `agent_type` follows the tree.** The
+  `chmod ~/.claude/…`, until the classifier started reading only the program (above).
+- **`actor3` can change inside a tree, because `agent_type` follows the tree.** The
   `claude auth status` probe that VS Code's extension host runs every few minutes is now
-  `vscode`, so `human-vscode`, and no longer `agent`. Something an agent runs that matches
-  `.vscode-server` is now `agent`.
+  `vscode`, so its `actor3` is `human-vscode` and no longer `agent`. Conversely, something
+  an agent runs that matches `.vscode-server` is now `agent`.
 - **`sandbox_ancestry` still sees `bwrap`.** It used to rely on `agent_type`, which a
   `bwrap` inside a tree no longer carries. The process table now keeps each process's own
-  classifier match next to its tree's. Tagged processes still each get a sandbox read at
-  exec, as they did when they were all roots.
-- **`residency` moves too.** `max_depth` grows, since tool calls sit below their agent.
+  classifier match alongside its tree's. Each tagged process still gets a sandbox read at
+  exec, as it did when they were all roots.
+- **`residency` changes too.** `max_depth` grows, since tool calls sit below their agent.
   `by_agent_type` changes along with `agent_type`. A tool shell whose command line carries
   a bypass flag no longer counts as `autonomous`.
 - **`EBPFM_INCLUDE_ROOTS=0` keeps tool calls.** It drops roots, and a tool shell is no
-  longer one.
+  longer a root.
 - **An exec clears the old attribution.** Before, a root that exec'd into an untagged
   command kept `is_agent: true`, and a process that lost its tree kept its old
   `agent_pid`.
 
-This is a heuristic over argv, so it can misfile a shape it has not seen. If a new kind
-of agent runtime is misfiled, it joins its spawner's session instead of starting its own.
+This is a heuristic over argv, so it can misfile a shape it has not seen. A new kind of
+agent runtime that gets misfiled joins its spawner's session instead of starting its own.
 Its `args`, `command` and `ppid` are still on every record, so a reader can split it out
-again. A capture that spans 7 and 8 has sessions of two different grains, and
-`schema_versions` is what shows the boundary. On schema-8 records the dashboard's fold
-finds almost nothing left to fold.
+again. A capture that spans schemas 7 and 8 has sessions at two different granularities,
+and `schema_versions` shows where the boundary is. On schema-8 records, the dashboard's
+fold finds almost nothing left to fold.
 
 #### Whole processes, ordered events, masked text
 
-A review of a week of FASRC captures (8 login nodes, 2026-10-20 to 25) found the
-endpoint table full most of the day, exit records frozen before their argv arrived,
-multi-threaded processes' CPU mostly missing, and prompts and keys in `args`.
-Schema 8 is the fix for each; every point below changes what a field holds.
+A review of a week of FASRC captures (8 login nodes, 2026-10-20 to 25) found four
+problems: the endpoint table was full most of the day, exit records were frozen before
+their argv arrived, most of the CPU time of multi-threaded processes was missing, and
+`args` contained prompts and keys. Schema 8 fixes each of these, and every point below
+changes what a field holds.
 
 - **Events are applied in kernel-time order.** Each CPU has its own perf ring and BCC
-  drains them in turn, so a round handed over a process's exit before its own exec,
-  and every argv after every exec. An exec applied after its exit revived the dead
-  process: an entry nothing retired (16-20k of them live at a time on one node), which
-  kept its endpoint-table entries and lent its identity to the next process on the pid.
-  Events are now queued and applied once nothing older can still be in a ring
-  (`EBPFM_REORDER_MS`, 20). An event about an already-exited process no longer revives
-  it, a recycled pid gets a fresh entry, and every residency tick retires entries whose
-  process is gone from `/proc` (on a second miss), counted in `proc_vanished`.
+  drains them in turn. As a result, a single round could deliver a process's exit before
+  its own exec, and every argv after every exec. An exec applied after its exit revived
+  the dead process as an entry that nothing retired (16-20k of them were live at a time
+  on one node). That entry kept its endpoint-table entries and lent its identity to the
+  next process that got the same pid. Events are now queued and applied only once nothing
+  older can still be in a ring (`EBPFM_REORDER_MS`, 20). An event about an already-exited
+  process no longer revives it, and a recycled pid gets a fresh entry. Every residency
+  tick also retires entries whose process is gone from `/proc` (on a second miss), and
+  counts them in `proc_vanished`.
 - **An exit record is built when it is written**, after the 250 ms hold, not when the
-  exit arrives, so a late argv, parent or attribution is in it. `ts_epoch` is still the
-  exit's. Args were null on 57% of sub-10 ms exits before this.
-- **Exit counters cover the whole process** with the `thread_acc` block: each thread
-  adds its own CPU, run time, faults, context switches, waits, D-state and I/O as it
-  exits, and the record comes from the last thread out. Before, the record was the
-  leader's, plus only threads already released into `signal_struct`: one 42-thread
-  Codex process went from 48,297 CPU-s at its last tick to 79.7 s at exit. `meta`
-  says which you have (`counters_scope`: `process` or `leader`); `threads` is now the
-  most threads seen. Not comparable with schema 7 for multi-threaded processes.
-  A thread that dropped the group's `live` count early can reach its tracepoint after
-  the last one and read zero too, so while other threads are unreleased the record
-  goes to the one that claims it (`thr_claim`); the rest add themselves. Sums carry
-  the process's start time, so a dead process's leftovers (its exit lost) never join
-  the next process on its pid, and the record lives in a per-CPU map, not on the
-  512-byte stack.
-- **`args` and `captured_tail` are masked by default** (`lib/redact.py`):
-  credentials with the dashboard's own rules, and the prompt text handed to a coding
-  agent on its command line (`claude -p "..."`, `codex exec "..."`, `gemini -p`, through
-  node/npx/wrappers or inside `bash -c` and `sbatch --wrap`). Flags, models,
+  exit arrives, so it includes an argv, parent or attribution that arrived late.
+  `ts_epoch` is still the time of the exit. Before this change, args were null on 57% of
+  sub-10 ms exits.
+- **Exit counters cover the whole process**, using the `thread_acc` block. As each thread
+  exits it adds its own CPU, run time, faults, context switches, waits, D-state and I/O,
+  and the record comes from the last thread out. Before, the record held the leader's
+  counters plus only those of threads already released into `signal_struct`. One
+  42-thread Codex process went from 48,297 CPU-s at its last tick to 79.7 s at exit.
+  `meta` says which kind you have (`counters_scope`: `process` or `leader`), and `threads`
+  is now the largest number of threads seen. For multi-threaded processes, these counters
+  are not comparable with schema 7.
+  A thread that decremented the group's `live` count early can reach its tracepoint after
+  the last thread and also read zero. So while other threads are still unreleased, the
+  record goes to whichever thread claims it (`thr_claim`), and the rest add their counts.
+  The sums carry the process's start time, so leftovers from a dead process whose exit
+  was lost never get merged into the next process with that pid. The record lives in a
+  per-CPU map, not on the 512-byte stack.
+- **`args` and `captured_tail` are masked by default** (`lib/redact.py`). Credentials
+  are masked with the dashboard's own rules. So is the prompt text handed to a coding
+  agent on its command line (`claude -p "..."`, `codex exec "..."`, `gemini -p`), whether
+  run through node/npx/wrappers or inside `bash -c` and `sbatch --wrap`. Flags, models,
   subcommands, session names (`--name`, `--remote-control`), and the agents' own
-  daemons (`claude daemon`, `codex app-server`) stay; the record's `args_redacted` names
-  what was masked. The claude and codex tables follow their `--help`, and an option's
-  value is kept unless it reads as a sentence where a name should be (codex's `-p` is
-  `--profile`). Where a prompt can stand, only a path, id, or `-` is kept, and text in
-  a script other than Latin reads as words, spaces or not. In a `bash -c` string only
-  the prompt changes, but for a comment beside it; a heredoc's body is data, masked when
-  it feeds an agent; and a credential the rules cannot read through the string's
-  quoting is masked in the string rebuilt from its words. Classification reads the raw
-  argv in memory, so nothing about attribution changes. `EBPFM_REDACT=keys` or
-  `prompts` keeps one kind; `0` turns it off, and a value it cannot read masks both.
-  The node tier masks its argv fields the same way, from `/proc/<pid>/cmdline`'s
-  separate arguments while they still spell `ps`'s line. `w`'s command, which has no
-  pid, is masked from the space-joined line, as is a process gone before `/proc` is
-  read, an argument `ps` prints `?` in, and a multi-line script; there a session name's
-  later words read as a prompt's.
+  daemons (`claude daemon`, `codex app-server`) are kept, and the record's
+  `args_redacted` names what was masked. The claude and codex tables follow each tool's
+  `--help`. An option's value is kept unless it reads as a sentence where a name should
+  be (codex's `-p` is `--profile`). Where a prompt could appear, only a path, id, or `-`
+  is kept, and text in a non-Latin script counts as words, with or without spaces. In a
+  `bash -c` string only the prompt changes, apart from a comment next to it. A heredoc's
+  body is treated as data, and is masked when it feeds an agent. If the string's quoting
+  stops the rules from reading a credential, the credential is masked in a copy of the
+  string rebuilt from its words. Classification reads the raw argv in memory, so
+  nothing about attribution changes. `EBPFM_REDACT=keys` or `prompts` keeps one kind,
+  `0` turns masking off, and a value it cannot parse masks both.
+  The node tier masks its argv fields the same way. It works from the separate
+  arguments in `/proc/<pid>/cmdline`, as long as they still match the line `ps`
+  printed. `w`'s command has no pid, so it is masked from the space-joined line. The
+  same goes for a process that is gone before `/proc` is read, an argument that `ps`
+  prints as `?`, and a multi-line script. In those cases, the later words of a session
+  name are read as part of a prompt.
 
-  Masking is a deny-list, and best effort: it masks the shapes below, and a secret in
-  a shape it does not know is written as it is. Credentials:
-  - a PEM private key; an `Authorization` header's credential (a scheme it knows --
-    Bearer, Basic, Token, Digest, Bot -- is kept; any other goes with it: to the closing
-    quote, or unquoted two words and each after a comma); a key, token, secret, cookie
+  Masking is a deny-list, and it is best effort. It masks the shapes listed below, and a
+  secret in a shape it does not recognize is written unchanged. Credentials:
+  - a PEM private key; an `Authorization` header's credential (a known scheme, one of
+    Bearer, Basic, Token, Digest or Bot, is kept; any other scheme is masked with the
+    credential: up to the closing quote, or if unquoted, two words and each word after
+    a comma); a key, token, secret, cookie
     or subscription-key header (`X-Api-Key`, `X-Auth-Token`, `X-Vault-Token`,
     `PRIVATE-TOKEN`, `Cookie`, `Ocp-Apim-Subscription-Key`), also as a JSON or TOML key;
-  - a URL's password, or a user long enough to be a token; `-u`/`--user`/`--proxy-user`
-    `user:PASS`, but a container's uid:gid; a query string's `token`, `key`, `secret`,
+  - a URL's password, or a username long enough to be a token; `-u`/`--user`/`--proxy-user`
+    `user:PASS`, but not a container's uid:gid; a query string's `token`, `key`, `secret`,
     `password`, `sig` and the like;
   - a credential-named flag's value (`--token`, `--api-key`, `--api_key`, `--password`,
     `--secret`, `--access-key`, `--credentials`, ...), also as a JSON list's items; a
@@ -548,66 +576,72 @@ Schema 8 is the fix for each; every point below changes what a field holds.
     `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `_PASS`, `_PWD`, `API_KEY`,
     `ACCESS_KEY`, `SECRET_KEY` and Spark's `secret.key`, `CREDENTIALS`, and in capitals
     `_KEY`, `PASS`, `_AUTH`; `PASSWD_FILE` names where a password is, and stays);
-  - what a program takes as one: mysql's and mariadb's `-pPASS`, the mongo tools' `-p`,
+  - an argument a specific program takes as a credential: mysql's and mariadb's `-pPASS`, the mongo tools' `-p`,
     redis-cli's `-a`, sshpass's `-p`, a registry login's `-p` (docker, podman, apptainer,
     singularity, ...), `az login -p`, `twine upload -p`, `wandb login KEY`, and a
     credential-named setting in `aws configure set` and `rclone config create`. The
-    program is found after a space, a slash, a quote, a backtick, `;` `|` `&` `(` or
-    `=`, so inside `bash -c '...'` and Claude Code's `eval '...'` too;
+    program name is recognized after a space, a slash, a quote, a backtick, `;` `|` `&` `(` or
+    `=`, so these also work inside `bash -c '...'` and Claude Code's `eval '...'`;
   - token shapes wherever they stand: `sk-` (OpenAI, Anthropic, OpenRouter), GitHub's
     `ghp_` and kin, `glpat-`, `hf_`, `AKIA`/`ASIA`, `xox?-`, `AIza`, `ya29.`, `npm_`, a
     JWT, EOS's `zteos64:`, `nvapi-`, `gsk_`, `r8_`, `pplx-`, `xai-`, Stripe's
     `sk_live_`/`rk_live_`, SendGrid's `SG.`, `dop_v1_`, Vault's `hvs.`, PyPI's tokens.
 
-  Prompts: an agent's prompt arguments and options, as above; in a command string,
-  its here-string or heredoc, what `echo`, `printf` or `cat` pipes straight into it,
-  and a variable set in the same string and expanded where a prompt was masked; and an
-  environment it is started with whose value says a sentence (`env 'PROMPT=...'`).
+  Prompts: an agent's prompt arguments and options, as above. In a command string, also
+  the agent's here-string or heredoc, whatever `echo`, `printf` or `cat` pipes straight
+  into it, and a variable set in the same string and expanded where a prompt was masked.
+  Finally, an environment variable the agent is started with whose value reads as a
+  sentence (`env 'PROMPT=...'`).
 
-  Every rule reads a line in time linear in its length. Past 16 KB a line is cut at a
-  space, the rest neither read nor written, and `[CUT]` written after the masked part
-  (a quoted credential the cut falls in is masked whole, as is one whose quote never closes);
-  `args_redacted` names `cut` and `args_truncated` is true. A submit record's
-  `captured_tail` is masked whole and then cut to its last 300 characters. The node
-  tier fails closed: if it cannot import `lib/redact.py` it writes every command line
-  as `[REDACTED]` and its `redact` field reads `["error"]` (unless `EBPFM_REDACT=0`),
-  and `ebpfm.sh check` masks a made-up credential through it.
-- **Kernel-socket traffic is no process's network I/O.** The NFS client sends its RPCs
-  from the calling process's context, so every `ls` on an NFS path was an endpoint:
-  95% of the table. A socket with no file behind it is now counted per node in
-  `netpeer_kernel` and left out of `net_*_bytes` and `net_endpoints`.
+  Every rule runs in time linear in the line's length. A line longer than 16 KB is cut
+  at a space. The rest is neither read nor written, and `[CUT]` is written after the
+  masked part. (A quoted credential that the cut falls inside is masked whole, as is one
+  whose quote never closes.) In that case `args_redacted` names `cut` and `args_truncated`
+  is true. A submit record's `captured_tail` is masked whole and then cut to its last
+  300 characters. The node tier fails closed: if it cannot import `lib/redact.py`, it
+  writes every command line as `[REDACTED]` and its `redact` field reads `["error"]`
+  (unless `EBPFM_REDACT=0`). `ebpfm.sh check` tests the node tier's masking by running a
+  made-up credential through it.
+- **Kernel-socket traffic no longer counts as any process's network I/O.** The NFS client
+  sends its RPCs from the calling process's context, so every `ls` on an NFS path became
+  an endpoint, and these made up 95% of the table. A socket with no file behind it is
+  now counted per node in `netpeer_kernel`, and left out of `net_*_bytes` and
+  `net_endpoints`.
 - **The endpoint table is read per process.** Each new entry is announced on
-  `netp_new`; a process's exit reads and deletes just its own entries, and a tick reads
-  only reported processes'. The whole table is read every 10 ticks, or sooner once it
-  fills (`netpeer_entries` is that read's count on those ticks, the indexed count on
-  others). The default size is 65,536 entries (`EBPFM_NETPEER_MAX`).
-- **`cgroup` is right for anything a service manager starts.** The id-to-path map never
-  matched on 4.18 (the id carries a generation in its top half), and a child kept the
-  cgroup it inherited at fork: `/init.scope`, on 22% of one node's records. Ids now
-  come from file handles, and a miss reads `/proc`.
-- **`ppid` is the forking process**, not its forking thread, and an entry keeps the
-  parent that forked it when exec or exit later reports init (`nohup cmd &`).
-- **Submit capture** stops at the job id, or after `EBPFM_SUBMIT_BUDGET` bytes (8192);
-  before, every write of an `srun --pty` session went up the ring (8.4M events in 6.5
+  `netp_new`. A process's exit reads and deletes only its own entries, and a tick reads
+  only the entries of reported processes. The whole table is read every 10 ticks, or
+  sooner once it fills. (`netpeer_entries` is that full read's count on those ticks, and
+  the indexed count on other ticks.) The default size is 65,536 entries
+  (`EBPFM_NETPEER_MAX`).
+- **`cgroup` is now correct for anything a service manager starts.** The id-to-path map
+  never matched on 4.18 (the id carries a generation in its top half), so a child kept
+  the cgroup it inherited at fork. That showed up as `/init.scope` on 22% of one node's
+  records. Ids now come from file handles, and a miss falls back to reading `/proc`.
+- **`ppid` is the forking process**, not the thread within it that forked. An entry also
+  keeps the parent that forked it when exec or exit later reports init as the parent
+  (`nohup cmd &`).
+- **Submit capture** stops at the job id, or after `EBPFM_SUBMIT_BUDGET` bytes (8192).
+  Before, every write of an `srun --pty` session went up the ring (8.4M events in 6.5
   days on one node).
-- **Startup attaches the probes, then seeds from `/proc`**, so nothing starts in a gap.
+- **Startup attaches the probes first, then seeds from `/proc`**, so no process can
+  start in a gap between the two.
 - **Python 3.6** (EL8): the BTF read used a 3.7 keyword and failed silently, so no FAS
-  node had `tcp_accept` or any BTF block; `conn.age_s` used the wall clock there.
+  node had `tcp_accept` or any BTF block, and `conn.age_s` used the wall clock there.
 - New blocks: `fork_raw` (threads never reach the ring), `thread_acc`, `netbytes_page`
-  (sendfile on kernels before 6.5). `meta.unsafe_dirs` lists directories other users
-  can change on the way to the output or the collector's code, and a second collector
+  (sendfile on kernels before 6.5). `meta.unsafe_dirs` lists directories on the path to
+  the output or to the collector's code that other users can change. A second collector
   for the same output directory and host refuses to start (`.<host>.lock`).
 
 ### Schema 7: network bytes by endpoint
 
-`net_tx_bytes`/`net_rx_bytes` said how much a process moved over the network, not
-where to. Schema 7 keeps those totals and adds the endpoint behind them, for TCP and
-UDP alike, so QUIC and DNS have a destination for the first time. TCP already had
-one in `conns.peers`, but only for connections opened after the collector attached,
-only the heaviest five, and only once the process exited.
+`net_tx_bytes`/`net_rx_bytes` said how much a process moved over the network, but not
+where it went. Schema 7 keeps those totals and adds the endpoints behind them, for TCP
+and UDP alike, so QUIC and DNS have a destination for the first time. TCP already had
+endpoints in `conns.peers`, but only for connections opened after the collector
+attached, only for the heaviest five, and only once the process exited.
 
-On `exit` and `truncated`, **`net_endpoints`** lists every endpoint of the process's
-life:
+On `exit` and `truncated`, **`net_endpoints`** lists every endpoint the process used
+during its life:
 
 ```json
 "net_endpoints": {"n": 2, "in_series": true, "unattributed": null,
@@ -621,55 +655,55 @@ life:
 
 In the snapshot stream, **`netio`** is the time series: one record per process per
 residency tick, with the bytes each endpoint moved since that process's previous
-`netio` (`interval_s`) and the full identity block. A six-day agent's traffic
-therefore has a time axis instead of arriving as one total when it exits.
+`netio` (`interval_s`) and the full identity block. So the traffic of an agent that
+runs for six days has a time axis, instead of arriving as one total when it exits.
 
-The rules it keeps:
+The rules these fields follow:
 
-- **Complete up to a cap, and the rest counted.** Sorted by bytes, up to
-  `EBPFM_NET_ENDPOINTS_MAX` (256); past that, an `overflow` object carries the count
-  and bytes. A day on madsys-gpu1 peaked at 52 for one process, and that was a VS
-  Code server whose inbound connections were still counted one per client port.
-- **`null`, not an empty block,** for a process with no network I/O, as `conns`.
-- **Loss is stated.** Bytes with no address anywhere (a `recv()` on an unconnected
-  UDP socket) are in `unattributed`. Bytes the per-process totals have but the
-  endpoint table missed (table full, or the call was in flight at attach) are
-  `unaccounted`. `residency_totals` and `stop` carry `netpeer_full`, the calls and
-  bytes that found the table full, and `netpeer_orphans`, the entries deleted before
-  they reached a record.
-- **One consumer rule for the time series.** A process joins the series at its first
-  tick with traffic. From then on its exit (or the stop) writes a last `netio`
+- **Complete up to a cap, with the rest counted.** Endpoints are sorted by bytes, up to
+  `EBPFM_NET_ENDPOINTS_MAX` (256). Past that, an `overflow` object carries the count
+  and bytes. On one day on madsys-gpu1 the peak was 52 for one process, a VS Code
+  server whose inbound connections were still counted one per client port.
+- **`null`, not an empty block,** for a process with no network I/O, as with `conns`.
+- **Loss is reported.** Bytes with no address anywhere (a `recv()` on an unconnected
+  UDP socket) are in `unattributed`. Bytes that the per-process totals have but the
+  endpoint table missed (because the table was full, or the call was in flight at
+  attach) are in `unaccounted`. `residency_totals` and `stop` carry `netpeer_full`, the
+  calls and bytes that found the table full, and `netpeer_orphans`, the entries deleted
+  before they reached a record.
+- **One rule for consumers of the time series.** A process joins the series at its first
+  tick with traffic. From then on, its exit (or the stop) writes a last `netio`
   (`reason: "exit"`/`"stop"`) for the remainder, and its record says
   `in_series: true`. So the series is every `netio` record, plus the
   `exit`/`truncated` records with `in_series: false` placed at their exit time. That
-  second group is exact to within one tick, since a process with traffic before a
-  tick would have joined, and `in_series` is what stops a consumer counting the same
-  bytes twice.
+  second group is exact to within one tick, since a process that had traffic before a
+  tick would have joined the series. `in_series` is what stops a consumer from counting
+  the same bytes twice.
 
 How the endpoint is found:
 
 - **Where it comes from.** An entry probe on each send/recv function records the
-  socket and `msghdr` for the thread; the return probe that already counted the bytes
-  reads the peer and adds them to a BPF hash keyed by (pid, protocol, direction,
+  socket and `msghdr` for the thread. The return probe, which already counted the bytes,
+  reads the peer and adds the bytes to a BPF hash keyed by (pid, protocol, direction,
   address, port). TCP and connected UDP use the socket's peer; `sendto`/`recvfrom` on
   an unconnected UDP socket use `msg->msg_name`.
-- **Direction.** Outbound traffic is keyed by the remote port, inbound by the local
-  one: a client's port is random, and keying on it would make one entry per
-  connection. Direction comes from the TCP birth map when it saw the socket open.
+- **Direction.** Outbound traffic is keyed by the remote port and inbound traffic by the
+  local port. A client's port is random, so keying on it would create one entry per
+  connection. Direction comes from the TCP birth map if the map saw the socket open.
   Otherwise the port range decides (`ip_local_port_range`, compiled in and recorded as
-  `meta.config.eph_range`): a remote end on an ephemeral port and a local end off one
-  is inbound. That guess covers sockets opened before the collector started, all
-  UDP, and inbound TCP where `tcp_accept` does not load (4.18).
+  `meta.config.eph_range`): traffic is inbound if the remote end is on an ephemeral port
+  and the local end is not. That guess covers sockets opened before the collector
+  started, all UDP, and inbound TCP where `tcp_accept` does not load (4.18).
 - **IPv6 UDP.** `udpv6_prot` has its own `udpv6_sendmsg`/`udpv6_recvmsg`, which the
-  schema-6 probes never saw: IPv6 UDP went uncounted, and on a dual-stack socket to
-  an IPv4 peer sends were counted but receives were not. `netbytes_udp6` probes both,
+  schema-6 probes never saw. IPv6 UDP went uncounted, and on a dual-stack socket to
+  an IPv4 peer, sends were counted but receives were not. `netbytes_udp6` probes both,
   so **`net_tx_bytes`/`net_rx_bytes` cover more from schema 7 on**, which is one
-  reason for the bump. The v4-mapped send path, where `udpv6_sendmsg` calls
+  reason for the version bump. The v4-mapped send path, where `udpv6_sendmsg` calls
   `udp_sendmsg` on the same socket, is counted once.
-- **Read, never deleted while alive.** Userspace reads the whole table each tick and
-  before it writes a networked process's record. A live process's entries are never
-  deleted, because a delete would race the kernel's increments and 4.18 has no atomic
-  read-and-delete; an exited process's are.
+- **Read, never deleted while alive.** Userspace reads the whole table each tick, and
+  again before it writes a networked process's record. A live process's entries are
+  never deleted, because a delete would race the kernel's increments and 4.18 has no
+  atomic read-and-delete. An exited process's entries are deleted.
 - **Names come from argv, never from traffic.** `host` is set only when the process's
   own command line names the endpoint (see below). Nothing parses DNS answers, TLS or
   HTTP. `provider` is still the existing CIDR bucket, and behind a proxy the endpoint is
@@ -678,75 +712,77 @@ How the endpoint is found:
 **`host` on an endpoint** is a name from the process's own command line: every URL's
 host (`curl https://…`, `pip --index-url=…`, `git clone https://…`), and the destination
 of `ssh`/`sftp`/`scp`/`rsync`, which covers the `ssh` that git runs for an ssh remote.
-Those names are resolved on a background thread and cached, and never on the event path.
-An endpoint takes a name only when its address is among the addresses the name resolves
+Those names are resolved on a background thread and cached, never on the event path.
+An endpoint gets a name only when its address is among the addresses the name resolves
 to, so `host` is null rather than a guess when:
 
 - the name isn't in argv, as with an agent's own API calls;
 - the lookup hasn't finished yet;
-- the name answered with other addresses, as a CDN that rotates them can.
+- the name resolved to other addresses, which can happen with a CDN that rotates them.
 
 The collector takes only the hostname, never a URL's credentials. It skips address
 literals and `localhost`, and never treats a file name or an email address as a
-hostname. It looks names up only for processes it reports anyway, and reads an argv for
-them once. It reads the first 4,096 characters of argv (the in-kernel read's default; an
-argv read from `/proc` at start has no cap), never half a word, and a URL's scheme from at
-most the 32 characters before its `://`, so the cost stays linear in what any user can
-put on a command line. `stop.argv_hosts`
-counts lookups resolved, failed, and dropped because the queue was full; each dropped
-one may be a missing `host`. `EBPFM_ARGV_HOSTS=0` turns this off.
+hostname. It looks names up only for processes it reports anyway, and reads each of
+their argvs once. It reads the first 4,096 characters of argv (the in-kernel read's
+default; an argv read from `/proc` at start has no cap) and never stops in the middle of
+a word. It looks for a URL's scheme in at most the 32 characters before its `://`. This
+keeps the cost linear in whatever a user puts on a command line. `stop.argv_hosts`
+counts lookups that resolved, failed, or were dropped because the queue was full. Each
+dropped lookup may mean a missing `host`. `EBPFM_ARGV_HOSTS=0` turns this off.
 
 `conn` records gain **`proto`**. The netlink dump asks for TCP and UDP, and a
 connected UDP socket reports `ESTABLISHED`, so a DHCP client's socket
-(128.103.1.210:67 on madsys-gpu1) read as a standing TCP connection with no pid,
+(128.103.1.210:67 on madsys-gpu1) showed up as a standing TCP connection with no pid,
 1 439 times a day. A UDP row also no longer joins the TCP-only birth map.
 
-The envelope gains **`collector_pid`** (see above), for filtering the collector's own
-process tree out, and loses **`source`** and **`collector`**. Those were the constants
+The envelope gains **`collector_pid`** (see above), for filtering out the collector's
+own process tree, and loses **`source`** and **`collector`**. Those were the constants
 `"ebpf"` and `"ebpf_marthen_new"` on every line, and nothing read them. Pre-7 captures still
 carry them.
 
-**`args` is no longer capped by default** (`EBPFM_ARGS_MAXLEN=0`; it was 2048). What limits
-it now is how much argv the collector can read: the in-kernel read at exec stops at
-`EBPFM_ARGV_KMAX` (4096 bytes), while a `/proc` read, used for processes seeded at
-startup, is whole up to the 16 KB the masking reads (*masked text*, above). `args_truncated` now also
+**`args` is no longer capped by default** (`EBPFM_ARGS_MAXLEN=0`; it was 2048). The
+limit now is how much argv the collector can read. The in-kernel read at exec stops at
+`EBPFM_ARGV_KMAX` (4096 bytes). A `/proc` read, used for processes seeded at startup,
+gets the whole command line up to the 16 KB that the masking reads (*masked text*,
+above). `args_truncated` now also
 reports the in-kernel cut. Before, it
 compared only against the emit cap, so with no cap a clipped command line would have
-read as complete. The cost is width: identity, and so `args`, rides on every record
-about a process, including each tick's `residency`, `conn` and `netio`, so one long
-command line is repeated all day. Set a cap to bound that.
+looked complete. The cost is record width. The identity block, and therefore `args`,
+goes on every record about a process, including each tick's `residency`, `conn` and
+`netio`, so one long command line is repeated all day. Set a cap to bound that.
 
 **`command` replaces `comm`.** The kernel's comm stops at 15 characters, so
-`codex-linux-sandbox` read as `codex-linux-san` and a VS Code CLI as `code-2242ebbb54`.
-`command` is the comm, completed from argv when it hit that limit: the first token
-whose basename extends it, which is argv[0] for a binary and the script path for a
-script run through its interpreter. On one day of madsys-gpu1 data, most of the 115
-records with a 15-character comm completed this way. What exists nowhere longer stays
-as the kernel reported it: a thread name set with `prctl`, or the loader run with no
-arguments. Keys named after it follow: `by_command` on `residency`, `top_procs[].command`,
-`dropped.by_command` and `stop.conns_dropped_commands`. `submit.tool` keeps its name and
-takes the whole command. One latent bug goes with it. `SANDBOX_COMMS` lists
-`codex-linux-sandbox`, and matched against the cut comm that entry could never fire;
-it is now matched on `command`.
+`codex-linux-sandbox` showed up as `codex-linux-san` and a VS Code CLI as `code-2242ebbb54`.
+`command` is the comm, completed from argv when it hit that limit. The completion is the
+first token whose basename extends the comm: argv[0] for a binary, and the script path
+for a script run through its interpreter. On one day of madsys-gpu1 data, most of the 115
+records with a 15-character comm were completed this way. A name that has no longer form
+anywhere stays as the kernel reported it, for example a thread name set with `prctl`, or
+the loader run with no arguments. Keys named after `comm` were renamed to match:
+`by_command` on `residency`, `top_procs[].command`,
+`dropped.by_command` and `stop.conns_dropped_commands`. `submit.tool` keeps its name but
+now holds the whole command. This also fixes a latent bug. `SANDBOX_COMMS` lists
+`codex-linux-sandbox`, and since it was matched against the truncated comm, that entry
+could never fire. It is now matched on `command`.
 
-**`cwd_source` is gone.** Whether `cwd` was read or inherited was not worth a field on
-every record once the value itself is there.
+**`cwd_source` is gone.** Once the `cwd` value itself is there, whether it was read or
+inherited was not worth a field on every record.
 
-**`env_flags` is gone, and `/proc/<pid>/environ` is never opened.** It kept only variable
-names, but the file holds the values too, API keys among them, for every agent root on
-the node. `approval_mode` now comes from argv alone, so a bypass set through the
+**`env_flags` is gone, and `/proc/<pid>/environ` is never opened.** `env_flags` kept only
+variable names, but the file also holds the values, including API keys, for every agent
+root on the node. `approval_mode` now comes from argv alone, so a bypass set through the
 environment or a config file rather than a flag is not seen (`approval_src` is `argv` or
 null).
 
-The feature cache now records the block list it was probed against and is ignored
-when that list changes. Without that, a host that ran an older collector would load
-its cached set and never try the new blocks.
+The feature cache now records the block list it was probed against, and the cache is
+ignored when that list changes. Without that, a host that ran an older collector would
+load its cached set and never try the new blocks.
 
 ### Schema 6: connections fold into the process
 
 `tcp` (socket close) and `accept` (inbound connect) were one record per connection.
 They no longer exist. The same connections now reach the feed as a **`conns` block on the
-owning process's `exit` record** — and on its `truncated` record, for a process still
+owning process's `exit` record**, or on its `truncated` record for a process still
 alive at stop.
 
 ```json
@@ -759,61 +795,64 @@ alive at stop.
                      "rx_bytes": 880000, "tx_bytes": 139000}]}
 ```
 
-Why the grain is better, not just cheaper: an agent's traffic is overwhelmingly **repeat
-calls to a handful of hosts**, so twenty sequential requests to one API endpoint were
-twenty near-identical records and are now one `peers` entry with `n: 20`. `peers` keeps
-the heaviest `EBPFM_CONNS_TOPN` (default 5) by bytes; `peers_total` is the true distinct
-count, the endpoint map is capped at 256 keys and anything past that is counted in
-`peers_overflow` rather than silently merged.
+This granularity is better, not just cheaper. An agent's traffic is overwhelmingly
+**repeat calls to a handful of hosts**, so twenty sequential requests to one API endpoint
+used to be twenty near-identical records, and are now one `peers` entry with `n: 20`.
+`peers` keeps the heaviest `EBPFM_CONNS_TOPN` (default 5) by bytes, and `peers_total` is
+the true distinct count. The endpoint map is capped at 256 keys, and anything past that
+is counted in `peers_overflow` rather than silently merged.
 
-Four rules it keeps:
+The `conns` block follows four rules:
 
 - **`conns` is `null`, not a zeroed block, for a process that opened nothing.** Most
-  processes open nothing, and the block is ~200 B against the width argument below.
-  Whether the TCP blocks loaded at all is a property of the capture and stays in
-  `meta.features` — it is not a per-process fact.
+  processes open nothing, and the block costs ~200 B (see the width argument below).
+  Whether the TCP blocks loaded at all is a property of the capture, not of each
+  process, so it stays in `meta.features`.
 - **`rx_bytes`/`tx_bytes` are `null`, never `0`, when no connection contributed a real
-  figure** (the `tcp_basic` variant cannot read byte counters). Design principle 4.
-- **`conn_s_total` is summed connection lifetimes, not wall time.** Connections overlap,
-  so it can exceed the process's own `duration_s`. It is not a rate base.
-- **Loss is counted, never silent.** A process that folded connections but never produced
-  a record — unattributable, or its exit event was lost — is counted at GC into
-  `stop.conns_dropped` / `conns_dropped_commands`. That pair is the acceptance gate for this
-  change.
+  figure** (the `tcp_basic` variant cannot read byte counters). This follows design
+  principle 4.
+- **`conn_s_total` is the sum of connection lifetimes, not wall time.** Connections
+  overlap, so it can exceed the process's own `duration_s`. Don't use it as the base for
+  a rate.
+- **Loss is counted, never silent.** If a process folded connections but never produced
+  a record (because it was unattributable, or its exit event was lost), GC counts it
+  into `stop.conns_dropped` / `conns_dropped_commands`. That pair is the acceptance gate
+  for this change.
 
 #### The exit record is now held for 250 ms
 
-This is forced by kernel ordering, not by batching. `do_exit()` runs
+Kernel ordering forces this hold; it is not there for batching. `do_exit()` runs
 `trace_sched_process_exit()` **before** `exit_files()`, so the `TCP_CLOSE` events for the
 sockets a process still held are submitted *after* the exit event that describes it.
 Writing the exit record inline would fold in only the connections that happened to close
-during the process's life and miss every one it was still holding — for an agent, nearly
-all of them.
+during the process's life, and would miss every connection it was still holding. For an
+agent, that is nearly all of them.
 
-So `on_exit` stages the record and `drain_exits()` writes it one poll round later
+So `on_exit` stages the record, and `drain_exits()` writes it one poll round later
 (`EBPFM_EXIT_HOLD_MS`, default 250; `0` restores the old inline emit).
 
-Two consequences worth knowing:
+This has two consequences worth knowing:
 
-- **File order, not time order, is what shifts.** `ts_epoch` is stamped when the record is
-  built, so a consumer that sorts on it — which is what it is for — sees nothing change.
-  A consumer that assumed append order *was* time order will now see an `exit` line after
+- **File order shifts, but time order does not.** `ts_epoch` is stamped when the record is
+  built, so a consumer that sorts on it (which is what it is for) sees no change. A
+  consumer that assumed append order *was* time order will now see an `exit` line after
   a `residency` line stamped later.
 - **Nothing is at risk at stop.** `drain_exits(final=True)` runs before `flush_live()`, so
   a pending record is still written as an `exit` and cannot also appear as a contradictory
   `truncated`.
 
 The hold also moves the three "too cheap to keep" filters (`EBPFM_MIN_DURATION`,
-`EBPFM_MIN_CPU`, the `sleep` timer filter) from decision to *application* time: a 40 ms
-`curl` is below `MIN_DURATION`, and dropping it at exit would throw away the connection
-that made it worth keeping. **A process that talked to the network is never a no-op.**
+`EBPFM_MIN_CPU`, the `sleep` timer filter) from decision time to *application* time. A
+40 ms `curl` is below `MIN_DURATION`, and dropping it at exit would throw away the
+connection that made it worth keeping. **A process that talked to the network is never
+treated as a no-op.**
 
 ### Schema 5 additions
 
 | Field | Event | What |
 |---|---|---|
 | `sandbox`, `sandbox_src`, `sandbox_detail` | identity | **namespace isolation**, from `/proc/<pid>/ns/*` against pid 1's. `null` (never `"unsandboxed"`) when the read was denied |
-| `sandbox_ancestry` | identity | `bwrap` / `codex-linux-sandbox` / … — *how* it got there, which is a different question from *what it is*. See below |
+| `sandbox_ancestry` | identity | `bwrap` / `codex-linux-sandbox` / …: *how* the process got there, which is a different question from *what it is*. See below |
 | `approval_mode`, `approval_src` | identity | unattended execution, split from confinement. `autonomous` is unchanged |
 | `env_flags` | identity | agent env variable names from `/proc/<pid>/environ`. **Gone in schema 7:** the collector no longer reads another process's environment |
 | `session_uuid` | identity | survives a collector restart, unlike the pid-based `session_key` |
@@ -825,137 +864,144 @@ that made it worth keeping. **A process that talked to the network is never a no
 
 ### `sandbox` vs `sandbox_ancestry` — read both
 
-`sandbox` is **namespace isolation and nothing else**. Seccomp and capabilities are in
-`sandbox_detail`, deliberately: every VS Code/Electron renderer is seccomp-filtered and
+`sandbox` is **namespace isolation and nothing else**. Seccomp and capabilities are kept
+in `sandbox_detail` on purpose. Every VS Code/Electron renderer is seccomp-filtered, and
 `actor3="human-vscode"` is a first-class actor class, so folding seccomp into the boolean
-would light up that whole class — and on a stock host `systemd-resolve`, `systemd-logind`,
-`rsyslogd` and `polkitd` all report `Seccomp=2` from systemd's `SystemCallFilter=`. A
-capability set decides nothing either way: an unprivileged process has `CapEff=0` by
-definition, and a process that is uid 0 *inside a user namespace* — the primary case of
-interest — reports a **full** set.
+would mark that whole class as sandboxed. On a stock host, `systemd-resolve`,
+`systemd-logind`, `rsyslogd` and `polkitd` also all report `Seccomp=2` from systemd's
+`SystemCallFilter=`. A capability set decides nothing either way. An unprivileged
+process has `CapEff=0` by definition, and a process that is uid 0 *inside a user
+namespace* (the main case we care about) reports a **full** set.
 
-`sandbox_ancestry` is free (the ancestry is already resolved) and answers the other half.
-**Their disagreement is the signal.** Claude Code's bwrap use is a capability *probe*
-(`bwrap --ro-bind / /`), and per `findings/login.md` that probe is exactly what wedges in
-D-state on a dead automount. So `ancestry="bwrap"` with `sandbox="unsandboxed"` is a probe;
-`ancestry="bwrap"` with `sandbox="sandboxed"` is a real confinement.
+`sandbox_ancestry` costs nothing (the ancestry is already resolved) and answers the
+other half of the question. **The useful signal is where the two fields disagree.**
+Claude Code's bwrap use is a capability *probe* (`bwrap --ro-bind / /`), and according
+to `findings/login.md`, that probe is exactly what wedges in D-state on a dead
+automount. So `ancestry="bwrap"` with `sandbox="unsandboxed"` is a probe, and
+`ancestry="bwrap"` with `sandbox="sandboxed"` is real confinement.
 
-A true verdict that still surprises: a systemd unit with `PrivateTmp=` really is in a
-private mount namespace, so a hardened daemon reports `sandboxed`/`mntns`. Correct for what
-the field means; not agent sandboxing. Read `sandbox_src`.
+One correct result can still be surprising. A systemd unit with `PrivateTmp=` really is
+in a private mount namespace, so a hardened daemon reports `sandboxed`/`mntns`. That is
+correct for what the field means, but it is not agent sandboxing. Check `sandbox_src`.
 
 ### The eight data points this adds over the poller
 
 A coverage audit found 40 observable login-node signals: 15 already read, 17 belonging to
-the node snapshot by nature, and **8 the collector could read and did not**. All eight:
+the node snapshot by nature, and **8 the collector could read and did not**. Here are
+all eight.
 
-**1. Working directory** — `cwd` on identity; `work_dir` on `submit` (named
-for the `groupby("work_dir")` join in five `analyze/` scripts). One
-`os.readlink('/proc/<pid>/cwd')` — **readlink only, never stat**. `os.stat`,
+**1. Working directory.** `cwd` on identity, and `work_dir` on `submit` (named
+for the `groupby("work_dir")` join in five `analyze/` scripts). Each read is one
+`os.readlink('/proc/<pid>/cwd')`: **readlink only, never stat**. `os.stat`,
 `os.path.exists`, `os.path.realpath` and listing the directory all follow the link onto
-the target mount and block in uninterruptible sleep on a wedged autofs mount, hanging the
-single-threaded collector *during the very incident it exists to observe*. **Inherit-first**:
-a fork inherits the directory and tool processes almost never `chdir`, so the parent's
-value is the default and a readlink happens only for agent roots, submit tools,
-tty-attached processes, or when the parent's is unknown — a handful per second instead of
-~95. `EBPFM_CWD_ALWAYS=1` forces a readlink per exec, to validate the assumption.
-*Caveats:* a `bwrap` sandbox resolves the string in its own mount namespace; a deleted
-directory returns a `" (deleted)"` suffix.
+the target mount. On a wedged autofs mount they block in uninterruptible sleep, which
+would hang the single-threaded collector *during the very incident it exists to observe*.
+The collector reads **inherit-first**. A fork inherits the directory and tool processes
+almost never `chdir`, so the parent's value is the default. A readlink happens only for
+agent roots, submit tools, tty-attached processes, or when the parent's value is unknown.
+That is a handful per second instead of ~95. `EBPFM_CWD_ALWAYS=1` forces a readlink per
+exec, to validate the assumption.
+*Caveats:* a `bwrap` sandbox resolves the string in its own mount namespace, and a
+deleted directory returns a `" (deleted)"` suffix.
 
-**2. NFS and autofs stall time** — `dstate_wait_s`, `dstate_episodes`, `dstate_max_s`,
-`dstate_src` on exit. Two independent blocks, both loaded where possible so they can be
-cross-checked: `dstate_task` reads `task->stats.sum_block_runtime` at exit (the kernel's
-own cumulative total, no extra probe, 5.19+); `dstate_stat` accumulates
-`sched:sched_stat_blocked` per tid, which fires only on unblock — far cheaper than
-filtering `sched_switch` — and is the path for older kernels. Prefers `task`.
+**2. NFS and autofs stall time.** `dstate_wait_s`, `dstate_episodes`, `dstate_max_s` and
+`dstate_src` on exit. These come from two independent blocks, both loaded where possible
+so they can be cross-checked. `dstate_task` reads `task->stats.sum_block_runtime` at exit
+(the kernel's own cumulative total, with no extra probe; 5.19+). `dstate_stat`
+accumulates `sched:sched_stat_blocked` per tid, which fires only on unblock and is far
+cheaper than filtering `sched_switch`. It is the path for older kernels. When both are
+available, `task` is preferred.
 **Both are inert without `kernel.sched_schedstats=1`**, which `bootstrap` sets.
 
-**3. Network usage** — three parts.
-  - **Standing flows.** The four-tuple is stored at `SYN_SENT` as a **join key**:
-    netlink names the endpoint but carries **no pid**, and `ss -p` only gets one by
-    scanning every `/proc/*/fd`. Each tick, query `NETLINK_SOCK_DIAG` directly
-    (`SOCK_DIAG_BY_FAMILY`, `NLM_F_DUMP`, AF_INET + AF_INET6, TCP then UDP), parse
-    `inet_diag_msg` + `INET_DIAG_INFO`, join on the tuple. Rows with no map entry still
-    emit with uid and no pid. Ladder: netlink → `ss --info --tcp` → `/proc/net/tcp`.
+**3. Network usage**, in three parts.
+  - **Standing flows.** The four-tuple is stored at `SYN_SENT` as a **join key**,
+    because netlink names the endpoint but carries **no pid**, and `ss -p` only gets a
+    pid by scanning every `/proc/*/fd`. Each tick, the collector queries
+    `NETLINK_SOCK_DIAG` directly (`SOCK_DIAG_BY_FAMILY`, `NLM_F_DUMP`, AF_INET +
+    AF_INET6, TCP then UDP), parses `inet_diag_msg` + `INET_DIAG_INFO`, and joins on the
+    tuple. Rows with no map entry are still emitted, with a uid and no pid. Fallback
+    order: netlink → `ss --info --tcp` → `/proc/net/tcp`.
   - **Per-process totals, all protocols.** kretprobes on `tcp_sendmsg`/`tcp_recvmsg`/
     `udp_sendmsg`/`udp_recvmsg` → `net_tx_bytes`, `net_rx_bytes`, `net_calls`. **This is
     what makes QUIC visible.** Unix-socket MCP traffic is excluded by family.
     Schema 7 adds `udpv6_sendmsg`/`udpv6_recvmsg` and the endpoint of every call:
     see **Schema 7** above.
     *Caveat:* `sendfile` and `splice` bypass the socket layer.
-  - **Close-record enrichment.** `connect_ms` and `established` come free from the same
-    tracepoint: `SYN_SENT`→`ESTABLISHED` is connect latency, and `SYN_SENT`→`CLOSE`
+  - **Close-record enrichment.** `connect_ms` and `established` come for free from the
+    same tracepoint. `SYN_SENT`→`ESTABLISHED` is connect latency, and `SYN_SENT`→`CLOSE`
     without `ESTABLISHED` is a refused or timed-out connect.
 
-**4. Wait channel and kernel stack** — `d_stack` on `residency`, plus `d_stack_top`, a
-per-tree histogram of blocking frames. For each tracked process in `D` at the tick, read
-`/proc/<pid>/stack` as root, top 5 frames. **Reading a kernel stack touches no
-filesystem**, so it cannot hang on the mount being diagnosed. Replaces the
-`ptrace_may_access`-gated `wchan` for all users and names the stuck server. Capped by
-`EBPFM_DSTACK_MAX`.
+**4. Wait channel and kernel stack.** `d_stack` on `residency`, plus `d_stack_top`, a
+per-tree histogram of blocking frames. For each tracked process in `D` at the tick, the
+collector reads the top 5 frames of `/proc/<pid>/stack` as root. **Reading a kernel
+stack touches no filesystem**, so it cannot hang on the mount being diagnosed. This
+replaces the `ptrace_may_access`-gated `wchan` for all users, and it names the stuck
+server. It is capped by `EBPFM_DSTACK_MAX`.
 
-**5. Live processes at stop** — `event="truncated"` per live tracked process on SIGTERM.
-**Drains the D-state and `netbytes` hashes first**, so the record carries real
-accumulated counters rather than only what `/proc` shows at that instant — strictly
-better than the poller's version. SIGKILL is unrecoverable; a missing `stop` record
-already signals a truncated file. A process that cannot be read is skipped and counted
-in the stop record's `handler_errors` (`flush_live`); a flush that fails as a whole
-leaves `truncated` null, not 0. The residency tick does the same per process
-(`residency_proc`).
+**5. Live processes at stop.** On SIGTERM, the collector writes one `event="truncated"`
+per live tracked process. It **drains the D-state and `netbytes` hashes first**, so the
+record carries real accumulated counters rather than only what `/proc` shows at that
+instant. That makes it strictly better than the poller's version. SIGKILL is
+unrecoverable, but a missing `stop` record already signals a truncated file. A process
+that cannot be read is skipped and counted in the stop record's `handler_errors`
+(`flush_live`). If the flush fails as a whole, `truncated` is left null, not 0. The
+residency tick does the same per process (`residency_proc`).
 
-**6. Unattributed user processes** — **`EBPFM_MIN_UID` is the discriminator, not the
-cgroup.** The cgroup cannot be trusted: tty-attached human processes sat in
-`/system.slice/ssh.service` while another user's VS Code sat in a `user-1000.slice`
-session scope, so it depends on how the session was established. A non-system uid with no
+**6. Unattributed user processes.** **`EBPFM_MIN_UID` is the discriminator, not the
+cgroup.** The cgroup cannot be trusted because it depends on how the session was
+established: tty-attached human processes sat in `/system.slice/ssh.service`, while
+another user's VS Code sat in a `user-1000.slice` session scope. A non-system uid with no
 agent ancestry and no tty is still a user's process. `attribution` on the identity block
-takes `ancestry` | `tty` | `uid`, keeping the three physical `actor3` classes intact for
-the Hive partitioning while making the recovered set filterable. Recovers the orphaned
-`bwrap` case (reparented to init, no tty) that is the wedge's signature. **Default OFF**
-(`EBPFM_MIN_UID=0`) — it is the only item that changes what an existing class *means*,
-and enabling it silently would make the human population incomparable with earlier
-captures.
+takes `ancestry` | `tty` | `uid`. This keeps the three physical `actor3` classes intact
+for the Hive partitioning, while letting you filter the recovered set. It recovers the
+orphaned `bwrap` case (reparented to init, no tty) that is the wedge's signature. It is
+**off by default** (`EBPFM_MIN_UID=0`), because it is the only item that changes what an
+existing class *means*. Enabling it silently would make the human population
+incomparable with earlier captures.
 
-**7. Per-agent-type totals** — `by_agent_type` in `residency_totals`, per type
-`{trees, n_procs, threads, rss_mb, cpu_s, d_state, users, autonomous}`. Userspace
-aggregation of data already held; mirrors the census's `totals_by_type`. Sums to the
-agent row of `by_actor3`.
+**7. Per-agent-type totals.** `by_agent_type` in `residency_totals`, with
+`{trees, n_procs, threads, rss_mb, cpu_s, d_state, users, autonomous}` per type. This is
+userspace aggregation of data the collector already holds, and it mirrors the census's
+`totals_by_type`. It sums to the agent row of `by_actor3`.
 
-**8. Inbound connections** — netlink from (3) already enumerates established inbound
-sockets for free (uid, no pid). Full attribution needs the kretprobe on
+**8. Inbound connections.** Netlink from (3) already enumerates established inbound
+sockets for free (with a uid, but no pid). Full attribution needs the kretprobe on
 `inet_csk_accept`, which returns the new `struct sock *` **in the accepting process's own
-context** — the inbound `SYN_RECV`→`ESTABLISHED` transition runs in softirq, where the
-current task is meaningless. Folds into the accepting process's `conns` block (as of
-schema 6; it emitted an `accept` record through schema 5) and seeds the birth map so
-inbound connections also get a proper close.
+context**. The inbound `SYN_RECV`→`ESTABLISHED` transition runs in softirq, where the
+current task is meaningless. As of schema 6 the connection folds into the accepting
+process's `conns` block (through schema 5 it was emitted as an `accept` record). It also
+seeds the birth map, so inbound connections get a proper close too.
 
 ---
 
 ## Design principles
 
 1. **Event-driven for anything that happens; sampled only for anything that persists.**
-   Per-process events are exhaustive. Only the residency view samples, which is inherent
-   to asking what is alive *now*. Every sampled path is bounded.
-2. **Keep userspace syscalls off the per-event path** — the reason cwd inherits by
-   default rather than reading `/proc` on every exec.
+   Per-process events are exhaustive. Only the residency view samples, because asking
+   what is alive *now* requires sampling. Every sampled path is bounded.
+2. **Keep userspace syscalls off the per-event path.** This is why cwd is inherited by
+   default rather than read from `/proc` on every exec.
 3. **Never dereference a path read from `/proc`** (see data point 1).
-4. **Every kernel read is a probed block.** A kernel that cannot compile one drops *that
-   block alone* and records the compiler's reason in `meta.features_rejected`. Dropped
-   blocks emit `null`, **never `0`** — an absent measurement must not read as a zero
-   measurement. The outcome is cached per kernel (`$EBPFM_OUTPUT_DIR/.features_<release>.json`),
-   and a start takes from it only what is final: a block that loaded on top of the same
-   blocks, one superseded by a variant, one missing a block it requires. A block a load or
-   BTF error refused is probed again at every start, with the blocks that need it, so a
-   refusal of a moment's is not kept for good; and the cache is ignored when the block
-   list, the BCC version, bpftool or the kernel's BTF, or the program text with the
-   settings compiled into it changed. `bootstrap` deletes it.
+4. **Every kernel read is a probed block.** A kernel that cannot compile a block drops
+   *that block alone* and records the compiler's reason in `meta.features_rejected`.
+   Dropped blocks emit `null`, **never `0`**, because an absent measurement must not look
+   like a zero measurement. The outcome is cached per kernel (`$EBPFM_OUTPUT_DIR/.features_<release>.json`),
+   and a start reuses only the results that are final: a block that loaded on top of the
+   same blocks, a block superseded by a variant, and a block missing a block it requires.
+   A block that was refused by a load or BTF error is probed again at every start, along
+   with the blocks that need it, so a transient refusal is not kept for good. The cache
+   is ignored when any of these changed: the block list, the BCC version, bpftool or the
+   kernel's BTF, or the program text with the settings compiled into it. `bootstrap`
+   deletes the cache.
 5. **`perf_lost` is the acceptance gate** for anything added to the tick.
 
 ### One caveat worth knowing
 
 `bpf_probe_read` of a `struct sock *` return value must be sign-extended from 32 bits.
-`tcp_sendmsg` and friends all return `int`, so the x86-64 ABI only defines `eax` and the
-upper 32 bits of `rax` are whatever was there before. Without the cast a 6.7 KB download
-first measured as **21 474 843 382 bytes** — exactly 20 GiB plus the true 6 902:
+`tcp_sendmsg` and friends all return `int`, so the x86-64 ABI only defines `eax`, and
+the upper 32 bits of `rax` hold whatever was there before. Without the cast, a 6.7 KB
+download first measured as **21 474 843 382 bytes**, which is exactly 20 GiB plus the
+true 6 902:
 
 ```c
 int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC(ctx), 1); return 0; }
@@ -979,13 +1025,13 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 
 ### Bootstrap, on a fresh Ubuntu 24.04
 
-1. Writes a `universe` entry into the existing deb822 stanzas directly — **not** via
+1. Writes a `universe` entry directly into the existing deb822 stanzas, **not** via
    `add-apt-repository`, which would itself need `software-properties-common`. Without
-   universe there is **no apt candidate for `python3-bpfcc`**, which is the failure a
+   universe there is **no apt candidate for `python3-bpfcc`**, and that is the failure a
    fresh node actually hits.
-2. `apt-get install -y python3-bpfcc linux-headers-$(uname -r)`; adds
+2. Runs `apt-get install -y python3-bpfcc linux-headers-$(uname -r)`, and adds
    `linux-tools-$(uname -r)` only if `bpftool` is missing. Skips `bpfcc-tools` (not
-   needed, no candidate here).
+   needed, and there is no candidate here).
 3. `sysctl -w kernel.sched_schedstats=1 kernel.task_delayacct=1`, persisted to
    `/etc/sysctl.d/99-ebpfm.conf`. **Two of the eight data points are inert without
    these.**
