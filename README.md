@@ -5,112 +5,143 @@
   </picture>
 </p>
 
-# agentic-hpc-dashboard
-
-Measuring what coding agents actually do on HPC login nodes, and showing it without
-inventing anything. A collector records what runs on each login node, agents and people
-alike; a dashboard, **Agent Observatory**, makes it visible to people.
-
-<p>
-  <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="64"></a>
+<p align="center">
+  <strong>What do AI coding agents actually do on a shared HPC login node?</strong>
 </p>
 
-<p>
-  <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="44"></a>
-  &nbsp;&nbsp;
-  <a href="https://www.rc.fas.harvard.edu/"><img src="dashboard/web/public/logos/fasrc.png" alt="FAS Research Computing, Harvard University" height="32"></a>
+<p align="center">
+  <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="52" align="middle"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="36" align="middle"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.rc.fas.harvard.edu/"><img src="dashboard/web/public/logos/fasrc.png" alt="FAS Research Computing, Harvard University" height="26" align="middle"></a>
 </p>
 
-**Contents:** [What is here](#what-is-here) ·
-[How the halves fit](#how-the-halves-fit) ·
-[Collector](#collector) ·
-[Dashboard](#dashboard) ·
-[Documentation map](#documentation-map) ·
-[The rules both halves obey](#the-rules-both-halves-obey) ·
-[Tests](#tests) ·
-[CI and releases](#ci-and-releases) ·
-[Requirements](#requirements) ·
-[Paths and names from elsewhere](#paths-and-names-from-elsewhere)
+<p align="center">
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#data-and-privacy">Privacy</a> ·
+  <a href="#documentation-map">Docs</a> ·
+  <a href="#development">Development</a>
+</p>
 
-## What is here
+---
 
-Two halves, in this order:
+This repository measures what coding agents and people do on shared HPC login nodes. A
+collector records every process that runs on each node, and a dashboard, **Agent
+Observatory**, shows the result live: who ran what, and how much of the node's CPU, memory,
+disk, network and scheduler it took. Nothing on the page is estimated or made up; what was
+not measured says *not measured*.
 
-| | what it is | privilege | output |
-|---|---|---|---|
-| [`collector/`](collector/) | `ebpfm`: a standalone two-tier login-node collector (eBPF + a `/proc` node snapshot) behind one entry point, `ebpfm.sh` | root for the eBPF tier, unprivileged for the node tier | JSONL day-files: two per host per day from the eBPF tier (`exits` + `snapshot`, gzipped once the day is over), one from the node tier |
-| [`dashboard/`](dashboard/) | `rc_dashboard`: a FastAPI service that tails those day-files, keeps rolling aggregates over a selectable window, and pushes them to a React page ([`dashboard/web/`](dashboard/web/)) over a WebSocket | unprivileged | HTTP + WebSocket, on `127.0.0.1:8080` by default |
+## How it works
 
-And around them:
+```mermaid
+flowchart TB
+    ebpf["eBPF tier, as root"] --> files
+    nodetier["node tier, as any user"] --> files
+    files[("JSONL day-files")] -->|"read in place, or via fleet/"| svc["rc_dashboard"]
+    svc -->|"HTTP and WebSocket"| page["Agent Observatory<br/>in your browser"]
+```
 
-| | what it is |
+1. **The collector**, `ebpfm` ([`collector/`](collector/README.md)), runs on each login node
+   in two tiers. The **eBPF tier** needs root: it hooks the kernel and records each process
+   as it exits (its command line, CPU, memory, I/O, network, and how it ended), takes a
+   census of what is running every 60 seconds, and records each Slurm submission. The
+   **node tier** runs as any user: every 5 minutes it reads the node's health from `/proc`,
+   `/sys` and standard tools (load, memory, NFS, filesystem space, per-user cgroups), which
+   eBPF cannot see at all.
+2. **The day-files** are the only thing the two halves share. Each tier writes JSONL into one
+   folder per day: `<host>.exits.jsonl` and `<host>.snapshot.jsonl` from the eBPF tier,
+   `<host>.jsonl` from the node tier. Once a day is over the collector gzips its files, and
+   they never change again. Because the halves meet only on disk (record schema 8), the
+   dashboard can read a capture made months ago or a whole fleet at once, and nothing has to
+   be running for it to start.
+3. **The dashboard**, `rc_dashboard` ([`dashboard/`](dashboard/README.md)), reads those
+   folders wherever they are: on the node itself, on a shared mount, or in the copy the
+   [fleet stream](fleet/README.md) keeps on the dashboard's host. It reduces each record once
+   into its hour, keeps rolling aggregates for whichever window you pick, keeps every sealed
+   day as Parquet too for fast selective reads, and pushes updates to the page over a
+   WebSocket.
+
+## What it records
+
+Every process is put in one of three classes by the process tree it runs in: **agent**
+(Claude Code, OpenAI Codex, GitHub Copilot), **ide** (VS Code, Cursor, Windsurf and other
+remote-IDE servers), or **human** (a person at a terminal).
+
+| tier | when | what |
+|---|---|---|
+| eBPF | each process, as it exits | its command line (masked) and working directory; parent, user, terminal and session; which agent it runs under, if any; exit code or signal; CPU time and run-queue wait; peak memory and page faults; disk and syscall I/O; time blocked on disk; network bytes per remote endpoint; its TCP connections; whether it ran in a sandbox |
+| eBPF | every 60 seconds | the agent process trees alive now; node-wide totals by class and agent type; open sockets; network bytes per endpoint |
+| eBPF | each `sbatch`, `salloc` and `srun` | the job id from the tool's output, and the partition, GPUs and array asked for |
+| node | every 5 minutes | load, CPU per core, memory and swap; disk, network and NFS I/O; local filesystem space; per-user cgroup CPU and memory; logged-in sessions; blocked processes and the whole process tree; how long the node takes to start a process, stat a file or look up an account |
+
+Every signal in plain words: [`collector/WHAT-IT-COLLECTS.md`](collector/WHAT-IT-COLLECTS.md).
+Every record and field: [`collector/README.md`](collector/README.md#what-it-collects).
+
+## What the dashboard shows
+
+| tab | shows |
 |---|---|
-| [`fleet/`](fleet/) | the fleet stream: each login node's collector files sent over ssh, as they are written, to the host that runs the dashboard |
-| [`deploy/fleet/`](deploy/fleet/) | the live service on a host of your own: the dashboard behind a password, fed by the fleet stream from every node, all set from one settings file, with an hourly check |
-| [`deploy/cloudflare/`](deploy/cloudflare/) | the public demo: a Cloudflare Worker in front of a container running the dashboard over a synthetic feed |
-| [`docker/`](docker/) | three images: `base` (Rocky 8.10), `collector` (built from `base`), and `demo` (the dashboard over a synthetic feed) |
-| [`packaging/rpm/`](packaging/rpm/) | the `ebpfm-collector` RPM for EL8: the spec, the sysctl drop-in and the unit's `/etc/default/ebpfm` |
-| [`docs/`](docs/) | documents about more than one part: what each figure computes, the feed as Parquet, the schema-9 proposal, plans, the logo ([index](docs/README.md)) |
-| [`.github/workflows/`](.github/workflows/) | the test suites on every pull request, and the RPM, images and demo they gate ([CI and releases](#ci-and-releases)) |
+| **Live** | what needs attention now; processes exited per minute, by class; each class's share of the nodes' CPU, memory, disk and network and of what was asked of Slurm; day by day; each login node's responsiveness; who is active |
+| **Users** | a portrait of each user from how they use coding agents |
+| **Agents** | every agent and its subagents; where each one's processes ran and wrote (its blast radius); the mix of tools they ran; the commands that failed |
+| **Sessions** | every session, ranked; an inspector that reads one as tasks, phases and its process tree |
+| **Login nodes** | node health and the worst processes (*Resources*); dangerous commands, and credentials on command lines, counted but never shown (*Risks*); how each class uses the scheduler (*Slurm*) |
+| **Ask LLM** | questions about the window on screen, answered by an agent that cites the panels it read; off unless a site turns it on |
+| **Feeds** | each collector and feed: where it was looked for, its status, how fresh it is; and every resolved setting |
 
-## How the halves fit
+The whole page can be narrowed to classes, users and agent types, over any window the
+service offers. What each tab holds: [`dashboard/web/README.md`](dashboard/web/README.md#tabs). What
+each figure computes, from which records, at what cost:
+[`docs/figures/README.md`](docs/figures/README.md).
 
-The collector runs on each login node; the dashboard reads the directories the collector
-writes. They are coupled only by the on-disk records (`SCHEMA_VERSION = 8`), written as
-JSONL, so the dashboard can read a feed captured months ago, or a fleet's worth of hosts
-at once, and nothing needs to be running for it to start.
+## Quick start
 
-The eBPF tier splits each day in two: `<host>.exits.jsonl` for the per-process terminal
-records, whose rate is the node's fork rate and which dominate the volume, and
-`<host>.snapshot.jsonl` for the residency census, connections, per-tick network bytes by
-endpoint, submits and the run's own meta/stop bookends. Each record carries its own `host`,
-and the dashboard lists the day directory, so the split is a filing decision, not a schema
-one. Once a day is over the collector gzips its files (`.jsonl.gz`), and they never change
-again; the dashboard keeps each such sealed file as Parquet too, in the background
-([History in Parquet](dashboard/README.md#history-in-parquet)), and answers a selective
-read of a sealed day (one user's events, one session's process tree) or a search of it by
-time from that copy, which reads exactly as the file does, offsets and all.
+You need [uv](https://docs.astral.sh/uv/), which fetches Python 3.11 or later if it is
+missing, and Node.js with npm to build the page (CI uses Node 22).
 
-```
-login node                                    anywhere with read access
-┌──────────────────────────────┐              ┌────────────────────────────────┐
-│ ebpfm.sh                     │   snapshot   │ rc_dashboard                   │
-│  ├ ebpf tier   (root)  ──────┼─ + exits ────┼─▶ tail → normalize → buckets   │
-│  └ node tier   (user)  ──────┼─ snapshot ───┼─▶ reducers → /api + WS         │
-└──────────────────────────────┘              │                  └─▶ web/ SPA  │
-                                              └────────────────────────────────┘
-```
-
-"Anywhere with read access" is the login node itself, a host that mounts the collector's
-output, or a host the [fleet stream](deploy/fleet/README.md) mirrors it to.
-
-## Collector
-
-Full reference: [`collector/README.md`](collector/README.md). What it records, in plain
-words: [`collector/WHAT-IT-COLLECTS.md`](collector/WHAT-IT-COLLECTS.md).
-
-### From the source tree
-
-The folder is self-contained: `scp` it to the login node, or hand over one file from
-`./collector/ebpfm.sh bundle`.
+### Try it without a cluster
 
 ```bash
-sudo ./collector/ebpfm.sh bootstrap    # dependencies + the two sysctls, once per node
+cd dashboard
+uv sync --frozen
+(cd web && npm ci && npm run build)
+uv run --frozen python -m rc_dashboard demo     # then open http://127.0.0.1:8080
+```
+
+The demo runs the real service over a synthetic feed it writes itself, for fictional login
+nodes and users, and keeps appending to it; every page says *fake data*. `./run-demo.sh` in
+`dashboard/` runs it with hot reload on :8087, and [`docker/demo`](docker/README.md#the-demo)
+packages it as an image. The same demo runs at <https://dashboard-demo.agentic-system.org>,
+behind a password of its own ([`deploy/cloudflare`](deploy/cloudflare/README.md)).
+
+### Collect on a login node
+
+From the source tree, as root, for both tiers:
+
+```bash
+sudo ./collector/ebpfm.sh bootstrap    # once per node: dependencies and two kernel settings
 sudo ./collector/ebpfm.sh check        # one line per precondition; expect 0 FAIL
 sudo ./collector/ebpfm.sh start        # both tiers
 sudo ./collector/ebpfm.sh status       # each stream's records and size today
-sudo ./collector/ebpfm.sh stop         # flushes live processes as `truncated`
+sudo ./collector/ebpfm.sh stop         # processes still running are written as `truncated`
 ```
 
-Without root you still get the node tier: `./collector/ebpfm.sh start`. That is a real
-half of the data, not a degraded mode: eBPF cannot produce load average, memory totals,
-filesystem space or interface counters at all. `start` runs the eBPF tier as a transient
-systemd service, which does not survive a reboot; for a fleet,
-`sudo ./collector/ebpfm.sh install-unit` installs the persistent unit, or install the RPM
-below.
+- Without `sudo`, `start` runs the node tier alone. That is half of the data, not a degraded
+  mode.
+- `start` runs the eBPF tier as a transient systemd unit, which does not survive a reboot.
+  To keep it running, install the unit (`sudo ./collector/ebpfm.sh install-unit`) or the RPM.
+- The `collector/` folder is self-contained: copy it to the node, or hand over the single
+  file `./collector/ebpfm.sh bundle` writes.
 
-Where the day-files go, unless `EBPFM_OUTPUT_DIR` (eBPF tier) and `EBPFM_NODE_OUTPUT_DIR`
-(node tier) say otherwise:
+The collector also comes as an **RPM** for Rocky/RHEL 8 ([`packaging/rpm`](packaging/rpm/README.md):
+`dnf install`, then `systemctl enable --now ebpfm`) and as a **container image**
+([`docker`](docker/README.md#the-collector)).
+
+Where the day-files go, unless `EBPFM_OUTPUT_DIR` (eBPF tier) or `EBPFM_NODE_OUTPUT_DIR`
+(node tier) says otherwise:
 
 | run as | eBPF tier | node tier |
 |---|---|---|
@@ -118,328 +149,213 @@ Where the day-files go, unless `EBPFM_OUTPUT_DIR` (eBPF tier) and `EBPFM_NODE_OU
 | root, otherwise | `/var/log/ebpfm` | `/var/log/ebpfm-login` |
 | an ordinary user | (needs root) | `~/.ebpfm/login` |
 
-Point the dashboard at the same directories ([Dashboard](#dashboard)).
+The RPM's unit writes to `/scratch/ebpfm`, and the container image to `/var/log/ebpfm`.
 
-### RPM (Rocky/RHEL 8)
-
-A signed-off release publishes an `ebpfm-collector` RPM (noarch, built for
-EL8 / Rocky 8.10, **x86_64** hosts) as a GitHub Release artifact. There is no release
-until the first `vX.Y.Z` tag; until then, take the RPM from a branch build's workflow
-artifact (below). Install it, check the node, then enable the service:
+### Run the dashboard over real data
 
 ```bash
-sudo dnf install ./ebpfm-collector-<version>-<release>.el8.noarch.rpm
-sudo ebpfm check         # expect 0 FAIL on real hardware
-sudo systemctl enable --now ebpfm
-sudo systemctl status ebpfm
+cd dashboard
+uv sync --frozen
+(cd web && npm ci && npm run build)                   # builds the page into web/dist/
+uv run --frozen python -m rc_dashboard new-password   # once: writes a password, prints its hash
 ```
 
-The RPM lays down:
+Put the hash in `dashboard/dashboard.config.json` (gitignored) as
+`{"server": {"auth": {"password_hash": "<hash>"}}}`, then point the service at the
+collector's folders and start it:
 
-| Path | What |
+```bash
+export RC_DASH_EBPF_ROOTS=/scratch/ebpfm RC_DASH_NODE_ROOTS=/scratch/ebpfm-login   # as in the table above
+uv run --frozen python -m rc_dashboard --check-feeds  # what it found, and everywhere it looked
+uv run --frozen python -m rc_dashboard serve          # on 127.0.0.1:8080
+```
+
+From another machine, open it through a tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`. Browsers
+get a sign-in page; scripts send the password as HTTP Basic auth, from the netrc
+`new-password` writes beside it (`curl --netrc-file ~/.config/rc-dashboard/netrc …`). `serve`
+refuses to start without a password, since on a login node every user can reach 127.0.0.1;
+`--open` (`RC_DASH_OPEN=1`) serves without one, for a machine only you can reach.
+
+### Run it live across a fleet
+
+[`deploy/fleet`](deploy/fleet/README.md) runs the dashboard on a host of your own, fed live by
+every login node: one ssh connection per node carries its day-files into a private copy on
+that host ([`fleet/`](fleet/README.md)), and the dashboard serves the copy on 127.0.0.1,
+behind a password. Everything is set in one file, `deploy/fleet/site.env`;
+`deploy/fleet/deploy.sh` installs and upgrades it, and `deploy/fleet/check.sh` checks it every
+hour from cron. No machine needs root for any of it.
+
+## Configuration
+
+Each setting resolves on its own: a command-line flag wins over an `RC_DASH_*` environment
+variable, which wins over `dashboard/dashboard.config.json`, which wins over the built-in
+default. Start the file from
+[`dashboard/dashboard.config.example.json`](dashboard/dashboard.config.example.json).
+`--print-config` prints every resolved setting and where it came from, and a mistake in a
+setting stops the service instead of loosening it. The settings most deployments touch:
+
+| variable | default | what it sets |
+|---|---|---|
+| `RC_DASH_EBPF_ROOTS` | every one that exists of `/var/log/ebpfm`, `~/.ebpfm/ebpf`, `$EBPFM_OUTPUT_DIR` and a few others | where the eBPF tier's day-files are |
+| `RC_DASH_NODE_ROOTS` | likewise: `/var/log/ebpfm-login`, `~/.ebpfm/login`, … | where the node tier's day-files are |
+| `RC_DASH_PASSWORD_HASH` | none: `serve` refuses to start | the hash `new-password` prints |
+| `RC_DASH_OPEN` | `0` | `1` serves without a password, to anyone who reaches the port |
+| `RC_DASH_HOST`, `RC_DASH_PORT` | `127.0.0.1`, `8080` | where the service listens |
+| `RC_DASH_ALLOWED_ORIGINS` | none | behind a proxy that rewrites the Host header, its public origin; without it the page's websocket is refused |
+| `RC_DASH_ANONYMIZE` | `0` | `1` replaces every user and account name with a stable alias, and masks email addresses and uids, in everything the service sends |
+| `RC_DASH_HISTORY` | `1` | keep each sealed day-file as Parquet too, for fast selective reads |
+| `RC_DASH_INGEST_WORKERS` | `1` | processes reducing the hours: `1` is one pass; `N` gives each node a process of its own, `N` at once; `0` is one per CPU |
+
+Neither default looks under `/scratch`, where the RPM writes, and so does a root collector on
+a host with a writable `/scratch`: name those folders in the two variables. Every setting,
+with its variable and its flag:
+[`dashboard/README.md`](dashboard/README.md#configuration).
+
+## Data and privacy
+
+The records name real users and show what they ran, so both halves keep them close.
+
+- **On each node**, the collector creates its folders `0750` and its files `0640`
+  (`EBPFM_DIR_MODE`, `EBPFM_FILE_MODE`; `EBPFM_GROUP` opens them to one group), and masks
+  every command line before writing it: credentials (API keys, tokens, passwords, private
+  keys) and the prompts handed to an agent on its command line become `[REDACTED]`
+  (`EBPFM_REDACT`). Its records go only to its output folders; its one use of the network is
+  resolving host names that command lines mention, to name the endpoints a process talked to
+  (`EBPFM_ARGV_HOSTS=0` turns that off).
+- **The dashboard** will not start without a password unless told to (`--open`), and masks
+  credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
+  It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
+  off). **Ask LLM** and tool-call annotation, both off by default, send masked data to a
+  model's provider when a site turns them on.
+- **The fleet stream** carries the files over ssh, with a key that can run the sender and
+  nothing else, and only from the dashboard's host.
+
+## Repository layout
+
+| path | what it is |
 |---|---|
-| `/usr/lib/ebpfm/` | the standalone collector bundle (`ebpf_trace.py`, `node_snapshot.py`, `lib/`, `ebpfm.sh`, `README.md`) |
-| `/usr/bin/ebpfm` | symlink to `ebpfm.sh`, the entry point for `check`/`status`/`tail` |
-| `/usr/lib/systemd/system/ebpfm.service` | the eBPF-tier unit, paths pre-substituted (no `install-unit` needed) |
-| `/usr/lib/sysctl.d/99-ebpfm.conf` | the two required sysctls, applied on install and every boot |
-| `/etc/default/ebpfm` | the unit's environment: the collector's settings, kept across upgrades |
-| `/scratch/ebpfm/` | the output directory (the unit's `EBPFM_OUTPUT_DIR`, which `/etc/default/ebpfm` can override), made by the collector when it first starts; the unit waits for `/scratch` to be mounted |
-
-Dependencies and sysctls are handled by the package, not a separate bootstrap
-step:
-
-* **Package deps** (`python3-bcc`, `bpftool`, `iproute`, `jq`, `sysstat`,
-  `nfs-utils`, `procps-ng`) are pulled in by `dnf`. `python3-bcc` lives in EPEL,
-  so the RPM `Requires: epel-release`; its `-devel` deps live in PowerTools,
-  which the RPM's `%post` enables (`powertools`/`PowerTools`/`crb`).
-* **Sysctls** (`kernel.sched_schedstats`, `kernel.task_delayacct`) ship as the
-  `99-ebpfm.conf` drop-in above. `%post` applies them immediately via
-  `systemd-sysctl`, and systemd re-applies them on every boot: no reboot and no
-  `bootstrap` needed.
-  * On EL8's 4.18 kernel `kernel.task_delayacct` has **no writable sysctl** (it
-    was added upstream in 5.14), but delay accounting is compiled in
-    (`CONFIG_TASK_DELAY_ACCT=y`) and on by default, so the data is still
-    collected. The drop-in lists that key with a leading dash
-    (`-kernel.task_delayacct`) so `systemd-sysctl` skips the absent knob
-    silently instead of logging `Couldn't write '1' to 'kernel/task_delayacct'`.
-    `ebpfm check` reports it as a non-blocking WARN ("no such knob — compile-time
-    only"); `sched_schedstats` does exist on 4.18 and is set to 1 normally.
-
-The service is **not** enabled on install; run `ebpfm check` (expect 0 FAIL)
-before enabling. The unit runs the eBPF tier only; for the node tier as well, run
-`ebpfm start` as an ordinary user.
-
-Release vs. feature builds ([`rpm-release.yml`](.github/workflows/rpm-release.yml)):
-
-* **Releases**: a semver git tag `vX.Y.Z` builds `ebpfm-collector-X.Y.Z-1.el8`
-  and attaches it to the GitHub Release for that tag.
-* **Feature branches**: a push to any branch but `develop` that changes the collector
-  or its packaging builds `ebpfm-collector-0.0.0-<YYYYMMDD>.<shortsha>.el8` and
-  uploads it as a workflow **artifact** (not a release). The `0.0.0` version keeps a
-  branch RPM sorting below any real release, and the datestamp+sha makes each build
-  identifiable.
-
-### Container image
-
-The collector also ships as a container image on the GitHub Container Registry,
-built on a project Rocky 8.10 base image. **x86_64 only** at present.
-
-```
-ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector     # the collector
-ghcr.io/harvardmadsys/agentic-hpc-dashboard/base          # the Rocky 8.10 base it builds on
-```
-
-Image tags follow the same scheme as the RPM:
-
-* semver tag `vX.Y.Z` → `X.Y.Z`, `X.Y`, `latest`
-* a push to a branch other than `develop` that changes what the image is built from →
-  `<branch>` (moving) and `<branch>-<YYYYMMDD>-<sha>` (immutable)
-* `main` → additionally `edge`
-
-`latest` exists only once a `vX.Y.Z` tag has been pushed; `edge`, main's newest build,
-is the one to pull until then, and is what the examples below use.
-
-Running the eBPF tier in a container needs host-level privileges, because eBPF
-attaches to the host kernel and the collector attributes **host** processes. On
-Rocky 8.10 physical hardware:
-
-```bash
-# One-time, on the HOST (sysctls are not namespaced):
-sudo sysctl -w kernel.sched_schedstats=1
-
-docker run -d --name ebpfm \
-  --privileged \
-  --pid=host \
-  -v /sys:/sys:ro \
-  -v /var/log/ebpfm:/var/log/ebpfm \
-  -e EBPFM_HOST="$(hostname -s)" \
-  ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector:edge
-```
-
-| option | why |
-|---|---|
-| `--privileged` | eBPF load + attach on EL8's 4.18 kernel |
-| `--pid=host` | see and attribute every process on the node |
-| `-v /sys:/sys:ro` | BTF + tracefs for program load |
-| `-v /var/log/ebpfm:/var/log/ebpfm` | persist the JSONL output |
-| `-e EBPFM_HOST=…` | name the day-files for the node, not the container |
-
-On a 5.14 or later kernel set `kernel.task_delayacct=1` too; EL8's 4.18 has no such
-knob, and its delay accounting is on by default (see the RPM notes above).
-
-Notes:
-
-* The container entrypoint execs `ebpf_trace.py` **in the foreground**, as the
-  container's main process. It deliberately does *not* use `ebpfm.sh start`'s
-  `systemd-run` cgroup escape, which only applies to the capped user slice on a bare
-  login node and has no host systemd to talk to inside a container. `docker stop` delivers the
-  SIGTERM the collector turns into its `truncated` flush.
-* Other subcommands are reachable by passing them as arguments, e.g.
-  `docker run --rm ... ghcr.io/.../collector:edge ebpfm check` or
-  `... ebpfm features`.
-* The collector writes **only** to the mounted output directory. Its one use of the
-  network is resolving the host names that command lines mention (`getaddrinfo`, through
-  the host's resolver), to name the endpoints a process talked to; `EBPFM_ARGV_HOSTS=0`
-  turns that off.
-
-## Dashboard
-
-Full reference: [`dashboard/README.md`](dashboard/README.md); the page itself:
-[`dashboard/web/README.md`](dashboard/web/README.md).
-
-### From the source tree
-
-```bash
-cd dashboard && uv sync
-uv run python -m rc_dashboard --check-feeds       # what resolved, what didn't, and why
-cd web && npm ci && npm run build && cd ..        # builds web/dist/, which the service serves
-uv run python -m rc_dashboard new-password        # once: put the hash it prints in dashboard.config.json
-uv run python -m rc_dashboard serve --port 8080
-```
-
-`serve` starts only behind a password: put the hash `new-password` prints in
-`dashboard.config.json` as `"server": {"auth": {"password_hash": "..."}}`
-([Password](dashboard/README.md#password)). `--open` (`RC_DASH_OPEN=1`) serves without
-one, on a machine only you can reach: on a login node every user can reach 127.0.0.1.
-
-Off-cluster, `--check-feeds` exits 1: the eBPF feed is `required` and absent. Point it at
-the collector's output first (the [table above](#from-the-source-tree) says where that is):
-
-```bash
-RC_DASH_EBPF_ROOTS=/var/log/ebpfm \
-RC_DASH_NODE_ROOTS=/var/log/ebpfm-login \
-uv run python -m rc_dashboard serve
-```
-
-For a remote instance: `ssh -L 8080:127.0.0.1:8080 <host>`.
-
-### Configuration
-
-Every setting resolves per key: **CLI flag > `RC_DASH_*` env var > `dashboard.config.json`
-> built-in default**; `--print-config` shows the resolved tree and where each value came
-from ([Configuration](dashboard/README.md#configuration)). The ones most deployments set:
-
-```bash
-RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # where the eBPF tier's day-files are
-RC_DASH_NODE_ROOTS=/var/log/ebpfm-login  # where the node tier's are
-RC_DASH_HISTORY=1                        # keep every sealed (.jsonl.gz) day-file as Parquet too (0: off)
-RC_DASH_HISTORY_WORKERS=0                # processes converting in the background: 0 (default) = up to 8
-RC_DASH_INGEST_WORKERS=1                 # processes reducing the hours: 1 (default) = one pass; N = a node each, N at once; 0 = one per CPU
-RC_DASH_INGEST_REDUCER_GROUPS=2          # each node's hour in 2 processes, one per reducer group, when workers >= nodes (1: one)
-```
-
-See [History in Parquet](dashboard/README.md#history-in-parquet) for what the store holds,
-which reads it answers, and what it costs, and
-[Hourly merge-reduce](dashboard/README.md#hourly-merge-reduce) for the workers.
-
-### Developing it
-
-**Hot reload on both halves**: [`dashboard/run.sh`](dashboard/run.sh) restarts the
-service on every `.py` edit and keeps the page fresh. `dev`, the default, is Vite's dev
-server with hot module replacement on `:5173`, proxying to the service on `:8124`;
-`build` rebuilds the real bundle into `web/dist/` on each edit; `api` runs the service
-alone. It runs `serve`, so it needs the password above, or `RC_DASH_OPEN=1` on a machine
-only you can reach. Its feed defaults are the development cluster's own paths, as are
-the wrappers beside it (`run-dev.sh`, `run-fasrc.sh`; [Two deployments on this
-host](dashboard/README.md#two-deployments-on-this-host)), so set the roots anywhere else:
-
-```bash
-cd dashboard && RC_DASH_EBPF_ROOTS=/var/log/ebpfm RC_DASH_NODE_ROOTS=/var/log/ebpfm-login ./run.sh
-```
-
-**The page alone**, with no service and no cluster: a Vite middleware answers the routes the
-tabs are drawn from, and the `/ws` handshake, from a static fixture
-([`dashboard/web/README.md`](dashboard/web/README.md#dev)):
-
-```bash
-cd dashboard/web && npm ci && npm run dev     # http://localhost:5173
-```
-
-### Demo, with no cluster
-
-The service runs unchanged over a synthetic collector feed it writes and keeps appending
-to, for fictional hosts and users; every record and every page says *fake data*
-([Demo mode](dashboard/README.md#demo-mode)). No cluster, collector or root:
-
-```bash
-cd dashboard && uv sync && (cd web && npm ci && npm run build)
-uv run python -m rc_dashboard demo        # http://127.0.0.1:8080
-./run-demo.sh                             # or with hot reload, on :8087
-```
-
-The same demo is an image ([`docker/demo/Dockerfile`](docker/demo/Dockerfile)), and is on
-a public URL, <https://dashboard-demo.agentic-system.org>, behind a Cloudflare Worker that
-asks for a password of its own ([`deploy/cloudflare`](deploy/cloudflare/README.md)),
-redeployed from `develop` by [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) whenever
-a push changes it and every test suite passes.
-
-### Live, on a host of your own
-
-[`deploy/fleet`](deploy/fleet/README.md) streams each node's collector files to that host
-over ssh ([`fleet/`](fleet/README.md)) and runs the dashboard over them behind a password,
-all set from one settings file.
+| [`collector/`](collector/) | `ebpfm`, the login-node collector, behind one entry point, `ebpfm.sh`; standalone, on Python 3.6 |
+| [`dashboard/`](dashboard/) | `rc_dashboard`, the service; [`web/`](dashboard/web/), the page (React, Vite, TypeScript); [`bench/`](dashboard/bench/), tools that measure it; [`risk-profiles/`](dashboard/risk-profiles/), what counts as risky on each cluster |
+| [`fleet/`](fleet/) | the fleet stream: each node's day-files, carried to the dashboard's host over ssh |
+| [`deploy/fleet/`](deploy/fleet/) | the kit that runs the dashboard live on a host of your own |
+| [`deploy/cloudflare/`](deploy/cloudflare/) | the public demo: a Cloudflare Worker in front of a container running the demo |
+| [`docker/`](docker/) | three images: a Rocky 8.10 base, the collector, the demo |
+| [`packaging/rpm/`](packaging/rpm/) | the collector's RPM for EL8 |
+| [`docs/`](docs/) | documents about more than one part ([index](docs/README.md)) |
+| [`.github/workflows/`](.github/workflows/) | the test suites, and the RPM, images and demo they gate |
 
 ## Documentation map
 
-| document | covers |
+| document | read it for |
 |---|---|
-| [`collector/README.md`](collector/README.md) | the two tiers, why eBPF (and why `sudo` does not escape the cgroup cap; `systemd-run` does), the concurrency model, **measured overhead**, the full event/field schema, `ebpfm.sh` verbs, kernel support |
-| [`collector/WHAT-IT-COLLECTS.md`](collector/WHAT-IT-COLLECTS.md) | every signal the collector records, in plain words, by source |
-| [`collector/COVERAGE.md`](collector/COVERAGE.md) | the field-by-field crosswalk: for each observable login-node signal, which tier reads it |
-| [`collector/VENDORED.md`](collector/VENDORED.md) | the copied modules, why copies rather than symlinks, and the sync rule `ebpfm.sh check` enforces |
-| [`dashboard/README.md`](dashboard/README.md) | feed resolution and config precedence, the history store (sealed days as Parquet), the time window and the hourly merge-reduce, the REST/WS API, the panel conventions, sign-in, every tab's method, known collector limitations the page surfaces, the module layout |
-| [`dashboard/web/README.md`](dashboard/web/README.md) | the page: tabs, charts, filter and URL state, the dev fixture, and the integrity rules the code enforces |
+| [`collector/README.md`](collector/README.md) | the two tiers; why eBPF, and why `sudo` does not escape a login node's CPU cap while `systemd-run` does; measured overhead; every record and field; the `ebpfm.sh` commands; kernel support |
+| [`collector/WHAT-IT-COLLECTS.md`](collector/WHAT-IT-COLLECTS.md) | every signal the collector records, in plain words |
+| [`collector/COVERAGE.md`](collector/COVERAGE.md) | which tier reads each observable login-node signal |
+| [`collector/VENDORED.md`](collector/VENDORED.md) | the modules copied from elsewhere, and the rule that keeps them in step |
+| [`packaging/rpm/README.md`](packaging/rpm/README.md) | the RPM: getting it, installing it, what it lays down, its dependencies and kernel settings |
+| [`docker/README.md`](docker/README.md) | the three images and their tags; running the collector in a container; the demo image |
+| [`dashboard/README.md`](dashboard/README.md) | how feeds are found and settings resolved; the history store; windows and the hourly merge-reduce; the REST and WebSocket API; sign-in; how every tab computes what it shows; the module layout |
+| [`dashboard/web/README.md`](dashboard/web/README.md) | the page: its tabs, charts, filters and URL state, the dev fixture, and the integrity rules the code enforces |
 | [`dashboard/risk-profiles/README.md`](dashboard/risk-profiles/README.md) | what counts as risky on a given cluster, and how to write and check a profile |
-| [`dashboard/bench/README.md`](dashboard/bench/README.md) | a synthetic feed at fleet density, timers, a profiler, and the guard that the main served answers stayed the same |
+| [`dashboard/bench/README.md`](dashboard/bench/README.md) | a synthetic feed at fleet scale, timers, a profiler, and a check that a change kept every answer the same |
 | [`docs/figures/README.md`](docs/figures/README.md) | every figure on the page: what it computes, from which records, by which read path, at what cost |
-| [`docs/feed-parquet/README.md`](docs/feed-parquet/README.md) | the feed as typed Parquet tables: the dashboard's history store, and an analysis dataset |
-| [`docs/feed-format-v9/README.md`](docs/feed-format-v9/README.md) | a proposal for feed schema 9, not implemented, with a prototype that measures it |
-| [`docs/plans/`](docs/plans/) | implementation plans, kept as the record once landed |
-| [`fleet/README.md`](fleet/README.md) | the fleet stream's three programs, and what each one is for |
-| [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live service on a host of your own: the fleet stream from each node, the settings file, the first deploy, memory and disk, and the hourly check |
-| [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the demo, over a synthetic feed, on a public URL |
+| [`docs/feed-parquet/README.md`](docs/feed-parquet/README.md) | the feed as typed Parquet tables: the dashboard's history store, and a dataset for analysis |
+| [`docs/feed-format-v9/README.md`](docs/feed-format-v9/README.md) | a proposed feed schema 9, not implemented, with a prototype that measures it |
+| [`docs/plans/`](docs/plans/) | implementation plans, kept as the record of how the work was done |
+| [`fleet/README.md`](fleet/README.md) | the fleet stream's three programs, and what each is for |
+| [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live deployment: the settings file, the first deploy, memory and disk, upgrades, and the hourly check |
+| [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the public demo: deploying it, its password, and deploying from GitHub |
 | [`docs/logo/README.md`](docs/logo/README.md) | the mark and the lockups |
-| [`CLAUDE.md`](CLAUDE.md) | for Claude Code sessions here, and a short guide for anyone: where pull requests go, the commands, the dashboard's architecture in brief, and the constraints that bite (Python 3.6 in the collector, vendored copies, what a push or a tag publishes) |
+| [`CLAUDE.md`](CLAUDE.md) | for Claude Code sessions, and a short guide for anyone: where pull requests go, the commands, the dashboard's architecture in brief, and the constraints that bite |
 
-## The rules both halves obey
+The collector's and dashboard's documents were first written inside a larger measurement
+repository and still mention its trees (`collect/`, `analyze/`, `findings/`); those name that
+repository, and nothing here depends on them.
 
-These are research-integrity constraints, not preferences; each one is a mistake this
-project made once. They are stated per component in the READMEs above, but they are the
-same rules:
+## Development
 
-- **Null is not zero, and zero is not missing.** A dropped BPF block emits `null`, never
-  `0`: an absent measurement must not read as a zero measurement. Downstream, a nullable
-  field carries `coverage_pct` and is never imputed; a present feed with no matching rows
-  says `none`, while an absent feed names the path it expected.
-- **Three actor classes, never two**: `agent` / `human` / `ide`. `ide` is any editor a person
-  drives (VS Code, Cursor, Windsurf, other remote-IDE servers); the collector's `human-vscode`
-  and its Cursor/Windsurf "agents" are mapped into it at ingest. Folding the IDE class into
-  "agent" is what produced a retracted GPU near-parity claim.
-- **Nothing is fabricated.** The collector emits only what it measured; the page contains
-  no `Math.random()` (`npm run check:no-random` asserts it) and never interpolates between
-  frames. A minute with no record is a hole in the line.
-- **`sandbox` and `approval` are independent axes**, and `denied` (the collector being
-  unable to read the field) is its own state, never folded into `unsandboxed`.
-- **Scope is stated.** The eBPF tier runs on login nodes, so its resource figures are
-  login-node use, not cluster use.
+- **Pull requests go to `develop`**, never `main`; the maintainers bring `main` up to
+  `develop` with a pull request of their own. Commit subjects read `Area: what changed`
+  (`Dashboard: …`, `Collector: …`, `Docs: …`), with a body that says why.
+- **Docs track the code.** A change to a setting, route, panel, module or command updates the
+  document that describes it, in the same pull request.
+- **The collector runs on Python 3.6**, EL8's own, and so does the fleet sender. A newer
+  Python accepts syntax that 3.6 rejects, so CI checks both on EL8. The dashboard needs 3.11
+  or later.
 
-## Tests
+### Tests
 
-Every suite runs from the repository root, needs no root and no BPF, and is what CI runs
-on every pull request ([`ci.yml`](.github/workflows/ci.yml)):
+Every suite runs from the repository root, needs no root and no BPF, and is what CI runs on
+every pull request ([`ci.yml`](.github/workflows/ci.yml)):
 
 ```bash
 python3 -m unittest discover -s collector/tests -q        # the collector
 python3 -m unittest discover -s fleet/tests -q            # the fleet stream, over a fake collector
 python3 -m unittest discover -s deploy/fleet/tests -q     # the deploy kit, with stand-ins for systemd, tmux and ssh
-(cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # the service
-(cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)   # the page
+(cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # the service, a few minutes
+(cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)            # the page
 ```
 
-`npm run check` runs every `check:*` script: no `Math.random`, then each
-`mock/check_*.mjs` under `node --test`. CI also runs the collector's suite on EL8's own
-Python 3.6, the one the login nodes run, and compiles the fleet sender there
-(`python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py`), and runs the
-dashboard's on 3.11 and 3.13.
+CI also runs the collector's suite on EL8's Python 3.6, and the dashboard's on 3.11 and 3.13.
+`npm run check` runs `check:no-random`, then every `mock/check_*.mjs`. Give `uv` `--frozen`
+(or `--no-sync`) as above: without it, `uv` may rewrite `dashboard/uv.lock`, and a change to
+that file on `develop` redeploys the public demo.
 
-## CI and releases
+### Working on the dashboard
+
+```bash
+cd dashboard && RC_DASH_EBPF_ROOTS=/var/log/ebpfm RC_DASH_NODE_ROOTS=/var/log/ebpfm-login ./run.sh
+```
+
+[`run.sh`](dashboard/run.sh) restarts the service on every `.py` edit and serves the page
+from Vite's dev server, with hot module replacement, on :5173 (the service itself is on
+:8124). `./run.sh build` rebuilds the real bundle on each edit instead, and `./run.sh api`
+runs the service alone. It runs `serve`, so it needs the password (or `RC_DASH_OPEN=1`), and
+its feed defaults are one site's own, so set the roots. To work on the page with no service
+at all, `cd dashboard/web && npm run dev` serves it from a fixture.
+
+### CI and releases
 
 | workflow | runs on | does |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | every pull request; pushes to `develop` and `main` | every test suite above; reads no secret and writes nothing |
+| [`ci.yml`](.github/workflows/ci.yml) | every pull request; each push to `develop` and `main` | every test suite above; reads no secret and writes nothing |
 | [`rpm-release.yml`](.github/workflows/rpm-release.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/` or `packaging/rpm/` | the collector's tests on EL8, then the RPM: attached to the tag's GitHub Release, or uploaded as a workflow artifact |
-| [`base-image.yml`](.github/workflows/base-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `docker/base/` | `ghcr.io/…/base` |
-| [`collector-image.yml`](.github/workflows/collector-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/`, `docker/collector/` or `docker/base/` | `ghcr.io/…/collector`, on the base its ref should use |
+| [`base-image.yml`](.github/workflows/base-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `docker/base/` | the base image |
+| [`collector-image.yml`](.github/workflows/collector-image.yml) | a `vX.Y.Z` tag; a push to any branch but `develop` that changes `collector/`, `docker/collector/` or `docker/base/` | the collector image |
 | [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) | a push to `develop` that changes what the demo runs; not a docs-only one (`*.md`) | `ci.yml` first, then the public demo |
 
-Pull requests go to `develop`; `main` is brought up to `develop` by a pull request of
-its own.
+A `vX.Y.Z` tag publishes the release images and attaches the RPM to a GitHub Release: push
+one only to make a release. None has been made yet.
+
+## The rules both halves obey
+
+These are research-integrity constraints, not preferences; each one is a mistake this project
+made once.
+
+- **Null is not zero, and zero is not missing.** A measurement the collector could not take is
+  `null`, never `0`, and the page says *not measured*. A nullable field carries its coverage
+  and is never imputed. A feed that is present but has no matching rows says `none`; an absent
+  feed names the path it expected.
+- **Three actor classes, never two:** `agent`, `human` and `ide`. Editors a person drives
+  (VS Code, Cursor, Windsurf) are `ide`, not `agent`: folding them into the agents once
+  produced a claim about GPU use that had to be retracted.
+- **Nothing is fabricated.** The collector writes only what it measured. The page never calls
+  `Math.random()` (`npm run check:no-random` enforces it) and never draws a line across a
+  minute with no record: that minute is a gap.
+- **`sandbox` and `approval` are independent**, and `denied`, the collector being unable to
+  read the field, is a state of its own, never counted as `unsandboxed`.
+- **Scope is stated.** The collector runs on login nodes, so its figures are login-node use,
+  not cluster use.
 
 ## Requirements
 
-- **Collector**: Linux with BCC (`python3-bpfcc` on Ubuntu, `python3-bcc` on
-  RHEL/Rocky) and kernel headers for the eBPF tier; developed against 6.8 and 6.17, with a
-  4.18 path for D-state dwell and the endpoint table. Its Python is held to 3.6, EL8's.
-  The node tier needs neither: it reads `/proc` and `/sys` and runs `ps`, `free`,
-  `uptime`, `w`, `vmstat`, `mpstat`, `iostat`, `sar`, `nfsiostat` and `ss` (procps-ng,
-  sysstat, nfs-utils, iproute); `check` fails without `ps`, and a missing tool blanks its
-  section. `bootstrap` installs the eBPF tier's dependencies; the RPM pulls in all of them.
-- **Dashboard**: Python ≥ 3.11 with what `dashboard/pyproject.toml` lists (`fastapi`,
-  `uvicorn`, `numpy`, `orjson`, `pyarrow`; `uv sync` installs them), Node for the
-  frontend build (`react`, `react-dom` at runtime; no charting library, every chart is
-  hand-rolled SVG).
-
-## Paths and names from elsewhere
-
-The collector and dashboard READMEs were written inside a larger measurement repository
-and still refer to trees that are not part of this one (`collect/`, `analyze/`,
-`findings/`). Those references are provenance, and the code does not depend on them: the
-collector has no `../` imports, and the dashboard resolves every feed path from config,
-env, or a probed candidate list.
-
-One legacy name survives only in old data. The collector folder was once
-`eBPF_marthen_new/` and is [`collector/`](collector/) here, and through schema 6 every
-record's envelope stamped `collector = "ebpf_marthen_new"` and `source = "ebpf"`. Schema 7
-drops both: they were the same on every line, nothing read them, and the feed's own
-location already says where a record came from. Captures from before the change still
-carry them.
+- **Collector:** Linux, with BCC (`python3-bpfcc` on Ubuntu, `python3-bcc` on RHEL and Rocky)
+  and kernel headers for the eBPF tier; developed on kernels 6.8 and 6.17, with fallbacks for
+  EL8's 4.18. Python 3.6 or later. The node tier needs only `/proc`, `/sys` and
+  standard tools (procps-ng, sysstat, nfs-utils, iproute); `check` fails without `ps`, and a
+  missing tool blanks only its own section. `bootstrap` installs the eBPF tier's
+  dependencies; the RPM pulls in everything.
+- **Dashboard:** Python 3.11 or later with what [`dashboard/pyproject.toml`](dashboard/pyproject.toml)
+  lists (`fastapi`, `uvicorn`, `numpy`, `orjson`, `pyarrow`), installed by `uv`; Node.js and
+  npm to build the page (`react` and `react-dom`, no charting library: every chart is
+  hand-drawn SVG).

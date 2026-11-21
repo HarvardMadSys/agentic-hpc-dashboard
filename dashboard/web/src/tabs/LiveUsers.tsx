@@ -897,6 +897,4 @@ export const ActiveUsers = memo(function ActiveUsers(props: UsersProps & { goto?
   );
 });
 
-export const scrollToUsers = () =>
-  document.getElementById('live-users')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
