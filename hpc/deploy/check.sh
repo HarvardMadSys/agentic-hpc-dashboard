@@ -13,7 +13,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "${SITE_ENV:-$here/site.env}"
 # This kit's folder in a release. deploy.sh installs this script by itself, beside a
 # copy of site.env, so the path is written here; tests/test_render.py checks it.
-KIT=deploy/fleet
+KIT=hpc/deploy
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 

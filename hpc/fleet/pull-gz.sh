@@ -4,11 +4,11 @@
 # `.jsonl.gz` files cross: the live day's plain files are left for the stream. Run it
 # again to fetch only what is new; rsync skips the rest.
 #
-#   SOURCE_USER=<account> SOURCE_NODES="<node> ..." fleet/pull-gz.sh PULL
-#   python3 fleet/seed_mirror.py PULL BASE     # then build the receiver's copy in BASE
+#   SOURCE_USER=<account> SOURCE_NODES="<node> ..." hpc/fleet/pull-gz.sh PULL
+#   python3 hpc/fleet/seed_mirror.py PULL BASE     # then build the receiver's copy in BASE
 #
-# The names are the deploy kit's (deploy/fleet/site.env), so this works too:
-#   (set -a; . deploy/fleet/site.env; fleet/pull-gz.sh PULL)
+# The names are the deploy kit's (hpc/deploy/site.env), so this works too:
+#   (set -a; . hpc/deploy/site.env; hpc/fleet/pull-gz.sh PULL)
 #
 # The files name real users and show their commands: PULL is made 700, files 600.
 # From the environment: SOURCE_USER and SOURCE_NODES (required), SOURCE_DOMAIN (each

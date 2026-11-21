@@ -292,7 +292,7 @@ working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.
 that image behind a Cloudflare Worker at <https://dashboard-demo.agentic-system.org>: one
 shared instance that sleeps when nobody is looking and says it is starting while it wakes.
 The real service over live collectors, behind a password, on a host of your own, is
-[`deploy/fleet`](../deploy/fleet/README.md).
+[`hpc/deploy`](../hpc/deploy/README.md).
 
 **Restarts resume it.** The feed is a function of the seed, the host count and the clock:
 the same span cut into windows anywhere is the same bytes (`demo/world.py`;
@@ -608,7 +608,7 @@ service's own process); the spike hours by boslogin07, whose records cost more t
 reduce, so its second read buys less. Two workers per node -- one per node and group -- is the
 most that helps; each is ~0.5 GB (16 of them ~7.4 GB, plus ~1.7 GB in the service while it
 merges), and they count against the service's memory cap. The FAS deployment uses that
-(`INGEST_WORKERS` in `deploy/fleet/site.env`, empty for two per node). The table was measured
+(`INGEST_WORKERS` in `hpc/deploy/site.env`, empty for two per node). The table was measured
 with one pool that every worker took any unit's next hour from; with a worker for every unit, as
 in the 16 (2) column, each unit now keeps to its own (`hours.UnitPool`, below), which this feed
 has not been measured with.
@@ -1090,7 +1090,7 @@ credentials. So:
   to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV`): `PATH`,
   `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
   `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
-  `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
+  `systemd-run --user` needs, as `hpc/deploy` runs it), the proxy and CA variables,
   `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
   provider reached through a cloud, is named in `ask.env_passthrough`
   (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix,

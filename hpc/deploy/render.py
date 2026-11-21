@@ -28,7 +28,7 @@ REQUIRED = ("SOURCE_USER", "DASH_SSH", "DASH_NODE", "DASH_ROOT", "DASH_PORT")
 OPTIONAL = ("SOURCE_DOMAIN", "SENDER_DIR", "DASH_PYTHON", "RISK_PROFILE", "CODEX")
 MEMORY = re.compile(r"^[1-9][0-9]*[KMGT]$")
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
-# This kit's folder, as a path in the repository (deploy/fleet): the release holds it
+# This kit's folder, as a path in the repository (hpc/deploy): the release holds it
 # there, so the unit and the hourly check find its scripts under DASH_ROOT/current.
 KIT_DIR = os.path.dirname(os.path.abspath(__file__))
 KIT = os.path.relpath(KIT_DIR, os.path.dirname(os.path.dirname(KIT_DIR)))

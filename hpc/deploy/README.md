@@ -3,12 +3,12 @@
 This kit runs the dashboard over live data from many collector nodes, such as a cluster's
 login nodes, on one Linux host that you have an account on. One ssh connection from that
 host to each node carries the node's collector files, compressed, into a private copy
-([`fleet/fleet_stream.py`](../../fleet/fleet_stream.py)). The dashboard reads the copy and
+([`hpc/fleet/fleet_stream.py`](../fleet/fleet_stream.py)). The dashboard reads the copy and
 serves the page on `127.0.0.1`, behind a password. Everything is set in one file,
 `site.env`, and the kit needs no root on any machine.
 
 For a public page over synthetic data, use the demo instead:
-[`deploy/cloudflare`](../cloudflare/README.md) and [`docker/demo`](../../docker/demo/Dockerfile).
+[`deploy/cloudflare`](../../deploy/cloudflare/README.md) and [`docker/demo`](../../docker/demo/Dockerfile).
 The demo writes its own made-up feed, and its Worker asks for a password of its own. This
 kit shows real users and their commands, so the service itself asks for the password, and
 everything on the host stays private.
@@ -82,7 +82,7 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
 
 ## First deploy
 
-1. On this machine, fill in `deploy/fleet/site.env`.
+1. On this machine, fill in `hpc/deploy/site.env`.
 2. On the dashboard's host, make the folder and the stream's key:
 
        umask 077; mkdir -p $DASH_ROOT/etc
@@ -110,12 +110,12 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
 5. Optional, to spare the nodes' network: if the nodes' sealed days are already in a
    folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz`, seed the
    copy from it before the first start. From a checkout of this repository on the host:
-   `python3 fleet/seed_mirror.py <folder> $DASH_ROOT/data --free-min-gb <FREE_MIN_GB>`.
-   `fleet/pull-gz.sh <folder>` makes such a folder with rsync, on a machine that logs in to
+   `python3 hpc/fleet/seed_mirror.py <folder> $DASH_ROOT/data --free-min-gb <FREE_MIN_GB>`.
+   `hpc/fleet/pull-gz.sh <folder>` makes such a folder with rsync, on a machine that logs in to
    the nodes with an ordinary key (the stream's key runs only the sender), with the
-   settings from `site.env` in its environment (`set -a; . deploy/fleet/site.env`). The
+   settings from `site.env` in its environment (`set -a; . hpc/deploy/site.env`). The
    stream fetches whatever is missing.
-6. On this machine: `deploy/fleet/deploy.sh --first`. It installs the sender on the
+6. On this machine: `hpc/deploy/deploy.sh --first`. It installs the sender on the
    nodes, then the release on the host, makes the venv, starts the session, and turns
    linger on.
 7. Add the hourly check to this machine's crontab ([The hourly check](#the-hourly-check)).
@@ -182,8 +182,8 @@ Other views of the state:
 
     R=<DASH_ROOT>
     systemctl --user status rc-tmux rc-dashboard.scope rc-fleet-stream.scope
-    /usr/bin/python3 $R/current/fleet/fleet_stream.py status --base $R/data
-    RC_DASH_ROOT=$R $R/current/deploy/fleet/check-local.sh
+    /usr/bin/python3 $R/current/hpc/fleet/fleet_stream.py status --base $R/data
+    RC_DASH_ROOT=$R $R/current/hpc/deploy/check-local.sh
     tail $R/logs/rc-fleet-stream.log
     curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<DASH_PORT>/api/health   # 401: it answers
 
@@ -256,11 +256,15 @@ ran with `HISTORY_DAYS=1`, `MAX_WINDOWS=1`, `MAX_SESSIONS=50000`, `DAY_CACHE=fal
 
 On this machine, from a tree with no uncommitted changes to tracked files:
 
-    deploy/fleet/deploy.sh              # install HEAD; the running processes keep their code
-    deploy/fleet/deploy.sh --restart    # install HEAD and restart the session
+    hpc/deploy/deploy.sh              # install HEAD; the running processes keep their code
+    hpc/deploy/deploy.sh --restart    # install HEAD and restart the session
 
 A deploy installs the sender on the nodes first, then the release on the dashboard's
-host, so the nodes never run an older sender than the receiver expects. Without
+host, so the nodes never run an older sender than the receiver expects. A deploy whose unit
+names another `ExecStart` than the installed one restarts the session even without
+`--restart`: its windows run the kit's scripts by the old path, which the new release no
+longer has. The first deploy after this kit moved from `deploy/fleet` to `hpc/deploy` does
+so, and the dashboard refills its history. Without
 `--restart`, the new code and settings are used at each process's next start. A change to
 `site.env` alone (the same commit) keeps the release folder as it is and replaces only
 the settings.
@@ -333,8 +337,8 @@ On the nodes: `rm -rf <SENDER_DIR>`, and delete the `rc-fleet-stream` line from
 
 ## Tests
 
-    python3 -m unittest discover -s deploy/fleet/tests
-    python3 -m unittest discover -s fleet/tests
+    python3 -m unittest discover -s hpc/deploy/tests
+    python3 -m unittest discover -s hpc/fleet/tests
 
 The kit's tests run each script for real, with systemctl, tmux, ssh, and the other
 system commands replaced by stand-ins that log their calls. They also render every

@@ -58,7 +58,7 @@ jobs:
           python3 -m unittest discover -s collector/tests -q
 
       - name: The fleet sender compiles on Python 3.6
-        run: python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py
+        run: python3 -m py_compile hpc/fleet/fleet_stream.py hpc/fleet/seed_mirror.py
 
   python:
     name: Collector, fleet and deploy kit
@@ -77,11 +77,11 @@ jobs:
           python3 --version
           python3 -m unittest discover -s collector/tests -q
 
-      - name: Fleet tests
-        run: python3 -m unittest discover -s fleet/tests -q
+      - name: HPC fleet stream tests
+        run: python3 -m unittest discover -s hpc/fleet/tests -q
 
-      - name: Deploy kit tests
-        run: python3 -m unittest discover -s deploy/fleet/tests -q
+      - name: HPC deploy kit tests
+        run: python3 -m unittest discover -s hpc/deploy/tests -q
 
   dashboard:
     name: Dashboard (Python ${{ matrix.python }})

@@ -162,8 +162,8 @@ As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare W
 <https://dashboard-demo.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
 redeployed from `develop` by `.github/workflows/demo-deploy.yml` whenever a push changes it.
 
-The real service, live, on a host of your own: [`deploy/fleet`](deploy/fleet/README.md)
-streams each node's collector files to that host over ssh (`fleet/fleet_stream.py`) and
+The real service, live, on a host of your own: [`hpc/deploy`](hpc/deploy/README.md)
+streams each node's collector files to that host over ssh (`hpc/fleet/fleet_stream.py`) and
 runs the dashboard over them behind a password, all set from one settings file.
 
 ## Configuration -- Dashboard

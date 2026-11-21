@@ -6,7 +6,7 @@
 # Builds the web bundle here, takes the runtime files from `git archive HEAD`, renders
 # the tmux unit and the settings from site.env, and installs them on the dashboard's
 # host (DASH_SSH) under DASH_ROOT/releases/<sha>, with `current` moved to it. The sender
-# (fleet/fleet_stream.py) goes first, to SENDER_DIR on the nodes (ship-sender.sh); the
+# (hpc/fleet/fleet_stream.py) goes first, to SENDER_DIR on the nodes (ship-sender.sh); the
 # stream key's forced command runs it there. Only code moves; no capture data passes
 # through this machine. --first also makes the venv; --restart restarts the tmux
 # session, and with it the stream and the dashboard (whose history then refills). It
@@ -19,6 +19,7 @@ umask 077
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 kit=${here#"$repo"/}                 # this kit's folder in the repository
+stream=$(dirname "$kit")/fleet       # the fleet stream's: the kit's sibling, as keep-running.sh has it
 # shellcheck source=/dev/null
 . "$here/site.env"
 first=0 restart=0
@@ -60,14 +61,14 @@ fi
 
 echo "==> release $sha"
 git archive --format=tar --prefix=release/ HEAD dashboard/rc_dashboard dashboard/risk-profiles \
-  dashboard/pyproject.toml dashboard/uv.lock fleet "$kit" > "$work/release.tar"
+  dashboard/pyproject.toml dashboard/uv.lock "$stream" "$kit" > "$work/release.tar"
 (cd dashboard && uv export --frozen --no-dev --no-emit-project --format requirements-txt \
   --quiet) > "$work/requirements.txt"
 git show "HEAD:$kit/install-remote.sh" > "$work/install-remote.sh"
 
 if [ -n "${SENDER_DIR:-}" ]; then
   echo "==> sender to $SENDER_DIR"
-  tar -xOf "$work/release.tar" release/fleet/fleet_stream.py > "$work/fleet_stream.py"
+  tar -xOf "$work/release.tar" "release/$stream/fleet_stream.py" > "$work/fleet_stream.py"
   SITE_ENV="$here/site.env" "$here/ship-sender.sh" "$sha" "$work/fleet_stream.py"
 fi
 

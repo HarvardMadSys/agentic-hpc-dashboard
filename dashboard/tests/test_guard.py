@@ -148,7 +148,7 @@ class Host(unittest.TestCase):
         self.assertEqual(call(OPEN, "http", None), "app")
 
     def test_with_a_password_the_name_is_free(self):
-        # a tunnel or a proxy may keep its public name in the Host (deploy/fleet)
+        # a tunnel or a proxy may keep its public name in the Host (hpc/deploy)
         self.assertEqual(call(SIGNED, "http", "dash.example.org"), "app")
         self.assertEqual(call(SIGNED, "websocket", "dash.example.org", "https://dash.example.org"),
                          "app")
