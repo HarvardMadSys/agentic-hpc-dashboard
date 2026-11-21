@@ -1085,8 +1085,9 @@ and for how the page draws them
 
 - **Shows:** the window's sessions ranked by one of seven measures -- recency, processes, CPU, peak
   memory, disk I/O, network, distinct tools; each row its key and date, surface, category, a live
-  badge with the processes up now, user, tool calls (an agent whose commands are read) or processes,
-  CPU, length, and the rank's own quantity. A user's sessions alone when opened from LV-23.
+  badge with the processes up now, user, its calls (an agent's tool calls, or the commands a session no
+  agent ran ran from its terminals), CPU, length, and the rank's own quantity. A user's sessions alone
+  when opened from LV-23.
 - **Records:** `exit`: `_sid`, `_kt`, `_kv`, `pid`, `ppid`, `cpu_s`, `_eff`, `_purpose`,
   `peak_rss_mb`, `io` (`rd_mb`, `wr_mb`, `scope`), `net_tx_bytes`, `net_rx_bytes`, `user` or `uid`,
   `tree_root_pid`, `_sandbox`, `_sandbox_ancestry`, `cwd`, `args`, `duration_s`; each root's own
@@ -1094,15 +1095,17 @@ and for how the page draws them
   ticks.
 - **Computation:** `TrajectoryReducer.feed` per exit: a `Session` per collector key (host, day,
   class, key) with counts, CPU, run-length chains of tools and of purposes (400 runs), drift arrays,
-  each process's own disk bytes (`own_io`: its figure less what its reaped children carried), and for
-  an agent session its call log (`_phase`, bottom up). At read (`result`): sessions idle past the
+  each process's own disk bytes (`own_io`: its figure less what its reaped children carried), and its
+  call log (`_phase`, bottom up): an agent's direct children, and in a session no agent runs the jobs its
+  terminals' shells ran, known by each record's `pgrp` and `sid`. At read (`result`): sessions idle past the
   longer of 2 h and the window are dropped; every key is folded into its agent through the process
   index (`folded`, `_fold_all`, cached until a record, an eviction or the index changes); each rank
   is `heapq.nlargest(15)` over the window's sessions (recency over rooted ones only); each listed
   session gets a row (`_row`) with its phase block (SE-3). `Aggregator._running_rows` marks the
   newest row of each agent whose root's records arrived in the last 600 s, with its tree's census.
-- **Cost:** per record a few adds, a run-length push, the drift arrays and, for an agent, the phase
-  join (pending entries up to `pend_max`, 50,000). Per read, under the aggregator's lock: the fold of
+- **Cost:** per record a few adds, a run-length push, the drift arrays and the phase join (pending
+  entries up to `pend_max`, 50,000; a record of a session no agent runs whose groups were not kept is
+  counted, `phase_ungrouped`, and joins nothing). Per read, under the aggregator's lock: the fold of
   every held key when anything changed -- "half a second to most of one" at 24 h on rtx6000a
   (`proctree.py:lookup`) -- seven partial sorts over the sessions, and up to 105 rows. The page reads
   again every 5 s while the list is shown, and the service makes the payload again at most that
@@ -1111,14 +1114,16 @@ and for how the page draws them
 
 #### SE-3 a row's phase band, task line and category chip
 
-- **Shows:** for an agent whose commands are read (Claude Code, Codex): a band of its phases, a tick
-  where each task or lone stretch begins, a line naming its tasks (or the order of its phases), the
-  category chip (the use that holds half its work), and at a running session's live edge what the
-  census shows running; for any other row, the purpose of each process, run by run.
-- **Records:** the session's call log (the agent's direct children, each a call named by
-  `phase_rules`, with its command text, start, end and what ran under it), its pending entries, and,
-  for the live edge, `residency` `by_command`.
-- **Computation:** `_phases` and `_build_block`: the agent's day rows are folded into one block
+- **Shows:** for every row, an agent's (Claude Code and Codex by their own rules, any other by the
+  general rule) and a session no agent ran (a person, an editor's terminal: `driver` `terminal`): a band
+  of its phases, a tick where each task or lone stretch begins, a line naming its tasks (or the order of
+  its phases), the category chip (the use that holds half its work), and at a running session's live edge
+  what the census shows running; a session running now with no call ended yet, its live edge alone and
+  no chip.
+- **Records:** the session's call log (an agent's direct children, or a terminal's jobs, each a call
+  named by `phase_rules`, with its command text, start, end and what ran under it), its pending
+  entries, and, for the live edge, `residency` `by_command`.
+- **Computation:** `_phases` and `_build_block`: an agent's day rows are folded into one block
   (`PhaseLog.fold`, at most `max_calls`, 20,000, calls), the open calls added from the pending join
   (`_open_calls`), then `phase_segment.prepared`, `phase_tasks.task_spans` (tasks),
   `phase_segment.segment` (phases, cut at the tasks' boundaries), `phase_tasks.name_tasks` (labels,
@@ -1138,8 +1143,8 @@ and for how the page draws them
 
 #### SE-4 inspector: facts; purpose ribbon and tool tokens
 
-- **Shows:** at the head of the inspector, the row's first and last record, its length, its tool calls
-  where the agent's commands are read, processes, CPU, distinct tools, pieces (keys folded and how the
+- **Shows:** at the head of the inspector, the row's first and last record, its length, its calls
+  (tool calls, or commands for a session no agent ran), processes, CPU, distinct tools, pieces (keys folded and how the
   least certain was attributed: said only where there is more than one, or the least certain was placed
   by a weaker rule than the agent itself or an ancestor), sandbox and approval. At the head of its
   Processes part, its purpose ribbon and tool tokens, each run opening the tree at its first record.

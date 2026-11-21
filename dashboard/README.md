@@ -1299,26 +1299,54 @@ and agent type, by tool and by kind of tool.
 
 ## Sessions: tasks, phases, and processes
 
-An agent session's row says what the agent was doing at three levels, which the page calls **Tasks**,
-**Phases**, and **Processes**.
+Every session's row says what it was doing at three levels, which the page calls **Tasks**, **Phases**, and
+**Processes**: an agent's, by the tool calls it made, and a session no agent ran (a person's login, an editor's
+terminal), by the commands its terminals ran.
 
 | level | what it is | built by |
 |---|---|---|
 | Tasks | stretches of the session that were about one thing, each labeled for what it was for | `reducers/phase_tasks.py` cuts and labels them, from the names and the agent's own words that `reducers/phase_names.py` reads out of each command |
-| Phases | what the agent spent its time on inside a task: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle | `reducers/phase_segment.py`, from the tool calls `reducers/phase_rules.py` names |
+| Phases | what the session spent its time on inside a task: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle | `reducers/phase_segment.py`, from the calls `reducers/phase_rules.py` names |
 | Processes | every process the session ran, in its tree | `/api/trajectory` (`proctree.py`) |
 
-A row of Claude Code or Codex carries the first two as `phases`: the `list` of phases, the `tasks` above
-them (each phase says which one it belongs to), a `headline` (the project, then the names that recur
-across the tasks, as `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`; and what kind of session
-it was, a `category` with the `uses` of its work it rests on and a `summary` (*What kind of session it
-was*, below). A row of any other
-agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`: not recognized is not none.
-How the page draws the levels is in [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
+Every row carries the first two as `phases`: the `list` of phases, the `tasks` above them (each phase says
+which one it belongs to), a `headline` (the project, then the names that recur across the tasks, as
+`KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`; what kind of session it was, a `category`
+with the `uses` of its work it rests on and a `summary` (*What kind of session it was*, below); and
+`driver`, whose calls they are: `agent` or `terminal`. How the page draws the levels is in
+[`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
 
-All of it is read from the commands the agent ran and the words it wrote in them, and from nothing else,
-as the basis line over the inspector's chart says. Reading and editing inside the agent, its thinking, and
-a log entry it writes with its own Write or Edit tool leave no command, so none of them is seen. No model
+**Which processes are calls** (`reducers/phase_rules.py`):
+
+- **An agent's tool calls** are its runtime's direct children. Claude Code and Codex have rules of their own
+  (their Bash tool's shell, Claude's Grep and Glob, Codex's shell and bare commands, each agent's own chores
+  counted as housekeeping). Any other agent -- Copilot, a Cursor or Windsurf agent, a sandbox the collector
+  keyed on its own, a type it learns later -- is read by the general rule, Codex's with only the chores any
+  agent runs: its own executable run as a probe, client, server, or helper, a login shell's startup helpers,
+  and `git --version`. An editor's server (VS Code, Cursor, Windsurf) runs nothing for anyone directly: its
+  direct children are the editor's own, and its terminals are read as any terminal is.
+- **A terminal's commands.** A shell a person types into runs each command line as a job, a process group of
+  its own, in the session the shell leads (sshd, a tmux pane, and an editor's terminal host each start it so).
+  The collector records each process's group and session (`pgrp`, `sid`), so a session no agent ran is read
+  from them a record at a time: a process that leads its own group in a session it does not lead is a call,
+  with everything under it, and so is a later stage of its pipeline and a command that leads a session of its
+  own (`ssh host cmd`, `setsid cmd`). The shell itself is never a call (it ran the whole time), and what it
+  runs in its own group -- its startup files' helpers, its prompt's `git rev-parse`, what a typed `module load`
+  or `conda activate` runs -- is its housekeeping, as are a terminal multiplexer and the daemons that lead a
+  session after a fork. A record whose group and session were not kept (a collector without the feature) is
+  not read, and counted (`phase_ungrouped`).
+- **A call still running** is read from what its children did while it runs, as the module docstring of
+  `reducers/trajectories.py` says; in a session no agent ran, only what runs inside a command (a job, or the
+  command that leads a session) can be one, never what waits under the shell itself or an editor's server.
+
+A session running now whose first call has not ended has no call to cut phases from: a call is recorded when it
+ends. Its row and its inspector draw its live edge alone, from its first record to now, and say what the
+per-minute census shows running in the summary's place, never `no tool calls`.
+
+All of it is read from the commands the session ran and the words written in them, and from nothing else,
+as the basis line over the inspector's chart says. Reading and editing inside an agent, its thinking, and
+a log entry it writes with its own Write or Edit tool leave no command, so none of them is seen, and nor is
+what a person reads or edits in an editor's window. No model
 writes a label, and no transcript, prompt, or file on disk is read. The cutting and the naming are
 heuristics over command text, and their thresholds were tuned on seven hand-labeled sessions of boslogin06
 and rtx6000a. `rc_dashboard/phase_report.py` reads a day of a feed as a window build does, prints the

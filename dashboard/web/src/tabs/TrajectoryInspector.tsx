@@ -4,7 +4,7 @@
  * It opens on who ran the session and what it came to (`Facts`), the session's headline, and the gist: what
  * kind of session it was and the session in a few sentences. Then two parts, each under a heading:
  *
- * - WHAT IT DID, for an agent whose commands are read: a map of its tasks over its phases on the whole
+ * - WHAT IT DID, for every session (an agent's tool calls, or the commands a session no agent ran ran from its terminals): a map of its tasks over its phases on the whole
  *   session's clock (SessionMap.tsx), and under it the list of them (TaskList.tsx, or PhaseList.tsx where the
  *   block has no tasks). They are the row's block, which is the whole session's, so they are drawn as soon
  *   as the row is here, before any process is read. An agent of a type whose commands are not read says so
@@ -67,7 +67,7 @@ import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'r
 import { sessionName } from '../lib/sessions';
 import type { CSSProperties, ReactNode } from 'react';
 import { useTrajectory } from '../api/hooks';
-import type { OwnerVia, Phase, PhaseDay, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
+import type { OwnerVia, Phase, PhaseDay, PhaseDriver, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
 import { PROC_LINKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import {
@@ -98,7 +98,7 @@ import { serverNow } from '../lib/clock';
 import { useNow } from '../lib/useNow';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
-import { categoryOf, isBlock, phaseLbl, phasesUnread } from '../lib/phases';
+import { callWord, categoryOf, driverOf, isBlock, phaseLbl, phasesUnread, runningUnread, runningUnreadText } from '../lib/phases';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
 import { otherDay, taskLabel } from '../lib/tasks';
@@ -288,8 +288,14 @@ function Facts({ row, d }: { row: TrajRow | null; d: TrajectoryDetail | null }) 
           length <b>{dur(r.wall_s)}</b>
         </span>
         {calls != null && (
-          <span data-tip="commands the agent issued itself; what they started counts as processes">
-            tool calls <b>{fint(calls)}</b>
+          <span
+            data-tip={
+              driverOf(isBlock(r.phases) ? r.phases : null) === 'terminal'
+                ? "commands run from its terminals, each with what it started: the rest is the shells' and the editor's own"
+                : 'commands the agent issued itself; what they started counts as processes'
+            }
+          >
+            {callWord(driverOf(isBlock(r.phases) ? r.phases : null), 2)} <b>{fint(calls)}</b>
           </span>
         )}
         <span>
@@ -515,8 +521,8 @@ function Figures({ text }: { text: string }) {
 }
 
 /** The colour of the gist's rule: its category's, and the plain edge for one with no colour of its own. */
-const gistColour = (c: string | null | undefined) => {
-  const col = c ? categoryOf(c)[2] : 'none';
+const gistColour = (c: string | null | undefined, driver?: PhaseDriver) => {
+  const col = c ? categoryOf(c, driver)[2] : 'none';
   return col === 'none' ? 'var(--edge)' : col;
 };
 
@@ -993,6 +999,8 @@ export function TrajectoryInspector({
   // reached. So it is drawn, and listed, as soon as the row is here, before the tree is read; a pick made from it waits for
   // the read, as every jump does. An agent of a type whose commands are not read says so in its place, as its row does.
   const unread = r ? phasesUnread(r) : null;
+  // running now, and no call of it has ended yet: its live edge is all there is to draw (`runningUnread`)
+  const waiting = runningUnread(block, edge);
 
   return (
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
@@ -1032,18 +1040,27 @@ export function TrajectoryInspector({
             {block.headline}
           </div>
         )}
-        {block?.summary && (
-          <p
-            className="ins-gist"
-            style={{ '--cat': gistColour(block.category) } as CSSProperties}
-          >
-            <CategoryChip of={block} />
-            <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
-              <Figures text={block.summary} />
+        {block && waiting ? (
+          // running now, and no call has ended: what runs, in the summary's place, and no `no tool calls` chip
+          <p className="ins-gist" style={{ '--cat': 'var(--edge)' } as CSSProperties}>
+            <span data-tip="from the per-minute census: a call has a record only once it ends">
+              {runningUnreadText(edge, driverOf(block))}
             </span>
           </p>
+        ) : (
+          block?.summary && (
+            <p
+              className="ins-gist"
+              style={{ '--cat': gistColour(block.category, driverOf(block)) } as CSSProperties}
+            >
+              <CategoryChip of={block} />
+              <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
+                <Figures text={block.summary} />
+              </span>
+            </p>
+          )
         )}
-        {block && block.list.length > 0 && (
+        {block && (block.list.length > 0 || waiting) && (
           <section className="ins-sec" aria-labelledby={`${uid}-did`}>
             <div className="ins-sec-h">
               <h4 id={`${uid}-did`}>What it did</h4>
@@ -1056,7 +1073,7 @@ export function TrajectoryInspector({
             {block.tasks?.length ? (
               <TaskList block={block} now={edge} view={view ?? aim} onTask={onTask} onPhase={onPhase} />
             ) : (
-              <PhaseList block={block} now={edge} onPick={onPhase} />
+              <PhaseList block={block} now={edge} first={r?.first} onPick={onPhase} />
             )}
           </section>
         )}
