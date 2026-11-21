@@ -37,11 +37,11 @@ not measured says *not measured*.
 ## How it works
 
 ```mermaid
-flowchart LR
-    ebpf["eBPF tier<br/>(root)"] --> files
-    nodetier["node tier<br/>(any user)"] --> files
-    files[("JSONL<br/>day-files")] -->|"read in place<br/>or via fleet/"| svc["rc_dashboard"]
-    svc -->|"HTTP and<br/>WebSocket"| page["Agent Observatory<br/>in your browser"]
+flowchart TB
+    ebpf["eBPF tier, as root"] --> files
+    nodetier["node tier, as any user"] --> files
+    files[("JSONL day-files")] -->|"read in place, or via fleet/"| svc["rc_dashboard"]
+    svc -->|"HTTP and WebSocket"| page["Agent Observatory<br/>in your browser"]
 ```
 
 1. **The collector**, `ebpfm` ([`collector/`](collector/README.md)), runs on each login node
