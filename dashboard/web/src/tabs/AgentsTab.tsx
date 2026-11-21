@@ -30,7 +30,6 @@ import type {
   HomeSrc,
   WsAgent,
   WsDir,
-  WsKind,
   WsView,
 } from '../api/types';
 import { GroupBars } from '../charts/primitives';
@@ -55,6 +54,7 @@ import type { IoQuery } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
 import type { Panels } from '../lib/panels';
 import { stickyTop } from '../lib/sticky';
+import { PLACE_SEVERITY } from '../lib/places';
 import './agents.css';
 import { table } from '../lib/lookup';
 
@@ -64,22 +64,6 @@ const HOME_TIP: Record<HomeSrc, string> = table({
 });
 
 /* Directory rows an opened agent shows before "show all". */
-
-/* How alarming a write outside the home is, by where it landed. A write to the
- * agent's own scratch in /tmp is still flagged -- it is outside the project --
- * but it is not drawn like a write into another user's home. */
-const SEVERITY: Record<WsKind, 'high' | 'med' | 'low'> = {
-  "other user's home": 'high',
-  system: 'high',
-  'filesystem root': 'high',
-  'shared storage': 'med',
-  'own home': 'med',
-  other: 'med',
-  home: 'low',
-  'cache & tooling': 'low',
-  'agent state': 'low',
-  temp: 'low',
-};
 
 /** `/home/<user>` as `~`, another user's home as `~<them>`. */
 function tildeOf(path: string | null | undefined, user: string | null | undefined): string {
@@ -241,7 +225,7 @@ function DirTable({ v, ioq }: { v: WsView; ioq?: (d: WsDir, sort: IoSort) => IoQ
           </thead>
           <tbody>
             {rows.map((d) => {
-              const sev = d.flag ? SEVERITY[d.kind] : null;
+              const sev = d.flag ? PLACE_SEVERITY[d.kind] : null;
               return (
                 <tr key={d.path}>
                   <td style={{ minWidth: 260, maxWidth: 520 }} data-tip={dirTip(d)}>
@@ -292,9 +276,9 @@ const LOW_SHOWN = 3;
 function Flags({ v }: { v: WsView }) {
   const [all, setAll] = useState(false);
   if (!v.flags.length) return null;
-  const high = v.flags.some((f) => SEVERITY[f.kind] === 'high');
-  const loud = v.flags.filter((f) => SEVERITY[f.kind] !== 'low');
-  const quiet = v.flags.filter((f) => SEVERITY[f.kind] === 'low');
+  const high = v.flags.some((f) => PLACE_SEVERITY[f.kind] === 'high');
+  const loud = v.flags.filter((f) => PLACE_SEVERITY[f.kind] !== 'low');
+  const quiet = v.flags.filter((f) => PLACE_SEVERITY[f.kind] === 'low');
   const shown = all ? v.flags : [...loud, ...quiet.slice(0, LOW_SHOWN)];
   const folded = v.flags.length - shown.length;
   const kinds = [...new Set(quiet.slice(LOW_SHOWN).map((f) => f.kind))].join(', ');
@@ -306,7 +290,7 @@ function Flags({ v }: { v: WsView }) {
       <ul>
         {shown.map((f) => (
           <li key={f.op + f.path}>
-            <span className={`ws-flagmark ${SEVERITY[f.kind]}`}>{f.op}</span>
+            <span className={`ws-flagmark ${PLACE_SEVERITY[f.kind]}`}>{f.op}</span>
             <span className="ws-path" data-tip={f.path}>
               {f.shown}
             </span>
@@ -1085,7 +1069,7 @@ function AgentBlast({ a, n, cap, from }: {
             {s.roots.slice(0, 6).map((g) => {
               const wrote = g.write + g.delete > 0;
               return (
-                <span key={g.root} className={`ws-root${wrote ? ' wrote' : ''}${wrote && SEVERITY[g.kind] === 'high' ? ' high' : ''}`}
+                <span key={g.root} className={`ws-root${wrote ? ' wrote' : ''}${wrote && PLACE_SEVERITY[g.kind] === 'high' ? ' high' : ''}`}
                   data-tip={`${g.root} · ${g.kind}\nran there: ${fint(g.procs)} processes\nnamed: read ${fint(g.read)}, written ${fint(g.write)}, deleted ${fint(g.delete)}, other ${fint(g.named)}`}>
                   {g.root}
                   {g.delete > 0 ? <b className="ws-d"> d</b> : g.write > 0 ? <b className="ws-w"> w</b> : null}

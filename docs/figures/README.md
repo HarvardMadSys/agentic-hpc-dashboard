@@ -470,13 +470,13 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   them, and how many agent sessions launched with a bypass flag, in auto mode, and ran tool calls of
   which none was sandboxed.
 - **Records:** for sessions, `exit` (`_sid`, `_kt`, `_kv`, `_a3`, `_ts_epoch`) and each root's own
-  record (role `agent`, `pid == agent_pid`); for the launch line, as IN-2 and IN-4.
+  record (role `agent`, `pid == agent_pid`); for the launch line, as SC-3 and SC-5.
 - **Computation:** `TrajectoryReducer.summary` counts each folded session whose last record is in
   the window and, for agents, whose root was seen (`rooted`; an agent-class key with no root is a
   probe, counted apart). The launch line is `SandboxReducer.result`'s sessions by approval at
   launch and by the verdict of their tool calls (`session_state`).
 - **Cost:** the summary walks every session of the window each time `trajectories` is made (SE-2);
-  the sandbox walks every tool call of the window each time its payload is made (IN-2).
+  the sandbox walks every tool call of the window each time its payload is made (SC-3).
 
 #### LV-4 risky agent actions
 
@@ -488,7 +488,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
 - **Computation:** `RiskReducer.feed` tests `"<tool> <args>"` against every rule a section shows
   (`_matches`: a literal gate first, then the regex; the verdict cached per tool and argv); the
   plate sums the rule rows' `classes` over the commands and credentials sections. The sandbox line
-  is IN-1's.
+  is SC-2's.
 - **Cost:** a cache lookup a record and, on a miss, one regex search per rule whose gate passes; the
   cache holds 50,000 command lines and is cleared when full. Before the cache, matching was half of
   a window build: 2.5 M regex searches for a 6 h window (`risk.py`).
@@ -514,7 +514,7 @@ name it; the live tier in the rate chart, Active users and the tables that name 
   nodes, and jobs, GPUs and GPU-hours asked of Slurm.
 - **Records:** those of the payloads it reads: `exit` (processes, CPU; LV-2), `exit`
   `io` (each process's own) and network bytes (`IoReducer`), `residency_totals` (memory; LV-9),
-  sessions (LV-3), `submit` (`gpus`, `array`, `time_limit_s`; SL-3).
+  sessions (LV-3), `submit` (`gpus`, `array`, `time_limit_s`; SL-4).
 - **Computation:** none of its own. `OverviewTab` reads `tool_mix.by_class[c]` `calls` and `cpu_s`,
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
@@ -838,7 +838,7 @@ trajectory row by agent and walks each session's call log. Measured on 500 synth
 - **Shows:** what the user's agent sessions asked of Slurm: jobs, refusals, queue checks and checks
   per job, polling sessions and their hours, the longest polling stretch, the `--parsable` share,
   cancels, GPU-hours.
-- **Records:** as SL-2.
+- **Records:** as SL-3.
 - **Computation:** `slurm_by_user` folds the Slurm reducer's agent keys into sessions
   (`SlurmReducer._sessions`) and reads each session's polling with `SlurmReducer._polls`; agent
   sessions only.
@@ -1189,11 +1189,144 @@ and for how the page draws them
   (`bandAxis`), so it covers the whole session whatever the read reached, which SE-7 cannot.
 - **Cost:** none on the service.
 
+## Security
+
+How the agents were launched, how their tool calls were confined, what they exposed, and where
+they wrote outside their start folder (`tabs/SecurityTab.tsx`): the checks (SC-1), then the
+sandbox panels (SC-2 to SC-8, drawn by `tabs/SandboxTab.tsx`; they were the Internal tab's while
+their takeaway was open), then the writes outside the start folder (SC-9). Credentials on
+command lines are checked here and listed on Risks (RI-4), which the site's risk profile lays
+out. See [Conventions the panels obey](../../dashboard/README.md#conventions-the-panels-obey) for
+what `sandboxed` and `approval` mean and why a session is judged by its tool calls.
+
+| | figure | path | payload | code (service · page) |
+|---|---|---|---|---|
+| SC-1 | list: security checks | BUILD | `sandbox`, `risk.sections`, `risk.secrets`, `cascades.workspace` | (no reducer of its own) · `tabs/SecurityTab.tsx:securityChecks`, `SecurityChecks` |
+| SC-2 | plates: agent tool calls sandboxed, sandboxes failed to start, sessions launched with a bypass flag | BUILD | `sandbox.tool_calls`, `attempts`, `approval_by_class_sessions` | `reducers/sandbox.py:SandboxReducer.result` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-3 | tool calls: did they run sandboxed? (outcomes; sessions by user) | BUILD | `sandbox.tool_calls`, `sessions`, `sessions_total` | `SandboxReducer._calls`, `_sessions`, `result`; `sandbox.py:session_state` · `tabs/SandboxTab.tsx:AxisBlock`, `SessionTable` |
+| SC-4 | sandboxed, per process and per session | BUILD | `sandbox.by_class_events`, `by_class_sessions` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock` |
+| SC-5 | approval at launch, per session and per process; launch flags as written | BUILD | `sandbox.approval_by_class_sessions`, `approval_by_class_events`, `launch_modes` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock`, `SandboxTab` |
+| SC-6 | sandbox wrapper calls, by outcome | BUILD | `sandbox.attempts` | `SandboxReducer._sessions` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-7 | processes by sandbox wrapper, kind and sandbox state | BUILD | `sandbox.ancestry_matrix` | `SandboxReducer.feed`, `result`; `sandbox.py:_reading` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-8 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-9 | writes outside the start folder: by kind of place; by user | BUILD | `cascades.workspace.agents[].self`: `summary.outside`, `summary.roots`, `flags` | `reducers/workspace.py:WorkspaceReducer.view`; `CascadeReducer._workspace` · `tabs/SecurityTab.tsx:OutsideWrites`, `writersOf`, `placesOf` |
+
+Records for the sandbox panels, SC-2 to SC-8: `exit` (each counted once): `_sandbox` (four states), `_sandbox_src`,
+`sandbox_detail`, `_sandbox_ancestry`, `_approval`, `_command` (a wrapper is `bwrap` or
+`codex-linux-san…`), `_role`, `pid`, `ppid`, `host`, `_ts_epoch`, `duration_s`, `exit_code`,
+`signal`, `dstate_wait_s`, `is_agent`, `agent_pid`, `tree_root_pid`, `agent_type`, `user`; and
+each agent root's own record of any kind, `truncated`, `residency`, `conn` and `netio` among
+them, for its launch (`_approval`, `_approval_detail`).
+
+#### SC-1 security checks
+
+- **Shows:** every check of the tab, under the axis it answers -- launch (a bypass flag, auto
+  mode), confinement (tool calls not sandboxed, sandboxes that failed to start), exposure (each
+  credentials section of the site's risk rules) and reach (agents that wrote outside their start
+  folder, agents that reached another user's home) -- each with what it found, the share it is of
+  the sessions or tool calls the axis could judge, the other classes beside the agent's count
+  where the payload splits it by class, and a link to the panel that shows it. A check that found
+  something wears a filled dot; one made that found none, a ring; one not made, a dashed ring and
+  the reason.
+- **Records:** none of its own: the window's `sandbox`, `risk` and `cascades` panels (BUILD).
+- **Computation:** in the page (`securityChecks`), with no threshold of its own: each line is a
+  state the service assigns or a rule it applies, so the list and the panels behind it cannot
+  disagree. Launch is SC-5's agent sessions by approval at launch, a bypass flag and auto mode
+  each a share of those whose launch flags are readable; confinement is SC-3's agent tool calls
+  not sandboxed, with the share sandboxed as SC-2 prints it, and its sandboxes that failed to
+  start, of SC-6's wrapper calls; exposure is RI-4's rows summed over each credentials section,
+  per class; reach is
+  `cascades.workspace.summary`'s `with_outside_writes` and `other_homes`, with the kinds of place
+  SC-9 counts. A check whose panel has no body (waited for, still being read, not reduced, not
+  returned), whose site counts no credential rule, or with the agent class filtered out is *not
+  checked*, and says why: never none, and never 0.
+- **Cost:** none past its payloads'.
+
+#### SC-2 plates
+
+- **Shows:** the share of agent tool calls that ran sandboxed, of those whose outcome is known
+  (isolated, not isolated, failed); agent sandboxes that failed to start, of the wrapper calls; the
+  share of agent sessions launched with a bypass flag, of those whose launch flags are readable.
+- **Computation:** SC-3's, SC-6's and SC-5's counts, divided in the page over the known states.
+
+#### SC-3 tool calls: did they run sandboxed?
+
+- **Shows:** agent tool calls by outcome, by class; the sessions that made tool calls, grouped by
+  user, with approval, calls, the share sandboxed and failed starts (40 served, the busiest first);
+  those that made none, folded.
+- **Computation:** `SandboxReducer._calls` reads an agent's exits bottom up: a child reports to its
+  parent's slot (`below[(host, ppid)]`: whether a payload ran, was isolated, was unknown); a wrapper
+  or a Claude Code Bash tool shell becomes a tool call with its outcome (isolated, not isolated,
+  failed -- the wrapper exited non-zero with no payload --, no payload, unknown), and a wrapper
+  absorbs the calls below it, so nested wrappers fold into the outermost. At read, `_sessions`
+  groups the calls not absorbed by the session that owns them (through the process index) beside
+  every agent root, and `session_state` judges each session by its calls.
+- **Cost:** a few counters a record, and for an agent's exit a slot (at most 200,000 parents waiting,
+  the overflow counted) and a call per tool call, kept for the window with no cap. `_sessions` walks
+  every call each time the payload is made, and the cascades (AG-2) and the Users tab
+  (`portraits.inputs`) walk them again (`agent_calls`). The slots and their calls are carried from
+  hour to hour when merging.
+
+#### SC-4 sandboxed, per process and per session
+
+- **Shows:** per class, the processes in each of the four namespace states, and the sessions in each
+  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls). As in SC-3 and SC-5, a state
+  the axis can judge is a share of the class's judged ones, and the rest (exited before it was checked,
+  unknown, no calls, not an agent session, can't tell) are counts, with the coverage under the class
+  (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`): the share a plate above prints.
+- **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
+  SC-3.
+
+#### SC-5 approval at launch
+
+- **Shows:** per class, sessions and processes by approval at launch; the launch flags as written,
+  per agent type and reading, with sessions.
+- **Computation:** each root's verdict is its own record's (`roots`, the newest kept); sessions are
+  SC-3's; per process, a counter of each counted record's `_approval`; `launch_modes` counts the
+  rooted sessions by (agent type, approval, flags).
+
+#### SC-6 sandbox wrapper calls, by outcome
+
+- **Shows:** per wrapper (`bwrap`, `codex-linux-sandbox`), agent type and outcome, the calls.
+- **Computation:** `_sessions` counts the wrapper calls not absorbed by another, by those three.
+
+#### SC-7 processes by sandbox wrapper, kind and sandbox state
+
+- **Shows:** per (wrapper above it, wrapper or process, sandbox state): processes, their D-state wait
+  and its coverage, and a reading of what the row means.
+- **Computation:** a counter per key with summed `dstate_wait_s` and a present count; `_reading`
+  words each row.
+
+#### SC-8 when each process was checked
+
+- **Shows:** each process's namespace answer by when it was read: at its start, in a census, copied
+  from its parent, or after it exited.
+- **Computation:** a counter of `_sandbox_src`.
+
+#### SC-9 writes outside the start folder
+
+- **Shows:** the agents that wrote or deleted outside the folder they were started in, of every
+  agent in the window: by the kind of place the paths are in, the most alarming first (another
+  user's home, system, the filesystem root, shared storage, the agent's own home, other, cache &
+  tooling, agent state, temp), with its agents, users, paths written and deleted, and the places;
+  then by user, each agent with its start folder, the paths it wrote and deleted, the kinds of
+  place, and the paths themselves, the most alarming first (three shown, the rest on hover).
+- **Records:** AG-4's and AG-5's: the paths an agent's commands name, read from the text of its
+  command lines, not measured.
+- **Computation:** in the page, from `cascades.workspace.agents[].self`, each agent judged on its
+  own processes as `with_outside_writes` counts it. An agent is listed when its
+  `summary.outside_writes` is above 0, and the service serves every such agent however quiet
+  (`CascadeReducer._workspace`), so the list is whole. The kinds of place are the
+  `summary.roots` it wrote or deleted in, ranked as the Agents tab ranks its flags
+  (`lib/places.ts`); its paths are its `flags` (16 served, the rest counted in `flags_more`),
+  sorted as the service sorts them.
+- **Cost:** none past AG-4's.
+
 ## Login nodes › Resources
 
 Login node health, the worst individual processes, then the I/O panels drawn by Risks' code
 (`tabs/RiskIoTab.tsx:RiskIoTab`, `part="io"`, `io="main"`). The per-process distributions and
-the faults table behind them, and the I/O distributions, are on the Internal tab (IN-8 to IN-11).
+the faults table behind them, and the I/O distributions, are on the Internal tab (IN-1 to IN-4).
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|
@@ -1335,27 +1468,53 @@ section the cluster's profile leaves out is neither computed nor drawn.
 - **Computation:** `RuleSet.summary`, built once per distinct `risk` configuration (`ruleset`). No
   records.
 
-## Login nodes › Slurm
+## HPC
 
-See [Slurm: how sessions use the scheduler](../../dashboard/README.md#slurm-how-sessions-use-the-scheduler).
+The scheduler, an entry of its own in the rail (`?tab=slurm`; `?tab=hpc` opens it too). See
+[Slurm: how sessions use the scheduler](../../dashboard/README.md#slurm-how-sessions-use-the-scheduler).
 Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line is not seen.
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|
 | SL-1 | plates: agent jobs submitted, queue checks per job, agent sessions polling, submissions refused | BUILD | `slurm.by_class`, `slurm.rejections` | `reducers/slurm.py:SlurmReducer.result` · `tabs/SlurmTab.tsx:SlurmTab` |
-| SL-2 | sessions at the scheduler | BUILD | `slurm.sessions`, `sessions_total` | `SlurmReducer.feed`, `_submit`, `_sessions`, `_polls`, `result` · `tabs/SlurmTab.tsx:Sessions`, `SessionDetail` |
-| SL-3 | how each class uses the scheduler | BUILD | `slurm.by_class`; `tool_mix.by_class[c].rows` | `SlurmReducer.result` · `tabs/SlurmTab.tsx:ByClass` |
-| SL-4 | submissions the scheduler refused | BUILD | `slurm.rejections` | `SlurmReducer._submit`, `slurm.py:reason` · `tabs/SlurmTab.tsx:SlurmTab` |
-| SL-5 | latest submissions | LIVE | `submits` | `reducers/live.py:LiveReducer._submit` · `tabs/SlurmTab.tsx:Latest` |
+| SL-2 | abnormal Slurm activity: the rules, each class's count; the sessions that broke one | BUILD | `slurm.abnormal`, `sessions[].abnormal`, `by_class[c].abnormal_by` | `SlurmReducer._abnormal`, `abnormal_rules`, `result` · `tabs/SlurmTab.tsx:Abnormal`, `ruleWords`, `evidence` |
+| SL-3 | sessions at the scheduler | BUILD | `slurm.sessions`, `sessions_total` | `SlurmReducer.feed`, `_submit`, `_sessions`, `_polls`, `result` · `tabs/SlurmTab.tsx:Sessions`, `SessionDetail` |
+| SL-4 | how each class uses the scheduler | BUILD | `slurm.by_class`; `tool_mix.by_class[c].rows` | `SlurmReducer.result` · `tabs/SlurmTab.tsx:ByClass` |
+| SL-5 | submissions the scheduler refused | BUILD | `slurm.rejections` | `SlurmReducer._submit`, `slurm.py:reason` · `tabs/SlurmTab.tsx:SlurmTab` |
+| SL-6 | latest submissions | LIVE | `submits` | `reducers/live.py:LiveReducer._submit` · `tabs/SlurmTab.tsx:Latest` |
 
 #### SL-1 plates
 
 - **Shows:** jobs agents submitted (agent sessions, the busiest minute), agent queue checks per job,
   agent sessions that polled the queue (hours polling), agent submissions refused (share, the
   commonest reason); the other classes beside each.
-- **Computation:** `slurm.by_class` (SL-3) and the agent's first refusal reason (SL-4).
+- **Computation:** `slurm.by_class` (SL-4) and the agent's first refusal reason (SL-5).
 
-#### SL-2 sessions at the scheduler
+#### SL-2 abnormal Slurm activity
+
+- **Shows:** the rules, each worded from its threshold, with each class's count of the sessions
+  that broke it; then every session that broke one: who, where and when, each rule it broke with
+  the session's own numbers (how often and how long it polled fast, the most queue checks or jobs
+  in any 60 s, the submissions refused and the commonest reason, `scancel` calls, failed
+  `srun`/`salloc` runs), its jobs and queue checks, opened into SL-3's detail. The count beside
+  the title is the classes' totals, so a session past the cap is counted though its row is not
+  sent, and the panel says how many of them are listed.
+- **Records:** SL-3's.
+- **Computation:** `SlurmReducer.result` judges each session's row (`_abnormal`) against
+  `reducers.slurm.abnormal`. Fast polling is the longest stretch of its polls each at most
+  `poll_gap_s` (30 s) after the last (`_stretch`, as `_polls` finds SL-3's loop) lasting
+  `poll_min_s` (30 min) or more; SL-3's own polling loop, at most 3 minutes apart, breaks
+  nothing. Each other rule is a count against a threshold -- the most queue checks, and the most
+  jobs, in any 60 s (`_in_a_minute`: a sliding half-open window over the times SL-3 keeps, so a
+  lower bound past 50,000 a key), submissions refused, `scancel` calls, and `srun`/`salloc` runs
+  that ended non-zero or on a signal. Each class counts its sessions per rule, zero included.
+  Every session that broke a rule is served past the busiest 200, up to 500 more, the rest
+  counted (`abnormal.served`). The page holds no threshold: it words the rules from
+  `abnormal.rules`.
+- **Cost:** a pass over each session's row at read: its query and job times, sorted once, are
+  walked by two pointers for the minutes and once more for the fast stretch.
+
+#### SL-3 sessions at the scheduler
 
 - **Shows:** per agent session -- its collector keys folded into the agent -- or per person or IDE
   and user: jobs, refusals, most in one minute, distinct commands with numbers masked, sbatch flags,
@@ -1369,16 +1528,17 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
 - **Computation:** `SlurmReducer.feed` and `_submit` per key (an agent's (host, agent pid, tree
   root); anyone else's (host, class, user)): the outcome (`outcome`: job, dry run, step, refused, no
   id), flags by regex, whether the request was on the command line, the command's shape (a blake2b
-  of `args` with digits masked), submissions per minute, partitions, GPUs times array tasks,
-  GPU-hours where GPUs and a time limit were both on the command line, and each query's time. At
+  of `args` with digits masked), each job's time (the most in any 60 s is SL-2's), partitions,
+  GPUs times array tasks, GPU-hours where GPUs and a time limit were both on the command line, and
+  each query's time. At
   read, `_sessions` folds the agent keys into their owner through the process index, and `_polls`
   joins a session's queries within 2 s into a poll, polls within 3 minutes into a stretch, and
   calls a stretch of 10 minutes or more polling. Sessions sorted by queries plus 10 times jobs and
-  refusals plus runs; 200 served.
+  refusals plus runs; the busiest 200 served, then every other one that broke a rule (SL-2).
 - **Cost:** a few counters a record; bounds of 50,000 keys (the rest counted), and per key 50,000
-  query times and 2,000 shapes. Per read, a sort of each session's query times.
+  query times, 50,000 job times and 2,000 shapes. Per read, a sort of each session's query times.
 
-#### SL-3 how each class uses the scheduler
+#### SL-4 how each class uses the scheduler
 
 - **Shows:** per class: jobs, sessions and users, queue checks and checks per job, sessions polling
   and the hours of it, the share of the class's processes that are scheduler commands, the share of
@@ -1389,7 +1549,7 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
   class; the scheduler share is the tool mix's `slurm-submit` and `slurm-query` kinds over the class's
   processes (AG-8), computed in the page.
 
-#### SL-4 submissions the scheduler refused
+#### SL-5 submissions the scheduler refused
 
 - **Shows:** per class, tool and reason: how many times, and one example (user, time, command on
   hover).
@@ -1397,12 +1557,12 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
   `captured_tail`) is counted by (class, tool, reason), the reason being that line with numbers
   masked and cut to 160 characters (`reason`); the 20 commonest served.
 
-#### SL-5 latest submissions
+#### SL-6 latest submissions
 
 - **Shows:** the newest submissions in the window: when, user, class or agent type, the job id or what
   came back (refused with its reason, dry run, step), the partition, time and GPUs asked (or "in the
   script"), the command.
-- **Records:** `submit`, as SL-2.
+- **Records:** `submit`, as SL-3.
 - **Computation:** `LiveReducer._submit` keeps the 50 newest (`live.submit_tail`), each judged by
   `slurm.outcome` and masked; `result` cuts them to the window.
 
@@ -1479,95 +1639,19 @@ are served.
 
 ## Internal
 
-The sandbox panels (IN-1 to IN-7), not settled yet, then the per-process tables of the resource
-and I/O reducers (IN-8 to IN-11), drawn through `ResourcesTab part="internal"` and
-`RiskIoTab io="internal"` (`tabs/InternalTab.tsx`). See
-[Conventions the panels obey](../../dashboard/README.md#conventions-the-panels-obey) for what
-`sandboxed` and `approval` mean and why a session is judged by its tool calls.
+The per-process tables of the resource and I/O reducers (IN-1 to IN-4), drawn through
+`ResourcesTab part="internal"` and `RiskIoTab io="internal"` (`tabs/InternalTab.tsx`). The
+sandbox panels were here until their takeaway settled; they are the Security tab's now (SC-2
+to SC-8).
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|
-| IN-1 | plates: agent tool calls sandboxed, sandboxes failed to start, sessions launched with a bypass flag | BUILD | `sandbox.tool_calls`, `attempts`, `approval_by_class_sessions` | `reducers/sandbox.py:SandboxReducer.result` · `tabs/SandboxTab.tsx:SandboxTab` |
-| IN-2 | tool calls: did they run sandboxed? (outcomes; sessions by user) | BUILD | `sandbox.tool_calls`, `sessions`, `sessions_total` | `SandboxReducer._calls`, `_sessions`, `result`; `sandbox.py:session_state` · `tabs/SandboxTab.tsx:AxisBlock`, `SessionTable` |
-| IN-3 | sandboxed, per process and per session | BUILD | `sandbox.by_class_events`, `by_class_sessions` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock` |
-| IN-4 | approval at launch, per session and per process; launch flags as written | BUILD | `sandbox.approval_by_class_sessions`, `approval_by_class_events`, `launch_modes` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock`, `SandboxTab` |
-| IN-5 | sandbox wrapper calls, by outcome | BUILD | `sandbox.attempts` | `SandboxReducer._sessions` · `tabs/SandboxTab.tsx:SandboxTab` |
-| IN-6 | processes by sandbox wrapper, kind and sandbox state | BUILD | `sandbox.ancestry_matrix` | `SandboxReducer.feed`, `result`; `sandbox.py:_reading` · `tabs/SandboxTab.tsx:SandboxTab` |
-| IN-7 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
-| IN-8 | per-process distributions | BUILD | `resources.by_class[c].quants`, `top`, `oncpu_set_aside` | `reducers/resources.py:ResourceReducer.feed`, `result`; `reducers/__init__.py:Quant` · `tabs/ResourcesTab.tsx:DistTable` |
-| IN-9 | faults, delays, and D-state | BUILD | `resources.by_class[c].faults`, `delays`, `dstate`; `impossible_waits` | `ResourceReducer.feed`; `reducers/__init__.py:Acc` · `tabs/ResourcesTab.tsx:FaultTable` |
-| IN-10 | requested bytes against disk bytes, per class | BUILD | `io_process.by_class[c]` | `IoReducer.feed`, `result` · `tabs/RiskIoTab.tsx:RiskIoTab` |
-| IN-11 | I/O distributions | BUILD | `io_process.by_class[c].quants` | `IoReducer.feed`; `Quant` · `tabs/RiskIoTab.tsx:RiskIoTab`, `components/Coverage.tsx:QuantCells` |
+| IN-1 | per-process distributions | BUILD | `resources.by_class[c].quants`, `top`, `oncpu_set_aside` | `reducers/resources.py:ResourceReducer.feed`, `result`; `reducers/__init__.py:Quant` · `tabs/ResourcesTab.tsx:DistTable` |
+| IN-2 | faults, delays, and D-state | BUILD | `resources.by_class[c].faults`, `delays`, `dstate`; `impossible_waits` | `ResourceReducer.feed`; `reducers/__init__.py:Acc` · `tabs/ResourcesTab.tsx:FaultTable` |
+| IN-3 | requested bytes against disk bytes, per class | BUILD | `io_process.by_class[c]` | `IoReducer.feed`, `result` · `tabs/RiskIoTab.tsx:RiskIoTab` |
+| IN-4 | I/O distributions | BUILD | `io_process.by_class[c].quants` | `IoReducer.feed`; `Quant` · `tabs/RiskIoTab.tsx:RiskIoTab`, `components/Coverage.tsx:QuantCells` |
 
-Records for the sandbox panels, IN-1 to IN-7: `exit` (each counted once): `_sandbox` (four states), `_sandbox_src`,
-`sandbox_detail`, `_sandbox_ancestry`, `_approval`, `_command` (a wrapper is `bwrap` or
-`codex-linux-san…`), `_role`, `pid`, `ppid`, `host`, `_ts_epoch`, `duration_s`, `exit_code`,
-`signal`, `dstate_wait_s`, `is_agent`, `agent_pid`, `tree_root_pid`, `agent_type`, `user`; and
-each agent root's own record of any kind, `truncated`, `residency`, `conn` and `netio` among
-them, for its launch (`_approval`, `_approval_detail`).
-
-#### IN-1 plates
-
-- **Shows:** the share of agent tool calls that ran sandboxed, of those whose outcome is known
-  (isolated, not isolated, failed); agent sandboxes that failed to start, of the wrapper calls; the
-  share of agent sessions launched with a bypass flag, of those whose launch flags are readable.
-- **Computation:** IN-2's, IN-5's and IN-4's counts, divided in the page over the known states.
-
-#### IN-2 tool calls: did they run sandboxed?
-
-- **Shows:** agent tool calls by outcome, by class; the sessions that made tool calls, grouped by
-  user, with approval, calls, the share sandboxed and failed starts (40 served, the busiest first);
-  those that made none, folded.
-- **Computation:** `SandboxReducer._calls` reads an agent's exits bottom up: a child reports to its
-  parent's slot (`below[(host, ppid)]`: whether a payload ran, was isolated, was unknown); a wrapper
-  or a Claude Code Bash tool shell becomes a tool call with its outcome (isolated, not isolated,
-  failed -- the wrapper exited non-zero with no payload --, no payload, unknown), and a wrapper
-  absorbs the calls below it, so nested wrappers fold into the outermost. At read, `_sessions`
-  groups the calls not absorbed by the session that owns them (through the process index) beside
-  every agent root, and `session_state` judges each session by its calls.
-- **Cost:** a few counters a record, and for an agent's exit a slot (at most 200,000 parents waiting,
-  the overflow counted) and a call per tool call, kept for the window with no cap. `_sessions` walks
-  every call each time the payload is made, and the cascades (AG-2) and the Users tab
-  (`portraits.inputs`) walk them again (`agent_calls`). The slots and their calls are carried from
-  hour to hour when merging.
-
-#### IN-3 sandboxed, per process and per session
-
-- **Shows:** per class, the processes in each of the four namespace states, and the sessions in each
-  verdict (sandboxed, partly, failed, not sandboxed, unknown, no calls). As in IN-2 and IN-4, a state
-  the axis can judge is a share of the class's judged ones, and the rest (exited before it was checked,
-  unknown, no calls, not an agent session, can't tell) are counts, with the coverage under the class
-  (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`): the share a plate above prints.
-- **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
-  IN-2.
-
-#### IN-4 approval at launch
-
-- **Shows:** per class, sessions and processes by approval at launch; the launch flags as written,
-  per agent type and reading, with sessions.
-- **Computation:** each root's verdict is its own record's (`roots`, the newest kept); sessions are
-  IN-2's; per process, a counter of each counted record's `_approval`; `launch_modes` counts the
-  rooted sessions by (agent type, approval, flags).
-
-#### IN-5 sandbox wrapper calls, by outcome
-
-- **Shows:** per wrapper (`bwrap`, `codex-linux-sandbox`), agent type and outcome, the calls.
-- **Computation:** `_sessions` counts the wrapper calls not absorbed by another, by those three.
-
-#### IN-6 processes by sandbox wrapper, kind and sandbox state
-
-- **Shows:** per (wrapper above it, wrapper or process, sandbox state): processes, their D-state wait
-  and its coverage, and a reading of what the row means.
-- **Computation:** a counter per key with summed `dstate_wait_s` and a present count; `_reading`
-  words each row.
-
-#### IN-7 when each process was checked
-
-- **Shows:** each process's namespace answer by when it was read: at its start, in a census, copied
-  from its parent, or after it exited.
-- **Computation:** a counter of `_sandbox_src`.
-
-#### IN-8 per-process distributions
+#### IN-1 per-process distributions
 
 - **Shows:** per class, the mean, min, p1, p10, median, p90, p99 and max of five measures of a
   process: CPU time, lifetime, the share of its lifetime on a CPU, runqueue wait, peak memory; the
@@ -1584,7 +1668,7 @@ them, for its launch (`_approval`, `_approval_detail`).
 - **Cost:** five sketch adds a record, bucketed 4,096 values at a time; per read, the buckets sorted
   once per measure. The sketch's size grows with the values' range, not their number.
 
-#### IN-9 faults, delays, and D-state
+#### IN-2 faults, delays, and D-state
 
 - **Shows:** per class, the average per process and the total of: minor and major page faults
   (major ones in reaped children too), voluntary and involuntary context switches, block-I/O,
@@ -1595,7 +1679,7 @@ them, for its launch (`_approval`, `_approval_detail`).
   `dstate_max_s`, `dstate_src`, and `_impossible` (the normalizer's list of waits it voided).
 - **Computation:** an `Acc` (sum, present count, records seen) per field and class; the page divides.
 
-#### IN-10 requested bytes against disk bytes
+#### IN-3 requested bytes against disk bytes
 
 - **Shows:** a table per class, over the window: the processes and those with any I/O, the bytes
   requested through `read()` and `write()` against those read from and written to disk, the bytes
@@ -1606,11 +1690,11 @@ them, for its launch (`_approval`, `_approval_detail`).
   `max(0, rchar - rd)` and the hit its share of `rchar`.
 - **Cost:** its reducer's.
 
-#### IN-11 I/O distributions
+#### IN-4 I/O distributions
 
 - **Shows:** per class, quantiles of each process's own bytes read requested, read from disk,
   written requested and written to disk (RE-3's join).
-- **Computation:** a `Quant` per counter and class (IN-8's sketch); a record with no `io` block is
+- **Computation:** a `Quant` per counter and class (IN-1's sketch); a record with no `io` block is
   counted as not measured.
 
 ## Feeds
@@ -1687,7 +1771,7 @@ reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
   every classifier-tagged process counted by agent type and role.
 - **`trajectories`' `drift`** (cwd drift and the purpose mix's Jensen-Shannon divergence, per row),
   `dominant_user_share_pct`, `by_key_type`, `by_class_counts`, `fold` and `buffer`.
-- **`sandbox.agent_only` and `sandbox_detail`**: only in IN-6's basis note.
+- **`sandbox.agent_only` and `sandbox_detail`**: only in SC-7's basis note.
 - **The live frame's `now` block, and the roster's counts** (`users.total`, `users.by_class`,
   `users.with_live_agent`): the last full minute's exits by class, the sessions and processes
   running now, the live agent sessions by launch approval, and the accounts active in the window.

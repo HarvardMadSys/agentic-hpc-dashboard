@@ -234,7 +234,7 @@ serve names as they are (`RC_DASH_ANONYMIZE=0` unless set; `1` aliases every nam
 one and exits. `run-demo.sh` needs none. `site.name` (`RC_DASH_SITE_NAME`) is
 shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
 side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
-Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
+HPC tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
 rows go with it.
 
 The FAS RC `sacct` export (`/scratch/marthen/agentic-hpc-measurement/raw_data/sacct`, one parquet
@@ -275,8 +275,8 @@ schema-8 rules the collector and the reducers document, so each tab has what it 
 | Agents | Claude Code in a terminal, `claude -p` and `codex exec` from scripts and from other agents' tool calls (nested), the desktop app's server and Remote Control hosting sessions, VS Code's Claude extension, the Codex app; writes outside the start folder for the blast radius |
 | Sessions | sessions cut into tasks labeled in the agent's own words (commit subjects, a pull request's title, a `PROGRESS.md` entry), phases from explore to an edit-test loop, a Slurm job polled to its end |
 | Risks | a year regridded on the login node, `pip`/`conda` installs, builds, `ssh` to compute nodes, `nvidia-smi`, `rm -rf` on shared scratch, credentials on command lines (masked, as schema 8 writes them) |
-| Slurm | agents submitting with `--parsable` and polling the queue; people submitting arrays and checking now and then; refusals with the scheduler's own words |
-| Internal (Sandbox) | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap` |
+| HPC | agents submitting with `--parsable` and polling the queue, which the abnormal activity lists; people submitting arrays and checking now and then; refusals with the scheduler's own words |
+| Security | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap`; sessions launched with a bypass flag and in auto mode; and, checked here, the credentials Risks lists and the writes outside the start folder the Agents tab draws |
 | Feeds | per host: a heartbeat a minute, a nightly collector restart with its lost-event count, a kernel limit on one host |
 
 Costs are drawn per command from ranges that look like a login node's; they make the
@@ -1700,11 +1700,11 @@ imports it, and changing it rebuilds nothing.
 
 | part | from | what it says |
 |---|---|---|
-| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Internal tab counts them |
+| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Security tab counts them |
 | rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
 | work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
 | footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Sessions row sums them |
-| scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the Slurm tab folds them |
+| scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the HPC tab folds them |
 
 - **A session is one agent run.** The rows the Sessions tab lists for one agent on two days are one session
   here, as the agent's phase block already is. Only rooted sessions count, as the Sessions tab's plates count
@@ -1759,8 +1759,33 @@ scheduler does. On boslogin06's 2026-10-09 agents made 16.6 scheduler queries pe
 against 0.2 for people, 41 agent sessions polled the queue for 10 minutes or more (94.9 h
 of it; one Claude session every 4.9 s for 4.9 h), one session submitted 112 jobs in a
 minute, and 79% of agent submissions used `--parsable` (people: 0.2%) -- a program reading
-the job id. The **Slurm** tab (`?tab=slurm`, hidden by `slurm.enabled: false`) is built on
-that, from the window's `slurm` reducer (`reducers/slurm.py`):
+the job id. The **HPC** tab (`?tab=slurm`, or `?tab=hpc`; an entry of its own in the rail,
+hidden by `slurm.enabled: false`) is built on that, from the window's `slurm` reducer
+(`reducers/slurm.py`):
+
+- **abnormal activity** -- every session that broke a rule, each rule the session's own count
+  against a threshold in `reducers.slurm.abnormal`:
+
+  | rule | breaks it | setting (default) |
+  |---|---|---|
+  | polling the queue fast | its longest stretch of polls each at most `poll_gap_s` after the last lasts `poll_min_s` or more | `poll_gap_s` (30 s), `poll_min_s` (1800 s) |
+  | a burst of queue checks | the most queue checks in any 60 s | `query_burst` (30) |
+  | a burst of submissions | the most jobs submitted in any 60 s (an array is one submission) | `submit_burst` (20) |
+  | refused again and again | submissions the scheduler refused | `refused` (3) |
+  | cancelling again and again | `scancel` calls | `cancels` (10) |
+  | runs failing again and again | `srun`/`salloc` runs that ended non-zero or on a signal | `failed_runs` (5) |
+
+  The polling loop below -- polls at most 3 min apart for 10 min or more -- is how an agent
+  waits for its own job, and it describes a session without flagging it; fast polling, every
+  30 s or less for half an hour by default, is the alarm (one Claude session polled every 5 s
+  for 5 h). "In any 60 s" is a sliding window, not a clock minute, which would call 29 checks
+  before a minute turns and 29 after it 29. Each setting a count of 1 or more (seconds for the
+  two polling bounds), or the service refuses to start. The service serves the rules with
+  their thresholds, so the page words them and holds none of its own; each class counts its
+  sessions per rule, zero included, and the page's count of flagged sessions is those totals;
+  and every session that broke a rule is served past the busiest 200 however quiet it was, up
+  to 500 more, the rest counted. A session's busiest minute of queue checks, or of jobs, is a
+  lower bound for a key past 50,000 of them, whose later ones have no time;
 
 - **per session** -- an agent's collector keys folded into the agent, as the Sessions tab folds
   them; people and IDEs one row per user: jobs, refusals, the busiest minute, distinct
@@ -1803,7 +1828,7 @@ only jobs with GPUs and a time limit on the command line, and say how many those
   request reports `null` for `partition`/`gpus`/`array`; `req_src` says which. Recovering them
   needs a `slurm_jobs` census join, which is not a configured feed.
 - **Scheduler and GPU panels are absent, not zero.** `running_agent_jobs` and GPU duty need
-  the census and `dcgm`. The Slurm tab shows the *latest submissions* in the window from eBPF
+  the census and `dcgm`. The HPC tab shows the *latest submissions* in the window from eBPF
   `submit` records instead — per-submission and actor-attributed, which is better evidence
   than a census count.
 

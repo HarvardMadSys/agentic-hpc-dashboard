@@ -3454,6 +3454,45 @@ th.sortable:focus-visible {
   font-size: 12px;
 }
 
+/* Security checks (tabs/SecurityTab.tsx): the same list with every check on
+   it, a label over each axis's lines, and a dot for each result -- filled,
+   something found; a ring, the check was made and found none; a dashed ring,
+   not checked, as everything unread is drawn dashed. */
+.attn-dot.clear {
+  background: transparent;
+  border: 1.5px solid var(--muted);
+}
+.attn-dot.unchecked {
+  background: transparent;
+  border: 1.5px dashed var(--muted);
+}
+.attn li.sec-axis {
+  display: block;
+  padding: 12px 0 0;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.attn li.sec-axis:first-child {
+  padding-top: 0;
+}
+.attn li.sec-axis + li {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+/* Abnormal Slurm activity (tabs/SlurmTab.tsx): a session's broken rules, one a
+   line, each with what the session did. */
+.slurm-abn {
+  white-space: normal;
+  min-width: 280px;
+}
+.slurm-abn + .slurm-abn {
+  margin-top: 4px;
+}
+
 /* Commands that failed (tabs/ExitsPanel.tsx): the codes and signals of a row,
    wrapping between items, never inside one. */
 .exit-item {

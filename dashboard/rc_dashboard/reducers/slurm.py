@@ -47,9 +47,39 @@ LOOP_GAP_S = 180.0         # polls this close together are one loop
 LOOP_MIN_S = 600.0         # a loop at least this long is "polling"
 MAX_KEYS = 50000           # raw collector keys held
 MAX_QUERY_TS = 50000       # query timestamps held per key; the rest are counted
+MAX_SUBMIT_TS = 50000      # job submission times held per key; the rest are counted
+MINUTE_S = 60.0            # "in one minute": any 60 s, not a clock minute
 MAX_SHAPES = 2000          # distinct command-line shapes held per key
 ROWS = 200                 # sessions served
 FAIL_ROWS = 20
+
+# Abnormal activity at the scheduler: what a session did that an operator would
+# ask its owner about. Each rule is the session's own count against a
+# threshold, `reducers.slurm.abnormal` in the config, whose defaults these are
+# (a test holds the two equal).
+#
+# Polling the queue is not one of them: checks at most LOOP_GAP_S apart for
+# LOOP_MIN_S, the loop above, is how an agent waits for its own job, and it is
+# the Slurm tab's description of a session, not an alarm. Polling FAST is: the
+# longest stretch of checks at most `poll_gap_s` apart lasting `poll_min_s` or
+# more, as one Claude session polled every 5 s for 5 h. The rest are bursts and
+# repeats: the most queue checks, or jobs, in any 60 s (one session submitted
+# 112 in a minute, where an array is one submission), and refusals, cancels and
+# failed runs that came again and again. A session that breaks any rule is
+# served whatever its rank, as an agent that wrote outside its home is
+# (cascades.py).
+ABNORMAL = {
+    "poll_gap_s": 30,      # fast polling: checks at most this many seconds apart ...
+    "poll_min_s": 1800,    # ... for at least this many seconds
+    "query_burst": 30,     # queue checks in any 60 s
+    "submit_burst": 20,    # jobs submitted in any 60 s
+    "refused": 3,          # submissions the scheduler refused
+    "cancels": 10,         # scancel calls
+    "failed_runs": 5,      # srun or salloc runs that ended non-zero or on a signal
+}
+ABNORMAL_RULES = ("fast_polling", "query_burst", "submit_burst", "refused", "cancels",
+                  "failed_runs")
+ABNORMAL_ROWS = 500        # abnormal sessions served past the busiest ROWS; the rest counted
 
 _DIGITS = re.compile(rb"\d+")
 _NUM = re.compile(r"\d+")
@@ -149,7 +179,7 @@ def shape(args):
 class _Key:
     """One collector key's share of a session, before the fold."""
     __slots__ = ("cls", "user", "agent_type", "host", "first", "last", "out", "tools",
-                 "flags", "argv_req", "shapes", "shapes_over", "minutes", "parts",
+                 "flags", "argv_req", "shapes", "shapes_over", "sub_ts", "sub_dropped", "parts",
                  "gpus", "gpu_h", "gpu_jobs", "gpu_h_known", "q", "q_by", "q_ts",
                  "q_dropped", "cancels", "runs", "runs_failed", "fails", "example", "example_t")
 
@@ -165,7 +195,8 @@ class _Key:
         self.argv_req = 0
         self.shapes = set()
         self.shapes_over = False
-        self.minutes = collections.Counter()
+        self.sub_ts = array("d")
+        self.sub_dropped = 0
         self.parts = collections.Counter()
         self.gpus = 0
         self.gpu_h = 0.0
@@ -188,7 +219,7 @@ class _Key:
             self.first = o.first
         if o.last is not None and (self.last is None or o.last > self.last):
             self.last = o.last
-        for k in ("out", "tools", "flags", "minutes", "parts", "q_by", "fails"):
+        for k in ("out", "tools", "flags", "parts", "q_by", "fails"):
             add_counts(getattr(self, k), getattr(o, k))
         for k in ("argv_req", "gpus", "gpu_h", "gpu_jobs", "gpu_h_known", "q",
                   "cancels", "runs", "runs_failed"):
@@ -205,6 +236,9 @@ class _Key:
         room = max(0, MAX_QUERY_TS - len(self.q_ts))
         self.q_ts.extend(o.q_ts[:room])
         self.q_dropped += o.q_dropped + max(0, len(o.q_ts) - room)
+        room = max(0, MAX_SUBMIT_TS - len(self.sub_ts))
+        self.sub_ts.extend(o.sub_ts[:room])
+        self.sub_dropped += o.sub_dropped + max(0, len(o.sub_ts) - room)
         # the newest job's, as `_submit` keeps it (a tie goes to the later share)
         if o.example_t is not None and (self.example_t is None
                                         or o.example_t >= self.example_t):
@@ -229,6 +263,10 @@ class SlurmReducer:
         self.cfg = cfg
         self.classes = list(classes)
         self.procs = procs
+        # The thresholds are config: config.py checks them at start, and a saved
+        # state's fingerprint pins them (snapshots.py), so a change rebuilds.
+        ab = (cfg.get("reducers.slurm", {}) or {}).get("abnormal") or {}
+        self.abnormal = {k: ab.get(k, v) for k, v in ABNORMAL.items()}
         self.bin_s = bin_for(window_s)
         self.keys = {}
         self.keys_dropped = 0
@@ -332,7 +370,10 @@ class SlurmReducer:
         if s.example_t is None or (ts or 0) >= s.example_t:
             s.example, s.example_t = redact(args)[:300], ts or 0     # masked, then cut
         if ts is not None:
-            s.minutes[int(ts // 60)] += 1
+            if len(s.sub_ts) < MAX_SUBMIT_TS:
+                s.sub_ts.append(ts)
+            else:
+                s.sub_dropped += 1
         self._bin(ts, s.cls, 0)
         for p in str(rec.get("partition") or "").split(","):
             if p.strip():
@@ -411,35 +452,74 @@ class SlurmReducer:
         return out
 
     @staticmethod
-    def _polls(ts):
-        """Polls (queries joined within POLL_JOIN_S) and the longest loop."""
+    def _polls(ts, fast_gap_s=None):
+        """Polls (queries joined within POLL_JOIN_S), the longest loop (polls at
+        most LOOP_GAP_S apart), and with `fast_gap_s` the longest stretch of
+        polls at most that far apart. `ts` sorted."""
         if not ts:
-            return {"polls": 0, "median_gap_s": None, "loop": None}
-        ts = sorted(ts)
+            return {"polls": 0, "median_gap_s": None, "loop": None, "fast": None}
         starts = [ts[0]]
         for a, b in zip(ts, ts[1:]):
             if b - a > POLL_JOIN_S:
                 starts.append(b)
         gaps = [b - a for a, b in zip(starts, starts[1:])]
+        loop = SlurmReducer._stretch(starts, LOOP_GAP_S)
+        if loop:
+            loop["polling"] = loop["span_s"] >= LOOP_MIN_S
+        return {"polls": len(starts),
+                "median_gap_s": round(sorted(gaps)[len(gaps) // 2], 1) if gaps else None,
+                "loop": loop,
+                "fast": SlurmReducer._stretch(starts, fast_gap_s) if fast_gap_s else None}
+
+    @staticmethod
+    def _stretch(starts, gap_s):
+        """The longest run of polls each at most `gap_s` after the one before:
+        when, how many, how long, and its median gap. None without two polls."""
         best, run = None, [starts[0]]
         for t in starts[1:] + [None]:
-            if t is not None and t - run[-1] <= LOOP_GAP_S:
+            if t is not None and t - run[-1] <= gap_s:
                 run.append(t)
                 continue
             if len(run) > 1 and (best is None or run[-1] - run[0] > best[-1] - best[0]):
                 best = run
             if t is not None:
                 run = [t]
-        loop = None
-        if best:
-            g = sorted(b - a for a, b in zip(best, best[1:]))
-            loop = {"from": best[0], "to": best[-1], "polls": len(best),
-                    "span_s": round(best[-1] - best[0], 1),
-                    "every_s": round(g[len(g) // 2], 1),
-                    "polling": best[-1] - best[0] >= LOOP_MIN_S}
-        return {"polls": len(starts),
-                "median_gap_s": round(sorted(gaps)[len(gaps) // 2], 1) if gaps else None,
-                "loop": loop}
+        if not best:
+            return None
+        g = sorted(b - a for a, b in zip(best, best[1:]))
+        return {"from": best[0], "to": best[-1], "polls": len(best),
+                "span_s": round(best[-1] - best[0], 1), "every_s": round(g[len(g) // 2], 1)}
+
+    @staticmethod
+    def _in_a_minute(ts):
+        """The most of `ts` (sorted) within any MINUTE_S, a half-open [t, t + 60 s):
+        29 at :59 and 29 at :00 are 58, which clock minutes would call 29."""
+        most, i = 0, 0
+        for j, t in enumerate(ts):
+            while t - ts[i] >= MINUTE_S:
+                i += 1
+            most = max(most, j - i + 1)
+        return most
+
+    def abnormal_rules(self):
+        """Each rule and its thresholds, in the order the page lists them."""
+        th = self.abnormal
+        return ([{"id": "fast_polling", "gap_s": th["poll_gap_s"], "min_s": th["poll_min_s"]}]
+                + [{"id": r, "min": th[r]} for r in ABNORMAL_RULES[1:]])
+
+    def _abnormal(self, row):
+        """The rules a session's row breaks, in ABNORMAL_RULES' order."""
+        th = self.abnormal
+        fast = row["fast_loop"]
+        got = ["fast_polling"] if fast and fast["span_s"] >= th["poll_min_s"] else []
+        for rule, v in (("query_burst", row["queries_peak_per_min"]),
+                        ("submit_burst", row["peak_per_min"]),
+                        ("refused", row["rejected"]),
+                        ("cancels", row["cancels"]),
+                        ("failed_runs", row["runs_failed"])):
+            if v >= th[rule]:
+                got.append(rule)
+        return got
 
     def result(self):
         rows, by_cls = [], {}
@@ -447,9 +527,9 @@ class SlurmReducer:
             ks = g["keys"]
             s0 = ks[0]
             out, tools, flags, fails = (collections.Counter() for _ in range(4))
-            minutes, parts, q_by = (collections.Counter() for _ in range(3))
+            parts, q_by = collections.Counter(), collections.Counter()
             shapes, over = set(), False
-            ts = []
+            ts, sub_ts, sub_dropped = [], [], 0
             row = {"cls": s0.cls, "user": s0.user, "host": s0.host,
                    "agent_type": next((s.agent_type for s in ks if s.agent_type), None),
                    "session": "%s:%s" % (sk[1], sk[2]) if sk[0] == "a" else None,
@@ -463,12 +543,13 @@ class SlurmReducer:
                 tools.update(s.tools)
                 flags.update(s.flags)
                 fails.update(s.fails)
-                minutes.update(s.minutes)
                 parts.update(s.parts)
                 q_by.update(s.q_by)
                 shapes |= s.shapes
                 over = over or s.shapes_over
                 ts.extend(s.q_ts)
+                sub_ts.extend(s.sub_ts)
+                sub_dropped += s.sub_dropped
                 for f in n:
                     n[f] += getattr(s, f)
                 if s.first is not None and (first is None or s.first < first):
@@ -480,13 +561,18 @@ class SlurmReducer:
                     example, example_t = s.example, s.example_t
             jobs = out["job"]
             asked = sum(out[o] for o in ("job", "rejected", "no_id"))
-            polls = self._polls(ts)
+            ts.sort()
+            sub_ts.sort()
+            polls = self._polls(ts, self.abnormal["poll_gap_s"])
             row.update({
                 "first": first, "last": last,
                 "jobs": jobs, "outcomes": {o: out[o] for o in OUTCOMES if out[o]},
                 "rejected": out["rejected"], "dry_runs": out["dry_run"],
                 "tools": dict(tools.most_common(4)),
-                "peak_per_min": max(minutes.values()) if minutes else 0,
+                # the most jobs in any 60 s; past MAX_SUBMIT_TS a key's jobs have
+                # no time, and this is a floor
+                "peak_per_min": self._in_a_minute(sub_ts),
+                "jobs_unplaced": sub_dropped,
                 "shapes": len(shapes), "shapes_capped": over,
                 "flags": dict(flags),
                 "argv_req_pct": pct(n["argv_req"], asked) if asked else None,
@@ -498,10 +584,16 @@ class SlurmReducer:
                 "queries_per_job": round(n["q"] / jobs, 1) if jobs else None,
                 "polls": polls["polls"], "poll_gap_s": polls["median_gap_s"],
                 "loop": polls["loop"], "queries_unplaced": n["q_dropped"],
+                # the longest stretch of checks at most `poll_gap_s` apart
+                "fast_loop": polls["fast"],
+                # the most queue checks in any 60 s: past MAX_QUERY_TS a key's
+                # checks have no time (`queries_unplaced`), and this is a floor
+                "queries_peak_per_min": self._in_a_minute(ts),
                 "cancels": n["cancels"], "runs": n["runs"], "runs_failed": n["runs_failed"],
                 "fails": [{"why": w, "n": c} for w, c in fails.most_common(3)],
                 "args": example,
             })
+            row["abnormal"] = self._abnormal(row)
             rows.append(row)
             c = by_cls.setdefault(s0.cls, {
                 "sessions": 0, "users": set(), "jobs": 0, "asked": 0, "rejected": 0,
@@ -509,7 +601,8 @@ class SlurmReducer:
                 "polls": 0, "polling": 0, "polling_s": 0.0, "cancels": 0, "runs": 0,
                 "runs_failed": 0, "flags": collections.Counter(), "argv_req": 0,
                 "parts": collections.Counter(), "gpus": 0, "gpu_jobs": 0, "gpu_h": 0.0,
-                "gpu_h_known": 0, "peak_per_min": 0})
+                "gpu_h_known": 0, "peak_per_min": 0, "abnormal": 0,
+                "abnormal_by": collections.Counter()})
             if jobs or n["q"] or n["cancels"] or n["runs"] or sum(out.values()):
                 c["sessions"] += 1
                 c["users"].add(s0.user)
@@ -533,6 +626,9 @@ class SlurmReducer:
             for f in ("gpus", "gpu_jobs", "gpu_h", "gpu_h_known"):
                 c[f] += n[f]
             c["peak_per_min"] = max(c["peak_per_min"], row["peak_per_min"])
+            if row["abnormal"]:
+                c["abnormal"] += 1
+                c["abnormal_by"].update(row["abnormal"])
 
         classes = {}
         for cls, c in by_cls.items():
@@ -556,6 +652,10 @@ class SlurmReducer:
                 "gpu_h_known": c["gpu_h_known"],
                 "time_limit_s": self.time_limit[cls].as_dict() if cls in self.time_limit else None,
                 "peak_per_min": c["peak_per_min"],
+                # sessions that broke a rule, and each rule's, 0 included: the
+                # class was judged
+                "abnormal_sessions": c["abnormal"],
+                "abnormal_by": {r: c["abnormal_by"][r] for r in ABNORMAL_RULES},
             }
 
         rows.sort(key=lambda r: (r["queries"] + 10 * (r["jobs"] + r["rejected"]) + r["runs"]),
@@ -563,9 +663,18 @@ class SlurmReducer:
         series = self._series()
         fails = [{"cls": k[0], "tool": k[1], "why": k[2], "n": v, "eg": self.fail_eg.get(k)}
                  for k, v in self.fail_rows.most_common(FAIL_ROWS)]
+        # The busiest are served, and past them every session that broke a rule
+        # however quiet, up to ABNORMAL_ROWS more: the abnormal list is whole
+        # unless `abnormal.served` says otherwise.
+        busiest = rows[:ROWS]
+        later = [r for r in rows[ROWS:] if r["abnormal"]]
+        flagged = sum(1 for r in rows if r["abnormal"])
         return {
             "by_class": classes,
-            "sessions": rows[:ROWS], "sessions_total": len(rows),
+            "sessions": busiest + later[:ABNORMAL_ROWS], "sessions_total": len(rows),
+            "sessions_busiest": len(busiest),
+            "abnormal": {"rules": self.abnormal_rules(), "sessions": flagged,
+                         "served": flagged - max(0, len(later) - ABNORMAL_ROWS)},
             "series": series, "rejections": fails,
             "basis": {
                 "sessions": "an agent's own key and every key folded into it (the "
@@ -575,6 +684,10 @@ class SlurmReducer:
                         % (POLL_JOIN_S, LOOP_GAP_S, LOOP_MIN_S // 60),
                 "requests": "argv only -- a #SBATCH line in the script is not seen",
                 "queries": "every exit of %s" % ", ".join(sorted(SLURM_Q)),
+                "abnormal": "a session breaks a rule when its own count reaches the rule's "
+                            "threshold (reducers.slurm.abnormal); fast polling is its longest "
+                            "stretch of checks at most poll_gap_s apart lasting poll_min_s; "
+                            "a minute is any 60 s",
                 "keys_dropped": self.keys_dropped,
             },
         }

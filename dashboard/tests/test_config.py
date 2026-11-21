@@ -156,6 +156,20 @@ class WhoMayConnect(Case):
                 self.assertIn("server.%s" % key, self.refused({"server": {key: [1]}}))
 
 
+class SlurmAbnormal(Case):
+    def test_each_threshold_is_a_count_and_the_reducer_s_defaults_are_the_config_s(self):
+        from rc_dashboard.reducers.slurm import ABNORMAL
+        self.assertEqual(configmod.defaults()["reducers"]["slurm"]["abnormal"], ABNORMAL)
+        cfg, _ = self.load({"reducers": {"slurm": {"abnormal": {"refused": 1}}}})
+        # one changed, the rest kept: objects merge key by key
+        self.assertEqual(cfg.get("reducers.slurm.abnormal"), dict(ABNORMAL, refused=1))
+        for key in ("cancels", "poll_gap_s"):
+            for bad in (0, -3, "5", 2.5, True, None):
+                with self.subTest(key=key, bad=bad):
+                    self.assertIn("reducers.slurm.abnormal." + key, self.refused(
+                        {"reducers": {"slurm": {"abnormal": {key: bad}}}}))
+
+
 class Passthrough(Case):
     def test_names_and_prefixes_for_the_agents_environment(self):
         self.assertEqual(configmod.defaults()["ask"]["env_passthrough"], [])

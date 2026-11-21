@@ -111,9 +111,12 @@ const TAB_ALIAS: Record<string, string> = table({
   // the consolidation (roadmap notes 41-47): a saved link still lands on the panels
   sessions: 'agents',
   io: 'resources',
-  sandbox: 'internal',
+  // the sandbox panels were Internal's, and are Security's confinement half now
+  sandbox: 'security',
   // Overview's one table is a section of Live now; App.tsx lands such a link on it
   overview: 'live',
+  // HPC is the Slurm tab, out from under the login nodes: its key stays
+  hpc: 'slurm',
 });
 
 /** How a filter asks for the processes the collector gave no agent type. */
