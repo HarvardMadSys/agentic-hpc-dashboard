@@ -114,6 +114,7 @@ npm run check:panels # node --test: a panel not reduced, waited for or building 
 npm run check:live   # node --test: the live socket is retried for good, polled meanwhile, replaced when quiet
 npm run check:lookup # node --test: no outside string reads a table's prototype; a part that throws says so
 npm run check:procexit # node --test: a run's box says how it ended as the process table does
+npm run check:io     # node --test: the per-tool disk chart keeps the heaviest on each counter, a 0 as 0, one scale
 npm run preview      # serve dist/ locally (no API; use the backend for that)
 ```
 
