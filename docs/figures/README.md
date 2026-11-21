@@ -1201,7 +1201,7 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
 | RE-2 | worst individual processes | BUILD | `resources.worst_stall`, `worst_fault`, `worst_wait` | `ResourceReducer._keep_worst` · `tabs/ResourcesTab.tsx:WorstPanel`, `tabs/RiskIoTab.tsx:InstanceTable` |
 | RE-3 | disk read by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | `reducers/io.py:IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:toolBars`, `charts/primitives.tsx:HBars` |
 | RE-4 | disk written by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | as RE-3 |
-| RE-5 | network bytes, and per class | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab`, `charts/primitives.tsx:GroupBars` |
+| RE-5 | network bytes per class (table) | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab` |
 | RE-6 | network endpoints | BUILD, named on read | `io_process.endpoints` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
 | RE-7 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
 
@@ -1241,10 +1241,11 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
   tool, read from the JSONL unless the page is filtered by user.
 - **Cost:** a few adds a record; the tool map is unbounded; per read four `nlargest` passes.
 
-#### RE-5 network bytes, and per class
+#### RE-5 network bytes per class
 
 - **Shows:** per class, bytes sent and received, and the network calls, with coverage; a cell opens
-  IOCMDS.
+  IOCMDS. Each class's share of the bytes is LV-6's network rows, so the panel draws no bars of
+  them.
 - **Records:** `exit`: `net_tx_bytes`, `net_rx_bytes`, `net_calls`, each null when the
   collector's netbytes block was dropped.
 - **Computation:** an `Acc` per class and counter.
@@ -1253,7 +1254,7 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
 
 - **Shows:** the top 10 remote endpoints by send and receive calls, or by bytes, for the classes
   shown, each row split by class; a name by reverse DNS, else by a command line, else the address;
-  the share of the bars' bytes whose endpoint is known
+  the share of RE-5's bytes whose endpoint is known
   ([Network endpoints](../../dashboard/README.md#network-endpoints)).
 - **Records:** `exit`: `net_endpoints` (schema 7): per endpoint `addr`, `inbound`,
   `calls`, `tx_bytes`, `rx_bytes`, `proto`, `port`, `host`, `external`, `provider`; and its
