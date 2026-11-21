@@ -185,8 +185,8 @@ _NIGHT = range(0, 6)
 
 BASIS = {
     "session": "one agent run: an agent process seen at the root of its tree, with every collector "
-               "key folded into it (as on the Sessions tab), and its rows on several days together. It "
-               "belongs to the account its records name first",
+               "key folded into it (as in the Agents tab's list of sessions), and its rows on several days "
+               "together. It belongs to the account its records name first",
     "open": "a session is open from its first record to its last; 'open at once' counts the "
             "sessions open at the same moment",
     "active_minutes": "the minutes in which one of the user's agents began a tool call, local time",
@@ -195,8 +195,8 @@ BASIS = {
              "Code and Codex by rules of their own, any other agent by the general rule",
     "words": "the agent's own words in a command: a commit message (git commit -m), a pull request's "
              "title (gh pr create/edit --title), or an entry written to a log or plan file",
-    "phases": "time in each phase, from the same phase blocks the Sessions tab's rows show, for the "
-              "newest %d sessions" % PHASE_SESSIONS,
+    "phases": "time in each phase, from the same phase blocks the rows of the Agents tab's list of "
+              "sessions show, for the newest %d sessions" % PHASE_SESSIONS,
     "project": "the folder the agent was started in, or when that is a home folder or named for a "
                "person, the folder its commands change into most (as a task's headline)",
     "category": "what kind of session it was, from the same phase blocks, for the newest %d "
@@ -788,7 +788,7 @@ def portrait(ctx, user, fleet=None):
                 "peak_rss_mb": round(s["peak_rss_mb"], 1),
                 "sids": [r.sid for r in s["_rows"]],
                 "headline": block.get("headline") if block is not None else None,
-                # what kind of session it was, as its row on the Sessions tab says (phase_summary)
+                # what kind of session it was, as its row in the Agents tab's list of sessions says (phase_summary)
                 **{k: block.get(k) if block is not None else None
                    for k in ("category", "uses", "summary")},
                 "tasks": n_own if block is not None else None,

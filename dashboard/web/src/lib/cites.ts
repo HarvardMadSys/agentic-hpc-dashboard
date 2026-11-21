@@ -15,7 +15,7 @@
  */
 import type { AskCite, AskView, CiteJump, Cls } from '../api/types';
 import { AGENT_TYPE_LBL, CLS } from './classes';
-import { parseUrl, urlQuery } from './filters';
+import { parseUrl, patched, urlQuery } from './filters';
 import type { UrlState } from './filters';
 import { table } from './lookup';
 
@@ -58,7 +58,6 @@ interface Place {
 const TAB_LBL: Record<string, string> = table({
   live: 'Live',
   agents: 'Agents',
-  trajectories: 'Sessions',
   resources: 'Resources',
   risk: 'Risks',
   slurm: 'HPC',
@@ -68,6 +67,8 @@ const TAB_LBL: Record<string, string> = table({
 
 /** The inspector's title, which is also its anchor (TrajectoryInspector.tsx). */
 const INSPECTOR = 'Session inspector';
+/** The list of every session beside it (TrajectoriesTab.tsx): the Agents tab's last part, as the inspector is. */
+const SESSIONS = 'Sessions';
 
 /** Where each part of a snapshot is drawn: the longest matching prefix of a
  *  ref's path wins. The risk sections are the site's own (titled by its rules),
@@ -117,14 +118,15 @@ const PLACES: [string, Place][] = [
   ['live_now', { tab: 'live' }],
   ['facets.users', { tab: 'live', panel: 'Active users', anchor: 'live-users' }],
   ['facets', { tab: 'live', panel: 'Who uses what', anchor: 'sec-who-uses-what' }],
-  ['sessions', { tab: 'trajectories', panel: 'Sessions', anchor: 'sec-ranked-sessions' }],
+  // the Sessions tab's list and inspector, the Agents tab's last part now
+  ['sessions', { tab: 'agents', panel: SESSIONS, anchor: 'sec-ranked-sessions' }],
   // one session's digest (ask.session_digest): the inspector it was asked from
-  ['session', { tab: 'trajectories', panel: INSPECTOR }],
-  ['tools', { tab: 'trajectories', panel: INSPECTOR }],
-  ['purposes', { tab: 'trajectories', panel: INSPECTOR }],
-  ['landmarks', { tab: 'trajectories', panel: INSPECTOR }],
-  ['tree', { tab: 'trajectories', panel: INSPECTOR }],
-  ['read', { tab: 'trajectories', panel: INSPECTOR }],
+  ['session', { tab: 'agents', panel: INSPECTOR }],
+  ['tools', { tab: 'agents', panel: INSPECTOR }],
+  ['purposes', { tab: 'agents', panel: INSPECTOR }],
+  ['landmarks', { tab: 'agents', panel: INSPECTOR }],
+  ['tree', { tab: 'agents', panel: INSPECTOR }],
+  ['read', { tab: 'agents', panel: INSPECTOR }],
 ];
 
 /** Panel.tsx's anchor for a title. */
@@ -311,7 +313,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
       label: mark ?? (line ? line.slice(0, 90) : rest.length ? human(rest[0]) : 'process'),
       narrows: null,
       arrival: {
-        patch: { ...base, tab: 'trajectories', traj: view.sid, tuser: null },
+        patch: { ...base, tab: 'agents', traj: view.sid, tuser: null },
         find: [],
         sid: view.sid,
         jump,
@@ -326,14 +328,15 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
     const at = typeof who.agent_type === 'string' ? who.agent_type : null;
     const kind = (at ? AGENT_TYPE_LBL[at] ?? at : String(who.actor3 ?? who.cls ?? '')).trim();
     const sess = `${whose}${kind ? kind + ' ' : ''}session`;
-    const isSession = place.tab === 'trajectories';
+    // read from the list of sessions or the inspector: no other panel to open
+    const isSession = place.panel === SESSIONS || place.panel === INSPECTOR;
     return {
-      where: sid === view?.sid ? 'this session' : `${TAB_LBL.trajectories} › ${INSPECTOR}`,
+      where: sid === view?.sid ? 'this session' : `${TAB_LBL.agents} › ${INSPECTOR}`,
       // a part of it by its own name; the agent or the session itself as the session
       label: c.of ? `${nm[0] ?? part} in ${sess}` : sess,
       narrows: null,
       arrival: {
-        patch: { ...base, tab: 'trajectories', traj: sid, tfrom: null, tuser: null },
+        patch: { ...base, tab: 'agents', traj: sid, tfrom: null, tuser: null },
         anchor: slug(INSPECTOR),
         find: [],
       },
@@ -347,7 +350,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
       label: c.path.filter((k) => typeof k === 'string').map(human).join(' › '),
       narrows: null,
       arrival: view?.sid
-        ? { patch: { ...base, tab: 'trajectories', traj: view.sid, tuser: null }, anchor: slug(INSPECTOR), find: [] }
+        ? { patch: { ...base, tab: 'agents', traj: view.sid, tuser: null }, anchor: slug(INSPECTOR), find: [] }
         : null,
     };
   }
@@ -376,7 +379,8 @@ function builds(a: Arrival, from: UrlState): boolean {
 /** The link that opens a citation: in a new tab, it arrives by its hash. */
 export function hrefOf(a: Arrival | null, what: string): string | undefined {
   if (!a) return undefined;
-  const q = urlQuery({ ...parseUrl(location.search), ...a.patch });
+  // another tab closes the session open on this one, as going there in this page does
+  const q = urlQuery(patched(parseUrl(location.search), a.patch));
   // the query already holds the patch: the hash says only how to arrive; a
   // new page builds its filtered view from nothing, so its rows are waited for
   const { anchor, titled, find, keys, sid, jump } = a;
@@ -543,9 +547,13 @@ export function arrive(a: Arrival, what: string) {
  *  then the row. */
 export function go(a: Arrival, what: string) {
   const from = parseUrl(location.search);
-  const q = urlQuery({ ...from, ...a.patch });
+  // The session open on this page is cited where it is open: under a portrait
+  // on Users as beside the Agents tab's list, so an answer asked from either
+  // inspector is not left behind on the tab it was asked on.
+  const at = a.patch.traj != null && a.patch.traj === from.traj ? { ...a, patch: { ...a.patch, tab: from.tab } } : a;
+  const q = urlQuery(patched(from, at.patch));
   const url = `${location.pathname}${q ? '?' + q : ''}`;
-  const b = { ...a, waits: builds(a, from) };
+  const b = { ...at, waits: builds(at, from) };
   if (url !== location.pathname + location.search) {
     history.pushState(null, '', url);
     window.dispatchEvent(new PopStateEvent('popstate'));

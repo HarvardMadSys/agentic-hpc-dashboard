@@ -862,7 +862,8 @@ about 0.3 s, and a portrait read from the roster's inputs about 20 ms (README).
 
 - **Shows:** the newest 60 sessions, each with its start, agent, surface, launch badges, category
   and headline, how long it was open, tool calls, tasks and how many are quoted, a bar of time by
-  phase, CPU, and a link to its process tree.
+  phase, CPU, and a link that opens its process tree under the portrait (SE-4 to SE-10: the
+  inspector the Agents tab opens beside its list), its row and its tasks' rows marked while open.
 - **Computation:** each session's sums (`portraits._session`) and, where its calls are read, its
   block's `headline`, `category`, tasks and phase times. The 60 sessions served are among the 80
   whose blocks US-8 reads.
@@ -1026,7 +1027,11 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
   ending is known. A count opens IOCMDS with `outcome=nonzero&outcome=signal`.
 - **Cost:** a few adds a record, with the tool mix's.
 
-## Sessions
+## Agents › Sessions
+
+The Sessions tab's figures, the Agents tab's last part now, under AG-10 (`?tab=trajectories` lands on
+them). The inspector (SE-4 to SE-10) opens under a portrait on the Users tab too (US-11), the same
+component (`tabs/OpenSession.tsx`) over the same read.
 
 See [Sessions: tasks, phases, and processes](../../dashboard/README.md#sessions-tasks-phases-and-processes),
 and for how the page draws them
@@ -1848,10 +1853,10 @@ measured and, where nothing was measured, on the work the code does.
 5. **Folding and ranking the sessions on read** (SE-1 to SE-3, LV-3, US-*, AG-2). The fold of every
    held key, "half a second to most of one" at 24 h on rtx6000a, runs under the aggregator's lock,
    which the tail and every reader share, whenever a record arrived since the last fold; the
-   Sessions list asks for it every 5 s. A running session's phase block is made again on each read:
-   `segment` up to 1.66-1.84 s for one session at the 20,000-call cap in its worst shape. The
-   cascades (each rebuild tick) and the Users roster (every 5-60 s) read the same fold, and make it
-   again when a record arrived since.
+   Agents tab's list of sessions asks for it every 5 s while that tab is open. A running
+   session's phase block is made again on each read: `segment` up to 1.66-1.84 s for one
+   session at the 20,000-call cap in its worst shape. The cascades (each rebuild tick) and the
+   Users roster (every 5-60 s) read the same fold, and make it again when a record arrived since.
 6. **The Users tab's composition** (US-*): a roster walks every session's call log, and its inputs
    walk every tool call of the window; a portrait makes up to 80 phase blocks. About 0.3 s a roster
    on 500 synthetic sessions with 100,000 calls; not measured on a real feed.

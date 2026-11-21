@@ -7,12 +7,14 @@
  * states beside it. A row opens that user's portrait below: the same numbers in
  * sentences and read against the window's other users, their rhythm by hour
  * and over the window, their agents' calls (counted) and time (by phase), their
- * projects and tasks in the agents' own words, the scheduler, and their sessions,
- * each one a link to its process tree on the Sessions tab.
+ * projects and tasks in the agents' own words, the scheduler, and their sessions.
+ * A session, or a task, opens its process tree here, under the portrait
+ * (OpenSession.tsx): the inspector the Agents tab opens beside its list of every
+ * session, which the portrait opens narrowed to the user for all of theirs.
  *
  * Everything is composed by the service from the reducers the other tabs read
- * (`rc_dashboard/portraits.py`), so a session here is the Sessions tab's
- * session and a verdict is the Sandbox's. Two rules carry over: a share is over
+ * (`rc_dashboard/portraits.py`), so a session here is the one the Agents tab
+ * lists and a verdict is the Sandbox's. Two rules carry over: a share is over
  * the known values, with the unknown ones counted beside it, and a count the
  * service could not make (the calls of an agent whose commands it does not read)
  * is said to be unread, never drawn as 0.
@@ -28,6 +30,7 @@ import type {
   Surface,
   Trait,
   TraitRule,
+  TrajRow,
   UserPortrait,
   UserRow,
   UsersFleet,
@@ -72,6 +75,8 @@ import { AP_COL, AP_LABEL, AP_SHORT, APPROVAL_KNOWN, APPROVAL_ORDER, SB_COL, SES
 import { SURFACE_LBL, SURFACE_ORDER } from '../lib/surfaces';
 import { taskLabel, taskSource } from '../lib/tasks';
 import { useSort } from '../lib/useSort';
+import { OpenSession } from './OpenSession';
+import type { SessionNav } from './OpenSession';
 import './users.css';
 import { table } from '../lib/lookup';
 
@@ -242,7 +247,7 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
       <Plate
         k={`agent users · last ${win}`}
         total={f ? f.users : null}
-        tip="accounts with at least one agent session in the window: an agent process seen at the root of its tree, as the Sessions tab’s plates count one"
+        tip="accounts with at least one agent session in the window: an agent process seen at the root of its tree, as the Agents tab’s session plates count one"
         note={f ? `${fint(running)} with an agent running now` : undefined}
       />
       <Plate
@@ -451,7 +456,7 @@ function Roster({
         {(U.unattributed ?? 0) > 0 && (
           <span
             className="nm"
-            data-tip="an agent session whose records named no user and no uid is no one’s row: there is no one to draw and no name to open it by. The Sessions tab lists it with the rest"
+            data-tip="an agent session whose records named no user and no uid is no one’s row: there is no one to draw and no name to open it by. The Agents tab’s list of sessions lists it with the rest"
           >
             {plural(U.unattributed ?? 0, 'agent session')} whose user was not read {U.unattributed === 1 ? 'is' : 'are'} not listed
           </span>
@@ -899,7 +904,7 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
           )}
         </div>
         <div className="ur-shares">
-          <div className="eyebrow" data-tip={`${GLOSS.phases}. Time from the same phase blocks the Sessions tab’s rows show`}>time · by phase</div>
+          <div className="eyebrow" data-tip={`${GLOSS.phases}. Time from the same phase blocks the rows of the Agents tab’s list of sessions show`}>time · by phase</div>
           {busy.length ? (
             <ShareRows
               items={busy.map(([k, v]) => ({
@@ -939,7 +944,8 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
   );
 }
 
-function Tasks({ p, row, openTraj }: { p: UserPortrait; row: UserRow; openTraj: (sid: string) => void }) {
+/** `open`: open a session's process tree under the portrait; `sel`: the one open there, whose rows are marked. */
+function Tasks({ p, row, sel, open }: { p: UserPortrait; row: UserRow; sel: string | null; open: (sid: string) => void }) {
   const t = p.tasks;
   const q = t?.quoted ?? {};
   const words = [
@@ -976,7 +982,7 @@ function Tasks({ p, row, openTraj }: { p: UserPortrait; row: UserRow; openTraj: 
               {t.recent.map((x: PortraitTask, i) => {
                 const src = taskSource(x);
                 return (
-                  <tr key={`${x.sid}:${x.t0}:${i}`}>
+                  <tr key={`${x.sid}:${x.t0}:${i}`} className={x.sid === sel ? 'on' : undefined}>
                     <td className="mono nm">{x.t0 != null ? fullClock(x.t0) : DASH}</td>
                     <td className="wrap">
                       <span className={src ? 'ur-quote' : undefined} data-tip={src ? 'the agent’s own words' : 'built from the names in its commands: not the agent’s words'}>
@@ -988,8 +994,8 @@ function Tasks({ p, row, openTraj }: { p: UserPortrait; row: UserRow; openTraj: 
                     <td className="nm">{x.project ?? DASH}</td>
                     <td className="num">{x.n != null ? plural(x.n, 'tool call') : DASH}</td>
                     <td>
-                      <button className="linkbtn" onClick={() => openTraj(x.sid)} data-tip="open this session's process tree on the Sessions tab">
-                        process tree →
+                      <button className="linkbtn" onClick={() => open(x.sid)} data-tip="open the process tree of the session this task is in, under the portrait">
+                        process tree ↓
                       </button>
                     </td>
                   </tr>
@@ -1060,7 +1066,9 @@ function Launched({ s }: { s: PortraitSession }) {
   );
 }
 
-function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) => void }) {
+/** `open`: open a session's process tree under the portrait; `sel`: the one open there, whose row is marked. A session
+ *  past midnight is a row to a day (`sids`), and opens at its newest. */
+function Sessions({ p, sel, open }: { p: UserPortrait; sel: string | null; open: (sid: string) => void }) {
   const s = useSort<string>('started');
   const rows = s.sort(p.sessions ?? [], (r, k) =>
     k === 'started' ? r.first : k === 'agent' ? agentLbl(r.agent_type) : k === 'project' ? r.headline ?? r.project
@@ -1068,12 +1076,12 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
   const multiHost = new Set((p.sessions ?? []).map((r) => r.host)).size > 1;
   return (
     <div className="scroller vscroll">
-      <table className="roomy">
+      <table className="roomy ur-sesslist">
         <thead>
           <tr>
             <SortTh s={s} k="started">started</SortTh>
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
-            <SortTh s={s} k="project" first="asc" tip="what kind of session it was, its project, and the names that recur across its tasks, as its row on the Sessions tab heads it">project</SortTh>
+            <SortTh s={s} k="project" first="asc" tip="what kind of session it was, its project, and the names that recur across its tasks, as its row in the Agents tab’s list of sessions heads it">project</SortTh>
             <SortTh s={s} k="open" num tip="open from its first record to its last">open for</SortTh>
             <SortTh s={s} k="calls" num gloss="toolcall">tool calls</SortTh>
             <SortTh s={s} k="tasks" num gloss="tasks">tasks</SortTh>
@@ -1084,7 +1092,7 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.sid}>
+            <tr key={r.sid} className={sel != null && (r.sid === sel || r.sids.includes(sel)) ? 'on' : undefined}>
               <td className="mono nm">
                 {r.first != null ? fullClock(r.first) : DASH}
                 {r.running && <span className="ur-live" data-tip="its agent is still sending records"><i />running</span>}
@@ -1115,8 +1123,8 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
               <td><PhaseBar s={r} /></td>
               <td className="num">{dur(r.cpu_s)}</td>
               <td>
-                <button className="linkbtn" onClick={() => openTraj(r.sids[r.sids.length - 1] ?? r.sid)} data-tip="open this session's process tree on the Sessions tab">
-                  process tree →
+                <button className="linkbtn" onClick={() => open(r.sids[r.sids.length - 1] ?? r.sid)} data-tip="open this session's process tree under the portrait">
+                  process tree ↓
                 </button>
               </td>
             </tr>
@@ -1134,8 +1142,11 @@ function Portrait({
   who,
   catalogue,
   close,
-  openTraj,
-  openUserTraj,
+  session,
+  trajRows,
+  toSessions,
+  listUserTraj,
+  above,
 }: {
   name: string;
   win: number | null;
@@ -1143,23 +1154,44 @@ function Portrait({
   who: Who;
   catalogue: TraitRule[];
   close: () => void;
-  openTraj: (sid: string) => void;
-  openUserTraj: (user: string) => void;
+  /** the session open under the portrait, and how one is opened, closed and paged: the URL's */
+  session: SessionNav;
+  /** the window's ranked sessions, which hold the open one's row when they rank it */
+  trajRows: Record<string, TrajRow> | null;
+  /** opened from "sessions →" (Active users, an answer's account): it lands on its list of their sessions */
+  toSessions: boolean;
+  /** every session of theirs, in the Agents tab's list */
+  listUserTraj: (user: string) => void;
+  /** what is drawn above it, the roster, has come: until then a scroll to it is pushed down after it */
+  above: boolean;
 }) {
   const q = useUserPortrait(name, win, buildNonce, who, EVERY_MS);
   const p = q.data?.user === name ? q.data : null;
   const ref = useRef<HTMLDivElement>(null);
+  const insRef = useRef<HTMLDivElement>(null);
   // A portrait opened from the roster is scrolled to once per user, when its
   // answer has come. Scrolled as it mounts, it is one short panel still
   // waiting, the page below it is too short to bring its top up, and nothing
-  // scrolls again once it grows: it stayed at the foot of the screen.
+  // scrolls again once it grows: it stayed at the foot of the screen. Nor
+  // before the roster above it has come, which would push it down: opened from
+  // another tab, the two are read at once. A link to a session of theirs lands
+  // on that session's inspector, under the portrait, and "sessions →" on the
+  // list of their sessions.
   const scrolled = useRef<string | null>(null);
-  const arrived = !!p || !!q.error;
+  const arrived = (!!p || !!q.error) && above;
   useEffect(() => {
     if (!arrived || scrolled.current === name) return;
     scrolled.current = name;
-    ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const to = insRef.current ?? (toSessions ? document.getElementById('portrait-sessions') : null) ?? ref.current;
+    to?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, arrived]);
+  const sel = session.sel;
+  // a session already open under the portrait is gone to, not opened again
+  const openHere = (sid: string) => {
+    if (sid === sel) insRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    else session.select(sid);
+  };
   const winLbl = p?._window?.label ?? null;
   const closeBtn = (
     <button className="btn" onClick={close} data-tip="close this portrait">close</button>
@@ -1178,8 +1210,13 @@ function Portrait({
         span
         header={
           <>
-            <button className="linkbtn" onClick={() => openUserTraj(name)} data-tip="this user's sessions on the Sessions tab">
-              their sessions →
+            <button
+              className="linkbtn"
+              onClick={() => listUserTraj(name)}
+              data-tip={'every session of theirs in the window, of every class, in the Agents tab’s list of sessions, ' +
+                'which ranks them by CPU, memory, disk or network'}
+            >
+              all their sessions →
             </button>
             {closeBtn}
           </>
@@ -1204,7 +1241,7 @@ function Portrait({
             <Work p={p} row={row} />
           </Panel>
           <Panel title="Projects and tasks" id="portrait-tasks">
-            <Tasks p={p} row={row} openTraj={openTraj} />
+            <Tasks p={p} row={row} sel={sel} open={openHere} />
           </Panel>
           {row.slurm && (
             <Panel title="At the scheduler" id="portrait-slurm">
@@ -1218,15 +1255,29 @@ function Portrait({
             empty={!(p.sessions ?? []).length}
             emptyWhat="no session"
           >
-            <Sessions p={p} openTraj={openTraj} />
+            <Sessions p={p} sel={sel} open={openHere} />
             {(p.sessions_total ?? 0) > (p.sessions ?? []).length && (
               <p className="paths">
                 the newest {fint(p.sessions?.length ?? 0)} of {plural(p.sessions_total ?? 0, 'session')} ·{' '}
-                <button className="linkbtn" onClick={() => openUserTraj(name)}>every session on the Sessions tab →</button>
+                <button className="linkbtn" onClick={() => listUserTraj(name)}>every session on the Agents tab →</button>
               </p>
             )}
           </Panel>
         </>
+      )}
+      {/* a session of theirs, opened from its row or from a task: its process tree, here under the portrait */}
+      {sel && (
+        <div className="span2 ur-session" ref={insRef}>
+          <OpenSession
+            {...session}
+            sel={sel}
+            row={trajRows?.[sel] ?? null}
+            win={win}
+            windowMin={p?.window?.minutes ?? null}
+            // opened with the page, before the portrait has come, it is the portrait's arrival that scrolls to it
+            scrollOnOpen={arrived}
+          />
+        </div>
       )}
     </div>
   );
@@ -1241,8 +1292,10 @@ export const UsersTab = memo(function UsersTab({
   cls,
   open,
   setOpen,
-  openTraj,
-  openUserTraj,
+  session,
+  trajRows,
+  toSessions,
+  listUserTraj,
 }: {
   win: number | null;
   buildNonce: number;
@@ -1251,8 +1304,14 @@ export const UsersTab = memo(function UsersTab({
   /** the user whose portrait is open (`?portrait=`) */
   open: string | null;
   setOpen: (u: string | null) => void;
-  openTraj: (sid: string) => void;
-  openUserTraj: (user: string) => void;
+  /** the session open under the portrait (`?traj=`), and how one is opened, closed and paged */
+  session: SessionNav;
+  /** the window's ranked sessions, which hold the open one's row when they rank it */
+  trajRows: Record<string, TrajRow> | null;
+  /** the portrait was opened from "sessions →": it lands on its list of their sessions */
+  toSessions: boolean;
+  /** every session of a user's, in the Agents tab's list */
+  listUserTraj: (user: string) => void;
 }) {
   const users = useUsers(win, buildNonce, who, EVERY_MS);
   const U = users.data;
@@ -1288,8 +1347,11 @@ export const UsersTab = memo(function UsersTab({
             who={who}
             catalogue={U?.traits ?? []}
             close={() => setOpen(null)}
-            openTraj={openTraj}
-            openUserTraj={openUserTraj}
+            session={session}
+            trajRows={trajRows}
+            toSessions={toSessions}
+            listUserTraj={listUserTraj}
+            above={U != null || users.error != null}
           />
         </>
       )}

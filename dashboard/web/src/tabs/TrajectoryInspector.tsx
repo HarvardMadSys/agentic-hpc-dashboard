@@ -43,7 +43,7 @@
  *
  * An agent that ran past midnight is a row to a day, each serving the one block, and a task or
  * phase says which row holds it. A pick of one the other day's row holds is a jump to that row
- * (`onJump`) whenever the window holds that row: the tab opens it, as a new inspector, and hands
+ * (`onJump`) whenever the window holds that row: its host (OpenSession.tsx) opens it, as a new inspector, and hands
  * it the jump (`pendingJump`), which it goes to as any pick once it has read itself. Where the
  * window does not hold it, the pick is made on this row.
  *
@@ -132,7 +132,7 @@ export type RunJump = Omit<Pending, 't' | 'by'> & { t: number | null; n: number 
 
 /** A task or phase picked on one day's row of a session that ran past midnight, though another day's row holds it: that row, and
  *  the stretch to go to in it, which is the zoom a pick on the same row would make. `what` is what the picked stretch is, for the
- *  line that says where the jump landed. The tab opens the row (TrajectoriesTab.tsx), and the row goes to the stretch once it
+ *  line that says where the jump landed. Its host opens the row (OpenSession.tsx), and the row goes to the stretch once it
  *  has read itself. */
 export interface DayJump {
   sid: string;
@@ -552,6 +552,7 @@ export function TrajectoryInspector({
   onJump,
   pendingJump,
   routine,
+  scrollOnOpen = true,
 }: {
   sid: string;
   /** the ranked row, when the ranking holds it: shown while the tree is read */
@@ -575,6 +576,10 @@ export function TrajectoryInspector({
   pendingJump?: DayJump | null;
   /** the site's routine commands, hidden from either view on request (`ui.routine_commands`) */
   routine?: string[] | null;
+  /** it scrolls itself into view as it opens; not when the page is about to go to it itself (App.tsx `land`), which
+   *  waits until what is drawn above it has come: a smooth scroll of its own, still running then, would carry the
+   *  page past it */
+  scrollOnOpen?: boolean;
 }) {
   // "read again": a bound of now is a different read from the one the service
   // kept, and is that read's own key there. Cleared by paging, which reads anew.
@@ -646,7 +651,8 @@ export function TrajectoryInspector({
 
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (scrollOnOpen) ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
   // A run picked in the ranked table.

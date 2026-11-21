@@ -386,7 +386,7 @@ window, filter, and classes the reader has on screen. Lists cut short end with
 "... N more".""" % (where, ", ".join(parts) or "its data"))
 
 
-SESSION_GUIDE = """The snapshot is ONE session the reader opened on the Sessions tab -- an
+SESSION_GUIDE = """The snapshot is ONE session the reader opened in the session inspector -- an
 agent (or a person's terminal, or an IDE) and every process it ran, re-read from
 the collector's records -- and nothing else from the dashboard.
 - session: whose, where, when (the host's local time), and its totals. For an

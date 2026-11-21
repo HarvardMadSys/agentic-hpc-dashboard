@@ -72,14 +72,17 @@ export interface UrlState extends Filters {
    *  pinning the old one. */
   win: number | null;
   /** The trajectory open in the inspector (its sid), so an inspection is a
-   *  link like every other view. */
+   *  link like every other view: on the Agents tab, beside its list of every
+   *  session, or on the Users tab, under a portrait. It is the tab's it was
+   *  opened on, so going to another tab closes it (`patched`). */
   traj: string | null;
   /** Where the inspector's read starts, epoch seconds: set by "continue" after
    *  a read stopped at its budget, so the continued view is linkable too. */
   tfrom: number | null;
-  /** A user whose sessions the Sessions tab opens on, from Active users'
-   *  "trajectories →" (roadmap note 7): a view, not a filter, so nothing is
-   *  rebuilt for it. */
+  /** A user the Agents tab's list of sessions is narrowed to, from a
+   *  portrait's "every session" on the Users tab (or a link to the old
+   *  Sessions tab, from Active users' "sessions →", roadmap note 7): a view,
+   *  not a filter, so nothing is rebuilt for it. */
   tuser: string | null;
   /** Which end of a session the inspector lists first and draws in full. It
    *  stays as other sessions are opened: it is how this reader reads them. */
@@ -110,6 +113,8 @@ const TAB_ALIAS: Record<string, string> = table({
   cascades: 'agents',
   // the consolidation (roadmap notes 41-47): a saved link still lands on the panels
   sessions: 'agents',
+  // the Sessions tab: its list and its inspector are the Agents tab's last part, and App.tsx lands such a link on them
+  trajectories: 'agents',
   io: 'resources',
   // the sandbox panels were Internal's, and are Security's confinement half now
   sandbox: 'security',
@@ -170,6 +175,20 @@ export function parseUrl(search: string): UrlState {
     torder: p.get('torder') === 'newest' ? 'newest' : 'oldest',
     portrait: p.get('portrait') || null,
   };
+}
+
+/** The state with `patch` applied. A session is open on the tab it was opened
+ *  on -- the Agents tab, or a portrait on Users -- so a patch that goes to
+ *  another tab closes it (`traj`, and where its read starts), unless the patch
+ *  opens one there itself: one left open would open again on a tab that did not
+ *  ask for it, and scroll that tab down to it. */
+export function patched(s: UrlState, patch: Partial<UrlState>): UrlState {
+  const next: UrlState = { ...s, ...patch };
+  if (patch.tab !== undefined && patch.tab !== s.tab && patch.traj === undefined) {
+    next.traj = null;
+    next.tfrom = null;
+  }
+  return next;
 }
 
 /** `user` and `agent_type` repeated, in `/api/events`' vocabulary, sorted so

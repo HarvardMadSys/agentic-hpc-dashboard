@@ -89,7 +89,7 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
               <div className="sugg-f">
                 {x.users.map((u) => (
                   <button key={u} className="linkbtn mono" onClick={() => openUserTraj(u)}
-                    data-tip="open this account's sessions on the Sessions tab">
+                    data-tip="open this account's portrait on the Users tab, at the list of their agent sessions">
                     {u} →
                   </button>
                 ))}
@@ -224,7 +224,7 @@ const STARTERS = [
 export const ChatTab = memo(function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto = () => {} }: {
   windowMin: number | null;
   windowLabel: string | null;
-  /** open an account's sessions on the Sessions tab */
+  /** open an account's sessions, in their portrait on the Users tab */
   openUserTraj?: (u: string) => void;
   /** open a tab */
   goto?: (tab: string) => void;

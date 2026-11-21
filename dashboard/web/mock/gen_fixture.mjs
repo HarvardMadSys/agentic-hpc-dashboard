@@ -1863,7 +1863,7 @@ function portraitRow(user, ss, grid = false) {
 }
 
 const PORTRAIT_BASIS = {
-  session: 'one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together',
+  session: 'one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together',
   traits: 'plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement',
 };
 

@@ -340,7 +340,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                     <td>
                       {s.sid && (
                         <button className="linkbtn" onClick={() => openTraj(s.sid!)}
-                          data-tip="open this session's process tree on the Sessions tab">
+                          data-tip="open this session's process tree on the Agents tab">
                           process tree →
                         </button>
                       )}
@@ -660,7 +660,7 @@ interface UsersProps {
   defaultCols?: string[] | null;
   pageUsers?: string[];
   pageTypes?: string[];
-  /** open a session, or a user's sessions, on the Sessions tab */
+  /** open a session on the Agents tab, or a user's sessions in their portrait on Users */
   openTraj: (sid: string) => void;
   openUserTraj: (user: string) => void;
   /** the live frame's tail of exits, every user's, newest first */
@@ -837,14 +837,14 @@ export function UsersPanel({
                     <td>
                       <span className="u-caret">{isOpen ? '▾' : '▸'}</span>
                       <span className="mono u-name">{r.user}</span>
-                      {/* to this user's sessions (roadmap note 7) */}
+                      {/* to this user's sessions (roadmap note 7), in their portrait */}
                       <button
                         className="linkbtn u-go"
                         onClick={(e) => {
                           e.stopPropagation();
                           openUserTraj(r.user);
                         }}
-                        data-tip="this user's sessions on the Sessions tab"
+                        data-tip="this user's portrait on the Users tab, at the list of their agent sessions, each of which opens its process tree there"
                       >
                         sessions →
                       </button>

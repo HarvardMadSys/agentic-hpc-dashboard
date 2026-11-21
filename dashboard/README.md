@@ -877,7 +877,8 @@ already made that mistake once.
   `unknown`. A host (the desktop app's `~/.claude/remote/srv/` server, `claude rc`,
   `claude daemon`) is never a session, but a row or box keyed on a host says where its sessions
   are driven from. The surface is shown as a chip on agent boxes, session rows and live sessions,
-  and as the terminal-or-script / app split on the Sessions tab's plate. There is no filter on it
+  and as the terminal-or-script / app split on the agent sessions plate over the Agents tab's list of
+  sessions. There is no filter on it
   yet.
 - **CPU is `sum(cpu_s)`, self time only, counted once per process.** `child_cpu_s` is never
   added. `analyze/common.py:364` measures that the naive sum inflates login CPU 1.83× and does so
@@ -1720,15 +1721,17 @@ the keys for this once the oldest key kept by the previous walk has left the win
 full of keys inside the window costs one walk, not one per record. Served paths are masked
 (`redact`), and no raw argv is served.
 
-The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are read from the session rows and stay
-on the Sessions tab. The Agents page no longer shows them.
+The **drift** proxies (`cwd_outside_pct`, `mix_jsd`) are read from the session rows, which
+serve them (`trajectories`' `drift`). The Agents page's blast radius no longer shows them, and
+neither does its list of sessions.
 
 ## Users: a portrait of each user
 
 The **Users** tab (`?tab=users`, with a portrait opened as `&portrait=<user>`) shows how each person works
 with coding agents: which agents they use, how and from where they launch them, what the agents' commands do,
 how long a session runs and how many run at once, what time of day, what they work on, and what they ask of
-the scheduler.
+the scheduler. Each of their sessions opens its process tree under the portrait (`&traj=<sid>`): the
+inspector the Agents tab opens beside its list of every session, read the same way (`/api/trajectory`).
 
 Nothing here is reduced or saved. `rc_dashboard/portraits.py` composes the tab when it is read, from the
 reducers a window view already holds (the trajectories, the sandbox and Slurm) and from the live tier for what
@@ -1741,15 +1744,15 @@ reducer imports it, and changing it rebuilds nothing.
 | launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Security tab counts them |
 | rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
 | work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
-| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Sessions row sums them |
+| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a row of the Agents tab's list of sessions sums them |
 | scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the HPC tab folds them |
 
-- **A session is one agent run.** The rows the Sessions tab lists for one agent on two days are one session
-  here, just as the agent's phase block already is. Only rooted sessions count, as on the Sessions tab's
-  plates, so a status bar probing `codex --version` every minute is not a session. A session belongs to the
+- **A session is one agent run.** The rows the Agents tab's list of sessions holds for one agent on two days
+  are one session here, just as the agent's phase block already is. Only rooted sessions count, as on that
+  list's plates, so a status bar probing `codex --version` every minute is not a session. A session belongs to the
   account its records name first. A session whose records name no user and no uid (the trajectories reducer
   falls back to `uid:N` where there is a uid) gets no one's row. The roster counts it separately
-  (`unattributed`) and says so under the table, and the Sessions tab lists it with the rest.
+  (`unattributed`) and says so under the table, and the Agents tab's list of sessions lists it with the rest.
 - **Unread is not none.** An agent whose commands the service does not read (anything other than Claude Code
   and Codex) has null calls, shown as *not read*, never 0.
 - **A share is taken over the known values**, with the rest counted next to it. For example, a Codex app
@@ -1779,11 +1782,12 @@ reducer imports it, and changing it rebuilds nothing.
   each derived from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are
   served with the traits and shown on hover, and each trait carries the numbers that met its rule. No trait is
   a judgement, none is made by a model, and a user may have none.
-- **The work is read from commands**, like everything on the Sessions tab. An agent's own Read and Edit
+- **The work is read from commands**, like everything in the session inspector. An agent's own Read and Edit
   tools, and its thinking, leave no command, so an agent that edits only through its own tools shows no
   editing.
 - **One user's portrait reads the phase blocks** of their newest `PHASE_SESSIONS` (80) sessions (the same
-  blocks the Sessions tab's rows show and cache), and lists at most 60 sessions and 40 tasks; the rest are
+  blocks, from the same cache, that the rows of the Agents tab's list of sessions show), and lists at most 60
+  sessions and 40 tasks; the rest are
   counted. Under a user filter, the portrait is compared against all of the window's users when that view is
   held (`fleet_of`).
 
@@ -1829,7 +1833,7 @@ hidden by `slurm.enabled: false`) is built on that, from the window's `slurm` re
   to 500 more, the rest counted. A session's busiest minute of queue checks, or of jobs, is a
   lower bound for a key past 50,000 of them, whose later ones have no time;
 
-- **per session** -- an agent's collector keys folded into the agent, as the Sessions tab folds
+- **per session** -- an agent's collector keys folded into the agent, as the list of sessions folds
   them; people and IDEs one row per user: jobs, refusals, the busiest minute, distinct
   command lines (numbers masked: one script resubmitted is one), the flags it submits with,
   queries, its longest **polling loop** (queries within 2 s are one poll, polls within 3 min

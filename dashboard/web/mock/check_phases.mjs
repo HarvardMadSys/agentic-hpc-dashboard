@@ -1989,31 +1989,41 @@ test("a zoom the chart cannot make is the list's aim until the reader zooms the 
   assert.match(ins, /view=\{view \?\? aim\}/);
 });
 
-test("the tab opens the other day's row for a jump and hands that row the jump, which it takes once it has read itself", () => {
-  const tab = source('tabs/TrajectoriesTab.tsx');
-  assert.match(tab, /import type \{ DayJump, RunJump \} from '\.\/TrajectoryInspector';/);
-  assert.match(tab, /useState<DayJump \| null>\(null\)/);
+test("the open session's host opens the other day's row for a jump and hands that row the jump, which it takes once it has read itself", () => {
+  // one host for the inspector, wherever a session opens: beside the Agents tab's list, and under a portrait on Users
+  const host = source('tabs/OpenSession.tsx');
+  for (const f of ['tabs/TrajectoriesTab.tsx', 'tabs/UsersTab.tsx']) {
+    assert.match(source(f), /<OpenSession\b/, f);
+    // on develop: the Sessions tab held the jump itself, and the Users tab sent a session to it
+    assert.doesNotMatch(source(f), /<TrajectoryInspector\b/, `${f} opens the inspector through the host`);
+  }
+  assert.match(host, /import type \{ DayJump \} from '\.\/TrajectoryInspector';/);
+  assert.match(host, /useState<DayJump \| null>\(null\)/);
   // the inspector is keyed on its session, so the other row is a new inspector, which takes the jump as it starts
-  assert.match(tab, /<TrajectoryInspector\s+key=\{sel\}/);
-  assert.match(tab, /onJump=\{jumpTo\}/);
-  assert.match(tab, /pendingJump=\{pending\?\.sid === sel \? pending : null\}/, 'only the row it is for');
-  const jumpTo = /const jumpTo = [\s\S]*?\n {2}\};/.exec(tab)?.[0] ?? '';
+  assert.match(host, /<TrajectoryInspector\s+key=\{sel\}/);
+  assert.match(host, /onJump=\{jumpTo\}/);
+  assert.match(host, /pendingJump=\{pending\?\.sid === sel \? pending : null\}/, 'only the row it is for');
+  const jumpTo = /const jumpTo = [\s\S]*?\n {2}\};/.exec(host)?.[0] ?? '';
   assert.match(jumpTo, /setPending\(\{ sid, t0, t1, what \}\)/);
   assert.match(jumpTo, /select\(sid\)/);
-  assert.doesNotMatch(jumpTo, /\bopen\(/, 'it picks the row itself: `open` drops a jump');
-  // A day row the window holds opens, whether the table ranks it or not: the window holds it when its own last record is at or after the
-  // window's start (`dayInWindow`), and the table's rows are not asked. One the window does not hold opens as the panel that says it is not
-  // in this window, so the tab makes no jump to it, says so, and the inspector makes the pick on the row it has.
+  // A day row the window holds opens, whether the list ranks it or not: the window holds it when its own last record is at or after the
+  // window's start (`dayInWindow`), and the list's rows are not asked. One the window does not hold opens as the panel that says it is not
+  // in this window, so the host makes no jump to it, says so, and the inspector makes the pick on the row it has.
   assert.match(
     jumpTo,
-    /^const jumpTo = \(day: PhaseDay, t0: number, t1: number, what\?: string\): boolean => \{\s*if \(!dayInWindow\(day, windowStart\(t\?\.window\?\.minutes, serverNow\(\)\)\)\) return false;\s*const \{ sid \} = day;\s*setJump\(null\);/,
+    /^const jumpTo = \(day: PhaseDay, t0: number, t1: number, what\?: string\): boolean => \{\s*if \(!dayInWindow\(day, windowStart\(windowMin, serverNow\(\)\)\)\) return false;\s*const \{ sid \} = day;\s*setPending\(/,
     'no row in the window, no jump, before anything is changed',
   );
-  assert.doesNotMatch(jumpTo, /rows\[/, 'whether the table ranks the row is not asked');
+  assert.doesNotMatch(jumpTo, /rows\[/, 'whether the list ranks the row is not asked');
   assert.match(jumpTo, /select\(sid\);\s*return true;\s*\};$/, 'and a jump that is made says so');
-  // a jump is for the row it names, and lasts only while that row is the open one; any other way to a row drops it
-  assert.match(tab, /if \(pending && pending\.sid !== sel\) setPending\(null\);/);
-  assert.match(/const open = [\s\S]*?\n {2}\};/.exec(tab)?.[0] ?? '', /setPending\(null\)/);
+  // a jump is for the row it names, and lasts only while that row is the open one: any other way to a row drops it
+  assert.match(host, /if \(pending && pending\.sid !== sel\) setPending\(null\);/);
+  // the list opens a row by `select` alone, never with a jump
+  const tab = source('tabs/TrajectoriesTab.tsx');
+  assert.match(tab, /const openRow = useCallback\(\(sid: string\) => latestSelect\.current\(sid\), \[\]\);/);
+  // the window each tab tells the host is the one its rows were read over
+  assert.match(tab, /windowMin=\{t\?\.window\?\.minutes\}/);
+  assert.match(source('tabs/UsersTab.tsx'), /windowMin=\{p\?\.window\?\.minutes \?\? null\}/);
 });
 
 test("a band's place on an axis: cut at its edges, never thinner than a pixel, parted from the next, and kept inside", () => {
