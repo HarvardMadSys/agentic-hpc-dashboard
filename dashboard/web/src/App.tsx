@@ -750,11 +750,14 @@ export default function App() {
               and the last update. The window, when the panels were built, and
               which code this page is are its hover. Folded, the light alone. */}
           <div className="foot">
-            <div className="foot-status mono" data-tip={footTip}>
+            {/* a tab stop, so its facts show on keyboard focus, and read to a
+                screen reader, which the tip layer is hidden from */}
+            <div className="foot-status mono" data-tip={footTip} tabIndex={0}>
               <i className={`sdot ${live.transport}`} />
               <span className="foot-t">
                 {footWords} · {footAgo}
               </span>
+              <span className="vh">{`. ${footTip}`}</span>
             </div>
             <button
               className="iconbtn rail-toggle"
@@ -817,11 +820,14 @@ export default function App() {
           {/* The tab's name, and what it answers on hover. Below 900px the top
               bar names the tab, so this one is for a screen reader there. */}
           <h1 data-tip={parent ? NODES_EYEBROW : tab.eyebrow}>{railOn.lbl}</h1>
+          {/* what the tab answers, for a screen reader: the tip layer is hidden from one */}
+          <p className="vh">{parent ? NODES_EYEBROW : tab.eyebrow}</p>
           <div className="status">
             {/* A pinned clock is a capture, not a feed: "live" and a lag of a
                 second would both be false (rc_dashboard/clock.py). */}
             {live.live?.clock?.pinned ? (
               <StatusPill
+                focusable
                 status="empty"
                 text={`frozen capture · as of ${live.live.clock.as_of ?? '—'}`}
                 tip={
@@ -830,7 +836,7 @@ export default function App() {
                 }
               />
             ) : (
-              <StatusPill {...pill} tip={statusTip} />
+              <StatusPill {...pill} tip={statusTip} focusable />
             )}
             {anonymized && (
               <span

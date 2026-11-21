@@ -328,7 +328,10 @@ restate it at the foot of `src/styles.css`). A sortable header (`src/components/
 sorts with Enter or Space, and a control's `data-tip` shows under it when it is reached with
 Tab (`src/components/Tooltip.tsx`), since the caveat about how a number is counted lives there.
 The tip is visual only: its layer is `aria-hidden`, and no control points at it with
-`aria-describedby`, so a screen reader does not announce it.
+`aria-describedby`, so a screen reader does not announce it. Where a tip holds facts the page
+shows nowhere beside it -- the head's status pill and the rail's status line -- the element is a
+tab stop too, so its tip shows on focus, and carries the tip's words as text a screen reader
+reads (`vh`); so does the line under each tab's name, which is its name's tip.
 
 | key | does |
 |---|---|
