@@ -84,7 +84,7 @@ sys.path.insert(0, os.path.join(_HERE, 'lib'))
 from agent_classify import (classify, actor3, is_autonomous, SANDBOX_TYPES,
                             approval_mode_of)  # noqa: E402
 from procparse import (  # noqa: E402
-    boot_time, list_pids, read_stat, read_cmdline, read_cgroup, read_cwd,
+    boot_time, list_pids, read_stat, read_cgroup, read_cwd,
     tty_name, uid_of, username, start_epoch, env_num, boot_id, read_ns, read_confinement, read_io)
 
 from slurm_args import parse_submit_args  # noqa: E402
