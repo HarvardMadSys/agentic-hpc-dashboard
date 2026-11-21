@@ -8,10 +8,12 @@
 # /var/log/ebpfm and /var/log/ebpfm-login. A folder the file and the environment name
 # differently is refused: the dashboard would read one, and the collector write the other.
 
-# KEY's last active value in $DEFAULTS, without the quotes systemd would remove
+# KEY's last active value in $DEFAULTS, as systemd reads it: the last assignment wins,
+# without the whitespace around it, or the quotes around it
 _ebpfm_default() {
   local v
   v=$( (sed -n "s/^$1=//p" "$DEFAULTS" 2>/dev/null || true) | tail -n 1)
+  v=$(printf '%s' "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   case $v in
     \"*\") v=${v#\"}; v=${v%\"} ;;
     \'*\') v=${v#\'}; v=${v%\'} ;;

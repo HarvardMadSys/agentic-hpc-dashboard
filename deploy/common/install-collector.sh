@@ -67,6 +67,9 @@ fi
 getent group "$GROUP" >/dev/null || { say "group $GROUP"; groupadd --system "$GROUP"; }
 if [ -z "$named" ]; then
   say "EBPFM_GROUP=$GROUP in $DEFAULTS"
+  # An empty assignment leaves the group as it is, and systemd keeps the last one: none may
+  # stay to outlast the group set here.
+  sed -i '/^EBPFM_GROUP=/d' "$DEFAULTS"
   if grep -q '^#EBPFM_GROUP=' "$DEFAULTS"; then
     sed -i "0,/^#EBPFM_GROUP=.*/s//EBPFM_GROUP=$GROUP/" "$DEFAULTS"
   else

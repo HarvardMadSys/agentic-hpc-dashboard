@@ -231,6 +231,16 @@ class TestSingle(Rig):
         self.assertEqual(self.unit("rc-dashboard.service")["SupplementaryGroups"], ["research"])
         self.assertNotIn("groupadd", self.calls())
 
+    def test_an_empty_group_assignment_does_not_outlast_the_group_set(self):
+        """`EBPFM_GROUP=` (empty) leaves the collector's group as it is, and systemd keeps
+        the last assignment: setting the group must leave no empty one after it."""
+        with open(self.default, "w") as fh:
+            fh.write("EBPFM_MIN_UID=0\n#EBPFM_GROUP=\nEBPFM_GROUP=\n")
+        self.install()
+        active = [l for l in self.read(self.default).splitlines() if l.startswith("EBPFM_GROUP=")]
+        self.assertEqual(active, ["EBPFM_GROUP=ebpfm"])
+        self.assertEqual(self.unit("rc-dashboard.service")["SupplementaryGroups"], ["ebpfm"])
+
     def test_a_quoted_group_is_the_group(self):
         """systemd takes the quotes off EBPFM_GROUP="research": so does the installer."""
         with open(self.default, "w") as fh:
@@ -322,6 +332,32 @@ class TestFleet(Rig):
             fh.write("FLEET_HOST=typo\n")
         out = self.install("--no-build", code=1)
         self.assertIn("unknown setting", out)
+
+
+class TestCollectorSettings(unittest.TestCase):
+    """_ebpfm_default reads /etc/default/ebpfm as systemd's EnvironmentFile= does."""
+
+    def value(self, text, key="EBPFM_GROUP"):
+        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
+            fh.write(text)
+        self.addCleanup(os.unlink, fh.name)
+        helper = os.path.join(REPO, "deploy", "common", "collector-paths.sh")
+        p = subprocess.run(["bash", "-c", 'die() { exit 9; }; DEFAULTS=$1; . "$2"; _ebpfm_default "$3"',
+                            "-", fh.name, helper, key],
+                           stdout=subprocess.PIPE, universal_newlines=True, check=True)
+        return p.stdout
+
+    def test_values(self):
+        for text, want in (("EBPFM_GROUP=research\n", "research"),
+                           ('EBPFM_GROUP="research"\n', "research"),
+                           ("EBPFM_GROUP='research'\n", "research"),
+                           ("EBPFM_GROUP= research \n", "research"),
+                           ("EBPFM_GROUP=\n", ""),
+                           ("#EBPFM_GROUP=research\n", ""),
+                           ("EBPFM_GROUP=research\nEBPFM_GROUP=\n", ""),
+                           ("EBPFM_GROUP=\nEBPFM_GROUP=lab\n", "lab"),
+                           ("", "")):
+            self.assertEqual(self.value(text), want, repr(text))
 
 
 @unittest.skipUnless(shutil.which("rsync"), "rsync is not installed")
