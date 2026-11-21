@@ -27,16 +27,30 @@ export function parseWindow(raw: string): number | null {
   return Math.round(n * mult);
 }
 
-export function human(minutes: number): string {
+function human(minutes: number): string {
   if (minutes % 1440 === 0 && minutes >= 2880) return `${minutes / 1440}d`;
   if (minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
+}
+
+/** What the window control offers: the service's floor first, when its presets
+ *  start above it, then the presets. Both are the service's: the floor is
+ *  `min_minutes` of `/api/windows`, which the websocket's `windows` frame
+ *  supersedes without it, so it is handed in apart -- and until the service has
+ *  said it, it is not offered. */
+export function offeredWindows(
+  presets: { minutes: number; label: string }[] | undefined,
+  min: number | null | undefined,
+): { minutes: number; label: string }[] {
+  const ps = presets ?? [];
+  return min && !ps.some((p) => p.minutes <= min) ? [{ minutes: min, label: human(min) }, ...ps] : ps;
 }
 
 export function WindowPicker({
   value,
   onChange,
   windows,
+  minMinutes,
   resolved,
   status,
   backfill,
@@ -44,11 +58,13 @@ export function WindowPicker({
   value: number | null;
   onChange: (v: number | null) => void;
   windows: WindowsResponse | null;
+  /** the service's floor, `min_minutes` of `/api/windows` (5) */
+  minMinutes?: number | null;
   resolved?: LiveResponse['window'];
   status?: WindowStatus | null;
   backfill?: BackfillStatus | null;
 }) {
-  const presets = windows?.presets ?? [];
+  const presets = offeredWindows(windows?.presets, minMinutes);
   const active = resolved?.minutes ?? value ?? windows?.default_minutes ?? null;
   const isPreset = presets.some((p) => p.minutes === active);
   const [draft, setDraft] = useState('');
