@@ -123,8 +123,9 @@ Point the dashboard at the same directories ([Dashboard](#dashboard)).
 ### RPM (Rocky/RHEL 8)
 
 A signed-off release publishes an `ebpfm-collector` RPM (noarch, built for
-EL8 / Rocky 8.10, **x86_64** hosts) as a GitHub Release artifact. Install it,
-check the node, then enable the service:
+EL8 / Rocky 8.10, **x86_64** hosts) as a GitHub Release artifact. There is no release
+until the first `vX.Y.Z` tag; until then, take the RPM from a branch build's workflow
+artifact (below). Install it, check the node, then enable the service:
 
 ```bash
 sudo dnf install ./ebpfm-collector-<version>-<release>.el8.noarch.rpm
@@ -283,8 +284,8 @@ RC_DASH_EBPF_ROOTS=/var/log/ebpfm        # where the eBPF tier's day-files are
 RC_DASH_NODE_ROOTS=/var/log/ebpfm-login  # where the node tier's are
 RC_DASH_HISTORY=1                        # keep every sealed (.jsonl.gz) day-file as Parquet too (0: off)
 RC_DASH_HISTORY_WORKERS=0                # processes converting in the background: 0 (default) = up to 8
-RC_DASH_INGEST_WORKERS=1                 # processes reducing the hours: 1 (default) = one pass; N = one node per process
-RC_DASH_INGEST_REDUCER_GROUPS=2          # with N >= 2: each node's hour in 2 processes, one per reducer group (1: one)
+RC_DASH_INGEST_WORKERS=1                 # processes reducing the hours: 1 (default) = one pass; N = a node each, N at once; 0 = one per CPU
+RC_DASH_INGEST_REDUCER_GROUPS=2          # each node's hour in 2 processes, one per reducer group, when workers >= nodes (1: one)
 ```
 
 See [History in Parquet](dashboard/README.md#history-in-parquet) for what the store holds,
@@ -326,11 +327,11 @@ uv run python -m rc_dashboard demo        # http://127.0.0.1:8080
 ./run-demo.sh                             # or with hot reload, on :8087
 ```
 
-The same demo is an image ([`docker/demo/Dockerfile`](docker/demo/Dockerfile)), and is
-public at <https://dashboard-demo.agentic-system.org>, behind a Cloudflare Worker
-([`deploy/cloudflare`](deploy/cloudflare/README.md)), redeployed from `develop` by
-[`demo-deploy.yml`](.github/workflows/demo-deploy.yml) whenever a push changes it and every
-test suite passes.
+The same demo is an image ([`docker/demo/Dockerfile`](docker/demo/Dockerfile)), and is on
+a public URL, <https://dashboard-demo.agentic-system.org>, behind a Cloudflare Worker that
+asks for a password of its own ([`deploy/cloudflare`](deploy/cloudflare/README.md)),
+redeployed from `develop` by [`demo-deploy.yml`](.github/workflows/demo-deploy.yml) whenever
+a push changes it and every test suite passes.
 
 ### Live, on a host of your own
 
@@ -358,6 +359,7 @@ all set from one settings file.
 | [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live service on a host of your own: the fleet stream from each node, the settings file, the first deploy, memory and disk, and the hourly check |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the demo, over a synthetic feed, on a public URL |
 | [`docs/logo/README.md`](docs/logo/README.md) | the mark and the lockups |
+| [`CLAUDE.md`](CLAUDE.md) | for Claude Code sessions here, and a short guide for anyone: where pull requests go, the commands, the dashboard's architecture in brief, and the constraints that bite (Python 3.6 in the collector, vendored copies, what a push or a tag publishes) |
 
 ## The rules both halves obey
 
@@ -390,7 +392,7 @@ on every pull request ([`ci.yml`](.github/workflows/ci.yml)):
 python3 -m unittest discover -s collector/tests -q        # the collector
 python3 -m unittest discover -s fleet/tests -q            # the fleet stream, over a fake collector
 python3 -m unittest discover -s deploy/fleet/tests -q     # the deploy kit, with stand-ins for systemd, tmux and ssh
-(cd dashboard && uv run python -m unittest discover -s tests -q)        # the service
+(cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # the service
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)   # the page
 ```
 
