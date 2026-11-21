@@ -729,55 +729,51 @@ html {
   height: 1px;
   margin-bottom: -1px;
 }
-/* on a phone the bar wraps to three rows; held at the top it would take a
-   seventh of the screen from the panels, so there it scrolls with the page */
+/* On a phone the bar is one row that scrolls sideways under a thumb: the
+   window, a rule, then who is on screen. Wrapped, it took three rows; one row
+   is short enough to keep sticking to the top as it does on a wide screen. */
 @media (max-width: 640px) {
   .controls {
-    position: static;
-    gap: 10px 0;
+    flex-wrap: nowrap;
+    gap: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
   }
-  /* Three rows with one left edge: the window, the classes, then who. Each
-     row's name is a fixed column, so the controls of all three start at one
-     line rather than wherever the name before them happened to end. */
+  .controls::-webkit-scrollbar {
+    display: none;
+  }
   .controls > .winpick,
   .controls > .filters {
-    flex: 1 1 100%;
-    gap: 8px;
-    padding-left: 60px;
-  }
-  /* the name sits in the row's indent, so a control that wraps lands under
-     the first control, not under the name */
-  .controls .eyebrow {
     flex: none;
-    width: 52px;
-    margin-left: -60px;
-  }
-  /* the presets share the row's width, the custom box at its end; on a phone
-     too narrow for both, the box goes under them rather than squeeze them */
-  .controls .seg {
-    flex: 1 1 180px;
     flex-wrap: nowrap;
-    min-width: 0;
+    gap: 6px;
   }
-  .controls .seg button {
-    flex: 1 1 0;
-    min-width: 0;
-    padding-left: 2px;
-    padding-right: 2px;
-    text-align: center;
+  .controls > .winpick {
+    padding-right: 12px;
+    margin-right: 12px;
+    border-right: 1px solid var(--rule);
+  }
+  /* the presets and the coloured chips name themselves; the row has no room
+     for the words over them (the bar's own aria-label still says what it is) */
+  .controls .eyebrow {
+    display: none;
+  }
+  /* the narrow layout lets every switch wrap; this one stays one strip */
+  .controls .seg {
+    flex-wrap: nowrap;
+    max-width: none;
+  }
+  .controls .seg button,
+  .controls .chip,
+  .controls .who-btn {
+    white-space: nowrap;
   }
   .controls .wininput {
     box-sizing: border-box;
     width: 80px;
     padding-left: 8px;
     padding-right: 8px;
-  }
-  .filters-extra {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    flex-basis: 100%;
   }
   /* The head's pills: one height, closer together, so they wrap as one strip
      and not as a ragged pile. */

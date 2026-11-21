@@ -47,7 +47,7 @@ export function ClassFilter({
           </button>
         );
       })}
-      {/* no box of its own on a wide screen; on a phone, a row of its own (styles.css) */}
+      {/* no box of its own: the dropdowns sit in the chips' row */}
       {extra && <span className="filters-extra">{extra}</span>}
     </div>
   );

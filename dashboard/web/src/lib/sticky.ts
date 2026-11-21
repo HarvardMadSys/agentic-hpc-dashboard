@@ -7,7 +7,7 @@
  * Tab, a panel picked in the rail's section list, the trajectory inspector --
  * lands below the bar rather than under it; and what else sticks to the top
  * (the Agents tab's list and detail) sticks below it. Where the bar does not
- * stick (a phone), it is 0.
+ * stick, it is 0.
  */
 import { useEffect, useLayoutEffect, useState } from 'react';
 import type { RefObject } from 'react';
